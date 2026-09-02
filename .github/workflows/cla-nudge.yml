@@ -1,0 +1,45 @@
+# CLA nudge — the moment a pull request is opened or pushed to, tell any commit
+# author without a contributors/ ledger entry exactly which file to add, in one
+# comment that updates itself. The `CLA ledger` job in ci.yml stays the gate;
+# this removes the guessing (a first contributor otherwise learns about the
+# ledger from a red check after a maintainer approves the run).
+#
+# `pull_request_target` runs on the BASE repository with its token — no
+# "approve and run" gate for first-time contributors — which is exactly why
+# scripts/cla_nudge.sh never checks out or executes anything from the fork:
+# the checkout below is the base branch, and the PR head is consulted only
+# through the contents API. Keep it that way.
+name: CLA nudge
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: cla-nudge-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  nudge:
+    name: CLA nudge
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # Base branch only (the default for pull_request_target): CLA.md's
+      # version line and scripts/cla_nudge.sh come from main, never the fork.
+      - uses: actions/checkout@v4
+
+      - name: Tell an unsigned author which file to add
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          # Same exemption as the CLA ledger job: the maintainer does not sign
+          # their own agreement.
+          MAINTAINER: eyalgolan
+        run: bash scripts/cla_nudge.sh
