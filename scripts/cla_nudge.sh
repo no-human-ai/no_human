@@ -87,7 +87,10 @@ fi
 err_file=$(mktemp)
 if ! ledger=$(gh api "repos/${GITHUB_REPOSITORY}/contents/contributors?ref=${MERGE_SHA}" \
     --jq '.[].name' 2>"$err_file"); then
-  if grep -q "HTTP 404" "$err_file"; then
+  # gh words a missing path "Not Found (HTTP 404)" and an unknown ref
+  # "No commit found for the ref ... (HTTP 404)": only the first is an empty
+  # ledger; the second is a read that never happened.
+  if grep -q "HTTP 404" "$err_file" && ! grep -q "No commit found" "$err_file"; then
     ledger=""
   else
     echo "could not read contributors/ at ${MERGE_SHA}; not posting on an unread ledger:" >&2

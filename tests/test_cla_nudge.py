@@ -28,6 +28,7 @@ case "$args" in
   *"/contents/contributors?ref="*)
       ref="${args##*ref=}"; ref="${ref%% *}"
       if [ -f "$STUB_DIR/ledger.fail" ]; then echo "gh: HTTP 500: boom" >&2; exit 1; fi
+      if [ -f "$STUB_DIR/ledger.badref" ]; then echo "gh: No commit found for the ref $ref (HTTP 404)" >&2; exit 1; fi
       if [ -f "$STUB_DIR/ledger.$ref" ]; then cat "$STUB_DIR/ledger.$ref"; else echo "gh: HTTP 404: Not Found" >&2; exit 1; fi ;;
   *"/issues/"*"/comments --jq"*)  cat "$STUB_DIR/existing.txt" 2>/dev/null || true ;;
   *"-X PATCH"*)  cp "${args##*body=@}" "$STUB_DIR/patched.md" ;;
@@ -50,10 +51,10 @@ def run(tmp_path):
             (stub_dir / f"ledger.{ref}").write_text("".join(f"{n}\n" for n in names))
         (stub_dir / "existing.txt").write_text(existing)
         (stub_dir / "merge_sha.txt").write_text(api_merge_sha + "\n")
-        for stale in ("posted.md", "patched.md", "calls.log", "ledger.fail"):
+        for stale in ("posted.md", "patched.md", "calls.log", "ledger.fail", "ledger.badref"):
             (stub_dir / stale).unlink(missing_ok=True)
         if ledger_fail:
-            (stub_dir / "ledger.fail").write_text("")
+            (stub_dir / ("ledger.badref" if ledger_fail == "badref" else "ledger.fail")).write_text("")
         e = {**os.environ, "PATH": f"{gh.parent}:{os.environ['PATH']}", "STUB_DIR": str(stub_dir),
              "GITHUB_REPOSITORY": "acme/thing", "PR_NUMBER": "7", "MERGE_SHA": merge_sha,
              "MAINTAINER": "eyalgolan", "CLA_NUDGE_POLL_SECONDS": "0", **(env or {})}
@@ -145,6 +146,15 @@ def test_a_ledger_read_failure_aborts_before_any_write(run):
     assert res.returncode != 0
     assert "HTTP 500" in res.stderr and "not posting on an unread ledger" in res.stderr
     assert not (d / "posted.md").exists() and not (d / "patched.md").exists()
+
+
+def test_an_unknown_ref_is_a_failed_read_not_an_empty_ledger(run):
+    # GitHub answers 404 for a ref it cannot find too ("No commit found for
+    # the ref ..."); that is not "no contributors/ here" and must abort
+    res, d = run(authors=["alice"], ledger_fail="badref", ledger_at={"m1": ["README.md", "alice.md"]})
+    assert res.returncode != 0
+    assert "No commit found" in res.stderr and "not posting on an unread ledger" in res.stderr
+    assert not (d / "posted.md").exists()
 
 
 def test_a_missing_contributors_directory_is_an_empty_ledger(run):
