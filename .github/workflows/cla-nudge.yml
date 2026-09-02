@@ -7,8 +7,9 @@
 # `pull_request_target` runs on the BASE repository with its token — no
 # "approve and run" gate for first-time contributors — which is exactly why
 # scripts/cla_nudge.sh never checks out or executes anything from the fork:
-# the checkout below is the base branch, and the PR head is consulted only
-# through the contents API. Keep it that way.
+# the checkout below is the base branch, and the PR's tree is consulted only
+# through the contents API (one directory listing per run, whatever the PR
+# carries). Keep it that way.
 name: CLA nudge
 
 on:
@@ -38,7 +39,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          # Head merged onto CURRENT main — the tree the CLA ledger job's
+          # checkout sees. Empty while GitHub has not computed it; the script
+          # then reads the head.
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
           # Same exemption as the CLA ledger job: the maintainer does not sign
           # their own agreement.
           MAINTAINER: eyalgolan

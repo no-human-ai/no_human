@@ -8,8 +8,9 @@ terms that make it possible. A tick-box in a pull-request template is not that.
 A file in git is: it has an author, a timestamp, a commit, and a diff, and it
 cannot be edited afterwards without leaving a trace.
 
-There is no signature service and nothing to sign up for; the only automation
-is a comment on your PR that shows you this file, filled in. One file,
+There is no signature service and nothing to sign up for. CI checks that the
+file exists, and a comment on your PR shows you this file filled in; neither
+signs anything for you. One file,
 once, in your first pull request.
 
 ## How to sign

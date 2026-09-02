@@ -1,0 +1,162 @@
+"""`scripts/cla_nudge.sh` (run by .github/workflows/cla-nudge.yml on
+`pull_request_target`): the comment it posts, the ledger semantics it shares
+with the `CLA ledger` job in ci.yml, and the write path (POST / PATCH) — all
+driven through a stub `gh` executable placed first on PATH, which records
+every call so the API budget and the exact write can be asserted."""
+from __future__ import annotations
+
+import os
+import subprocess
+from pathlib import Path
+
+import pytest
+
+REPO = Path(__file__).resolve().parents[1]
+SCRIPT = REPO / "scripts" / "cla_nudge.sh"
+CLA_VERSION = next(
+    line.split("Version: ")[1].rstrip("*").strip()
+    for line in (REPO / "CLA.md").read_text().splitlines() if line.startswith("**Version:"))
+
+STUB_GH = r'''#!/usr/bin/env bash
+# Stub `gh` for tests: replays canned answers from $STUB_DIR, logs every call.
+set -u
+printf '%s\n' "$*" >> "$STUB_DIR/calls.log"
+args="$*"
+case "$args" in
+  *"/pulls/"*"/commits"*)  cat "$STUB_DIR/commits.txt" ;;
+  *"/contents/contributors?ref="*)
+      ref="${args##*ref=}"; ref="${ref%% *}"
+      [ -f "$STUB_DIR/ledger.$ref" ] && cat "$STUB_DIR/ledger.$ref" || exit 1 ;;
+  *"/issues/"*"/comments --jq"*)  cat "$STUB_DIR/existing.txt" 2>/dev/null || true ;;
+  *"-X PATCH"*)  cp "${args##*body=@}" "$STUB_DIR/patched.md" ;;
+  *"-X POST"*)   cp "${args##*body=@}" "$STUB_DIR/posted.md" ;;
+  *) echo "unexpected gh call: $args" >&2; exit 2 ;;
+esac
+'''
+
+
+@pytest.fixture
+def run(tmp_path):
+    """Run the script against a stub `gh`; returns (result, stub_dir)."""
+    stub_dir = tmp_path / "stub"; stub_dir.mkdir()
+    gh = tmp_path / "bin" / "gh"; gh.parent.mkdir(); gh.write_text(STUB_GH); gh.chmod(0o755)
+
+    def _run(*, authors, ledger_at=None, existing="", merge_sha="m1", head_sha="h1",
+             dry=False, env=None):
+        (stub_dir / "commits.txt").write_text("".join(f"{a}\n" for a in authors))
+        for ref, names in (ledger_at or {}).items():
+            (stub_dir / f"ledger.{ref}").write_text("".join(f"{n}\n" for n in names))
+        (stub_dir / "existing.txt").write_text(existing)
+        for stale in ("posted.md", "patched.md", "calls.log"):
+            (stub_dir / stale).unlink(missing_ok=True)
+        e = {**os.environ, "PATH": f"{gh.parent}:{os.environ['PATH']}", "STUB_DIR": str(stub_dir),
+             "GITHUB_REPOSITORY": "acme/thing", "PR_NUMBER": "7", "HEAD_SHA": head_sha,
+             "MERGE_SHA": merge_sha, "MAINTAINER": "eyalgolan", **(env or {})}
+        if dry:
+            e["CLA_NUDGE_DRY_RUN"] = "1"
+        res = subprocess.run(["bash", str(SCRIPT)], cwd=REPO, env=e, capture_output=True, text=True)
+        return res, stub_dir
+    return _run
+
+
+def _calls(stub_dir):
+    return (stub_dir / "calls.log").read_text().splitlines()
+
+
+def test_unsigned_author_gets_one_posted_nudge_with_the_filled_in_file(run):
+    res, d = run(authors=["newperson"], ledger_at={"m1": ["README.md"]})
+    assert res.returncode == 0, res.stderr
+    body = (d / "posted.md").read_text()
+    assert "<!-- cla-nudge -->" in body
+    assert "`@newperson`" in body and "@newperson\n" not in body.replace("- GitHub: @newperson\n", "")
+    assert "contributors/newperson.md" in body
+    assert f"I have read CLA.md version {CLA_VERSION} and I agree to it." in body
+    assert f'git commit -m "Agree to CLA.md version {CLA_VERSION}"' in body
+    assert "https://github.com/acme/thing/blob/main/CLA.md" in body
+    assert not (d / "patched.md").exists()
+
+
+def test_api_budget_is_two_reads_plus_one_write_regardless_of_author_count(run):
+    many = [f"user{i:03d}" for i in range(250)]
+    res, d = run(authors=many, ledger_at={"m1": ["README.md"]})
+    assert res.returncode == 0, res.stderr
+    calls = _calls(d)
+    assert sum("/contents/contributors" in c for c in calls) == 1
+    assert sum("/commits" in c for c in calls) == 1
+    assert sum("-X POST" in c for c in calls) == 1
+    body = (d / "posted.md").read_text()
+    assert "250 distinct commit authors" in body
+    assert len(body.encode()) < 4000  # far under GitHub's 65,536-byte comment cap
+
+
+def test_maintainer_and_bot_only_posts_nothing_and_says_nothing_false(run):
+    res, d = run(authors=["eyalgolan", "dependabot[bot]"], ledger_at={"m1": ["README.md"]})
+    assert res.returncode == 0, res.stderr
+    assert not (d / "posted.md").exists() and not (d / "patched.md").exists()
+    assert "nothing missing" in res.stdout
+
+
+def test_returning_contributor_whose_file_is_on_main_is_not_nudged(run):
+    # the merge commit's tree carries main's contributors/ even when the head
+    # branch predates the file — exactly what the CLA ledger job's checkout sees
+    res, d = run(authors=["Octocat"], ledger_at={"m1": ["README.md", "octocat.md"], "h1": ["README.md"]})
+    assert res.returncode == 0, res.stderr
+    assert not (d / "posted.md").exists()
+
+
+def test_a_pr_that_deletes_a_ledger_file_is_nudged_like_the_gate_fails(run):
+    # the file exists on main but not in the merge result: the gate fails, so
+    # the nudge must not say all-clear
+    res, d = run(authors=["octocat"], ledger_at={"m1": ["README.md"]})
+    assert res.returncode == 0, res.stderr
+    assert "contributors/octocat.md" in (d / "posted.md").read_text()
+
+
+def test_falls_back_to_the_head_tree_while_github_has_no_merge_commit(run):
+    res, d = run(authors=["octocat"], merge_sha="", ledger_at={"h1": ["README.md", "octocat.md"]})
+    assert res.returncode == 0, res.stderr
+    assert any("ref=h1" in c for c in _calls(d)) and not any("ref=m1" in c for c in _calls(d))
+    assert not (d / "posted.md").exists()
+
+
+def test_existing_bot_comment_is_updated_in_place_and_resolved_when_signed(run):
+    res, d = run(authors=["octocat"], existing="4242\n", ledger_at={"m1": ["README.md", "octocat.md"]})
+    assert res.returncode == 0, res.stderr
+    assert not (d / "posted.md").exists()
+    patched = (d / "patched.md").read_text()
+    assert "<!-- cla-nudge -->" in patched and "has what it needs" in patched
+    assert any("-X PATCH repos/acme/thing/issues/comments/4242" in c for c in _calls(d))
+    # the lookup asks only for the bot's own comments carrying the marker
+    lookup = next(c for c in _calls(d) if "/issues/7/comments" in c)
+    assert 'user.login == "github-actions[bot]"' in lookup and "cla-nudge" in lookup
+
+
+def test_unlinked_email_is_explained_not_guessed(run):
+    res, d = run(authors=["UNLINKED-EMAIL"], ledger_at={"m1": ["README.md"]})
+    assert res.returncode == 0, res.stderr
+    body = (d / "posted.md").read_text()
+    assert "not attached to any GitHub account" in body
+    assert "contributors/unlinked-email.md" not in body
+
+
+def test_dry_run_prints_and_never_writes(run):
+    res, d = run(authors=["newperson"], ledger_at={"m1": ["README.md"]}, dry=True)
+    assert res.returncode == 0, res.stderr
+    assert "would post (resolved=0)" in res.stdout and "contributors/newperson.md" in res.stdout
+    assert not (d / "posted.md").exists() and not (d / "patched.md").exists()
+    assert not any("/issues/7/comments" in c for c in _calls(d))
+
+
+def test_positive_control_a_failing_commits_call_aborts_rather_than_posting(run, tmp_path):
+    # the stub exits 2 on an unknown call; make the commits listing itself fail
+    res, d = run(authors=["newperson"], ledger_at={"m1": ["README.md"]},
+                 env={"GITHUB_REPOSITORY": "acme/thing", "PR_NUMBER": "7"})
+    assert (d / "posted.md").exists()  # the control's precondition: the same setup DOES post
+    (d / "posted.md").unlink()
+    (d / "commits.txt").unlink()  # next run: `cat` fails -> gh exits non-zero
+    res2 = subprocess.run(["bash", str(SCRIPT)], cwd=REPO, capture_output=True, text=True, env={
+        **os.environ, "PATH": f"{tmp_path / 'bin'}:{os.environ['PATH']}", "STUB_DIR": str(d),
+        "GITHUB_REPOSITORY": "acme/thing", "PR_NUMBER": "7", "HEAD_SHA": "h1", "MERGE_SHA": "m1",
+        "MAINTAINER": "eyalgolan"})
+    assert res2.returncode != 0
+    assert not (d / "posted.md").exists()

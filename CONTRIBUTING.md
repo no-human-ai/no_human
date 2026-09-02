@@ -390,9 +390,11 @@ bot accounts are skipped. When it would fail, the `CLA nudge` workflow
 in for your handle, and updates that comment on every push; it never signs
 anything for you.
 
-Your pull request lands as one squashed commit with **you as the author** and
-the maintainer as the committer; the ledger entry is what admits an author
-other than the maintainer into `main`'s history.
+The maintainer lands an external pull request by hand, as one squashed commit
+that keeps **you as the author** (the maintainer is the committer). The ledger
+entry is what admits an author other than the maintainer into `main`'s history;
+`CLA.md` §3 leaves crediting to the maintainer's discretion, and this is how it
+is exercised.
 
 ## Trademark
 
