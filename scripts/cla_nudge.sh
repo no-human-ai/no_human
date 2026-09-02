@@ -146,7 +146,7 @@ else
     if [ "$unlinked" -eq 1 ]; then
       printf '%s\n\n' "At least one commit on this PR has an author email that is not attached to any GitHub account, so the ledger cannot tell who wrote it. Either add that email to your GitHub account (Settings → Emails) or re-author the commits with an address that is, then push again."
     fi
-    printf '%s\n' "This comment updates itself on every push. Nothing here signs anything on your behalf."
+    printf '%s\n' "This comment is updated on each push once GitHub has computed the pull request's merge commit. Nothing here signs anything on your behalf."
   } > "$body_file"
 fi
 

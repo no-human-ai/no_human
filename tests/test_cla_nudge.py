@@ -150,6 +150,16 @@ def test_a_stale_payload_merge_commit_is_not_trusted(run):
     assert not (d / "posted.md").exists()
 
 
+def test_a_polled_candidate_is_held_to_the_same_parent_check(run):
+    # the API keeps answering with the merge of the PREVIOUS head: never used
+    res, d = run(authors=["alice"], merge_sha="", api_merge_sha="m_old", head_sha="h2",
+                 parents={"m_old": "h1"}, ledger_at={"m_old": ["README.md"]})
+    assert res.returncode == 0, res.stderr
+    assert "nothing posted" in res.stdout
+    assert not any("/contents/contributors" in c for c in _calls(d))
+    assert sum("--jq .merge_commit_sha" in c for c in _calls(d)) == 6
+
+
 def test_no_merge_commit_at_all_posts_nothing_and_exits_clean(run):
     # conflicting PR, or GitHub has not computed the merge: never guess from
     # another tree, never make a public statement the gate would not
