@@ -19,11 +19,20 @@
 #     no GitHub account reported as unlinked. Identical to the gate's loop.
 #   * the ledger — ONE directory listing of `contributors/` at the PR's merge
 #     commit (`merge_commit_sha`: head merged onto CURRENT main, the tree the
-#     gate's checkout sees), falling back to the head commit while GitHub has
-#     not computed a merge (a conflicting or just-opened PR). Two API calls
-#     per run regardless of how many authors a PR carries — a fork can make
-#     the author list as long as it likes, and this must not turn into a
-#     request per author against the repository's shared token quota.
+#     gate's checkout sees). GitHub computes that commit asynchronously, so on
+#     `opened` the payload may not carry it yet: the script then asks the API
+#     for it a few times, and if there still is none — a conflicting PR, or
+#     one GitHub has not got to — it posts NOTHING and exits 0 rather than
+#     read some other tree and make a public statement the gate would not.
+#     The next push (`synchronize`) tries again. Two API reads per run
+#     regardless of how many authors a PR carries — a fork can make the
+#     author list as long as it likes, and this must not turn into a request
+#     per author against the repository's shared token quota. Only a genuine
+#     404 (no contributors/ directory in that tree) reads as an empty ledger;
+#     any other failure aborts the run, because an empty ledger nudges every
+#     author at once and must never come from a rate limit or a 500. (The
+#     listing returns at most 1,000 entries; revisit before the ledger nears
+#     that.)
 #   * size — a PR with more than MAX_NUDGED distinct unsigned authors gets one
 #     short comment naming the count, not a block per author: the per-author
 #     block is ~500 bytes and a comment body is capped at 65,536.
@@ -34,11 +43,12 @@
 #   * its own comment — found by marker AND by author (github-actions[bot]);
 #     a person quoting the marker text is not this bot's comment to edit.
 #
-# Env: GH_TOKEN, GITHUB_REPOSITORY, PR_NUMBER, HEAD_SHA, MERGE_SHA (may be
-# empty), MAINTAINER. CLA_NUDGE_DRY_RUN=1 prints the comment and exits 0.
+# Env: GH_TOKEN, GITHUB_REPOSITORY, PR_NUMBER, MERGE_SHA (may be empty),
+# MAINTAINER. CLA_NUDGE_DRY_RUN=1 prints the comment and exits 0.
+# CLA_NUDGE_POLL_SECONDS (default 5) is the wait between merge-commit polls.
 set -euo pipefail
 
-: "${GITHUB_REPOSITORY:?}" "${PR_NUMBER:?}" "${HEAD_SHA:?}" "${MAINTAINER:?}"
+: "${GITHUB_REPOSITORY:?}" "${PR_NUMBER:?}" "${MAINTAINER:?}"
 MERGE_SHA="${MERGE_SHA:-}"
 MARKER='<!-- cla-nudge -->'
 BOT_LOGIN='github-actions[bot]'
@@ -50,14 +60,41 @@ CLA_VERSION=$(sed -n 's/^\*\*Version: \([^*]*\)\*\*.*/\1/p' CLA.md | sed -n 1p)
 TODAY=$(date -u +%F)
 DOC_URL="https://github.com/${GITHUB_REPOSITORY}/blob/main/CLA.md"
 
+# The tree the gate sees: head merged onto current main. Poll briefly when
+# the event payload did not carry it; give up quietly rather than guess.
+if [ -z "$MERGE_SHA" ]; then
+  for _ in 1 2 3 4 5 6; do
+    MERGE_SHA=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '.merge_commit_sha // ""')
+    [ -n "$MERGE_SHA" ] && break
+    sleep "${CLA_NUDGE_POLL_SECONDS:-5}"
+  done
+  if [ -z "$MERGE_SHA" ]; then
+    echo "no merge commit for PR ${PR_NUMBER} yet (conflicting, or not computed): nothing posted"
+    exit 0
+  fi
+fi
+
 authors=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/commits" \
   --jq '.[].author.login // "UNLINKED-EMAIL"' | sort -u)
+if [ -z "$authors" ]; then
+  echo "PR ${PR_NUMBER} lists no commits: nothing to say"
+  exit 0
+fi
 
-# The ledger as the gate will see it: names in contributors/ at the merge
-# commit, else at the head. One listing; an absent directory lists as nothing.
-ledger_ref="${MERGE_SHA:-$HEAD_SHA}"
-ledger=$(gh api "repos/${GITHUB_REPOSITORY}/contents/contributors?ref=${ledger_ref}" \
-  --jq '.[].name' 2>/dev/null || true)
+# ONE listing of contributors/ at the merge commit. A 404 is "no such
+# directory in that tree" (an empty ledger); anything else is a failed read
+# and the run stops, because an empty ledger would nudge every author at once.
+err_file=$(mktemp)
+if ! ledger=$(gh api "repos/${GITHUB_REPOSITORY}/contents/contributors?ref=${MERGE_SHA}" \
+    --jq '.[].name' 2>"$err_file"); then
+  if grep -q "HTTP 404" "$err_file"; then
+    ledger=""
+  else
+    echo "could not read contributors/ at ${MERGE_SHA}; not posting on an unread ledger:" >&2
+    cat "$err_file" >&2
+    exit 1
+  fi
+fi
 
 missing=()
 unlinked=0

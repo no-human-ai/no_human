@@ -24,9 +24,11 @@ printf '%s\n' "$*" >> "$STUB_DIR/calls.log"
 args="$*"
 case "$args" in
   *"/pulls/"*"/commits"*)  cat "$STUB_DIR/commits.txt" ;;
+  *"/pulls/"*" --jq .merge_commit_sha"*)  cat "$STUB_DIR/merge_sha.txt" 2>/dev/null || echo "" ;;
   *"/contents/contributors?ref="*)
       ref="${args##*ref=}"; ref="${ref%% *}"
-      [ -f "$STUB_DIR/ledger.$ref" ] && cat "$STUB_DIR/ledger.$ref" || exit 1 ;;
+      if [ -f "$STUB_DIR/ledger.fail" ]; then echo "gh: HTTP 500: boom" >&2; exit 1; fi
+      if [ -f "$STUB_DIR/ledger.$ref" ]; then cat "$STUB_DIR/ledger.$ref"; else echo "gh: HTTP 404: Not Found" >&2; exit 1; fi ;;
   *"/issues/"*"/comments --jq"*)  cat "$STUB_DIR/existing.txt" 2>/dev/null || true ;;
   *"-X PATCH"*)  cp "${args##*body=@}" "$STUB_DIR/patched.md" ;;
   *"-X POST"*)   cp "${args##*body=@}" "$STUB_DIR/posted.md" ;;
@@ -41,17 +43,20 @@ def run(tmp_path):
     stub_dir = tmp_path / "stub"; stub_dir.mkdir()
     gh = tmp_path / "bin" / "gh"; gh.parent.mkdir(); gh.write_text(STUB_GH); gh.chmod(0o755)
 
-    def _run(*, authors, ledger_at=None, existing="", merge_sha="m1", head_sha="h1",
-             dry=False, env=None):
+    def _run(*, authors, ledger_at=None, existing="", merge_sha="m1", api_merge_sha="",
+             ledger_fail=False, dry=False, env=None):
         (stub_dir / "commits.txt").write_text("".join(f"{a}\n" for a in authors))
         for ref, names in (ledger_at or {}).items():
             (stub_dir / f"ledger.{ref}").write_text("".join(f"{n}\n" for n in names))
         (stub_dir / "existing.txt").write_text(existing)
-        for stale in ("posted.md", "patched.md", "calls.log"):
+        (stub_dir / "merge_sha.txt").write_text(api_merge_sha + "\n")
+        for stale in ("posted.md", "patched.md", "calls.log", "ledger.fail"):
             (stub_dir / stale).unlink(missing_ok=True)
+        if ledger_fail:
+            (stub_dir / "ledger.fail").write_text("")
         e = {**os.environ, "PATH": f"{gh.parent}:{os.environ['PATH']}", "STUB_DIR": str(stub_dir),
-             "GITHUB_REPOSITORY": "acme/thing", "PR_NUMBER": "7", "HEAD_SHA": head_sha,
-             "MERGE_SHA": merge_sha, "MAINTAINER": "eyalgolan", **(env or {})}
+             "GITHUB_REPOSITORY": "acme/thing", "PR_NUMBER": "7", "MERGE_SHA": merge_sha,
+             "MAINTAINER": "eyalgolan", "CLA_NUDGE_POLL_SECONDS": "0", **(env or {})}
         if dry:
             e["CLA_NUDGE_DRY_RUN"] = "1"
         res = subprocess.run(["bash", str(SCRIPT)], cwd=REPO, env=e, capture_output=True, text=True)
@@ -112,11 +117,55 @@ def test_a_pr_that_deletes_a_ledger_file_is_nudged_like_the_gate_fails(run):
     assert "contributors/octocat.md" in (d / "posted.md").read_text()
 
 
-def test_falls_back_to_the_head_tree_while_github_has_no_merge_commit(run):
-    res, d = run(authors=["octocat"], merge_sha="", ledger_at={"h1": ["README.md", "octocat.md"]})
+def test_polls_the_api_for_the_merge_commit_when_the_event_lacks_it(run):
+    # a returning contributor whose branch predates her file on main: the
+    # merge tree (from the API) has it, the head tree does not — no nudge
+    res, d = run(authors=["octocat"], merge_sha="", api_merge_sha="m2",
+                 ledger_at={"m2": ["README.md", "octocat.md"], "h1": ["README.md"]})
     assert res.returncode == 0, res.stderr
-    assert any("ref=h1" in c for c in _calls(d)) and not any("ref=m1" in c for c in _calls(d))
+    assert any("ref=m2" in c for c in _calls(d))
     assert not (d / "posted.md").exists()
+
+
+def test_no_merge_commit_at_all_posts_nothing_and_exits_clean(run):
+    # conflicting PR, or GitHub has not computed the merge: never guess from
+    # another tree, never make a public statement the gate would not
+    res, d = run(authors=["octocat"], merge_sha="", api_merge_sha="", ledger_at={"h1": ["README.md"]})
+    assert res.returncode == 0, res.stderr
+    assert "nothing posted" in res.stdout
+    assert not (d / "posted.md").exists()
+    assert not any("/contents/contributors" in c for c in _calls(d))
+    assert sum("--jq .merge_commit_sha" in c for c in _calls(d)) == 6  # bounded poll
+
+
+def test_a_ledger_read_failure_aborts_before_any_write(run):
+    # a 500 / rate limit must NOT read as "empty ledger": that would nudge
+    # every author at once, on a blip, with the reason discarded
+    res, d = run(authors=["alice"], ledger_fail=True, ledger_at={"m1": ["README.md", "alice.md"]})
+    assert res.returncode != 0
+    assert "HTTP 500" in res.stderr and "not posting on an unread ledger" in res.stderr
+    assert not (d / "posted.md").exists() and not (d / "patched.md").exists()
+
+
+def test_a_missing_contributors_directory_is_an_empty_ledger(run):
+    # 404 on the listing = the tree has no contributors/ at all: nudge
+    res, d = run(authors=["alice"], ledger_at={})
+    assert res.returncode == 0, res.stderr
+    assert "contributors/alice.md" in (d / "posted.md").read_text()
+
+
+def test_ledger_match_is_whole_name_not_substring(run):
+    # `ice` must not be satisfied by `alice.md`; `alice` must be
+    res, d = run(authors=["ice", "alice"], ledger_at={"m1": ["README.md", "alice.md"]})
+    assert res.returncode == 0, res.stderr
+    body = (d / "posted.md").read_text()
+    assert "contributors/ice.md" in body and "contributors/alice.md" not in body
+
+
+def test_a_pr_with_no_commits_says_nothing(run):
+    res, d = run(authors=[], ledger_at={"m1": ["README.md"]})
+    assert res.returncode == 0, res.stderr
+    assert "nothing to say" in res.stdout and not (d / "posted.md").exists()
 
 
 def test_existing_bot_comment_is_updated_in_place_and_resolved_when_signed(run):
@@ -156,7 +205,7 @@ def test_positive_control_a_failing_commits_call_aborts_rather_than_posting(run,
     (d / "commits.txt").unlink()  # next run: `cat` fails -> gh exits non-zero
     res2 = subprocess.run(["bash", str(SCRIPT)], cwd=REPO, capture_output=True, text=True, env={
         **os.environ, "PATH": f"{tmp_path / 'bin'}:{os.environ['PATH']}", "STUB_DIR": str(d),
-        "GITHUB_REPOSITORY": "acme/thing", "PR_NUMBER": "7", "HEAD_SHA": "h1", "MERGE_SHA": "m1",
+        "GITHUB_REPOSITORY": "acme/thing", "PR_NUMBER": "7", "MERGE_SHA": "m1",
         "MAINTAINER": "eyalgolan"})
     assert res2.returncode != 0
     assert not (d / "posted.md").exists()
