@@ -38,9 +38,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           # Head merged onto CURRENT main — the tree the CLA ledger job's
-          # checkout sees. Empty while GitHub has not computed it; the script
-          # then polls for it briefly and posts nothing if there is none.
+          # checkout sees. Empty while GitHub has not computed it, or stale
+          # by one push; the script trusts it only when its second parent is
+          # HEAD_SHA, else polls ~30 s and, if there is still none, posts
+          # nothing and exits green — the log says why; the next push retries.
           MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
           # Same exemption as the CLA ledger job: the maintainer does not sign
           # their own agreement.

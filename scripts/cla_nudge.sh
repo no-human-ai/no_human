@@ -19,12 +19,15 @@
 #     no GitHub account reported as unlinked. Identical to the gate's loop.
 #   * the ledger — ONE directory listing of `contributors/` at the PR's merge
 #     commit (`merge_commit_sha`: head merged onto CURRENT main, the tree the
-#     gate's checkout sees). GitHub computes that commit asynchronously, so on
-#     `opened` the payload may not carry it yet: the script then asks the API
-#     for it a few times, and if there still is none — a conflicting PR, or
-#     one GitHub has not got to — it posts NOTHING and exits 0 rather than
-#     read some other tree and make a public statement the gate would not.
-#     The next push (`synchronize`) tries again. Two API reads per run
+#     gate's checkout sees). GitHub computes that commit asynchronously: on
+#     `opened` the payload may not carry it yet, and on `synchronize` it may
+#     still carry the merge of the PREVIOUS head. A merge commit's second
+#     parent is the head it merged, so a value is trusted only when that
+#     parent is this event's head; otherwise the script asks the API a few
+#     times, and if there still is none — a conflicting PR, or one GitHub has
+#     not got to — it posts NOTHING and exits 0 rather than read some other
+#     tree and make a public statement the gate would not. The next push
+#     tries again. A handful of API reads per run
 #     regardless of how many authors a PR carries — a fork can make the
 #     author list as long as it likes, and this must not turn into a request
 #     per author against the repository's shared token quota. Only a genuine
@@ -43,12 +46,12 @@
 #   * its own comment — found by marker AND by author (github-actions[bot]);
 #     a person quoting the marker text is not this bot's comment to edit.
 #
-# Env: GH_TOKEN, GITHUB_REPOSITORY, PR_NUMBER, MERGE_SHA (may be empty),
-# MAINTAINER. CLA_NUDGE_DRY_RUN=1 prints the comment and exits 0.
+# Env: GH_TOKEN, GITHUB_REPOSITORY, PR_NUMBER, HEAD_SHA, MERGE_SHA (may be
+# empty or stale), MAINTAINER. CLA_NUDGE_DRY_RUN=1 prints the comment and exits 0.
 # CLA_NUDGE_POLL_SECONDS (default 5) is the wait between merge-commit polls.
 set -euo pipefail
 
-: "${GITHUB_REPOSITORY:?}" "${PR_NUMBER:?}" "${MAINTAINER:?}"
+: "${GITHUB_REPOSITORY:?}" "${PR_NUMBER:?}" "${HEAD_SHA:?}" "${MAINTAINER:?}"
 MERGE_SHA="${MERGE_SHA:-}"
 MARKER='<!-- cla-nudge -->'
 BOT_LOGIN='github-actions[bot]'
@@ -60,16 +63,22 @@ CLA_VERSION=$(sed -n 's/^\*\*Version: \([^*]*\)\*\*.*/\1/p' CLA.md | sed -n 1p)
 TODAY=$(date -u +%F)
 DOC_URL="https://github.com/${GITHUB_REPOSITORY}/blob/main/CLA.md"
 
-# The tree the gate sees: head merged onto current main. Poll briefly when
-# the event payload did not carry it; give up quietly rather than guess.
-if [ -z "$MERGE_SHA" ]; then
-  for _ in 1 2 3 4 5 6; do
-    MERGE_SHA=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '.merge_commit_sha // ""')
-    [ -n "$MERGE_SHA" ] && break
-    sleep "${CLA_NUDGE_POLL_SECONDS:-5}"
+# The tree the gate sees: THIS head merged onto current main. A merge commit
+# is trusted only if its second parent is this head (the payload's value can
+# be empty on `opened` or one push stale on `synchronize`); otherwise poll
+# briefly, and give up quietly rather than guess from another tree.
+merges_this_head() {  # <sha> — true if <sha>'s second parent is HEAD_SHA
+  [ -n "$1" ] && [ "$(gh api "repos/${GITHUB_REPOSITORY}/commits/$1" --jq '.parents[1].sha // ""')" = "$HEAD_SHA" ]
+}
+if ! merges_this_head "$MERGE_SHA"; then
+  MERGE_SHA=""
+  for attempt in 1 2 3 4 5 6; do
+    [ "$attempt" -gt 1 ] && sleep "${CLA_NUDGE_POLL_SECONDS:-5}"
+    candidate=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '.merge_commit_sha // ""')
+    if merges_this_head "$candidate"; then MERGE_SHA="$candidate"; break; fi
   done
   if [ -z "$MERGE_SHA" ]; then
-    echo "no merge commit for PR ${PR_NUMBER} yet (conflicting, or not computed): nothing posted"
+    echo "no merge commit of ${HEAD_SHA} for PR ${PR_NUMBER} yet (conflicting, or not computed): nothing posted"
     exit 0
   fi
 fi

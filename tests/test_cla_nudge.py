@@ -25,11 +25,14 @@ args="$*"
 case "$args" in
   *"/pulls/"*"/commits"*)  cat "$STUB_DIR/commits.txt" ;;
   *"/pulls/"*" --jq .merge_commit_sha"*)  cat "$STUB_DIR/merge_sha.txt" 2>/dev/null || echo "" ;;
+  *"/commits/"*" --jq .parents[1].sha"*)
+      sha="${args##*/commits/}"; sha="${sha%% *}"
+      cat "$STUB_DIR/parent2.$sha" 2>/dev/null || echo "" ;;
   *"/contents/contributors?ref="*)
       ref="${args##*ref=}"; ref="${ref%% *}"
       if [ -f "$STUB_DIR/ledger.fail" ]; then echo "gh: HTTP 500: boom" >&2; exit 1; fi
       if [ -f "$STUB_DIR/ledger.badref" ]; then echo "gh: No commit found for the ref $ref (HTTP 404)" >&2; exit 1; fi
-      if [ -f "$STUB_DIR/ledger.$ref" ]; then cat "$STUB_DIR/ledger.$ref"; else echo "gh: HTTP 404: Not Found" >&2; exit 1; fi ;;
+      if [ -f "$STUB_DIR/ledger.$ref" ]; then cat "$STUB_DIR/ledger.$ref"; else echo "gh: Not Found (HTTP 404)" >&2; exit 1; fi ;;
   *"/issues/"*"/comments --jq"*)  cat "$STUB_DIR/existing.txt" 2>/dev/null || true ;;
   *"-X PATCH"*)  cp "${args##*body=@}" "$STUB_DIR/patched.md" ;;
   *"-X POST"*)   cp "${args##*body=@}" "$STUB_DIR/posted.md" ;;
@@ -45,8 +48,12 @@ def run(tmp_path):
     gh = tmp_path / "bin" / "gh"; gh.parent.mkdir(); gh.write_text(STUB_GH); gh.chmod(0o755)
 
     def _run(*, authors, ledger_at=None, existing="", merge_sha="m1", api_merge_sha="",
-             ledger_fail=False, dry=False, env=None):
+             head_sha="h1", parents=None, ledger_fail=False, dry=False, env=None):
         (stub_dir / "commits.txt").write_text("".join(f"{a}\n" for a in authors))
+        # every merge commit's second parent is the head unless a test says otherwise
+        for sha, parent in {**{merge_sha: head_sha, api_merge_sha: head_sha}, **(parents or {})}.items():
+            if sha:
+                (stub_dir / f"parent2.{sha}").write_text(parent + "\n")
         for ref, names in (ledger_at or {}).items():
             (stub_dir / f"ledger.{ref}").write_text("".join(f"{n}\n" for n in names))
         (stub_dir / "existing.txt").write_text(existing)
@@ -57,7 +64,8 @@ def run(tmp_path):
             (stub_dir / ("ledger.badref" if ledger_fail == "badref" else "ledger.fail")).write_text("")
         e = {**os.environ, "PATH": f"{gh.parent}:{os.environ['PATH']}", "STUB_DIR": str(stub_dir),
              "GITHUB_REPOSITORY": "acme/thing", "PR_NUMBER": "7", "MERGE_SHA": merge_sha,
-             "MAINTAINER": "eyalgolan", "CLA_NUDGE_POLL_SECONDS": "0", **(env or {})}
+             "HEAD_SHA": head_sha, "MAINTAINER": "eyalgolan", "CLA_NUDGE_POLL_SECONDS": "0",
+             **(env or {})}
         if dry:
             e["CLA_NUDGE_DRY_RUN"] = "1"
         res = subprocess.run(["bash", str(SCRIPT)], cwd=REPO, env=e, capture_output=True, text=True)
@@ -88,8 +96,10 @@ def test_api_budget_is_two_reads_plus_one_write_regardless_of_author_count(run):
     assert res.returncode == 0, res.stderr
     calls = _calls(d)
     assert sum("/contents/contributors" in c for c in calls) == 1
-    assert sum("/commits" in c for c in calls) == 1
+    assert sum("/pulls/7/commits" in c for c in calls) == 1
+    assert sum("/commits/m1 " in c for c in calls) == 1  # the merge commit's parent check
     assert sum("-X POST" in c for c in calls) == 1
+    assert len(calls) == 5  # + the comment lookup: bounded whatever the PR carries
     body = (d / "posted.md").read_text()
     assert "250 distinct commit authors" in body
     assert len(body.encode()) < 4000  # far under GitHub's 65,536-byte comment cap
@@ -125,6 +135,18 @@ def test_polls_the_api_for_the_merge_commit_when_the_event_lacks_it(run):
                  ledger_at={"m2": ["README.md", "octocat.md"], "h1": ["README.md"]})
     assert res.returncode == 0, res.stderr
     assert any("ref=m2" in c for c in _calls(d))
+    assert not (d / "posted.md").exists()
+
+
+def test_a_stale_payload_merge_commit_is_not_trusted(run):
+    # the event's merge_commit_sha can be the merge of the PREVIOUS head: its
+    # second parent is not this head, so it is "not computed yet" -> poll,
+    # and the polled merge (whose second parent IS the head) has her file
+    res, d = run(authors=["alice"], merge_sha="m_old", head_sha="h2", api_merge_sha="m_new",
+                 parents={"m_old": "h1", "m_new": "h2"},
+                 ledger_at={"m_old": ["README.md"], "m_new": ["README.md", "alice.md"]})
+    assert res.returncode == 0, res.stderr
+    assert any("ref=m_new" in c for c in _calls(d)) and not any("ref=m_old" in c for c in _calls(d))
     assert not (d / "posted.md").exists()
 
 
@@ -215,7 +237,7 @@ def test_positive_control_a_failing_commits_call_aborts_rather_than_posting(run,
     (d / "commits.txt").unlink()  # next run: `cat` fails -> gh exits non-zero
     res2 = subprocess.run(["bash", str(SCRIPT)], cwd=REPO, capture_output=True, text=True, env={
         **os.environ, "PATH": f"{tmp_path / 'bin'}:{os.environ['PATH']}", "STUB_DIR": str(d),
-        "GITHUB_REPOSITORY": "acme/thing", "PR_NUMBER": "7", "MERGE_SHA": "m1",
+        "GITHUB_REPOSITORY": "acme/thing", "PR_NUMBER": "7", "MERGE_SHA": "m1", "HEAD_SHA": "h1",
         "MAINTAINER": "eyalgolan"})
     assert res2.returncode != 0
     assert not (d / "posted.md").exists()
