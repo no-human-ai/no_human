@@ -225,6 +225,12 @@ for Codex runs are estimates with a wider error bar than Claude ones.
 
 ## `local` — your own model server
 
+> **Your model must support extended thinking, or the first turn fails.**
+> The harness enables thinking on coder sessions; a server whose model
+> rejects it 500s before any token (measured 2026-09-01: `qwen2.5-coder`
+> behind an Anthropic-compatible proxy returned HTTP 500 "does not support
+> thinking"). Details below.
+
 `local` is still the Claude Agent SDK harness (the same `claude` CLI the
 default backend runs) — only three environment variables change what it talks
 to. It is for a self-hosted or third-party server that speaks the Anthropic

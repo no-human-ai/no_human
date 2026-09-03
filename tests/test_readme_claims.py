@@ -525,6 +525,42 @@ def test_security_md_session_mark_covers_all_three_backends():
         "backends and explain `local` is covered via ClaudeBackend."
     )
 
+
+def test_backends_md_flags_the_extended_thinking_requirement_at_the_top_of_the_local_section():
+    """A user picking `local` used to meet the extended-thinking requirement
+    only mid-section, after several paragraphs of env-var setup — by then
+    they may already have hit the turn-one 500 the requirement exists to
+    warn about. The admonition must be the first thing under the section
+    heading, not merely present somewhere inside it."""
+    text = (REPO / "docs" / "BACKENDS.md").read_text(encoding="utf-8")
+    heading = "## `local` — your own model server"
+    start = text.index(heading) + len(heading)
+    end = text.index("\n## ", start)
+    section = text[start:end]
+
+    lines = [line for line in section.splitlines() if line.strip()]
+    first_line = lines[0]
+    assert first_line.startswith(">") and "extended thinking" in first_line, (
+        "the local-backend section's first non-blank line must be the "
+        "extended-thinking admonition, not merely appear later in the "
+        "section: " + repr(first_line)
+    )
+
+    admonition_block = " ".join(line.lstrip(">").strip() for line in lines[:5])
+    assert "500" in admonition_block and "does not support thinking" in admonition_block, (
+        "the top-of-section admonition must cite the measured consequence "
+        "(HTTP 500, \"does not support thinking\"), not just the bare "
+        "requirement"
+    )
+
+    assert (
+        "**Your model must support extended thinking.** The harness enables "
+        "thinking on"
+    ) in section, (
+        "the original detailed prose paragraph must survive verbatim; the "
+        "admonition is an addition, not a replacement"
+    )
+
 # Section boundaries: (line the section starts with, line the NEXT section
 # starts with). Sliced rather than whole-file so a legitimate `read-only` use
 # elsewhere in either file (there is none today, but nothing prevents one)
