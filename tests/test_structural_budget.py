@@ -364,13 +364,15 @@ FROZEN_FILE_LINES = {
     # falling through to the generic dev-server sentence. Measured with the
     # scanner below, never summed by hand.
     #
-    # 21198 -> 21272 (+74): dispatch-time intake-eval hoisted path for
+    # 21198 -> 21275 (+77): dispatch-time intake-eval hoisted path for
     # grill/wizard-sourced tasks — the `elif ctx.get("eval_result")` branch
     # plus `_act_on_stored_eval`/`_write_eval_ctx` helpers and the
     # `_act_on_eval` merge-not-clobber rewrite, rebased onto the
-    # `build_cmd` change above. Measured with the scanner below, never
-    # summed by hand.
-    "core/orchestrator.py": 21272,
+    # `build_cmd` change above. Measured with the scanner's own
+    # `len(Path(...).read_text().splitlines())` metric (which, unlike
+    # `wc -l`, also counts the file's 3 pre-existing Unicode line-break
+    # characters inside `_LINE_BREAKS`'s regex), never summed by hand.
+    "core/orchestrator.py": 21275,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.
