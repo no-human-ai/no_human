@@ -30,7 +30,6 @@ from no_human.config import (
     MissingCredentialError,
     assert_subscription_mode,
 )
-from no_human.core.db import Store
 from no_human.core.scheduler import Scheduler
 from no_human.core.task import Task, TaskStatus
 
@@ -50,11 +49,8 @@ def _no_ambient_token(monkeypatch) -> None:
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
 
 
-@pytest_asyncio.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "test.db").connect()
-    yield s
-    await s.close()
+# `store` comes from tests/conftest.py's shared, exception-safe fixture — no
+# local variant here (see tests/test_store_fixture_convergence_guard.py).
 
 
 @pytest_asyncio.fixture
