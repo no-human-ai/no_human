@@ -349,7 +349,7 @@ export default function ModelsPanel() {
     : [];
 
   function selectedFor(row) {
-    return pending[row.key] !== undefined ? pending[row.key] : row.current;
+    return pending[row.key] !== undefined ? pending[row.key] : row.saved;
   }
 
   function handleChange(row, value) {
@@ -381,6 +381,11 @@ export default function ModelsPanel() {
 
   const dirty = pendingBody(payload, pending, pendingRoleBackend);
   const hasChanges = Object.keys(dirty).length > 0;
+  // Computed the same way Save's body is: a Reset that would send an empty
+  // PUT (disk already sits at every default) is disabled rather than a
+  // click that silently does nothing.
+  const resetDirty = resetBody(payload);
+  const hasResetChanges = Object.keys(resetDirty).length > 0;
 
   // The reviewer row's saved/pending/selected derivation, all in one place —
   // `null` for every other role (they carry no `backend` block at all).
@@ -440,6 +445,12 @@ export default function ModelsPanel() {
                 default: <code>{row.default}</code>
               </span>
               {row.note && <div className="ntm-hint">{row.note}</div>}
+              {row.pendingRestart && (
+                <div className="ntm-hint" data-testid="pending-restart-hint">
+                  Saved: <code>{row.saved}</code> — the running server still uses{" "}
+                  <code>{row.current}</code> until restart.
+                </div>
+              )}
               {row.costNote && <div className="ntm-hint">{row.costNote}</div>}
               {row.role === "reviewer" && reviewerView && (
                 <div className="reviewer-backend-override">
@@ -537,8 +548,8 @@ export default function ModelsPanel() {
         <button
           type="button"
           className="btn btn-sendback"
-          disabled={saving}
-          onClick={() => commit(resetBody(payload))}
+          disabled={saving || !hasResetChanges}
+          onClick={() => commit(resetDirty)}
         >
           Reset to defaults
         </button>

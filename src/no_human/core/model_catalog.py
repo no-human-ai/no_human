@@ -59,6 +59,7 @@ __all__ = [
     "PriceInfo",
     "ModelOption",
     "options_for",
+    "role_note",
     "validate",
     "defaults",
 ]
@@ -163,6 +164,19 @@ def _known_roles_message() -> str:
     return f"unknown role {{!r}}; must be one of {sorted(ROLES)}"
 
 
+def role_note(role: str) -> str:
+    """The ROLE-level note a picker must render verbatim next to the row —
+    :data:`VENDOR_PIN_NOTE` for every role in :data:`PINNED_ROLES`, ``""``
+    for ``coder``. This is the same sentence :func:`options_for` stamps onto
+    each *option*; a role dict (``model_settings.models_payload``) uses this
+    helper directly instead of re-deriving the ``role in PINNED_ROLES``
+    check a second time.
+    """
+    if not isinstance(role, str) or role not in ROLES:
+        raise ValueError(_known_roles_message().format(role))
+    return VENDOR_PIN_NOTE if role in PINNED_ROLES else ""
+
+
 def options_for(role: str) -> list[ModelOption]:
     """The ids a picker may offer for ``role``, priced and defaulted.
 
@@ -181,7 +195,7 @@ def options_for(role: str) -> list[ModelOption]:
         raise ValueError(_known_roles_message().format(role))
 
     default_id = defaults()[ROLES[role]]
-    note = VENDOR_PIN_NOTE if role in PINNED_ROLES else ""
+    note = role_note(role)
 
     options = [
         ModelOption(
