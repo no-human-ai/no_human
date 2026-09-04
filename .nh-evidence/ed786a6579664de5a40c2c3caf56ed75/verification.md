@@ -1,102 +1,34 @@
 # How I verified this — full log
 
-_Harness-captured record for task `ed786a65`, commit `08987988d2376008241861ff9bdb3f1c799cd0b1` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `ed786a65`, commit `19c650d41ddcae7dea6dfa78666cc0280884237d` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ## How I verified this
-7 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
+3 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
 
 ### test
-- `uv run pytest -q tests/test_ui_evidence_prompt.py 2>&1 | tail -40`
+- `uv run pytest -q tests/test_ui_evidence_default_walk.py tests/test_ui_evidence_prompt.py -n 4 --collect-only 2>&1 | tail -30`
 
 ```
-Using CPython 3.12.13
-Creating virtual environment at: .venv
-   Building no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/ed786a6579664de5a40c2c3caf56ed75.9318.63150623
-      Built no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/ed786a6579664de5a40c2c3caf56ed75.9318.63150623
-Installed 65 packages in 179ms
-.........                                                                [100%]
-9 passed in 2.68s
-```
+tests/test_ui_evidence_default_walk.py::test_default_manifest_none_when_base_url_fails_loopback_rule
+tests/test_ui_evidence_default_walk.py::test_default_manifest_landing_only_shape
+tests/test_ui_evidence_default_walk.py::test_default_manifest_adds_a_settled_shot_when_web_src_touched
+tests/test_ui_evidence_default_walk.py::test_default_manifest_drives_a_fake_page_end_to_end
+tests/test_ui_evidence_default_walk.py::test_default_manifest_not_used_when_coder_manifest_present
+tests/test_ui_evidence_default_walk.py::test_deliver_ui_evidence_default_walk_labels_the_section
+tests/test_ui_evidence_default_walk.py::test_deliver_ui_evidence_without_default_walk_flag_is_unlabeled
+tests/
+[... 799 of 1,938 characters omitted from the middle ...]
+mpt.py::test_enabled_but_plan_files_do_not_match_ui_paths_hides_the_block
+tests/test_ui_evidence_prompt.py::test_enabled_but_missing_start_cmd_or_base_url_hides_the_block
+tests/test_ui_evidence_prompt.py::test_part2_wires_the_attempt_time_walk
+tests/test_ui_evidence_prompt.py::test_block_says_the_harness_boots_the_dev_server
+tests/test_ui_evidence_prompt.py::test_block_shows_an_example_manifest_and_the_bare_landing_fallback
 
-- `uv run pytest -q tests/test_ui_evidence_default_walk.py 2>&1 | tail -150`
-
-```
-.......F...                                                              [100%]
-=================================== FAILURES ===================================
-____ test_no_coder_manifest_and_configured_profile_invokes_the_default_walk ____
-
-tmp_path = PosixPath('/private/var/folders/1r/3r0rt1jd4j1456rsg_fh4d380000gn/T/pytest-of-eyalgolan/pytest-24816/test_no_coder_manifest_and_con0')
-store = <<redacted>.core.db.Store object at 0x10b06c110>
-monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x10b04dfa0>
-
-    async def test_no_coder_manifest_and_configured_profile_invokes_the_default_walk(
-            tmp_path, store, monkeypatch):
-        """AC1: no manifest + enabled
-[... 1,610 of 2,749 characters omitted from the middle ...]
-ult walk (no coder manifest): landing](https://raw.githubusercontent.com/acme/widge...
-E         
-E         ...Full output truncated (2 lines hidden), use '-vv' to show
-
-tests/test_ui_evidence_default_walk.py:345: AssertionError
-=========================== short test summary info ============================
-FAILED tests/test_ui_evidence_default_walk.py::test_no_coder_manifest_and_configured_profile_invokes_the_default_walk
-1 failed, 10 passed in 0.91s
+20 tests collected in 0.23s
 ```  
-  _excerpt - 2,745 characters of output in total_
+  _excerpt - 1,938 characters of output in total_
 
-- `uv run pytest -q tests/test_ui_evidence_default_walk.py 2>&1 | tail -60`
-
-```
-...........                                                              [100%]
-11 passed in 0.46s
-```
-
-- `uv run pytest -q -n 4 \   tests/test_ui_evidence_default_walk.py \   tests/test_ui_evidence.py \   tests/test_ui_evidence_prompt.py \   tests/test_ui_evidence_attempt_hook.py \   tests/test_ui_evidence_bui [... 134 of 477 characters omitted from the middle ...] idence_should_run.py \   tests/test_ui_evidence_playwright_probe_parity.py \   tests/test_ui_evidence_provisioning.py \   2>&1 | tail -100`
-
-```
-bringing up nodes...
-bringing up nodes...
-
-........................................................................ [ 35%]
-........................................................................ [ 70%]
-..................ss.s.....................................              [100%]
-200 passed, 3 skipped in 10.50s
-```
-
-- `uv run pytest -q tests/test_structural_budget.py 2>&1 | tail -150`
-
-```
-.....F............                                                       [100%]
-=================================== FAILURES ===================================
-________________________ test_no_frozen_entry_has_grown ________________________
-
-scanned = ({'agent/claude_backend.py:ClaudeBackend.stream': 407, 'blockers/landed_override.py:approve_landed_override': 315, 'bl... ...}, {'agent/guard.py': 2892, 'api/app.py': 5919, 'blockers/wake.py': 2740, 'cli/commands.py': 8423, ...}, 217, 3220)
-
-    def test_no_frozen_entry_has_grown(scanned):
-        function_lines, function_cc, file_lines, _, _ = scanned
-        checks = [
-            (function_lines, FROZEN_FUNCTION_LINES, MAX_
-[... 534 of 1,673 characters omitted from the middle ...]
-/orches...atchets down'] == []
-E             
-E             Left contains one more item: 'core/orchestrator.py: frozen 21198, now 21268 (+70); this budget only ratchets down'
-E             Use -v to get more diff
-
-tests/test_structural_budget.py:872: AssertionError
-=========================== short test summary info ============================
-FAILED tests/test_structural_budget.py::test_no_frozen_entry_has_grown - Asse...
-1 failed, 17 passed in 1.60s
-```  
-  _excerpt - 1,673 characters of output in total_
-
-- `uv run pytest -q tests/test_structural_budget.py 2>&1 | tail -100`
-
-```
-..................                                                       [100%]
-18 passed in 1.45s
-```
-
-- `uv run pytest -q -n 4 \   tests/test_ui_evidence_default_walk.py \   tests/test_ui_evidence.py \   tests/test_ui_evidence_prompt.py \   tests/test_ui_evidence_attempt_hook.py \   tests/test_ui_evidence_bui [... 169 of 512 characters omitted from the middle ...] _ui_evidence_playwright_probe_parity.py \   tests/test_ui_evidence_provisioning.py \   tests/test_structural_budget.py \   2>&1 | tail -60`
+- `uv run pytest -q tests/test_ui_evidence_default_walk.py tests/test_ui_evidence.py \   tests/test_ui_evidence_prompt.py tests/test_ui_evidence_attempt_hook.py \   tests/test_ui_evidence_build_cmd.py tests/t [... 141 of 484 characters omitted from the middle ...] est_ui_evidence_playwright_probe_parity.py tests/test_ui_evidence_provisioning.py \   tests/test_structural_budget.py -n 4 2>&1 | tail -30`
 
 ```
 bringing up nodes...
@@ -104,9 +36,18 @@ bringing up nodes...
 
 ........................................................................ [ 32%]
 ........................................................................ [ 65%]
-...........ss..s........................................................ [ 97%]
+............ss.s........................................................ [ 97%]
 .....                                                                    [100%]
-218 passed, 3 skipped in 13.80s
+218 passed, 3 skipped in 11.06s
+```
+
+- `uv run pytest -q tests/test_ui_evidence_default_walk.py tests/test_ui_evidence.py \   tests/test_ui_evidence_prompt.py tests/test_ui_evidence_attempt_hook.py \   tests/test_ui_evidence_build_cmd.py tests/t [... 155 of 498 characters omitted from the middle ...] e_playwright_probe_parity.py tests/test_ui_evidence_provisioning.py \   tests/test_structural_budget.py -rs -n 4 2>&1 | grep -A2 "SKIPPED"`
+
+```
+SKIPPED [1] tests/test_ui_evidence_playwright_probe_parity.py:56: playwright not installed in this environment (uv sync --group e2e)
+SKIPPED [1] tests/test_ui_evidence_playwright_probe_parity.py:80: playwright not installed in this environment (uv sync --group e2e)
+SKIPPED [1] tests/test_ui_evidence_playwright_probe_parity.py:178: playwright not installed in this environment (uv sync --group e2e)
+218 passed, 3 skipped in 12.40s
 ```
 
 
