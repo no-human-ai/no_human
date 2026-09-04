@@ -278,6 +278,36 @@ def test_add_restores_the_file_if_verification_fails(tmp_path, monkeypatch):
     assert (repo / ".no_human" / "verifiers.yaml").read_text() == original
 
 
+def test_add_succeeds_despite_an_unrelated_pre_existing_bad_entry(tmp_path, monkeypatch):
+    """A malformed entry already in the file (bad id, in this case) must not
+    make write-then-verify roll back an otherwise-valid `add` to the same
+    file: the loader's problem line for that entry is present both before
+    and after the write, so it must not be mistaken for a new problem caused
+    by the write."""
+    repo = tmp_path / "repo"
+    _write_verifiers(
+        repo,
+        "verifiers:\n"
+        "  - id: Bad Id\n"
+        "    statement: This entry has always been broken.\n"
+        "    paths: src/**/*.py\n",
+    )
+    runner = _runner(tmp_path, monkeypatch)
+
+    result = runner.invoke(cli, [
+        "verifiers", "add", "--repo", str(repo),
+        "--id", "rule-two", "--statement", "Second rule.", "--path", "docs/*",
+    ])
+
+    assert result.exit_code == 0, result.output
+    text = (repo / ".no_human" / "verifiers.yaml").read_text()
+    assert "id: Bad Id" in text
+    assert "id: rule-two" in text
+    report = vcmd.load_verifiers(repo, home=tmp_path / "home")
+    assert {v.id for v in report.verifiers} == {"rule-two"}
+    assert any("Bad Id" in p for p in report.problems)
+
+
 # --------------------------------------------------------------------------- #
 # nh verifiers check                                                          #
 # --------------------------------------------------------------------------- #

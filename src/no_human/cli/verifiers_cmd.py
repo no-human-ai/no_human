@@ -153,12 +153,21 @@ def _write_then_verify(
     """Append `block` to `path`, reload the merged verifier set, and confirm
     the new id actually loads clean. On any problem, restore `path`'s
     original bytes (or delete it, if it didn't exist before) and return an
-    error string; returns None on success."""
+    error string; returns None on success.
+
+    The "did it load clean" check diffs the problem list *before* vs.
+    *after* the write, rather than substring-matching `str(path)` against
+    every problem line: every problem the loader emits for this file is
+    prefixed with `str(path)` (it is the entry's `origin`), so a file that
+    already has an unrelated malformed entry would otherwise make every
+    future `add`/`propose` to that file look like it broke verification.
+    """
     original = path.read_bytes() if path.exists() else None
+    before_problems = load_verifiers(repo_root, home=home).problems
     append_entry(path, block)
     report = load_verifiers(repo_root, home=home)
     ids = {v.id for v in report.verifiers}
-    new_problems = [p for p in report.problems if new_id in p or str(path) in p]
+    new_problems = [p for p in report.problems if p not in before_problems]
     if new_id not in ids or new_problems:
         if original is not None:
             path.write_bytes(original)
