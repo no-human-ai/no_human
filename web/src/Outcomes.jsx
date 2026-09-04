@@ -11,7 +11,7 @@ import { pluralize } from "./pluralize.js";
 //
 // Rows open the SAME drawer the board cards open, so nothing is lost by leaving the board.
 
-export default function Outcomes({ tasks, lane, onFollowUp = null }) {
+export default function Outcomes({ tasks, lane, onFollowUp = null, authMode }) {
   const [selectedId, setSelectedId] = useState(null);
   const triggerRef = useRef(null);
   const isFailedLane = lane === "failed";
@@ -54,6 +54,7 @@ export default function Outcomes({ tasks, lane, onFollowUp = null }) {
         tasks={rows}
         onSelect={open}
         emptyHint={isFailedLane ? "No failures — nothing has broken." : "Nothing shipped yet."}
+        authMode={authMode}
       />
       {selectedId && (
         <SlideOver

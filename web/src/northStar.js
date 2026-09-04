@@ -2,7 +2,7 @@
 // actually trusts, derived from /api/metrics — NOT "completed tasks", which
 // counts 0-token code reviews as deliveries. Pure so node --test can pin it.
 
-import { fmtCost, lifetimeCost } from "./cost.js";
+import { fmtCost, fmtTokens, lifetimeCost, lifetimeTokens, pricingIsReal } from "./cost.js";
 
 // tone: "good" | "bad" | "neutral" drives the semantic colour of the value.
 //
@@ -11,7 +11,7 @@ import { fmtCost, lifetimeCost } from "./cost.js";
 // tiles in a row taught the operator nothing — the colour carried no signal. Volume numbers
 // (how many, how much) are neutral; quality numbers (did the gate hold, is the cache working)
 // carry the colour.
-export function northStarTiles(metrics) {
+export function northStarTiles(metrics, authMode) {
   if (!metrics) return [];
   const merged = metrics.prs_merged ?? 0;
   const opened = metrics.prs_opened ?? 0;
@@ -36,6 +36,33 @@ export function northStarTiles(metrics) {
   const lifetime = lifetimeCost(metrics);
   const costPerPr = merged > 0 && lifetime ? lifetime / merged : null;
 
+  // Subscription (flat-fee) mode never renders a dollar figure here — the
+  // API-rate estimate is not money that changed hands. `pricingIsReal` is
+  // the single home of the api_key-vs-subscription rule (SCRUM re-home);
+  // `authMode` absent/unrecognized falls to the token-led tile, same as
+  // every other subscription-mode surface.
+  const tokens = lifetimeTokens(metrics);
+  const tokensPerPr = merged > 0 && tokens ? Math.round(tokens / merged) : null;
+  const secondTile = pricingIsReal(authMode)
+    ? {
+        label: "Cost / merged PR",
+        value: fmtCost(costPerPr),
+        sub:
+          costPerPr == null
+            ? (merged === 0 ? "no merge yet" : "no token data yet")
+            : `${fmtCost(lifetime)} spent · ${merged} merged`,
+        tone: "neutral",
+      }
+    : {
+        label: "Tokens / merged PR",
+        value: fmtTokens(tokensPerPr),
+        sub:
+          tokensPerPr == null
+            ? (merged === 0 ? "no merge yet" : "no token data yet")
+            : `${fmtTokens(tokens)} used · ${merged} merged`,
+        tone: "neutral",
+      };
+
   return [
     {
       label: "PRs merged",
@@ -46,15 +73,7 @@ export function northStarTiles(metrics) {
       // nothing across four tiles.
       tone: merged === 0 ? "bad" : "neutral",
     },
-    {
-      label: "Cost / merged PR",
-      value: fmtCost(costPerPr),
-      sub:
-        costPerPr == null
-          ? (merged === 0 ? "no merge yet" : "no token data yet")
-          : `${fmtCost(lifetime)} spent · ${merged} merged`,
-      tone: "neutral",
-    },
+    secondTile,
     {
       label: "Review gate",
       value: rPass + rFail > 0 ? `${rPass}/${rPass + rFail}` : "—",

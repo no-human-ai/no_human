@@ -2069,6 +2069,50 @@ async def test_metrics_cost_usd_total_equals_the_sum_of_task_costs(tmp_path):
         await store.close()
 
 
+@pytest.mark.asyncio
+async def test_metrics_tokens_total_sums_every_bucket_priced_by_cost_usd_total(client, store):
+    """/api/metrics's `tokens_total` (the token-basis sibling of
+    `cost_usd_total`, SCRUM re-home) must sum the SAME nine buckets
+    `attempts_cost` prices — coder/reviewer/aux x used+cache_creation+
+    cache_read — or the subscription-mode token tile and the dollar tile
+    would describe different universes."""
+    t1 = Task.new("a", repo_path="/tmp/a")
+    await store.create_task(t1)
+    a1 = await store.create_attempt(t1.id, attempt_number=1)
+    await store.update_attempt(
+        a1,
+        tokens_used=1_000_000, cache_creation_tokens=200_000, cache_read_tokens=50_000,
+        review_tokens_used=10_000, review_cache_creation_tokens=2_000, review_cache_read_tokens=500,
+        utility_tokens_used=3_000, utility_cache_creation_tokens=400, utility_cache_read_tokens=100,
+        models={"coder": "claude-sonnet-5"})
+
+    t2 = Task.new("b", repo_path="/tmp/b")
+    await store.create_task(t2)
+    a2 = await store.create_attempt(t2.id, attempt_number=1)
+    await store.update_attempt(
+        a2,
+        tokens_used=500_000, cache_creation_tokens=100_000, cache_read_tokens=25_000,
+        review_tokens_used=5_000, review_cache_creation_tokens=1_000, review_cache_read_tokens=250,
+        utility_tokens_used=1_500, utility_cache_creation_tokens=200, utility_cache_read_tokens=50,
+        models={"coder": "gpt-5.3-codex"})
+
+    r = await client.get("/api/metrics")
+    assert r.status_code == 200
+    expected = (
+        (1_000_000 + 200_000 + 50_000) + (500_000 + 100_000 + 25_000)  # coder
+        + (10_000 + 2_000 + 500) + (5_000 + 1_000 + 250)  # reviewer
+        + (3_000 + 400 + 100) + (1_500 + 200 + 50)  # aux
+    )
+    assert r.json()["tokens_total"] == expected
+
+
+@pytest.mark.asyncio
+async def test_metrics_tokens_total_is_zero_not_none_on_an_empty_store(client):
+    r = await client.get("/api/metrics")
+    assert r.status_code == 200
+    assert r.json()["tokens_total"] == 0
+
+
 def test_task_out_withholds_a_failure_reason_that_would_be_a_lie():
     """Two cases where a plausible string is worse than nothing.
 

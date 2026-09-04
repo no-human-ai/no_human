@@ -6,10 +6,10 @@
 // IS the spend — same as today's line.
 // Pure derivation, no fetching: the caller (the sidebar block) already has
 // every number this needs from data it already fetches.
-import { fmtTokens, fmtCost } from "./cost.js";
+import { fmtTokens, fmtCost, pricingIsReal } from "./cost.js";
 
 export function deriveSpendDisplay(tokensSpent, dollarEstimate, actualDollarSpent, authMode) {
-  if (authMode === "api_key") {
+  if (pricingIsReal(authMode)) {
     return { primary: fmtCost(actualDollarSpent), secondary: "spent", format: "dollars" };
   }
   // "subscription" and any absent/unrecognized value fall back to the

@@ -1509,9 +1509,9 @@ export default function App() {
             onStart={(list) => setBacklog((s) => backlogQueueReducer(s, { type: "start", issues: list }))}
           />
         )}
-        {page === "done" && <Outcomes tasks={tasks} lane="done" onFollowUp={openFollowUp} />}
-        {page === "failed" && <Outcomes tasks={tasks} lane="failed" onFollowUp={openFollowUp} />}
-        {page === "stats" && <Stats tasks={tasks} />}
+        {page === "done" && <Outcomes tasks={tasks} lane="done" onFollowUp={openFollowUp} authMode={authMode} />}
+        {page === "failed" && <Outcomes tasks={tasks} lane="failed" onFollowUp={openFollowUp} authMode={authMode} />}
+        {page === "stats" && <Stats tasks={tasks} authMode={authMode} />}
         {page === "about" && <About onShowShortcuts={() => setShowShortcuts(true)} />}
       </main>
       {showNewTask && (

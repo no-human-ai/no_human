@@ -96,3 +96,26 @@ export function taskCost(task) {
 export function lifetimeCost(metrics) {
   return metrics?.cost_usd_total ?? null;
 }
+
+/**
+ * Only `api_key` (BYO) mode pays Anthropic per token for real; `subscription`
+ * (the default, and any absent/unrecognized value — OAuth is the fallback,
+ * never assume real dollars) pays a flat fee, so a dollar figure there is an
+ * API-rate ESTIMATE, not money that changed hands. The single home of this
+ * rule (SCRUM re-home) — every surface that must choose tokens vs. dollars
+ * reads this instead of re-deriving the `=== "api_key"` check.
+ */
+export function pricingIsReal(authMode) {
+  return authMode === "api_key";
+}
+
+/**
+ * Lifetime tokens from `/api/metrics`'s `tokens_total` — the token-basis
+ * sibling of `lifetimeCost`, reading the SAME nine buckets `cost_usd_total`
+ * prices. `null` on an older payload that lacks the key (distinct from "0
+ * tokens spent"), so a subscription-mode tile can say "no token data yet"
+ * instead of a false zero.
+ */
+export function lifetimeTokens(metrics) {
+  return metrics?.tokens_total ?? null;
+}

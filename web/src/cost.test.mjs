@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { fmtTokens, totalBurn, fmtCost, lifetimeCost, taskCost, taskBurn } from "./cost.js";
+import {
+  fmtTokens, totalBurn, fmtCost, lifetimeCost, taskCost, taskBurn,
+  pricingIsReal, lifetimeTokens,
+} from "./cost.js";
 
 // NOTE ON WHAT MOVED: this file used to pin the dollar ARITHMETIC (a flat rate applied to
 // three token buckets). That arithmetic no longer lives in JS — it moved server-side to
@@ -98,4 +101,28 @@ test("taskBurn counts every bucket a task's cost can be priced from", () => {
     assert.equal(taskBurn(only(field)), 1_000_000, `${field} missing from taskBurn`);
   }
   assert.equal(taskBurn(null), 0);
+});
+
+// SCRUM re-home: the single home of the api_key-vs-subscription rule. Only `api_key` (BYO)
+// pays Anthropic per token for real — every other/absent/garbage value must fall to the
+// subscription (token-led) behavior, never assume real dollars.
+test("pricingIsReal is true only for api_key — subscription, absent, and garbage all fall to token display", () => {
+  assert.equal(pricingIsReal("api_key"), true);
+  assert.equal(pricingIsReal("subscription"), false);
+  assert.equal(pricingIsReal(undefined), false);
+  assert.equal(pricingIsReal(null), false);
+  assert.equal(pricingIsReal("SUBSCRIPTION"), false);   // case-sensitive, no normalization guess
+  assert.equal(pricingIsReal("api-key"), false);         // near-miss spelling is not a match
+  assert.equal(pricingIsReal(""), false);
+});
+
+test("lifetimeTokens renders /api/metrics's tokens_total verbatim — the token-basis sibling of lifetimeCost", () => {
+  assert.equal(lifetimeTokens({ tokens_total: 12_345 }), 12_345);
+  assert.equal(lifetimeTokens({ tokens_total: 0 }), 0, "0 tokens spent is honest, not absence");
+});
+
+test("lifetimeTokens is null when the payload lacks the key — distinct from 0 tokens spent", () => {
+  assert.equal(lifetimeTokens({}), null);
+  assert.equal(lifetimeTokens(null), null);
+  assert.equal(lifetimeTokens(undefined), null);
 });

@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { fmtCost, fmtTokens, taskBurn, taskCost } from "./cost.js";
+import { fmtCost, fmtTokens, taskBurn, taskCost, pricingIsReal } from "./cost.js";
 import { httpPrUrl } from "./prUrl.js";
 import { failedReasonLine } from "./cardBlockerLine.js";
 import { parseTimestamp } from "./parseTimestamp.js";
@@ -34,7 +34,11 @@ function fmtDuration(seconds) {
   return m > 0 ? `${h}h ${m}m` : `${h}h`;
 }
 
-export default function TaskTable({ tasks, onSelect = null, emptyHint = null }) {
+export default function TaskTable({ tasks, onSelect = null, emptyHint = null, authMode }) {
+  // Same rule as Stats.jsx: only api_key (BYO) pays per token for real, so only that mode
+  // gets the "Est. Cost" column at all — the header and its cells share this ONE boolean so
+  // the <th> count and <td> count can never drift apart (tableA11y.test.mjs).
+  const realDollars = pricingIsReal(authMode);
   const rows = useMemo(() => {
     return tasks
       .map((t) => {
@@ -61,7 +65,7 @@ export default function TaskTable({ tasks, onSelect = null, emptyHint = null }) 
             <th className="stats-th">Duration</th>
             <th className="stats-th">Project</th>
             <th className="stats-th stats-th-right">Tokens</th>
-            <th className="stats-th stats-th-right">Est. Cost</th>
+            {realDollars && <th className="stats-th stats-th-right">Est. Cost</th>}
           </tr>
         </thead>
         {/* ph-no-capture: every row renders operator content (task titles,
@@ -157,9 +161,11 @@ export default function TaskTable({ tasks, onSelect = null, emptyHint = null }) 
               <td className="stats-td stats-td-mono stats-td-right">
                 {fmtTokens(taskBurn(t) || null)}
               </td>
-              <td className="stats-td stats-td-mono stats-td-right">
-                {fmtCost(taskCost(t))}
-              </td>
+              {realDollars && (
+                <td className="stats-td stats-td-mono stats-td-right">
+                  {fmtCost(taskCost(t))}
+                </td>
+              )}
             </tr>
           ))}
         </tbody>
