@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { statusChip, KIND_LABEL, BRAND_COLOR, NAME_LABEL, CONFIG_HINT } from "./integrationChip.js";
+import {
+  statusChip, healthBadge, KIND_LABEL, BRAND_COLOR, NAME_LABEL, CONFIG_HINT,
+} from "./integrationChip.js";
 
 // Must match integrations/__init__.py `_ORDER`.
 const ALL = ["jira", "linear", "monday", "github", "gitlab", "jenkins",
@@ -123,4 +125,26 @@ test("every BRAND_COLOR entry is a well-formed hex", () => {
   for (const [name, hex] of entries) {
     assert.match(hex, /^#[0-9A-Fa-f]{6}$/, `brand color: ${name}`);
   }
+});
+
+// healthBadge (integrations/health.py's boot-time + scheduled probe, surfaced
+// on the board) is deliberately separate from statusChip: a manual test can
+// pass (chip stays "Configured"/"Connected") while the background probe is
+// currently failing, and vice versa right after a fix until the next probe.
+test("healthBadge returns null unless enabled and currently failing", () => {
+  assert.equal(healthBadge(null), null);
+  assert.equal(healthBadge(undefined), null);
+  // healthy: true -> nothing to flag.
+  assert.equal(healthBadge({ enabled: true, healthy: true, detail: "authenticated" }), null);
+  // never probed -> nothing to flag (not the same as failing).
+  assert.equal(healthBadge({ enabled: true, healthy: null, detail: "" }), null);
+  // the operator turned it off -> not a failure to report.
+  assert.equal(healthBadge({ enabled: false, healthy: false, detail: "HTTP 404" }), null);
+});
+
+test("healthBadge flags an enabled-but-failing integration", () => {
+  assert.deepEqual(
+    healthBadge({ enabled: true, healthy: false, detail: "HTTP 404 from acme.atlassian.net" }),
+    { label: "Failing", tone: "error", detail: "HTTP 404 from acme.atlassian.net", checkedAt: "" },
+  );
 });

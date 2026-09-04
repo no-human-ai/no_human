@@ -80,6 +80,9 @@ class IntegrationStatus:
     # report. Folding it into `configured` instead would have changed what
     # `configured` means for every existing caller and test.
     enabled: bool | None = None
+    # UTC ISO-8601 timestamp of the last health probe (integrations/health.py),
+    # or None if never probed. Only the health overlay sets this.
+    checked_at: str | None = None
 
 
 @dataclass
@@ -631,6 +634,12 @@ def list_integrations_with_ambient(
             s = replace(s, status="ambient", detail=_AMBIENT_DETAIL)
         out.append(s)
     return out
+
+
+def list_integrations_with_health(config: dict) -> list[IntegrationStatus]:
+    """`list_integrations_with_ambient` + the health overlay (integrations/health.py)."""
+    from .health import overlay
+    return overlay(list_integrations_with_ambient(config))
 
 
 # --------------------------------------------------------------------------- #
@@ -1591,7 +1600,7 @@ async def test_integration(name: str, config: dict) -> IntegrationStatus:
 __all__ = [
     "IntegrationStatus", "KIND_BY_NAME", "list_integrations", "test_integration",
     "FieldSpec", "FIELD_SPECS", "integration_fields", "save_integration_config",
-    "ambient_available", "list_integrations_with_ambient",
+    "ambient_available", "list_integrations_with_ambient", "list_integrations_with_health",
     "SETUP_SECRET_ENV", "SETUP_SECRET_NOTE", "assert_config_safe_field",
     "is_credential_name", "enable_field", "enable_default", "enable_state",
     "setup_specs", "apply_setup", "mark_verified", "RepoNotRegistered",

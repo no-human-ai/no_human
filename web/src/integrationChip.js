@@ -27,6 +27,16 @@ export function statusChip(it) {
   return { label: "Configured", tone: "ok" };
 }
 
+// The board's "Failing" badge — separate from statusChip's five states so an
+// integration that has never been tested by hand (chip stays "Configured")
+// still surfaces the scheduled/boot-time health probe's verdict (integrations
+// /health.py). Only for integrations the operator has actually switched on:
+// `enabled === false` is a deliberate off state, not a failure to report.
+export function healthBadge(it) {
+  if (!it || it.enabled === false || it.healthy !== false) return null;
+  return { label: "Failing", tone: "error", detail: it.detail || "", checkedAt: it.checked_at || "" };
+}
+
 export const NAME_LABEL = {
   jira: "Jira", linear: "Linear", github: "GitHub", gitlab: "GitLab",
   jenkins: "Jenkins", circleci: "CircleCI", slack: "Slack",

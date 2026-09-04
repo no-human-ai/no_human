@@ -251,3 +251,14 @@ test("the test-connection result is never gated on healthy === true/false", () =
   assert.match(tryBody, /setTestResults\(/, "the try arm must call setTestResults");
   assert.match(catchBody, /setTestResults\(/, "the catch arm must call setTestResults");
 });
+
+// Health probes (integrations/health.py, boot-time + scheduled) are surfaced
+// on the board as a red "Failing" badge + detail for an enabled-but-failing
+// integration — separate from the manual Test-connection result above.
+test("the card list renders healthBadge's Failing badge and detail", () => {
+  assert.match(src, /import\s*\{[^}]*\bhealthBadge\b[^}]*\}\s*from\s*"\.\/integrationChip\.js"/,
+    "must import healthBadge from integrationChip.js");
+  assert.match(src, /healthBadge\(it\)/, "must call healthBadge per integration row");
+  assert.match(src, /badge\.label/, "must render the badge's label (\"Failing\")");
+  assert.match(src, /badge\.detail/, "must render the badge's detail alongside the label");
+});
