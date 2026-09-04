@@ -36,17 +36,24 @@ import {
 
 // Input with live directory autocomplete (via /api/fs/suggest). As you type a
 // path, matching sub-directories are offered through a native <datalist>.
-function PathInput({ value, onChange, placeholder, autoFocus }) {
+// `onNetworkError` is `noteFetchFailure` handed down from the wizard:
+// PathInput has no state of its own, so a network-level rejection here must
+// propagate up to the wizard-level offline banner rather than reject unhandled.
+function PathInput({ value, onChange, placeholder, autoFocus, onNetworkError }) {
   const [opts, setOpts] = useState([]);
   const listId = "pathlist-" + (placeholder || "p").replace(/\W/g, "");
   useEffect(() => {
     let live = true;
     const t = setTimeout(async () => {
-      const res = await suggestPaths(value);
-      if (live) setOpts(res.suggestions || []);
+      try {
+        const res = await suggestPaths(value);
+        if (live) setOpts(res.suggestions || []);
+      } catch (e) {
+        if (live && !onNetworkError?.(e)) setOpts([]);
+      }
     }, 120);
     return () => { live = false; clearTimeout(t); };
-  }, [value]);
+  }, [value, onNetworkError]);
   return (
     <>
       <input
@@ -864,7 +871,8 @@ export default function Onboarding({ onComplete }) {
                       scanner, which refuses a root outside home server-side. */}
                   <PathInput value={root}
                              onChange={(v) => { setRoot(v); debouncedScan(v); }}
-                             placeholder="folder to search, e.g. ~/work" />
+                             placeholder="folder to search, e.g. ~/work"
+                             onNetworkError={noteFetchFailure} />
                   <button className="ob-btn-ghost" disabled={busy || !root.trim()}
                           onClick={() => { debouncedScan.cancel(); scanFolder(root); }}>
                     Search
@@ -1124,7 +1132,13 @@ export default function Onboarding({ onComplete }) {
                                   const res = await generateDocs(rp);   // {job_id}
                                   setWikiJobs((s) => nextJobState(s, rp, res));
                                 } catch (e) {
-                                  setWikiJobs((s) => nextJobState(s, rp, { status: "failed", error: e.message }));
+                                  // A dead backend raises the wizard-level banner instead
+                                  // of stashing the raw exception text in the job's error
+                                  // field; the button stays visible so the user retries
+                                  // once reconnected. A real per-job failure still renders.
+                                  if (!noteFetchFailure(e)) {
+                                    setWikiJobs((s) => nextJobState(s, rp, { status: "failed", error: e.message }));
+                                  }
                                 }
                               }}>Generate wiki</button>
                           )}

@@ -66,6 +66,29 @@ test("Onboarding.jsx routes every loader rejection through noteFetchFailure", ()
   assert.match(onboardingSrc, /if \(!noteFetchFailure\(e\)\) setIntegrations\(\[\]\)/);
 });
 
+test("PathInput reports a network-level rejection to the wizard instead of dying silently", () => {
+  // The autocomplete effect must never leave `suggestPaths(value)` as a bare
+  // unhandled await — a network-level rejection has to route through the
+  // `onNetworkError` prop (noteFetchFailure), not vanish as an unhandled
+  // promise rejection.
+  assert.match(onboardingSrc, /function PathInput\(\{[^}]*onNetworkError[^}]*\}\)/);
+  assert.match(onboardingSrc, /try \{\s*const res = await suggestPaths\(value\);/);
+  assert.match(onboardingSrc, /if \(live && !onNetworkError\?\.\(e\)\) setOpts\(\[\]\)/);
+  // And the wizard must actually wire noteFetchFailure into it, not just
+  // declare the prop.
+  assert.match(onboardingSrc, /<PathInput value=\{root\}[\s\S]{0,400}?onNetworkError=\{noteFetchFailure\}/);
+});
+
+test("Generate wiki reports a network-level rejection to the wizard, not the raw exception text", () => {
+  const wikiCatch = onboardingSrc.match(
+    /const res = await generateDocs\(rp\);[\s\S]{0,800}?\}\s*\}\}>Generate wiki<\/button>/,
+  )?.[0];
+  assert.ok(wikiCatch, "Generate wiki's onClick handler must be present");
+  assert.match(wikiCatch, /if \(!noteFetchFailure\(e\)\) \{/);
+  // A network failure must not fall through to the bare, unguarded job-error write.
+  assert.doesNotMatch(wikiCatch, /catch \(e\) \{\s*setWikiJobs\(\(s\) => nextJobState\(s, rp, \{ status: "failed", error: e\.message \}\)\);\s*\}/);
+});
+
 test("an HTTP failure is a step error, not an outage", () => {
   assert.equal(isNetworkError(new Error("GET /api/integrations/setup → 500")), false);
   const msg = detailMessage(
