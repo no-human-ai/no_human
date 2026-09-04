@@ -798,7 +798,11 @@ FROZEN_FILE_LINES = {
     # backend-config validation so an unrunnable LOCAL config is rejected
     # before a task dies attempt 1 on BackendUnavailable. Measured on this
     # merged tree with the scanner below.
-    "api/app.py": 6126,
+    # 6126 -> 6133 (+7): `_workers_payload` gains `cpu_count`/`hardware_ceiling`
+    # (this machine's detected cores and the derived pool ceiling) so the
+    # stranded Settings Workers panel UI can state where the limit comes
+    # from, instead of re-deriving it client-side.
+    "api/app.py": 6133,
     # +51: W5 active-time phase writer (phase instrumentation).
     # +84: `list_escalations`/`list_review_fails`/`list_tamper_trips` — the
     # three new failure-signal sources the recurring learning harvest mines.

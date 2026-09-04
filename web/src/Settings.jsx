@@ -32,6 +32,7 @@ import { pluralize } from "./pluralize.js";
 import { updateNotice } from "./updateNotice.js";
 import IntegrationsPanel from "./Integrations.jsx";
 import ModelsPanel from "./ModelsPanel.jsx";
+import WorkersPanel from "./WorkersPanel.jsx";
 
 const SECTIONS = [
   { key: "projects",  label: "Projects" },
@@ -47,6 +48,7 @@ const SECTIONS = [
   { key: "learnings", label: "Second brain" },
   { key: "integrations", label: "Integrations" },
   { key: "models",    label: "Models" },
+  { key: "workers",   label: "Workers" },
   { key: "account",   label: "Account" },
   { key: "updates",   label: "Updates" },
 ];
@@ -645,6 +647,7 @@ export default function SettingsOverlay({ onClose, initialTab, onOpenTask, onSec
             )}
             {section === "integrations" && <IntegrationsPanel />}
             {section === "models"      && <ModelsPanel />}
+            {section === "workers"     && <WorkersPanel />}
             {section === "account"     && <AuthPanel />}
             {section === "updates"     && <UpdatesPanel />}
           </div>

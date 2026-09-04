@@ -153,9 +153,11 @@ async function runE2ESuite() {
     });
     await openModels(page);
 
-    // Scoped to `.models-rows` — CoderBackendRow / WorkersRow render their
-    // own `.models-row`-classed divs OUTSIDE that wrapper, as siblings of it,
-    // whenever their own (unrelated) endpoints are reachable at all.
+    // Scoped to `.models-rows` — CoderBackendRow renders its own
+    // `.models-row`-classed div OUTSIDE that wrapper, as a sibling of it,
+    // whenever its own (unrelated) endpoint is reachable at all. WorkersRow
+    // no longer renders in the Models pane at all (task 05a9cee0, re-home) —
+    // it moved to its own top-level Settings → Workers section.
     const rows = page.locator(".models-rows > .models-row");
     check("[s1] exactly five rows are rendered", (await rows.count()) === 5, String(await rows.count()));
 
