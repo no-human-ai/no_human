@@ -71,9 +71,18 @@ async def client(store, tmp_path, monkeypatch):
     # dependency — but start from a clean slate so a leftover flag from a
     # different test module's direct `app.state` mutation can't leak in.
     app.state.setup_mode = True
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://localhost") as c:
-        yield c
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://localhost") as c:
+            yield c
+    finally:
+        # `app` is the process-wide FastAPI singleton every test file that
+        # imports it shares — leaving `setup_mode` set here would leak into
+        # a later test (in ANY file, under xdist) that never opts into
+        # setup-mode tracking and relies on `_require_credentials`'/
+        # `show_config`'s `hasattr(state, "setup_mode")` check reading as
+        # "never wired" to stay ungated, e.g. tests/test_api.py's `client`.
+        del app.state.setup_mode
 
 
 @pytest_asyncio.fixture
@@ -89,9 +98,12 @@ async def client_with_credential(store, tmp_path, monkeypatch, isolated_env_file
         path=tmp_path / "config.yaml",
     )
     app.state.setup_mode = False
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://localhost") as c:
-        yield c
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://localhost") as c:
+            yield c
+    finally:
+        del app.state.setup_mode  # see `client`'s teardown for why
 
 
 # --------------------------------------------------------------------------- #

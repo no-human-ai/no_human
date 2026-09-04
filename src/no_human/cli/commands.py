@@ -6736,16 +6736,12 @@ def start(host, port, workers, no_open):
       nh start --workers 3         # board + 3 concurrent workers
       nh start --no-open           # don't open browser
     """
+    # `_bootstrap` already printed the setup-mode banner (with the fix steps)
+    # when it caught MissingCredentialError; nothing more to say here.
     config, _ = _bootstrap(allow_setup_mode=True)
     setup_reason = _server_setup_reason(config)
     if setup_reason is None:
         _assert_backend_usable()
-    else:
-        console.print(
-            f"[yellow]⚠ setup mode:[/] {setup_reason} Task dispatch, grill and "
-            "split are disabled until it's added; onboarding and Settings "
-            "still work."
-        )
     _warn_if_editable_install_dangles()
 
     if not _acquire_pid_lock():
