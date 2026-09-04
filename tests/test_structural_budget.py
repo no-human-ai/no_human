@@ -141,7 +141,11 @@ FROZEN_FUNCTION_LINES = {
     # EXPORT_CLASSIFICATION.txt paths) -- the `BUDGET_TEST_PATH` import, the
     # widened `eligible` fallback set, and the `pr_conflict_resolved` event's
     # budget note. Measured on this tree with the scanner below.
-    "blockers/wake.py:WakeWatcher._check_pr_conflict": 453,
+    # 453 -> 458 (+5): the failed-DerivedResolution escalation now surfaces
+    # `result.detail` (capped, whitespace-collapsed) in the event text and
+    # `question`, and prefixes `step=` onto the stored `evidence` -- step
+    # alone was not root-causeable. Measured on this tree.
+    "blockers/wake.py:WakeWatcher._check_pr_conflict": 458,
     # 418 -> 424 (+6): D1.1 fix round — attempt-scoped verification-artifact
     # write wired into `_finalize` (review findings #1/#7). Measured on the
     # D1.1 squash-merge result.
@@ -950,7 +954,10 @@ FROZEN_FILE_LINES = {
     # 2740 -> 2752 (+12): mechanical resolution extended to cover structural
     # budget conflicts, same cause as the FROZEN_FUNCTION_LINES entry above.
     # Measured on this tree with the scanner below.
-    "blockers/wake.py": 2752,
+    # 2752 -> 2757 (+5): same cause as the FROZEN_FUNCTION_LINES entry above
+    # -- the whole-file delta equals the function's delta. Measured on this
+    # tree.
+    "blockers/wake.py": 2757,
     # +91: `_SCAN_WRAPPER_NAMES` + `_peel_scan_wrappers` — peels
     # timeout/xargs/nice/stdbuf (and siblings) for the scan-severity check
     # only, so a wrapped `find … -delete` in a denied compound classifies
