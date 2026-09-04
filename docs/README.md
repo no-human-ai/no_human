@@ -6,6 +6,7 @@
 | [configuration.md](configuration.md) | `~/.no_human/config.yaml`, every section + default, plus the model picker (`GET /api/models`, `PUT /api/config/models`, `nh config models`) |
 | [verification.md](verification.md) | The gates that stop a broken change, the bounded loop, the limits |
 | [security.md](security.md) | Subscription-auth boundary, the never-merge rule, guards |
+| [INTEGRATIONS_LEGAL.md](INTEGRATIONS_LEGAL.md) | The recorded legal/compliance position for each third-party integration (Codex auth, sourcing, what is unresolved) |
 | [adapters.md](adapters.md) | Intake (TRACKER/GitHub/GitLab), context, VCS, CI backends |
 | [BACKENDS.md](BACKENDS.md) | The three coding backends (`claude`, `codex`, `local`): switching, credentials, per-mode defaults |
 | [eval.md](eval.md) | Golden set, replay scoring, scorecard/CI gate, shadow mode |
