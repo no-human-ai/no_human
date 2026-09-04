@@ -175,7 +175,7 @@ export async function fetchDiff(id) {
   return r.text();
 }
 
-export async function createTask({ title, description, repo_path, project_id, kind, priority, acceptance_criteria, source, external_id, backend, follows_id }) {
+export async function createTask({ title, description, repo_path, project_id, kind, priority, acceptance_criteria, source, external_id, backend, follows_id, eval_result }) {
   const r = await fetch(`${BASE}/api/tasks`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -185,7 +185,10 @@ export async function createTask({ title, description, repo_path, project_id, ki
     // handler), so an untouched control's empty string is handled exactly
     // like an absent field and behaves exactly as it did before the picker
     // existed.
-    body: JSON.stringify({ title, description, repo_path, project_id, kind, priority, acceptance_criteria, source, external_id, backend, follows_id }),
+    // `eval_result` is undefined unless a grill round produced a verdict
+    // (App.jsx's `evalVerdict`) — a bare composer create omits it, same as
+    // today. See CreateTaskRequest.eval_result for why this exists.
+    body: JSON.stringify({ title, description, repo_path, project_id, kind, priority, acceptance_criteria, source, external_id, backend, follows_id, eval_result }),
   });
   if (!r.ok) {
     const detail = await r.json().catch(() => ({}));

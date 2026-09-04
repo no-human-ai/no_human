@@ -806,6 +806,17 @@ class CreateTaskRequest(BaseModel):
     # project_id check just above it in the handler; never Task.parent_id
     # (the compound-child relation the orchestrator still schedules on).
     follows_id: str | None = None
+    # The grill/wizard's intake-eval verdict (`EvalResult.as_dict()` shape),
+    # produced by `/api/grill/stream`'s D1/D9 evaluator and, until now, only
+    # ever streamed to the composer for display — never carried into the
+    # created task, so the orchestrator's stored-verdict path (dispatch-time
+    # `_act_on_stored_eval`) had no production task to act on. Optional and
+    # untyped-through: the server never trusts client-supplied JSON as a real
+    # verdict, only rebuilds it leniently via `EvalResult.from_dict`
+    # (unknown/missing fields fall back rather than raising). A bare board
+    # create (composer without a grill round, `nh` CLI, pollers) omits it and
+    # behaves exactly as before.
+    eval_result: dict[str, Any] | None = None
 
 
 class ImportedInfo(BaseModel):

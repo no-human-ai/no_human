@@ -343,6 +343,16 @@ function Spinner() {
   return <span className="grill-spinner" />;
 }
 
+// Strips the SSE envelope (`kind: "eval_verdict"`, `source: "grill"`) off an
+// eval_verdict frame down to the `EvalResult.as_dict()` shape
+// CreateTaskRequest.eval_result expects — null when no grill round produced
+// a verdict, so createTask's payload omits the key exactly as before.
+function _evalResultField(evalData) {
+  if (!evalData) return null;
+  const { kind: _kind, source: _source, ...verdictFields } = evalData;
+  return verdictFields;
+}
+
 function NewTaskModal({
   onClose, onCreated, initial = null,
   notice = null, queueLeft = 0, onStopQueue = null,
@@ -368,6 +378,12 @@ function NewTaskModal({
   const [grillResult, setGrillResult] = useState(null);
   const [grillEvents, setGrillEvents] = useState([]);
   const [evalVerdict, setEvalVerdict] = useState(null);
+  // Mirrors evalVerdict for _startGrillSSE's onResult callback, which closes
+  // over the render that created it (a stale one, since the eval_verdict SSE
+  // frame — which triggers setEvalVerdict — arrives and re-renders BEFORE the
+  // grill_result frame that consumes it here). A ref reads its CURRENT value,
+  // not the one from whichever render captured this closure.
+  const evalVerdictRef = useRef(null);
   const grillStreamRef = useRef(null);
   // Escape closes the dialog — same escape route the overlay-click already gives,
   // but for keyboard users. Suppressed while a submit is in flight so Escape can't
@@ -429,6 +445,13 @@ function NewTaskModal({
         kind: fields.kind,
         priority: fields.priority,
         acceptance_criteria: grillResult?.acceptance_criteria || [],
+        // The grill's intake-eval verdict, carried on `grillResult` (stripped
+        // of the SSE envelope's `kind`/`source` down to the
+        // `EvalResult.as_dict()` shape CreateTaskRequest.eval_result
+        // documents) by `_startGrillSSE`'s onResult handler below. Undefined
+        // for a create with no grill round, same as every other optional
+        // field here.
+        eval_result: grillResult?.eval_result,
         // Task 1.6: the hidden marker TaskComposer sets when the task came
         // from a picked Jira ticket — "board" for every typed task, unchanged.
         source: fields.source,
@@ -486,19 +509,25 @@ function NewTaskModal({
       (evt) => setGrillEvents((prev) => [...prev.slice(-30), evt]),
       (result) => {
         setBusy(false);
-        if (result.type === "done") { setGrillResult(result); setGrillQuestion(null); }
-        else { setGrillQuestion(result); }
+        if (result.type === "done") {
+          setGrillResult({ ...result, eval_result: _evalResultField(evalVerdictRef.current) });
+          setGrillQuestion(null);
+        } else { setGrillQuestion(result); }
       },
       (err) => {
-        // SSE failed — fall back to sync POST
+        // SSE failed — fall back to sync POST. No eval_verdict frame exists on
+        // this path (grillStep is the non-streaming endpoint), so eval_result
+        // stays whatever evalVerdictRef already holds from an earlier round.
         grillStep(params)
           .then((step) => {
-            if (step.type === "done") { setGrillResult(step); } else { setGrillQuestion(step); }
+            if (step.type === "done") {
+              setGrillResult({ ...step, eval_result: _evalResultField(evalVerdictRef.current) });
+            } else { setGrillQuestion(step); }
           })
           .catch((e) => { setError(e.message); setGrillMode(false); })
           .finally(() => setBusy(false));
       },
-      (evalData) => setEvalVerdict(evalData),
+      (evalData) => { evalVerdictRef.current = evalData; setEvalVerdict(evalData); },
     );
   }
 
@@ -507,6 +536,7 @@ function NewTaskModal({
     setFields(spec);
     setBusy(true); setError(null); setGrillMode(true);
     setGrillQA([]); setGrillQuestion(null); setGrillResult(null); setEvalVerdict(null);
+    evalVerdictRef.current = null;
     _startGrillSSE(_grillParams([], spec));
   }
 

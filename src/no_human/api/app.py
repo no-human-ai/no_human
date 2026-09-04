@@ -851,6 +851,15 @@ async def create_task(body: CreateTaskRequest, request: Request) -> TaskSummaryO
     pinned_base = (body.base_branch or "").strip()
     if pinned_base:
         task.context = {**(task.context or {}), "base_branch": pinned_base}
+    # Carry the grill's intake-eval verdict (if the composer ran one) onto the
+    # created task's context, exactly where the dispatch-time evaluator would
+    # have written it for a bare create — this is what makes
+    # `_act_on_stored_eval` reachable for grill-sourced tasks; see
+    # CreateTaskRequest.eval_result. Pydantic already rejects a non-dict
+    # `eval_result` (422) before this handler runs, so only "present and
+    # truthy" needs checking here.
+    if body.eval_result:
+        task.context = {**(task.context or {}), "eval_result": body.eval_result}
     if body.backend:
         # Per-task coder backend (public issue #5) — set by API clients, and
         # by the board's composer, whose picker options come from GET

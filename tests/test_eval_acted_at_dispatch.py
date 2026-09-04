@@ -10,15 +10,21 @@ annotated, never enriched. This file covers the hoisted ``elif`` path
 path inside ``_act_on_eval``, and ``EvalResult.from_dict``.
 """
 
+import json
+
 import pytest
+from httpx import ASGITransport, AsyncClient
 
 from no_human.agent.claude_backend import AgentEvent, AgentResult
+from no_human.api.app import app
 from no_human.config import load_config
 from no_human.core.db import Store
 from no_human.core.orchestrator import Orchestrator
 from no_human.core.task import Task
 from no_human.intake import evaluator as ev
+from no_human.intake import grill as grill_mod
 from no_human.intake.evaluator import EvalResult, EvalVerdict
+from no_human.intake.grill import GrillResult
 from no_human.notify.slack import SlackNotifier
 
 from tests.test_e2e_orchestrator import bare_repo  # noqa: F401 — shared fixture
@@ -39,6 +45,19 @@ async def store(tmp_path):
 def _orch(store, tmp_path):
     cfg = load_config(tmp_path / "config.yaml")
     return Orchestrator(store, cfg.data, _Backend(), SlackNotifier(None))
+
+
+@pytest.fixture
+async def client(store, tmp_path):
+    """Real ASGI app, real HTTP surface — mirrors test_api_task_follows.py's
+    fixture. Used by the grill->create_task end-to-end test below, which
+    needs the actual /api/grill/stream and /api/tasks routes, not a
+    hand-built Task."""
+    app.state.store = store
+    app.state.config = load_config(tmp_path / "config.yaml")
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://localhost") as c:
+        yield c
 
 
 # --------------------------------------------------------------------------- #
@@ -150,6 +169,85 @@ async def test_grilled_task_reaches_planning_enriched(bare_repo, tmp_path, store
     await orch.run_task(t)
 
     got = await store.get_task(t.id)
+    assert got.acceptance_criteria == ["sharp A", "sharp B"]
+    assert got.context["original_criteria"] == ["stated one"]
+
+
+async def test_grill_http_flow_creates_the_eval_result_precondition_end_to_end(
+        client, store, bare_repo, tmp_path, monkeypatch):
+    """The precondition the two tests above hand-set (``t.context['eval_result']``)
+    must actually be reachable from production traffic, or the stored-verdict
+    path is dead for the exact tasks the ticket targets (grill/wizard). This
+    drives the REAL surface: POST /api/grill/stream (the SSE the composer
+    calls) for the eval_verdict frame, then POST /api/tasks (the web client's
+    createTask, now forwarding eval_result) — no hand-set context anywhere —
+    and only then runs the task and checks it came out enriched.
+    """
+
+    async def _fake_grill_step(title, description, repo_path, qa_history,
+                                backend, *, on_event=None, max_rounds=None):
+        return GrillResult(
+            title=title, description=description or "",
+            acceptance_criteria=["stated one"],
+        )
+    monkeypatch.setattr(grill_mod, "grill_step", _fake_grill_step)
+
+    async def _fake_evaluate_spec(title, description, criteria, *, model=None):
+        return EvalResult(verdict=EvalVerdict.ENRICH,
+                          enriched_criteria=["sharp A", "sharp B"])
+    monkeypatch.setattr(ev, "evaluate_spec", _fake_evaluate_spec)
+
+    frames = []
+    async with client.stream(
+        "POST", "/api/grill/stream",
+        json={"title": "grilled task", "repo_path": str(bare_repo)},
+    ) as resp:
+        assert resp.status_code == 200
+        async for line in resp.aiter_lines():
+            if line.startswith("data: "):
+                frames.append(json.loads(line[6:]))
+
+    eval_frames = [f for f in frames if f.get("kind") == "eval_verdict"]
+    assert len(eval_frames) == 1, frames
+    # Exactly what App.jsx's _evalResultField strips off the SSE envelope
+    # (kind/source) before handing the rest to createTask as eval_result.
+    eval_result_payload = {k: v for k, v in eval_frames[0].items()
+                           if k not in ("kind", "source")}
+    assert eval_result_payload["verdict"] == "enrich"
+
+    r = await client.post("/api/tasks", json={
+        "title": "grilled task",
+        "repo_path": str(bare_repo),
+        "acceptance_criteria": ["stated one"],
+        "eval_result": eval_result_payload,
+    })
+    assert r.status_code == 201, r.text
+    task_id = r.json()["id"]
+
+    # The precondition, produced entirely through HTTP — this is the fact
+    # under test, not an assumption baked into a hand-built Task.
+    created = await store.get_task(task_id)
+    assert created.context["eval_result"]["verdict"] == "enrich"
+
+    class SimpleBackend:
+        async def run(self, prompt, *, cwd, max_turns, effort=None, resume=None,
+                      on_event=None, supervisor_hook=None, **kwargs):
+            (cwd / "calc.py").write_text("def add(a, b):\n    return a + b\n")
+            (cwd / "test_calc.py").write_text(
+                "from calc import add\n\ndef test_add():\n    assert add(1, 2) == 3\n")
+            return AgentResult(final_text="done", num_turns=1, is_error=False,
+                               tokens_used=100, session_id="s", stop_reason="end_turn")
+
+    cfg = load_config(tmp_path / "config.yaml")
+    cfg.data.setdefault("planning", {})["enabled"] = False
+    cfg.data.setdefault("reviewer", {})["allow_advisory"] = True
+    cfg.data.setdefault("blockers", {})["challenge"] = False
+    orch = Orchestrator(store, cfg.data, SimpleBackend(), SlackNotifier(None))
+
+    task = await store.get_task(task_id)
+    await orch.run_task(task)
+
+    got = await store.get_task(task_id)
     assert got.acceptance_criteria == ["sharp A", "sharp B"]
     assert got.context["original_criteria"] == ["stated one"]
 
