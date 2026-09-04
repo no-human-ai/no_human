@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import sys
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -117,6 +118,23 @@ def _export_guard_argv() -> list[str]:
     without a `uv` dependency in the test sandbox, mirroring the documented
     ``uv run python scripts/export_guard.py`` invocation everywhere else."""
     return ["uv", "run", "python", "scripts/export_guard.py"]
+
+
+def _inventory_argv() -> list[str]:
+    """Base argv for invoking ``check_release_manifest.py`` — the manifest
+    tool of repos WITHOUT ``scripts/export_guard.py`` (the public working
+    repo): ``--write`` rebuilds every pin from the tracked tree, ``--strict``
+    verifies. Same monkeypatch seam as ``_export_guard_argv``. Uses the
+    running interpreter, not ``uv run``: the script is stdlib-only by its own
+    contract, and ``uv run`` inside a resolver worktree would sync/claim a
+    venv there for nothing. In a PyInstaller-frozen build ``sys.executable``
+    is the ``nh`` binary, NOT a Python (the ``repro_gate._pytest_python``
+    lesson) — fall back to a PATH interpreter there; any Python serves a
+    stdlib-only script."""
+    if getattr(sys, "frozen", False):
+        py = shutil.which("python3") or shutil.which("python") or "python3"
+        return [py, "scripts/check_release_manifest.py"]
+    return [sys.executable, "scripts/check_release_manifest.py"]
 
 
 async def resolve_base_tip(repo_path: str, base: str) -> str | None:
@@ -471,6 +489,23 @@ def _run_export_guard(worktree_path: Path, subargs: list[str], *,
         return None
 
 
+def _run_inventory(worktree_path: Path, subargs: list[str], *,
+                   timeout: float) -> subprocess.CompletedProcess | None:
+    """Run `check_release_manifest.py` with `subargs` in `worktree_path`;
+    `None` means it timed out OR could not be spawned at all (the caller
+    treats both as a failure, never as success) — `_run_export_guard`'s
+    contract plus the `OSError` arm, because on a frozen build with no
+    Python on PATH the fallback argv's interpreter may not exist
+    (`FileNotFoundError`), and that must fail the resolution closed, not
+    crash the wake watcher (same pair `approve_merge.py` catches around
+    `_sh`)."""
+    try:
+        return _sh([*_inventory_argv(), *subargs], cwd=worktree_path,
+                   timeout=timeout)
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+
+
 def _unmerged_paths(worktree_path: Path) -> set[str]:
     """Paths `git ls-files -u` reports as still conflicted (any stage)."""
     out = _sh(["git", "ls-files", "-u", "-z"], cwd=worktree_path).stdout
@@ -536,18 +571,32 @@ def resolve_derived_conflict(repo_path: str, branch: str, base_tip_sha: str,
     `DERIVED_ARTEFACTS | {CLASSIFICATION_NAME}` when `mechanically_resolvable`
     confirmed the conflict is also eligible by the count-only shape rule.
 
-    Never force-pushes; never pushes a tree that fails `export_guard.py
-    verify`. A failure at any step is reported via `DerivedResolution.ok =
-    False` with `step`/`detail` naming what happened — the caller escalates,
-    it never retries with force or weakens a gate.
+    Never force-pushes; never pushes a tree that fails its backend's
+    verifier (`export_guard.py verify`, or `check_release_manifest.py
+    --strict` on the inventory backend). A failure at any step is reported
+    via `DerivedResolution.ok = False` with `step`/`detail` naming what
+    happened — the caller escalates, it never retries with force or weakens
+    a gate.
     """
     root = Path(repo_path)
     guard = root / "scripts" / "export_guard.py"
-    if not guard.exists():
+    inventory = root / "scripts" / "check_release_manifest.py"
+    if not guard.exists() and not inventory.exists():
         return DerivedResolution(
             ok=False, step="regenerate",
-            detail=f"{root} has no scripts/export_guard.py — not an export-"
+            detail=f"{root} has neither scripts/export_guard.py nor "
+                   "scripts/check_release_manifest.py — not a manifest-"
                    "gated repo, mechanical resolution does not apply")
+    if not guard.exists() and CLASSIFICATION_NAME in eligible:
+        # The inventory backend has no classification arithmetic; a repo
+        # without export_guard.py should never present this shape (its
+        # `--write` refuses when a classification file exists), so fail
+        # closed rather than guess.
+        return DerivedResolution(
+            ok=False, step="regenerate",
+            detail=f"{CLASSIFICATION_NAME} is in the eligible set but {root} "
+                   "has no scripts/export_guard.py — the inventory backend "
+                   "cannot reconcile classification counts")
 
     try:
         repo = GitRepo(root)
@@ -610,6 +659,84 @@ def _take_classification_hunks(worktree_path: Path) -> DerivedResolution | None:
     return None
 
 
+def _inventory_resolve_tail(*, repo: GitRepo, worktree_path: Path, remote: str,
+                            branch: str, branch_tip_sha: str,
+                            ) -> DerivedResolution:
+    """Steps 5-8 for the inventory backend (`check_release_manifest.py`,
+    repos without `scripts/export_guard.py`): `--write` rebuilds EVERY pin
+    from the merged tracked tree — no per-path approve/prune/count machinery
+    exists or is needed — then commit, `--strict` verify (the same mode the
+    inventory CI job runs), and the same plain-push/update-ref mechanics the
+    export-guard tail documents. The caller already refused a
+    CLASSIFICATION_NAME-eligible conflict for this backend, and `--write`
+    itself exits 2 if a classification file appears (belt and braces).
+    Called with the merge already committed/staged in `worktree_path` (after
+    steps 3-4), so the tree `--write` hashes is the merged, resolved one."""
+    write_proc = _run_inventory(
+        worktree_path, ["--write"], timeout=_APPROVE_TIMEOUT_S)
+    if write_proc is None:
+        return DerivedResolution(
+            ok=False, step="regenerate",
+            detail=f"check_release_manifest --write timed out after "
+                   f"{_APPROVE_TIMEOUT_S}s")
+    if write_proc.returncode != 0:
+        return DerivedResolution(
+            ok=False, step="regenerate",
+            detail=_cap("check_release_manifest --write failed "
+                        f"({write_proc.returncode}):\n"
+                        + write_proc.stdout + write_proc.stderr))
+
+    # -- step 6 (inventory): commit — the export-guard tail's mechanics. -- #
+    add = _sh(["git", "add", "--", "RELEASE_MANIFEST.txt"], cwd=worktree_path)
+    if add.returncode != 0:
+        return DerivedResolution(ok=False, step="regenerate",
+                                 detail=_cap(add.stderr))
+    status = _sh(["git", "status", "--porcelain"], cwd=worktree_path).stdout
+    if status.strip():
+        commit_proc = _sh(["git", "commit", "--no-edit"], cwd=worktree_path)
+        if commit_proc.returncode != 0:
+            return DerivedResolution(
+                ok=False, step="commit",
+                detail=_cap(commit_proc.stdout + "\n" + commit_proc.stderr))
+    # else: `git merge` already auto-committed — HEAD is the merge commit.
+    merge_sha = _sh(["git", "rev-parse", "HEAD"],
+                    cwd=worktree_path).stdout.strip()
+
+    # -- step 7 (inventory): verify BEFORE any push. `--strict` so a tracked
+    # file with no row fails HERE, matching what the inventory CI job runs —
+    # the no-flag run only warns on that class. No classification arithmetic
+    # exists on this backend, so there is no count-drift backstop. --------- #
+    verify_proc = _run_inventory(
+        worktree_path, ["--strict"], timeout=_VERIFY_TIMEOUT_S)
+    if verify_proc is None:
+        return DerivedResolution(
+            ok=False, step="verify",
+            detail=f"check_release_manifest --strict timed out after "
+                   f"{_VERIFY_TIMEOUT_S}s")
+    if verify_proc.returncode != 0:
+        return DerivedResolution(
+            ok=False, step="verify",
+            detail=_cap(verify_proc.stdout + verify_proc.stderr))
+
+    # -- step 8 (inventory): plain push from the MAIN repo, exactly as the
+    # export-guard tail documents (shared object database; never force). -- #
+    push_proc = _sh(
+        ["git", "push", remote, f"{merge_sha}:refs/heads/{branch}"],
+        cwd=repo.path,
+    )
+    if push_proc.returncode != 0:
+        return DerivedResolution(
+            ok=False, step="push",
+            detail=_cap(push_proc.stdout + "\n" + push_proc.stderr))
+    _sh(["git", "update-ref", f"refs/heads/{branch}", merge_sha,
+         branch_tip_sha], cwd=repo.path)
+    return DerivedResolution(
+        ok=True, step="ok", pushed_sha=merge_sha,
+        detail=f"regenerated RELEASE_MANIFEST.txt whole-tree "
+               f"(check_release_manifest --write) from the merged tree, "
+               f"pushed {merge_sha[:8]}")
+
+
 def _resolve_in_worktree(*, repo: GitRepo, worktree_path: Path, remote: str,
                          branch: str, base_tip_sha: str,
                          eligible: frozenset[str] = DERIVED_ARTEFACTS,
@@ -657,6 +784,15 @@ def _resolve_in_worktree(*, repo: GitRepo, worktree_path: Path, remote: str,
         if add.returncode != 0:
             _sh(["git", "merge", "--abort"], cwd=worktree_path)
             return DerivedResolution(ok=False, step="merge", detail=_cap(add.stderr))
+
+    # -- steps 5-8 (inventory backend): a repo without export_guard.py
+    # carries the whole-tree inventory tool instead
+    # (`check_release_manifest.py`, the public working repo) — dispatched to
+    # its own tail; the export-guard tail below is untouched.
+    if not (worktree_path / "scripts" / "export_guard.py").exists():
+        return _inventory_resolve_tail(
+            repo=repo, worktree_path=worktree_path, remote=remote,
+            branch=branch, branch_tip_sha=branch_tip_sha)
 
     # -- step 5: regenerate the pins for what the branch actually changed - #
     # No --diff-filter here: a path base added/changed that the (pre-merge)
