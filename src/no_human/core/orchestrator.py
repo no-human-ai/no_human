@@ -1626,9 +1626,9 @@ class Orchestrator:
                     status=str(meta.get("status")), duration_bucket=bucket,
                     attempts=getattr(self, "_tel_attempts", 0))
             elif kind == "failed" and not getattr(self, "_tel_terminal_sent", False):
-                # Terminal `_fail` off-ramp. The free-text detail must NOT
-                # ship; the category is the signal name itself. reason_category
-                # is a closed enum (never free text) — see telemetry.py.
+                # Terminal off-ramp (`_fail`, or `_raise_blocker` routing to
+                # FAILED). Free-text detail must NOT ship; reason_category is
+                # a closed enum (never free text) — see telemetry.py.
                 self._tel_terminal_sent = True
                 telemetry.record("task_failed", config=self.config,
                                  category="failed",
@@ -8105,7 +8105,7 @@ class Orchestrator:
             question="The agent could not complete this within bounds. Refine the "
                      "task, split it, or advise an approach.",
         )
-        outcome = await self._raise_blocker(task, blocker, repo=repo, branch=branch)
+        outcome = await self._raise_blocker(task, blocker, repo=repo, branch=branch, reason_category="max_attempts")
         # 🔴 THE PUBLISHED FIELD AND THE CALLER-FACING ONE ARE NOT THE SAME
         # CHANNEL, and welding them is what made the leak above possible.
         # `_raise_blocker` returns `detail=root_cause_hypothesis or question`,
@@ -9738,6 +9738,7 @@ class Orchestrator:
         self, task: Task, blocker: Blocker, *, repo: GitRepo | None = None,
         branch: str | None = None, escalate_now: bool = False,
         notify_override: bool | None = None, attempt_id: str | None = None,
+        reason_category: str | None = None,
     ) -> TaskOutcome:
         """Checkpoint WIP, route by taxonomy (22.2), persist, and notify by
         severity (22.6). The single funnel for every off-ramp.
@@ -9759,6 +9760,10 @@ class Orchestrator:
         was not already reused for this exact attempt), that answer is
         replayed instead of parking on the operator again (see
         `_blocker_reuse_eligible` / `_reuse_stored_answer`).
+
+        ``reason_category`` is an optional explicit `task_failed.reason_category`
+        override (see `telemetry.FAILURE_REASON_CATEGORIES`); only used when
+        the route resolves to `TaskStatus.FAILED`, else inert like `blocker_category`.
         """
         blocker.attempt_id = attempt_id or blocker.attempt_id or ""
 
@@ -9863,8 +9868,13 @@ class Orchestrator:
             TaskStatus.FAILED: "failed",
         }.get(route.target_status, "escalated")
         report = render_report(blocker, task_title=task.title, task_id=task.id)
+        # blocker_category/reason_category feed `_telemetry_hook`'s
+        # reason_category resolution only when kind == "failed"; otherwise
+        # inert event metadata, like `blocker` itself.
+        extra = {"reason_category": reason_category} if reason_category else {}
         self.emit(kind, report, status=route.target_status.value,
-                  blocker=blocker.to_dict())
+                  blocker=blocker.to_dict(),
+                  blocker_category=blocker.category.value, **extra)
 
         # 4b. C5: an ESCALATED task has stopped. Any draft it opened before the
         # gate is now a dead PR that still claims its criteria are met, so say
@@ -10911,7 +10921,7 @@ class Orchestrator:
             task, adj, reasons=report.reasons, summary=report.summary,
             repeat=repeat, where=where,
         )
-        return await self._raise_blocker(task, blocker, repo=repo, branch=branch)
+        return await self._raise_blocker(task, blocker, repo=repo, branch=branch, reason_category="tamper_blocked")
 
     async def _adjudicate_tamper(
         self, task: Task, report, *, diff_repo: Path, before_ref: str,

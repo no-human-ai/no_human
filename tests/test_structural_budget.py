@@ -553,7 +553,14 @@ FROZEN_FILE_LINES = {
     # hook-refresh call, rebased onto the reviewer-worktree tree above.
     # Measured on this merged tree with the scanner below, never summed by
     # hand.
-    "core/orchestrator.py": 21762,
+    # 21762 -> 21788 (+26): task_failed reason_category wiring — threads an
+    # optional `reason_category` kwarg through `_raise_blocker` (signature +
+    # docstring note), stamps `blocker_category=blocker.category.value` onto
+    # its emit so `_telemetry_hook` can resolve BUDGET_EXHAUSTED-caused
+    # failures correctly, and tags the max_attempts/tamper_blocked call
+    # sites explicitly. Measured via `wc -l`/the scanner below; growth is
+    # the minimal functional diff after trimming comments/docstrings.
+    "core/orchestrator.py": 21788,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.

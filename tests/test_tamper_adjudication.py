@@ -407,6 +407,37 @@ async def test_a_second_tampering_verdict_parks_instead_of_bouncing_again(
     assert "a second time" in blocker["question"]
 
 
+async def test_a_second_tampering_verdict_tags_reason_category_for_telemetry(
+    store, tmp_path
+):
+    """The second-strike escalation calls `_raise_blocker` with an explicit
+    `reason_category="tamper_blocked"` (see `telemetry.FAILURE_REASON_CATEGORIES`)
+    — the event-metadata wiring must be correct regardless of the route the
+    AMBIGUITY category currently resolves to (AWAITING_INPUT, which is why
+    this correctly does not — and must not — ship a `task_failed` telemetry
+    event: no human was told the task failed, so telemetry must not claim
+    that either). If a future change to the routing/config surface ever
+    let this off-ramp reach TaskStatus.FAILED, the tag is already there and
+    no code change would be needed for it to resolve to "tamper_blocked"
+    instead of the useless "other" catch-all."""
+    orch = _orch(store, tmp_path, _RecordingBackend(TAMPER))
+    task = await _task(store)
+
+    first = await _fire(orch, task, tmp_path)
+    assert first.status is TaskStatus.FAILED
+    stale = await store.get_task(task.id)
+    stale.context = {}
+
+    events: list = []
+    orch._sink = events.append
+    second = await _fire(orch, stale, tmp_path)
+
+    assert second.status is TaskStatus.AWAITING_INPUT
+    [ev] = [e for e in events if e["kind"] == "awaiting_input"]
+    assert ev["blocker_category"] == "AMBIGUITY"
+    assert ev["reason_category"] == "tamper_blocked"
+
+
 async def test_cannot_decide_parks(store, tmp_path):
     orch = _orch(store, tmp_path, _RecordingBackend(UNSURE))
     outcome = await _fire(orch, await _task(store), tmp_path)
