@@ -519,7 +519,12 @@ FROZEN_FILE_LINES = {
     # and `task_events_stream` (§6d part 2) — the non-default reviewer
     # disclosure kwarg was dropped before reaching the board otherwise.
     # Measured directly (`wc -l src/no_human/api/app.py`).
-    "api/app.py": 5914,
+    # 5914 -> 5919 (+5): feasibility hint calibration — `create_task` now
+    # loads the app config and threads it into `estimate_feasibility`, and
+    # persists the hint's `signals`/`hint_reasons` alongside band/tier/offer
+    # so the pre-flight card can surface hint-only families. Measured
+    # directly (`wc -l src/no_human/api/app.py`).
+    "api/app.py": 5919,
     # +51: W5 active-time phase writer (phase instrumentation).
     # +84: `list_escalations`/`list_review_fails`/`list_tamper_trips` — the
     # three new failure-signal sources the recurring learning harvest mines.
@@ -628,7 +633,11 @@ FROZEN_FILE_LINES = {
     # its explanatory comment — the timeout for the merge-time FULL gate that
     # runs when the squash tree diverges from the tested attempt's tree
     # (vcs/approve_merge.py `_decide_gate`). Measured on this tree.
-    "config.py": 3554,
+    # 3554 -> 3562 (+8): `feasibility.hint_signals_enabled` (default true) and
+    # its explanatory comment — the off-switch the hint-only signal path
+    # (`core/complexity.py:hint_signals`) reads before folding `multi_family`
+    # into the pre-flight card. Measured on this tree.
+    "config.py": 3562,
     # +61: the tamper-adjudication one-bounded-retry contract (mechanical-
     # failure classification + the extracted `_review_tamper_adjudication`
     # helper that keeps `AdversarialReviewer.review` itself under the
