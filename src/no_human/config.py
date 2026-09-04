@@ -1633,6 +1633,14 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # restores the pre-2026-08-14 behaviour (every gate review is full).
         "review_routing": {"enabled": True, "max_diff_lines": 200},
     },
+    "feasibility": {
+        # Off-switch for the pre-flight card's HINT-ONLY signal families (e.g.
+        # `multi_family`, `core/complexity.py:hint_signals`) — extra
+        # transparency the card shows beside the tier's own signals. Never
+        # feeds back into `compute_tier`'s MoA/thinking gates; false just
+        # narrows the card to exactly those legacy signals.
+        "hint_signals_enabled": True,
+    },
     "planning": {
         # Plan-first worker (Phase 1): generate a detailed implementation plan
         # before the implement loop. Sonnet explores the codebase and writes a

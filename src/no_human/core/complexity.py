@@ -204,6 +204,23 @@ def is_trivial(task: "Task") -> bool:
     return ((task.context or {}).get("complexity_tier")) == "trivial"
 
 
+def _tier_signals(task: "Task", moa_cfg: dict | None) -> list[str]:
+    """The legacy signal list, exactly as ``compute_tier`` has always built
+    it — the MoA gate's four plus the thinking gate's two post-spec ones.
+    Pulled out so ``hint_signals`` below can start from the SAME list without
+    duplicating it; ``compute_tier`` calling this instead of inlining the six
+    lines changes no output (see ``test_compute_tier_output_is_frozen``)."""
+    from .orchestrator import _moa_complexity_signals
+
+    signals = list(_moa_complexity_signals(task, moa_cfg or {}))
+    ctx = task.context or {}
+    if len((ctx.get("spec") or {}).get("files_to_change") or []) > 4:
+        signals.append("many-files")
+    if ctx.get("plan_size_warning"):
+        signals.append("large-plan")
+    return signals
+
+
 def compute_tier(task: "Task", moa_cfg: dict | None = None) -> tuple[str, list[str]]:
     """(tier, fired signal names) from signals knowable at intake.
 
@@ -214,15 +231,13 @@ def compute_tier(task: "Task", moa_cfg: dict | None = None) -> tuple[str, list[s
     0 ⇒ simple, or trivial when the spec is demonstrably tiny AND every file
     it names is non-executed prose (``trivial_paths`` — the fast path's
     admission test, since 2026-08-09 the tier BUYS something).
-    """
-    from .orchestrator import _moa_complexity_signals
 
-    signals = list(_moa_complexity_signals(task, moa_cfg or {}))
+    This signal set and its thresholds are the MoA/thinking gates' own —
+    ``hint_signals`` below adds HINT-ONLY families the pre-flight card shows
+    that never reach here.
+    """
+    signals = _tier_signals(task, moa_cfg)
     ctx = task.context or {}
-    if len((ctx.get("spec") or {}).get("files_to_change") or []) > 4:
-        signals.append("many-files")
-    if ctx.get("plan_size_warning"):
-        signals.append("large-plan")
     verdict = (ctx.get("eval_result") or {}).get("verdict")
 
     # The complex bar tracks the operator's min_signals when RAISED above
@@ -242,6 +257,96 @@ def compute_tier(task: "Task", moa_cfg: dict | None = None) -> tuple[str, list[s
             and trivial_paths(named_paths(task))):
         return "trivial", signals
     return "simple", signals
+
+
+# ------------------------------------------------------- hint-only signals --
+#
+# The pre-flight card (feasibility.py) under-fired on genuinely hard tasks: a
+# 24h live sample of multi-hour tasks (median 2.1h, max 5.6h) got no split
+# suggestion. A first attempt fixed this by adding signals straight into
+# `compute_tier`'s own set — and would have silently re-tiered ~19.4% of a
+# 62-task live population into `complex`, arming MoA fan-out + extended
+# thinking for tasks that never asked for that order-of-magnitude cost.
+# Ruling: new signals are HINT-ONLY. `hint_signals` below is a SEPARATE, pure
+# function the card calls; `compute_tier` never calls it and its own signal
+# set/thresholds/bar are untouched (frozen by the test above).
+
+#: Legacy signal -> analytical FAMILY. compute_tier's own signals, grouped by
+#: dimension (description-text, requirement-count, spec-length,
+#: ambiguity/verdict, plan-scope); a family is present when >=1 of its
+#: signals fired.
+_SIGNAL_FAMILIES = {
+    "multi-repo": "repos",
+    "many-criteria": "requirements",
+    "long-spec": "spec-length",
+    "ambiguous-spec": "ambiguity",
+    "many-files": "plan-scope",
+    "large-plan": "plan-scope",
+}
+MULTI_FAMILY = "multi_family"
+MIN_FAMILIES = 3   # a >=2 variant fired on 41% of ordinary bulleted specs — too hot
+
+_BULLET_RE = re.compile(r"^\s*(?:[-*+•]|\(?\d+[.)])\s+(.*)$", re.M)
+_ORDINAL_RE = re.compile(
+    r"^(first|second|third|fourth|fifth|sixth|next|then|finally|lastly)\b", re.I)
+_PREFIX_RE = re.compile(r"^(fix|fixes|fixed|issue|issues|part|parts)\b", re.I)
+#: One stray "Fix the typo" bullet is not a multi-part ticket — require this
+#: many matching lead-ins before the description-shape branch fires (the same
+#: calibration decision as MIN_FAMILIES above).
+MIN_LEAD_INS = 2
+
+
+def _lead_in_matches(description: str) -> list[str]:
+    """Bullet/numbered items whose text OPENS with an ordinal or a
+    Fix/Issue/Part lead-in (word-bounded, case-insensitive) — the shape of a
+    ticket that bundles several distinct pieces of work into one description."""
+    matches = []
+    for item in _BULLET_RE.findall(description or ""):
+        text = item.strip()
+        m = _ORDINAL_RE.match(text) or _PREFIX_RE.match(text)
+        if m:
+            matches.append(m.group(1).lower())
+    return matches
+
+
+def hint_signals_enabled(config: dict | None) -> bool:
+    """``feasibility.hint_signals_enabled`` — mirrors ``trivial_enabled``
+    above: tolerates the empty-YAML-section shape and is read at CALL time,
+    never cached, so a config edit takes effect on the next hint."""
+    return bool(((config or {}).get("feasibility") or {}).get(
+        "hint_signals_enabled", True))
+
+
+def hint_signals(
+    task: "Task", moa_cfg: dict | None = None, config: dict | None = None,
+) -> tuple[list[str], list[str]]:
+    """(signals, reasons): the legacy tier signals PLUS hint-only families the
+    pre-flight card shows that ``compute_tier`` never sees or is influenced
+    by. Pure — no ``task.context`` mutation, no ``store_tier`` call, no
+    logging of its own; a caller that wants a fallback on error wraps this.
+
+    ``multi_family`` fires when >=3 distinct signal FAMILIES are present, or
+    when the description's bullet/numbered items carry >=2 ordinal or
+    Fix/Issue/Part lead-ins — never on fewer than either.
+    """
+    signals = _tier_signals(task, moa_cfg)
+    if not hint_signals_enabled(config):
+        return signals, []
+
+    reasons: list[str] = []
+    families = {_SIGNAL_FAMILIES[s] for s in signals if s in _SIGNAL_FAMILIES}
+    if len(families) >= MIN_FAMILIES:
+        reasons.append(
+            f"{MIN_FAMILIES}+ signal families present: {', '.join(sorted(families))}")
+    else:
+        leadins = _lead_in_matches(task.description or "")
+        if len(leadins) >= MIN_LEAD_INS:
+            reasons.append(
+                "multi-part description lead-ins: " + ", ".join(leadins))
+
+    if reasons and MULTI_FAMILY not in signals:
+        signals = signals + [MULTI_FAMILY]
+    return signals, reasons
 
 
 def store_tier(task: "Task", tier: str, signals: list[str]) -> bool:

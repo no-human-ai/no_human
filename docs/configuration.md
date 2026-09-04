@@ -265,6 +265,13 @@ safety:
   max_lines_changed: null         # SCOPE_EXPLOSION past it. The human is the gate.
   forbidden_paths: [".env", "secrets/", "*.key", "*.pem"]
 
+feasibility:
+  hint_signals_enabled: true      # the pre-flight card's HINT-ONLY signal families
+                                   # (e.g. `multi_family`) — extra transparency shown
+                                   # alongside the tier's own signals, never fed back
+                                   # into compute_tier's MoA/thinking gates. false
+                                   # restores the card to exactly the tier's signals.
+
 bounds:
   max_attempts: 3
   max_turns_per_attempt: 500

@@ -884,7 +884,11 @@ async def create_task(body: CreateTaskRequest, request: Request) -> TaskSummaryO
     # whole block is guarded).
     try:
         from ..core.feasibility import estimate_feasibility
-        hint = estimate_feasibility(task, await store.done_rate_by_tier())
+        _cfg = getattr(request.app.state, "config", None)
+        hint = estimate_feasibility(
+            task, await store.done_rate_by_tier(),
+            config=_cfg.data if _cfg is not None else None,
+        )
         if hint is not None:
             task.context = await store.merge_context(task.id, {
                 "feasibility_hint": {
