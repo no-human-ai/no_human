@@ -359,7 +359,17 @@ FROZEN_FILE_LINES = {
     # a `ui_evidence.build_cmd` failure/timeout names the build instead of
     # falling through to the generic dev-server sentence. Measured with the
     # scanner below, never summed by hand.
-    "core/orchestrator.py": 21198,
+    # 21198 -> 21268 (+70): default UI walk when the coder writes no manifest
+    # (2026-09-04) — new `_default_walk_manifest` static helper builds the
+    # harness's OWN fallback `ui_evidence.Manifest` from the confirmed
+    # profile's `base_url`/`ready_path` when no coder
+    # `.no_human/ui_evidence.json` exists, `_maybe_capture_ui_evidence` wires
+    # it through `ui_evidence.run(..., manifest=...)` and threads a new
+    # `default_walk` flag into `_deliver_ui_evidence`, which labels the
+    # rendered section "default walk (no coder manifest)" instead of the old
+    # unconditional skip text — visual proof must not depend on coder
+    # compliance. Measured with the scanner below, never summed by hand.
+    "core/orchestrator.py": 21268,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.

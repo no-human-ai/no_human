@@ -374,6 +374,52 @@ def read_manifest(repo_path: Path) -> Manifest:
     return manifest
 
 
+def default_manifest(
+    base_url: str, ready_path: str = "/", *, web_src: bool = False,
+) -> "Manifest | None":
+    """The harness's OWN fallback walk — used only when the coder wrote no
+    ``.no_human/ui_evidence.json``. Visual proof must not depend on coder
+    compliance: this is the "boring but always there" walk (goto -> wait for
+    network idle -> a full-page `landing` shot), so a PR still ships a real
+    screenshot even when the advisory prompt paragraph went unread.
+
+    Returns ``None`` when *base_url* fails the same loopback rule
+    :func:`_base_url_problem` enforces for a coder-authored manifest — never
+    raises, so a bad/unparsable profile ``base_url`` degrades to the
+    caller's disclosed skip, not an exception. Deliberately built as `Step`
+    objects directly, no JSON round-trip: this manifest is harness-authored,
+    not coder-authored, so it has no `_parse` rejection surface to pass
+    through — and `"wait_idle"` is intentionally absent from `_ACTIONS`, so
+    a coder cannot write it into their own manifest either.
+
+    `web_src=True` (the diff touched `web/src/`) adds one more network-idle
+    wait plus a second shot, `landing-settled` — no selectors, no clicks,
+    nothing that can rot as the app's markup changes.
+    """
+    if _base_url_problem(base_url) is not None:
+        return None
+    path = ready_path or "/"
+    steps = [
+        Step("goto", path, None, _DEFAULT_TIMEOUT_MS, 0),
+        Step("wait_idle", "networkidle", None, _DEFAULT_TIMEOUT_MS, 1),
+        Step("shot", "landing", None, _DEFAULT_TIMEOUT_MS, 2),
+    ]
+    raw_steps = [
+        {"goto": path}, {"wait_idle": "networkidle"}, {"shot": "landing"},
+    ]
+    if web_src:
+        steps.append(Step("wait_idle", "networkidle", None, _DEFAULT_TIMEOUT_MS, 3))
+        steps.append(Step("shot", "landing-settled", None, _DEFAULT_TIMEOUT_MS, 4))
+        raw_steps.append({"wait_idle": "networkidle"})
+        raw_steps.append({"shot": "landing-settled"})
+    return Manifest(
+        base_url=base_url,
+        viewport=dict(_DEFAULT_VIEWPORT),
+        steps=tuple(steps),
+        raw={"base_url": base_url, "steps": raw_steps, "_source": "default-walk"},
+    )
+
+
 # --------------------------------------------------------------------------
 # Seams
 # --------------------------------------------------------------------------
@@ -1126,6 +1172,16 @@ async def _dispatch(page, step: Step, base_url: str, out_dir: Path, shots: list)
             raise RuntimeError(f"text not found: {value}")
     elif action == "shot":
         await _write_shot(page, out_dir, value, step.index, shots)
+    elif action == "wait_idle":
+        # Internal-only action (never in `_ACTIONS`, so a coder cannot write
+        # it into their own manifest — see `default_manifest`). Suppressed on
+        # purpose: an idle wait is a settling nicety, never a reason to lose
+        # the landing shot that follows it, and a stubbed test page has no
+        # `wait_for_load_state` at all.
+        with contextlib.suppress(Exception):
+            waiter = getattr(page, "wait_for_load_state", None)
+            if waiter is not None:
+                await _maybe_await(waiter(value))
     else:  # pragma: no cover - validation forbids this
         raise RuntimeError(f"unknown action: {action}")
 
@@ -1155,20 +1211,27 @@ def _write_artifacts(out_dir: Path, result: UiEvidenceResult) -> None:
 
 async def _run_body(
     repo_path: Path, out_dir: Path, deadline_s: float, launch, start: float,
-    result: UiEvidenceResult,
+    result: UiEvidenceResult, *, injected_manifest: "Manifest | None" = None,
 ) -> None:
-    p = repo_path / MANIFEST
-    if not p.is_file():
-        result.reason = "no manifest"
-        return
+    if injected_manifest is not None:
+        # The default-walk seam (`run(..., manifest=...)`): a harness-built
+        # `Manifest`, never a coder-authored file on disk — skip the file
+        # read/parse entirely. `injected_manifest is None` (every existing
+        # caller) falls through to the byte-identical file path below.
+        manifest = injected_manifest
+    else:
+        p = repo_path / MANIFEST
+        if not p.is_file():
+            result.reason = "no manifest"
+            return
 
-    data, problem = _load(repo_path)
-    manifest = None
-    if problem is None:
-        manifest, problem = _parse(data)
-    if problem:
-        result.reason = problem
-        return
+        data, problem = _load(repo_path)
+        manifest = None
+        if problem is None:
+            manifest, problem = _parse(data)
+        if problem:
+            result.reason = problem
+            return
 
     result.manifest = manifest.raw
     result.steps_total = len(manifest.steps)
@@ -1261,13 +1324,21 @@ async def _run_body(
 
 async def run(
     repo_path: Path, out_dir: Path, *, deadline_s: float = 120.0, launch=None,
+    manifest: "Manifest | None" = None,
 ) -> UiEvidenceResult:
-    """Execute the coder-authored manifest, capturing evidence into `out_dir`.
+    """Execute a walk manifest, capturing evidence into `out_dir`.
 
     `launch` injects a page-producing async callable, `(out_dir, viewport)
     -> page`, in place of a real headless-chromium launch — the module's
     test seam. Never raises; every failure path returns a `UiEvidenceResult`
     with `verdict` in {"ran", "not_run", "failed"}.
+
+    `manifest`, when given (e.g. from `default_manifest`), is used AS-IS,
+    bypassing the `.no_human/ui_evidence.json` file read/parse entirely —
+    the coder-authored manifest on disk always takes precedence, so a
+    caller passes this only when it has already confirmed no such file
+    exists. `manifest=None` (the default) is byte-identical to before this
+    parameter existed.
     """
     start = time.monotonic()
     result = UiEvidenceResult(verdict="not_run")
@@ -1280,7 +1351,9 @@ async def run(
         return result
 
     try:
-        await _run_body(repo_path, out_dir, deadline_s, launch, start, result)
+        await _run_body(
+            repo_path, out_dir, deadline_s, launch, start, result,
+            injected_manifest=manifest)
     except Exception as exc:
         result.verdict = "not_run"
         result.reason = exc.__class__.__name__
