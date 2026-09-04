@@ -94,7 +94,11 @@ FROZEN_FUNCTION_LINES = {
     # for callers with no HTTP handler in the loop. Measured on this tree
     # with the scanner below.
     "core/orchestrator.py:Orchestrator._run_attempt": 2167,
-    "core/orchestrator.py:Orchestrator._drive": 760,
+    # 760 -> 778 (+18): dispatch-time intake-eval hoisted path — the `elif
+    # ctx.get("eval_result")` branch that acts on a grill/wizard-stored
+    # verdict (idempotency marker, cost/residual-gap comments) added inside
+    # `_drive`. Measured on this tree with the scanner below.
+    "core/orchestrator.py:Orchestrator._drive": 778,
     # 449 -> 457 (+8): D3.1 (2026-08-31, auto-activation pipeline) adds the
     # one call (plus its explanatory comment) that hands `paused`/
     # `activated_at`/`learning_events` schema work to a new sibling method,
@@ -354,7 +358,13 @@ FROZEN_FILE_LINES = {
     # cannot bind to the hermetic target, DISCLOSES and still runs the walk
     # instead of skipping it. Measured with the scanner below, never summed
     # by hand.
-    "core/orchestrator.py": 21191,
+    #
+    # 21191 -> 21267 (+76): dispatch-time intake-eval hoisted path for
+    # grill/wizard-sourced tasks — the `elif ctx.get("eval_result")` branch
+    # plus `_act_on_stored_eval`/`_write_eval_ctx` helpers and the
+    # `_act_on_eval` merge-not-clobber rewrite. Measured with the scanner
+    # below, never summed by hand.
+    "core/orchestrator.py": 21267,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.
