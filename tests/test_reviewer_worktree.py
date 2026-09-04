@@ -493,14 +493,96 @@ def test_the_benign_allowlist_is_unchanged_by_this_naming_change():
     allowlisting it. Any future addition to `_BENIGN_CONFIG_KEY_PATTERNS`
     needs its own evidence-gated change (one of the 31 recorded
     false-discards, proven benign one key at a time), never bundled with a
-    display/diagnostics change like this one."""
+    display/diagnostics change like this one.
+
+    `^user\\.(name|email)$` is exactly such an evidence-gated addition (the
+    false-discards of 15eb6e7d / bf0cfd72: the reviewer setting its own git
+    identity on the shared config) and is pinned here alongside the rest.
+    """
     patterns = [p.pattern for p in rw._BENIGN_CONFIG_KEY_PATTERNS]
     assert patterns == [
         r"^branch\.[^.]+\.(rebase|remote|merge|pushremote|description|"
         r"vscode-merge-base)$",
         r"^maintenance\..+$",
         r"^gc\..+$",
+        r"^user\.(name|email)$",
     ], patterns
+
+
+def test_the_reviewer_identity_written_to_the_shared_config_is_excused_and_disclosed(
+    worktree_env,
+):
+    """Root-cause regression for the reviewer-worktree-integrity false
+    discards of 15eb6e7d / bf0cfd72: the reviewer session runs `git config
+    user.email`/`user.name` to set its own identity, which writes to the
+    SHARED `.git/common/config`. That write has no execution surface and
+    changes no judged file, so it must be excused exactly like the
+    bookkeeping branch/maintenance/gc keys above.
+    """
+    wt = worktree_env["wt"]
+    common_dir = worktree_env["common_dir"]
+    cfg = common_dir / "config"
+
+    before = rw.snapshot(wt, timeout=_TIMEOUT)
+
+    _git(wt, "config", "--file", str(cfg), "user.email", "reviewer@example.com")
+    _git(wt, "config", "--file", str(cfg), "user.name", "Reviewer Bot")
+
+    delta = rw.compare(wt, before, timeout=_TIMEOUT)
+    assert delta.is_empty(), (
+        "the reviewer's own git identity written to the shared config "
+        f"discarded the verdict: added={delta.added} modified={delta.modified} "
+        f"deleted={delta.deleted}"
+    )
+    assert any(p.endswith("common/config") or p == ".git/common/config"
+               for p in delta.benign), (
+        f"the excused identity write was not disclosed: benign={delta.benign}")
+    assert "user.email" in delta.benign_keys, delta.benign_keys
+    assert "user.name" in delta.benign_keys, delta.benign_keys
+    assert delta.nonbenign_keys == [], delta.nonbenign_keys
+
+
+def test_reviewer_identity_plus_an_exec_surface_key_still_discards(worktree_env):
+    """Positive control: the allowlist added by this task must not widen
+    past `user.name`/`user.email`. A genuine execution-surface key
+    (`alias.pwn`) alongside the reviewer's identity write must still
+    discard the whole verdict — the existing all()-benign gate holds."""
+    wt = worktree_env["wt"]
+    common_dir = worktree_env["common_dir"]
+    cfg = common_dir / "config"
+
+    before = rw.snapshot(wt, timeout=_TIMEOUT)
+
+    _git(wt, "config", "--file", str(cfg), "user.email", "reviewer@example.com")
+    _git(wt, "config", "--file", str(cfg), "alias.pwn", "!sh -c id")
+
+    delta = rw.compare(wt, before, timeout=_TIMEOUT)
+    assert not delta.is_empty(), (
+        "user.email alongside a non-benign alias key was excused: "
+        f"added={delta.added} modified={delta.modified} deleted={delta.deleted}")
+    assert any("/config" in p for p in delta.modified), (
+        f"the mixed config change was not caught: modified={delta.modified}")
+    assert not any(p.endswith("/config") for p in delta.benign), (
+        f"a non-allowlisted config change landed in benign: benign={delta.benign}")
+    assert delta.nonbenign_keys == ["alias.pwn"], delta.nonbenign_keys
+    assert "user.email" not in delta.benign_keys, (
+        "user.email was disclosed as excused even though the whole file "
+        f"stayed a violation: benign_keys={delta.benign_keys}")
+
+
+def test_no_exec_surface_key_entered_the_benign_allowlist():
+    """Guard: the allowlist widened by this task must not, even
+    accidentally, cover any of the execution-surface keys the module's own
+    evidence comment lists as 'Deliberately NOT here'."""
+    for key in (
+        "alias.pwn",
+        "core.hookspath",
+        "include.path",
+        "filter.lfs.clean",
+        "remote.origin.url",
+    ):
+        assert not rw._is_benign_config_key(key), (
+            f"{key!r} must not be treated as a benign config key")
 
 
 def test_the_named_non_benign_key_reaches_the_persisted_checklist_evidence(
