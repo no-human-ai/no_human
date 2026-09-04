@@ -483,7 +483,7 @@ FROZEN_FILE_LINES = {
     # Re-home merge 2026-09-04 (279c03c5): the WIP-checkpoint resume
     # correction lands on the same tree as the chain above. Measured
     # on this merged tree with the scanner below, never summed.
-    "core/orchestrator.py": 21502,
+    "core/orchestrator.py": 21580,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.

@@ -4237,13 +4237,6 @@ class Orchestrator:
                                 f"{_labels_txt}"
                             )[:500],
                         )
-                        # STAGNATION routes to ESCALATED, not FAILED — the
-                        # task stays actionable. `fail_category` still
-                        # reaches `task_failed` telemetry as an ADDITIONAL,
-                        # telemetry-only event (review pass-rate stuck is
-                        # exactly the "review_failed" pattern the
-                        # success-rate signal must see); it does not change
-                        # routing.
                         return await self._raise_blocker(
                             task, blocker, repo=repo, branch=base_branch,
                             escalate_now=True, fail_category="review_failed",
@@ -4309,16 +4302,9 @@ class Orchestrator:
                             ),
                             evidence=(outcome.detail or "")[:500],
                         )
-                        # STAGNATION routes to ESCALATED, not FAILED — the
-                        # task stays actionable. `fail_category` still
-                        # reaches `task_failed` telemetry as an ADDITIONAL,
-                        # telemetry-only event (a byte-equivalent retry is
-                        # exactly the "review_failed" pattern the
-                        # success-rate signal must see); it does not change
-                        # routing.
                         return await self._raise_blocker(
                             task, blocker, repo=repo, branch=base_branch,
-                            escalate_now=True, fail_category="review_failed",
+                            escalate_now=True,
                         )
                 except Exception as exc:  # noqa: BLE001
                     self._advisory(f"restoration fingerprint failed: {exc}")
