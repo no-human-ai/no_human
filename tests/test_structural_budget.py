@@ -991,7 +991,12 @@ FROZEN_FILE_LINES = {
     # check that idles (returns `[]`) and emits `setup_required`/
     # `setup_complete` instead of crash-looping when no credential is on
     # file. Measured on this tree with the scanner below.
-    "core/scheduler.py": 3002,
+    # 3002 -> 3037 (+35): worker-death instrumentation in `_run`'s pool-crash
+    # handler — an all-time `_worker_deaths_total` counter (surfaced via
+    # `health_snapshot`'s `worker_deaths_total`), plus `exit_code`/
+    # `termination_reason`/capped `stderr_excerpt` on the durable
+    # `task_crashed` event. Measured on this tree with the scanner below.
+    "core/scheduler.py": 3037,
 }
 
 
