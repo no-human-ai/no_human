@@ -584,7 +584,15 @@ FROZEN_FILE_LINES = {
     # the attempt's tested commit via `latest_attempt_branch` and threads it
     # into `land_task(..., tested_commit_sha=tested)` (+1 net: 2 added lines,
     # 1 modified in place). Measured on this tree with the scanner below.
-    "cli/commands.py": 8423,
+    # cli/commands.py 8423 -> 8441 (+18): `_ensure_board_fresh()` (new
+    # helper, +10 incl. docstring) wraps `core.web_build.ensure_fresh_board`
+    # and is called at the top of `start()` (+1 call, +7 comment/blank lines
+    # explaining the load-bearing placement) before `from ..api.app import
+    # app as _app` — a stale `web/dist` on a source checkout must be
+    # detected/rebuilt before the `StaticFiles` mount is decided at import
+    # time (no-human/2026-09-04 web-dist-staleness task). Measured on this
+    # tree with the scanner below.
+    "cli/commands.py": 8441,
     # api/app.py 5338 -> 5346 (+8): same budget-floor warning surfaced by
     # `send-back`/`reply` as `budget_warning` in the JSON response. Net cost
     # was trimmed from a naive +14 to +8 by computing `Bounds.from_config(...)`

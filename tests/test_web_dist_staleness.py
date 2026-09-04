@@ -332,6 +332,28 @@ def test_the_source_scan_ignores_node_modules_and_dist(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
+# Review fix: staleness must cover non-JS/TS assets under web/src too         #
+# --------------------------------------------------------------------------- #
+
+def test_a_css_only_change_under_web_src_is_detected_as_stale(tmp_path):
+    """A stylesheet edit under `web/src` rebuilds a different bundle just as
+    a `.tsx` edit does — the scan must not be limited to code suffixes."""
+    web_dir = _source_layout(tmp_path, dist_mtime=_MID, src_mtime=_OLD)
+
+    css = web_dir / "src" / "App.css"
+    css.write_text(".App { color: red; }\n")
+    os.utime(css, (_OLD, _OLD))
+
+    v = web_build.inspect_board(web_dir)
+    assert v.state == "fresh"
+
+    os.utime(css, (_NEW, _NEW))
+    v2 = web_build.inspect_board(web_dir)
+    assert v2.state == "stale", "a newer .css file under web/src must trigger staleness"
+    assert v2.newest_path == css
+
+
+# --------------------------------------------------------------------------- #
 # Load-bearing ordering: freshness check must run before api.app import       #
 # --------------------------------------------------------------------------- #
 

@@ -32,8 +32,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-_SOURCE_SUFFIXES = {".ts", ".tsx", ".js", ".jsx"}
-_EXTRA_TRIGGERS = ("package.json", "package-lock.json", "pnpm-lock.yaml")
+_EXTRA_TRIGGERS = ("package.json", "package-lock.json", "pnpm-lock.yaml", "index.html")
 _VITE_GLOB = "vite.config.*"
 _SKIP_DIRS = {"node_modules", "dist", ".git", ".vite", "coverage", "test-results"}
 _BUILD_ARGVS = (["npm", "--prefix", "web", "ci"], ["npm", "--prefix", "web", "run", "build"])
@@ -71,12 +70,17 @@ def newest_source(web_dir: Path) -> "tuple[float, Path] | None":
     """`(mtime, path)` of the newest file that should trigger a rebuild, or
     `None` if nothing matched.
 
-    Scans `web/src` for `_SOURCE_SUFFIXES`, pruning `_SKIP_DIRS` (notably
-    `node_modules` and `dist`) so a stray build artifact or dependency tree
-    under `src` can never itself look "stale". Also considers
-    `web/package.json`, `web/package-lock.json`/`web/pnpm-lock.yaml` (lock
-    file changes are dependency version changes, and must trigger a rebuild)
-    and `web/vite.config.*`.
+    Scans EVERY file under `web/src` — not just code suffixes — because the
+    served bundle depends on markup, styles, and static assets too (a
+    `.css`/`.scss`/`.svg` edit, or a change to a component's stylesheet,
+    rebuilds a different bundle just as a `.tsx` edit does). Prunes
+    `_SKIP_DIRS` (notably `node_modules` and `dist`) so a stray build
+    artifact or dependency tree nested under `src` can never itself look
+    "stale". Also considers `web/package.json`,
+    `web/package-lock.json`/`web/pnpm-lock.yaml` (lock file changes are
+    dependency version changes, and must trigger a rebuild), `web/index.html`
+    (vite's entry point, which lives beside `src/`, not under it), and
+    `web/vite.config.*`.
     """
     best: "tuple[float, Path] | None" = None
 
@@ -85,8 +89,6 @@ def newest_source(web_dir: Path) -> "tuple[float, Path] | None":
         for dirpath, dirnames, filenames in os.walk(src_dir):
             dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS]
             for name in filenames:
-                if Path(name).suffix not in _SOURCE_SUFFIXES:
-                    continue
                 path = Path(dirpath) / name
                 with contextlib.suppress(OSError):
                     mtime = path.stat().st_mtime
