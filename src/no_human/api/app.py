@@ -895,6 +895,13 @@ async def create_task(body: CreateTaskRequest, request: Request) -> TaskSummaryO
                     "band": hint.band, "tier": hint.tier, "offer": hint.offer,
                     "done_rate_pct": hint.done_rate_pct,
                     "message": hint.message(),
+                    # Hint-only families (e.g. multi_family) folded into
+                    # `signals` by estimate_feasibility, plus their human
+                    # -readable `hint_reasons` — never fed to band/offer above,
+                    # but persisted so the pre-flight card can actually show
+                    # them instead of computing them for nothing.
+                    "signals": list(hint.signals),
+                    "hint_reasons": list(hint.hint_reasons),
                 },
             })
     except Exception:  # noqa: BLE001 — advisory; a hint never fails a create
