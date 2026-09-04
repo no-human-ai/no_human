@@ -809,6 +809,45 @@ _STDERR_DRAIN_WAIT = 5
 # exists to keep alive. 64 MiB is ~1000x the largest plausible real event.
 _LINE_ACCUM_CAP = 64 * 1024 * 1024
 
+#: Events one codex session may emit per ALLOWED TURN before the stream is
+#: declared a flood. `turns` (below, in `stream()`) counts tool events only
+#: (a text message is not a turn), so without this a child looping on
+#: `agent_message` satisfies neither `max_turns` nor the orchestrator's
+#: INACTIVITY watchdog — every event it emits refreshes
+#: `_last_progress_at` (`orchestrator._await_coder_turn`) — and holds a pool
+#: worker forever. 50 is ~10x the busiest real turn measured (reasoning +
+#: message + tool_use + tool_result + usage per turn).
+_EVENTS_PER_TURN = 50
+
+#: Absolute event ceiling when `max_turns <= 0` (turn-unbounded callers),
+#: where the per-turn cap has nothing to multiply. Sized above the largest
+#: plausible real session (500-turn investigation bound x `_EVENTS_PER_TURN`)
+#: so it only ever fires on a genuine flood.
+_MAX_STREAM_EVENTS = 25_000
+
+
+def _event_cap(max_turns: int) -> int:
+    """Emitted-event ceiling for one session: `max_turns` allowed turns times
+    `_EVENTS_PER_TURN`, or the absolute `_MAX_STREAM_EVENTS` ceiling when
+    `max_turns` does not bound the session at all (`<= 0`)."""
+    return max_turns * _EVENTS_PER_TURN if max_turns > 0 else _MAX_STREAM_EVENTS
+
+
+def _flood_failure(emitted: int, cap: int, max_turns: int) -> str:
+    """Terminal text for a stream stopped by the event cap rather than by
+    turns — a session emitting nothing but text/reasoning/usage events never
+    trips `turns >= max_turns` (that counter only advances on `tool_use`), so
+    this is the only bound that stops it. Deliberately distinct wording from
+    the tool-turn exhaustion text below it, so an operator reading `nh watch`
+    can tell "flooded with talk, no tools" apart from "ran out of allowed
+    tool turns"; both still classify as `stop_reason="max_turns"` for
+    routing (`orchestrator._classify_error`)."""
+    return (
+        f"codex session emitted {emitted} events without completing "
+        f"{max_turns if max_turns > 0 else 'a bounded number of'} turns "
+        f"(event cap {cap} reached) — treating as a stalled/flooding "
+        f"session")
+
 
 class _CodexLineTruncated(Exception):
     """stdout blew the accumulation cap mid-line, or made no progress trying
@@ -1572,6 +1611,8 @@ class CodexBackend:
 
         session_id: str | None = None
         turns = 0
+        events_emitted = 0
+        event_cap = _event_cap(max_turns)
         totals = {"tokens_used": 0, "output_tokens": 0,
                   "cache_read_tokens": 0, "cache_creation_tokens": 0}
         saw_usage = False
@@ -1691,10 +1732,15 @@ class CodexBackend:
                         for k in totals:
                             totals[k] += int(event.meta.get(k, 0) or 0)
                     yield event
-                    if stop_reason == "guard":
+                    events_emitted += 1
+                    if not stop_reason and events_emitted >= event_cap:
+                        stop_reason = "max_turns"
+                        failure = failure or _flood_failure(
+                            events_emitted, event_cap, max_turns)
+                    if stop_reason:
                         break
 
-                if stop_reason == "guard":
+                if stop_reason:
                     break
                 if turns >= max_turns > 0:
                     stop_reason = "max_turns"
