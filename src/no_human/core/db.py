@@ -452,6 +452,11 @@ class ImportedTaskRow(NamedTuple):
     created_at: str
 
 
+# Bounded wait for aiosqlite's worker thread in `Store._join_sqlite_worker`.
+# Generous relative to the measured sub-millisecond race, never unbounded.
+_SQLITE_WORKER_JOIN_TIMEOUT_S = 5.0
+
+
 class Store:
     """Thin async wrapper over the tasks/attempts tables."""
 
@@ -537,9 +542,47 @@ class Store:
         return self
 
     async def close(self) -> None:
-        if self._db is not None:
-            await self._db.close()
-            self._db = None
+        db, self._db = self._db, None
+        if db is None:
+            return
+        try:
+            await db.close()
+        finally:
+            await self._join_sqlite_worker(db)
+
+    async def _join_sqlite_worker(self, db: aiosqlite.Connection) -> None:
+        """Bounded join of aiosqlite's non-daemon `_connection_worker_thread`
+        after `db.close()` has already returned.
+
+        `aiosqlite.Connection.close()` awaits the stop-sentinel future, and
+        the worker thread `break`s its loop a few bytecodes after resolving
+        that future (see `_connection_worker_thread` in aiosqlite/core.py) —
+        measured 0/60 still-alive on CPython 3.12 + aiosqlite 0.22.1 the
+        instant `await db.close()` returns. This join converts an
+        unspecified sub-millisecond race into a guarantee that the thread is
+        gone before the caller's event loop can close; it does not fix a
+        leak — an un-closed `aiosqlite.Connection` is a caller bug, not
+        something this method can see.
+
+        Bounded on purpose: `connect()`'s atomicity comment above exists
+        because an unbounded join on a wedged worker thread hangs the
+        process forever, which is worse than the loop-closed race this join
+        is here to close.
+        """
+        # `_thread` is a private aiosqlite attribute; `getattr` with a
+        # default means an aiosqlite rename degrades to a no-op here rather
+        # than an AttributeError, and the regression test in
+        # tests/test_store_fixture_teardown_loop_safe.py is what would catch
+        # that silently-disabled guard.
+        thread = getattr(db, "_thread", None)
+        if thread is None:
+            return
+        await asyncio.to_thread(thread.join, _SQLITE_WORKER_JOIN_TIMEOUT_S)
+        if thread.is_alive():
+            log.warning(
+                "aiosqlite worker thread %r still alive %.1fs after close()",
+                thread.name, _SQLITE_WORKER_JOIN_TIMEOUT_S,
+            )
 
     async def _rollback_quietly(self) -> None:
         """End whatever transaction a failed write left open. Never raises.

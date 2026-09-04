@@ -2536,9 +2536,16 @@ def test_known_issues_traceback_cites_the_functions_it_names(known_issues_doc):
     from 2235 to 2296; re-verified against the code, not carried forward
     blind. `_run_attempt`'s call site in orchestrator.py is untouched by
     this change and stays at 4625.
+
+    Re-anchored again 2026-09-04: `Store.close`'s bounded join of aiosqlite's
+    worker thread (`_join_sqlite_worker`, `_SQLITE_WORKER_JOIN_TIMEOUT_S`)
+    added 43 lines above `update_attempt`'s commit in db.py, moving the
+    citation from 2296 to 2339; re-verified against the code, not carried
+    forward blind. `_run_attempt`'s call site in orchestrator.py is untouched
+    by this change and stays at 4625.
     """
-    assert "db.py:2296" in known_issues_doc, (
-        "the traceback no longer cites db.py:2296 — this test is pointed at "
+    assert "db.py:2339" in known_issues_doc, (
+        "the traceback no longer cites db.py:2339 — this test is pointed at "
         "stale text; re-derive from the current traceback"
     )
     assert "orchestrator.py:4625" in known_issues_doc, (
@@ -2549,13 +2556,13 @@ def test_known_issues_traceback_cites_the_functions_it_names(known_issues_doc):
     db_src = (REPO / "src" / "no_human" / "core" / "db.py").read_text(encoding="utf-8")
     db_body = _function_body_source(db_src, "update_attempt")
     db_lines = db_src.splitlines()
-    assert 1 <= 2296 <= len(db_lines), "db.py is now shorter than line 2296"
-    assert db_lines[2295].strip() == "await self.db.commit()", (
-        f"db.py:2296 is now {db_lines[2295]!r}, not the commit the traceback "
+    assert 1 <= 2339 <= len(db_lines), "db.py is now shorter than line 2339"
+    assert db_lines[2338].strip() == "await self.db.commit()", (
+        f"db.py:2339 is now {db_lines[2338]!r}, not the commit the traceback "
         f"names"
     )
     assert "await self.db.commit()" in db_body, (
-        "line 2296 is no longer inside update_attempt's body"
+        "line 2339 is no longer inside update_attempt's body"
     )
 
     orch_src = ORCHESTRATOR_PY.read_text(encoding="utf-8")

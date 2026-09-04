@@ -13,7 +13,6 @@ from concurrent.futures import Future
 
 import pytest
 
-from no_human.core.db import Store
 from no_human.integrations.slack.intake import (
     AppMentionHandler,
     extract_repo_token,
@@ -66,10 +65,6 @@ def _event(text, *, channel="C1", ts="1000.1", thread_ts=None):
     return e
 
 
-async def _store(tmp_path, name="t.db"):
-    return await Store(tmp_path / name).connect()
-
-
 # ------------------------------ registration ---------------------------------
 
 
@@ -82,11 +77,11 @@ def test_handler_registers_via_on_event(monkeypatch, tmp_path):
     assert calls == [("app_mention", handler._dispatch)]
 
 
-async def test_registered_handler_is_reachable_through_real_worker(monkeypatch, tmp_path):
+async def test_registered_handler_is_reachable_through_real_worker(monkeypatch, store_factory):
     """End-to-end through SlackWorker.on_event/dispatch (not just a stub
     capture) — proves the registration API contract, not just the call."""
     w = _worker(monkeypatch)
-    store = await _store(tmp_path)
+    store = await store_factory()
     handler = AppMentionHandler(store=store, reply=_Reply())
     handler.register(w)
     assert w._handlers["app_mention"] == [handler._dispatch]
@@ -138,8 +133,8 @@ def test_parse_message_empty_text_falls_back_to_default_title():
 # ------------------------------ validation: missing repo ----------------------
 
 
-async def test_missing_repo_replies_in_thread_and_creates_no_task(monkeypatch, tmp_path):
-    store = await _store(tmp_path)
+async def test_missing_repo_replies_in_thread_and_creates_no_task(monkeypatch, store_factory):
+    store = await store_factory()
     await store.create_project(Project.new("foo", repo_paths=["/tmp/foo"]))
     reply = _Reply()
     handler = AppMentionHandler(store=store, reply=reply)
@@ -159,8 +154,8 @@ async def test_missing_repo_replies_in_thread_and_creates_no_task(monkeypatch, t
 # ------------------------------ validation: unknown repo ----------------------
 
 
-async def test_unknown_repo_replies_in_thread_and_creates_no_task(monkeypatch, tmp_path):
-    store = await _store(tmp_path)
+async def test_unknown_repo_replies_in_thread_and_creates_no_task(monkeypatch, store_factory):
+    store = await store_factory()
     await store.create_project(Project.new("foo", repo_paths=["/tmp/foo"]))
     reply = _Reply()
     handler = AppMentionHandler(store=store, reply=reply)
@@ -178,8 +173,8 @@ async def test_unknown_repo_replies_in_thread_and_creates_no_task(monkeypatch, t
 # ------------------------------ valid repo: task creation ---------------------
 
 
-async def test_valid_repo_creates_task_with_source_and_external_id(monkeypatch, tmp_path):
-    store = await _store(tmp_path)
+async def test_valid_repo_creates_task_with_source_and_external_id(monkeypatch, store_factory):
+    store = await store_factory()
     await store.create_project(Project.new("foo", repo_paths=["/tmp/foo"]))
     reply = _Reply()
     handler = AppMentionHandler(store=store, reply=reply)
@@ -202,8 +197,8 @@ async def test_valid_repo_creates_task_with_source_and_external_id(monkeypatch, 
 # ------------------------------ dedupe on re-delivery --------------------------
 
 
-async def test_redelivery_same_channel_and_ts_does_not_duplicate(monkeypatch, tmp_path):
-    store = await _store(tmp_path)
+async def test_redelivery_same_channel_and_ts_does_not_duplicate(monkeypatch, store_factory):
+    store = await store_factory()
     await store.create_project(Project.new("foo", repo_paths=["/tmp/foo"]))
     reply = _Reply()
     handler = AppMentionHandler(store=store, reply=reply)
@@ -220,12 +215,12 @@ async def test_redelivery_same_channel_and_ts_does_not_duplicate(monkeypatch, tm
     assert tasks_after_second[0].id == tasks_after_first[0].id
 
 
-async def test_concurrent_redelivery_creates_only_one_task(monkeypatch, tmp_path):
+async def test_concurrent_redelivery_creates_only_one_task(monkeypatch, store_factory):
     """PR #54 review MAJOR 1: two deliveries of the SAME event racing each
     other on the loop (not sequential) must still dedupe to a single task —
     proves the check-then-insert is serialized, not just fast enough to
     usually not collide."""
-    store = await _store(tmp_path)
+    store = await store_factory()
     await store.create_project(Project.new("foo", repo_paths=["/tmp/foo"]))
     reply = _Reply()
     handler = AppMentionHandler(store=store, reply=reply)
@@ -244,8 +239,8 @@ async def test_concurrent_redelivery_creates_only_one_task(monkeypatch, tmp_path
 # ------------------------------ task creation failure --------------------------
 
 
-async def test_create_task_failure_replies_in_thread_and_does_not_raise(monkeypatch, tmp_path):
-    store = await _store(tmp_path)
+async def test_create_task_failure_replies_in_thread_and_does_not_raise(monkeypatch, store_factory):
+    store = await store_factory()
     await store.create_project(Project.new("foo", repo_paths=["/tmp/foo"]))
     reply = _Reply()
     handler = AppMentionHandler(store=store, reply=reply)
@@ -265,11 +260,11 @@ async def test_create_task_failure_replies_in_thread_and_does_not_raise(monkeypa
 # ------------------------------ reply-failure resilience -----------------------
 
 
-async def test_reply_failure_does_not_raise_or_suppress_event(monkeypatch, tmp_path, caplog):
+async def test_reply_failure_does_not_raise_or_suppress_event(monkeypatch, store_factory, caplog):
     """PR #54 review MAJOR 2: a broken transport (reply() raises) must be
     logged, must not propagate out of _handle, and must not swallow the
     on_event telemetry that follows it."""
-    store = await _store(tmp_path)
+    store = await store_factory()
     await store.create_project(Project.new("foo", repo_paths=["/tmp/foo"]))
 
     def _broken_reply(channel, thread_ts, text):

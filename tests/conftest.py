@@ -321,3 +321,16 @@ def own_pytest_on_path(tmp_path, monkeypatch):
         f"silent no-op here would re-hide the bug: shutil.which -> {resolved!r}"
     )
     return bin_dir
+
+
+@pytest.fixture
+async def store_factory(tmp_path):
+    """Open ``Store``s that are ALWAYS closed before this test's event loop
+    tears down — see ``tests/_store_scope.py`` for the mechanic this guards
+    against. Named, requested by argument, and NOT autouse — it monkeypatches
+    nothing, so it does not touch this file's `tamper_guard` fixture count
+    (see `isolated_env_file` above)."""
+    from tests._store_scope import store_scope
+
+    async with store_scope(tmp_path) as open_store:
+        yield open_store

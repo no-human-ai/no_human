@@ -24,7 +24,6 @@ import subprocess
 from pathlib import Path
 
 from no_human.config import load_config
-from no_human.core.db import Store
 from no_human.core.orchestrator import Orchestrator
 from no_human.core.task import Task
 from no_human.notify.slack import SlackNotifier
@@ -38,10 +37,6 @@ def _orch(store, tmp_path):
 
     cfg = load_config(tmp_path / "config.yaml")
     return Orchestrator(store, cfg.data, _Backend(), SlackNotifier(None))
-
-
-async def _store(tmp_path):
-    return await Store(tmp_path / "t.db").connect()
 
 
 def _git(cwd, *args, author=None):
@@ -106,34 +101,31 @@ def _resumed_multi_commit_repo(tmp_path: Path, *, author=_AGENT) -> dict:
 # --------------------------------------------------------------------------- #
 
 
-async def test_is_resume_shape_false_for_a_plain_task(tmp_path):
-    store = await _store(tmp_path)
+async def test_is_resume_shape_false_for_a_plain_task(tmp_path, store_factory):
+    store = await store_factory()
     orch = _orch(store, tmp_path)
     task = Task.new("t", repo_path="/r")
     assert orch._is_resume_shape(task) is False
-    await store.close()
 
 
-async def test_is_resume_shape_true_for_explicit_context_flag(tmp_path):
-    store = await _store(tmp_path)
+async def test_is_resume_shape_true_for_explicit_context_flag(tmp_path, store_factory):
+    store = await store_factory()
     orch = _orch(store, tmp_path)
     task = Task.new("t", repo_path="/r")
     task.context = {"resume_shape": True}
     assert orch._is_resume_shape(task) is True
-    await store.close()
 
 
-async def test_is_resume_shape_true_when_resume_from_sha_present(tmp_path):
-    store = await _store(tmp_path)
+async def test_is_resume_shape_true_when_resume_from_sha_present(tmp_path, store_factory):
+    store = await store_factory()
     orch = _orch(store, tmp_path)
     task = Task.new("t", repo_path="/r")
     task.context = {"resume_from": {"sha": "a" * 40, "by": "human"}}
     assert orch._is_resume_shape(task) is True
-    await store.close()
 
 
-async def test_is_resume_shape_false_on_missing_or_malformed_context(tmp_path):
-    store = await _store(tmp_path)
+async def test_is_resume_shape_false_on_missing_or_malformed_context(tmp_path, store_factory):
+    store = await store_factory()
     orch = _orch(store, tmp_path)
     task = Task.new("t", repo_path="/r")
     task.context = None
@@ -142,7 +134,6 @@ async def test_is_resume_shape_false_on_missing_or_malformed_context(tmp_path):
     assert orch._is_resume_shape(task) is False
     task.context = {"resume_from": "not-a-dict"}
     assert orch._is_resume_shape(task) is False
-    await store.close()
 
 
 # --------------------------------------------------------------------------- #
@@ -150,7 +141,7 @@ async def test_is_resume_shape_false_on_missing_or_malformed_context(tmp_path):
 # --------------------------------------------------------------------------- #
 
 
-async def test_resume_base_walks_past_multiple_attempt_commits(tmp_path):
+async def test_resume_base_walks_past_multiple_attempt_commits(tmp_path, store_factory):
     """AC: multi-commit checkpoint handling. The reviewer's exact scenario: a
     checkpoint that sits THREE commits above the true base. The old
     ``HEAD~1`` fallback would have returned ``b_sha`` (still carrying the
@@ -161,7 +152,7 @@ async def test_resume_base_walks_past_multiple_attempt_commits(tmp_path):
     ``HEAD~1`` (== ``b_sha``, which already carries the fix) because
     ``_repro_base_ref`` did not accept a ``resume_shape`` kwarg at all.
     """
-    store = await _store(tmp_path)
+    store = await store_factory()
     orch = _orch(store, tmp_path)
     shapes = _resumed_multi_commit_repo(tmp_path)
     work = shapes["work"]
@@ -176,10 +167,9 @@ async def test_resume_base_walks_past_multiple_attempt_commits(tmp_path):
         "the exact multi-commit-checkpoint bug the reviewer flagged"
     )
     assert resolved != "HEAD~1"
-    await store.close()
 
 
-async def test_resume_base_never_returns_a_wip_checkpoint_when_identity_differs(tmp_path):
+async def test_resume_base_never_returns_a_wip_checkpoint_when_identity_differs(tmp_path, store_factory):
     """§3 gap, red-first against the branch's own (unfixed) walk: the walk
     must never return a [WIP-*] checkpoint as the base, even when the
     attempt's commits are authored under an identity that does not match
@@ -190,7 +180,7 @@ async def test_resume_base_never_returns_a_wip_checkpoint_when_identity_differs(
     reinstating the original bug silently. The WIP-subject check must be
     independent of author identity.
     """
-    store = await _store(tmp_path)
+    store = await store_factory()
     orch = _orch(store, tmp_path)
     shapes = _resumed_multi_commit_repo(tmp_path, author=_AGENT_OTHER_IDENTITY)
     work = shapes["work"]
@@ -210,17 +200,16 @@ async def test_resume_base_never_returns_a_wip_checkpoint_when_identity_differs(
         "the attempt's own commits, so an identity-only check stops on "
         "the first non-WIP attempt commit it sees"
     )
-    await store.close()
 
 
-async def test_all_agent_authored_history_returns_an_unresolvable_base(tmp_path):
+async def test_all_agent_authored_history_returns_an_unresolvable_base(tmp_path, store_factory):
     """§D — fail-closed: when every reachable commit is agent-authored (no
     human base commit at all), the walk must find nothing and the caller
     must get the unresolvable sentinel — never a guessed sha. Feeding that
     sentinel to ``run_repro_gate`` must read as ``error`` ("cannot verify"),
     never a guessed ``fail``/``pass``.
     """
-    store = await _store(tmp_path)
+    store = await store_factory()
     orch = _orch(store, tmp_path)
     work = tmp_path / "work"
     work.mkdir()
@@ -252,14 +241,13 @@ async def test_all_agent_authored_history_returns_an_unresolvable_base(tmp_path)
     result = run_repro_gate(work, resolved, resume_shape=True)
     assert result.verdict == "error"
     assert result.verdict not in ("fail", "pass")
-    await store.close()
 
 
-async def test_non_resume_fallback_is_still_head_tilde_one(tmp_path):
+async def test_non_resume_fallback_is_still_head_tilde_one(tmp_path, store_factory):
     """AC: no regressions. Criterion 5 for the orchestrator half:
     resume_shape=False (the default) is byte-identical to before this
     feature existed."""
-    store = await _store(tmp_path)
+    store = await store_factory()
     orch = _orch(store, tmp_path)
     shapes = _resumed_multi_commit_repo(tmp_path)
     work = shapes["work"]
@@ -267,14 +255,13 @@ async def test_non_resume_fallback_is_still_head_tilde_one(tmp_path):
     resolved = await orch._repro_base_ref(work, "main")
 
     assert resolved == "HEAD~1"
-    await store.close()
 
 
-async def test_merge_base_still_wins_when_base_resolves(tmp_path):
+async def test_merge_base_still_wins_when_base_resolves(tmp_path, store_factory):
     """AC: no regressions. When ``<base>`` actually resolves (here: a local
     branch literally named the base), the ordinary merge-base path wins on
     BOTH ``resume_shape`` values — the resume fallback never fires."""
-    store = await _store(tmp_path)
+    store = await store_factory()
     orch = _orch(store, tmp_path)
     work = tmp_path / "work"
     work.mkdir()
@@ -293,10 +280,9 @@ async def test_merge_base_still_wins_when_base_resolves(tmp_path):
         resolved = await orch._repro_base_ref(
             work, "main", resume_shape=resume_shape)
         assert resolved == base_sha, (resume_shape, resolved)
-    await store.close()
 
 
-async def test_51eeaa07_shape_end_to_end(tmp_path):
+async def test_51eeaa07_shape_end_to_end(tmp_path, store_factory):
     """Fixture reproduction of task 51eeaa07's rejection shape (the live
     task's own rows were not reachable from this sandbox — this is the
     equivalent fixture-based proof named in the plan, not a live rerun).
@@ -308,7 +294,7 @@ async def test_51eeaa07_shape_end_to_end(tmp_path):
     real change as "already passes on the base" and FAILS it. The NEW
     resume-aware path walks to the true base and PASSES the same repro.
     """
-    store = await _store(tmp_path)
+    store = await store_factory()
     orch = _orch(store, tmp_path)
     shapes = _resumed_multi_commit_repo(tmp_path)
     work = shapes["work"]
@@ -334,4 +320,3 @@ async def test_51eeaa07_shape_end_to_end(tmp_path):
     assert new_verdict.verdict == "pass", new_verdict.reasons
     assert new_verdict.resume_shape is True
 
-    await store.close()
