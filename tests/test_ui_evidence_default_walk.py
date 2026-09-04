@@ -272,7 +272,7 @@ async def store(tmp_path):
 
 async def _drive(
     tmp_path, store, monkeypatch, srv_outcome, *, with_manifest,
-    run_result_shots=(("landing", "landing.png"),),
+    run_result_shots=(("landing", "landing.png"),), run_raises=None,
 ):
     """Shared driver: fakes `hermetic_backend` armed, `dev_server` yielding
     `srv_outcome`, `evidence_ledger.deliver` succeeding, and spies on
@@ -300,6 +300,8 @@ async def _drive(
 
     async def _spy_run(repo_path, out_dir, **kwargs):
         run_calls.append(kwargs)
+        if run_raises is not None:
+            raise run_raises
         out_dir.mkdir(parents=True, exist_ok=True)
         shots = []
         for name, path in run_result_shots:
@@ -388,6 +390,26 @@ async def test_default_walk_boot_failure_still_yields_the_disclosed_skip(
 
     assert "Visual proof skipped:" in section
     assert "the dev server failed to start" in section
+    assert "default walk (no coder manifest)" not in section
+
+
+async def test_default_walk_run_explosion_still_yields_the_disclosed_skip(
+        tmp_path, store, monkeypatch):
+    """AC3 (second half): no coder manifest, and `ui_evidence.run` itself
+    raises mid-walk — still a DISCLOSED skip (`the walk errored (...)`),
+    never an exception escaping `_maybe_capture_ui_evidence` (and so never
+    one reaching `_finalize`, which only wraps this call as a last-resort
+    net — the disclosed text must come from here, not from that net)."""
+    srv = ui_evidence.DevServerOutcome(
+        mode="booted", start_cmd="npm run dev", base_url="http://127.0.0.1:5173",
+        ready_timeout_s=60,
+    )
+    section, advisories, run_calls = await _drive(
+        tmp_path, store, monkeypatch, srv, with_manifest=False,
+        run_raises=RuntimeError("boom"))
+
+    assert len(run_calls) == 1
+    assert "Visual proof skipped: the walk errored (RuntimeError)" in section
     assert "default walk (no coder manifest)" not in section
 
 
