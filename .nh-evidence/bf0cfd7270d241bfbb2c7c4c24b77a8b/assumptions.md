@@ -1,0 +1,12 @@
+# Assumptions
+
+_Harness-captured record for task `bf0cfd72`, commit `9310de299aad80eab7a01e8514d6d2caa32c6d3d` — not model-authored: no_human wrote this file from the intake step's recorded questions and assumptions. It records what the gate produced; it is not a verdict of the model that wrote the code._
+
+<details><summary>⚠️ 3 assumptions made on your behalf — verify at review</summary>
+
+- **Q:** What should be the structure of the `roots_refused` field in the `discover_repos` API response? Should it be a simple array of path strings like `['/path1', '/path2']`, or should it include reason information like `[{path: '/path1', reason: 'outside home'}, ...]` or structured differently? **A:** An array of objects, each with at least `path` (string) and `reason` (string) fields—e.g. `[{"path": "/some/path", "reason": "outside home"}, ...]`. This allows the frontend to display per-root refusal reasons and handle each case distinctly. A simple string array would force a single shared reason across all refused roots, which breaks the 'future refusal class' extensibility mentioned in the spe _(assumption)_
+- **Q:** What exact user-facing message text should appear when a root is refused? The spec shows format `'not scanned: <reason>'` but does not specify what text should replace `<reason>`. Should it be 'outside home directory', 'path outside home folder', 'not accessible', or something else? **A:** Plain message text should be 'outside home directory' or 'outside home folder'. Following the spec format `'not scanned: <reason>'`, the full message would be 'not scanned: outside home directory'. This is clear, matches the actual constraint (containment to home), and aligns with the API refusal docstring 'a root resolving outside home is refused'. _(assumption)_
+- **Q:** How is `extra_scan_roots` passed to or configured within `discover_repos()`—is it a function parameter (e.g. `extra_scan_roots=[...]`), an environment variable, a config file entry, or something else? The acceptance criteria mention testing 'via extra_roots', implying a specific passing mechanism. **A:** `extra_scan_roots` is most likely a parameter to `discover_repos(root=None, extra_scan_roots=None)` or loaded from a config/settings object (e.g., `app.config['EXTRA_SCAN_ROOTS']`). Tests would inject it either as a function parameter or via a test-specific config override. This matches the spec's phrasing 'configured extra_scan_roots' and allows the acceptance criteria to verify both the user-typ _(assumption)_
+
+</details>
+
