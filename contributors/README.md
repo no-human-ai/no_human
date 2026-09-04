@@ -51,9 +51,12 @@ of them has no file here. It checks that a file exists, nothing more — it does
 not read the contents and it cannot verify a signature. The record is the point;
 the check only stops one from being forgotten.
 
-Two kinds of author are skipped: the maintainer, who does not sign their own
-agreement, and bot accounts such as `dependabot[bot]`, which hold no copyright
-to license.
+Three kinds of author are skipped: the maintainer, who does not sign their own
+agreement; bot accounts such as `dependabot[bot]`, which hold no copyright to
+license; and `no-human`, this repo's own agent account, whose commits are
+first-party work — but only on pull requests the agent or the maintainer
+opened. On anyone else's PR a `no-human`-authored commit reads as a forged
+author email, and no file in this directory can satisfy it.
 
 One thing the check cannot see: a `Co-authored-by:` trailer. GitHub resolves a
 commit's *author*, and that is all this job asks for. If someone co-authored
