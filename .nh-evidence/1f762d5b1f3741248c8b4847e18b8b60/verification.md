@@ -3,89 +3,69 @@
 _Harness-captured record for task `1f762d5b`, commit `9178907ee479b7dad0c0185b39dd39e2b2ea04ec` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ## How I verified this
-6 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
+4 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
 
 ### test
-- `uv run pytest tests/test_integrations_health.py tests/test_integrations_registry.py tests/test_integrations_setup.py tests/test_integrations_write.py -q -n 4 2>&1 | tail -60`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/1f762d5b1f3741248c8b4847e18b8b60.9318.8080c7ee uv run pytest tests/test_integrations_health.py tests/test_integrations_registry.py tests/test_integrations_setup.py tests/test_integrations_write.py -q 2>&1 | tail -60`
 
 ```
-bringing up nodes...
-bringing up nodes...
-
 ........................................................................ [ 36%]
 ........................................................................ [ 73%]
 ...................................................                      [100%]
-195 passed in 2.11s
+195 passed in 2.68s
 ```
 
-- `uv run pytest tests/test_api.py -q -k integration 2>&1 | tail -40`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/1f762d5b1f3741248c8b4847e18b8b60.9318.8080c7ee uv run pytest tests/test_api.py -q -k integration 2>&1 | tail -40`
 
 ```
 ........                                                                 [100%]
-8 passed, 214 deselected in 1.79s
+8 passed, 214 deselected in 2.05s
 ```
 
-- `uv run pytest tests/test_integrations_health.py --collect-only -q 2>&1 | grep "::"`
-
-```
-tests/test_integrations_health.py::test_probe_healthy_on_200
-tests/test_integrations_health.py::test_probe_unhealthy_401_detail_has_status_and_host
-tests/test_integrations_health.py::test_probe_unhealthy_404_detail_has_status_and_host
-tests/test_integrations_health.py::test_probe_dns_error_and_timeout_are_captured_not_raised
-tests/test_integrations_health.py::test_probe_timeout_value_is_five_seconds
-tests/test_integrations_health.py::test_detail_never_contains_a_credential
-tests/test_integrations_health.py::test_jira_wrong_tenant_404_is_actionable
-tests/test_integrations_health.py::test_disabled_integration_is_never_probed
-tests/test_integrations_health.py::test_boot_and_interval_scheduling_via_the_seam
-tests/test_integrations_health.py::test_failing_integration_reprobes_on_the_short_backoff
-tests/test_integrations_health.py::test_ensure_fresh_before_poll_reprobes_only_a_stale_failure_and_never_raises
-tests/test_integrations_health.py::test_probe_failure_never_blocks_start
-tests/test_integrations_health.py::test_status_endpoint_exposes_health_fields
-```
-
-- `uv run pytest tests/test_structural_budget.py tests/test_integrations_health.py tests/test_integrations_registry.py tests/test_integrations_setup.py tests/test_integrations_write.py tests/test_api.py -q -n 4 -k "structural_budget or integrations_health or integrations_registry or integrations_setup or integrations_write or integration" 2>&1 | tail -20`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/1f762d5b1f3741248c8b4847e18b8b60.9318.8080c7ee uv run pytest -q -n 4 tests/test_integrations_health.py tests/test_integrations_registry.py tests/test_integrations_setup.py tests/test_integrations_write.py tests/test_api.py tests/test_structural_budget.py 2>&1 | tail -30`
 
 ```
 bringing up nodes...
 bringing up nodes...
 
-........................................................................ [ 32%]
-........................................................................ [ 65%]
-........................................................................ [ 97%]
-.....                                                                    [100%]
-221 passed in 2.73s
+........................................................................ [ 16%]
+........................................................................ [ 33%]
+........................................................................ [ 49%]
+........................................................................ [ 66%]
+........................................................................ [ 82%]
+........................................................................ [ 99%]
+...                                                                      [100%]
+=============================== warnings summary ===============================
+tests/test_api.py::test_board_websocket_routes_and_sends_the_init_snapshot
+  /Users/eyalgolan/.<redacted>/worktrees/1f762d5b1f3741248c8b4847e18b8b60.9318.8080c7ee/tests/test_api.py:2610: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+435 passed, 1 warning in 47.05s
 ```
 
-- `uv run pytest tests/test_structural_budget.py -q -n 4 2>&1 | tail -10 echo "===" uv run pytest tests/test_integrations_health.py tests/test_integrations_registry.py tests/test_integrations_setup.py tests/test_integrations_write.py -q -n 4 2>&1 | tail -10 echo "===" uv run pytest tests/test_api.py -q -n 4 -k integration 2>&1 | tail -10`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/1f762d5b1f3741248c8b4847e18b8b60.9318.8080c7ee uv run pytest tests/ -m repoguard -q 2>&1 | tail -20`
 
 ```
-bringing up nodes...
-bringing up nodes...
+............................s.s.s.s.s.s.s.s.s.s......................... [ 53%]
+.....................s.......................s................           [100%]
+=============================== warnings summary ===============================
+tests/test_local_boundary_guard.py:17
+  /Users/eyalgolan/.<redacted>/worktrees/1f762d5b1f3741248c8b4847e18b8b60.9318.8080c7ee/tests/test_local_boundary_guard.py:17: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient
 
-..................                                                       [100%]
-18 passed in 2.36s
-===
-bringing up nodes...
-bringing up nodes...
+src/<redacted>/testing/test_layers.py:35
+  /Users/eyalgolan/.<redacted>/worktrees/1f762d5b1f3741248c8b4847e18b8b60.9
+[... 205 of 1,344 characters omitted from the middle ...]
 
-........................................................................ [ 36%]
-........................................................................ [ 73%]
-...................................................                      [100%]
-195 passed in 1.71s
-===
-bringing up nodes...
-bringing up nodes...
+src/<redacted>/testing/test_layers.py:89
+  /Users/eyalgolan/.<redacted>/worktrees/1f762d5b1f3741248c8b4847e18b8b60.9318.8080c7ee/src/<redacted>/testing/test_layers.py:89: PytestCollectionWarning: cannot collect test class 'TestPlan' because it has a __init__ constructor (from: tests/test_test_layers.py)
+    @dataclass
 
-........                                                                 [100%]
-8 passed in 1.66s
-```
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/1f762d5b1f3741248c8b4847e18b8b60.9318.fc90133d && uv run pytest tests/test_structural_budget.py -q 2>&1 | tail -10`
-
-```
-..................                                                       [100%]
-18 passed in 1.40s
-```
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+122 passed, 13 skipped, 11250 deselected, 3 warnings in 11.60s
+```  
+  _excerpt - 1,330 characters of output in total_
 
 
 **Not verified:** everything below is a limit of this section, listed whether or not it bit this attempt.

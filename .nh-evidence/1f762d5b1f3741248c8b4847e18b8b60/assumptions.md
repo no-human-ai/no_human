@@ -2,9 +2,9 @@
 
 _Harness-captured record for task `1f762d5b`, commit `9178907ee479b7dad0c0185b39dd39e2b2ea04ec` — not model-authored: no_human wrote this file from the intake step's recorded questions and assumptions. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
-> ⚠️ **Unresolved:** 1 verifier(s) reached no verdict after a bounded retry, and none of the other verifiers this round failed: board-uses-theme-tokens. Escalating instead of charging the coder for a defect nobody found.
+> ⚠️ **Unresolved:** mechanical derived-artefact conflict resolution failed: https://github.com/no-human-ai/no_human/pull/42 step=regenerate
 
-> ⚠️ **Open question:** Review the blocker and advise how to proceed.
+> ⚠️ **Open question:** PR https://github.com/no-human-ai/no_human/pull/42 conflicts only in derived artefact(s) (RELEASE_MANIFEST.txt) but mechanical resolution failed at step 'regenerate'. Advise, or take over?
 
 <details><summary>⚠️ 4 assumptions made on your behalf — verify at review</summary>
 
