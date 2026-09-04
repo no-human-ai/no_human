@@ -7,6 +7,7 @@ tests/test_integrations_registry.py: `no_human.integrations._http_get` /
 from __future__ import annotations
 
 import logging
+from contextlib import asynccontextmanager
 
 import pytest
 import pytest_asyncio
@@ -321,6 +322,46 @@ async def test_probe_failure_never_blocks_start(monkeypatch):
         state = _State2()
 
     await h.stop_health_probes(_App2())  # must not raise
+
+
+@pytest.mark.asyncio
+async def test_with_health_probes_starts_after_boot_and_stops_before_return(monkeypatch):
+    calls = []
+
+    def fake_start(app):
+        calls.append(("start", app.state.config))
+        return "task-sentinel"
+
+    async def fake_stop(app):
+        calls.append(("stop", None))
+
+    monkeypatch.setattr(h, "start_health_probes", fake_start)
+    monkeypatch.setattr(h, "stop_health_probes", fake_stop)
+
+    @asynccontextmanager
+    async def inner_lifespan(app):
+        app.state.config = "configured"  # start_health_probes must see this
+        calls.append(("inner-boot", None))
+        yield "sentinel-value"
+        calls.append(("inner-shutdown", None))
+
+    class _State:
+        pass
+
+    class _App:
+        state = _State()
+
+    app = _App()
+    wrapped = h.with_health_probes(inner_lifespan)
+    async with wrapped(app) as value:
+        assert value == "sentinel-value"  # the original lifespan's yielded value passes through
+        assert app.state.health_probes == "task-sentinel"
+        assert calls == [("inner-boot", None), ("start", "configured")]
+
+    # stop_health_probes runs on the way out, before the wrapped lifespan's
+    # own shutdown code (an independent background task, safe to tear down
+    # in either order relative to the worker/store shutdown it wraps).
+    assert calls[-2:] == [("stop", None), ("inner-shutdown", None)]
 
 
 # --------------------------------------------------------------------------- #

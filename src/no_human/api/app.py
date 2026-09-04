@@ -173,9 +173,6 @@ async def lifespan(app: FastAPI):
     except Exception:
         pass
 
-    from ..integrations.health import start_health_probes  # boot + scheduled, advisory only
-    app.state.health_probes = start_health_probes(app)
-
     # Always start the embedded worker — board up = worker up.
     # CLI may override max_workers/poll_interval via app.state._worker_opts.
     from ..core.runtime import build_orchestrator
@@ -356,9 +353,6 @@ async def lifespan(app: FastAPI):
     with contextlib.suppress(asyncio.CancelledError):
         await stale_refresh_task
 
-    from ..integrations.health import stop_health_probes
-    await stop_health_probes(app)
-
     if worker_task and stop_event:
         stop_event.set()
         # `run_forever` asks every running attempt to checkpoint, then drains
@@ -383,8 +377,8 @@ async def lifespan(app: FastAPI):
 # a release that moved `__version__` and `pyproject.toml`, so `/openapi.json`
 # and `/docs` reported a version the build had left behind. A literal that only
 # a generated document shows is exactly the kind nobody notices is stale.
-app = FastAPI(title="no_human board", version=__version__, lifespan=lifespan)
-
+from ..integrations.health import with_health_probes
+app = FastAPI(title="no_human board", version=__version__, lifespan=with_health_probes(lifespan))
 app.add_middleware(
     CORSMiddleware,
     allow_origin_regex=LOOPBACK_ORIGIN_REGEX,  # loopback only: api/local_boundary.py

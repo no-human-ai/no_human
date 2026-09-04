@@ -29,6 +29,7 @@ import asyncio
 import logging
 import os
 import re
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from urllib.parse import urlsplit
@@ -367,3 +368,23 @@ async def ensure_fresh_before_poll(name: str, config: dict) -> None:
             log.warning("integration %s is FAILING: %s", name, result.detail)
     except Exception as exc:  # noqa: BLE001
         log.warning("ensure_fresh_before_poll(%s) failed: %s", name, exc)
+
+
+def with_health_probes(lifespan):
+    """Wrap an ASGI `lifespan` context manager so boot + scheduled health
+    probes start right after the wrapped lifespan's own startup has run
+    (in particular after ``app.state.config`` is set, which
+    `start_health_probes` reads) and stop during its shutdown. Lets
+    `api/app.py` wire this module in with a single-line change to the
+    `FastAPI(lifespan=...)` call, keeping ALL probe/scheduler logic here."""
+
+    @asynccontextmanager
+    async def wrapped(app):
+        async with lifespan(app) as value:
+            app.state.health_probes = start_health_probes(app)
+            try:
+                yield value
+            finally:
+                await stop_health_probes(app)
+
+    return wrapped
