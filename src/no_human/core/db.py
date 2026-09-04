@@ -2466,22 +2466,52 @@ class Store:
         )
         return dict(row) if row else None
 
+    async def latest_review_attempt(self, task_id: str) -> dict[str, Any] | None:
+        """The NEWEST attempt row that recorded a review verdict, or None if
+        no attempt ever recorded one.
+
+        Newest by ``(started_at, rowid)`` — NOT ``attempt_number``, for the
+        exact reason `latest_open_attempt` above documents. ``rowid`` is
+        exposed as ``_rowid`` (``SELECT *`` omits the rowid pseudo-column)
+        because callers compare recency against `latest_failed_attempt`'s
+        row, and attempts are never deleted so it is a stable insertion
+        order to compare on.
+        """
+        row = await self._fetchone(
+            "SELECT rowid AS _rowid, * FROM attempts WHERE task_id = ? "
+            "AND review_passed IS NOT NULL "
+            "ORDER BY started_at DESC, rowid DESC LIMIT 1", (task_id,))
+        return dict(row) if row else None
+
+    async def latest_failed_attempt(self, task_id: str) -> dict[str, Any] | None:
+        """The NEWEST attempt row with a non-empty ``failure_reason``, or
+        None if no attempt ever recorded one.
+
+        Same ``(started_at, rowid)`` recency as `latest_review_attempt`, so
+        the two can be compared directly to tell whether a task's most
+        recent event was a review verdict or a later, unrelated failure
+        (e.g. tests failing after review already PASSed). ``NULL`` and
+        ``''`` both collapse to absent, matching `latest_attempt_pr_url` /
+        `latest_attempt_branch` below — a blank reason quoted verbatim would
+        read as "last failure: " with nothing after it.
+        """
+        row = await self._fetchone(
+            "SELECT rowid AS _rowid, * FROM attempts WHERE task_id = ? "
+            "AND COALESCE(TRIM(failure_reason), '') <> '' "
+            "ORDER BY started_at DESC, rowid DESC LIMIT 1", (task_id,))
+        return dict(row) if row else None
+
     async def latest_review_verdict(self, task_id: str) -> int | None:
         """The NEWEST recorded review verdict for the task (1 = PASS, 0 =
         FAIL), or None if no attempt ever recorded one.
 
-        Newest by ``(started_at, rowid)`` — NOT ``attempt_number``: the live
-        DB holds duplicate and out-of-order numbers (see
-        `latest_open_attempt`), so ordering by number can hand back a verdict
-        from an earlier round. A later review FAIL must re-arm the lifetime
-        budget cap after an earlier PASS, so "latest", not "any PASS ever",
-        is what `orchestrator._mechanical_round` and `_check_lifetime_budget`
-        need here.
+        Delegates to `latest_review_attempt` so there is ONE ordering to
+        maintain — a later review FAIL must re-arm the lifetime budget cap
+        after an earlier PASS, so "latest", not "any PASS ever", is what
+        `orchestrator._mechanical_round` and `_check_lifetime_budget` need
+        here.
         """
-        row = await self._fetchone(
-            "SELECT review_passed FROM attempts WHERE task_id = ? "
-            "AND review_passed IS NOT NULL "
-            "ORDER BY started_at DESC, rowid DESC LIMIT 1", (task_id,))
+        row = await self.latest_review_attempt(task_id)
         return None if row is None else int(row["review_passed"])
 
     async def latest_attempt_pr_url(self, task_id: str) -> str:

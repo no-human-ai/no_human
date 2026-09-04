@@ -14,8 +14,11 @@ the cap.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
+import no_human.core.orchestrator as orch_mod
 from no_human.blockers import BlockerCategory
 from no_human.blockers.wake import WakeWatcher
 from no_human.core.bounds import Bounds
@@ -280,3 +283,146 @@ async def test_mechanical_rounds_still_count_their_tokens(store):
     assert total_attempts == 8
     assert total_tokens >= 500_000, (
         "the all-in raw total must still reflect the mechanical spend")
+
+
+async def test_a_post_review_failure_re_arms_the_cap(store):
+    """Third conjunct: a PASS-carrying round is mechanical only while no
+    NEWER attempt recorded a failure. attempt 9 fails (tests failed) after
+    attempt 8's PASS, with a live pr_conflict feedback entry still present —
+    the third conjunct alone must re-arm the cap. Control: without attempt
+    9, the existing pr_conflict exemption still holds."""
+    t = await _approval_task(store)
+    await _spend(store, t.id, attempts=7, last_verdict=None)
+    aid8 = await store.create_attempt(t.id, 8)
+    await store.update_attempt(
+        aid8, status="succeeded", tokens_used=1_000, review_passed=1)
+    await store.append_context_list(t.id, "send_back_feedback", {
+        "source": "pr_conflict",
+    })
+    fresh = await store.get_task(t.id)
+    orch = _orch(store)
+
+    # Control: without a newer failed attempt, the pr_conflict exemption holds.
+    assert await orch._mechanical_round(fresh) is True
+
+    aid9 = await store.create_attempt(t.id, 9)
+    await store.update_attempt(
+        aid9, status="failed", tokens_used=1_000, failure_reason="tests failed")
+    fresh = await store.get_task(t.id)
+
+    assert await orch._mechanical_round(fresh) is False
+
+    # `_budget_frozen_by_pass`'s shape 1 (parked in AWAITING_APPROVAL) reads a
+    # bare `latest_review_verdict == 1` and never consults `_mechanical_round`
+    # at all — by design (criterion 2's freeze), and explicitly out of scope
+    # to touch here. The live flow this test models (a pr_conflict rebase
+    # round) is already off AWAITING_APPROVAL by the time the gate runs
+    # (`wake._resume` flips it to IMPLEMENTING first, same as
+    # `test_a_non_mechanical_send_back_after_pass_still_caps_the_gate` mirrors
+    # below) — do the same here so the assertion actually exercises shape 2,
+    # the one the third conjunct lives in.
+    await store.set_status(fresh, TaskStatus.IMPLEMENTING, validate=False)
+    fresh = await store.get_task(t.id)
+
+    b = await orch._check_lifetime_budget(fresh)
+    assert b is not None
+    assert b.category is BlockerCategory.BUDGET_EXHAUSTED
+
+
+async def test_the_blocker_quotes_the_final_failure_not_the_last_verdict(store):
+    """AC3/AC4: alternating rounds to the cap — a review FAIL (attempt 7), a
+    review PASS (attempt 8), then a verdict-less failure (attempt 9, tests
+    failed after the PASS). The blocker must quote attempt 9's reason, not
+    attempt 7's (the newest VERDICT-carrying row is 8's PASS, which has no
+    failure_reason at all; the newest FAILED row is 9)."""
+    t = Task.new("alternating", repo_path="/tmp/x")
+    await store.create_task(t)
+    for n in range(1, 7):
+        aid = await store.create_attempt(t.id, n)
+        await store.update_attempt(aid, status="succeeded", tokens_used=1_000)
+    aid7 = await store.create_attempt(t.id, 7)
+    await store.update_attempt(
+        aid7, status="failed", tokens_used=1_000, review_passed=0,
+        failure_reason="review FAIL: missing test")
+    aid8 = await store.create_attempt(t.id, 8)
+    await store.update_attempt(
+        aid8, status="succeeded", tokens_used=1_000, review_passed=1)
+    aid9 = await store.create_attempt(t.id, 9)
+    await store.update_attempt(
+        aid9, status="failed", tokens_used=1_000,
+        failure_reason="tests failed after PASS")
+
+    b = await _orch(store)._check_lifetime_budget(t)
+    assert b is not None
+    assert b.category is BlockerCategory.BUDGET_EXHAUSTED
+    assert "tests failed after PASS" in b.evidence
+    assert "review FAIL: missing test" not in b.evidence
+
+
+async def test_a_human_gated_resume_after_a_post_review_failure_counts_against_the_cap(
+        store, tmp_path, monkeypatch):
+    """AC6: `_resume_human_gated` routes `mechanical=` through `_mechanical_round`
+    instead of a bare verdict stamp, so it re-arms the cap the same way any
+    other round does."""
+    # (i) helper level.
+    t = await _approval_task(store)
+    aid8 = await store.create_attempt(t.id, 8)
+    await store.update_attempt(
+        aid8, status="succeeded", tokens_used=1_000, review_passed=1)
+    fresh = await store.get_task(t.id)
+    orch = _orch(store)
+    assert await orch._mechanical_round(
+        fresh, require_mechanical_feedback=False) is True
+
+    aid9 = await store.create_attempt(t.id, 9)
+    await store.update_attempt(
+        aid9, status="failed", tokens_used=1_000, failure_reason="tests failed")
+    fresh = await store.get_task(t.id)
+    assert await orch._mechanical_round(
+        fresh, require_mechanical_feedback=False) is False
+
+    # (ii) call-site level. `_resume_human_gated` calls
+    # `self._finalize(task, repo, branch, base, commit, attempt_id, result,
+    # human_gated_resume=True)` — mirror that exact positional order so the
+    # stub actually stands in for it rather than raising a TypeError.
+    async def _fake_finalize(self, task, repo, branch, base, commit, attempt_id,
+                              result, **kw):
+        return "sentinel"
+
+    monkeypatch.setattr(orch_mod.Orchestrator, "_finalize", _fake_finalize)
+
+    for label, branch, expect in (
+        ("clean", "no-human/clean", 1),
+        ("post-failure", "no-human/postfail", 0),
+    ):
+        tt = await _approval_task(store, url=f"https://code.example.com/{label}")
+        aid = await store.create_attempt(tt.id, 8)
+        await store.update_attempt(
+            aid, status="succeeded", tokens_used=1_000, review_passed=1)
+        if label == "post-failure":
+            aid9b = await store.create_attempt(tt.id, 9)
+            await store.update_attempt(
+                aid9b, status="failed", tokens_used=1_000,
+                failure_reason="tests failed")
+        tt.context = (tt.context or {}) | {"base_branch": "main"}
+        await store.update_task(tt)
+
+        repo = SimpleNamespace(
+            checkout=lambda *_a, **_kw: None,
+            head_sha=lambda: "deadbeef",
+        )
+        o = _orch(store)
+        await o._resume_human_gated(
+            tt, repo, {"branch": branch, "base": "main", "hint": None})
+
+        # `list_attempts` orders by `attempt_number` ascending, not recency —
+        # and `_resume_human_gated` computes its own `attempt_number` as
+        # `len(list_attempts) + 1`, which lands BELOW the 8/9 rows this test
+        # seeded above, not after them. Find the row `_resume_human_gated`
+        # itself created by its `branch_name` stamp (`update_attempt(...,
+        # branch_name=branch, ...)`), unique per iteration, rather than
+        # trusting list order or position.
+        rows = await store.list_attempts(tt.id)
+        newest = next(r for r in rows if r.get("branch_name") == branch)
+        assert newest["mechanical_round"] == expect, (
+            f"{label}: expected mechanical_round == {expect}, got {newest}")

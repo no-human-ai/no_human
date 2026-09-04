@@ -1156,6 +1156,15 @@ def _infra_sdk_failure(result) -> str | None:
 # work that was already reviewed and about to land.
 _MECHANICAL_FEEDBACK_SOURCES = frozenset({"pr_conflict"})
 
+
+def _attempt_recency(row: dict) -> tuple[str, int]:
+    """Comparable recency key for an ``attempts`` row fetched via
+    `Store.latest_review_attempt` / `latest_failed_attempt` (both expose
+    ``_rowid``): same ``(started_at, rowid)`` ordering those queries use, so
+    two rows from either helper can be compared to tell which happened
+    later."""
+    return (str(row.get("started_at") or ""), int(row.get("_rowid") or 0))
+
 # One bounded round to write a MISSING artefact (the repro manifest) on the
 # SAME branch, when the gate WAIVED for lack of one — not a review round, so
 # it gets a small budget of its own rather than the attempt's full turn cap.
@@ -4297,26 +4306,46 @@ class Orchestrator:
         # (never fake done). 22.3: ≤2 distinct alternatives, then escalate.
         return await self._escalate_exhausted(task, repo, base_branch)
 
-    async def _mechanical_round(self, task: Task) -> bool:
+    async def _mechanical_round(
+        self, task: Task, *, require_mechanical_feedback: bool = True,
+    ) -> bool:
         """Is the round about to start a post-PASS MECHANICAL one — no code
         change to make, so it must not consume a lifetime attempt?
 
-        Requires BOTH, and the conjunction is what makes it safe in each
-        direction:
+        Requires ALL THREE, and the conjunction is what makes it safe:
+          * (when `require_mechanical_feedback`) the newest
+            ``send_back_feedback`` entry names a mechanical source
+            (`_MECHANICAL_FEEDBACK_SOURCES`) — a stale pr_conflict entry
+            cannot make a corrective round free on its own. Callers with no
+            ``send_back_feedback`` shape at all (a human-gated resume after
+            an external CI gate cleared, not a send-back) pass
+            ``require_mechanical_feedback=False`` to waive this conjunct —
+            they still get the other two, so a post-review failure re-arms
+            the cap for them exactly as it does for a send-back round.
           * the latest recorded review verdict is a PASS (so a review FAIL,
-            and any operator reject that records one, re-arms the counter),
+            and any operator reject that records one, re-arms the counter);
             and
-          * the newest ``send_back_feedback`` entry names a mechanical
-            source (`_MECHANICAL_FEEDBACK_SOURCES`) — a stale pr_conflict
-            entry cannot make a corrective round free, because the verdict
-            half fails once a newer round records a FAIL.
+          * no attempt NEWER than that PASS-carrying row recorded a
+            failure — either a later round entirely, or the PASS row itself
+            ending ``status == "failed"`` (review passed, then e.g. tests
+            failed before delivery). Either shape must re-arm the cap, not
+            silently ride the earlier PASS as "still mechanical".
         """
-        feedback = (task.context or {}).get("send_back_feedback") or []
-        if not feedback or not isinstance(feedback[-1], dict):
+        if require_mechanical_feedback:
+            feedback = (task.context or {}).get("send_back_feedback") or []
+            if not feedback or not isinstance(feedback[-1], dict):
+                return False
+            if feedback[-1].get("source") not in _MECHANICAL_FEEDBACK_SOURCES:
+                return False
+        row = await self.store.latest_review_attempt(task.id)
+        if row is None or int(row["review_passed"]) != 1:
             return False
-        if feedback[-1].get("source") not in _MECHANICAL_FEEDBACK_SOURCES:
+        if str(row.get("status")) == "failed":
             return False
-        return await self.store.latest_review_verdict(task.id) == 1
+        failed = await self.store.latest_failed_attempt(task.id)
+        if failed is not None and _attempt_recency(failed) > _attempt_recency(row):
+            return False
+        return True
 
     async def _budget_frozen_by_pass(self, task: Task) -> bool:
         """Is lifetime-budget enforcement frozen for the round about to run?
@@ -10027,10 +10056,19 @@ class Orchestrator:
         # Re-verification tick: the docstring above already states the change
         # was reviewed + tested before parking and verification is NOT
         # re-run here — provably no code changes, so a round resuming a
-        # PASSed task must not burn a lifetime attempt.
+        # PASSed task must not burn a lifetime attempt. Routed through
+        # `_mechanical_round` (not a bare `latest_review_verdict` stamp) so
+        # the third conjunct applies here too: a post-review failure since
+        # the PASS (e.g. tests failed after parking) re-arms the cap on this
+        # resume exactly as it would on any other round.
+        # `require_mechanical_feedback=False`: this flow has no
+        # `send_back_feedback` entry at all — a human cleared an external CI
+        # gate, not a send-back — so the default form would return False
+        # unconditionally and burn an attempt on every human-gated resume.
         attempt_id = await self.store.create_attempt(
             task.id, attempt_n,
-            mechanical=await self.store.latest_review_verdict(task.id) == 1)
+            mechanical=await self._mechanical_round(
+                task, require_mechanical_feedback=False))
         await self.store.update_attempt(attempt_id, branch_name=branch,
                                         commit_sha=repo.head_sha())
         commit = SimpleNamespace(files_changed=0, insertions=0, deletions=0,
@@ -14228,6 +14266,30 @@ class Orchestrator:
             f"{residual_text}. Raising the cap from the figure above is "
             "raising it from attempt-row spend, not from this task's total."
         )
+        # Quotes the last FAILED attempt's own `failure_reason` — NOT
+        # `latest_review_verdict`/`latest_review_attempt` — so a task whose
+        # final round failed WITHOUT recording a verdict (e.g. tests failed
+        # after an earlier round's review PASS) quotes THAT failure, not a
+        # stale verdict-carrying reason from an older round. Guarded the
+        # same fail-open way `_orphaned_ledger_residual` reads: diagnostics
+        # must never change this blocker's outcome.
+        read_failed = False
+        failed = None
+        try:
+            failed = await self.store.latest_failed_attempt(task.id)
+        except Exception as exc:  # noqa: BLE001 — diagnostics never block a task
+            log.warning(
+                "last failure not read for %s: %s", task.id[:8], exc)
+            read_failed = True
+        if read_failed:
+            evidence += " Last recorded failure: unavailable (read failed)."
+        elif failed is None:
+            evidence += " No attempt recorded a failure reason."
+        else:
+            reason = str(failed["failure_reason"]).strip()
+            if len(reason) > 400:
+                reason = reason[:400] + "…"
+            evidence += f" Last recorded failure: {reason}"
         # The raise is proportional to what the task has actually spent — a
         # human raising the budget buys roughly one more bounded loop, not
         # unbounded life. Rounded to 100k, not 1M: the caps are weighted now
