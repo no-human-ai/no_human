@@ -1,82 +1,62 @@
 # How I verified this — full log
 
-_Harness-captured record for task `bf0cfd72`, commit `9310de299aad80eab7a01e8514d6d2caa32c6d3d` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `bf0cfd72`, commit `1fdbefccdc7eebd7a1885a192fb34e30a13439bb` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ## How I verified this
 5 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
 
 ### test
-- `uv run pytest tests/test_structural_budget.py::test_no_frozen_entry_has_grown -q 2>&1 | tail -100`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/bf0cfd7270d241bfbb2c7c4c24b77a8b.39117.4a67fb2e uv run pytest tests/test_repo_discovery.py tests/test_repo_discovery_typed_root.py -q 2>&1 | tail -60`
 
 ```
-F                                                                        [100%]
-=================================== FAILURES ===================================
-________________________ test_no_frozen_entry_has_grown ________________________
-
-scanned = ({'agent/claude_backend.py:ClaudeBackend.stream': 407, 'blockers/landed_override.py:approve_landed_override': 315, 'bl... ...}, {'agent/guard.py': 2892, 'api/app.py': 5921, 'blockers/wake.py': 2740, 'cli/commands.py': 8423, ...}, 217, 3220)
-
-    def test_no_frozen_entry_has_grown(scanned):
-        function_lines, function_cc, file_lines, _, _ = scanned
-        checks = [
-            (function_lines, FROZEN_FUNCTION_LINES, MAX_
-[... 497 of 1,636 characters omitted from the middle ...]
-           assert ['api/app.py:...atchets down'] == []
-E             
-E             Left contains one more item: 'api/app.py: frozen 5919, now 5921 (+2); this budget only ratchets down'
-E             Use -v to get more diff
-
-tests/test_structural_budget.py:872: AssertionError
-=========================== short test summary info ============================
-FAILED tests/test_structural_budget.py::test_no_frozen_entry_has_grown - Asse...
-1 failed in 1.17s
-```  
-  _excerpt - 1,636 characters of output in total_
-
-- `uv run pytest tests/test_structural_budget.py -q 2>&1 | tail -30`
-
-```
-..................                                                       [100%]
-18 passed in 1.67s
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+Using CPython 3.12.13
+Creating virtual environment at: .venv
+   Building no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/bf0cfd7270d241bfbb2c7c4c24b77a8b.39117.4a67fb2e
+      Built no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/bf0cfd7270d241bfbb2c7c4c24b77a8b.39117.4a67fb2e
+Installed 65 packages in 97ms
+.........................................................                [100%]
+57 passed in 8.80s
 ```
 
-- `uv run pytest tests/test_repo_discovery*.py tests/test_onboarding_api.py -q 2>&1 | tail -60`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/bf0cfd7270d241bfbb2c7c4c24b77a8b.39117.4a67fb2e uv run pytest tests/test_onboarding_api.py tests/test_structural_budget.py -q 2>&1 | tail -40`
 
 ```
-........................................................................ [ 80%]
-..................                                                       [100%]
-90 passed in 6.41s
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+...................................................                      [100%]
+51 passed in 4.24s
 ```
 
-- `uv run pytest tests/ -m repoguard -q 2>&1 | tail -40`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/bf0cfd7270d241bfbb2c7c4c24b77a8b.39117.4a67fb2e uv run pytest tests/test_repo_discovery.py tests/test_repo_discovery_typed_root.py -q 2>&1 | tail -10`
 
 ```
-............................s.s.s.s.s.s.s.s.s.s......................... [ 53%]
-.....................s.......................s................           [100%]
-=============================== warnings summary ===============================
-tests/test_local_boundary_guard.py:17
-  /Users/eyalgolan/.<redacted>/worktrees/bf0cfd7270d241bfbb2c7c4c24b77a8b.9318.bf62bf1d/tests/test_local_boundary_guard.py:17: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
-    from starlette.testclient import TestClient
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+.........................................................                [100%]
+57 passed in 6.21s
+```
 
-src/<redacted>/testing/test_layers.py:35
-  /Users/eyalgolan/.<redacted>/worktrees/bf0cfd7270d241bfbb2c7c4c24b77a8b.9
-[... 204 of 1,343 characters omitted from the middle ...]
-
-
-src/<redacted>/testing/test_layers.py:89
-  /Users/eyalgolan/.<redacted>/worktrees/bf0cfd7270d241bfbb2c7c4c24b77a8b.9318.bf62bf1d/src/<redacted>/testing/test_layers.py:89: PytestCollectionWarning: cannot collect test class 'TestPlan' because it has a __init__ constructor (from: tests/test_test_layers.py)
-    @dataclass
-
--- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-122 passed, 13 skipped, 11273 deselected, 3 warnings in 4.53s
-```  
-  _excerpt - 1,329 characters of output in total_
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/bf0cfd7270d241bfbb2c7c4c24b77a8b.9318.bf62bf1d uv run pytest tests/test_repo_discovery*.py tests/test_onboarding_api.py tests/test_structural_budget.py -q 2>&1 | tail -20`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/bf0cfd7270d241bfbb2c7c4c24b77a8b.39117.4a67fb2e uv run pytest -q -n 4 tests/test_repo_discovery.py tests/test_repo_discovery_typed_root.py tests/test_onboarding_api.py tests/test_structural_budget.py 2>&1 | tail -40`
 
 ```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+bringing up nodes...
+bringing up nodes...
+
 ........................................................................ [ 66%]
 ....................................                                     [100%]
-108 passed in 6.97s
+108 passed in 5.71s
+```
+
+- `cd /Users/eyalgolan/.<redacted>/worktrees/bf0cfd7270d241bfbb2c7c4c24b77a8b.39117.4a67fb2e uv run pytest -q -n 4 tests/test_repo_discovery.py tests/test_repo_discovery_typed_root.py tests/test_onboarding_api.py tests/test_structural_budget.py 2>&1 | tail -40`
+
+```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+bringing up nodes...
+bringing up nodes...
+
+........................................................................ [ 66%]
+....................................                                     [100%]
+108 passed in 7.12s
 ```
 
 
