@@ -45,10 +45,19 @@ def _make_orchestrator(events, tmp_path, *, mechanical: bool):
     async def _latest_review_verdict(*_a, **_kw):
         return verdict
 
+    async def _latest_review_attempt(*_a, **_kw):
+        return {"review_passed": verdict, "status": "succeeded",
+                "started_at": "2026-01-01 00:00:00", "_rowid": 1}
+
+    async def _latest_failed_attempt(*_a, **_kw):
+        return None
+
     orch.store = SimpleNamespace(
         update_task=_async_noop,
         list_verification_receipts=_empty_receipts,
         latest_review_verdict=_latest_review_verdict,
+        latest_review_attempt=_latest_review_attempt,
+        latest_failed_attempt=_latest_failed_attempt,
     )
 
     repo = SimpleNamespace(

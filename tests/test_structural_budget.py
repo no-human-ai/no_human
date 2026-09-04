@@ -483,7 +483,21 @@ FROZEN_FILE_LINES = {
     # Re-home merge 2026-09-04 (279c03c5): the WIP-checkpoint resume
     # correction lands on the same tree as the chain above. Measured
     # on this merged tree with the scanner below, never summed.
-    "core/orchestrator.py": 21502,
+    # 21502 -> 21564 (+62, `len(Path(...).read_text().splitlines())` — the
+    # scanner's own metric, which counts 3 above `wc -l` for this
+    # pre-existing file, same discrepancy noted elsewhere in this file):
+    # 2026-09-04 lifetime-cap follow-ups — the `_attempt_recency`
+    # module-level helper; `_mechanical_round` gained the
+    # `require_mechanical_feedback` kwarg and its third conjunct (no attempt
+    # newer than the PASS-carrying row recorded a failure, via the new
+    # `Store.latest_failed_attempt`); `_budget_exhausted_blocker` now quotes
+    # the newest FAILED attempt's `failure_reason` (not the newest verdict-
+    # carrying attempt) via a fail-open read; `_resume_human_gated`'s
+    # `mechanical=` stamp routes through `_mechanical_round(...,
+    # require_mechanical_feedback=False)` instead of a bare
+    # `latest_review_verdict(...) == 1` check. Measured on this tree with the
+    # scanner below, never summed by hand.
+    "core/orchestrator.py": 21564,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.
@@ -744,7 +758,13 @@ FROZEN_FILE_LINES = {
     # `awaiting_approval` other than `done` (write-once, all three CAS
     # branches), the in-process mirror, and the docstring explaining the
     # contract. Measured on this tree with the scanner below.
-    "core/db.py": 5052,
+    # 5052 -> 5082 (+30): 2026-09-04 lifetime-cap follow-ups —
+    # `latest_review_attempt` (the shared NEWEST-verdict-row query) and
+    # `latest_failed_attempt` (the shared NEWEST-failed-row query) added;
+    # `latest_review_verdict` rewritten to delegate to
+    # `latest_review_attempt` so there is one ordering to maintain. Measured
+    # on this tree with the scanner below, never summed by hand.
+    "core/db.py": 5082,
     # +71: set_local_backend_fields — the config-write helper for the Settings
     # pane's local coder-backend fields (llm.local_model / llm.local_base_url).
     # +75: Codex account config helpers.
