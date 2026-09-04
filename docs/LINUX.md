@@ -166,7 +166,10 @@ every push to `main`, opt-in `linux` label on PRs, and `workflow_dispatch`
 ONLY with the `linux_release` input — a bare dispatch is the nightly guards'
 handle and neither runs this job nor produces packages):
 
-1. `uv sync --frozen`, `npm ci` in `web/` and `desktop/` (a FULL desktop
+1. `uv sync --frozen` (15-minute bound with a 2-attempt internal-timeout
+   retry — a cache-cold sync measured 7.32s locally on 2026-09-04; the uv
+   cache itself is keyed by `uv.lock` via `setup-uv`'s `enable-cache`), then
+   `npm ci` in `web/` and `desktop/` (a FULL desktop
    install — electron-builder needs the Electron binary).
 2. `bash packaging/build-installer.sh` — the frozen server, with every gate
    the macOS build has (0 `.py`, no `ci_gate`, no private term inventory, no
@@ -211,7 +214,10 @@ handle and neither runs this job nor produces packages):
 Cost: the heaviest ubuntu job in the file (`uv sync`, two `npm ci`, a
 PyInstaller freeze, an Electron package, two Xvfb app runs) — expected in the
 15–25 billed-minute range per run **[unverified until §6's "billed minutes"
-row is filled]**; it runs on main pushes and opt-in PRs, like `windows`, for
+row is filled]**; a warm `uv sync` (cache hit, keyed by `uv.lock`) does not
+change this, it only raises the ceiling a stalled/cold sync can survive
+before the step fails loudly instead of exhausting the job's 45-minute
+budget. It runs on main pushes and opt-in PRs, like `windows`, for
 the same billing reason. `ubuntu-22.04` is a pinned hosted-image label:
 if GitHub retires that image the job stops scheduling rather than failing —
 re-check the runner-image retirement schedule before this becomes the

@@ -49,6 +49,14 @@ All notable changes to no_human. The format follows
   silently returning nothing; the fetch is scoped to the controller's host,
   port and path, not its host alone.
 
+### Fixed
+- The `linux` CI job's `Install dependencies` step (`uv sync --frozen`) was
+  chronically timing out at its 5-minute bound before the P2 Linux bundle
+  could ever be validated green. The bound is now 15 minutes with a
+  2-attempt retry whose own internal per-attempt timeout fires (and prints
+  the real `uv` error plus a `uv lock --check` drift probe) before GitHub's
+  step timeout can turn a stall into an opaque `cancelled` job.
+
 ## [0.1.9] — 2026-09-01
 
 The evidence release. PR bodies shrink to final results with the full receipts

@@ -808,6 +808,11 @@ jobs:
       # A `uses:` step has no shell to wrap in a retry loop, and setup-uv
       # already handles its own cache/download retries internally — a bound
       # is the only meaningful control here.
+      # THIS is the uv-cache-keyed-by-uv.lock step (a hash of uv.lock plus
+      # runner OS/arch/uv version) -- it already restores/saves
+      # $UV_CACHE_DIR via actions/cache internally. Do not re-add a second
+      # actions/cache step for the same directory: two save attempts for one
+      # path race each other and make the restore order nondeterministic.
       - name: Install uv
         uses: astral-sh/setup-uv@v6
         timeout-minutes: 3
@@ -819,13 +824,48 @@ jobs:
       # exact path. pyinstaller is in the `dev` dependency-group.
       # uv sync is idempotent (it converges the venv to uv.lock), so a bounded
       # retry is safe.
+      #
+      # timeout-minutes=15: a cache-cold `uv sync --frozen` measured 7.32s
+      # locally on 2026-09-04 (network fetch + extraction of 65 packages;
+      # `uv lock --check` resolved in 3ms, so lock resolution is not the
+      # cost and the ticket's lock-drift hypothesis is ruled out). This
+      # sandbox's registry path cannot reproduce the slow/contended registry
+      # a GitHub-hosted runner can hit -- which is what actually burned the
+      # previous 5-minute bound -- so 15 is the ticket's own suggested upper
+      # bound, not a number this measurement alone would justify; it buys
+      # real headroom for a genuinely slow runner while an internal
+      # per-attempt bound (below) still fires first on a true stall.
       - name: Install dependencies
-        timeout-minutes: 5
+        timeout-minutes: 15
         run: |
-          n=1
-          until uv sync --frozen; do
-            if [ "$n" -ge 2 ]; then echo "uv sync --frozen failed on both attempts"; exit 1; fi
-            n=$((n + 1)); sleep 15
+          set -uo pipefail
+          attempt=1
+          max=2
+          per_attempt=6m
+          rc=0
+          while :; do
+            log="$RUNNER_TEMP/uv-sync-$attempt.log"
+            set +e
+            timeout --signal=TERM --kill-after=30s "$per_attempt" uv sync --frozen 2>&1 | tee "$log"
+            rc=${PIPESTATUS[0]}
+            set -e
+            [ "$rc" -eq 0 ] && break
+            if [ "$attempt" -ge "$max" ]; then
+              echo "::error::uv sync --frozen failed on all $max attempts (last exit=$rc)"
+              if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
+                echo "::error::final attempt exceeded the per-attempt bound of $per_attempt with no uv error surfaced -- this is a stall, not a resolution failure"
+              fi
+              echo "----- last 60 lines of the final attempt log -----"
+              tail -n 60 "$log"
+              echo "----- lock drift check (uv lock --check) -----"
+              if ! uv lock --check; then
+                echo "::error::uv.lock is out of date against pyproject.toml"
+              fi
+              exit "$rc"
+            fi
+            echo "::warning::uv sync attempt $attempt failed (exit=$rc); retrying after backoff"
+            sleep $((15 * attempt))
+            attempt=$((attempt + 1))
           done
 
       - name: Install the board's dependencies

@@ -22,7 +22,14 @@ WORKFLOW_PATH = Path(__file__).resolve().parent.parent / ".github" / "workflows"
 # PR body/plan commit to for each.
 EXPECTED_TIMEOUTS = {
     "Install uv": 3,
-    "Install dependencies": 5,
+    # 15, not 5: a cache-cold `uv sync --frozen` measured 7.32s locally on
+    # 2026-09-04 (`uv lock --check` resolved in 3ms -- not lock drift). The
+    # prior 5-minute bound was chronically hit by a GitHub-runner-only
+    # registry/network stall this sandbox cannot reproduce; 15 is the
+    # ticket's own suggested ceiling and gives real headroom while the
+    # step's internal per-attempt bound still fires before it (see
+    # tests/test_ci_uv_sync_install_step.py).
+    "Install dependencies": 15,
     "apt lists + Xvfb": 3,
     "Install the .deb the way a user would": 5,
     "Install the Claude Code CLI the way a user would": 5,
