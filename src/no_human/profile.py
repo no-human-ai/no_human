@@ -102,6 +102,12 @@ class ProjectProfile:
     #                              attempt's declared plan files are "UI
     #                              work" — only then does the prompt block
     #                              appear.
+    #   build_cmd: str           - optional; run in the worktree by `dev_server`
+    #                              immediately BEFORE `start_cmd`, and only when a
+    #                              server is about to be booted. `&&`-separated
+    #                              segments, each shlex-split and run shell=False.
+    #                              A failure/timeout is a DISCLOSED walk skip.
+    #   build_timeout_s: int     - whole-chain budget (default 300), clamped [1,3600].
     ui_evidence: dict[str, Any] = field(
         default_factory=lambda: {
             "enabled": False,

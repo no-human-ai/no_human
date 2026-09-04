@@ -20474,16 +20474,24 @@ SIX of them read a checkpoint and TWO do not — but do
             # out of this section. A `boot-failed` dev server names the URL
             # it never answered at instead — more useful than the walk's own
             # generic "not reachable" reason, and still sanitized the same way.
-            # `srv.cause` picks which of two sentences applies: `"timeout"`
-            # (spawned, polled, never answered — the original, byte-identical
-            # sentence) vs `"failed-to-start"` (never became a polling server
-            # at all — non-loopback refusal, unparsable start_cmd, or a spawn
-            # OSError). An empty/unknown `cause` falls back to the timeout
+            # `srv.cause` picks which sentence applies: `"timeout"` (spawned,
+            # polled, never answered — the original, byte-identical sentence)
+            # vs `"failed-to-start"` (never became a polling server at all —
+            # non-loopback refusal, unparsable start_cmd, or a spawn OSError)
+            # vs `"build-timeout"`/`"build-failed"` (the optional `build_cmd`
+            # never finished, or exited nonzero, BEFORE `start_cmd` was ever
+            # spawned). An empty/unknown `cause` falls back to the timeout
             # sentence so an older/None-ish outcome still renders as before.
             # `srv.detail` (the log tail) is still never rendered here.
             shutil.rmtree(out_dir, ignore_errors=True)
             if srv is not None and srv.mode == "boot-failed":
-                if srv.cause == "failed-to-start":
+                if srv.cause == "build-timeout":
+                    reason = ("the UI build command timed out before the "
+                               f"dev server started ({srv.mode})")
+                elif srv.cause == "build-failed":
+                    reason = (f"the UI build command failed (exit {srv.exit_code}) "
+                               f"before the dev server started ({srv.mode})")
+                elif srv.cause == "failed-to-start":
                     reason = (f"the dev server failed to start for {srv.base_url} "
                               f"({srv.mode})")
                 else:

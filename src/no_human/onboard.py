@@ -187,6 +187,24 @@ _DEV_SERVER_PORTS = {
 }
 
 
+_WEB_BUILD_CMD = "npm --prefix web ci && npm --prefix web run build"
+
+
+def _detect_web_build_cmd(repo: Path) -> str | None:
+    """`web/package.json` declaring a `build` script -> the ci+build chain, so a
+    FRESH worktree (no node_modules, gitignored `web/dist`) still has a UI to
+    serve. Missing file / bad JSON / no build script -> None (no key at all)."""
+    pkg = repo / "web" / "package.json"
+    try:
+        data = json.loads(_read_text(pkg) or "{}")
+    except (OSError, json.JSONDecodeError):
+        return None
+    scripts = data.get("scripts") or {}
+    if "build" not in scripts:
+        return None
+    return _WEB_BUILD_CMD
+
+
 def detect_dev_server(repo_path: str | Path, data: dict[str, Any] | None = None) -> dict[str, Any] | None:
     """Detect a `npm run dev` convention from a repo's own package.json.
 
@@ -215,13 +233,17 @@ def detect_dev_server(repo_path: str | Path, data: dict[str, Any] | None = None)
     if framework is None:
         return None
     port = _DEV_SERVER_PORTS[framework]
-    return {
+    out = {
         "start_cmd": "npm run dev",
         "base_url": f"http://localhost:{port}",
         "port": port,
         "framework": framework,
         "source": "package.json:scripts.dev",
     }
+    build_cmd = _detect_web_build_cmd(repo)
+    if build_cmd:
+        out["build_cmd"] = build_cmd
+    return out
 
 
 class DeclarationDeriver:
@@ -665,13 +687,16 @@ def ui_evidence_suggestion(
         "means no_human will RUN this command to start your dev server "
         "during visual-proof walks (and stop it after) — enable?"
     )
-    return {
+    suggestion = {
         "start_cmd": dev_server["start_cmd"],
         "base_url": dev_server["base_url"],
         "port": dev_server["port"],
         "framework": dev_server["framework"],
         "gap": gap,
     }
+    if dev_server.get("build_cmd"):
+        suggestion["build_cmd"] = dev_server["build_cmd"]
+    return suggestion
 
 
 def apply_ui_evidence_suggestion(profile: ProjectProfile, suggestion: dict[str, Any]) -> ProjectProfile:
@@ -684,6 +709,8 @@ def apply_ui_evidence_suggestion(profile: ProjectProfile, suggestion: dict[str, 
     ui["enabled"] = True
     ui["start_cmd"] = suggestion["start_cmd"]
     ui["base_url"] = suggestion["base_url"]
+    if suggestion.get("build_cmd"):
+        ui["build_cmd"] = suggestion["build_cmd"]
     profile.ui_evidence = ui
     return profile
 

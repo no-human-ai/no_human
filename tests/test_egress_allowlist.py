@@ -859,19 +859,27 @@ ALLOWLIST: dict[str, dict[str, Allowed]] = {
 
     "testing/ui_evidence.py": {
         "exec:<dynamic>": Allowed(
-            "two spawns, both loopback-only: `dev_server` spawns the "
-            "profile's OWN `ui_evidence.start_cmd` in the attempt's "
-            "worktree so the walk has something to walk (kills the process "
-            "group afterwards); `hermetic_backend` separately spawns an "
-            "ISOLATED `nh start` (the existing command, no new CLI surface) "
-            "under a throwaway `HOME`/`NO_HUMAN_HOME` on an ephemeral port, "
-            "so a walk step that clicks Save/Reset-to-defaults can never "
-            "write into the operator's real `~/.no_human/config.yaml` — "
-            "torn down (killed, `HOME` rmtree'd) every time",
+            "two or three spawns, all loopback-only/worktree-local: "
+            "`dev_server` spawns the profile's OWN `ui_evidence.start_cmd` "
+            "in the attempt's worktree so the walk has something to walk "
+            "(kills the process group afterwards) — and, when the profile "
+            "also sets `ui_evidence.build_cmd`, runs that FIRST, in the "
+            "same worktree, `shell=False`, one `subprocess.run` per "
+            "`&&`-separated segment, with a hard timeout "
+            "(`build_timeout_s`, default 300s) — a build failure/timeout "
+            "never spawns `start_cmd` at all, it is a disclosed walk skip; "
+            "`hermetic_backend` separately spawns an ISOLATED `nh start` "
+            "(the existing command, no new CLI surface) under a throwaway "
+            "`HOME`/`NO_HUMAN_HOME` on an ephemeral port, so a walk step "
+            "that clicks Save/Reset-to-defaults can never write into the "
+            "operator's real `~/.no_human/config.yaml` — torn down "
+            "(killed, `HOME` rmtree'd) every time",
             _CFG + "ui_evidence.enabled — and, past that, `dev_server` only "
             "when the repo's own profile sets a `start_cmd` (absent from "
             "DEFAULT_CONFIG: it is a per-repo profile field, empty by "
-            "default) and the manifest base_url is loopback; "
+            "default) and the manifest base_url is loopback; `build_cmd` "
+            "only runs when set AND a server is genuinely about to be "
+            "booted (nothing pre-existing at that base_url); "
             "`hermetic_backend` runs whenever the manifest has a base_url at "
             "all — it is the harness's own throwaway backend, not something "
             "a profile configures"),

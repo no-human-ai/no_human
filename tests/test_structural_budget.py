@@ -354,7 +354,12 @@ FROZEN_FILE_LINES = {
     # cannot bind to the hermetic target, DISCLOSES and still runs the walk
     # instead of skipping it. Measured with the scanner below, never summed
     # by hand.
-    "core/orchestrator.py": 21191,
+    # 21191 -> 21198 (+7): `_maybe_capture_ui_evidence`'s `boot-failed`
+    # reason branch gains two causes (`"build-timeout"`/`"build-failed"`) so
+    # a `ui_evidence.build_cmd` failure/timeout names the build instead of
+    # falling through to the generic dev-server sentence. Measured with the
+    # scanner below, never summed by hand.
+    "core/orchestrator.py": 21198,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.
