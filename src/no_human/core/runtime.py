@@ -61,8 +61,15 @@ def assert_task_backend_usable(name: str | None, config: dict[str, Any] | None) 
                 "not found. Install it (npm install -g @openai/codex) or file "
                 "the task without --backend.")
     elif name == "local":
+        from ..agent.backend import BackendUnavailable
         from ..config import assert_local_backend_mode
-        assert_local_backend_mode(((config or {}).get("llm") or {}).get("local_base_url"))
+        llm_cfg = (config or {}).get("llm") or {}
+        assert_local_backend_mode(llm_cfg.get("local_base_url"))
+        if not str(llm_cfg.get("local_model") or "").strip():
+            raise BackendUnavailable(
+                "this task asked for `--backend local` but `llm.local_model` "
+                "is not set. Set it in config.yaml: llm: local_model: <the "
+                "model id the local server exposes>")
 
 
 def build_orchestrator(config, store: Store, *, event_sink: Any = None,

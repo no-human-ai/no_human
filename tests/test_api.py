@@ -4098,9 +4098,20 @@ async def test_board_pause_direct_park_carries_the_checkpoint(client, store):
 
 
 @pytest.mark.asyncio
-async def test_create_task_records_a_supported_backend_and_refuses_an_unknown_one(client, store):
+async def test_create_task_records_a_supported_backend_and_refuses_an_unknown_one(
+        client, store, monkeypatch):
     """Public issue #5: the board's backend field is a real per-task switch,
-    validated at intake against the factory's own tuple."""
+    validated at intake against the factory's own tuple.
+
+    Made available same as `tests/test_per_task_backend.py`'s credential
+    tests: this now also runs the [re-home] availability preflight
+    (`describe_backend` -> `core.runtime.assert_task_backend_usable`), so an
+    `OPENAI_API_KEY`-less, CLI-less install would otherwise 422 here on a
+    DIFFERENT, unrelated reason (no credential) than the one under test (a
+    typo'd backend name)."""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-not-a-real-key")
+    monkeypatch.setattr(
+        "no_human.agent.codex_backend.find_codex_cli", lambda explicit=None: "/stub/codex")
     r = await client.post("/api/tasks", json={"title": "On codex", "backend": "codex"})
     assert r.status_code == 201, r.text
     task = await store.get_task(r.json()["id"])
