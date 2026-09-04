@@ -202,7 +202,7 @@ FROZEN_FUNCTION_LINES = {
     # (task bf413cc6): two new refusal guards + the DONE branch. The growth
     # was reviewed on its merits; frozen here as its landing baseline.
     "blockers/landed_override.py:approve_landed_override": 315,
-    "core/metrics.py:compute_metrics": 334,  # +21: PR #869 cost_usd_total server-side pricing
+    "core/metrics.py:compute_metrics": 346,  # +12: tokens_total (SCRUM re-home) sibling of cost_usd_total
     # NEW (324, > 300): mechanical resolution extended to cover
     # `tests/test_structural_budget.py` FROZEN_* numeric-only conflicts --
     # the new budget-hunk branch in the worktree merge-step loop, the

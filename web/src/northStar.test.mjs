@@ -25,10 +25,11 @@ test("cost/PR only shows once something merged; cache share inverts", () => {
   // The API prices the lifetime figure server-side now (core/metrics.py's cost_usd_total,
   // core/cost.py's attempts_cost) — this tile just divides that number by prs_merged, so the
   // fixture sets cost_usd_total directly rather than reconstructing it from token buckets.
+  // api_key mode: this is the only mode where the dollar tile renders at all (SCRUM re-home).
   const t = northStarTiles({
     prs_merged: 2, cost_usd_total: 6.00, cost_model_total: "claude-sonnet-5",
     cache_economics: { creation_share: 0.0335 },
-  });
+  }, "api_key");
   const cost = t.find((x) => x.label === "Cost / merged PR");
   assert.equal(cost.value, "$3.00");
   assert.match(cost.sub, /\$6\.00 spent · 2 merged/);
@@ -36,7 +37,7 @@ test("cost/PR only shows once something merged; cache share inverts", () => {
   assert.equal(cache.value, "97%");   // 1 - 0.0335
   assert.equal(cache.tone, "good");
   // no merge → a dash, not a misleading number
-  const t2 = northStarTiles({ prs_merged: 0, cost_usd_total: 5000 });
+  const t2 = northStarTiles({ prs_merged: 0, cost_usd_total: 5000 }, "api_key");
   assert.equal(t2.find((x) => x.label === "Cost / merged PR").value, "—");
 });
 
@@ -49,19 +50,19 @@ test("the cost per merged PR is the LIFETIME cost over merged PRs — not tokens
   const tiles = northStarTiles({
     prs_merged: 13, prs_opened: 17, tokens_per_pr: 9_992_527,
     cost_usd_total: 73.58, cost_model_total: "claude-sonnet-5",
-  });
+  }, "api_key");
   const cost = tiles.find((t) => t.label === "Cost / merged PR");
   assert.equal(cost.value, "$5.66");            // NOT $3.93 (split model), NOT $29.98 (fresh-rate)
   assert.match(cost.sub, /\$73\.58 spent · 13 merged/);
 });
 
 test("no token data → the cost tile says so rather than guessing", () => {
-  const tiles = northStarTiles({ prs_merged: 13 });
+  const tiles = northStarTiles({ prs_merged: 13 }, "api_key");
   assert.equal(tiles.find((t) => t.label === "Cost / merged PR").value, "—");
 });
 
 test("no measured cache split → the cost tile says so rather than guessing", () => {
-  const tiles = northStarTiles({ prs_merged: 13, tokens_per_pr: 9_992_527 });
+  const tiles = northStarTiles({ prs_merged: 13, tokens_per_pr: 9_992_527 }, "api_key");
   const cost = tiles.find((t) => t.label === "Cost / merged PR");
   assert.equal(cost.value, "—");
 });
@@ -72,7 +73,7 @@ test("volume tiles are neutral; only tiles with a real threshold carry colour", 
     prs_merged: 13, prs_opened: 17, tokens_per_pr: 1_000_000,
     review_pass: 42, review_fail: 17,
     cache_economics: { creation_share: 0.03 },
-  });
+  }, "api_key");
   const tone = (label) => tiles.find((t) => t.label === label)?.tone;
   assert.equal(tone("PRs merged"), "neutral", "a raw count has no threshold — green meant 'non-zero'");
   assert.equal(tone("Cost / merged PR"), "neutral", "cost is volume, not quality");
@@ -90,7 +91,7 @@ test("the per-PR tile and the lifetime tile derive from the same cost — they c
     prs_merged: 13, prs_opened: 17,
     cost_usd_total: 73.58, cost_model_total: "claude-sonnet-5",
   };
-  const tiles = northStarTiles(metrics);
+  const tiles = northStarTiles(metrics, "api_key");
   const perPr = tiles.find((t) => t.label === "Cost / merged PR");
   const lifetime = lifetimeCost(metrics);          // what the Token Usage tile renders
   assert.equal(fmtCost(lifetime), "$73.58");
@@ -103,7 +104,10 @@ test("no cost_usd_total (an un-restarted server or an install with no attempts) 
   const metrics = { prs_merged: 13 };
   assert.equal(lifetimeCost(metrics), null);
   assert.equal(fmtCost(lifetimeCost(metrics)), "—");
-  assert.equal(northStarTiles(metrics).find((t) => t.label === "Cost / merged PR").value, "—");
+  assert.equal(
+    northStarTiles(metrics, "api_key").find((t) => t.label === "Cost / merged PR").value,
+    "—",
+  );
 });
 
 // The per-attempt distribution is a SIBLING tile of the fleet "Cache reuse" tile, not
@@ -132,4 +136,41 @@ test("cache-read-share distribution absent → the tile reads '—', no crash", 
   assert.ok(perAttempt);
   assert.equal(perAttempt.value, "—");
   assert.equal(perAttempt.sub, "no data");
+});
+
+// SCRUM re-home: subscription (flat-fee) mode — the default, and any absent/unrecognized
+// authMode — must never render a dollar figure for the second tile. Only api_key (BYO) mode
+// gets "Cost / merged PR"; every other mode gets "Tokens / merged PR" with no `$` anywhere.
+test("subscription mode (and no authMode at all) renders tokens, not dollars, for the 2nd tile", () => {
+  const metrics = {
+    prs_merged: 2, tokens_total: 500_000, cost_usd_total: 6.00,
+    cost_model_total: "claude-sonnet-5",
+  };
+  for (const authMode of [undefined, null, "subscription", "bogus"]) {
+    const tiles = northStarTiles(metrics, authMode);
+    assert.equal(tiles.find((t) => t.label === "Cost / merged PR"), undefined,
+      `authMode=${authMode} must not render a dollar-labelled tile`);
+    const tokenTile = tiles.find((t) => t.label === "Tokens / merged PR");
+    assert.ok(tokenTile, `authMode=${authMode} must render the token tile`);
+    assert.equal(tokenTile.value, "250.0k");
+    assert.match(tokenTile.sub, /500\.0k used · 2 merged/);
+    assert.doesNotMatch(tokenTile.value + tokenTile.sub, /\$/, "no dollar figure anywhere");
+  }
+});
+
+test("api_key mode still renders the dollar tile, with fmtCost output", () => {
+  const tiles = northStarTiles({
+    prs_merged: 2, tokens_total: 500_000, cost_usd_total: 6.00,
+    cost_model_total: "claude-sonnet-5",
+  }, "api_key");
+  assert.equal(tiles.find((t) => t.label === "Tokens / merged PR"), undefined);
+  const cost = tiles.find((t) => t.label === "Cost / merged PR");
+  assert.equal(cost.value, "$3.00");
+});
+
+test("subscription mode: no merge yet vs no token data yet are distinguished", () => {
+  const noMerge = northStarTiles({ prs_merged: 0, tokens_total: 500_000 });
+  assert.equal(noMerge.find((t) => t.label === "Tokens / merged PR").sub, "no merge yet");
+  const noTokens = northStarTiles({ prs_merged: 5 });
+  assert.equal(noTokens.find((t) => t.label === "Tokens / merged PR").sub, "no token data yet");
 });

@@ -360,6 +360,18 @@ async def compute_metrics(store: Store) -> dict[str, Any]:
         # attempts" vs "attempts spent $0" distinction as TaskOut.cost_usd.
         "cost_usd_total": cost_usd_total,
         "cost_model_total": cost_model_total,
+        # The token-basis sibling of cost_usd_total: the SAME nine buckets
+        # (coder/reviewer/aux x used+cache_creation+cache_read) attempts_cost
+        # prices, summed instead of priced. Subscription-mode surfaces read
+        # this instead of a dollar estimate (a flat-fee plan pays nothing per
+        # token, so a $ figure there is a rate estimate, not real spend). An
+        # int, always — 0 (not None) for an install with no attempts, unlike
+        # cost_usd_total: a token COUNT of zero is honest, a $0 estimate is not.
+        "tokens_total": (
+            total_tokens + total_cache_read + sum_creation
+            + rev_used + rev_creation + rev_read
+            + aux_used + aux_creation + aux_read
+        ),
         # Per-role burn across the whole install. `by_tier` beside it answers
         # a different question (which MODEL ran, from `attempts.models`); this
         # one answers which ROLE spent, which is what a cost target is set
