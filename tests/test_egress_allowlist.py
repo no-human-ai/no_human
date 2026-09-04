@@ -736,6 +736,23 @@ ALLOWLIST: dict[str, dict[str, Allowed]] = {
             _ON + "runs whenever a task carries env_setup/env_teardown; the "
                   "content is the task author's, not ours"),
     },
+    "core/web_build.py": {
+        # `rebuild()` loops `for argv in _BUILD_ARGVS: run(argv, ...)` — the
+        # analyzer sees argv bound by a loop, not a literal at the call site,
+        # so it reports `<dynamic>` even though both argvs are the fixed,
+        # hardcoded module-level tuple `(["npm", "--prefix", "web", "ci"],
+        # ["npm", "--prefix", "web", "run", "build"])`. Nothing here reads
+        # task/profile/user config into the argv.
+        "exec:<dynamic>": Allowed(
+            "the npm registry — `npm --prefix web ci` then "
+            "`npm --prefix web run build`, resolving `web/package-lock.json` "
+            "against the configured npm registry",
+            _ON + "fires only on a SOURCE checkout (`web/src` beside "
+                  "`web/dist`; a wheel/frozen install has no `web/src` and "
+                  "is skipped entirely) whose `web/dist` is older than "
+                  "`web/src` — and only when `NH_NO_AUTO_BUILD` is unset; "
+                  "set it to fall back to a warning instead"),
+    },
     "updates.py": {
         "http:urllib.request": Allowed(
             "https://pypi.org/pypi/no-human/json — no identifier, no repo name",
