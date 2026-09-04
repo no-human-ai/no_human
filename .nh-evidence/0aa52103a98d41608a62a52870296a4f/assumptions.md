@@ -2,6 +2,10 @@
 
 _Harness-captured record for task `0aa52103`, commit `fbf486b8e16419edb95cf16084979732f66d1b26` — not model-authored: no_human wrote this file from the intake step's recorded questions and assumptions. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
+> ⚠️ **Unresolved:** mechanical derived-artefact conflict resolution failed: https://github.com/no-human-ai/no_human/pull/49 step=regenerate
+
+> ⚠️ **Open question:** PR https://github.com/no-human-ai/no_human/pull/49 conflicts only in derived artefact(s) (RELEASE_MANIFEST.txt) but mechanical resolution failed at step 'regenerate'. Advise, or take over?
+
 <details><summary>⚠️ 4 assumptions made on your behalf — verify at review</summary>
 
 - **Q:** When the server probe succeeds after network failures, should we re-invoke ALL fetches in the current step, or only the specific fetch(es) that originally failed? **A:** Re-invoke ALL fetches in the current step when the probe succeeds. This ensures the wizard has current data after reconnection, avoids tracking which individual fetches failed, and aligns with standard reconnection behavior. _(assumption)_

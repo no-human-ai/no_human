@@ -8,7 +8,7 @@ _Harness-captured record for task `0aa52103`, commit `fbf486b8e16419edb95cf16084
   "failed": 0,
   "failing_tests": [],
   "ok": true,
-  "passed": 1514,
+  "passed": 11183,
   "ran": true,
   "tamper_flag": false
 }

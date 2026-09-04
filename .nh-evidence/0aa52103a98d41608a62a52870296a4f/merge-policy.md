@@ -14,7 +14,7 @@ _Harness-captured record for task `0aa52103`, commit `fbf486b8e16419edb95cf16084
       "passed": true
     },
     {
-      "detail": "tests: 0 failed of 1514 run",
+      "detail": "tests: 0 failed of 11183 run",
       "name": "tests_ran_and_passed",
       "passed": true
     },

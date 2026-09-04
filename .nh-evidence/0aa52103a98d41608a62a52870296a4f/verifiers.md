@@ -5,8 +5,8 @@ _Harness-captured record for task `0aa52103`, commit `fbf486b8e16419edb95cf16084
 ```json
 [
   {
-    "comment": "The added banner styles use existing dual-theme tokens (--state-failed, --surface-1, --text-hi, --text-muted) with color-mix/transparent; no new hard-coded color literal is introduced, and the JSX changes are className-only. Statement holds.",
-    "evidence": "The only new colors are in .ob-offline-banner/.ob-offline-hint/.ob-offline-retry, all via var(--state-failed), var(--surface-1), var(--text-hi), var(--text-muted) plus color-mix and transparent \u2014 no hex/rgb/hsl literal; all four vars are defined in both :root and [data-theme=\"light\"].",
+    "comment": "The three new .ob-offline-* rules use only existing CSS vars (--state-failed, --surface-1, --text-hi, --text-muted), all defined in both :root (dark) and [data-theme=\"light\"]; no new hex/rgb/hsl literal is introduced (color-mix and `transparent` are not literals), and the JSX changes add only class names, no inline color styles.",
+    "evidence": ".ob-offline-banner { background: color-mix(in oklab, var(--state-failed) 12%, var(--surface-1)); border: 1px solid var(--state-failed); color: var(--text-hi); } .ob-offline-hint { color: var(--text-muted); } .ob-offline-retry { border: 1px solid var(--state-failed); background: transparent; color: var(--state-failed); }",
     "file": "web/src/styles.css",
     "files_checked": [
       "web/src/Onboarding.jsx",
@@ -15,11 +15,11 @@ _Harness-captured record for task `0aa52103`, commit `fbf486b8e16419edb95cf16084
       "web/src/onboardingOffline.test.mjs",
       "web/src/styles.css"
     ],
-    "line": 6047,
+    "line": 6046,
     "no_verdict": false,
     "passed": true,
     "severity": "medium",
-    "tokens_used": 810,
+    "tokens_used": 803,
     "unavailable": false,
     "verifier_id": "board-uses-theme-tokens"
   }
