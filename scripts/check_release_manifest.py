@@ -226,7 +226,7 @@ def write_manifest(root: Path) -> int:
 
     rows = {rel: hash_path(root, rel) for rel in tracked}
     body = "".join(f"{digest}  {rel}\n" for rel, digest in sorted(rows.items()))
-    (root / MANIFEST_NAME).write_text(HEADER + body, encoding="utf-8")
+    (root / MANIFEST_NAME).write_text(HEADER + body, encoding="utf-8", newline="\n")
     print(f"{MANIFEST_NAME}: wrote {len(rows)} row(s)")
     return 0
 
