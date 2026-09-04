@@ -1616,9 +1616,14 @@ class Orchestrator:
                     status=str(meta.get("status")), duration_bucket=bucket,
                     attempts=getattr(self, "_tel_attempts", 0))
             elif kind == "failed" and not getattr(self, "_tel_terminal_sent", False):
-                # Terminal `_fail`/`_raise_blocker` off-ramp. The free-text
-                # detail must NOT ship; `reason_category` is a CLOSED coarse
-                # enum (which STAGE failed — budget/review/infra/etc, see
+                # Terminal `_fail`/`_raise_blocker` off-ramp — OR a direct,
+                # synthetic call from `_raise_blocker` when a known
+                # terminal-failure pattern (max-attempts, tamper, review
+                # stagnation) routed to ESCALATED rather than FAILED: the
+                # TASK stays actionable, but the failure pattern must still
+                # be visible here. Either way the free-text detail must NOT
+                # ship; `reason_category` is a CLOSED coarse enum (which
+                # STAGE failed — budget/review/infra/etc, see
                 # telemetry.FAILURE_REASON_CATEGORIES), never the failure
                 # string, title or path. `meta["blocker"]` (present only from
                 # `_raise_blocker`) can carry a `root_cause_hypothesis` with
@@ -4232,9 +4237,16 @@ class Orchestrator:
                                 f"{_labels_txt}"
                             )[:500],
                         )
+                        # STAGNATION routes to ESCALATED, not FAILED — the
+                        # task stays actionable. `fail_category` still
+                        # reaches `task_failed` telemetry as an ADDITIONAL,
+                        # telemetry-only event (review pass-rate stuck is
+                        # exactly the "review_failed" pattern the
+                        # success-rate signal must see); it does not change
+                        # routing.
                         return await self._raise_blocker(
                             task, blocker, repo=repo, branch=base_branch,
-                            escalate_now=True,
+                            escalate_now=True, fail_category="review_failed",
                         )
 
             # Failed-restoration fingerprint (P2, Paperclip via the 2026-08-18
@@ -4297,9 +4309,16 @@ class Orchestrator:
                             ),
                             evidence=(outcome.detail or "")[:500],
                         )
+                        # STAGNATION routes to ESCALATED, not FAILED — the
+                        # task stays actionable. `fail_category` still
+                        # reaches `task_failed` telemetry as an ADDITIONAL,
+                        # telemetry-only event (a byte-equivalent retry is
+                        # exactly the "review_failed" pattern the
+                        # success-rate signal must see); it does not change
+                        # routing.
                         return await self._raise_blocker(
                             task, blocker, repo=repo, branch=base_branch,
-                            escalate_now=True,
+                            escalate_now=True, fail_category="review_failed",
                         )
                 except Exception as exc:  # noqa: BLE001
                     self._advisory(f"restoration fingerprint failed: {exc}")
@@ -7963,9 +7982,12 @@ class Orchestrator:
             question="The agent could not complete this within bounds. Refine the "
                      "task, split it, or advise an approach.",
         )
-        # This routes to ESCALATED today, not FAILED — `fail_category` is only
-        # stamped onto telemetry if the route ever lands on FAILED, so this is
-        # inert until then; it does not change routing.
+        # This routes to ESCALATED today, not FAILED — the task itself stays
+        # actionable by a human. `fail_category` still reaches `task_failed`
+        # telemetry (as an ADDITIONAL, telemetry-only event fired inside
+        # `_raise_blocker`) because max-attempts exhaustion is exactly the
+        # kind of failure pattern the success-rate signal must see; it does
+        # not change routing.
         outcome = await self._raise_blocker(
             task, blocker, repo=repo, branch=branch,
             fail_category="max_attempts")
@@ -9611,11 +9633,16 @@ class Orchestrator:
         `_blocker_reuse_eligible` / `_reuse_stored_answer`).
 
         ``fail_category`` is an already-known internal telemetry category
-        (e.g. "max_attempts", "tamper_blocked") for `telemetry.
-        failure_reason_category`'s `explicit` slot. It is only stamped onto
-        the emitted event's meta when the route lands on FAILED — an
-        escalated/parked/awaiting-input route's meta is untouched — and is
-        a coarse enum value only, never the blocker's free text.
+        (e.g. "max_attempts", "tamper_blocked", "review_failed") for
+        `telemetry.failure_reason_category`'s `explicit` slot. When the route
+        lands on FAILED it is stamped onto that event's own meta; for any
+        other route (escalated/parked/awaiting-input — whose own meta stays
+        untouched) it instead fires an ADDITIONAL, telemetry-only
+        `task_failed` event, because e.g. max-attempts exhaustion, a tamper
+        block or a review stagnation are real failure patterns even though
+        the TASK itself remains actionable by a human, not marked FAILED.
+        Either way it is a coarse enum value only, never the blocker's free
+        text.
         """
         blocker.attempt_id = attempt_id or blocker.attempt_id or ""
 
@@ -9720,13 +9747,33 @@ class Orchestrator:
             TaskStatus.FAILED: "failed",
         }.get(route.target_status, "escalated")
         report = render_report(blocker, task_title=task.title, task_id=task.id)
-        # `reason_category` is only stamped for a FAILED route — an
-        # escalated/blocked/parked/awaiting-input event's meta is untouched.
+        # `reason_category` is only stamped onto THIS event's own meta for a
+        # FAILED route — an escalated/blocked/parked/awaiting-input event's
+        # meta is untouched (its `kind`/`status` still say exactly what
+        # happened to the task; routing is not this code's business).
         extra: dict[str, Any] = {}
         if kind == "failed":
             from .. import telemetry
             extra["reason_category"] = telemetry.failure_reason_category(
                 fail_category, blocker.category.value)
+        elif fail_category:
+            # The route did NOT land on FAILED (e.g. max-attempts exhaustion,
+            # a tamper block or a review-stagnation escalation all route to
+            # ESCALATED today — a human can still act, so the TASK is not
+            # marked failed). But the run still hit a known terminal-failure
+            # pattern, and that pattern is exactly what `task_failed`
+            # telemetry exists to surface (product's success-rate signal
+            # must see max-attempts/review/tamper exhaustion, not just the
+            # rare BUDGET_EXHAUSTED route that happens to land on FAILED).
+            # Fire the telemetry event directly — this is telemetry-only:
+            # it does not touch `kind`, `route`, `status` or the sink event
+            # emitted below, so task routing is unchanged.
+            from .. import telemetry
+            self._telemetry_hook("failed", {
+                "status": "failed",
+                "reason_category": telemetry.failure_reason_category(
+                    fail_category, blocker.category.value),
+            })
         self.emit(kind, report, status=route.target_status.value,
                   blocker=blocker.to_dict(), **extra)
 
@@ -10766,9 +10813,12 @@ class Orchestrator:
             task, adj, reasons=report.reasons, summary=report.summary,
             repeat=repeat, where=where,
         )
-        # This routes to ESCALATED today, not FAILED — `fail_category` is only
-        # stamped onto telemetry if the route ever lands on FAILED, so this is
-        # inert until then; it does not change routing.
+        # This routes to ESCALATED today, not FAILED — the task itself stays
+        # actionable by a human. `fail_category` still reaches `task_failed`
+        # telemetry (as an ADDITIONAL, telemetry-only event fired inside
+        # `_raise_blocker`) because a tamper block is exactly the kind of
+        # failure pattern the success-rate signal must see; it does not
+        # change routing.
         return await self._raise_blocker(
             task, blocker, repo=repo, branch=branch,
             fail_category="tamper_blocked")
