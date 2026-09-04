@@ -584,6 +584,15 @@ export async function fetchVersion() {
   return { version, distName, published };
 }
 
+// Liveness probe, not a version read: ANY HTTP response — 200, 404, even 500 —
+// proves the process answered, which is the only question the onboarding
+// reconnect banner asks (offlineRetry.js). Rejects only when `fetch` itself
+// rejects (the process is dead), never on a non-2xx status.
+export async function probeServer() {
+  await fetch(`${BASE}/api/version`, { cache: "no-store" });
+  return true;
+}
+
 export async function fetchProfiles() {
   const r = await fetch(`${BASE}/api/profiles`);
   if (!r.ok) return [];
