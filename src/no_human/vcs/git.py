@@ -530,7 +530,9 @@ class GitRepo:
         self._run(*args)
         return CommitResult(branch=branch, sha=self.head_sha(), **self._diffstat())
 
-    def commit_identities(self, base: str) -> list[CommitIdentity]:
+    def commit_identities(
+        self, base: str, *, exclude: list[str] | None = None,
+    ) -> list[CommitIdentity]:
         """Author/committer as git itself recorded them for every commit in
         `base..HEAD` — the RESULT of whatever commit-writing command(s) ran,
         not a re-derivation of which command ran them. Used by
@@ -538,6 +540,17 @@ class GitRepo:
         that can stamp a commit with something other than the agent's
         configured identity (`--author=`, `env -u GIT_AUTHOR_*`, `-c
         user.email=`, and any future one) without enumerating any of them.
+
+        `exclude`, when given, is a list of commit shas whose own history is
+        removed from the window (`^sha` revs, git's own ancestry exclusion —
+        not a second pass over the result) — e.g. a pinned base tip, so that
+        the base branch's pre-existing commits are never checked against the
+        agent's identity. Every entry is validated as bare hex
+        (`[0-9a-fA-F]{7,64}`) and rejected with `GitError` otherwise, and a
+        literal `--` always separates the last `^sha` from `f"{base}..HEAD"`
+        so no future caller can smuggle a git option in through this
+        parameter. Omitted or empty, this method's argv is byte-identical to
+        calling it with no `exclude` at all.
 
         `check=True` (the default — no `check=False` here): an unreadable
         `base..HEAD` (bad/unresolvable base ref, corrupt object, ...) raises
@@ -549,10 +562,20 @@ class GitRepo:
         `Orchestrator._foreign_authored_commits`), but it needs the read
         failure as a distinct signal to make that call — `check=False` would
         make a failed read and a clean branch produce the identical `[]`."""
-        out = self._run(
+        args = [
             "log", "--format=%H%x00%an%x00%ae%x00%cn%x00%ce%x00%s",
             f"{base}..HEAD",
-        )
+        ]
+        if exclude:
+            for sha in exclude:
+                if not re.fullmatch(r"[0-9a-fA-F]{7,64}", sha):
+                    raise GitError(
+                        f"commit_identities(exclude=...): not a hex sha: "
+                        f"{sha!r}"
+                    )
+            args.extend(f"^{sha}" for sha in exclude)
+            args.append("--")
+        out = self._run(*args)
         identities: list[CommitIdentity] = []
         # Split on the literal "\n" git puts between records — NOT
         # str.splitlines(), which also breaks on \x0b, \x0c, \x1c-\x1e, \x85,
@@ -967,6 +990,55 @@ class GitRepo:
             except Exception:  # noqa: BLE001 — one bad ref must not sink the rest
                 continue
         return matches
+
+    def ls_remote_exact(self, ref: str, *, remote: str = "origin",
+                         timeout: int = 30) -> str | None:
+        """The sha `remote` currently advertises for `ref`, or `None`.
+
+        Exact-match only: `git ls-remote <remote> <ref>` matches on *tail*
+        path components, so asking for `refs/heads/develop` can also surface
+        a decoy like `refs/heads/x/refs/heads/develop`. Every returned line
+        is checked against `ref` byte-for-byte before being trusted; a line
+        that merely tail-matches is ignored, and if no line equals `ref`
+        exactly the result is `None`, never a decoy's sha.
+
+        `ref` must already be a full ref (`refs/heads/...`, `refs/tags/...`)
+        and must not start with `-` — anything else is refused before a
+        subprocess ever runs, so no caller-supplied string reaches `git`
+        argv as an option. Every other unreadable state git can hand back —
+        rc != 0 (auth/unreachable/bad URL/unknown ref), empty stdout, a
+        timeout, `OSError` (git missing), or two-or-more DISTINCT shas both
+        exactly matching `ref` (should not happen for a single ref, but is
+        treated as ambiguous rather than guessed at) — returns `None`. This
+        is the pin `Orchestrator._run_attempt` reads ONCE, before the coder
+        session starts; a caller that re-reads this at gate time instead of
+        trusting the pin would let a force-push after pinning move the
+        answer, which is exactly the laundering path this method exists to
+        avoid.
+        """
+        if not ref.startswith("refs/") or ref.startswith("-"):
+            return None
+        try:
+            ls = subprocess.run(
+                ["git", "ls-remote", remote, ref],
+                cwd=self.path, capture_output=True, text=True, timeout=timeout,
+                **hidden_console_kwargs(),
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            return None
+        if ls.returncode != 0 or not ls.stdout.strip():
+            return None
+        exact_shas: set[str] = set()
+        for line in ls.stdout.splitlines():
+            parts = line.split()
+            if len(parts) != 2:
+                continue
+            sha, name = parts
+            if name == ref:
+                exact_shas.add(sha)
+        if len(exact_shas) != 1:
+            return None
+        return next(iter(exact_shas))
 
     def remote_branch_relation(self, branch: str, *, remote: str = "origin",
                                 timeout: int = 30) -> str:

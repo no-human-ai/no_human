@@ -137,6 +137,7 @@ from ..vcs import (
     promote_draft_pr,
 )
 from ..vcs import pr_watcher
+from ..vcs.push_hook import refresh_protected_patterns
 from ..vcs.receipts import verify_pr_receipt
 from ..vcs.task_pr import resolve_task_pr
 from . import merge_policy
@@ -3043,7 +3044,9 @@ class Orchestrator:
             task, status=TaskStatus.BLOCKED, detail=f"cancelled by operator: {reason}"
         )
 
-    def _protect_base_branch(self, task: Task, base: str | None) -> None:
+    def _protect_base_branch(
+        self, task: Task, base: str | None, repo: GitRepo | None = None,
+    ) -> None:
         """Add this task's PR base branch to the agent's never-push list.
 
         The agent may push its own branch and open a PR; it may never merge one.
@@ -3055,6 +3058,18 @@ class Orchestrator:
 
         Rebuilt from config every attempt rather than appended, because the
         worker pool reuses one backend across tasks with different bases.
+
+        `self.backend.never_push_to` only feeds the lexical PreToolUse guard
+        (`agent/guard.py`), which reads the agent's PROPOSED command line —
+        `git config remote.origin.push HEAD:refs/heads/<base>` followed by a
+        bare `git push origin` carries no branch-name token for it to see.
+        When `repo` is given, this also regenerates the installed pre-push
+        hook's pattern file (`vcs.push_hook.refresh_protected_patterns`) so
+        the task's base is enforced at the hook layer too — the one git
+        itself resolves the refspec before, immune to that bypass. Best
+        effort only: a refresh that can't proceed (guard not installed here,
+        e.g. a primary checkout) or that raises is logged as an advisory and
+        never fails the attempt — the lexical guard above still applies.
         """
         protected = list(self.config.get("git", {}).get("never_push_to", []))
         ctx_base = (task.context or {}).get("base_branch")
@@ -3062,6 +3077,18 @@ class Orchestrator:
             if branch and branch not in protected:
                 protected.append(branch)
         self.backend.never_push_to = protected
+        if repo is not None:
+            try:
+                refreshed = refresh_protected_patterns(repo.path, protected)
+            except Exception as exc:  # noqa: BLE001 — advisory only, never fatal
+                self._advisory(f"pre-push hook pattern refresh failed: {exc}")
+            else:
+                if not refreshed:
+                    self._advisory(
+                        "pre-push hook pattern refresh skipped (no guard "
+                        "installed at this worktree) — base branch is only "
+                        "enforced by the PreToolUse lexical guard here"
+                    )
 
     async def _refresh_stale_base(
         self, task: Task, repo: GitRepo, branch: str, base: str | None,
@@ -3139,8 +3166,52 @@ class Orchestrator:
             "GIT_COMMITTER_NAME": name, "GIT_COMMITTER_EMAIL": email,
         }
 
+    def _base_exclusion_refs(
+        self, repo: GitRepo, pinned: str | None,
+    ) -> list[str]:
+        """The sha(s) whose own ancestry `_foreign_authored_commits` should
+        exclude from its attribution window — i.e. "commits the base branch
+        already had", not "commits this attempt made".
+
+        `pinned` MUST be a sha resolved ONCE, before the coder session
+        started (`_run_attempt` calls `repo.ls_remote_exact` right after
+        `_protect_base_branch`, and stores it on the attempt row). Re-reading
+        `origin/<base>` HERE, at gate time, instead of trusting that pin
+        would hand the coder a laundering path on any non-main base: the
+        pre-push hook only ever protected `git.never_push_to`
+        (main/master/release/* plus whatever `_protect_base_branch` adds),
+        so a coder that force-pushes a forged-identity commit onto
+        `refs/heads/<base>` on the remote — nothing stops that for a base the
+        hook doesn't cover as strictly as main — would make its own forgery
+        the exclusion root if this method re-resolved the base fresh.
+        Because the pin was captured before the coder ever ran, nothing it
+        does afterward can move what gets excluded.
+
+        `pinned` falsy (no base, or `ls_remote_exact` returned `None` because
+        the remote was unreachable, the ref didn't exist, or the answer was
+        ambiguous) returns `[]` — NO exclusion, which only ever means MORE
+        commits get checked for attribution, never fewer; that is the
+        fail-closed direction. Likewise if the pinned sha's own commit object
+        cannot be read locally (a stale or bogus pin) — logged and excluded
+        as `[]` rather than trusted blind.
+        """
+        if not pinned:
+            return []
+        readable = subprocess.run(
+            ["git", "-C", str(repo.path), "cat-file", "-e", f"{pinned}^{{commit}}"],
+            capture_output=True, text=True,
+        )
+        if readable.returncode != 0:
+            log.warning(
+                "base_pin %s is not a readable commit in %s; excluding "
+                "nothing (fail closed)", pinned, repo.path,
+            )
+            return []
+        return [pinned]
+
     def _foreign_authored_commits(
         self, repo: GitRepo, base: str | None, since: str | None = None,
+        base_pin: str | None = None,
     ) -> list[str]:
         """Post-hoc attribution gate for constraint #2 ("the agent commits
         under a distinct identity"). `_agent_git_identity` EXPORTS that
@@ -3179,6 +3250,20 @@ class Orchestrator:
         Scoping to `since` answers that without touching `_review_base`
         itself or any gate that still needs its wider window.
 
+        `base_pin`, when given, is the sha `_run_attempt` resolved ONCE,
+        before the coder session ever started, and is handed to
+        `_base_exclusion_refs` to compute what `commit_identities(exclude=)`
+        removes from the window: the base branch's OWN pre-existing history,
+        as of that one pin, and nothing that landed on the base ref
+        afterward. That "as of that one pin" is load-bearing: if a commit
+        the base branch did not yet have at pin time later reaches this
+        window's ancestry (a rebase onto a moved base, a merge, ...), the
+        pin does not exclude it — only re-resolving the base fresh at gate
+        time could make a commit that arrived after pinning quietly count
+        as "already excluded", and that is exactly the laundering path a
+        forged base-branch push is trying to open. Omitted (the default),
+        this method's behaviour is identical to before `base_pin` existed.
+
         This DETECTS and FAILS the attempt; it does not and cannot make
         forgery impossible — a commit outside this window, or a run where the
         configured agent identity itself equals the operator's, is not
@@ -3196,8 +3281,12 @@ class Orchestrator:
         like a real mismatch — loud and stop, not quiet and pass.
         """
         window = since if since is not None else self._review_base(repo, base)
+        exclusion = self._base_exclusion_refs(repo, base_pin)
         try:
-            commits = repo.commit_identities(window)
+            commits = (
+                repo.commit_identities(window, exclude=exclusion)
+                if exclusion else repo.commit_identities(window)
+            )
         except GitError as exc:
             log.warning("commit_identities(%s) failed: %s", window, exc)
             return [
@@ -4684,7 +4773,30 @@ class Orchestrator:
         # So a cancellation honoured from the attempt loop can name the branch
         # its [WIP-BLOCKED] checkpoint landed on.
         self._active_branch = branch
-        self._protect_base_branch(task, base)
+        self._protect_base_branch(task, base, repo)
+
+        # Pinned ONCE, here, BEFORE the coder session ever starts — never
+        # re-read at gate time. `base_pin` lives only in this frame; the
+        # coder cannot reach it, so nothing it does afterward (force-pushing
+        # a forged commit to `refs/heads/<base>` on the remote, moving a
+        # local ref, ...) can move what `_foreign_authored_commits` treats
+        # as "the base's own history". `None` (remote unreachable, ref
+        # absent, ambiguous) means NO exclusion — fail closed, more commits
+        # checked, never fewer. See `Orchestrator._base_exclusion_refs`.
+        base_pin = repo.ls_remote_exact(f"refs/heads/{base}") if base else None
+        if base_pin:
+            await self.store.update_attempt(attempt_id, base_pin_sha=base_pin)
+            self.emit("base_pin", f"pinned {base} @ {base_pin[:8]}", sha=base_pin)
+        else:
+            log.warning(
+                "base pin unresolvable for base=%r — attribution gate runs "
+                "with no exclusion window", base,
+            )
+            self._advisory(
+                "base pin unresolvable — attribution gate runs with NO "
+                "exclusion window this attempt"
+            )
+
         await self._refresh_stale_base(task, repo, branch, base)
 
         # PR-F Gate 2: create matching branches in linked repos so changes
@@ -5760,7 +5872,8 @@ class Orchestrator:
         # `_review_base` window is wrong here (it would re-flag an
         # already-credited prior-session checkpoint commit on every resume).
         # Linked repos (`task.linked_repos`) are not covered by this check.
-        foreign = self._foreign_authored_commits(repo, base, since=attempt_start_sha)
+        foreign = self._foreign_authored_commits(
+            repo, base, since=attempt_start_sha, base_pin=base_pin)
         if foreign:
             detail = (
                 "commit attribution mismatch — one or more commits on this "

@@ -21,6 +21,10 @@ import subprocess
 import pytest
 
 from no_human.agent import guard
+from no_human.config import load_config
+from no_human.core.orchestrator import Orchestrator
+from no_human.core.task import Task
+from no_human.notify.slack import SlackNotifier
 from no_human.vcs.git import GitRepo
 from no_human.vcs.push_hook import (
     PATTERNS_FILENAME,
@@ -201,6 +205,71 @@ def test_install_refuses_when_core_worktree_would_leak(tmp_path):
     _git(up, "config", "core.worktree", str(up))
     with pytest.raises(PushHookError, match="core.worktree"):
         install_pre_push_guard(wt, PROTECTED)
+
+
+# --------------------------------------------------------------------------- #
+# `Orchestrator._protect_base_branch` reaching the hook, not just the guard.
+# --------------------------------------------------------------------------- #
+
+
+def _orch(tmp_path, never_push_to=PROTECTED):
+    initial = list(never_push_to)
+
+    class _Backend:
+        model = "claude-sonnet-5"
+        never_push_to = initial
+
+    cfg = load_config(tmp_path / "config.yaml")
+    return Orchestrator(None, cfg.data, _Backend(), SlackNotifier(None))
+
+
+def test_protect_base_branch_hook_covers_base(repo_with_remote, tmp_path):
+    """AC #2. `_protect_base_branch(base="develop", repo=...)` must not only
+    extend the lexical guard's `never_push_to` — it must reach the installed
+    pre-push hook's pattern file too, closing the hole where `git config
+    remote.origin.push HEAD:refs/heads/develop` + a bare `git push origin`
+    carries no branch-name token for the lexical guard to see at all."""
+    env = repo_with_remote
+    orch = _orch(tmp_path)
+    task = Task.new("do a thing", repo_path=str(env["up"]))
+
+    orch._protect_base_branch(task, "develop", repo=env["repo"])
+
+    text = (hook_dir_for(env["wt"]) / PATTERNS_FILENAME).read_text()
+    assert "develop" in text.splitlines(), text
+    assert "develop" in orch.backend.never_push_to
+
+    proc = _git(env["wt"], "push", "origin", "HEAD:refs/heads/develop", check=False)
+    assert proc.returncode != 0, f"push to develop was NOT refused: {proc.stderr}"
+    assert "no_human pre-push guard: REFUSED" in proc.stderr, proc.stderr
+
+    # Negative control: the task's own branch still pushes fine.
+    proc2 = _git(env["wt"], "push", "origin", "HEAD:refs/heads/no-human/x",
+                 check=False)
+    assert proc2.returncode == 0, f"legitimate push refused: {proc2.stderr}"
+
+    # The primary checkout was never touched by this refresh.
+    effective = _git(env["up"], "config", "--get", "core.hooksPath", check=False)
+    assert not effective.stdout.strip(), (
+        "core.hooksPath leaked into the primary checkout"
+    )
+
+
+def test_protect_base_branch_without_repo_is_a_noop(repo_with_remote, tmp_path):
+    """Legacy 2-arg call (`repo` omitted) must keep working exactly as
+    before — no hook pattern file touched, no exception — since not every
+    caller has a `GitRepo` handy at this call site."""
+    env = repo_with_remote
+    orch = _orch(tmp_path)
+    task = Task.new("do a thing", repo_path=str(env["up"]))
+    patterns = hook_dir_for(env["wt"]) / PATTERNS_FILENAME
+    before = patterns.read_text()
+
+    orch._protect_base_branch(task, "develop")
+
+    after = patterns.read_text()
+    assert before == after, "the hook's pattern file must not change with no repo given"
+    assert "develop" in orch.backend.never_push_to
 
 
 # --------------------------------------------------------------------------- #

@@ -19,8 +19,8 @@ are from BEFORE it. Re-measure, then re-enable or close.
 
 ```
 sqlite3.OperationalError: cannot commit transaction - SQL statements in progress
-  src/no_human/core/db.py:2296 in update_attempt   (await self.db.commit())
-  <- src/no_human/core/orchestrator.py:4683 in _run_attempt
+  src/no_human/core/db.py:2306 in update_attempt   (await self.db.commit())
+  <- src/no_human/core/orchestrator.py:4772 in _run_attempt
 ```
 
 **This is a product defect, not a test defect.** The traceback is entirely in

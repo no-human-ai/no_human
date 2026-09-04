@@ -1110,6 +1110,16 @@ class Store:
             # migrations/0016_attempt_full_final_text.sql for why the ALTER lives
             # here and not in a .sql file.
             "full_final_text": "TEXT",
+            # NULLABLE, NO DEFAULT: audit record of the base-branch sha
+            # `Orchestrator._run_attempt` pinned via `GitRepo.ls_remote_exact`
+            # BEFORE the coder session started — the exclusion root the
+            # attribution gate actually used (see `_base_exclusion_refs`).
+            # NULL means either a row predates this column or the pin was
+            # unresolvable (remote unreachable, ref absent, ambiguous) — in
+            # both cases the gate ran with no exclusion window, never a
+            # silently-wrong one. Same no-.sql-migration precedent as
+            # `full_final_text` above: additive, generic `ALTER TABLE` loop.
+            "base_pin_sha": "TEXT",
         }
         # A THIRD exclusion lives beside these two, but needs no new column:
         # `status = 'interrupted'` (the base column, written only by
