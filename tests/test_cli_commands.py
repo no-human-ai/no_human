@@ -168,8 +168,19 @@ def test_approve_completes_an_already_satisfied_task(tmp_path, monkeypatch):
 
     async def _ctx():
         async with Store(db) as s:
-            await s.merge_context(task_id, {"already_satisfied_report":
-                "ALREADY-SATISFIED\nCRITERION: x — MET — evidence: a.py:1"})
+            await s.merge_context(task_id, {
+                "already_satisfied_report":
+                    "ALREADY-SATISFIED\nCRITERION: x — MET — evidence: a.py:1",
+                # Satisfying commit is reachable from origin/base — truly
+                # nothing to land, so approve marks DONE with zero changes
+                # (AC2). Without this the new landing classifier would
+                # re-derive from git and find no repo at the seeded
+                # `repo_path`, refusing to complete the task.
+                "already_satisfied_landing": {
+                    "on_base": True, "sha": "deadbeef", "branch": "",
+                    "ship_ref": "origin/main",
+                },
+            })
     asyncio.run(_ctx())
     runner = _make_runner(db, monkeypatch)
 

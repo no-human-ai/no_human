@@ -4689,8 +4689,15 @@ def _ready_batch_non_merge_message(tag, outcome):
     result = outcome["result"]
     branch = outcome["branch"]
     pr_url = outcome["pr_url"]
+    evidence = outcome["evidence"]
     if tag == "already_satisfied":
-        return "already satisfied claim confirmed; task done."
+        return "already satisfied claim confirmed; task done." + (
+            f" ({evidence})" if evidence else "")
+    if tag == "already_satisfied_unlanded":
+        return (
+            "already satisfied claim confirmed, but could not be landed "
+            f"automatically: {evidence}. Task remains awaiting_approval."
+        )
     if tag == "no_pr":
         return "merge the PR in your git host (no PR URL recorded)."
     if tag == "no_branch":
@@ -4807,9 +4814,10 @@ async def _approve_go_ready(config, assume_yes, land_one):
                 sys.exit(1)
             if tag == "done":
                 landed += 1
+                note = outcome.get("landing_note") or ""
                 console.print(
                     f"[bold green]merged[/] {t.id[:8]} — landed "
-                    f"{result.landed_sha[:12]}"
+                    f"{result.landed_sha[:12]}" + (f" ({note})" if note else "")
                 )
                 continue
             console.print(
@@ -4878,6 +4886,24 @@ async def _approve_go_single(config, task_id, land_one):
                 f"[bold green]approved[/] {t.id[:8]} — already satisfied "
                 "claim confirmed; no code change was needed. Task done."
             )
+            if evidence:
+                console.print(f"  [dim]{evidence}[/]")
+            return
+
+        if tag == "already_satisfied_unlanded":
+            # NOT a hard failure (exit 0): the approval itself is recorded —
+            # there is just nothing landed yet. Never mark the task done
+            # without landing (the incident this closes); it stays
+            # awaiting_approval so a human, or a later `nh approve` retry
+            # once the issue named in `evidence` is resolved, can land it.
+            console.print(
+                f"[yellow]approved[/] {t.id[:8]} — already satisfied claim "
+                f"confirmed, but could not be landed automatically: {evidence}. "
+                "Task remains awaiting_approval — land it manually, or re-run "
+                "`nh approve` once resolved."
+            )
+            if pr_url:
+                console.print(f"  PR: {pr_url}")
             return
 
         if tag == "no_pr":
@@ -4955,6 +4981,9 @@ async def _approve_go_single(config, task_id, land_one):
         )
         if result.gate_reason:
             console.print(f"  gate: {result.gate_reason}")
+        landing_note = outcome.get("landing_note") or ""
+        if landing_note:
+            console.print(f"  [dim]{landing_note}[/]")
 
 
 @cli.command("approve")
@@ -5026,8 +5055,9 @@ def approve(task_id, list_ready, assume_yes, landed_sha, justification, base_bra
 
         Returns {"tag": <outcome>, "pr_url": str, "branch": str,
         "evidence": str, "result": LandResult | None}. `tag` is one of
-        "already_satisfied", "no_pr", "no_branch", "already_landed",
-        "unresolved_head", "precondition", "skipped", "failed", "done".
+        "already_satisfied", "already_satisfied_unlanded", "no_pr",
+        "no_branch", "already_landed", "unresolved_head", "precondition",
+        "skipped", "failed", "done".
         """
         t.context = await store.merge_context(
             t.id, {"approved_at": _now_iso(), "approval_superseded_at": None})
@@ -5043,16 +5073,57 @@ def approve(task_id, list_ready, assume_yes, landed_sha, justification, base_bra
         # must stay a merge instruction, never a false DONE (PR #101
         # round-2 review).
         pr_url = await task_has_pr_evidence(store, t)
+        # Set only on the already-satisfied "land" path — names, for the
+        # eventual "done" console line, which of the two landing cases
+        # actually applied (AC3: the incident this closes was a silent DONE
+        # for a commit that was never landed, so a successful land through
+        # THIS path must say so explicitly, not read identically to an
+        # ordinary PR merge).
+        landing_note = ""
         if (t.context or {}).get("already_satisfied_report") and not pr_url:
-            from ..blockers import process_actor
-            await store.set_status(
-                t, TaskStatus.DONE, validate=False,
-                event={"source": "human", "kind": "approved_already_satisfied",
-                       "text": "already-satisfied claim confirmed by approve",
-                       "actor": process_actor()},
+            from ..vcs.task_pr import land_already_satisfied_claim
+            git_cfg = config.get("git") or {}
+            step = await land_already_satisfied_claim(
+                store, t, repo_path=t.repo_path or "",
+                identity_name=git_cfg.get("agent_identity_name", "no_human"),
+                identity_email=git_cfg.get("agent_identity_email", "no-human@acme.com"),
+                never_push_to=git_cfg.get("never_push_to")
+                or ["main", "master", "release/*"],
+                github_hosts=git_cfg.get("github_hosts"),
             )
-            return {"tag": "already_satisfied", "pr_url": pr_url, "branch": "",
-                    "evidence": "", "result": None}
+            if step["decision"] == "refuse":
+                # NOT a hard failure: the approval itself stands (recorded
+                # above), there is just nothing landed yet. The task stays
+                # awaiting_approval — a human (or a later `nh approve`
+                # retry) still has to resolve whatever `evidence` names.
+                return {"tag": "already_satisfied_unlanded", "pr_url": step["pr_url"],
+                        "branch": step["branch"], "evidence": step["reason"],
+                        "result": None}
+            if step["decision"] == "done":
+                from ..blockers import process_actor
+                await store.set_status(
+                    t, TaskStatus.DONE, validate=False,
+                    event={"source": "human", "kind": "approved_already_satisfied",
+                           "text": "already-satisfied claim confirmed by approve — "
+                           + step["reason"],
+                           "actor": process_actor()},
+                )
+                return {"tag": "already_satisfied", "pr_url": pr_url, "branch": "",
+                        "evidence": step["reason"], "result": None}
+            # decision == "land": the satisfying commit lives only on the
+            # task branch and IS the deliverable — a PR now exists for it
+            # (opened by the helper above if one didn't already). Fall
+            # through to the normal PR-merge path below, exactly like a
+            # task that shipped a real diff would; never mark this done
+            # without actually landing it (the incident this closes).
+            # Mirror the helper's own `pr_watch`/`pr_branch` write into this
+            # local copy of `t.context` — `resolve_task_pr` (just below)
+            # reads `t.context` directly, not the store, so without this a
+            # freshly-opened PR would be invisible to it on this same call.
+            pr_url = step["pr_url"]
+            t.context = {**(t.context or {}), "pr_watch": pr_url,
+                         "pr_branch": step["branch"]}
+            landing_note = step["reason"]
 
         if not pr_url:
             return {"tag": "no_pr", "pr_url": pr_url, "branch": "",
@@ -5125,7 +5196,8 @@ def approve(task_id, list_ready, assume_yes, landed_sha, justification, base_bra
                    "actor": process_actor()},
         )
         return {"tag": "done", "pr_url": pr_url, "branch": branch,
-                "evidence": evidence, "result": result}
+                "evidence": evidence, "result": result,
+                "landing_note": landing_note}
 
     if list_ready:
         asyncio.run(_approve_go_ready(config, assume_yes, _land_one))
@@ -7128,6 +7200,10 @@ def bench():
              LATEST SAVED RESULTS — NOT the published baseline, which is a
              separate file only a clean publish writes.
     """
+    # Self-mark every `nh bench …` subprocess so telemetry.environment()
+    # tags its events "bench" instead of counting bench-fleet volume as
+    # real installs. setdefault: an explicit outer NH_ENV still wins.
+    os.environ.setdefault("NH_ENV", "bench")
 
 
 def _slug(label: str) -> str:

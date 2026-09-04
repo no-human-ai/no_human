@@ -99,7 +99,16 @@ FROZEN_FUNCTION_LINES = {
     # comment, so a frozen-file growth buys its corrective round in the
     # SAME attempt instead of costing a whole extra one. Measured on this
     # tree with the scanner below.
-    "core/orchestrator.py:Orchestrator._run_attempt": 2186,
+    # 2186 -> 2210 (+24): attribution-guard hardening — `ls_remote_exact` is
+    # called ONCE here, right after `_protect_base_branch`, to pin the base
+    # sha BEFORE the coder session starts (plus the fail-closed
+    # advisory/log branch when the pin doesn't resolve, and threading
+    # `base_pin` through to the `_foreign_authored_commits` call site).
+    # Deliberately kept inline rather than split out, since the whole point
+    # is that the pin is captured in `_run_attempt`'s own frame, before the
+    # coder can influence it — a helper callable from elsewhere would weaken
+    # that guarantee. Measured on this tree with the scanner below.
+    "core/orchestrator.py:Orchestrator._run_attempt": 2210,
     # 760 -> 778 (+18): dispatch-time intake-eval hoisted path — the `elif
     # ctx.get("eval_result")` branch that acts on a grill/wizard-stored
     # verdict (idempotency marker, cost/residual-gap comments) added inside
@@ -110,7 +119,11 @@ FROZEN_FUNCTION_LINES = {
     # `activated_at`/`learning_events` schema work to a new sibling method,
     # `_ensure_d3_learning_columns` — split out specifically so the three new
     # columns' worth of ALTERs did NOT land inline here. Re-anchored on merge.
-    "core/db.py:Store._ensure_task_columns": 457,
+    # 457 -> 467 (+10): `base_pin_sha` added to the generic `wanted`/`existing`
+    # additive-column dict (attribution-guard hardening) — same one-line-per-
+    # column shape as every other entry here, plus its explanatory comment.
+    # Measured on this tree with the scanner below.
+    "core/db.py:Store._ensure_task_columns": 467,
     # 429 -> 434 (+5): pre-existing red on main at 03b262d23 — e922e9b4's
     # (#935 derived-artefact keystone) landing grew the conflict watcher
     # without re-freezing; nh approve runs change-scoped tests only, so the
@@ -211,7 +224,11 @@ FROZEN_FUNCTION_CC = {
     # `except` clauses plus the `if budget_outcome is not None` guard —
     # same try/except shape as the repro-gate call site above it. Measured
     # on this tree with the scanner below.
-    "core/orchestrator.py:Orchestrator._run_attempt": 255,
+    # 255 -> 257 (+2): attribution-guard hardening — the `if base:` guard
+    # around the `ls_remote_exact` pin capture, plus the fail-closed
+    # `if base_pin is None:` advisory branch when the pin doesn't resolve.
+    # Measured on this tree with the scanner below.
+    "core/orchestrator.py:Orchestrator._run_attempt": 257,
     "core/orchestrator.py:Orchestrator._drive": 115,
     "agent/guard.py:_approve_denial": 81,
     # 73 -> 74 (+1): same cause as the LINES entry above — e922e9b4's landing
@@ -517,7 +534,22 @@ FROZEN_FILE_LINES = {
     # the scanner below (`len(Path(...).read_text().splitlines())`).
     # Supervised-land merge 2026-09-04: default-walk chain + the reviewer
     # config-key naming (+1) on one tree. Measured on this merged tree.
-    "core/orchestrator.py": 21635,
+    # 21502 -> 21516 (+14): already-satisfied approve-on-DONE landing fix —
+    # `_gate_already_satisfied` now persists `already_satisfied_landing`
+    # (on_base/sha/branch/ship_ref) and the state/blocker detail text names
+    # which of the two landing cases applied. Measured via
+    # `wc -l src/no_human/core/orchestrator.py`.
+    # Supervised-land merge 2026-09-04: already-satisfied-land fix on the
+    # current tree. Measured on this merged tree.
+    # 21635 -> 21748 (+113, rebased onto the above): attribution guard
+    # hardening — the base-sha pin capture in `_run_attempt` (docstring
+    # above the call site plus the fail-closed advisory/log branch),
+    # `_base_exclusion_refs` and its `base_pin`-aware paragraph on
+    # `_foreign_authored_commits`'s docstring, and the `_protect_base_branch`
+    # hook-refresh call, rebased onto the reviewer-worktree tree above.
+    # Measured on this merged tree with the scanner below, never summed by
+    # hand.
+    "core/orchestrator.py": 21762,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.
@@ -604,7 +636,18 @@ FROZEN_FILE_LINES = {
     # the attempt's tested commit via `latest_attempt_branch` and threads it
     # into `land_task(..., tested_commit_sha=tested)` (+1 net: 2 added lines,
     # 1 modified in place). Measured on this tree with the scanner below.
-    "cli/commands.py": 8423,
+    # 8423 -> 8495 (+72): `_land_one`'s already-satisfied branch now calls
+    # the shared `land_already_satisfied_claim` helper (`vcs/task_pr.py`)
+    # instead of unconditionally marking the task done, so a satisfying
+    # commit that lives only on the task branch gets landed through the
+    # normal PR/squash path rather than silently completing unmerged.
+    # Measured via `wc -l src/no_human/cli/commands.py`.
+    # 8423 -> 8427 (+4): the `bench` click group now self-marks every
+    # `nh bench …` subprocess with `os.environ.setdefault("NH_ENV", "bench")`
+    # (a comment + the setdefault call) so telemetry.environment() tags
+    # bench-fleet events "bench" instead of counting them as real installs.
+    # Measured on this tree with the scanner below.
+    "cli/commands.py": 8499,
     # api/app.py 5338 -> 5346 (+8): same budget-floor warning surfaced by
     # `send-back`/`reply` as `budget_warning` in the JSON response. Net cost
     # was trimmed from a naive +14 to +8 by computing `Bounds.from_config(...)`
@@ -707,7 +750,13 @@ FROZEN_FILE_LINES = {
     # Re-home merge 2026-09-04: the feasibility-hint + grill-eval carry
     # changes and the /api/worker/status stall fix now live on ONE tree.
     # Measured on this merged tree, never summed by hand.
-    "api/app.py": 5983,
+    # 5983 -> 6037 (+54): `approve_task`'s already-satisfied branch now
+    # calls the shared `land_already_satisfied_claim` helper
+    # (`vcs/task_pr.py`) instead of unconditionally marking the task done,
+    # so a satisfying commit that lives only on the task branch gets landed
+    # through the normal PR-merge path rather than silently completing
+    # unmerged. Measured via `wc -l src/no_human/api/app.py`.
+    "api/app.py": 6037,
     # +51: W5 active-time phase writer (phase instrumentation).
     # +84: `list_escalations`/`list_review_fails`/`list_tamper_trips` — the
     # three new failure-signal sources the recurring learning harvest mines.
@@ -784,7 +833,11 @@ FROZEN_FILE_LINES = {
     # `latest_review_verdict` rewritten to delegate to
     # `latest_review_attempt` so there is one ordering to maintain. Measured
     # on this tree with the scanner below, never summed by hand.
-    "core/db.py": 5082,
+    # 5082 -> 5092 (+10, rebased onto the above): `base_pin_sha` added to
+    # `Store._ensure_task_columns`'s `wanted` dict (attribution guard
+    # hardening) plus its explanatory comment. Measured on this merged tree
+    # with the scanner below.
+    "core/db.py": 5092,
     # +71: set_local_backend_fields — the config-write helper for the Settings
     # pane's local coder-backend fields (llm.local_model / llm.local_base_url).
     # +75: Codex account config helpers.

@@ -16,11 +16,21 @@ because an unlisted event is a privacy bug, not an operational hiccup.
 
 NEVER include: task ids, titles, repo names, paths, prompts, tokens. Props are
 validated against `_ALLOWED_EVENTS` — kind AND prop names are closed sets.
+
+Every event also carries `environment` (`real`/`bench`/`test`/`ci`/`dev`),
+classified fresh on each `record()` call by `environment()` — never
+suppressing an event, only tagging it so real installs are countable amid
+dogfood volume. `ensure_instance_id` mints and persists a real uuid4 ONLY for
+`real`/`dev` context (an actual install / a developer's own checkout); the
+`bench`/`test`/`ci` contexts instead reuse a fixed per-environment sentinel
+uuid4 from `_ENV_SENTINEL_IDS` so every bench run / pytest run / CI job
+collapses onto a handful of ids instead of minting a fresh one every time.
 """
 from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 import time
 from datetime import datetime, timezone
@@ -31,12 +41,29 @@ log = logging.getLogger(__name__)
 
 # Closed allowlist: event kind -> allowed prop names. Anything else raises.
 _ALLOWED_EVENTS: dict[str, frozenset[str]] = {
-    "app_started": frozenset(),
-    "task_created": frozenset({"source"}),
-    "task_completed": frozenset({"status", "duration_bucket", "attempts"}),
-    "task_failed": frozenset({"category"}),
-    "approve_clicked": frozenset(),
-    "feature_used": frozenset({"name"}),
+    "app_started": frozenset({"environment"}),
+    "task_created": frozenset({"source", "environment"}),
+    "task_completed": frozenset({"status", "duration_bucket", "attempts", "environment"}),
+    "task_failed": frozenset({"category", "environment"}),
+    "approve_clicked": frozenset({"environment"}),
+    "feature_used": frozenset({"name", "environment"}),
+}
+
+# Recognized CI platform markers (intake-resolved: covers ~95% of CI
+# deployments; more can be added here without touching the classification
+# logic in `environment()`).
+_CI_MARKERS = ("GITHUB_ACTIONS", "GITLAB_CI", "CIRCLECI", "TRAVIS", "JENKINS_HOME")
+
+_VALID_ENVIRONMENTS = frozenset({"real", "bench", "test", "ci", "dev"})
+
+# Fixed, hand-written, canonical version-4 uuids — one per non-"real"/"dev"
+# environment — so bench/test/ci runs collapse onto a handful of stable ids
+# instead of each minting (and persisting) a fresh uuid4. Never written to a
+# real user's config.yaml (see `ensure_instance_id`).
+_ENV_SENTINEL_IDS = {
+    "bench": "b0000000-0000-4000-8000-000000000001",
+    "test": "7e570000-0000-4000-8000-000000000002",
+    "ci": "c1000000-0000-4000-8000-000000000003",
 }
 
 # Mirror of the first-party Lambda's per-event validation. The Lambda
@@ -141,6 +168,74 @@ def enabled(config: dict[str, Any] | None = None) -> bool:
     return bool(section.get("enabled")) and _destination(section) is not None
 
 
+def _is_source_checkout() -> bool:
+    """True if this module is running from a git/pyproject source tree
+    rather than an installed package (site-packages/wheel) — a `.git`
+    directory or `pyproject.toml` within a few parents of this file."""
+    try:
+        here = Path(__file__).resolve()
+        for parent in list(here.parents)[:6]:
+            if (parent / ".git").exists() or (parent / "pyproject.toml").exists():
+                return True
+    except OSError:
+        pass
+    return False
+
+
+def _is_throwaway_home() -> bool:
+    """True if HOME looks like a disposable sandbox — a pytest tmp dir, a
+    CI runner's ephemeral home, or a git worktree checkout — rather than a
+    real user's persistent machine."""
+    try:
+        home = str(Path.home())
+        tmpdir = os.environ.get("TMPDIR", "")
+        if home.startswith("/tmp") or home.startswith("/var/tmp"):
+            return True
+        if tmpdir and home.startswith(tmpdir):
+            return True
+        if "pytest-of-" in home:
+            return True
+        if ".worktree" in home or "worktrees" in Path(home).parts:
+            return True
+    except OSError:
+        pass
+    return False
+
+
+def environment() -> str:
+    """Classify the running process for telemetry attribution.
+
+    Evaluated fresh on every call (never cached), so a monkeypatched env var
+    in a test takes effect immediately. Precedence, first match wins:
+
+    1. `NH_ENV`, if set to a recognized value — an explicit self-declaration
+       (e.g. the `bench` CLI group sets `NH_ENV=bench`).
+    2. `PYTEST_CURRENT_TEST` in the environment -> "test" (pytest sets this
+       natively for the duration of every test).
+    3. A recognized CI platform marker (`_CI_MARKERS`) -> "ci".
+    4. A source checkout (`.git`/`pyproject.toml` near this file) running
+       under a throwaway HOME (a sandbox/worktree, not a real machine)
+       -> "dev".
+    5. Otherwise -> "real".
+
+    Fail-open: any probe error falls through toward "real" rather than
+    raising — telemetry must never break the caller.
+    """
+    try:
+        forced = os.environ.get("NH_ENV", "")
+        if forced in _VALID_ENVIRONMENTS:
+            return forced
+        if "PYTEST_CURRENT_TEST" in os.environ:
+            return "test"
+        if any(os.environ.get(marker) for marker in _CI_MARKERS):
+            return "ci"
+        if _is_source_checkout() and _is_throwaway_home():
+            return "dev"
+    except Exception:
+        pass
+    return "real"
+
+
 def record(kind: str, config: dict[str, Any] | None = None, **props: Any) -> None:
     """Queue one telemetry event. No-op unless consented AND a destination
     resolves (`telemetry.endpoint`, else PostHog).
@@ -148,6 +243,10 @@ def record(kind: str, config: dict[str, Any] | None = None, **props: Any) -> Non
     Raises ``ValueError`` for a kind or prop name outside `_ALLOWED_EVENTS`
     (validated even when disabled — an unlisted event is a bug either way).
     Every other failure is swallowed: telemetry must never break the caller.
+
+    Stamps `environment` (see `environment()`) onto every event unless the
+    caller already passed one explicitly — never suppresses an event, only
+    tags it.
     """
     allowed = _ALLOWED_EVENTS.get(kind)
     if allowed is None:
@@ -160,6 +259,8 @@ def record(kind: str, config: dict[str, Any] | None = None, **props: Any) -> Non
         section = _conf(config)
         if not (bool(section.get("enabled")) and _destination(section)):
             return
+        props = {**props}
+        props.setdefault("environment", environment())
         # "name" is the QUEUE-LINE field (this on-disk contract, pinned by
         # test) — not the PostHog wire field, which is "event" (see
         # `_posthog_body`, :231). For the Lambda, "name" IS the wire field
@@ -203,6 +304,15 @@ def ensure_instance_id(section: dict[str, Any]) -> str:
     persistence keeps it stable across runs. Public because both the Lambda
     and PostHog code paths need it, and callers may want to ensure an id
     exists before enabling telemetry.
+
+    In `bench`/`test`/`ci` contexts (see `environment()`), a fresh uuid4
+    would mint on EVERY run — every pytest run, every bench replay, every CI
+    job — drowning real installs and making `instance_id` uncountable. Those
+    contexts instead reuse a fixed per-environment sentinel from
+    `_ENV_SENTINEL_IDS` and it is never persisted to config.yaml (persisting
+    a sentinel into a real user's config would permanently make that install
+    uncountable). `real`/`dev` contexts keep today's mint-and-persist path
+    unchanged.
     """
     import uuid
     raw = str(section.get("instance_id") or "")
@@ -216,6 +326,11 @@ def ensure_instance_id(section: dict[str, Any]) -> str:
             return str(parsed)
     except Exception:
         pass
+    env = environment()
+    sentinel = _ENV_SENTINEL_IDS.get(env)
+    if sentinel is not None:
+        section["instance_id"] = sentinel  # process-local only; never persisted
+        return sentinel
     minted = str(uuid.uuid4())
     section["instance_id"] = minted  # this process reuses it even if persist fails
     try:
@@ -249,6 +364,19 @@ def _posthog_body(section: dict[str, Any], events: list[dict[str, Any]],
         "api_key": str(section.get("posthog_publishable") or ""),
         "batch": batch,
     }
+
+
+def _strip_environment(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Drop `environment` from each event's props for the Lambda wire path.
+
+    The deployed ingestion Lambda validates prop KEYS against its own closed
+    allowlist and 400s the batch WHOLESALE on an unknown key; `environment`
+    is consumed by PostHog only until the server-side allowlist ships it too.
+    Shallow-copies — never mutates the queued event dicts (they may still be
+    re-flushed to a different destination, or re-read, after this call).
+    """
+    return [{**ev, "props": {k: v for k, v in ev.get("props", {}).items()
+                              if k != "environment"}} for ev in events]
 
 
 def flush(section: dict[str, Any] | None = None,
@@ -313,7 +441,7 @@ def flush(section: dict[str, Any] | None = None,
             body = json.dumps({
                 "instance_id": ensure_instance_id(section),
                 "version": __version__,
-                "events": events,
+                "events": _strip_environment(events),
             }).encode()
         import urllib.request
         req = urllib.request.Request(

@@ -196,6 +196,13 @@ async def test_an_abandoned_draft_does_not_block_completion(store, client):
             "ALREADY-SATISFIED\nCRITERION: x — MET — evidence: a.py:1",
         "pr_draft_created": url,
         "abandoned_pr_urls": [url],
+        # Satisfying commit reachable from origin/base — truly nothing to
+        # land; without this the landing classifier would re-derive from
+        # git and find no repo at the seeded `repo_path`, refusing.
+        "already_satisfied_landing": {
+            "on_base": True, "sha": "deadbeef", "branch": "",
+            "ship_ref": "origin/main",
+        },
     })
 
     r = await client.post(f"/api/tasks/{t.id}/approve")
@@ -213,6 +220,13 @@ async def test_a_genuinely_prless_claim_still_completes(store, client):
     t = await _seed(store, context={
         "already_satisfied_report":
             "ALREADY-SATISFIED\nCRITERION: x — MET — evidence: a.py:1",
+        # Satisfying commit reachable from origin/base — truly nothing to
+        # land; without this the landing classifier would re-derive from
+        # git and find no repo at the seeded `repo_path`, refusing.
+        "already_satisfied_landing": {
+            "on_base": True, "sha": "deadbeef", "branch": "",
+            "ship_ref": "origin/main",
+        },
     })
 
     r = await client.post(f"/api/tasks/{t.id}/approve")
@@ -281,7 +295,16 @@ async def test_a_refused_terminal_transition_writes_no_event(store):
 ])
 async def test_every_done_writer_leaves_a_task_event(store, client, scenario):
     if scenario == "api_approve_prless":
-        t = await _seed(store, context={"already_satisfied_report": "x"})
+        t = await _seed(store, context={
+            "already_satisfied_report": "x",
+            # Satisfying commit reachable from origin/base — truly nothing
+            # to land; without this the landing classifier would re-derive
+            # from git and find no repo at the seeded `repo_path`, refusing.
+            "already_satisfied_landing": {
+                "on_base": True, "sha": "deadbeef", "branch": "",
+                "ship_ref": "origin/main",
+            },
+        })
         before = len(await store.list_events(t.id))
         r = await client.post(f"/api/tasks/{t.id}/approve")
         assert r.status_code == 200

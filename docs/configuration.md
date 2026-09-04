@@ -673,20 +673,34 @@ by the browser:
 
 | Event | Channel | Props |
 |---|---|---|
-| `app_started` | server | — |
-| `task_created` | server | `source` |
-| `task_completed` | server | `status`, `duration_bucket`, `attempts` |
-| `task_failed` | server | `category` |
-| `approve_clicked` | server | — |
-| `feature_used` | server | `name` |
+| `app_started` | server | `environment` |
+| `task_created` | server | `source`, `environment` |
+| `task_completed` | server | `status`, `duration_bucket`, `attempts`, `environment` |
+| `task_failed` | server | `category`, `environment` |
+| `approve_clicked` | server | `environment` |
+| `feature_used` | server | `name`, `environment` |
 | `screen_viewed` | browser | `screen` (the lane name — `board`/`backlog`/`done`/`failed`/`stats`/`settings`/…, never content) |
 
+Every server event also carries `environment` (`real`/`bench`/`test`/`ci`/
+`dev`), classified fresh per event by `telemetry.environment()` — an
+explicit `NH_ENV` override, else `PYTEST_CURRENT_TEST`, else a recognized CI
+platform marker, else a source checkout under a throwaway HOME, else `real`.
+No event is ever suppressed or sampled on `environment` — it exists purely
+so real installs stay countable amid bench/pytest/CI dogfood volume. (The
+first-party ingestion Lambda strips `environment` before validating its own
+closed allowlist — PostHog, the default destination, is where it's read.)
+
 Both channels stamp every event with the same two identifiers: `instance_id`
-(a random uuid4 minted server-side on first consent, persisted in config —
-never minted in, or accepted from, the browser) and `app_version`. Person
-profiles are created (`person_profiles: "always"`), one per `instance_id`;
-no human identity (name, email, IP-derived identity) is ever attached — the
-board never calls PostHog's `identify()`.
+and `app_version`. For a `real`/`dev` context, `instance_id` is a random
+uuid4 minted server-side on first consent and persisted in config — never
+minted in, or accepted from, the browser. For `bench`/`test`/`ci` contexts,
+`instance_id` is instead a fixed, per-environment sentinel uuid4 that is
+never persisted to config.yaml — otherwise every bench replay, pytest run,
+and CI job would each mint (and permanently keep) its own id, diluting real
+installs into unrecoverable noise. Person profiles are created
+(`person_profiles: "always"`), one per `instance_id`; no human identity
+(name, email, IP-derived identity) is ever attached — the board never calls
+PostHog's `identify()`.
 
 **Autocapture and the browser's implicit/element channels are on.**
 `autocapture`, `capture_pageview`, `capture_pageleave`, `capture_dead_clicks`,

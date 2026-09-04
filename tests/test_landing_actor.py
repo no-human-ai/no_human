@@ -135,7 +135,16 @@ async def test_finish_review_records_actor(client, store):
 async def test_approve_already_satisfied_records_actor(client, store):
     # already-satisfied report + no PR -> the approve route completes here
     # with an `approved_already_satisfied` event.
-    t = await _seed(store, context={"already_satisfied_report": "nothing to change"})
+    t = await _seed(store, context={
+        "already_satisfied_report": "nothing to change",
+        # Satisfying commit reachable from origin/base — truly nothing to
+        # land; without this the landing classifier would re-derive from
+        # git and find no repo at the seeded `repo_path`, refusing.
+        "already_satisfied_landing": {
+            "on_base": True, "sha": "deadbeef", "branch": "",
+            "ship_ref": "origin/main",
+        },
+    })
     r = await client.post(f"/api/tasks/{t.id}/approve")
     assert r.status_code == 200, r.text
     ev = [e for e in await store.list_events(t.id)

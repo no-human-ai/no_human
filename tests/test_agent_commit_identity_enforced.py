@@ -559,3 +559,260 @@ def test_no_doc_or_docstring_claims_forgery_is_impossible():
     _assert_only_honest_disclaimer(
         section, "does not and cannot make forging the identity impossible"
     )
+
+
+# --------------------------------------------------------------------------- #
+# (8) — the base-pin exclusion: pinned ONCE before the coder session, never   #
+# re-read at gate time                                                        #
+# --------------------------------------------------------------------------- #
+
+
+def test_forged_commit_non_main_base_not_laundered(tmp_path):
+    """AC #1 (the primary finding). The exclusion root MUST be a sha pinned
+    once, before the coder session starts (`_run_attempt` calls
+    `repo.ls_remote_exact` right after `_protect_base_branch` and threads the
+    result through as `base_pin`) — never a sha re-read from the remote at
+    gate time. A coder that force-pushes a forged-identity commit straight to
+    `refs/heads/develop` on the remote (the pre-push hook only protects
+    `git.never_push_to`, and `develop` is not on it unless
+    `_protect_base_branch` is told about it separately — see
+    `test_protect_base_branch_hook_covers_base` for that half) must not get
+    that commit laundered through the exclusion window just because a LATER
+    read of `origin/develop` would now return the forged commit's own sha as
+    the base tip.
+
+    RED on base: `_foreign_authored_commits` accepts no `base_pin` keyword on
+    base — this call raises `TypeError` there."""
+    bare = tmp_path / "origin.git"
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(bare)],
+                    check=True, capture_output=True)
+
+    work = tmp_path / "work"
+    work.mkdir()
+    _git(work, "init", "-q", "-b", "main")
+    _git(work, "config", "user.email", _OPERATOR_EMAIL)
+    _git(work, "config", "user.name", _OPERATOR_NAME)
+    (work / "f.txt").write_text("base\n")
+    _git(work, "add", "-A")
+    _git(work, "commit", "-q", "-m", "init")
+    _git(work, "remote", "add", "origin", str(bare))
+    _git(work, "push", "-q", "origin", "main")
+
+    _git(work, "checkout", "-q", "-b", "develop")
+    (work / "f.txt").write_text("develop base\n")
+    _git(work, "commit", "-q", "-am", "develop base")
+    _git(work, "push", "-q", "origin", "develop")
+
+    repo = GitRepo(work)
+    # The pin: captured ONCE, before the "coder session" (the attack below) —
+    # exactly what `_run_attempt` does right after `_protect_base_branch`.
+    pinned_before_attack = repo.ls_remote_exact("refs/heads/develop")
+    assert pinned_before_attack == _git(work, "rev-parse", "develop")
+
+    # The attempt's own branch, cut from develop BEFORE the attack — `since`
+    # at the real call site is this branch's tip at the start of the attempt.
+    _git(work, "checkout", "-q", "-b", "nh/attempt-1")
+    since_sha = _git(work, "rev-parse", "nh/attempt-1")
+
+    # The attack: a forged-identity commit pushed straight to origin's
+    # `refs/heads/develop` — the direct-push-to-base hole.
+    _git(work, "checkout", "-q", "develop")
+    (work / "f.txt").write_text("forged\n")
+    _git(work, "-c", f"user.name={_OPERATOR_NAME}",
+         "-c", f"user.email={_OPERATOR_EMAIL}",
+         "commit", "-q", "-am", "forged commit",
+         "--author", "Mallory <mallory@evil.example>")
+    forged_sha = _git(work, "rev-parse", "develop")
+    _git(work, "push", "-q", "origin", "develop")
+
+    # A LATER read of the remote now returns the forged commit's own sha —
+    # exactly what a gate-time re-read (instead of trusting the pin) would
+    # see.
+    read_after_attack = repo.ls_remote_exact("refs/heads/develop")
+    assert read_after_attack == forged_sha
+
+    # The forged commit reaches the attempt's own HEAD ancestry — a merge
+    # during the coder session, exactly as `_base_exclusion_refs`'s
+    # docstring describes.
+    _git(work, "checkout", "-q", "nh/attempt-1")
+    _git(work, "merge", "-q", "--no-ff", "-m", "merge develop", "develop")
+
+    orch = _orch(tmp_path)
+
+    offenders_with_pin = orch._foreign_authored_commits(
+        repo, "develop", since=since_sha, base_pin=pinned_before_attack,
+    )
+    assert any(forged_sha[:8] in o for o in offenders_with_pin), (
+        "the forged commit must remain an offender when the exclusion root "
+        "is the sha pinned BEFORE the attack"
+    )
+
+    offenders_with_fresh_read = orch._foreign_authored_commits(
+        repo, "develop", since=since_sha, base_pin=read_after_attack,
+    )
+    assert not any(forged_sha[:8] in o for o in offenders_with_fresh_read), (
+        "sanity check: a gate-time re-read WOULD have laundered the forged "
+        "commit through the exclusion window — this is the exact bug this "
+        "fix closes; base_pin must never be that fresh read"
+    )
+
+
+def test_base_commits_are_excluded_for_main(tmp_path):
+    """Backward compatibility. Passing a valid `base_pin` for `base="main"`
+    must not change the outcome from the pre-existing `_review_base` fallback
+    (`merge-base(base, HEAD)..HEAD`) — both already exclude main's own
+    history, and an honest agent commit on top must still pass clean."""
+    work = _repo_on_main(tmp_path)
+    (work / "f.txt").write_text("honest\n")
+    env = {**os.environ, **_AGENT_ENV}
+    subprocess.run(["git", "commit", "-am", "honest"], cwd=work, env=env,
+                    check=True, capture_output=True, text=True)
+
+    repo = GitRepo(work)
+    pinned = _git(work, "rev-parse", "main")
+
+    orch = _orch(tmp_path)
+    offenders = orch._foreign_authored_commits(repo, "main", base_pin=pinned)
+    assert offenders == []
+
+
+def test_no_pin_means_no_exclusion_and_warns(caplog, tmp_path):
+    """Fail-closed on both flavors of "no usable pin": `pinned=None` (the
+    remote was unreachable, the ref didn't exist, or the read was ambiguous)
+    excludes nothing, silently — that IS the expected shape for a repo with
+    no remote at all. A pin that IS given but whose sha cannot be read
+    locally (stale, bogus, tampered) also excludes nothing, but this one
+    logs a WARNING — an operator-visible signal that the gate ran with a
+    wider window than intended, not a quiet fallback."""
+    work = _repo_on_main(tmp_path)
+    repo = GitRepo(work)
+    orch = _orch(tmp_path)
+
+    assert orch._base_exclusion_refs(repo, None) == []
+    assert not any("base_pin" in r.getMessage() for r in caplog.records)
+
+    caplog.clear()
+    bogus = "deadbeef" * 5
+    assert orch._base_exclusion_refs(repo, bogus) == []
+    assert any(
+        "base_pin" in r.getMessage() and bogus in r.getMessage()
+        for r in caplog.records
+    ), caplog.text
+
+
+def test_decoy_remote_ref_does_not_become_the_exclusion_root(tmp_path):
+    """This test passes on main because main has no exclusion window (no
+    commits to exclude) — it pins the behaviour of the exclusion introduced
+    here: even with a decoy ref present on the remote (one that tail-matches
+    `refs/heads/main` the way `git ls-remote` matches trailing path
+    components — see `tests/test_vcs_git_ls_remote_exact.py`), the pin
+    resolved for `main` and used as the exclusion root is main's own real
+    tip, never the decoy's."""
+    bare = tmp_path / "origin.git"
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(bare)],
+                    check=True, capture_output=True)
+    work = _repo_on_main(tmp_path)
+    _git(work, "remote", "add", "origin", str(bare))
+    _git(work, "push", "-q", "origin", "main")
+
+    decoy_ref = "refs/heads/x/refs/heads/main"
+    _git(work, "update-ref", decoy_ref, "nh/attempt-1")
+    _git(work, "push", "-q", "origin", f"{decoy_ref}:{decoy_ref}")
+
+    repo = GitRepo(work)
+    pinned = repo.ls_remote_exact("refs/heads/main")
+    assert pinned == _git(work, "rev-parse", "main")
+
+    orch = _orch(tmp_path)
+    offenders = orch._foreign_authored_commits(repo, "main", base_pin=pinned)
+    assert offenders == []
+    assert orch._base_exclusion_refs(repo, pinned) == [pinned]
+
+
+def test_moved_local_refs_do_not_move_the_exclusion_root(tmp_path):
+    """This test passes on main because main has no exclusion window (no
+    commits to exclude) — it pins the behaviour of the exclusion introduced
+    here: `_base_exclusion_refs` is handed a SHA, never a ref name, so
+    nothing that happens to the local `main` ref afterward — a further
+    commit, a reset, a stray `git update-ref` — can change what gets
+    excluded once the pin is captured."""
+    work = _repo_on_main(tmp_path)
+    repo = GitRepo(work)
+    pinned = _git(work, "rev-parse", "main")
+
+    _git(work, "checkout", "-q", "main")
+    (work / "f.txt").write_text("moved\n")
+    _git(work, "commit", "-q", "-am", "main moved locally")
+    moved_main = _git(work, "rev-parse", "main")
+    assert moved_main != pinned
+    _git(work, "checkout", "-q", "nh/attempt-1")
+
+    orch = _orch(tmp_path)
+    assert orch._base_exclusion_refs(repo, pinned) == [pinned]
+    assert orch._base_exclusion_refs(repo, moved_main) == [moved_main]
+
+
+def test_commit_identities_blocks_injection(tmp_path):
+    """`exclude=` must never let a future caller smuggle a git OPTION into
+    `commit_identities`'s argv. Every entry is validated as bare hex before
+    it reaches git at all — an injection-shaped string is rejected with
+    `GitError`, never passed through."""
+    work = _repo_on_main(tmp_path)
+    repo = GitRepo(work)
+    pwn = tmp_path / "pwn"
+    injected = [
+        "--upload-pack=evil",
+        "-oProxyCommand=evil",
+        "not-hex-at-all",
+        "--all",
+        "--graph",
+        "-c",
+        f"--output={pwn}",
+        "main",
+        "abc; rm -rf /",
+    ]
+    for bad in injected:
+        with pytest.raises(GitError):
+            repo.commit_identities("main", exclude=[bad])
+    assert not pwn.exists(), (
+        "an injected --output= flag must never reach git and write a file"
+    )
+
+    valid_sha = _git(work, "rev-parse", "main")
+    assert repo.commit_identities("main", exclude=[valid_sha]) == []
+
+
+def test_commit_identities_puts_exclude_shas_before_the_trailing_dashdash(
+    monkeypatch, tmp_path,
+):
+    """The `^sha` exclusion revs must appear BEFORE the trailing `--`, never
+    after — `--` starts the pathspec list in `git log`, so a sha placed
+    after it becomes a path filter instead of an ancestry exclusion (a
+    silent no-op, and a laundering hole of its own)."""
+    work = _repo_on_main(tmp_path)
+    repo = GitRepo(work)
+    sha1 = _git(work, "rev-parse", "main")
+    _git(work, "checkout", "-q", "-b", "nh/second", "main")
+    (work / "g.txt").write_text("more\n")
+    _git(work, "add", "g.txt")
+    _git(work, "commit", "-q", "-m", "second")
+    sha2 = _git(work, "rev-parse", "HEAD")
+
+    captured: list[str] = []
+    real_run = GitRepo._run
+
+    def spy(self, *args, **kwargs):
+        captured.append(args)
+        return real_run(self, *args, **kwargs)
+
+    monkeypatch.setattr(GitRepo, "_run", spy)
+    repo.commit_identities("main", exclude=[sha1, sha2])
+
+    assert len(captured) == 1
+    argv = captured[0]
+    assert argv[-1] == "--", "the trailing '--' must be the last argument"
+    dashdash_index = len(argv) - 1
+    assert f"^{sha1}" in argv[:dashdash_index]
+    assert f"^{sha2}" in argv[:dashdash_index]
+    assert argv.index(f"^{sha1}") < dashdash_index
+    assert argv.index(f"^{sha2}") < dashdash_index
