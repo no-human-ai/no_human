@@ -3,6 +3,9 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { modelsPanelView, pendingBody, resetBody, applyError, reviewerBackendView } from "./modelsPanelView.js";
 
+// 6d part 3: reviewer-backend visual proof is delivered via the hermetic UI
+// walk (.no_human/ui_evidence.json) driving web/e2e/models-pane.mjs's
+// --evidence-server fixture; this file's own coverage is unchanged.
 // One fixture payload shared by every test below — the shape GET /api/models
 // actually returns (see core/model_settings.py::models_payload). Nothing in
 // this file invents an id, price, default or rule string of its own; every
