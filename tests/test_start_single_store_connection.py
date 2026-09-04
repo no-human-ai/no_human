@@ -76,10 +76,10 @@ def test_start_go_opens_exactly_one_store_connection():
 
 
 @pytest.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "no_human.db").connect()
-    yield s
-    await s.close()
+async def store(store_factory):
+    # Variant: test_two_independent_connections_race_on_the_same_file (below)
+    # opens tmp_path/"no_human.db" directly, so the filename is load-bearing.
+    return await store_factory("no_human.db")
 
 
 async def test_two_independent_connections_race_on_the_same_file(tmp_path):

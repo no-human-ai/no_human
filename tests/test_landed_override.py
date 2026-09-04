@@ -126,13 +126,6 @@ def _repo_stacked_base(tmp_path, name="repo"):
     return repo, landed_sha
 
 
-@pytest_asyncio.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "nh.db").connect()
-    yield s
-    await s.close()
-
-
 async def _seed(store, repo_path, *, base_branch="main", pr_branch="feature",
                 status=TaskStatus.AWAITING_APPROVAL) -> Task:
     t = Task.new("landed-override-check", repo_path=str(repo_path))

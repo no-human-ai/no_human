@@ -16,7 +16,6 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from no_human.api.app import app
-from no_human.core.db import Store
 from no_human.eval.northstar import BenchScore
 from no_human.eval.northstar_card import NorthStarCard
 
@@ -35,21 +34,20 @@ def _score(task_id: str, *, nh_tokens: int = 20_000, status: str = "done",
 
 
 @pytest_asyncio.fixture
-async def client(tmp_path, monkeypatch):
+async def client(store_factory, tmp_path, monkeypatch):
     from no_human.config import load_config
     import no_human.eval.northstar_card as nc
 
     results = tmp_path / "results"
     results.mkdir()
     monkeypatch.setattr(nc, "RESULTS_DIR", results)
-    store = await Store(tmp_path / "test.db").connect()
+    store = await store_factory("test.db")
     app.state.store = store
     app.state.config = load_config(tmp_path / "config.yaml")
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://localhost") as c:
         c.results = results        # type: ignore[attr-defined]
         yield c
-    await store.close()
 
 
 @pytest.mark.asyncio

@@ -9,7 +9,6 @@ import logging
 import httpx
 import pytest
 
-from no_human.core.db import Store
 from no_human.core.task import Task, TaskStatus
 from no_human.intake.linear import (
     API_URL,
@@ -659,13 +658,6 @@ class _FakeAdapter:
 
     def state_type(self, issue_id):
         return self.state_types.get(issue_id, "backlog")
-
-
-@pytest.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "t.db").connect()
-    yield s
-    await s.close()
 
 
 @pytest.mark.asyncio

@@ -10,10 +10,10 @@ from no_human.core.task import IllegalTransition, Task, TaskStatus
 
 
 @pytest.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "t.db").connect()
-    yield s
-    await s.close()
+async def store(store_factory):
+    # Variant: several tests below (lines ~648/690/740) open tmp_path/"t.db"
+    # directly via their own Store connections, so the filename is load-bearing.
+    return await store_factory("t.db")
 
 
 async def test_create_and_get(store):

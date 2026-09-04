@@ -18,15 +18,7 @@ from datetime import datetime, timezone
 import pytest
 
 from no_human.blockers.wake import WakeWatcher
-from no_human.core.db import Store
 from no_human.core.task import Task, TaskStatus
-
-
-@pytest.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "stall.db").connect()
-    yield s
-    await s.close()
 
 
 def _cfg():

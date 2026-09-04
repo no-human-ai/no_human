@@ -23,7 +23,7 @@ from no_human.review.reviewer import ReviewerUnavailable
 from no_human.review.verifiers import Verifier, run_verifiers
 from no_human.vcs.git import GitRepo
 
-from .test_e2e_orchestrator import FakeBackend, _config, _git, bare_repo, store  # noqa: F401
+from .test_e2e_orchestrator import FakeBackend, _config, _git, bare_repo  # noqa: F401
 from .test_verifiers_gate import (
     FakeReviewer, VERIFIER_YAML, _ok_json_for, _orch, _repo_with_a_verifier,
 )

@@ -19,13 +19,6 @@ from no_human.core.pricing import BUDGET_UNIT_KEY, WEIGHTED_UNIT, weighted_token
 from no_human.core.task import Task, TaskStatus
 
 
-@pytest.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "nh.db").connect()
-    yield s
-    await s.close()
-
-
 def _orch(store, cfg_extra=None, *, config=None):
     """A minimal orchestrator: only .store, .bounds, .config and .emit are
     exercised.

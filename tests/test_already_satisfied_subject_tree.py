@@ -8,7 +8,6 @@ import pytest
 
 from no_human.agent.claude_backend import AgentResult
 from no_human.config import load_config
-from no_human.core.db import Store
 from no_human.core.orchestrator import Orchestrator
 from no_human.core.task import Task, TaskStatus
 from no_human.notify.slack import SlackNotifier
@@ -37,13 +36,6 @@ def bare_repo(tmp_path):
     _git(work, "remote", "add", "origin", str(bare))
     _git(work, "push", "-u", "origin", "main")
     return work
-
-
-@pytest.fixture
-async def store(tmp_path):
-    result = await Store(tmp_path / "nh.db").connect()
-    yield result
-    await result.close()
 
 
 def _config(tmp_path):

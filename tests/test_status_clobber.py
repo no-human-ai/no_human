@@ -28,13 +28,6 @@ from no_human.intake.jira_poll import JiraPoller
 pytestmark = pytest.mark.asyncio
 
 
-@pytest.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "t.db").connect()
-    yield s
-    await s.close()
-
-
 # --------------------------------------------------------------------------- #
 # 1. Store: only set_status moves status                                       #
 # --------------------------------------------------------------------------- #

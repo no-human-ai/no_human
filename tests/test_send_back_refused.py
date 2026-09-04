@@ -102,13 +102,6 @@ def _config(tmp_path):
     return cfg
 
 
-@pytest.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "nh.db").connect()
-    yield s
-    await s.close()
-
-
 async def _spend(store, task_id, attempts, tokens_each):
     """Copied from test_lifetime_budget.py: burns `attempts` attempt rows,
     each with `tokens_each` raw tokens split fresh/cache-read, so the

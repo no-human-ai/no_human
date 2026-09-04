@@ -22,9 +22,9 @@ TOKEN = "sk-ant-oat01-EXAMPLE-not-a-real-token"
 
 
 @pytest_asyncio.fixture
-async def client(tmp_path, monkeypatch):
+async def client(store_factory, tmp_path, monkeypatch):
     from no_human.config import load_config
-    store = await Store(tmp_path / "test.db").connect()
+    store = await store_factory("test.db")
     app.state.store = store
     app.state.config = load_config(tmp_path / "config.yaml")
     monkeypatch.setattr("no_human.config.ENV_PATH", tmp_path / ".env")
@@ -49,7 +49,6 @@ async def client(tmp_path, monkeypatch):
     async with AsyncClient(transport=transport, base_url="http://localhost",
                            headers={"Origin": "http://127.0.0.1:8420"}) as c:
         yield c
-    await store.close()
 
 
 # ------------------------------ GET status -------------------------------- #
@@ -375,12 +374,12 @@ async def test_a_lookalike_origin_is_refused(client, tmp_path, origin):
 
 
 @pytest.mark.asyncio
-async def test_a_write_with_no_origin_is_refused(tmp_path, monkeypatch):
+async def test_a_write_with_no_origin_is_refused(store_factory, tmp_path, monkeypatch):
     """A browser always sends Origin cross-site, so refusing its ABSENCE costs
     the real UI nothing and closes the one case a local malicious process or a
     rebinding proxy would otherwise walk through unchecked."""
     from no_human.config import load_config
-    store = await Store(tmp_path / "test.db").connect()
+    store = await store_factory("test.db")
     app.state.store = store
     app.state.config = load_config(tmp_path / "config.yaml")
     monkeypatch.setattr("no_human.config.ENV_PATH", tmp_path / ".env")
@@ -390,7 +389,6 @@ async def test_a_write_with_no_origin_is_refused(tmp_path, monkeypatch):
     async with AsyncClient(transport=transport, base_url="http://localhost") as c:
         r = await c.put("/api/auth/token",
                         json={"profile": "personal", "token": TOKEN})
-    await store.close()
     assert r.status_code == 403
     assert not (tmp_path / ".env").exists()
 

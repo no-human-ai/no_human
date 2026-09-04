@@ -33,7 +33,6 @@ import pytest
 import pytest_asyncio
 
 from no_human.core.bounds import Bounds
-from no_human.core.db import Store
 from no_human.core.task import Task
 from no_human.core.prompt_blocks import (
     build_distilled_state,
@@ -44,13 +43,6 @@ from no_human.learning import LearningQueue
 from no_human.review.reviewer import ChecklistItem, ReviewDecision
 
 REPO = "/tmp/repo-review-currency"
-
-
-@pytest_asyncio.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "currency.db").connect()
-    yield s
-    await s.close()
 
 
 def _decision(passed, blocking=(), advisory=()):

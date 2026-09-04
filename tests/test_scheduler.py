@@ -21,13 +21,6 @@ from no_human.core.scheduler import Scheduler
 from no_human.core.task import Task, TaskStatus
 
 
-@pytest.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "nh.db").connect()
-    yield s
-    await s.close()
-
-
 async def _age_row(store: Store, task_id: str, seconds: float = 3600) -> None:
     """Back-date a row's `updated_at` so it clears `Scheduler._row_is_live`'s
     grace window before an orphan-recovery test calls `_recover_orphans`.

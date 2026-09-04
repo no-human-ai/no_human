@@ -78,13 +78,6 @@ def bare_repo(tmp_path):
 
 
 @pytest_asyncio.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "nh.db").connect()
-    yield s
-    await s.close()
-
-
-@pytest_asyncio.fixture
 async def client(store, tmp_path):
     app.state.store = store
     app.state.config = load_config(tmp_path / "cfg.yaml")

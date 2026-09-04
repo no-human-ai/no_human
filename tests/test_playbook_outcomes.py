@@ -2,18 +2,9 @@
 
 from __future__ import annotations
 
-import pytest
 
-from no_human.core.db import Store
 from no_human.core.metrics import playbook_outcomes
 from no_human.core.task import Task, TaskStatus
-
-
-@pytest.fixture
-async def store():
-    s = await Store(":memory:").connect()
-    yield s
-    await s.close()
 
 
 async def _task_with_playbook(store, name: str, status: TaskStatus, tokens: int):

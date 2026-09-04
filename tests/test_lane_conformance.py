@@ -32,7 +32,6 @@ from httpx import AsyncClient, ASGITransport
 
 from no_human.core.lanes import LANE_KEYS, LANE_STATUSES, is_waiting, lane_for
 from no_human.core.task import Task, TaskStatus
-from no_human.core.db import Store
 from no_human.api.app import app
 from no_human.api.models import TaskSummaryOut
 
@@ -305,12 +304,6 @@ def test_a_summary_built_outside_the_board_path_carries_no_lane():
 # --------------------------------------------------------------------------- #
 # The board endpoint ships the lane                                            #
 # --------------------------------------------------------------------------- #
-
-@pytest_asyncio.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "lanes.db").connect()
-    yield s
-    await s.close()
 
 
 @pytest_asyncio.fixture

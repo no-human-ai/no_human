@@ -107,13 +107,6 @@ class _NoBackend:
         raise AssertionError("the coder backend should not run in this test")
 
 
-@pytest_asyncio.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "nh.db").connect()
-    yield s
-    await s.close()
-
-
 def _orch(store, tmp_path, backend=None):
     cfg = load_config(tmp_path / "config.yaml")
     cfg.data.setdefault("planning", {})["enabled"] = False

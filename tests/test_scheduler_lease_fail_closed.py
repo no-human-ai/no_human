@@ -41,13 +41,6 @@ from no_human.core.scheduler import (
 pytestmark = pytest.mark.asyncio
 
 
-@pytest.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "t.db").connect()
-    yield s
-    await s.close()
-
-
 class _NeverRunOrch:
     async def run_task(self, task):  # pragma: no cover - dispatch must not run
         raise AssertionError("dispatch must not run in these tests")

@@ -18,7 +18,6 @@ from __future__ import annotations
 import pytest
 import pytest_asyncio
 
-from no_human.core.db import Store
 from no_human.core.task import Task
 from no_human.learning import (
     CONFIRMED_BY_AUTO,
@@ -30,13 +29,6 @@ from no_human.learning import (
 from no_human.vcs.pr_outcome import CLOSED_UNMERGED, MERGED, OPEN
 
 REPO = "/tmp/repo-d3m1"
-
-
-@pytest_asyncio.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "d3m1.db").connect()
-    yield s
-    await s.close()
 
 
 def _findings(label="image pinning"):

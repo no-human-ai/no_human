@@ -40,7 +40,6 @@ from .test_e2e_orchestrator import (  # noqa: F401
     _config,
     _git,
     bare_repo,
-    store,
 )
 
 PYTEST = f"{sys.executable} -m pytest -q"

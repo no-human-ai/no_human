@@ -27,7 +27,6 @@ import pytest
 from no_human.agent.claude_backend import AgentEvent, AgentResult
 from no_human.config import load_config
 from no_human.core import orchestrator as orch_mod
-from no_human.core.db import Store
 from no_human.core.orchestrator import Orchestrator
 from no_human.core.task import Task, TaskStatus
 from no_human.notify.slack import SlackNotifier
@@ -63,13 +62,6 @@ def repo_env(tmp_path):
     _git(work, "remote", "add", "origin", str(origin))
     _git(work, "push", "-q", "origin", "main")
     return {"origin": origin, "work": work, "tmp_path": tmp_path}
-
-
-@pytest.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "nh.db").connect()
-    yield s
-    await s.close()
 
 
 class FakeBackend:

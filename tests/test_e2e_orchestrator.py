@@ -16,7 +16,6 @@ from types import SimpleNamespace as _SimpleNamespace
 from no_human.agent.claude_backend import AgentEvent, AgentResult
 from no_human.cli.commands import _review_pass_evidence
 from no_human.config import load_config
-from no_human.core.db import Store
 from no_human.core.orchestrator import (
     Orchestrator, _REFORMAT_NUDGE, _REFORMAT_NUDGE_MARKER,
 )
@@ -96,13 +95,6 @@ def _config(tmp_path):
     # tests/test_blocker_challenge.py with the advisory seam patched.
     cfg.data.setdefault("blockers", {})["challenge"] = False
     return cfg
-
-
-@pytest.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "nh.db").connect()
-    yield s
-    await s.close()
 
 
 async def test_full_pipeline_opens_local_pr(bare_repo, tmp_path, store):

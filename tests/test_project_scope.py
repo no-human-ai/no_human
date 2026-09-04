@@ -42,13 +42,6 @@ CLEAN_URL = "https://example.com/team/repo.git"
 CRED_URL = "https://alice:s3kr1t-token@example.com/team/repo.git"
 
 
-@pytest_asyncio.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "b4.db").connect()
-    yield s
-    await s.close()
-
-
 def _git_repo(path, remote_url=None):
     """A real git repo at *path*, optionally with an `origin` remote — the
     resolution path under test shells out to real git."""

@@ -1,16 +1,7 @@
 """ProjectProfile: YAML round-trip, readiness gate, and SQLite mirror."""
 
-import pytest
 
-from no_human.core.db import Store
 from no_human.profile import PROFILE_RELPATH, ProjectProfile, apply_default_task_config
-
-
-@pytest.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "t.db").connect()
-    yield s
-    await s.close()
 
 
 def _sample(repo_path):

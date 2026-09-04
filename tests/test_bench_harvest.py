@@ -10,19 +10,9 @@ curated file.
 
 import yaml
 
-from no_human.core.db import Store
 from no_human.core.task import Task, TaskStatus
 from no_human.eval.harvest import (HARVEST_STATUSES, candidate_from_task,
                                    harvest)
-
-import pytest
-
-
-@pytest.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "nh.db").connect()
-    yield s
-    await s.close()
 
 
 def _escalated_task():

@@ -18,8 +18,7 @@ from no_human.core.orchestrator import Orchestrator
 from no_human.core.task import Task, TaskStatus
 from no_human.notify.slack import SlackNotifier
 
-from .test_e2e_orchestrator import (BlockerBackend, _config, bare_repo,  # noqa: F401
-                                    store)
+from .test_e2e_orchestrator import BlockerBackend, _config, bare_repo  # noqa: F401
 
 _AMBIGUITY_JSON = (
     '{"category": "AMBIGUITY", "confidence": 0.9, '

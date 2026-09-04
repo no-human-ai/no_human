@@ -33,7 +33,6 @@ from no_human.agent import claude_backend
 from no_human.agent.claude_backend import AgentResult, ClaudeBackend
 from no_human.config import load_config
 from no_human.core.bounds import QuotaExhausted
-from no_human.core.db import Store
 from no_human.core.infra_breaker import infra_breaker
 from no_human.core.orchestrator import Orchestrator
 from no_human.core.scheduler import Scheduler
@@ -52,13 +51,6 @@ def _clean_infra_breaker_singleton():
     infra_breaker().reset()
     yield
     infra_breaker().reset()
-
-
-@pytest.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "nh.db").connect()
-    yield s
-    await s.close()
 
 
 def _git(cwd, *args):

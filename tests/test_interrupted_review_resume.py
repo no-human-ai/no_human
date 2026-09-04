@@ -24,7 +24,7 @@ from no_human.core.task import Task, TaskStatus
 from no_human.notify.slack import SlackNotifier
 
 from .test_e2e_orchestrator import (  # noqa: F401
-    _config, _git, bare_repo, store, FakeReviewer, ReviewDecision, ChecklistItem,
+    _config, _git, bare_repo, FakeReviewer, ReviewDecision, ChecklistItem,
 )
 from .test_resume_wiring import ScriptedBackend, _ok  # noqa: F401
 

@@ -23,7 +23,6 @@ never passes unreviewed either way.
 from datetime import datetime, timedelta, timezone
 
 import pytest
-import pytest_asyncio
 
 from no_human.agent.claude_backend import AgentResult
 from no_human.blockers.taxonomy import BlockerCategory
@@ -107,15 +106,6 @@ async def _real_reason(text: str, tmp_path, *, stop_reason: str = "error") -> st
 # --------------------------------------------------------------------------- #
 # harness — the real store, the real `_raise_blocker`, the real watcher.        #
 # --------------------------------------------------------------------------- #
-
-
-@pytest_asyncio.fixture
-async def store(tmp_path):
-    from no_human.core.db import Store
-
-    s = await Store(tmp_path / "infra_park.db").connect()
-    yield s
-    await s.close()
 
 
 def _orch_with(store, notes):

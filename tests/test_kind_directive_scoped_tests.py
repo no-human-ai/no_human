@@ -30,15 +30,6 @@ REPO_WIDE_PHRASES = (
 )
 
 
-@pytest.fixture
-async def store():
-    from no_human.core.db import Store
-
-    s = await Store(":memory:").connect()
-    yield s
-    await s.close()
-
-
 def _directive(orch, kind, tmp_path):
     t = Task.new(f"do a {kind} thing", repo_path=str(tmp_path))
     t.kind = kind

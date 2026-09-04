@@ -54,7 +54,6 @@ from tests.test_infra_not_work import (  # noqa: F401 — fixtures re-exported o
     _incident_result,
     _run_one_attempt,
     bare_repo,
-    store,
 )
 
 # The CLI leg goes through `nh task pause`, which (like every test in

@@ -27,14 +27,13 @@ LOCAL = "http://localhost:8420"
 
 
 @pytest_asyncio.fixture
-async def client(tmp_path):
-    store = await Store(tmp_path / "b.db").connect()
+async def client(store_factory, tmp_path):
+    store = await store_factory("b.db")
     app.state.store = store
     app.state.config = load_config(tmp_path / "config.yaml")
     async with AsyncClient(transport=ASGITransport(app=app),
                            base_url="http://localhost") as c:
         yield c
-    await store.close()
 
 
 def _rule(title):

@@ -23,8 +23,6 @@ import pytest
 from no_human.core.orchestrator import Orchestrator
 from no_human.core.task import Task
 
-from .test_e2e_orchestrator import store  # noqa: F401
-
 
 def _git(cwd, *args):
     subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True)

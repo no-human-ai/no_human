@@ -11,16 +11,8 @@ from datetime import datetime, timezone
 import pytest
 
 from no_human.blockers.wake import WakeWatcher
-from no_human.core.db import Store
 from no_human.core.task import Task, TaskStatus
 from no_human.vcs import derived_conflict as dc
-
-
-@pytest.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "nh.db").connect()
-    yield s
-    await s.close()
 
 
 @pytest.fixture(autouse=True)

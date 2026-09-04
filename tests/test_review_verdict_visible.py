@@ -32,7 +32,7 @@ from no_human.notify.slack import SlackNotifier
 from no_human.review.reviewer import ReviewDecision, findings_from_checklist
 from no_human.review.selfcheck import ChecklistItem
 
-from .test_e2e_orchestrator import FakeBackend, _config, bare_repo, store  # noqa: F401
+from .test_e2e_orchestrator import FakeBackend, _config, bare_repo  # noqa: F401
 from .test_cli_commands import _make_runner, _seed_attempt, _seed_task
 
 

@@ -5,17 +5,8 @@ relation `core/task.py`'s transition table still knows about (COMPOUND_PARENT,
 LeadAgent decomposition subsystem was deleted 2026-08-12) — reusing it would
 make a follow-up render as a sub-task with a progress chip on its predecessor.
 """
-import pytest
 
-from no_human.core.db import Store
 from no_human.core.task import Task
-
-
-@pytest.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "t.db").connect()
-    yield s
-    await s.close()
 
 
 async def test_follows_id_round_trips(store, tmp_path):

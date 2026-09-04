@@ -23,13 +23,6 @@ from no_human.doctor import MECHANISMS, codex_row, diagnose
 from tests.test_codex_backend import _MODERN_HELP_TEXT, _MODERN_RESUME_HELP_TEXT
 
 
-@pytest.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "nh.db").connect()
-    yield s
-    await s.close()
-
-
 def _ev(kind: str, **extra) -> dict:
     return {"source": "test", "kind": kind, "text": "", "ts": time.time(), **extra}
 

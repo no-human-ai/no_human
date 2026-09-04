@@ -7,20 +7,11 @@ for a repo present in the profiles table or referenced by an existing task.
 """
 from __future__ import annotations
 
-import pytest
 import pytest_asyncio
 
 from no_human.api.app import app
-from no_human.core.db import Store
 from no_human.core.task import Task, TaskStatus
 from no_human.profile import ProjectProfile
-
-
-@pytest_asyncio.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "test.db").connect()
-    yield s
-    await s.close()
 
 
 @pytest_asyncio.fixture

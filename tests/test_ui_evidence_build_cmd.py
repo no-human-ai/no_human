@@ -25,10 +25,8 @@ from __future__ import annotations
 import json
 import subprocess
 
-import pytest
 
 from no_human.core import orchestrator as orch_mod
-from no_human.core.db import Store
 from no_human.core.orchestrator import Orchestrator
 from no_human.core.task import Task
 from no_human.notify.slack import SlackNotifier
@@ -434,13 +432,6 @@ def _make_repo_with_manifest(tmp_path, base_url="http://127.0.0.1:5173"):
         f'{{"base_url": "{base_url}", "steps": [{{"goto": "/"}}, {{"shot": "loaded"}}]}}'
     )
     return _FakeRepo(repo_dir)
-
-
-@pytest.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "nh.db").connect()
-    yield s
-    await s.close()
 
 
 async def _drive_maybe_capture(

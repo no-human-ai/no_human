@@ -24,7 +24,6 @@ from __future__ import annotations
 import pytest
 
 from no_human.api.models import TaskSummaryOut
-from no_human.core.db import Store
 from no_human.core.lanes import approval_pending
 from no_human.core.task import Task, TaskStatus
 
@@ -38,13 +37,6 @@ def _pending(task: Task) -> bool:
     under `task.context` on the raw row. Mirrors how the API/CLI/board
     actually call it (`TaskSummaryOut.from_task` first)."""
     return approval_pending(TaskSummaryOut.from_task(task))
-
-
-@pytest.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "t.db").connect()
-    yield s
-    await s.close()
 
 
 async def _approved_task(store, **create_kwargs) -> Task:

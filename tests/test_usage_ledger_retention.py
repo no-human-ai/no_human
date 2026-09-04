@@ -22,13 +22,6 @@ MODELS = ("model_x", "model_y")
 OLD_TS = "2020-01-01T00:00:00+00:00"
 
 
-@pytest_asyncio.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "nh.db").connect()
-    yield s
-    await s.close()
-
-
 async def _backdate(store, ids, ts=OLD_TS):
     if not ids:
         return

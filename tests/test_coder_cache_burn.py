@@ -57,7 +57,7 @@ def _expected_env(**deliberate):
             **{name: "" for name in scrub_foreign_secrets_into({})}}
 
 from .test_cli_commands import _make_runner, _seed_attempt, _seed_task
-from .test_e2e_orchestrator import _config, store  # noqa: F401
+from .test_e2e_orchestrator import _config  # noqa: F401
 
 
 # --------------------------------------------------------------------------- #

@@ -44,10 +44,10 @@ pytestmark = pytest.mark.usefixtures("isolated_env_file")
 # --------------------------------------------------------------------------- #
 
 @pytest_asyncio.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "test.db").connect()
-    yield s
-    await s.close()
+async def store(store_factory):
+    # Variant: `_seed_cli_task` and other helpers below open tmp_path/"test.db"
+    # directly, so the filename is load-bearing.
+    return await store_factory("test.db")
 
 
 @pytest_asyncio.fixture

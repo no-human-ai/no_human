@@ -12,7 +12,6 @@ from no_human.vcs.pr_watcher import (
     check_pr_comments,
 )
 from no_human.blockers.wake import WakeWatcher
-from no_human.core.db import Store
 from no_human.core.task import Task, TaskStatus
 
 
@@ -90,11 +89,6 @@ async def test_check_pr_comments_bad_gitlab_iid():
 # --------------------------------------------------------------------------- #
 # Wake condition: pr_comment_on:<ref>                                         #
 # --------------------------------------------------------------------------- #
-
-@pytest.fixture
-async def store(tmp_path):
-    async with Store(tmp_path / "test.db") as s:
-        yield s
 
 
 def _cfg(**over):

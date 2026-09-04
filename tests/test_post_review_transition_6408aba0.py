@@ -19,13 +19,6 @@ from no_human.core.db import Store
 from no_human.core.task import IllegalTransition, Task, TaskStatus
 
 
-@pytest.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "t.db").connect()
-    yield s
-    await s.close()
-
-
 def _orch(store, tmp_path):
     from no_human.config import load_config
     from no_human.core.orchestrator import Orchestrator

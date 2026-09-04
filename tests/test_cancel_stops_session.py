@@ -34,7 +34,7 @@ from no_human.core.task import Task, TaskStatus
 from no_human.notify.slack import SlackNotifier
 from no_human.vcs import GitRepo
 
-from tests.test_infra_not_work import _config, bare_repo, store  # noqa: F401 — shared fixtures
+from tests.test_infra_not_work import _config, bare_repo  # noqa: F401 — shared fixtures
 
 pytestmark = pytest.mark.usefixtures("isolated_env_file")
 

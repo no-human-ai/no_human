@@ -20,7 +20,6 @@ from types import SimpleNamespace
 from unittest.mock import patch as _patch
 
 import pytest
-import pytest_asyncio
 from click.testing import CliRunner
 
 # The option-building tests exercise the REAL ClaudeBackend class over its
@@ -139,14 +138,6 @@ async def test_intake_evaluator_uses_the_toolless_seam(monkeypatch):
     await evaluator.generate_grill_questions("t", "d", ["ac"])
 
     assert calls == ["intake", "intake", "intake"]
-
-
-@pytest_asyncio.fixture
-async def store(tmp_path):
-    from no_human.core.db import Store
-    s = await Store(tmp_path / "nh.db").connect()
-    yield s
-    await s.close()
 
 
 def _orch_min():

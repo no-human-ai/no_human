@@ -75,13 +75,6 @@ _MSG_UNRELATED = (
 )
 
 
-@pytest_asyncio.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "b2.db").connect()
-    yield s
-    await s.close()
-
-
 def _rec(message, *, project=REPO, task_id="task-1", ts=1.0):
     return CorrectionRecord(
         task_id=task_id, project=project, message=message, ts=ts)

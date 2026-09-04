@@ -15,7 +15,6 @@ from httpx import AsyncClient, ASGITransport
 
 import no_human.config as nh_config
 from no_human.api.app import app
-from no_human.core.db import Store
 from no_human.integrations import (
     FIELD_SPECS,
     integration_fields,
@@ -202,12 +201,6 @@ def test_integration_fields_reports_set_booleans(tmp_path):
 # --------------------------------------------------------------------------- #
 # API-level: PUT /api/integrations/{name}/config + GET /api/integrations       #
 # --------------------------------------------------------------------------- #
-
-@pytest_asyncio.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "test.db").connect()
-    yield s
-    await s.close()
 
 
 @pytest_asyncio.fixture

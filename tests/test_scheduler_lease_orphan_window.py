@@ -21,16 +21,8 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from no_human.core.db import Store
 from no_human.core.scheduler import Scheduler, SiblingSchedulerRunning
 from no_human.core.task import Task, TaskStatus
-
-
-@pytest.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "t.db").connect()
-    yield s
-    await s.close()
 
 
 class _NeverRunOrch:

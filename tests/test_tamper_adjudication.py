@@ -30,7 +30,7 @@ from no_human.review.reviewer import AdversarialReviewer
 from no_human.testing.tamper_guard import TamperReport
 
 from .test_e2e_orchestrator import (  # noqa: F401
-    FakeBackend, _config, bare_repo, store,
+    FakeBackend, _config, bare_repo,
 )
 
 #: Text only the CODER could have written. If this ever reaches the

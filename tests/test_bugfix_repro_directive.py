@@ -8,10 +8,8 @@ actually enforces, in both directions."""
 
 from __future__ import annotations
 
-import pytest
 
 from no_human.config import load_config
-from no_human.core.db import Store
 from no_human.core.orchestrator import Orchestrator
 from no_human.core.prompt_blocks import build_rules_block
 from no_human.core.task import Task
@@ -19,13 +17,6 @@ from no_human.notify.slack import SlackNotifier
 from no_human.testing.repro_gate import MANIFEST
 
 from .test_e2e_orchestrator import FakeBackend
-
-
-@pytest.fixture
-async def store():
-    s = await Store(":memory:").connect()
-    yield s
-    await s.close()
 
 
 def _orch(store, tmp_path, mode=None):

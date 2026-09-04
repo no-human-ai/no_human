@@ -21,20 +21,11 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-import pytest
 
 import no_human.core.scheduler as scheduler_mod
-from no_human.core.db import Store
 from no_human.core.health import queue_health
 from no_human.core.scheduler import Scheduler
 from no_human.core.task import Task, TaskStatus
-
-
-@pytest.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "nh.db").connect()
-    yield s
-    await s.close()
 
 
 class _RecordingOrch:

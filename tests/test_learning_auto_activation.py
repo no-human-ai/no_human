@@ -23,7 +23,6 @@ per injection) get their own tests here alongside the pipeline they gate.
 
 from __future__ import annotations
 
-import pytest
 import pytest_asyncio
 
 from no_human.core.db import Store
@@ -34,13 +33,6 @@ from no_human.core.task import Task
 from no_human.eval.vendor_terms import BANNED_TERMS
 from no_human.learning import LearningQueue, TYPE_RULE
 from no_human.learning.retire import sweep_auto_activated
-
-
-@pytest_asyncio.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "auto_activate.db").connect()
-    yield s
-    await s.close()
 
 
 @pytest_asyncio.fixture

@@ -6,16 +6,8 @@ import time
 
 import pytest
 
-from no_human.core.db import Store
 from no_human.core.metrics import cache_read_share, compute_metrics
 from no_human.core.task import Task
-
-
-@pytest.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "nh.db").connect()
-    yield s
-    await s.close()
 
 
 def _ev(kind: str, **extra) -> dict:

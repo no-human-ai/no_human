@@ -152,13 +152,6 @@ def _config(tmp_path):
     return cfg
 
 
-@pytest.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "nh.db").connect()
-    yield s
-    await s.close()
-
-
 class AlreadySatisfiedBackend:
     """Zero edits + a fully-cited ALREADY-SATISFIED per-criterion claim.
     Copied from tests/test_e2e_orchestrator.py's AlreadySatisfiedBackend."""

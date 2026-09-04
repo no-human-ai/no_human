@@ -26,7 +26,6 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-import pytest
 
 from no_human.blockers import Blocker, BlockerCategory, WakeWatcher, triage
 from no_human.config import DEFAULT_CONFIG, load_config
@@ -50,13 +49,6 @@ class _RecordingNotifier(SlackNotifier):
 
     def notify(self, kind, text):  # noqa: D102
         self.sent.append((kind, text))
-
-
-@pytest.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "nh.db").connect()
-    yield s
-    await s.close()
 
 
 def _orch(store, tmp_path, notifier=None, *, config_over=None):

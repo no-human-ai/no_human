@@ -9,7 +9,6 @@ import pytest
 from click.testing import CliRunner
 
 from no_human.core.task import Task, TaskStatus
-from no_human.core.db import Store
 from no_human.core.multi_repo import (
     RepoResult,
     MultiRepoOutcome,
@@ -207,12 +206,6 @@ def test_task_linked_repos_default_empty():
 # --------------------------------------------------------------------------- #
 # DB persistence of linked_repos                                               #
 # --------------------------------------------------------------------------- #
-
-
-@pytest.fixture
-async def store(tmp_path):
-    async with Store(tmp_path / "test.db") as s:
-        yield s
 
 
 @pytest.mark.asyncio

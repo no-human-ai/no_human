@@ -64,13 +64,6 @@ def _make_repo(tmp_path):
     return repo
 
 
-@pytest.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "nh.db").connect()
-    yield s
-    await s.close()
-
-
 class FakeForge:
     """Per-URL ``"open"`` -> ``"closed"`` state, recording every call."""
 

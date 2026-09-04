@@ -177,15 +177,6 @@ def live_checkout(tmp_path):
     return work
 
 
-@pytest.fixture
-async def store(tmp_path):
-    from no_human.core.db import Store
-
-    s = await Store(tmp_path / "nh.db").connect()
-    yield s
-    await s.close()
-
-
 def _orchestrator(store, cfg):
     from no_human.core.orchestrator import Orchestrator
     from no_human.notify.slack import SlackNotifier

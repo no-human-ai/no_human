@@ -41,13 +41,6 @@ _LESSON = (
 )
 
 
-@pytest_asyncio.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "b1.db").connect()
-    yield s
-    await s.close()
-
-
 def _findings(label="image pinning"):
     return [{
         "label": label,

@@ -21,15 +21,14 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from no_human.api.app import app
-from no_human.core.db import Store
 
 
 @pytest_asyncio.fixture
-async def client(tmp_path, monkeypatch):
+async def client(store_factory, tmp_path, monkeypatch):
     """Same shape as test_auth_api.py's client, plus a redirected $HOME so the
     under-home containment check can be exercised against tmp_path."""
     from no_human.config import load_config
-    store = await Store(tmp_path / "test.db").connect()
+    store = await store_factory("test.db")
     app.state.store = store
     app.state.config = load_config(tmp_path / "config.yaml")
     fake_home = (tmp_path / "home").resolve()
@@ -41,7 +40,6 @@ async def client(tmp_path, monkeypatch):
     async with AsyncClient(transport=transport, base_url="http://localhost",
                            headers={"Origin": "http://127.0.0.1:8420"}) as c:
         yield c
-    await store.close()
 
 
 def _git(repo: Path, *args: str) -> str:

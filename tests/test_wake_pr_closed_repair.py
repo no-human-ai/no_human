@@ -25,20 +25,12 @@ from __future__ import annotations
 
 import time
 
-import pytest
 
 from no_human.blockers.wake import WakeWatcher
 from no_human.core.db import Store
 from no_human.core.task import Task, TaskStatus
 
 PR_URL = "https://github.com/o/r/pull/293"
-
-
-@pytest.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "nh.db").connect()
-    yield s
-    await s.close()
 
 
 async def _never_shipped(repo_path, branch, base):

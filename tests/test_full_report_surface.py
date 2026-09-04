@@ -138,12 +138,6 @@ async def _run_one_attempt(store, bare_repo, tmp_path, result: AgentResult):
 # store / api-client / cli-runner fixtures                                    #
 # --------------------------------------------------------------------------- #
 
-@pytest_asyncio.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "nh.db").connect()
-    yield s
-    await s.close()
-
 
 @pytest_asyncio.fixture
 async def client(store, tmp_path):

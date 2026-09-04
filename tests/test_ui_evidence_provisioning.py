@@ -63,13 +63,6 @@ def _plain_node_repo(root):
 
 
 @pytest_asyncio.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "test.db").connect()
-    yield s
-    await s.close()
-
-
-@pytest_asyncio.fixture
 async def client(store, tmp_path, monkeypatch):
     import types
 

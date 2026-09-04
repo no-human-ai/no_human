@@ -349,12 +349,6 @@ def test_parse_duration_invalid():
 # Wake watcher                                                                #
 # --------------------------------------------------------------------------- #
 
-@pytest_asyncio.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "wake.db").connect()
-    yield s
-    await s.close()
-
 
 def _cfg(**over):
     base = {"blockers": {"max_park_duration": "48h"}}

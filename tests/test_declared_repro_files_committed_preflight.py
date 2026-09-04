@@ -31,7 +31,6 @@ import pytest
 
 from no_human.agent.claude_backend import AgentEvent, AgentResult
 from no_human.config import load_config
-from no_human.core.db import Store
 from no_human.core.infra_breaker import infra_breaker
 from no_human.core.orchestrator import (
     Orchestrator, declared_files_send_back_message,
@@ -86,13 +85,6 @@ def _config(tmp_path):
     cfg.data.setdefault("reviewer", {})["allow_advisory"] = True
     cfg.data.setdefault("blockers", {})["challenge"] = False
     return cfg
-
-
-@pytest.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "nh.db").connect()
-    yield s
-    await s.close()
 
 
 def _mul_fix(cwd: Path) -> None:

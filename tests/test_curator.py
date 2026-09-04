@@ -2,18 +2,10 @@
 
 from __future__ import annotations
 
-import pytest
 
-from no_human.core.db import SOURCE_PROPOSED, Store
+from no_human.core.db import SOURCE_PROPOSED
 from no_human.learning import ORIGIN_CURATOR, LearningQueue
 from no_human.learning.curator import build_curate_prompt, curate, parse_curation
-
-
-@pytest.fixture
-async def store():
-    s = await Store(":memory:").connect()
-    yield s
-    await s.close()
 
 
 async def _seed(store, n=3, *, title="never push to master", confirmed=False):

@@ -15,14 +15,6 @@ from httpx import ASGITransport, AsyncClient
 import no_human
 from no_human.api.app import app
 from no_human.config import Config
-from no_human.core.db import Store
-
-
-@pytest_asyncio.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "test.db").connect()
-    yield s
-    await s.close()
 
 
 @pytest_asyncio.fixture

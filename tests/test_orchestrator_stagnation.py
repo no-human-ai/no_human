@@ -19,7 +19,7 @@ from no_human.review.reviewer import ReviewDecision
 from no_human.review.selfcheck import ChecklistItem
 
 from .test_e2e_orchestrator import (  # noqa: F401
-    FakeBackend, SequencedFakeReviewer, _config, bare_repo, store,
+    FakeBackend, SequencedFakeReviewer, _config, bare_repo,
 )
 
 # Copied locally from tests/test_failed_restoration.py (per the task's

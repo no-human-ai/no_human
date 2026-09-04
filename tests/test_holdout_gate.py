@@ -21,7 +21,6 @@ from .test_e2e_orchestrator import (  # noqa: F401
     _config,
     _git,
     bare_repo,
-    store,
 )
 
 # Self-contained sys.path bootstrap: pytest runs tests/held_out/ without the

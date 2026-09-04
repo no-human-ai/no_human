@@ -4,16 +4,8 @@ from __future__ import annotations
 import pytest
 import pytest_asyncio
 
-from no_human.core.db import Store
 from no_human.core.task import Task, TaskStatus
 from no_human.learning import LearningQueue, TYPE_ANTI_PATTERN, TYPE_SKILL
-
-
-@pytest_asyncio.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "learn.db").connect()
-    yield s
-    await s.close()
 
 
 @pytest_asyncio.fixture

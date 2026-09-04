@@ -18,13 +18,6 @@ from no_human.docs_gen import WikiResult
 from no_human.wiki_jobs import run_job, resume_unfinished
 
 
-@pytest_asyncio.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "test.db").connect()
-    yield s
-    await s.close()
-
-
 class _GenOk:
     async def generate(self, repo_path):
         return WikiResult(repo_path=repo_path, files_written=["a.md", "b.md"])

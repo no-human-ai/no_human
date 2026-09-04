@@ -8,9 +8,7 @@ scores.
 
 from __future__ import annotations
 
-import pytest
 
-from no_human.core.db import Store
 from no_human.history.analyzer import (
     Finding,
     analyze_transcript,
@@ -20,13 +18,6 @@ from no_human.history.analyzer import (
 from no_human.history.extractor import Message, Transcript
 from no_human.history.ingester import TranscriptIngester, _dedupe_key
 from no_human.learning import LearningQueue
-
-
-@pytest.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "nh.db").connect()
-    yield s
-    await s.close()
 
 
 def _finding(content="never push to main", cat="rule", cascade="c1", msg=2):

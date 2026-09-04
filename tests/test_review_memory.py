@@ -8,7 +8,6 @@ had itself demanded.
 
 from __future__ import annotations
 
-import pytest
 
 from no_human.core.task import Task
 from no_human.review.reviewer import ChecklistItem, ReviewDecision, _build_review_prompt
@@ -117,13 +116,6 @@ def test_prompt_target_line_tolerates_a_missing_branch():
 
 
 # ── orchestrator side ─────────────────────────────────────────────────────── #
-
-@pytest.fixture
-async def store(tmp_path):
-    from no_human.core.db import Store
-    s = await Store(tmp_path / "nh.db").connect()
-    yield s
-    await s.close()
 
 
 async def test_history_accumulates_and_feeds_the_next_round(store):

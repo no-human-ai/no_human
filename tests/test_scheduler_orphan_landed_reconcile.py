@@ -29,13 +29,6 @@ from no_human.core.task import IllegalTransition, Task, TaskStatus
 from no_human.vcs import pr_watcher as pr_watcher_mod
 
 
-@pytest.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "nh.db").connect()
-    yield s
-    await s.close()
-
-
 def _run_git(repo, *args):
     subprocess.run(["git", "-C", str(repo), *args],
                     check=True, capture_output=True, text=True)

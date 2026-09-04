@@ -1,17 +1,8 @@
 """Autonomy telemetry (megaplan P0) — metric computation over tasks/attempts."""
 
-import pytest
 
 from no_human.core.autonomy import compute_autonomy_metrics
-from no_human.core.db import Store
 from no_human.core.task import Task, TaskStatus
-
-
-@pytest.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "t.db").connect()
-    yield s
-    await s.close()
 
 
 async def _mk(store, title, status, *, blocker=None):

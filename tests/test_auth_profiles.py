@@ -23,7 +23,6 @@ from no_human.config import (
     profile_token_var,
     set_auth_profile,
 )
-from no_human.core.db import Store
 from no_human.core.orchestrator import Orchestrator
 from no_human.core.task import Task
 from no_human.notify.slack import SlackNotifier
@@ -379,13 +378,6 @@ def test_set_auth_profile_rejects_names_that_could_inject_yaml(tmp_path, bad):
 
 
 # ------------------- attribution: every burn names its payer ---------------- #
-
-
-@pytest.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "t.db").connect()
-    yield s
-    await s.close()
 
 
 class _StubBackend:

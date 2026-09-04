@@ -14,17 +14,9 @@ import pytest
 
 from no_human.config import load_config
 from no_human.core.bounds import error_signature
-from no_human.core.db import Store
 from no_human.core.orchestrator import Orchestrator, TaskOutcome
 from no_human.core.task import Task, TaskStatus
 from no_human.notify.slack import SlackNotifier
-
-
-@pytest.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "nh.db").connect()
-    yield s
-    await s.close()
 
 
 # ── store layer ─────────────────────────────────────────────────────────── #

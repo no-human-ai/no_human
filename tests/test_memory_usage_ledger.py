@@ -70,13 +70,6 @@ def _config(tmp_path):
     return cfg
 
 
-@pytest.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "nh.db").connect()
-    yield s
-    await s.close()
-
-
 # ── schema ────────────────────────────────────────────────────────────────── #
 
 async def test_schema_has_use_count_and_memory_uses_table(store):

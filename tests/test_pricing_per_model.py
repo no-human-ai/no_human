@@ -61,13 +61,6 @@ def _clean_unknown_counter():
     _reset_unknown_pricing_models()
 
 
-@pytest.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "nh.db").connect()
-    yield s
-    await s.close()
-
-
 # --------------------------------------------------------------------------- #
 # the table itself
 # --------------------------------------------------------------------------- #

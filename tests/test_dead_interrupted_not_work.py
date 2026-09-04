@@ -27,7 +27,6 @@ needed anywhere in this file.
 
 from __future__ import annotations
 
-import pytest
 
 from no_human.blockers import BlockerCategory
 from no_human.core.bounds import Bounds
@@ -42,13 +41,6 @@ _SUPERSEDED = (
     "interrupted: superseded by a newer attempt — the prior worker "
     "process died without closing its row"
 )
-
-
-@pytest.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "nh.db").connect()
-    yield s
-    await s.close()
 
 
 def _orch(store):

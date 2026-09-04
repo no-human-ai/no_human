@@ -321,3 +321,43 @@ def own_pytest_on_path(tmp_path, monkeypatch):
         f"silent no-op here would re-hide the bug: shutil.which -> {resolved!r}"
     )
     return bin_dir
+
+
+@pytest.fixture
+async def store_factory(tmp_path):
+    """Exception-safe Store lifecycle, owned in ONE place.
+
+    Under `-n 4`, aiosqlite's non-daemon worker thread calls
+    call_soon_threadsafe on the test loop when it closes. A store closed in a
+    test BODY is skipped whenever that body raises, so the connection outlives
+    the loop and the close lands on a CLOSED loop — poisoning whichever
+    unrelated test the xdist worker runs next (the ui_evidence tests were the
+    usual victims). Teardown here runs in the `finally` of a fixture, i.e.
+    still on the test's own loop, on every exit path.
+
+    Deliberately NOT autouse and it monkeypatches nothing: an autouse conftest
+    fixture that patches is what `tamper_guard.count_faking_fixtures` scores,
+    and this file's `isolated_env_file` docstring spells out why we don't add
+    to that score.
+
+    `name` is a filename under tmp_path, an absolute path, or ":memory:".
+    """
+    stores = []
+
+    async def _make(name="nh.db"):
+        from no_human.core.db import Store
+        path = name if str(name) == ":memory:" else tmp_path / str(name)
+        s = await Store(path).connect()
+        stores.append(s)
+        return s
+
+    try:
+        yield _make
+    finally:
+        for s in reversed(stores):
+            await s.close()   # idempotent (core/db.py:539); joins the aiosqlite thread
+
+
+@pytest.fixture
+async def store(store_factory):
+    return await store_factory()

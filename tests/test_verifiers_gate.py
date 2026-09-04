@@ -22,7 +22,6 @@ import pytest
 
 import no_human.core.orchestrator as orchestrator_module
 from no_human.agent.backend import AgentResult
-from no_human.core.db import Store
 from no_human.core.orchestrator import (
     REVIEWER_ROLE,
     Orchestrator,
@@ -130,13 +129,6 @@ class FakeReviewer:
     async def review(self, task, **kw):
         self.review_calls += 1
         return self.review_decision
-
-
-@pytest.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "nh.db").connect()
-    yield s
-    await s.close()
 
 
 def _orch(store, tmp_path, reviewer, *, tests_cmd="true", events=None):

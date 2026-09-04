@@ -8,18 +8,9 @@ from __future__ import annotations
 import time
 from datetime import datetime, timezone
 
-import pytest
 
 from no_human.blockers.wake import WakeWatcher
-from no_human.core.db import Store
 from no_human.core.task import Task, TaskStatus
-
-
-@pytest.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "nh.db").connect()
-    yield s
-    await s.close()
 
 
 async def _approval_task(store, url="https://code.example.com/dev/x/pull/7004"):

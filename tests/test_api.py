@@ -27,12 +27,6 @@ pytestmark = pytest.mark.usefixtures("isolated_env_file")
 # Fixtures                                                                     #
 # --------------------------------------------------------------------------- #
 
-@pytest_asyncio.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "test.db").connect()
-    yield s
-    await s.close()
-
 
 @pytest_asyncio.fixture
 async def client(store, tmp_path):

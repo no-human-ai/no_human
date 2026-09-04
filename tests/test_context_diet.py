@@ -183,7 +183,7 @@ def test_repo_map_kept_when_plan_is_truncated(monkeypatch):
 # ------------------------------------------------------------- prompt_size --
 
 # Reuse the proven fixtures instead of keeping a third copy in the suite.
-from tests.test_e2e_orchestrator import bare_repo, store  # noqa: E402,F401
+from tests.test_e2e_orchestrator import bare_repo  # noqa: E402,F401
 
 
 class _FakeBackend:

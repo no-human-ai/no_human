@@ -3,10 +3,8 @@ precedence + usability gating (replaces the detect_command heuristic)."""
 
 from types import SimpleNamespace
 
-import pytest
 
 from no_human.config import load_config
-from no_human.core.db import Store
 from no_human.core.orchestrator import Orchestrator
 from no_human.notify.slack import SlackNotifier
 from no_human.profile import ProjectProfile
@@ -15,13 +13,6 @@ from no_human.profile import ProjectProfile
 class _Backend:
     async def run(self, *a, **k):  # pragma: no cover - not exercised here
         raise AssertionError("backend should not run in resolution tests")
-
-
-@pytest.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "nh.db").connect()
-    yield s
-    await s.close()
 
 
 def _orch(store, tmp_path, *, tests_command=None):

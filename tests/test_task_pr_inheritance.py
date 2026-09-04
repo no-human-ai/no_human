@@ -23,10 +23,8 @@ from __future__ import annotations
 import logging
 import subprocess
 
-import pytest
 
 from no_human.blockers.wake import WakeWatcher
-from no_human.core.db import Store
 from no_human.core.task import Task, TaskStatus
 from no_human.vcs.pr_watcher import default_branch_shipped
 from no_human.vcs.task_pr import resolve_task_pr, task_has_pr_evidence
@@ -72,13 +70,6 @@ def _unshipped_repo(tmp_path):
     _git(repo, "commit", "-am", "feature: change a.txt")
     _git(repo, "checkout", "main")
     return repo
-
-
-@pytest.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "nh.db").connect()
-    yield s
-    await s.close()
 
 
 async def _seed_attempts(store, task_id, rows):

@@ -42,7 +42,6 @@ from pathlib import Path
 import pytest
 
 from no_human.blockers.wake import WakeWatcher
-from no_human.core.db import Store
 from no_human.core.task import Task, TaskStatus
 from no_human.vcs import GitError, GitRepo, commit_with_manifest_repair
 from no_human.vcs import approve_merge
@@ -495,13 +494,6 @@ def _repo_with_budget_stub(tmp_path: Path) -> Path:
     _git(work, "commit", "-qm", "pin growing.py")
     _git(work, "push", "-q", "origin", "HEAD:refs/heads/main")
     return work
-
-
-@pytest.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "nh.db").connect()
-    yield s
-    await s.close()
 
 
 async def _approval_task(store, repo_path: str, *, branch="feature", base="main"):
@@ -2394,7 +2386,6 @@ async def test_a_drift_that_skips_approve_is_caught_by_verify_and_escalates(stor
     evidence = (stored.blocker.get("evidence") or "") + (stored.blocker.get("question") or "")
     assert "step 'regenerate'" in evidence and "actually wins" in evidence, stored.blocker
     assert _git(work, "rev-parse", "origin/branch-a").stdout.strip() == before, "verify refused but something was pushed"
-
 
 
 def test_reconcile_refuses_when_the_classification_is_absent_on_a_side(tmp_path):

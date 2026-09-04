@@ -58,15 +58,6 @@ def _status(cwd) -> str:
 
 
 @pytest.fixture
-async def store(tmp_path):
-    from no_human.core.db import Store
-
-    s = await Store(tmp_path / "nh.db").connect()
-    yield s
-    await s.close()
-
-
-@pytest.fixture
 def cfg(tmp_path):
     c = load_config(tmp_path / "config.yaml")
     c.data["isolation"]["worktree_root"] = str(tmp_path / "wt")

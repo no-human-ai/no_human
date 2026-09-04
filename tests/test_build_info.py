@@ -14,7 +14,6 @@ import time
 import pytest
 
 from no_human.core.build_info import LoadedCode, _detect, staleness_note
-from no_human.core.db import Store
 from no_human.core.task import Task
 
 
@@ -255,13 +254,6 @@ def test_staleness_note_accepts_a_premeasured_head(repo, monkeypatch):
 
 
 # --- the record ------------------------------------------------------------
-
-
-@pytest.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "t.db").connect()
-    yield s
-    await s.close()
 
 
 async def test_attempt_records_the_loaded_code_version(store):

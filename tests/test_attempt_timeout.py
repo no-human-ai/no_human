@@ -15,7 +15,7 @@ from no_human.core.task import Task, TaskStatus
 from no_human.notify.slack import SlackNotifier
 
 from .test_e2e_orchestrator import (  # noqa: F401
-    RESUMABLE, FakeBackend, _SHA_RE, _config, bare_repo, store,
+    RESUMABLE, FakeBackend, _SHA_RE, _config, bare_repo,
 )
 
 

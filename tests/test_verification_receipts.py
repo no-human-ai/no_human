@@ -77,13 +77,6 @@ class _Caps:
         self.name = "fake"
 
 
-@pytest.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "nh.db").connect()
-    yield s
-    await s.close()
-
-
 def _orch(store, tmp_path, *, observable=True):
     cfg = load_config(tmp_path / "config.yaml")
     b = _Backend()

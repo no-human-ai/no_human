@@ -22,7 +22,7 @@ import pytest
 from no_human.agent.supervisor import SupervisorHook, parse_decision
 from no_human.core.bounds import QuotaExhausted
 
-from .test_infra_not_work import _config, _run_one_attempt, bare_repo, store  # noqa: F401
+from .test_infra_not_work import _config, _run_one_attempt, bare_repo  # noqa: F401
 
 _SESSION_LIMIT_TEXT = "You've hit your session limit · resets 4:20am (Asia/Jerusalem)"
 

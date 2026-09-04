@@ -22,7 +22,6 @@ from httpx import ASGITransport, AsyncClient
 
 import no_human.config as nh_config
 from no_human.api.app import app
-from no_human.core.db import Store
 from no_human.core.task import Task, TaskStatus
 
 
@@ -72,13 +71,6 @@ def _isolated_paths(tmp_path, monkeypatch):
     yield tmp_path
     # load_env_var writes straight into os.environ (untracked by monkeypatch).
     os.environ.pop("LINEAR_API_KEY", None)
-
-
-@pytest_asyncio.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "test.db").connect()
-    yield s
-    await s.close()
 
 
 @pytest_asyncio.fixture

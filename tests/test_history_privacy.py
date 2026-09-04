@@ -46,13 +46,6 @@ from no_human.learning.pii import find_pii
 MACHINERY_FIXTURE = Path(__file__).resolve().parents[1] / "testdata" / "machinery_strings.txt"
 
 
-@pytest.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "nh.db").connect()
-    yield s
-    await s.close()
-
-
 def _fixture_lines() -> list[str]:
     raw = MACHINERY_FIXTURE.read_text(encoding="utf-8").splitlines()
     return [ln for ln in raw if ln.strip() and not ln.lstrip().startswith("#")]

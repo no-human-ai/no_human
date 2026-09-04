@@ -39,13 +39,6 @@ def iso_ts(hours_ago: float) -> str:
     return (NOW - timedelta(hours=hours_ago)).isoformat()
 
 
-@pytest.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "nh.db").connect()
-    yield s
-    await s.close()
-
-
 async def _attempt(store, task_id, number, *, started_ago, completed_ago=None,
                     status="succeeded", tokens=1000, cache_read=9000):
     aid = await store.create_attempt(task_id, attempt_number=number)

@@ -209,8 +209,6 @@ import sys as _sys
 _sys.path.insert(0, str(Path(__file__).parent))
 import test_pr_evidence as _P  # the body fixtures live there
 
-store = _P.store  # the async Store fixture the body fixtures need
-
 
 def _urls() -> dict[str, str]:
     base = "https://github.com/acme/widget/blob/" + "f" * 40 + "/.nh-evidence/t1/"

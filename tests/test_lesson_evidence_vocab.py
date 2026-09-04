@@ -61,13 +61,6 @@ _MSG_B = (
 )
 
 
-@pytest_asyncio.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "b3.db").connect()
-    yield s
-    await s.close()
-
-
 def _cluster():
     clusters = cluster_corrections([
         CorrectionRecord(task_id="aaaaaaaabbbb", project=REPO,

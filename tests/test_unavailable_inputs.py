@@ -173,13 +173,6 @@ class _Backend:
         raise AssertionError("backend must not run for a C2 escalation")
 
 
-@pytest.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "nh.db").connect()
-    yield s
-    await s.close()
-
-
 def _orch(store, tmp_path):
     cfg = load_config(tmp_path / "config.yaml")
     return Orchestrator(store, cfg.data, _Backend(), SlackNotifier(None))

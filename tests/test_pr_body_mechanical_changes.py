@@ -21,7 +21,7 @@ from no_human.core.task import Task
 from no_human.vcs.git import GitError, GitRepo
 
 from .test_pr_body_truthfulness import (  # noqa: F401
-    WAITING, _Commit, _Result, _git, _orch, store,
+    WAITING, _Commit, _Result, _git, _orch,
 )
 
 

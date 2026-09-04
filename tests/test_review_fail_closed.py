@@ -17,7 +17,7 @@ from no_human.core.task import Task, TaskStatus
 from no_human.notify.slack import SlackNotifier
 from no_human.review.reviewer import ReviewerUnavailable
 
-from .test_e2e_orchestrator import FakeBackend, _config, bare_repo, store  # noqa: F401
+from .test_e2e_orchestrator import FakeBackend, _config, bare_repo  # noqa: F401
 
 
 def _good_mutate(cwd):

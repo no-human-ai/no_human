@@ -11,7 +11,7 @@ from no_human.notify.slack import SlackNotifier
 from no_human.vcs import GitRepo
 
 from .test_e2e_orchestrator import (  # noqa: F401  (re-exported fixtures/helpers)
-    FakeBackend, FakeReviewer, _config, _git, bare_repo, store,
+    FakeBackend, FakeReviewer, _config, _git, bare_repo,
 )
 
 

@@ -43,19 +43,17 @@ from no_human.core.task import Task, TaskStatus
 
 
 @pytest.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "f.db").connect()
-    yield s
-    await s.close()
+async def store(store_factory):
+    # Variant: `peer` below opens a SECOND connection to the exact same file,
+    # so the filename is load-bearing and shared between fixtures.
+    return await store_factory("f.db")
 
 
 @pytest.fixture
-async def peer(tmp_path, store):
+async def peer(store_factory, store):
     """An independent connection to the same file — every `nh` CLI call, the
     Jira poller and the Linear poller are one of these in real life."""
-    s = await Store(tmp_path / "f.db").connect()
-    yield s
-    await s.close()
+    return await store_factory("f.db")
 
 
 async def _mk(store: Store, title: str = "t") -> Task:

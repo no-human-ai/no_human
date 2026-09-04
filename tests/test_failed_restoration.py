@@ -15,7 +15,7 @@ from no_human.core.task import Task, TaskStatus
 from no_human.notify.slack import SlackNotifier
 from no_human.profile import ProjectProfile
 
-from .test_e2e_orchestrator import FakeBackend, _config, bare_repo, store  # noqa: F401
+from .test_e2e_orchestrator import FakeBackend, _config, bare_repo  # noqa: F401
 
 # Fails on the broken tree, passes on base — so the already-fails-on-base
 # repro comparison stays out of the way and the failure is REAL each attempt.

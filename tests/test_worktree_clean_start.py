@@ -31,7 +31,6 @@ import subprocess
 import pytest
 
 from no_human.config import load_config
-from no_human.core.db import Store
 from no_human.core.orchestrator import Orchestrator
 from no_human.core.task import Task, TaskStatus
 from no_human.core.worktree import is_agent_worktree, reset_agent_workspace
@@ -58,13 +57,6 @@ def main_repo(tmp_path):
     _git(work, "add", "-A")
     _git(work, "commit", "-m", "init")
     return GitRepo(work)
-
-
-@pytest.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "nh.db").connect()
-    yield s
-    await s.close()
 
 
 def _cfg(tmp_path, root):

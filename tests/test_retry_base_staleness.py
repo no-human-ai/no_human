@@ -33,7 +33,6 @@ import pytest
 import pytest_asyncio
 
 from no_human.config import load_config
-from no_human.core.db import Store
 from no_human.core.orchestrator import (
     BASE_STALENESS_REBASE_THRESHOLD,
     Orchestrator,
@@ -54,13 +53,6 @@ class _Stop(Exception):
     under test; the coder session, review and tests below are 40s of real
     subprocess work and none of it is under test here (same pattern as
     `tests/test_resume_checkpoint_lost.py`)."""
-
-
-@pytest_asyncio.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "nh.db").connect()
-    yield s
-    await s.close()
 
 
 @pytest.fixture

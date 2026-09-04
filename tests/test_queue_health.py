@@ -6,17 +6,9 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from no_human.core.db import Store
 from no_human.core.health import CLAIMABLE_STATUSES, queue_health
 from no_human.core.scheduler import _CLAIMABLE
 from no_human.core.task import Task, TaskStatus
-
-
-@pytest.fixture
-async def store():
-    s = await Store(":memory:").connect()
-    yield s
-    await s.close()
 
 
 async def _task(store, status: TaskStatus, *, updated_min_ago: int = 0):

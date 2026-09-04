@@ -68,10 +68,10 @@ def test_actor_neutralises_markup_and_truncates(monkeypatch):
 # --------------------------------------------------------------------------- #
 
 @pytest_asyncio.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "test.db").connect()
-    yield s
-    await s.close()
+async def store(store_factory):
+    # Variant: test_task_show_renders_the_actor (below) opens tmp_path/"test.db"
+    # directly, so the filename is load-bearing.
+    return await store_factory("test.db")
 
 
 @pytest_asyncio.fixture

@@ -11,17 +11,9 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from no_human.api.app import app
-from no_human.core.db import Store
 from no_human.core.task import Task
 
 pytestmark = pytest.mark.usefixtures("isolated_env_file")
-
-
-@pytest_asyncio.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "test.db").connect()
-    yield s
-    await s.close()
 
 
 @pytest_asyncio.fixture

@@ -31,18 +31,16 @@ from no_human.core.task import Task, TaskStatus
 
 
 @pytest.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "c.db").connect()
-    yield s
-    await s.close()
+async def store(store_factory):
+    # Variant: `observer` below opens a SECOND connection to the exact same
+    # file, so the filename is load-bearing and shared between fixtures.
+    return await store_factory("c.db")
 
 
 @pytest.fixture
-async def observer(tmp_path, store):
+async def observer(store_factory, store):
     """A second connection to the same file — sees COMMITTED state only."""
-    s = await Store(tmp_path / "c.db").connect()
-    yield s
-    await s.close()
+    return await store_factory("c.db")
 
 
 async def _mk_task(store, title="t") -> Task:

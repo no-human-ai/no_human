@@ -17,7 +17,6 @@ import logging
 import httpx
 import pytest
 
-from no_human.core.db import Store
 from no_human.core.task import Task, TaskStatus
 from no_human.intake.monday import (
     API_URL,
@@ -826,13 +825,6 @@ class _FakeAdapter:
 
     def item_status(self, item_id):
         return self.statuses.get(item_id, "Ready for Dev")
-
-
-@pytest.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "t.db").connect()
-    yield s
-    await s.close()
 
 
 @pytest.mark.asyncio

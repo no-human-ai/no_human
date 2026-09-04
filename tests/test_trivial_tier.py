@@ -23,7 +23,6 @@ from no_human.core.complexity import (
     trivial_enabled,
     trivial_paths,
 )
-from no_human.core.db import Store
 from no_human.core.orchestrator import Orchestrator
 from no_human.core.task import Task, TaskStatus
 from no_human.intake import evaluator as ev
@@ -38,13 +37,6 @@ from no_human.review.reviewer import (
 class _Backend:
     async def run(self, *a, **k):  # pragma: no cover
         raise AssertionError("backend should not run here")
-
-
-@pytest.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "nh.db").connect()
-    yield s
-    await s.close()
 
 
 def _orch(store, tmp_path, events, cfg_overlay=None):

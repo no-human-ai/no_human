@@ -28,7 +28,6 @@ import time
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
-import pytest
 
 from no_human.core import scheduler as scheduler_mod
 from no_human.core.db import Store
@@ -45,13 +44,6 @@ from no_human.learning.queue import (
 from no_human.learning.corrections import CorrectionCluster, CorrectionRecord
 
 REPO = "/repo/harvest-loop"
-
-
-@pytest.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "nh.db").connect()
-    yield s
-    await s.close()
 
 
 class FakeOrch:

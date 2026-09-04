@@ -33,7 +33,6 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
-import pytest_asyncio
 
 # The whole module drives the REAL ClaudeBackend — over a stub binary in one
 # test and over a monkeypatched `query` seam in the rest.
@@ -1026,15 +1025,6 @@ _DEAD_GATE_DETAIL = (
     f"{TRANSPORT_DIAGNOSIS_MARKER} ... worker w7, dispatched at 3 of 4 pool "
     "slot(s) busy.)"
 )
-
-
-@pytest_asyncio.fixture
-async def store(tmp_path):
-    from no_human.core.db import Store
-
-    s = await Store(tmp_path / "transport.db").connect()
-    yield s
-    await s.close()
 
 
 def _orch_with(store, notes):

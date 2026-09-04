@@ -20,26 +20,18 @@ from __future__ import annotations
 
 import subprocess
 
-import pytest
 
 from no_human.blockers.wake import WakeWatcher
 from no_human.core import autonomy
 from no_human.core.autonomy import (compute_pr_outcome_metrics,
                                     render_pr_outcome_lines)
-from no_human.core.db import SETTLED_PR_OUTCOMES, Store
+from no_human.core.db import SETTLED_PR_OUTCOMES
 from no_human.core.task import Task, TaskStatus
 from no_human.vcs import pr_outcome as po
 from no_human.vcs.pr_watcher import default_branch_shipped, refs_resolvable
 
 GH_URL = "https://github.com/o/r/pull/86"
 GH_URL2 = "https://github.com/o/r/pull/87"
-
-
-@pytest.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "nh.db").connect()
-    yield s
-    await s.close()
 
 
 def _git(repo_path, *args):

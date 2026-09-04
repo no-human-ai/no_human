@@ -33,13 +33,6 @@ from no_human.learning.retire import (
 )
 
 
-@pytest_asyncio.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "m.db").connect()
-    yield s
-    await s.close()
-
-
 def _days_ago(n: int, *, iso: bool = False) -> str:
     dt = datetime.now(timezone.utc) - timedelta(days=n)
     if iso:

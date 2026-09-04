@@ -28,7 +28,6 @@ from httpx import ASGITransport, AsyncClient
 import no_human.config as nh_config
 import no_human.integrations as reg
 from no_human.api.app import app
-from no_human.core.db import Store
 from no_human.notify import build_notifier
 
 # Field names that are unambiguously credentials. Used as ATTACK input, never
@@ -477,12 +476,6 @@ def test_upgrade_with_webhook_and_enabled_false_is_muted():
 # --------------------------------------------------------------------------- #
 # API surface                                                                  #
 # --------------------------------------------------------------------------- #
-
-@pytest_asyncio.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "test.db").connect()
-    yield s
-    await s.close()
 
 
 @pytest_asyncio.fixture

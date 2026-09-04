@@ -4,17 +4,8 @@ from __future__ import annotations
 
 import asyncio
 
-import pytest
 
-from no_human.core.db import Store
 from no_human.core.events import EventPersister
-
-
-@pytest.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "nh.db").connect()
-    yield s
-    await s.close()
 
 
 async def test_flushes_on_a_timer_while_the_run_is_live(store):

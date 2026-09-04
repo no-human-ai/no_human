@@ -533,10 +533,8 @@ def test_plan_runner_ci_fail_blocks(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_find_project_by_repo(tmp_path):
+async def test_find_project_by_repo(store):
     """Store.find_project_by_repo finds a project by its repo_paths."""
-    from no_human.core.db import Store
-    store = await Store(tmp_path / "test.db").connect()
     p = Project.new("my-project", repo_paths=["/home/user/repo1", "/home/user/repo2"])
     await store.create_project(p)
 
@@ -546,4 +544,3 @@ async def test_find_project_by_repo(tmp_path):
 
     not_found = await store.find_project_by_repo("/home/user/other")
     assert not_found is None
-    await store.close()

@@ -6,22 +6,13 @@ delivered docs died in the report field)."""
 
 from __future__ import annotations
 
-import pytest
 
 from no_human.config import load_config
-from no_human.core.db import Store
 from no_human.core.orchestrator import Orchestrator
 from no_human.core.task import Task
 from no_human.notify.slack import SlackNotifier
 
 from .test_e2e_orchestrator import FakeBackend
-
-
-@pytest.fixture
-async def store():
-    s = await Store(":memory:").connect()
-    yield s
-    await s.close()
 
 
 async def test_design_doc_deliverable_is_a_file_not_the_final_message(store, tmp_path):

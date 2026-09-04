@@ -25,13 +25,6 @@ from no_human.core.task import Task, TaskStatus
 from no_human.vcs import derived_conflict as dc
 
 
-@pytest.fixture
-async def store(tmp_path):
-    s = await Store(tmp_path / "nh.db").connect()
-    yield s
-    await s.close()
-
-
 @pytest.fixture(autouse=True)
 def _resolvable_conflicting_paths(monkeypatch):
     """`_approval_task` below uses a fake, non-existent `repo_path`
