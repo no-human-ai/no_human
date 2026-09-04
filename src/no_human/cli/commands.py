@@ -381,6 +381,18 @@ def _warn_if_editable_install_dangles() -> None:
         console.print(f"[bold yellow]⚠ {problem}[/]")
 
 
+def _ensure_board_fresh() -> None:
+    """Loud, never fatal (see core/web_build): detects a `web/dist` built
+    before the latest `web/src` change on a source checkout and rebuilds it
+    (or warns) before the board is mounted.
+    """
+    try:
+        from ..core.web_build import ensure_fresh_board
+        ensure_fresh_board(emit=lambda m: console.print(f"[bold yellow]⚠ {m}[/]"))
+    except Exception:  # noqa: BLE001 — never block startup
+        return
+
+
 def _build_orchestrator(config, store: Store, *, event_sink=None, task=None) -> Orchestrator:
     """Back-compat alias for the shared factory (core/runtime.build_orchestrator).
     Kept as a module-level name because five call sites in this module and
@@ -6659,6 +6671,12 @@ def start(host, port, workers, no_open):
     if not no_open:
         import webbrowser
         webbrowser.open(url)
+
+    # Placement is load-bearing: `_WEB_DIST` and the `StaticFiles` mount are
+    # decided at `api/app` IMPORT time (module scope, not per-request), so a
+    # rebuild triggered after that import below would never be picked up by
+    # this running process.
+    _ensure_board_fresh()
 
     import uvicorn
     from ..api.app import app as _app
