@@ -1,282 +1,154 @@
 # How I verified this — full log
 
-_Harness-captured record for task `b5599d40`, commit `6c038af96463fa8b0e1c9ab0545d1682c367a567` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `b5599d40`, commit `9e1923867f2b61b1afee8023bc7d891a372394a0` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ## How I verified this
-17 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
-
-**Not everything recorded is shown:** the 12 most recent of those listed are shown with their captured output, and the other 5 commands are shown as a command line only.
+8 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
 
 ### test
-- `uv run pytest -q tests/test_cli_shell_app.py::test_the_intake_flow_has_one_name_in_everything_an_operator_reads tests/test_structural_budget.py::test_no_frozen_entry_has_grown 2>&1 | tail -100`
-  _output not shown - see the note above._
-- `cd /Users/eyalgolan/.<redacted>/worktrees/b5599d40f4c5465194c58f2ffd94273e.9318.62ac8b23 uv run pytest -q tests/test_structural_budget.py 2>&1 | tail -30`
-  _output not shown - see the note above._
-- `cd /Users/eyalgolan/.<redacted>/worktrees/b5599d40f4c5465194c58f2ffd94273e.9318.62ac8b23 uv run pytest -q tests/test_cli_shell_app.py::test_the_intake_flow_has_one_name_in_everything_an_operator_reads 2>&1 | tail -80`
-  _output not shown - see the note above._
-- `cd /Users/eyalgolan/.<redacted>/worktrees/b5599d40f4c5465194c58f2ffd94273e.9318.62ac8b23 uv run pytest -q tests/test_setup_mode_boot.py 2>&1 | tail -100`
-  _output not shown - see the note above._
-- `cd /Users/eyalgolan/.<redacted>/worktrees/b5599d40f4c5465194c58f2ffd94273e.9318.62ac8b23 uv run pytest -q tests/test_cli_shell_app.py 2>&1 | tail -20`
-  _output not shown - see the note above._
-- `cd /Users/eyalgolan/.<redacted>/worktrees/b5599d40f4c5465194c58f2ffd94273e.9318.62ac8b23 uv run pytest -q -n 4 \   tests/test_setup_mode_boot.py \   tests/test_structural_budget.py \   tests/test_cli_shell [... 283 of 626 characters omitted from the middle ...] ests/test_api.py \   tests/test_brain_invariants.py \   tests/test_readme_claims.py \   $(ls tests/test_scheduler*.py) \   2>&1 | tail -60`
+- `uv run pytest -q tests/test_setup_mode_boot.py 2>&1 | tail -40`
 
 ```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+...........                                                              [100%]
+11 passed in 1.10s
+```
+
+- `uv run pytest -q -n 4 tests/test_structural_budget.py tests/test_store_fixture_convergence_guard.py 2>&1 | tail -60`
+
+```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
 bringing up nodes...
 bringing up nodes...
 
-........................................................................ [  6%]
-........................................................................ [ 13%]
-........................................................................ [ 19%]
-........................................................................ [ 26%]
-........................................................................ [ 33%]
-........................................................................ [ 39%]
-........................................................................ [ 46%]
-........................................................................ [ 53%]
-
-[... 2,228 of 3,367 characters omitted from the middle ...]
-rletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
-    from starlette.testclient import TestClient
-
--- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-=========================== short test summary info ============================
-FAILED tests/test_api.py::test_mutation_broadcast_payload_carries_claimed - a...
-1 failed, 1073 passed, 12 skipped, 1 warning in 66.02s (0:01:06)
-```  
-  _excerpt - 3,359 characters of output in total_
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/b5599d40f4c5465194c58f2ffd94273e.9318.62ac8b23 uv run pytest -q tests/test_api.py -k "post" 2>&1 | tail -40 echo "=== grep other create_task tests ===" grep -n 'async def test_.*(client' tests/test_api.py | grep -i "creat\|post" | head -20`
-
-```
-222 deselected in 0.36s
-=== grep other create_task tests ===
-479:async def test_create_task_jira_stores_external_id(client, store):
-493:async def test_create_task_jira_external_id_trimmed_and_capped(client, store):
-507:async def test_create_task_mcp_source_persists(client, store):
-520:async def test_create_task_unknown_source_still_coerced_to_board(client, store):
-530:async def test_create_task_board_ignores_external_id(client, store):
-544:async def test_create_task_absent_external_id_unchanged(client, store):
-567:async def test_create_task_copies_profile_defaults_into_config(client, store, tmp_path):
-580:async def test_create_task_no_profile_defaults_config_unchanged(client
-[... 295 of 1,434 characters omitted from the middle ...]
-nd_cancels_parent(client, store):
-4202:async def test_a_second_split_creates_no_duplicate_children(client, store):
-4219:async def test_create_stashes_a_feasibility_hint_for_a_large_task(client, store):
-4243:async def test_create_of_a_simple_task_stashes_no_hint(client, store):
-4254:async def test_create_response_carries_the_feasibility_hint_immediately(client, store):
-4278:async def test_create_response_carries_no_hint_for_a_simple_task(client, store):
-```  
-  _excerpt - 1,434 characters of output in total_
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/b5599d40f4c5465194c58f2ffd94273e.9318.62ac8b23 uv run pytest -q tests/test_api.py::test_create_task_jira_stores_external_id -x 2>&1 | tail -40`
-
-```
-F
+..................F.                                                     [100%]
 =================================== FAILURES ===================================
-___________________ test_create_task_jira_stores_external_id ___________________
+__________________ test_no_undocumented_local_store_fixtures ___________________
+[gw3] darwin -- Python 3.12.13 /Users/eyalgolan/.<redacted>/worktrees/b5599d40f4c5465194c58f2ffd94273e.39117.01874ebf/.venv/bin/python
 
-client = <httpx.AsyncClient object at 0x109b6c320>
-store = <<redacted>.core.db.Store object at 0x109c07e30>
+    def test_no_undocumented_local_store_fixtures():
+        """A
+[... 1,708 of 2,847 characters omitted from the middle ...]
+s/test_...boot.py', ...} == {'tests/test_...onnection.py'}
+E         
+E         Extra items in the left set:
+E         'tests/test_setup_mode_boot.py'
+E         Use -v to get more diff
 
-    @pytest.mark.asyncio
-    async def test_create_task_jira_stores_external_id(client, store):
-        r = await client.post("/api/tasks", json={
-            "title": "Import from Jira",
-            "source": "jira",
-            "external_id": "PROJ-9",
-        })
->       assert r.status_code == 201
-E       assert 503 == 201
-E        +  where 503 = <Response [503 Service Unavailable]>.status_code
-
-tests/test_api.py:485: AssertionError
+tests/test_store_fixture_convergence_guard.py:95: AssertionError
 =========================== short test summary info ============================
-FAILED tests/test_api.py::test_create_task_jira_stores_external_id - assert 5...
-!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
-1 failed in 0.47s
-```
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/b5599d40f4c5465194c58f2ffd94273e.9318.62ac8b23 uv run pytest -q tests/test_setup_mode_boot.py tests/test_api.py -p no:xdist 2>&1 | tail -40`
-
-```
-........................................................................ [ 31%]
-........................................................................ [ 62%]
-........................................................................ [ 93%]
-................                                                         [100%]
-=============================== warnings summary ===============================
-tests/test_api.py::test_board_websocket_routes_and_sends_the_init_snapshot
-  /Users/eyalgolan/.<redacted>/worktrees/b5599d40f4c5465194c58f2ffd94273e.9318.62ac8b23/tests/test_api.py:2610: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
-    from starlette.testclient import TestClient
-
--- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-232 passed, 1 warning in 32.43s
-```
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/b5599d40f4c5465194c58f2ffd94273e.9318.62ac8b23 uv run pytest -q -n 4 \   tests/test_setup_mode_boot.py tests/test_api.py tests/test_api_version.py \   tests/test_a [... 216 of 559 characters omitted from the middle ...] s/test_cli_shell_app.py \   tests/test_structural_budget.py tests/test_brain_invariants.py \   tests/test_readme_claims.py 2>&1 | tail -60`
-
-```
-bringing up nodes...
-bringing up nodes...
-
-........................................................................ [  7%]
-........................................................................ [ 15%]
-........................................................................ [ 23%]
-........................................................................ [ 31%]
-........................................................................ [ 38%]
-........................................................................ [ 46%]
-........................................................................ [ 54%]
-........................................................................ [ 62%]
-
-[... 2,173 of 3,312 characters omitted from the middle ...]
-y:2610: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
-    from starlette.testclient import TestClient
-
--- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-=========================== short test summary info ============================
-FAILED tests/test_structural_budget.py::test_no_frozen_entry_has_grown - Asse...
-1 failed, 914 passed, 12 skipped, 1 warning in 20.58s
+FAILED tests/test_store_fixture_convergence_guard.py::test_no_undocumented_local_store_fixtures
+1 failed, 19 passed in 2.47s
 ```  
-  _excerpt - 3,308 characters of output in total_
+  _excerpt - 2,843 characters of output in total_
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/b5599d40f4c5465194c58f2ffd94273e.9318.62ac8b23 uv run pytest -q -n 4 \   tests/test_setup_mode_boot.py tests/test_api.py tests/test_api_version.py \   tests/test_a [... 216 of 559 characters omitted from the middle ...] s/test_cli_shell_app.py \   tests/test_structural_budget.py tests/test_brain_invariants.py \   tests/test_readme_claims.py 2>&1 | tail -40`
+- `uv run pytest -q -n 4 tests/test_setup_mode_boot.py tests/test_structural_budget.py tests/test_store_fixture_convergence_guard.py 2>&1 | tail -50`
 
 ```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
 bringing up nodes...
 bringing up nodes...
 
-........................................................................ [  7%]
-........................................................................ [ 15%]
-........................................................................ [ 23%]
-........................................................................ [ 31%]
-........................................................................ [ 38%]
-........................................................................ [ 46%]
-........................................................................ [ 54%]
-........................................................................ [ 62%]
+...............................                                          [100%]
+31 passed in 3.30s
+```
 
-[... 488 of 1,627 characters omitted from the middle ...]
-est_api.py::test_board_websocket_routes_and_sends_the_init_snapshot
-  /Users/eyalgolan/.<redacted>/worktrees/b5599d40f4c5465194c58f2ffd94273e.9318.62ac8b23/tests/test_api.py:2610: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+- `uv run pytest -q -n 4 tests/test_api_key_auth_mode.py tests/test_config.py tests/test_auth_profiles.py tests/test_api_config_scrub.py tests/test_api_version.py tests/test_start_single_store_connection.py tests/test_serve_pid_lock.py tests/test_cli_commands.py tests/test_api.py tests/test_brain_invariants.py tests/test_readme_claims.py 2>&1 | tail -40`
+
+```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+bringing up nodes...
+bringing up nodes...
+
+........................................................................ [  8%]
+........................................................................ [ 17%]
+........................................................................ [ 25%]
+........................................................................ [ 34%]
+........................................................................ [ 42%]
+...........................................
+[... 606 of 1,745 characters omitted from the middle ...]
+st_api.py::test_board_websocket_routes_and_sends_the_init_snapshot
+  /Users/eyalgolan/.<redacted>/worktrees/b5599d40f4c5465194c58f2ffd94273e.39117.01874ebf/tests/test_api.py:2624: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
     from starlette.testclient import TestClient
 
 -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-915 passed, 12 skipped, 1 warning in 19.41s
+830 passed, 12 skipped, 1 warning in 24.85s
 ```  
-  _excerpt - 1,625 characters of output in total_
+  _excerpt - 1,741 characters of output in total_
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/b5599d40f4c5465194c58f2ffd94273e.9318.62ac8b23 uv run pytest -q -n 4 tests/test_scheduler.py tests/test_scheduler_dispatch.py 2>&1 | tail -20 || true echo "=== find scheduler-ish test files ===" ls tests/ | grep -i sched`
-
-```
-bringing up nodes...
-bringing up nodes...
-
-
-no tests ran in 0.23s
-=== find scheduler-ish test files ===
-test_scheduler_lease_fail_closed.py
-test_scheduler_lease_orphan_window.py
-test_scheduler_orphan_landed_reconcile.py
-test_scheduler_priority_dispatch.py
-test_scheduler_quota_cost_leak.py
-test_scheduler_quota_park_resume.py
-test_scheduler_quota_recovery.py
-test_scheduler_shipped_gate.py
-test_scheduler_terminal_landed_reconcile.py
-test_scheduler.py
-```
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/b5599d40f4c5465194c58f2ffd94273e.9318.62ac8b23 uv run pytest -q -n 4 tests/test_scheduler.py tests/test_scheduler_lease_fail_closed.py \   tests/test_scheduler_lea [... 207 of 550 characters omitted from the middle ...] est_scheduler_quota_recovery.py \   tests/test_scheduler_shipped_gate.py tests/test_scheduler_terminal_landed_reconcile.py 2>&1 | tail -20`
+- `uv run pytest -q -n 4 tests/test_scheduler*.py 2>&1 | tail -20`
 
 ```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
 bringing up nodes...
 bringing up nodes...
 
 ........................................................................ [ 45%]
 ........................................................................ [ 90%]
 ...............                                                          [100%]
-159 passed in 5.46s
+159 passed in 9.92s
 ```
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/b5599d40f4c5465194c58f2ffd94273e.9318.62ac8b23 uv run pytest -q -n 4 tests/test_api_task_follows.py tests/test_intake_token_accounting.py \   tests/test_feature_used_telemetry.py tests/test_plan_approval_gate.py 2>&1 | tail -20`
+- `uv run pytest -q -n 4 \   tests/test_setup_mode_boot.py \   tests/test_structural_budget.py \   tests/test_store_fixture_convergence_guard.py \   tests/test_api_key_auth_mode.py \   tests/test_config.py \  [... 206 of 549 characters omitted from the middle ...]  \   tests/test_api.py \   tests/test_scheduler*.py \   tests/test_brain_invariants.py \   tests/test_readme_claims.py \   2>&1 | tail -50`
 
 ```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
 bringing up nodes...
 bringing up nodes...
 
-..............................................                           [100%]
-46 passed in 5.76s
-```
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/b5599d40f4c5465194c58f2ffd94273e.9318.62ac8b23 uv run pytest -q -n 4 \   tests/test_api_coder_backend.py tests/test_api_legacy_blocker_list_fields.py \   tests/t [... 1,104 of 1,443 characters omitted from the middle ...] ession_search.py tests/test_telemetry.py \   tests/test_ui_evidence_provisioning.py tests/test_user_paused_typed_stop.py 2>&1 | tail -40`
-
-```
-bringing up nodes...
-bringing up nodes...
-
-........................................................................ [  7%]
-........................................................................ [ 14%]
-........................................................................ [ 22%]
-........................................................................ [ 29%]
-........................................................................ [ 37%]
-........................................................................ [ 44%]
-........................................................................ [ 51%]
-........................................................................ [ 59%]
-
-[... 671 of 1,810 characters omitted from the middle ...]
-:17
-tests/test_local_boundary_guard.py:17
-  /Users/eyalgolan/.<redacted>/worktrees/b5599d40f4c5465194c58f2ffd94273e.9318.62ac8b23/tests/test_local_boundary_guard.py:17: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+........................................................................ [  6%]
+........................................................................ [ 13%]
+........................................................................ [ 20%]
+........................................................................ [ 27%]
+........................................................................ [ 34%]
+...........................................
+[... 847 of 1,986 characters omitted from the middle ...]
+t_api.py::test_board_websocket_routes_and_sends_the_init_snapshot
+  /Users/eyalgolan/.<redacted>/worktrees/b5599d40f4c5465194c58f2ffd94273e.39117.01874ebf/tests/test_api.py:2624: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
     from starlette.testclient import TestClient
 
 -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-971 passed, 1 skipped, 4 warnings in 100.19s (0:01:40)
+1020 passed, 12 skipped, 1 warning in 29.88s
 ```  
-  _excerpt - 1,808 characters of output in total_
+  _excerpt - 1,982 characters of output in total_
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/b5599d40f4c5465194c58f2ffd94273e.9318.62ac8b23 uv run pytest -q --collect-only tests/test_setup_mode_boot.py 2>&1 | grep "::"`
-
-```
-tests/test_setup_mode_boot.py::test_app_with_no_credential_serves_version_and_flags_setup_mode
-tests/test_setup_mode_boot.py::test_start_bootstrap_does_not_exit_without_a_credential
-tests/test_setup_mode_boot.py::test_task_create_in_setup_mode_returns_setup_error
-tests/test_setup_mode_boot.py::test_grill_and_split_are_refused_in_setup_mode[/api/grill-body0]
-tests/test_setup_mode_boot.py::test_grill_and_split_are_refused_in_setup_mode[/api/tasks/does-not-exist/split-body1]
-tests/test_setup_mode_boot.py::test_scheduler_tick_idles_instead_of_crashing_without_a_credential
-tests/test_setup_mode_boot.py::test_credential_added_lifts_the_restriction
-tests/test_setup_mode_boot.py::test_scheduler_resumes_once_auth_check_stops_raising
-tests/test_setup_mode_boot.py::test_with_a_credential_present_nothing_is_gated
-tests/test_setup_mode_boot.py::test_scrub_still_runs_on_the_missing_credential_path
-```
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/b5599d40f4c5465194c58f2ffd94273e.9318.62ac8b23 uv run pytest -q -n 4 \   tests/test_cli_shell_app.py::test_the_intake_flow_has_one_name_in_everything_an_operator_reads \   tests/test_structural_budget.py::test_no_frozen_entry_has_grown \   tests/test_setup_mode_boot.py tests/test_api.py 2>&1 | tail -15 echo "=== final git status ===" git status --porcelain`
+- `uv run pytest -q tests/test_structural_budget.py -v 2>&1 | tail -20`
 
 ```
-bringing up nodes...
-bringing up nodes...
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.1.1, pluggy-1.6.0
+<redacted> isolated HOME: /var/folders/1r/3r0rt1jd4j1456rsg_fh4d380000gn/T/nh-test-home-y6sp_ri4
+rootdir: /Users/eyalgolan/.<redacted>/worktrees/b5599d40f4c5465194c58f2ffd94273e.39117.01874ebf
+configfile: pyproject.toml
+plugins: anyio-4.14.0, cov-7.1.0, no-human-0.1.9, xdist-3.8.0, asyncio-1.4.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 18 items
 
-........................................................................ [ 30%]
-........................................................................ [ 61%]
-........................................................................ [ 92%]
-..................                                                       [100%]
+tests/test_structural_budget.py ..................                       [100%]
+
+============================== 18 passed in 2.41s ==============================
+```
+
+- `uv run pytest -q -n 4 \   tests/test_setup_mode_boot.py \   tests/test_structural_budget.py \   tests/test_store_fixture_convergence_guard.py \   tests/test_api_key_auth_mode.py \   tests/test_config.py \  [... 206 of 549 characters omitted from the middle ...]  \   tests/test_api.py \   tests/test_scheduler*.py \   tests/test_brain_invariants.py \   tests/test_readme_claims.py \   2>&1 | tail -10`
+
+```
+s.s...............................................s..................... [ 90%]
+..s..................................................................... [ 97%]
+........................                                                 [100%]
 =============================== warnings summary ===============================
 tests/test_api.py::test_board_websocket_routes_and_sends_the_init_snapshot
-  /Users/eyalgolan/.<redacted>/worktrees/b5599d40f4c5465194c58f2ffd94273e.9318.62ac8b23/tests/test_api.py:2610: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+  /Users/eyalgolan/.<redacted>/worktrees/b5599d40f4c5465194c58f2ffd94273e.39117.01874ebf/tests/test_api.py:2624: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
     from starlette.testclient import TestClient
 
 -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-234 passed, 1 warning in 14.49s
-=== final git status ===
- M RELEASE_MANIFEST.txt
- M src/<redacted>/api/app.py
- M src/<redacted>/cli/commands.py
- M src/<redacted>/core/scheduler.py
- M tests/test_setup_mode_boot.py
- M tests/test_structural_budget.py
+1020 passed, 12 skipped, 1 warning in 38.76s
 ```
 
 
 **Not verified:** everything below is a limit of this section, listed whether or not it bit this attempt.
 
 - no command recognised as e2e, http, typecheck, lint, build was recorded - and a recorded command is shown with its middle omitted, so a check inside the omitted part cannot be ruled out
-- 5 commands listed above are shown without their captured output: only the 12 most recent carry it
 - an entry shows that a command LINE was submitted to the shell and what came back - never that the check recognised inside it RAN, and never that it was the RIGHT command: `pytest -k test_nothing` prints a clean run, and a recorded command line may name a check the shell never reached yet is still counted - TEN SHAPES WERE DRIVEN against bash 3.2.57 with the check replaced by a marker-printing stub and the marker was absent in every one: a failed `&&`, a taken `||`, an `exit`, an `exec`, an `exit` inside a `source`d script, a syntax error that aborts the REST of the line, a multi-line `if false`, a `case` that matches nothing, `set -e` aborting an earlier command, and `set -u` on an unset variable; that list is MEASURED, NOT EXHAUSTIVE, because this module is not bash, so a kind this section does NOT list as missing is a kind some recorded line named, which is not the same as a kind that ran
 - the text is the coder's: the session chose the command string and, through `echo`/`printf`, can choose the output too. Both are shown as inert text, and no entry ASSERTS a pass, a fail, or an exit status - `pytest -q | tail -3` exits with `tail`'s status, `Error: Exit code 1` is a line IN THE OUTPUT, and where the harness reported a timeout or an interruption instead of output that report is appended to the captured text in square brackets. Read the output
 - recognition reads the command line ONLY - it never looks inside what a command runs, so `bash -c 'uv run pytest -q'` leaves no receipt at all while `make test` leaves one that names `make` and not the recipe it ran; and the other way, a check merely NAMED in a heredoc body, or in a quoted string that happens to spell a shell separator, can be recorded as though it ran
