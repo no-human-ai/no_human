@@ -5,7 +5,9 @@ import {
   generateDocs, getDocsJob, detectDocs, fetchIntegrationSetup, saveIntegrationSetup,
   testIntegration,
   proveRepoSSE, confirmRepoProfile, fetchReadiness, setRepoUiEvidence,
+  probeServer,
 } from "./api.js";
+import { isNetworkError, offlineBanner, createServerProbe } from "./offlineRetry.js";
 import { shouldPoll, nextJobState } from "./wikiJobs.js";
 import { repoBadges, discoveryMessage, ambiguousNames, rowName } from "./discoveredRepos.js";
 // onboardingHistory.js (scanSummary/groupProposalsByProject) went with the
@@ -121,6 +123,16 @@ export default function Onboarding({ onComplete }) {
   const [newProjRepos, setNewProjRepos] = useState(() => new Set());
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
+  // Incident 2026-09-04: the backend died mid-wizard and every step rendered
+  // its own raw "Failed to fetch" string. `offline` is set the moment ANY
+  // step loader hits a network-level rejection; the wizard-level banner then
+  // owns the failure and no step renders the exception text. `reloadNonce`
+  // is bumped once the server answers again, so the current step's loader
+  // effects re-run and repopulate with live data.
+  const [offline, setOffline] = useState(false);
+  const [probing, setProbing] = useState(false);
+  const [reloadNonce, setReloadNonce] = useState(0);
+  const probeRef = useRef(null);
   // Background wiki-generation jobs (B4): repoPath -> {jobId,status,error,files}.
   // Polled every 2 s while queued|running; the result survives this unmount.
   const [wikiJobs, setWikiJobs] = useState({});
@@ -237,9 +249,36 @@ export default function Onboarding({ onComplete }) {
     if (card && !card.contains(document.activeElement)) card.focus();
   }, [i]);
 
+  // While offline, probe /api/version every 3s (fixed cadence, no escalation
+  // — the endpoint is cheap) until the server answers, then bump reloadNonce
+  // so the current step's loader effects re-run with live data. Retries
+  // indefinitely; only going back online or unmounting stops them.
+  useEffect(() => {
+    if (!offline) return;
+    const p = createServerProbe({
+      probe: probeServer,
+      onStatus: (s) => setProbing(s === "probing"),
+      onReconnect: () => { setOffline(false); setProbing(false); setReloadNonce((n) => n + 1); },
+    });
+    probeRef.current = p;
+    p.start();
+    return () => { probeRef.current = null; p.stop(); };
+  }, [offline]);
+  const obBanner = offlineBanner({ offline, probing });
+
+  // The single choke point every step loader's catch routes through. Returns
+  // true when the throw was the server being gone, in which case the caller
+  // must NOT also set its own per-step error state — the wizard-level banner
+  // owns the failure and no step renders the exception text.
+  function noteFetchFailure(e) {
+    if (!isNetworkError(e)) return false;
+    setOffline(true);
+    return true;
+  }
+
   async function guard(fn) {
     setBusy(true); setErr(null);
-    try { await fn(); } catch (e) { setErr(e.message); } finally { setBusy(false); }
+    try { await fn(); } catch (e) { if (!noteFetchFailure(e)) setErr(e.message); } finally { setBusy(false); }
   }
 
   // Scan ONE folder the user typed. The single scanner refuses a root outside
@@ -278,7 +317,10 @@ export default function Onboarding({ onComplete }) {
           setIntegrations(specs);
           setIntDraft(draftFrom(specs));
         })
-        .catch(() => setIntegrations([]));
+        // On a network failure `integrations` must stay `null` (unloaded) so
+        // the `integrations === null` guard above permits a refetch once
+        // `reloadNonce` bumps on reconnect, instead of a permanent [].
+        .catch((e) => { if (!noteFetchFailure(e)) setIntegrations([]); });
     }
     // Entering Projects with the add form pristine seeds its repo picker with
     // the repos selected on the repos step — the "one project, all my repos"
@@ -287,7 +329,7 @@ export default function Onboarding({ onComplete }) {
       setNewProjRepos(new Set(selectedRepos));
     }
     // deps intentionally partial (was: eslint-disable react-hooks/exhaustive-deps — plugin never loaded here)
-  }, [step.key]);
+  }, [step.key, reloadNonce]);
 
   // Docs step: detect each selected repo's README/docs/CONTRIBUTING once, so
   // the wizard shows what the coder already reads rather than asking the user
@@ -298,10 +340,12 @@ export default function Onboarding({ onComplete }) {
       if (detectedDocs[rp] !== undefined) continue;
       detectDocs(rp)
         .then((res) => setDetectedDocs((d) => ({ ...d, [rp]: res.found || [] })))
-        .catch(() => setDetectedDocs((d) => ({ ...d, [rp]: [] })));
+        // Same reasoning as integrations: leave this repo's key undefined on
+        // a network failure so it refetches once reloadNonce bumps.
+        .catch((e) => { if (!noteFetchFailure(e)) setDetectedDocs((d) => ({ ...d, [rp]: [] })); });
     }
     // deps intentionally partial (detectedDocs read only to skip refetch)
-  }, [step.key, selectedRepos]);
+  }, [step.key, selectedRepos, reloadNonce]);
 
   // Poll running wiki jobs every 2 s until each reaches a terminal state. The
   // interval is recreated whenever wikiJobs changes and torn down once nothing
@@ -519,10 +563,10 @@ export default function Onboarding({ onComplete }) {
     let cancelled = false;
     fetchReadiness()
       .then((r) => { if (!cancelled) setReadiness(r); })
-      .catch(() => { if (!cancelled) setReadiness({ error: true }); });
+      .catch((e) => { if (cancelled) return; if (!noteFetchFailure(e)) setReadiness({ error: true }); });
     return () => { cancelled = true; };
     // deps intentionally partial (matches this file's existing convention)
-  }, [step.key]);
+  }, [step.key, reloadNonce]);
 
   // Tick/untick a repo for the project being composed in the add form.
   function toggleNewProjRepo(repoPath) {
@@ -695,6 +739,24 @@ export default function Onboarding({ onComplete }) {
             </div>
           ))}
         </div>
+
+        {/* Incident 2026-09-04: the server died mid-wizard and every step showed
+            its own raw "Failed to fetch" string. This banner is wizard-level
+            (above the step card, not per-step) so it stays put across step
+            navigation and reads as one outage, not N. */}
+        {obBanner && (
+          <div className={obBanner.className} role={obBanner.role}>
+            <span>{obBanner.text}</span>
+            <span className="ob-offline-hint">{obBanner.hint}</span>
+            <button
+              type="button"
+              className="ob-offline-retry"
+              onClick={() => probeRef.current?.retryNow()}
+            >
+              {obBanner.retryLabel}
+            </button>
+          </div>
+        )}
 
         <div
           className="ob-card"

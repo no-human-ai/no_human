@@ -6041,6 +6041,21 @@ a.so-chip-value:hover { color: var(--accent-300); }
 .ob-summary b { font-family: var(--font-mono); color: var(--text-hi); }
 .ob-error { margin-top: 16px; color: var(--state-failed); font-size: 13px; }
 
+/* Wizard-level "server is gone" banner (incident 2026-09-04) — unlike
+   .nh-stale-banner this one has a Retry button, so pointer-events stay auto. */
+.ob-offline-banner {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin: 0 0 14px; padding: 10px 14px; border-radius: 6px;
+  background: color-mix(in oklab, var(--state-failed) 12%, var(--surface-1));
+  border: 1px solid var(--state-failed); color: var(--text-hi); font-size: 13px;
+}
+.ob-offline-hint { color: var(--text-muted); font-size: 12px; }
+.ob-offline-retry {
+  margin-left: auto; padding: 4px 12px; border-radius: 6px;
+  border: 1px solid var(--state-failed); background: transparent;
+  color: var(--state-failed); font-size: 12px; cursor: pointer;
+}
+
 /* nav + buttons */
 .ob-nav { display: flex; align-items: center; gap: 10px; padding: 0 4px; }
 .ob-nav-spacer { flex: 1; }
