@@ -3138,7 +3138,7 @@ def onboard(repo, confirm, agent):
             console.print("[bold]proving (running each candidate):[/]")
             for p in result.proofs:
                 icon = "[green]✓[/]" if p.ok else "[red]✗[/]"
-                console.print(f"  {icon} {p.summary}")
+                console.print(f"  {icon} {p.summary}{p.failure_tail()}")
             console.print("\n[bold]proposed profile:[/]")
             for label, val in (("install", prof.install_cmd), ("test", prof.test_cmd),
                                ("lint", prof.lint_cmd)):

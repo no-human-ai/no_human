@@ -178,8 +178,10 @@ defaults to `concurrency.stop_grace_s` (60s) plus a 15s margin, i.e. 75s.
 
 ## KI-4 — `nh onboard` reports a failed command without its output
 
-**Status:** open. Found 2026-08-01 by the adoption harness, persona "Sam",
-step `onboard-proving-opacity`.
+**Status:** CLOSED 2026-09-04 by `ProveOutcome.failure_tail`, which renders the
+tail of a failed candidate's own output under the summary line. Found 2026-08-01
+by the adoption harness, persona "Sam", step `onboard-proving-opacity`. The rest
+of this entry stays as the record of what the fix had to prove.
 
 **Symptom**
 
