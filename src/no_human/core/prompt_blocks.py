@@ -488,10 +488,10 @@ def current_review_feedback(task: Task) -> tuple[list[dict], int]:
     return [], 0
 
 
-def build_resume_digest(task: Task) -> str:
+def build_resume_digest(task: Task, base: str | None = None) -> str:
     """Seed a resumed task's fresh session with the prior blocker report and
     any human reply (22.5) — not a stale, bloated context. Pure: reads only
-    ``task.blocker`` and ``task.context``."""
+    ``task.blocker``, ``task.context`` and the given ``base`` branch name."""
     parts: list[str] = []
     if task.blocker:
         b = Blocker.from_dict(task.blocker)
@@ -648,6 +648,19 @@ def build_resume_digest(task: Task) -> str:
         read_step = ("  1. READ the files listed above to understand what is already done.\n"
                      if files else
                      "  1. Inspect the working tree to see what is already done.\n")
+        if wip and not failed_gate:
+            attempt_n = handoff.get("attempt_n")
+            attempt_label = (
+                f"attempt {attempt_n}"
+                if isinstance(attempt_n, int) and not isinstance(attempt_n, bool) and attempt_n > 0
+                else "a previous attempt"
+            )
+            base_label = (base or "").strip() or "the base branch"
+            resume_lines.append(
+                f"  Commit {wip[:8]} on this branch is your own unfinished checkpoint "
+                f"from {attempt_label}; it is NOT on {base_label}; continue from it and "
+                f"do not treat it as evidence the task is complete."
+            )
         resume_lines.append(
             "CRITICAL: Your working tree ALREADY CONTAINS the partial implementation.\n"
             + read_step +

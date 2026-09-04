@@ -2550,6 +2550,23 @@ def test_known_issues_traceback_cites_the_functions_it_names(known_issues_doc):
     bounded corrective round when a diff grows a frozen
     `tests/test_structural_budget.py` entry, so the re-anchor lands before
     review instead of costing a whole extra attempt) added 34 lines above
+
+Re-anchored again 2026-09-03 (fourth): the WIP-checkpoint resume-digest
+    sentence (`build_resume_digest`'s `base` kwarg, kept) was tried together
+    with a one-turn already-satisfied correction (`_wip_claim_correction`,
+    `_WIP_SUBJECT_REASON`, `_WIP_CLAIM_CORRECTION`) that briefly moved this
+    citation to 4648; the correction turn was WITHDRAWN on independent
+    review (task bf645f3a: coder sessions never resume across attempts, so a
+    same-session correction turn cannot fix a cross-attempt mistake, and its
+    abort-exception path had no handler at its call site) and removed along
+    with its constants and test registration — see
+    `tests/test_already_satisfied_wip_correction.py`. `_run_attempt`'s call
+    site in orchestrator.py is back at 4625, its original line; the `base`
+    threading and the `attempt_n` handoff write that stayed neither added
+    nor removed lines above this call. `update_attempt`'s call site in
+    db.py is untouched by this change and stays at 2296.
+
+    Re-home merge 2026-09-04 (279c03c5): the WIP resume-digest change and the intake-eval/preflight chain now live on one tree; the call measures at 4683 here — re-verified against the code, not carried forward blind.
     `_run_attempt`'s `update_attempt(attempt_id, branch_name=branch)` call
     in orchestrator.py, moving the citation from 4625 to 4659; re-verified
     against the code, not carried forward blind. db.py:2296 is untouched by

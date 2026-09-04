@@ -4770,7 +4770,7 @@ class Orchestrator:
         # early return).
         await self._distill_attempt_state(task, repo, attempt_n, base)
         prompt = self._build_implement_prompt(
-            task, str(repo.path), attempt_n=attempt_n
+            task, str(repo.path), attempt_n=attempt_n, base=base
         )
 
         # Supervisor hook: a PostToolUse evaluator that course-corrects the
@@ -16118,7 +16118,7 @@ class Orchestrator:
 
     def _build_implement_prompt(
         self, task: Task, work_dir: str | None = None, *,
-        attempt_n: int | None = None,
+        attempt_n: int | None = None, base: str | None = None,
     ) -> str:
         criteria = "\n".join(f"  - {c}" for c in task.acceptance_criteria) or "  (none stated)"
         kind_directive = self._kind_directive(task)
@@ -16148,7 +16148,7 @@ class Orchestrator:
         # "" when the feature is off, so this line adds no bytes by default.
         brain_block = self._team_brain_block()
         digest = self._context_digest(task)
-        resume = self._resume_digest(task)
+        resume = self._resume_digest(task, base)
         # Retry-cost class: attempt N>1's distilled state doc REPLACES the
         # repo map and gathered-context digest below — those are exactly the
         # bytes re-accumulated every attempt that the doc exists to cut. "" on
@@ -17378,10 +17378,10 @@ class Orchestrator:
         self._carry_reviewer_usage(exc, decision)
         return exc
 
-    def _resume_digest(self, task: Task) -> str:
+    def _resume_digest(self, task: Task, base: str | None = None) -> str:
         """Seed a resumed session with the prior blocker + reply (22.5).
         Pure logic lives in prompt_blocks.build_resume_digest."""
-        return build_resume_digest(task)
+        return build_resume_digest(task, base=base)
 
     def _resume_branch_point(self, repo, ctx: dict, attempt_n: int) -> str:
         """Which checkpoint this attempt branches from ("" = branch from base).
@@ -17697,6 +17697,17 @@ SIX of them read a checkpoint and TWO do not — but do
         handoff["failed_gate"] = None
         handoff["failed_gate_summary"] = None
         handoff["own_partial"] = None
+        # RFC 7396: written (or cleared to None) on every checkpoint this
+        # method records, same discipline as `turns_used` above — a stale
+        # attempt number from an earlier checkpoint must never be attributed
+        # to this one's commit.
+        _active_n = getattr(self, "_active_attempt_number", None)
+        handoff["attempt_n"] = (
+            _active_n
+            if isinstance(_active_n, int) and not isinstance(_active_n, bool)
+            and _active_n > 0
+            else None
+        )
         if stopped_because:
             # BEFORE the wip_sha early-out: an abort with a clean tree has no
             # commit to record but still stopped for a reason, and returning here
@@ -17805,6 +17816,17 @@ SIX of them read a checkpoint and TWO do not — but do
         # checkpoint; `_resume_branch_point` re-checks its ancestry anyway.
         prior = dict((ctx.get("handoff") or {}))
         prior_wip = prior.get("wip_sha", "")
+        # Same discipline as `_record_wip_checkpoint`: written (or cleared to
+        # None) on every handoff this method persists, so a stale attempt
+        # number from an earlier checkpoint can never be attributed to this
+        # one's commit.
+        _active_n = getattr(self, "_active_attempt_number", None)
+        attempt_n = (
+            _active_n
+            if isinstance(_active_n, int) and not isinstance(_active_n, bool)
+            and _active_n > 0
+            else None
+        )
         # Keeping the sha while dropping the file list recreates the defect the
         # sha was preserved to avoid: the next attempt's prompt says "READ the
         # files listed above" with nothing listed. If this attempt observed no
@@ -17844,6 +17866,7 @@ SIX of them read a checkpoint and TWO do not — but do
                 if gate and gate_detail else None
             ),
             "own_partial": True if own_partial else None,
+            "attempt_n": attempt_n,
         }
         # merge_context, not update_task — see _record_wip_checkpoint's docstring:
         # update_task rewrites the whole blob and drops `resume_from` written by

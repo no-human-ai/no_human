@@ -155,6 +155,78 @@ def test_resume_digest_says_no_commit_was_made_when_a_gate_failed_before_any_com
     assert "WIP-PARTIAL" not in d
 
 
+def test_a_wip_checkpoint_resume_digest_names_the_sha_and_refuses_it_as_evidence():
+    """AC1: a genuine [WIP-PARTIAL]/[WIP-BLOCKED] checkpoint (wip_sha, no
+    failed_gate) must tell the resumed coder — in the task's own prompt — that
+    the commit is ITS OWN unfinished work, not landed on the base branch, so
+    it stops mistaking it for evidence the task is already done."""
+    from no_human.core.task import Task, TaskStatus
+    sha = "a" * 40
+    t = Task(id="a", source="test", title="x", status=TaskStatus.IMPLEMENTING,
+             acceptance_criteria=["c"],
+             context={"handoff": {
+                 "wip_sha": sha,
+                 "attempt_n": 4,
+                 "changed_files": ["src/x.py"],
+                 "stopped_because": "attempt timeout",
+             }})
+    d = build_resume_digest(t, base="main")
+    assert sha[:8] in d
+    assert "your own unfinished checkpoint" in d
+    assert "from attempt 4" in d
+    assert "is NOT on main" in d
+    assert "do not treat it as evidence the task is complete" in d
+
+
+def test_a_wip_checkpoint_without_a_recorded_attempt_number_says_a_previous_attempt():
+    """When no attempt number was persisted, the digest must not fabricate one
+    (no literal 'attempt None') and instead says 'a previous attempt'."""
+    from no_human.core.task import Task, TaskStatus
+    sha = "b" * 40
+    t = Task(id="a", source="test", title="x", status=TaskStatus.IMPLEMENTING,
+             acceptance_criteria=["c"],
+             context={"handoff": {
+                 "wip_sha": sha,
+                 "changed_files": ["src/x.py"],
+                 "stopped_because": "attempt timeout",
+             }})
+    d = build_resume_digest(t, base="main")
+    assert "from a previous attempt" in d
+    assert "attempt None" not in d
+
+
+def test_a_digest_with_no_handoff_checkpoint_has_no_checkpoint_sentence():
+    """AC2: without a handoff/checkpoint at all, no checkpoint sentence leaks
+    into the digest."""
+    from no_human.core.task import Task, TaskStatus
+    t = Task(id="a", source="test", title="x", status=TaskStatus.IMPLEMENTING,
+             acceptance_criteria=["c"], context={"attempt_log": ["x"]})
+    d = build_resume_digest(t, base="main")
+    assert "unfinished checkpoint" not in d
+    assert "do not treat it as evidence" not in d
+
+
+def test_a_gate_failed_commit_is_not_called_an_unfinished_checkpoint():
+    """AC2 positive control: a real commit that a GATE rejected is not a
+    '[WIP-PARTIAL]' checkpoint, so it must not get the checkpoint sentence —
+    while 'REJECTED that commit' proves the fixture actually exercises the
+    gate-failed branch (so this test can fail)."""
+    from no_human.core.task import Task, TaskStatus
+    sha = "c" * 40
+    t = Task(id="a", source="test", title="x", status=TaskStatus.IMPLEMENTING,
+             acceptance_criteria=["c"],
+             context={"handoff": {
+                 "wip_sha": sha,
+                 "failed_gate": "tests",
+                 "failed_gate_summary": "AssertionError",
+                 "stopped_because": "the tests gate rejected the diff",
+             }})
+    d = build_resume_digest(t, base="main")
+    assert "REJECTED that commit" in d
+    assert "unfinished checkpoint" not in d
+    assert "do not treat it as evidence" not in d
+
+
 def _finding(label, comment, file="a.py", line=1):
     return {"label": label, "file": file, "line": line, "comment": comment}
 

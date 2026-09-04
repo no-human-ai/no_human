@@ -447,7 +447,43 @@ FROZEN_FILE_LINES = {
     # (build_cmd +7, intake-eval +77, verifier-wall +30, preflight
     # chain +132/+6/+69 rebased together). Measured on this merged
     # tree with the scanner below, never summed by hand.
-    "core/orchestrator.py": 21479,
+    #
+    # 21191 -> 21213 (+22, per the scanner's own
+    # `len(Path(...).read_text().splitlines())` metric — the pre-existing
+    # `_LINE_BREAKS` regex's literal U+0085/U+2028/U+2029 characters keep the
+    # splitlines() count 3 above `wc -l`, same discrepancy noted at the
+    # 20293 -> 20296 entry above; `wc -l` alone reports +19/21210 for this
+    # change): the WIP-checkpoint resume-digest sentence — the `base` kwarg
+    # threaded through `_run_attempt`'s `_build_implement_prompt` call,
+    # `_build_implement_prompt` itself, and `_resume_digest` (5 lines
+    # touched, 0 net new — each just gained a `base=` argument on an existing
+    # line), plus the `attempt_n` field written into the handoff dict by
+    # `_record_wip_checkpoint` (+11) and by `_persist_handoff` (+12, including
+    # the one-line `"attempt_n": attempt_n,` entry in its returned dict).
+    # A same-session one-turn already-satisfied correction
+    # (`_WIP_SUBJECT_REASON`, `_WIP_CLAIM_CORRECTION_MARKER`,
+    # `_WIP_CLAIM_CORRECTION`, `_wip_claim_correction`) was tried and briefly
+    # pushed this to 21354, then WITHDRAWN on independent review (task
+    # bf645f3a: coder sessions never resume across attempts, so a
+    # same-session correction turn cannot fix a cross-attempt mistaken-claim
+    # bug, and its abort-exception path had no handler at its unique call
+    # site inside `_gate_already_satisfied`) and removed in full, along with
+    # its `tests/test_server_stop_checkpoint.py` registration — see
+    # `tests/test_already_satisfied_wip_correction.py`. Measured with the
+    # scanner below, never summed by hand.
+    #
+    # 21213 -> 21247 (+34, rebased onto the above): task a47e5330 —
+    # `_mechanical_round` gained a third conjunct (the PASS-carrying attempt
+    # row must not itself have ended `status="failed"`) so tests-failed /
+    # CI-red / invocation-error rounds after a review PASS re-arm the
+    # lifetime cap instead of reading as a free mechanical round forever,
+    # plus the docstring naming it and a `_check_lifetime_budget` addition
+    # that appends the last recorded failure reason to the BUDGET_EXHAUSTED
+    # blocker. Measured with the scanner below, never summed by hand.
+    # Re-home merge 2026-09-04 (279c03c5): the WIP-checkpoint resume
+    # correction lands on the same tree as the chain above. Measured
+    # on this merged tree with the scanner below, never summed.
+    "core/orchestrator.py": 21502,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.

@@ -5,8 +5,10 @@ import {
   generateDocs, fetchIntegrationSetup, saveIntegrationSetup,
   testIntegration,
   proveRepoSSE, confirmRepoProfile, fetchReadiness, setRepoUiEvidence,
+  probeServer,
 } from "./api.js";
 import { kickoffWikiGeneration } from "./onboardingDocsKickoff.js";
+import { isNetworkError, offlineBanner, createServerProbe } from "./offlineRetry.js";
 import { repoBadges, discoveryMessage, ambiguousNames, rowName } from "./discoveredRepos.js";
 // onboardingHistory.js (scanSummary/groupProposalsByProject) went with the
 // removed AI-history/rules steps — the mining now happens from Settings.
@@ -34,17 +36,24 @@ import {
 
 // Input with live directory autocomplete (via /api/fs/suggest). As you type a
 // path, matching sub-directories are offered through a native <datalist>.
-function PathInput({ value, onChange, placeholder, autoFocus }) {
+// `onNetworkError` is `noteFetchFailure` handed down from the wizard:
+// PathInput has no state of its own, so a network-level rejection here must
+// propagate up to the wizard-level offline banner rather than reject unhandled.
+function PathInput({ value, onChange, placeholder, autoFocus, onNetworkError }) {
   const [opts, setOpts] = useState([]);
   const listId = "pathlist-" + (placeholder || "p").replace(/\W/g, "");
   useEffect(() => {
     let live = true;
     const t = setTimeout(async () => {
-      const res = await suggestPaths(value);
-      if (live) setOpts(res.suggestions || []);
+      try {
+        const res = await suggestPaths(value);
+        if (live) setOpts(res.suggestions || []);
+      } catch (e) {
+        if (live && !onNetworkError?.(e)) setOpts([]);
+      }
     }, 120);
     return () => { live = false; clearTimeout(t); };
-  }, [value]);
+  }, [value, onNetworkError]);
   return (
     <>
       <input
@@ -124,6 +133,16 @@ export default function Onboarding({ onComplete }) {
   const [newProjRepos, setNewProjRepos] = useState(() => new Set());
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
+  // Incident 2026-09-04: the backend died mid-wizard and every step rendered
+  // its own raw "Failed to fetch" string. `offline` is set the moment ANY
+  // step loader hits a network-level rejection; the wizard-level banner then
+  // owns the failure and no step renders the exception text. `reloadNonce`
+  // is bumped once the server answers again, so the current step's loader
+  // effects re-run and repopulate with live data.
+  const [offline, setOffline] = useState(false);
+  const [probing, setProbing] = useState(false);
+  const [reloadNonce, setReloadNonce] = useState(0);
+  const probeRef = useRef(null);
   const [integrations, setIntegrations] = useState(null);   // null=unloaded
   // Proving: path -> {status, lines[], elapsed, attempted, result, error}.
   // "unproven" is not a cosmetic state — a repo without a proven test command
@@ -236,9 +255,36 @@ export default function Onboarding({ onComplete }) {
     if (card && !card.contains(document.activeElement)) card.focus();
   }, [i]);
 
+  // While offline, probe /api/version every 3s (fixed cadence, no escalation
+  // — the endpoint is cheap) until the server answers, then bump reloadNonce
+  // so the current step's loader effects re-run with live data. Retries
+  // indefinitely; only going back online or unmounting stops them.
+  useEffect(() => {
+    if (!offline) return;
+    const p = createServerProbe({
+      probe: probeServer,
+      onStatus: (s) => setProbing(s === "probing"),
+      onReconnect: () => { setOffline(false); setProbing(false); setReloadNonce((n) => n + 1); },
+    });
+    probeRef.current = p;
+    p.start();
+    return () => { probeRef.current = null; p.stop(); };
+  }, [offline]);
+  const obBanner = offlineBanner({ offline, probing });
+
+  // The single choke point every step loader's catch routes through. Returns
+  // true when the throw was the server being gone, in which case the caller
+  // must NOT also set its own per-step error state — the wizard-level banner
+  // owns the failure and no step renders the exception text.
+  function noteFetchFailure(e) {
+    if (!isNetworkError(e)) return false;
+    setOffline(true);
+    return true;
+  }
+
   async function guard(fn) {
     setBusy(true); setErr(null);
-    try { await fn(); } catch (e) { setErr(e.message); } finally { setBusy(false); }
+    try { await fn(); } catch (e) { if (!noteFetchFailure(e)) setErr(e.message); } finally { setBusy(false); }
   }
 
   // Scan ONE folder the user typed. The single scanner refuses a root outside
@@ -277,7 +323,10 @@ export default function Onboarding({ onComplete }) {
           setIntegrations(specs);
           setIntDraft(draftFrom(specs));
         })
-        .catch(() => setIntegrations([]));
+        // On a network failure `integrations` must stay `null` (unloaded) so
+        // the `integrations === null` guard above permits a refetch once
+        // `reloadNonce` bumps on reconnect, instead of a permanent [].
+        .catch((e) => { if (!noteFetchFailure(e)) setIntegrations([]); });
     }
     // Entering Projects with the add form pristine seeds its repo picker with
     // the repos selected on the repos step — the "one project, all my repos"
@@ -286,7 +335,7 @@ export default function Onboarding({ onComplete }) {
       setNewProjRepos(new Set(selectedRepos));
     }
     // deps intentionally partial (was: eslint-disable react-hooks/exhaustive-deps — plugin never loaded here)
-  }, [step.key]);
+  }, [step.key, reloadNonce]);
 
   function setIntField(name, field, value) {
     setIntDraft((d) => ({ ...d, [name]: { ...(d[name] || {}), [field]: value } }));
@@ -488,10 +537,10 @@ export default function Onboarding({ onComplete }) {
     let cancelled = false;
     fetchReadiness()
       .then((r) => { if (!cancelled) setReadiness(r); })
-      .catch(() => { if (!cancelled) setReadiness({ error: true }); });
+      .catch((e) => { if (cancelled) return; if (!noteFetchFailure(e)) setReadiness({ error: true }); });
     return () => { cancelled = true; };
     // deps intentionally partial (matches this file's existing convention)
-  }, [step.key]);
+  }, [step.key, reloadNonce]);
 
   // Tick/untick a repo for the project being composed in the add form.
   function toggleNewProjRepo(repoPath) {
@@ -670,6 +719,24 @@ export default function Onboarding({ onComplete }) {
           ))}
         </div>
 
+        {/* Incident 2026-09-04: the server died mid-wizard and every step showed
+            its own raw "Failed to fetch" string. This banner is wizard-level
+            (above the step card, not per-step) so it stays put across step
+            navigation and reads as one outage, not N. */}
+        {obBanner && (
+          <div className={obBanner.className} role={obBanner.role}>
+            <span>{obBanner.text}</span>
+            <span className="ob-offline-hint">{obBanner.hint}</span>
+            <button
+              type="button"
+              className="ob-offline-retry"
+              onClick={() => probeRef.current?.retryNow()}
+            >
+              {obBanner.retryLabel}
+            </button>
+          </div>
+        )}
+
         <div
           className="ob-card"
           key={step.key}
@@ -776,7 +843,8 @@ export default function Onboarding({ onComplete }) {
                       scanner, which refuses a root outside home server-side. */}
                   <PathInput value={root}
                              onChange={(v) => { setRoot(v); debouncedScan(v); }}
-                             placeholder="folder to search, e.g. ~/work" />
+                             placeholder="folder to search, e.g. ~/work"
+                             onNetworkError={noteFetchFailure} />
                   <button className="ob-btn-ghost" disabled={busy || !root.trim()}
                           onClick={() => { debouncedScan.cancel(); scanFolder(root); }}>
                     Search
