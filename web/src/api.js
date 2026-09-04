@@ -862,8 +862,9 @@ export async function fetchOnboardingStatus() {
   return r.json();
 }
 // Auto-discovery over home + the conventional clone roots. `root` scans just
-// that one folder (still refused server-side if it escapes home); `limit` caps
-// the rows. Both optional — a plain `discoverRepos()` is the default scan.
+// that one folder, wherever it resolves — even outside home, the user typed
+// it on purpose; `limit` caps the rows. Both optional — a plain
+// `discoverRepos()` is the default scan.
 export const discoverRepos = async ({ root, limit } = {}) => {
   const qs = new URLSearchParams();
   if (limit) qs.set("limit", limit);

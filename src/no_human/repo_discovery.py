@@ -11,13 +11,19 @@ Three properties matter more than coverage:
   is a leaf (we do not descend into one), and the result count is capped. When
   the cap bites, the response says so — a silently truncated list is a list
   the user cannot trust.
-* **Contained.** Every scan root — the conventional ones as much as the
-  operator-configured extras — is resolved and must land inside the resolved
-  ``home``; one that does not is refused and reported. Every directory entered
-  below a root is likewise checked, so a symlink pointing out of home is never
-  followed. The rule is containment after resolution, not "no symlinks":
-  ``~/Code -> ~/actual-clones`` is scanned, ``~/Code -> /Volumes/BigDisk`` is
-  refused.
+* **Contained — for configured roots.** Every conventional root and every
+  operator-configured ``extra_roots`` entry is resolved and must land inside
+  the resolved ``home``; one that does not is refused and reported, in both
+  ``roots_refused`` (strings, kept for compatibility) and ``refusals``
+  (``{path, reason}``). Every directory entered below such a root is likewise
+  checked, so a symlink pointing out of home is never followed. The rule is
+  containment after resolution, not "no symlinks": ``~/Code ->
+  ~/actual-clones`` is scanned, ``~/Code -> /Volumes/BigDisk`` is refused. A
+  user-**typed** ``root`` (the "type a folder to scan it" path) is the one
+  exception: it is scanned wherever it resolves, never refused for being
+  outside home — the user pointed at it on purpose, and ``GET /api/fs/suggest``
+  already lists directories anywhere on disk, so this is no wider a surface.
+  A symlink under a typed root still may not lead outside *that* root.
 * **Fast.** The walk is pure ``os.scandir`` under its own wall-clock budget
   (:data:`WALK_BUDGET_S`) — a network-mounted root cannot stall the request, it
   can only truncate the answer, and a truncated answer says so. The only
@@ -409,10 +415,15 @@ def _untracked_pass(rows: list[dict[str, Any]], deadline: float) -> None:
         list(pool.map(probe, pending))
 
 
-def _walk(root: Path, home: Path, max_depth: int, ceiling: int,
+def _walk(root: Path, boundary: Path, max_depth: int, ceiling: int,
           found: list[Path], deadline: float,
           skip: frozenset[str] = frozenset()) -> bool:
     """Collect candidate project directories under ``root``, depth-bounded.
+
+    ``boundary`` is the symlink escape hatch this walk must not take — for a
+    home-contained root that is ``home`` itself; for a user-typed root that
+    resolves outside home it is the typed root, so a link inside it still
+    cannot lead back out.
 
     Returns True if the wall-clock ``deadline`` cut the walk short — the caller
     reports that rather than passing a truncated list off as a complete one.
@@ -460,9 +471,9 @@ def _walk(root: Path, home: Path, max_depth: int, ceiling: int,
                     target = child.resolve()
                 except OSError:
                     continue  # a cycle or a dead link: refuse, do not guess
-                # A link out of home is exactly the escape hatch this walk
-                # must not take.
-                if not _is_within(target, home):
+                # A link out of the boundary is exactly the escape hatch this
+                # walk must not take.
+                if not _is_within(target, boundary):
                     continue
             visit(child, depth + 1)
 
@@ -482,9 +493,10 @@ def discover_repos(
 
     Returns a JSON-ready dict: ``repos`` (path/name/is_git/branch/dirty/
     detached/ecosystem/``mtime``), the roots actually scanned, missing and
-    refused, the cap state, ``walk_truncated`` (the walk ran out of wall clock,
-    so some folders were never reached), a human-readable ``note`` covering both
-    of those, ``home_direct`` (repos found directly under ``home``) and
+    refused (``roots_refused`` as strings, ``refusals`` as ``{path, reason}``),
+    the cap state, ``walk_truncated`` (the walk ran out of wall clock, so some
+    folders were never reached), a human-readable ``note`` covering both of
+    those, ``home_direct`` (repos found directly under ``home``) and
     ``elapsed_ms``. Rows sort newest-first by ``mtime`` (None last), then name.
 
     ``home`` itself is a depth-1 root — the common case of repos cloned straight
@@ -492,10 +504,13 @@ def discover_repos(
     (the macOS TCC-guarded folders) so setup never triggers an access prompt.
 
     ``root``: when given, ONLY that single folder is scanned (still at
-    ``max_depth`` and under the same containment check as ``extra_roots`` — a
-    ``root`` resolving outside ``home`` is refused, not scanned), and the
-    conventional/home roots are skipped. This is the "type a folder to scan it"
-    path.
+    ``max_depth``), and the conventional/home roots are skipped. Unlike
+    ``extra_roots``, a typed ``root`` is scanned wherever it resolves, even
+    outside ``home`` — this is the "type a folder to scan it" path, and the
+    user's own typed intent is trusted the same way ``GET /api/fs/suggest``
+    already trusts it for browsing. A symlink under the typed root still
+    cannot lead outside that root. A ``root`` that does not exist lands in
+    ``roots_missing``, not ``roots_refused``.
 
     It does not raise on anything it merely cannot read. An unreadable
     directory, a dead symlink or a root that vanished mid-scan is skipped and
@@ -508,38 +523,49 @@ def discover_repos(
     scanned: list[str] = []
     missing: list[str] = []
     refused: list[str] = []
+    refusal_details: list[dict[str, str]] = []
 
-    def _contain(text: str) -> Path | None:
-        """Resolve a caller-supplied root and refuse it if it escapes ``home``.
-
-        ``~``/``~/`` mean the home this scan is bound to, not the process's
+    def _expand(text: str) -> Path:
+        """``~``/``~/`` mean the home this scan is bound to, not the process's
         home — anything else would let configured text reach outside the
-        boundary every other line here defends. Returns None (and records the
-        refusal) for a root that resolves outside ``home``.
-        """
+        boundary every other line here defends."""
         text = text.strip()
         if text == "~":
-            p = home_path
-        elif text.startswith("~/"):
-            p = home_path / text[2:]
-        else:
-            p = Path(text)
-        p = _resolved(p)
+            return home_path
+        if text.startswith("~/"):
+            return home_path / text[2:]
+        return Path(text)
+
+    def _contain(text: str, reason: str = "outside home directory") -> Path | None:
+        """Resolve a caller-supplied root and refuse it if it escapes ``home``.
+
+        Returns None (and records the refusal, both in ``refused`` and in the
+        structured ``refusal_details``) for a root that resolves outside
+        ``home``.
+        """
+        p = _resolved(_expand(text))
         if not _is_within(p, home_path):
             refused.append(str(p))
+            refusal_details.append({"path": str(p), "reason": reason})
             return None
         return p
 
+    def _typed_root(text: str) -> Path:
+        """Resolve a user-**typed** ``root`` with the same ``~`` expansion as
+        :func:`_contain`, but with no containment check and no refusal — the
+        user pointed here on purpose (see the module docstring)."""
+        return _resolved(_expand(text))
+
     protected = frozenset(PROTECTED_HOME_DIRS)
-    # (root, depth, skip-names, report-in-roots_scanned).
-    walk_specs: list[tuple[Path, int, frozenset[str], bool]] = []
+    # (root, depth, skip-names, report-in-roots_scanned, symlink-boundary).
+    walk_specs: list[tuple[Path, int, frozenset[str], bool, Path]] = []
 
     if root is not None:
-        # "Type a folder to scan it": ONLY that root, still contained in home,
-        # conventional and home roots skipped.
-        p = _contain(str(root))
-        if p is not None:
-            walk_specs.append((p, max_depth, frozenset(), True))
+        # "Type a folder to scan it": ONLY that root, scanned wherever it
+        # resolves (see docstring), conventional and home roots skipped. Its
+        # own resolved path is the symlink boundary, not ``home_path``.
+        p = _typed_root(str(root))
+        walk_specs.append((p, max_depth, frozenset(), True, p))
     else:
         candidate_roots: list[Path] = []
         # Case-sensitive filesystems (Linux) keep ``~/code`` and ``~/Code``
@@ -576,6 +602,10 @@ def discover_repos(
                 seen.add(target)
                 if target != cr and not _is_within(target, home_path):
                     refused.append(f"{cr} -> {target}")
+                    refusal_details.append({
+                        "path": f"{cr} -> {target}",
+                        "reason": "outside home directory",
+                    })
                     continue
                 candidate_roots.append(cr)
 
@@ -586,18 +616,18 @@ def discover_repos(
             if p is not None and p not in candidate_roots:
                 candidate_roots.append(p)
 
-        walk_specs = [(cr, max_depth, frozenset(), True) for cr in candidate_roots]
+        walk_specs = [(cr, max_depth, frozenset(), True, home_path) for cr in candidate_roots]
         # Home itself is a depth-1 root — repos cloned straight under ~, the
         # case a user with dozens of them saw zero results for. Not reported in
         # ``roots_scanned`` (``home_direct`` carries the count); its protected
         # children are never entered, so setup raises no macOS access prompt.
-        walk_specs.append((home_path, 1, protected, False))
+        walk_specs.append((home_path, 1, protected, False, home_path))
 
     ceiling = max(max_results * 5, 1000)
     found: list[Path] = []
     walk_deadline = time.monotonic() + WALK_BUDGET_S
     walk_truncated = False
-    for wroot, wdepth, wskip, wreport in walk_specs:
+    for wroot, wdepth, wskip, wreport, wboundary in walk_specs:
         if time.monotonic() >= walk_deadline:
             walk_truncated = True
             break
@@ -607,7 +637,7 @@ def discover_repos(
             continue
         if wreport:
             scanned.append(str(wroot))
-        if _walk(wroot, home_path, wdepth, ceiling, found, walk_deadline, wskip):
+        if _walk(wroot, wboundary, wdepth, ceiling, found, walk_deadline, wskip):
             walk_truncated = True
 
     # Dedupe on the RESOLVED path: `Projects/alias -> Projects/plain` is one
@@ -654,6 +684,9 @@ def discover_repos(
         "roots_scanned": scanned,
         "roots_missing": missing,
         "roots_refused": refused,
+        # Structured form of the same refusals, one entry per string above, so
+        # a caller can render a per-root reason instead of a bare path.
+        "refusals": refusal_details,
         # Short aliases the wizard reads (the sub-heading lists the roots it
         # scanned, and a refused root becomes an inline warning).
         "roots": scanned,

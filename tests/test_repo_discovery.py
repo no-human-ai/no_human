@@ -94,9 +94,15 @@ def test_root_param_scans_only_that_root(fake_home):
     _fake_repo(fake_home / "git" / "a"); _fake_repo(fake_home / "elsewhere" / "b")
     out = discover_repos(home=fake_home, root=str(fake_home / "elsewhere"))
     assert [r["name"] for r in out["repos"]] == ["b"] and out["roots"] == [str(fake_home / "elsewhere")]
-def test_root_outside_home_is_refused(fake_home, tmp_path):
+def test_a_missing_typed_root_is_not_refused(fake_home, tmp_path):
+    """A user-typed ``root`` outside home is scanned, not refused (see
+    ``tests/test_repo_discovery_typed_root.py`` for that coverage) - a typed
+    root that simply does not exist is ``roots_missing``, never
+    ``roots_refused``, so the UI keeps its honest "no repositories" wording
+    for that case."""
     out = discover_repos(home=fake_home, root=str(tmp_path / "x"))
-    assert out["repos"] == [] and out["refused"]
+    assert out["repos"] == [] and out["refused"] == []
+    assert str(tmp_path / "x") in out["roots_missing"]
 def test_home_scan_never_enters_protected_dirs(fake_home, monkeypatch):
     touched = []
     real = Path.iterdir
