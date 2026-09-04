@@ -676,7 +676,7 @@ by the browser:
 | `app_started` | server | — |
 | `task_created` | server | `source` |
 | `task_completed` | server | `status`, `duration_bucket`, `attempts` |
-| `task_failed` | server | `category` |
+| `task_failed` | server | `category`, `reason_category` (closed enum — which STAGE failed: `budget_exhausted`/`review_failed`/`max_attempts`/`infra`/`tamper_blocked`/`blocker_parked`/`other` — never a reason string) |
 | `approve_clicked` | server | — |
 | `feature_used` | server | `name` |
 | `screen_viewed` | browser | `screen` (the lane name — `board`/`backlog`/`done`/`failed`/`stats`/`settings`/…, never content) |

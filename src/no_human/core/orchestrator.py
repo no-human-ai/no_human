@@ -1616,11 +1616,20 @@ class Orchestrator:
                     status=str(meta.get("status")), duration_bucket=bucket,
                     attempts=getattr(self, "_tel_attempts", 0))
             elif kind == "failed" and not getattr(self, "_tel_terminal_sent", False):
-                # Terminal `_fail` off-ramp. The free-text detail must NOT
-                # ship; the category is the signal name itself.
+                # Terminal `_fail`/`_raise_blocker` off-ramp. The free-text
+                # detail must NOT ship; `reason_category` is a CLOSED coarse
+                # enum (which STAGE failed — budget/review/infra/etc, see
+                # telemetry.FAILURE_REASON_CATEGORIES), never the failure
+                # string, title or path. `meta["blocker"]` (present only from
+                # `_raise_blocker`) can carry a `root_cause_hypothesis` with
+                # task-specific text — only its `category` name is read.
                 self._tel_terminal_sent = True
-                telemetry.record("task_failed", config=self.config,
-                                 category="failed")
+                blocker = meta.get("blocker")
+                bcat = blocker.get("category") if isinstance(blocker, dict) else None
+                telemetry.record(
+                    "task_failed", config=self.config, category="failed",
+                    reason_category=telemetry.failure_reason_category(
+                        meta.get("reason_category"), bcat))
         except Exception:
             pass
 
@@ -2604,11 +2613,13 @@ class Orchestrator:
         primary checkout. That is the only way to get there: a worktree we
         cannot create is a failure, never a silent fall-back to the checkout."""
         if not task.repo_path:
-            return await self._fail(task, "no repo_path set on task")
+            return await self._fail(task, "no repo_path set on task",
+                                    reason_category="other")
 
         main_repo = self._open_repo(task)
         if main_repo is None:
-            return await self._fail(task, f"not a git repo: {task.repo_path}")
+            return await self._fail(task, f"not a git repo: {task.repo_path}",
+                                    reason_category="infra")
 
         # Ensure remote refs are current before deriving the base branch —
         # avoids branching off stale state when the remote moved (e.g. a PR
@@ -2654,7 +2665,7 @@ class Orchestrator:
                 "Not running in the primary checkout instead — fix the "
                 "worktree root (isolation.worktree_root), or set "
                 "isolation.enabled: false to work in the checkout on purpose."
-            ))
+            ), reason_category="infra")
         try:
             return await self._drive_watched(task, repo)
         finally:
@@ -7371,9 +7382,10 @@ class Orchestrator:
 
     # --------------------------- off-ramps --------------------------------- #
 
-    async def _fail(self, task: Task, detail: str) -> TaskOutcome:
+    async def _fail(self, task: Task, detail: str, *,
+                    reason_category: str = "other") -> TaskOutcome:
         await self.store.set_status(task, TaskStatus.FAILED)
-        self.emit("failed", detail, status="failed")
+        self.emit("failed", detail, status="failed", reason_category=reason_category)
         self.notifier.notify("task_failed", f"{task.title}: {detail}")
         return TaskOutcome(task, status=TaskStatus.FAILED, detail=detail)
 
@@ -7951,7 +7963,12 @@ class Orchestrator:
             question="The agent could not complete this within bounds. Refine the "
                      "task, split it, or advise an approach.",
         )
-        outcome = await self._raise_blocker(task, blocker, repo=repo, branch=branch)
+        # This routes to ESCALATED today, not FAILED — `fail_category` is only
+        # stamped onto telemetry if the route ever lands on FAILED, so this is
+        # inert until then; it does not change routing.
+        outcome = await self._raise_blocker(
+            task, blocker, repo=repo, branch=branch,
+            fail_category="max_attempts")
         # 🔴 THE PUBLISHED FIELD AND THE CALLER-FACING ONE ARE NOT THE SAME
         # CHANNEL, and welding them is what made the leak above possible.
         # `_raise_blocker` returns `detail=root_cause_hypothesis or question`,
@@ -9570,6 +9587,7 @@ class Orchestrator:
         self, task: Task, blocker: Blocker, *, repo: GitRepo | None = None,
         branch: str | None = None, escalate_now: bool = False,
         notify_override: bool | None = None, attempt_id: str | None = None,
+        fail_category: str = "",
     ) -> TaskOutcome:
         """Checkpoint WIP, route by taxonomy (22.2), persist, and notify by
         severity (22.6). The single funnel for every off-ramp.
@@ -9591,6 +9609,13 @@ class Orchestrator:
         was not already reused for this exact attempt), that answer is
         replayed instead of parking on the operator again (see
         `_blocker_reuse_eligible` / `_reuse_stored_answer`).
+
+        ``fail_category`` is an already-known internal telemetry category
+        (e.g. "max_attempts", "tamper_blocked") for `telemetry.
+        failure_reason_category`'s `explicit` slot. It is only stamped onto
+        the emitted event's meta when the route lands on FAILED — an
+        escalated/parked/awaiting-input route's meta is untouched — and is
+        a coarse enum value only, never the blocker's free text.
         """
         blocker.attempt_id = attempt_id or blocker.attempt_id or ""
 
@@ -9695,8 +9720,15 @@ class Orchestrator:
             TaskStatus.FAILED: "failed",
         }.get(route.target_status, "escalated")
         report = render_report(blocker, task_title=task.title, task_id=task.id)
+        # `reason_category` is only stamped for a FAILED route — an
+        # escalated/blocked/parked/awaiting-input event's meta is untouched.
+        extra: dict[str, Any] = {}
+        if kind == "failed":
+            from .. import telemetry
+            extra["reason_category"] = telemetry.failure_reason_category(
+                fail_category, blocker.category.value)
         self.emit(kind, report, status=route.target_status.value,
-                  blocker=blocker.to_dict())
+                  blocker=blocker.to_dict(), **extra)
 
         # 4b. C5: an ESCALATED task has stopped. Any draft it opened before the
         # gate is now a dead PR that still claims its criteria are met, so say
@@ -10734,7 +10766,12 @@ class Orchestrator:
             task, adj, reasons=report.reasons, summary=report.summary,
             repeat=repeat, where=where,
         )
-        return await self._raise_blocker(task, blocker, repo=repo, branch=branch)
+        # This routes to ESCALATED today, not FAILED — `fail_category` is only
+        # stamped onto telemetry if the route ever lands on FAILED, so this is
+        # inert until then; it does not change routing.
+        return await self._raise_blocker(
+            task, blocker, repo=repo, branch=branch,
+            fail_category="tamper_blocked")
 
     async def _adjudicate_tamper(
         self, task: Task, report, *, diff_repo: Path, before_ref: str,
@@ -12281,6 +12318,7 @@ class Orchestrator:
                 "code_review task needs at least one PR/MR reference in the title "
                 "or description — a full URL, or shorthand like "
                 "'host/owner/repo PR #123' or 'host group/repo MR !45'",
+                reason_category="other",
             )
         pr_url = pr_urls[0]  # canonical anchor for single-URL fields (comments, UI)
 
@@ -12336,6 +12374,7 @@ class Orchestrator:
                 task,
                 f"could not fetch any diff for {len(pr_urls)} ref(s): "
                 + ", ".join(pr_urls),
+                reason_category="infra",
             )
         if len(fetched) < len(pr_urls):
             self.emit(
@@ -12402,7 +12441,8 @@ class Orchestrator:
 
         self._emit_review("review_start", f"running staff-level code review on {pr_url}")
         if self.reviewer is None:
-            return await self._fail(task, "no reviewer configured for code_review tasks")
+            return await self._fail(task, "no reviewer configured for code_review tasks",
+                                    reason_category="infra")
 
         try:
             # Single reviewer chokepoint; confirmed_rules is set inside it from
@@ -12439,10 +12479,12 @@ class Orchestrator:
                 failure_reason=f"reviewer crashed: {exc}",
             )
             self._emit_review("review_error", str(exc))
-            return await self._fail(task, f"reviewer crashed: {exc}")
+            return await self._fail(task, f"reviewer crashed: {exc}",
+                                    reason_category="infra")
         except Exception as exc:  # noqa: BLE001
             self._emit_review("review_error", str(exc))
-            return await self._fail(task, f"reviewer crashed: {exc}")
+            return await self._fail(task, f"reviewer crashed: {exc}",
+                                    reason_category="infra")
 
         # Store the review result — including the reviewer's real token cost, so
         # a code_review task no longer reads as a 0-token "done" (f71107e9).

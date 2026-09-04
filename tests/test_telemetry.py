@@ -86,7 +86,7 @@ def test_allowlist_is_the_documented_closed_set():
         "app_started": frozenset(),
         "task_created": frozenset({"source"}),
         "task_completed": frozenset({"status", "duration_bucket", "attempts"}),
-        "task_failed": frozenset({"category"}),
+        "task_failed": frozenset({"category", "reason_category"}),
         "approve_clicked": frozenset(),
         "feature_used": frozenset({"name"}),
     }
@@ -453,7 +453,14 @@ def test_client_allowlist_matches_the_deployed_lambda_contract():
     server doesn't know silently 400s every batch (the server carries the
     mirror of this pin). This is the server's allowlist as deployed
     2026-08-16; if this test fails you are adding a client event — ship the
-    server-side allowlist change FIRST, then update this fixture."""
+    server-side allowlist change FIRST, then update this fixture.
+
+    2026-09-04: `task_failed.reason_category` is a deliberate EXCEPTION to
+    "client == deployed" — the server has not shipped support for it yet, so
+    `flush()` strips it from the Lambda POST body on the way out (see
+    `test_lambda_body_omits_reason_category`) while it ships to PostHog
+    unfiltered. This test therefore asserts client == deployed + exactly
+    that one extra prop, not full equality."""
     deployed_lambda_events = {
         "app_started": frozenset(),
         "task_created": frozenset({"source"}),
@@ -462,7 +469,10 @@ def test_client_allowlist_matches_the_deployed_lambda_contract():
         "approve_clicked": frozenset(),
         "feature_used": frozenset({"name"}),
     }
-    assert telemetry._ALLOWED_EVENTS == deployed_lambda_events
+    client_events = dict(telemetry._ALLOWED_EVENTS)
+    assert client_events.pop("task_failed") - deployed_lambda_events.pop(
+        "task_failed") == {"reason_category"}
+    assert client_events == deployed_lambda_events
     # The server also regex-validates `version` (semver-ish, MAJOR.MINOR.
     # PATCH + optional short suffix) and 400s the whole batch otherwise —
     # a release-versioning change must trip THIS test, not the fleet.
@@ -533,6 +543,54 @@ def test_all_poisoned_batch_is_deleted_without_posting(temp_home, no_network,
     telemetry.record("app_started", config={"telemetry": _ENABLED})
     assert telemetry.flush(_ENABLED) == 1
     assert len(no_network) == 1
+
+
+def test_task_failed_rejects_non_enum_reason_category():
+    """`reason_category` is a CLOSED enum — a free-form string (the exact
+    class of thing that must never ship) must raise, not queue."""
+    with pytest.raises(ValueError, match="not allowed"):
+        telemetry.record(
+            "task_failed", config={"telemetry": _ENABLED}, category="failed",
+            reason_category="disk full: /Users/x/secret-repo")
+
+
+def test_task_failed_accepts_every_enum_value(temp_home, no_thread):
+    for value in telemetry.FAILURE_REASON_CATEGORIES:
+        telemetry.record(
+            "task_failed", config={"telemetry": _ENABLED}, category="failed",
+            reason_category=value)
+    path = temp_home / ".no_human" / "telemetry-queue.jsonl"
+    lines = [ln for ln in path.read_text().splitlines() if ln.strip()]
+    assert len(lines) == len(telemetry.FAILURE_REASON_CATEGORIES)
+
+
+def test_lambda_body_omits_reason_category(temp_home, no_network, no_thread):
+    """The deployed Lambda has not shipped `reason_category` support — it
+    must never appear in the Lambda POST body (batch-wholesale-rejection
+    risk), while PostHog (the shipped default) still gets it."""
+    path = temp_home / ".no_human" / "telemetry-queue.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        '{"name":"task_failed","ts":1786889836,'
+        '"props":{"category":"failed","reason_category":"infra"}}\n')
+    assert telemetry.flush(_ENABLED) == 1
+    [(req, _)] = no_network
+    events = json.loads(req.data.decode())["events"]
+    assert events == [{"name": "task_failed", "ts": 1786889836,
+                       "props": {"category": "failed"}}]
+
+    path.write_text(
+        '{"name":"task_failed","ts":1786889836,'
+        '"props":{"category":"failed","reason_category":"infra"}}\n')
+    posthog_section = {"enabled": True,
+                       "posthog_publishable": "phc_test",
+                       "posthog_host": "https://phog.invalid",
+                       "instance_id": _ENABLED["instance_id"]}
+    assert telemetry.flush(posthog_section) == 1
+    [(_, _), (req2, _)] = no_network
+    body = json.loads(req2.data.decode())
+    [event] = body["batch"]
+    assert event["properties"]["reason_category"] == "infra"
 
 
 # ------------------- published event-list disclosure ---------------------- #

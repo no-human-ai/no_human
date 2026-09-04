@@ -34,9 +34,25 @@ _ALLOWED_EVENTS: dict[str, frozenset[str]] = {
     "app_started": frozenset(),
     "task_created": frozenset({"source"}),
     "task_completed": frozenset({"status", "duration_bucket", "attempts"}),
-    "task_failed": frozenset({"category"}),
+    "task_failed": frozenset({"category", "reason_category"}),
     "approve_clicked": frozenset(),
     "feature_used": frozenset({"name"}),
+}
+
+#: CLOSED enum of task_failed reason categories. COARSE ON PURPOSE: it says
+#: which STAGE killed the task, never anything about the task. Never a
+#: failure string, title, path, repo or free-form text.
+FAILURE_REASON_CATEGORIES = frozenset({
+    "budget_exhausted", "review_failed", "max_attempts",
+    "infra", "tamper_blocked", "blocker_parked", "other",
+})
+
+# Value-level allowlist: (kind, prop) -> allowed VALUES, for props whose
+# name alone is not enough to keep them privacy-safe (a free-form string
+# would pass the prop-NAME check above). Checked in both `record()` and
+# `_sendable()` — see their docstrings.
+_ALLOWED_PROP_VALUES: dict[tuple[str, str], frozenset[str]] = {
+    ("task_failed", "reason_category"): FAILURE_REASON_CATEGORIES,
 }
 
 # Mirror of the first-party Lambda's per-event validation. The Lambda
@@ -72,16 +88,24 @@ def _sendable(event: Any) -> bool:
     props = event.get("props", {})
     if not isinstance(props, dict) or not set(props) <= allowed:
         return False
-    for value in props.values():
+    for prop, value in props.items():
         if isinstance(value, bool):
-            continue
-        if isinstance(value, str):
+            pass
+        elif isinstance(value, str):
             if len(value) > _MAX_PROP_STR:
                 return False
         elif isinstance(value, int):
             if abs(value) > 2 ** 31:  # server: abs(value) > MAX_PROP_INT
                 return False
         else:
+            return False
+        # Type shape confirmed (str/int/bool) before this membership check —
+        # an unhashable value (list/dict from a corrupted line) would make
+        # `in allowed_values` RAISE, and flush's fail-open except would then
+        # retain the batch, the wedge the isinstance-first ordering above
+        # already guards `name` against.
+        allowed_values = _ALLOWED_PROP_VALUES.get((name, prop))
+        if allowed_values is not None and value not in allowed_values:
             return False
     return True
 
@@ -108,6 +132,37 @@ def duration_bucket(minutes: float) -> str:
     if minutes < 60:
         return "30-60m"
     return ">60m"
+
+
+# Coarse mapping from a `blockers.taxonomy.BlockerCategory` NAME (plain
+# string — this module must not import `blockers.taxonomy`) to a
+# FAILURE_REASON_CATEGORIES value. Anything not listed here is "other".
+_BLOCKER_FAILURE_CATEGORY = {
+    "BUDGET_EXHAUSTED": "budget_exhausted",
+    "TRANSIENT_INFRA": "infra",
+    "QUOTA": "infra",
+    "DEPENDENCY_WAIT": "blocker_parked",
+    "USER_PAUSED": "blocker_parked",
+    "STAGNATION": "review_failed",
+    "MISSING_ACCESS": "infra",
+    # AMBIGUITY / SCOPE_EXPLOSION / IMPOSSIBLE / NOVEL_UNKNOWN -> "other"
+}
+
+
+def failure_reason_category(explicit: str | None = None,
+                            blocker_category: str | None = None) -> str:
+    """Coarse category for a terminal failure. LOOKUP ONLY — never parses a
+    failure string. Anything unrecognised is "other". Never raises (callers
+    are in a fail-open path).
+
+    `explicit` (an already-known internal category name, e.g. "infra") wins
+    when it is itself a valid enum value; otherwise falls back to mapping
+    `blocker_category` (a `BlockerCategory.name`, e.g. "BUDGET_EXHAUSTED")
+    through the table above; otherwise "other".
+    """
+    if explicit in FAILURE_REASON_CATEGORIES:
+        return explicit
+    return _BLOCKER_FAILURE_CATEGORY.get(blocker_category or "", "other")
 
 
 def _conf(config: dict[str, Any] | None) -> dict[str, Any]:
@@ -145,9 +200,11 @@ def record(kind: str, config: dict[str, Any] | None = None, **props: Any) -> Non
     """Queue one telemetry event. No-op unless consented AND a destination
     resolves (`telemetry.endpoint`, else PostHog).
 
-    Raises ``ValueError`` for a kind or prop name outside `_ALLOWED_EVENTS`
-    (validated even when disabled — an unlisted event is a bug either way).
-    Every other failure is swallowed: telemetry must never break the caller.
+    Raises ``ValueError`` for a kind or prop name outside `_ALLOWED_EVENTS`,
+    or a prop VALUE outside `_ALLOWED_PROP_VALUES` for props with a closed
+    value enum (validated even when disabled — an unlisted event/value is a
+    bug either way). Every other failure is swallowed: telemetry must never
+    break the caller.
     """
     allowed = _ALLOWED_EVENTS.get(kind)
     if allowed is None:
@@ -156,6 +213,21 @@ def record(kind: str, config: dict[str, Any] | None = None, **props: Any) -> Non
     if unknown:
         raise ValueError(
             f"telemetry: props {sorted(unknown)!r} not allowed for {kind!r}")
+    for prop, value in props.items():
+        allowed_values = _ALLOWED_PROP_VALUES.get((kind, prop))
+        if allowed_values is None:
+            continue
+        # `value in allowed_values` on an unhashable value (a caller passing
+        # a list/dict by mistake) would raise TypeError, not the ValueError
+        # this validation promises — fail the same way either way.
+        try:
+            ok = value in allowed_values
+        except TypeError:
+            ok = False
+        if not ok:
+            raise ValueError(
+                f"telemetry: value {value!r} not allowed for "
+                f"{kind!r}.{prop!r}")
     try:
         section = _conf(config)
         if not (bool(section.get("enabled")) and _destination(section)):
@@ -310,10 +382,26 @@ def flush(section: dict[str, Any] | None = None,
         if kind == "posthog":
             body = json.dumps(_posthog_body(section, events, __version__)).encode()
         else:
+            # The deployed Lambda's server-side allowlist has not shipped
+            # `reason_category` yet (client-side pin:
+            # test_client_allowlist_matches_the_deployed_lambda_contract) and
+            # rejects a batch WHOLESALE on an unknown prop key — a rejected
+            # batch stays queued, so sending it unguarded would wedge the
+            # queue of every fleet with `telemetry.endpoint` set until the
+            # server ships. Strip it from a COPY of each event's props on
+            # every build (lines are only removed after a successful POST,
+            # so a retried batch re-runs this strip) — never mutate the
+            # queued events themselves. PostHog (the shipped default) is
+            # unaffected and gets the full prop set.
+            lambda_events = [
+                {**ev, "props": {k: v for k, v in ev.get("props", {}).items()
+                                 if k != "reason_category"}}
+                for ev in events
+            ]
             body = json.dumps({
                 "instance_id": ensure_instance_id(section),
                 "version": __version__,
-                "events": events,
+                "events": lambda_events,
             }).encode()
         import urllib.request
         req = urllib.request.Request(
