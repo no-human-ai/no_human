@@ -41,7 +41,9 @@ def _names(tools) -> list[str]:
     names = []
     for tool in tools.values():
         names.append(tool.name)
-        names.extend(tool.inputSchema.get("properties", {}))
+        schema = getattr(tool, "input_schema", getattr(tool, "inputSchema", None))
+        if isinstance(schema, dict):
+            names.extend(schema.get("properties", {}))
     return names
 
 

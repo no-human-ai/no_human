@@ -16,26 +16,9 @@ dependencies = [
     "click>=8.4.1",
     "fastapi>=0.138.0",
     "httpx>=0.28.1",
-    # UPPER BOUND, and it is load-bearing. `intake/mcp_bridge.py` imports
-    # `mcp.server.fastmcp`, which the SDK REMOVED in 2.0.0 — so an unbounded
-    # `mcp>=1.28.0` published a wheel whose `nh mcp-serve` dies with
-    # ModuleNotFoundError on any fresh install, while every lane that resolves
-    # through uv.lock (CI, the container, the desktop bundles, dev) stayed
-    # green on the pinned 1.29.0. Raise this only together with the import in
-    # `intake/mcp_bridge.py`; `tests/test_mcp_dependency_bound.py` fails if the
-    # bound stops excluding the version that dropped the module.
-    #
-    # It broke when a TRANSITIVE cap loosened, not when 2.0.0 shipped:
-    # mcp 2.0.0 was published 2026-07-28 and broke nothing here, because
-    # claude-agent-sdk 0.2.121 (locked) requires `mcp<2.0.0`. 0.2.140
-    # (2026-08-18) relaxed that to `mcp<3.0.0` — carried by latest 0.2.143 —
-    # and every release of this package postdates it, so someone else's bound
-    # had been holding this one up by accident. `<2` is enough for prereleases too:
-    # PEP 440's exclusive upper bound excludes pre-releases OF that version, so
-    # `<2` rejects 2.0.0a1 and 2.0.0rc1 as well (measured, not assumed) — the
-    # bound that would re-open the hole is a raised one, and the test below is
-    # what catches that.
-    "mcp>=1.28.0,<2",
+    # `intake/mcp_bridge.py` imports `mcp.server.mcpserver`, which requires
+    # `mcp>=2` (FastMCP was removed in 2.0.0 and replaced by MCPServer).
+    "mcp>=2",
     "psutil>=7.0.0",
     "pyyaml>=6.0.3",
     "rich>=15.0.0",

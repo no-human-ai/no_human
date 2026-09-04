@@ -41,13 +41,13 @@ async def test_tool_schemas():
     tools = {t.name: t for t in await mcp_bridge.mcp.list_tools()}
     assert set(tools) == {"task_add", "task_status"}
 
-    add_schema = tools["task_add"].inputSchema
+    add_schema = tools["task_add"].input_schema
     assert set(add_schema["required"]) == {"title", "description", "repo_path"}
     assert add_schema["properties"]["title"]["type"] == "string"
     assert add_schema["properties"]["description"]["type"] == "string"
     assert add_schema["properties"]["repo_path"]["type"] == "string"
 
-    status_schema = tools["task_status"].inputSchema
+    status_schema = tools["task_status"].input_schema
     assert status_schema["required"] == ["task_id_or_external_id"]
     assert status_schema["properties"]["task_id_or_external_id"]["type"] == "string"
 
@@ -74,7 +74,7 @@ async def test_task_add_posts_source_mcp_and_returns_compact_json():
         "task_add",
         {"title": "Fix thing", "description": "details", "repo_path": "/tmp/repo"},
     )
-    text = result[0][0].text
+    text = result.content[0].text
     payload = json.loads(text)
 
     # compact: no whitespace padding
@@ -108,7 +108,7 @@ async def test_task_status_direct_id_hit_returns_full_object():
     result = await mcp_bridge.mcp.call_tool(
         "task_status", {"task_id_or_external_id": "task-abc123"}
     )
-    payload = json.loads(result[0][0].text)
+    payload = json.loads(result.content[0].text)
     assert payload == full_task
 
 
@@ -132,7 +132,7 @@ async def test_task_status_falls_back_to_external_id_scan():
     result = await mcp_bridge.mcp.call_tool(
         "task_status", {"task_id_or_external_id": "JIRA-9"}
     )
-    payload = json.loads(result[0][0].text)
+    payload = json.loads(result.content[0].text)
     assert payload == full_task
 
 
