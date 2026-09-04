@@ -21,6 +21,7 @@ function payload(overrides = {}) {
         role: "coder",
         key: "primary_model",
         current: "claude-sonnet-5",
+        saved: "claude-sonnet-5",
         default: "claude-sonnet-5",
         note: "",
         cost_note: "",
@@ -46,6 +47,7 @@ function payload(overrides = {}) {
         role: "reviewer",
         key: "review_model",
         current: "claude-opus-4-8",
+        saved: "claude-opus-4-8",
         default: "claude-opus-4-8",
         note: VENDOR_PIN_NOTE,
         cost_note: COST_NOTE,
@@ -70,6 +72,7 @@ function payload(overrides = {}) {
         role: "planner",
         key: "planner_model",
         current: "claude-opus-5",
+        saved: "claude-opus-5",
         default: "claude-opus-5",
         note: VENDOR_PIN_NOTE,
         cost_note: "",
@@ -87,6 +90,7 @@ function payload(overrides = {}) {
         role: "supervisor",
         key: "supervisor_model",
         current: "claude-sonnet-5",
+        saved: "claude-sonnet-5",
         default: "claude-sonnet-5",
         note: VENDOR_PIN_NOTE,
         cost_note: "",
@@ -104,6 +108,7 @@ function payload(overrides = {}) {
         role: "utility",
         key: "utility_model",
         current: "claude-haiku-4-5",
+        saved: "claude-haiku-4-5",
         default: "claude-haiku-4-5",
         note: VENDOR_PIN_NOTE,
         cost_note: "",
@@ -188,6 +193,30 @@ test("pinned-role rows carry the server's note verbatim; the coder row does not"
   }
 });
 
+// 3b. rows expose `saved` and `pendingRestart`, straight off the payload.
+test("rows expose saved and pendingRestart from the payload", () => {
+  const p = payload();
+  p.roles[1].saved = "claude-opus-5"; // reviewer: disk has moved past running
+  const view = modelsPanelView(p);
+  const byRole = Object.fromEntries(view.rows.map((r) => [r.role, r]));
+  assert.equal(byRole.reviewer.saved, "claude-opus-5");
+  assert.equal(byRole.reviewer.pendingRestart, true);
+  for (const role of ["coder", "planner", "supervisor", "utility"]) {
+    assert.equal(byRole[role].saved, byRole[role].current);
+    assert.equal(byRole[role].pendingRestart, false);
+  }
+});
+
+test("rows fall back to current when the server omits saved (older build)", () => {
+  const p = payload();
+  for (const r of p.roles) delete r.saved;
+  const view = modelsPanelView(p);
+  for (const row of view.rows) {
+    assert.equal(row.saved, row.current);
+    assert.equal(row.pendingRestart, false);
+  }
+});
+
 // 4. pendingBody returns only edited keys; a selection equal to current is
 // absent even if present in `pending`.
 test("pendingBody sends only keys whose pending value differs from current", () => {
@@ -199,6 +228,22 @@ test("pendingBody sends only keys whose pending value differs from current", () 
   assert.deepEqual(pendingBody(p, pending), { review_model: "claude-opus-5" });
 });
 
+// 4b. pendingBody diffs against the SAVED (on-disk) value, not the running
+// one — the direct regression test for the "re-pick is a silent no-op"
+// defect: right after a save, `current` (old) !== `saved` (new).
+test("pendingBody diffs against the saved on-disk value, not the running one", () => {
+  const p = payload();
+  const old = p.roles[0].current; // coder: current still holds the pre-save id
+  const next = "claude-opus-5"; // the id just saved to disk
+  p.roles[0].saved = next;
+  // Picking the value that is already saved must be a no-op — the running
+  // process being stale must not make this look like a change.
+  assert.deepEqual(pendingBody(p, { primary_model: next }), {});
+  // Picking the OLD (still-running) value back is a real change again,
+  // because it now differs from what's on disk.
+  assert.deepEqual(pendingBody(p, { primary_model: old }), { primary_model: old });
+});
+
 test("pendingBody is empty for an empty or missing pending map", () => {
   const p = payload();
   assert.deepEqual(pendingBody(p, {}), {});
@@ -207,12 +252,14 @@ test("pendingBody is empty for an empty or missing pending map", () => {
 });
 
 // 5. resetBody equals the fixture's default values, read from the fixture.
-test("resetBody equals the payload's own defaults for every role that has drifted", () => {
+test("resetBody equals the payload's own defaults for every role whose SAVED value has drifted", () => {
   const p = payload();
-  p.roles[1].current = "claude-opus-5"; // reviewer drifted from its default
+  // Drift the on-disk value, not the running one — resetBody targets disk.
+  p.roles[1].saved = "claude-opus-5";
+  p.roles[1].current = "claude-opus-5";
   const expected = {};
   for (const r of p.roles) {
-    if (r.default !== r.current) expected[r.key] = r.default;
+    if (r.default !== r.saved) expected[r.key] = r.default;
   }
   assert.deepEqual(resetBody(p), expected);
   assert.deepEqual(resetBody(p), { review_model: p.roles[1].default });
@@ -220,6 +267,17 @@ test("resetBody equals the payload's own defaults for every role that has drifte
 
 test("resetBody is empty when every role already sits at its default", () => {
   assert.deepEqual(resetBody(payload()), {});
+});
+
+// 5b. Direct regression test for the inert Reset: `current` already equals
+// `default` (the running process was never restarted since the save), but
+// `saved` (disk) still holds a non-default id — Reset must still fire.
+test("resetBody resets against saved, so a post-save reset is not empty", () => {
+  const p = payload();
+  const reviewer = p.roles[1];
+  reviewer.current = reviewer.default; // running process still on default
+  reviewer.saved = "claude-opus-5"; // disk holds a non-default pick
+  assert.deepEqual(resetBody(p), { review_model: reviewer.default });
 });
 
 // 6. applyError reverts everything and surfaces the server text verbatim.
@@ -381,7 +439,9 @@ test("resetBody adds no role_backends key when the reviewer's backend block is a
 
 test("resetBody combines a role_backends clear with an ordinary drifted model-id reset in one body", () => {
   const p = payload();
-  p.roles[1].current = "claude-opus-5"; // review_model drifted from its default
+  // review_model drifted from its default (on disk — resetBody targets disk).
+  p.roles[1].saved = "claude-opus-5";
+  p.roles[1].current = "claude-opus-5";
   p.roles[1].backend = { backend: "codex", model: "gpt-5-codex", is_default: false };
   assert.deepEqual(resetBody(p), {
     review_model: p.roles[1].default,
@@ -546,4 +606,26 @@ test("ModelsPanel.jsx's Save button still goes through pendingBody, not a second
   const src = readFileSync(new URL("./ModelsPanel.jsx", import.meta.url), "utf8");
   assert.match(src, /const dirty = pendingBody\(payload, pending, pendingRoleBackend\)/);
   assert.match(src, /commit\(dirty\)/, "Save must submit the pendingBody-derived body");
+});
+
+// --- Dead row-note / inert Reset-and-Reselect fix: ModelsPanel.jsx wiring --- //
+
+test("ModelsPanel drives the role select from row.saved, not row.current", () => {
+  const src = readFileSync(new URL("./ModelsPanel.jsx", import.meta.url), "utf8");
+  assert.match(src, /function selectedFor\(row\) \{\s*\n\s*return pending\[row\.key\] !== undefined \? pending\[row\.key\] : row\.saved;/,
+    "selectedFor must fall back to row.saved, not row.current");
+  assert.doesNotMatch(src, /: row\.current;/,
+    "the select's fallback value must no longer be the stale running value");
+});
+
+test("ModelsPanel disables Reset when there is nothing to reset", () => {
+  const src = readFileSync(new URL("./ModelsPanel.jsx", import.meta.url), "utf8");
+  assert.match(src, /const resetDirty = resetBody\(payload\)/,
+    "must compute the reset body once, from resetBody(payload)");
+  assert.match(src, /const hasResetChanges = Object\.keys\(resetDirty\)\.length > 0/,
+    "must derive whether Reset has anything to do from the computed reset body");
+  assert.match(src, /disabled=\{saving \|\| !hasResetChanges\}/,
+    "the Reset button's disabled expression must reference the computed reset body");
+  assert.match(src, /onClick=\{\(\) => commit\(resetDirty\)\}/,
+    "Reset must submit the same body its disabled state was computed from");
 });

@@ -27,6 +27,7 @@ from .model_catalog import (
     _is_claude_id,
     defaults,
     options_for,
+    role_note,
     validate,
 )
 from .role_backend_settings import (
@@ -120,7 +121,26 @@ def models_payload(
     re-derived here); ``current`` comes from *running_cfg_data* — the config
     object the caller already has bound (the running server's ``app.state.
     config.data`` for the API, or a freshly loaded one for the CLI, which has
-    no running process to ask).
+    no running process to ask). ``current`` is the honest "what is the
+    running process actually using" answer and never changes meaning — the
+    Settings pane's restart banner depends on that (see B6 below).
+
+    ``saved`` is the same key resolved from a FRESH read of *config_path* —
+    i.e. what the NEXT process start will run, and what ``apply_model_changes``
+    diffs a PUT against (``apply_model_changes`` below reads on-disk, not
+    *running_cfg_data*, for exactly this reason). A picker must edit against
+    ``saved``, not ``current``: right after a successful save, ``current``
+    still holds the stale running value until a restart, so a client that
+    diffs its next pick (or a "reset to defaults" click) against ``current``
+    computes an already-applied-on-disk change as "different" or a
+    still-non-default disk value as "already at default" — silently inert
+    until restart. ``saved`` fixes that without changing what ``current``
+    means.
+
+    ``note`` is :func:`model_catalog.role_note` for the role — the pinned-
+    role sentence a picker must render next to the row, previously only
+    landing on each *option* (still true; unchanged) and therefore never
+    rendered as row-level UI text.
 
     ``restart_required`` is a true file-vs-process comparison: the five
     values resolved from a FRESH read of *config_path* are compared against
@@ -159,8 +179,12 @@ def models_payload(
             "role": role,
             "key": key,
             "current": running[key],
+            "saved": on_disk[key],
             "default": defaults()[key],
             "options": [_option_dict(opt) for opt in options_for(role)],
+            # The role-level pinned-role sentence (see the docstring's "note"
+            # paragraph above) — distinct from each option's own `note`.
+            "note": role_note(role),
             # The reviewer-only cost/quality note (REVIEWER_COST_NOTE); every
             # other role carries "" — the A/B evidence only exists for this
             # role's tier decision (see model_catalog.py / config.py).
