@@ -1199,8 +1199,8 @@ def ui_evidence_block(profile: Any) -> str:
         dev_server_sentence = (
             f"The harness boots your dev server itself (`{start_cmd}`) "
             f"unless one already answers at {base_url}{ready_path}, and "
-            "stops it when the walk ends — you must still write the "
-            "manifest file or no walk runs."
+            "stops it when the walk ends — write the manifest for a walk "
+            "you control, or the harness runs its own default walk instead."
         )
     else:
         dev_server_sentence = (
@@ -1208,6 +1208,13 @@ def ui_evidence_block(profile: Any) -> str:
             f"running at {base_url} when your tests finish, or the walk "
             "reports NOT RUN and nothing is attached."
         )
+    example_manifest = (
+        '  {"base_url": "' + base_url + '",\n'
+        '   "steps": [\n'
+        f'     {{"goto": "{ready_path}"}},\n'
+        '     {"shot": "landing"}\n'
+        '   ]}'
+    )
     return (
         "UI EVIDENCE — this attempt touches UI code. After your tests pass, "
         "the harness probes "
@@ -1216,13 +1223,15 @@ def ui_evidence_block(profile: Any) -> str:
         '`.no_human/ui_evidence.json` (never committed) as {"base_url": '
         '"...", "steps": [...]}, where each step is one of '
         "goto/wait_for/click/fill/press/assert_text/shot (in order); use "
-        f"`shot` at any point worth capturing. {dev_server_sentence} "
+        f"`shot` at any point worth capturing, e.g.:\n{example_manifest}\n\n"
+        f"{dev_server_sentence} "
         "When it runs, it records whatever the page actually "
         "shows (screenshots, a video, console errors) — proving nothing "
         "beyond what each screenshot shows — and delivers them on a "
-        "separate branch, embedded directly in the PR body. Skipping the "
-        "manifest file means no walk runs either; either way this never "
-        "blocks the attempt.\n\n"
+        "separate branch, embedded directly in the PR body. Writing no "
+        "manifest does not skip the walk: the harness ships only a bare "
+        "landing screenshot from its own default walk instead of the one "
+        "you control; either way this never blocks the attempt.\n\n"
     )
 
 

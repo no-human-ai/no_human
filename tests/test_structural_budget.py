@@ -483,7 +483,18 @@ FROZEN_FILE_LINES = {
     # Re-home merge 2026-09-04 (279c03c5): the WIP-checkpoint resume
     # correction lands on the same tree as the chain above. Measured
     # on this merged tree with the scanner below, never summed.
-    "core/orchestrator.py": 21502,
+    #
+    # 21502 -> 21572 (+70, rebased onto the above): default UI walk when the
+    # coder writes no manifest (2026-09-04) — new `_default_walk_manifest`
+    # static helper builds the harness's OWN fallback `ui_evidence.Manifest`
+    # from the confirmed profile's `base_url`/`ready_path` when no coder
+    # `.no_human/ui_evidence.json` exists, `_maybe_capture_ui_evidence` wires
+    # it through `ui_evidence.run(..., manifest=...)` and threads a new
+    # `default_walk` flag into `_deliver_ui_evidence`, which labels the
+    # rendered section "default walk (no coder manifest)" instead of the old
+    # unconditional skip text — visual proof must not depend on coder
+    # compliance. Measured with the scanner below, never summed by hand.
+    "core/orchestrator.py": 21572,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.
