@@ -1514,14 +1514,68 @@ async def approve_task(task_id: str, request: Request) -> dict[str, Any]:
             # the task while its PR sat open.
             pr_url = await task_has_pr_evidence(store, task)
             if not pr_url:
-                await store.set_status(
-                    task, TaskStatus.DONE, validate=False,
-                    event={"source": "human", "kind": "approved_already_satisfied",
-                           "text": "already-satisfied claim confirmed by approve",
-                           "actor": process_actor()},
+                # No PR on record yet — decide (and, if the satisfying commit
+                # is only on the task branch, act on) what this claim actually
+                # requires via the SAME helper `nh approve` uses
+                # (`vcs/task_pr.py::land_already_satisfied_claim`), so the two
+                # surfaces can never diverge on this decision. Root-cause
+                # incident this closes: a claim used to be marked DONE here
+                # unconditionally, even when its satisfying commit was never
+                # pushed to (or merged into) the base branch.
+                from ..vcs.task_pr import land_already_satisfied_claim
+
+                git_cfg = request.app.state.config["git"]
+                step = await land_already_satisfied_claim(
+                    store, task, repo_path=task.repo_path or "",
+                    identity_name=git_cfg["agent_identity_name"],
+                    identity_email=git_cfg["agent_identity_email"],
+                    never_push_to=git_cfg["never_push_to"],
+                    github_hosts=git_cfg.get("github_hosts"),
                 )
-                message = ("Already satisfied claim confirmed — no code change was "
-                           "needed. Task done (there is no PR; the agent never merges).")
+                if step["decision"] == "refuse":
+                    # NOT a hard failure: the approval itself stands (recorded
+                    # above) — there is just nothing landed yet. The task
+                    # stays awaiting_approval; a human (or a later approve
+                    # retry) still has to resolve whatever `reason` names.
+                    message = (
+                        "Already satisfied claim confirmed, but could not be "
+                        f"landed automatically: {step['reason']}. Task remains "
+                        "awaiting_approval."
+                    )
+                elif step["decision"] == "done":
+                    await store.set_status(
+                        task, TaskStatus.DONE, validate=False,
+                        event={"source": "human", "kind": "approved_already_satisfied",
+                               "text": "already-satisfied claim confirmed by approve — "
+                               + step["reason"],
+                               "actor": process_actor()},
+                    )
+                    message = ("Already satisfied claim confirmed — no code change was "
+                               "needed. Task done (there is no PR; the agent never merges).")
+                else:
+                    # decision == "land": the satisfying commit lives only on
+                    # the task branch and IS the deliverable — a PR now
+                    # exists for it (opened by the helper above if one didn't
+                    # already). Fall through to the normal PR-merge path
+                    # below, exactly like a task that shipped a real diff
+                    # would; never mark this done without actually landing it
+                    # (the incident this closes). Mirror the helper's own
+                    # `pr_watch`/`pr_branch` write into this local copy of
+                    # `task.context` — `resolve_task_pr` (inside `_merge`,
+                    # via `_merge_task_pr`) reads `task.context` directly, not
+                    # the store, so without this the freshly-opened PR would
+                    # be invisible to it on this same request.
+                    pr_url = step["pr_url"]
+                    task.context = {**(task.context or {}), "pr_watch": pr_url,
+                                     "pr_branch": step["branch"]}
+                    landed_sha, error_detail = await _merge(pr_url)
+                    if error_detail:
+                        await _fail_merge(error_detail)
+                    if landed_sha:
+                        message = _merge_outcome_message(landed_sha)
+                    else:
+                        completed_landed, message = await _landed_completion_outcome(
+                            store, task, landed_sha)
             else:
                 landed_sha, error_detail = await _merge(pr_url)
                 if error_detail:

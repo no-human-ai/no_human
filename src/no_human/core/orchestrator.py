@@ -9265,8 +9265,13 @@ class Orchestrator:
                 await self.store.update_attempt(attempt_id, pr_url=pr_url)
         except Exception as exc:  # noqa: BLE001 — never fail the attempt on a backfill error
             log.warning("task %s: PR backfill failed: %s", task.id[:8], exc)
-        task.context = await self.store.merge_context(
-            task.id, {"already_satisfied_report": claim})
+        task.context = await self.store.merge_context(task.id, {
+            "already_satisfied_report": claim,
+            "already_satisfied_landing": {
+                "sha": reviewed_sha, "branch": branch or "",
+                "ship_ref": ship_ref, "on_base": bool(subject_on_main),
+            },
+        })
 
         # Typed evidence, ALWAYS — even with no PR, so `doctor`/`task_pr` see
         # a reason this task sits in AWAITING_APPROVAL. `review_round` is the
@@ -9353,14 +9358,23 @@ class Orchestrator:
         await self.store.set_status(task, TaskStatus.AWAITING_APPROVAL, validate=False)
         # The persisted detail must not claim a review that never ran (PR #101
         # review, low): advisory mode says so explicitly.
+        # Name which of the two landing cases applies, in the SAME sentence a
+        # human reads to decide whether to approve — the incident this closes
+        # was a silent DONE for a commit that was never actually landed, so
+        # the case must be spelled out here, not left implicit.
+        landing_note = (
+            "; satisfying commit reachable from base (nothing to land)"
+            if subject_on_main else
+            "; satisfying commit on task branch only (landing required)"
+            + (f" — approve will land {branch}" if branch else ""))
         detail = (
             "already satisfied (ADVISORY — claim NOT verified, no reviewer "
             f"configured) against {subject}; no code change needed, awaiting "
-            "your confirmation"
+            "your confirmation" + landing_note
             if advisory_pass else
             "already satisfied — the review verified every cited "
             f"criterion against {subject}; no code change needed, awaiting "
-            "your confirmation")
+            "your confirmation" + landing_note)
         self.emit("state", detail, status="awaiting_approval")
         return TaskOutcome(task, status=TaskStatus.AWAITING_APPROVAL,
                            pr_url=(pr_url if promoted else None), detail=detail, report=claim)

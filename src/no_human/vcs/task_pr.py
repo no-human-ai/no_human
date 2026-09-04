@@ -35,6 +35,8 @@ this module does not import ``core``.
 
 from __future__ import annotations
 
+import asyncio
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -140,6 +142,236 @@ async def task_has_pr_evidence(store: Any, task: Any) -> str:
         if url and url not in abandoned:
             return url
     return ""
+
+
+#: `classify_already_satisfied_landing` verdicts — see its docstring. The
+#: string values are also used as `already_satisfied_landing["verdict"]` in
+#: persisted task context, so they are part of the on-disk contract: do not
+#: rename.
+LANDING_REQUIRED = "landing_required"
+NOTHING_TO_LAND = "nothing_to_land"
+UNVERIFIABLE = "unverifiable"
+
+
+@dataclass(frozen=True)
+class AlreadySatisfiedLanding:
+    """The verdict `classify_already_satisfied_landing` reached, and why.
+
+    ``verdict`` is one of `LANDING_REQUIRED`, `NOTHING_TO_LAND`,
+    `UNVERIFIABLE`. ``reason`` is a human-readable sentence naming which case
+    applied — the exact text `approve`'s console output and the
+    orchestrator's gate `detail` string surface to a human, so its two
+    non-`UNVERIFIABLE` phrasings ("satisfying commit reachable from base
+    (nothing to land)" / "satisfying commit on task branch only (landing
+    required)") are part of the human-facing contract: do not reword.
+    """
+
+    verdict: str
+    sha: str
+    branch: str
+    base_ref: str
+    reason: str
+
+
+def classify_already_satisfied_landing(
+    repo: Any, *, sha: str, branch: str, base: str,
+) -> AlreadySatisfiedLanding:
+    """Is the already-satisfied claim's satisfying commit reachable from the
+    base branch already — or does it exist only on the task branch and still
+    need to land?
+
+    Root cause of the incident this closes: an already-satisfied approval
+    used to be treated as "nothing to land" unconditionally, even when the
+    satisfying commit was never pushed to (or merged into) the base branch —
+    silently marking the task DONE while the deliverable sat stranded on the
+    task branch. This function is the one place that tells the two cases
+    apart, and it fails CLOSED: any ambiguity (empty inputs, an unresolvable
+    base, a git error) comes back `UNVERIFIABLE`, never `NOTHING_TO_LAND`.
+
+    ``repo`` is duck-typed — only ``branch_sha(name)`` (raises on an
+    unresolvable ref) and ``is_ancestor(sha, descendant)`` (never raises,
+    `False` on anything it cannot resolve) are used, the same contract
+    `GitRepo` (`vcs/git.py`) exposes. No network calls are made here — a
+    caller that wants a fresh remote view must `repo.fetch()` first.
+
+    Base-ref candidates are tried in order, first that resolves wins:
+    ``origin/<base>``, ``<base>``, ``origin/main``, ``main`` — mirroring
+    `Orchestrator._already_satisfied_subject`'s own ladder, base-first
+    instead of default-branch-first since there is no local `GitRepo` handle
+    passed here for a `default_branch()` lookup.
+    """
+    sha = (sha or "").strip()
+    branch = (branch or "").strip()
+    base = (base or "").strip()
+
+    if not sha:
+        return AlreadySatisfiedLanding(
+            UNVERIFIABLE, sha, branch, "", "no satisfying commit sha recorded")
+
+    candidates = []
+    if base:
+        candidates.append(f"origin/{base}")
+        candidates.append(base)
+    candidates.append("origin/main")
+    candidates.append("main")
+
+    base_ref = ""
+    base_sha = ""
+    try:
+        for candidate in candidates:
+            try:
+                base_sha = repo.branch_sha(candidate)
+            except Exception:
+                continue
+            if base_sha:
+                base_ref = candidate
+                break
+    except Exception as exc:
+        return AlreadySatisfiedLanding(
+            UNVERIFIABLE, sha, branch, "", f"base branch lookup failed: {exc}")
+
+    if not base_ref or not base_sha:
+        return AlreadySatisfiedLanding(
+            UNVERIFIABLE, sha, branch, "",
+            f"could not resolve a base ref among {candidates!r}")
+
+    try:
+        on_base = repo.is_ancestor(sha, base_sha)
+    except Exception as exc:
+        return AlreadySatisfiedLanding(
+            UNVERIFIABLE, sha, branch, base_ref,
+            f"ancestry check failed: {exc}")
+
+    if on_base:
+        return AlreadySatisfiedLanding(
+            NOTHING_TO_LAND, sha, branch, base_ref,
+            "satisfying commit reachable from base (nothing to land)")
+
+    reason = "satisfying commit on task branch only (landing required)"
+    if branch:
+        reason = f"{reason} — branch {branch}"
+    return AlreadySatisfiedLanding(LANDING_REQUIRED, sha, branch, base_ref, reason)
+
+
+async def land_already_satisfied_claim(
+    store: Any, task: Any, *, repo_path: str,
+    identity_name: str = "no_human",
+    identity_email: str = "no-human@acme.com",
+    never_push_to: list[str] | None = None,
+    github_hosts: list[str] | None = None,
+) -> dict[str, str]:
+    """Decide — and, when needed, act on — what an ALREADY-SATISFIED claim's
+    approval must do next. The ONE place `cli/commands.py::approve` and
+    `api/app.py::approve_task` both call, so the two surfaces can never
+    diverge on this decision.
+
+    Trusts a persisted ``already_satisfied_landing.on_base is True`` as
+    "nothing to land" (the classification `_gate_already_satisfied` already
+    computed at review time, `core/orchestrator.py`). Any other stored
+    value — ``False``, missing, or the whole key absent (an older attempt,
+    from before this classification existed) — is fail-closed: it is
+    re-derived FRESH from git via `classify_already_satisfied_landing`,
+    never trusted stale, since a once-unreachable commit could have landed
+    by another route since it was stamped.
+
+    Root-cause incident this closes: an already-satisfied approval used to
+    be marked DONE unconditionally, even when its satisfying commit was
+    never pushed to (or merged into) the base branch — the deliverable sat
+    stranded on the task branch while the task reported done.
+
+    Returns ``{"decision": "done" | "land" | "refuse", "pr_url": str,
+    "branch": str, "reason": str}``:
+
+    - ``"done"``: truly nothing to land — the caller may mark the task DONE.
+    - ``"land"``: the satisfying commit IS the deliverable, and now has a PR
+      open on it (opened here, pushing ``branch``, if one did not already
+      exist) — the caller must land it through its normal PR-merge
+      (`land_task`) path, never mark done directly.
+    - ``"refuse"``: could not verify, or could not open a PR — the caller
+      must NOT mark the task done; ``reason`` explains why. The approval
+      itself still stands; the task stays `awaiting_approval`.
+
+    Never raises: a git/PR-open failure comes back as ``"refuse"``, not an
+    exception — this function's job is to keep a human-facing approve
+    command from crashing, not to propagate git plumbing errors.
+    """
+    landing = (task.context or {}).get("already_satisfied_landing") or {}
+    sha = _clean(landing.get("sha"))
+    branch = _clean(landing.get("branch"))
+
+    if landing.get("on_base") is True:
+        return {"decision": "done", "pr_url": "", "branch": branch,
+                "reason": "satisfying commit reachable from base (nothing to land)"}
+
+    if not repo_path:
+        return {"decision": "refuse", "pr_url": "", "branch": branch,
+                "reason": "no repo_path recorded — cannot verify the "
+                          "satisfying commit against the base branch"}
+
+    from .git import GitError, GitRepo
+
+    try:
+        repo = GitRepo(
+            repo_path, identity_name=identity_name, identity_email=identity_email,
+            never_push_to=never_push_to or ["main", "master", "release/*"],
+        )
+        repo.fetch()
+    except (GitError, OSError) as exc:
+        return {"decision": "refuse", "pr_url": "", "branch": branch,
+                "reason": f"could not fetch the repo to verify: {exc}"}
+
+    base = _clean((task.context or {}).get("base_branch"))
+    verdict = classify_already_satisfied_landing(repo, sha=sha, branch=branch, base=base)
+
+    if verdict.verdict == NOTHING_TO_LAND:
+        # Backfill the flag so a re-approve (or another reader of this
+        # context) never re-derives it from git again.
+        await store.merge_context(task.id, {
+            "already_satisfied_landing": {**landing, "on_base": True}})
+        return {"decision": "done", "pr_url": "", "branch": branch,
+                "reason": verdict.reason}
+
+    if verdict.verdict == UNVERIFIABLE:
+        return {"decision": "refuse", "pr_url": "", "branch": branch,
+                "reason": verdict.reason}
+
+    # LANDING_REQUIRED — the satisfying commit lives only on the task
+    # branch and is the deliverable. Ensure a PR exists for it (open one if
+    # not) so the caller's normal merge path has something to land, exactly
+    # like a task that shipped a real diff would.
+    if not branch:
+        return {"decision": "refuse", "pr_url": "", "branch": "",
+                "reason": "no branch recorded for the satisfying commit — "
+                          "cannot open a PR to land it"}
+
+    pr_url = await task_has_pr_evidence(store, task)
+    if not pr_url:
+        from . import open_pr as _open_pr
+        try:
+            pr = await asyncio.to_thread(
+                _open_pr, repo, branch, task.title or task.id,
+                "Already-satisfied claim confirmed by approve — landing "
+                f"the satisfying commit{(' ' + sha[:12]) if sha else ''}, "
+                "found only on the task branch, never merged into base.",
+                base=base or "main", github_hosts=github_hosts)
+        except Exception as exc:  # noqa: BLE001 — never crash approve
+            return {"decision": "refuse", "pr_url": "", "branch": branch,
+                    "reason": f"opening a PR to land {branch} failed: {exc}"}
+        pr_url = pr.url
+        await store.merge_context(task.id, {"pr_watch": pr_url, "pr_branch": branch})
+        # `save_events`, NOT `set_status` — there is no status change here
+        # (the task is already `awaiting_approval`), and a same-status
+        # `set_status(..., event=...)` call silently drops the event
+        # (`core/db.py::_write_status` only inserts when the status
+        # actually changes). This is the append-only primitive that exists
+        # precisely for "record an event, no status transition".
+        await store.save_events(task.id, [{
+            "source": "human", "kind": "pr_open", "text": pr_url,
+            "pr_url": pr_url, "pr_kind": pr.kind, "ts": time.time(),
+        }])
+
+    return {"decision": "land", "pr_url": pr_url, "branch": branch,
+            "reason": verdict.reason}
 
 
 async def task_pr_urls(store: Any, task: Any) -> list[str]:

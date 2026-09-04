@@ -2535,8 +2535,17 @@ async def test_approve_completes_an_already_satisfied_task(client, store):
     approval IS the human confirmation the terminal promised, so it completes
     the task."""
     t = await _seed_task(store, status=TaskStatus.AWAITING_APPROVAL)
-    await store.merge_context(t.id, {"already_satisfied_report":
-        "ALREADY-SATISFIED\nCRITERION: Should work — MET — evidence: x.py:1"})
+    await store.merge_context(t.id, {
+        "already_satisfied_report":
+            "ALREADY-SATISFIED\nCRITERION: Should work — MET — evidence: x.py:1",
+        # Satisfying commit reachable from origin/base — truly nothing to
+        # land (AC2); without this the landing classifier would re-derive
+        # from git and find no repo at the seeded `repo_path`, refusing.
+        "already_satisfied_landing": {
+            "on_base": True, "sha": "deadbeef", "branch": "",
+            "ship_ref": "origin/main",
+        },
+    })
     r = await client.post(f"/api/tasks/{t.id}/approve")
     assert r.status_code == 200
     data = r.json()
