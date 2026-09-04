@@ -6,7 +6,10 @@ import time
 
 import pytest
 
-from no_human.core.metrics import cache_read_share, compute_metrics
+from no_human.agent.verification_receipts import VerificationReceipt
+from no_human.core.metrics import (
+    cache_read_share, compute_metrics, verification_receipt_rate,
+)
 from no_human.core.task import Task
 
 
@@ -264,3 +267,88 @@ async def test_cache_economics_keys_are_unchanged(store):
         "attempts_measured", "cache_creation_total", "cache_read_total",
         "creation_per_attempt", "read_per_attempt", "creation_share",
     }
+
+
+# --------------------------------------------------------------------------- #
+# verification_receipt_rate — per-attempt "did the coder run its checks
+# before claiming done" rate (aggregated over verification_receipts rows).
+# --------------------------------------------------------------------------- #
+
+def _receipt(seq, kind="test", excerpt="1 passed"):
+    return VerificationReceipt(
+        kind=kind, command=f"pytest -q # {seq}", output_excerpt=excerpt,
+        output_bytes=len(excerpt), truncated=False, seq=seq)
+
+
+async def test_empty_db_yields_a_null_rate_not_a_crash(store):
+    r = await verification_receipt_rate(store)
+    assert r == {"attempts": 0, "ran_checks": 0, "rate": None, "by_kind": {}}
+
+
+async def test_rate_counts_attempts_with_at_least_one_receipt(store):
+    t = Task.new("x", repo_path="/tmp/x")
+    await store.create_task(t)
+    a1 = await store.create_attempt(t.id, attempt_number=1)
+    a2 = await store.create_attempt(t.id, attempt_number=2)
+    a3 = await store.create_attempt(t.id, attempt_number=3)
+    await store.add_verification_receipt(a1, _receipt(1))
+    await store.add_verification_receipt(a1, _receipt(2, kind="lint"))
+    await store.add_verification_receipt(a2, _receipt(1, kind="lint"))
+    # a3 gets no receipt at all — it claimed done without running a check.
+    await store.update_attempt(a1, status="succeeded")
+    await store.update_attempt(a2, status="failed", failure_reason="review failed")
+    await store.update_attempt(a3, status="succeeded")
+
+    r = await verification_receipt_rate(store)
+    assert r["attempts"] == 3
+    assert r["ran_checks"] == 2
+    assert r["rate"] == round(2 / 3, 4)
+    assert r["by_kind"] == {"test": 1, "lint": 2}
+
+
+async def test_rate_excludes_in_progress_and_interrupted_attempts(store):
+    """Only attempts that actually CONCLUDED (succeeded/failed) count as
+    having "claimed done" — an attempt still running, or cut off by the
+    harness before it could conclude, is neither."""
+    t = Task.new("x", repo_path="/tmp/x")
+    await store.create_task(t)
+    a1 = await store.create_attempt(t.id, attempt_number=1)
+    a2 = await store.create_attempt(t.id, attempt_number=2)
+    # a1 stays in_progress (no receipt, no status update).
+    await store.update_attempt(a2, status="interrupted")
+
+    r = await verification_receipt_rate(store)
+    assert r == {"attempts": 0, "ran_checks": 0, "rate": None, "by_kind": {}}
+
+
+async def test_rate_excludes_infra_and_mechanical_rows(store):
+    """The same predicate the lifetime budget gates on
+    (`Store._lifetime_included_sql`) keeps an infra-classified retry or a
+    mechanical post-pass round — neither the coder's own submission — out of
+    the denominator, exactly as it keeps them out of the budget count."""
+    t = Task.new("x", repo_path="/tmp/x")
+    await store.create_task(t)
+    a1 = await store.create_attempt(t.id, attempt_number=1)
+    a2 = await store.create_attempt(t.id, attempt_number=2)
+    await store.update_attempt(a1, status="failed", infra_failure=1)
+    await store.update_attempt(a2, status="succeeded", mechanical_round=1)
+
+    r = await verification_receipt_rate(store)
+    assert r == {"attempts": 0, "ran_checks": 0, "rate": None, "by_kind": {}}
+
+
+async def test_compute_metrics_surfaces_the_verification_receipt_rate(store):
+    """`compute_metrics` itself does not carry this key — it is merged
+    separately in `/api/metrics` (see `api/app.py`), same treatment as
+    `by_playbook`. Assert the two stay independently importable and callable
+    from the same store."""
+    t = Task.new("x", repo_path="/tmp/x")
+    await store.create_task(t)
+    a = await store.create_attempt(t.id, attempt_number=1)
+    await store.add_verification_receipt(a, _receipt(1))
+    await store.update_attempt(a, status="succeeded")
+
+    m = await compute_metrics(store)
+    assert "verification_receipts" not in m
+    r = await verification_receipt_rate(store)
+    assert r["attempts"] == 1 and r["ran_checks"] == 1 and r["rate"] == 1.0
