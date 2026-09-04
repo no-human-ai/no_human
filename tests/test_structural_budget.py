@@ -784,7 +784,10 @@ FROZEN_FILE_LINES = {
     # default-subscription-mode config with no credential on file. Measured
     # on this tree with the scanner below, rebased onto the 6037
     # already-satisfied-landing tree above (6037 -> 6107).
-    "api/app.py": 6107,
+    # 6107 -> 6108 (+1): review fix — `get_split_drafts` (GET /split-drafts)
+    # was missing its `_require_credentials(request)` call; it runs the same
+    # paid utility-model draft call as `split_task` and must be gated too.
+    "api/app.py": 6108,
     # +51: W5 active-time phase writer (phase instrumentation).
     # +84: `list_escalations`/`list_review_fails`/`list_tamper_trips` — the
     # three new failure-signal sources the recurring learning harvest mines.

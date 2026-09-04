@@ -179,6 +179,15 @@ async def test_grill_and_split_are_refused_in_setup_mode(client, path, body):
     assert "CLAUDE_CODE_OAUTH_TOKEN" in r.json()["detail"]
 
 
+@pytest.mark.asyncio
+async def test_split_drafts_is_refused_in_setup_mode(client):
+    # GET /split-drafts runs the same paid utility-model draft call as
+    # /split — it must be gated too, not just its sibling POST endpoints.
+    r = await client.get("/api/tasks/does-not-exist/split-drafts")
+    assert r.status_code == 503
+    assert "CLAUDE_CODE_OAUTH_TOKEN" in r.json()["detail"]
+
+
 # --------------------------------------------------------------------------- #
 # 5. The scheduler idles instead of crash-looping without a credential        #
 # --------------------------------------------------------------------------- #

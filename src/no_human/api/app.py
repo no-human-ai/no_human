@@ -1128,6 +1128,7 @@ async def get_split_drafts(task_id: str, request: Request) -> dict[str, Any]:
     []}`` when the proposer produced nothing parseable (the UI shows a
     "couldn't draft a split" state rather than an error).
     """
+    _require_credentials(request)
     store = _store(request)
     task = await _require_task(store, task_id)
     # Only a PENDING task can actually BE split (POST /split enforces the same),
