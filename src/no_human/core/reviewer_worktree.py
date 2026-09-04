@@ -114,6 +114,10 @@ class Delta:
     #: The config keys that changed within `benign` paths, for the disclosure
     #: event — never used for gating.
     benign_keys: list[str] = field(default_factory=list)
+    #: The changed config keys that were NOT on the benign allowlist and so
+    #: kept the file a violation — capped at `_MAX_NONBENIGN_KEYS_SHOWN`.
+    #: Disclosure only; the discard already happened via `modified`.
+    nonbenign_keys: list[str] = field(default_factory=list)
 
     def is_empty(self) -> bool:
         return not (self.added or self.modified or self.deleted)
@@ -590,6 +594,14 @@ def _is_benign_config_key(key: str) -> bool:
     return any(p.match(normalized) for p in _BENIGN_CONFIG_KEY_PATTERNS)
 
 
+#: Cap on how many non-benign config keys `compare()` names in a discard
+#: display string. Mirrors `orchestrator._INTEGRITY_PATHS_SHOWN` (5) and the
+#: same "and N more" tail: this text is PERSISTED into a review verdict, so a
+#: pathological diff must not blow the message up. Naming the keys does not
+#: change the gate — any non-benign key still discards.
+_MAX_NONBENIGN_KEYS_SHOWN = 5
+
+
 def _config_norm_map(
     admin_dir: Path, common_dir: Path, *, timeout: float
 ) -> dict[str, str]:
@@ -920,6 +932,7 @@ def compare(repo_path: Path, before: Snapshot, *, timeout: float) -> Delta:
     deleted: list[str] = []
     benign: list[str] = []
     benign_keys: list[str] = []
+    nonbenign_keys: list[str] = []
     for path in sorted(set(before.entries) | set(after.entries)):
         b = before.entries.get(path)
         a = after.entries.get(path)
@@ -943,6 +956,7 @@ def compare(repo_path: Path, before: Snapshot, *, timeout: float) -> Delta:
     for path in sorted(set(before.git_entries) | set(after.git_entries)):
         b = before.git_entries.get(path)
         a = after.git_entries.get(path)
+        nonbenign_for_this_path: list[str] = []
         if a == b:
             continue
         if path == "common/HEAD" and a is not None and b is not None:
@@ -994,7 +1008,15 @@ def compare(repo_path: Path, before: Snapshot, *, timeout: float) -> Delta:
                     benign.append(f".git/{path}")
                     benign_keys.extend(sorted(changed))
                     continue
+                nonbenign_for_this_path = sorted(
+                    k for k in changed if not _is_benign_config_key(k))
         display = f".git/{path}"
+        if nonbenign_for_this_path:
+            shown_keys = nonbenign_for_this_path[:_MAX_NONBENIGN_KEYS_SHOWN]
+            more = len(nonbenign_for_this_path) - len(shown_keys)
+            display += (" (non-benign keys: " + ", ".join(shown_keys)
+                        + (f" and {more} more" if more else "") + ")")
+            nonbenign_keys.extend(shown_keys)
         if a is None:
             deleted.append(display)
         elif b is None:
@@ -1021,7 +1043,8 @@ def compare(repo_path: Path, before: Snapshot, *, timeout: float) -> Delta:
     if before.head != after.head:
         modified.append(f"HEAD:{before.head}->{after.head}")
     return Delta(added=sorted(added), modified=sorted(modified), deleted=sorted(deleted),
-                 benign=sorted(benign), benign_keys=sorted(set(benign_keys)))
+                 benign=sorted(benign), benign_keys=sorted(set(benign_keys)),
+                 nonbenign_keys=sorted(set(nonbenign_keys)))
 
 
 def revert(repo_path: Path, before: Snapshot, delta: Delta, *, timeout: float) -> None:

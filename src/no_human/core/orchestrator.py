@@ -17401,6 +17401,7 @@ class Orchestrator:
             added=delta.added,
             modified=delta.modified,
             deleted=delta.deleted,
+            nonbenign_config_keys=list(getattr(delta, "nonbenign_keys", [])),
             baseline_commit=before.head,
         )
 
@@ -20691,6 +20692,30 @@ SIX of them read a checkpoint and TWO do not — but do
                 return m.group(1), m.group(2)
         return None
 
+    @staticmethod
+    def _default_walk_manifest(
+        ui_conf: dict, changed_paths: "list[str]",
+    ) -> "tuple[ui_evidence.Manifest | None, str]":
+        """The harness's OWN fallback walk (`ui_evidence.default_manifest`)
+        for when the coder wrote no `.no_human/ui_evidence.json` — visual
+        proof must not depend on coder compliance. Built from the CONFIRMED
+        profile's `base_url`/`ready_path` (there is no manifest to read
+        those from). Returns `(None, reason)` when there is nothing to walk
+        against, so the caller's existing disclosed-skip still fires;
+        `reason` names why for that message.
+        """
+        base_url = str((ui_conf or {}).get("base_url") or "")
+        if not base_url:
+            return None, "no base_url configured"
+        ready_path = str((ui_conf or {}).get("ready_path") or "/")
+        web_src = any(
+            str(p).startswith("web/src/") or "/web/src/" in str(p)
+            for p in (changed_paths or []))
+        manifest = ui_evidence.default_manifest(base_url, ready_path, web_src=web_src)
+        if manifest is None:
+            return None, "base_url is not a reachable loopback address"
+        return manifest, ""
+
     async def _maybe_capture_ui_evidence(
         self, task: Task, repo: "GitRepo", branch: str, base: str | None,
     ) -> str:
@@ -20700,9 +20725,14 @@ SIX of them read a checkpoint and TWO do not — but do
         exist to deliver: `""` ONLY when the diff never qualified for a walk
         (`ui_evidence_should_run` says no — nothing was skipped, there was
         nothing to do). Every other empty outcome before that decision —
-        playwright missing, no manifest, the walk raising, unreachable dev
-        server, zero shots — discloses via `_ui_evidence_skipped`/
-        `_UI_EVIDENCE_SKIPPED_SECTION` instead of silently rendering `""`.
+        playwright missing, no manifest AND no default walk configured, the
+        walk raising, unreachable dev server, zero shots — discloses via
+        `_ui_evidence_skipped`/`_UI_EVIDENCE_SKIPPED_SECTION` instead of
+        silently rendering `""`. A missing coder manifest, on its own, no
+        longer disqualifies the walk: `_default_walk_manifest` builds the
+        harness's own minimal landing-page walk from the confirmed
+        profile's `base_url`, so a PR still ships real screenshots when the
+        coder ignored the advisory prompt.
         Past that point this method just forwards `_deliver_ui_evidence`'s
         return value verbatim: if shots WERE captured but delivery then
         fails (e.g. push rejected, non-GitHub remote, a `current_branch`/
@@ -20739,14 +20769,22 @@ SIX of them read a checkpoint and TWO do not — but do
             return self._UI_EVIDENCE_SKIPPED_SECTION
 
         manifest_path = Path(repo.path) / ui_evidence.MANIFEST
-        if not manifest_path.is_file():
-            # The coder never wrote a walk — `ui_evidence.run` would say so
-            # too (verdict "not_run", reason "no manifest"), but skipping
-            # the temp dir + subprocess dance entirely here is cheaper and
-            # every bit as honest: nothing ran, so disclose that instead of
-            # rendering "" (honesty floor, `_ui_evidence_skipped` above).
-            return self._ui_evidence_skipped(
-                "the coder wrote no `.no_human/ui_evidence.json` walk manifest")
+        have_coder_manifest = manifest_path.is_file()
+        walk_manifest: "ui_evidence.Manifest | None" = None
+        if not have_coder_manifest:
+            # The coder never wrote a walk — visual proof must not depend
+            # on coder compliance, so fall back to the harness's OWN
+            # default walk instead of skipping outright. Only when THAT
+            # also has nothing to walk against (no configured base_url, or
+            # one that fails the loopback rule) does this still disclose-
+            # and-skip, same as before this fallback existed.
+            walk_manifest, default_reason = self._default_walk_manifest(
+                ui_conf or {}, changed_paths)
+            if walk_manifest is None:
+                return self._ui_evidence_skipped(
+                    "the coder wrote no `.no_human/ui_evidence.json` walk "
+                    "manifest and the default walk could not run "
+                    f"({default_reason})")
 
         out_dir = ui_evidence.default_out_dir(task.id)
         # Boot the repo's configured dev server (`ui_conf["start_cmd"]`) when
@@ -20755,10 +20793,16 @@ SIX of them read a checkpoint and TWO do not — but do
         # server is guaranteed dead before the PR body is produced. A bad/
         # unreadable manifest reads the same as "unconfigured": `run` below
         # still reports its own `not_run` for that; this just skips the boot.
-        try:
-            manifest_base_url = ui_evidence.read_manifest(Path(repo.path)).base_url
-        except Exception:  # noqa: BLE001 — bad manifest: skip the boot, `run` reports it
-            manifest_base_url = ""
+        if have_coder_manifest:
+            try:
+                manifest_base_url = ui_evidence.read_manifest(Path(repo.path)).base_url
+            except Exception:  # noqa: BLE001 — bad manifest: skip the boot, `run` reports it
+                manifest_base_url = ""
+        else:
+            # No coder manifest to read a `base_url` from — the default
+            # walk built above already carries one (or this method would
+            # have returned the disclosed skip above already).
+            manifest_base_url = walk_manifest.base_url
         srv: "ui_evidence.DevServerOutcome | None" = None
         # A dev server never boots straight at the operator's live `:8420`
         # board any more: when there IS a manifest base_url, arm a throwaway-
@@ -20809,7 +20853,9 @@ SIX of them read a checkpoint and TWO do not — but do
                         self._advisory(
                             "walk_nonhermetic::pre_existing_dev_server: "
                             f"{safe_url}")
-                    result = await ui_evidence.run(Path(repo.path), out_dir)
+                    result = await ui_evidence.run(
+                        Path(repo.path), out_dir,
+                        manifest=None if have_coder_manifest else walk_manifest)
         except Exception as exc:  # noqa: BLE001 — `ui_evidence.run` documents
             # "never raises", but this call site does not re-derive that
             # promise; it fails the same way every other evidence gather here
@@ -20871,7 +20917,9 @@ SIX of them read a checkpoint and TWO do not — but do
             return self._ui_evidence_skipped(f"the walk captured no shots ({reason})")
 
         try:
-            return self._deliver_ui_evidence(repo, task.id, out_dir, result, server=srv)
+            return self._deliver_ui_evidence(
+                repo, task.id, out_dir, result, server=srv,
+                default_walk=not have_coder_manifest)
         finally:
             shutil.rmtree(out_dir, ignore_errors=True)
 
@@ -20879,6 +20927,7 @@ SIX of them read a checkpoint and TWO do not — but do
         self, repo: "GitRepo", task_id: str, out_dir: Path,
         result: "ui_evidence.UiEvidenceResult",
         *, server: "ui_evidence.DevServerOutcome | None" = None,
+        default_walk: bool = False,
     ) -> str:
         """Commit the captured shots + video to a SIDE branch
         (`nh-evidence/<task_id>`), push it, and return the rendered media
@@ -20890,6 +20939,15 @@ SIX of them read a checkpoint and TWO do not — but do
         one extra disclosure sentence is appended naming which case
         occurred — `unconfigured`/`boot-failed`/`None` add nothing, so the
         body stays byte-identical to before this parameter existed.
+
+        `default_walk` (keyword-only, default `False` so every existing
+        caller/rendered body stays byte-identical) marks this walk as the
+        harness's OWN fallback (`Orchestrator._default_walk_manifest`,
+        used when the coder wrote no `.no_human/ui_evidence.json`) rather
+        than a coder-authored one — the lead paragraph and each embedded
+        image's alt text are labeled `default walk (no coder manifest)` so
+        a PR reader knows these shots are the fallback, not something the
+        coder wrote a walk for.
 
         NOT a commit on the task branch itself. D1.2's own decision-gate
         test (`tests/test_approve_merge.py::
@@ -20943,15 +21001,27 @@ SIX of them read a checkpoint and TWO do not — but do
         def _raw_url(rel_path: str) -> str:
             return f"{raw_base}/{_url_quote(f'.nh-evidence/{task_id}/{rel_path}', safe='/')}"
 
-        lines = [
-            "## UI evidence",
-            "The harness drove a real headless browser through the coder's "
-            "`.no_human/ui_evidence.json` walk after this attempt's tests "
-            f"passed ({ui_evidence.summary_line(result)}). Screenshots and "
-            f"the walk video are committed to the `{evidence_branch}` "
-            "branch — proof of what the page rendered at each step, "
-            "nothing more.\n",
-        ]
+        if default_walk:
+            lead = (
+                "The harness drove a real headless browser through its own "
+                "**default walk (no coder manifest)** after this attempt's "
+                "tests passed — the coder wrote no "
+                "`.no_human/ui_evidence.json`, so this is the harness's "
+                f"minimal landing-page fallback, not a coder-defined walk "
+                f"({ui_evidence.summary_line(result)}). Screenshots are "
+                f"committed to the `{evidence_branch}` branch — proof of "
+                "what the page rendered on load, nothing more.\n"
+            )
+        else:
+            lead = (
+                "The harness drove a real headless browser through the coder's "
+                "`.no_human/ui_evidence.json` walk after this attempt's tests "
+                f"passed ({ui_evidence.summary_line(result)}). Screenshots and "
+                f"the walk video are committed to the `{evidence_branch}` "
+                "branch — proof of what the page rendered at each step, "
+                "nothing more.\n"
+            )
+        lines = ["## UI evidence", lead]
         if server is not None and server.mode == "booted":
             cmd = (server.start_cmd or "").strip().replace("\n", " ").replace("`", "'")
             if len(cmd) > 120:
@@ -20969,8 +21039,9 @@ SIX of them read a checkpoint and TWO do not — but do
                 "checkout it serves, and could not bind it to this walk's "
                 "hermetic backend — this walk was not hermetic.\n")
         shown = delivered_names[: self._UI_EVIDENCE_MAX_EMBEDDED_SHOTS]
+        alt_prefix = "default walk (no coder manifest): " if default_walk else ""
         for shot in shown:
-            lines.append(f"![{shot['name']}]({_raw_url(shot['path'])})")
+            lines.append(f"![{alt_prefix}{shot['name']}]({_raw_url(shot['path'])})")
         omitted = len(delivered_names) - len(shown)
         if omitted > 0:
             lines.append(f"_(+{omitted} more shot(s) on `{evidence_branch}`)_")

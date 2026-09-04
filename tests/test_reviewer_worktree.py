@@ -31,6 +31,7 @@ from pathlib import Path
 import pytest
 
 from no_human.core import reviewer_worktree as rw
+from no_human.core.orchestrator import _integrity_failure_decision
 from no_human.vcs.git import GitRepo
 
 PROTECTED = ["main", "master", "release/*"]
@@ -295,7 +296,7 @@ def test_config_reserialization_excused_but_key_change_and_source_edit_caught(
     delta = rw.compare(wt, before, timeout=_TIMEOUT)
     assert "src/main.py" in delta.modified, (
         f"reviewer source edit was not caught: modified={delta.modified}")
-    assert any(p.endswith("/config") for p in delta.modified), (
+    assert any("/config" in p for p in delta.modified), (
         "an include.path addition to config was not caught: "
         f"modified={delta.modified}")
 
@@ -362,7 +363,7 @@ def test_a_non_bookkeeping_config_key_and_a_tracked_edit_still_discard(
     (wt / "src" / "main.py").write_text("v2 -- reviewer edit\n")
 
     delta = rw.compare(wt, before, timeout=_TIMEOUT)
-    assert any(p.endswith("/config") for p in delta.modified), (
+    assert any("/config" in p for p in delta.modified), (
         f"a non-allowlisted config key was excused instead of caught: "
         f"modified={delta.modified} benign={delta.benign}")
     assert not any(p.endswith("/config") for p in delta.benign), (
@@ -385,6 +386,142 @@ def test_a_non_bookkeeping_config_key_and_a_tracked_edit_still_discard(
         "a tracked edit alongside a benign-only config key was excused: "
         f"added={mixed.added} modified={mixed.modified} deleted={mixed.deleted}"
     )
+
+
+def test_a_non_benign_config_key_is_named_in_the_discard_alongside_a_benign_one(
+    worktree_env,
+):
+    """Task reviewer-worktree-integrity-name-nonbenign-keys.
+
+    A discard used to name only the FILE (`.git/common/config`), never WHICH
+    key kept it a violation — so a real execution-surface write (`alias.*`,
+    `include.path`, `core.hooksPath`) was indistinguishable from a new
+    bookkeeping key that SHOULD be allowlisted, and the allowlist could never
+    be safely closed. This plants ONE benign key and ONE non-benign key in
+    the same write and asserts the discard names the non-benign one and does
+    NOT falsely name the benign one.
+    """
+    wt = worktree_env["wt"]
+    common_dir = worktree_env["common_dir"]
+    cfg = common_dir / "config"
+
+    before = rw.snapshot(wt, timeout=_TIMEOUT)
+
+    _git(wt, "config", "--file", str(cfg), "branch.x.rebase", "true")
+    _git(wt, "config", "--file", str(cfg), "alias.pwn", "!sh -c id")
+
+    delta = rw.compare(wt, before, timeout=_TIMEOUT)
+    assert not delta.is_empty(), (
+        "a mixed benign/non-benign config change was excused: "
+        f"added={delta.added} modified={delta.modified} deleted={delta.deleted}")
+
+    entries = [p for p in delta.modified
+               if p.startswith(".git/") and "/config" in p]
+    assert entries, f"no config entry in modified: {delta.modified}"
+    entry = entries[0]
+    assert "(non-benign keys: alias.pwn)" in entry, entry
+    assert "branch.x.rebase" not in entry, (
+        f"the benign key was falsely named as non-benign: {entry}")
+    assert delta.nonbenign_keys == ["alias.pwn"], delta.nonbenign_keys
+    assert "branch.x.rebase" not in delta.benign_keys, (
+        "the benign key was disclosed as excused even though the whole "
+        f"file stayed a violation: benign_keys={delta.benign_keys}")
+
+
+def test_a_benign_only_config_change_names_nothing_as_non_benign(worktree_env):
+    """The unchanged half: a benign-only change stays excused, and the
+    naming added by this task must not start naming anything for it."""
+    wt = worktree_env["wt"]
+    common_dir = worktree_env["common_dir"]
+    cfg = common_dir / "config"
+
+    before = rw.snapshot(wt, timeout=_TIMEOUT)
+    _git(wt, "config", "--file", str(cfg), "branch.some-other-task.rebase", "true")
+
+    delta = rw.compare(wt, before, timeout=_TIMEOUT)
+    assert delta.is_empty(), (
+        f"added={delta.added} modified={delta.modified} deleted={delta.deleted}")
+    assert "branch.some-other-task.rebase" in delta.benign_keys, delta.benign_keys
+    assert delta.nonbenign_keys == [], delta.nonbenign_keys
+    assert not any("non-benign keys" in p
+                   for p in (*delta.added, *delta.modified, *delta.deleted)), (
+        "a benign-only change was named as non-benign: "
+        f"added={delta.added} modified={delta.modified} deleted={delta.deleted}")
+
+
+def test_the_non_benign_key_list_is_capped_and_reports_the_remainder(worktree_env):
+    """A pathological diff must not blow the persisted verdict message up —
+    same shape as `orchestrator._INTEGRITY_PATHS_SHOWN`'s per-bucket cap."""
+    wt = worktree_env["wt"]
+    common_dir = worktree_env["common_dir"]
+    cfg = common_dir / "config"
+
+    before = rw.snapshot(wt, timeout=_TIMEOUT)
+    n = rw._MAX_NONBENIGN_KEYS_SHOWN + 3
+    for i in range(n):
+        _git(wt, "config", "--file", str(cfg), f"alias.pwn{i}", "!true")
+
+    delta = rw.compare(wt, before, timeout=_TIMEOUT)
+    entries = [p for p in delta.modified
+               if p.startswith(".git/") and "/config" in p]
+    assert entries, f"no config entry in modified: {delta.modified}"
+    entry = entries[0]
+
+    assert "and 3 more" in entry, entry
+    shown = [f"alias.pwn{i}" for i in range(rw._MAX_NONBENIGN_KEYS_SHOWN)]
+    for key in shown:
+        assert key in entry, entry
+    beyond = [f"alias.pwn{i}" for i in range(rw._MAX_NONBENIGN_KEYS_SHOWN, n)]
+    for key in beyond:
+        assert key not in entry, f"a key beyond the cap was named: {key} in {entry}"
+    assert len(delta.nonbenign_keys) == rw._MAX_NONBENIGN_KEYS_SHOWN, delta.nonbenign_keys
+
+
+def test_the_non_benign_key_cap_value_itself_is_asserted_not_derived():
+    """`n = _MAX_NONBENIGN_KEYS_SHOWN + 3` in the cap test above derives
+    from the constant under test, so raising the cap to 200 would keep that
+    test green while making a persisted discard message 200 keys long. This
+    pins the VALUE against a literal."""
+    assert rw._MAX_NONBENIGN_KEYS_SHOWN == 5, (
+        "the non-benign key display cap changed; a persisted discard message "
+        "is read by the next attempt and by an operator, so a larger value "
+        "needs a deliberate decision, not a silent edit")
+
+
+def test_the_benign_allowlist_is_unchanged_by_this_naming_change():
+    """Naming a non-benign key (this task) is disclosure only — it is NOT
+    allowlisting it. Any future addition to `_BENIGN_CONFIG_KEY_PATTERNS`
+    needs its own evidence-gated change (one of the 31 recorded
+    false-discards, proven benign one key at a time), never bundled with a
+    display/diagnostics change like this one."""
+    patterns = [p.pattern for p in rw._BENIGN_CONFIG_KEY_PATTERNS]
+    assert patterns == [
+        r"^branch\.[^.]+\.(rebase|remote|merge|pushremote|description|"
+        r"vscode-merge-base)$",
+        r"^maintenance\..+$",
+        r"^gc\..+$",
+    ], patterns
+
+
+def test_the_named_non_benign_key_reaches_the_persisted_checklist_evidence(
+    worktree_env,
+):
+    """End-to-end: the key named in `compare()`'s discard text must survive
+    into the persisted `ReviewDecision.checklist` evidence the next attempt
+    and an operator actually read — naming it in `compare()` alone is not
+    enough if the wiring to the verdict drops it."""
+    wt = worktree_env["wt"]
+    common_dir = worktree_env["common_dir"]
+    cfg = common_dir / "config"
+
+    before = rw.snapshot(wt, timeout=_TIMEOUT)
+    _git(wt, "config", "--file", str(cfg), "branch.x.rebase", "true")
+    _git(wt, "config", "--file", str(cfg), "alias.pwn", "!sh -c id")
+    delta = rw.compare(wt, before, timeout=_TIMEOUT)
+
+    decision = _integrity_failure_decision(delta)
+    assert decision.passed is False
+    assert "alias.pwn" in decision.checklist[0].evidence, decision.checklist[0].evidence
 
 
 # --------------------------------------------------------------------------- #

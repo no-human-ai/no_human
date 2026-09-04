@@ -202,3 +202,26 @@ def test_block_says_the_harness_boots_the_dev_server():
     assert "does NOT start your dev server" not in prompt
     assert "proving nothing beyond what each screenshot shows" in prompt
     assert "either way this never blocks the attempt" in prompt
+
+
+def test_block_shows_an_example_manifest_and_the_bare_landing_fallback():
+    """Default-walk fallback (2026-09-04): the block must show the coder a
+    concrete, copy-pasteable manifest example, and must say plainly that
+    skipping the file does NOT skip the walk — it degrades to a bare
+    landing screenshot from the harness's own default walk, not to
+    nothing. Visual proof must not depend on coder compliance."""
+    orch = _prompt_orchestrator()
+    orch._active_profile = _profile(
+        enabled=True, start_cmd="npm run dev", base_url="http://127.0.0.1:5173",
+        ready_path="/",
+    )
+    prompt = _prompt(orch, plan=_PLAN_WITH_UI_FILE)
+    assert _MARKER in prompt
+    assert '"base_url"' in prompt
+    assert '{"shot": "landing"}' in prompt
+    assert (
+        "Writing no manifest does not skip the walk: the harness ships "
+        "only a bare landing screenshot from its own default walk instead "
+        "of the one you control"
+    ) in prompt
+    assert "either way this never blocks the attempt" in prompt

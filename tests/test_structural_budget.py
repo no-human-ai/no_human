@@ -497,7 +497,27 @@ FROZEN_FILE_LINES = {
     # require_mechanical_feedback=False)` instead of a bare
     # `latest_review_verdict(...) == 1` check. Measured on this tree with the
     # scanner below, never summed by hand.
-    "core/orchestrator.py": 21564,
+    #
+    # 21502 -> 21572 (+70, rebased onto the above): default UI walk when the
+    # coder writes no manifest (2026-09-04) — new `_default_walk_manifest`
+    # static helper builds the harness's OWN fallback `ui_evidence.Manifest`
+    # from the confirmed profile's `base_url`/`ready_path` when no coder
+    # `.no_human/ui_evidence.json` exists, `_maybe_capture_ui_evidence` wires
+    # it through `ui_evidence.run(..., manifest=...)` and threads a new
+    # `default_walk` flag into `_deliver_ui_evidence`, which labels the
+    # rendered section "default walk (no coder manifest)" instead of the old
+    # unconditional skip text — visual proof must not depend on coder
+    # compliance. Measured with the scanner below, never summed by hand.
+    # Supervised-land merge 2026-09-04: lifetime-cap (+62) and default-walk
+    # (+70) now on one tree. Measured on this merged tree with the scanner
+    # below, never summed by hand.
+    # 21502 -> 21503 (+1): the reviewer-worktree non-benign-config-key naming
+    # task threads `nonbenign_config_keys=list(getattr(delta, "nonbenign_keys",
+    # []))` into the `reviewer_wrote` event emit — one kwarg. Measured with
+    # the scanner below (`len(Path(...).read_text().splitlines())`).
+    # Supervised-land merge 2026-09-04: default-walk chain + the reviewer
+    # config-key naming (+1) on one tree. Measured on this merged tree.
+    "core/orchestrator.py": 21635,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.

@@ -150,7 +150,7 @@ def test_a_content_change_with_an_unchanged_mode_is_still_detected(linked_worktr
         wt, lambda: cfg.write_text(cfg.read_text() + "\n[alias]\n\tx = !sh -c 'id'\n"))
 
     assert cfg.stat().st_mode == mode_before, "this case must vary ONLY content"
-    assert ".git/common/config" in delta.modified, delta
+    assert any(p.startswith(".git/common/config") for p in delta.modified), delta
 
 
 def test_a_SAME_SIZE_content_change_is_still_detected(linked_worktree):
