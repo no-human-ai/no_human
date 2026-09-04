@@ -3916,10 +3916,15 @@ async def metrics(request: Request) -> dict[str, Any]:
     """The north-star numbers (M4): PRs opened/merged, attempts and tokens
     per PR, burn per auth profile, gate outcomes, repro-gate verdict split.
     Read-only SQL over the record — nothing derived, nothing cached."""
-    from ..core.metrics import compute_metrics, playbook_outcomes
+    from ..core.metrics import (
+        compute_metrics, playbook_outcomes, verification_receipt_rate,
+    )
     data = await compute_metrics(_store(request))
     # D2 #5: which playbooks actually pay (gate rate + burn).
     data["by_playbook"] = await playbook_outcomes(request.app.state.store)
+    # Per-attempt rate: did the coder run its checks before claiming done.
+    data["verification_receipts"] = await verification_receipt_rate(
+        request.app.state.store)
     return data
 
 
