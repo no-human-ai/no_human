@@ -14,6 +14,7 @@ import { cardFacts } from "./cardFacts.js";
 import { taskCost } from "./cost.js";
 import { isFirstRun } from "./boardFirstRun.js";
 import { timestampMs, compareAsc } from "./parseTimestamp.js";
+import { elapsedChip } from "./cardElapsed.js";
 
 // Toast lifetime — long enough to read a refusal sentence, short enough not
 // to pile up. The persistent source of truth is the card banner (dismissed
@@ -26,9 +27,15 @@ const APPROVE_TOAST_MS = 8_000;
 // badge still shows the true total, so nothing is hidden from awareness.
 const LANE_TOP_N = 4;
 
+// Board elapsed-chip tick — one shared interval for the whole board, not one
+// per card. 60s is fine granularity for an "1h 42m" readout that only
+// matters at the minute scale.
+const ELAPSED_TICK_MS = 60_000;
+
 export default function Board({ tasks, pendingOpenId, onPendingOpenHandled, tasksLoaded = true, outcomeCount = 0, onNewTask, onFollowUp = null }) {
   const [selectedId, setSelectedId] = useState(null);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [nowMs, setNowMs] = useState(() => Date.now());
   const triggerRef = useRef(null);
   const prevUpdatedAtRef = useRef(null);
   // Per-task approve refusal state — the board's approve button used to fail
@@ -48,6 +55,12 @@ export default function Board({ tasks, pendingOpenId, onPendingOpenHandled, task
     const t = setTimeout(() => setToast((cur) => (cur?.id === toast.id ? null : cur)), APPROVE_TOAST_MS);
     return () => clearTimeout(t);
   }, [toast]);
+
+  // Client-side tick for the elapsed-time chip - no server polling change.
+  useEffect(() => {
+    const id = setInterval(() => setNowMs(Date.now()), ELAPSED_TICK_MS);
+    return () => clearInterval(id);
+  }, []);
 
   // A refusal error is stale once its task has left awaiting_approval — the
   // approve either landed on a retry or the task moved on some other way.
@@ -118,6 +131,7 @@ export default function Board({ tasks, pendingOpenId, onPendingOpenHandled, task
             onSelect={openTask}
             approveErrors={approveErrors}
             onDismissApproveError={(id) => setApproveErrors((m) => dismissApproveError(m, id))}
+            nowMs={nowMs}
           />
         ))}
       </div>
@@ -184,7 +198,7 @@ function workingBreakdown(tasks) {
   return waiting > 0 ? `${base} · ${waiting} waiting` : base;
 }
 
-function Lane({ lane, tasks, onSelect, approveErrors, onDismissApproveError }) {
+function Lane({ lane, tasks, onSelect, approveErrors, onDismissApproveError, nowMs }) {
   const [expanded, setExpanded] = useState(false);
   // SCRUM-19: the Needs-Answer lane's OWN collapse — stale escalations (>24h,
   // by escalation recency) sink behind an expandable divider instead of
@@ -257,6 +271,7 @@ function Lane({ lane, tasks, onSelect, approveErrors, onDismissApproveError }) {
                 onClick={(e) => onSelect(task.id, e.currentTarget)}
                 approveError={approveErrors?.[task.id]}
                 onDismissApproveError={onDismissApproveError}
+                nowMs={nowMs}
               />
             ))}
             {stale.length > 0 && (
@@ -282,6 +297,7 @@ function Lane({ lane, tasks, onSelect, approveErrors, onDismissApproveError }) {
                 onClick={(e) => onSelect(task.id, e.currentTarget)}
                 approveError={approveErrors?.[task.id]}
                 onDismissApproveError={onDismissApproveError}
+                nowMs={nowMs}
               />
             ))}
           </>
@@ -294,6 +310,7 @@ function Lane({ lane, tasks, onSelect, approveErrors, onDismissApproveError }) {
               onClick={(e) => onSelect(task.id, e.currentTarget)}
               approveError={approveErrors?.[task.id]}
               onDismissApproveError={onDismissApproveError}
+              nowMs={nowMs}
             />
           ))
         )}
@@ -319,13 +336,14 @@ function Lane({ lane, tasks, onSelect, approveErrors, onDismissApproveError }) {
 const STALE_STATUSES = new Set(["context", "planning", "implementing", "reviewing", "testing", "awaiting_approval", "awaiting_input", "blocked"]);
 const STALE_THRESHOLD_S = 16 * 3600;
 
-function TaskCard({ task, isAwaiting, staleAnswer, onClick, approveError, onDismissApproveError }) {
+function TaskCard({ task, isAwaiting, staleAnswer, onClick, approveError, onDismissApproveError, nowMs = Date.now() }) {
   const activityTs = task.last_activity || task.updated_at || task.created_at;
   const ageMs = Date.now() - timestampMs(activityTs, 0);
   const ageSec = ageMs / 1000;
   const age = relativeTime(activityTs);
   const isStale = STALE_STATUSES.has(task.status) && ageSec > STALE_THRESHOLD_S;
   const f = cardFacts(task, { cost: taskCost(task) });
+  const elapsed = elapsedChip(task, nowMs);
 
   // SCRUM-15: the live pulse/progress must reflect the scheduler's actual claim,
   // not merely an "active" status — an unclaimed active-status task is queued,
@@ -435,6 +453,12 @@ function TaskCard({ task, isAwaiting, staleAnswer, onClick, approveError, onDism
           ) : (
             <span className="card-pr-badge">PR</span>
           )
+        )}
+        {elapsed && (
+          <span
+            className={`card-elapsed tone-${elapsed.tone}`}
+            title="running time since this task was created"
+          >{elapsed.text}</span>
         )}
         <span className="card-age">{age}</span>
       </div>

@@ -1228,6 +1228,17 @@ html, body, #root {
   border: 1px solid var(--green); letter-spacing: 0.02em;
 }
 
+/* Elapsed-time chip for an active card (context/planning/implementing/
+   reviewing/testing) - amber past 2h, red past 4h (cardElapsed.js). Terminal
+   and human-gated states never render this element at all. */
+.card-elapsed {
+  font-size: 12px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+.card-elapsed.tone-warn { color: var(--warn); font-weight: 600; }
+.card-elapsed.tone-error { color: var(--danger); font-weight: 600; }
+
 .card-age {
   font-size: 12px;
   color: var(--text-dim);
