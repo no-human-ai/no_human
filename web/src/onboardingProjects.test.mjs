@@ -219,7 +219,7 @@ test("deselecting a repo on the repos step unbinds it from the project defs", ()
 
 test("the projects step shows the unbound state and offers the default picker", () => {
   const step = onboarding.slice(onboarding.indexOf('step.key === "projects"'),
-                                onboarding.indexOf('step.key === "docs"'));
+                                onboarding.indexOf('{step.key === "integrations" && ('));
   assert.match(step, /pd\.repos\.size === 0/,
     "an unbound project must say so on the card, next to the empty tick-list");
   assert.match(step, /chooseProjectPrimary\(pi, e\.target\.value\)/,
@@ -242,7 +242,7 @@ test("the projects step shows the unbound state and offers the default picker", 
 // refuses exactly those definitions by name — a wizard you cannot leave.
 test("the projects empty state does not claim a gate the nav does not enforce", () => {
   const step = onboarding.slice(onboarding.indexOf('step.key === "projects"'),
-                                onboarding.indexOf('step.key === "docs"'));
+                                onboarding.indexOf('{step.key === "integrations" && ('));
   assert.doesNotMatch(step, /Add at least one to continue/,
     "Continue is never disabled on this step — see onboardingNav.forwardDisabled");
   assert.match(step, /No projects yet — this step is optional/,

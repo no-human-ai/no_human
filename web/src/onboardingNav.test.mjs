@@ -23,7 +23,7 @@ import { backDisabled, backDisabledReason, forwardDisabled, canJumpTo, stepButto
 // at the top of onboardingIntegrations.test.mjs), so the wiring half is a source
 // assertion.
 
-const LAST = 5; // STEPS.length - 1 in Onboarding.jsx (AI-history/rules steps left the wizard 2026-08-30; team step left 2026-08-09); asserted against the real list below.
+const LAST = 4; // STEPS.length - 1 in Onboarding.jsx (Docs step left the wizard 2026-09-04; AI-history/rules steps left 2026-08-30; team step left 2026-08-09); asserted against the real list below.
 
 // ── the predicates ─────────────────────────────────────────────────────────
 
@@ -116,7 +116,7 @@ const NAV = (() => {
   return src.slice(start, end);
 })();
 
-test("the wizard's STEPS list really has lastIndex 7, so these cases are the real ones", () => {
+test("the wizard's STEPS list really has lastIndex 4, so these cases are the real ones", () => {
   const steps = [...src.matchAll(/\{ key: "\w+",\s+title:/g)];
   assert.equal(steps.length - 1, LAST,
     "STEPS changed length — update LAST in this test so the launch case still tests the LAST step");
