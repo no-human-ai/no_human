@@ -7,7 +7,7 @@ import {
   proveRepoSSE, confirmRepoProfile, fetchReadiness, setRepoUiEvidence,
 } from "./api.js";
 import { shouldPoll, nextJobState } from "./wikiJobs.js";
-import { repoBadges, discoveryMessage, ambiguousNames, rowName } from "./discoveredRepos.js";
+import { repoBadges, discoveryMessage, searchEmptyMessage, ambiguousNames, rowName } from "./discoveredRepos.js";
 // onboardingHistory.js (scanSummary/groupProposalsByProject) went with the
 // removed AI-history/rules steps — the mining now happens from Settings.
 import { optionValue } from "./pathSuggest.js";
@@ -799,7 +799,9 @@ export default function Onboarding({ onComplete }) {
                 <div className="ob-row">
                   {/* Typing a folder scans it (debounced); "Search" is the
                       explicit trigger for the impatient. Both go through the one
-                      scanner, which refuses a root outside home server-side. */}
+                      scanner, which scans a typed folder wherever it resolves —
+                      only the conventional/home roots and configured extras
+                      stay contained to home. */}
                   <PathInput value={root}
                              onChange={(v) => { setRoot(v); debouncedScan(v); }}
                              placeholder="folder to search, e.g. ~/work" />
@@ -848,8 +850,10 @@ export default function Onboarding({ onComplete }) {
                 {detected.length === 0 && <div className="ob-empty">{busy
                   ? <><span className="grill-spinner" style={{ width: 16, height: 16, verticalAlign: 'middle', marginRight: 8 }} />{searchedPath ? `Searching ${searchedPath}…` : "Looking for your repositories…"}</>
                   // An empty result reads as "broken" without saying WHAT was
-                  // searched. Name the folder the user actually pointed at.
-                  : searchedPath ? `Searched ${searchedPath} — no git repositories there.` : "No repositories found. Search another folder above."}</div>}
+                  // searched. Name the folder the user actually pointed at —
+                  // and never claim "no repositories" for a root the server
+                  // refused to scan (searchEmptyMessage says so honestly).
+                  : searchEmptyMessage(discovery, searchedPath)}</div>}
                 {restRepos.map((r) => {
                   const st = onboarded[r.path];
                   return (

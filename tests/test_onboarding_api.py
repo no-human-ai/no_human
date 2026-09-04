@@ -69,9 +69,12 @@ async def test_discover_root_param_bounded(client, tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_discover_root_missing_is_refused(client, tmp_path, monkeypatch):
-    """A ``?root=`` that resolves outside the home this endpoint is bound to is
-    refused, not scanned — the same containment the extra roots get."""
+async def test_discover_root_outside_home_is_scanned_not_refused(client, tmp_path, monkeypatch):
+    """A ``?root=`` outside the home this endpoint is bound to is a user-TYPED
+    folder ("Search another folder") and is scanned wherever it resolves — no
+    wider a surface than ``GET /api/fs/suggest`` already exposes. Only
+    ``extra_scan_roots`` (operator config, not user-typed) stays home-contained;
+    see ``test_discover_honours_operator_configured_extra_roots`` for that."""
     home = tmp_path / "home"
     home.mkdir()
     _seed_repo(tmp_path / "outside" / "secret")
@@ -81,7 +84,8 @@ async def test_discover_root_missing_is_refused(client, tmp_path, monkeypatch):
                          params={"root": str(tmp_path / "outside")})
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["repos"] == [] and body["refused"]
+    assert {x["name"] for x in body["repos"]} == {"secret"}
+    assert body["refused"] == [] and body["refusals"] == []
 
 
 @pytest.mark.asyncio

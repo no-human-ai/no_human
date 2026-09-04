@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   repoBadges,
   discoveryMessage,
+  searchEmptyMessage,
   filterRepos,
   DIRTY_TEXT,
   fromDetectedRepo,
@@ -172,6 +173,34 @@ test("no message uses an em dash", () => {
     discoveryMessage(result({ repos: [repo()], roots_scanned: ["/a"], roots_refused: ["/etc"] })),
   ];
   for (const m of ms) assert.ok(!m.includes("—"), `em dash in ${m}`);
+});
+
+// --------------------------------------------------------------------------
+// searchEmptyMessage — the "Search another folder" empty state
+// --------------------------------------------------------------------------
+
+test("a refused search says it was not scanned, never that the folder is empty", () => {
+  const m = searchEmptyMessage(result({
+    repos: [], roots_refused: ["/etc"],
+    refusals: [{ path: "/etc", reason: "outside home directory" }],
+  }), "/etc");
+  assert.match(m, /not scanned: outside home directory/);
+  assert.doesNotMatch(m, /no git repositories there/);
+});
+
+test("a genuinely empty search still says so", () => {
+  const m = searchEmptyMessage(result({ repos: [] }), "/Users/x/work");
+  assert.equal(m, "Searched /Users/x/work — no git repositories there.");
+});
+
+test("no search and no refusal keeps the default empty state", () => {
+  const m = searchEmptyMessage(result({ repos: [] }), "");
+  assert.equal(m, "No repositories found. Search another folder above.");
+});
+
+test("a string-only roots_refused (older server) still yields a reason", () => {
+  const m = searchEmptyMessage(result({ repos: [], roots_refused: ["/etc"] }), "/etc");
+  assert.match(m, /not scanned: outside home directory/);
 });
 
 // --------------------------------------------------------------------------

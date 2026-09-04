@@ -62,3 +62,20 @@ test("the path style exists and is not a dead selector", () => {
     ".ob-repo must wrap so the full-width path span can break onto its own line",
   );
 });
+
+test("the empty state delegates to searchEmptyMessage", () => {
+  assert.match(
+    jsx,
+    /import\s*\{[^}]*\bsearchEmptyMessage\b[^}]*\}\s*from\s*"\.\/discoveredRepos\.js"/,
+    "searchEmptyMessage must be imported from ./discoveredRepos.js",
+  );
+  assert.match(
+    jsx,
+    /searchEmptyMessage\(discovery, searchedPath\)/,
+    "the empty-result state must delegate its wording to searchEmptyMessage, so a refused root is never misreported as an empty folder",
+  );
+  assert.ok(
+    !jsx.includes("no git repositories there"),
+    "the absence wording must live in discoveredRepos.js, not be duplicated as a literal in Onboarding.jsx",
+  );
+});

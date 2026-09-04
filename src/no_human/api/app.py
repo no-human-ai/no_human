@@ -5090,11 +5090,13 @@ async def discover_repositories(
 
     The default scan is bound to the process's own home directory (home itself
     plus the conventional clone roots) and whatever the operator put in
-    ``onboarding.extra_scan_roots``. ``root`` is NOT an arbitrary-filesystem
-    escape hatch: :func:`discover_repos` refuses any ``root`` that resolves
-    outside home, exactly as it does for the configured extra roots. It is the
-    "type a folder to scan just that folder" path that replaced the old,
-    unbounded ``POST /api/onboarding/repos/detect`` scanner.
+    ``onboarding.extra_scan_roots`` — those stay refused if they resolve
+    outside home. ``root`` is different: it is a folder the user TYPED into
+    "Search another folder", so :func:`discover_repos` scans it wherever it
+    resolves, home or not — no wider a local-API surface than
+    ``GET /api/fs/suggest`` already exposes. It is the "type a folder to scan
+    just that folder" path that replaced the old, unbounded
+    ``POST /api/onboarding/repos/detect`` scanner.
     """
     from ..repo_discovery import DEFAULT_MAX_RESULTS, discover_repos
 
