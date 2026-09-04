@@ -147,6 +147,16 @@ async def lifespan(app: FastAPI):
     store = external_store or await Store(config.db_path).connect()
     app.state.store = store
     app.state.config = config
+    # Setup mode: no subscription credential on file at all. `nh start` may
+    # already have computed this (setup_reason printed at boot, before this
+    # lifespan even fires) — OR it together with what THIS process sees now,
+    # so a credential added between CLI bootstrap and lifespan firing still
+    # lifts it, and a bare `TestClient(app)` construction (no CLI involved)
+    # gets its own correct answer.
+    from ..config import subscription_credential_missing
+    _reason = subscription_credential_missing(config.data)
+    app.state.setup_mode = bool(_reason) or bool(getattr(app.state, "setup_mode", False))
+    app.state.setup_reason = _reason or getattr(app.state, "setup_reason", None)
     # Wiki jobs a previous process left queued/running are orphans now — fail
     # them so the board shows the truth instead of a job stuck "running"
     # forever (mirrors the scheduler's orphan recovery). Advisory: a failure
@@ -272,6 +282,20 @@ async def lifespan(app: FastAPI):
                       "disabled this run: %s", exc)
             retirement_job = None
 
+    # Dispatch-time gate: `assert_subscription_mode` (scrub + enforce) still
+    # runs before any RUNNING task, just moved from "must pass before the
+    # server boots" to "must pass before each dispatch" — so setup mode
+    # never spends a token, and a credential added mid-run is picked up on
+    # the very next tick with no restart.
+    from ..config import assert_subscription_mode as _assert_sub_mode
+    _llm_cfg = config.data.get("llm") or {}
+
+    def _auth_check() -> None:
+        _assert_sub_mode(
+            profile=_llm_cfg.get("auth_profile"),
+            auth_mode=_llm_cfg.get("auth_mode", "subscription"),
+        )
+
     sched = Scheduler(
         store, _orch_factory,
         max_workers=max_workers,
@@ -280,6 +304,7 @@ async def lifespan(app: FastAPI):
         reanalysis_job=reanalysis,
         retirement_job=retirement_job,
         config=config.data,
+        auth_check=_auth_check,
     )
     stop_event = asyncio.Event()
     worker_task = asyncio.create_task(
@@ -544,6 +569,31 @@ def _store(req: Request) -> Store:
     return req.app.state.store
 
 
+SETUP_MODE_DETAIL = (
+    "no_human is in setup mode: no Claude credential is on file, so nothing "
+    "that spends tokens can run. Finish auth setup — add "
+    "CLAUDE_CODE_OAUTH_TOKEN to ~/.no_human/.env (chmod 600), created with "
+    "`claude setup-token`, or run `nh init` — then reload the board."
+)
+
+
+def _require_credentials(request: Request) -> None:
+    """Refuse a token-spending call while the server has no credential.
+
+    Re-probed per call (cheap: one env-file read) so adding the token lifts
+    the restriction without a restart. Left ungated: onboarding, Settings,
+    /api/version, /api/config, every read-only board endpoint.
+    """
+    cfg = getattr(request.app.state, "config", None)
+    if cfg is None:
+        return  # unconfigured test app: unchanged today
+    from ..config import subscription_credential_missing
+    if subscription_credential_missing(cfg.data) is None:
+        request.app.state.setup_mode = False
+        return
+    raise HTTPException(status_code=503, detail=SETUP_MODE_DETAIL)
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -780,6 +830,7 @@ async def list_tasks(
 async def create_task(body: CreateTaskRequest, request: Request) -> TaskSummaryOut:
     """Create a new task from the web board. The task is staged as PENDING and
     will be picked up by the next ``nh serve`` tick or ``nh watch``."""
+    _require_credentials(request)
     store = _store(request)
     repo_path: str | None = None
     linked: list[str] = []
@@ -935,6 +986,7 @@ async def split_task(
     Guarded on PENDING: a task already dispatched, parked or terminal has work
     in flight or done and must not be silently replaced.
     """
+    _require_credentials(request)
     store = _store(request)
     task = await _require_task(store, task_id)
     if task.status != TaskStatus.PENDING:
@@ -1088,6 +1140,7 @@ async def grill_step_endpoint(body: GrillStepRequest, request: Request):
       - Caches the backend in app.state._grill_sessions keyed by (title, repo)
         so multi-round grills reuse the same agent session (context carryover).
     """
+    _require_credentials(request)
     from ..agent.claude_backend import ClaudeBackend
     from ..intake.grill import GrillQuestion, GrillResult, grill_step
 
@@ -1158,6 +1211,7 @@ async def grill_stream_endpoint(body: GrillStepRequest, request: Request):
     with the full payload. Falls through to the sync POST semantics on
     the backend — only the transport is different.
     """
+    _require_credentials(request)
     from ..agent.claude_backend import ClaudeBackend
     from ..intake.grill import GrillQuestion, GrillResult, grill_step
 
@@ -4253,6 +4307,12 @@ async def show_config(request: Request) -> dict[str, Any]:
     ]
     scrubbed["coder_backend_effective"] = resolve_backend_name(cfg.data)
     scrubbed["coder_backend_default"] = DEFAULT_CONFIG["worker"]["backend"]
+    # Live, not cached off app.state: a credential added to the .env since
+    # the last request must lift the board's setup banner on the very next
+    # poll, with no restart — same probe `_require_credentials` re-checks
+    # per dispatch call.
+    from ..config import subscription_credential_missing
+    scrubbed["setup_mode"] = subscription_credential_missing(cfg.data) is not None
     return scrubbed
 
 
