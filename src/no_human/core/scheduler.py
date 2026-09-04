@@ -532,16 +532,12 @@ class Scheduler:
         self.retirement = retirement_job
         self.harvest = harvest_job
         self._config = config or {}
-        # Setup mode (missing credential, see config.assert_subscription_mode):
-        # re-probed every tick, right before dispatch, instead of once at
-        # startup — a credential added to the .env after boot must resume
-        # dispatch without a restart. None means "no check configured",
-        # i.e. every existing caller that doesn't pass auth_check keeps
-        # today's zero-gate behavior exactly.
+        # Re-probed every tick (see config.assert_subscription_mode), not just
+        # at startup, so an added credential resumes dispatch without a
+        # restart. None = no check configured = today's zero-gate behavior.
         self._auth_check = auth_check
-        # The last auth-failure message this process already emitted an
-        # advisory for, so a stuck-in-setup-mode server logs ONE line, not
-        # one per tick — cleared the moment dispatch resumes.
+        # Last auth-failure message already advisory-logged, so a stuck
+        # server logs ONE line per reason, not one per tick.
         self._auth_advisory: str | None = None
         # Orchestrators whose `run_task` is being awaited right now, so a
         # shutdown can ask each one to checkpoint and requeue
@@ -2094,12 +2090,9 @@ class Scheduler:
             except Exception as exc:  # noqa: BLE001 — sweep must not kill the pool
                 log.warning("quota-park resume sweep failed: %s", exc)
 
-        # Setup mode: no credential on file at all (config.assert_subscription_
-        # mode is the gate). Checked every tick, right before dispatch, not
-        # once at startup — so a credential added to the .env after boot
-        # resumes dispatch on the next tick, no restart, and a server that
-        # boots INTO setup mode idles cleanly instead of crash-looping this
-        # coroutine forever.
+        # Checked every tick, right before dispatch (config.assert_subscription_
+        # mode is the gate) — idles instead of crash-looping when no credential
+        # is on file, and resumes on the next tick once one appears.
         if self._auth_check is not None:
             try:
                 self._auth_check()

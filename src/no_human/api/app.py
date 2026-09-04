@@ -580,16 +580,24 @@ SETUP_MODE_DETAIL = (
 def _require_credentials(request: Request) -> None:
     """Refuse a token-spending call while the server has no credential.
 
-    Re-probed per call (cheap: one env-file read) so adding the token lifts
-    the restriction without a restart. Left ungated: onboarding, Settings,
-    /api/version, /api/config, every read-only board endpoint.
+    Gated only for apps that opted in: `lifespan` always sets
+    `app.state.setup_mode` at boot, so the real server is always covered. A
+    test app that hand-builds `app.state` without touching that attribute
+    (e.g. tests/test_api.py's `client` fixture, which predates this feature)
+    is unchanged today — same as the bare `cfg is None` short-circuit this
+    replaces. Re-probed per call once opted in (cheap: one env-file read) so
+    adding the token lifts the restriction without a restart. Left ungated:
+    onboarding, Settings, /api/version, /api/config, every read-only route.
     """
-    cfg = getattr(request.app.state, "config", None)
+    state = request.app.state
+    if not hasattr(state, "setup_mode"):
+        return  # opted out (e.g. a bare test app): unchanged today
+    cfg = getattr(state, "config", None)
     if cfg is None:
-        return  # unconfigured test app: unchanged today
+        return
     from ..config import subscription_credential_missing
     if subscription_credential_missing(cfg.data) is None:
-        request.app.state.setup_mode = False
+        state.setup_mode = False
         return
     raise HTTPException(status_code=503, detail=SETUP_MODE_DETAIL)
 
@@ -4307,12 +4315,14 @@ async def show_config(request: Request) -> dict[str, Any]:
     ]
     scrubbed["coder_backend_effective"] = resolve_backend_name(cfg.data)
     scrubbed["coder_backend_default"] = DEFAULT_CONFIG["worker"]["backend"]
-    # Live, not cached off app.state: a credential added to the .env since
-    # the last request must lift the board's setup banner on the very next
-    # poll, with no restart — same probe `_require_credentials` re-checks
-    # per dispatch call.
-    from ..config import subscription_credential_missing
-    scrubbed["setup_mode"] = subscription_credential_missing(cfg.data) is not None
+    # Live, not cached off app.state, so an added credential lifts the
+    # banner on the next poll (see `_require_credentials`). Only reported
+    # for apps that opted in the same way that function gates on.
+    if hasattr(request.app.state, "setup_mode"):
+        from ..config import subscription_credential_missing
+        scrubbed["setup_mode"] = subscription_credential_missing(cfg.data) is not None
+    else:
+        scrubbed["setup_mode"] = False
     return scrubbed
 
 
