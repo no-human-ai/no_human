@@ -64,7 +64,8 @@ def run(tmp_path):
             (stub_dir / ("ledger.badref" if ledger_fail == "badref" else "ledger.fail")).write_text("")
         e = {**os.environ, "PATH": f"{gh.parent}:{os.environ['PATH']}", "STUB_DIR": str(stub_dir),
              "GITHUB_REPOSITORY": "acme/thing", "PR_NUMBER": "7", "MERGE_SHA": merge_sha,
-             "HEAD_SHA": head_sha, "MAINTAINER": "eyalgolan", "CLA_NUDGE_POLL_SECONDS": "0",
+             "HEAD_SHA": head_sha, "MAINTAINER": "eyalgolan", "PR_AUTHOR": "eyalgolan",
+             "CLA_NUDGE_POLL_SECONDS": "0",
              **(env or {})}
         if dry:
             e["CLA_NUDGE_DRY_RUN"] = "1"
@@ -110,6 +111,41 @@ def test_maintainer_and_bot_only_posts_nothing_and_says_nothing_false(run):
     assert res.returncode == 0, res.stderr
     assert not (d / "posted.md").exists() and not (d / "patched.md").exists()
     assert "nothing missing" in res.stdout
+
+
+def test_agent_author_on_the_agents_own_pr_is_exempt(run):
+    # no-human is the repo's own agent account: on a PR the agent (or the
+    # maintainer) opened, its commits are first-party and nothing is posted.
+    res, d = run(authors=["no-human"], ledger_at={"m1": ["README.md"]},
+                 env={"PR_AUTHOR": "eyalgolan"})
+    assert res.returncode == 0, res.stderr
+    assert not (d / "posted.md").exists() and not (d / "patched.md").exists()
+    assert "nothing missing" in res.stdout
+
+
+def test_forged_agent_author_on_a_strangers_pr_blocks_the_resolved_text(run):
+    # A stranger's PR carrying a commit authored as no-human: forged author
+    # email. The nudge must NOT post the green "has what it needs" text —
+    # that is the gate-red/comment-green split the review caught — and must
+    # never suggest contributors/no-human.md.
+    res, d = run(authors=["no-human"], ledger_at={"m1": ["README.md"]},
+                 env={"PR_AUTHOR": "somestranger"})
+    assert res.returncode == 0, res.stderr
+    body = (d / "posted.md").read_text()
+    assert "has what it needs" not in body
+    assert "forged author email" in body
+    assert "contributors/no-human.md" not in body
+
+
+def test_forged_agent_author_never_patches_an_earlier_comment_green(run):
+    # With an existing nudge comment, the same forged-agent PR must PATCH it
+    # to the red explanation, not to the resolved text.
+    res, d = run(authors=["no-human"], ledger_at={"m1": ["README.md"]},
+                 existing="123", env={"PR_AUTHOR": "somestranger"})
+    assert res.returncode == 0, res.stderr
+    body = (d / "patched.md").read_text()
+    assert "has what it needs" not in body
+    assert "forged author email" in body
 
 
 def test_returning_contributor_whose_file_is_on_main_is_not_nudged(run):

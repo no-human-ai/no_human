@@ -28,6 +28,7 @@ import { ledgerSummary } from "./nightLedger.js";
 import { fmtCost } from "./cost.js";
 import { deriveSpendDisplay, perShippedCost } from "./ledgerSpend.js";
 import { tasksReducer } from "./tasksReducer.js";
+import useIsPhone from "./useIsPhone.js";
 import { createReconnector } from "./wsReconnect.js";
 import { connectionBanner } from "./connectionBanner.js";
 import { drainChip, formatPausedUntil } from "./drainChip.js";
@@ -343,6 +344,16 @@ function Spinner() {
   return <span className="grill-spinner" />;
 }
 
+// Strips the SSE envelope (`kind: "eval_verdict"`, `source: "grill"`) off an
+// eval_verdict frame down to the `EvalResult.as_dict()` shape
+// CreateTaskRequest.eval_result expects — null when no grill round produced
+// a verdict, so createTask's payload omits the key exactly as before.
+function _evalResultField(evalData) {
+  if (!evalData) return null;
+  const { kind: _kind, source: _source, ...verdictFields } = evalData;
+  return verdictFields;
+}
+
 function NewTaskModal({
   onClose, onCreated, initial = null,
   notice = null, queueLeft = 0, onStopQueue = null,
@@ -368,6 +379,12 @@ function NewTaskModal({
   const [grillResult, setGrillResult] = useState(null);
   const [grillEvents, setGrillEvents] = useState([]);
   const [evalVerdict, setEvalVerdict] = useState(null);
+  // Mirrors evalVerdict for _startGrillSSE's onResult callback, which closes
+  // over the render that created it (a stale one, since the eval_verdict SSE
+  // frame — which triggers setEvalVerdict — arrives and re-renders BEFORE the
+  // grill_result frame that consumes it here). A ref reads its CURRENT value,
+  // not the one from whichever render captured this closure.
+  const evalVerdictRef = useRef(null);
   const grillStreamRef = useRef(null);
   // Escape closes the dialog — same escape route the overlay-click already gives,
   // but for keyboard users. Suppressed while a submit is in flight so Escape can't
@@ -429,6 +446,13 @@ function NewTaskModal({
         kind: fields.kind,
         priority: fields.priority,
         acceptance_criteria: grillResult?.acceptance_criteria || [],
+        // The grill's intake-eval verdict, carried on `grillResult` (stripped
+        // of the SSE envelope's `kind`/`source` down to the
+        // `EvalResult.as_dict()` shape CreateTaskRequest.eval_result
+        // documents) by `_startGrillSSE`'s onResult handler below. Undefined
+        // for a create with no grill round, same as every other optional
+        // field here.
+        eval_result: grillResult?.eval_result,
         // Task 1.6: the hidden marker TaskComposer sets when the task came
         // from a picked Jira ticket — "board" for every typed task, unchanged.
         source: fields.source,
@@ -486,19 +510,25 @@ function NewTaskModal({
       (evt) => setGrillEvents((prev) => [...prev.slice(-30), evt]),
       (result) => {
         setBusy(false);
-        if (result.type === "done") { setGrillResult(result); setGrillQuestion(null); }
-        else { setGrillQuestion(result); }
+        if (result.type === "done") {
+          setGrillResult({ ...result, eval_result: _evalResultField(evalVerdictRef.current) });
+          setGrillQuestion(null);
+        } else { setGrillQuestion(result); }
       },
       (err) => {
-        // SSE failed — fall back to sync POST
+        // SSE failed — fall back to sync POST. No eval_verdict frame exists on
+        // this path (grillStep is the non-streaming endpoint), so eval_result
+        // stays whatever evalVerdictRef already holds from an earlier round.
         grillStep(params)
           .then((step) => {
-            if (step.type === "done") { setGrillResult(step); } else { setGrillQuestion(step); }
+            if (step.type === "done") {
+              setGrillResult({ ...step, eval_result: _evalResultField(evalVerdictRef.current) });
+            } else { setGrillQuestion(step); }
           })
           .catch((e) => { setError(e.message); setGrillMode(false); })
           .finally(() => setBusy(false));
       },
-      (evalData) => setEvalVerdict(evalData),
+      (evalData) => { evalVerdictRef.current = evalData; setEvalVerdict(evalData); },
     );
   }
 
@@ -507,6 +537,7 @@ function NewTaskModal({
     setFields(spec);
     setBusy(true); setError(null); setGrillMode(true);
     setGrillQA([]); setGrillQuestion(null); setGrillResult(null); setEvalVerdict(null);
+    evalVerdictRef.current = null;
     _startGrillSSE(_grillParams([], spec));
   }
 
@@ -845,6 +876,9 @@ export default function App() {
   //     strictly weaker condition than the badge's.
   const [aiConfigDone, setAiConfigDone] = useState(() => isAiConfigDone());
   const [popupDismissed, setPopupDismissed] = useState(() => isPopupDismissed());
+  // Phone width renders the nudge as a flow child of .nh-main instead of the
+  // sidebar foot — see useIsPhone.js.
+  const isPhone = useIsPhone();
   const openSettings = (tab = null) => {
     if (tab !== null) setSettingsTab(tab);
     setSettingsOpen(true);
@@ -1193,6 +1227,41 @@ export default function App() {
   // "Working (N)" figure agrees with the board instead of its own count.
   const sidebarCounts = deriveCounts(tasks);
   const banner = connectionBanner(wsPhase);
+  // One-time nudge from the "!" — shown after onboarding until Settings
+  // opens on ANY pane or the popup is dismissed (`popupDismissed`, a
+  // strictly weaker condition than the badge's own `aiConfigDone` above —
+  // the badge needs the Second-brain pane specifically; this popup does
+  // not). Not while onboarding is still checking (null) or in progress
+  // (false). Built once here so exactly one instance ever renders — desktop
+  // hosts it as a flow sibling in .nh-sidebar-foot (so it can never
+  // absolutely-overlap the Finish-setup row below it); phone hosts it inside
+  // .nh-main instead, since the sidebar foot sits outside the mobile nav's
+  // viewport there (see useIsPhone.js).
+  const showAiNudge = !popupDismissed && onboarded === true && !settingsOpen;
+  const aiConfigNudge = showAiNudge ? (
+    <div
+      className={`nh-aiconfig-nudge${isPhone ? " nh-aiconfig-nudge-mobile" : ""}`}
+      role="dialog"
+      aria-label="Complete AI configuration"
+    >
+      <button
+        type="button"
+        className="nh-aiconfig-nudge-x"
+        aria-label="Dismiss"
+        onClick={dismissAiConfig}
+      >×</button>
+      <div className="nh-aiconfig-nudge-title">Complete AI configuration</div>
+      <div className="nh-aiconfig-nudge-body">
+        Review your rules, pick the model for each role, and seed your
+        second brain — all in Settings.
+      </div>
+      <button
+        type="button"
+        className="btn btn-approve nh-aiconfig-nudge-cta"
+        onClick={() => openSettings("learnings")}
+      >Open Settings</button>
+    </div>
+  ) : null;
   return (
     <div className="nh-shell nh-shell-cc">
       {banner && (
@@ -1358,35 +1427,12 @@ export default function App() {
             onClick={() => setPage("about")}
             title="What no_human is, docs, and contact"
           />
-          {/* One-time nudge from the "!" — shown after onboarding until
-              Settings opens on ANY pane or the popup is dismissed
-              (`popupDismissed`, a strictly weaker condition than the
-              badge's own `aiConfigDone` below — the badge needs the
-              Second-brain pane specifically; this popup does not). Not
-              while onboarding is still checking (null) or in progress
-              (false). Rendered as a flow sibling here (not inside
-              .nh-settings-navwrap) so it can never absolutely-overlap the
-              Finish-setup row below it. */}
-          {!popupDismissed && onboarded === true && !settingsOpen && (
-            <div className="nh-aiconfig-nudge" role="dialog" aria-label="Complete AI configuration">
-              <button
-                type="button"
-                className="nh-aiconfig-nudge-x"
-                aria-label="Dismiss"
-                onClick={dismissAiConfig}
-              >×</button>
-              <div className="nh-aiconfig-nudge-title">Complete AI configuration</div>
-              <div className="nh-aiconfig-nudge-body">
-                Review your rules, pick the model for each role, and seed your
-                second brain — all in Settings.
-              </div>
-              <button
-                type="button"
-                className="btn btn-approve nh-aiconfig-nudge-cta"
-                onClick={() => openSettings("learnings")}
-              >Open Settings</button>
-            </div>
-          )}
+          {/* One-time nudge from the "!" (built above, near `banner`) — a flow
+              sibling here (not inside .nh-settings-navwrap) so it can never
+              absolutely-overlap the Finish-setup row below it. Desktop only:
+              at phone width it renders inside .nh-main instead, since the
+              sidebar foot sits outside the mobile nav's viewport there. */}
+          {!isPhone && aiConfigNudge}
           {/* The minimal path's leftover steps, as a compact affordance directly
               above Settings — not the old board-body card (real-user feedback:
               it "took half the screen" and every row deep-linked to the wrong
@@ -1434,6 +1480,11 @@ export default function App() {
             : page === "about" ? "About no_human"
             : "Settings"}
         </h1>
+        {/* Phone-only host for the AI-config nudge (built above, near
+            `banner`) — the sidebar foot it uses on desktop sits outside the
+            mobile nav's viewport, so at phone width it renders in flow here
+            instead, above the board on every page. */}
+        {isPhone && aiConfigNudge}
         {page === "board" && (
           <div className="nh-main-bar">
             <OverviewStrip tasks={tasks} />

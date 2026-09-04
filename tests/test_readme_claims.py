@@ -1962,7 +1962,7 @@ CITATION_TABLE = (
      "cfg.control_plane_url"),
     ("security.md", "telemetry.py:_destination", "telemetry.py",
      "posthog_host"),
-    ("security.md", "intake/mcp_bridge.py:29", "intake/mcp_bridge.py",
+    ("security.md", "intake/mcp_bridge.py:40", "intake/mcp_bridge.py",
      "127.0.0.1:8420"),
     ("security.md", "cli/commands.py:print_no_task_matching:78", "cli/commands.py",
      "no task matching"),
@@ -2477,7 +2477,7 @@ def test_every_line_citation_currently_resolves_exactly():
 
 def test_known_issues_traceback_cites_the_functions_it_names(known_issues_doc):
     """The plain-text traceback in KNOWN_ISSUES.md names `db.py:2296` inside
-    `update_attempt` and `orchestrator.py:4625` inside `_run_attempt` — not
+    `update_attempt` and `orchestrator.py:4643` inside `_run_attempt` — not
     backtick-wrapped, so the generic citation table above cannot see them.
     Checked directly against the AST so a refactor that moves either call is
     caught rather than silently believed.
@@ -2536,13 +2536,20 @@ def test_known_issues_traceback_cites_the_functions_it_names(known_issues_doc):
     from 2235 to 2296; re-verified against the code, not carried forward
     blind. `_run_attempt`'s call site in orchestrator.py is untouched by
     this change and stays at 4625.
+
+    Re-anchored again 2026-09-04: the dispatch-time intake-eval hoisted
+    path (the `elif ctx.get("eval_result")` branch that acts on a
+    grill/wizard-stored verdict, plus its cost/residual-gap comments)
+    added 18 lines above `_run_attempt`'s `update_attempt` call inside
+    `_drive`, earlier in orchestrator.py, moving the citation from 4625
+    to 4643; re-verified against the code, not carried forward blind.
     """
     assert "db.py:2296" in known_issues_doc, (
         "the traceback no longer cites db.py:2296 — this test is pointed at "
         "stale text; re-derive from the current traceback"
     )
-    assert "orchestrator.py:4625" in known_issues_doc, (
-        "the traceback no longer cites orchestrator.py:4625 — this test is "
+    assert "orchestrator.py:4643" in known_issues_doc, (
+        "the traceback no longer cites orchestrator.py:4643 — this test is "
         "pointed at stale text; re-derive from the current traceback"
     )
 
@@ -2561,13 +2568,13 @@ def test_known_issues_traceback_cites_the_functions_it_names(known_issues_doc):
     orch_src = ORCHESTRATOR_PY.read_text(encoding="utf-8")
     orch_body = _function_body_source(orch_src, "_run_attempt")
     orch_lines = orch_src.splitlines()
-    assert 1 <= 4599 <= len(orch_lines), "orchestrator.py is now shorter than line 4599"
-    assert "self.store.update_attempt(" in orch_lines[4624], (
-        f"orchestrator.py:4625 is now {orch_lines[4624]!r}, not the "
+    assert 1 <= 4643 <= len(orch_lines), "orchestrator.py is now shorter than line 4643"
+    assert "self.store.update_attempt(" in orch_lines[4642], (
+        f"orchestrator.py:4643 is now {orch_lines[4642]!r}, not the "
         f"update_attempt call the traceback names"
     )
     assert "self.store.update_attempt(" in orch_body, (
-        "line 4599 is no longer inside _run_attempt's body"
+        "line 4643 is no longer inside _run_attempt's body"
     )
 
 

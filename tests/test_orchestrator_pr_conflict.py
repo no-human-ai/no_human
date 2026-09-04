@@ -49,6 +49,7 @@ from no_human.vcs import approve_merge
 from no_human.vcs import derived_conflict as dc
 from no_human.vcs import manifest_repair
 from no_human.vcs.approve_merge import reconcile_commit_count_drift
+from no_human.vcs.budget_conflict import run_budget_test
 from tests.test_vcs import _HOOK_CHECK_SRC
 
 
@@ -409,6 +410,91 @@ def _push_branch(work: Path, wt: Path, branch: str) -> None:
     # also make the local branch ref (created by `worktree add -b`) match,
     # and set its upstream so future @{upstream} lookups on it work too.
     _git(work, "branch", "-q", "--set-upstream-to", f"origin/{branch}", branch)
+
+
+_BUDGET_STUB = '''\
+"""Throwaway structural-budget-ratchet stub for the mechanical-conflict
+fixture repo -- NOT the real tests/test_structural_budget.py (that file's
+OUT-OF-SCOPE thresholds are untouched by this task). Mirrors just enough of
+the real file's shape -- a FROZEN_FUNCTION_LINES allow-list dict plus a
+scan_tree(root) matching the real one's call/return contract -- for
+src/no_human/vcs/budget_conflict.py's `load_scanner`/`measure`/
+`run_budget_test` to operate on it. The threshold is set low enough that a
+couple of inserted lines in this fixture's own src/no_human/growing.py is
+enough to grow the one frozen entry.
+"""
+from __future__ import annotations
+
+import ast
+from pathlib import Path
+
+MAX_FUNCTION_LINES = 2
+
+FROZEN_FUNCTION_LINES = {
+    "growing.py:grow": 3,
+}
+FROZEN_FUNCTION_CC = {}
+FROZEN_FILE_LINES = {}
+
+
+def scan_tree(root):
+    function_lines = {}
+    function_cc = {}
+    file_lines = {}
+    files = sorted(Path(root).rglob("*.py"))
+    total_functions = 0
+    for path in files:
+        rel = path.relative_to(root).as_posix()
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                total_functions += 1
+                span = node.end_lineno - node.lineno + 1
+                if span > MAX_FUNCTION_LINES:
+                    function_lines[f"{rel}:{node.name}"] = span
+    return function_lines, function_cc, file_lines, len(files), total_functions
+
+
+def test_frozen_entries_match_the_measured_tree():
+    src = Path(__file__).resolve().parent.parent / "src" / "no_human"
+    function_lines, _cc, _fl, _files, _fns = scan_tree(src)
+    for key, frozen_value in FROZEN_FUNCTION_LINES.items():
+        measured = function_lines.get(key)
+        assert measured == frozen_value, (
+            f"{key}: frozen at {frozen_value}, tree measures {measured}"
+        )
+    for key, measured in function_lines.items():
+        assert key in FROZEN_FUNCTION_LINES, f"new offender not frozen: {key}={measured}"
+'''
+
+
+def _repo_with_budget_stub(tmp_path: Path) -> Path:
+    """`_repo()` plus a `src/no_human/` subtree (one function, `grow`,
+    already over the stub's own threshold) and a throwaway
+    `tests/test_structural_budget.py` (`_BUDGET_STUB`) so tests can drive the
+    mechanical structural-budget conflict resolution end to end.
+    `EXPORT_CLASSIFICATION.txt`'s `drop tests/**` count is bumped 1 -> 2 in
+    the same commit (a second tracked file now matches it) -- `_repo()`
+    itself, and every OTHER test that calls it directly, is untouched.
+    """
+    work = _repo(tmp_path)
+    no_human = work / "src" / "no_human"
+    no_human.mkdir()
+    (no_human / "growing.py").write_text(
+        "def grow():\n"
+        "    a = 1\n"
+        "    return a\n",
+        encoding="utf-8",
+    )
+    (work / "tests" / "test_structural_budget.py").write_text(_BUDGET_STUB, encoding="utf-8")
+    _bump_drop_count(work, "tests/**", 2)
+    _git(work, "add", "-A")
+    _git(work, "commit", "-qm", "add src/no_human/growing.py + budget stub")
+    _approve(work, ["src/no_human/growing.py"])
+    _git(work, "add", "RELEASE_MANIFEST.txt")
+    _git(work, "commit", "-qm", "pin growing.py")
+    _git(work, "push", "-q", "origin", "HEAD:refs/heads/main")
+    return work
 
 
 @pytest.fixture
@@ -1159,6 +1245,295 @@ async def test_a_count_only_classification_conflict_is_resolved_without_a_coder_
     assert "ship   4  src/base*.py" in (wt_check / "EXPORT_CLASSIFICATION.txt").read_text(encoding="utf-8")
     v = _verify(wt_check)
     assert v.returncode == 0, v.stdout + v.stderr
+
+
+# --------------------------------------------------------------------------- #
+# Every concurrent PR conflicts on the frozen structural-budget bumps too --  #
+# a genuine end-to-end conflict + merge + subprocess-pytest proof, not just   #
+# the isolated conflict-SHAPE unit tests in test_budget_conflict_numeric_     #
+# only.py.                                                                    #
+# --------------------------------------------------------------------------- #
+
+
+async def test_a_manifest_plus_budget_conflict_is_resolved_without_a_coder_session(
+    store, tmp_path, monkeypatch,
+):
+    """Two branches each independently grow src/no_human/growing.py's
+    `grow()` function -- non-overlapping edits, so growing.py itself
+    auto-merges cleanly -- and each re-pins it (RELEASE_MANIFEST.txt, a
+    derived artefact, conflicts on the two different sha256 pin lines) and
+    each bumps the SAME FROZEN_FUNCTION_LINES entry to its OWN branch's
+    (different, and in BOTH cases wrong) declared value (tests/
+    test_structural_budget.py conflicts on the entry line). Neither side's
+    declared number is right -- only the merged tree's own measurement is --
+    proved here for real: a genuine merge plus a genuine `pytest` subprocess
+    run on the pushed tree, not just the isolated shape unit test already
+    covered by test_budget_conflict_numeric_only.py."""
+    _use_stub_export_guard(monkeypatch)
+    work = _repo_with_budget_stub(tmp_path)
+
+    wt_f = tmp_path / "wt_feature"
+    _worktree(work, wt_f, "feature")
+    (wt_f / "src" / "no_human" / "growing.py").write_text(
+        "def grow():\n"
+        "    b = 0\n"
+        "    a = 1\n"
+        "    return a\n",
+        encoding="utf-8",
+    )
+    budget_path_f = wt_f / "tests" / "test_structural_budget.py"
+    budget_path_f.write_text(
+        budget_path_f.read_text(encoding="utf-8").replace(
+            '"growing.py:grow": 3,', '"growing.py:grow": 4,'
+        ),
+        encoding="utf-8",
+    )
+    _git(wt_f, "add", "-A")
+    _git(wt_f, "commit", "-qm", "feature grows grow() at the top")
+    _approve(wt_f, ["src/no_human/growing.py"])
+    _git(wt_f, "add", "RELEASE_MANIFEST.txt")
+    _git(wt_f, "commit", "-qm", "pin growing.py (feature)")
+    _push_branch(work, wt_f, "feature")
+
+    (work / "src" / "no_human" / "growing.py").write_text(
+        "def grow():\n"
+        "    a = 1\n"
+        "    c = 2\n"
+        "    d = 3\n"
+        "    return a\n",
+        encoding="utf-8",
+    )
+    budget_path_m = work / "tests" / "test_structural_budget.py"
+    budget_path_m.write_text(
+        budget_path_m.read_text(encoding="utf-8").replace(
+            '"growing.py:grow": 3,', '"growing.py:grow": 5,'
+        ),
+        encoding="utf-8",
+    )
+    _git(work, "add", "-A")
+    _git(work, "commit", "-qm", "main grows grow() at the bottom")
+    _approve(work, ["src/no_human/growing.py"])
+    _git(work, "add", "RELEASE_MANIFEST.txt")
+    _git(work, "commit", "-qm", "pin growing.py (main)")
+    _git(work, "push", "-q", "origin", "HEAD:refs/heads/main")
+
+    # sanity: growing.py itself auto-merges (non-overlapping insertions);
+    # the conflict is confined to the manifest pin + the frozen entry line.
+    paths = await dc.conflicting_paths(str(work), "main", "feature")
+    assert paths == {"RELEASE_MANIFEST.txt", dc.BUDGET_TEST_PATH}
+
+    events = []
+    t = await _approval_task(store, str(work))
+    w = _watcher(store, events=events)
+    result = await w._check_pr_conflict(t, "https://code.example.com/dev/x/pull/26", "DIRTY", branch="feature")
+
+    assert result == "resolved_pr_conflict"
+    kinds = [k for k, _ in events]
+    assert "pr_conflict_resolved" in kinds and "resumed" not in kinds
+    text = next(txt for k, txt in events if k == "pr_conflict_resolved")
+    assert "RELEASE_MANIFEST.txt" in text and dc.BUDGET_TEST_PATH in text
+    assert "structural budget re-anchored" in text, text
+
+    stored = await store.get_task(t.id)
+    assert stored.status == TaskStatus.AWAITING_APPROVAL  # unchanged by mechanical resolution
+
+    wt_check = tmp_path / "wt_check"
+    _worktree(work, wt_check, "check", "feature")
+    grown = (wt_check / "src" / "no_human" / "growing.py").read_text(encoding="utf-8")
+    assert grown == (
+        "def grow():\n"
+        "    b = 0\n"
+        "    a = 1\n"
+        "    c = 2\n"
+        "    d = 3\n"
+        "    return a\n"
+    )
+    frozen_text = (wt_check / "tests" / "test_structural_budget.py").read_text(encoding="utf-8")
+    # the TRUE merged-tree measurement (6 lines) -- neither branch's own
+    # declared, wrong, number (4 or 5).
+    assert '"growing.py:grow": 6,' in frozen_text
+    v = _verify(wt_check)
+    assert v.returncode == 0, v.stdout + v.stderr
+
+    # literal proof: pytest tests/test_structural_budget.py passes on the
+    # pushed (merged) tree -- the same `run_budget_test` helper the resolver
+    # itself runs before pushing, never a re-implemented pytest invocation.
+    ok, detail = run_budget_test(str(wt_check))
+    assert ok, detail
+
+
+async def test_a_budget_conflict_mixed_with_a_source_file_opens_a_coder_round(
+    store, tmp_path, monkeypatch,
+):
+    """Not every conflicting path is mechanically resolvable: src/base.py is
+    a genuine hand-decision conflict, so this must still open the existing
+    bounded coder round -- unchanged -- even though RELEASE_MANIFEST.txt and
+    tests/test_structural_budget.py are ALSO among the conflicting paths."""
+    _use_stub_export_guard(monkeypatch)
+    work = _repo_with_budget_stub(tmp_path)
+
+    wt_f = tmp_path / "wt_feature"
+    _worktree(work, wt_f, "feature")
+    (wt_f / "src" / "base.py").write_text("base\nfeature change\n", encoding="utf-8")
+    (wt_f / "src" / "no_human" / "growing.py").write_text(
+        "def grow():\n"
+        "    b = 0\n"
+        "    a = 1\n"
+        "    return a\n",
+        encoding="utf-8",
+    )
+    budget_path_f = wt_f / "tests" / "test_structural_budget.py"
+    budget_path_f.write_text(
+        budget_path_f.read_text(encoding="utf-8").replace(
+            '"growing.py:grow": 3,', '"growing.py:grow": 4,'
+        ),
+        encoding="utf-8",
+    )
+    _git(wt_f, "add", "-A")
+    _git(wt_f, "commit", "-qm", "feature edits base.py and grows grow()")
+    _approve(wt_f, ["src/no_human/growing.py"])
+    _git(wt_f, "add", "RELEASE_MANIFEST.txt")
+    _git(wt_f, "commit", "-qm", "pin growing.py (feature)")
+    _push_branch(work, wt_f, "feature")
+
+    (work / "src" / "base.py").write_text("base\nmain change\n", encoding="utf-8")
+    (work / "src" / "no_human" / "growing.py").write_text(
+        "def grow():\n"
+        "    a = 1\n"
+        "    c = 2\n"
+        "    d = 3\n"
+        "    return a\n",
+        encoding="utf-8",
+    )
+    budget_path_m = work / "tests" / "test_structural_budget.py"
+    budget_path_m.write_text(
+        budget_path_m.read_text(encoding="utf-8").replace(
+            '"growing.py:grow": 3,', '"growing.py:grow": 5,'
+        ),
+        encoding="utf-8",
+    )
+    _git(work, "add", "-A")
+    _git(work, "commit", "-qm", "main edits base.py and grows grow()")
+    _approve(work, ["src/no_human/growing.py"])
+    _git(work, "add", "RELEASE_MANIFEST.txt")
+    _git(work, "commit", "-qm", "pin growing.py (main)")
+    _git(work, "push", "-q", "origin", "HEAD:refs/heads/main")
+
+    paths = await dc.conflicting_paths(str(work), "main", "feature")
+    assert paths == {"src/base.py", "RELEASE_MANIFEST.txt", dc.BUDGET_TEST_PATH}
+
+    events = []
+    resolver_calls = []
+    t = await _approval_task(store, str(work))
+    w = _watcher(
+        store, events=events,
+        derived_resolver=lambda *a, **k: resolver_calls.append((a, k)),
+    )
+    result = await w._check_pr_conflict(t, "https://code.example.com/dev/x/pull/26", "DIRTY", branch="feature")
+
+    assert result == "resumed"
+    assert resolver_calls == []
+    kinds = [k for k, _ in events]
+    assert "pr_conflict" in kinds and "pr_conflict_resolved" not in kinds
+    text = next(txt for k, txt in events if k == "pr_conflict")
+    assert "src/base.py" in text and "RELEASE_MANIFEST.txt" in text and dc.BUDGET_TEST_PATH in text
+
+
+async def test_a_classification_count_and_budget_conflict_resolve_together(
+    store, tmp_path, monkeypatch,
+):
+    """A three-way mechanical conflict: EXPORT_CLASSIFICATION.txt (count-only
+    arithmetic), RELEASE_MANIFEST.txt (derived, regenerated wholesale) and
+    tests/test_structural_budget.py (numeric-only FROZEN_* re-anchoring) all
+    conflict on the SAME PR from independent edits on two branches -- and all
+    three resolve together in one mechanical pass, one pr_conflict_resolved
+    event, no coder round."""
+    _use_stub_export_guard(monkeypatch)
+    work = _repo_with_budget_stub(tmp_path)
+
+    wt_a = tmp_path / "wt_branch_a"
+    _worktree(work, wt_a, "branch-a")
+    (wt_a / "src" / "base_two.py").write_text("base two\n", encoding="utf-8")
+    (wt_a / "src" / "no_human" / "growing.py").write_text(
+        "def grow():\n"
+        "    b = 0\n"
+        "    a = 1\n"
+        "    return a\n",
+        encoding="utf-8",
+    )
+    budget_path_a = wt_a / "tests" / "test_structural_budget.py"
+    budget_path_a.write_text(
+        budget_path_a.read_text(encoding="utf-8").replace(
+            '"growing.py:grow": 3,', '"growing.py:grow": 4,'
+        ),
+        encoding="utf-8",
+    )
+    _git(wt_a, "add", "src/base_two.py")
+    _bump_count(wt_a, "src/base*.py", 2)
+    _git(wt_a, "add", "-A")
+    _git(wt_a, "commit", "-qm", "branch-a: add base_two.py, bump counted rule 1 -> 2, grow grow()")
+    _approve(wt_a, ["src/base_two.py", "src/no_human/growing.py"])
+    _git(wt_a, "add", "RELEASE_MANIFEST.txt")
+    _git(wt_a, "commit", "-qm", "pin base_two.py + growing.py (branch-a)")
+    _push_branch(work, wt_a, "branch-a")
+
+    (work / "src" / "base_three.py").write_text("base three\n", encoding="utf-8")
+    (work / "src" / "base_four.py").write_text("base four\n", encoding="utf-8")
+    (work / "src" / "no_human" / "growing.py").write_text(
+        "def grow():\n"
+        "    a = 1\n"
+        "    c = 2\n"
+        "    d = 3\n"
+        "    return a\n",
+        encoding="utf-8",
+    )
+    budget_path_m = work / "tests" / "test_structural_budget.py"
+    budget_path_m.write_text(
+        budget_path_m.read_text(encoding="utf-8").replace(
+            '"growing.py:grow": 3,', '"growing.py:grow": 5,'
+        ),
+        encoding="utf-8",
+    )
+    _git(work, "add", "src/base_three.py", "src/base_four.py")
+    _bump_count(work, "src/base*.py", 3)
+    _git(work, "add", "-A")
+    _git(work, "commit", "-qm", "main: add base_three.py + base_four.py, bump counted rule 1 -> 3, grow grow()")
+    _approve(work, ["src/base_three.py", "src/base_four.py", "src/no_human/growing.py"])
+    _git(work, "add", "RELEASE_MANIFEST.txt")
+    _git(work, "commit", "-qm", "pin base_three.py + base_four.py + growing.py (main)")
+    _git(work, "push", "-q", "origin", "HEAD:refs/heads/main")
+
+    paths = await dc.conflicting_paths(str(work), "main", "branch-a")
+    assert paths == {dc.CLASSIFICATION_NAME, "RELEASE_MANIFEST.txt", dc.BUDGET_TEST_PATH}
+    base_tip = await dc.resolve_base_tip(str(work), "main")
+    eligible = await dc.mechanically_resolvable(str(work), paths, base_tip, "branch-a")
+    assert eligible == paths
+
+    events = []
+    t = await _approval_task(store, str(work), branch="branch-a")
+    w = _watcher(store, events=events)
+    result = await w._check_pr_conflict(t, "https://code.example.com/dev/x/pull/26", "DIRTY", branch="branch-a")
+
+    assert result == "resolved_pr_conflict"
+    kinds = [k for k, _ in events]
+    assert "pr_conflict_resolved" in kinds and "resumed" not in kinds
+    text = next(txt for k, txt in events if k == "pr_conflict_resolved")
+    assert "EXPORT_CLASSIFICATION.txt count reconciled" in text, text
+    assert "structural budget re-anchored" in text, text
+    assert "RELEASE_MANIFEST.txt" in text and dc.BUDGET_TEST_PATH in text
+
+    stored = await store.get_task(t.id)
+    assert stored.status == TaskStatus.AWAITING_APPROVAL
+
+    wt_check = tmp_path / "wt_check"
+    _worktree(work, wt_check, "check", "branch-a")
+    assert "ship   4  src/base*.py" in (wt_check / "EXPORT_CLASSIFICATION.txt").read_text(encoding="utf-8")
+    frozen_text = (wt_check / "tests" / "test_structural_budget.py").read_text(encoding="utf-8")
+    assert '"growing.py:grow": 6,' in frozen_text
+    v = _verify(wt_check)
+    assert v.returncode == 0, v.stdout + v.stderr
+    ok, detail = run_budget_test(str(wt_check))
+    assert ok, detail
 
 
 async def test_a_count_conflict_that_also_flips_a_verb_opens_a_coder_round(store, tmp_path, monkeypatch):

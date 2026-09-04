@@ -3001,8 +3001,8 @@ def watch(task_id):
 def mcp_serve():
     """Run the MCP stdio bridge (task_add + task_status only, SCRUM-63).
 
-    Talks to the existing local HTTP API at 127.0.0.1:8420 — start `nh serve`
-    or `nh start` first. Refuses to start if that API is unreachable.
+    Talks to the local HTTP API at `server.host`:`server.port` (127.0.0.1:8420 by
+    default) — start `nh serve` or `nh start` first. Refuses to start if unreachable.
     """
     from ..intake.mcp_bridge import main as mcp_bridge_main
     mcp_bridge_main()

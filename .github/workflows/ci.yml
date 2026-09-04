@@ -88,6 +88,8 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           # The maintainer does not sign their own agreement.
           MAINTAINER: eyalgolan
+          # Who OPENED the PR — gates the agent-account exemption below.
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
         run: |
           set -euo pipefail
 
@@ -98,8 +100,27 @@ jobs:
             "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/commits" \
             --jq '.[].author.login // "UNLINKED-EMAIL"' | sort -u)
 
+          # The agent exemption is trusted only on PRs the agent (or the
+          # maintainer) opened: anyone can forge a commit's author email, so a
+          # fork PR by a stranger carrying "no-human"-authored commits must
+          # still hit the ledger, not ride the exemption.
+          agent_exempt=""
+          case "$PR_AUTHOR" in
+            no-human|"$MAINTAINER") agent_exempt=yes ;;
+          esac
+
           missing=""
           for author in $authors; do
+            if [ "$author" = "no-human" ]; then
+              # This repo's own agent account: on a PR the agent or maintainer
+              # opened, its commits are first-party work that lands identity-
+              # normalized to the maintainer — nothing to license. On anyone
+              # else's PR the author email was forged, and no ledger file may
+              # ever satisfy it (like UNLINKED-EMAIL below): a stranger cannot
+              # sign for our agent.
+              [ "$agent_exempt" = "yes" ] || missing="${missing} ${author}"
+              continue
+            fi
             case "$author" in
               # Bot accounts (dependabot[bot], github-actions[bot]) hold no
               # copyright, so there is nothing for them to license.
@@ -126,6 +147,12 @@ jobs:
             for author in $missing; do
               if [ "$author" = "UNLINKED-EMAIL" ]; then
                 echo "    (no file can be named for this one — see below)"
+                continue
+              fi
+              if [ "$author" = "no-human" ]; then
+                echo "    (no-human is this repo's own agent — commits carrying"
+                echo "     its author email on an external PR look forged; no"
+                echo "     ledger file can satisfy this. Re-commit as yourself.)"
                 continue
               fi
               handle=$(printf '%s' "$author" | tr '[:upper:]' '[:lower:]')

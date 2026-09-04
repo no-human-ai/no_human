@@ -631,6 +631,42 @@ def quota_signal(text: str) -> bool:
     return bool(_QUOTA_RE.search(t)) or any(s in t for s in _QUOTA_TERMS)
 
 
+# The wall shapes `quota_signal` deliberately cannot see: it is scoped to the
+# CLI's OWN billing prose, and a prose-less transport/outage failure (a raw
+# HTTP 429/5xx, or the SDK's own `overloaded_error`/`api_error` subtype) is a
+# different wall — infrastructure, not a subscription limit — that still must
+# park the task rather than escalate a defect nobody found. Kept beside
+# `quota_signal`/`_QUOTA_TERMS`, never merged into them, for the same reason
+# `_infra_sdk_failure` (orchestrator.py) is kept separate: blurring what each
+# classifier is proven against makes both harder to trust.
+#
+# Every term carries a space or is a full API error TYPE, same discipline as
+# `_QUOTA_TERMS` above — `final_text`/an exception's `str()` carries a
+# traceback, and a bare substring matches file paths.
+_API_WALL_TERMS = (
+    "overloaded_error", "api_error", "internal server error",
+    "service unavailable", "bad gateway", "gateway timeout",
+)
+_API_WALL_STATUS_RE = re.compile(r"\bhttp\s*(429|5\d\d)\b", re.I)
+
+
+def api_wall_reason(text: str) -> str | None:
+    """The reason string iff `text` names an API wall `quota_signal` cannot
+    see (a raw 429/5xx or an SDK overload/api_error subtype), else None.
+
+    Same shape as `quota_reason`: the first non-empty line, trimmed to 200
+    chars — `text` may carry a traceback, and the park detail is a
+    human-facing summary, not a log.
+    """
+    t = (text or "").lower()
+    if not (_API_WALL_STATUS_RE.search(t) or any(s in t for s in _API_WALL_TERMS)):
+        return None
+    for line in (text or "").splitlines():
+        if line.strip():
+            return line.strip()[:200]
+    return "API unavailable"
+
+
 class QuotaExhausted(Exception):
     """Raised when a subscription usage limit is hit mid-task.
 

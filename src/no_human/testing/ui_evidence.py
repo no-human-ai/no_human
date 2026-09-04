@@ -465,6 +465,10 @@ _READY_POLL_S = 0.5
 _READY_TIMEOUT_MIN, _READY_TIMEOUT_MAX = 1, 300
 _KILL_GRACE_S = 5.0
 _DEV_SERVER_LOG = "dev-server.log"
+_BUILD_LOG = "ui-build.log"
+_BUILD_TIMEOUT_DEFAULT_S = 300
+_BUILD_TIMEOUT_MIN, _BUILD_TIMEOUT_MAX = 1, 3600
+_BUILD_TAIL_LINES = 10
 
 
 @dataclass  # NOT frozen — teardown stamps exit_code/detail onto the caller's object
@@ -475,15 +479,20 @@ class DevServerOutcome:
     `base_url` — never killed, replaced, or checkout-verified), ``booted``
     (the harness spawned `start_cmd` and it became reachable), ``unconfigured``
     (no `start_cmd`/`base_url` — the byte-identical-to-today path), or
-    ``boot-failed`` (spawn/host/timeout/early-exit failure — see `detail`).
+    ``boot-failed`` (spawn/host/timeout/early-exit/build failure — see
+    `detail`).
     `detail` is LOG-ONLY: never rendered into a PR body, only an advisory.
 
     `cause` is a fixed vocabulary and therefore safe to render (unlike
     `detail`): ``""`` (not a failure), ``"timeout"`` (spawned, never answered
-    before `ready_timeout_s`), or ``"failed-to-start"`` (never became a
+    before `ready_timeout_s`), ``"failed-to-start"`` (never became a
     polling server — non-loopback refusal, unparsable `start_cmd`, spawn
-    `OSError`, or early process exit). Only meaningful when `mode ==
-    "boot-failed"`.
+    `OSError`, or early process exit), ``"build-failed"`` (the optional
+    `build_cmd` exited nonzero, was unparsable, or raised an `OSError` —
+    `exit_code` is the BUILD's exit code here, `None` when there wasn't one
+    to report), or ``"build-timeout"`` (`build_cmd` did not finish within
+    `build_timeout_s`; `exit_code` is always `None`). Only meaningful when
+    `mode == "boot-failed"`.
     """
 
     mode: str
@@ -493,7 +502,80 @@ class DevServerOutcome:
     waited_s: float = 0.0
     exit_code: int | None = None
     detail: str = ""  # LOG-ONLY — never rendered into a PR body
-    cause: str = ""  # "" | "timeout" | "failed-to-start" — safe to render
+    cause: str = ""  # "" | "timeout" | "failed-to-start" | "build-failed" | "build-timeout"
+
+
+def _build_argvs(build_cmd: str) -> "list[list[str]] | None":
+    """`a && b` -> [argv(a), argv(b)]. None when unparsable/empty — no shell
+    is ever spawned, so `&&` is the ONLY operator honored; `;`, `|`, `>` and
+    friends stay literal argv tokens, exactly as `start_cmd` treats them."""
+    segments = build_cmd.split("&&")
+    argvs: list[list[str]] = []
+    for segment in segments:
+        segment = segment.strip()
+        if not segment:
+            return None
+        try:
+            argv = shlex.split(segment)
+        except ValueError:
+            return None
+        if not argv:
+            return None
+        argvs.append(argv)
+    return argvs or None
+
+
+def _run_build(repo_path, argvs, out_dir: Path, timeout_s: float, *,
+                run=subprocess.run) -> "tuple[str, int | None, str]":
+    """Run each `argvs` segment sequentially, `shell=False`, stopping at the
+    first failure. Never raises. Returns `(cause, exit_code, detail)`:
+    `cause` is `""` on success, else `"build-timeout"` or `"build-failed"` —
+    the caller's `DevServerOutcome.cause` vocabulary, decided HERE (not
+    inferred from a `None` exit code, which timeout/unparsable/OSError all
+    share). `detail` is a LOG-ONLY, newline-folded, size-capped tail of the
+    combined output — same convention `dev_server`'s own `detail` already
+    uses. `exit_code` is only ever the BUILD's own exit code (`None` unless
+    a segment actually ran to completion and exited nonzero)."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    log_path = out_dir / _BUILD_LOG
+    started = time.monotonic()
+    with open(log_path, "ab") as fh:
+        for argv in argvs:
+            remaining = timeout_s - (time.monotonic() - started)
+            if remaining <= 0:
+                return "build-timeout", None, _build_tail(log_path, "build timed out")
+            try:
+                proc = run(argv, cwd=str(repo_path), stdout=subprocess.PIPE,
+                           stderr=subprocess.STDOUT, timeout=remaining)
+            except subprocess.TimeoutExpired as exc:
+                if exc.output:
+                    fh.write(exc.output if isinstance(exc.output, bytes)
+                              else exc.output.encode("utf-8", "replace"))
+                    fh.flush()
+                return "build-timeout", None, _build_tail(log_path, "build timed out")
+            except OSError as exc:
+                fh.write(f"{type(exc).__name__}: {exc}\n".encode())
+                fh.flush()
+                return "build-failed", None, _build_tail(
+                    log_path, f"{type(exc).__name__}: {exc}")
+            fh.write(proc.stdout or b"")
+            fh.flush()
+            if proc.returncode != 0:
+                return "build-failed", proc.returncode, _build_tail(
+                    log_path, f"build exit {proc.returncode}")
+    return "", 0, ""
+
+
+def _build_tail(log_path: Path, prefix: str) -> str:
+    """Last `_BUILD_TAIL_LINES` lines of `log_path`, newline-folded and
+    capped — LOG-ONLY, mirrors `dev_server`'s own `detail` convention."""
+    try:
+        text = log_path.read_bytes()[-8192:].decode("utf-8", "replace")
+    except OSError:
+        text = ""
+    lines = text.splitlines()[-_BUILD_TAIL_LINES:]
+    detail = f"{prefix}: " + " ".join(line.strip() for line in lines)
+    return detail[:2048]
 
 
 def _kill_dev_server(process) -> None:
@@ -523,6 +605,7 @@ async def dev_server(
     spawn=subprocess.Popen, clock=time.monotonic,
     sleep=asyncio.sleep, reachable=_reachable,
     kill=_kill_dev_server, extra_env: dict | None = None,
+    build_run=subprocess.run,
 ):
     """Boot the repo's configured dev server if nothing already answers at
     `base_url`, poll for readiness, and tear it down (kill the process group)
@@ -540,16 +623,28 @@ async def dev_server(
     call passes NO `env=` kwarg at all, so the customer path (no hermetic
     backend involved) is byte-identical to before this parameter existed.
 
+    `ui_conf["build_cmd"]` (optional) runs in `repo_path`, `shell=False`,
+    BEFORE `start_cmd` is spawned — but only once every earlier branch has
+    already decided a server is genuinely about to be booted (a manifest
+    `base_url` that is loopback and not already answering, plus a parsable
+    `start_cmd`). `&&`-separated segments run sequentially; a nonzero exit,
+    an unparsable command, or exceeding `build_timeout_s` (default 300,
+    clamped [1, 3600]) yields `boot-failed`/`build-failed`|`build-timeout`
+    and spawns nothing — a disclosed skip, never an exception. When
+    `build_cmd` is unset, not one new statement runs before the spawn.
+
     Decision order — each early branch yields exactly one `DevServerOutcome`
     and spawns nothing: falsy/unconfigured `base_url` or `start_cmd` ->
     `unconfigured`; something already reachable at `base_url` -> `pre-existing`
     (never killed/replaced); a non-loopback `base_url` host -> `boot-failed`
-    (refused); otherwise spawn `start_cmd` and poll `base_url + ready_path`
-    until reachable, the process exits early, or `ready_timeout_s` elapses.
+    (refused); an unparsable/failing/timing-out `build_cmd` -> `boot-failed`;
+    otherwise spawn `start_cmd` and poll `base_url + ready_path` until
+    reachable, the process exits early, or `ready_timeout_s` elapses.
     """
     ui_conf = ui_conf or {}
     start_cmd = str(ui_conf.get("start_cmd") or "").strip()
     ready_path = str(ui_conf.get("ready_path") or "/")
+    build_cmd = str(ui_conf.get("build_cmd") or "").strip()
     try:
         # `.get(..., 60)` (not `or 60`) so an explicit 0 clamps to the floor
         # instead of falling back to the default — 0 is falsy but valid input.
@@ -557,6 +652,11 @@ async def dev_server(
     except (TypeError, ValueError):
         timeout = 60
     timeout = min(max(timeout, _READY_TIMEOUT_MIN), _READY_TIMEOUT_MAX)
+    try:
+        build_timeout = int(ui_conf.get("build_timeout_s", _BUILD_TIMEOUT_DEFAULT_S))
+    except (TypeError, ValueError):
+        build_timeout = _BUILD_TIMEOUT_DEFAULT_S
+    build_timeout = min(max(build_timeout, _BUILD_TIMEOUT_MIN), _BUILD_TIMEOUT_MAX)
 
     if not base_url:
         yield DevServerOutcome(mode="unconfigured", start_cmd=start_cmd,
@@ -599,6 +699,22 @@ async def dev_server(
                                 detail="unparsable start_cmd",
                                 cause="failed-to-start")
         return
+
+    if build_cmd:
+        argvs = _build_argvs(build_cmd)
+        if argvs is None:
+            yield DevServerOutcome(mode="boot-failed", start_cmd=start_cmd,
+                                    base_url=base_url, ready_timeout_s=timeout,
+                                    cause="build-failed",
+                                    detail=f"unparsable build_cmd: {build_cmd[:200]}")
+            return
+        cause, exit_code, detail = _run_build(
+            repo_path, argvs, Path(out_dir), build_timeout, run=build_run)
+        if cause:
+            yield DevServerOutcome(mode="boot-failed", start_cmd=start_cmd,
+                                    base_url=base_url, ready_timeout_s=timeout,
+                                    exit_code=exit_code, cause=cause, detail=detail)
+            return
 
     out_dir = Path(out_dir)
     process = None

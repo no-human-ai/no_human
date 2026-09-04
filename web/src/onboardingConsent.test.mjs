@@ -132,7 +132,7 @@ const here = fileURLToPath(new URL(".", import.meta.url));
 const jsx = readFileSync(here + "Onboarding.jsx", "utf8");
 const api = readFileSync(here + "api.js", "utf8");
 
-test("the 6 base steps are untouched and nothing is appended after summary", () => {
+test("the 5 base steps are untouched and nothing is appended after summary", () => {
   const base = jsx.match(/const BASE_STEPS = \[([\s\S]*?)\n\];/);
   assert.ok(base, "the base-step list must still exist as its own array");
   const keys = [...base[1].matchAll(/key: "(\w+)"/g)].map((m) => m[1]);
@@ -140,7 +140,9 @@ test("the 6 base steps are untouched and nothing is appended after summary", () 
     keys,
     // "history" + "rules" (the AI-learnings walk) left the wizard 2026-08-30 —
     // that work now lives in Settings, nudged by the Settings "!" badge.
-    ["welcome", "repos", "projects", "docs", "integrations", "summary"],
+    // "docs" (Repo docs & wiki) left the wizard 2026-09-04 — the wiki is now
+    // enqueued automatically in the background at Launch.
+    ["welcome", "repos", "projects", "integrations", "summary"],
     "the existing steps must not be reordered or renamed",
   );
   assert.match(jsx, /const STEPS = BASE_STEPS;/,

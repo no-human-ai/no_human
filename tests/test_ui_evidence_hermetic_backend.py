@@ -266,25 +266,27 @@ async def test_hermetic_backend_home_seed_failure_detail_is_non_empty(tmp_path):
 
 async def test_hermetic_backend_closes_the_log_file_on_spawn_failure(tmp_path):
     """AC4: `fh` (the hermetic API log file handle) must be closed on the
-    spawn-failed path. Before this fix it leaked — CPython emits a
-    `ResourceWarning` when an unclosed file object is garbage-collected, so
-    that warning firing here is a positive signal the handle was left open."""
+    spawn-failed path. Asserted directly on the handle's own `closed` state:
+    a ResourceWarning/gc probe is not reliable here — the async-generator
+    frame that `async with` drives keeps `fh` referenced through the yield,
+    so `gc.collect()` never frees it and no ResourceWarning fires either
+    way, closed or not. `_spawn_factory` records the exact kwargs `spawn`
+    was called with, so the real `stdout=fh` object `hermetic_backend`
+    opened and passed in is recovered from that recorded call."""
     spawn = _spawn_factory(raises=OSError("no such file"))
 
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always", ResourceWarning)
-        async with ui_evidence.hermetic_backend(
-            tmp_path, spawn=spawn, pick_port=lambda: 54328,
-            reachable=lambda url: True, sleep=_no_sleep, home_root=tmp_path,
-        ) as hb:
-            assert hb.mode == "failed"
-            assert hb.cause == "spawn-failed"
-        gc.collect()
+    async with ui_evidence.hermetic_backend(
+        tmp_path, spawn=spawn, pick_port=lambda: 54328,
+        reachable=lambda url: True, sleep=_no_sleep, home_root=tmp_path,
+    ) as hb:
+        assert hb.mode == "failed"
+        assert hb.cause == "spawn-failed"
 
-    resource_warnings = [w for w in caught if issubclass(w.category, ResourceWarning)]
-    assert resource_warnings == [], (
-        f"the hermetic API log file handle leaked (unclosed): "
-        f"{[str(w.message) for w in resource_warnings]}")
+    assert spawn.calls, "spawn was never called"
+    captured_stdout = spawn.calls[-1][1]["stdout"]
+    assert captured_stdout.closed is True, (
+        "the hermetic API log file handle leaked (not closed) on the "
+        "spawn-failed path")
 
 
 # ───────────────────────── AC3: seeded llm.auth_mode ─────────────────────── #

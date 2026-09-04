@@ -4232,6 +4232,12 @@ async def test_create_stashes_a_feasibility_hint_for_a_large_task(client, store)
     assert hint["tier"] == "complex"
     assert hint["offer"] == "split"
     assert "message" in hint
+    # Hint-only families (feasibility hint calibration): the create handler
+    # must persist the card's `signals`/`hint_reasons`, not just band/offer —
+    # otherwise a fired hint-only family (e.g. multi_family) is computed for
+    # nothing and never reaches anything a human looks at.
+    assert hint["signals"] == ["many-criteria", "long-spec"]
+    assert hint["hint_reasons"] == []
 
 
 async def test_create_of_a_simple_task_stashes_no_hint(client, store):
@@ -4262,6 +4268,11 @@ async def test_create_response_carries_the_feasibility_hint_immediately(client, 
     assert hint["tier"] == "complex"
     assert hint["offer"] == "split"
     assert "message" in hint
+    # TaskSummaryOut.feasibility_hint reads straight off the persisted dict
+    # (models.py), so the create RESPONSE — not just the stored task — must
+    # carry the hint-only `signals`/`hint_reasons` too.
+    assert hint["signals"] == ["many-criteria", "long-spec"]
+    assert hint["hint_reasons"] == []
 
 
 async def test_create_response_carries_no_hint_for_a_simple_task(client, store):

@@ -2,11 +2,11 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   discoverRepos, onboardRepo,
   completeOnboarding, suggestPaths, createProject,
-  generateDocs, getDocsJob, detectDocs, fetchIntegrationSetup, saveIntegrationSetup,
+  generateDocs, fetchIntegrationSetup, saveIntegrationSetup,
   testIntegration,
   proveRepoSSE, confirmRepoProfile, fetchReadiness, setRepoUiEvidence,
 } from "./api.js";
-import { shouldPoll, nextJobState } from "./wikiJobs.js";
+import { kickoffWikiGeneration } from "./onboardingDocsKickoff.js";
 import { repoBadges, discoveryMessage, ambiguousNames, rowName } from "./discoveredRepos.js";
 // onboardingHistory.js (scanSummary/groupProposalsByProject) went with the
 // removed AI-history/rules steps — the mining now happens from Settings.
@@ -76,7 +76,10 @@ const BASE_STEPS = [
   // free→team / free→cloud UPGRADE onboarding, where team scoping is real.
   { key: "repos",    title: "Repositories" },
   { key: "projects", title: "Projects" },
-  { key: "docs",     title: "Docs" },
+  // "Repo docs & wiki" left the wizard (operator, 2026-09-04): it was a step
+  // that asked nothing decision-worthy of the user. The wiki is now enqueued
+  // automatically, in the background, when Launch completes onboarding — see
+  // kickoffWikiGeneration() in finish() below.
   { key: "integrations", title: "Integrations" },
   // "AI history" + "Rules review" left the wizard (operator, 2026-08-30): the
   // AI-learnings walk made onboarding long, and the work already lives in
@@ -121,10 +124,6 @@ export default function Onboarding({ onComplete }) {
   const [newProjRepos, setNewProjRepos] = useState(() => new Set());
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
-  // Background wiki-generation jobs (B4): repoPath -> {jobId,status,error,files}.
-  // Polled every 2 s while queued|running; the result survives this unmount.
-  const [wikiJobs, setWikiJobs] = useState({});
-  const [detectedDocs, setDetectedDocs] = useState({});  // repoPath -> [names] | undefined (unfetched)
   const [integrations, setIntegrations] = useState(null);   // null=unloaded
   // Proving: path -> {status, lines[], elapsed, attempted, result, error}.
   // "unproven" is not a cosmetic state — a repo without a proven test command
@@ -288,36 +287,6 @@ export default function Onboarding({ onComplete }) {
     }
     // deps intentionally partial (was: eslint-disable react-hooks/exhaustive-deps — plugin never loaded here)
   }, [step.key]);
-
-  // Docs step: detect each selected repo's README/docs/CONTRIBUTING once, so
-  // the wizard shows what the coder already reads rather than asking the user
-  // to re-type paths nobody read. Cheap existence checks, no generation.
-  useEffect(() => {
-    if (step.key !== "docs") return;
-    for (const rp of selectedRepos) {
-      if (detectedDocs[rp] !== undefined) continue;
-      detectDocs(rp)
-        .then((res) => setDetectedDocs((d) => ({ ...d, [rp]: res.found || [] })))
-        .catch(() => setDetectedDocs((d) => ({ ...d, [rp]: [] })));
-    }
-    // deps intentionally partial (detectedDocs read only to skip refetch)
-  }, [step.key, selectedRepos]);
-
-  // Poll running wiki jobs every 2 s until each reaches a terminal state. The
-  // interval is recreated whenever wikiJobs changes and torn down once nothing
-  // is in flight, so a done/failed job stops costing requests.
-  useEffect(() => {
-    const active = Object.entries(wikiJobs).filter(([, j]) => shouldPoll(j) && j.jobId);
-    if (active.length === 0) return;
-    const t = setInterval(() => {
-      active.forEach(([rp, j]) => {
-        getDocsJob(j.jobId)
-          .then((row) => setWikiJobs((s) => nextJobState(s, rp, row)))
-          .catch(() => { /* transient; retry next tick */ });
-      });
-    }, 2000);
-    return () => clearInterval(t);
-  }, [wikiJobs]);
 
   function setIntField(name, field, value) {
     setIntDraft((d) => ({ ...d, [name]: { ...(d[name] || {}), [field]: value } }));
@@ -598,6 +567,11 @@ export default function Onboarding({ onComplete }) {
         team: null,
         repos: [...selectedRepos],
       });
+      // Wiki generation is background work the user is never asked about
+      // (operator, 2026-09-04). Fire-and-forget: the POST returns 202 with a
+      // job id and the server runs it detached, so a failure here is advisory
+      // only and must never block or fail the launch.
+      kickoffWikiGeneration({ repos: selectedRepos, generate: generateDocs });
       // Hand the ready repo up so the app can open the composer on it instead
       // of dropping the user onto an empty board.
       onComplete(firstTaskRepo ? { firstTaskRepo } : {});
@@ -1023,67 +997,6 @@ export default function Onboarding({ onComplete }) {
             );
           })()}
 
-          {step.key === "docs" && (
-            <Stagger>
-              <h2 className="ob-h2">Repo docs & wiki</h2>
-              <p className="ob-sub">The coder reads your <code>README</code> and <code>docs/</code> itself — the chips below are just what it found. Generating a wiki gives it a structured architecture / modules / conventions summary in <code>.no_human/wiki/</code>. It runs in the background, so you can continue.</p>
-              {selectedRepos.size === 0 ? (
-                <div className="ob-empty">Select one or more repositories on the previous step to see their docs here.</div>
-              ) : (
-                <div style={{ marginTop: "0.5rem" }}>
-                  {[...selectedRepos].map((rp) => {
-                    const job = wikiJobs[rp];
-                    const found = detectedDocs[rp];
-                    let fileCount = 0;
-                    if (job && job.status === "done") {
-                      try { fileCount = JSON.parse(job.files || "[]").length; } catch { fileCount = 0; }
-                    }
-                    return (
-                      <div key={rp} style={{ marginBottom: "0.9rem" }}>
-                        <code style={{ fontSize: "0.85rem", fontWeight: 600 }}>{rp.split("/").slice(-2).join("/")}</code>
-                        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "0.35rem 0" }}>
-                          {found === undefined ? (
-                            <span className="ob-faint" style={{ fontSize: "0.75rem" }}>detecting…</span>
-                          ) : found.length === 0 ? (
-                            <span className="ob-faint" style={{ fontSize: "0.75rem" }}>no README / docs / CONTRIBUTING found</span>
-                          ) : (
-                            found.map((name) => (
-                              <span key={name} title="the coder reads this itself"
-                                style={{ fontSize: "0.72rem", padding: "0.1rem 0.5rem", border: "1px solid var(--border)", borderRadius: 999, color: "var(--fg-dim)" }}>{name}</span>
-                            ))
-                          )}
-                        </div>
-                        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                          {(!job || job.status === "failed") && (
-                            <button className="ob-btn" style={{ padding: "0.2rem 0.7rem", fontSize: "0.78rem" }}
-                              aria-label={`Generate wiki for ${repoName(rp)}`}
-                              onClick={async () => {
-                                try {
-                                  const res = await generateDocs(rp);   // {job_id}
-                                  setWikiJobs((s) => nextJobState(s, rp, res));
-                                } catch (e) {
-                                  setWikiJobs((s) => nextJobState(s, rp, { status: "failed", error: e.message }));
-                                }
-                              }}>Generate wiki</button>
-                          )}
-                          {job && (job.status === "queued" || job.status === "running") && (
-                            <span style={{ fontSize: "0.75rem", color: "var(--fg-dim)" }}>Generating in the background — you can continue</span>
-                          )}
-                          {job && job.status === "done" && (
-                            <span style={{ fontSize: "0.75rem", color: "var(--success)" }}>✓ Wiki written: {fileCount} files</span>
-                          )}
-                          {job && job.status === "failed" && (
-                            <span style={{ fontSize: "0.75rem", color: "var(--danger)" }}>✗ {job.error}</span>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </Stagger>
-          )}
-
           {step.key === "integrations" && (
             <Stagger>
               <h2 className="ob-h2">Connect your tools <span className="ob-faint">(optional)</span></h2>
@@ -1144,7 +1057,6 @@ export default function Onboarding({ onComplete }) {
                       <b>{projectDefs.length}{unbound.length ? ` · ${unbound.length} with no repos` : ""}</b>
                     </li>
                     <li><span>Repos</span><b>{counts.repos}</b></li>
-                    <li><span>Wiki generated</span><b>{Object.values(wikiJobs).filter((j) => j.status === "done").length}</b></li>
                     <li>
                       <span>Repos with a proven test command</span>
                       <b>{counts.proven}</b>

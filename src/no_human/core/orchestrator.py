@@ -142,8 +142,8 @@ from ..vcs.task_pr import resolve_task_pr
 from . import merge_policy
 from . import plan_gate
 from .bounds import (
-    Bounds, ConvergenceTracker, QuotaExhausted, StuckDetector, error_signature,
-    quota_reason, quota_signal,
+    Bounds, ConvergenceTracker, QuotaExhausted, StuckDetector, api_wall_reason,
+    error_signature, quota_reason, quota_signal,
 )
 from ..blockers.taxonomy import carried_checkpoint, carry_human_hold, resume_checkpoint
 from .complexity import is_trivial as _is_trivial
@@ -3593,6 +3593,16 @@ class Orchestrator:
 
             # D1/D9: run intake evaluator for tasks that skipped the grill
             # wizard (board-sourced). Advisory — never blocks pipeline.
+            # Cost: measured ~8.7k utility-tier tokens per evaluated create,
+            # on the utility model (self._utility_model()).
+            #
+            # Residual gap: poller-sourced creates (src/no_human/intake/
+            # {jira,linear,monday,github_issues,gitlab_issues}_poll.py) and
+            # CLI creates still have no create-time eval; this dispatch-time
+            # eval is what covers them. Only the API grill path
+            # (src/no_human/api/app.py:1223) evaluates at intake — the
+            # `elif` below is what acts on THAT stored verdict, so a grilled
+            # task is no longer annotation-only.
             if not (task.context or {}).get("eval_result"):
                 try:
                     from ..intake.evaluator import evaluate_spec
@@ -3606,6 +3616,9 @@ class Orchestrator:
                     if eval_out:
                         ctx = task.context or {}
                         ctx["eval_result"] = eval_out.as_dict()
+                        # Never fall into _act_on_stored_eval on a re-dispatch
+                        # of THIS task — it already acted below.
+                        ctx["eval_acted"] = True
                         task.context = ctx
                         await self.store.update_task(task)
                         self.emit(
@@ -3616,6 +3629,11 @@ class Orchestrator:
                         await self._act_on_eval(task, eval_out)
                 except Exception as exc:  # noqa: BLE001
                     self._advisory(f"intake evaluator skipped: {exc}")
+            else:
+                # Grill/wizard-sourced tasks arrive WITH eval_result already
+                # stored — act on it here so they get the same ENRICH/
+                # CLARIFY/DECOMPOSE treatment as board/API bare creates.
+                await self._act_on_stored_eval(task)
 
             # Proportionality (2026-08-09): classify BEFORE the grill, because
             # the grill is the first stage the verdict can make cheaper. The
@@ -11639,19 +11657,40 @@ class Orchestrator:
             self._opened_draft_this_attempt = not pre_existing
         return url
 
-    async def _raise_if_verifier_quota_wall(self, attempt_id: str, reason: str | None) -> None:
-        """Route a bare verifier-call failure through the same classifier the
-        coder path uses (`quota_signal`): a genuine quota wall never had a
-        chance, so retrying wastes time and escalating misreports it as a
-        NOVEL_UNKNOWN infra incident (INCIDENT 2026-08-20). Close THIS
-        attempt row before the park, else `lifetime_usage_by_class` charges
-        a lifetime attempt for a round that never got a verdict."""
-        reason = reason or ""
-        if not quota_signal(reason):
+    async def _raise_if_verifier_wall(
+        self, attempt_id: str, reason: str | None, result=None,
+    ) -> None:
+        """Route a verifier-call failure through the same classifiers the
+        coder path uses: a genuine quota wall or an API wall (outage/529/5xx)
+        never had a chance, so retrying wastes time and escalating misreports
+        it as a NOVEL_UNKNOWN infra incident (INCIDENT 2026-08-20, and its
+        2026-09-03 sibling — a walled verifier reaching no verdict as an
+        `AgentResult`, not just a bare timeout). Close THIS attempt row
+        before the park, else `lifetime_usage_by_class` charges a lifetime
+        attempt for a round that never got a verdict.
+
+        `result`, when given, is the (possibly errored) `AgentResult` the
+        judge call returned — `reason` alone is what a bare timeout (`result
+        is None`) carries."""
+        text = reason or ""
+        if result is not None and getattr(result, "is_error", False):
+            text = f"{text}\n{result.final_text or ''}"
+        infra = False
+        if quota_signal(text):
+            wall = quota_reason(text)
+        elif result is not None and (r := _infra_sdk_failure(result)) is not None:
+            wall = r
+            infra = True
+        elif (r := api_wall_reason(text)) is not None:
+            wall = r
+            infra = True
+        else:
             return
-        wall_reason = quota_reason(reason)
-        await self.store.update_attempt(attempt_id, status="failed", failure_reason=f"quota: {wall_reason}", infra_failure=1)
-        raise QuotaExhausted(wall_reason)
+        await self.store.update_attempt(
+            attempt_id, status="failed",
+            failure_reason=f"{'infra' if infra else 'quota'}: {wall}",
+            infra_failure=1)
+        raise QuotaExhausted(wall, infra=infra)
 
     async def _run_review(
         self, task: Task, repo: GitRepo, attempt_id: str, base: str | None = None,
@@ -11835,9 +11874,18 @@ class Orchestrator:
                     prompt, repo.path, max_turns=1, timeout=timeout, on_event=None)
                 if result is None:
                     # Ordinarily infra (fall through to no_verdict) unless it's
-                    # actually a quota wall (see the helper's docstring).
-                    await self._raise_if_verifier_quota_wall(attempt_id, reason)
+                    # actually a quota/API wall (see the helper's docstring).
+                    await self._raise_if_verifier_wall(attempt_id, reason)
                     return "", 0  # parse_result → no_verdict → one bounded retry
+                if getattr(result, "is_error", False):
+                    # A result CAME BACK but errored (2026-09-03 shape): the
+                    # backend does not always raise on a dead session, it can
+                    # hand the failure back as a normal result whose
+                    # `final_text` is empty — which used to fall straight
+                    # through to `no_verdict` below and, after the bounded
+                    # retry, escalate as NOVEL_UNKNOWN instead of parking on
+                    # the wall that actually killed it.
+                    await self._raise_if_verifier_wall(attempt_id, reason, result)
                 verifier_tok["total"] += result.tokens_used or 0
                 verifier_tok["cache_read"] += result.cache_read_tokens or 0
                 verifier_tok["cache_creation"] += result.cache_creation_tokens or 0
@@ -12701,6 +12749,59 @@ class Orchestrator:
             return None
         return missing_input_blocker(missing, goal=task.title)
 
+    async def _act_on_stored_eval(self, task: Task) -> None:
+        """Act on a verdict that intake already stored (grill/wizard path).
+
+        The dispatch-time evaluator only runs when context carries no
+        ``eval_result``, and ``_act_on_eval`` used to be called only inside
+        that branch — so for exactly the tasks that WENT THROUGH intake the
+        verdict was annotation-only: board/API bare creates got ENRICH /
+        CLARIFY / DECOMPOSE acted on, grilled tasks did not.
+
+        Idempotent: ``context['eval_acted']`` is persisted BEFORE acting, so a
+        resume or re-dispatch never enriches twice. Advisory throughout — any
+        failure logs and returns.
+        """
+        ctx = task.context or {}
+        stored = ctx.get("eval_result")
+        if not stored or not isinstance(stored, dict) or ctx.get("eval_acted"):
+            return
+        try:
+            # Persist the marker first — if _act_on_eval crashes mid-way the
+            # marker is already down, the conservative choice for an
+            # advisory path (better to skip than to double-enrich).
+            await self.store.merge_context(task.id, {"eval_acted": True})
+            ctx["eval_acted"] = True
+            task.context = ctx
+            from ..intake.evaluator import EvalResult
+            eval_out = EvalResult.from_dict(stored)
+            await self._act_on_eval(task, eval_out)
+        except Exception as exc:  # noqa: BLE001 — advisory, never blocks
+            self._advisory(f"acting on stored eval verdict skipped: {exc}")
+
+    _EVAL_CTX_KEYS = ("original_criteria", "assumptions", "split_proposal")
+
+    async def _write_eval_ctx(self, task: Task, ctx: dict, *keys: str) -> None:
+        """Persist ONLY the context keys ``_act_on_eval`` owns.
+
+        ``update_task`` rewrites the whole context blob from the in-memory
+        Task, so a concurrent writer's key added since this coroutine read
+        the row is clobbered. Re-read the row here and merge just *keys* into
+        the FRESH context. Scoped fix — no new store machinery; the
+        acceptance_criteria column still writes whole (this method is its
+        only writer on this path).
+        """
+        fresh = await self.store.get_task(task.id)
+        if fresh is not None:
+            merged = dict(fresh.context or {})
+            for k in keys:
+                if k in ctx:
+                    merged[k] = ctx[k]
+            ctx.clear()
+            ctx.update(merged)
+        task.context = ctx
+        await self.store.update_task(task)
+
     async def _act_on_eval(self, task: Task, eval_out: Any) -> None:
         """P2: act on the intake evaluator's verdict so no human is needed.
 
@@ -12728,22 +12829,29 @@ class Orchestrator:
             if eval_out.verdict == EvalVerdict.DECOMPOSE:
                 proposal = await self._maybe_attach_split_proposal(ctx, task)
                 if proposal:
-                    task.context = ctx
-                    await self.store.update_task(task)
+                    await self._write_eval_ctx(task, ctx, "split_proposal")
             if (eval_out.verdict == EvalVerdict.ENRICH
                     and eval_out.enriched_criteria):
-                # ALWAYS record what the operator stated — including [] (the
-                # board default, and exactly when ENRICH fires). Complexity
-                # gating reads original_criteria; skipping the empty case let
-                # the evaluator's own enrichment manufacture "many-criteria"
-                # on a bare quick task.
-                ctx.setdefault("original_criteria",
-                               list(task.acceptance_criteria or []))
-                task.acceptance_criteria = list(eval_out.enriched_criteria)
-                task.context = ctx
-                await self.store.update_task(task)
-                self.emit("eval_enriched",
-                          f"adopted {len(eval_out.enriched_criteria)} enriched criteria")
+                # Belt-and-braces: a second pass (e.g. a re-dispatch that
+                # slipped past the eval_acted marker) must not re-adopt when
+                # the criteria are already the enriched ones and originals
+                # are already recorded — the emit + write must not repeat.
+                already_adopted = (
+                    ctx.get("original_criteria") is not None
+                    and task.acceptance_criteria == list(eval_out.enriched_criteria)
+                )
+                if not already_adopted:
+                    # ALWAYS record what the operator stated — including []
+                    # (the board default, and exactly when ENRICH fires).
+                    # Complexity gating reads original_criteria; skipping the
+                    # empty case let the evaluator's own enrichment
+                    # manufacture "many-criteria" on a bare quick task.
+                    ctx.setdefault("original_criteria",
+                                   list(task.acceptance_criteria or []))
+                    task.acceptance_criteria = list(eval_out.enriched_criteria)
+                    await self._write_eval_ctx(task, ctx, "original_criteria")
+                    self.emit("eval_enriched",
+                              f"adopted {len(eval_out.enriched_criteria)} enriched criteria")
             needs_assumptions = (
                 eval_out.verdict == EvalVerdict.CLARIFY
                 or not (eval_out.dimensions or {}).get("no_missing_context", True)
@@ -12757,8 +12865,7 @@ class Orchestrator:
                 )
                 if assumptions:
                     ctx["assumptions"] = assumptions
-                    task.context = ctx
-                    await self.store.update_task(task)
+                    await self._write_eval_ctx(task, ctx, "assumptions")
                     self.emit("eval_assumptions",
                               f"proceeding under {len(assumptions)} documented assumption(s)")
         except Exception as exc:  # noqa: BLE001 — advisory, never blocks
@@ -20474,16 +20581,24 @@ SIX of them read a checkpoint and TWO do not — but do
             # out of this section. A `boot-failed` dev server names the URL
             # it never answered at instead — more useful than the walk's own
             # generic "not reachable" reason, and still sanitized the same way.
-            # `srv.cause` picks which of two sentences applies: `"timeout"`
-            # (spawned, polled, never answered — the original, byte-identical
-            # sentence) vs `"failed-to-start"` (never became a polling server
-            # at all — non-loopback refusal, unparsable start_cmd, or a spawn
-            # OSError). An empty/unknown `cause` falls back to the timeout
+            # `srv.cause` picks which sentence applies: `"timeout"` (spawned,
+            # polled, never answered — the original, byte-identical sentence)
+            # vs `"failed-to-start"` (never became a polling server at all —
+            # non-loopback refusal, unparsable start_cmd, or a spawn OSError)
+            # vs `"build-timeout"`/`"build-failed"` (the optional `build_cmd`
+            # never finished, or exited nonzero, BEFORE `start_cmd` was ever
+            # spawned). An empty/unknown `cause` falls back to the timeout
             # sentence so an older/None-ish outcome still renders as before.
             # `srv.detail` (the log tail) is still never rendered here.
             shutil.rmtree(out_dir, ignore_errors=True)
             if srv is not None and srv.mode == "boot-failed":
-                if srv.cause == "failed-to-start":
+                if srv.cause == "build-timeout":
+                    reason = ("the UI build command timed out before the "
+                               f"dev server started ({srv.mode})")
+                elif srv.cause == "build-failed":
+                    reason = (f"the UI build command failed (exit {srv.exit_code}) "
+                               f"before the dev server started ({srv.mode})")
+                elif srv.cause == "failed-to-start":
                     reason = (f"the dev server failed to start for {srv.base_url} "
                               f"({srv.mode})")
                 else:

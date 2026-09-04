@@ -16,7 +16,10 @@
 # What it looks at, and why it agrees with the gate:
 #   * authors — GitHub's `.author.login` for every commit on the PR, the
 #     maintainer and bot accounts skipped, a commit whose email is attached to
-#     no GitHub account reported as unlinked. Identical to the gate's loop.
+#     no GitHub account reported as unlinked, and the repo's own agent
+#     account exempt only on a PR the agent or maintainer opened (else its
+#     authorship reads as forged and blocks the resolved text). Mirrors the
+#     gate's loop, including the PR-opener gating.
 #   * the ledger — ONE directory listing of `contributors/` at the PR's merge
 #     commit (`merge_commit_sha`: head merged onto CURRENT main, the tree the
 #     gate's checkout sees). GitHub computes that commit asynchronously: on
@@ -47,11 +50,14 @@
 #     a person quoting the marker text is not this bot's comment to edit.
 #
 # Env: GH_TOKEN, GITHUB_REPOSITORY, PR_NUMBER, HEAD_SHA, MERGE_SHA (may be
-# empty or stale), MAINTAINER. CLA_NUDGE_DRY_RUN=1 prints the comment and exits 0.
+# empty or stale), MAINTAINER, PR_AUTHOR (who OPENED the PR — gates the
+# agent-account exemption exactly as the CLA ledger job does; empty reads as
+# untrusted). CLA_NUDGE_DRY_RUN=1 prints the comment and exits 0.
 # CLA_NUDGE_POLL_SECONDS (default 5) is the wait between merge-commit polls.
 set -euo pipefail
 
 : "${GITHUB_REPOSITORY:?}" "${PR_NUMBER:?}" "${HEAD_SHA:?}" "${MAINTAINER:?}"
+: "${PR_AUTHOR?}"  # may be empty (fails closed) but must be SET — a workflow that forgets it would accuse every fleet PR of forgery
 MERGE_SHA="${MERGE_SHA:-}"
 MARKER='<!-- cla-nudge -->'
 BOT_LOGIN='github-actions[bot]'
@@ -110,8 +116,22 @@ fi
 
 missing=()
 unlinked=0
+forged_agent=0
 while IFS= read -r author; do
   [ -n "$author" ] || continue
+  if [ "$author" = "no-human" ]; then
+    # The repo's own agent account, exempt only on a PR the agent or the
+    # maintainer opened — the same split the CLA ledger job in ci.yml
+    # enforces. On anyone else's PR the author email was forged; there is
+    # never a filename to suggest (a stranger cannot sign for our agent),
+    # so the comment explains instead of naming a file, and the resolved/
+    # green text must never be posted over the gate's red.
+    case "$PR_AUTHOR" in
+      no-human|"$MAINTAINER") ;;
+      *) forged_agent=1 ;;
+    esac
+    continue
+  fi
   case "$author" in
     "$MAINTAINER"|*'[bot]') continue ;;
     UNLINKED-EMAIL) unlinked=1; continue ;;
@@ -121,9 +141,9 @@ while IFS= read -r author; do
 done <<<"$authors"
 
 body_file=$(mktemp)
-if [ "${#missing[@]}" -eq 0 ] && [ "$unlinked" -eq 0 ]; then
+if [ "${#missing[@]}" -eq 0 ] && [ "$unlinked" -eq 0 ] && [ "$forged_agent" -eq 0 ]; then
   printf '%s\n' "$MARKER" \
-    "The \`CLA ledger\` check has what it needs: every non-exempt commit author on this pull request has a \`contributors/\` entry (the maintainer's own commits and bot accounts are exempt). Thank you." \
+    "The \`CLA ledger\` check has what it needs: every non-exempt commit author on this pull request has a \`contributors/\` entry (the maintainer's own commits, bot accounts, and this repo's own agent on pull requests it or the maintainer opened are exempt). Thank you." \
     > "$body_file"
   resolved=1
 else
@@ -146,6 +166,9 @@ else
     if [ "$unlinked" -eq 1 ]; then
       printf '%s\n\n' "At least one commit on this PR has an author email that is not attached to any GitHub account, so the ledger cannot tell who wrote it. Either add that email to your GitHub account (Settings → Emails) or re-author the commits with an address that is, then push again."
     fi
+    if [ "$forged_agent" -eq 1 ]; then
+      printf '%s\n\n' "At least one commit on this PR is authored as \`no-human\`, this repo's own agent account. On a pull request the agent did not open, that reads as a forged author email; no \`contributors/\` file can satisfy it. Re-author those commits as yourself and push again."
+    fi
     printf '%s\n' "This comment is updated on each push once GitHub has computed the pull request's merge commit. Nothing here signs anything on your behalf."
   } > "$body_file"
 fi
@@ -161,7 +184,7 @@ if [ -n "$existing" ]; then
   echo "updated comment ${existing} (resolved=${resolved})"
 elif [ "$resolved" -eq 0 ]; then
   gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" -F body=@"$body_file" >/dev/null
-  echo "posted nudge: ${#missing[@]} unsigned author(s), unlinked=${unlinked}"
+  echo "posted nudge: ${#missing[@]} unsigned author(s), unlinked=${unlinked}, forged_agent=${forged_agent}"
 else
   echo "nothing missing and no earlier nudge to resolve"
 fi

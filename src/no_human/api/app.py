@@ -857,6 +857,15 @@ async def create_task(body: CreateTaskRequest, request: Request) -> TaskSummaryO
     pinned_base = (body.base_branch or "").strip()
     if pinned_base:
         task.context = {**(task.context or {}), "base_branch": pinned_base}
+    # Carry the grill's intake-eval verdict (if the composer ran one) onto the
+    # created task's context, exactly where the dispatch-time evaluator would
+    # have written it for a bare create — this is what makes
+    # `_act_on_stored_eval` reachable for grill-sourced tasks; see
+    # CreateTaskRequest.eval_result. Pydantic already rejects a non-dict
+    # `eval_result` (422) before this handler runs, so only "present and
+    # truthy" needs checking here.
+    if body.eval_result:
+        task.context = {**(task.context or {}), "eval_result": body.eval_result}
     if body.backend:
         # Per-task coder backend (public issue #5) — set by API clients, and
         # by the board's composer, whose picker options come from GET
@@ -890,13 +899,24 @@ async def create_task(body: CreateTaskRequest, request: Request) -> TaskSummaryO
     # whole block is guarded).
     try:
         from ..core.feasibility import estimate_feasibility
-        hint = estimate_feasibility(task, await store.done_rate_by_tier())
+        _cfg = getattr(request.app.state, "config", None)
+        hint = estimate_feasibility(
+            task, await store.done_rate_by_tier(),
+            config=_cfg.data if _cfg is not None else None,
+        )
         if hint is not None:
             task.context = await store.merge_context(task.id, {
                 "feasibility_hint": {
                     "band": hint.band, "tier": hint.tier, "offer": hint.offer,
                     "done_rate_pct": hint.done_rate_pct,
                     "message": hint.message(),
+                    # Hint-only families (e.g. multi_family) folded into
+                    # `signals` by estimate_feasibility, plus their human
+                    # -readable `hint_reasons` — never fed to band/offer above,
+                    # but persisted so the pre-flight card can actually show
+                    # them instead of computing them for nothing.
+                    "signals": list(hint.signals),
+                    "hint_reasons": list(hint.hint_reasons),
                 },
             })
     except Exception:  # noqa: BLE001 — advisory; a hint never fails a create

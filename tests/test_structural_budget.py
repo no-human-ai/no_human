@@ -94,7 +94,11 @@ FROZEN_FUNCTION_LINES = {
     # for callers with no HTTP handler in the loop. Measured on this tree
     # with the scanner below.
     "core/orchestrator.py:Orchestrator._run_attempt": 2167,
-    "core/orchestrator.py:Orchestrator._drive": 760,
+    # 760 -> 778 (+18): dispatch-time intake-eval hoisted path — the `elif
+    # ctx.get("eval_result")` branch that acts on a grill/wizard-stored
+    # verdict (idempotency marker, cost/residual-gap comments) added inside
+    # `_drive`. Measured on this tree with the scanner below.
+    "core/orchestrator.py:Orchestrator._drive": 778,
     # 449 -> 457 (+8): D3.1 (2026-08-31, auto-activation pipeline) adds the
     # one call (plus its explanatory comment) that hands `paused`/
     # `activated_at`/`learning_events` schema work to a new sibling method,
@@ -112,7 +116,13 @@ FROZEN_FUNCTION_LINES = {
     # `pr_conflict_local_clean` event instead of deferring/escalating at a
     # bound; the docstring also gained a paragraph explaining why the local
     # merge is authoritative. Measured on this merge.
-    "blockers/wake.py:WakeWatcher._check_pr_conflict": 441,
+    # 441 -> 453 (+12): mechanical resolution extended to cover
+    # `tests/test_structural_budget.py` FROZEN_* numeric-only conflicts
+    # (alongside the pre-existing RELEASE_MANIFEST.txt/
+    # EXPORT_CLASSIFICATION.txt paths) -- the `BUDGET_TEST_PATH` import, the
+    # widened `eligible` fallback set, and the `pr_conflict_resolved` event's
+    # budget note. Measured on this tree with the scanner below.
+    "blockers/wake.py:WakeWatcher._check_pr_conflict": 453,
     # 418 -> 424 (+6): D1.1 fix round — attempt-scoped verification-artifact
     # write wired into `_finalize` (review findings #1/#7). Measured on the
     # D1.1 squash-merge result.
@@ -127,7 +137,13 @@ FROZEN_FUNCTION_LINES = {
     # the FROZEN_FILE_LINES note below records. Re-anchored to the current
     # baseline so the full suite is green again; growth from here fails.
     "agent/claude_backend.py:ClaudeBackend.stream": 407,
-    "core/orchestrator.py:Orchestrator._run_review": 386,
+    # 386 -> 394 (+8): verifier-wall-park bugfix (tasks 279c03c5/c5b24230/
+    # 7da7c7ce) — `_raise_if_verifier_wall` (renamed from
+    # `_raise_if_verifier_quota_wall`) now also classifies a returned
+    # errored `AgentResult` via `_quota_signal`/`_infra_sdk_failure`, so
+    # `_run_review` gained the `result.is_error` check and passes `result`
+    # through on both `_judge_call` branches. Measured on this tree.
+    "core/orchestrator.py:Orchestrator._run_review": 394,
     # 377 -> 398 (+21): quota-saturation mid-run halt. `bench_run` now builds
     # a `QuotaHaltDetector`, threads `halt.observe(score)`/`halt.scored(...)`
     # through the per-spec checkpoint save inside `_run_spec`, and prints the
@@ -168,6 +184,15 @@ FROZEN_FUNCTION_LINES = {
     # was reviewed on its merits; frozen here as its landing baseline.
     "blockers/landed_override.py:approve_landed_override": 315,
     "core/metrics.py:compute_metrics": 334,  # +21: PR #869 cost_usd_total server-side pricing
+    # NEW (324, > 300): mechanical resolution extended to cover
+    # `tests/test_structural_budget.py` FROZEN_* numeric-only conflicts --
+    # the new budget-hunk branch in the worktree merge-step loop, the
+    # ship-classified-paths extension, the names-to-add extension, the
+    # re-anchor proof-test call, and the extended final-return detail
+    # string; re-homed onto the tree where the inventory-backend dispatch
+    # (97a9fd79b) also lives in this function. Measured on this merged tree
+    # with the scanner below.
+    "vcs/derived_conflict.py:_resolve_in_worktree": 324,
 }
 
 # 5 functions with estimated cyclomatic complexity > 60.
@@ -183,7 +208,10 @@ FROZEN_FUNCTION_CC = {
     # grew the conflict watcher; pre-existing red on main at 03b262d23,
     # repaired (measured) on this merge.
     "blockers/wake.py:WakeWatcher._check_pr_conflict": 74,
-    "core/orchestrator.py:Orchestrator._run_review": 73,
+    # 73 -> 74 (+1): same verifier-wall-park cause as the LINES entry above
+    # — the added `result.is_error` branch is one more `If`. Measured on
+    # this tree.
+    "core/orchestrator.py:Orchestrator._run_review": 74,
     # Crossed 60 (to 67) with the UI-evidence gate landed by task 389210fa.
     "core/orchestrator.py:Orchestrator._build_implement_prompt": 67,
 }
@@ -354,7 +382,28 @@ FROZEN_FILE_LINES = {
     # cannot bind to the hermetic target, DISCLOSES and still runs the walk
     # instead of skipping it. Measured with the scanner below, never summed
     # by hand.
-    "core/orchestrator.py": 21191,
+    # 21191 -> 21198 (+7): `_maybe_capture_ui_evidence`'s `boot-failed`
+    # reason branch gains two causes (`"build-timeout"`/`"build-failed"`) so
+    # a `ui_evidence.build_cmd` failure/timeout names the build instead of
+    # falling through to the generic dev-server sentence. Measured with the
+    # scanner below, never summed by hand.
+    #
+    # 21198 -> 21275 (+77): dispatch-time intake-eval hoisted path for
+    # grill/wizard-sourced tasks — the `elif ctx.get("eval_result")` branch
+    # plus `_act_on_stored_eval`/`_write_eval_ctx` helpers and the
+    # `_act_on_eval` merge-not-clobber rewrite, rebased onto the
+    # `build_cmd` change above. Measured with the scanner's own
+    # `len(Path(...).read_text().splitlines())` metric (which, unlike
+    # `wc -l`, also counts the file's 3 pre-existing Unicode line-break
+    # characters inside `_LINE_BREAKS`'s regex), never summed by hand.
+    #
+    # 21275 -> 21305 (+30): verifier-wall-park bugfix (task 57f38618,
+    # re-homed from the pre-cutover world) — `api_wall_reason` import, the
+    # `_raise_if_verifier_quota_wall` -> `_raise_if_verifier_wall` widening
+    # (new `result` param, `AgentResult`/`_infra_sdk_failure` classification)
+    # and its two call sites in `_run_review`. Measured with the scanner
+    # below on this tree.
+    "core/orchestrator.py": 21305,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.
@@ -519,7 +568,19 @@ FROZEN_FILE_LINES = {
     # and `task_events_stream` (§6d part 2) — the non-default reviewer
     # disclosure kwarg was dropped before reaching the board otherwise.
     # Measured directly (`wc -l src/no_human/api/app.py`).
-    "api/app.py": 5914,
+    # 5914 -> 5919 (+5): feasibility hint calibration — `create_task` now
+    # loads the app config and threads it into `estimate_feasibility`, and
+    # persists the hint's `signals`/`hint_reasons` alongside band/tier/offer
+    # so the pre-flight card can surface hint-only families. Measured
+    # directly (`wc -l src/no_human/api/app.py`).
+    # 5919 -> 5928 (+9): grill-sourced tasks are annotated but never enriched
+    # — `create_task` now carries the grill's intake-eval verdict
+    # (`body.eval_result`) onto the created task's context, the missing
+    # production path that makes the orchestrator's stored-verdict dispatch
+    # branch (`_act_on_stored_eval`) reachable for grill/wizard tasks.
+    # Measured directly (`wc -l src/no_human/api/app.py`), rebased onto the
+    # feasibility-hint-calibration change above.
+    "api/app.py": 5928,
     # +51: W5 active-time phase writer (phase instrumentation).
     # +84: `list_escalations`/`list_review_fails`/`list_tamper_trips` — the
     # three new failure-signal sources the recurring learning harvest mines.
@@ -628,7 +689,11 @@ FROZEN_FILE_LINES = {
     # its explanatory comment — the timeout for the merge-time FULL gate that
     # runs when the squash tree diverges from the tested attempt's tree
     # (vcs/approve_merge.py `_decide_gate`). Measured on this tree.
-    "config.py": 3554,
+    # 3554 -> 3562 (+8): `feasibility.hint_signals_enabled` (default true) and
+    # its explanatory comment — the off-switch the hint-only signal path
+    # (`core/complexity.py:hint_signals`) reads before folding `multi_family`
+    # into the pre-flight card. Measured on this tree.
+    "config.py": 3562,
     # +61: the tamper-adjudication one-bounded-retry contract (mechanical-
     # failure classification + the extracted `_review_tamper_adjudication`
     # helper that keeps `AdversarialReviewer.review` itself under the
@@ -648,7 +713,10 @@ FROZEN_FILE_LINES = {
     # the FROZEN_FUNCTION_LINES entry above — the whole-file delta equals the
     # function's delta since no other function in the file changed. Measured
     # on this merge.
-    "blockers/wake.py": 2740,
+    # 2740 -> 2752 (+12): mechanical resolution extended to cover structural
+    # budget conflicts, same cause as the FROZEN_FUNCTION_LINES entry above.
+    # Measured on this tree with the scanner below.
+    "blockers/wake.py": 2752,
     # +91: `_SCAN_WRAPPER_NAMES` + `_peel_scan_wrappers` — peels
     # timeout/xargs/nice/stdbuf (and siblings) for the scan-severity check
     # only, so a wrapped `find … -delete` in a denied compound classifies

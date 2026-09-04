@@ -277,6 +277,37 @@ class EvalResult:
             }
         return d
 
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "EvalResult":
+        """Rebuild from the ``as_dict`` shape stored on ``context['eval_result']``.
+
+        Lenient in exactly the way ``evaluate_spec`` is: the verdict is
+        lower-cased before the enum lookup (models echo the UPPERCASE bullets
+        from the prompt), and an unrecognised/absent verdict falls back to
+        ACCEPT rather than raising — this runs on an advisory path.
+        """
+        try:
+            verdict = EvalVerdict(str(d.get("verdict", "accept")).strip().lower())
+        except ValueError:
+            verdict = EvalVerdict.ACCEPT
+        dimensions = d.get("dimensions")
+        if not isinstance(dimensions, dict):
+            dimensions = {}
+        enriched_criteria = d.get("enriched_criteria")
+        enriched_criteria = list(enriched_criteria) if enriched_criteria else None
+        usage = d.get("usage") or {}
+        if not isinstance(usage, dict):
+            usage = {}
+        return cls(
+            verdict=verdict,
+            dimensions=dimensions,
+            enriched_criteria=enriched_criteria,
+            rationale=str(d.get("rationale") or ""),
+            tokens_used=int(usage.get("tokens_used") or 0),
+            cache_read_tokens=int(usage.get("cache_read_tokens") or 0),
+            cache_creation_tokens=int(usage.get("cache_creation_tokens") or 0),
+        )
+
 
 _EVAL_JSON = re.compile(r"EVAL_JSON_START\s*(.*?)\s*EVAL_JSON_END", re.DOTALL)
 

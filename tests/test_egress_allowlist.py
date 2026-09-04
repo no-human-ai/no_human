@@ -454,13 +454,16 @@ ALLOWLIST: dict[str, dict[str, Allowed]] = {
             "/api/queue/health, server.host defaults to 127.0.0.1"),
     },
     "intake/mcp_bridge.py": {
-        "http:httpx": Allowed("no_human's own API", "loopback: 127.0.0.1:8420 "
-                              "(BASE_URL) — the MCP bridge calling our server"),
+        "http:httpx": Allowed("no_human's own API",
+                              "loopback: http://{server.host}:{server.port} "
+                              "(BASE_URL), server.host defaults to 127.0.0.1 "
+                              "— the MCP bridge calling our server"),
         "sdk:mcp": Allowed(
             "the MCP client that launched this bridge — FastMCP's default "
             "transport is stdio, so the 'connection' is the pipe your editor "
             "already opened",
-            "loopback: BASE_URL is 127.0.0.1:8420; the bridge dials nothing else"),
+            "loopback: BASE_URL is {server.host}:{server.port}, 127.0.0.1:8420 "
+            "by default; the bridge dials nothing else"),
     },
     "api/local_boundary.py": {
         "sock:fastapi": Allowed(
@@ -859,19 +862,27 @@ ALLOWLIST: dict[str, dict[str, Allowed]] = {
 
     "testing/ui_evidence.py": {
         "exec:<dynamic>": Allowed(
-            "two spawns, both loopback-only: `dev_server` spawns the "
-            "profile's OWN `ui_evidence.start_cmd` in the attempt's "
-            "worktree so the walk has something to walk (kills the process "
-            "group afterwards); `hermetic_backend` separately spawns an "
-            "ISOLATED `nh start` (the existing command, no new CLI surface) "
-            "under a throwaway `HOME`/`NO_HUMAN_HOME` on an ephemeral port, "
-            "so a walk step that clicks Save/Reset-to-defaults can never "
-            "write into the operator's real `~/.no_human/config.yaml` — "
-            "torn down (killed, `HOME` rmtree'd) every time",
+            "two or three spawns, all loopback-only/worktree-local: "
+            "`dev_server` spawns the profile's OWN `ui_evidence.start_cmd` "
+            "in the attempt's worktree so the walk has something to walk "
+            "(kills the process group afterwards) — and, when the profile "
+            "also sets `ui_evidence.build_cmd`, runs that FIRST, in the "
+            "same worktree, `shell=False`, one `subprocess.run` per "
+            "`&&`-separated segment, with a hard timeout "
+            "(`build_timeout_s`, default 300s) — a build failure/timeout "
+            "never spawns `start_cmd` at all, it is a disclosed walk skip; "
+            "`hermetic_backend` separately spawns an ISOLATED `nh start` "
+            "(the existing command, no new CLI surface) under a throwaway "
+            "`HOME`/`NO_HUMAN_HOME` on an ephemeral port, so a walk step "
+            "that clicks Save/Reset-to-defaults can never write into the "
+            "operator's real `~/.no_human/config.yaml` — torn down "
+            "(killed, `HOME` rmtree'd) every time",
             _CFG + "ui_evidence.enabled — and, past that, `dev_server` only "
             "when the repo's own profile sets a `start_cmd` (absent from "
             "DEFAULT_CONFIG: it is a per-repo profile field, empty by "
-            "default) and the manifest base_url is loopback; "
+            "default) and the manifest base_url is loopback; `build_cmd` "
+            "only runs when set AND a server is genuinely about to be "
+            "booted (nothing pre-existing at that base_url); "
             "`hermetic_backend` runs whenever the manifest has a base_url at "
             "all — it is the harness's own throwaway backend, not something "
             "a profile configures"),

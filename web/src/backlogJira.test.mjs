@@ -155,9 +155,13 @@ test("SCRUM-3: client request limit matches the backend clamp (50, not 20)", () 
   assert.doesNotMatch(apiJs, /limit = 20/);
 });
 
-test("createTask forwards source (undefined for every typed task, unchanged wire shape)", () => {
+// The wire shape grew one key (`eval_result`) for the grill's intake-eval
+// verdict — the regex is updated to match, per the same "updated not
+// deleted" precedent as the backend-picker test just below. `source` itself
+// is unaffected: an undefined value for every typed task, exactly as before.
+test("createTask forwards source (undefined for every typed task)", () => {
   assert.match(apiJs, /export async function createTask\(\{[^}]*\bsource\b[^}]*\}\)/s);
-  assert.match(apiJs, /JSON\.stringify\(\{ title, description, repo_path, project_id, kind, priority, acceptance_criteria, source, external_id, backend, follows_id \}\)/);
+  assert.match(apiJs, /JSON\.stringify\(\{ title, description, repo_path, project_id, kind, priority, acceptance_criteria, source, external_id, backend, follows_id, eval_result \}\)/);
 });
 
 // The board can now pick a coder backend (claude|codex|local) — this test
@@ -168,7 +172,7 @@ test("createTask forwards source (undefined for every typed task, unchanged wire
 // or assertions" rule.
 test("createTask forwards backend to the wire body (board coder-backend picker)", () => {
   assert.match(apiJs, /export async function createTask\(\{[^}]*\bbackend\b[^}]*\}\)/s);
-  assert.match(apiJs, /JSON\.stringify\(\{ title, description, repo_path, project_id, kind, priority, acceptance_criteria, source, external_id, backend, follows_id \}\)/);
+  assert.match(apiJs, /JSON\.stringify\(\{ title, description, repo_path, project_id, kind, priority, acceptance_criteria, source, external_id, backend, follows_id, eval_result \}\)/);
 });
 
 // ── TaskComposer.jsx — coder-backend picker (public issue #5) ──────────────

@@ -18,10 +18,10 @@ caller (a cheap DB query), keeping this module a pure function of the task.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from .complexity import compute_tier
+from .complexity import compute_tier, hint_signals
 
 if TYPE_CHECKING:
     from .task import Task
@@ -48,6 +48,7 @@ class FeasibilityHint:
     offer: str | None            # split | clarify | None
     done_rate_pct: int | None    # this install's done-rate for `tier`, if known
     signals: list[str]           # the fired complexity signals, for transparency
+    hint_reasons: list[str] = field(default_factory=list)  # hint-only families' why
 
     def message(self) -> str:
         """One honest human line — a band and a calibrated rate, never a verdict.
@@ -69,6 +70,7 @@ def estimate_feasibility(
     task: "Task",
     done_rate_by_tier: dict[str, int] | None = None,
     moa_cfg: dict | None = None,
+    config: dict | None = None,
 ) -> FeasibilityHint | None:
     """The pre-flight hint for *task*, or ``None`` when nothing is worth offering.
 
@@ -77,6 +79,10 @@ def estimate_feasibility(
     budget. ``done_rate_by_tier`` is this install's measured per-tier done-rate
     (``{tier: pct}``), supplied by the caller; ``None`` just omits the number.
     Fail-open: any error returns ``None``.
+
+    ``config`` gates ``feasibility.hint_signals_enabled`` — it never affects
+    the band/tier/offer decision above, only which *signals* the card shows
+    (``compute_tier``'s own, or those plus hint-only families).
     """
     try:
         tier, signals = compute_tier(task, moa_cfg or {})
@@ -94,11 +100,18 @@ def estimate_feasibility(
         else:
             return None
 
+        hints: list[str] = []
+        try:
+            signals, hints = hint_signals(task, moa_cfg or {}, config)
+        except Exception as exc:  # advisory channel — never silent
+            log.warning("hint signals skipped: %s", type(exc).__name__)
+
         pct = (done_rate_by_tier or {}).get(tier)
         return FeasibilityHint(
             band=band, tier=tier, offer=offer,
             done_rate_pct=int(pct) if pct is not None else None,
             signals=list(signals),
+            hint_reasons=list(hints),
         )
     except Exception as exc:  # noqa: BLE001 — advisory, never blocks a create
         log.warning("feasibility hint skipped: %s", type(exc).__name__)

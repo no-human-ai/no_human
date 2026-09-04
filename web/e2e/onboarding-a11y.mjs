@@ -3,7 +3,9 @@
 // content; without an accessible name a screen reader announces nothing
 // meaningful. This drives the real flow in a browser and asserts it carries an
 // aria-label. Mocked API, no :8420. (The Docs step's ListEditor and its
-// remove-entry ✕ were retired in B4; the walk now anchors on that step's
+// remove-entry ✕ were retired in B4; the Docs step itself left the wizard on
+// the operator's 2026-09-04 ruling — wiki generation is now enqueued
+// automatically at Launch — so the walk now anchors on the Integrations step
 // heading instead.)
 import { chromium } from "playwright";
 import http from "node:http";
@@ -108,14 +110,13 @@ check("remove-project button has a descriptive aria-label",
   await removeProj.isVisible().catch(() => false),
   `looked for aria-label "Remove project ${NAME}"`);
 
-// Docs step: the free-text ListEditor is gone (B4). It now shows detected
-// README/docs chips + a background "Generate wiki" button per selected repo.
-// With no repos ticked (repos/detect mock returns []) it renders the empty
-// state; assert the step heading rendered so the walk is anchored here.
+// The Docs step left the wizard 2026-09-04 (wiki generation is enqueued
+// automatically at Launch); one Continue from Projects now lands directly on
+// Integrations. Assert that step's heading rendered so the walk is anchored.
 await cont(); await page.waitForTimeout(300);
-const docsHeading = page.getByRole("heading", { name: /Repo docs & wiki/i });
-check("reached the Docs step (wiki UI present)",
-  await docsHeading.isVisible().catch(() => false));
+const integrationsHeading = page.getByRole("heading", { name: /Connect your tools/i });
+check("reached the Integrations step",
+  await integrationsHeading.isVisible().catch(() => false));
 
 check("no page errors during onboarding", errors.length === 0, errors[0] || "");
 

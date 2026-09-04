@@ -48,4 +48,7 @@ jobs:
           # Same exemption as the CLA ledger job: the maintainer does not sign
           # their own agreement.
           MAINTAINER: eyalgolan
+          # Who OPENED the PR — gates the agent-account exemption the same
+          # way the CLA ledger job does.
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
         run: bash scripts/cla_nudge.sh

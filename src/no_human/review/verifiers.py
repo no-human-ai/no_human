@@ -58,7 +58,7 @@ from typing import Any
 import yaml
 
 from ..core import pathglob
-from ..core.bounds import QuotaExhausted, quota_reason, quota_signal
+from ..core.bounds import QuotaExhausted, api_wall_reason, quota_reason, quota_signal
 from .selfcheck import ChecklistItem
 
 _ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{1,63}$")
@@ -582,6 +582,9 @@ async def _judge_once(
             raise
         if quota_signal(str(exc)):
             raise QuotaExhausted(quota_reason(str(exc))) from exc
+        wall = api_wall_reason(str(exc))
+        if wall is not None:
+            raise QuotaExhausted(wall, infra=True) from exc
         return VerifierResult(
             verifier_id=verifier.id,
             passed=False,

@@ -634,12 +634,13 @@ html, body, #root {
   .nh-sidebar-foot { margin-top: 0; margin-left: auto; flex-direction: row; align-items: center; flex-shrink: 0; }
   .nh-sidebar-foot .nh-status-label { display: none; }
   /* The foot is a horizontal row here (above) — a flow AI-config popup would
-     stretch that row to its own text width. Lift it back to an absolute
-     overlay anchored to the whole foot (not to one row inside it), so it
-     still cannot cover any foot row underneath. */
-  .nh-sidebar-foot { position: relative; }
-  .nh-aiconfig-nudge { position: absolute; bottom: calc(100% + 8px); left: 8px; right: 8px; z-index: 40; }
-  /* Settings moves from a bottom-pinned, divider-topped row (vertical rail
+     stretch that row to its own text width, and an absolute overlay anchored
+     to the foot put the popup outside the mobile nav's viewport (the foot
+     sits at the very top of the page here, so `bottom: 100%` placed the
+     popup above the viewport top — invisible on a phone). App.jsx hosts the
+     nudge inside .nh-main instead at phone width; see .nh-aiconfig-nudge-mobile
+     below.
+     Settings moves from a bottom-pinned, divider-topped row (vertical rail
      layout) to just another item in the row-layout foot — a left hairline
      reads as the equivalent separator once the sidebar itself is a row. It
      sits in the FOOT, not the nav strip, so it keeps the horizontal icon+label
@@ -649,6 +650,12 @@ html, body, #root {
     padding: 8px 7px; margin-top: 0; margin-left: 4px;
     flex: 0 0 auto; width: auto; gap: 5px; font-size: 13px;
     flex-direction: row; align-items: center; text-align: left;
+  }
+  /* Phone: the nudge renders inside .nh-main (App.jsx), in normal flow above
+     the board, so it is on-screen and its CTA is tappable. */
+  .nh-aiconfig-nudge-mobile {
+    position: relative;          /* still the containing block for the × button */
+    margin: 12px 12px 0; flex: 0 0 auto;
   }
 }
 
@@ -1227,6 +1234,17 @@ html, body, #root {
   color: var(--green);
   border: 1px solid var(--green); letter-spacing: 0.02em;
 }
+
+/* Elapsed-time chip for an active card (context/planning/implementing/
+   reviewing/testing) - amber past 2h, red past 4h (cardElapsed.js). Terminal
+   and human-gated states never render this element at all. */
+.card-elapsed {
+  font-size: 12px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+.card-elapsed.tone-warn { color: var(--warn); font-weight: 600; }
+.card-elapsed.tone-error { color: var(--danger); font-weight: 600; }
 
 .card-age {
   font-size: 12px;

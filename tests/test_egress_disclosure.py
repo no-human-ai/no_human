@@ -77,7 +77,9 @@ LOOPBACK_ONLY: dict[str, str] = {
         "health) — `nh status` probing our own local server, same trust model "
         "as cli/api_client.py (the CLI calling our own API)",
     "intake/mcp_bridge.py":
-        "BASE_URL = http://127.0.0.1:8420 — the MCP bridge calling our own API",
+        "http://<server host, 127.0.0.1 by default>:<port> (BASE_URL, resolved "
+        "from server.host/server.port at startup) — the MCP bridge calling our "
+        "own API",
     "history/extractor.py":
         "host defaults to 127.0.0.1; probes a language server on a local port",
 }

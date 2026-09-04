@@ -2020,9 +2020,17 @@ class WakeWatcher:
         # independently added): that shape is arithmetic, not a hand
         # decision, and gets repaired the same way a clean-merge count drift
         # already does (`approve_merge.reconcile_merge_count_drift`).
+        # `tests/test_structural_budget.py`'s FROZEN_* ratchet entries get
+        # the same treatment: a conflict confined to hunks that differ only
+        # by the frozen numeric value (both sides growing the same frozen
+        # function/file and honestly re-measuring it) is not a hand decision
+        # either — the merged tree's OWN measurement is the correct value,
+        # never either side's number (`derived_conflict.
+        # budget_conflict_hunks_numeric_only` / `budget_conflict.measure`).
         # Import lazily (blockers -> vcs at call time, as shipped.py
         # documents) to keep this module's import graph unchanged.
         from ..vcs.derived_conflict import (
+            BUDGET_TEST_PATH,
             CLASSIFICATION_NAME,
             DERIVED_ARTEFACTS,
             conflicting_paths,
@@ -2210,14 +2218,14 @@ class WakeWatcher:
             if base_tip_sha:
                 eligible = await mechanically_resolvable(
                     task.repo_path, conflict_paths, base_tip_sha, branch_name)
-            elif conflict_paths <= DERIVED_ARTEFACTS | {CLASSIFICATION_NAME}:
+            elif conflict_paths <= DERIVED_ARTEFACTS | {CLASSIFICATION_NAME, BUDGET_TEST_PATH}:
                 # The conflict has a mechanical SHAPE but the base tip could
                 # not be resolved, so eligibility cannot be confirmed. A coder
                 # cannot fix these files either — the honest outcome is the
                 # same "could not resolve the base tip" escalation the
                 # manifest-only path always had (review finding on PR #568:
                 # this sub-case fell through to a paid coder round).
-                eligible = DERIVED_ARTEFACTS | {CLASSIFICATION_NAME}
+                eligible = DERIVED_ARTEFACTS | {CLASSIFICATION_NAME, BUDGET_TEST_PATH}
 
         if eligible:
             resolver = self._derived_resolver or resolve_derived_conflict
@@ -2245,12 +2253,16 @@ class WakeWatcher:
                 pruned_note = (
                     f"; pruned stale pin(s): {', '.join(pruned)}" if pruned else ""
                 )
+                budget = getattr(result, "budget", "")
+                budget_note = (
+                    f"; structural budget re-anchored: {budget}" if budget else ""
+                )
                 await self._emit(
                     task, "pr_conflict_resolved",
                     f"{task.id[:8]} PR CONFLICTING — resolved mechanically "
-                    f"(derived artefact(s) only: {conflict_desc}), pushed "
-                    f"{result.pushed_sha[:8]}{unpinned_note}{reconciled_note}"
-                    f"{pruned_note}",
+                    f"(mechanically resolvable path(s) only: {conflict_desc}), "
+                    f"pushed {result.pushed_sha[:8]}{unpinned_note}"
+                    f"{reconciled_note}{pruned_note}{budget_note}",
                 )
                 return "resolved_pr_conflict"
 

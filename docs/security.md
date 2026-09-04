@@ -412,7 +412,8 @@ config key that turns it on and the default that keeps it off.
 ### Not egress: loopback
 
 The CLI, the desktop app and the MCP bridge talk to no_human's **own** API on
-`127.0.0.1:8420` (`cli/api_client.py`, `intake/mcp_bridge.py:29`,
+`server.host`:`server.port`, which is `127.0.0.1:8420` by default
+(`cli/api_client.py`, `intake/mcp_bridge.py:40`,
 `cli/commands.py:print_no_task_matching:78`), and the transcript-research reader probes a language
 server on localhost (`history/extractor.py:65-72`). These never leave the
 machine, and `server.host` defaults to `127.0.0.1`.

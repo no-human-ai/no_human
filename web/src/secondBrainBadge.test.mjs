@@ -54,7 +54,9 @@ test("I1: openSettings marks the POPUP dismissed on every open, independent of w
 });
 
 test("I1: the popup's visibility is gated on popupDismissed, NOT on the badge's aiConfigDone", () => {
-  const idx = appJsx.indexOf("nh-aiconfig-nudge\" role=\"dialog\"");
+  // The className is now a template literal (mobile vs. desktop variant),
+  // not a plain string — tolerate that instead of matching it verbatim.
+  const idx = appJsx.search(/nh-aiconfig-nudge[^`]*`\}\s*role="dialog"/);
   assert.ok(idx > -1, "the popup element must be found");
   const before = appJsx.slice(Math.max(0, idx - 400), idx);
   assert.match(before, /!popupDismissed && onboarded === true && !settingsOpen/,
@@ -317,7 +319,9 @@ test("I2: the split-row divider/reset rules are scoped to desktop (min-width: 64
 // fails here before it ever reaches the e2e run.
 
 test("the AI-config popup renders as a flow sibling ABOVE the Finish-setup entry, not inside .nh-settings-navwrap", () => {
-  const popupIdx = appJsx.indexOf('nh-aiconfig-nudge" role="dialog"');
+  // The className is now a template literal (mobile vs. desktop variant),
+  // not a plain string — tolerate that instead of matching it verbatim.
+  const popupIdx = appJsx.search(/nh-aiconfig-nudge[^`]*`\}\s*role="dialog"/);
   const finishIdx = appJsx.indexOf("<FinishSetupCard");
   const navwrapIdx = appJsx.indexOf('<div className="nh-settings-navwrap">');
   assert.ok(popupIdx > -1, "the popup element must be found");
@@ -340,4 +344,60 @@ test("the popup's base rule is not absolutely positioned over the sidebar rows",
     "the base rule must not anchor the popup above another element");
   assert.match(block, /position:\s*relative/,
     "position:relative must be kept so the × dismiss button still anchors to the popup");
+});
+
+// ── Mobile off-screen popup regression (this bug, pinned) ───────────────── //
+// Live bug: the ≤640px block re-lifted .nh-aiconfig-nudge to
+// `position: absolute; bottom: calc(100% + 8px)` anchored to .nh-sidebar-foot,
+// which sits outside the mobile nav's viewport — a new mobile user never saw
+// the nudge. Fixed by rendering it in normal flow inside .nh-main on phones
+// instead. Pinned at every layer: CSS must not re-lift it, App.jsx must host
+// exactly one instance per breakpoint, and the mobile-only class must not
+// leak into desktop.
+
+test("the ≤640px mobile block no longer re-lifts .nh-aiconfig-nudge to position:absolute (this bug, pinned)", () => {
+  const mobileStart = stylesCss.indexOf("@media (max-width: 640px)");
+  assert.ok(mobileStart > -1, "the mobile sidebar block must be found");
+  const [mStart, mEnd] = braceBlock(stylesCss, stylesCss.indexOf("{", mobileStart));
+  const mobileBlock = stylesCss.slice(mStart, mEnd);
+  assert.doesNotMatch(mobileBlock, /position:\s*absolute/,
+    "the mobile block must not re-lift .nh-aiconfig-nudge to position:absolute — that put the popup outside the mobile nav's viewport");
+  assert.doesNotMatch(mobileBlock, /bottom:\s*calc\(100% \+ 8px\)/,
+    "the mobile block must not anchor the popup to `bottom: calc(100% + 8px)` of the (out-of-viewport) sidebar foot");
+});
+
+test("App.jsx hosts the AI-config nudge inside .nh-main on phones, and the two render sites are mutually exclusive", () => {
+  const mainIdx = appJsx.indexOf('<main className="nh-main">');
+  assert.ok(mainIdx > -1, "the main board container must be found");
+  const phoneSiteIdx = appJsx.indexOf("{isPhone && aiConfigNudge}", mainIdx);
+  assert.ok(phoneSiteIdx > -1,
+    "on phones the nudge must be hosted as a flow child of <main className=\"nh-main\">, after its opening tag");
+
+  const desktopSiteIdx = appJsx.indexOf("{!isPhone && aiConfigNudge}");
+  assert.ok(desktopSiteIdx > -1,
+    "on desktop the nudge must stay gated behind !isPhone at the sidebar-foot site");
+  assert.ok(desktopSiteIdx < mainIdx,
+    "the desktop (sidebar) site must render before <main>, i.e. it is a distinct site from the phone one");
+
+  // Exactly one instance can ever be mounted — Playwright uses strict-mode
+  // locators, so both sites rendering at once would break the e2e checks.
+  assert.doesNotMatch(appJsx, /\{isPhone && aiConfigNudge\}[\s\S]*\{isPhone && aiConfigNudge\}/,
+    "the phone-gated render site must appear exactly once");
+  assert.doesNotMatch(appJsx, /\{!isPhone && aiConfigNudge\}[\s\S]*\{!isPhone && aiConfigNudge\}/,
+    "the desktop-gated render site must appear exactly once");
+});
+
+test(".nh-aiconfig-nudge-mobile is defined only inside the ≤640px block, never at top level (no desktop leak)", () => {
+  const mobileStart = stylesCss.indexOf("@media (max-width: 640px)");
+  assert.ok(mobileStart > -1, "the mobile sidebar block must be found");
+  const [mStart, mEnd] = braceBlock(stylesCss, stylesCss.indexOf("{", mobileStart));
+
+  const ruleIdx = stylesCss.indexOf(".nh-aiconfig-nudge-mobile {");
+  assert.ok(ruleIdx > -1, "a .nh-aiconfig-nudge-mobile rule must be defined");
+  assert.ok(ruleIdx >= mStart && ruleIdx < mEnd,
+    ".nh-aiconfig-nudge-mobile must be declared inside the ≤640px block, not at top level");
+
+  const occurrences = stylesCss.split(".nh-aiconfig-nudge-mobile {").length - 1;
+  assert.equal(occurrences, 1,
+    ".nh-aiconfig-nudge-mobile must be declared exactly once (no stray top-level/desktop copy)");
 });
