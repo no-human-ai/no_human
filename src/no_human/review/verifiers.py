@@ -223,6 +223,15 @@ def _build_verifier(
     return verifier, None
 
 
+def validate_entry(entry: Any, origin: str) -> tuple[Verifier | None, str | None]:
+    """Public validation entry point for authoring surfaces (e.g. `nh verifiers
+    add`/`propose`) that need the exact same acceptance rule the file loader
+    uses, without duplicating it. Delegates to `_build_verifier` — the id
+    regex, statement length cap, paths shape, and severity set are defined
+    once, here, and nowhere else."""
+    return _build_verifier(entry, origin, "cli")
+
+
 def _load_file(path: Path, source: str) -> tuple[list[Verifier], list[str]]:
     origin = str(path)
     try:

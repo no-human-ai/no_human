@@ -31,6 +31,11 @@ All notable changes to no_human. The format follows
 ### Added
 - `ci_gate.jenkins_ca_bundle`: PEM path the CI-log fetch verifies the Jenkins
   TLS chain against (empty = system trust store).
+- `nh verifiers list/add/check/propose`: inspect, additively author, and
+  dry-run-select the repo's natural-language verifiers from the CLI, and turn
+  a task's persisted review findings into candidate verifier YAML
+  (`nh verifiers propose TASK_ID [--apply]`). None of the four make a model
+  or network call.
 
 ### Changed
 - Development now happens directly in this repository: changes land here as
