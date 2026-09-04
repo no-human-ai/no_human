@@ -7128,6 +7128,10 @@ def bench():
              LATEST SAVED RESULTS — NOT the published baseline, which is a
              separate file only a clean publish writes.
     """
+    # Self-mark every `nh bench …` subprocess so telemetry.environment()
+    # tags its events "bench" instead of counting bench-fleet volume as
+    # real installs. setdefault: an explicit outer NH_ENV still wins.
+    os.environ.setdefault("NH_ENV", "bench")
 
 
 def _slug(label: str) -> str:

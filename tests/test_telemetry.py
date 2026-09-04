@@ -82,13 +82,15 @@ def test_unknown_prop_raises_even_for_known_kind():
 
 
 def test_allowlist_is_the_documented_closed_set():
+    # Every event also carries "environment" (real/bench/test/ci/dev),
+    # stamped by record() via environment() — see telemetry.py's docstring.
     assert telemetry._ALLOWED_EVENTS == {
-        "app_started": frozenset(),
-        "task_created": frozenset({"source"}),
-        "task_completed": frozenset({"status", "duration_bucket", "attempts"}),
-        "task_failed": frozenset({"category"}),
-        "approve_clicked": frozenset(),
-        "feature_used": frozenset({"name"}),
+        "app_started": frozenset({"environment"}),
+        "task_created": frozenset({"source", "environment"}),
+        "task_completed": frozenset({"status", "duration_bucket", "attempts", "environment"}),
+        "task_failed": frozenset({"category", "environment"}),
+        "approve_clicked": frozenset({"environment"}),
+        "feature_used": frozenset({"name", "environment"}),
     }
 
 
@@ -413,6 +415,11 @@ def test_missing_instance_id_mints_persists_and_still_sends(
     import yaml
 
     from no_human import config as config_mod
+    # Pin the REAL-context mint-and-persist path explicitly: without this,
+    # pytest's own PYTEST_CURRENT_TEST would classify this process as "test"
+    # and ensure_instance_id would take the sentinel branch instead (never
+    # persisting), breaking the on-disk assertion below by design.
+    monkeypatch.setenv("NH_ENV", "real")
     cfg_path = temp_home / ".no_human" / "config.yaml"
     cfg_path.parent.mkdir(parents=True, exist_ok=True)
     cfg_path.write_text("telemetry:\n  enabled: true\n")
@@ -454,13 +461,17 @@ def test_client_allowlist_matches_the_deployed_lambda_contract():
     mirror of this pin). This is the server's allowlist as deployed
     2026-08-16; if this test fails you are adding a client event — ship the
     server-side allowlist change FIRST, then update this fixture."""
+    # "environment" is a client-side-only addition (stripped by
+    # _strip_environment before the Lambda ever sees it — the server's
+    # allowlist itself is unchanged); it's still listed here because this
+    # fixture pins the CLIENT'S `_ALLOWED_EVENTS`, not the wire body.
     deployed_lambda_events = {
-        "app_started": frozenset(),
-        "task_created": frozenset({"source"}),
-        "task_completed": frozenset({"status", "duration_bucket", "attempts"}),
-        "task_failed": frozenset({"category"}),
-        "approve_clicked": frozenset(),
-        "feature_used": frozenset({"name"}),
+        "app_started": frozenset({"environment"}),
+        "task_created": frozenset({"source", "environment"}),
+        "task_completed": frozenset({"status", "duration_bucket", "attempts", "environment"}),
+        "task_failed": frozenset({"category", "environment"}),
+        "approve_clicked": frozenset({"environment"}),
+        "feature_used": frozenset({"name", "environment"}),
     }
     assert telemetry._ALLOWED_EVENTS == deployed_lambda_events
     # The server also regex-validates `version` (semver-ish, MAJOR.MINOR.
