@@ -1627,10 +1627,14 @@ class Orchestrator:
                     attempts=getattr(self, "_tel_attempts", 0))
             elif kind == "failed" and not getattr(self, "_tel_terminal_sent", False):
                 # Terminal `_fail` off-ramp. The free-text detail must NOT
-                # ship; the category is the signal name itself.
+                # ship; the category is the signal name itself. reason_category
+                # is a closed enum (never free text) — see telemetry.py.
                 self._tel_terminal_sent = True
                 telemetry.record("task_failed", config=self.config,
-                                 category="failed")
+                                 category="failed",
+                                 reason_category=telemetry.failure_reason_category(
+                                     meta.get("reason_category"),
+                                     meta.get("blocker_category")))
         except Exception:
             pass
 
@@ -2614,11 +2618,13 @@ class Orchestrator:
         primary checkout. That is the only way to get there: a worktree we
         cannot create is a failure, never a silent fall-back to the checkout."""
         if not task.repo_path:
-            return await self._fail(task, "no repo_path set on task")
+            return await self._fail(
+                task, "no repo_path set on task", reason_category="other")
 
         main_repo = self._open_repo(task)
         if main_repo is None:
-            return await self._fail(task, f"not a git repo: {task.repo_path}")
+            return await self._fail(
+                task, f"not a git repo: {task.repo_path}", reason_category="other")
 
         # Ensure remote refs are current before deriving the base branch —
         # avoids branching off stale state when the remote moved (e.g. a PR
@@ -2664,7 +2670,7 @@ class Orchestrator:
                 "Not running in the primary checkout instead — fix the "
                 "worktree root (isolation.worktree_root), or set "
                 "isolation.enabled: false to work in the checkout on purpose."
-            ))
+            ), reason_category="infra")
         try:
             return await self._drive_watched(task, repo)
         finally:
@@ -7513,9 +7519,15 @@ class Orchestrator:
 
     # --------------------------- off-ramps --------------------------------- #
 
-    async def _fail(self, task: Task, detail: str) -> TaskOutcome:
+    async def _fail(
+        self, task: Task, detail: str, *, reason_category: str = "other",
+    ) -> TaskOutcome:
+        from .. import telemetry
+        # Degrade an invalid caller value to "other" rather than raising in
+        # a failure off-ramp — this must never itself throw.
+        resolved_reason = telemetry.failure_reason_category(reason_category)
         await self.store.set_status(task, TaskStatus.FAILED)
-        self.emit("failed", detail, status="failed")
+        self.emit("failed", detail, status="failed", reason_category=resolved_reason)
         self.notifier.notify("task_failed", f"{task.title}: {detail}")
         return TaskOutcome(task, status=TaskStatus.FAILED, detail=detail)
 
@@ -12446,6 +12458,7 @@ class Orchestrator:
                 "code_review task needs at least one PR/MR reference in the title "
                 "or description — a full URL, or shorthand like "
                 "'host/owner/repo PR #123' or 'host group/repo MR !45'",
+                reason_category="other",
             )
         pr_url = pr_urls[0]  # canonical anchor for single-URL fields (comments, UI)
 
@@ -12501,6 +12514,7 @@ class Orchestrator:
                 task,
                 f"could not fetch any diff for {len(pr_urls)} ref(s): "
                 + ", ".join(pr_urls),
+                reason_category="infra",
             )
         if len(fetched) < len(pr_urls):
             self.emit(
@@ -12604,10 +12618,12 @@ class Orchestrator:
                 failure_reason=f"reviewer crashed: {exc}",
             )
             self._emit_review("review_error", str(exc))
-            return await self._fail(task, f"reviewer crashed: {exc}")
+            return await self._fail(
+                task, f"reviewer crashed: {exc}", reason_category="review_failed")
         except Exception as exc:  # noqa: BLE001
             self._emit_review("review_error", str(exc))
-            return await self._fail(task, f"reviewer crashed: {exc}")
+            return await self._fail(
+                task, f"reviewer crashed: {exc}", reason_category="review_failed")
 
         # Store the review result — including the reviewer's real token cost, so
         # a code_review task no longer reads as a 0-token "done" (f71107e9).

@@ -676,10 +676,15 @@ by the browser:
 | `app_started` | server | `environment` |
 | `task_created` | server | `source`, `environment` |
 | `task_completed` | server | `status`, `duration_bucket`, `attempts`, `environment` |
-| `task_failed` | server | `category`, `environment` |
+| `task_failed` | server | `category`, `reason_category`, `environment` |
 | `approve_clicked` | server | `environment` |
 | `feature_used` | server | `name`, `environment` |
 | `screen_viewed` | browser | `screen` (the lane name — `board`/`backlog`/`done`/`failed`/`stats`/`settings`/…, never content) |
+
+`task_failed`'s `reason_category` is a CLOSED enum — one of
+`budget_exhausted`, `review_failed`, `max_attempts`, `infra`,
+`tamper_blocked`, `blocker_parked`, `other` — never free text; that closure
+is the privacy guarantee (no failure detail ever leaves the machine).
 
 Every server event also carries `environment` (`real`/`bench`/`test`/`ci`/
 `dev`), classified fresh per event by `telemetry.environment()` — an

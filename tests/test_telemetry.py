@@ -88,7 +88,7 @@ def test_allowlist_is_the_documented_closed_set():
         "app_started": frozenset({"environment"}),
         "task_created": frozenset({"source", "environment"}),
         "task_completed": frozenset({"status", "duration_bucket", "attempts", "environment"}),
-        "task_failed": frozenset({"category", "environment"}),
+        "task_failed": frozenset({"category", "reason_category", "environment"}),
         "approve_clicked": frozenset({"environment"}),
         "feature_used": frozenset({"name", "environment"}),
     }
@@ -115,6 +115,92 @@ def test_hook_normalizes_unknown_task_kinds_to_other(monkeypatch):
     stub._telemetry_hook("kind", {})
     sources = [p["source"] for k, p in sent if k == "task_created"]
     assert sources == ["other", "feature", "unknown"]
+
+
+def test_failed_hook_emits_reason_category(monkeypatch):
+    """Keeps the orchestrator wiring honest: `_telemetry_hook`'s "failed"
+    branch resolves `reason_category` via `failure_reason_category()`, so an
+    explicit valid value passes through and a missing one degrades to
+    "other" rather than raising or dropping the event."""
+    from no_human.core.orchestrator import Orchestrator
+
+    sent = []
+    monkeypatch.setattr(
+        telemetry, "record",
+        lambda kind, config=None, **props: sent.append((kind, props)))
+
+    class _Stub:  # only what the hook touches
+        config: dict = {}
+        _telemetry_hook = Orchestrator._telemetry_hook
+
+    stub1 = _Stub()
+    stub1._telemetry_hook("failed", {"reason_category": "infra"})
+    stub2 = _Stub()
+    stub2._telemetry_hook("failed", {})
+    reasons = [p["reason_category"] for k, p in sent if k == "task_failed"]
+    assert reasons == ["infra", "other"]
+
+
+# --- failure reason category ----------------------------------------------- #
+
+def test_task_failed_accepts_every_reason_category(temp_home, no_thread):
+    for value in telemetry.FAILURE_REASON_CATEGORIES:
+        telemetry.record("task_failed", config={"telemetry": _ENABLED},
+                         category="failed", reason_category=value)
+    path = temp_home / ".no_human" / "telemetry-queue.jsonl"
+    lines = [json.loads(ln) for ln in path.read_text().splitlines() if ln.strip()]
+    sent_reasons = {ev["props"]["reason_category"] for ev in lines}
+    assert sent_reasons == set(telemetry.FAILURE_REASON_CATEGORIES)
+
+
+def test_out_of_enum_reason_category_raises():
+    for bad in ("budget", "BUDGET_EXHAUSTED", "repo acme/private failed at step 3"):
+        with pytest.raises(ValueError, match="not allowed"):
+            telemetry.record("task_failed", config={"telemetry": _ENABLED},
+                             category="failed", reason_category=bad)
+        # Validated even when telemetry is disabled — an out-of-enum value
+        # is a privacy bug regardless of consent state.
+        with pytest.raises(ValueError, match="not allowed"):
+            telemetry.record(
+                "task_failed", config={"telemetry": {"enabled": False}},
+                category="failed", reason_category=bad)
+
+
+def test_reason_category_is_closed_and_carries_no_free_text():
+    assert (telemetry._ALLOWED_PROP_VALUES[("task_failed", "reason_category")]
+            is telemetry.FAILURE_REASON_CATEGORIES)
+    assert telemetry.FAILURE_REASON_CATEGORIES == {
+        "budget_exhausted", "review_failed", "max_attempts", "infra",
+        "tamper_blocked", "blocker_parked", "other",
+    }
+    for value in telemetry.FAILURE_REASON_CATEGORIES:
+        assert re.fullmatch(r"[a-z_]{1,24}", value), value
+
+
+def test_failure_reason_category_maps_explicit_blocker_and_unknown():
+    # explicit valid value wins outright
+    assert telemetry.failure_reason_category("infra", "BUDGET_EXHAUSTED") == "infra"
+    # explicit invalid + a mapped blocker category -> the mapping
+    assert telemetry.failure_reason_category(
+        "not-a-category", "BUDGET_EXHAUSTED") == "budget_exhausted"
+    assert telemetry.failure_reason_category(None, "TRANSIENT_INFRA") == "infra"
+    assert telemetry.failure_reason_category(None, "QUOTA") == "infra"
+    assert telemetry.failure_reason_category(None, "AMBIGUITY") == "blocker_parked"
+    # both None -> "other"
+    assert telemetry.failure_reason_category(None, None) == "other"
+    # garbage blocker string -> "other"
+    assert telemetry.failure_reason_category(None, "NOT_A_REAL_CATEGORY") == "other"
+
+
+def test_task_failed_still_carries_environment(temp_home, no_thread, monkeypatch):
+    monkeypatch.setenv("NH_ENV", "ci")
+    telemetry.record("task_failed", config={"telemetry": _ENABLED},
+                     category="failed", reason_category="infra")
+    path = temp_home / ".no_human" / "telemetry-queue.jsonl"
+    [line] = [ln for ln in path.read_text().splitlines() if ln.strip()]
+    props = json.loads(line)["props"]
+    assert props["environment"] == "ci"
+    assert props["reason_category"] == "infra"
 
 
 # ------------------------- consent gate ----------------------------------- #
@@ -469,7 +555,7 @@ def test_client_allowlist_matches_the_deployed_lambda_contract():
         "app_started": frozenset({"environment"}),
         "task_created": frozenset({"source", "environment"}),
         "task_completed": frozenset({"status", "duration_bucket", "attempts", "environment"}),
-        "task_failed": frozenset({"category", "environment"}),
+        "task_failed": frozenset({"category", "reason_category", "environment"}),
         "approve_clicked": frozenset({"environment"}),
         "feature_used": frozenset({"name", "environment"}),
     }
