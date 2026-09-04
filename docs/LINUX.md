@@ -166,10 +166,20 @@ every push to `main`, opt-in `linux` label on PRs, and `workflow_dispatch`
 ONLY with the `linux_release` input — a bare dispatch is the nightly guards'
 handle and neither runs this job nor produces packages):
 
-1. `uv sync --frozen` (15-minute bound with a 2-attempt internal-timeout
-   retry — a cache-cold sync measured 7.32s locally on 2026-09-04; the uv
-   cache itself is keyed by `uv.lock` via `setup-uv`'s `enable-cache`), then
-   `npm ci` in `web/` and `desktop/` (a FULL desktop
+1. `uv sync --frozen` (15-minute step bound; a cache-cold sync measured
+   7.32s locally on 2026-09-04, and `uv lock --check` resolved in 3ms,
+   ruling out lock drift — the real failures are a GitHub-runner registry
+   stall this sandbox cannot reproduce). The first attempt gets nearly the
+   whole 15-minute budget (~14 minutes) so it alone can absorb a diagnosed
+   6-12 minute sustained stall, instead of being capped below it by a small
+   per-attempt timeout and retried into an identical failure — a contended
+   registry does not get faster on retry. A second attempt only fires, with
+   whatever budget remains, if the first attempt failed FAST with a real
+   (non-timeout) `uv` error; the uv cache itself is keyed by `uv.lock` via
+   `setup-uv`'s `enable-cache`. On final failure the step prints the last 60
+   log lines and a `uv lock --check` drift probe before exiting non-zero, so
+   the real error is never hidden behind a bare timeout. Then
+   `npm ci` runs in `web/` and `desktop/` (a FULL desktop
    install — electron-builder needs the Electron binary).
 2. `bash packaging/build-installer.sh` — the frozen server, with every gate
    the macOS build has (0 `.py`, no `ci_gate`, no private term inventory, no

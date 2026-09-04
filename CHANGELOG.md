@@ -52,10 +52,17 @@ All notable changes to no_human. The format follows
 ### Fixed
 - The `linux` CI job's `Install dependencies` step (`uv sync --frozen`) was
   chronically timing out at its 5-minute bound before the P2 Linux bundle
-  could ever be validated green. The bound is now 15 minutes with a
-  2-attempt retry whose own internal per-attempt timeout fires (and prints
-  the real `uv` error plus a `uv lock --check` drift probe) before GitHub's
-  step timeout can turn a stall into an opaque `cancelled` job.
+  could ever be validated green. The step bound is now 15 minutes, and the
+  first attempt is given nearly that whole budget (~14 minutes) instead of
+  a small fixed per-attempt cap — a diagnosed 6-12 minute sustained
+  registry stall on GitHub-hosted runners could previously outlast even a
+  6-minute per-attempt cap on both retries, since retrying a stall cannot
+  make a contended registry faster. A second attempt, with whatever budget
+  remains, now fires only when the first attempt fails FAST with a real
+  (non-timeout) `uv` error worth retrying; a stalled attempt goes straight
+  to final failure, which prints the real `uv` error plus a `uv lock
+  --check` drift probe before GitHub's step timeout can turn it into an
+  opaque `cancelled` job.
 
 ## [0.1.9] — 2026-09-01
 

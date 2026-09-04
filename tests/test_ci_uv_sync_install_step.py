@@ -73,27 +73,53 @@ def test_uv_cache_is_keyed_by_uv_lock():
 
 
 def test_per_attempt_bound_fires_before_the_step_timeout():
+    """A single attempt must be able to absorb the diagnosed 6-12 minute
+    sustained-registry stall on its own -- not be capped below it and
+    retried into an identical failure, since retrying a stall cannot make a
+    contended registry faster. The internal budget must still stay under
+    the step's own timeout-minutes, so a stall always ends as a printed
+    internal failure (job status `failure`), never GitHub's bare step
+    timeout (job status `cancelled`)."""
     workflow = _load_workflow()
     steps = _steps_by_name(_linux_job(workflow))
     step_timeout = steps["Install dependencies"]["timeout-minutes"]
     body = _install_deps_body()
 
-    per_attempt_match = re.search(r"per_attempt=(\d+)m\b", body)
-    max_match = re.search(r"\bmax=(\d+)\b", body)
-    assert per_attempt_match, "could not find a per_attempt=<N>m assignment in the run body"
-    assert max_match, "could not find a max=<N> assignment in the run body"
+    budget_match = re.search(r"budget_s=\$\(\(\s*(\d+)\s*\*\s*60\s*-\s*(\d+)\s*\)\)", body)
+    assert budget_match, "could not find a budget_s=$((<step_minutes> * 60 - <reserve>)) assignment"
 
-    per_attempt = int(per_attempt_match.group(1))
-    max_attempts = int(max_match.group(1))
-
-    backoff_seconds = sum(15 * n for n in range(1, max_attempts))
-    total_minutes = per_attempt * max_attempts + backoff_seconds / 60
-
-    assert total_minutes < step_timeout, (
-        f"per_attempt({per_attempt}) * max({max_attempts}) + backoff({backoff_seconds}s) "
-        f"= {total_minutes}min must stay under the step timeout ({step_timeout}min), so a "
-        "stall always ends as an internal timeout, never a bare GitHub step timeout"
+    step_minutes_in_body, reserve_seconds = (int(g) for g in budget_match.groups())
+    assert step_minutes_in_body == step_timeout, (
+        "the budget's step-minutes term must track the step's actual timeout-minutes"
     )
+    budget_minutes = (step_minutes_in_body * 60 - reserve_seconds) / 60
+
+    assert budget_minutes > 12, (
+        f"the internal per-attempt budget ({budget_minutes}min) must exceed the diagnosed "
+        "6-12 minute sustained-registry-stall range so a single attempt can absorb it, "
+        "instead of being capped below it (e.g. a 6-minute cap) and retried into an "
+        "identical failure"
+    )
+    assert budget_minutes < step_timeout, (
+        f"the internal budget ({budget_minutes}min) must stay under the step timeout "
+        f"({step_timeout}min) so an internal failure (with a printed uv error) always fires "
+        "before GitHub's bare step timeout"
+    )
+
+
+def test_a_stalled_attempt_is_not_retried():
+    """Retrying a stalled (timed-out) attempt cannot make a contended
+    registry faster -- only a fast, real uv error is worth a second try."""
+    body = _install_deps_body()
+
+    assert re.search(
+        r'if \[ "\$rc" -eq 124 \] \|\| \[ "\$rc" -eq 137 \]; then\s*\n\s*stalled=1',
+        body,
+    ), "could not find the 124/137 stall detection setting stalled=1"
+
+    assert re.search(
+        r'if \[ "\$stalled" -eq 1 \] \|\| \[ "\$attempt" -ge "\$max" \]; then', body
+    ), "a stalled attempt must short-circuit straight to the final-failure branch, not be retried"
 
 
 def test_final_failure_surfaces_the_real_uv_error():
