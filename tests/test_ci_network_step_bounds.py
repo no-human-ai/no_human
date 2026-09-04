@@ -22,7 +22,7 @@ WORKFLOW_PATH = Path(__file__).resolve().parent.parent / ".github" / "workflows"
 # PR body/plan commit to for each.
 EXPECTED_TIMEOUTS = {
     "Install uv": 3,
-    "Install dependencies": 5,
+    "Install dependencies": 15,
     "apt lists + Xvfb": 3,
     "Install the .deb the way a user would": 5,
     "Install the Claude Code CLI the way a user would": 5,
@@ -104,6 +104,52 @@ def test_all_six_network_steps_are_bounded():
         assert isinstance(value, int), f"{name}: timeout-minutes must be an int, got {value!r}"
         assert 0 < value < 45, f"{name}: timeout-minutes={value} out of (0, 45)"
         assert value == expected, f"{name}: timeout-minutes={value}, expected {expected}"
+
+
+def test_uv_cache_step_is_keyed_by_the_lockfile():
+    workflow = _load_workflow()
+    job = _linux_job(workflow)
+    steps = job["steps"]
+
+    names = [step.get("name") for step in steps]
+    install_uv_idx = names.index("Install uv")
+    install_deps_idx = names.index("Install dependencies")
+
+    cache_idx = None
+    for i, step in enumerate(steps):
+        uses = step.get("uses", "")
+        if uses.startswith("actions/cache@"):
+            cache_idx = i
+            cache_step = step
+            break
+    assert cache_idx is not None, "no actions/cache step found in the linux job"
+
+    with_block = cache_step.get("with", {})
+    assert with_block.get("path") == "~/.cache/uv"
+    assert "hashFiles('uv.lock')" in with_block.get("key", "")
+    assert with_block.get("restore-keys"), "restore-keys must be present and non-empty"
+
+    assert install_uv_idx < cache_idx < install_deps_idx, (
+        "the cache step must sit strictly between 'Install uv' and 'Install dependencies'"
+    )
+
+
+def test_uv_sync_retry_prints_the_captured_stderr_on_final_failure():
+    workflow = _load_workflow()
+    steps = _steps_by_name(_linux_job(workflow))
+    body = steps["Install dependencies"]["run"]
+
+    assert re.search(r'2>"?\$err"?', body), "uv sync stderr must be redirected to a captured file"
+
+    guard_idx = body.index('[ "$n" -ge 2 ]')
+    exit_idx = body.index("exit 1")
+    cat_after_guard = [m.start() for m in re.finditer(r'cat "\$err"', body) if guard_idx < m.start() < exit_idx]
+    assert cat_after_guard, "cat \"$err\" must appear after the final-attempt guard and before exit 1"
+
+    assert "sleep 15" in body
+    assert "exit 1" in body
+    sync_matches = [m.start() for m in re.finditer(r"uv sync --frozen", body)]
+    assert len(sync_matches) == 1, "uv sync --frozen must appear exactly once"
 
 
 def test_cli_install_retries_only_the_npm_half():
