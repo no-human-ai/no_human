@@ -459,12 +459,16 @@ def propose_cmd(task_id: str, repo: str, apply_: bool, severity: str) -> None:
                 return
 
             target = repo_verifiers_path(repo_root)
+            any_failed = False
             for c in candidates:
                 block = render_entry(c["id"], c["statement"], c["paths"], c["severity"])
                 err = _write_then_verify(target, block, c["id"], repo_root, NO_HUMAN_HOME)
                 if err:
+                    any_failed = True
                     console.print(f"[red]failed[/] {c['id']} — {err}")
                 else:
                     console.print(f"[green]added[/] verifier {c['id']} -> {target}")
+            if any_failed:
+                sys.exit(1)
 
     asyncio.run(_go())

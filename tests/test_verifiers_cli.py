@@ -304,10 +304,15 @@ def test_check_reports_selected_and_not_selected(tmp_path, monkeypatch):
 
 
 def test_check_would_fail_closed_when_no_matching_hunks(tmp_path, monkeypatch):
-    # `docs/*` matches a changed path via `select()`'s glob (against the
-    # loosely-matched changed-file list) in this fixture only if the changed
-    # file set includes a docs path; force that, but keep the diff itself
-    # free of docs hunks, so filter_diff finds nothing to judge.
+    # `select()` (real, driven by the actual changed-file list from git) and
+    # `filter_diff` (monkeypatched) are independent steps in check_cmd's own
+    # dispatch — select genuinely selects "everything-rule" because
+    # `src/**/*.py` matches the real changed path `src/a.py`, and filter_diff
+    # is forced to report no matching hunks for it, so this exercises
+    # check_cmd's own "selected but filter_diff found nothing" branch
+    # directly rather than depending on a git corner case to reproduce it.
+    # filter_diff's own hunk-matching behaviour has its own coverage in
+    # tests/test_verifiers.py.
     yaml_text = (
         "verifiers:\n"
         "  - id: everything-rule\n"
@@ -317,15 +322,14 @@ def test_check_would_fail_closed_when_no_matching_hunks(tmp_path, monkeypatch):
         "      - docs/*\n"
     )
     repo = _git_repo_with_two_commits(tmp_path, verifiers_yaml=yaml_text)
-    # Touch docs/readme.md too, so the verifier is selected, but then amend
-    # the last commit to drop that hunk back out of the diff while the
-    # changed-files list (used for selection) still isn't rebuilt.
     runner = _runner(tmp_path, monkeypatch)
+    monkeypatch.setattr(vcmd, "filter_diff", lambda diff_text, paths: ("", []))
 
     result = runner.invoke(cli, ["verifiers", "check", "--repo", str(repo)])
 
     assert result.exit_code == 0, result.output
     assert "everything-rule" in result.output
+    assert "would fail closed as no_verdict" in result.output.lower()
 
 
 def test_check_exits_nonzero_on_a_malformed_config(tmp_path, monkeypatch):
@@ -451,6 +455,24 @@ def test_propose_apply_appends_and_is_idempotent(tmp_path, monkeypatch):
     assert "already defined" in second.output.lower()
     text_after_second = (repo / ".no_human" / "verifiers.yaml").read_text()
     assert text_after_second.count("- id:") == 1
+
+
+def test_propose_apply_exits_nonzero_when_a_write_fails(tmp_path, monkeypatch):
+    # A write failure must be detectable from the exit code alone — a caller
+    # scripting `nh verifiers propose --apply` should never have to scrape
+    # stdout for the red "failed" line to know a candidate was rolled back.
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    db = tmp_path / "test.db"
+    task_id = _seed_task(db, review_checklist=_blocking_checklist())
+    runner = _runner(tmp_path, monkeypatch, db_path=db)
+    monkeypatch.setattr(vcmd, "_write_then_verify", lambda *a, **k: "forced failure")
+
+    result = runner.invoke(cli, ["verifiers", "propose", task_id, "--repo", str(repo), "--apply"])
+
+    assert result.exit_code != 0
+    assert "failed" in result.output.lower()
+    assert not (repo / ".no_human" / "verifiers.yaml").exists()
 
 
 def test_propose_skips_rule_labelled_findings(tmp_path, monkeypatch):
