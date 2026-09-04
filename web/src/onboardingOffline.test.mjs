@@ -1,7 +1,7 @@
 // Incident 2026-09-04: the operator walked the onboarding wizard while the
 // backend process died mid-flow. Every step's fetch rejected and rendered its
 // own raw "Failed to fetch" string — REPOSITORIES path-completion silently
-// dead, DOCS chips, INTEGRATIONS list, no explanation, no way back. These
+// dead, INTEGRATIONS list, no explanation, no way back. These
 // tests pin `offlineRetry.js` (the pure logic: classification, banner
 // view-model, fake-clock-driven probe) plus static-source guards on
 // `Onboarding.jsx`, the same idiom `connectionBanner.test.mjs` /
@@ -64,6 +64,19 @@ test("Onboarding.jsx routes every loader rejection through noteFetchFailure", ()
   // No bare setIntegrations([]) fallback either — only the guarded form.
   assert.doesNotMatch(onboardingSrc, /\.catch\(\(\) => setIntegrations\(\[\]\)\)/);
   assert.match(onboardingSrc, /if \(!noteFetchFailure\(e\)\) setIntegrations\(\[\]\)/);
+});
+
+test("PathInput reports a network-level rejection to the wizard instead of dying silently", () => {
+  // The autocomplete effect must never leave `suggestPaths(value)` as a bare
+  // unhandled await — a network-level rejection has to route through the
+  // `onNetworkError` prop (noteFetchFailure), not vanish as an unhandled
+  // promise rejection.
+  assert.match(onboardingSrc, /function PathInput\(\{[^}]*onNetworkError[^}]*\}\)/);
+  assert.match(onboardingSrc, /try \{\s*const res = await suggestPaths\(value\);/);
+  assert.match(onboardingSrc, /if \(live && !onNetworkError\?\.\(e\)\) setOpts\(\[\]\)/);
+  // And the wizard must actually wire noteFetchFailure into it, not just
+  // declare the prop.
+  assert.match(onboardingSrc, /<PathInput value=\{root\}[\s\S]{0,400}?onNetworkError=\{noteFetchFailure\}/);
 });
 
 test("an HTTP failure is a step error, not an outage", () => {
@@ -186,10 +199,11 @@ test("the banner is wizard-level, has a Retry control, and uses role=status not 
 });
 
 test("the reconnect re-runs the current step's loaders", () => {
-  // All three loader effects' dep arrays must include reloadNonce, so a
-  // reconnect re-fetches the current step's data instead of leaving it stale.
+  // Both loader effects' dep arrays (repos/integrations, and readiness) must
+  // include reloadNonce, so a reconnect re-fetches the current step's data
+  // instead of leaving it stale.
   const nonceDeps = [...onboardingSrc.matchAll(/\}, \[[^\]]*reloadNonce[^\]]*\]\);/g)];
-  assert.equal(nonceDeps.length, 3, `expected 3 effects depending on reloadNonce, saw ${nonceDeps.length}`);
+  assert.equal(nonceDeps.length, 2, `expected 2 effects depending on reloadNonce, saw ${nonceDeps.length}`);
 });
 
 test("the offline banner styles exist and are themed", () => {
