@@ -27,6 +27,7 @@ from ..agent.claude_backend import ClaudeBackend
 from ..agent.backend import make_backend, resolve_backend_name, SUPPORTED_BACKENDS
 from ..config import (
     AuthError,
+    MissingCredentialError,
     _windows_pid_alive,
     assert_codex_mode,
     assert_local_backend_mode,
@@ -243,8 +244,16 @@ def _local_hhmm(iso: str | None) -> str:
     return dt.astimezone().strftime("%H:%M")
 
 
-def _bootstrap(*, require_auth: bool = True):
-    """Load config + enforce subscription mode. Returns (config, scrub_report)."""
+def _bootstrap(*, require_auth: bool = True, allow_setup_mode: bool = False):
+    """Load config + enforce subscription mode. Returns (config, scrub_report).
+
+    ``allow_setup_mode``: when the ONLY problem is that no subscription
+    credential is on file at all (:class:`MissingCredentialError`), let the
+    caller (``nh start``) boot anyway instead of exiting — the board is where
+    a new user sets the credential up. Every other AuthError (a named
+    profile's missing token, ANTHROPIC_API_KEY present, codex/local
+    misconfig) still exits 2 exactly as before; this never widens those.
+    """
     config = load_config()
     report = None
     if require_auth:
@@ -274,6 +283,18 @@ def _bootstrap(*, require_auth: bool = True):
             if resolve_backend_name(config.data) == "local":
                 assert_local_backend_mode((_llm or {}).get("local_base_url"))
         except AuthError as exc:
+            if allow_setup_mode and isinstance(exc, MissingCredentialError):
+                console.print(
+                    "[yellow]⚠ starting in setup mode:[/] no subscription "
+                    "credential is on file. The board will serve onboarding "
+                    "and Settings only — anything that spends tokens is "
+                    "disabled until you finish setup:\n"
+                    "  1. [bold]claude setup-token[/]  (creates a subscription token)\n"
+                    "  2. Add it to ~/.no_human/.env:\n"
+                    "     [bold]echo 'CLAUDE_CODE_OAUTH_TOKEN=<token>' >> ~/.no_human/.env[/]\n"
+                    "  3. Reload the board (or restart), or finish the wizard in Settings."
+                )
+                return config, report
             console.print(f"[bold red]auth error:[/] {exc}")
             # The Codex failure carries its own complete remedy — either "add
             # OPENAI_API_KEY" (api_key mode) or "run `codex login`"
@@ -294,6 +315,18 @@ def _bootstrap(*, require_auth: bool = True):
             )
             sys.exit(2)
     return config, report
+
+
+def _server_setup_reason(config) -> str | None:
+    """None when a subscription credential is on file, else the reason.
+
+    Used only by ``nh start`` (via ``_bootstrap(allow_setup_mode=True)``) to
+    decide whether the server it is about to build boots restricted. Never
+    raises, never scrubs — see :func:`no_human.config.subscription_credential_missing`.
+    """
+    from ..config import subscription_credential_missing
+
+    return subscription_credential_missing(config.data)
 
 
 def _refuse_agent_gate_act(act: str) -> None:
@@ -6703,8 +6736,16 @@ def start(host, port, workers, no_open):
       nh start --workers 3         # board + 3 concurrent workers
       nh start --no-open           # don't open browser
     """
-    config, _ = _bootstrap()
-    _assert_backend_usable()
+    config, _ = _bootstrap(allow_setup_mode=True)
+    setup_reason = _server_setup_reason(config)
+    if setup_reason is None:
+        _assert_backend_usable()
+    else:
+        console.print(
+            f"[yellow]⚠ setup mode:[/] {setup_reason} Task dispatch, grill and "
+            "split are disabled until it's added; onboarding and Settings "
+            "still work."
+        )
     _warn_if_editable_install_dangles()
 
     if not _acquire_pid_lock():
@@ -6760,6 +6801,8 @@ def start(host, port, workers, no_open):
         "max_workers": max_workers,
         "poll_interval": poll_interval,
     }
+    _app.state.setup_mode = bool(setup_reason)
+    _app.state.setup_reason = setup_reason
 
     # Build the server ourselves (instead of uvicorn.run) so we can run it in
     # the same event loop as the Jira poll loop below — mirrors `serve`'s

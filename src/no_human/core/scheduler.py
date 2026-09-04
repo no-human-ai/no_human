@@ -34,8 +34,9 @@ from typing import Awaitable, Callable
 from ..agent.worker_context import WorkerContext, set_worker_context
 from ..blockers import human_gate_armed
 from ..blockers.shipped import _TICK_ABORTED, complete_if_content_landed
-from ..config import (DEFAULT_CONFIG, active_auth_profile, parallelism_enabled,
-                      pid_alive, process_start_token, worktree_isolation_enabled)
+from ..config import (AuthError, DEFAULT_CONFIG, active_auth_profile,
+                      parallelism_enabled, pid_alive, process_start_token,
+                      worktree_isolation_enabled)
 from ..vcs.pr_watcher import landing_sha_candidates, orphan_landed_evidence
 from ..vcs.task_pr import resolve_task_pr
 from .bounds import QuotaExhausted
@@ -482,6 +483,7 @@ class Scheduler:
         retirement_job: "RetirementSweepJob | None" = None,
         harvest_job: "HarvestJob | None" = None,
         config: dict | None = None,
+        auth_check: Callable[[], None] | None = None,
     ):
         self.store = store
         self.factory = orchestrator_factory
@@ -530,6 +532,17 @@ class Scheduler:
         self.retirement = retirement_job
         self.harvest = harvest_job
         self._config = config or {}
+        # Setup mode (missing credential, see config.assert_subscription_mode):
+        # re-probed every tick, right before dispatch, instead of once at
+        # startup — a credential added to the .env after boot must resume
+        # dispatch without a restart. None means "no check configured",
+        # i.e. every existing caller that doesn't pass auth_check keeps
+        # today's zero-gate behavior exactly.
+        self._auth_check = auth_check
+        # The last auth-failure message this process already emitted an
+        # advisory for, so a stuck-in-setup-mode server logs ONE line, not
+        # one per tick — cleared the moment dispatch resumes.
+        self._auth_advisory: str | None = None
         # Orchestrators whose `run_task` is being awaited right now, so a
         # shutdown can ask each one to checkpoint and requeue
         # (`request_stop_checkpoints` → `Orchestrator.request_server_stop`).
@@ -2080,6 +2093,29 @@ class Scheduler:
                 await self._resume_quota_parks(now=now)
             except Exception as exc:  # noqa: BLE001 — sweep must not kill the pool
                 log.warning("quota-park resume sweep failed: %s", exc)
+
+        # Setup mode: no credential on file at all (config.assert_subscription_
+        # mode is the gate). Checked every tick, right before dispatch, not
+        # once at startup — so a credential added to the .env after boot
+        # resumes dispatch on the next tick, no restart, and a server that
+        # boots INTO setup mode idles cleanly instead of crash-looping this
+        # coroutine forever.
+        if self._auth_check is not None:
+            try:
+                self._auth_check()
+            except AuthError as exc:
+                msg = str(exc).splitlines()[0]
+                if self._auth_advisory != msg:  # emit once per distinct reason
+                    self._auth_advisory = msg
+                    log.warning("dispatch paused — %s", msg)
+                    self._on_event("setup_required", msg)
+                return []  # idle, not raise: this must never crash-loop
+            else:
+                if self._auth_advisory is not None:
+                    self._auth_advisory = None
+                    self._on_event(
+                        "setup_complete",
+                        "credential detected — dispatch resumed")
 
         slots = self.max_workers - len(self._inflight)
         started: list[str] = []
