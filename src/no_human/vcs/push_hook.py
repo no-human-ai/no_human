@@ -194,6 +194,20 @@ def hook_dir_for(worktree_path: Path | str) -> Path:
     return admin / HOOK_DIR_NAME
 
 
+def _write_patterns(hooks: Path, never_push_to: list[str]) -> None:
+    """The one generated file the hook reads its branch list from. Shared by
+    `install_pre_push_guard` (first install) and `refresh_protected_patterns`
+    (later re-installs a per-task base into an already-installed guard) so
+    there is exactly one place that decides the file's format."""
+    patterns = hooks / PATTERNS_FILENAME
+    patterns.write_text(
+        "# no_human protected-branch patterns -- GENERATED from the same\n"
+        "# git.never_push_to config the PreToolUse guard is given.\n"
+        + "".join(f"{p}\n" for p in never_push_to),
+        encoding="utf-8",
+    )
+
+
 def install_pre_push_guard(
     worktree_path: Path | str, never_push_to: list[str],
 ) -> Path:
@@ -232,13 +246,7 @@ def install_pre_push_guard(
     hooks = hook_dir_for(wt)
     hooks.mkdir(parents=True, exist_ok=True)
 
-    patterns = hooks / PATTERNS_FILENAME
-    patterns.write_text(
-        "# no_human protected-branch patterns -- GENERATED from the same\n"
-        "# git.never_push_to config the PreToolUse guard is given.\n"
-        + "".join(f"{p}\n" for p in never_push_to),
-        encoding="utf-8",
-    )
+    _write_patterns(hooks, never_push_to)
 
     delegate = ""
     if prev_hooks is not None and prev_hooks != hooks:
@@ -276,3 +284,42 @@ def install_pre_push_guard(
             f"resolved to {effective!r}, expected {str(hooks)!r}"
         )
     return hooks
+
+
+def refresh_protected_patterns(
+    worktree_path: Path | str, never_push_to: list[str],
+) -> bool:
+    """Rewrite the pattern file of an ALREADY-INSTALLED guard so a base
+    branch discovered per-task (`Orchestrator._protect_base_branch`) reaches
+    the hook, not just the PreToolUse lexical guard — closing a
+    direct-push-to-base hole the lexical guard alone cannot: it only sees
+    the agent's proposed argv, and `git config remote.origin.push
+    HEAD:refs/heads/<base>` plus a bare `git push origin` leaves it no
+    branch-name token to read at all.
+
+    Refreshes ONLY when the guard is already installed and active at
+    `worktree_path` — `hooks/pre-push` must exist AND the effective
+    `core.hooksPath` must already resolve to that directory — else returns
+    `False` and writes nothing. That is what keeps a primary checkout
+    (`isolation.enabled: false`, `install_pre_push_guard` never ran there)
+    from ever getting a patterns file, a hooksPath, or anything else
+    written into it; `install_pre_push_guard` itself refuses to touch a repo
+    where `core.worktree` would leak for the same reason, and this function
+    must not become a second way to reach that same corruption.
+
+    Purely additive/replacing of the one generated `never_push_to` file —
+    same bytes for the same input, no git config writes, no hook-script
+    rewrite, no delegate/shim re-discovery. The caller treats a `False`
+    return, or an exception raised out of here, as advisory: a missed
+    refresh must never be fatal to the attempt, only to the base's coverage
+    by this specific enforcement point (the lexical guard still applies).
+    """
+    wt = Path(worktree_path).expanduser()
+    hooks = hook_dir_for(wt)
+    if not (hooks / "pre-push").exists():
+        return False
+    effective = _git(wt, "config", "--get", "core.hooksPath", check=False)
+    if Path(effective or "") != hooks:
+        return False
+    _write_patterns(hooks, never_push_to)
+    return True
