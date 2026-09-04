@@ -34,8 +34,9 @@ from typing import Awaitable, Callable
 from ..agent.worker_context import WorkerContext, set_worker_context
 from ..blockers import human_gate_armed
 from ..blockers.shipped import _TICK_ABORTED, complete_if_content_landed
-from ..config import (DEFAULT_CONFIG, active_auth_profile, parallelism_enabled,
-                      pid_alive, process_start_token, worktree_isolation_enabled)
+from ..config import (AuthError, DEFAULT_CONFIG, active_auth_profile,
+                      parallelism_enabled, pid_alive, process_start_token,
+                      worktree_isolation_enabled)
 from ..vcs.pr_watcher import landing_sha_candidates, orphan_landed_evidence
 from ..vcs.task_pr import resolve_task_pr
 from .bounds import QuotaExhausted
@@ -482,6 +483,7 @@ class Scheduler:
         retirement_job: "RetirementSweepJob | None" = None,
         harvest_job: "HarvestJob | None" = None,
         config: dict | None = None,
+        auth_check: Callable[[], None] | None = None,
     ):
         self.store = store
         self.factory = orchestrator_factory
@@ -530,6 +532,13 @@ class Scheduler:
         self.retirement = retirement_job
         self.harvest = harvest_job
         self._config = config or {}
+        # Re-probed every tick (see config.assert_subscription_mode), not just
+        # at startup, so an added credential resumes dispatch without a
+        # restart. None = no check configured = today's zero-gate behavior.
+        self._auth_check = auth_check
+        # Last auth-failure message already advisory-logged, so a stuck
+        # server logs ONE line per reason, not one per tick.
+        self._auth_advisory: str | None = None
         # Orchestrators whose `run_task` is being awaited right now, so a
         # shutdown can ask each one to checkpoint and requeue
         # (`request_stop_checkpoints` → `Orchestrator.request_server_stop`).
@@ -2080,6 +2089,26 @@ class Scheduler:
                 await self._resume_quota_parks(now=now)
             except Exception as exc:  # noqa: BLE001 — sweep must not kill the pool
                 log.warning("quota-park resume sweep failed: %s", exc)
+
+        # Checked every tick, right before dispatch (config.assert_subscription_
+        # mode is the gate) — idles instead of crash-looping when no credential
+        # is on file, and resumes on the next tick once one appears.
+        if self._auth_check is not None:
+            try:
+                self._auth_check()
+            except AuthError as exc:
+                msg = str(exc).splitlines()[0]
+                if self._auth_advisory != msg:  # emit once per distinct reason
+                    self._auth_advisory = msg
+                    log.warning("dispatch paused — %s", msg)
+                    self._on_event("setup_required", msg)
+                return []  # idle, not raise: this must never crash-loop
+            else:
+                if self._auth_advisory is not None:
+                    self._auth_advisory = None
+                    self._on_event(
+                        "setup_complete",
+                        "credential detected — dispatch resumed")
 
         slots = self.max_workers - len(self._inflight)
         started: list[str] = []

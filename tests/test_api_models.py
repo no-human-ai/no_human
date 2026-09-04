@@ -121,6 +121,41 @@ async def test_get_models_restart_required_true_when_disk_diverges_from_running(
 
 
 @pytest.mark.asyncio
+async def test_get_models_saved_tracks_disk_while_current_tracks_the_running_process(
+        client, tmp_path):
+    """`saved` is what the Settings pane must edit/reset against — it has to
+    reflect a write that landed on disk from elsewhere (another `nh`
+    process, the CLI) even though the running process hasn't picked it up
+    yet, exactly like `restart_required` already does for its own check."""
+    from no_human.config import set_model_ids
+
+    set_model_ids({"utility_model": "claude-opus-5"}, tmp_path / "config.yaml")
+    r = await client.get("/api/models")
+    body = r.json()
+    util = next(row for row in body["roles"] if row["role"] == "utility")
+    assert util["saved"] == "claude-opus-5"
+    assert util["current"] == "claude-haiku-4-5"
+    assert body["restart_required"] is True
+
+
+@pytest.mark.asyncio
+async def test_get_models_role_note_is_the_catalog_pin_note_for_pinned_roles_only(client):
+    """The row-level `note` (distinct from each option's own `note`) must be
+    `model_catalog.role_note(role)` verbatim — the pinned-role sentence,
+    previously only emitted per-option and therefore never rendered as the
+    row's own note."""
+    r = await client.get("/api/models")
+    body = r.json()
+    for row in body["roles"]:
+        assert row["note"] == mc.role_note(row["role"])
+    coder = next(row for row in body["roles"] if row["role"] == "coder")
+    assert coder["note"] == ""
+    for role in ("reviewer", "planner", "supervisor", "utility"):
+        row = next(row for row in body["roles"] if row["role"] == role)
+        assert row["note"] == mc.VENDOR_PIN_NOTE
+
+
+@pytest.mark.asyncio
 async def test_get_models_disabled_reason_matches_requires_backend_exactly(client):
     """Model picker part 3 (Settings pane) renders an option `disabled` iff
     the server marked it `requires_backend`, using `disabled_reason` as the
@@ -274,6 +309,24 @@ async def test_put_success_writes_to_disk_and_returns_refreshed_payload(client, 
 
 
 @pytest.mark.asyncio
+async def test_put_then_get_reports_the_new_value_as_saved_without_a_restart(
+        client, tmp_path):
+    """This is the whole point of `saved`: right after a PUT, a follow-up
+    GET (e.g. the Settings pane refetching) must show the just-written value
+    as `saved` with no restart, while `current` — the running process — is
+    still honestly the old value until an actual restart happens."""
+    put_r = await client.put("/api/config/models", json={"utility_model": "claude-opus-5"})
+    assert put_r.status_code == 200
+
+    get_r = await client.get("/api/models")
+    body = get_r.json()
+    util = next(row for row in body["roles"] if row["role"] == "utility")
+    assert util["saved"] == "claude-opus-5"
+    assert util["current"] == "claude-haiku-4-5"
+    assert body["restart_required"] is True
+
+
+@pytest.mark.asyncio
 async def test_put_strips_whitespace_before_validating(client, tmp_path):
     r = await client.put(
         "/api/config/models", json={"utility_model": "  claude-opus-5  "})
@@ -301,6 +354,29 @@ async def test_put_idempotent_no_op_emits_no_event(client, store):
     assert r.status_code == 200
     events = await store.list_events("__config__")
     assert events == []
+
+
+@pytest.mark.asyncio
+async def test_repicking_the_saved_value_is_a_no_op_write(client, store):
+    """The server side of the re-pick story: PUT-ing the value that is
+    ALREADY on disk — including a value the running process has not picked
+    up yet — must be a true no-op (no event, no rewrite). This is exactly
+    why the client must diff its Save body against `saved`, not `current`:
+    if it diffed against `current` it would resend an already-saved value
+    as a "change", which would still land here as a no-op, but a client
+    diffing against `current` would ALSO stay silent on a real edit back to
+    the running value — this test locks down the server's half so the
+    contract the view-model relies on cannot silently drift.
+    """
+    first = await client.put("/api/config/models", json={"utility_model": "claude-opus-5"})
+    assert first.status_code == 200
+    events_after_first = await store.list_events("__config__")
+    assert len(events_after_first) == 1
+
+    second = await client.put("/api/config/models", json={"utility_model": "claude-opus-5"})
+    assert second.status_code == 200
+    events_after_second = await store.list_events("__config__")
+    assert len(events_after_second) == 1
 
 
 @pytest.mark.asyncio

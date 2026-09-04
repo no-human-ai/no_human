@@ -647,7 +647,22 @@ FROZEN_FILE_LINES = {
     # (a comment + the setdefault call) so telemetry.environment() tags
     # bench-fleet events "bench" instead of counting them as real installs.
     # Measured on this tree with the scanner below.
-    "cli/commands.py": 8499,
+    # cli/commands.py 8423 -> 8441 (+18): `_ensure_board_fresh()` (new
+    # helper, +10 incl. docstring) wraps `core.web_build.ensure_fresh_board`
+    # and is called at the top of `start()` (+1 call, +7 comment/blank lines
+    # explaining the load-bearing placement) before `from ..api.app import
+    # app as _app` — a stale `web/dist` on a source checkout must be
+    # detected/rebuilt before the `StaticFiles` mount is decided at import
+    # time (no-human/2026-09-04 web-dist-staleness task). Measured on this
+    # tree with the scanner below.
+    # 8423 -> 8462 (+39): setup-mode boot — `allow_setup_mode` on `_bootstrap`
+    # (with its advisory banner) and `_server_setup_reason` (the no-credential
+    # probe that lets `nh start` boot into a restricted setup state instead of
+    # `sys.exit(2)`), plus the `MissingCredentialError` import. `start()`
+    # itself reuses `_bootstrap`'s banner rather than printing its own second
+    # one. Measured on this tree with the scanner below, rebased onto the
+    # 8517 web-dist-staleness/bench/land-satisfied tree above (8517 -> 8556).
+    "cli/commands.py": 8556,
     # api/app.py 5338 -> 5346 (+8): same budget-floor warning surfaced by
     # `send-back`/`reply` as `budget_warning` in the JSON response. Net cost
     # was trimmed from a naive +14 to +8 by computing `Bounds.from_config(...)`
@@ -756,7 +771,23 @@ FROZEN_FILE_LINES = {
     # so a satisfying commit that lives only on the task branch gets landed
     # through the normal PR-merge path rather than silently completing
     # unmerged. Measured via `wc -l src/no_human/api/app.py`.
-    "api/app.py": 6037,
+    # 5928 -> 5998 (+70): setup-mode boot — `_require_credentials` (the
+    # dispatch-time 503 gate naming the missing `.env` variable) applied to
+    # `create_task`/`split_task`/`grill_step_endpoint`/`grill_stream_endpoint`/
+    # `split_drafts` (the paid draft-generation lookup), setup-state computed
+    # in `lifespan` and stored on `app.state`, and `setup_mode` added to
+    # `GET /api/config`. `_require_credentials`/`show_config` gate on
+    # `hasattr(state, "setup_mode")` rather than a bare `cfg is None` check —
+    # needed so a test app that hand-builds `app.state.config` without
+    # opting into setup-mode tracking (e.g. tests/test_api.py's `client`
+    # fixture, which predates this feature) is not spuriously gated by a
+    # default-subscription-mode config with no credential on file. Measured
+    # on this tree with the scanner below, rebased onto the 6037
+    # already-satisfied-landing tree above (6037 -> 6107).
+    # 6107 -> 6108 (+1): review fix — `get_split_drafts` (GET /split-drafts)
+    # was missing its `_require_credentials(request)` call; it runs the same
+    # paid utility-model draft call as `split_task` and must be gated too.
+    "api/app.py": 6108,
     # +51: W5 active-time phase writer (phase instrumentation).
     # +84: `list_escalations`/`list_review_fails`/`list_tamper_trips` — the
     # three new failure-signal sources the recurring learning harvest mines.
@@ -879,7 +910,13 @@ FROZEN_FILE_LINES = {
     # its explanatory comment — the off-switch the hint-only signal path
     # (`core/complexity.py:hint_signals`) reads before folding `multi_family`
     # into the pre-flight card. Measured on this tree.
-    "config.py": 3562,
+    # 3562 -> 3596 (+34): setup-mode boot — `MissingCredentialError` (the
+    # subclass of `AuthError` that lets a caller opt into setup mode instead
+    # of a hard exit) and `subscription_credential_missing`, the non-raising
+    # probe `nh start`/the API lifespan use to detect a missing credential
+    # without triggering the scrub. Measured on this tree with the scanner
+    # below.
+    "config.py": 3596,
     # +61: the tamper-adjudication one-bounded-retry contract (mechanical-
     # failure classification + the extracted `_review_tamper_adjudication`
     # helper that keeps `AdversarialReviewer.review` itself under the
@@ -934,7 +971,12 @@ FROZEN_FILE_LINES = {
     # leaving the row failed forever); wired into `_run`'s startup sequence
     # next to `_reconcile_terminal_task_attempts`. Measured on this tree with
     # the scanner below.
-    "core/scheduler.py": 2973,
+    # 2973 -> 3002 (+29): setup-mode boot — the optional `auth_check` ctor
+    # kwarg and `_auth_advisory` dedup state, plus the `tick()` pre-dispatch
+    # check that idles (returns `[]`) and emits `setup_required`/
+    # `setup_complete` instead of crash-looping when no credential is on
+    # file. Measured on this tree with the scanner below.
+    "core/scheduler.py": 3002,
 }
 
 
