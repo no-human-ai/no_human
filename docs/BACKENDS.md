@@ -215,6 +215,12 @@ turn can overshoot before the abort fires.
 **5. `max_turns` is enforced by no_human, not by the vendor.** Turns are counted
 from the event stream (each command execution or file change is one) and the
 session is killed when the ceiling is crossed. Same ceiling, different enforcer.
+A session that only ever emits assistant text or reasoning — no tool calls —
+never advances that turn counter, so it is bounded separately by a per-turn
+**event** ceiling (`max_turns` times a fixed events-per-turn factor, or an
+absolute ceiling when `max_turns` does not bound the session). Hitting it
+still ends the session with `stop_reason="max_turns"`, so it is reported the
+same way as an ordinary turn exhaustion.
 
 **6. Cost figures are less precise.** OpenAI has no billed cache-*write* class,
 so `cache_creation_tokens` is legitimately 0 rather than unmeasured — but

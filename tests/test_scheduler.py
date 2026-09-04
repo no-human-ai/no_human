@@ -1664,6 +1664,136 @@ async def test_a_pool_crash_records_a_durable_reason(store):
     assert sched.inflight == set(), "the crashed task was not released"
 
 
+async def test_a_pool_crash_increments_the_worker_death_counter(store):
+    """The all-time worker-death counter must be a real counter — visible on
+    `health_snapshot()` (what `/api/worker/status` serves) and surviving past
+    `_crash_times`'s rolling rate windows, which age entries out."""
+    class CrashingOrch:
+        async def run_task(self, task):
+            raise RuntimeError("boom inside the pool")
+
+    sched = Scheduler(store, lambda task=None: CrashingOrch(), max_workers=1)
+    ids = await _mk_tasks(store, 2)
+
+    assert sched.health_snapshot()["worker_deaths_total"] == 0
+
+    await sched.tick()
+    await sched.wait_idle()
+    assert sched.health_snapshot()["worker_deaths_total"] == 1
+
+    await sched.tick()
+    await sched.wait_idle()
+    assert sched.health_snapshot()["worker_deaths_total"] == 2, (
+        "a second worker death must ADD to the counter, not replace it")
+
+
+async def test_a_pool_crash_records_exit_code_and_termination_reason(store):
+    """When the crashing exception carries a subprocess-style `.returncode`,
+    that exit status and a clean termination reason are captured and
+    persisted — not just folded into the free-text `text` field."""
+    class CrashingOrch:
+        async def run_task(self, task):
+            exc = RuntimeError("worker subprocess died")
+            exc.returncode = 137  # SIGKILL-style exit status
+            raise exc
+
+    sched = Scheduler(store, lambda task=None: CrashingOrch(), max_workers=1)
+    ids = await _mk_tasks(store, 1)
+
+    await sched.tick()
+    await sched.wait_idle()
+
+    events = await store.list_events(ids[0])
+    crashed = [e for e in events if e.get("kind") == "task_crashed"]
+    assert crashed, "no durable task_crashed event was recorded"
+    assert crashed[0]["exit_code"] == 137, (
+        "the exception's returncode must be captured as the exit status")
+    assert "worker subprocess died" in crashed[0]["termination_reason"]
+    assert "RuntimeError" in crashed[0]["termination_reason"]
+
+
+async def test_a_pool_crash_with_no_exit_code_records_none(store):
+    """An ordinary Python exception (no subprocess behind it) must not
+    fabricate an exit status — `exit_code` stays None rather than 0 or some
+    other made-up value, so a reader can tell "no process" from "exited 0"."""
+    class CrashingOrch:
+        async def run_task(self, task):
+            raise RuntimeError("boom, no subprocess involved")
+
+    sched = Scheduler(store, lambda task=None: CrashingOrch(), max_workers=1)
+    ids = await _mk_tasks(store, 1)
+
+    await sched.tick()
+    await sched.wait_idle()
+
+    events = await store.list_events(ids[0])
+    crashed = [e for e in events if e.get("kind") == "task_crashed"]
+    assert crashed[0]["exit_code"] is None
+
+
+async def test_a_pool_crash_preserves_the_dying_attempt_stderr(store):
+    """Per-attempt stderr on the crashing exception (e.g. a
+    `subprocess.CalledProcessError`) is preserved on the durable event — this
+    IS the "outside a restart" path: nothing above `_run`'s except retries or
+    restarts the coroutine, so this is the only chance to keep that output."""
+    class CrashingOrch:
+        async def run_task(self, task):
+            exc = RuntimeError("build step died")
+            exc.stderr = "compiler error: missing semicolon\n"
+            raise exc
+
+    sched = Scheduler(store, lambda task=None: CrashingOrch(), max_workers=1)
+    ids = await _mk_tasks(store, 1)
+
+    await sched.tick()
+    await sched.wait_idle()
+
+    events = await store.list_events(ids[0])
+    crashed = [e for e in events if e.get("kind") == "task_crashed"]
+    assert "compiler error: missing semicolon" in crashed[0]["stderr_excerpt"]
+
+
+async def test_a_pool_crash_stderr_is_capped_not_unbounded(store):
+    """A runaway process's stderr must not balloon the persisted event
+    forever — capped the same way `testing/runner.py`'s output excerpts are."""
+    class CrashingOrch:
+        async def run_task(self, task):
+            exc = RuntimeError("noisy subprocess died")
+            exc.stderr = "x" * 10_000
+            raise exc
+
+    sched = Scheduler(store, lambda task=None: CrashingOrch(), max_workers=1)
+    ids = await _mk_tasks(store, 1)
+
+    await sched.tick()
+    await sched.wait_idle()
+
+    events = await store.list_events(ids[0])
+    crashed = [e for e in events if e.get("kind") == "task_crashed"]
+    assert len(crashed[0]["stderr_excerpt"]) < 10_000, (
+        "10k of stderr must be truncated, not stored verbatim")
+    assert "truncated" in crashed[0]["stderr_excerpt"]
+
+
+async def test_a_pool_crash_with_no_stderr_omits_the_field(store):
+    """An exception with nothing on `.stderr` must not persist an empty/None
+    excerpt — the field's ABSENCE is how a reader tells "nothing captured"
+    from "captured and it was empty"."""
+    class CrashingOrch:
+        async def run_task(self, task):
+            raise RuntimeError("no stderr on this one")
+
+    sched = Scheduler(store, lambda task=None: CrashingOrch(), max_workers=1)
+    ids = await _mk_tasks(store, 1)
+
+    await sched.tick()
+    await sched.wait_idle()
+
+    events = await store.list_events(ids[0])
+    crashed = [e for e in events if e.get("kind") == "task_crashed"]
+    assert "stderr_excerpt" not in crashed[0]
+
+
 # --------------------------------------------------------------------------- #
 # `nh serve --until-empty`: drain-and-exit (KI-3 / ADOPT-17)                   #
 # --------------------------------------------------------------------------- #
