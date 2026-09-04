@@ -1,12 +1,12 @@
 # Verifiers
 
-_Harness-captured record for task `95757282`, commit `6ad824741950a0b77cfe72b56e87c19ec1e77aa7` — not model-authored: no_human wrote this file from the deterministic verifier rules selected for this commit's files. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `95757282`, commit `b26009e1c7b44aab9e77b80b1c5039704b01bba7` — not model-authored: no_human wrote this file from the deterministic verifier rules selected for this commit's files. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ```json
 [
   {
-    "comment": "All new/changed test functions (across the four test files) carry at least one assertion or pytest.raises block; the surrounding helpers like _orch/_git/_plain_repo are not test functions. Statement holds.",
-    "evidence": "Every added/modified test function contains an assert or pytest.raises, e.g. test_protect_base_branch_without_repo_is_a_noop ends with `assert before == after` and `assert \"develop\" in orch.backend.never_push_to`, and test_commit_identities_blocks_injection uses `with pytest.raises(GitError):`.",
+    "comment": "All new/modified test functions across the five files include at least one assertion (assert or pytest.raises); helper functions like _orch and _plain_repo are not test functions and need none.",
+    "evidence": "Every added/modified test function contains asserts or pytest.raises, e.g. test_base_commits_are_excluded_for_main ends with `assert offenders == []` and test_commit_identities_blocks_injection uses `with pytest.raises(GitError):`",
     "file": "",
     "files_checked": [
       "tests/test_agent_commit_identity_enforced.py",
@@ -19,23 +19,23 @@ _Harness-captured record for task `95757282`, commit `6ad824741950a0b77cfe72b56e
     "no_verdict": false,
     "passed": true,
     "severity": "medium",
-    "tokens_used": 549,
+    "tokens_used": 960,
     "unavailable": false,
     "verifier_id": "tests-assert-something"
   },
   {
-    "comment": "The change concerns base-pin/attribution logic and adds no task-status transitions; it introduces no update_task call (validated or not), so the invariant is not violated by the modified code.",
-    "evidence": "The only status/row write added by the diff is `await self.store.update_attempt(attempt_id, base_pin_sha=base_pin)` \u2014 an attempt-column write (audit sha), not a task status, and no `update_task(..., validate=False)` call appears anywhere in the added or modified lines.",
+    "comment": "The change writes only an attempt-level audit field (base_pin_sha) via update_attempt and never touches task status, so it does not bypass set_status with an unvalidated update_task call.",
+    "evidence": "The only DB writes added by the diff are `await self.store.update_attempt(attempt_id, base_pin_sha=base_pin)` and the new `base_pin_sha` column in db.py; no new or modified line calls `update_task` at all, let alone with `validate=False`, and no task status is written by the changed code.",
     "file": "src/no_human/core/orchestrator.py",
     "files_checked": [
       "src/no_human/core/db.py",
       "src/no_human/core/orchestrator.py"
     ],
-    "line": 4787,
+    "line": 4814,
     "no_verdict": false,
     "passed": true,
     "severity": "high",
-    "tokens_used": 785,
+    "tokens_used": 1097,
     "unavailable": false,
     "verifier_id": "no-unvalidated-status-write"
   }
