@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 
 from ..core.db import Store
 from ..core.task import Task, TaskStatus
+from ..integrations.health import ensure_fresh_before_poll
 from ..profile import apply_default_task_config
 
 log = logging.getLogger("no_human.intake.jira_poll")
@@ -86,6 +87,7 @@ class JiraPoller:
     def __init__(self, adapter, store: Store, *, config: dict | None = None, on_event=None):
         self.adapter = adapter
         self.store = store
+        self._config = config or {}
         j = ((config or {}).get("integrations") or {}).get("jira") or {}
         self.default_repo = j.get("default_repo") or getattr(adapter, "default_repo", None)
         self.write_back = bool(j.get("write_back", False))
@@ -239,6 +241,7 @@ class JiraPoller:
 
     async def tick(self) -> PollResult:
         """One poll + write-back pass; errors in one half never block the other."""
+        await ensure_fresh_before_poll("jira", self._config)
         result = await self.poll_once()
         try:
             await self.sync_statuses()

@@ -377,8 +377,8 @@ async def lifespan(app: FastAPI):
 # a release that moved `__version__` and `pyproject.toml`, so `/openapi.json`
 # and `/docs` reported a version the build had left behind. A literal that only
 # a generated document shows is exactly the kind nobody notices is stale.
-app = FastAPI(title="no_human board", version=__version__, lifespan=lifespan)
-
+from ..integrations.health import with_health_probes
+app = FastAPI(title="no_human board", version=__version__, lifespan=with_health_probes(lifespan))
 app.add_middleware(
     CORSMiddleware,
     allow_origin_regex=LOOPBACK_ORIGIN_REGEX,  # loopback only: api/local_boundary.py
@@ -4357,14 +4357,14 @@ async def list_integrations_endpoint(request: Request) -> dict[str, Any]:
     """Status of every integration (configured + kind; healthy is null until a
     `test` is run), PLUS its `fields` array so the UI can render a settings
     form. Never returns a secret — `fields` carries only `set: bool`."""
-    from ..integrations import integration_fields, list_integrations_with_ambient
+    from ..integrations import integration_fields, list_integrations_with_health
     cfg = request.app.state.config
     out = []
     # The ambient overlay can shell out to `gh`/`git` (subprocess.run with a
     # multi-second timeout) — the same asyncio.to_thread discipline the rest
     # of this file uses for blocking work, so a slow/hanging CLI probe never
     # freezes the single-threaded event loop (SSE, task list, every request).
-    statuses = await asyncio.to_thread(list_integrations_with_ambient, cfg.data)
+    statuses = await asyncio.to_thread(list_integrations_with_health, cfg.data)
     for s in statuses:
         d = asdict(s)
         d["fields"] = integration_fields(s.name, cfg.data)

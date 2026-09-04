@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { fetchIntegrations, testIntegration, saveIntegrationConfig } from "./api.js";
 import {
-  statusChip, KIND_LABEL, NAME_LABEL, CONFIG_HINT, SECRET_ENV_KEY,
+  statusChip, healthBadge, KIND_LABEL, NAME_LABEL, CONFIG_HINT, SECRET_ENV_KEY,
 } from "./integrationChip.js";
 import { testResultView } from "./integrationTestResult.js";
 import { IntegrationIcon } from "./integrationIcons.jsx";
@@ -187,6 +187,7 @@ export default function IntegrationsPanel() {
       <div className="integrations-list">
         {items.map((it) => {
           const chip = statusChip(it);
+          const badge = healthBadge(it);
           const secret = secretState(it);
           const isOpen = expanded === it.name;
           const isConfiguring = configuring === it.name;
@@ -200,11 +201,17 @@ export default function IntegrationsPanel() {
                 <span className="integration-name">{NAME_LABEL[it.name] || it.name}</span>
                 <span className="integration-kind">{KIND_LABEL[it.kind] || it.kind}</span>
                 <span className={`integration-chip tone-${chip.tone}`}>{chip.label}</span>
+                {badge && (
+                  <span className={`integration-chip tone-${badge.tone}`}>{badge.label}</span>
+                )}
                 <span className="integration-chev" aria-hidden="true">›</span>
               </button>
               {isOpen && (
                 <div className="integration-body">
                   <div className="integration-detail ph-no-capture">{it.detail || "—"}</div>
+                  {badge && (
+                    <div className="integration-detail ph-no-capture">{badge.detail}</div>
+                  )}
                   {SECRET_ENV_KEY[it.name] && secret && (
                     <div className="integration-field">
                       <span className="ntm-label" style={{ marginBottom: 0 }}>Secret</span>
