@@ -1,6 +1,6 @@
 # Assumptions
 
-_Harness-captured record for task `0aa52103`, commit `fbf486b8e16419edb95cf16084979732f66d1b26` — not model-authored: no_human wrote this file from the intake step's recorded questions and assumptions. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `0aa52103`, commit `be236a08e58b5a378fa88e75ac21cfd3ac0f167c` — not model-authored: no_human wrote this file from the intake step's recorded questions and assumptions. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 > ⚠️ **Unresolved:** mechanical derived-artefact conflict resolution failed: https://github.com/no-human-ai/no_human/pull/49 step=regenerate
 
