@@ -615,6 +615,59 @@ async def test_an_existing_failure_reason_is_preserved(store):
     assert rows[0]["failure_reason"] == "the real reason"
 
 
+async def test_latest_review_attempt_and_verdict_agree_on_same_second_rows(store):
+    """`latest_review_verdict` delegates to `latest_review_attempt` — the
+    verdict is exactly `int(row["review_passed"])` of the row the other
+    helper returns, even when two attempts land in the SAME second and only
+    rowid breaks the tie."""
+    t = Task.new("x", repo_path="/tmp/r")
+    await store.create_task(t)
+    a1 = await store.create_attempt(t.id, 1)
+    await store.update_attempt(
+        a1, status="succeeded", review_passed=1, started_at="2026-01-01 00:00:00")
+    a2 = await store.create_attempt(t.id, 2)
+    await store.update_attempt(
+        a2, status="succeeded", review_passed=0, started_at="2026-01-01 00:00:00")
+
+    rows = await store.list_attempts(t.id)
+    assert rows[0]["started_at"] == rows[1]["started_at"], (
+        "the fixture must exercise the rowid tie-break, not started_at ordering")
+
+    row = await store.latest_review_attempt(t.id)
+    assert row["review_passed"] == 0
+    assert await store.latest_review_verdict(t.id) == 0
+    assert await store.latest_review_verdict(t.id) == int(row["review_passed"])
+
+
+async def test_latest_review_verdict_is_none_when_no_attempt_recorded_one(store):
+    t = Task.new("x", repo_path="/tmp/r")
+    await store.create_task(t)
+    await store.create_attempt(t.id, 1)  # never records a review_passed
+
+    assert await store.latest_review_attempt(t.id) is None
+    assert await store.latest_review_verdict(t.id) is None
+
+
+async def test_latest_failed_attempt_is_the_newest_reason_bearing_row(store):
+    """The empty-string reason on #2 is treated as absent — #3's reason
+    (same second as #1, so rowid breaks the tie) is what comes back."""
+    t = Task.new("x", repo_path="/tmp/r")
+    await store.create_task(t)
+    a1 = await store.create_attempt(t.id, 1)
+    await store.update_attempt(
+        a1, status="failed", failure_reason="first failure",
+        started_at="2026-01-01 00:00:00")
+    a2 = await store.create_attempt(t.id, 2)
+    await store.update_attempt(a2, status="succeeded", failure_reason="")
+    a3 = await store.create_attempt(t.id, 3)
+    await store.update_attempt(
+        a3, status="failed", failure_reason="third failure",
+        started_at="2026-01-01 00:00:00")
+
+    row = await store.latest_failed_attempt(t.id)
+    assert row["failure_reason"] == "third failure"
+
+
 async def test_historical_compound_parent_and_subtask_rows_still_load(store):
     """The LeadAgent subsystem that WROTE `parent_id` and `COMPOUND_PARENT`
     was removed 2026-08-12 (operator decision A1), but rows it left behind
