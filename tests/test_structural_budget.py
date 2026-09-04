@@ -662,7 +662,13 @@ FROZEN_FILE_LINES = {
     # itself reuses `_bootstrap`'s banner rather than printing its own second
     # one. Measured on this tree with the scanner below, rebased onto the
     # 8517 web-dist-staleness/bench/land-satisfied tree above (8517 -> 8556).
-    "cli/commands.py": 8556,
+    # 8499 -> 8510 (+11): `nh verifiers` (list/add/check/propose) registered
+    # via `cli.add_command(verifiers_group)` — the import (with its
+    # `noqa`-free comment block) and the group registration itself, next to
+    # `rules`/`skills`. The command bodies live in the new
+    # `cli/verifiers_cmd.py`, not here, to keep this file's growth to just
+    # the registration. Measured via `wc -l src/no_human/cli/commands.py`.
+    "cli/commands.py": 8567,
     # api/app.py 5338 -> 5346 (+8): same budget-floor warning surfaced by
     # `send-back`/`reply` as `budget_warning` in the JSON response. Net cost
     # was trimmed from a naive +14 to +8 by computing `Bounds.from_config(...)`

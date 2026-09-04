@@ -102,6 +102,40 @@ skip the step entirely and proceed straight to the agentic reviewer — this is
 an added gate, not a replacement for it, and an empty rule set changes
 nothing about what already ran.
 
+### Managing verifiers from the CLI
+
+`nh verifiers` ([`src/no_human/cli/verifiers_cmd.py`](../src/no_human/cli/verifiers_cmd.py))
+is an authoring and inspection surface over the same `verifiers.yaml` files —
+none of its subcommands make a model call, a network call, or construct an
+`Orchestrator`; `Orchestrator._run_review` remains the only caller of
+`run_verifiers`.
+
+- `nh verifiers list [--repo] [--json]` — prints every configured verifier
+  (repo + global, repo wins on id collision) and any load problems. Always
+  exits 0; it is a read-only inspection command.
+- `nh verifiers add --id ID --statement TEXT --path GLOB [--path GLOB ...]
+  [--severity high] [--repo] [--global/-g]` — additively defines a new
+  verifier. It never rewrites the whole YAML file, only appends the new
+  entry, so hand-authored comments and ordering survive untouched; a
+  write-then-verify step reloads the merged config and rolls back the
+  written bytes if the new id doesn't come back clean. Refuses (exit 1,
+  nothing written) on a duplicate id or an entry that fails the same
+  validation the loader itself applies.
+- `nh verifiers check [--repo] [--against REF] [--path PATH ...]` — a
+  config/selection gate: which verifiers would be selected for the changed
+  paths, and which of those would fail closed for lack of a matching diff
+  hunk. Makes no model call and builds no verifier prompt. Exits 1 if the
+  config failed to load, zero verifiers are configured, or `--against`
+  doesn't resolve; exits 0 otherwise.
+- `nh verifiers propose TASK_ID [--repo] [--apply] [--severity high]` — turns
+  a task's already-persisted review findings (`attempts.review_checklist`,
+  falling back to `task.context.draft_review_comments`) into candidate
+  verifier YAML, skipping a verifier's own `rule:`-labelled verdicts and
+  findings that don't cite a file. Without `--apply` nothing is written;
+  with `--apply` it appends the candidates the same additive, write-then-
+  verify way `add` does, and is idempotent — an id that's already defined is
+  named and skipped rather than duplicated.
+
 ## Deterministic lint evidence — not a gate, an input
 
 [`src/no_human/review/lint_evidence.py`](../src/no_human/review/lint_evidence.py)

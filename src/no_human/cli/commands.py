@@ -62,6 +62,10 @@ from .pool_probe import (  # noqa: F401
     POOL_TIMEOUT, POOL_UNREACHABLE, PROBE_TIMEOUT_S, PoolProbe, _pool_note,
     _probe_pool,
 )
+# `nh verifiers` (list/add/check/propose) — body lives in its own module so
+# this file's structural-budget ratchet stays flat; registered below via
+# `cli.add_command`, next to `rules`/`skills`.
+from .verifiers_cmd import verifiers_group
 
 console = Console()
 
@@ -2489,6 +2493,13 @@ def auth_use(profile):
             "Restart it (`nh stop && nh start`) for this to take effect — a "
             "live task is never re-billed mid-run."
         )
+
+
+# --------------------------------------------------------------------------- #
+# Verifiers management — body in verifiers_cmd.py, registered here            #
+# --------------------------------------------------------------------------- #
+
+cli.add_command(verifiers_group)
 
 
 # --------------------------------------------------------------------------- #
