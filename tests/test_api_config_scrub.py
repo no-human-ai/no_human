@@ -174,12 +174,29 @@ async def test_show_config_reports_local_unavailable_without_local_base_url(clie
 
 
 @pytest.mark.asyncio
-async def test_show_config_reports_local_available_once_base_url_is_set(client):
-    """The other half of the same criterion: with `llm.local_base_url` set
-    to a valid loopback URL, the same selection is accepted — same config
-    object, only the one key changed, proving the answer tracks the actual
-    config check rather than being hardcoded to 'local' = unavailable."""
+async def test_show_config_still_reports_local_unavailable_with_only_base_url_set(client):
+    """The other half of the same criterion, updated for the closed hole:
+    `llm.local_base_url` alone is no longer sufficient — `llm.local_model`
+    is also required (a `local` task with a base URL but no model id is
+    guaranteed to die on its first coder turn). Same config object, only
+    the base_url key changed, proving the answer still tracks the actual
+    config check rather than being hardcoded to 'local' = available."""
     app.state.config.data.setdefault("llm", {})["local_base_url"] = "http://localhost:8000"
+    r = await client.get("/api/config")
+    data = r.json()
+    local = next(row for row in data["coder_backend_availability"] if row["id"] == "local")
+    assert local["available"] is False
+    assert "llm.local_model" in local["reason"]
+
+
+@pytest.mark.asyncio
+async def test_show_config_reports_local_available_once_both_fields_are_set(client):
+    """With BOTH `llm.local_base_url` and `llm.local_model` set, the same
+    selection is accepted — same config object, only the two required keys
+    changed, proving the answer tracks the actual config check rather than
+    being hardcoded to 'local' = unavailable."""
+    app.state.config.data.setdefault("llm", {})["local_base_url"] = "http://localhost:8000"
+    app.state.config.data["llm"]["local_model"] = "llama-3-8b-instruct"
     r = await client.get("/api/config")
     data = r.json()
     local = next(row for row in data["coder_backend_availability"] if row["id"] == "local")

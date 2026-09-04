@@ -787,7 +787,12 @@ FROZEN_FILE_LINES = {
     # 6107 -> 6108 (+1): review fix — `get_split_drafts` (GET /split-drafts)
     # was missing its `_require_credentials(request)` call; it runs the same
     # paid utility-model draft call as `split_task` and must be gated too.
-    "api/app.py": 6108,
+    # 6108 -> 6126 (+18): the local-backend board preflight (task 05a9cee0,
+    # re-home) — `discover_repos`/`repos/discover` gains the pre-submit
+    # backend-config validation so an unrunnable LOCAL config is rejected
+    # before a task dies attempt 1 on BackendUnavailable. Measured on this
+    # merged tree with the scanner below.
+    "api/app.py": 6126,
     # +51: W5 active-time phase writer (phase instrumentation).
     # +84: `list_escalations`/`list_review_fails`/`list_tamper_trips` — the
     # three new failure-signal sources the recurring learning harvest mines.

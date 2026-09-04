@@ -950,6 +950,24 @@ async def create_task(body: CreateTaskRequest, request: Request) -> TaskSummaryO
             raise HTTPException(
                 422, f"unknown backend {body.backend!r}; one of "
                      f"{', '.join(SUPPORTED_BACKENDS)}")
+        # A KNOWN backend this install cannot actually run (e.g. `local` with
+        # no `llm.local_model`, or `codex` with no CLI/credential) is refused
+        # HERE too, not just typo'd names above — a client that is not the
+        # board's composer (whose own gating reads this same signal off GET
+        # /api/config's `coder_backend_availability`) must not be able to file
+        # a task that is guaranteed to die on its first coder turn. Same
+        # preflight `core.runtime.build_orchestrator` runs at construction —
+        # `describe_backend` turns its raise/no-raise into a 422/no-422 rather
+        # than reimplementing it. Absent config (no `request.app.state.config`
+        # yet) never blocks: that would be refusing on missing evidence, not
+        # a real unavailability.
+        cfg = getattr(request.app.state, "config", None)
+        cfg_data = getattr(cfg, "data", None)
+        if cfg_data is not None:
+            from ..core.backend_settings import describe_backend
+            info = await asyncio.to_thread(describe_backend, chosen, cfg_data)
+            if not info["available"]:
+                raise HTTPException(422, info["reason"])
         task.config["backend"] = chosen
     # GAP 1: opt in to the human plan-approval gate. Never for an imported
     # ticket — see CreateTaskRequest.plan_approval.
