@@ -459,7 +459,7 @@ ALLOWLIST: dict[str, dict[str, Allowed]] = {
                               "(BASE_URL), server.host defaults to 127.0.0.1 "
                               "— the MCP bridge calling our server"),
         "sdk:mcp": Allowed(
-            "the MCP client that launched this bridge — FastMCP's default "
+            "the MCP client that launched this bridge — MCPServer's default "
             "transport is stdio, so the 'connection' is the pipe your editor "
             "already opened",
             "loopback: BASE_URL is {server.host}:{server.port}, 127.0.0.1:8420 "

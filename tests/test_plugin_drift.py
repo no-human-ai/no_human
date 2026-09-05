@@ -41,7 +41,7 @@ def _names(tools) -> list[str]:
     names = []
     for tool in tools.values():
         names.append(tool.name)
-        names.extend(tool.inputSchema.get("properties", {}))
+        names.extend(tool.input_schema.get("properties", {}))
     return names
 
 

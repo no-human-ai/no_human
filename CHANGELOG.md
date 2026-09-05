@@ -6,6 +6,20 @@ All notable changes to no_human. The format follows
 
 ## [Unreleased]
 
+### Changed
+- **The MCP bridge runs on the MCP SDK 2.x API, and the requirement is now
+  `mcp>=2,<3`.** `intake/mcp_bridge.py` imports `mcp.server.mcpserver.MCPServer`
+  instead of the `mcp.server.fastmcp.FastMCP` the SDK removed in 2.0.0, which
+  lifts the `<2` cap 0.1.4 added as a hotfix. The cap stays one major up for
+  the same reason: a fresh `pip install no-human` is the only lane that does
+  not resolve through `uv.lock`, and `tests/test_mcp_dependency_bound.py` fails
+  if the declared bound admits a major the bridge has not been ported to.
+  Relocking moves `claude-agent-sdk` from 0.2.121 to 0.2.152, because 0.2.121
+  itself pinned `mcp<2.0.0`. If you followed 0.1.4's workaround
+  (`uvx --with "mcp<2" no-human mcp-serve`), drop the `--with`: it now
+  conflicts with the declared bound. First contribution by @Siddh2024
+  (public issue #16).
+
 ## [0.2.0] — 2026-09-05
 
 First release developed entirely in the open on the public repository, including

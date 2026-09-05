@@ -94,13 +94,13 @@ FROZEN_DEPENDENCIES = [
     "click>=8.4.1",
     "fastapi>=0.138.0",
     "httpx>=0.28.1",
-    # Narrowed 2026-08-21 (public issue #15), not added: the MCP SDK removed
-    # `mcp.server.fastmcp` in 2.0.0, which `intake/mcp_bridge.py` imports, so an
-    # unbounded requirement shipped a broken `nh mcp-serve` to every PyPI user.
-    # A bound edit on a package already on this list is a one-line deliberate
-    # update here; the invariant this file exists for — no NEW runtime package —
-    # is asserted by name below and is untouched by it.
-    "mcp>=1.28.0,<2",
+    # Moved 2026-09-05 (public issue #16), not added: `intake/mcp_bridge.py`
+    # now imports `mcp.server.mcpserver` (2.x), and the upper bound stays for
+    # the reason issue #15 taught — an unbounded requirement ships a broken
+    # `nh mcp-serve` the day the SDK moves the module again. A bound edit on a
+    # package already on this list is a deliberate one-line update here; the
+    # invariant this file exists for — no NEW runtime package — is untouched.
+    "mcp>=2,<3",
     "psutil>=7.0.0",
     "pyyaml>=6.0.3",
     "rich>=15.0.0",

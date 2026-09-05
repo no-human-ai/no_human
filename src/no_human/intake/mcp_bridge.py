@@ -25,7 +25,7 @@ import logging
 
 import httpx
 import yaml
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 from ..config import load_config
 
@@ -59,7 +59,7 @@ _CONFIG_ERRORS = (
 # real server. None (the default) means "use the real network".
 _TRANSPORT: httpx.BaseTransport | None = None
 
-mcp = FastMCP("no_human-mcp-bridge")
+mcp = MCPServer("no_human-mcp-bridge")
 
 
 @functools.cache
