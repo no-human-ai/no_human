@@ -1,0 +1,5 @@
+# Every pull request needs the maintainer's approval before it can merge.
+# main's branch protection requires a code-owner review, and this file makes
+# the maintainer the owner of every path, so an approval from any other
+# collaborator does not satisfy that requirement.
+* @eyalgolan

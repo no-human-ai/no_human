@@ -418,7 +418,8 @@ repository. From then on you press the squash-merge button on your own PRs
 yourself, once all of the following hold. `main`'s branch protection enforces
 every one of them, so the button is simply disabled until they do:
 
-- the maintainer has approved the PR;
+- the maintainer has approved the PR (`.github/CODEOWNERS` makes the
+  maintainer the owner of every path, so no other approval counts);
 - nothing was pushed to the branch after that approval (a push dismisses it,
   and the most recent push must be approved by someone other than whoever
   pushed it);
