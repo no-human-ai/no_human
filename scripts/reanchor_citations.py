@@ -83,19 +83,60 @@ def _new_spec(tail: str, found_line: int) -> str:
     return str(found_line)
 
 
-def plan(mod, rows) -> tuple[list[Drift], list[Unfixable]]:
-    """Classify every legacy line-form row in *rows*: drifted (fixable),
-    missing (unfixable — nothing to anchor to), or fine (neither, skipped).
+def _new_symbol_spec(tail: str, found_line: int) -> str:
+    """`symbol:line` or `symbol:start-end`, re-anchored to *found_line*.
 
-    Symbol-form rows are drift-immune by construction and are never
-    considered here — this script's whole job is the legacy-line surface.
+    A range keeps its span: the end moves by the same delta as the start, so an
+    edit inside the symbol does not silently change what the range claims to
+    cover. Only the start is ever verified — a symbol's length legitimately
+    changes whenever its body is edited.
+    """
+    head, _, line_part = tail.rpartition(":")
+    return f"{head}:{_new_spec(line_part, found_line)}"
+
+
+def _symbol_drift(mod, resolve_path: str, tail: str, token: str) -> int | None:
+    """Where *token* really is for a `symbol:line` row, or None if it is right.
+
+    None also when the row carries no line at all, when the path does not
+    resolve to exactly one file, or when the symbol or token cannot be found —
+    all of those are the checker's business to report, not this script's to
+    guess at.
+    """
+    cited = mod._cited_line(tail)
+    if cited is None:
+        return None
+    hits = mod._resolve_source(resolve_path)
+    if len(hits) != 1:
+        return None
+    symbol = tail.rsplit(":", 1)[0]
+    actual = mod._token_line_in_symbol(
+        hits[0].read_text(encoding="utf-8"), symbol, token)
+    return None if actual is None or actual == cited else actual
+
+
+def plan(mod, rows) -> tuple[list[Drift], list[Unfixable]]:
+    """Classify every row in *rows*: drifted (fixable), missing (unfixable —
+    nothing to anchor to), or fine (neither, skipped).
+
+    Both citation forms are handled, and they are fixable for different reasons.
+    A legacy line-form row is anchored by PROXIMITY, so a match beyond the drift
+    window is a guess and is refused. A `symbol:line` row is anchored by the
+    SYMBOL, which resolves however far the code has moved, so its number can be
+    rewritten exactly at any distance (issue #93).
     """
     drifts: list[Drift] = []
     unfixable: list[Unfixable] = []
     for doc, raw, resolve_path, token in rows:
         tail = raw.split(":", 1)[1]
         if not mod._LEGACY_LINE_SPEC_RE.match(tail):
-            continue  # symbol citation — out of scope for this script
+            actual = _symbol_drift(mod, resolve_path, tail, token)
+            if actual is not None:
+                prefix = raw.split(":", 1)[0]
+                drifts.append(Drift(
+                    doc, raw, f"{prefix}:{_new_symbol_spec(tail, actual)}",
+                    resolve_path))
+            continue
         status, found_line, detail = mod._locate_line_citation(resolve_path, tail, token)
         if status in ("exact", "unresolved"):
             continue
@@ -233,7 +274,11 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     for path, new_text in texts.items():
-        path.write_text(new_text, encoding="utf-8")
+        # newline="\n" for the same reason `check_release_manifest.py --write`
+        # needs it (#32): without it the write goes through the platform's text
+        # layer, so on Windows every line in the file comes out CRLF and a
+        # four-citation change lands as a thousand-line diff.
+        path.write_text(new_text, encoding="utf-8", newline="\n")
     print(f"applied {len(drifts)} re-anchor(s)")
     print("VERDICT=" + ("FAIL" if unfixable else "OK"))
     return 1 if unfixable else 0
