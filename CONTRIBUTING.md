@@ -24,9 +24,9 @@ be rejected even if the tests pass:
 ## Before you open a PR
 
 `main` is protected. Nobody pushes to it directly, and no automation merges to
-it. Every change lands through a pull request that the maintainer reviews and
-merges by hand. That includes changes written by no_human itself: the agent
-opens a PR and stops.
+it. Every change lands through a pull request that the maintainer reviews. Who
+presses the merge button is in "Merging your own PR" below. That includes
+changes written by no_human itself: the agent opens a PR and stops.
 
 Practical consequence: open an issue first for anything larger than a bug fix.
 A rejected design costs you less as a paragraph than as a branch.
@@ -373,7 +373,8 @@ occurrence to rewrite when a citation's raw text appears more than once.
 4. Run the suites that your change touches. Paste the command and its output in
    the PR body. "Looks done" is not evidence here.
 5. Open the PR against `main` and fill in the template.
-6. The maintainer reviews and merges. There is no auto-merge on this repo.
+6. The maintainer reviews. Once approved, either you merge it yourself (see
+   "Merging your own PR") or the maintainer does. No bot merges here.
 
 CI runs the Python, web, and desktop suites on every pull request, and on
 pushes to `main` — not on pushes to a branch that has no PR open yet. It
@@ -405,11 +406,30 @@ bot accounts are skipped. When it would fail, the `CLA nudge` workflow
 in for your handle, and updates that comment on every push; it never signs
 anything for you.
 
-The maintainer lands an external pull request by hand, as one squashed commit
-that keeps **you as the author** (the maintainer is the committer). The ledger
-entry is what admits an author other than the maintainer into `main`'s history;
-`CLA.md` §3 leaves crediting to the maintainer's discretion, and this is how it
-is exercised.
+An external pull request lands as one squashed commit that keeps **you as the
+author**. The ledger entry is what admits an author other than the maintainer
+into `main`'s history; `CLA.md` §3 leaves crediting to the maintainer's
+discretion, and this is how it is exercised.
+
+## Merging your own PR
+
+After your first PR has landed, the maintainer gives you write access to the
+repository. From then on you press the squash-merge button on your own PRs
+yourself, once all of the following hold. `main`'s branch protection enforces
+every one of them, so the button is simply disabled until they do:
+
+- the maintainer has approved the PR;
+- nothing was pushed to the branch after that approval (a push dismisses it,
+  and the most recent push must be approved by someone other than whoever
+  pushed it);
+- the branch is up to date with `main` and has no conflicts (if `main` moved,
+  update the branch, which means a fresh approval);
+- CI is green.
+
+Squash is the only merge method the repository allows, so the result is one
+commit on `main` authored by you. Until you have write access, or when any of
+the conditions above does not hold, the maintainer lands the PR, still as one
+squashed commit with you as the author.
 
 ## Trademark
 
