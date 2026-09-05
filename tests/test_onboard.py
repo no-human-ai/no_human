@@ -2,15 +2,18 @@
 REAL end-to-end proving on two different ecosystems (Python+pytest and Node)
 with no code path differing between them — the Phase-4 DoD."""
 
+import io
 import json
 import shutil
 
 import pytest
+from rich.console import Console
 
 from no_human.onboard import (
     AgentDeriver,
     DeclarationDeriver,
     OnboardEngine,
+    ProveOutcome,
 )
 from no_human.profile import PROFILE_RELPATH, ProjectProfile
 
@@ -203,3 +206,114 @@ async def test_onboard_writes_yaml_and_round_trips(tmp_path):
     loaded = ProjectProfile.load(tmp_path)
     assert loaded.test_cmd == "pytest -q"
     assert loaded.proven.get("test_cmd") is True
+
+
+# --------------------------------------------------------------------------- #
+# A failed proving candidate must say WHY (KI-4)                               #
+# --------------------------------------------------------------------------- #
+
+
+def _failed(output: str) -> ProveOutcome:
+    return ProveOutcome("test", "pytest -q", False, 1, output, "pyproject.toml")
+
+
+def test_a_passing_candidate_stays_quiet():
+    """A clean prove run must read exactly as it did before this existed."""
+    passed = ProveOutcome("test", "pytest -q", True, 0, "42 passed", "pyproject.toml")
+    assert passed.failure_tail() == ""
+
+
+def test_a_failed_candidate_that_said_nothing_stays_quiet():
+    assert _failed("").failure_tail() == ""
+    assert _failed("   \n\n  ").failure_tail() == ""
+
+
+def test_a_failed_candidate_shows_the_reason():
+    tail = _failed("E   ModuleNotFoundError: No module named 'psycopg2'").failure_tail()
+    assert "ModuleNotFoundError" in tail
+    assert "psycopg2" in tail
+
+
+def test_the_output_is_bounded_by_line_count():
+    """A 10,000-line pytest failure must not flood the terminal."""
+    tail = _failed("\n".join(f"line {i}" for i in range(10_000))).failure_tail()
+    rendered = [ln for ln in tail.splitlines() if ln.strip()]
+    assert len(rendered) == 13                    # 12 lines + the elision note
+    assert "9988 earlier line(s) not shown" in tail
+    assert "line 9999" in tail                    # the tail, which is the useful end
+    assert "line 0" not in tail
+
+
+def test_the_output_is_bounded_by_line_width():
+    """One enormous line floods just as effectively as ten thousand short ones."""
+    tail = _failed("x" * 5_000).failure_tail()
+    assert len(tail) < 400
+    assert "(+4800 chars)" in tail
+
+
+def test_what_is_dropped_is_announced_not_silently_cut():
+    """Silently truncating a diagnostic is its own trap: the reader cannot tell
+    a short failure from a clipped one."""
+    assert "not shown" not in _failed("one\ntwo").failure_tail()
+    assert "not shown" in _failed("\n".join(str(i) for i in range(50))).failure_tail()
+
+
+def test_command_output_cannot_inject_console_markup():
+    """The output is the command's, not ours. An unclosed Rich tag in a
+    traceback would otherwise be swallowed or would raise."""
+    tail = _failed("got [red]unclosed and [/] stray").failure_tail()
+    assert r"\[red]" in tail
+    assert r"\[/]" in tail
+
+
+def test_a_line_ending_in_a_backslash_keeps_its_closing_tag():
+    """A Windows path at the end of a traceback line ends in a backslash. Escaping
+    only `[` would let that backslash escape our own closing tag, so the line lost
+    its last character and printed a literal `[/]`."""
+    tail = _failed("cannot open C:\\Users\\dev\\").failure_tail()
+    assert tail.rstrip().endswith("[/]")
+
+    console = Console(file=io.StringIO(), width=200, force_terminal=False)
+    console.print(tail.strip())
+    rendered = console.file.getvalue()
+    assert "[/]" not in rendered
+    assert rendered.rstrip().endswith("\\")
+
+
+def test_a_credential_in_the_command_output_is_masked(monkeypatch):
+    """A proved command can print a credential of its own. `output` is the
+    command's, not the environment's, but it still must not reach a terminal."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-super-secret-value")
+    tail = _failed(
+        "config dump: ANTHROPIC_API_KEY=sk-ant-super-secret-value\nfailed"
+    ).failure_tail()
+    assert "sk-ant-super-secret-value" not in tail
+    assert "failed" in tail
+
+
+def test_nothing_from_the_environment_is_rendered(monkeypatch):
+    """The proving subprocess inherits the process env, which by then holds the
+    values loaded from ~/.no_human/.env. Only `output` may ever be printed."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-must-never-be-rendered")
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "oauth-must-never-be-rendered")
+    tail = _failed("E   assert 1 == 2").failure_tail()
+    assert "must-never-be-rendered" not in tail
+    assert tail.strip() == "[dim]E   assert 1 == 2[/]"
+
+
+@pytest.mark.asyncio
+async def test_onboard_end_to_end_surfaces_a_real_failure_reason(tmp_path):
+    """The whole point, through the real engine: a missing dependency has to be
+    nameable from the onboard output alone."""
+    repo = _python_repo(tmp_path)
+    (repo / "test_demo.py").write_text(
+        "import nh_no_such_module_9f3a  # noqa: F401\n\n\ndef test_ok():\n    assert True\n"
+    )
+    result = await OnboardEngine().onboard(repo)
+
+    failed = [p for p in result.proofs if p.kind == "test" and not p.ok]
+    assert failed, "the fixture repo's test command was supposed to fail"
+    tail = failed[0].failure_tail()
+    assert "nh_no_such_module_9f3a" in tail, (
+        "the reason the command failed is not recoverable from the output"
+    )

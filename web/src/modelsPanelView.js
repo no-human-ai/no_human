@@ -8,7 +8,7 @@ import { titleCase } from "./titleCase.js";
 // the server just sent; this module only reshapes it.
 //
 // Payload shape (read, not invented — model_settings.py::models_payload):
-//   {"roles": [{"role","key","current","default",
+//   {"roles": [{"role","key","current","saved","default","note",
 //               "options":[{"id","price_class":{"label","input_rate",
 //                           "output_rate"},"is_default","note",
 //                           "requires_backend","disabled_reason"}],
@@ -16,11 +16,25 @@ import { titleCase } from "./titleCase.js";
 //               "backend"?:{"backend","model","is_default"}}],
 //    "restart_required": bool}
 //
+// `current` is what the RUNNING process is using (only changes on restart);
+// `saved` is what a fresh read of config.yaml holds right now — the value a
+// PUT actually diffs against server-side. `saved` may be absent (an older
+// server): `savedOf` below falls back to `current` in that case, degrading
+// to exactly today's behaviour rather than throwing.
+//
 // Constraint §6d: a role in `role_backend_settings.ROLE_BACKEND_ROLES` (today
 // only "reviewer") additionally carries the optional "backend" block above —
 // the server's own effective-backend answer, copied verbatim onto the row as
 // `row.backend`; every other role's row has `backend: null`, exactly as it
 // had no such field before this constraint landed.
+
+// savedOf(r) -> the on-disk value for a raw payload role dict, falling back
+// to `current` when the server omits `saved` (an older build) — the ONE
+// place this fallback is spelled, reused by the row mapping below and by
+// both PUT-body builders so they always agree on what "saved" means.
+function savedOf(r) {
+  return r.saved !== undefined ? r.saved : r.current;
+}
 
 // modelsPanelView(payload) -> {unavailable, showRestartBanner, rows}
 //
@@ -38,6 +52,11 @@ export function modelsPanelView(payload) {
     key: r.key,
     label: titleCase(String(r.role || "")),
     current: r.current,
+    saved: savedOf(r),
+    // True only when the server told us the on-disk value AND it differs
+    // from the running one — an older server (no `saved`) never sets this,
+    // matching "no restart-pending info available" rather than guessing.
+    pendingRestart: r.saved !== undefined && r.saved !== r.current,
     default: r.default,
     note: r.note || "",
     costNote: r.cost_note || "",
@@ -64,9 +83,16 @@ export function modelsPanelView(payload) {
 }
 
 // The PUT body for a Save click: only the keys whose pending selection
-// differs from the row's `current` value. `pending` is `{config_key:
-// model_id}` for every row the user has touched (Reset never needs this —
-// see resetBody below), keyed by `row.key` exactly as the payload spells it.
+// differs from the row's SAVED (on-disk) value — not `current` (the running
+// process), which the server itself never diffs a PUT against
+// (apply_model_changes reads on-disk). Diffing against `current` instead
+// would make re-picking the value you just saved a silent no-op (the PUT
+// body would be empty even though the running process still needs a
+// restart to pick it up) and would make picking the still-running-but-
+// already-superseded value look like a real change. `pending` is
+// `{config_key: model_id}` for every row the user has touched (Reset never
+// needs this — see resetBody below), keyed by `row.key` exactly as the
+// payload spells it.
 //
 // `pendingRoleBackend` (constraint §6d, optional — omit it and this behaves
 // exactly as before the amendment) is the reviewer backend picker's own
@@ -88,7 +114,7 @@ export function pendingBody(payload, pending, pendingRoleBackend) {
     for (const r of roles) {
       const next = pending[r.key];
       if (next === undefined) continue;
-      if (next === r.current) continue;
+      if (next === savedOf(r)) continue;
       out[r.key] = next;
     }
   }
@@ -110,9 +136,14 @@ export function pendingBody(payload, pending, pendingRoleBackend) {
 }
 
 // The PUT body for a Reset-to-defaults click: every role's `default` value,
-// filtered to the ones that actually differ from `current` — an idempotent
-// PUT (Reset when everything is already at its default) sends an empty body,
-// which the server treats as a no-op write (no event, nothing on disk).
+// filtered to the ones that actually differ from the SAVED (on-disk) value —
+// not `current` — an idempotent PUT (Reset when disk is already at every
+// default) sends an empty body, which the server treats as a no-op write (no
+// event, nothing on disk). Diffing against `current` instead would make
+// Reset silently inert right after a save: the running process still
+// reports its old (already-default) value, so `default !== current` is
+// false even though disk holds a real non-default value that needs
+// resetting.
 //
 // Constraint §6d: also clears the reviewer's explicit backend, if any —
 // `{role_backends: {reviewer: null}}` — read straight off the payload's own
@@ -123,7 +154,7 @@ export function resetBody(payload) {
   if (!Array.isArray(roles)) return {};
   const out = {};
   for (const r of roles) {
-    if (r.default !== r.current) out[r.key] = r.default;
+    if (r.default !== savedOf(r)) out[r.key] = r.default;
   }
   const reviewer = roles.find((r) => r.role === "reviewer");
   if (reviewer && reviewer.backend && reviewer.backend.is_default === false) {

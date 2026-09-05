@@ -1,13 +1,13 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { fetchMetrics, fetchRepos, fetchRepoUnderstanding, searchEvents } from "./api.js";
-import { fmtCost, fmtTokens, lifetimeCost, taskBurn } from "./cost.js";
+import { fmtCost, fmtTokens, lifetimeCost, taskBurn, pricingIsReal } from "./cost.js";
 import { northStarTiles } from "./northStar.js";
 import TaskTable from "./TaskTable.jsx";
 import { isRealFailure } from "./boardLanes.js";
 import { profileRows, profileStatus } from "./repoView.js";
 import { kindLabel, groupByTask } from "./searchView.js";
 import { pluralize } from "./pluralize.js";
-import { costByProject, totalCost } from "./costGroups.js";
+import { costByProject, totalCost, totalTokens as totalProjectTokens } from "./costGroups.js";
 import { parseTimestamp } from "./parseTimestamp.js";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -283,17 +283,27 @@ const KIND_COLORS = {
 
 // Per-task cost is a table column and lifetime cost is a tile; nothing sat between them, so
 // "what has this repo cost me" meant adding the column up by hand. Same cost model as both.
-function CostByProject({ tasks }) {
+//
+// Subscription mode (realDollars = false) never renders a dollar figure here — the same rule
+// as everywhere else on this page. The testid, section shape and `cost-project-*` CSS classes
+// stay identical either way; only the title, sub-line, last column and bar basis switch to
+// tokens (deadCss.test.mjs pins the classes; no new class names are introduced).
+function CostByProject({ tasks, realDollars }) {
   const rows = useMemo(() => costByProject(tasks), [tasks]);
   if (rows.length === 0) return null;
   const total = totalCost(rows);
-  const max = Math.max(...rows.map((r) => r.cost), 0);
+  const tokens = totalProjectTokens(rows);
+  const max = Math.max(...rows.map((r) => (realDollars ? r.cost : r.tokens)), 0);
 
   return (
     <div className="stats-section ph-no-capture" data-testid="cost-by-project">
-      <h3 className="stats-section-title">Cost by Project</h3>
+      <h3 className="stats-section-title">
+        {realDollars ? "Cost by Project" : "Token Usage by Project"}
+      </h3>
       <div className="stats-section-sub">
-        {fmtCost(total)} across {rows.length} {pluralize(rows.length, "project")}
+        {realDollars
+          ? `${fmtCost(total)} across ${rows.length} ${pluralize(rows.length, "project")}`
+          : `${fmtTokens(tokens)} across ${rows.length} ${pluralize(rows.length, "project")}`}
       </div>
       <div className="cost-project-wrap">
         <table className="cost-project-table">
@@ -301,7 +311,9 @@ function CostByProject({ tasks }) {
           <tr>
             <th className="cost-project-th" scope="col">Project</th>
             <th className="cost-project-th cost-project-th-right" scope="col">Tasks</th>
-            <th className="cost-project-th cost-project-th-right" scope="col">Est. Cost</th>
+            <th className="cost-project-th cost-project-th-right" scope="col">
+              {realDollars ? "Est. Cost" : "Tokens"}
+            </th>
           </tr>
         </thead>
         <tbody>
@@ -311,13 +323,17 @@ function CostByProject({ tasks }) {
                 {/* The bar is decoration on top of the number, not the only way to read it. */}
                 <span
                   className="cost-project-bar"
-                  style={{ width: max > 0 ? `${(r.cost / max) * 100}%` : 0 }}
+                  style={{
+                    width: max > 0 ? `${((realDollars ? r.cost : r.tokens) / max) * 100}%` : 0,
+                  }}
                   aria-hidden="true"
                 />
                 <span className="cost-project-label">{r.project}</span>
               </th>
               <td className="cost-project-val">{r.tasks}</td>
-              <td className="cost-project-val cost-project-cost">{fmtCost(r.cost)}</td>
+              <td className="cost-project-val cost-project-cost">
+                {realDollars ? fmtCost(r.cost) : fmtTokens(r.tokens)}
+              </td>
             </tr>
           ))}
         </tbody>
@@ -539,8 +555,11 @@ function SessionSearch() {
   );
 }
 
-export default function Stats({ tasks }) {
+export default function Stats({ tasks, authMode }) {
   const stats = useMemo(() => computeStats(tasks), [tasks]);
+  // api_key (BYO) is the only mode that pays Anthropic per token for real; every
+  // other/absent value falls to token-led display (pricingIsReal, SCRUM re-home).
+  const realDollars = pricingIsReal(authMode);
   // undefined = fetch in flight (loader) · null = fetch FAILED (honest
   // 'unavailable') · object = loaded. A failed refetch keeps the loaded value
   // — a dollar figure must never be replaced by a fake loader (PR #108
@@ -551,7 +570,7 @@ export default function Stats({ tasks }) {
     fetchMetrics().then((m) =>
       setMetrics((prev) => (m === null && prev ? prev : m)));
   }, [tasks.length]);
-  const northStar = northStarTiles(metrics);
+  const northStar = northStarTiles(metrics, authMode);
 
   if (tasks.length === 0) {
     return (
@@ -641,12 +660,17 @@ export default function Stats({ tasks }) {
           <div className="stats-card-label">Token Usage</div>
           <div className="stats-card-value">{fmtTokens(stats.totalTokens)}</div>
           <div className="stats-card-sub">
-            {metrics === undefined
-              ? <span className="stats-loading">est. loading…</span>
-              : metrics === null
-                ? <>est. unavailable</>
-                : <>est. {fmtCost(lifetimeCost(metrics))}</>}
-            {stats.avgTokensPerTask > 0 && ` · avg ${fmtTokens(stats.avgTokensPerTask)}/task`}
+            {/* Subscription mode pays a flat fee: an "est. $X" here would be an API-rate
+                estimate, not money that changed hands, so it is dropped entirely rather
+                than shown alongside the token count (pricingIsReal, SCRUM re-home). */}
+            {realDollars &&
+              (metrics === undefined
+                ? <span className="stats-loading">est. loading…</span>
+                : metrics === null
+                  ? <>est. unavailable</>
+                  : <>est. {fmtCost(lifetimeCost(metrics))}</>)}
+            {stats.avgTokensPerTask > 0 &&
+              `${realDollars ? " · " : ""}avg ${fmtTokens(stats.avgTokensPerTask)}/task`}
           </div>
         </div>
 
@@ -699,7 +723,7 @@ export default function Stats({ tasks }) {
       )}
 
       {/* Cost by project — the rollup between the per-task column and the lifetime tile. */}
-      <CostByProject tasks={tasks} />
+      <CostByProject tasks={tasks} realDollars={realDollars} />
 
       {/* Repository Understanding (C3-G3) */}
       <RepoUnderstanding />
@@ -711,7 +735,7 @@ export default function Stats({ tasks }) {
       <div className="stats-section">
         <h3 className="stats-section-title">All Tasks</h3>
         <div className="stats-section-sub">{tasks.length} tasks</div>
-        <TaskTable tasks={tasks} />
+        <TaskTable tasks={tasks} authMode={authMode} />
       </div>
     </div>
   );

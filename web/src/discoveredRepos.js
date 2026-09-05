@@ -82,6 +82,35 @@ export function discoveryMessage(res) {
   return parts.join(" ");
 }
 
+// Structured refusal reasons for a discovery response. `res.refusals` is the
+// modern shape (`[{path, reason}, ...]`); an older server only sends the
+// plain-string `res.roots_refused`, in which case every entry falls back to
+// the one reason that field has ever meant.
+export function refusalReasons(res) {
+  if (!res) return [];
+  if (Array.isArray(res.refusals) && res.refusals.length) {
+    return res.refusals.map((r) => r?.reason || "outside home directory");
+  }
+  if (Array.isArray(res.roots_refused) && res.roots_refused.length) {
+    return res.roots_refused.map(() => "outside home directory");
+  }
+  return [];
+}
+
+// The message for the empty-result state of a folder search. A refused root
+// is NOT an empty folder — saying "no git repositories there" for a root the
+// server never scanned is a lie the user cannot see through, so a refusal
+// signal always wins over the absence wording.
+export function searchEmptyMessage(res, searchedPath) {
+  if ((res?.repos || []).length) return "";
+  const reasons = refusalReasons(res);
+  if (reasons.length) {
+    return `${searchedPath || "That folder"} was not scanned: ${reasons[0]}.`;
+  }
+  if (searchedPath) return `Searched ${searchedPath} — no git repositories there.`;
+  return "No repositories found. Search another folder above.";
+}
+
 // The older single-root scan (POST /api/onboarding/repos/detect) returns only
 // path/name/ecosystem. Widen its rows to the discovery shape so one renderer
 // serves both surfaces - without inventing a branch or a clean working tree

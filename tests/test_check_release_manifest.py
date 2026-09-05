@@ -453,3 +453,97 @@ def test_the_remedy_does_recommend_write_where_it_is_safe(tmp_path):
     assert "--write`" in proc.stderr
     assert "no EXPORT_CLASSIFICATION.txt" in proc.stderr
     assert "export_guard.py approve` instead" in proc.stderr
+
+
+def test_write_produces_lf_bytes_on_every_platform(tmp_path):
+    """`--write` goes through Python's text layer, which on Windows would turn
+    every row into CRLF. The manifest is compared as bytes by git, so a CRLF
+    write makes all rows look changed while the tool itself stays quiet."""
+    repo = make_repo(tmp_path)
+    write_manifest(repo)
+
+    written = (repo / "RELEASE_MANIFEST.txt").read_bytes()
+    assert b"\r" not in written
+    assert written.endswith(b"\n")
+
+
+def test_rewriting_the_manifest_is_idempotent_byte_for_byte(tmp_path):
+    """A second `--write` over an unchanged tree must not alter a single byte,
+    which is what makes a large diff a real signal rather than noise."""
+    repo = make_repo(tmp_path)
+    write_manifest(repo)
+    first = (repo / "RELEASE_MANIFEST.txt").read_bytes()
+    write_manifest(repo)
+
+    assert (repo / "RELEASE_MANIFEST.txt").read_bytes() == first
+
+
+def test_write_notes_when_it_rewrites_most_of_the_manifest(tmp_path):
+    """The line-ending failure looks exactly like a huge honest diff, so say
+    something. A warning, never a refusal: wide sweeps are legitimate."""
+    repo = make_repo(tmp_path)
+    write_manifest(repo)
+
+    # Change every tracked file, the shape a line-ending mismatch produces.
+    (repo / "README.md").write_text("hello, again\n")
+    (repo / "pkg" / "a.py").write_text("A = 2\n")
+    subprocess.check_call(["git", "add", "-A"], cwd=str(repo))
+
+    proc = run("--root", str(repo), "--write")
+    assert proc.returncode == 0
+    assert "existing row(s) changed" in proc.stderr
+    assert "core.autocrlf" in proc.stderr
+
+
+def test_write_is_quiet_when_only_a_little_changed(tmp_path):
+    """One row in a wider manifest is the ordinary case and must stay silent."""
+    repo = make_repo(tmp_path)
+    for i in range(8):
+        (repo / f"f{i}.txt").write_text(f"{i}\n")
+    subprocess.check_call(["git", "add", "-A"], cwd=str(repo))
+    write_manifest(repo)
+
+    (repo / "f0.txt").write_text("changed\n")
+    subprocess.check_call(["git", "add", "-A"], cwd=str(repo))
+
+    proc = run("--root", str(repo), "--write")
+    assert proc.returncode == 0
+    assert "existing row(s) changed" not in proc.stderr
+
+
+def test_write_recovers_a_manifest_left_mid_merge(tmp_path):
+    """`--write` is how a conflicted manifest gets cleared, and the manifest
+    conflicts on nearly every merge because it is generated. So the write side
+    has to survive READING a file that does not parse; `parse_manifest` raising
+    on the first bad row is right for the check side and fatal for this one."""
+    repo = make_repo(tmp_path)
+    (repo / "RELEASE_MANIFEST.txt").write_text(
+        "# pins\n"
+        "<<<<<<< HEAD\n"
+        + "a" * 64 + "  README.md\n"
+        "=======\n"
+        + "b" * 64 + "  README.md\n"
+        ">>>>>>> origin/main\n"
+    )
+
+    proc = run("--root", str(repo), "--write")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+    written = (repo / "RELEASE_MANIFEST.txt").read_text()
+    assert "<<<<<<<" not in written
+    assert ">>>>>>>" not in written
+    assert "=======" not in written
+
+    # Recovery means the checker accepts the result, not merely that the write
+    # did not crash.
+    assert run("--root", str(repo)).returncode == 0
+
+
+def test_an_unreadable_previous_manifest_costs_only_the_note(tmp_path):
+    """The comparison is a convenience. Losing it must never cost the write."""
+    repo = make_repo(tmp_path)
+    (repo / "RELEASE_MANIFEST.txt").write_text("# pins\nnot a manifest row at all\n")
+
+    proc = run("--root", str(repo), "--write")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "existing row(s) changed" not in proc.stderr

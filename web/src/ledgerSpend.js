@@ -6,10 +6,10 @@
 // IS the spend — same as today's line.
 // Pure derivation, no fetching: the caller (the sidebar block) already has
 // every number this needs from data it already fetches.
-import { fmtTokens, fmtCost } from "./cost.js";
+import { fmtTokens, fmtCost, pricingIsReal } from "./cost.js";
 
 export function deriveSpendDisplay(tokensSpent, dollarEstimate, actualDollarSpent, authMode) {
-  if (authMode === "api_key") {
+  if (pricingIsReal(authMode)) {
     return { primary: fmtCost(actualDollarSpent), secondary: "spent", format: "dollars" };
   }
   // "subscription" and any absent/unrecognized value fall back to the
@@ -30,4 +30,20 @@ export function perShippedCost(shippedCount, windowCost) {
     return null;
   }
   return windowCost / shippedCount;
+}
+
+// The per-PR figure, rendered — same tokens-lead/dollars-est. convention as
+// deriveSpendDisplay above, applied to the per-shipped-PR figure instead of
+// the window total. Returns null exactly when perShippedCost does (no
+// shipped PRs, or no usable window cost yet) — callers show the shipped
+// count alone in that case, same contract as today.
+export function derivePerShippedDisplay(shippedCount, windowCost, tokensSpent, authMode) {
+  const perPr = perShippedCost(shippedCount, windowCost);
+  if (perPr == null) return null;
+  if (pricingIsReal(authMode)) return `(~${fmtCost(perPr)}/PR)`;
+  const perPrTokens = shippedCount > 0 && Number.isFinite(tokensSpent) && tokensSpent > 0
+    ? tokensSpent / shippedCount : null;
+  return perPrTokens != null
+    ? `(~${fmtTokens(Math.round(perPrTokens))} tok/PR · ~${fmtCost(perPr)} est.)`
+    : `(~${fmtCost(perPr)}/PR est.)`;
 }

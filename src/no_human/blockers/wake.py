@@ -2276,16 +2276,20 @@ class WakeWatcher:
             failing_step = result.step if result is not None else "worktree"
             detail = result.detail if result is not None else (
                 "could not resolve the base tip to a commit")
+            # step alone is not root-causeable — the sub-step reason lives
+            # in `result.detail`; surface it (capped) everywhere step is.
+            detail_note = (
+                f"; detail: {' '.join(detail.split())[:500]}" if detail else "")
             data["question"] = (
                 f"PR {url} conflicts only in derived artefact(s) "
                 f"({conflict_desc}) but mechanical resolution failed at "
-                f"step {failing_step!r}. Advise, or take over?"
+                f"step {failing_step!r}{detail_note}. Advise, or take over?"
             )
             data["root_cause_hypothesis"] = (
                 f"mechanical derived-artefact conflict resolution failed: "
                 f"{url} step={failing_step}"
             )
-            data["evidence"] = detail
+            data["evidence"] = f"step={failing_step}: {detail[:500]}"
             task.blocker = data
             await self.store.update_task_columns(task)
             await self.store.set_status(task, TaskStatus.ESCALATED, validate=False)
@@ -2293,7 +2297,8 @@ class WakeWatcher:
                 task, "escalated_pr_conflict",
                 f"{task.id[:8]} PR {url} CONFLICTING — mechanical "
                 f"resolution failed at step {failing_step!r} "
-                f"({conflict_desc})",
+                f"({conflict_desc}){detail_note}",
+                extra={"error": detail[:500]},
             )
             return "escalated_pr_conflict"
 

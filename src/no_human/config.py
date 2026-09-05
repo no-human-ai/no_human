@@ -228,6 +228,12 @@ class AuthError(RuntimeError):
     """Raised when the process is not provably in subscription-billing mode."""
 
 
+class MissingCredentialError(AuthError):
+    """No credential on file at all — the ONE auth failure a server may boot
+    through into setup mode. Every other AuthError (ANTHROPIC_API_KEY set in
+    subscription mode, codex/local misconfig) stays fatal."""
+
+
 class CredentialPermissionError(AuthError):
     """Raised when a credential file cannot be restricted to its owner.
 
@@ -1241,13 +1247,41 @@ def assert_subscription_mode(
     env_path = ENV_PATH if env_path is None else env_path
     token = load_env_token(env_path, profile=profile)
     if not token:
-        raise AuthError(
+        raise MissingCredentialError(
             f"No subscription token found. Expected {SUBSCRIPTION_TOKEN_VAR} in "
             f"{env_path} (chmod 600) or the process environment.\n"
             "Create one with:  claude setup-token\n"
             "Inspect configured profiles with:  nh auth status"
         )
     return report
+
+
+def subscription_credential_missing(
+    data: dict | None, env_path: Path | None = None
+) -> str | None:
+    """Return a human reason when NO billing credential is on file, else None.
+
+    Non-raising, non-scrubbing probe used to compute setup-mode state (at
+    server startup and per-request) without the side effects of
+    :func:`assert_subscription_mode`. ``api_key`` mode is out of scope for
+    setup mode and always reports ``None`` here. Fails open on any error — an
+    unreadable env file must never restrict an otherwise-working install.
+    """
+    try:
+        llm = (data or {}).get("llm") or {}
+        if llm.get("auth_mode", "subscription") != "subscription":
+            return None
+        profile = llm.get("auth_profile")
+        token = load_env_token(env_path, profile=profile)
+        if token:
+            return None
+        path = ENV_PATH if env_path is None else env_path
+        return (
+            f"No subscription token found. Expected {SUBSCRIPTION_TOKEN_VAR} in "
+            f"{path} (chmod 600) or the process environment."
+        )
+    except Exception:
+        return None
 
 
 # --------------------------------------------------------------------------- #

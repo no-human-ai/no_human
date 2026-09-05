@@ -34,8 +34,9 @@ from typing import Awaitable, Callable
 from ..agent.worker_context import WorkerContext, set_worker_context
 from ..blockers import human_gate_armed
 from ..blockers.shipped import _TICK_ABORTED, complete_if_content_landed
-from ..config import (DEFAULT_CONFIG, active_auth_profile, parallelism_enabled,
-                      pid_alive, process_start_token, worktree_isolation_enabled)
+from ..config import (AuthError, DEFAULT_CONFIG, active_auth_profile,
+                      parallelism_enabled, pid_alive, process_start_token,
+                      worktree_isolation_enabled)
 from ..vcs.pr_watcher import landing_sha_candidates, orphan_landed_evidence
 from ..vcs.task_pr import resolve_task_pr
 from .bounds import QuotaExhausted
@@ -51,6 +52,14 @@ from .task import (
 from .worktree import salvage_dead_worktrees, sweep_stale_worktrees
 
 log = logging.getLogger("no_human.scheduler")
+
+#: Cap on the stderr text persisted alongside a pool-crash event (see `_run`'s
+#: crash handler below). The exception object's `stderr` (when it carries
+#: one — e.g. `subprocess.CalledProcessError`/`TimeoutExpired`) is the last
+#: thing the dying worker's own attempt printed; capped the same way
+#: `testing/runner.py`'s command-output excerpts are, so one runaway process
+#: cannot balloon the task_events row.
+_STDERR_EXCERPT_CAP = 2048
 
 # Tasks the scheduler may pick up: freshly created, or flipped back to
 # IMPLEMENTING by the WakeWatcher / `nh reply` resume. IMPLEMENTING first —
@@ -482,6 +491,7 @@ class Scheduler:
         retirement_job: "RetirementSweepJob | None" = None,
         harvest_job: "HarvestJob | None" = None,
         config: dict | None = None,
+        auth_check: Callable[[], None] | None = None,
     ):
         self.store = store
         self.factory = orchestrator_factory
@@ -530,6 +540,13 @@ class Scheduler:
         self.retirement = retirement_job
         self.harvest = harvest_job
         self._config = config or {}
+        # Re-probed every tick (see config.assert_subscription_mode), not just
+        # at startup, so an added credential resumes dispatch without a
+        # restart. None = no check configured = today's zero-gate behavior.
+        self._auth_check = auth_check
+        # Last auth-failure message already advisory-logged, so a stuck
+        # server logs ONE line per reason, not one per tick.
+        self._auth_advisory: str | None = None
         # Orchestrators whose `run_task` is being awaited right now, so a
         # shutdown can ask each one to checkpoint and requeue
         # (`request_stop_checkpoints` → `Orchestrator.request_server_stop`).
@@ -570,6 +587,11 @@ class Scheduler:
         self._last_dispatch_at: float | None = None
         self._last_claimable_count: int | None = None
         self._crash_times: deque = deque(maxlen=500)
+        # All-time count of pool-level worker deaths (see `_run`'s crash
+        # handler) — a cumulative COUNTER, unlike `_crash_times`'s rolling
+        # rate windows below, so a dashboard can show "N worker deaths since
+        # start" even after the last one ages out of every window.
+        self._worker_deaths_total = 0
         # Set (to the failure reason) the moment a per-tick lease REFRESH
         # fails — never by the startup claim, which raises instead of
         # setting a flag. Once set, `tick()` stops dispatching immediately
@@ -1905,6 +1927,7 @@ class Scheduler:
             "claimable": self._last_claimable_count,
             "crashes_last_5m": self._crashes_since(300),
             "crashes_last_1m": self._crashes_since(60),
+            "worker_deaths_total": self._worker_deaths_total,
             "status_write_failures": self._status_write_failures,
             "consecutive_status_write_failures":
                 self._consecutive_status_write_failures,
@@ -2081,6 +2104,26 @@ class Scheduler:
             except Exception as exc:  # noqa: BLE001 — sweep must not kill the pool
                 log.warning("quota-park resume sweep failed: %s", exc)
 
+        # Checked every tick, right before dispatch (config.assert_subscription_
+        # mode is the gate) — idles instead of crash-looping when no credential
+        # is on file, and resumes on the next tick once one appears.
+        if self._auth_check is not None:
+            try:
+                self._auth_check()
+            except AuthError as exc:
+                msg = str(exc).splitlines()[0]
+                if self._auth_advisory != msg:  # emit once per distinct reason
+                    self._auth_advisory = msg
+                    log.warning("dispatch paused — %s", msg)
+                    self._on_event("setup_required", msg)
+                return []  # idle, not raise: this must never crash-loop
+            else:
+                if self._auth_advisory is not None:
+                    self._auth_advisory = None
+                    self._on_event(
+                        "setup_complete",
+                        "credential detected — dispatch resumed")
+
         slots = self.max_workers - len(self._inflight)
         started: list[str] = []
         claimable = await self._claimable()
@@ -2253,14 +2296,30 @@ class Scheduler:
                     self._on_event("quota_pause",
                                    f"pool paused until {resets.isoformat()}")
         except Exception as exc:  # noqa: BLE001 — one task must not kill the pool
+            # This IS the pool's worker-death path: nothing above retries or
+            # restarts the coroutine that just raised — `orch.run_task`'s own
+            # bounded retries (e.g. claude_backend's one transport retry) have
+            # already run their course inside it, so reaching here means the
+            # worker died OUTSIDE any restart. Exit status + termination
+            # reason + stderr are captured here, once, for exactly that case.
+            exit_code = getattr(exc, "returncode", None)
+            termination_reason = f"{type(exc).__name__}: {exc}"
+            stderr_raw = getattr(exc, "stderr", None)
+            if isinstance(stderr_raw, bytes):
+                stderr_raw = stderr_raw.decode("utf-8", errors="replace")
+            stderr_excerpt = (stderr_raw or "").strip()
+            if len(stderr_excerpt) > _STDERR_EXCERPT_CAP:
+                stderr_excerpt = (stderr_excerpt[:_STDERR_EXCERPT_CAP]
+                                   + "\n… [truncated]")
             # logging only — a bare print/traceback to stderr raises
             # BrokenPipeError inside THIS except when the desktop parent that
             # piped our stderr has crashed away (SCRUM-11), killing the pool
             # worker the except exists to protect. logging.handleError swallows.
-            log.warning("task %s crashed in pool: %s", task.id[:8], exc,
-                        exc_info=True)
+            log.warning("task %s crashed in pool (exit_code=%s): %s",
+                        task.id[:8], exit_code, exc, exc_info=True)
             self._on_event("task_error", f"{task.id[:8]}: {exc}")
             self._crash_times.append(time.time())
+            self._worker_deaths_total += 1
             # Durable reason. `_on_event` above is the LIVE pool stream — it is
             # gone the moment nobody is watching, and `log.warning` lands in a
             # file the board never reads. Without this the task is FAILED with
@@ -2274,11 +2333,16 @@ class Scheduler:
             # protect (see the stderr note above — that hazard is real, but it
             # is about writing to a broken pipe, not about the store).
             try:
-                await self.store.save_events(task.id, [{
+                crash_event = {
                     "source": "scheduler", "kind": "task_crashed",
-                    "text": f"{type(exc).__name__}: {exc}",
+                    "text": termination_reason,
+                    "exit_code": exit_code,
+                    "termination_reason": termination_reason,
                     "ts": time.time(),
-                }])
+                }
+                if stderr_excerpt:
+                    crash_event["stderr_excerpt"] = stderr_excerpt
+                await self.store.save_events(task.id, [crash_event])
             except Exception:  # noqa: BLE001
                 pass
             # Mark the task as FAILED so it doesn't stay stuck.

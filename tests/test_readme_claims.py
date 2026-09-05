@@ -1801,15 +1801,19 @@ def test_is_agent_session_is_real_but_absent_from_approve(security_doc):
 # convention wholesale would be a style change this fix does not make — so a
 # SECOND citation form is accepted alongside the line form: `file.py:Symbol`
 # (a class, function, or module-level constant name, optionally followed by
-# `:line_start-line_end` as a purely advisory, never-checked hint). Every
-# citation actually written in the three docs — either form — is required to
-# appear in the table below.
+# `:line_start-line_end`). The symbol is what resolves that form, which is why
+# it survives the code moving; the line, when the row carries one, is checked
+# against where the cited token really is, and `reanchor_citations.py --apply`
+# rewrites it (issue #93). Every citation actually written in the three docs —
+# either form — is required to appear in the table below.
 
 _LINE_CITATION_RE = re.compile(
     r"`((?:[\w./-]+\.(?:py|mjs|cjs))?:\d+(?:-\d+)?)`"
 )
-#: `file.py:Symbol[.method]` optionally followed by an advisory `:N[-M]` that
-#: is parsed but never checked — the whole point is that it may go stale.
+#: `file.py:Symbol[.method]` optionally followed by `:N[-M]`. The symbol is
+#: what anchors the row, so it survives a move that would rot a line citation;
+#: `N` is then checked against the token's line, warning inside the drift
+#: window and failing beyond it. A range's start is the part that is read.
 #: Reuses `_SYMBOL` (module scope, above) so both citation surfaces recognize
 #: the same identifier shape.
 _SYMBOL_CITATION_RE = re.compile(
@@ -1849,8 +1853,15 @@ def _symbol_vicinity_by_regex(lines: list[str], symbol: str) -> list[str] | None
     return lines[start:end]
 
 
-def _symbol_vicinity(source_text: str, symbol: str) -> list[str] | None:
-    """The lines making up *symbol*'s vicinity in *source_text*.
+def _symbol_vicinity_span(
+    source_text: str, symbol: str
+) -> tuple[int | None, list[str]] | None:
+    """The lines making up *symbol*'s vicinity in *source_text*, and where they
+    start.
+
+    `start` is the AST's own `node.lineno`, or None on the regex fallback path,
+    which recognizes a symbol without ever numbering it. Callers that want only
+    the text use `_symbol_vicinity` below.
 
     For a function or class: its `def`/`class` line through its last line,
     including the docstring and body, EXCLUDING any decorator lines (a
@@ -1878,7 +1889,8 @@ def _symbol_vicinity(source_text: str, symbol: str) -> list[str] | None:
             UserWarning,
             stacklevel=2,
         )
-        return _symbol_vicinity_by_regex(lines, symbol)
+        vicinity = _symbol_vicinity_by_regex(lines, symbol)
+        return None if vicinity is None else (None, vicinity)
 
     outer, dot, inner = symbol.partition(".")
 
@@ -1904,7 +1916,61 @@ def _symbol_vicinity(source_text: str, symbol: str) -> list[str] | None:
 
     if node is None:
         return None
-    return lines[node.lineno - 1 : node.end_lineno]
+    return node.lineno, lines[node.lineno - 1 : node.end_lineno]
+
+
+def _symbol_vicinity(source_text: str, symbol: str) -> list[str] | None:
+    """The lines of *symbol*, for callers that do not need to know where from."""
+    span = _symbol_vicinity_span(source_text, symbol)
+    return None if span is None else span[1]
+
+
+def _symbol_first_line(source_text: str, symbol: str) -> int | None:
+    """The 1-based line *symbol*'s vicinity starts on, or None if not found.
+
+    The token check needs only the lines, but reporting a token found inside
+    them as an ABSOLUTE line needs the offset too.
+
+    The AST already knows the offset, so it is used as-is. Only the regex
+    fallback has to search by content, and there the first match is the best
+    available answer: that path recognizes a symbol without numbering it. This
+    matters when a file holds two identical bodies, where a content search
+    would anchor every citation to whichever one comes first.
+    """
+    span = _symbol_vicinity_span(source_text, symbol)
+    if span is None:
+        return None
+    start, vicinity = span
+    if start is not None:
+        return start
+    lines = source_text.splitlines()
+    for i in range(len(lines) - len(vicinity) + 1):
+        if lines[i : i + len(vicinity)] == vicinity:
+            return i + 1
+    return None
+
+
+def _token_line_in_symbol(source_text: str, symbol: str, token: str) -> int | None:
+    """The 1-based line where *token* appears inside *symbol*, or None.
+
+    The token rather than the symbol is what a `symbol:line` row points at. Five
+    rows in `CITATION_TABLE` cite a phrase from inside a function body rather
+    than its `def` — `:_probe_github_ambient:549` names a docstring sentence in a
+    function that starts on 515 — so anchoring on the definition would report
+    those as 34 lines wrong when they are exactly right.
+    """
+    start = _symbol_first_line(source_text, symbol)
+    if start is None:
+        return None
+    vicinity = _symbol_vicinity(source_text, symbol) or []
+    for offset, line in enumerate(vicinity):
+        if token in line:
+            return start + offset
+    # A token spanning more than one line: report the line it begins on.
+    block = "\n".join(vicinity)
+    if token in block:
+        return start + block[: block.index(token)].count("\n")
+    return None
 
 #: (doc filename, raw citation text exactly as it appears between backticks,
 #: path to resolve it against — inherited from the preceding citation in the
@@ -1914,20 +1980,20 @@ def _symbol_vicinity(source_text: str, symbol: str) -> list[str] | None:
 CITATION_TABLE = (
     # docs/security.md
     ("security.md", "guard.py:WRITE_TOOLS", "guard.py", 'WRITE_TOOLS = {"Write"'),
-    ("security.md", "agent/claude_backend.py:ClaudeBackend.__init__:519",
+    ("security.md", "agent/claude_backend.py:ClaudeBackend.__init__:520",
      "agent/claude_backend.py", 'permission_mode: str = "bypassPermissions"'),
-    ("security.md", ":ClaudeBackend.__init__:544", "agent/claude_backend.py",
+    ("security.md", ":ClaudeBackend.__init__:545", "agent/claude_backend.py",
      "PreToolUse guard"),
     ("security.md", "vcs/pr_watcher.py:default_pr_state", "vcs/pr_watcher.py",
      '"gh", "pr", "view"'),
-    ("security.md", "vcs/git.py:GitRepo._have_remote_commit:836", "vcs/git.py",
+    ("security.md", "vcs/git.py:GitRepo._have_remote_commit:934", "vcs/git.py",
      '"git", "fetch"'),
-    ("security.md", ":GitRepo.fetch:916", "vcs/git.py", '["fetch", remote]'),
-    ("security.md", "cli/commands.py:merge_stack_run:2807", "cli/commands.py",
+    ("security.md", ":GitRepo.fetch:1103", "vcs/git.py", '["fetch", remote]'),
+    ("security.md", "cli/commands.py:merge_stack_run:2865", "cli/commands.py",
      '"gh", "pr", "merge"'),
-    ("security.md", "cli/commands.py:approve:4955", "cli/commands.py",
+    ("security.md", "cli/commands.py:approve:5085", "cli/commands.py",
      '_refuse_agent_gate_act("approve")'),
-    ("security.md", ":merge_stack_run:2777", "cli/commands.py",
+    ("security.md", ":merge_stack_run:2835", "cli/commands.py",
      '_refuse_agent_gate_act("merge_stack_run")'),
     ("security.md", "updates.py:44", "updates.py", "PYPI_JSON_URL"),
     ("security.md", "updates.py:57", "updates.py", "DISABLE_ENV_VAR"),
@@ -1954,9 +2020,15 @@ CITATION_TABLE = (
      "httpx.post(self.webhook_url"),
     ("security.md", "notify/teams.py:205", "notify/teams.py",
      "httpx.post(self.webhook_url"),
-    ("security.md", "integrations/__init__.py:_probe_github_ambient:512",
-     "integrations/__init__.py", "_probe_github_ambient"),
-    ("security.md", ":_probe_github_ambient:546", "integrations/__init__.py",
+    ("security.md", "integrations/__init__.py:test_integration:1591",
+     "integrations/__init__.py", "async def test_integration"),
+    ("security.md", ":VIEW_ONLY_CHECKS:1588", "integrations/__init__.py",
+     "VIEW_ONLY_CHECKS = frozenset"),
+    ("security.md", ":_check_github:1462", "integrations/__init__.py",
+     "async def _check_github"),
+    ("security.md", ":_probe_github_ambient:515", "integrations/__init__.py",
+     "_probe_github_ambient"),
+    ("security.md", ":_probe_github_ambient:549", "integrations/__init__.py",
      "Only WHETHER a non-empty token exists"),
     ("security.md", "brain/client.py:89-133", "brain/client.py",
      "cfg.control_plane_url"),
@@ -1964,25 +2036,25 @@ CITATION_TABLE = (
      "posthog_host"),
     ("security.md", "intake/mcp_bridge.py:40", "intake/mcp_bridge.py",
      "127.0.0.1:8420"),
-    ("security.md", "cli/commands.py:print_no_task_matching:78", "cli/commands.py",
+    ("security.md", "cli/commands.py:print_no_task_matching:84", "cli/commands.py",
      "no task matching"),
     ("security.md", "history/extractor.py:65-72", "history/extractor.py",
      "csrf_token"),
     # docs/eval.md
-    ("eval.md", "src/no_human/cli/commands.py:bench_run:7123",
+    ("eval.md", "src/no_human/cli/commands.py:bench_run:7633",
      "src/no_human/cli/commands.py", "different --trials are not resumed"),
-    ("eval.md", ":bench_run:7446", "src/no_human/cli/commands.py", "asyncio.gather"),
-    ("eval.md", ":bench_run:7329", "src/no_human/cli/commands.py",
+    ("eval.md", ":bench_run:7784", "src/no_human/cli/commands.py", "asyncio.gather"),
+    ("eval.md", ":bench_run:7662", "src/no_human/cli/commands.py",
      "(sc.task_id, sc.trial)"),
-    ("eval.md", "src/no_human/eval/northstar_card.py:NorthStarCard.pass_k_rate:443",
+    ("eval.md", "src/no_human/eval/northstar_card.py:NorthStarCard.pass_k_rate:456",
      "src/no_human/eval/northstar_card.py", "def pass_k_rate("),
-    ("eval.md", "northstar_card.py:success_headline:829-830", "northstar_card.py",
+    ("eval.md", "northstar_card.py:success_headline:875-876", "northstar_card.py",
      "pass^{card.trials}"),
-    ("eval.md", "northstar_card.py:render_northstar_md:1474-1478", "northstar_card.py",
+    ("eval.md", "northstar_card.py:render_northstar_md:1555-1559", "northstar_card.py",
      "Per-spec reliability"),
     ("eval.md", "tests/test_bench_trials.py:272", "tests/test_bench_trials.py",
      '"pass^1" not in line'),
-    ("eval.md", "northstar_card.py:NorthStarCard.spec_mean_success_rate:360",
+    ("eval.md", "northstar_card.py:NorthStarCard.spec_mean_success_rate:373",
      "northstar_card.py", "def spec_mean_success_rate("),
     # docs/KNOWN_ISSUES.md
     ("KNOWN_ISSUES.md", "db.py:Store.connect", "db.py", "aiosqlite.connect"),
@@ -2041,6 +2113,19 @@ def _citation_source_lines(resolve_path: str, spec: str) -> list[str]:
 #: the token itself must still match EXACTLY as a substring — the window
 #: widens WHERE we look, never WHAT counts as a match.
 _CITATION_DRIFT_WINDOW = 5
+
+def _cited_line(tail: str) -> int | None:
+    """The line a `symbol:line` or `symbol:line-line` spec cites, if any.
+
+    Returns the START of a range: a symbol's length legitimately changes when
+    its body is edited, so tracking the end would make an unrelated edit inside
+    the function look like citation rot.
+    """
+    parts = tail.split(":")
+    if len(parts) < 2:
+        return None
+    start = parts[-1].split("-")[0]
+    return int(start) if start.isdigit() else None
 
 
 def _locate_line_citation(
@@ -2116,9 +2201,10 @@ def _check_citation(
     Dispatches on the shape of the spec after the (possibly inherited) path:
     a bare line number or range (`58`, `507-533`) resolves against the real
     file on disk, unchanged from before symbol citations existed. Anything
-    else is a symbol (optionally followed by an advisory `:line-line` that is
-    parsed and then ignored — the whole point of a symbol citation is to
-    survive that range going stale).
+    else is a symbol, optionally followed by `:line[-line]`. Resolving the
+    symbol is what makes that form survive an edit above it; the line, when
+    the row carries one, is then checked against the token's real line, on
+    the same warn-inside-the-window, fail-beyond-it terms a bare row gets.
 
     *source_text* lets a test inject file content directly instead of
     reading the resolved path from disk (used by the refactor-resilience and
@@ -2161,8 +2247,9 @@ def _check_citation(
             f"nearest candidate above is the right target"
         )
 
-    # Symbol citation: strip the optional advisory `:line[-line]` suffix —
-    # it is never consulted for pass/fail, only parsed so the format allows it.
+    # Symbol citation: strip the optional `:line[-line]` suffix so the symbol
+    # can be resolved on its own. The line is checked further down, once the
+    # symbol and the token have both been found.
     symbol = tail.split(":", 1)[0]
     if source_text is not None:
         text = source_text
@@ -2187,6 +2274,39 @@ def _check_citation(
         f"  {haystack!r}\n"
         f"re-derive the citation from the current tree"
     )
+
+    # The cited line, if the row carries one. Until this existed the number
+    # was parsed and thrown away, so it could be any distance wrong and nothing
+    # said so; `integrations/__init__.py:test_integration:1591` stayed green
+    # with the function on 1601. See issue #93.
+    #
+    # Unlike a bare row, a far-away match here is not a guess: the SYMBOL
+    # resolved the citation, so the token's line is known exactly however far it
+    # has moved. The window below therefore decides only whether a row is
+    # reported, never whether it can be re-anchored.
+    # Not against injected source: `source_text` is a synthetic buffer (the
+    # resilience and AST-fallback tests pad it deliberately), so its line
+    # numbers mean nothing and checking them would fail the very test that
+    # proves a symbol citation survives a shift.
+    cited_line = None if source_text is not None else _cited_line(tail)
+    if cited_line is None:
+        return
+    actual = _token_line_in_symbol(text, symbol, token)
+    if actual is None or actual == cited_line:
+        return
+    message = (
+        f"{doc} cites `{raw}` for {token!r}, which is on line {actual} of "
+        f"{display_path}, not {cited_line} — {abs(actual - cited_line)} line(s) "
+        f"out. Run `uv run python scripts/reanchor_citations.py --apply` to "
+        f"re-anchor it; the symbol resolves, so the rewrite is exact"
+    )
+    # The same verdict a bare row gets: inside the window it is drift and warns,
+    # beyond it the number is simply wrong and fails. The one difference is that
+    # a bare row can also be "missing" — nothing to anchor to — which cannot
+    # happen here, because the symbol and the token both resolved above.
+    if abs(actual - cited_line) > _CITATION_DRIFT_WINDOW:
+        raise AssertionError(message)
+    warnings.warn(message, UserWarning, stacklevel=2)
 
 
 @pytest.mark.parametrize(
@@ -2612,13 +2732,21 @@ Re-anchored again 2026-09-03 (fourth): the WIP-checkpoint resume-digest
     `update_attempt`, moving its `await self.db.commit()` from 2296 to 2306
     (the lifetime-cap helpers sit above this call and do not shift it
     further). Both re-verified against the code, not carried forward blind.
+
+    Re-anchored again 2026-09-04 (sixth): the task_failed telemetry
+    reason_category wiring (_fail's new keyword-only param, the
+    _telemetry_hook resolution, and the tagged self._fail(...) call sites)
+    added 6 net lines above _run_attempt's update_attempt(attempt_id,
+    branch_name=branch) call in orchestrator.py, moving the citation from
+    4801 to 4807; re-verified against the code, not carried forward blind.
+    db.py:2306 is untouched by this change.
     """
     assert "db.py:2306" in known_issues_doc, (
         "the traceback no longer cites db.py:2306 — this test is pointed at "
         "stale text; re-derive from the current traceback"
     )
-    assert "orchestrator.py:4801" in known_issues_doc, (
-        "the traceback no longer cites orchestrator.py:4801 — this test is "
+    assert "orchestrator.py:4807" in known_issues_doc, (
+        "the traceback no longer cites orchestrator.py:4807 — this test is "
         "pointed at stale text; re-derive from the current traceback"
     )
 
@@ -2637,13 +2765,13 @@ Re-anchored again 2026-09-03 (fourth): the WIP-checkpoint resume-digest
     orch_src = ORCHESTRATOR_PY.read_text(encoding="utf-8")
     orch_body = _function_body_source(orch_src, "_run_attempt")
     orch_lines = orch_src.splitlines()
-    assert 1 <= 4801 <= len(orch_lines), "orchestrator.py is now shorter than line 4801"
-    assert "self.store.update_attempt(" in orch_lines[4800], (
-        f"orchestrator.py:4801 is now {orch_lines[4800]!r}, not the "
+    assert 1 <= 4807 <= len(orch_lines), "orchestrator.py is now shorter than line 4807"
+    assert "self.store.update_attempt(" in orch_lines[4806], (
+        f"orchestrator.py:4807 is now {orch_lines[4806]!r}, not the "
         f"update_attempt call the traceback names"
     )
     assert "self.store.update_attempt(" in orch_body, (
-        "line 4801 is no longer inside _run_attempt's body"
+        "line 4807 is no longer inside _run_attempt's body"
     )
 
 
@@ -2868,3 +2996,144 @@ def test_verification_md_bounds_numbers_match_config(verification_doc):
                 f'(DEFAULT_CONFIG["bounds"]["{key}"], src/no_human/config.py), '
                 f'found {found} in the "When it cannot finish" paragraph'
             )
+
+
+# --------------------------------------------------------------------------- #
+# The cited line in a `path:symbol:line` row (issue #93)                       #
+# --------------------------------------------------------------------------- #
+
+_SYMBOL_FIXTURE = '''\
+"""module docstring"""
+
+
+def unrelated():
+    return 1
+
+
+def widget_fn():
+    """Does a thing.
+
+    MARKER PHRASE lives here.
+    """
+    return 2
+'''
+
+
+#: Two methods whose vicinities are byte-identical, so only the AST can tell
+#: them apart. Line 5 is `Alpha.probe`, line 11 is `Beta.probe`.
+_TWIN_FIXTURE = '''\
+"""module docstring"""
+
+
+class Alpha:
+    def probe(self):
+        """MARKER PHRASE"""
+        return 1
+
+
+class Beta:
+    def probe(self):
+        """MARKER PHRASE"""
+        return 1
+'''
+
+
+def _write_symbol_fixture(tmp_path, monkeypatch, *, pad=0):
+    target = tmp_path / "widget.py"
+    target.write_text("\n" * pad + _SYMBOL_FIXTURE, encoding="utf-8")
+    monkeypatch.setattr(sys.modules[__name__], "_resolve_source", lambda path: [target])
+    return target
+
+
+def test_cited_line_reads_a_plain_line_and_a_range_start():
+    """A range's END is deliberately ignored: a symbol's length changes whenever
+    someone edits its body, so tracking it would report an unrelated edit as rot."""
+    assert _cited_line("widget_fn:12") == 12
+    assert _cited_line("widget_fn:12-40") == 12
+    assert _cited_line("widget_fn") is None
+    assert _cited_line("Outer.method:7") == 7
+
+
+def test_twin_methods_anchor_to_the_right_one():
+    """Two byte-identical vicinities in one file. A top-level pair cannot collide
+    (the `def` line carries the name), but `Alpha.probe` and `Beta.probe` can, and
+    a content search returns the first match for both: line 5 for a symbol on 11.
+    The AST knows which node it matched, so the number comes from there."""
+    assert _symbol_vicinity(_TWIN_FIXTURE, "Alpha.probe") == _symbol_vicinity(
+        _TWIN_FIXTURE, "Beta.probe"
+    )
+    assert _symbol_first_line(_TWIN_FIXTURE, "Alpha.probe") == 5
+    assert _symbol_first_line(_TWIN_FIXTURE, "Beta.probe") == 11
+    assert _token_line_in_symbol(_TWIN_FIXTURE, "Beta.probe", "MARKER PHRASE") == 12
+
+
+def test_a_symbol_row_with_no_line_is_not_line_checked(tmp_path, monkeypatch):
+    """Six rows in CITATION_TABLE carry no number. They must stay unaffected."""
+    _write_symbol_fixture(tmp_path, monkeypatch, pad=25)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        _check_citation("security.md", "widget.py:widget_fn", "widget.py", "MARKER PHRASE")
+
+
+def test_a_correct_symbol_line_stays_silent(tmp_path, monkeypatch):
+    _write_symbol_fixture(tmp_path, monkeypatch)
+    # MARKER PHRASE is on line 11 of the unpadded fixture.
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        _check_citation(
+            "security.md", "widget.py:widget_fn:11", "widget.py", "MARKER PHRASE"
+        )
+
+
+def test_a_shifted_symbol_row_is_reported(tmp_path, monkeypatch):
+    """The regression this issue is about. Ten planted lines move the symbol and
+    nothing said so, because the number was parsed and thrown away."""
+    _write_symbol_fixture(tmp_path, monkeypatch, pad=3)
+    with pytest.warns(UserWarning, match=r"line 14 of .*, not 11 — 3 line\(s\) out"):
+        _check_citation(
+            "security.md", "widget.py:widget_fn:11", "widget.py", "MARKER PHRASE"
+        )
+
+
+def test_the_line_is_anchored_on_the_token_not_the_definition(tmp_path, monkeypatch):
+    """`:_probe_github_ambient:549` cites a docstring sentence inside a function
+    that starts on 515. Anchoring on the `def` would call that row 34 lines wrong
+    when it is exactly right."""
+    _write_symbol_fixture(tmp_path, monkeypatch)
+    # `def widget_fn` is line 8; the phrase inside it is line 11.
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        _check_citation(
+            "security.md", "widget.py:widget_fn:11", "widget.py", "MARKER PHRASE"
+        )
+    with pytest.warns(UserWarning, match="not 8"):
+        _check_citation(
+            "security.md", "widget.py:widget_fn:8", "widget.py", "MARKER PHRASE"
+        )
+
+
+def test_injected_source_is_never_line_checked(tmp_path, monkeypatch):
+    """`source_text` is a synthetic buffer, so its line numbers mean nothing.
+    Checking them would fail test_symbol_citation_resilience, whose whole point
+    is that a symbol citation survives a shift."""
+    _write_symbol_fixture(tmp_path, monkeypatch)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        _check_citation(
+            "security.md",
+            "widget.py:widget_fn:11",
+            "widget.py",
+            "MARKER PHRASE",
+            source_text="\n" * 99 + _SYMBOL_FIXTURE,
+        )
+
+
+def test_a_symbol_row_beyond_the_window_fails(tmp_path, monkeypatch):
+    """Inside the window a wrong number is drift and warns, exactly as a bare row
+    does. Beyond it the number is simply wrong, and a warning nobody reads is how
+    these rotted to 510 lines out in the first place."""
+    _write_symbol_fixture(tmp_path, monkeypatch, pad=10)
+    with pytest.raises(AssertionError, match=r"10 line\(s\) out"):
+        _check_citation(
+            "security.md", "widget.py:widget_fn:11", "widget.py", "MARKER PHRASE"
+        )

@@ -141,7 +141,11 @@ FROZEN_FUNCTION_LINES = {
     # EXPORT_CLASSIFICATION.txt paths) -- the `BUDGET_TEST_PATH` import, the
     # widened `eligible` fallback set, and the `pr_conflict_resolved` event's
     # budget note. Measured on this tree with the scanner below.
-    "blockers/wake.py:WakeWatcher._check_pr_conflict": 453,
+    # 453 -> 458 (+5): the failed-DerivedResolution escalation now surfaces
+    # `result.detail` (capped, whitespace-collapsed) in the event text and
+    # `question`, and prefixes `step=` onto the stored `evidence` -- step
+    # alone was not root-causeable. Measured on this tree.
+    "blockers/wake.py:WakeWatcher._check_pr_conflict": 458,
     # 418 -> 424 (+6): D1.1 fix round — attempt-scoped verification-artifact
     # write wired into `_finalize` (review findings #1/#7). Measured on the
     # D1.1 squash-merge result.
@@ -202,7 +206,7 @@ FROZEN_FUNCTION_LINES = {
     # (task bf413cc6): two new refusal guards + the DONE branch. The growth
     # was reviewed on its merits; frozen here as its landing baseline.
     "blockers/landed_override.py:approve_landed_override": 315,
-    "core/metrics.py:compute_metrics": 334,  # +21: PR #869 cost_usd_total server-side pricing
+    "core/metrics.py:compute_metrics": 346,  # +12: tokens_total (SCRUM re-home) sibling of cost_usd_total
     # NEW (324, > 300): mechanical resolution extended to cover
     # `tests/test_structural_budget.py` FROZEN_* numeric-only conflicts --
     # the new budget-hunk branch in the worktree merge-step loop, the
@@ -549,7 +553,14 @@ FROZEN_FILE_LINES = {
     # hook-refresh call, rebased onto the reviewer-worktree tree above.
     # Measured on this merged tree with the scanner below, never summed by
     # hand.
-    "core/orchestrator.py": 21762,
+    # 21762 -> 21788 (+26): task_failed reason_category wiring — threads an
+    # optional `reason_category` kwarg through `_raise_blocker` (signature +
+    # docstring note), stamps `blocker_category=blocker.category.value` onto
+    # its emit so `_telemetry_hook` can resolve BUDGET_EXHAUSTED-caused
+    # failures correctly, and tags the max_attempts/tamper_blocked call
+    # sites explicitly. Measured via `wc -l`/the scanner below; growth is
+    # the minimal functional diff after trimming comments/docstrings.
+    "core/orchestrator.py": 21788,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.
@@ -655,7 +666,20 @@ FROZEN_FILE_LINES = {
     # detected/rebuilt before the `StaticFiles` mount is decided at import
     # time (no-human/2026-09-04 web-dist-staleness task). Measured on this
     # tree with the scanner below.
-    "cli/commands.py": 8517,
+    # 8423 -> 8462 (+39): setup-mode boot — `allow_setup_mode` on `_bootstrap`
+    # (with its advisory banner) and `_server_setup_reason` (the no-credential
+    # probe that lets `nh start` boot into a restricted setup state instead of
+    # `sys.exit(2)`), plus the `MissingCredentialError` import. `start()`
+    # itself reuses `_bootstrap`'s banner rather than printing its own second
+    # one. Measured on this tree with the scanner below, rebased onto the
+    # 8517 web-dist-staleness/bench/land-satisfied tree above (8517 -> 8556).
+    # 8499 -> 8510 (+11): `nh verifiers` (list/add/check/propose) registered
+    # via `cli.add_command(verifiers_group)` — the import (with its
+    # `noqa`-free comment block) and the group registration itself, next to
+    # `rules`/`skills`. The command bodies live in the new
+    # `cli/verifiers_cmd.py`, not here, to keep this file's growth to just
+    # the registration. Measured via `wc -l src/no_human/cli/commands.py`.
+    "cli/commands.py": 8567,
     # api/app.py 5338 -> 5346 (+8): same budget-floor warning surfaced by
     # `send-back`/`reply` as `budget_warning` in the JSON response. Net cost
     # was trimmed from a naive +14 to +8 by computing `Bounds.from_config(...)`
@@ -764,7 +788,42 @@ FROZEN_FILE_LINES = {
     # so a satisfying commit that lives only on the task branch gets landed
     # through the normal PR-merge path rather than silently completing
     # unmerged. Measured via `wc -l src/no_human/api/app.py`.
-    "api/app.py": 6037,
+    # 5928 -> 5998 (+70): setup-mode boot — `_require_credentials` (the
+    # dispatch-time 503 gate naming the missing `.env` variable) applied to
+    # `create_task`/`split_task`/`grill_step_endpoint`/`grill_stream_endpoint`/
+    # `split_drafts` (the paid draft-generation lookup), setup-state computed
+    # in `lifespan` and stored on `app.state`, and `setup_mode` added to
+    # `GET /api/config`. `_require_credentials`/`show_config` gate on
+    # `hasattr(state, "setup_mode")` rather than a bare `cfg is None` check —
+    # needed so a test app that hand-builds `app.state.config` without
+    # opting into setup-mode tracking (e.g. tests/test_api.py's `client`
+    # fixture, which predates this feature) is not spuriously gated by a
+    # default-subscription-mode config with no credential on file. Measured
+    # on this tree with the scanner below, rebased onto the 6037
+    # already-satisfied-landing tree above (6037 -> 6107).
+    # 6107 -> 6108 (+1): review fix — `get_split_drafts` (GET /split-drafts)
+    # was missing its `_require_credentials(request)` call; it runs the same
+    # paid utility-model draft call as `split_task` and must be gated too.
+    # 6108 -> 6126 (+18): the local-backend board preflight (task 05a9cee0,
+    # re-home) — `discover_repos`/`repos/discover` gains the pre-submit
+    # backend-config validation so an unrunnable LOCAL config is rejected
+    # before a task dies attempt 1 on BackendUnavailable. Measured on this
+    # merged tree with the scanner below.
+    # 6126 -> 6131 (+5): `metrics` (GET /api/metrics) now imports and calls
+    # `verification_receipt_rate` and merges its result into
+    # `data["verification_receipts"]` (verification-receipt aggregate, task
+    # 33e958ed, re-home). Measured on this merged tree with the scanner below.
+    # 6131 -> 6138 (+7): `_workers_payload` gains `cpu_count`/`hardware_ceiling`
+    # (this machine's detected cores and the derived pool ceiling) so the
+    # stranded Settings Workers panel UI can state where the limit comes
+    # from, instead of re-deriving it client-side (task 5caad018, re-home).
+    # Measured on this merged tree with the scanner below.
+    # 6138 -> 6140 (+2): `discover_repositories`'s docstring corrected to
+    # describe the typed-`root` containment fix (scanned wherever it resolves;
+    # configured `extra_scan_roots` stay home-contained) — comment only, no
+    # behaviour change (task bf0cfd72, re-home). Measured on this merged tree
+    # with the scanner below.
+    "api/app.py": 6140,
     # +51: W5 active-time phase writer (phase instrumentation).
     # +84: `list_escalations`/`list_review_fails`/`list_tamper_trips` — the
     # three new failure-signal sources the recurring learning harvest mines.
@@ -887,7 +946,13 @@ FROZEN_FILE_LINES = {
     # its explanatory comment — the off-switch the hint-only signal path
     # (`core/complexity.py:hint_signals`) reads before folding `multi_family`
     # into the pre-flight card. Measured on this tree.
-    "config.py": 3562,
+    # 3562 -> 3596 (+34): setup-mode boot — `MissingCredentialError` (the
+    # subclass of `AuthError` that lets a caller opt into setup mode instead
+    # of a hard exit) and `subscription_credential_missing`, the non-raising
+    # probe `nh start`/the API lifespan use to detect a missing credential
+    # without triggering the scrub. Measured on this tree with the scanner
+    # below.
+    "config.py": 3596,
     # +61: the tamper-adjudication one-bounded-retry contract (mechanical-
     # failure classification + the extracted `_review_tamper_adjudication`
     # helper that keeps `AdversarialReviewer.review` itself under the
@@ -910,7 +975,10 @@ FROZEN_FILE_LINES = {
     # 2740 -> 2752 (+12): mechanical resolution extended to cover structural
     # budget conflicts, same cause as the FROZEN_FUNCTION_LINES entry above.
     # Measured on this tree with the scanner below.
-    "blockers/wake.py": 2752,
+    # 2752 -> 2757 (+5): same cause as the FROZEN_FUNCTION_LINES entry above
+    # -- the whole-file delta equals the function's delta. Measured on this
+    # tree.
+    "blockers/wake.py": 2757,
     # +91: `_SCAN_WRAPPER_NAMES` + `_peel_scan_wrappers` — peels
     # timeout/xargs/nice/stdbuf (and siblings) for the scan-severity check
     # only, so a wrapped `find … -delete` in a denied compound classifies
@@ -942,7 +1010,17 @@ FROZEN_FILE_LINES = {
     # leaving the row failed forever); wired into `_run`'s startup sequence
     # next to `_reconcile_terminal_task_attempts`. Measured on this tree with
     # the scanner below.
-    "core/scheduler.py": 2973,
+    # 2973 -> 3002 (+29): setup-mode boot — the optional `auth_check` ctor
+    # kwarg and `_auth_advisory` dedup state, plus the `tick()` pre-dispatch
+    # check that idles (returns `[]`) and emits `setup_required`/
+    # `setup_complete` instead of crash-looping when no credential is on
+    # file. Measured on this tree with the scanner below.
+    # 3002 -> 3037 (+35): worker-death instrumentation in `_run`'s pool-crash
+    # handler — an all-time `_worker_deaths_total` counter (surfaced via
+    # `health_snapshot`'s `worker_deaths_total`), plus `exit_code`/
+    # `termination_reason`/capped `stderr_excerpt` on the durable
+    # `task_crashed` event. Measured on this tree with the scanner below.
+    "core/scheduler.py": 3037,
 }
 
 

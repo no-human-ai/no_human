@@ -360,6 +360,18 @@ async def compute_metrics(store: Store) -> dict[str, Any]:
         # attempts" vs "attempts spent $0" distinction as TaskOut.cost_usd.
         "cost_usd_total": cost_usd_total,
         "cost_model_total": cost_model_total,
+        # The token-basis sibling of cost_usd_total: the SAME nine buckets
+        # (coder/reviewer/aux x used+cache_creation+cache_read) attempts_cost
+        # prices, summed instead of priced. Subscription-mode surfaces read
+        # this instead of a dollar estimate (a flat-fee plan pays nothing per
+        # token, so a $ figure there is a rate estimate, not real spend). An
+        # int, always — 0 (not None) for an install with no attempts, unlike
+        # cost_usd_total: a token COUNT of zero is honest, a $0 estimate is not.
+        "tokens_total": (
+            total_tokens + total_cache_read + sum_creation
+            + rev_used + rev_creation + rev_read
+            + aux_used + aux_creation + aux_read
+        ),
         # Per-role burn across the whole install. `by_tier` beside it answers
         # a different question (which MODEL ran, from `attempts.models`); this
         # one answers which ROLE spent, which is what a cost target is set
@@ -378,6 +390,60 @@ async def compute_metrics(store: Store) -> dict[str, Any]:
         "grill_answering_outcomes": grill_answering,
         "grill_answering_answers": grill_answers,
         "grill_questions_outcomes": grill_questions,
+    }
+
+
+async def verification_receipt_rate(store: Store) -> dict[str, Any]:
+    """Per-attempt rate: did the coder submit at least one command the
+    receipt observer RECOGNISES as a verification check
+    (`agent.verification_receipts.classify`) before the attempt reached a
+    terminal, coder-concluded status?
+
+    POPULATION is `status IN ('succeeded', 'failed')` — an attempt still
+    `in_progress` has not claimed anything yet, and one left `interrupted`
+    was cut off by the harness, not concluded by the coder — AND
+    `Store._lifetime_included_sql()`, the SAME predicate the lifetime budget
+    gates on, so an infra-classified retry or a dead zero-work interrupted
+    row (never the coder's own submission) cannot drag the rate down.
+
+    A receipt existing for an attempt is sufficient: `add_verification_receipt`
+    is only ever called from the PostToolUse hook WHILE the attempt runs
+    (`VerificationReceiptHook.hook`), so any stored row necessarily precedes
+    the row's own terminal `status` update — there is no later code path that
+    backfills a receipt after the fact. `by_kind` breaks the same population
+    down by which check kind ran, so "ran SOMETHING" and "ran the unit test
+    suite specifically" can be told apart.
+    """
+    included = Store._lifetime_included_sql()
+    row = await store.query_one(
+        f"""
+        SELECT COUNT(*),
+               SUM(CASE WHEN EXISTS (
+                   SELECT 1 FROM verification_receipts vr
+                   WHERE vr.attempt_id = a.id
+               ) THEN 1 ELSE 0 END)
+        FROM attempts a
+        WHERE a.status IN ('succeeded', 'failed') AND {included}
+        """
+    )
+    total, ran = (row or (0, 0))
+    total = int(total or 0)
+    ran = int(ran or 0)
+    rows = await store.query(
+        f"""
+        SELECT vr.kind, COUNT(DISTINCT vr.attempt_id)
+        FROM verification_receipts vr
+        JOIN attempts a ON a.id = vr.attempt_id
+        WHERE a.status IN ('succeeded', 'failed') AND {included}
+        GROUP BY vr.kind
+        """
+    )
+    by_kind = {r[0]: r[1] for r in rows}
+    return {
+        "attempts": total,
+        "ran_checks": ran,
+        "rate": round(ran / total, 4) if total else None,
+        "by_kind": by_kind,
     }
 
 

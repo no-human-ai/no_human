@@ -1931,6 +1931,33 @@ async def _exhausted(orch, t):
     await orch._escalate_exhausted(t, None, "main")
 
 
+async def test_max_attempts_exhaustion_tags_reason_category_for_telemetry(
+    store, tmp_path
+):
+    """`_escalate_exhausted` calls `_raise_blocker` with an explicit
+    `reason_category="max_attempts"` (see `telemetry.FAILURE_REASON_CATEGORIES`)
+    — the event-metadata wiring must be correct regardless of the route
+    NOVEL_UNKNOWN currently resolves to (ESCALATED, which is why this
+    correctly does not — and must not — ship a `task_failed` telemetry
+    event: a human was asked, the task did not fail). If a future change to
+    the routing/config surface ever let this off-ramp reach TaskStatus.FAILED,
+    the tag is already there and no code change would be needed for it to
+    resolve to "max_attempts" instead of the useless "other" catch-all."""
+    orch = _orch(store, tmp_path)
+    t = Task.new("Add the thing", repo_path="/r")
+    await store.create_task(t)
+    await orch.store.create_attempt(t.id, 3)
+
+    events: list = []
+    orch._sink = events.append
+    outcome = await orch._escalate_exhausted(t, None, "main")
+
+    assert outcome.status is TaskStatus.ESCALATED
+    [ev] = [e for e in events if e["kind"] == "escalated"]
+    assert ev["blocker_category"] == "NOVEL_UNKNOWN"
+    assert ev["reason_category"] == "max_attempts"
+
+
 # 🔴 THE REVIEWER MODEL AUTHORED THIS, WORD FOR WORD. `_run_attempt` builds
 # `"review failed: " + "; ".join(f"{i.label}: {i.evidence}" …)` from the failed
 # checklist items (`orchestrator.py`), and `i.evidence` is lifted verbatim out

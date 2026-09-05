@@ -208,7 +208,7 @@ test("chips include cost+tokens, wall-time, attempts, and a PR link when present
     wall_seconds: 305, attempt_count: 2,
     attempts: [{ branch_name: "nh/task-1", pr_url: null }, { branch_name: "nh/task-1-v2", pr_url: "https://example.com/pr/9" }],
   };
-  const chips = chipsFor(task);
+  const chips = chipsFor(task, "api_key");
   const keys = chips.map((c) => c.key);
   assert.deepEqual(keys, ["cost", "time", "attempts", "pr"]);
   assert.ok(chips[0].label.startsWith("$"));
@@ -247,7 +247,7 @@ test("the PR chip renders for DONE tasks too, not only awaiting ones", () => {
     status: "done",
     attempts: [{ branch_name: "nh/task-7", pr_url: "https://example.com/pr/7" }],
   };
-  const chips = chipsFor(task);
+  const chips = chipsFor(task, "api_key");
   const pr = chips.find((c) => c.key === "pr");
   assert.ok(pr, "done task with a pr_url must still carry the PR chip");
   assert.equal(pr.href, "https://example.com/pr/7");
@@ -262,7 +262,7 @@ test("a non-http pr_url (demo local-pr://) yields a text chip with NO href", () 
     status: "done",
     attempts: [{ branch_name: "nh/task-8", pr_url: "local-pr://tasks/8" }],
   };
-  const chips = chipsFor(task);
+  const chips = chipsFor(task, "api_key");
   const pr = chips.find((c) => c.key === "pr");
   assert.ok(pr, "the PR chip still appears (the branch/PR exists)");
   assert.equal(pr.href, undefined, "a local-pr:// href would be a dead link");
@@ -353,7 +353,7 @@ test("the PR chip caption never uses the verb 'open'", () => {
     status: "done",
     attempts: [{ branch_name: "nh/task-9", pr_url: "https://example.com/pr/9" }],
   };
-  const httpPr = chipsFor(httpTask).find((c) => c.key === "pr");
+  const httpPr = chipsFor(httpTask, "api_key").find((c) => c.key === "pr");
   assert.equal(httpPr.sub, "pull request");
   assert.doesNotMatch(httpPr.sub, /open/i);
 
@@ -361,7 +361,7 @@ test("the PR chip caption never uses the verb 'open'", () => {
     status: "done",
     attempts: [{ branch_name: "nh/task-10", pr_url: "local-pr://tasks/10" }],
   };
-  const localPr = chipsFor(localTask).find((c) => c.key === "pr");
+  const localPr = chipsFor(localTask, "api_key").find((c) => c.key === "pr");
   assert.equal(localPr.sub, "pull request");
   assert.doesNotMatch(localPr.sub, /open/i);
 });

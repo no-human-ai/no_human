@@ -1,4 +1,4 @@
-import { taskCost } from "./cost.js";
+import { taskBurn, taskCost } from "./cost.js";
 
 // Cost rolled up per project. The per-task cost is already on screen and the lifetime total
 // is already a tile, but nothing sat between them: "what has this repo cost me" took manual
@@ -23,11 +23,18 @@ export function costByProject(tasks) {
   const byProject = new Map();
   for (const t of tasks || []) {
     const name = (t.repo_name || "").trim() || UNATTRIBUTED;
-    const g = byProject.get(name.toLowerCase()) || { project: name, tasks: 0, cost: 0 };
+    const g = byProject.get(name.toLowerCase())
+      || { project: name, tasks: 0, cost: 0, tokens: 0 };
     g.tasks += 1;
     g.cost += taskCost(t);
+    // Same nine buckets `cost` prices (SCRUM re-home) — cost and burn move
+    // together closely enough that sorting stays keyed on `cost` alone (see
+    // below), so subscription mode can read this column without a second sort.
+    g.tokens += taskBurn(t);
     byProject.set(name.toLowerCase(), g);
   }
+  // Sort key stays `cost`, not `tokens`: changing it would reorder rows out
+  // from under the existing (dollar-mode) ordering assertions.
   return [...byProject.values()].sort(
     (a, b) => b.cost - a.cost || a.project.localeCompare(b.project),
   );
@@ -36,4 +43,9 @@ export function costByProject(tasks) {
 /** The sum of the rows above — so the header total and the rows cannot disagree. */
 export function totalCost(groups) {
   return (groups || []).reduce((sum, g) => sum + g.cost, 0);
+}
+
+/** The token-basis sibling of `totalCost`, for the subscription-mode table. */
+export function totalTokens(groups) {
+  return (groups || []).reduce((sum, g) => sum + g.tokens, 0);
 }

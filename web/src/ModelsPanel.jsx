@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from "react";
-import { fetchModels, saveModels, fetchCoderBackend, saveCoderBackend, fetchWorkers, saveWorkers } from "./api.js";
+import { fetchModels, saveModels, fetchCoderBackend, saveCoderBackend } from "./api.js";
 import { modelsPanelView, pendingBody, resetBody, applyError, reviewerBackendView } from "./modelsPanelView.js";
 import {
   backendPanelView,
@@ -181,123 +181,6 @@ function CoderBackendRow() {
   );
 }
 
-// Settings → Models pane's worker-count row: how many tasks run at once
-// (concurrency.max_workers) and whether parallelism is on at all
-// (concurrency.enabled). Independent fetch/save cycle against
-// GET/PUT /api/config/workers. The server clamps the effective pool further
-// at runtime (CPU + isolation aware), and reports both the written value and
-// the effective one plus a warning when they differ — this row renders both.
-function WorkersRow() {
-  const [payload, setPayload] = useState(undefined); // undefined = loading, null = unavailable
-  const [mwEdit, setMwEdit] = useState(null);   // string being typed, or null = unedited
-  const [enEdit, setEnEdit] = useState(null);   // bool, or null = unedited
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState(null);
-
-  const load = useCallback(() => {
-    fetchWorkers().then((p) => setPayload(p));
-  }, []);
-  useEffect(() => { load(); }, [load]);
-
-  if (payload === undefined) return <div className="settings-empty">Loading…</div>;
-  if (payload === null) {
-    return (
-      <div className="settings-empty">
-        Worker count is unavailable — this server build does not expose the
-        workers endpoint yet.
-      </div>
-    );
-  }
-
-  const mwValue = mwEdit !== null ? mwEdit : String(payload.max_workers);
-  const enValue = enEdit !== null ? enEdit : payload.enabled;
-  const mwInt = Number.parseInt(mwValue, 10);
-  const mwValid = Number.isInteger(mwInt) && mwInt >= 1 && mwInt <= payload.max_allowed;
-  const changed =
-    (mwEdit !== null && mwInt !== payload.max_workers) ||
-    (enEdit !== null && enValue !== payload.enabled);
-  const canSave = changed && mwValid && !saving;
-
-  async function commit() {
-    const body = {};
-    if (mwEdit !== null && mwInt !== payload.max_workers) body.max_workers = mwInt;
-    if (enEdit !== null && enValue !== payload.enabled) body.enabled = enValue;
-    if (Object.keys(body).length === 0) return;
-    setSaving(true);
-    setError(null);
-    try {
-      const refreshed = await saveWorkers(body);
-      setPayload(refreshed);
-      setMwEdit(null);
-      setEnEdit(null);
-    } catch (e) {
-      setError(e.message);
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  return (
-    <div className="models-row workers-row">
-      <label className="auth-label">
-        Workers — how many tasks run at once
-        <input
-          type="number"
-          className="new-task-input"
-          aria-label="Number of workers"
-          min={1}
-          max={payload.max_allowed}
-          value={mwValue}
-          onChange={(e) => { setMwEdit(e.target.value); setError(null); }}
-        />
-      </label>
-      <label className="auth-label workers-enable">
-        <input
-          type="checkbox"
-          aria-label="Run tasks in parallel"
-          checked={!!enValue}
-          onChange={(e) => { setEnEdit(e.target.checked); setError(null); }}
-        />{" "}
-        Run tasks in parallel
-      </label>
-      {!enValue ? (
-        <span className="models-default">
-          Parallelism is off — one task runs at a time, whatever the number
-          above. Turn it on to run up to that many.
-        </span>
-      ) : payload.warning ? (
-        <span className="models-default">
-          This machine will run <code>{payload.effective_max_workers}</code> at
-          a time. {payload.warning}
-        </span>
-      ) : (
-        <span className="models-default">
-          effective: <code>{payload.effective_max_workers}</code> at a time
-        </span>
-      )}
-      {payload.restart_required && (
-        <div className="nh-alarm auth-alarm" role="alert">
-          Restart required — the worker count is saved to{" "}
-          <code>config.yaml</code>, but the running server sized its pool at
-          start and does not resize mid-run. Restart with{" "}
-          <code>nh stop && nh start</code> to apply.
-        </div>
-      )}
-      {error && <div className="settings-error" role="alert">{error}</div>}
-      <div className="integration-actions">
-        <button
-          type="button"
-          className="btn btn-approve"
-          disabled={!canSave}
-          onClick={commit}
-        >
-          {saving ? "Saving…" : "Save"}
-        </button>
-      </div>
-    </div>
-  );
-}
-
 // Settings → Models (model picker part 3 of 3). One row per role (coder,
 // reviewer, planner, supervisor, utility), fed entirely by GET /api/models —
 // every id, price class, default, disabled reason and pinned-role note comes
@@ -349,7 +232,7 @@ export default function ModelsPanel() {
     : [];
 
   function selectedFor(row) {
-    return pending[row.key] !== undefined ? pending[row.key] : row.current;
+    return pending[row.key] !== undefined ? pending[row.key] : row.saved;
   }
 
   function handleChange(row, value) {
@@ -381,6 +264,11 @@ export default function ModelsPanel() {
 
   const dirty = pendingBody(payload, pending, pendingRoleBackend);
   const hasChanges = Object.keys(dirty).length > 0;
+  // Computed the same way Save's body is: a Reset that would send an empty
+  // PUT (disk already sits at every default) is disabled rather than a
+  // click that silently does nothing.
+  const resetDirty = resetBody(payload);
+  const hasResetChanges = Object.keys(resetDirty).length > 0;
 
   // The reviewer row's saved/pending/selected derivation, all in one place —
   // `null` for every other role (they carry no `backend` block at all).
@@ -398,8 +286,6 @@ export default function ModelsPanel() {
       </div>
 
       <CoderBackendRow />
-
-      <WorkersRow />
 
       {view.showRestartBanner && (
         <div className="nh-alarm auth-alarm" role="alert">
@@ -440,6 +326,12 @@ export default function ModelsPanel() {
                 default: <code>{row.default}</code>
               </span>
               {row.note && <div className="ntm-hint">{row.note}</div>}
+              {row.pendingRestart && (
+                <div className="ntm-hint" data-testid="pending-restart-hint">
+                  Saved: <code>{row.saved}</code> — the running server still uses{" "}
+                  <code>{row.current}</code> until restart.
+                </div>
+              )}
               {row.costNote && <div className="ntm-hint">{row.costNote}</div>}
               {row.role === "reviewer" && reviewerView && (
                 <div className="reviewer-backend-override">
@@ -537,8 +429,8 @@ export default function ModelsPanel() {
         <button
           type="button"
           className="btn btn-sendback"
-          disabled={saving}
-          onClick={() => commit(resetBody(payload))}
+          disabled={saving || !hasResetChanges}
+          onClick={() => commit(resetDirty)}
         >
           Reset to defaults
         </button>

@@ -18,9 +18,13 @@ tick: every entry point catches broadly and logs, never raises.
 Reuses the existing `_check_*` probes in `integrations/__init__.py` (via
 `test_integration`) rather than writing new HTTP code — the ONLY thing added
 here is a shorter, forced timeout (`_PROBE_TIMEOUT`, via a monkeypatch of the
-`_http_get`/`_http_post` seams those functions already call through) and a
+`_http_get`/`_http_post` seams those functions already call through), a
 layer of detail formatting (host + an actionable hint for Jira's classic
-wrong-tenant 404) plus a second, independent credential scrub.
+wrong-tenant 404), a second, independent credential scrub, and one more
+rule `_check_*` itself does not apply: an ENABLED-but-UNCONFIGURED target
+(nothing to probe yet) is reported `healthy=None` — neutral, not the red
+"Failing" chip — while a CONFIGURED target that genuinely fails still
+reports `healthy=False` (see `probe()`).
 """
 
 from __future__ import annotations
@@ -94,7 +98,8 @@ _PATCH_LOCK = asyncio.Lock()
 @dataclass(frozen=True)
 class HealthResult:
     name: str
-    healthy: bool | None   # None = ambient/advisory-neutral, never a "failure"
+    healthy: bool | None   # None = ambient/advisory-neutral OR unconfigured,
+                           # never a "failure"; False = configured-and-broken
     detail: str            # never a secret — see `_scrub`
     checked_at: str        # UTC ISO-8601, matches `mark_verified`'s format
 
@@ -241,11 +246,24 @@ async def probe(name: str, config: dict) -> HealthResult:
     """Live health check for *name*, hardened for the unattended path: never
     raises (a probe failure must not block boot or a poll tick), forces the
     5s timeout above, and scrubs any credential out of the detail before it
-    is stored or logged anywhere."""
+    is stored or logged anywhere.
+
+    Unconfigured ⇒ ``healthy=None`` (neutral — nothing to probe, never a
+    "failure"); configured-and-broken ⇒ ``healthy=False`` (a real failure
+    still lights the red badge)."""
     await _load_secrets(name)
     try:
         status = await _probe_with_timeout(name, config)
         healthy, detail = status.healthy, status.detail
+        # An integration nobody has configured yet is NOT a failure. `_check_*`
+        # returns healthy=False/"not configured" because the operator-initiated
+        # /test route asks "did this connect?" — for the unattended board badge
+        # the honest answer is "nothing to probe". Keyed on `configured`, not on
+        # the detail string, so a *configured* target that genuinely fails (bad
+        # credential, HTTP 4xx/5xx, timeout, retired connector URL) still lands
+        # healthy=False and still lights the red chip.
+        if healthy is False and not status.configured:
+            healthy = None
     except Exception as exc:  # noqa: BLE001 — a probe must never raise
         healthy, detail = False, f"probe error: {type(exc).__name__}"
     detail = _scrub(_with_host(detail, name, config), config)

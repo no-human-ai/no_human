@@ -1,6 +1,6 @@
 [project]
 name = "no-human"
-version = "0.1.9"
+version = "0.2.0"
 description = "Autonomous AI software-delivery orchestrator driving the Claude Agent SDK on your own Claude credentials"
 readme = "README.md"
 requires-python = ">=3.12"

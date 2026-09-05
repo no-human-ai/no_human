@@ -8,7 +8,7 @@ import { cardFacts } from "./cardFacts.js";
 test("awaiting_input yields an Answer question action and the blocker as status line", () => {
   const f = cardFacts(
     { title: "T", status: "awaiting_input", blocker_question: "Which repo?", repo_name: "app", attempt_count: 2 },
-    { cost: 1.234 },
+    { cost: 1.234, authMode: "api_key" },
   );
   assert.equal(f.statusLine, "Which repo?");
   assert.deepEqual(f.action, { label: "Answer question", kind: "answer" });

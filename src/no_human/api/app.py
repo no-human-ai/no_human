@@ -154,6 +154,16 @@ async def lifespan(app: FastAPI):
     store = external_store or await Store(config.db_path).connect()
     app.state.store = store
     app.state.config = config
+    # Setup mode: no subscription credential on file at all. `nh start` may
+    # already have computed this (setup_reason printed at boot, before this
+    # lifespan even fires) — OR it together with what THIS process sees now,
+    # so a credential added between CLI bootstrap and lifespan firing still
+    # lifts it, and a bare `TestClient(app)` construction (no CLI involved)
+    # gets its own correct answer.
+    from ..config import subscription_credential_missing
+    _reason = subscription_credential_missing(config.data)
+    app.state.setup_mode = bool(_reason) or bool(getattr(app.state, "setup_mode", False))
+    app.state.setup_reason = _reason or getattr(app.state, "setup_reason", None)
     # Wiki jobs a previous process left queued/running are orphans now — fail
     # them so the board shows the truth instead of a job stuck "running"
     # forever (mirrors the scheduler's orphan recovery). Advisory: a failure
@@ -279,6 +289,20 @@ async def lifespan(app: FastAPI):
                       "disabled this run: %s", exc)
             retirement_job = None
 
+    # Dispatch-time gate: `assert_subscription_mode` (scrub + enforce) still
+    # runs before any RUNNING task, just moved from "must pass before the
+    # server boots" to "must pass before each dispatch" — so setup mode
+    # never spends a token, and a credential added mid-run is picked up on
+    # the very next tick with no restart.
+    from ..config import assert_subscription_mode as _assert_sub_mode
+    _llm_cfg = config.data.get("llm") or {}
+
+    def _auth_check() -> None:
+        _assert_sub_mode(
+            profile=_llm_cfg.get("auth_profile"),
+            auth_mode=_llm_cfg.get("auth_mode", "subscription"),
+        )
+
     sched = Scheduler(
         store, _orch_factory,
         max_workers=max_workers,
@@ -287,6 +311,7 @@ async def lifespan(app: FastAPI):
         reanalysis_job=reanalysis,
         retirement_job=retirement_job,
         config=config.data,
+        auth_check=_auth_check,
     )
     stop_event = asyncio.Event()
     worker_task = asyncio.create_task(
@@ -563,6 +588,39 @@ def _store(req: Request) -> Store:
     return req.app.state.store
 
 
+SETUP_MODE_DETAIL = (
+    "no_human is in setup mode: no Claude credential is on file, so nothing "
+    "that spends tokens can run. Finish auth setup — add "
+    "CLAUDE_CODE_OAUTH_TOKEN to ~/.no_human/.env (chmod 600), created with "
+    "`claude setup-token`, or run `nh init` — then reload the board."
+)
+
+
+def _require_credentials(request: Request) -> None:
+    """Refuse a token-spending call while the server has no credential.
+
+    Gated only for apps that opted in: `lifespan` always sets
+    `app.state.setup_mode` at boot, so the real server is always covered. A
+    test app that hand-builds `app.state` without touching that attribute
+    (e.g. tests/test_api.py's `client` fixture, which predates this feature)
+    is unchanged today — same as the bare `cfg is None` short-circuit this
+    replaces. Re-probed per call once opted in (cheap: one env-file read) so
+    adding the token lifts the restriction without a restart. Left ungated:
+    onboarding, Settings, /api/version, /api/config, every read-only route.
+    """
+    state = request.app.state
+    if not hasattr(state, "setup_mode"):
+        return  # opted out (e.g. a bare test app): unchanged today
+    cfg = getattr(state, "config", None)
+    if cfg is None:
+        return
+    from ..config import subscription_credential_missing
+    if subscription_credential_missing(cfg.data) is None:
+        state.setup_mode = False
+        return
+    raise HTTPException(status_code=503, detail=SETUP_MODE_DETAIL)
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -799,6 +857,7 @@ async def list_tasks(
 async def create_task(body: CreateTaskRequest, request: Request) -> TaskSummaryOut:
     """Create a new task from the web board. The task is staged as PENDING and
     will be picked up by the next ``nh serve`` tick or ``nh watch``."""
+    _require_credentials(request)
     store = _store(request)
     repo_path: str | None = None
     linked: list[str] = []
@@ -891,6 +950,24 @@ async def create_task(body: CreateTaskRequest, request: Request) -> TaskSummaryO
             raise HTTPException(
                 422, f"unknown backend {body.backend!r}; one of "
                      f"{', '.join(SUPPORTED_BACKENDS)}")
+        # A KNOWN backend this install cannot actually run (e.g. `local` with
+        # no `llm.local_model`, or `codex` with no CLI/credential) is refused
+        # HERE too, not just typo'd names above — a client that is not the
+        # board's composer (whose own gating reads this same signal off GET
+        # /api/config's `coder_backend_availability`) must not be able to file
+        # a task that is guaranteed to die on its first coder turn. Same
+        # preflight `core.runtime.build_orchestrator` runs at construction —
+        # `describe_backend` turns its raise/no-raise into a 422/no-422 rather
+        # than reimplementing it. Absent config (no `request.app.state.config`
+        # yet) never blocks: that would be refusing on missing evidence, not
+        # a real unavailability.
+        cfg = getattr(request.app.state, "config", None)
+        cfg_data = getattr(cfg, "data", None)
+        if cfg_data is not None:
+            from ..core.backend_settings import describe_backend
+            info = await asyncio.to_thread(describe_backend, chosen, cfg_data)
+            if not info["available"]:
+                raise HTTPException(422, info["reason"])
         task.config["backend"] = chosen
     # GAP 1: opt in to the human plan-approval gate. Never for an imported
     # ticket — see CreateTaskRequest.plan_approval.
@@ -963,6 +1040,7 @@ async def split_task(
     Guarded on PENDING: a task already dispatched, parked or terminal has work
     in flight or done and must not be silently replaced.
     """
+    _require_credentials(request)
     store = _store(request)
     task = await _require_task(store, task_id)
     if task.status != TaskStatus.PENDING:
@@ -1068,6 +1146,7 @@ async def get_split_drafts(task_id: str, request: Request) -> dict[str, Any]:
     []}`` when the proposer produced nothing parseable (the UI shows a
     "couldn't draft a split" state rather than an error).
     """
+    _require_credentials(request)
     store = _store(request)
     task = await _require_task(store, task_id)
     # Only a PENDING task can actually BE split (POST /split enforces the same),
@@ -1116,6 +1195,7 @@ async def grill_step_endpoint(body: GrillStepRequest, request: Request):
       - Caches the backend in app.state._grill_sessions keyed by (title, repo)
         so multi-round grills reuse the same agent session (context carryover).
     """
+    _require_credentials(request)
     from ..agent.claude_backend import ClaudeBackend
     from ..intake.grill import GrillQuestion, GrillResult, grill_step
 
@@ -1186,6 +1266,7 @@ async def grill_stream_endpoint(body: GrillStepRequest, request: Request):
     with the full payload. Falls through to the sync POST semantics on
     the backend — only the transport is different.
     """
+    _require_credentials(request)
     from ..agent.claude_backend import ClaudeBackend
     from ..intake.grill import GrillQuestion, GrillResult, grill_step
 
@@ -3835,10 +3916,15 @@ async def metrics(request: Request) -> dict[str, Any]:
     """The north-star numbers (M4): PRs opened/merged, attempts and tokens
     per PR, burn per auth profile, gate outcomes, repro-gate verdict split.
     Read-only SQL over the record — nothing derived, nothing cached."""
-    from ..core.metrics import compute_metrics, playbook_outcomes
+    from ..core.metrics import (
+        compute_metrics, playbook_outcomes, verification_receipt_rate,
+    )
     data = await compute_metrics(_store(request))
     # D2 #5: which playbooks actually pay (gate rate + burn).
     data["by_playbook"] = await playbook_outcomes(request.app.state.store)
+    # Per-attempt rate: did the coder run its checks before claiming done.
+    data["verification_receipts"] = await verification_receipt_rate(
+        request.app.state.store)
     return data
 
 
@@ -4371,6 +4457,14 @@ async def show_config(request: Request) -> dict[str, Any]:
     ]
     scrubbed["coder_backend_effective"] = resolve_backend_name(cfg.data)
     scrubbed["coder_backend_default"] = DEFAULT_CONFIG["worker"]["backend"]
+    # Live, not cached off app.state, so an added credential lifts the
+    # banner on the next poll (see `_require_credentials`). Only reported
+    # for apps that opted in the same way that function gates on.
+    if hasattr(request.app.state, "setup_mode"):
+        from ..config import subscription_credential_missing
+        scrubbed["setup_mode"] = subscription_credential_missing(cfg.data) is not None
+    else:
+        scrubbed["setup_mode"] = False
     return scrubbed
 
 
@@ -4762,8 +4856,12 @@ def _workers_payload(file_data: dict, running_data: dict) -> dict[str, Any]:
     (``resolve_max_workers`` is read once at server start, so a fresh write
     only takes effect on the next ``nh serve``) — the same file-vs-process
     signal ``/api/config/models`` and ``/api/coder-backend`` report.
+
+    ``cpu_count``/``hardware_ceiling`` name *this machine's* detected cores
+    and the derived pool ceiling, so the Settings UI can say where the limit
+    comes from without re-deriving it.
     """
-    from ..core.scheduler import resolve_max_workers
+    from ..core.scheduler import pool_width_ceiling, resolve_max_workers
     from ..config import _MAX_WORKERS_WRITE_CEILING
 
     fconc = (file_data.get("concurrency") or {})
@@ -4775,6 +4873,7 @@ def _workers_payload(file_data: dict, running_data: dict) -> dict[str, Any]:
         file_mw != int(rconc.get("max_workers", 2) or 2)
         or file_en != bool(rconc.get("enabled", False))
     )
+    cpus = os.cpu_count() or 4
     return {
         "max_workers": file_mw,
         "enabled": file_en,
@@ -4782,6 +4881,8 @@ def _workers_payload(file_data: dict, running_data: dict) -> dict[str, Any]:
         "warning": warning,
         "max_allowed": _MAX_WORKERS_WRITE_CEILING,
         "restart_required": restart,
+        "cpu_count": cpus,
+        "hardware_ceiling": pool_width_ceiling(cpus),
     }
 
 
@@ -5208,11 +5309,13 @@ async def discover_repositories(
 
     The default scan is bound to the process's own home directory (home itself
     plus the conventional clone roots) and whatever the operator put in
-    ``onboarding.extra_scan_roots``. ``root`` is NOT an arbitrary-filesystem
-    escape hatch: :func:`discover_repos` refuses any ``root`` that resolves
-    outside home, exactly as it does for the configured extra roots. It is the
-    "type a folder to scan just that folder" path that replaced the old,
-    unbounded ``POST /api/onboarding/repos/detect`` scanner.
+    ``onboarding.extra_scan_roots`` — those stay refused if they resolve
+    outside home. ``root`` is different: it is a folder the user TYPED into
+    "Search another folder", so :func:`discover_repos` scans it wherever it
+    resolves, home or not — no wider a local-API surface than
+    ``GET /api/fs/suggest`` already exposes. It is the "type a folder to scan
+    just that folder" path that replaced the old, unbounded
+    ``POST /api/onboarding/repos/detect`` scanner.
     """
     from ..repo_discovery import DEFAULT_MAX_RESULTS, discover_repos
 

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { costByProject, totalCost, UNATTRIBUTED } from "./costGroups.js";
-import { taskCost } from "./cost.js";
+import { costByProject, totalCost, totalTokens, UNATTRIBUTED } from "./costGroups.js";
+import { taskCost, taskBurn } from "./cost.js";
 import { ledgerSummary } from "./nightLedger.js";
 
 // Pure aggregation over the cost model — the kind of logic this repo tests directly
@@ -101,6 +101,35 @@ test("the rows always sum to the total", () => {
   const expected = tasks.reduce((s, t) => s + taskCost(t), 0);
   // Floating point: compare within a cent rather than exactly.
   assert.ok(Math.abs(totalCost(rows) - expected) < 0.01);
+});
+
+// SCRUM re-home: `tokens` is the token-basis sibling of `cost` — same nine buckets taskBurn
+// sums, kept per-row so the subscription-mode table can show a token column without a
+// second sort (the rows stay ordered by `cost`, unchanged — see the test above).
+test("each row carries a tokens field summing taskBurn over its tasks; totalTokens sums the rows", () => {
+  const tok = (repo, tokens, costUsd = 0) => ({
+    repo_name: repo, cost_usd: costUsd, total_tokens: tokens,
+  });
+  const rows = costByProject([tok("a", 1000), tok("a", 2000), tok("b", 500)]);
+  const a = rows.find((r) => r.project === "a");
+  const b = rows.find((r) => r.project === "b");
+  assert.equal(a.tokens, 3000);
+  assert.equal(b.tokens, 500);
+  assert.equal(totalTokens(rows), 3500);
+});
+
+test("totalTokens on empty/missing input does not throw", () => {
+  assert.equal(totalTokens([]), 0);
+  assert.equal(totalTokens(undefined), 0);
+});
+
+test("row order stays keyed on cost, not tokens — a low-cost/high-token project does not jump the queue", () => {
+  const tasks = [
+    { repo_name: "high-cost-low-tokens", cost_usd: 100, total_tokens: 10 },
+    { repo_name: "low-cost-high-tokens", cost_usd: 1, total_tokens: 999_999 },
+  ];
+  const rows = costByProject(tasks);
+  assert.deepEqual(rows.map((r) => r.project), ["high-cost-low-tokens", "low-cost-high-tokens"]);
 });
 
 test("empty and missing input do not throw", () => {

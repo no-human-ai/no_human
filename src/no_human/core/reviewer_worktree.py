@@ -577,11 +577,17 @@ def _config_keyvals(norm: str) -> dict[str, list[str]]:
 #: command), `submodule.*` (arbitrary repo URL). An unrecognised key returns
 #: `False` from `_is_benign_config_key` — fail-closed default, same posture as
 #: every other adjudication in this module.
+#:
+#: `user.name`/`user.email` are authorship METADATA only: no git operation
+#: executes them, they change no judged file, and the reviewer session sets
+#: them on the SHARED `.git/common/config` as its identity — commit
+#: authorship is enforced by the attribution guard, not this one.
 _BENIGN_CONFIG_KEY_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"^branch\.[^.]+\.(rebase|remote|merge|pushremote|description|"
                r"vscode-merge-base)$"),
     re.compile(r"^maintenance\..+$"),
     re.compile(r"^gc\..+$"),
+    re.compile(r"^user\.(name|email)$"),
 )
 
 

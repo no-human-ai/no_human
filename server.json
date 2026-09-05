@@ -9,13 +9,13 @@
     "id": "1324170924"
   },
   "websiteUrl": "https://getnohuman.com",
-  "version": "0.1.9",
+  "version": "0.2.0",
   "packages": [
     {
       "registryType": "pypi",
       "registryBaseUrl": "https://pypi.org",
       "identifier": "no-human",
-      "version": "0.1.9",
+      "version": "0.2.0",
       "runtimeHint": "uvx",
       "transport": {
         "type": "stdio"

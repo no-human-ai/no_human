@@ -681,7 +681,11 @@ jobs:
           $argv = @(
             'run', 'pytest', '-q', '--tb=short',
             'tests/test_windows_portability.py',
-            'tests/test_windows_credential_file.py'
+            'tests/test_windows_credential_file.py',
+            # The manifest is written through Python's text layer, so only this
+            # job can catch a regression to CRLF rows. On linux it passes for
+            # free and proves nothing.
+            'tests/test_check_release_manifest.py'
           ) + $skip
           uv @argv
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -815,16 +819,39 @@ jobs:
           enable-cache: true
           cache-dependency-glob: uv.lock
 
+      # setup-uv's own cache is scoped to that action; this is a second,
+      # explicit pin of the uv download cache so a cold `uv sync --frozen`
+      # (the observed 5-minute timeout on nearly every main commit) is the
+      # exception, not the rule. restore-keys give a partial hit when uv.lock
+      # moves incrementally, so a lock bump does not mean a full cold sync.
+      - name: Cache uv's download cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/uv
+          key: uv-${{ runner.os }}-${{ hashFiles('uv.lock') }}
+          restore-keys: |
+            uv-${{ runner.os }}-
+
       # Creates .venv/bin/pyinstaller, which build-installer.sh requires by that
       # exact path. pyinstaller is in the `dev` dependency-group.
       # uv sync is idempotent (it converges the venv to uv.lock), so a bounded
-      # retry is safe.
+      # retry is safe. timeout-minutes is 15 (not 5): a cold `uv sync --frozen`
+      # on this runner repeatedly exceeded 5 min, which is what this job was
+      # timing out on — 15 is a realistic cold bound, still well inside the
+      # job's 45-minute cap.
       - name: Install dependencies
-        timeout-minutes: 5
+        timeout-minutes: 15
         run: |
+          err="$RUNNER_TEMP/uv-sync.err"
           n=1
-          until uv sync --frozen; do
-            if [ "$n" -ge 2 ]; then echo "uv sync --frozen failed on both attempts"; exit 1; fi
+          while true; do
+            if uv sync --frozen 2>"$err"; then cat "$err" >&2; break; fi
+            cat "$err" >&2
+            if [ "$n" -ge 2 ]; then
+              echo "uv sync failed on both attempts — uv stderr from the final attempt:" >&2
+              cat "$err" >&2
+              exit 1
+            fi
             n=$((n + 1)); sleep 15
           done
 

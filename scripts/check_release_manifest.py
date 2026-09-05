@@ -203,9 +203,49 @@ def load_unpinnable(root: Path, builder_root: Path | None = None
     return Unpinnable(verdicts)
 
 
+def _previous_rows(manifest_path: Path) -> dict[str, str]:
+    """The rows the manifest holds now, or empty when it cannot be read.
+
+    `--write` is the documented way out of a manifest left mid-merge, so it has
+    to survive reading a file that does not parse — conflict markers and all.
+    `parse_manifest` raises `SystemExit` on the first bad row, which is correct
+    for the check side and fatal for this one, so a failure here costs only the
+    comparison note below and never the regeneration itself.
+    """
+    if not manifest_path.exists():
+        return {}
+    try:
+        return parse_manifest(manifest_path.read_text(encoding="utf-8"))
+    except (SystemExit, OSError, UnicodeDecodeError):
+        return {}
+
+
+def _warn_if_nearly_every_row_changed(previous: dict[str, str],
+                                      rows: dict[str, str]) -> None:
+    """Say so when a regeneration rewrites most of the manifest.
+
+    A dependency bump or a docs sweep can legitimately touch a large share of
+    the rows, so this is a warning and never a refusal. It exists because the
+    one cause that is never legitimate, a checkout whose line endings differ
+    from the ones the rows were hashed over, looks exactly like a huge honest
+    diff and is otherwise silent.
+    """
+    if not previous:
+        return
+    changed = sum(1 for rel, digest in rows.items()
+                  if previous.get(rel) not in (None, digest))
+    if changed * 4 > len(previous):
+        print(f"  NOTE: {changed} of {len(previous)} existing row(s) changed. "
+              "That is usual for a dependency bump or a wide sweep. If you did "
+              "not expect it, check your checkout's line endings "
+              "(git config core.autocrlf false).", file=sys.stderr)
+
+
 def write_manifest(root: Path) -> int:
     tracked = [rel for rel in tracked_files(root) if rel != MANIFEST_NAME]
     unpinnable = load_unpinnable(root)
+    manifest_path = root / MANIFEST_NAME
+    previous = _previous_rows(manifest_path)
 
     if unpinnable is not None:
         refused = [(rel, why) for rel in tracked
@@ -226,7 +266,12 @@ def write_manifest(root: Path) -> int:
 
     rows = {rel: hash_path(root, rel) for rel in tracked}
     body = "".join(f"{digest}  {rel}\n" for rel, digest in sorted(rows.items()))
-    (root / MANIFEST_NAME).write_text(HEADER + body, encoding="utf-8")
+    # newline="\n" so the bytes are identical on every platform. Without it the
+    # write goes through the platform's text layer, which on Windows makes every
+    # row CRLF; the compare side reads back through the same layer and stays
+    # quiet, so the tool looks fine while git reports the whole file as changed.
+    manifest_path.write_text(HEADER + body, encoding="utf-8", newline="\n")
+    _warn_if_nearly_every_row_changed(previous, rows)
     print(f"{MANIFEST_NAME}: wrote {len(rows)} row(s)")
     return 0
 

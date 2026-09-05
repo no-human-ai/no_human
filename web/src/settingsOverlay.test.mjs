@@ -38,8 +38,10 @@ test("the section list covers Projects, Rules, Skills, Second brain, Integration
   // "Second brain" (D3.2, 2026-09-01 hotfix): the learnings pane was renamed
   // and is now the ONLY surface for it — see sidebarNav.test.mjs for the
   // sidebar-row removal this pairs with.
+  // "Workers" (task 05a9cee0, re-home): re-homed out of ModelsPanel's old
+  // WorkersRow into its own section — see workersPanelView.test.mjs.
   const expected = ["Projects", "Rules", "Skills", "Second brain", "Integrations",
-                    "Models", "Account", "Updates"];
+                    "Models", "Workers", "Account", "Updates"];
   for (const label of expected) {
     assert.match(settingsJsx, new RegExp(`label:\\s*["']${label}["']`), `missing section: ${label}`);
   }

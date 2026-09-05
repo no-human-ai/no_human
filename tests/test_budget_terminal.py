@@ -143,6 +143,40 @@ async def test_the_event_says_failed_not_escalated(store, tmp_path):
     assert "failed" in kinds and "escalated" not in kinds, kinds
 
 
+async def test_the_failed_event_carries_blocker_category_for_telemetry(
+        store, tmp_path, monkeypatch):
+    """`_raise_blocker`'s "failed" event must carry a flat `blocker_category`
+    so `_telemetry_hook` can resolve `task_failed.reason_category` — without
+    it, `meta.get("blocker_category")` is always None and a budget-exhausted
+    task's failure ships to telemetry as the useless catch-all "other"
+    instead of "budget_exhausted" (the whole point of the closed enum)."""
+    from no_human import telemetry
+
+    t = await _exhausted(store)
+    orch = _orch(store, tmp_path)
+
+    events: list = []
+    real_sink = orch._sink
+    def _sink(event):
+        events.append(event)
+        return real_sink(event)
+    orch._sink = _sink
+
+    sent: list = []
+    monkeypatch.setattr(
+        telemetry, "record",
+        lambda kind, config=None, **props: sent.append((kind, props)))
+
+    await orch._raise_blocker(t, await orch._check_lifetime_budget(t))
+
+    [failed_event] = [e for e in events if e["kind"] == "failed"]
+    assert failed_event["blocker_category"] == "BUDGET_EXHAUSTED"
+
+    [(kind, props)] = [(k, p) for k, p in sent if k == "task_failed"]
+    assert kind == "task_failed"
+    assert props["reason_category"] == "budget_exhausted"
+
+
 async def test_the_cap_itself_is_untouched(store, tmp_path):
     """Terminal is an OUTCOME change. The gate still fires at the same place on
     the same numbers, and a task under its cap is still untouched."""

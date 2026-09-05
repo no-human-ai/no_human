@@ -11,7 +11,7 @@ import {
 } from "./approveRefusal.js";
 import { cardTitle } from "./cardTitle.js";
 import { cardFacts } from "./cardFacts.js";
-import { taskCost } from "./cost.js";
+import { taskCost, taskBurn } from "./cost.js";
 import { isFirstRun } from "./boardFirstRun.js";
 import { timestampMs, compareAsc } from "./parseTimestamp.js";
 import { elapsedChip } from "./cardElapsed.js";
@@ -32,7 +32,7 @@ const LANE_TOP_N = 4;
 // matters at the minute scale.
 const ELAPSED_TICK_MS = 60_000;
 
-export default function Board({ tasks, pendingOpenId, onPendingOpenHandled, tasksLoaded = true, outcomeCount = 0, onNewTask, onFollowUp = null }) {
+export default function Board({ tasks, pendingOpenId, onPendingOpenHandled, tasksLoaded = true, outcomeCount = 0, onNewTask, onFollowUp = null, authMode }) {
   const [selectedId, setSelectedId] = useState(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [nowMs, setNowMs] = useState(() => Date.now());
@@ -132,6 +132,7 @@ export default function Board({ tasks, pendingOpenId, onPendingOpenHandled, task
             approveErrors={approveErrors}
             onDismissApproveError={(id) => setApproveErrors((m) => dismissApproveError(m, id))}
             nowMs={nowMs}
+            authMode={authMode}
           />
         ))}
       </div>
@@ -161,6 +162,7 @@ export default function Board({ tasks, pendingOpenId, onPendingOpenHandled, task
           }}
           onApproveRefused={handleApproveRefused}
           onFollowUp={onFollowUp}
+          authMode={authMode}
         />
       )}
       {toast && (
@@ -198,7 +200,7 @@ function workingBreakdown(tasks) {
   return waiting > 0 ? `${base} · ${waiting} waiting` : base;
 }
 
-function Lane({ lane, tasks, onSelect, approveErrors, onDismissApproveError, nowMs }) {
+function Lane({ lane, tasks, onSelect, approveErrors, onDismissApproveError, nowMs, authMode }) {
   const [expanded, setExpanded] = useState(false);
   // SCRUM-19: the Needs-Answer lane's OWN collapse — stale escalations (>24h,
   // by escalation recency) sink behind an expandable divider instead of
@@ -272,6 +274,7 @@ function Lane({ lane, tasks, onSelect, approveErrors, onDismissApproveError, now
                 approveError={approveErrors?.[task.id]}
                 onDismissApproveError={onDismissApproveError}
                 nowMs={nowMs}
+                authMode={authMode}
               />
             ))}
             {stale.length > 0 && (
@@ -298,6 +301,7 @@ function Lane({ lane, tasks, onSelect, approveErrors, onDismissApproveError, now
                 approveError={approveErrors?.[task.id]}
                 onDismissApproveError={onDismissApproveError}
                 nowMs={nowMs}
+                authMode={authMode}
               />
             ))}
           </>
@@ -311,6 +315,7 @@ function Lane({ lane, tasks, onSelect, approveErrors, onDismissApproveError, now
               approveError={approveErrors?.[task.id]}
               onDismissApproveError={onDismissApproveError}
               nowMs={nowMs}
+              authMode={authMode}
             />
           ))
         )}
@@ -336,13 +341,13 @@ function Lane({ lane, tasks, onSelect, approveErrors, onDismissApproveError, now
 const STALE_STATUSES = new Set(["context", "planning", "implementing", "reviewing", "testing", "awaiting_approval", "awaiting_input", "blocked"]);
 const STALE_THRESHOLD_S = 16 * 3600;
 
-function TaskCard({ task, isAwaiting, staleAnswer, onClick, approveError, onDismissApproveError, nowMs = Date.now() }) {
+function TaskCard({ task, isAwaiting, staleAnswer, onClick, approveError, onDismissApproveError, nowMs = Date.now(), authMode }) {
   const activityTs = task.last_activity || task.updated_at || task.created_at;
   const ageMs = Date.now() - timestampMs(activityTs, 0);
   const ageSec = ageMs / 1000;
   const age = relativeTime(activityTs);
   const isStale = STALE_STATUSES.has(task.status) && ageSec > STALE_THRESHOLD_S;
-  const f = cardFacts(task, { cost: taskCost(task) });
+  const f = cardFacts(task, { cost: taskCost(task), tokens: taskBurn(task), authMode });
   const elapsed = elapsedChip(task, nowMs);
 
   // SCRUM-15: the live pulse/progress must reflect the scheduler's actual claim,

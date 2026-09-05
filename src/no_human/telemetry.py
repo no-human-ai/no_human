@@ -16,6 +16,10 @@ because an unlisted event is a privacy bug, not an operational hiccup.
 
 NEVER include: task ids, titles, repo names, paths, prompts, tokens. Props are
 validated against `_ALLOWED_EVENTS` — kind AND prop names are closed sets.
+`task_failed`'s `reason_category` prop is additionally value-validated
+against `FAILURE_REASON_CATEGORIES` (see `_ALLOWED_PROP_VALUES`): a closed
+enum of failure PATTERNS, never free text — no failure detail ever leaves
+the machine.
 
 Every event also carries `environment` (`real`/`bench`/`test`/`ci`/`dev`),
 classified fresh on each `record()` call by `environment()` — never
@@ -44,9 +48,25 @@ _ALLOWED_EVENTS: dict[str, frozenset[str]] = {
     "app_started": frozenset({"environment"}),
     "task_created": frozenset({"source", "environment"}),
     "task_completed": frozenset({"status", "duration_bucket", "attempts", "environment"}),
-    "task_failed": frozenset({"category", "environment"}),
+    "task_failed": frozenset({"category", "reason_category", "environment"}),
     "approve_clicked": frozenset({"environment"}),
     "feature_used": frozenset({"name", "environment"}),
+}
+
+# Closed enum of `task_failed`'s `reason_category` prop — a machine-readable
+# failure PATTERN, never free text (no task id, title, repo name, or detail
+# string may ever land here; that is the privacy guarantee).
+FAILURE_REASON_CATEGORIES = frozenset({
+    "budget_exhausted", "review_failed", "max_attempts", "infra",
+    "tamper_blocked", "blocker_parked", "other",
+})
+
+# Mirror of the first-party Lambda's per-event-prop VALUE validation, for
+# props whose value space is itself a closed enum (currently just
+# `task_failed.reason_category`). kind/prop NAME validation lives in
+# `_ALLOWED_EVENTS`; this is the additional VALUE-level check.
+_ALLOWED_PROP_VALUES: dict[tuple[str, str], frozenset[str]] = {
+    ("task_failed", "reason_category"): FAILURE_REASON_CATEGORIES,
 }
 
 # Recognized CI platform markers (intake-resolved: covers ~95% of CI
@@ -135,6 +155,46 @@ def duration_bucket(minutes: float) -> str:
     if minutes < 60:
         return "30-60m"
     return ">60m"
+
+
+# Maps `no_human.blockers.taxonomy.BlockerCategory` member NAMES (not the
+# enum itself — telemetry.py stays dependency-light, so these are hardcoded
+# strings, not an import) onto `FAILURE_REASON_CATEGORIES`. Any name not
+# listed here (including an unrecognized/garbage string) falls through to
+# "blocker_parked" in `failure_reason_category` only when it IS a park-shaped
+# call; genuinely unknown input falls through further to "other".
+_BLOCKER_REASON_MAP = {
+    "BUDGET_EXHAUSTED": "budget_exhausted",
+    "TRANSIENT_INFRA": "infra",
+    "QUOTA": "infra",
+    "STAGNATION": "blocker_parked",
+    "DEPENDENCY_WAIT": "blocker_parked",
+    "AMBIGUITY": "blocker_parked",
+    "MISSING_ACCESS": "blocker_parked",
+    "SCOPE_EXPLOSION": "blocker_parked",
+    "IMPOSSIBLE": "blocker_parked",
+    "NOVEL_UNKNOWN": "blocker_parked",
+    "USER_PAUSED": "blocker_parked",
+}
+
+
+def failure_reason_category(explicit: str | None = None,
+                            blocker_category: str | None = None) -> str:
+    """Resolve a `task_failed.reason_category` value — always a member of
+    `FAILURE_REASON_CATEGORIES`, never free text.
+
+    `explicit` wins if it is already a valid category. Otherwise, map
+    `blocker_category` (a `BlockerCategory` member name, any case) via
+    `_BLOCKER_REASON_MAP`. Falls back to `"other"` when neither resolves —
+    this never raises, so a failure path can always safely tag an event.
+    """
+    if explicit in FAILURE_REASON_CATEGORIES:
+        return explicit
+    if blocker_category:
+        mapped = _BLOCKER_REASON_MAP.get(blocker_category.strip().upper())
+        if mapped is not None:
+            return mapped
+    return "other"
 
 
 def _conf(config: dict[str, Any] | None) -> dict[str, Any]:
@@ -255,6 +315,11 @@ def record(kind: str, config: dict[str, Any] | None = None, **props: Any) -> Non
     if unknown:
         raise ValueError(
             f"telemetry: props {sorted(unknown)!r} not allowed for {kind!r}")
+    for name, value in props.items():
+        choices = _ALLOWED_PROP_VALUES.get((kind, name))
+        if choices is not None and (not isinstance(value, str) or value not in choices):
+            raise ValueError(
+                f"telemetry: value {value!r} not allowed for {kind!r}.{name!r}")
     try:
         section = _conf(config)
         if not (bool(section.get("enabled")) and _destination(section)):

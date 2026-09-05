@@ -8,12 +8,15 @@ lands on the next `nh serve`).
 """
 from __future__ import annotations
 
+import os
+
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 import no_human.config as nh_config
 from no_human.api.app import app
+from no_human.core.scheduler import pool_width_ceiling
 
 pytestmark = pytest.mark.usefixtures("isolated_env_file")
 
@@ -87,3 +90,28 @@ async def test_put_empty_body_is_422(client):
 async def test_put_non_object_body_is_422(client):
     r = await client.put("/api/config/workers", json=["nope"])
     assert r.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_get_reports_this_machines_cpu_count_and_ceiling(client, monkeypatch):
+    monkeypatch.setattr(os, "cpu_count", lambda: 12)
+    r = await client.get("/api/config/workers")
+    b = r.json()
+    assert b["cpu_count"] == 12
+    assert b["hardware_ceiling"] == pool_width_ceiling(12)
+
+
+@pytest.mark.asyncio
+async def test_ceiling_floors_at_two_on_a_small_machine(client, monkeypatch):
+    monkeypatch.setattr(os, "cpu_count", lambda: 2)
+    r = await client.get("/api/config/workers")
+    b = r.json()
+    assert b["hardware_ceiling"] == 2
+
+
+@pytest.mark.asyncio
+async def test_put_response_carries_the_hardware_keys(client):
+    r = await client.put("/api/config/workers", json={"max_workers": 8})
+    assert r.status_code == 200, r.text
+    b = r.json()
+    assert "cpu_count" in b and "hardware_ceiling" in b

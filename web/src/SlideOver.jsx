@@ -55,7 +55,7 @@ const IconInfo = ({ size = 14 }) => (
 
 export default function SlideOver({ taskId, onClose, refreshKey = 0,
                                     reviewQueue = [], onJump = null, onApproveRefused = null,
-                                    onFollowUp = null }) {
+                                    onFollowUp = null, authMode = undefined }) {
   // W2.5: the review queue — the next awaiting-approval task after this one,
   // so five reviews feel like one pass instead of five board round-trips.
   const nextInQueue = reviewQueue.find((id) => id !== taskId) || null;
@@ -585,7 +585,7 @@ export default function SlideOver({ taskId, onClose, refreshKey = 0,
         {/* summary — the landing state: a plain-language narrative, live chips,
             and a small milestone timeline. Replaces the tab strip; the action
             bar below still leads with Approve/Reply/etc. */}
-        {task && <TaskSummary task={task} isActive={isLive} />}
+        {task && <TaskSummary task={task} isActive={isLive} authMode={authMode} />}
 
         {/* Pre-flight feasibility (feature #1): only while the task is still
             PENDING and the create-time hint offered a mitigation — a task
@@ -1025,9 +1025,9 @@ function FlashBanner({ msg, onDismiss }) {
 // The one glance that answers "what is this and what happens next" in plain
 // language, before any accordion section is opened. All derivation is pure
 // (slideOverSummary.js) — this component only lays it out.
-function TaskSummary({ task, isActive }) {
+function TaskSummary({ task, isActive, authMode }) {
   const n = useMemo(() => narrativeFor(task), [task]);
-  const chips = useMemo(() => chipsFor(task), [task]);
+  const chips = useMemo(() => chipsFor(task, authMode), [task, authMode]);
   const milestones = useMemo(() => milestonesFor(task), [task]);
   const status = useMemo(() => coarseStatus(task), [task]);
   return (

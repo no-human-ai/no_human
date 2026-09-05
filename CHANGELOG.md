@@ -6,6 +6,11 @@ All notable changes to no_human. The format follows
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-09-05
+
+First release developed entirely in the open on the public repository, including
+the first external-contributor PRs.
+
 ### Security
 - The board API enforces a loopback boundary (`api/local_boundary.py`): a
   request whose `Host` is not loopback is refused (400, DNS-rebinding defence),
@@ -31,10 +36,63 @@ All notable changes to no_human. The format follows
 ### Added
 - `ci_gate.jenkins_ca_bundle`: PEM path the CI-log fetch verifies the Jenkins
   TLS chain against (empty = system trust store).
+- `nh verifiers list/add/check/propose`: inspect, additively author, and
+  dry-run-select the repo's natural-language verifiers from the CLI, and turn
+  a task's persisted review findings into candidate verifier YAML
+  (`nh verifiers propose TASK_ID [--apply]`). None of the four make a model
+  or network call.
+- Subscription users see token usage (not dollar estimates) as their usage
+  display on the board.
+- A Settings ▸ Workers panel showing the worker count derived from hardware
+  (`cpu_count`/`hardware_ceiling`) and where the limit comes from.
+- Evidence ledger: every claim in a PR body links to its proof, and the body
+  leads with the verdict and a per-kind "How I verified this".
+- Telemetry (defaults unchanged) tags every event with its environment and a
+  stable install id, and `task_failed` carries a privacy-safe CLOSED
+  failure-category enum (`reason_category`) so failure patterns are visible
+  without leaking content.
+- A default UI walk runs at finalize when the coder writes no manifest;
+  UI-evidence walks build the web UI from the worktree and run against a
+  hermetic backend (throwaway HOME + isolated server), never the live config.
+- Integration health probes (boot-time + scheduled) surface healthy/detail on
+  the board; task cards show elapsed running time, amber past 2h.
 
 ### Changed
 - Development now happens directly in this repository: changes land here as
   commits and pull requests rather than arriving through a periodic export.
+- Approve runs the FULL test gate when the squash tree diverges from the
+  attempt's tested tree, so a conflict-round tree cannot ship untested.
+- Onboarding no longer has a DOCS step — wiki generation runs fully async after
+  Launch and asks nothing of the user.
+- The board serves a strict Content-Security-Policy; board Markdown is hardened
+  against XSS with a dependency-regression guard.
+- First external-contributor PRs landed: MCP bridge honoring server.host/port,
+  board CSP form-action, regression tests, a cross-platform LF release
+  manifest, docs index + integration-probe accuracy, and onboarding
+  failure-output.
+- The Linux-bundle CI job's dependency-install timeout was raised (5→15 min)
+  with uv caching so the packaging gate stops timing out.
+
+### Fixed
+- Integration health: an enabled-but-unconfigured target (e.g. Microsoft Teams
+  on a fresh install) reports neutral, not a red "Failing" chip; a configured
+  target that genuinely fails still reports the failure.
+- `nh start` no longer refuses to boot without a credential — a new user can
+  reach the onboarding that sets the credential up; on a source checkout it
+  rebuilds (or warns on) a stale `web/dist` so the current UI is served.
+- The onboarding wizard survives a dead/restarting backend with a reconnect
+  banner and retry instead of a bare "Failed to fetch".
+- Repo-folder Search scans a user-typed root wherever it resolves (not only
+  under home) and never misreports a refusal as "no git repositories there".
+- The "Complete AI configuration" nudge no longer renders off-screen on phones.
+- Models settings: the dead row-note and silently-inert Reset/re-pick are
+  fixed, and a one-line reason shows under the backend picker instead of a raw
+  AuthError paragraph.
+- `GET /api/worker/status` no longer intermittently blocks 5–14 s.
+- A verifier walled by quota/overload parks on quota-refresh instead of
+  escalating to a human as an unknown failure.
+- The "approved — merge pending" chip no longer sticks after a task leaves
+  awaiting-approval.
 - A board bound to a non-loopback interface (`nh start --host 0.0.0.0`) answers
   `400 bad_host` to a browser that addresses it by a LAN name or IP other than
   the configured `server.host`; set `server.host` to that name, or use an SSH

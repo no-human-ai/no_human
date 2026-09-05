@@ -1,6 +1,6 @@
 {
   "name": "no-human-desktop",
-  "version": "0.1.9",
+  "version": "0.2.0",
   "private": true,
   "license": "MIT",
   "description": "Desktop shell for the no_human board \u2014 attaches to (or launches) the local nh server and wraps it in a native window.",

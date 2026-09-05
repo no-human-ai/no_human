@@ -350,11 +350,13 @@ export default function TaskComposer({ busy, error, initial, notice, queueRemain
   // `coder_backend_availability` is core.backend_settings.describe_backend's
   // output for every SUPPORTED_BACKENDS entry — the SAME call
   // core.runtime.assert_task_backend_usable makes that build_orchestrator
-  // runs before the first coder turn. Never a second frontend rule (the
-  // 'local'-only, base_url-truthiness-only check this replaced could
-  // disagree with the server — e.g. an unset OPENAI credential for 'codex'
-  // was invisible to it). Keyed by id so a lookup miss (older server, no
-  // field yet) degrades to "no opinion" rather than blocking everything.
+  // runs before the first coder turn (that check now also refuses a 'local'
+  // config missing llm.local_model, not just an unset/unsafe
+  // llm.local_base_url). Never a second frontend rule (the 'local'-only,
+  // base_url-truthiness-only check this replaced could disagree with the
+  // server — e.g. an unset OPENAI credential for 'codex' was invisible to
+  // it). Keyed by id so a lookup miss (older server, no field yet) degrades
+  // to "no opinion" rather than blocking everything.
   const backendAvailability = new Map(
     (config?.coder_backend_availability ?? []).map((o) => [o.id, o]),
   );

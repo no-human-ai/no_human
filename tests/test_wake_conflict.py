@@ -46,7 +46,7 @@ async def _approval_task(store, url="https://code.example.com/dev/x/pull/26"):
 
 
 def _watcher(store, *, mergeable_sequence=None, mergeable=None, merge_state="",
-             events=None, pr_shipped=None):
+             events=None, pr_shipped=None, derived_resolver=None):
     """``mergeable_sequence`` (a list) is popped from the front on each call —
     lets a test script CONFLICTING → UNKNOWN → CONFLICTING across ticks.
     ``mergeable`` is a fixed single value used when no sequence is given."""
@@ -65,6 +65,7 @@ def _watcher(store, *, mergeable_sequence=None, mergeable=None, merge_state="",
         pr_mergeable=pr_mergeable,
         pr_shipped=pr_shipped,
         on_event=(lambda k, t: events.append((k, t))) if events is not None else None,
+        derived_resolver=derived_resolver,
     )
 
 
@@ -524,3 +525,82 @@ async def test_the_completed_conflict_task_records_a_settled_merged_outcome(stor
     assert rows[0]["outcome"] == po.MERGED
     assert rows[0]["outcome_evidence"] == po.EVIDENCE_CONTENT_ON_BASE
     assert po.is_settled(rows[0]["outcome"]), "a landing must not stay unsettled"
+
+
+# --------------------------------------------------------------------------- #
+# A failed DerivedResolution's `detail` must be root-causeable from the
+# escalation alone (event text + stored blocker), not just the `step`.
+# --------------------------------------------------------------------------- #
+
+def _derived_shape(monkeypatch, path="tests/test_structural_budget.py"):
+    """Make `_check_pr_conflict`'s eligibility probe see a mechanically
+    resolvable derived-artefact shape (a resolved base tip, a non-empty
+    `mechanically_resolvable` result) so it reaches the `eligible` branch
+    and calls the resolver — same wiring `test_orchestrator_pr_conflict.py`
+    exercises against real repos, done here against the fake `/tmp/x`."""
+    async def fake_conflicting_paths(repo_path, base_tip, branch):
+        return {path}
+
+    async def fake_resolve_base_tip(repo_path, base_branch):
+        return "a" * 40
+
+    async def fake_mechanically_resolvable(repo_path, paths, base_tip_sha, branch):
+        return {path}
+
+    monkeypatch.setattr(dc, "conflicting_paths", fake_conflicting_paths)
+    monkeypatch.setattr(dc, "resolve_base_tip", fake_resolve_base_tip)
+    monkeypatch.setattr(dc, "mechanically_resolvable", fake_mechanically_resolvable)
+
+
+async def test_a_failed_mechanical_resolution_escalation_names_the_detail(
+        store, monkeypatch):
+    DISTINCTIVE = ("scanner measure() subprocess timed out after 120s "
+                    "(budget-detail-probe-9f3a)")
+    _derived_shape(monkeypatch)
+    t = await _approval_task(store)
+    events = []
+    w = _watcher(
+        store, mergeable="CONFLICTING", merge_state="DIRTY", events=events,
+        derived_resolver=lambda *a, **k: dc.DerivedResolution(
+            ok=False, step="budget", detail=DISTINCTIVE),
+    )
+
+    out = await w._check_pr_conflict(
+        t, "https://code.example.com/dev/x/pull/26", "DIRTY", branch="scratch/x")
+
+    assert out == "escalated_pr_conflict"
+    event_texts = [text for kind, text in events if kind == "escalated_pr_conflict"]
+    assert event_texts and DISTINCTIVE in event_texts[0]
+    fresh = await store.get_task(t.id)
+    assert fresh.status is TaskStatus.ESCALATED
+    blocker = fresh.blocker or {}
+    assert DISTINCTIVE in blocker.get("evidence", "")
+    assert DISTINCTIVE in blocker.get("question", "")
+    assert "budget" in blocker.get("question", "")
+    kinds = [kind for kind, _ in events]
+    assert "pr_conflict" not in kinds
+    assert "resumed" not in kinds
+
+
+async def test_an_over_long_resolution_detail_is_capped_in_the_escalation(
+        store, monkeypatch):
+    _derived_shape(monkeypatch)
+    t = await _approval_task(store)
+    events = []
+    w = _watcher(
+        store, mergeable="CONFLICTING", merge_state="DIRTY", events=events,
+        derived_resolver=lambda *a, **k: dc.DerivedResolution(
+            ok=False, step="budget", detail="X" * 5000),
+    )
+
+    out = await w._check_pr_conflict(
+        t, "https://code.example.com/dev/x/pull/26", "DIRTY", branch="scratch/x")
+
+    assert out == "escalated_pr_conflict"
+    event_texts = [text for kind, text in events if kind == "escalated_pr_conflict"]
+    assert event_texts
+    text = event_texts[0]
+    assert "X" * 500 in text and "X" * 501 not in text
+    fresh = await store.get_task(t.id)
+    evidence = (fresh.blocker or {}).get("evidence", "")
+    assert "X" * 500 in evidence and "X" * 501 not in evidence

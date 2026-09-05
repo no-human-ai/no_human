@@ -8,7 +8,7 @@
 
 import { approvedAtOf, supersededAtOf } from "./approvalState.js";
 import { routeTask } from "./boardLanes.js";
-import { fmtCost, fmtTokens, taskBurn, taskCost } from "./cost.js";
+import { fmtCost, fmtTokens, taskBurn, taskCost, pricingIsReal } from "./cost.js";
 import { formatDuration } from "./formatDuration.js";
 import { httpPrUrl } from "./prUrl.js";
 import { pluralize } from "./pluralize.js";
@@ -291,13 +291,22 @@ function branchFor(task) {
 }
 
 // { key, label, sub, href? } — `label` values are the tabular-nums figures;
-// `sub` is the quiet caption under them.
-export function chipsFor(task) {
+// `sub` is the quiet caption under them. `authMode` decides the cost chip's
+// basis: only api_key (BYO) mode pays Anthropic per token for real
+// (cost.js's pricingIsReal) — subscription/OAuth (the default, and any
+// absent value) pays a flat fee, so tokens lead there and the dollar figure
+// becomes a marked-est. secondary, same convention as ledgerSpend.js's
+// deriveSpendDisplay.
+export function chipsFor(task, authMode) {
   if (!task) return [];
   const chips = [];
   const burn = taskBurn(task);
   const cost = taskCost(task);
-  if (burn > 0) chips.push({ key: "cost", label: fmtCost(cost), sub: `${fmtTokens(burn)} tok` });
+  if (burn > 0) {
+    chips.push(pricingIsReal(authMode)
+      ? { key: "cost", label: fmtCost(cost), sub: `${fmtTokens(burn)} tok` }
+      : { key: "cost", label: `${fmtTokens(burn)} tok`, sub: cost > 0 ? `~${fmtCost(cost)} est.` : "tokens" });
+  }
   // "ran" (Σ phase durations, D1.3) sits before "wall". Only a POSITIVE number
   // gets a chip: the phase table is empty until D1.2 lands, so every real task
   // reads active_seconds null/0 and shows no ran chip — never a false "0s ran".
