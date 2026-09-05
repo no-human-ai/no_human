@@ -6,6 +6,7 @@ tests/test_integrations_registry.py: `no_human.integrations._http_get` /
 """
 from __future__ import annotations
 
+import copy
 import logging
 from contextlib import asynccontextmanager
 
@@ -14,6 +15,7 @@ import pytest_asyncio
 from httpx import AsyncClient, ASGITransport
 
 from no_human import integrations as reg
+from no_human.config import DEFAULT_CONFIG
 from no_human.integrations import health as h
 
 # health.py's _load_secrets() reaches config.load_env_var, which reads the
@@ -199,6 +201,109 @@ async def test_disabled_integration_is_never_probed(monkeypatch):
     assert "jira" not in h.probe_targets(cfg)
     results = await h.probe_all(cfg)
     assert all(r.name != "jira" for r in results)
+
+
+# --------------------------------------------------------------------------- #
+# enabled-but-unconfigured must never report Failing (fresh-install bug)      #
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.asyncio
+async def test_default_config_has_no_failing_integration(monkeypatch, caplog):
+    """A brand-new install (DEFAULT_CONFIG, no user edits) must show NO
+    integration in a red 'Failing' state — Teams is enabled by default (see
+    config.py) but has no webhook, so it must probe as neutral/unconfigured,
+    not FAILING."""
+    async def boom_get(*a, **k):
+        pytest.fail("must not call the network for the default config")
+
+    async def boom_post(*a, **k):
+        pytest.fail("must not call the network for the default config")
+
+    monkeypatch.setattr(reg, "_http_get", boom_get)
+    monkeypatch.setattr(reg, "_http_post", boom_post)
+
+    cfg = copy.deepcopy(DEFAULT_CONFIG)
+    with caplog.at_level(logging.WARNING, logger="no_human.integrations.health"):
+        results = await h.probe_all(cfg)
+
+    assert all(r.healthy is not False for r in results)
+    assert "is FAILING" not in caplog.text
+
+    teams_result = next(r for r in results if r.name == "teams")
+    assert teams_result.healthy is None
+    assert "not configured" in teams_result.detail
+
+    # UI-contract check at the data level: `healthBadge()` in
+    # web/src/integrationChip.js only turns red when `healthy === false`.
+    statuses = {s.name: s for s in reg.list_integrations_with_health(cfg)}
+    teams_status = statuses["teams"]
+    assert teams_status.healthy is None
+    assert teams_status.status == "unconfigured"
+
+
+@pytest.mark.asyncio
+async def test_configured_teams_with_retired_connector_still_fails(monkeypatch):
+    """Positive control: a Teams webhook that IS configured but points at a
+    retired Office 365 connector must still probe as Failing — the
+    unconfigured -> neutral fix must not blanket-suppress a real failure."""
+    cfg = {
+        "integrations": {"teams": {"enabled": True}},
+        "notifications": {
+            "teams_webhook_url": "https://acme.webhook.office.com/webhookb2/xyz",
+        },
+        "ci": {},
+    }
+
+    async def boom(*a, **k):
+        pytest.fail("Teams has no live ping — must not touch the network")
+
+    monkeypatch.setattr(reg, "_http_get", boom)
+    monkeypatch.setattr(reg, "_http_post", boom)
+
+    result = await h.probe("teams", cfg)
+    assert result.healthy is False
+    assert "retired" in result.detail.lower()
+
+
+@pytest.mark.asyncio
+async def test_configured_jira_http_401_still_fails(monkeypatch):
+    """Positive control: a fully-configured Jira with a real credential
+    failure must still probe as Failing — guards against a blanket
+    suppression keyed on anything other than `configured`."""
+    monkeypatch.setenv("JIRA_API_TOKEN", "tok")
+
+    async def fake_get(url, headers=None, auth=None, timeout=None):
+        return _Resp(401)
+
+    monkeypatch.setattr(reg, "_http_get", fake_get)
+    result = await h.probe("jira", _JIRA_CFG)
+    assert result.healthy is False
+
+
+@pytest.mark.asyncio
+async def test_enabled_and_configured_probes_as_before(monkeypatch):
+    """An integration the user actually enabled and configured must probe
+    exactly as it did before this fix — no change to the "it works" path."""
+    teams_cfg = {
+        "integrations": {"teams": {"enabled": True}},
+        "notifications": {
+            "teams_webhook_url":
+                "https://prod-1.westus.logic.azure.com/workflows/abc123",
+        },
+        "ci": {},
+    }
+    teams_result = await h.probe("teams", teams_cfg)
+    assert teams_result.healthy is True
+
+    monkeypatch.setenv("JIRA_API_TOKEN", "tok")
+
+    async def fake_get(url, headers=None, auth=None, timeout=None):
+        return _Resp(200, {"displayName": "Dana"})
+
+    monkeypatch.setattr(reg, "_http_get", fake_get)
+    jira_result = await h.probe("jira", _JIRA_CFG)
+    assert jira_result.healthy is True
+    assert "dana" in jira_result.detail.lower()
 
 
 # --------------------------------------------------------------------------- #
