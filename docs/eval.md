@@ -149,16 +149,16 @@ over time; it is the trust signal that matters most.
 ## Reading a bench run: pass^k, escalation latency, and what must not lead
 
 **pass^k: SUPPORTED (yes, not partial).** The bench runner already reruns each
-spec — `nh bench run --trials N` (`src/no_human/cli/commands.py:bench_run:7123`), with a
-spec-major fan-out (`:bench_run:7446`) and `(task_id, trial)` as the checkpoint
-identity (`:bench_run:7329`) so a resumed multi-trial run cannot double-count a spec.
+spec — `nh bench run --trials N` (`src/no_human/cli/commands.py:bench_run:7633`), with a
+spec-major fan-out (`:bench_run:7784`) and `(task_id, trial)` as the checkpoint
+identity (`:bench_run:7662`) so a resumed multi-trial run cannot double-count a spec.
 Each trial is its own `BenchScore` (`BenchScore.trial`,
 `src/no_human/eval/northstar.py`). The reliability figure this produces is
 `NorthStarCard.pass_k_rate` — the fraction of specs that passed **every**
-trial, not the mean success rate (`src/no_human/eval/northstar_card.py:NorthStarCard.pass_k_rate:443`) —
+trial, not the mean success rate (`src/no_human/eval/northstar_card.py:NorthStarCard.pass_k_rate:456`) —
 surfaced in the headline as `· pass^{trials} {rate}`
-(`northstar_card.py:success_headline:829-830`), in a dedicated "Per-spec reliability" table
-(`northstar_card.py:render_northstar_md:1474-1478`), and now also as a `pass^k` cell (`n/k`, read
+(`northstar_card.py:success_headline:875-876`), in a dedicated "Per-spec reliability" table
+(`northstar_card.py:render_northstar_md:1555-1559`), and now also as a `pass^k` cell (`n/k`, read
 from the same `per_spec_passes` — no new arithmetic) on each core spec's row
 in the "Per-task" table, present only when `trials > 1` (`pass^1` is
 arithmetically the mean; printing it would read as a second, corroborating
@@ -188,7 +188,7 @@ it as a failed run, not a strong result.
 uneven trial count (a resumed run that died partway) silently over-weights
 whichever specs happened to run more often. The headline is
 `spec_mean_success_rate` — the mean of PER-SPEC means
-(`northstar_card.py:NorthStarCard.spec_mean_success_rate:360`) — and it should be read together with cost ratio and
+(`northstar_card.py:NorthStarCard.spec_mean_success_rate:373`) — and it should be read together with cost ratio and
 the honest-escalation rate, never alone. **Bench is an instrument, not a target: never tune the product to pass the specific specs in this corpus** —
 that measures memorization of the benchmark, not capability.
 

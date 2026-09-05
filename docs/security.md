@@ -104,7 +104,7 @@ or escalates with a structured report (see [blockers.md](blockers.md)).
 to be an exhaustive list of its network traffic.** It cannot be one. The coder
 session is a Claude Agent SDK session built with **no tool restrictions** and
 `permission_mode="bypassPermissions"`
-(`agent/claude_backend.py:ClaudeBackend.__init__:519`, `:ClaudeBackend.__init__:544`) —
+(`agent/claude_backend.py:ClaudeBackend.__init__:520`, `:ClaudeBackend.__init__:545`) —
 no tool allowlist, no tool denylist, no per-call permission callback. It has
 Bash. Anything an agent decides to run — `curl`, `pip install`, `npm i`, a test
 suite that hits a staging API — leaves your machine, and nothing in no_human sits
@@ -145,11 +145,11 @@ named here.
   and line and quote the lines they are about. Same destination as the push.
 - **PR receipt and status polling** — `gh` / `glab` calls for the PR's head SHA
   and its mergeability (`vcs/pr_watcher.py:default_pr_state`, `vcs/receipts.py`), plus
-  `git fetch origin` (`vcs/git.py:GitRepo._have_remote_commit:836`, `:GitRepo.fetch:916`),
+  `git fetch origin` (`vcs/git.py:GitRepo._have_remote_commit:934`, `:GitRepo.fetch:1103`),
   while a task waits on CI or review.
   These read; they send only the identifiers of a PR you just created.
 - **`nh merge-stack run` calls `gh pr merge`** against your git host
-  (`cli/commands.py:merge_stack_run:2807`). This is *your* command, not the agent's — an agent
+  (`cli/commands.py:merge_stack_run:2865`). This is *your* command, not the agent's — an agent
   session's Bash is denied it for the spellings the rule models
   (`_LEXICAL_MERGE_STACK` in `agent/guard.py`, plus the argv check beside it),
   in both session modes; see §2 for the bound.
@@ -241,7 +241,7 @@ named here.
   and `CodexBackend._child_env()` — with an
   env-var mark that is inherited by every descendant of that session, no
   matter how it is invoked. `nh approve` and `nh merge-stack run`
-  (`_refuse_agent_gate_act`, `cli/commands.py:approve:4955`, `:merge_stack_run:2777`) refuse before
+  (`_refuse_agent_gate_act`, `cli/commands.py:approve:5085`, `:merge_stack_run:2835`) refuse before
   `_bootstrap` runs when the calling process carries that mark, and an HTTP
   middleware in `api/app.py` (`_refuse_marked_gate_acts`, by `_csp_header`)
   refuses
@@ -422,7 +422,7 @@ config key that turns it on and the default that keeps it off.
 The CLI, the desktop app and the MCP bridge talk to no_human's **own** API on
 `server.host`:`server.port`, which is `127.0.0.1:8420` by default
 (`cli/api_client.py`, `intake/mcp_bridge.py:40`,
-`cli/commands.py:print_no_task_matching:78`), and the transcript-research reader probes a language
+`cli/commands.py:print_no_task_matching:84`), and the transcript-research reader probes a language
 server on localhost (`history/extractor.py:65-72`). These never leave the
 machine, and `server.host` defaults to `127.0.0.1`.
 
