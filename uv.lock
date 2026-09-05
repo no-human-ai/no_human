@@ -708,7 +708,7 @@ requires-dist = [
     { name = "click", specifier = ">=8.4.1" },
     { name = "fastapi", specifier = ">=0.138.0" },
     { name = "httpx", specifier = ">=0.28.1" },
-    { name = "mcp", specifier = ">=2" },
+    { name = "mcp", specifier = ">=2,<3" },
     { name = "psutil", specifier = ">=7.0.0" },
     { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "rich", specifier = ">=15.0.0" },

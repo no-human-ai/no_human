@@ -16,9 +16,20 @@ dependencies = [
     "click>=8.4.1",
     "fastapi>=0.138.0",
     "httpx>=0.28.1",
-    # `intake/mcp_bridge.py` imports `mcp.server.mcpserver`, which requires
-    # `mcp>=2` (FastMCP was removed in 2.0.0 and replaced by MCPServer).
-    "mcp>=2",
+    # BOTH BOUNDS ARE LOAD-BEARING. `intake/mcp_bridge.py` imports
+    # `mcp.server.mcpserver`, which exists from 2.0.0 (1.x shipped
+    # `mcp.server.fastmcp` instead; 2.x keeps that path only as a stub that
+    # raises). The upper bound is the lesson of public issue #15: an
+    # unbounded requirement shipped a broken `nh mcp-serve` to every PyPI
+    # install when 2.0.0 moved the module, while every lane that resolves
+    # through uv.lock stayed green. When 3.0 moves it again, `<3` is what
+    # keeps a fresh `pip install no-human` on a version the bridge imports.
+    # Raise either bound only together with the import in
+    # `intake/mcp_bridge.py`; `tests/test_mcp_dependency_bound.py` fails if
+    # the declared bound admits a major the bridge was not ported to.
+    # claude-agent-sdk >=0.2.140 pins `mcp<3.0.0` itself; 0.2.121 pinned
+    # `mcp<2.0.0`, which is why raising this floor also moved that package.
+    "mcp>=2,<3",
     "psutil>=7.0.0",
     "pyyaml>=6.0.3",
     "rich>=15.0.0",

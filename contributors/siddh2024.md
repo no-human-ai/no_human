@@ -1,4 +1,4 @@
-﻿# Siddh2024
+# Siddh2024
 
 I have read CLA.md version 1.0 and I agree to it.
 
