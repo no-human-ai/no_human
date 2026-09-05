@@ -7,17 +7,32 @@
 //
 // `cost` is a plain dollar number (or null/undefined), not an API field:
 // TaskSummaryOut has no cost_usd — callers compute it once via
-// cost.js's taskCost(task) and pass it in, so this stays a pure function of
-// its two arguments and is trivial to unit test without a token-bucket fixture.
+// cost.js's taskCost(task) and pass it in. `tokens` is the same idea for the
+// token burn — callers compute it via cost.js's taskBurn(task) — so this stays
+// a pure function of its arguments, trivial to unit test without a
+// token-bucket fixture. `authMode` decides which of the two leads: only
+// api_key (BYO) mode pays Anthropic per token for real (cost.js's
+// pricingIsReal) — subscription/OAuth (the default, and any absent value —
+// never assume real dollars) pays a flat fee, so the dollar figure there is
+// an API-rate ESTIMATE, marked "est." and demoted to secondary.
 import { cardBlockerLine } from "./cardBlockerLine.js";
 import { isWaiting } from "./boardLanes.js";
 import { showConflictBadge, conflictRoundLabel } from "./conflictStatus.js";
-import { fmtCost } from "./cost.js";
+import { fmtCost, fmtTokens, pricingIsReal } from "./cost.js";
 import { approvalLive } from "./approvalState.js";
 
-export function cardFacts(task, { cost } = {}) {
+export function cardFacts(task, { cost, tokens, authMode } = {}) {
   const title = task.title_short || task.title || "";
-  const costPart = Number.isFinite(cost) && cost > 0 ? fmtCost(cost) : "";
+  const hasCost = Number.isFinite(cost) && cost > 0;
+  const hasTokens = Number.isFinite(tokens) && tokens > 0;
+  let costPart = "";
+  if (pricingIsReal(authMode)) {
+    costPart = hasCost ? fmtCost(cost) : "";
+  } else if (hasTokens) {
+    costPart = hasCost ? `${fmtTokens(tokens)} tok (~${fmtCost(cost)} est.)` : `${fmtTokens(tokens)} tok`;
+  } else if (hasCost) {
+    costPart = `~${fmtCost(cost)} est.`;   // tokens missing on an older payload
+  }
   const metaLine = [
     task.repo_name,
     task.attempt_count > 0 ? `att ${task.attempt_count}` : "",

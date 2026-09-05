@@ -25,8 +25,7 @@ import ShortcutsDialog from "./ShortcutsDialog.jsx";
 import { isNeedsYou, isRealFailure, deriveCounts } from "./boardLanes.js";
 import { overviewState } from "./overviewStrip.js";
 import { ledgerSummary } from "./nightLedger.js";
-import { fmtCost } from "./cost.js";
-import { deriveSpendDisplay, perShippedCost } from "./ledgerSpend.js";
+import { deriveSpendDisplay, derivePerShippedDisplay } from "./ledgerSpend.js";
 import { tasksReducer } from "./tasksReducer.js";
 import useIsPhone from "./useIsPhone.js";
 import { createReconnector } from "./wsReconnect.js";
@@ -263,11 +262,12 @@ function NightLedger({ tasks, authMode, spend }) {
   const s = ledgerSummary(tasks, undefined, undefined, spend);
   const tokensSpent = s.tokens;
   const windowCost = s.cost;
-  const perPr = perShippedCost(s.done, windowCost);
-  const perPrCost = perPr != null ? fmtCost(perPr) : null;
   // In subscription/OAuth mode (default/absent) the dollar figure is an
   // API-rate ESTIMATE, never money that changed hands — only api_key mode
-  // pays Anthropic per token for real (SCRUM-20).
+  // pays Anthropic per token for real (SCRUM-20). derivePerShippedDisplay
+  // (2b62483a follow-up) leads with tokens there too, same convention as
+  // deriveSpendDisplay below — never re-derive the `=== "api_key"` check.
+  const perPrText = derivePerShippedDisplay(s.done, windowCost, tokensSpent, authMode);
   const spendDisplay = deriveSpendDisplay(tokensSpent, windowCost, windowCost, authMode);
   const showSpend = spend != null && (windowCost > 0 || tokensSpent > 0);
   return (
@@ -278,12 +278,12 @@ function NightLedger({ tasks, authMode, spend }) {
         : (
           <div className="nh-ledger-rows">
             <div className="nh-ledger-row">
-              {/* Review 2026-07-25: in subscription mode the dollar is an
-                  API-rate estimate — a naked "$X/PR" claimed real spend in the
-                  one mode where it isn't (SCRUM-20's whole point). */}
+              {/* Review 2026-07-25, updated for the tokens-not-dollars follow-up:
+                  in subscription mode tokens lead and the dollar is only a
+                  marked-est. secondary — a naked "$X/PR" claimed real spend in
+                  the one mode where it isn't (SCRUM-20's whole point). */}
               <b>{s.done}</b> shipped
-              {perPrCost && (authMode === "api_key"
-                ? ` (~${perPrCost}/PR)` : ` (~${perPrCost}/PR est.)`)}
+              {perPrText && ` ${perPrText}`}
             </div>
             <div className="nh-ledger-row"><b>{s.parked}</b> waiting on you</div>
             {s.failed > 0 && (
@@ -1501,6 +1501,7 @@ export default function App() {
             outcomeCount={doneCount + failedCount}
             onNewTask={() => setShowNewTask(true)}
             onFollowUp={openFollowUp}
+            authMode={authMode}
           />
         )}
         {page === "backlog" && (

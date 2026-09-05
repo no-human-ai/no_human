@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { deriveSpendDisplay, perShippedCost } from "./ledgerSpend.js";
+import { deriveSpendDisplay, perShippedCost, derivePerShippedDisplay } from "./ledgerSpend.js";
 
 test("subscription mode: tokens primary, dollars marked estimated", () => {
   const d = deriveSpendDisplay(12_400_000, 34, 34, "subscription");
@@ -53,4 +53,34 @@ test("perShippedCost is null when cost data is missing", () => {
   assert.equal(perShippedCost(3, undefined), null);
   assert.equal(perShippedCost(3, 0), null);
   assert.equal(perShippedCost(3, NaN), null);
+});
+
+// ── derivePerShippedDisplay — the per-PR figure, subscription-mode tokens-lead follow-up ──
+
+test("subscription mode: per-PR figure leads with tokens, dollars marked est.", () => {
+  const text = derivePerShippedDisplay(3, 2.43, 3_000_000, "subscription");
+  assert.match(text, /1\.00M tok\/PR/);
+  assert.match(text, /~\$0\.81 est\./);
+});
+
+test("undefined auth_mode falls back to the same tokens-lead per-PR display", () => {
+  const text = derivePerShippedDisplay(3, 2.43, 3_000_000, undefined);
+  assert.match(text, /1\.00M tok\/PR/);
+  assert.match(text, /~\$0\.81 est\./);
+});
+
+test("api_key mode: per-PR figure stays a plain dollar figure, no regression", () => {
+  const text = derivePerShippedDisplay(3, 2.43, 3_000_000, "api_key");
+  assert.equal(text, "(~$0.81/PR)");
+});
+
+test("derivePerShippedDisplay is null exactly when perShippedCost is null", () => {
+  assert.equal(derivePerShippedDisplay(0, 20, 1_000_000, "subscription"), null);
+  assert.equal(derivePerShippedDisplay(3, null, 1_000_000, "subscription"), null);
+  assert.equal(derivePerShippedDisplay(3, 0, 1_000_000, "subscription"), null);
+});
+
+test("subscription mode with no usable token count still marks the dollar figure est.", () => {
+  const text = derivePerShippedDisplay(3, 2.43, null, "subscription");
+  assert.equal(text, "(~$0.81/PR est.)");
 });
