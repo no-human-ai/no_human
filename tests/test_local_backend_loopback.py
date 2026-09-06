@@ -37,6 +37,7 @@ import json
 import os
 import threading
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import pytest
 from claude_agent_sdk import ClaudeAgentOptions
@@ -66,8 +67,9 @@ pytestmark = [
     pytest.mark.skipif(
         _BUNDLED_CLI_PATH is None,
         reason=(
-            "SDK-bundled claude CLI not found (expected under "
-            "<claude_agent_sdk install>/_bundled/claude) — this module "
+            "SDK-bundled claude CLI not found (expected in "
+            "<claude_agent_sdk install>/_bundled/, named claude.exe on "
+            "Windows and claude elsewhere) — this module "
             "spawns a real CLI subprocess and cannot run without it."
         ),
     ),
@@ -328,10 +330,18 @@ def test_bundled_cli_skip_marker_is_honest():
     through, i.e. the locator found a real bundled CLI — so reaching this
     assertion is itself proof the guard consulted the SAME locator the real
     transport uses, not a placeholder that always evaluates True/False. The
-    skip `reason` above must name the actual bundled path so a run with no
-    CLI reports *why* (`-rs`) instead of just vanishing from the count."""
+    skip `reason` above must name where the bundle is expected so a run with
+    no CLI reports *why* (`-rs`) instead of just vanishing from the count."""
     assert _BUNDLED_CLI_PATH is not None, (
         "reaching this line means pytestmark's skipif did not fire, so the "
         "locator must have found something"
     )
-    assert _BUNDLED_CLI_PATH.endswith(os.path.join("_bundled", "claude")), _BUNDLED_CLI_PATH
+    # Checked as directory + stem rather than a literal `_bundled/claude`,
+    # because the binary's NAME is the SDK's business and it is not the same on
+    # every platform: `_find_bundled_cli` looks for `claude.exe` on Windows and
+    # `claude` elsewhere. Asserting the POSIX name failed every Windows run of
+    # this module while the locator was working correctly. Re-deriving the
+    # platform rule here would just be a second copy of it to drift.
+    found = Path(_BUNDLED_CLI_PATH)
+    assert found.parent.name == "_bundled", _BUNDLED_CLI_PATH
+    assert found.stem == "claude", _BUNDLED_CLI_PATH
