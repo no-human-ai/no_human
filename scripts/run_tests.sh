@@ -50,25 +50,32 @@ case "$MODE" in
     # a machine that is also serving the live queue, and -n auto has wedged
     # this repo before. The other modes are left as they were.
     #
-    # The same --deselects ci.yml applies, kept in step with it deliberately:
-    # a selector that differs here stops a green local run predicting CI.
+    # THIS LANE DELIBERATELY DESELECTS ONE MORE TEST THAN ci.yml DOES, and the
+    # difference is temporary. Keep the two lists in step apart from this entry;
+    # tests/test_deselect_lists_agree.py enforces that and names this exception.
     #
-    # KI-1's test was the third of these until 2026-09-06. It IS `slow`, so it
-    # is in this lane, and it is dropped here for the same reason ci.yml drops
-    # it: re-measured at 0 failures in 400 serial runs and 10 whole-suite -n 4
-    # runs after the serialized_write lock, against the 3/8 the entry recorded.
-    # Note what that re-exposes, because it is sharper here than in CI:
-    # scripts/nightly_eval.sh propagates this mode's exit code into its own
-    # verdict (see its header, "Exit code IS the verdict"), so if the residual
-    # rate is not actually zero, a flake here reddens the nightly verdict and
-    # masks the eval signal rather than just failing one job. The measured 95%
-    # upper bound is about 1%. The other two deselects are not `slow` and so
-    # collect nothing here; they are listed anyway because the list that drifts
-    # is the list nobody reconciles.
+    # KI-1 (docs/KNOWN_ISSUES.md) used to fail
+    # test_two_repos_run_concurrently_in_worktrees in roughly a third of runs.
+    # It was re-measured on 2026-09-06 after the serialized_write lock at 0
+    # failures in 400 serial runs and 13 whole-suite -n 4 runs, so ci.yml
+    # selects it again. It stays deselected HERE because this lane is the one
+    # with teeth: scripts/nightly_eval.sh propagates this mode's exit code into
+    # its own verdict ("Exit code IS the verdict", its header), so a residual
+    # rate that CI would show as one red job would instead redden the nightly
+    # verdict and mask the eval signal. The measurement bounds the residual near
+    # 1%, not at zero, so this waits for push-to-main history rather than for a
+    # better number.
+    #
+    # REMOVE THIS DESELECT once main has run it clean for a while; that is a
+    # one-line change here plus deleting the entry from the test above.
+    #
+    # The other two are not `slow` and so collect nothing here; they are listed
+    # anyway because the list that drifts is the list nobody reconciles.
     echo "=== Running the nightly lane (slow or nightly) ==="
     uv run pytest -q --tb=short -n 4 -m "slow or nightly" \
       --deselect tests/test_scheduler.py::test_reanalysis_maybe_run_produces_result \
       --deselect tests/test_scheduler.py::test_reanalysis_dedup_across_runs \
+      --deselect tests/test_scheduler.py::test_two_repos_run_concurrently_in_worktrees \
       "$@"
     ;;
   full|*)

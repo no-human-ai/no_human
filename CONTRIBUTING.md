@@ -193,7 +193,9 @@ It is the only test that drives two orchestrators against one `Store` at once,
 and about a third of runs died on `cannot commit transaction - SQL statements in
 progress`. The `serialized_write` lock landed in July 2026 and the rate was
 re-measured in September at 0 failures in 400 serial runs and 13 whole-suite
-`-n 4` runs, so it is selected again in CI and in `scripts/run_tests.sh`.
+`-n 4` runs, so CI selects it again. `scripts/run_tests.sh`'s nightly lane
+still deselects it deliberately until `main` has push history, because that
+lane's exit code is the nightly verdict.
 [`docs/KNOWN_ISSUES.md`](docs/KNOWN_ISSUES.md) keeps the original repro data,
 the hypothesis that was ruled out, and the new numbers with their limits: the
 residual rate is bounded near 1%, not shown to be zero. If you see that error,

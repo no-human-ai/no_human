@@ -10,8 +10,13 @@ leaves this file when the defect is fixed, not when it stops being convenient.
 
 **Status:** CLOSED 2026-09-06 by the `serialized_write` lock
 (`src/no_human/core/db.py`, landed 2026-07-30), confirmed by re-measurement on
-`580a879` (issue #19). The test is selected again in `.github/workflows/ci.yml`
-and in `scripts/run_tests.sh`'s nightly lane. The rest of this entry stays as
+`580a879` (issue #19). The test is selected again in `.github/workflows/ci.yml`.
+It stays deselected in `scripts/run_tests.sh`'s nightly lane on purpose, until
+`main` has push history: `scripts/nightly_eval.sh` makes that lane's exit code
+its own verdict, so a residual rate there would mask the eval signal rather
+than just failing one job. That exception is recorded in
+`tests/test_deselect_lists_agree.py`, which fails if it is ever left behind
+after the deselect goes. The rest of this entry stays as
 the record of what the fix had to prove, and the measurement below is stated
 with its limits because a rate is not the same thing as a proof.
 
