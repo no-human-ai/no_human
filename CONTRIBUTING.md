@@ -183,17 +183,21 @@ They read local IDE transcripts through `no_human.history.extractor`, which
 scans running processes for a language server. CI deselects both. If you see
 `IDENotRunningError` locally, that is why.
 
-CI deselects a third test for a different reason — a real, open defect:
+CI used to deselect a third test for a different reason, a real defect:
 
 ```
 tests/test_scheduler.py::test_two_repos_run_concurrently_in_worktrees
 ```
 
 It is the only test that drives two orchestrators against one `Store` at once,
-and about a third of runs die on `cannot commit transaction - SQL statements in
-progress`. It is not an xdist flake: it reproduces serially and on its own.
-[`docs/KNOWN_ISSUES.md`](docs/KNOWN_ISSUES.md) has the repro data, the
-hypothesis already ruled out, and what a fix has to prove. Run it locally,
+and about a third of runs died on `cannot commit transaction - SQL statements in
+progress`. The `serialized_write` lock landed in July 2026 and the rate was
+re-measured in September at 0 failures in 400 serial runs and 13 whole-suite
+`-n 4` runs, so it is selected again in CI and in `scripts/run_tests.sh`.
+[`docs/KNOWN_ISSUES.md`](docs/KNOWN_ISSUES.md) keeps the original repro data,
+the hypothesis that was ruled out, and the new numbers with their limits: the
+residual rate is bounded near 1%, not shown to be zero. If you see that error,
+reopen KI-1 rather than deselecting the test again. Run it locally,
 several times, if you touch `core/db.py` or the scheduler.
 
 There is also [`scripts/run_tests.sh`](scripts/run_tests.sh) with `fast`,

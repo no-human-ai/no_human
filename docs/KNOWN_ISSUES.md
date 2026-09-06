@@ -8,12 +8,48 @@ leaves this file when the defect is fixed, not when it stops being convenient.
 
 ## KI-1 — concurrent tasks can crash a `Store` commit
 
-**Status:** mitigated in code — every `Store` write now goes through the
-`serialized_write` lock (`src/no_human/core/db.py`, landed 2026-07-30), so two
-orchestrators can no longer interleave statements on one connection. The test
-below stays deselected in CI (`.github/workflows/ci.yml`) because its failure
-rate has not been re-measured since the lock landed; the numbers in this entry
-are from BEFORE it. Re-measure, then re-enable or close.
+**Status:** CLOSED 2026-09-06 by the `serialized_write` lock
+(`src/no_human/core/db.py`, landed 2026-07-30), confirmed by re-measurement on
+`580a879` (issue #19). The test is selected again in `.github/workflows/ci.yml`
+and in `scripts/run_tests.sh`'s nightly lane. The rest of this entry stays as
+the record of what the fix had to prove, and the measurement below is stated
+with its limits because a rate is not the same thing as a proof.
+
+**Re-measurement, 2026-09-06.** Every run with the test selected:
+
+| condition                                  | failures | environment |
+| ------------------------------------------ | -------- | ----------- |
+| this test alone, serial, no xdist          | 0 / 300  | Linux, matched to the CI job |
+| this test alone, serial, no xdist          | 0 / 100  | Windows 11 host |
+| whole suite, `-n 4`, this test selected    | 0 / 13   | Linux, matched to the CI job |
+
+The `-n 4` denominator is 13 completed runs out of 15 attempts. The other
+two attempts hung on an unrelated deadlock (issue #104) and produced no
+verdict for this test, so they are excluded rather than counted as passes.
+
+Linux here means `ubuntu:24.04` with uv-managed CPython via `.python-version`
+and `uv sync --frozen`, matching what the `Python` job actually provisions,
+cloned onto the container's own filesystem rather than a bind mount. That is
+not fussiness: this is a SQLite defect and SQLite ships with the interpreter,
+so the CI-matched image gives SQLite 3.53.1 where a `python:3.12-slim` image
+gives 3.46.1 and the Windows host gives 3.49.1. Measuring the wrong one would
+have measured the wrong SQLite.
+
+Against the 3/8 below, the probability of 300 consecutive passes is
+`0.625^300`, about `6e-62`. The old rate is gone.
+
+**What this does NOT establish**, kept here so nobody reads the table as more
+than it is:
+
+- Zero failures in 300 bounds the residual rate near **1%** at 95% confidence
+  (the rule of three, `3/N`), not at zero. A one-in-five-hundred race would
+  pass this comfortably.
+- The Linux runs were on WSL2 (`6.6.87.2-microsoft-standard-WSL2`). The distro,
+  the interpreter provenance and the SQLite build match CI; the virtualisation
+  and the I/O stack do not, and timing races are sensitive to exactly that.
+- That `serialized_write` is the *cause* of the change is the standing
+  hypothesis, not something this measurement demonstrates. It shows the symptom
+  is gone, not why.
 
 **Symptom**
 
