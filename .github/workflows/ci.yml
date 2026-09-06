@@ -217,22 +217,22 @@ jobs:
 
       # -n auto has wedged on this repo, so the worker count is explicit.
       #
-      # The first two deselected tests read local IDE transcripts through
+      # BOTH deselected tests read local IDE transcripts through
       # no_human.history.extractor, which scans running processes for a
       # language server. They raise IDENotRunningError on any machine without
       # that IDE open, which includes every CI runner.
       #
-      # The third is deselected for a defect in the product, not in the runner.
-      # test_two_repos_run_concurrently_in_worktrees is the only test that
-      # drives two orchestrators against one Store at once, and a commit in
-      # Store.update_attempt raises "cannot commit transaction - SQL statements
-      # in progress" in roughly a third of runs. This is NOT an xdist flake: it
-      # reproduces with no xdist and with the test running alone, so lowering
-      # the worker count does nothing. Deselecting it keeps this badge honest
-      # instead of red on a third of pushes; it does not pretend the race is
-      # fixed. Repro data, the hypothesis already ruled out, and what a fix has
-      # to prove are in docs/KNOWN_ISSUES.md (KI-1). Run it locally, repeatedly,
-      # if you touch core/db.py or the scheduler.
+      # There used to be a third, test_two_repos_run_concurrently_in_worktrees,
+      # deselected for KI-1: a commit in Store.update_attempt raising "cannot
+      # commit transaction - SQL statements in progress" in roughly a third of
+      # runs. The serialized_write lock (core/db.py, 2026-07-30) landed after
+      # that measurement and the rate was never re-taken, which is what issue
+      # #19 asked for. Re-measured 2026-09-06 on 580a879: 300/300 serial passes
+      # on Linux matched to this job, 100/100 on Windows, and 13/13 whole-suite
+      # -n 4 runs with the test selected. Zero failures in 400 serial runs puts
+      # a 95% upper bound near 1% by the rule of three, against the 3/8 the
+      # entry recorded. So it is selected again. KI-1 in docs/KNOWN_ISSUES.md
+      # keeps the repro data and now carries the new numbers and their limits.
       # Three lanes, ONE computed selector — a second job would be a second
       # thing to keep in sync, and the failure it fails at is a node that runs
       # in neither lane, which looks exactly like a node that passes.
@@ -254,8 +254,7 @@ jobs:
           uv run pytest -q --tb=short -n 4 \
             ${{ (github.event_name == 'pull_request' && '-m "not slow and not nightly"') || (github.event_name == 'workflow_dispatch' && '-m "slow or nightly"') || '' }} \
             --deselect tests/test_scheduler.py::test_reanalysis_maybe_run_produces_result \
-            --deselect tests/test_scheduler.py::test_reanalysis_dedup_across_runs \
-            --deselect tests/test_scheduler.py::test_two_repos_run_concurrently_in_worktrees
+            --deselect tests/test_scheduler.py::test_reanalysis_dedup_across_runs
 
       - name: Context files under load limits
         run: python scripts/check_context_files.py --claude CLAUDE.md
