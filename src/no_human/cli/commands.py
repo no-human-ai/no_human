@@ -8522,9 +8522,9 @@ def test_cmd(mode, verbose):
 
     Modes:
 
-      fast  — 711 tests, ~28s (skip slow integration tests)
-      full  — 721 tests, ~3min (all tests, parallel)
-      slow  — 10 tests, ~3min (eval replay + integration only)
+      fast  — selects ``not slow and not nightly`` (the PR lane)
+      full  — everything
+      slow  — selects ``slow``
 
     This runs pytest directly as a subprocess — no agent turns, no token cost.
     Use this instead of running 'uv run pytest' inside an AI session.
@@ -8537,9 +8537,9 @@ def test_cmd(mode, verbose):
     if script.exists():
         cmd = [str(script), mode]
     else:
-        # Fallback if script missing.
+        # Fallback if script missing — selectors match scripts/run_tests.sh.
         marker_args = {
-            "fast": ["-m", "not slow"],
+            "fast": ["-m", "not slow and not nightly"],
             "slow": ["-m", "slow"],
             "full": [],
         }[mode]
