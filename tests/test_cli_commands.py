@@ -837,6 +837,28 @@ def test_test_cmd_help():
     assert "zero llm tokens" in result.output.lower()
 
 
+def test_test_cmd_help_describes_selectors_not_counts():
+    """Help must name what each mode selects, never a hard-coded count (#10).
+
+    Hard-coded numbers go stale the moment a test is added; the selectors in
+    scripts/run_tests.sh are the source of truth and do not.
+    """
+    runner = CliRunner()
+    result = runner.invoke(cli, ["test", "--help"])
+    assert result.exit_code == 0, result.output
+    out = result.output
+    assert "not slow and not nightly" in out, out
+    assert "selects" in out.lower() or "everything" in out.lower(), out
+    # No mode line may advertise a fixed headcount.
+    assert "711 tests" not in out
+    assert "721 tests" not in out
+    assert "10 tests" not in out
+    # \b keeps Click from re-wrapping the three modes into one paragraph.
+    assert "fast  — selects 'not slow and not nightly' (the PR lane)" in out, out
+    assert "full  — everything" in out, out
+    assert "slow  — selects 'slow'" in out, out
+
+
 # --------------------------------------------------------------------------- #
 # nh agents                                                                     #
 # --------------------------------------------------------------------------- #
