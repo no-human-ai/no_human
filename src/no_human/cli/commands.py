@@ -8520,11 +8520,11 @@ def shadow_cmd(title, repo, criteria):
 def test_cmd(mode, verbose):
     """Run the test suite locally (zero LLM tokens).
 
+    \b
     Modes:
-
-      fast  — selects ``not slow and not nightly`` (the PR lane)
+      fast  — selects 'not slow and not nightly' (the PR lane)
       full  — everything
-      slow  — selects ``slow``
+      slow  — selects 'slow'
 
     This runs pytest directly as a subprocess — no agent turns, no token cost.
     Use this instead of running 'uv run pytest' inside an AI session.

@@ -853,6 +853,10 @@ def test_test_cmd_help_describes_selectors_not_counts():
     assert "711 tests" not in out
     assert "721 tests" not in out
     assert "10 tests" not in out
+    # \b keeps Click from re-wrapping the three modes into one paragraph.
+    assert "fast  — selects 'not slow and not nightly' (the PR lane)" in out, out
+    assert "full  — everything" in out, out
+    assert "slow  — selects 'slow'" in out, out
 
 
 # --------------------------------------------------------------------------- #
