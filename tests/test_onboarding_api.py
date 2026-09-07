@@ -130,6 +130,8 @@ async def test_suggest_reports_the_prefix_it_completed_against(client, tmp_path,
     home = tmp_path / "home"
     (home / "myrepo").mkdir(parents=True)
     (home / "myother").mkdir(parents=True)
+    (home / "work" / "alpha").mkdir(parents=True)
+    (home / "work" / "beta").mkdir(parents=True)
     monkeypatch.setenv("HOME", str(home))
 
     r = await client.get("/api/fs/suggest", params={"path": str(home / "my")})
@@ -139,6 +141,15 @@ async def test_suggest_reports_the_prefix_it_completed_against(client, tmp_path,
     assert body["base"] == str(home)
     names = {s["name"] for s in body["suggestions"]}
     assert names == {"myrepo", "myother"}
+
+    # An EXISTING directory, with NO trailing slash, is still "list its
+    # children" - the caller need not append one to complete it.
+    r_dir = await client.get("/api/fs/suggest", params={"path": str(home / "work")})
+    assert r_dir.status_code == 200, r_dir.text
+    dir_body = r_dir.json()
+    assert dir_body["prefix"] == ""
+    assert dir_body["base"] == str(home / "work")
+    assert {s["name"] for s in dir_body["suggestions"]} == {"alpha", "beta"}
 
     # A completed folder path (trailing "/") lists its children, prefix empty.
     r2 = await client.get("/api/fs/suggest", params={"path": str(home) + "/"})

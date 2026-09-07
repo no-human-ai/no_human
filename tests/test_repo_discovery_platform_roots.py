@@ -86,15 +86,25 @@ def test_darwin_none_follows_sys_platform(tmp_path, monkeypatch):
 
 
 def test_home_depth_one_walk_runs_before_documents(tmp_path):
-    """A wide ~/Documents (lots of manifest-bearing folders that are not
-    themselves repos) must never push a repo cloned straight under ~ out of
-    the result ceiling — pin the walk order, not just its existence."""
+    """A wide ~/Documents FULL OF REPOS (enough to fill the result ceiling by
+    itself) must never push a repo cloned straight under ~ out of the list —
+    pin the walk order, not just its existence.
+
+    Each ``projNNNN`` folder holds a ``package.json`` so ``_walk`` actually
+    appends it to ``found`` (an empty directory never would, and would make
+    this test pass under the old append-last order too — see the bug this
+    pins: with Documents walked first, 1100 manifest hits alone would already
+    hit the ceiling of ``max(max_results * 5, 1000) == 1000`` before the home
+    pass ever got to run, and ``myrepo`` would never be seen)."""
     home = tmp_path / "home"
     _fake_repo(home / "myrepo")
     for i in range(1100):
-        (home / "Documents" / f"folder-{i}").mkdir(parents=True)
-    res = discover_repos(home=home, darwin=False, max_results=50)
+        proj = home / "Documents" / f"proj{i:04d}"
+        proj.mkdir(parents=True)
+        (proj / "package.json").write_text("{}")
+    res = discover_repos(home=home, darwin=False, max_results=200)
     assert "myrepo" in _by_name(res)
+    assert res["home_direct"] == 1
 
 
 # --------------------------------------------------------------------------- #
