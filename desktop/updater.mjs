@@ -19,7 +19,9 @@
 //     module still tells the user an update exists — it just refuses the
 //     install path up front, with a sentence that says why.
 
-import { deferVersion, dueForCheck, isNewer, shouldNotify } from "./updatePolicy.mjs";
+import {
+  deferVersion, dueForCheck, isNewer, shouldNotify, updateErrorMessage,
+} from "./updatePolicy.mjs";
 
 /** Result modes returned by check(). */
 export const AVAILABLE = "available";
@@ -76,8 +78,9 @@ export function createUpdater({
     autoUpdater.disableDifferentialDownload = true;
 
     autoUpdater.on?.("error", (err) => {
-      log(`updater error: ${err?.message ?? err}`);
-      emit({ mode: FAILED, error: String(err?.message ?? err) });
+      const raw = String(err?.message ?? err);
+      log(`updater error: ${raw}`);
+      emit({ mode: FAILED, error: updateErrorMessage(err), rawError: raw });
     });
     autoUpdater.on?.("download-progress", (p) => {
       emit({ mode: "downloading", percent: Math.round(p?.percent ?? 0) });
@@ -113,8 +116,9 @@ export function createUpdater({
       const res = await autoUpdater.checkForUpdates();
       info = res?.updateInfo ?? null;
     } catch (err) {
-      log(`update check failed: ${err?.message ?? err}`);
-      const r = { mode: FAILED, error: String(err?.message ?? err),
+      const raw = String(err?.message ?? err);
+      log(`update check failed: ${raw}`);
+      const r = { mode: FAILED, error: updateErrorMessage(err), rawError: raw,
                   current: currentVersion };
       if (manual) emit(r);
       return r;   // never blocks, never throws — a check is not a feature gate
@@ -172,7 +176,8 @@ export function createUpdater({
       await autoUpdater.downloadUpdate();
       return { mode: "downloading", latest: pending.version };
     } catch (err) {
-      const r = { mode: FAILED, error: String(err?.message ?? err) };
+      const raw = String(err?.message ?? err);
+      const r = { mode: FAILED, error: updateErrorMessage(err), rawError: raw };
       emit(r);
       return r;
     }

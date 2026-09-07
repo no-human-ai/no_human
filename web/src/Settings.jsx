@@ -136,6 +136,12 @@ function UpdatesPanel() {
            role={view.tone === "error" ? "alert" : "status"}>
         <strong>{view.title}</strong>
         <div className="update-detail">{view.detail}</div>
+        {view.details && (
+          <details className="update-raw">
+            <summary>Details</summary>
+            <pre>{view.details}</pre>
+          </details>
+        )}
       </div>
       {view.actions.length > 0 && (
         <div className="update-actions">

@@ -241,7 +241,7 @@ async function checkForUpdates({ manual = false } = {}) {
   const u = await getUpdater();
   if (!u) {
     if (manual) {
-      sendUpdateEvent({ mode: "failed",
+      sendUpdateEvent({ mode: "failed", rawError: null,
         error: "The updater component is not available in this build." });
     }
     return null;

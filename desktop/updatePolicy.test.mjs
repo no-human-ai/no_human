@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   compareVersions, deferVersion, dueForCheck, isNewer, shouldNotify, updateMessage,
+  updateErrorMessage,
 } from "./updatePolicy.mjs";
 
 test("version comparison orders releases, including uneven segment counts", () => {
@@ -98,4 +99,51 @@ test("the unsigned message states the cause instead of just failing", () => {
   assert.match(updateMessage({ mode: "up-to-date", current: "0.1.0" }), /up to date/);
   assert.match(updateMessage({ mode: "available", latest: "0.2.0",
                                current: "0.1.0", canAutoUpdate: true }), /0\.2\.0/);
+});
+
+test("a raw electron-updater HttpError never reaches the user", () => {
+  // A realistic dump of what electron-updater's HttpError.message actually
+  // contains: the URL, the status, the full response headers, and a
+  // node/electron stack trace — exactly the artefact this bug leaked to the
+  // Settings card.
+  const raw = "Cannot find latest.yml in the latest release artifacts "
+    + "(https://github.com/no-human-ai/no_human/releases/download/v0.2.2/latest.yml): "
+    + "HttpError: 404\n"
+    + 'Headers: {"cache-control":"no-cache","content-security-policy":"default-src '
+    + '\'none\'","x-github-request-id":"ABCD:1234:56789:ABCDEF:0123456"}\n'
+    + "    at createHttpError (/Applications/no_human.app/Contents/Resources/app.asar"
+    + "/node_modules/electron-updater/out/util/httpExecutor.js:52:12)\n"
+    + "    at node:electron/js2c/browser_init:2:12345";
+
+  const msg = updateErrorMessage(raw);
+  assert.match(msg, /Release update information is unavailable/);
+
+  for (const forbidden of [
+    "x-github-request-id", "content-security-policy", "browser_init",
+    "httpExecutor", "HttpError", "latest.yml",
+  ]) {
+    assert.doesNotMatch(msg, new RegExp(forbidden.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+      `the primary message must not contain "${forbidden}"`);
+  }
+});
+
+test("network failures ask the user to check their connection", () => {
+  for (const raw of [
+    "ENOTFOUND", "ECONNREFUSED", "ENETUNREACH",
+    "getaddrinfo ENOTFOUND github.com",
+    new Error("connect ECONNREFUSED 127.0.0.1:443"),
+  ]) {
+    assert.match(updateErrorMessage(raw), /Check your internet connection/,
+      `expected an offline sentence for ${raw}`);
+  }
+});
+
+test("other failures fall back to the server-unavailable sentence", () => {
+  for (const raw of [
+    "HttpError: 503", "ETIMEDOUT", "EACCES", "", null, undefined, {},
+  ]) {
+    assert.doesNotThrow(() => updateErrorMessage(raw));
+    assert.match(updateErrorMessage(raw), /Update server is temporarily unavailable/,
+      `expected the conservative fallback for ${JSON.stringify(raw)}`);
+  }
 });

@@ -52,6 +52,7 @@ export function updateNotice({ inShell = false, current = null, update = null, c
     return {
       title: "Updates",
       detail,
+      details: null,
       tone: "info",
       actions: [],
       version,
@@ -65,6 +66,7 @@ export function updateNotice({ inShell = false, current = null, update = null, c
     return {
       title: `Downloading ${update?.latest ?? "update"}… ${pct}%`,
       detail: "You can keep working. The update installs when you choose to restart.",
+      details: null,
       tone: "info",
       actions: [],
       version,
@@ -76,6 +78,7 @@ export function updateNotice({ inShell = false, current = null, update = null, c
       title: `no_human ${update?.latest ?? ""} is ready to install`.trim(),
       detail: "Restarting takes a few seconds. Running tasks are not interrupted"
         + " — the server keeps going.",
+      details: null,
       tone: "ok",
       actions: ["install", "later"],
       version,
@@ -90,6 +93,7 @@ export function updateNotice({ inShell = false, current = null, update = null, c
       detail: update?.message
         || "This build is not code-signed, so it cannot install updates itself."
            + " Download the new version manually.",
+      details: null,
       tone: "warn",
       actions: ["download-page"],
       version,
@@ -100,6 +104,7 @@ export function updateNotice({ inShell = false, current = null, update = null, c
     return {
       title: `no_human ${update?.latest ?? ""} is available`.trim(),
       detail: `You have ${version}. Nothing downloads until you choose to.`,
+      details: null,
       tone: "info",
       actions: ["download", "later"],
       version,
@@ -107,9 +112,14 @@ export function updateNotice({ inShell = false, current = null, update = null, c
   }
 
   if (mode === "failed") {
+    // `update.error` is already the short, classified sentence (see
+    // desktop/updatePolicy.mjs) — the raw electron-updater dump (headers,
+    // status, stack) travels separately in `rawError` and is only ever
+    // rendered behind a collapsed "Details" element, never on this line.
     return {
       title: "Could not check for updates",
       detail: update?.error || "The update service could not be reached.",
+      details: update?.rawError ? String(update.rawError) : null,
       tone: "error",
       actions: ["check"],
       version,
@@ -120,6 +130,7 @@ export function updateNotice({ inShell = false, current = null, update = null, c
     return {
       title: `no_human ${version} is up to date`,
       detail: "Checked just now.",
+      details: null,
       tone: "ok",
       actions: ["check"],
       version,
@@ -131,6 +142,7 @@ export function updateNotice({ inShell = false, current = null, update = null, c
     title: `no_human ${version}`,
     detail: "Updates are checked once a day. You are told when one is"
       + " available and choose when to install it.",
+    details: null,
     tone: "info",
     actions: ["check"],
     version,

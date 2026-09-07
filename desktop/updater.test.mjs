@@ -189,7 +189,31 @@ test("a network failure is reported, never thrown, and never blocks", async () =
 
   const manual = await up.check({ manual: true });
   assert.equal(manual.mode, FAILED);
+  assert.match(manual.error, /Check your internet connection/,
+    "the user gets a short, actionable sentence, not the raw error");
+  assert.match(manual.rawError, /ENOTFOUND/,
+    "the raw text is kept, but only in rawError for a collapsed Details view");
   assert.equal(events.length, 1, "an explicit check must say it could not reach the feed");
+});
+
+test("a 404 latest.yml failure emits a short sentence and keeps the dump in rawError", async () => {
+  const raw = "Cannot find latest.yml in the latest release artifacts "
+    + "(https://github.com/no-human-ai/no_human/releases/download/v0.2.2/latest.yml): "
+    + "HttpError: 404\n"
+    + 'Headers: {"x-github-request-id":"ABCD:1234:56789:ABCDEF:0123456"}\n'
+    + "    at createHttpError (.../electron-updater/out/util/httpExecutor.js:52:12)\n"
+    + "    at node:electron/js2c/browser_init:2:12345";
+  const { up, events } = harness({ plan: SIGNED_PLAN, throws: raw });
+  up.configure();
+  const manual = await up.check({ manual: true });
+  assert.equal(manual.mode, FAILED);
+  assert.doesNotMatch(manual.error, /x-github-request-id/);
+  assert.doesNotMatch(manual.error, /browser_init/);
+  assert.match(manual.rawError, /x-github-request-id/,
+    "the dump must still be available for the collapsed Details section");
+  assert.match(manual.rawError, /browser_init/);
+  assert.equal(events.length, 1);
+  assert.doesNotMatch(events[0].error, /x-github-request-id/);
 });
 
 test("an unpackaged dev run is skipped rather than reported as broken", async () => {

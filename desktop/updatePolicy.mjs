@@ -100,3 +100,47 @@ export function updateMessage({ mode, latest, current, canAutoUpdate }) {
   }
   return "";
 }
+
+// electron-updater's HttpError.message embeds the response headers and a
+// node/electron stack trace verbatim — Cannot find latest.yml in the latest
+// release artifacts (...): HttpError: 404, followed by cache-control,
+// content-security-policy, x-github-request-id, and a trace through
+// httpExecutor.js / node:electron/js2c/browser_init. None of that is
+// actionable by a user, so the raw text is classified here, in ONE place,
+// into a short sentence for the failure CLASS — never interpolated into it.
+export const UPDATE_ERROR_MESSAGES = {
+  "no-metadata": "Release update information is unavailable. Try again later"
+    + " or download the new version from the releases page.",
+  offline: "Check your internet connection and try again.",
+  server: "Update server is temporarily unavailable. Try again later.",
+};
+
+/**
+ * Classify a raw electron-updater error into a failure category and its
+ * short user-facing sentence. `raw` may be an Error, a string, or anything
+ * else — it is always coerced to text before matching, and an unrecognised
+ * shape falls back to the conservative "server" category rather than risk
+ * mis-classifying it as transient/harmless.
+ */
+export function classifyUpdateError(raw) {
+  const text = String(raw?.message ?? raw ?? "");
+  const statusCode = raw?.statusCode;
+
+  if (
+    /cannot find .*\.yml/i.test(text)
+    || /latest(-mac|-linux)?\.yml/i.test(text)
+    || /HttpError:\s*404\b/.test(text)
+    || statusCode === 404
+  ) {
+    return { category: "no-metadata", message: UPDATE_ERROR_MESSAGES["no-metadata"] };
+  }
+  if (/\b(ENOTFOUND|ECONNREFUSED|ENETUNREACH|EAI_AGAIN|ENETDOWN|getaddrinfo)\b/.test(text)) {
+    return { category: "offline", message: UPDATE_ERROR_MESSAGES.offline };
+  }
+  return { category: "server", message: UPDATE_ERROR_MESSAGES.server };
+}
+
+/** The short, actionable sentence for a raw electron-updater error. */
+export function updateErrorMessage(raw) {
+  return classifyUpdateError(raw).message;
+}
