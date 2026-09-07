@@ -35,9 +35,12 @@ be uploaded by mistake. See `docs/DISTRIBUTION.md` for the signing runbook.
 
 Each platform's release also carries its electron-builder updater feed —
 `latest-mac.yml` (macOS), `latest.yml` (Windows), `latest-linux.yml` (Linux) —
-because each one enables in-app update checks to report available versions,
-even though no platform auto-installs (`nhCanAutoUpdate` is `false`
-everywhere until signing exists).
+because each one enables in-app update checks to report available versions.
+The install path forks by signing: the signed **and** notarized macOS build
+stamps `nhCanAutoUpdate: true` and installs the update itself via
+Squirrel.Mac from the `arm64-mac.zip` that rides on every release, while the
+unsigned Windows and Linux builds stamp `nhCanAutoUpdate: false` — they
+report the newer version but refuse the install path.
 
 ## The build stamp, and why the DMG is opened before it is called done
 
