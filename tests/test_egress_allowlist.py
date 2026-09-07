@@ -635,10 +635,18 @@ ALLOWLIST: dict[str, dict[str, Allowed]] = {
             "same gate's documented FIX for a tree with no classification "
             "ledger to consult, also inside the task worktree (120s "
             "timeout); the committed script re-hashes every tracked file "
-            "from `git ls-files` + working-tree bytes and dials nothing",
-            _ON + "the pipeline commit path — proactively on every commit, "
-            "reactively on exactly the manifest gate's changed-pinned-files "
-            "refusal (commit_with_manifest_repair, approve_pending_pins)"),
+            "from `git ls-files` + working-tree bytes and dials nothing — "
+            "and now also PROACTIVELY, before every commit attempt on that "
+            "same PUBLIC shape (`write_pending_manifest`, same script/args/"
+            "timeout), staging the commit's own paths first so a brand-new "
+            "untracked file is pinned in the commit that adds it rather "
+            "than shipping unlisted (task 2d30b000); a failing or hanging "
+            "proactive run is log-only and falls through to the REACTIVE "
+            "route above as fallback",
+            _ON + "the pipeline commit path — proactively on every commit "
+            "(both repo shapes now), reactively on exactly the manifest "
+            "gate's changed-pinned-files refusal (commit_with_manifest_repair, "
+            "approve_pending_pins, write_pending_manifest)"),
     },
     "vcs/github.py": {
         "exec:gh": Allowed("your GitHub host — PR create/read",

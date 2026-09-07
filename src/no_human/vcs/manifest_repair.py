@@ -19,15 +19,19 @@ says so in its own docstring). A new file sails straight through it and
 dies later, unpinned, in TESTING (``tests/test_pr_body_layout.py`` shipped
 with no approval row). So there are now two steps, in order:
 
-1. ``approve_pending_pins`` — PROACTIVE, runs before every commit attempt.
-   It performs the guard's own ``approve --all --prune`` maintenance so any
-   new-or-changed ship-classified file is pinned *in the same commit* as the
-   file it pins. It never raises: a refusal here (a real leak candidate, or
-   an unclassified file) is advisory only — the file stays unpinned and
-   fails later, honestly, by name.
-2. ``commit_with_manifest_repair`` — REACTIVE: if the pre-commit gate still
-   refuses (an already-pinned file the proactive pass could not or would
-   not touch, e.g. a scan-refused approval), perform the gate's own
+1. PROACTIVE, runs before every commit attempt. ``approve_pending_pins``
+   performs the guard's own ``approve --all --prune`` maintenance on the
+   PRIVATE tree so any new-or-changed ship-classified file is pinned *in
+   the same commit* as the file it pins. ``write_pending_manifest`` is that
+   shape's PUBLIC-tree sibling (below): it stages *paths* — new files
+   included — then runs ``check_release_manifest.py --write``, so a
+   brand-new file is TRACKED before the gate's own ``git ls-files`` scan
+   ever looks for it. Neither ever raises: a refusal here is advisory
+   only — the file stays unpinned and fails later, honestly, by name.
+2. ``commit_with_manifest_repair`` — REACTIVE fallback: if the pre-commit
+   gate still refuses (an already-pinned file the proactive pass could not
+   or would not touch, e.g. a scan-refused approval, or a proactive
+   ``--write`` that itself failed or timed out), perform the gate's own
    documented FIX for that one refusal and retry once.
 
 Two repo shapes, one gate
@@ -44,15 +48,21 @@ manifest gate"):
   both routines above do when ``export_guard.py`` exists.
 * the PUBLIC tree (no ``export_guard.py``, no classification — every
   tracked file ships) has no ledger to consult, so the documented FIX is
-  wholesale regeneration: ``check_release_manifest.py --write``. Two
-  dogfood tasks on this repo's own public tree died here: the reactive
-  repair only knew the private tree's guard, so a refusal it could not
-  repair re-raised, and the pipeline commits only the
-  coder's edited ``paths`` — a coder that ran ``--write`` from the shell
-  still lost, because the regenerated manifest was never staged in the
-  same commit. ``commit_with_manifest_repair`` now runs ``--write`` and
-  retries with the manifest appended to ``paths`` when this shape is
-  detected (below).
+  wholesale regeneration: ``check_release_manifest.py --write``. Both
+  reactive dogfood incidents on this repo's own public tree (before this
+  module existed) died on a changed-but-pinned file: the regenerated
+  manifest was never staged in the same commit as the coder's edited
+  ``paths``. A THIRD dogfood shape (task 2d30b000, PR #122 head 8ecb120e,
+  PR for 0e1edabb head c68ee842) died differently: a coder ADDED new files
+  and ran ``--write`` from the shell before ``git add``-ing them — since
+  ``--write`` regenerates the manifest from ``git ls-files`` (the INDEX,
+  not the working tree), the untracked new files were invisible to it and
+  shipped with no manifest row at all, failing CI's "File inventory" job.
+  ``write_pending_manifest`` closes that gap PROACTIVELY, above, by staging
+  *paths* before ever invoking ``--write``; ``commit_with_manifest_repair``
+  still runs ``--write`` reactively (with the manifest appended to
+  ``paths``) as the fallback for whatever the proactive pass could not or
+  would not fix.
 """
 
 from __future__ import annotations
@@ -163,8 +173,11 @@ def approve_pending_pins(
     the working tree actually has changes to maintain, and the current
     branch is not protected (nothing here should touch the index on a
     branch the commit itself refuses to land on). On the PUBLIC repo shape
-    (no ``export_guard.py``) this stays a no-op — there is no proactive
-    ``--write`` equivalent; that route is only ever REACTIVE, below.
+    (no ``export_guard.py``) this stays a no-op — ``write_pending_manifest``,
+    below, is that shape's own proactive equivalent (stage *paths*, then
+    ``check_release_manifest.py --write``); the reactive repair remains the
+    fallback for whichever shape's proactive pass could not or would not fix
+    a refusal.
 
     Exit-code contract (``scripts/export_guard.py:_cmd_approve``), because
     this *is* the integration surface:
@@ -313,6 +326,149 @@ def approve_pending_pins(
         proc.returncode, tail)
 
 
+def _public_manifest_shape(root: Path) -> Path | None:
+    """The PUBLIC tree's ``scripts/check_release_manifest.py``, or ``None``.
+
+    PUBLIC means: no ``scripts/export_guard.py`` (that is the PRIVATE tree's
+    own route, handled by ``approve_pending_pins``/the reactive repair
+    above), no ``EXPORT_CLASSIFICATION.txt`` (present without the guard
+    installed — ``--write`` itself refuses there, so this must not spawn
+    it), and both ``scripts/check_release_manifest.py`` and
+    ``RELEASE_MANIFEST.txt`` present (otherwise this repo does not use the
+    gate at all). Mirrors ``_repair_by_manifest_write``'s own inline checks
+    exactly — kept a separate predicate rather than a shared call so that
+    function's raise-on-miss contract never has to change shape for this.
+    """
+    guard = root / "scripts" / "export_guard.py"
+    if guard.exists() or (root / "EXPORT_CLASSIFICATION.txt").exists():
+        return None
+    script = root / "scripts" / "check_release_manifest.py"
+    if not script.exists() or not (root / "RELEASE_MANIFEST.txt").exists():
+        return None
+    return script
+
+
+def write_pending_manifest(
+    repo: GitRepo,
+    paths: list[str] | None,
+    on_repair: Callable[[list[str], str], None] | None = None,
+) -> list[str] | None:
+    """Proactively regenerate the manifest, PUBLIC-tree shape, before the
+    first commit attempt — the ``approve_pending_pins`` sibling for a repo
+    with no ``export_guard.py`` ledger to consult.
+
+    The dogfood bug this closes (task 2d30b000, PR #122 head 8ecb120e, PR
+    for 0e1edabb head c68ee842): ``check_release_manifest.py``'s
+    ``tracked_files()`` enumerates ``git ls-files`` — the INDEX — so a
+    brand-new file is invisible to ``--write`` until it is staged. The
+    reactive repair (``_repair_by_manifest_write``, below) only ever runs
+    ``--write`` AFTER the pre-commit gate has already refused, and that
+    gate never refuses a brand-new file in the first place (only an
+    already-PINNED one whose content changed) — so a coder that ran
+    ``--write`` before ``git add`` shipped the new file with no manifest
+    row at all, failing CI's "File inventory" job (``--strict``). Staging
+    *paths* here first — new files included — before running ``--write``
+    closes that gap.
+
+    Returns the *effective* paths for the commit: on every miss or failure
+    this returns *paths* unchanged, so the reactive repair still gets its
+    chance exactly as before this function existed. Never raises — same
+    never-raises doctrine as ``approve_pending_pins``.
+
+    1. ``paths`` falsy (``None``/empty) — this is a no-op; ``commit_all``'s
+       own sweep plus the reactive fallback cover it.
+    2. Not the PUBLIC shape (see ``_public_manifest_shape``) — a no-op;
+       the PRIVATE tree's route above already handled it, or this repo
+       does not use the gate at all.
+    3. The current branch is protected — a no-op; nothing here should touch
+       the index on a branch the commit itself refuses to land on
+       (``commit_paths``/``commit_all`` raise ``ProtectedBranch`` moments
+       later).
+    4. No changes to maintain — a no-op.
+    5. Stage *paths* — the actual fix. Reuses ``_stage_untracked_for_approve``
+       verbatim: it resolves each entry against the repo root (dropping
+       anything outside it or ephemeral), and — because a bare relative
+       string in *paths* resolves against the PROCESS cwd rather than the
+       repo root (the same caveat ``GitRepo.commit_paths`` documents) — it
+       also independently stages every untracked *code* file the repo
+       already knows about via ``git ls-files --others``, which is how a
+       brand-new file reaches the index even when the explicit entry could
+       not be resolved. A failed ``git add`` is logged and does not stop
+       this function from still attempting ``--write``.
+    6. Run ``check_release_manifest.py --write``, bounded by the existing
+       ``_MANIFEST_WRITE_TIMEOUT_S`` ceiling (the same constant the
+       reactive route uses for the identical work). ``TimeoutExpired``,
+       ``OSError``, and a non-zero exit are all logged and non-fatal here —
+       the reactive route gets its chance if the gate still refuses.
+    7. On a clean run, compare the manifest's bytes before and after.
+       Unchanged — nothing to report (``--write`` rewrites unconditionally,
+       so a mtime bump is not evidence; only a byte diff is). Changed —
+       call ``on_repair`` exactly once. Either way, ``RELEASE_MANIFEST.txt``
+       is appended (as an ABSOLUTE path — ``commit_paths`` resolves each
+       entry against the process cwd, not the repo root) to the returned
+       paths, so it is staged into this same commit rather than left as an
+       orphaned working-tree edit.
+    """
+    if not paths:
+        return paths
+    root = Path(repo.path)
+    script = _public_manifest_shape(root)
+    if script is None:
+        return paths
+    if _branch_protected(repo.current_branch(), repo.never_push_to):
+        return paths
+    if not repo.has_changes():
+        return paths
+
+    try:
+        _stage_untracked_for_approve(repo, paths)
+    except (GitError, OSError) as exc:
+        _logger.warning("proactive manifest staging failed: %s", exc)
+
+    manifest = root / "RELEASE_MANIFEST.txt"
+    try:
+        before = manifest.read_bytes()
+    except OSError:
+        before = b""
+
+    try:
+        proc = subprocess.run(
+            [sys.executable, str(script), "--write"],
+            cwd=repo.path, capture_output=True, text=True,
+            timeout=_MANIFEST_WRITE_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired:
+        _logger.warning(
+            "proactive manifest --write timed out after %ss; continuing "
+            "without it", _MANIFEST_WRITE_TIMEOUT_S)
+        return paths
+    except OSError as exc:
+        _logger.warning("proactive manifest --write failed to start: %s", exc)
+        return paths
+
+    if proc.returncode != 0:
+        tail = (proc.stderr.strip() or proc.stdout.strip())[:500]
+        _logger.warning(
+            "proactive manifest --write refused (rc=%s, "
+            "check_release_manifest.py --write): %s",
+            proc.returncode, tail)
+        return paths
+
+    try:
+        after = manifest.read_bytes()
+    except OSError:
+        after = b""
+
+    if after != before and on_repair is not None:
+        tail = (proc.stdout.strip() + "\n" + proc.stderr.strip()).strip()
+        on_repair(
+            list(paths),
+            "manifest re-pinned proactively by check_release_manifest.py "
+            "--write: " + tail[:500],
+        )
+    return list(dict.fromkeys([*paths, str(manifest)]))
+
+
 def parse_manifest_refusal(text: str) -> list[str] | None:
     """Extract the changed-but-pinned paths from a manifest-gate refusal.
 
@@ -387,6 +543,7 @@ def commit_with_manifest_repair(
     repair never runs for it (nothing to parse).
     """
     approve_pending_pins(repo, paths, on_repair=on_repair)
+    paths = write_pending_manifest(repo, paths, on_repair=on_repair)
 
     def _commit() -> CommitResult:
         if paths:

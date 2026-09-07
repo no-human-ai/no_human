@@ -1805,6 +1805,207 @@ def test_a_hanging_manifest_write_times_out_into_a_git_error(
     assert head_after == head_before
 
 
+# --- proactive check_release_manifest.py --write (task 2d30b000: a brand-new
+# --- untracked file shipped unlisted in RELEASE_MANIFEST.txt because the
+# --- repair above only ever ran REACTIVELY, after a pre-commit refusal that
+# --- a new file never triggers in the first place) -------------------------
+
+
+def test_a_new_untracked_file_lands_pinned_and_passes_strict(
+        repo_with_bare_remote):
+    """The dogfood bug itself: a brand-new untracked file must land WITH a
+    pin in the very commit that adds it — no pre-commit refusal is ever in
+    play for a new file, so the old REACTIVE-only repair could never catch
+    this. `check_release_manifest.py --strict` (CI's own check) must agree."""
+    from no_human.vcs import commit_with_manifest_repair
+    work = _repo_with_real_public_manifest_gate(repo_with_bare_remote)
+    repo = GitRepo(work, identity_name="agent", identity_email="a@x.y",
+                   never_push_to=[])
+    repo.create_branch("no-human/pub6", base="main")
+    (work / "src" / "pkg" / "newmod.py").write_text("NEW = 1\n")
+
+    result = commit_with_manifest_repair(
+        repo, ["src/pkg/newmod.py"], "feat: add newmod")
+
+    assert result.sha
+    committed = subprocess.run(
+        ["git", "show", "--name-only", "--format=", "HEAD"],
+        cwd=work, capture_output=True, text=True, check=True).stdout
+    assert "src/pkg/newmod.py" in committed
+    assert "RELEASE_MANIFEST.txt" in committed
+    manifest_at_head = subprocess.run(
+        ["git", "show", "HEAD:RELEASE_MANIFEST.txt"],
+        cwd=work, capture_output=True, text=True, check=True).stdout
+    digest = hashlib.sha256(b"NEW = 1\n").hexdigest()
+    assert f"{digest}  src/pkg/newmod.py" in manifest_at_head
+    strict = subprocess.run(
+        [sys.executable, str(work / "scripts" / "check_release_manifest.py"),
+         "--strict"],
+        cwd=work, capture_output=True, text=True)
+    assert strict.returncode == 0, strict.stdout + strict.stderr
+
+
+def test_a_changed_pinned_file_lands_via_the_proactive_step_without_the_reactive_route(
+        repo_with_bare_remote, monkeypatch):
+    """An already-pinned file's edit must be re-pinned by the PROACTIVE step
+    before `git commit` is ever attempted — the reactive fallback (which
+    depends on the pre-commit gate refusing first) must never run at all."""
+    from no_human.vcs import commit_with_manifest_repair, manifest_repair
+    monkeypatch.setattr(
+        manifest_repair, "_repair_by_manifest_write",
+        lambda *a, **k: pytest.fail("reactive route ran"))
+    work = _repo_with_real_public_manifest_gate(repo_with_bare_remote)
+    repo = GitRepo(work, identity_name="agent", identity_email="a@x.y",
+                   never_push_to=[])
+    repo.create_branch("no-human/pub7", base="main")
+    (work / "src" / "pkg" / "mod.py").write_text("y = 2\n")
+    repairs = []
+
+    result = commit_with_manifest_repair(
+        repo, ["src/pkg/mod.py"], "feat: change",
+        on_repair=lambda p, note: repairs.append(p))
+
+    assert result.sha
+    assert len(repairs) == 1
+    manifest_at_head = subprocess.run(
+        ["git", "show", "HEAD:RELEASE_MANIFEST.txt"],
+        cwd=work, capture_output=True, text=True, check=True).stdout
+    new_digest = hashlib.sha256(b"y = 2\n").hexdigest()
+    assert f"{new_digest}  src/pkg/mod.py" in manifest_at_head
+    strict = subprocess.run(
+        [sys.executable, str(work / "scripts" / "check_release_manifest.py"),
+         "--strict"],
+        cwd=work, capture_output=True, text=True)
+    assert strict.returncode == 0, strict.stdout + strict.stderr
+
+
+def test_an_unchanged_manifest_never_reports_a_repair(repo_with_bare_remote):
+    """`--write` rewrites the manifest unconditionally, but when the bytes
+    come out identical to what was already staged, that is not a repair —
+    `on_repair` must stay silent (review finding F3: it must never change
+    silently, which cuts both ways — it must not fire for a no-op either)."""
+    from no_human.vcs import commit_with_manifest_repair
+    work = _repo_with_real_public_manifest_gate(repo_with_bare_remote)
+    (work / "src" / "pkg" / "mod.py").write_text("y = 2\n")
+    subprocess.run(
+        [sys.executable, str(work / "scripts" / "check_release_manifest.py"),
+         "--write"],
+        cwd=work, check=True, capture_output=True, text=True)
+    _git(work, "add", "RELEASE_MANIFEST.txt")
+    repo = GitRepo(work, identity_name="agent", identity_email="a@x.y",
+                   never_push_to=[])
+    repo.create_branch("no-human/pub8", base="main")
+    manifest_before = (work / "RELEASE_MANIFEST.txt").read_bytes()
+    repairs = []
+
+    result = commit_with_manifest_repair(
+        repo, ["src/pkg/mod.py"], "feat: change",
+        on_repair=lambda p, note: repairs.append(p))
+
+    assert result.sha
+    assert repairs == []
+    manifest_at_head = subprocess.run(
+        ["git", "show", "HEAD:RELEASE_MANIFEST.txt"],
+        cwd=work, capture_output=True, text=True, check=True).stdout
+    assert manifest_at_head.encode() == manifest_before
+    strict = subprocess.run(
+        [sys.executable, str(work / "scripts" / "check_release_manifest.py"),
+         "--strict"],
+        cwd=work, capture_output=True, text=True)
+    assert strict.returncode == 0, strict.stdout + strict.stderr
+
+
+def test_a_failing_proactive_write_still_lands_the_commit(
+        repo_with_bare_remote, caplog):
+    """A proactive `--write` that fails must never block or crash the
+    commit — a new file is not this gate's job in the first place, so the
+    commit lands regardless; the failure is logged, not raised, and no
+    ledger entry is forged for a repair that never actually happened."""
+    from no_human.vcs import commit_with_manifest_repair
+    work = _repo_with_real_public_manifest_gate(repo_with_bare_remote)
+    _swap_in_exploding_check_release_manifest(
+        work,
+        'if __name__ == "__main__":\n'
+        '    sys.stderr.write("boom\\n")\n'
+        '    sys.exit(2)\n')
+    # Baseline the stub swap itself, --no-verify, so this test's own commit
+    # (below) has nothing pinned in its diff besides the new file — the
+    # stub's own stale pin is irrelevant to a gate that only checks staged
+    # files, and orthogonal to what this test is about.
+    _git(work, "add", "-A")
+    _git(work, "commit", "-m", "swap in exploding stub", "--no-verify")
+    repo = GitRepo(work, identity_name="agent", identity_email="a@x.y",
+                   never_push_to=[])
+    repo.create_branch("no-human/pub9", base="main")
+    (work / "src" / "pkg" / "newmod.py").write_text("NEW = 1\n")
+    repairs = []
+
+    with caplog.at_level("WARNING"):
+        result = commit_with_manifest_repair(
+            repo, ["src/pkg/newmod.py"], "feat: add newmod",
+            on_repair=lambda p, note: repairs.append(p))
+
+    assert result.sha
+    assert repairs == []
+    assert any("proactive manifest" in r.message for r in caplog.records)
+
+
+def test_a_hanging_proactive_write_still_lands_the_commit(
+        repo_with_bare_remote, monkeypatch, caplog):
+    """A proactive `--write` that hangs must be bounded by the same timeout
+    ceiling as the existing approve/reactive paths, and must never block or
+    crash the commit — logged and swallowed, not raised."""
+    from no_human.vcs import commit_with_manifest_repair, manifest_repair
+    work = _repo_with_real_public_manifest_gate(repo_with_bare_remote)
+    _swap_in_exploding_check_release_manifest(
+        work,
+        'import time\n'
+        'if __name__ == "__main__":\n'
+        '    time.sleep(30)\n')
+    # Baseline the stub swap itself, --no-verify, so this test's own commit
+    # (below) has nothing pinned in its diff besides the new file.
+    _git(work, "add", "-A")
+    _git(work, "commit", "-m", "swap in exploding stub", "--no-verify")
+    monkeypatch.setattr(manifest_repair, "_MANIFEST_WRITE_TIMEOUT_S", 1)
+    repo = GitRepo(work, identity_name="agent", identity_email="a@x.y",
+                   never_push_to=[])
+    repo.create_branch("no-human/pub10", base="main")
+    (work / "src" / "pkg" / "newmod.py").write_text("NEW = 1\n")
+    repairs = []
+
+    with caplog.at_level("WARNING"):
+        result = commit_with_manifest_repair(
+            repo, ["src/pkg/newmod.py"], "feat: add newmod",
+            on_repair=lambda p, note: repairs.append(p))
+
+    assert result.sha
+    assert repairs == []
+    assert any("proactive manifest" in r.message for r in caplog.records)
+
+
+def test_the_proactive_write_never_touches_the_index_on_a_protected_branch(
+        repo_with_bare_remote):
+    """A protected branch must never be staged into, proactively or
+    otherwise — `ProtectedBranch` must propagate untouched, with nothing
+    staged and the manifest byte-for-byte as it was."""
+    from no_human.vcs import ProtectedBranch, commit_with_manifest_repair
+    work = _repo_with_real_public_manifest_gate(repo_with_bare_remote)
+    repo = GitRepo(work, identity_name="agent", identity_email="a@x.y",
+                   never_push_to=["main"])
+    (work / "src" / "pkg" / "newmod.py").write_text("NEW = 1\n")
+    manifest_before = (work / "RELEASE_MANIFEST.txt").read_bytes()
+
+    with pytest.raises(ProtectedBranch):
+        commit_with_manifest_repair(
+            repo, ["src/pkg/newmod.py"], "feat: add newmod")
+
+    staged = subprocess.run(
+        ["git", "diff", "--cached", "--name-only"],
+        cwd=work, capture_output=True, text=True, check=True).stdout.strip()
+    assert staged == ""
+    assert (work / "RELEASE_MANIFEST.txt").read_bytes() == manifest_before
+
+
 # --- lock-contention retry (main-6cec2140 booked two specs `crashed` on a
 # --- `git add` and a `git checkout -B` that failed on briefly-held locks) ----
 
