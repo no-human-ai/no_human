@@ -8,6 +8,7 @@ and config.yaml persistence on complete.
 from __future__ import annotations
 
 import os
+import sys
 import types
 from pathlib import Path
 
@@ -99,8 +100,11 @@ async def test_suggest_never_stats_git_under_home(client, tmp_path, monkeypatch)
     listed folder to badge it "git repo", and doing that inside Documents/
     Desktop is what raised the "wants to access" prompt DURING setup. The
     rewrite lists names via iterdir only — no ``.git`` stat at all — and never
-    lists the protected dirs when the base is home.
+    lists the protected dirs when the base is home. This guarantee is macOS-only
+    (see :func:`repo_discovery.home_skip`), so the platform is pinned here to
+    keep this test host-independent (CI runs ubuntu-latest).
     """
+    monkeypatch.setattr(sys, "platform", "darwin")
     home = tmp_path / "home"
     (home / "Documents").mkdir(parents=True)
     (home / "myrepo" / ".git").mkdir(parents=True)
@@ -118,6 +122,62 @@ async def test_suggest_never_stats_git_under_home(client, tmp_path, monkeypatch)
     names = {s["name"] for s in r.json()["suggestions"]}
     assert "myrepo" in names
     assert "Documents" not in names, "protected home dirs must not be listed"
+    assert not any(s.endswith("/.git") for s in seen), \
+        f"suggest must not stat any .git under home: {[s for s in seen if s.endswith('/.git')]}"
+
+
+@pytest.mark.asyncio
+async def test_suggest_lists_documents_and_desktop_off_macos(client, tmp_path, monkeypatch):
+    """Off macOS there is no TCC prompt to avoid, so ``home_skip`` only hides
+    ``Library`` (see repo_discovery.py). A Windows/Linux user typing
+    ``~/Doc`` must get Documents back — the whole point of the 0.2.1 fix.
+    """
+    monkeypatch.setattr(sys, "platform", "linux")
+    home = tmp_path / "home"
+    (home / "Documents").mkdir(parents=True)
+    (home / "Desktop").mkdir(parents=True)
+    (home / "Library").mkdir(parents=True)
+    (home / "myrepo").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+
+    r = await client.get("/api/fs/suggest", params={"path": str(home) + "/"})
+    assert r.status_code == 200, r.text
+    names = {s["name"] for s in r.json()["suggestions"]}
+    assert {"Documents", "Desktop", "myrepo"} <= names
+    assert "Library" not in names, "Library stays hidden on every platform"
+
+    r_prefix = await client.get("/api/fs/suggest", params={"path": str(home / "Doc")})
+    assert r_prefix.status_code == 200, r_prefix.text
+    body = r_prefix.json()
+    assert body["prefix"] == "doc"
+    assert body["base"] == str(home)
+    assert {s["name"] for s in body["suggestions"]} == {"Documents"}
+
+
+@pytest.mark.asyncio
+async def test_suggest_hides_tcc_dirs_on_macos(client, tmp_path, monkeypatch):
+    """The macOS branch keeps hiding exactly ``PROTECTED_HOME_DIRS`` and still
+    never stats ``<dir>/.git`` under home."""
+    monkeypatch.setattr(sys, "platform", "darwin")
+    home = tmp_path / "home"
+    (home / "Documents").mkdir(parents=True)
+    (home / "Desktop").mkdir(parents=True)
+    (home / "Downloads").mkdir(parents=True)
+    (home / "Library").mkdir(parents=True)
+    (home / "myrepo" / ".git").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+
+    seen: list[str] = []
+    real = Path.exists
+    def spy(self):
+        seen.append(str(self))
+        return real(self)
+    monkeypatch.setattr(Path, "exists", spy)
+
+    r = await client.get("/api/fs/suggest", params={"path": str(home) + "/"})
+    assert r.status_code == 200, r.text
+    names = {s["name"] for s in r.json()["suggestions"]}
+    assert names == {"myrepo"}
     assert not any(s.endswith("/.git") for s in seen), \
         f"suggest must not stat any .git under home: {[s for s in seen if s.endswith('/.git')]}"
 

@@ -21,6 +21,7 @@ import os
 import posixpath
 import re
 import subprocess
+import sys
 import threading
 import time
 from dataclasses import asdict
@@ -5268,11 +5269,10 @@ async def fs_suggest(path: str = "") -> dict[str, Any]:
 
     It lists NAMES via ``iterdir`` only and never stats ``<dir>/.git``: doing
     that inside ``~/Documents`` or ``~/Desktop`` is what raised the macOS "wants
-    to access" prompt during setup. For the same reason, when the base directory
-    IS the user's home, the TCC-guarded folders (:data:`PROTECTED_HOME_DIRS`)
-    are not offered at all — a repo does not live in Downloads.
+    to access" prompt during setup. At home, hidden children are exactly
+    :func:`repo_discovery.home_skip` for this platform: TCC-guarded on macOS, ``Library`` elsewhere.
     """
-    from ..repo_discovery import PROTECTED_HOME_DIRS, ends_with_sep, normalize_typed_path
+    from ..repo_discovery import ends_with_sep, home_skip, normalize_typed_path
 
     raw = normalize_typed_path((path or "").strip() or "~")
     expanded = Path(raw).expanduser()
@@ -5282,7 +5282,7 @@ async def fs_suggest(path: str = "") -> dict[str, Any]:
         base, prefix = expanded, ""
     else:
         base, prefix = expanded.parent, expanded.name.lower()
-    hidden = set(PROTECTED_HOME_DIRS) if base == Path.home() else set()
+    hidden = home_skip(sys.platform == "darwin") if base == Path.home() else set()
     out: list[dict[str, Any]] = []
     try:
         for p in sorted(base.iterdir()):
