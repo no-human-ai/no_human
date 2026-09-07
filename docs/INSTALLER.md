@@ -31,6 +31,14 @@ The filename carries the signing verdict: only a signed **and** notarized build
 gets the plain `no_human-<version>.dmg` name, so an unshippable artifact cannot
 be uploaded by mistake. See `docs/DISTRIBUTION.md` for the signing runbook.
 
+### Release assets
+
+Each platform's release also carries its electron-builder updater feed —
+`latest-mac.yml` (macOS), `latest.yml` (Windows), `latest-linux.yml` (Linux) —
+because each one enables in-app update checks to report available versions,
+even though no platform auto-installs (`nhCanAutoUpdate` is `false`
+everywhere until signing exists).
+
 ## The build stamp, and why the DMG is opened before it is called done
 
 On 2026-08-05 a signed, notarized DMG was found to contain none of that week's

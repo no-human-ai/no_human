@@ -676,6 +676,9 @@ Stated plainly rather than implied by omission:
   so the shipped app will not offer one. NSIS differs from Squirrel.Mac in that
   it CAN install an unsigned update, but shipping an update path nobody has
   watched work is exactly the "guessing wrong" the config header rejects.
+  `latest.yml` IS uploaded as a release asset (CI's "Upload the packages"
+  step, next to the exe/zip): it enables in-app update checks to report available versions,
+  even though the install path stays refused.
 * **The full pytest suite** — see §4.2.
 
 ---

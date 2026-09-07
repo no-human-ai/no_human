@@ -740,8 +740,11 @@ jobs:
       # 7 days, like the linux packages: long enough for a human to download,
       # re-verify the sums and attach to the GitHub release by hand; short
       # enough that a forgotten run is not a standing unsigned download.
-      # latest.yml is never included: no auto-update path ships
-      # (nhCanAutoUpdate is false on every platform).
+      # latest.yml is included to enable the in-app updater check to report
+      # newer versions; nhCanAutoUpdate=false still prevents auto-install.
+      # (desktop/updater.mjs's check is a plain HTTPS fetch of the feed and
+      # works unsigned; it only refuses the INSTALL path. A release without
+      # latest.yml makes every Windows "Check for updates" fail HttpError 404.)
       - name: Upload the packages (release build only — workflow_dispatch with windows_release)
         if: github.event_name == 'workflow_dispatch' && inputs.windows_release
         uses: actions/upload-artifact@v4
@@ -750,6 +753,7 @@ jobs:
           path: |
             desktop/dist/no_human-*-UNSIGNED.exe
             desktop/dist/no_human-*-UNSIGNED.zip
+            desktop/dist/latest.yml
             desktop/dist/SHA256SUMS-windows.txt
             desktop/dist/win-unpacked/resources/nh-server/BUILD_STAMP
           if-no-files-found: error
@@ -1020,8 +1024,12 @@ jobs:
       # WITH linux_release=true — docs/LINUX.md §4 defines that run as the
       # release build (a bare dispatch is the nightly guards' handle) — and even then
       # for 7 days, to be attached to the GitHub release by hand after the sums
-      # are re-verified. latest-linux.yml is never attached to a release: no
-      # Linux update path ships (nhCanAutoUpdate is false on every platform).
+      # are re-verified. latest-linux.yml is included to enable the in-app
+      # updater check to report newer versions; nhCanAutoUpdate=false still
+      # prevents auto-install. (desktop/updater.mjs's check is a plain HTTPS
+      # fetch of the feed and works unsigned; it only refuses the INSTALL
+      # path. A release without latest-linux.yml makes every Linux "Check
+      # for updates" fail HttpError 404.)
       - name: Gather the evidence under one root
         if: always()
         run: |

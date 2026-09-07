@@ -828,3 +828,38 @@ test("the config exports the config and nothing else, or electron-builder refuse
   assert.deepEqual(unknown, [],
     `electron-builder would reject these top-level config keys: ${unknown.join(", ")}`);
 });
+
+test("the release upload steps carry the updater feed the in-app check fetches", () => {
+  // updater.mjs's "Check for updates" is a plain HTTPS fetch of latest.yml /
+  // latest-linux.yml that works on an unsigned build — only the INSTALL path
+  // is refused (nhCanAutoUpdate=false). A release missing the feed file 404s
+  // on every check. This observes ci.yml's own artefact list and comments
+  // rather than re-deriving them, so a future edit that drops the file or
+  // reverts the comment fails here before it reaches a release.
+  const ciYaml = fs.readFileSync(path.join(here, "..", ".github", "workflows", "ci.yml"), "utf8");
+  // De-wrap YAML comment continuations ("\n      # ") into flowing text so a
+  // sentence split across lines can still be matched as one string.
+  const flat = ciYaml.replace(/\n +# /g, " ");
+
+  const windowsStepStart = ciYaml.indexOf("name: Upload the packages (release build only — workflow_dispatch with windows_release)");
+  const linuxStepStart = ciYaml.indexOf("name: Upload the packages (release build only — workflow_dispatch with linux_release)");
+  assert.ok(windowsStepStart > -1, "windows upload step not found in ci.yml");
+  assert.ok(linuxStepStart > -1, "linux upload step not found in ci.yml");
+
+  const windowsStepEnd = ciYaml.indexOf("retention-days:", windowsStepStart);
+  const linuxStepEnd = ciYaml.indexOf("retention-days:", linuxStepStart);
+  const windowsStep = ciYaml.slice(windowsStepStart, windowsStepEnd);
+  const linuxStep = ciYaml.slice(linuxStepStart, linuxStepEnd);
+
+  assert.match(windowsStep, /desktop\/dist\/latest\.yml/,
+    "windows release upload must include latest.yml (electron-builder's dist/ output) or Windows checks 404");
+  assert.match(linuxStep, /desktop\/dist\/latest-linux\.yml/,
+    "linux release upload must include latest-linux.yml (electron-builder's dist/ output) or Linux checks 404");
+
+  assert.ok(flat.includes(
+    "latest.yml is included to enable the in-app updater check to report newer versions; nhCanAutoUpdate=false still prevents auto-install"),
+    "windows upload step comment must state why latest.yml ships despite nhCanAutoUpdate=false");
+  assert.ok(flat.includes(
+    "latest-linux.yml is included to enable the in-app updater check to report newer versions; nhCanAutoUpdate=false still prevents auto-install"),
+    "linux upload step comment must state why latest-linux.yml ships despite nhCanAutoUpdate=false");
+});
