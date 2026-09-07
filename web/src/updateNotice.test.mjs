@@ -7,7 +7,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { TONES, updateNotice } from "./updateNotice.js";
+import { TONES, updateBanner, updateNotice } from "./updateNotice.js";
 
 test("every branch returns a known tone and a non-empty title", () => {
   const cases = [
@@ -159,4 +159,92 @@ test("it never throws on a malformed payload", () => {
     assert.doesNotThrow(() => updateNotice({ inShell: true, current: "0.1.0", update }));
   }
   assert.doesNotThrow(() => updateNotice());
+});
+
+// updateBanner: the board-shell-level notice for the automatic startup check.
+// This is the fix for the bug this whole module was named for — the startup
+// check's one "nh:update" push used to fire before Settings' UpdatesPanel (its
+// only subscriber) mounted, so nobody outside Settings ever saw it.
+
+test("updateBanner shows an available update", () => {
+  const b = updateBanner({ update: { mode: "available", latest: "0.2.1", current: "0.2.0" } });
+  assert.ok(b, "an available update must produce a banner");
+  assert.match(b.text, /0\.2\.1/);
+  assert.equal(b.version, "0.2.1");
+  assert.equal(b.role, "status");
+});
+
+test("updateBanner shows an unavailable one, which is the unsigned case", () => {
+  // The exact incident reported: an unsigned build's automatic check reports
+  // "unavailable" (can't self-update), and this is the mode that was silently
+  // dropped — the amber card only ever appeared after a MANUAL check.
+  const b = updateBanner({
+    update: {
+      mode: "unavailable", latest: "0.2.1", current: "0.2.0",
+      message: "no_human 0.2.1 is available (you have 0.2.0), but this build"
+        + " is not code-signed, so it cannot update itself. Download the new"
+        + " version manually.",
+    },
+  });
+  assert.ok(b, "an unavailable (unsigned) update must still produce a banner");
+  assert.match(b.text, /0\.2\.1/);
+  assert.equal(b.version, "0.2.1");
+});
+
+test("updateBanner is silent for up-to-date, failed, downloading, downloaded and null", () => {
+  const silentModes = ["up-to-date", "failed", "downloading", "downloaded"];
+  for (const mode of silentModes) {
+    const b = updateBanner({ update: { mode, latest: "0.2.1", current: "0.2.0" } });
+    assert.equal(b, null, `mode "${mode}" must not produce a board banner`);
+  }
+  assert.equal(updateBanner({ update: null }), null);
+  assert.equal(updateBanner(), null);
+});
+
+test("updateBanner hides a version the user deferred", () => {
+  const update = { mode: "available", latest: "0.2.1", current: "0.2.0" };
+  assert.ok(updateBanner({ update }), "sanity: shows without a dismissal");
+  const b = updateBanner({ update, dismissedVersion: "0.2.1" });
+  assert.equal(b, null, "a version the user clicked Later on must not re-show this session");
+  // A DIFFERENT (newer) version must still break through the old deferral.
+  const b2 = updateBanner({
+    update: { mode: "available", latest: "0.3.0", current: "0.2.0" },
+    dismissedVersion: "0.2.1",
+  });
+  assert.ok(b2, "a newer version than the one dismissed must still show");
+});
+
+// Static source-analysis wiring assertions — this repo has no jsdom/React
+// renderer (see settingsOverlay.test.mjs), so the mount-time wiring is read
+// from the source rather than exercised through a mounted component.
+const settingsSrc = readFileSync(fileURLToPath(new URL("./Settings.jsx", import.meta.url)), "utf8");
+const appSrc = readFileSync(fileURLToPath(new URL("./App.jsx", import.meta.url)), "utf8");
+
+test("UpdatesPanel seeds itself from getLastUpdate on mount", () => {
+  const panel = settingsSrc.match(/function UpdatesPanel\(\)[\s\S]*?\n}\n/)?.[0] ?? "";
+  assert.ok(panel, "UpdatesPanel not found in Settings.jsx");
+  assert.match(panel, /getLastUpdate/,
+    "UpdatesPanel must pull the retained result via desktop.getLastUpdate()");
+  assert.match(panel, /setUpdate\(\s*\(cur\)\s*=>\s*cur\s*\?\?/,
+    "the seed must use the non-clobbering functional form, so a live event that raced ahead is never overwritten");
+});
+
+test("the shell subscribes AND seeds, so an event fired before mount still shows", () => {
+  assert.match(appSrc, /onUpdate\?\.\(/,
+    "App.jsx must subscribe to the live nh:update push");
+  assert.match(appSrc, /getLastUpdate\?\.\(\)/,
+    "App.jsx must also pull the retained last result on mount");
+  assert.match(appSrc, /updateBanner\(/,
+    "App.jsx must call updateBanner to decide whether to render the notice");
+  // Rendered at the same host as the connection banner, so it inherits the
+  // shell's existing top-of-shell banner slot rather than a new one.
+  const bannerSite = appSrc.match(/\{banner\s*&&\s*\([\s\S]*?\)\}\s*\n\s*\{updateBar[\s\S]*?\)\}/);
+  assert.ok(bannerSite,
+    "the update banner must be rendered immediately next to the connection banner's output");
+});
+
+test("Later defers through the existing bridge", () => {
+  const laterButton = appSrc.match(/updateBar[\s\S]{0,400}?deferUpdate\?\.\([^)]*\)/);
+  assert.ok(laterButton,
+    "the Later button must call the existing deferUpdate bridge with the banner's version");
 });

@@ -136,3 +136,44 @@ export function updateNotice({ inShell = false, current = null, update = null, c
     version,
   };
 }
+
+/**
+ * The board-shell notice for an update the AUTOMATIC startup check found —
+ * the fix for the defect this module exists to close: that check's one
+ * "nh:update" push fires before Settings' UpdatesPanel (its only subscriber)
+ * ever mounts, so a result nobody was listening for used to vanish. The main
+ * process now retains it (main.mjs's `lastUpdate`) and the shell seeds from
+ * that on load; this is the pure decision of whether to show it there.
+ *
+ * Deliberately covers "available" AND "unavailable" — the reported incident
+ * was the unsigned case ("this build is not code-signed…"), whose mode is
+ * "unavailable". Both mean "a newer version exists"; every other mode
+ * (up-to-date, failed, downloading, downloaded) stays board-silent, same as
+ * today — an automatic-check failure must never surface outside Settings.
+ *
+ * @param {object} s
+ * @param {object} s.update           the last payload (from onUpdate or getLastUpdate), or null
+ * @param {string} s.dismissedVersion the version the user last clicked "Later" on, this session
+ * @returns {null|{text:string,version:string,className:string,role:string,tone:string}}
+ */
+export function updateBanner({ update = null, dismissedVersion = null } = {}) {
+  if (!update) return null;
+  if (update.mode !== "available" && update.mode !== "unavailable") return null;
+  const version = update.latest ?? null;
+  if (!version) return null;
+  if (dismissedVersion && dismissedVersion === version) return null;
+
+  const tone = update.mode === "unavailable" ? "warn" : "info";
+  // main already computed the exact sentence via updateMessage; fall back to
+  // the same copy updateNotice() would show, so the two surfaces never drift.
+  const text = update.message
+    || updateNotice({ inShell: true, current: update.current, update }).title;
+
+  return {
+    text,
+    version,
+    className: "nh-stale-banner nh-update-banner",
+    role: "status",
+    tone,
+  };
+}

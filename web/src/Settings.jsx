@@ -77,6 +77,20 @@ function UpdatesPanel() {
 
   useEffect(() => desktop?.onUpdate?.((payload) => setUpdate(payload)), [desktop]);
 
+  // The automatic startup check's ONE "nh:update" push fires before this panel
+  // ever mounts (it only exists while Settings > Updates is open), so it was
+  // lost. main.mjs now retains the last result behind "nh:update-last"; seed
+  // from it here so opening this panel shows what already happened instead of
+  // nothing until the next manual "Check for updates" click. The functional
+  // `cur ?? p` form never clobbers a live event the subscription above already
+  // received (e.g. a check that finished while this effect's promise was
+  // still in flight).
+  useEffect(() => {
+    let live = true;
+    desktop?.getLastUpdate?.().then((p) => { if (live && p) setUpdate((cur) => cur ?? p); }).catch(() => {});
+    return () => { live = false; };
+  }, [desktop]);
+
   useEffect(() => {
     if (inShell) return undefined;
     let live = true;

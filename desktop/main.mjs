@@ -223,18 +223,20 @@ async function getUpdater() {
 }
 
 // The board renders the notice; the shell never puts a modal in the way. An
-// update is information, not an interruption.
-function sendUpdateEvent(payload) {
-  if (win && !win.isDestroyed()) {
-    win.webContents.send("nh:update", {
-      ...payload,
-      message: updateMessage({
-        mode: payload.mode, latest: payload.latest,
-        current: payload.current ?? app.getVersion(),
-        canAutoUpdate: payload.canAutoUpdate,
-      }),
-    });
-  }
+// update is information, not an interruption. `lastUpdate` retains the last
+// payload so a renderer that mounts late can still ask, via "nh:update-last".
+let lastUpdate = null;
+
+export function sendUpdateEvent(payload) {
+  lastUpdate = {
+    ...payload,
+    message: updateMessage({
+      mode: payload.mode, latest: payload.latest,
+      current: payload.current ?? app.getVersion(),
+      canAutoUpdate: payload.canAutoUpdate,
+    }),
+  };
+  if (win && !win.isDestroyed()) win.webContents.send("nh:update", lastUpdate);
 }
 
 async function checkForUpdates({ manual = false } = {}) {
@@ -871,10 +873,13 @@ ipcMain.handle("nh:update-install", async () => {
 });
 
 ipcMain.handle("nh:update-defer", async (_event, version) => {
+  if (!version || lastUpdate?.latest === version) lastUpdate = null;
   const u = await getUpdater();
   if (!u) return { mode: "failed", error: "the updater is unavailable" };
   return u.defer(version);
 });
+
+ipcMain.handle("nh:update-last", () => lastUpdate);
 
 /**
  * The win32 title-bar overlay for a theme. On win32 `hiddenInset` degrades to a

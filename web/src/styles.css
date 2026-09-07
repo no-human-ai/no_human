@@ -313,6 +313,34 @@ html, body, #root {
 @media (prefers-reduced-motion: reduce) {
   .nh-stale-banner { transition: none; }
 }
+/* The automatic startup update check's result, surfaced in the board shell
+   itself rather than only inside Settings > Updates — see updateNotice.js's
+   updateBanner(). Same full-width fixed-top strip as .nh-stale-banner above
+   (reusing that primitive rather than a new component), but this ONE carries
+   actionable buttons ("See details" / "Later"), so pointer-events must be
+   re-enabled and the content laid out as a row instead of centered text. */
+.nh-update-banner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  pointer-events: auto;
+  text-align: left;
+  background: color-mix(in oklab, var(--blue) 20%, var(--bg-raised));
+  border-bottom: 1px solid var(--blue);
+}
+/* The "unavailable"/unsigned case (updateBanner's tone: "warn") — same amber
+   treatment updateNotice() already uses for that state in Settings, so the
+   two surfaces read as the same signal. */
+.nh-update-banner[data-tone="warn"] {
+  background: color-mix(in oklab, var(--amber) 20%, var(--bg-raised));
+  border-bottom-color: var(--amber);
+}
+/* Connection banner + update banner can both be true at once (a dead socket
+   during the startup check); stack rather than overlap. */
+.nh-stale-banner:not(.nh-update-banner) + .nh-update-banner {
+  top: 28px;
+}
 .nh-sidebar {
   width: 232px;
   flex-shrink: 0;
