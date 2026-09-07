@@ -629,7 +629,13 @@ ALLOWLIST: dict[str, dict[str, Allowed]] = {
             "`[sys.executable, <repo>/scripts/export_guard.py, 'approve', "
             "<refused paths>]` — the manifest gate's documented FIX, inside "
             "the task worktree (120s timeout); the committed guard rewrites "
-            "RELEASE_MANIFEST.txt pins and dials nothing",
+            "RELEASE_MANIFEST.txt pins and dials nothing. On the PUBLIC repo "
+            "shape (no `export_guard.py`), REACTIVELY as `[sys.executable, "
+            "<repo>/scripts/check_release_manifest.py, '--write']` — the "
+            "same gate's documented FIX for a tree with no classification "
+            "ledger to consult, also inside the task worktree (120s "
+            "timeout); the committed script re-hashes every tracked file "
+            "from `git ls-files` + working-tree bytes and dials nothing",
             _ON + "the pipeline commit path — proactively on every commit, "
             "reactively on exactly the manifest gate's changed-pinned-files "
             "refusal (commit_with_manifest_repair, approve_pending_pins)"),

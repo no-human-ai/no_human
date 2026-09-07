@@ -3,7 +3,9 @@
 import hashlib
 import json
 import os
+import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -1577,6 +1579,230 @@ def test_a_repo_without_the_export_guard_spawns_nothing(repo_with_bare_remote):
 
     assert result.sha
     assert not (work / "guard_calls.txt").exists()
+
+
+# ---- public-tree repair route: check_release_manifest.py --write (dogfood
+# ---- incident, this repo's own tree has no scripts/export_guard.py) -------
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+
+# Prefix shared by both "exploding" check_release_manifest.py stubs below: it
+# still imports cleanly (scripts/precommit_manifest_gate.py loads
+# parse_manifest/MANIFEST_NAME/CLASSIFICATION_NAME from it on every commit,
+# including the FIRST one that must refuse normally) but only misbehaves when
+# actually RUN as `--write`, i.e. under `__main__`.
+_EXPLODING_STUB_PREFIX = """\
+import importlib.util, sys
+from pathlib import Path
+
+_real_path = Path(__file__).resolve().parent / "_real_check_release_manifest.py"
+_spec = importlib.util.spec_from_file_location(
+    "_nh_real_check_release_manifest", _real_path)
+_real = importlib.util.module_from_spec(_spec)
+sys.modules[_spec.name] = _real
+_spec.loader.exec_module(_real)
+
+parse_manifest = _real.parse_manifest
+MANIFEST_NAME = _real.MANIFEST_NAME
+CLASSIFICATION_NAME = _real.CLASSIFICATION_NAME
+
+"""
+
+
+def _swap_in_exploding_check_release_manifest(work, main_body):
+    """Move the REAL check_release_manifest.py aside and replace it with a
+    stub whose `--write` misbehaves per *main_body*, while still importing
+    cleanly for the gate's own use of its manifest grammar."""
+    real = work / "scripts" / "check_release_manifest.py"
+    stub = work / "scripts" / "_real_check_release_manifest.py"
+    real.rename(stub)
+    (work / "scripts" / "check_release_manifest.py").write_text(
+        _EXPLODING_STUB_PREFIX + main_body)
+
+
+def _repo_with_real_public_manifest_gate(repo_with_bare_remote):
+    """Wire the fixture repo to the REAL public-tree gate scripts copied from
+    THIS tree (which has no scripts/export_guard.py / EXPORT_CLASSIFICATION.txt
+    itself — the exact dogfood shape), via `core.hooksPath` so the hook is
+    really installed rather than hand-rolled."""
+    work = repo_with_bare_remote
+    (work / "scripts" / "hooks").mkdir(parents=True)
+    shutil.copy(_REPO_ROOT / "scripts" / "check_release_manifest.py",
+                work / "scripts" / "check_release_manifest.py")
+    shutil.copy(_REPO_ROOT / "scripts" / "precommit_manifest_gate.py",
+                work / "scripts" / "precommit_manifest_gate.py")
+    shutil.copy(_REPO_ROOT / "scripts" / "hooks" / "pre-commit",
+                work / "scripts" / "hooks" / "pre-commit")
+    (work / "scripts" / "hooks" / "pre-commit").chmod(0o755)
+    _git(work, "config", "core.hooksPath", str(work / "scripts" / "hooks"))
+
+    (work / "src" / "pkg").mkdir(parents=True)
+    (work / "src" / "pkg" / "mod.py").write_text("y = 1\n")
+    _git(work, "add", "-A")
+    _git(work, "commit", "-m", "add mod")
+
+    subprocess.run(
+        [sys.executable, str(work / "scripts" / "check_release_manifest.py"),
+         "--write"],
+        cwd=work, check=True, capture_output=True, text=True)
+    _git(work, "add", "-A")
+    _git(work, "commit", "-m", "pin mod", "--no-verify")
+
+    assert not (work / "scripts" / "export_guard.py").exists()
+    assert not (work / "EXPORT_CLASSIFICATION.txt").exists()
+    return work
+
+
+def test_public_tree_refusal_is_repaired_with_check_release_manifest_write(
+        repo_with_bare_remote):
+    """The dogfood incident itself: no export_guard.py, so the reactive
+    repair must fall back to `check_release_manifest.py --write` and stage
+    RELEASE_MANIFEST.txt in the SAME retried commit."""
+    from no_human.vcs import commit_with_manifest_repair
+    work = _repo_with_real_public_manifest_gate(repo_with_bare_remote)
+    repo = GitRepo(work, identity_name="agent", identity_email="a@x.y",
+                   never_push_to=[])
+    repo.create_branch("no-human/pub1", base="main")
+    (work / "src" / "pkg" / "mod.py").write_text("y = 2\n")
+    repairs = []
+    notes = []
+
+    result = commit_with_manifest_repair(
+        repo, ["src/pkg/mod.py"], "feat: change",
+        on_repair=lambda p, note: (repairs.append(p), notes.append(note)))
+
+    assert result.sha
+    assert repairs == [["src/pkg/mod.py"]]
+    assert notes and notes[0]
+    committed = subprocess.run(
+        ["git", "show", "--name-only", "--format=", "HEAD"],
+        cwd=work, capture_output=True, text=True, check=True).stdout
+    assert "src/pkg/mod.py" in committed
+    assert "RELEASE_MANIFEST.txt" in committed
+    manifest_at_head = subprocess.run(
+        ["git", "show", "HEAD:RELEASE_MANIFEST.txt"],
+        cwd=work, capture_output=True, text=True, check=True).stdout
+    new_digest = hashlib.sha256(b"y = 2\n").hexdigest()
+    assert f"{new_digest}  src/pkg/mod.py" in manifest_at_head
+
+
+def test_the_real_pre_commit_gate_refuses_the_control_commit(
+        repo_with_bare_remote):
+    """Proves the real gate was actually installed and would have refused
+    the plain commit `commit_with_manifest_repair` above had to repair —
+    without this, the passing test above could just mean nothing ever ran."""
+    from no_human.vcs import GitError, parse_manifest_refusal
+    work = _repo_with_real_public_manifest_gate(repo_with_bare_remote)
+    repo = GitRepo(work, identity_name="agent", identity_email="a@x.y",
+                   never_push_to=[])
+    repo.create_branch("no-human/pub2", base="main")
+    (work / "src" / "pkg" / "mod.py").write_text("y = 2\n")
+
+    with pytest.raises(GitError, match="REFUSED") as excinfo:
+        repo.commit_paths(["src/pkg/mod.py"], "feat: change")
+
+    assert parse_manifest_refusal(str(excinfo.value)) == ["src/pkg/mod.py"]
+
+
+def test_export_classification_keeps_the_export_guard_route(
+        repo_with_bare_remote):
+    """EXPORT_CLASSIFICATION.txt present (private-tree shape) but no
+    export_guard.py installed: the new `--write` route must NOT fire — it
+    would forge approvals with no term scan — so the original refusal must
+    propagate untouched."""
+    from no_human.vcs import GitError, commit_with_manifest_repair
+    work = _repo_with_real_public_manifest_gate(repo_with_bare_remote)
+    (work / "EXPORT_CLASSIFICATION.txt").write_text("ship: **\n")
+    _git(work, "add", "-A")
+    _git(work, "commit", "-m", "classify", "--no-verify")
+    repo = GitRepo(work, identity_name="agent", identity_email="a@x.y",
+                   never_push_to=[])
+    repo.create_branch("no-human/pub3", base="main")
+    (work / "src" / "pkg" / "mod.py").write_text("y = 2\n")
+    manifest_before = (work / "RELEASE_MANIFEST.txt").read_text()
+    head_before = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=work,
+        capture_output=True, text=True, check=True).stdout.strip()
+    repairs = []
+
+    with pytest.raises(GitError, match="REFUSED"):
+        commit_with_manifest_repair(
+            repo, ["src/pkg/mod.py"], "feat: change",
+            on_repair=lambda p, note: repairs.append(p))
+
+    assert repairs == []
+    assert (work / "RELEASE_MANIFEST.txt").read_text() == manifest_before
+    head_after = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=work,
+        capture_output=True, text=True, check=True).stdout.strip()
+    assert head_after == head_before
+
+
+def test_a_failing_manifest_write_raises_with_the_tool_stderr(
+        repo_with_bare_remote):
+    """A `--write` that exits non-zero must raise GitError with the tool's
+    own stderr embedded — never a swallowed or generic failure."""
+    from no_human.vcs import GitError, commit_with_manifest_repair, is_gate_refusal
+    work = _repo_with_real_public_manifest_gate(repo_with_bare_remote)
+    _swap_in_exploding_check_release_manifest(
+        work,
+        'if __name__ == "__main__":\n'
+        '    sys.stderr.write("check_release_manifest: exploded on purpose\\n")\n'
+        '    sys.exit(2)\n')
+    repo = GitRepo(work, identity_name="agent", identity_email="a@x.y",
+                   never_push_to=[])
+    repo.create_branch("no-human/pub4", base="main")
+    (work / "src" / "pkg" / "mod.py").write_text("y = 2\n")
+    head_before = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=work,
+        capture_output=True, text=True, check=True).stdout.strip()
+
+    with pytest.raises(GitError, match="check_release_manifest: exploded on purpose") \
+            as excinfo:
+        commit_with_manifest_repair(repo, ["src/pkg/mod.py"], "feat: change")
+
+    assert "manifest re-approve failed" in str(excinfo.value)
+    assert is_gate_refusal(str(excinfo.value))
+    head_after = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=work,
+        capture_output=True, text=True, check=True).stdout.strip()
+    assert head_after == head_before
+
+
+def test_a_hanging_manifest_write_times_out_into_a_git_error(
+        repo_with_bare_remote, monkeypatch):
+    """A `--write` that hangs must be bounded by the same timeout ceiling as
+    the existing approve path, and its timeout must still classify as a gate
+    refusal (the checkpoint bypass seam depends on that)."""
+    from no_human.vcs import (
+        GitError,
+        commit_with_manifest_repair,
+        is_gate_refusal,
+        manifest_repair,
+    )
+    work = _repo_with_real_public_manifest_gate(repo_with_bare_remote)
+    _swap_in_exploding_check_release_manifest(
+        work,
+        'import time\n'
+        'if __name__ == "__main__":\n'
+        '    time.sleep(30)\n')
+    monkeypatch.setattr(manifest_repair, "_MANIFEST_WRITE_TIMEOUT_S", 1)
+    repo = GitRepo(work, identity_name="agent", identity_email="a@x.y",
+                   never_push_to=[])
+    repo.create_branch("no-human/pub5", base="main")
+    (work / "src" / "pkg" / "mod.py").write_text("y = 2\n")
+    head_before = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=work,
+        capture_output=True, text=True, check=True).stdout.strip()
+
+    with pytest.raises(GitError, match="timed out") as excinfo:
+        commit_with_manifest_repair(repo, ["src/pkg/mod.py"], "feat: change")
+
+    assert is_gate_refusal(str(excinfo.value))
+    head_after = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=work,
+        capture_output=True, text=True, check=True).stdout.strip()
+    assert head_after == head_before
 
 
 # --- lock-contention retry (main-6cec2140 booked two specs `crashed` on a

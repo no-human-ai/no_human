@@ -25,10 +25,34 @@ with no approval row). So there are now two steps, in order:
    file it pins. It never raises: a refusal here (a real leak candidate, or
    an unclassified file) is advisory only — the file stays unpinned and
    fails later, honestly, by name.
-2. ``commit_with_manifest_repair`` — REACTIVE, unchanged: if the pre-commit
-   gate still refuses (an already-pinned file the proactive pass could not
-   or would not touch, e.g. a scan-refused approval), perform the gate's
+2. ``commit_with_manifest_repair`` — REACTIVE: if the pre-commit gate still
+   refuses (an already-pinned file the proactive pass could not or would
+   not touch, e.g. a scan-refused approval), perform the gate's own
    documented FIX for that one refusal and retry once.
+
+Two repo shapes, one gate
+--------------------------
+``scripts/precommit_manifest_gate.py`` ships to both trees this codebase
+runs in, and its own ``remedy_command`` already branches on which one a
+commit is running in (see ``CONTRIBUTING.md`` §"Optional: the pre-commit
+manifest gate"):
+
+* the PRIVATE tree carries ``scripts/export_guard.py`` and
+  ``EXPORT_CLASSIFICATION.txt``; the documented FIX is
+  ``export_guard.py approve <path>`` — hash maintenance for a file already
+  on the ship ledger, gated by the guard's own term scan. This is what
+  both routines above do when ``export_guard.py`` exists.
+* the PUBLIC tree (no ``export_guard.py``, no classification — every
+  tracked file ships) has no ledger to consult, so the documented FIX is
+  wholesale regeneration: ``check_release_manifest.py --write``. Two
+  dogfood tasks on this repo's own public tree died here: the reactive
+  repair only knew the private tree's guard, so a refusal it could not
+  repair re-raised, and the pipeline commits only the
+  coder's edited ``paths`` — a coder that ran ``--write`` from the shell
+  still lost, because the regenerated manifest was never staged in the
+  same commit. ``commit_with_manifest_repair`` now runs ``--write`` and
+  retries with the manifest appended to ``paths`` when this shape is
+  detected (below).
 """
 
 from __future__ import annotations
@@ -66,6 +90,12 @@ _APPROVE_TIMEOUT_S = 120
 # its last pin — a bigger sweep than the reactive path's named-file re-scan,
 # so it gets a longer, but still bounded, ceiling.
 _PREAPPROVE_TIMEOUT_S = 300
+
+# `--write` (the PUBLIC-tree route, no export_guard.py) re-hashes every
+# tracked file locally from `git ls-files` + working-tree bytes and dials
+# nothing — same shape of work as the reactive approve path above, so the
+# same bounded ceiling.
+_MANIFEST_WRITE_TIMEOUT_S = _APPROVE_TIMEOUT_S
 
 # scripts/export_guard.py's own output lines for a successful pin/prune
 # (`_cmd_approve`: `print(f"approved  {digest[:12]}  {rel} ({state})")` and
@@ -132,7 +162,9 @@ def approve_pending_pins(
     (``scripts/export_guard.py`` and ``RELEASE_MANIFEST.txt`` both exist),
     the working tree actually has changes to maintain, and the current
     branch is not protected (nothing here should touch the index on a
-    branch the commit itself refuses to land on).
+    branch the commit itself refuses to land on). On the PUBLIC repo shape
+    (no ``export_guard.py``) this stays a no-op — there is no proactive
+    ``--write`` equivalent; that route is only ever REACTIVE, below.
 
     Exit-code contract (``scripts/export_guard.py:_cmd_approve``), because
     this *is* the integration surface:
@@ -326,22 +358,33 @@ def commit_with_manifest_repair(
     on_repair: Callable[[list[str], str], None] | None = None,
 ) -> CommitResult:
     """Commit, and if the manifest pre-commit gate refuses because
-    already-pinned files changed, perform the gate's own documented FIX
-    (``export_guard.py approve <paths>`` — hash maintenance for files that
-    are ALREADY classified ship; the re-derived manifest is staged by the
-    retry's modified-tracked-files sweep) and retry ONCE.
+    already-pinned files changed, perform the gate's own documented FIX for
+    whichever of the two repo shapes this one is, and retry ONCE:
 
-    ``on_repair(approved_paths, approve_stderr)`` is called after a
-    successful approve so the caller can put the pipeline-granted approval
-    on the task's event record — the release ledger must never change
-    silently (review finding F3).
+    * PRIVATE tree (``scripts/export_guard.py`` present) —
+      ``export_guard.py approve <paths>``: hash maintenance for files that
+      are ALREADY classified ship; the re-derived manifest is staged by the
+      retry's modified-tracked-files sweep.
+    * PUBLIC tree (no ``export_guard.py``, ``scripts/check_release_manifest.py``
+      present, no ``EXPORT_CLASSIFICATION.txt``) —
+      ``check_release_manifest.py --write``: wholesale regeneration from the
+      tree, sanctioned there precisely because no ledger sits beside it
+      (see the module docstring's "Two repo shapes"). The retry appends
+      ``RELEASE_MANIFEST.txt`` to *paths* explicitly rather than relying on
+      the modified-tracked-files sweep alone.
+
+    ``on_repair(offender_paths, note)`` is called once after a successful
+    repair so the caller can put the pipeline-granted ledger change on the
+    task's event record — it must never change silently (review finding F3).
 
     Anything else propagates ``GitError`` for the caller to turn into an
     honest attempt failure: an unclassified-file refusal never parses (and
     the target repo's guard refuses it besides), a failed or timed-out
-    approve raises, a second refusal raises, and a missing guard script
-    means this repo does not use the gate. ``ProtectedBranch`` passes
-    through untouched — the repair never runs for it (nothing to parse).
+    repair raises, a second refusal raises, and a repo with neither
+    ``export_guard.py`` nor ``check_release_manifest.py`` (or one that still
+    carries ``EXPORT_CLASSIFICATION.txt`` without the guard) does not use
+    either repair route. ``ProtectedBranch`` passes through untouched — the
+    repair never runs for it (nothing to parse).
     """
     approve_pending_pins(repo, paths, on_repair=on_repair)
 
@@ -358,7 +401,8 @@ def commit_with_manifest_repair(
             raise
         guard = Path(repo.path) / "scripts" / "export_guard.py"
         if not guard.exists():
-            raise
+            return _repair_by_manifest_write(
+                repo, paths, message, pinned, exc, on_repair)
         try:
             proc = subprocess.run(
                 [sys.executable, str(guard), "approve", *pinned],
@@ -410,6 +454,97 @@ def commit_with_manifest_repair(
         if on_repair is not None:
             on_repair(list(pinned), proc.stderr.strip())
         return _commit()
+
+
+def _repair_by_manifest_write(
+    repo: GitRepo,
+    paths: list[str] | None,
+    message: str,
+    pinned: list[str],
+    exc: GitError,
+    on_repair: Callable[[list[str], str], None] | None,
+) -> CommitResult:
+    """The PUBLIC-tree repair route for `commit_with_manifest_repair`.
+
+    Only reachable when `scripts/export_guard.py` is absent — the private
+    tree's ledger route (above) always wins when it exists. Two more
+    preconditions gate this route, checked before spawning anything; either
+    miss re-raises *exc* unrepaired, exactly today's behaviour for a repo
+    that carries neither shape of the gate:
+
+    * `scripts/check_release_manifest.py` must exist — otherwise this repo
+      does not use the gate at all.
+    * `EXPORT_CLASSIFICATION.txt` must be ABSENT. Its presence is the
+      private tree's shape without the guard installed — `--write` itself
+      refuses there (it would forge approvals for `drop`-classified paths
+      with no term scan), so re-raising the original refusal is the honest
+      outcome rather than spawning a call already known to fail.
+
+    `--write` regenerates the whole manifest from `git ls-files` +
+    working-tree bytes (the manifest's own row excluded, a symlink hashed
+    by its target) — a bigger, unconditional sweep than the reactive
+    per-file re-scan, but the one sanctioned exactly because no
+    classification ledger sits beside this tree to forge approvals against.
+    It is idempotent and re-pins every drifted tracked file, not only
+    *pinned* — the refused paths that led here — so a tracked file whose
+    working-tree bytes still won't match what gets staged (a conflicting
+    concurrent edit) earns a second, honest refusal on the retry below;
+    there is no third round.
+
+    Every outcome:
+
+    * `TimeoutExpired` / `OSError` / `returncode != 0` all raise
+      `GitError` chained from *exc*, reusing the existing
+      `"manifest re-approve failed"` / `"manifest re-approve timed out"`
+      substrings verbatim — `is_gate_refusal` classifies these through the
+      unchanged `_REAPPROVE_FAILURE_MARKERS`, so the checkpoint bypass seam
+      needs no change for this new route.
+    * `0` calls `on_repair(pinned, note)` exactly once, then retries the
+      commit exactly once with `RELEASE_MANIFEST.txt` appended to *paths*
+      (as an ABSOLUTE path: `GitRepo.commit_paths` resolves each entry with
+      `Path(p).resolve()`, which resolves a bare relative name against the
+      process CWD, not the repo root, and silently drops it when that does
+      not land inside the repo). A second refusal from the retry propagates
+      untouched.
+    """
+    root = Path(repo.path)
+    script = root / "scripts" / "check_release_manifest.py"
+    if not script.exists() or (root / "EXPORT_CLASSIFICATION.txt").exists():
+        raise exc
+    try:
+        proc = subprocess.run(
+            [sys.executable, str(script), "--write"],
+            cwd=repo.path, capture_output=True, text=True,
+            timeout=_MANIFEST_WRITE_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired:
+        raise GitError(
+            "manifest re-approve timed out after "
+            f"{_MANIFEST_WRITE_TIMEOUT_S}s (check_release_manifest.py --write)"
+        ) from exc
+    except OSError as write_exc:
+        raise GitError(
+            "manifest re-approve failed "
+            f"(--write could not start): {write_exc}"
+        ) from exc
+    if proc.returncode != 0:
+        tail = proc.stderr.strip() or proc.stdout.strip()
+        raise GitError(
+            "manifest re-approve failed "
+            f"(rc={proc.returncode}, check_release_manifest.py --write): "
+            f"{tail[:500]}"
+        ) from exc
+    if on_repair is not None:
+        tail = (proc.stdout.strip() + "\n" + proc.stderr.strip()).strip()
+        on_repair(
+            list(pinned),
+            "manifest re-pinned by check_release_manifest.py --write: "
+            + tail[:500],
+        )
+    manifest = str(root / "RELEASE_MANIFEST.txt")
+    if paths is not None:
+        return repo.commit_paths(list(dict.fromkeys([*paths, manifest])), message)
+    return repo.commit_all(message)
 
 
 def _try_reconcile_count_drift(
