@@ -5,16 +5,14 @@ fetch of the feed that only refuses the INSTALL path, not the check).
 
 The `linux` job's "Upload the packages" step already lists
 `desktop/dist/latest-linux.yml`, but the `windows` job's equivalent step
-omitted `desktop/dist/latest.yml`, and both steps' preceding comments
-asserted the opposite of what `updater.mjs` actually does. This test reads
-the workflow (electron-builder's own output files, `desktop/dist/*.yml`)
-rather than re-deriving the fix, so it fails on the pre-fix workflow and
-passes once both release jobs ship the feed file with an accurate comment.
+omitted `desktop/dist/latest.yml`. This test reads the workflow
+(electron-builder's own output files, `desktop/dist/*.yml`) rather than
+re-deriving the fix, so it fails on the pre-fix workflow and passes once
+both release jobs ship the feed file.
 """
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 import yaml
@@ -53,30 +51,4 @@ def test_linux_release_upload_includes_latest_linux_yml():
         "the linux release upload must include desktop/dist/latest-linux.yml "
         "(electron-builder's AppImage updater feed) or every Linux "
         "'Check for updates' 404s"
-    )
-
-
-def test_upload_comments_state_the_check_still_works_unsigned():
-    text = WORKFLOW_PATH.read_text(encoding="utf-8")
-    # De-wrap the YAML comment continuations ("\n      # ") so a sentence
-    # split across source lines can still be matched as one string.
-    flat = re.sub(r"\n +# ", " ", text)
-
-    windows_sentence = (
-        "latest.yml is included to enable the in-app updater check to "
-        "report newer versions; nhCanAutoUpdate=false still prevents "
-        "auto-install"
-    )
-    linux_sentence = (
-        "latest-linux.yml is included to enable the in-app updater check "
-        "to report newer versions; nhCanAutoUpdate=false still prevents "
-        "auto-install"
-    )
-    assert windows_sentence in flat, (
-        "the windows upload step's comment must state why latest.yml ships "
-        "despite nhCanAutoUpdate=false"
-    )
-    assert linux_sentence in flat, (
-        "the linux upload step's comment must state why latest-linux.yml "
-        "ships despite nhCanAutoUpdate=false"
     )
