@@ -2006,6 +2006,126 @@ def test_the_proactive_write_never_touches_the_index_on_a_protected_branch(
     assert (work / "RELEASE_MANIFEST.txt").read_bytes() == manifest_before
 
 
+def test_paths_falsy_new_file_lands_pinned_and_passes_strict(
+        repo_with_bare_remote):
+    """Gap 1 (independent review, 2026-09-07): a coder that creates its
+    files via Bash calls back with `paths=None`/`[]` — the orchestrator's
+    own `list(edited) if edited else None` shape. The old proactive step
+    was a silent no-op for a falsy `paths`, so a brand-new file created
+    this way still shipped unlisted: the reactive route never fires for it
+    either, since no pre-commit refusal is ever produced for a file the
+    gate has never seen. `stage_all()` before `--write` must close this,
+    with `commit_all`'s own later sweep (not this function) doing the
+    actual staging for the commit itself."""
+    from no_human.vcs import commit_with_manifest_repair
+    work = _repo_with_real_public_manifest_gate(repo_with_bare_remote)
+    repo = GitRepo(work, identity_name="agent", identity_email="a@x.y",
+                   never_push_to=[])
+    repo.create_branch("no-human/pub11", base="main")
+    (work / "src" / "pkg" / "newmod.py").write_text("NEW = 1\n")
+
+    result = commit_with_manifest_repair(repo, None, "feat: add newmod")
+
+    assert result.sha
+    committed = subprocess.run(
+        ["git", "show", "--name-only", "--format=", "HEAD"],
+        cwd=work, capture_output=True, text=True, check=True).stdout
+    assert "src/pkg/newmod.py" in committed
+    assert "RELEASE_MANIFEST.txt" in committed
+    manifest_at_head = subprocess.run(
+        ["git", "show", "HEAD:RELEASE_MANIFEST.txt"],
+        cwd=work, capture_output=True, text=True, check=True).stdout
+    digest = hashlib.sha256(b"NEW = 1\n").hexdigest()
+    assert f"{digest}  src/pkg/newmod.py" in manifest_at_head
+    strict = subprocess.run(
+        [sys.executable, str(work / "scripts" / "check_release_manifest.py"),
+         "--strict"],
+        cwd=work, capture_output=True, text=True)
+    assert strict.returncode == 0, strict.stdout + strict.stderr
+
+
+def test_a_non_code_sibling_in_a_newly_created_directory_lands_pinned(
+        repo_with_bare_remote):
+    """Gap 2 (independent review, 2026-09-07): a non-code deliverable (the
+    review's own example: a markdown report) sitting beside an
+    explicitly-listed new file in a directory this commit itself creates is
+    staged by `GitRepo.commit_paths`'s own untracked sweep at COMMIT time,
+    but the proactive manifest step only staged code extensions before
+    `--write` ran — so `--write` never saw it and it shipped with no
+    manifest row. `_stage_new_directory_deliverables` must mirror
+    `commit_paths`'s own "new directory, no code extension" predicate."""
+    from no_human.vcs import commit_with_manifest_repair
+    work = _repo_with_real_public_manifest_gate(repo_with_bare_remote)
+    repo = GitRepo(work, identity_name="agent", identity_email="a@x.y",
+                   never_push_to=[])
+    repo.create_branch("no-human/pub12", base="main")
+    (work / "eval").mkdir()
+    (work / "eval" / "harness.py").write_text("HARNESS = 1\n")
+    (work / "eval" / "report.md").write_text("# report\n")
+
+    result = commit_with_manifest_repair(
+        repo, [str(work / "eval" / "harness.py")], "feat: add eval harness")
+
+    assert result.sha
+    committed = subprocess.run(
+        ["git", "show", "--name-only", "--format=", "HEAD"],
+        cwd=work, capture_output=True, text=True, check=True).stdout
+    assert "eval/harness.py" in committed
+    assert "eval/report.md" in committed
+    assert "RELEASE_MANIFEST.txt" in committed
+    manifest_at_head = subprocess.run(
+        ["git", "show", "HEAD:RELEASE_MANIFEST.txt"],
+        cwd=work, capture_output=True, text=True, check=True).stdout
+    harness_digest = hashlib.sha256(b"HARNESS = 1\n").hexdigest()
+    report_digest = hashlib.sha256(b"# report\n").hexdigest()
+    assert f"{harness_digest}  eval/harness.py" in manifest_at_head
+    assert f"{report_digest}  eval/report.md" in manifest_at_head
+    strict = subprocess.run(
+        [sys.executable, str(work / "scripts" / "check_release_manifest.py"),
+         "--strict"],
+        cwd=work, capture_output=True, text=True)
+    assert strict.returncode == 0, strict.stdout + strict.stderr
+
+
+def test_an_absolute_non_code_path_is_staged_via_the_explicit_paths_branch(
+        repo_with_bare_remote):
+    """Minor issue (independent review, 2026-09-07): the shipped new-file
+    test only ever passed a RELATIVE `.py` path, which
+    `_stage_untracked_for_approve`'s explicit-paths resolution drops
+    (pytest's cwd is not the repo) and which the untracked-CODE-file
+    fallback scan silently covers instead — so that resolution branch
+    itself was never actually exercised. An ABSOLUTE, non-code path (not
+    reachable via the code-extension fallback) must still resolve, stage,
+    and land pinned."""
+    from no_human.vcs import commit_with_manifest_repair
+    work = _repo_with_real_public_manifest_gate(repo_with_bare_remote)
+    repo = GitRepo(work, identity_name="agent", identity_email="a@x.y",
+                   never_push_to=[])
+    repo.create_branch("no-human/pub13", base="main")
+    (work / "docs").mkdir()
+    (work / "docs" / "note.md").write_text("# note\n")
+
+    result = commit_with_manifest_repair(
+        repo, [str(work / "docs" / "note.md")], "docs: add note")
+
+    assert result.sha
+    committed = subprocess.run(
+        ["git", "show", "--name-only", "--format=", "HEAD"],
+        cwd=work, capture_output=True, text=True, check=True).stdout
+    assert "docs/note.md" in committed
+    assert "RELEASE_MANIFEST.txt" in committed
+    manifest_at_head = subprocess.run(
+        ["git", "show", "HEAD:RELEASE_MANIFEST.txt"],
+        cwd=work, capture_output=True, text=True, check=True).stdout
+    digest = hashlib.sha256(b"# note\n").hexdigest()
+    assert f"{digest}  docs/note.md" in manifest_at_head
+    strict = subprocess.run(
+        [sys.executable, str(work / "scripts" / "check_release_manifest.py"),
+         "--strict"],
+        cwd=work, capture_output=True, text=True)
+    assert strict.returncode == 0, strict.stdout + strict.stderr
+
+
 # --- lock-contention retry (main-6cec2140 booked two specs `crashed` on a
 # --- `git add` and a `git checkout -B` that failed on briefly-held locks) ----
 

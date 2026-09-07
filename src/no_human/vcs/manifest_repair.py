@@ -23,11 +23,16 @@ with no approval row). So there are now two steps, in order:
    performs the guard's own ``approve --all --prune`` maintenance on the
    PRIVATE tree so any new-or-changed ship-classified file is pinned *in
    the same commit* as the file it pins. ``write_pending_manifest`` is that
-   shape's PUBLIC-tree sibling (below): it stages *paths* — new files
-   included — then runs ``check_release_manifest.py --write``, so a
-   brand-new file is TRACKED before the gate's own ``git ls-files`` scan
-   ever looks for it. Neither ever raises: a refusal here is advisory
-   only — the file stays unpinned and fails later, honestly, by name.
+   shape's PUBLIC-tree sibling (below): when *paths* names files, it
+   stages them — new files included, plus a non-code sibling deliverable
+   sitting in a directory the same commit is newly creating — then runs
+   ``check_release_manifest.py --write``, so a brand-new file is TRACKED
+   before the gate's own ``git ls-files`` scan ever looks for it; when
+   *paths* is falsy (a coder that wrote everything via Bash, with nothing
+   for the caller to name individually) it stages the whole tree instead
+   (``stage_all``) before the same ``--write``. Neither ever raises: a
+   refusal here is advisory only — the file stays unpinned and fails
+   later, honestly, by name.
 2. ``commit_with_manifest_repair`` — REACTIVE fallback: if the pre-commit
    gate still refuses (an already-pinned file the proactive pass could not
    or would not touch, e.g. a scan-refused approval, or a proactive
@@ -58,11 +63,17 @@ manifest gate"):
   ``--write`` regenerates the manifest from ``git ls-files`` (the INDEX,
   not the working tree), the untracked new files were invisible to it and
   shipped with no manifest row at all, failing CI's "File inventory" job.
-  ``write_pending_manifest`` closes that gap PROACTIVELY, above, by staging
-  *paths* before ever invoking ``--write``; ``commit_with_manifest_repair``
-  still runs ``--write`` reactively (with the manifest appended to
-  ``paths``) as the fallback for whatever the proactive pass could not or
-  would not fix.
+  ``write_pending_manifest`` closes that gap PROACTIVELY, above: it stages
+  *paths* (new files included) before ever invoking ``--write``, falls
+  back to staging the whole tree when *paths* is falsy so a Bash-only
+  coder is covered too, and also stages a non-code sibling deliverable
+  sitting in a directory the same commit is newly creating — the same
+  "new directory, no code extension" shape ``GitRepo.commit_paths``
+  already special-cases for its own untracked sweep (independent review,
+  2026-09-07: both gaps were found still live on this module's first cut).
+  ``commit_with_manifest_repair`` still runs ``--write`` reactively (with
+  the manifest appended to ``paths``) as the fallback for whatever the
+  proactive pass could not or would not fix.
 """
 
 from __future__ import annotations
@@ -335,9 +346,13 @@ def _public_manifest_shape(root: Path) -> Path | None:
     installed — ``--write`` itself refuses there, so this must not spawn
     it), and both ``scripts/check_release_manifest.py`` and
     ``RELEASE_MANIFEST.txt`` present (otherwise this repo does not use the
-    gate at all). Mirrors ``_repair_by_manifest_write``'s own inline checks
-    exactly — kept a separate predicate rather than a shared call so that
-    function's raise-on-miss contract never has to change shape for this.
+    gate at all). Closely mirrors ``_repair_by_manifest_write``'s own inline
+    checks — kept a separate predicate rather than a shared call so that
+    function's raise-on-miss contract never has to change shape for this —
+    but is not quite identical: it ALSO requires ``RELEASE_MANIFEST.txt`` to
+    already exist, since this proactive step has no refusal text to parse a
+    repair out of, and a repo with no manifest file at all is not using the
+    gate in the first place, not a candidate for regenerating one.
     """
     guard = root / "scripts" / "export_guard.py"
     if guard.exists() or (root / "EXPORT_CLASSIFICATION.txt").exists():
@@ -346,6 +361,51 @@ def _public_manifest_shape(root: Path) -> Path | None:
     if not script.exists() or not (root / "RELEASE_MANIFEST.txt").exists():
         return None
     return script
+
+
+def _stage_new_directory_deliverables(repo: GitRepo) -> None:
+    """Stage a non-code untracked file sitting beside something this commit
+    is already staging into a directory that does not exist in ``HEAD`` yet.
+
+    Mirrors the "new directory, no code extension" deliverable predicate
+    ``GitRepo.commit_paths`` uses for its own untracked sweep (git.py,
+    ``commit_paths``'s comment names the measured case: a new ``eval/``
+    directory holding a harness module plus the markdown report running it
+    produces) — reusing ``repo._dir_absent_from_tree`` directly rather than
+    re-deriving the same "is this directory new" answer a second way, so
+    the two predicates cannot drift apart. Without this, a Bash-generated
+    non-code sibling of an explicitly-listed new file is invisible to both
+    ``_stage_untracked_for_approve`` (code extensions only) and
+    ``check_release_manifest.py --write`` (the INDEX only) — the exact
+    "tracked but not listed" shape this module exists to close, just for a
+    second file next to the first (independent review, 2026-09-07).
+
+    Never raises: every git call here runs with ``check=False``, matching
+    ``_stage_untracked_for_approve``'s own doctrine — the caller decides
+    what a staging failure means for the commit, this only stages what it
+    safely can.
+    """
+    staged = repo._run(
+        "diff", "--cached", "--name-only", check=False
+    ).splitlines()
+    staged_dirs = {str(Path(s.strip()).parent) for s in staged if s.strip()}
+    if not staged_dirs:
+        return
+    untracked = repo._run(
+        "ls-files", "--others", "--exclude-standard", check=False
+    ).splitlines()
+    extra: list[str] = []
+    for u in untracked:
+        u = u.strip()
+        if not u or GitRepo._is_ephemeral_path(u):
+            continue
+        if Path(u).suffix.lower() in GitRepo._CODE_EXTS:
+            continue  # already staged by _stage_untracked_for_approve
+        d = str(Path(u).parent)
+        if d in staged_dirs and repo._dir_absent_from_tree(d, "HEAD"):
+            extra.append(u)
+    if extra:
+        repo._run("add", "--", *extra, check=False)
 
 
 def write_pending_manifest(
@@ -375,26 +435,40 @@ def write_pending_manifest(
     chance exactly as before this function existed. Never raises — same
     never-raises doctrine as ``approve_pending_pins``.
 
-    1. ``paths`` falsy (``None``/empty) — this is a no-op; ``commit_all``'s
-       own sweep plus the reactive fallback cover it.
-    2. Not the PUBLIC shape (see ``_public_manifest_shape``) — a no-op;
+    1. Not the PUBLIC shape (see ``_public_manifest_shape``) — a no-op;
        the PRIVATE tree's route above already handled it, or this repo
        does not use the gate at all.
-    3. The current branch is protected — a no-op; nothing here should touch
+    2. The current branch is protected — a no-op; nothing here should touch
        the index on a branch the commit itself refuses to land on
        (``commit_paths``/``commit_all`` raise ``ProtectedBranch`` moments
        later).
-    4. No changes to maintain — a no-op.
-    5. Stage *paths* — the actual fix. Reuses ``_stage_untracked_for_approve``
-       verbatim: it resolves each entry against the repo root (dropping
-       anything outside it or ephemeral), and — because a bare relative
-       string in *paths* resolves against the PROCESS cwd rather than the
-       repo root (the same caveat ``GitRepo.commit_paths`` documents) — it
-       also independently stages every untracked *code* file the repo
-       already knows about via ``git ls-files --others``, which is how a
-       brand-new file reaches the index even when the explicit entry could
-       not be resolved. A failed ``git add`` is logged and does not stop
-       this function from still attempting ``--write``.
+    3. No changes to maintain — a no-op.
+    4. ``paths`` falsy (``None``/empty) — a coder that wrote its new files
+       entirely via Bash, with nothing for the caller to name individually.
+       ``commit_all`` would stage everything anyway a few lines later, but
+       only AFTER ``_commit()`` is reached — a new file left unstaged until
+       then is invisible to ``--write`` run here, same defect this module
+       exists to close. So this stages the whole tree itself
+       (``repo.stage_all()``) before running ``--write``, and returns
+       *paths* unchanged (still falsy): ``_commit()``'s own
+       ``commit_all()`` call re-sweeps (idempotent — everything relevant is
+       already staged) and picks up the regenerated manifest along with
+       everything else.
+    5. ``paths`` truthy — stage *paths* themselves. Reuses
+       ``_stage_untracked_for_approve`` verbatim: it resolves each entry
+       against the repo root (dropping anything outside it or ephemeral),
+       and — because a bare relative string in *paths* resolves against the
+       PROCESS cwd rather than the repo root (the same caveat
+       ``GitRepo.commit_paths`` documents) — it also independently stages
+       every untracked *code* file the repo already knows about via
+       ``git ls-files --others``, which is how a brand-new file reaches the
+       index even when the explicit entry could not be resolved.
+       ``_stage_new_directory_deliverables`` then stages a non-code sibling
+       of whatever just got staged, when it sits in a directory this commit
+       is newly creating (the ``eval/harness.py`` + ``eval/report.md``
+       shape — see that function's own docstring). A failed ``git add`` in
+       either step is logged and does not stop this function from still
+       attempting ``--write``.
     6. Run ``check_release_manifest.py --write``, bounded by the existing
        ``_MANIFEST_WRITE_TIMEOUT_S`` ceiling (the same constant the
        reactive route uses for the identical work). ``TimeoutExpired``,
@@ -403,14 +477,14 @@ def write_pending_manifest(
     7. On a clean run, compare the manifest's bytes before and after.
        Unchanged — nothing to report (``--write`` rewrites unconditionally,
        so a mtime bump is not evidence; only a byte diff is). Changed —
-       call ``on_repair`` exactly once. Either way, ``RELEASE_MANIFEST.txt``
-       is appended (as an ABSOLUTE path — ``commit_paths`` resolves each
-       entry against the process cwd, not the repo root) to the returned
-       paths, so it is staged into this same commit rather than left as an
-       orphaned working-tree edit.
+       call ``on_repair`` exactly once. When *paths* is truthy,
+       ``RELEASE_MANIFEST.txt`` is appended (as an ABSOLUTE path —
+       ``commit_paths`` resolves each entry against the process cwd, not
+       the repo root) to the returned paths, so it is staged into this same
+       commit rather than left as an orphaned working-tree edit; when
+       *paths* is falsy it is left modified-but-unstaged, since
+       ``commit_all``'s own sweep (step 4, above) picks it up.
     """
-    if not paths:
-        return paths
     root = Path(repo.path)
     script = _public_manifest_shape(root)
     if script is None:
@@ -420,10 +494,17 @@ def write_pending_manifest(
     if not repo.has_changes():
         return paths
 
-    try:
-        _stage_untracked_for_approve(repo, paths)
-    except (GitError, OSError) as exc:
-        _logger.warning("proactive manifest staging failed: %s", exc)
+    if not paths:
+        try:
+            repo.stage_all()
+        except (GitError, OSError) as exc:
+            _logger.warning("proactive manifest staging failed: %s", exc)
+    else:
+        try:
+            _stage_untracked_for_approve(repo, paths)
+            _stage_new_directory_deliverables(repo)
+        except (GitError, OSError) as exc:
+            _logger.warning("proactive manifest staging failed: %s", exc)
 
     manifest = root / "RELEASE_MANIFEST.txt"
     try:
@@ -459,13 +540,17 @@ def write_pending_manifest(
     except OSError:
         after = b""
 
-    if after != before and on_repair is not None:
+    if after == before:
+        return paths
+    if on_repair is not None:
         tail = (proc.stdout.strip() + "\n" + proc.stderr.strip()).strip()
         on_repair(
-            list(paths),
+            list(paths) if paths else [],
             "manifest re-pinned proactively by check_release_manifest.py "
             "--write: " + tail[:500],
         )
+    if not paths:
+        return paths
     return list(dict.fromkeys([*paths, str(manifest)]))
 
 
