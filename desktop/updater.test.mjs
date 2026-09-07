@@ -220,11 +220,12 @@ test("a 404 latest.yml failure emits a short sentence and keeps the dump in rawE
 });
 
 test("autoUpdater's own 'error' event emits a short sentence, keeping the dump in rawError", () => {
-  // AppUpdater emits "error" (then rethrows) on failures that happen outside
-  // check()'s try/catch — e.g. during its own retry/background work. The fake
-  // autoUpdater never fired this event before, so a regression that reverted
-  // this handler back to raw `error: String(err?.message ?? err)` was
-  // undetected: this is the FIRST thing a manual check's renderer would see.
+  // AppUpdater's checkForUpdates() catches the SAME failure check() catches,
+  // emits "error" itself, and then rethrows — so for one manual failure this
+  // handler's emit is the FIRST of two FAILED events, not a separate path.
+  // The fake autoUpdater never fired this event before, so a regression that
+  // reverted this handler back to raw `error: String(err?.message ?? err)`
+  // was undetected: this is the FIRST thing a manual check's renderer would see.
   const { up, au, events } = harness({ plan: SIGNED_PLAN });
   up.configure();
   const raw = "Cannot find latest.yml in the latest release artifacts "
