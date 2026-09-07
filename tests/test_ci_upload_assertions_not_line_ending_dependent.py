@@ -1,17 +1,19 @@
 """Regression test for the public-main CRLF break introduced in 72ca3a0b.
 
 `desktop/packagedFiles.test.mjs` and `tests/test_release_updater_feed_shipped.py`
-each asserted two full sentences of ci.yml *comment* prose by de-wrapping YAML
-comment continuations with a `\n`-only regex (`ciYaml.replace(/\n +# /g, " ")`
-/ `re.sub(r"\n +# ", " ", text)`). On a Windows runner, git checks ci.yml out
-with CRLF line endings, so the continuation is "\r\n      # " and the regex
-never matches - the prose assertion fails even though the release contract
-(the upload step actually shipping latest.yml / latest-linux.yml) is intact.
+used to assert two full sentences of ci.yml *comment* prose by de-wrapping
+YAML comment continuations with a `\n`-only regex
+(`ciYaml.replace(/\n +# /g, " ")` / `re.sub(r"\n +# ", " ", text)`). On a
+Windows runner, git checks ci.yml out with CRLF line endings, so the
+continuation is "\r\n      # " and the regex never matched - the prose
+assertion failed even though the release contract (the upload step actually
+shipping latest.yml / latest-linux.yml) was intact. That fix deleted the
+prose assertions and kept only the line-ending-independent path-list
+assertions in both files.
 
-The fix deletes the prose assertions and the now-unused de-wrap in both
-files, keeping only the line-ending-independent path-list assertions. This
-test fails on the pre-fix files (both still contain the `flat` de-wrap and
-the prose sentence) and passes once they are gone.
+This test pins the surviving artefact directly: it parses ci.yml (simulating
+a CRLF checkout) and asserts the Windows and Linux upload steps' own `with.path`
+list still ships latest.yml / latest-linux.yml, independent of line endings.
 """
 
 from __future__ import annotations
@@ -21,35 +23,7 @@ from pathlib import Path
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-DESKTOP_TEST = REPO_ROOT / "desktop" / "packagedFiles.test.mjs"
-PYTHON_TEST = REPO_ROOT / "tests" / "test_release_updater_feed_shipped.py"
 WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "ci.yml"
-
-BANNED_SNIPPETS = (
-    "nhCanAutoUpdate=false still prevents",
-    "flat",
-)
-
-
-def test_ci_yml_comment_prose_assertions_and_dewrap_are_gone():
-    for test_file in (DESKTOP_TEST, PYTHON_TEST):
-        content = test_file.read_text(encoding="utf-8")
-        for snippet in BANNED_SNIPPETS:
-            assert snippet not in content, (
-                f"{test_file.relative_to(REPO_ROOT)} still contains {snippet!r}: "
-                "a comment-prose assertion (or its \\n-only de-wrap) over ci.yml "
-                "survives, and it will fail on a CRLF (Windows runner) checkout"
-            )
-
-
-def test_release_upload_path_list_assertions_still_present():
-    js = DESKTOP_TEST.read_text(encoding="utf-8")
-    assert r"desktop\/dist\/latest\.yml" in js
-    assert r"desktop\/dist\/latest-linux\.yml" in js
-
-    py = PYTHON_TEST.read_text(encoding="utf-8")
-    assert "desktop/dist/latest.yml" in py
-    assert "desktop/dist/latest-linux.yml" in py
 
 
 def test_retained_path_list_contract_survives_a_crlf_checkout():
