@@ -156,8 +156,8 @@ const win = {
 // (appImageUtil.js) — so a hand-run `./AppRun` on a host where userns works
 // launches sandboxed. Recorded in docs/LINUX.md and the release notes. electron-updater's Linux feed (latest-linux.yml)
 // is emitted for the AppImage target; nhCanAutoUpdate stays false on Linux
-// exactly as on the shipped Mac and Windows apps (no update path nobody has
-// watched work).
+// exactly as on the shipped unsigned Windows app (no update path nobody has
+// watched work) — the signed and notarized Mac app stamps it true instead.
 //
 // NOT signed, and the filename does NOT say so. "Signed" is not a property of
 // a .deb or an AppImage (apt REPOSITORIES are signed, packages are not), and a
