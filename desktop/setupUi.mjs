@@ -41,6 +41,39 @@ export function labels(canReturn, mode = "subscription") {
   };
 }
 
+// --- Existing Claude Code sign-in: honest copy for a detected row -------- //
+//
+// `claude setup-token` mints a subscription token via browser OAuth with a
+// loopback callback — it is NOT a way to hand no_human the CLI's existing
+// session non-interactively. MEASURED (macOS, `claude` 2.1.263, `auth
+// status` already loggedIn:true): `setup-token --help` exposes no
+// non-interactive flag, and spawned the way this app spawns children (piped,
+// non-TTY stdio) the command writes nothing to stdout/stderr even once its
+// loopback listener is up — a bounded child only ever times out with both
+// streams empty. A Windows field report (3/3 runs) never observed the
+// callback port accept a connection at all. So the detected row never spawns
+// anything: the click only reveals the manual-paste instructions, which is
+// the one path that actually works on every platform.
+
+/**
+ * Copy for the "Use my existing Claude Code sign-in" row. Platform-neutral
+ * (no OS-specific terminal app or path shape) and describes rather than
+ * disparages the manual-paste path it points at — same claims discipline as
+ * labels() above (D4). Names `claude setup-token` explicitly so the
+ * instruction is copy-pasteable, and never claims no_human does anything
+ * automatically: it only reveals the same paste field every other path uses.
+ */
+export function existingSignInCopy() {
+  return {
+    button: "How to get a token",
+    note: "Detected a Claude Code sign-in. no_human cannot reuse it "
+        + "directly — a subscription token has to be minted with "
+        + "`claude setup-token`.",
+    guidance: "Run `claude setup-token` in a terminal, finish the sign-in "
+            + "it starts, then paste the token it prints below.",
+  };
+}
+
 /**
  * The OPTIONAL codex OpenAI key to hand the main process, given the selected
  * codex mode and the field's contents. Returns "" — meaning "write nothing for
