@@ -7227,6 +7227,65 @@ class Orchestrator:
         for _url in (pr.url, *linked_pr_urls):
             await record_pr_opened(self.store, task.id, _url)
 
+        # The first merge-policy verdict is computed before a PR exists, so it
+        # cannot observe the GitHub check rollup that a human sees beside the
+        # delivered PR. Poll once after delivery is established and restamp the
+        # same head's advisory verdict before the task reaches
+        # AWAITING_APPROVAL. Failures here are advisory like the original
+        # policy block: a forge/API wobble must not turn a delivered PR into a
+        # failed attempt, but a real red check must no longer leave the board's
+        # merge-ready field saying "ready".
+        try:
+            from ..vcs.pr_watcher import default_pr_checks
+
+            pr_checks = await default_pr_checks(pr.url)
+            pr_ci_state = merge_policy.ci_state_from_pr_checks(pr_checks)
+            task.context = await self.store.merge_context(
+                task.id, {"ci_status": pr_ci_state})
+            review_base = self._review_base(repo, base)
+            evidence_problems: list[str] = []
+            try:
+                changed_paths = list(repo.changed_files(review_base))
+            except Exception as exc:  # noqa: BLE001
+                changed_paths = []
+                evidence_problems.append(
+                    f"the changed-file list could not be read ({exc}) — "
+                    "paths_within and the self-authored-gate check could not "
+                    "be evaluated")
+            changed_lines = 0
+            try:
+                for line in repo.diff(review_base).splitlines():
+                    if line.startswith(("+++", "---")):
+                        continue
+                    if line.startswith(("+", "-")):
+                        changed_lines += 1
+            except Exception as exc:  # noqa: BLE001
+                evidence_problems.append(
+                    f"the diff could not be read ({exc}) — max_changed_lines "
+                    "could not be evaluated")
+            repro_state = getattr(self, "_last_repro", None) or {}
+            ci_policy_evidence = replace(policy_evidence, ci_state=pr_ci_state)
+            verdict = merge_policy.evaluate_repo(
+                repo.path,
+                extra_problems=tuple(evidence_problems),
+                facts=merge_policy.facts_from_evidence(
+                    ci_policy_evidence,
+                    changed_paths=changed_paths,
+                    changed_lines=changed_lines,
+                    repro_verdict=repro_state.get("verdict"),
+                    repro_required=bool(repro_state.get("required")),
+                    tamper_adjudications=(task.context or {}).get(
+                        "tamper_adjudications"),
+                ),
+            )
+            merge_policy_dict = verdict.as_dict()
+            if pre_push_sha:
+                task.context = await self.store.merge_context(
+                    task.id, {"merge_policy": {pre_push_sha: merge_policy_dict}})
+            self.emit("merge_policy", verdict.summary, ready=verdict.ready)
+        except Exception as exc:  # noqa: BLE001 — advisory only; never blocks delivery
+            self._advisory(f"post-delivery PR check rollup not reflected in merge policy: {exc}")
+
         await self._advance_after_review(
             task, TaskStatus.AWAITING_APPROVAL, attempt_id=attempt_id,
             branch=branch, base=base, commit=commit, pr_url=pr.url,

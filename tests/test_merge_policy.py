@@ -17,6 +17,7 @@ from no_human.core.merge_policy import (
     PolicyVerdict,
     Rule,
     RuleVerdict,
+    ci_state_from_pr_checks,
     evaluate,
     evaluate_repo,
     facts_from_evidence,
@@ -410,16 +411,40 @@ def test_ci_success_mode_fails_on_none():
     assert not v.passed
 
 
-@pytest.mark.parametrize("state", ["success", "unknown", None])
+@pytest.mark.parametrize("state", ["success", "pass", "unknown", None])
 def test_ci_success_or_unknown_mode_passes(state):
     v = _one(Rule("ci", "success_or_unknown"), _facts(ci_state=state))
     assert v.passed
 
 
-@pytest.mark.parametrize("state", ["failure", "pending"])
+@pytest.mark.parametrize("state", ["failure", "fail", "pending"])
 def test_ci_success_or_unknown_mode_fails(state):
     v = _one(Rule("ci", "success_or_unknown"), _facts(ci_state=state))
     assert not v.passed
+
+
+def test_ci_success_or_unknown_mode_failing_detail_names_check():
+    v = _one(
+        Rule("ci", "success_or_unknown"),
+        _facts(ci_state="failure: File inventory"),
+    )
+    assert not v.passed
+    assert v.detail == "ci: failure: File inventory"
+
+
+def test_ci_state_from_pr_checks_names_failing_check_before_pending():
+    state = ci_state_from_pr_checks([
+        {"name": "Python", "status": "pending"},
+        {"name": "File inventory", "status": "fail"},
+        {"name": "Docs", "status": "pass"},
+    ])
+    assert state == "failure: File inventory"
+
+
+def test_ci_state_from_pr_checks_green_pending_and_empty():
+    assert ci_state_from_pr_checks([{"name": "Python", "status": "pass"}]) == "success"
+    assert ci_state_from_pr_checks([{"name": "Python", "status": "pending"}]) == "pending: Python"
+    assert ci_state_from_pr_checks([]) == "unknown"
 
 
 # --------------------------------------------------------------------- #

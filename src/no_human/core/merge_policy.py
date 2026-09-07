@@ -122,7 +122,7 @@ class GateFacts:
     repro_required: bool = False
     verifiers_ran: int = 0
     verifiers_failed: tuple[str, ...] = ()
-    ci_state: str | None = None  # success/failure/pending/unknown/None
+    ci_state: str | None = None  # success/failure/pending/unknown/None; may include ": detail"
     changed_paths: tuple[str, ...] = ()
     changed_lines: int = 0
     # True when the diff being evaluated itself edits the policy file
@@ -366,24 +366,71 @@ def _check_verifiers_all_satisfied(facts: GateFacts, _arg: Any) -> tuple[bool, s
     return False, f"{len(facts.verifiers_failed)} verifier{'s' if len(facts.verifiers_failed) != 1 else ''} failed: {', '.join(facts.verifiers_failed)}"
 
 
+def ci_state_from_pr_checks(checks: list[dict] | tuple[dict, ...] | None) -> str:
+    """Merge-policy CI state from ``vcs.pr_watcher.default_pr_checks`` rows.
+
+    ``default_pr_checks`` normalises each GitHub status/check run to
+    ``{"name", "status"}``, where status is ``pass``/``fail``/``pending``.
+    The merge policy's historic vocabulary is
+    ``success``/``failure``/``pending``/``unknown`` because it also reads
+    pluggable CI backends. This adapter is intentionally tiny and lossy in one
+    direction only: it preserves failing/pending check names in the detail so a
+    human sees which GitHub check contradicted a "ready" verdict.
+    """
+    rows = [r for r in (checks or ()) if isinstance(r, dict)]
+    if not rows:
+        return "unknown"
+    failed = [str(r.get("name") or "unnamed check") for r in rows
+              if str(r.get("status") or "").strip().lower() == "fail"]
+    if failed:
+        shown = ", ".join(failed[:3])
+        suffix = f" (+{len(failed) - 3} more)" if len(failed) > 3 else ""
+        return f"failure: {shown}{suffix}"
+    pending = [str(r.get("name") or "unnamed check") for r in rows
+               if str(r.get("status") or "").strip().lower() == "pending"]
+    if pending:
+        shown = ", ".join(pending[:3])
+        suffix = f" (+{len(pending) - 3} more)" if len(pending) > 3 else ""
+        return f"pending: {shown}{suffix}"
+    statuses = {str(r.get("status") or "").strip().lower() for r in rows}
+    if statuses == {"pass"}:
+        return "success"
+    return "unknown"
+
+
+def _ci_state_name(state: str | None) -> str | None:
+    if state is None:
+        return None
+    head = str(state).split(":", 1)[0].strip().lower()
+    # Accept both the pluggable CI backend vocabulary and the PR-check
+    # vocabulary; old pr_outcomes rows used pass/fail.
+    if head == "pass":
+        return "success"
+    if head == "fail":
+        return "failure"
+    return head
+
+
 def _check_ci(facts: GateFacts, arg: Any) -> tuple[bool, str]:
     state = facts.ci_state
+    state_name = _ci_state_name(state)
+    detail = str(state) if state is not None else ""
     if arg == "success":
-        if state == "success":
+        if state_name == "success":
             return True, "ci: success"
-        if state in (None,):
+        if state is None:
             return False, "ci: none reported (strict mode requires success)"
-        if state == "unknown":
+        if state_name == "unknown":
             return False, "ci: unknown (strict mode requires success)"
-        return False, f"ci: {state}"
+        return False, f"ci: {detail}"
     # success_or_unknown
-    if state == "success":
+    if state_name == "success":
         return True, "ci: success"
-    if state == "unknown":
+    if state_name == "unknown":
         return True, "ci: unknown (tolerated)"
     if state is None:
         return True, "ci: none reported (tolerated)"
-    return False, f"ci: {state}"
+    return False, f"ci: {detail}"
 
 
 def _check_paths_within(facts: GateFacts, arg: Any) -> tuple[bool, str]:
