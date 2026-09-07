@@ -41,3 +41,25 @@ test("Settings uses the shared component instead of a private copy", () => {
   assert.doesNotMatch(settings, /function PathInputSettings/);
   assert.match(settings, /import PathInput from "\.\/PathInput\.jsx"/);
 });
+
+// The datalist-completion bug: a full folder name (no trailing separator) makes
+// the server list the folder's CHILDREN; optionValue must be told so via a
+// third `children` argument, or the option value never starts with the input
+// and no completion shows. Both PathInput components must keep `res.prefix`
+// and derive `children` the same way.
+
+for (const file of ["PathInput.jsx", "Onboarding.jsx"]) {
+  test(`${file} keeps the suggest response's prefix and wires children into optionValue`, () => {
+    const src = read(file);
+    assert.match(src, /res\.prefix/, `${file} must read res.prefix from the suggest response`);
+    assert.match(src, /prefix\s*===\s*""/, `${file} must check prefix === "" for the children case`);
+    // Raw source text of the trailing-separator guard: a character class
+    // matching either backslash or forward slash, anchored at the end.
+    assert.ok(src.includes('[\\\\/]$'), `${file} must guard against a value already ending in a separator`);
+    assert.match(
+      src,
+      /optionValue\(\s*value\s*,\s*o\.name\s*,\s*children\s*\)/,
+      `${file} must pass children as optionValue's third argument`,
+    );
+  });
+}

@@ -59,6 +59,12 @@ export async function initTelemetry(cfg, { importer } = {}) {
     client.init(consent.key, {
       api_host: consent.host,
       defaults: "2026-05-30",
+      // posthog-js's "2026-05-30" defaults turn on
+      // internal_or_test_user_hostname=/^(localhost|127\.0\.0\.1)$/. This board
+      // ALWAYS serves on 127.0.0.1, so every real install was being stamped
+      // $internal_or_test_user=true and hidden by PostHog's internal-user
+      // filter - disable the hostname heuristic entirely.
+      internal_or_test_user_hostname: null,
       // Everything PostHog offers is on (operator, 2026-09-03). Operator
       // content is still kept out of autocapture and replay pixels by the
       // hand-applied `ph-no-capture` blocks (posthog-js skips any element

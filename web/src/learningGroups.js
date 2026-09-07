@@ -4,6 +4,7 @@
 // (memory.project — now carried through from Transcript.workspaces), so the
 // human triages a handful of labeled, counted groups and can recognize the
 // big unscoped conversation-mining backlog at a glance. Pure, node --test'd.
+import { basename } from "./pathBasename.js";
 
 const UNSCOPED = "__unscoped__";
 
@@ -12,7 +13,7 @@ const UNSCOPED = "__unscoped__";
 export function projectLabel(project) {
   const p = (project || "").trim();
   if (!p) return "Unscoped";
-  const seg = p.replace(/\/+$/, "").split("/").filter(Boolean).pop();
+  const seg = basename(p);
   return seg || p;
 }
 

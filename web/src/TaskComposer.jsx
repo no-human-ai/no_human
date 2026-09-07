@@ -14,6 +14,7 @@ import { coderBackendCaption, effectiveCoderBackend } from "./coderBackendCaptio
 import { shortReason } from "./backendPanelView.js";
 import PathInput from "./PathInput.jsx";
 import QueueNotice from "./QueueNotice.jsx";
+import { basename } from "./pathBasename.js";
 
 // The new-task composer (Task 5A) — one prompt, kind chips, inline controls.
 //
@@ -644,7 +645,7 @@ export default function TaskComposer({ busy, error, initial, notice, queueRemain
               >
                 {project.repo_paths.map((rp) => (
                   <option key={rp} value={rp}>
-                    {rp.split("/").pop()}
+                    {basename(rp)}
                     {rp === project.primary_repo ? " (primary)" : ""}
                   </option>
                 ))}

@@ -9,6 +9,7 @@ import {
   DIRTY_TEXT,
   fromDetectedRepo,
   ambiguousNames,
+  rowName,
 } from "./discoveredRepos.js";
 
 const repo = (over = {}) => ({
@@ -203,6 +204,34 @@ test("a string-only roots_refused (older server) still yields a reason", () => {
   assert.match(m, /not scanned: outside home directory/);
 });
 
+test("a typed folder that does not exist says so, not that it was searched and empty", () => {
+  const m = searchEmptyMessage(
+    result({ repos: [], roots_scanned: [], roots_missing: ["/x/nope"] }),
+    "/x/nope",
+  );
+  assert.equal(m, "/x/nope does not exist or is not a folder.");
+});
+
+test("a refusal still wins over a missing-root reading", () => {
+  const m = searchEmptyMessage(
+    result({
+      repos: [], roots_scanned: [], roots_missing: ["/etc"], roots_refused: ["/etc"],
+      refusals: [{ path: "/etc", reason: "outside home directory" }],
+    }),
+    "/etc",
+  );
+  assert.match(m, /not scanned: outside home directory/);
+  assert.doesNotMatch(m, /does not exist/);
+});
+
+test("a scanned-and-empty result keeps its old wording even when roots_missing is present but empty", () => {
+  const m = searchEmptyMessage(
+    result({ repos: [], roots_scanned: ["/Users/x/work"], roots_missing: [] }),
+    "/Users/x/work",
+  );
+  assert.equal(m, "Searched /Users/x/work — no git repositories there.");
+});
+
 // --------------------------------------------------------------------------
 // Filter
 // --------------------------------------------------------------------------
@@ -295,6 +324,10 @@ test("a missing or ragged list does not throw", () => {
 test("collision detection falls back to the path's last segment when name is absent", () => {
   const rs = [{ path: "/a/svc" }, { path: "/b/svc" }];
   assert.ok(ambiguousNames(rs).has("svc"));
+});
+
+test("rowName falls back to a Windows path's last segment when name is absent", () => {
+  assert.equal(rowName({ path: "C:\\Users\\me\\svc" }), "svc");
 });
 
 test("names differing only in case are distinct directories, not a collision", () => {

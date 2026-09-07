@@ -13,6 +13,7 @@ import { repoBadges, discoveryMessage, searchEmptyMessage, ambiguousNames, rowNa
 // onboardingHistory.js (scanSummary/groupProposalsByProject) went with the
 // removed AI-history/rules steps — the mining now happens from Settings.
 import { optionValue } from "./pathSuggest.js";
+import { basename } from "./pathBasename.js";
 import { splitRecent, relativeMtime, debounce } from "./repoRecency.js";
 import { LegionLogo } from "./Logo.jsx";
 import { KIND_LABEL, NAME_LABEL } from "./integrationChip.js";
@@ -41,19 +42,27 @@ import {
 // propagate up to the wizard-level offline banner rather than reject unhandled.
 function PathInput({ value, onChange, placeholder, autoFocus, onNetworkError }) {
   const [opts, setOpts] = useState([]);
+  const [prefix, setPrefix] = useState(undefined);
   const listId = "pathlist-" + (placeholder || "p").replace(/\W/g, "");
   useEffect(() => {
     let live = true;
     const t = setTimeout(async () => {
       try {
         const res = await suggestPaths(value);
-        if (live) setOpts(res.suggestions || []);
+        if (live) { setOpts(res.suggestions || []); setPrefix(res.prefix); }
       } catch (e) {
         if (live && !onNetworkError?.(e)) setOpts([]);
+        if (live) setPrefix(undefined);
       }
     }, 120);
     return () => { live = false; clearTimeout(t); };
   }, [value, onNetworkError]);
+  // prefix === "" means the server listed the typed folder's CHILDREN (it is
+  // itself a complete, existing directory) rather than filtering by a
+  // trailing partial segment - the suggestion belongs AFTER it, not spliced
+  // in place of its last segment. Older servers that omit `prefix` keep the
+  // pre-existing splice behaviour.
+  const children = prefix === "" && !/[\\/]$/.test(value || "");
   return (
     <>
       <input
@@ -67,7 +76,7 @@ function PathInput({ value, onChange, placeholder, autoFocus, onNetworkError }) 
             absolute path). Rebuild it in the input's shape. is_repo was removed
             from /api/fs/suggest, so every entry is just a folder. */}
         {opts.map((o) => (
-          <option key={o.path} value={optionValue(value, o.name)}>folder</option>
+          <option key={o.path} value={optionValue(value, o.name, children)}>folder</option>
         ))}
       </datalist>
     </>
@@ -103,7 +112,7 @@ const BASE_STEPS = [
 // endpoint ships empty, so nothing leaves the machine). There is therefore no
 // consent step, no consent state, and no telemetry mention in this wizard's UI.
 // The privacy-policy/docs mention stays; only the UI mention goes.
-export const repoName = (p) => (p || "").replace(/\/+$/, "").split("/").pop() || p;
+export const repoName = (p) => basename(p) || p;
 
 export default function Onboarding({ onComplete }) {
   const [i, setI] = useState(0);
@@ -855,7 +864,7 @@ export default function Onboarding({ onComplete }) {
               )}
               {manualScan && (
                 <p className="ob-faint ob-scan-hint" style={{ margin: '0.35rem 0 0', fontSize: '0.8rem' }}>
-                  Don’t see a repo above? The auto-scan skips <strong>Documents, Desktop and Downloads</strong> by default and stops a few folders deep — type its folder here (e.g. <code>~/Documents/my-app</code>) and it will be scanned.
+                  Don’t see a repo above? On macOS the auto-scan skips <strong>Documents, Desktop and Downloads</strong>; everywhere it stops a few folders deep — type any folder here (e.g. <code>~/Documents/my-app</code> or <code>{"D:\\work"}</code>) and it will be scanned.
                 </p>
               )}
               {recentRepos.length > 0 && (

@@ -35,3 +35,24 @@ test("null/undefined inputs do not throw", () => {
   assert.equal(optionValue(undefined, "git"), "git");
   assert.equal(optionValue("~/g", undefined), "~/");
 });
+
+test("a Windows backslash input cuts at the last backslash", () => {
+  assert.equal(optionValue("C:\\Users\\me\\Doc", "Documents"), "C:\\Users\\me\\Documents");
+  assert.equal(optionValue("C:/Users/me/Doc", "Documents"), "C:/Users/me/Documents");
+  assert.equal(optionValue("D:\\", "work"), "D:\\work");
+});
+
+test("children mode appends the separator matched to the input", () => {
+  assert.equal(optionValue("~/work", "svc", true), "~/work/svc");
+  assert.equal(optionValue("C:\\Users\\me", "work", true), "C:\\Users\\me\\work");
+  // Already has a trailing separator: falls through to the cut behaviour,
+  // which produces the identical result here.
+  assert.equal(optionValue("~/work/", "svc", true), "~/work/svc");
+  assert.equal(optionValue("", "git", true), "git");
+});
+
+test("children mode is opt-in", () => {
+  // Every pre-existing 2-arg call site must keep the splice behaviour.
+  assert.equal(optionValue("~/work", "svc"), "~/svc");
+  assert.equal(optionValue("C:\\Users\\me", "work"), "C:\\Users\\work");
+});

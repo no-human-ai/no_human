@@ -79,6 +79,7 @@ test("consent → posthog-js imported once, init gets the exact masking options"
   assert.deepEqual(options, {
     api_host: "https://us.i.posthog.com",
     defaults: "2026-05-30",
+    internal_or_test_user_hostname: null,
     autocapture: true,
     capture_pageview: true,
     capture_pageleave: true,
@@ -95,6 +96,8 @@ test("consent → posthog-js imported once, init gets the exact masking options"
   assert.equal(options.session_recording.maskTextSelector, undefined,
     "maskTextSelector matches zero elements in this UI and must not be configured");
   assert.equal(options.person_profiles, "always", "one person per install id");
+  assert.equal(options.internal_or_test_user_hostname, null,
+    "the board serves on 127.0.0.1 — posthog defaults would flag every real install $internal_or_test_user");
 
   // app_version + the installation id registered on every event.
   assert.equal(fake.calls.register.length, 1);

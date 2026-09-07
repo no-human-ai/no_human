@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import keepFocusInDialog from "./keepFocusInDialog.js";
 import PathInput from "./PathInput.jsx";
+import { basename } from "./pathBasename.js";
 import {
   addRule, addSkill, confirmLearning, fetchLearnings,
   fetchRules, fetchSkills, rejectLearning, removeRule, removeSkill,
@@ -1979,7 +1980,7 @@ function TestPlanEditor({ project, onUpdated }) {
           </span>
           {l.repo && (
             <span className="project-repo-path ph-no-capture" style={{ flex: 'none' }} title={l.repo}>
-              {"\u2197"} {l.repo.split("/").pop()}
+              {"\u2197"} {basename(l.repo)}
             </span>
           )}
           <button className="project-repo-action danger" disabled={saving} onClick={() => handleRemoveLayer(idx)} title="Remove layer">{"\u2715"}</button>

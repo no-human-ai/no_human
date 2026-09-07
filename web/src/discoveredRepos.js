@@ -4,6 +4,8 @@
 // below are asserted once, in discoveredRepos.test.mjs, rather than pinned by
 // regex over JSX in two places.
 
+import { basename } from "./pathBasename.js";
+
 export const DIRTY_TEXT = "uncommitted changes";
 
 // Rows the picker shows, most-load-bearing first. `tone` maps to the caller's
@@ -107,6 +109,11 @@ export function searchEmptyMessage(res, searchedPath) {
   if (reasons.length) {
     return `${searchedPath || "That folder"} was not scanned: ${reasons[0]}.`;
   }
+  const scanned = res?.roots_scanned || [];
+  const missing = res?.roots_missing || [];
+  if (searchedPath && !scanned.length && missing.length) {
+    return `${searchedPath} does not exist or is not a folder.`;
+  }
   if (searchedPath) return `Searched ${searchedPath} — no git repositories there.`;
   return "No repositories found. Search another folder above.";
 }
@@ -146,8 +153,7 @@ export function filterRepos(repos, query) {
 export function rowName(r) {
   const n = (r?.name || "").trim();
   if (n) return n;
-  const segs = (r?.path || "").split("/").filter(Boolean);
-  return segs.length ? segs[segs.length - 1] : "";
+  return basename(r?.path);
 }
 
 // Two checkouts of the same repository (say ~/git/svc and ~/work/svc) render as
