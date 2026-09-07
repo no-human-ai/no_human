@@ -35,6 +35,15 @@ pipeline committing on this public repository.
   that drive, `~\x` expands like `~/x`, and a trailing backslash means "list
   inside" on Windows only. Repo names on the board are derived on either
   separator, and the folder-search hint states the macOS-only skip truthfully.
+- **"Check for updates" on Windows and Linux no longer fails with a 404.**
+  The 0.2.0 release carried only `latest-mac.yml`, so the in-app check on
+  Windows and Linux (which fetches `latest.yml` / `latest-linux.yml`) failed
+  on every launch and, from Settings, showed a raw HttpError. This release
+  ships both files, so the check reaches the release metadata. These builds
+  are not code-signed, so they never install an update themselves —
+  download the new version from the GitHub release.
+  Shipping them from CI, and a short error message when the update server
+  is unreachable, are tracked as follow-ups.
 - **Every install is no longer flagged as a PostHog internal user.** posthog-js
   2026-05-30 defaults mark any person on localhost/127.0.0.1 as
   `$internal_or_test_user`; the board always serves on 127.0.0.1, so every real
