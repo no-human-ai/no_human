@@ -136,7 +136,7 @@ from ..vcs import (
     open_pr,
     promote_draft_pr,
 )
-from ..vcs import pr_watcher
+from ..vcs import ci_rollup, pr_watcher
 from ..vcs.push_hook import refresh_protected_patterns
 from ..vcs.receipts import verify_pr_receipt
 from ..vcs.task_pr import resolve_task_pr
@@ -6933,6 +6933,8 @@ class Orchestrator:
         # below. Wrapped like the two evidence blocks above it — a failure
         # here is an advisory note, never a reason this PR doesn't ship.
         merge_policy_dict: dict | None = None
+        policy_facts: merge_policy.GateFacts | None = None
+        policy_extra_problems: tuple[str, ...] = ()
         head_sha = (getattr(commit, "sha", "") or "").strip()
         # Gathered here, BEFORE the policy try-block, so a policy-compute
         # failure below can never change what `_pr_body` builds from — it
@@ -6976,24 +6978,18 @@ class Orchestrator:
                     f"the diff could not be read ({exc}) — max_changed_lines "
                     "could not be evaluated")
             repro_state = getattr(self, "_last_repro", None) or {}
+            policy_extra_problems = tuple(evidence_problems)
+            policy_facts = merge_policy.facts_from_evidence(
+                policy_evidence, changed_paths=changed_paths,
+                changed_lines=changed_lines,
+                repro_verdict=repro_state.get("verdict"),
+                repro_required=bool(repro_state.get("required")),
+                tamper_adjudications=(task.context or {}).get(
+                    "tamper_adjudications"),
+            )
             verdict = merge_policy.evaluate_repo(
-                repo.path,
-                extra_problems=tuple(evidence_problems),
-                facts=merge_policy.facts_from_evidence(
-                    policy_evidence,
-                    changed_paths=changed_paths,
-                    changed_lines=changed_lines,
-                    repro_verdict=repro_state.get("verdict"),
-                    repro_required=bool(repro_state.get("required")),
-                    # The RAW, unfiltered adjudication list — NOT
-                    # `evidence.tamper`, which `_tamper_data` has already
-                    # pre-filtered down to LEGITIMATE-only waivers. A
-                    # TAMPERING/CANNOT_DECIDE fire must still be visible to
-                    # `tamper_guard_clear` even though it never reaches the
-                    # PR body.
-                    tamper_adjudications=(task.context or {}).get(
-                        "tamper_adjudications"),
-                ),
+                repo.path, extra_problems=policy_extra_problems,
+                facts=policy_facts,
             )
             merge_policy_dict = verdict.as_dict()
             # Fold the verdict INTO the evidence object it was computed from,
@@ -7227,6 +7223,10 @@ class Orchestrator:
         for _url in (pr.url, *linked_pr_urls):
             await record_pr_opened(self.store, task.id, _url)
 
+        await ci_rollup.stamp_delivered_ci_status(
+            store=self.store, emit=self.emit, advisory=self._advisory,
+            task=task, pr_url=pr.url, head_sha=head_sha, facts=policy_facts,
+            extra_problems=policy_extra_problems, repo=repo)
         await self._advance_after_review(
             task, TaskStatus.AWAITING_APPROVAL, attempt_id=attempt_id,
             branch=branch, base=base, commit=commit, pr_url=pr.url,

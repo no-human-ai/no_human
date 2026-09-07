@@ -538,27 +538,30 @@ async def default_pr_state(ref: str) -> str:
 
 
 async def default_pr_checks(ref: str) -> list[dict]:
-    """The PR head's CI checks, normalized: [{name, status, link}].
+    """The PR head's CI checks, normalized: [{name, status, link, required}].
 
     status ∈ "fail" | "pass" | "pending". Sources both GitHub check-runs
     (conclusion) and commit statuses (state) from statusCheckRollup — the
     Jenkins integration on code.example.com reports plain commit statuses
     (e.g. continuous-integration/jenkins/pr-head), which `gh pr checks`
     renders but scripts often miss. Empty list = unknown/no checks.
+
+    ``required`` comes from a SECOND call, `gh pr checks --required`: the
+    generic `--json statusCheckRollup` export is a plain-field reflection
+    and cannot answer `isRequired` (GitHub's schema puts that field behind a
+    `pullRequestId` argument that `--json` field reflection does not
+    supply, so it is silently absent from every `statusCheckRollup` entry
+    regardless of branch protection). A failed/empty required-lookup leaves
+    every entry `required=False` — "no required-ness data", which
+    `ci_rollup.aggregate_rollup` treats as "evaluate every check", not
+    "confirmed zero required checks".
     """
     if not shutil.which("gh"):
         return []
-    if ref.startswith("http"):
-        parsed = parse_pr_url(ref)
-        if not parsed or parsed[0] != "github":
-            return []
-        _, host, slug, num = parsed
-        repo_arg, num_str = f"{host}/{slug}", str(num)
-    elif "#" in ref:
-        repo, _, num_str = ref.partition("#")
-        repo_arg = repo
-    else:
+    target = _gh_repo_and_number(ref)
+    if not target:
         return []
+    repo_arg, num_str = target
     out = await _run_cli([
         "gh", "pr", "view", num_str, "--repo", repo_arg,
         "--json", "statusCheckRollup",
@@ -569,6 +572,7 @@ async def default_pr_checks(ref: str) -> list[dict]:
         rollup = json.loads(out).get("statusCheckRollup") or []
     except json.JSONDecodeError:
         return []
+    required_names = await _required_check_names(repo_arg, num_str)
     checks: list[dict] = []
     for c in rollup:
         name = c.get("name") or c.get("context") or "unnamed check"
@@ -582,8 +586,32 @@ async def default_pr_checks(ref: str) -> list[dict]:
         checks.append({
             "name": name, "status": status,
             "link": c.get("targetUrl") or c.get("detailsUrl") or "",
+            "required": name in required_names,
         })
     return checks
+
+
+async def _required_check_names(repo_arg: str, num_str: str) -> set[str]:
+    """Names GitHub enforces as required on this PR.
+
+    `gh pr checks --required` is the gh surface that actually resolves
+    required-ness (it issues the pullRequestId-argumented query under the
+    hood; `gh pr view --json statusCheckRollup` cannot). Empty set on any
+    failure or unexpected shape — "no required-ness data", not "confirmed
+    zero required checks" — so callers fall back to treating every check as
+    in-scope rather than silently narrowing to nothing.
+    """
+    out = await _run_cli([
+        "gh", "pr", "checks", num_str, "--repo", repo_arg,
+        "--required", "--json", "name",
+    ])
+    if not out:
+        return set()
+    try:
+        data = json.loads(out)
+        return {c.get("name") for c in data if isinstance(c, dict) and c.get("name")}
+    except (json.JSONDecodeError, TypeError, AttributeError):
+        return set()
 
 
 def _gh_repo_and_number(ref: str) -> tuple[str, str] | None:

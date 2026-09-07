@@ -36,6 +36,7 @@ class _Evidence:
         self.tamper = kw.get("tamper")
         self.verifiers = kw.get("verifiers")
         self.ci_state = kw.get("ci_state")
+        self.ci_failed_checks = kw.get("ci_failed_checks")
 
 
 def _facts(**kw) -> GateFacts:
@@ -420,6 +421,59 @@ def test_ci_success_or_unknown_mode_passes(state):
 def test_ci_success_or_unknown_mode_fails(state):
     v = _one(Rule("ci", "success_or_unknown"), _facts(ci_state=state))
     assert not v.passed
+
+
+def test_ci_failure_detail_names_failing_checks():
+    v = _one(
+        Rule("ci", "success_or_unknown"),
+        _facts(ci_state="failure", ci_failed_checks=("File inventory",)),
+    )
+    assert not v.passed
+    assert v.detail == "ci: failure (File inventory)"
+
+
+def test_ci_failure_detail_caps_names_with_plus_n_more():
+    names = ("a", "b", "c", "d", "e")
+    v = _one(
+        Rule("ci", "success_or_unknown"),
+        _facts(ci_state="failure", ci_failed_checks=names),
+    )
+    assert not v.passed
+    assert v.detail == "ci: failure (a, b, c +2 more)"
+
+
+def test_ci_failure_without_names_keeps_the_old_detail():
+    v = _one(Rule("ci", "success_or_unknown"), _facts(ci_state="failure"))
+    assert not v.passed
+    assert v.detail == "ci: failure"
+
+
+def test_ci_failure_detail_names_failing_checks_strict_mode():
+    v = _one(
+        Rule("ci", "success"),
+        _facts(ci_state="failure", ci_failed_checks=("File inventory",)),
+    )
+    assert not v.passed
+    assert v.detail == "ci: failure (File inventory)"
+
+
+def test_ci_none_and_unknown_semantics_unchanged():
+    # Regression: the None/unknown-tolerated branches never gain a suffix
+    # even when (implausibly) ci_failed_checks is set.
+    v_none = _one(
+        Rule("ci", "success_or_unknown"),
+        _facts(ci_state=None, ci_failed_checks=("should not appear",)),
+    )
+    assert v_none.passed
+    assert v_none.detail == "ci: none reported (tolerated)"
+
+    v_unknown = _one(Rule("ci", "success"), _facts(ci_state="unknown"))
+    assert not v_unknown.passed
+    assert v_unknown.detail == "ci: unknown (strict mode requires success)"
+
+    v_success = _one(Rule("ci", "success"), _facts(ci_state="success"))
+    assert v_success.passed
+    assert v_success.detail == "ci: success"
 
 
 # --------------------------------------------------------------------- #
@@ -869,6 +923,25 @@ def test_facts_from_evidence_ci_none():
     ev = _Evidence(ci_state=None)
     facts = facts_from_evidence(ev, tamper_adjudications=[])
     assert facts.ci_state is None
+
+
+def test_facts_from_evidence_carries_ci_failed_checks():
+    ev = _Evidence(ci_state="failure", ci_failed_checks=["File inventory", "Build"])
+    facts = facts_from_evidence(ev, tamper_adjudications=[])
+    assert facts.ci_failed_checks == ("File inventory", "Build")
+
+
+def test_facts_from_evidence_ci_failed_checks_defaults_empty():
+    ev = _Evidence(ci_state="success")
+    facts = facts_from_evidence(ev, tamper_adjudications=[])
+    assert facts.ci_failed_checks == ()
+
+
+def test_facts_from_evidence_ci_failed_checks_explicit_kwarg_overrides_evidence():
+    ev = _Evidence(ci_state="failure", ci_failed_checks=["from evidence"])
+    facts = facts_from_evidence(
+        ev, tamper_adjudications=[], ci_failed_checks=["from kwarg"])
+    assert facts.ci_failed_checks == ("from kwarg",)
 
 
 def test_facts_from_evidence_advisory_count_read_from_review_verdict():
