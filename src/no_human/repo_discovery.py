@@ -10,7 +10,13 @@ Three properties matter more than coverage:
   root, the well-known dependency/build directories are never entered, a repo
   is a leaf (we do not descend into one), and the result count is capped. When
   the cap bites, the response says so — a silently truncated list is a list
-  the user cannot trust.
+  the user cannot trust. The walk order is home (depth 1) first, then the
+  conventional roots, then — off macOS only — :data:`NON_MAC_ROOTS`, so a wide
+  ``~/Documents`` can never push a repo cloned straight under ``~`` out of the
+  result ceiling. The home-level skip list (:func:`home_skip`) is a macOS-only
+  concession to TCC prompts, NOT a universal rule: off macOS, Desktop and
+  Documents are not skipped anywhere — they are scanned as their own roots —
+  and Downloads is never a root on any platform.
 * **Contained — for configured roots.** Every conventional root and every
   operator-configured ``extra_roots`` entry is resolved and must land inside
   the resolved ``home``; one that does not is refused and reported, in both
@@ -46,8 +52,10 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import stat
 import subprocess
+import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -56,9 +64,24 @@ from typing import Any, Iterable
 log = logging.getLogger(__name__)
 
 #: Where developers actually clone things, in the order they are offered.
+#: ``source`` is Visual Studio's ``~/source/repos/<repo>`` default (depth 3,
+#: reachable under :data:`DEFAULT_MAX_DEPTH`) — appended last so the offer
+#: order for everyone else is unchanged.
 CONVENTIONAL_ROOTS: tuple[str, ...] = (
     "Projects", "Code", "Development", "Dev", "repos", "git", "workspace", "src",
+    "source",
 )
+
+#: Extra roots scanned only when NOT on macOS: GitHub Desktop's
+#: ``Documents\GitHub\<repo>`` default and repos dropped straight on the
+#: Desktop. Never added on macOS, where stat-ing ``.git`` inside them raises
+#: the TCC "wants to access" prompt (see :data:`PROTECTED_HOME_DIRS`).
+#: ``Downloads`` is deliberately never a root, on any platform.
+NON_MAC_ROOTS: tuple[str, ...] = ("Desktop", "Documents")
+
+#: Depth for :data:`NON_MAC_ROOTS`: ``Documents/GitHub/<repo>`` and
+#: ``Desktop/<repo>`` are both reached at 2.
+NON_MAC_ROOT_DEPTH = 2
 
 #: Levels below a root. Three, because the common layouts are ``<root>/<repo>``
 #: (1), ``<root>/<owner>/<repo>`` (2) and ``<root>/<host>/<owner>/<repo>`` (3) —
@@ -71,12 +94,15 @@ DEFAULT_MAX_DEPTH = 3
 #: response carries a note instead of quietly dropping the tail.
 DEFAULT_MAX_RESULTS = 200
 
-#: Direct children of ``home`` the home-root scan never enters. These are the
-#: macOS TCC-guarded folders (Documents/Desktop/Downloads and the media dirs) —
-#: stat-ing ``.git`` inside them is what raised the "wants to access" prompt
-#: during setup — plus ``Library``, which holds no repos worth the walk. Home is
-#: a depth-1 root precisely so a user whose repos sit directly under ``~`` is
-#: found without descending into any of these.
+#: Direct children of ``home`` the home-root scan never enters ON MACOS. These
+#: are the TCC-guarded folders (Documents/Desktop/Downloads and the media
+#: dirs) — stat-ing ``.git`` inside them is what raised the "wants to access"
+#: prompt during setup — plus ``Library``, which holds no repos worth the
+#: walk. Home is a depth-1 root precisely so a user whose repos sit directly
+#: under ``~`` is found without descending into any of these. Off macOS there
+#: is no TCC prompt to avoid, so only ``Library`` is skipped at the home level
+#: (see :func:`home_skip`) — Desktop and Documents are instead scanned as
+#: their own roots, at their own depth, via :data:`NON_MAC_ROOTS`.
 PROTECTED_HOME_DIRS = ("Desktop", "Documents", "Downloads", "Library",
                        "Pictures", "Movies", "Music")
 
@@ -130,6 +156,60 @@ DIRTY_BUDGET_S = 2.0
 WALK_BUDGET_S = 1.5
 
 _GIT_WORKERS = 8
+
+
+def platform_roots(darwin: bool) -> tuple[str, ...]:
+    """Root names to scan for the given platform — a parameter, never read
+    from the running process, so both branches are testable from any host.
+    Off macOS, :data:`NON_MAC_ROOTS` joins the conventional list: Visual
+    Studio's and GitHub Desktop's defaults, and the Desktop itself, sit only
+    there."""
+    return CONVENTIONAL_ROOTS if darwin else CONVENTIONAL_ROOTS + NON_MAC_ROOTS
+
+
+def home_skip(darwin: bool) -> frozenset[str]:
+    """Direct children of ``home`` the home-level walk never enters, for the
+    given platform. On macOS this is the full TCC-guarded list
+    (:data:`PROTECTED_HOME_DIRS`); off macOS there is no TCC prompt to avoid,
+    so only ``Library`` is skipped — Desktop and Documents are instead
+    offered as their own roots (see :func:`platform_roots`)."""
+    return frozenset(PROTECTED_HOME_DIRS) if darwin else frozenset({"Library"})
+
+
+_DRIVE_RE = re.compile(r"^[A-Za-z]:$")
+
+
+def normalize_typed_path(text: str, *, windows: bool = os.name == "nt") -> str:
+    """A bare drive is drive-RELATIVE in Python: ``Path("D:")`` means the
+    current directory ON drive D, not its root — never what a user typing a
+    drive letter means. On Windows, append the backslash that makes it one."""
+    text = (text or "").strip()
+    return text + "\\" if windows and _DRIVE_RE.match(text) else text
+
+
+def expand_home(text: str, home: Path, *, windows: bool = os.name == "nt") -> Path:
+    """Expand ``~`` against ``home`` — the scan's own boundary, not whatever
+    :meth:`Path.expanduser` would resolve for the process. ``~\\`` is the same
+    shell-free spelling on Windows, where backslash is the path separator; off
+    Windows a leading ``~\\`` is left alone, since there it is just a literal,
+    if unusual, filename character."""
+    text = (text or "").strip()
+    if text == "~":
+        return home
+    if text.startswith("~/"):
+        return home / text[2:]
+    if windows and text.startswith("~\\"):
+        return home / text[2:]
+    return Path(normalize_typed_path(text, windows=windows))
+
+
+def ends_with_sep(text: str, *, windows: bool = os.name == "nt") -> bool:
+    """Whether ``text`` ends in a path separator that means "list this
+    folder's children". A trailing backslash counts only on Windows; on POSIX
+    it is a legal, if unusual, filename character and must not be misread as
+    one."""
+    text = text or ""
+    return text.endswith("/") or (windows and text.endswith("\\"))
 
 
 def _exists(p: Path) -> bool:
@@ -488,6 +568,7 @@ def discover_repos(
     max_depth: int = DEFAULT_MAX_DEPTH,
     max_results: int = DEFAULT_MAX_RESULTS,
     root: str | None = None,
+    darwin: bool | None = None,
 ) -> dict[str, Any]:
     """Scan the conventional clone roots and return a pickable repository list.
 
@@ -499,9 +580,19 @@ def discover_repos(
     those, ``home_direct`` (repos found directly under ``home``) and
     ``elapsed_ms``. Rows sort newest-first by ``mtime`` (None last), then name.
 
-    ``home`` itself is a depth-1 root — the common case of repos cloned straight
-    under ``~`` — scanned without descending into :data:`PROTECTED_HOME_DIRS`
-    (the macOS TCC-guarded folders) so setup never triggers an access prompt.
+    ``darwin``: which platform's root set and home-skip list to use (see
+    :func:`platform_roots`/:func:`home_skip`). ``None`` (the default) detects
+    it from ``sys.platform`` — the only place this module reads it; every
+    caller that wants a specific platform's behaviour passes it explicitly.
+
+    ``home`` itself is a depth-1 root — the common case of repos cloned
+    straight under ``~`` — and it is walked BEFORE every other root: a wide
+    ``~/Documents`` must never push a repo cloned straight under ``~`` out of
+    the result ceiling. On macOS the home-level walk does not descend into
+    :data:`PROTECTED_HOME_DIRS` (the TCC-guarded folders), so setup never
+    triggers an access prompt; off macOS only ``Library`` is skipped there,
+    and Desktop/Documents are instead scanned as their own roots, at their own
+    depth (:data:`NON_MAC_ROOTS`).
 
     ``root``: when given, ONLY that single folder is scanned (still at
     ``max_depth``), and the conventional/home roots are skipped. Unlike
@@ -517,6 +608,7 @@ def discover_repos(
     the rest of the list still comes back.
     """
     t0 = time.perf_counter()
+    darwin = sys.platform == "darwin" if darwin is None else darwin
     home_path = Path(home).expanduser() if home is not None else Path.home()
     home_path = _resolved(home_path)
 
@@ -526,15 +618,11 @@ def discover_repos(
     refusal_details: list[dict[str, str]] = []
 
     def _expand(text: str) -> Path:
-        """``~``/``~/`` mean the home this scan is bound to, not the process's
-        home — anything else would let configured text reach outside the
-        boundary every other line here defends."""
-        text = text.strip()
-        if text == "~":
-            return home_path
-        if text.startswith("~/"):
-            return home_path / text[2:]
-        return Path(text)
+        """``~``/``~/``/``~\\`` mean the home this scan is bound to, not the
+        process's home — anything else would let configured text reach
+        outside the boundary every other line here defends. Delegates to
+        :func:`expand_home` so this scan and the module-level helper agree."""
+        return expand_home(text, home_path)
 
     def _contain(text: str, reason: str = "outside home directory") -> Path | None:
         """Resolve a caller-supplied root and refuse it if it escapes ``home``.
@@ -556,7 +644,7 @@ def discover_repos(
         user pointed here on purpose (see the module docstring)."""
         return _resolved(_expand(text))
 
-    protected = frozenset(PROTECTED_HOME_DIRS)
+    protected = home_skip(darwin)
     # (root, depth, skip-names, report-in-roots_scanned, symlink-boundary).
     walk_specs: list[tuple[Path, int, frozenset[str], bool, Path]] = []
 
@@ -567,7 +655,8 @@ def discover_repos(
         p = _typed_root(str(root))
         walk_specs.append((p, max_depth, frozenset(), True, p))
     else:
-        candidate_roots: list[Path] = []
+        candidate_roots: list[tuple[Path, int]] = []
+        non_mac_names = frozenset(NON_MAC_ROOTS)
         # Case-sensitive filesystems (Linux) keep ``~/code`` and ``~/Code``
         # apart; APFS and NTFS fold them, which is why the list above only ever
         # needed one spelling. Measured on a real Ubuntu 24.04 desktop
@@ -588,7 +677,9 @@ def discover_repos(
         except OSError:
             by_fold = {}
         seen: set[Path] = set()
-        for name in CONVENTIONAL_ROOTS:
+        for name in platform_roots(darwin):
+            is_non_mac = name in non_mac_names
+            depth = NON_MAC_ROOT_DEPTH if is_non_mac else max_depth
             for cr in sorted(by_fold.get(name.lower()) or [home_path / name]):
                 # The conventional roots were the ONE path built without this
                 # check, and `~/Code -> /Volumes/BigDisk/code` is an ordinary
@@ -607,21 +698,33 @@ def discover_repos(
                         "reason": "outside home directory",
                     })
                     continue
-                candidate_roots.append(cr)
+                # A NON_MAC_ROOTS candidate that does not exist is opportunistic
+                # (Desktop/Documents are not "the" clone location the way the
+                # conventional roots are) - dropping it here, before it reaches
+                # a walk_spec, keeps it out of roots_missing too.
+                if is_non_mac and not _exists(cr):
+                    continue
+                candidate_roots.append((cr, depth))
 
+        candidate_paths = {cr for cr, _ in candidate_roots}
         for raw in extra_roots or []:
             if not str(raw).strip():
                 continue
             p = _contain(str(raw))
-            if p is not None and p not in candidate_roots:
-                candidate_roots.append(p)
+            if p is not None and p not in candidate_paths:
+                candidate_roots.append((p, max_depth))
+                candidate_paths.add(p)
 
-        walk_specs = [(cr, max_depth, frozenset(), True, home_path) for cr in candidate_roots]
         # Home itself is a depth-1 root — repos cloned straight under ~, the
-        # case a user with dozens of them saw zero results for. Not reported in
-        # ``roots_scanned`` (``home_direct`` carries the count); its protected
-        # children are never entered, so setup raises no macOS access prompt.
-        walk_specs.append((home_path, 1, protected, False, home_path))
+        # case a user with dozens of them saw zero results for. It runs FIRST,
+        # not last: with the old append-last order, a wide ~/Documents (or any
+        # other root scanned first) could burn the whole result ceiling before
+        # the home pass ever ran, so a repo sitting directly under ~ silently
+        # never made the list. Not reported in ``roots_scanned`` (``home_direct``
+        # carries the count); its skipped children (see :func:`home_skip`) are
+        # never entered, so setup raises no macOS access prompt.
+        walk_specs = [(home_path, 1, protected, False, home_path)]
+        walk_specs += [(cr, d, frozenset(), True, home_path) for cr, d in candidate_roots]
 
     ceiling = max(max_results * 5, 1000)
     found: list[Path] = []

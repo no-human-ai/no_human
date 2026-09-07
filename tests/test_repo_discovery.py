@@ -109,7 +109,7 @@ def test_home_scan_never_enters_protected_dirs(fake_home, monkeypatch):
     def spy(self): touched.append(str(self)); return real(self)
     monkeypatch.setattr(Path, "iterdir", spy)
     (fake_home / "Documents" / "secret" / ".git").mkdir(parents=True)
-    discover_repos(home=fake_home)
+    discover_repos(home=fake_home, darwin=True)
     assert not any(t.endswith("/Documents") or "/Documents/" in t for t in touched)
 
 
@@ -120,13 +120,14 @@ def test_home_scan_never_enters_protected_dirs(fake_home, monkeypatch):
 def test_conventional_roots_cover_the_standard_clone_locations():
     assert CONVENTIONAL_ROOTS == (
         "Projects", "Code", "Development", "Dev", "repos", "git", "workspace", "src",
+        "source",
     )
 
 
 def test_discovers_across_every_conventional_root(tmp_path):
     for i, root in enumerate(CONVENTIONAL_ROOTS):
         _fake_repo(tmp_path / root / f"proj-{i}")
-    res = discover_repos(home=tmp_path)
+    res = discover_repos(home=tmp_path, darwin=True)
     names = set(_by_name(res))
     assert names == {f"proj-{i}" for i in range(len(CONVENTIONAL_ROOTS))}
     # The roots that actually existed are reported, so the UI can say where it looked.
@@ -141,7 +142,7 @@ def test_conventional_roots_match_case_variants_on_case_sensitive_filesystems(tm
     variant of a conventional name is a root; the canonical spelling is still
     reported missing when no variant exists."""
     _fake_repo(tmp_path / "code" / "calc")          # lowercase, the Linux convention
-    res = discover_repos(home=tmp_path)
+    res = discover_repos(home=tmp_path, darwin=True)
     assert "calc" in _by_name(res)
     assert str(tmp_path / "code") in res["roots_scanned"]
     # No double scan when the filesystem folds case (macOS): one entry per real dir.
@@ -150,7 +151,7 @@ def test_conventional_roots_match_case_variants_on_case_sensitive_filesystems(tm
 
 def test_missing_roots_are_reported_not_errors(tmp_path):
     (tmp_path / "git").mkdir()
-    res = discover_repos(home=tmp_path)
+    res = discover_repos(home=tmp_path, darwin=True)
     assert res["roots_scanned"] == [str(tmp_path / "git")]
     assert len(res["roots_missing"]) == len(CONVENTIONAL_ROOTS) - 1
 
@@ -661,10 +662,13 @@ def test_a_slow_root_cannot_stall_the_request_forever(tmp_path, monkeypatch):
 def test_a_truncated_walk_still_returns_what_it_found(tmp_path, monkeypatch):
     """Degrade honestly: partial results plus a flag, the way the git probe
     already does - not an empty list and not an exception."""
-    # "Projects" is scanned before "git", so the fast root finishes first and
-    # the slow one is what the budget cuts off.
+    # Home is scanned first (the walk-order fix: home before every other
+    # root), so repos cloned straight under home are what the *fast* first
+    # scandir call finds - they are leaves, no further scandir needed to
+    # confirm them. "git" is scanned next, and its slow buried subtree is
+    # what the budget cuts off.
     for i in range(6):
-        _fake_repo(tmp_path / "Projects" / f"r{i}")
+        _fake_repo(tmp_path / f"r{i}")
     (tmp_path / "git" / "slow-tree" / "buried").mkdir(parents=True)
     _fake_repo(tmp_path / "git" / "slow-tree" / "buried" / "unreached")
 

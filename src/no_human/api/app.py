@@ -5272,13 +5272,13 @@ async def fs_suggest(path: str = "") -> dict[str, Any]:
     IS the user's home, the TCC-guarded folders (:data:`PROTECTED_HOME_DIRS`)
     are not offered at all — a repo does not live in Downloads.
     """
-    from ..repo_discovery import PROTECTED_HOME_DIRS
+    from ..repo_discovery import PROTECTED_HOME_DIRS, ends_with_sep, normalize_typed_path
 
-    raw = (path or "").strip() or "~"
+    raw = normalize_typed_path((path or "").strip() or "~")
     expanded = Path(raw).expanduser()
     # If the user is mid-typing a segment (no trailing slash and the path isn't a
     # dir), complete against the parent using the last segment as a prefix.
-    if raw.endswith("/") or expanded.is_dir():
+    if ends_with_sep(raw) or expanded.is_dir():
         base, prefix = expanded, ""
     else:
         base, prefix = expanded.parent, expanded.name.lower()
@@ -5295,7 +5295,7 @@ async def fs_suggest(path: str = "") -> dict[str, Any]:
                 break
     except OSError:
         pass
-    return {"base": str(base), "suggestions": out}
+    return {"base": str(base), "prefix": prefix, "suggestions": out}
 
 
 @app.get("/api/repos/discover")

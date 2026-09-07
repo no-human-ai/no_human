@@ -123,6 +123,52 @@ async def test_suggest_never_stats_git_under_home(client, tmp_path, monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_suggest_reports_the_prefix_it_completed_against(client, tmp_path, monkeypatch):
+    """A partial segment (``my`` in ``.../myrepo``) completes against the
+    parent's listing; the response must say what it completed against, not
+    just hand back a bare suggestion list the caller has to re-derive."""
+    home = tmp_path / "home"
+    (home / "myrepo").mkdir(parents=True)
+    (home / "myother").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+
+    r = await client.get("/api/fs/suggest", params={"path": str(home / "my")})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["prefix"] == "my"
+    assert body["base"] == str(home)
+    names = {s["name"] for s in body["suggestions"]}
+    assert names == {"myrepo", "myother"}
+
+    # A completed folder path (trailing "/") lists its children, prefix empty.
+    r2 = await client.get("/api/fs/suggest", params={"path": str(home) + "/"})
+    assert r2.status_code == 200, r2.text
+    assert r2.json()["prefix"] == ""
+
+
+@pytest.mark.asyncio
+async def test_trailing_backslash_is_part_of_the_name_on_posix(client, tmp_path, monkeypatch):
+    """On POSIX a trailing backslash is a literal, if unusual, filename
+    character — not a "list this folder's children" separator the way a
+    trailing "/" is. Only Windows treats "\\" as meaning that. A directory
+    named plain "weird" (no backslash) does NOT exist under that spelling, so
+    if the backslash were (wrongly) read as a separator here, ``expanded``
+    would still not resolve to an existing dir either way; the real proof is
+    that the parent/prefix split happens instead of a "list children" split."""
+    home = tmp_path / "home"
+    (home / "weird").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+
+    r = await client.get("/api/fs/suggest", params={"path": str(home / "weird") + "\\"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    # Not treated as "list home's children" - base is the PARENT (home), and
+    # prefix is the literal name including its trailing backslash.
+    assert body["base"] == str(home)
+    assert body["prefix"] == "weird\\"
+
+
+@pytest.mark.asyncio
 async def test_onboard_repo_persists_unproven_profile(client, store, tmp_path):
     repo = tmp_path / "svc"
     (repo / ".git").mkdir(parents=True)
