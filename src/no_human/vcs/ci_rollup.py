@@ -11,9 +11,14 @@ invocation shape) and reduces its normalized checks to
 Scope: required/blocking checks only, when the rollup carries that data —
 these are the checks GitHub's own merge policy enforces, and matching that
 scope is what prevents a false-ready verdict (the File-inventory incident).
-A rollup with no `isRequired` data at all (no entry has it truthy) falls
-back to evaluating every entry, so a repo that simply doesn't report
-required-ness doesn't silently look like "no checks".
+`pr_watcher.default_pr_checks` resolves `required` with a SECOND `gh`
+call, `gh pr checks --required` (the generic `--json statusCheckRollup`
+export cannot answer `isRequired` itself — that field takes a
+`pullRequestId` argument plain `--json` field reflection does not supply).
+A rollup with no `required` data at all (no entry has it truthy — a failed
+required-lookup, or a repo with genuinely zero required checks) falls back
+to evaluating every entry, so "no required-ness data" never silently looks
+like "no checks".
 """
 
 from __future__ import annotations

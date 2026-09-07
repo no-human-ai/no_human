@@ -582,6 +582,64 @@ async def test_the_same_helpers_do_resolve_for_github(cli_recorder):
     assert calls and all(c[0] == "gh" for c in calls)
 
 
+async def test_default_pr_checks_marks_required_from_a_second_gh_call(monkeypatch):
+    """`gh pr view --json statusCheckRollup` never carries `isRequired` (that
+    field needs a `pullRequestId`-argumented query plain `--json` field
+    reflection cannot issue) — `default_pr_checks` must resolve it with the
+    dedicated `gh pr checks --required` call instead, not merely echo a key
+    the rollup export never populates."""
+    import no_human.vcs.pr_watcher as pw
+
+    calls: list[list[str]] = []
+
+    async def fake_run_cli(cmd):
+        calls.append(cmd)
+        if cmd[:3] == ["gh", "pr", "view"]:
+            return json.dumps({"statusCheckRollup": [
+                {"name": "File inventory", "conclusion": "FAILURE"},
+                {"name": "Optional lint", "conclusion": "FAILURE"},
+            ]})
+        if cmd[:3] == ["gh", "pr", "checks"]:
+            assert "--required" in cmd
+            return json.dumps([{"name": "File inventory"}])
+        raise AssertionError(f"unexpected cmd: {cmd}")
+
+    monkeypatch.setattr(pw, "_run_cli", fake_run_cli)
+    monkeypatch.setattr(pw.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    checks = await pw.default_pr_checks("acme/svc#7")
+    by_name = {c["name"]: c for c in checks}
+    assert by_name["File inventory"]["required"] is True
+    assert by_name["Optional lint"]["required"] is False
+    assert any(c[:3] == ["gh", "pr", "checks"] for c in calls)
+
+
+async def test_default_pr_checks_required_lookup_failure_degrades_to_unscoped(monkeypatch):
+    """A `gh pr checks --required` failure (network/auth/older gh) must never
+    crash `default_pr_checks` — every check just comes back `required=False`,
+    which `ci_rollup.aggregate_rollup` treats as "evaluate everything", not
+    "nothing is in scope"."""
+    import no_human.vcs.pr_watcher as pw
+
+    async def fake_run_cli(cmd):
+        if cmd[:3] == ["gh", "pr", "view"]:
+            return json.dumps({"statusCheckRollup": [
+                {"name": "File inventory", "conclusion": "FAILURE"},
+            ]})
+        if cmd[:3] == ["gh", "pr", "checks"]:
+            return None  # simulates a failed/older-gh required lookup
+        raise AssertionError(f"unexpected cmd: {cmd}")
+
+    monkeypatch.setattr(pw, "_run_cli", fake_run_cli)
+    monkeypatch.setattr(pw.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    checks = await pw.default_pr_checks("acme/svc#7")
+    assert checks == [{
+        "name": "File inventory", "status": "fail", "link": "",
+        "required": False,
+    }]
+
+
 async def test_comment_fetch_encodes_a_raw_slash_short_ref(cli_recorder):
     """The read side of the same defect (`check_pr_comments` -> notes)."""
     calls, replies = cli_recorder
