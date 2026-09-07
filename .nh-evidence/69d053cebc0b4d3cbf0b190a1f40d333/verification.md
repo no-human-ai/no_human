@@ -1,23 +1,43 @@
 # How I verified this — full log
 
-_Harness-captured record for task `69d053ce`, commit `989703bca0ea88941109b6d4a452ad0e2fc7b503` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `69d053ce`, commit `c04e8d87054c13f604cb09e5f12206c289918ff5` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ## How I verified this
-1 command recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
+2 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
 
 ### test
-- `cd /Users/eyalgolan/.<redacted>/worktrees/69d053cebc0b4d3cbf0b190a1f40d333.90097.b59b63eb uv run pytest -q tests/test_release_updater_feed_shipped.py tests/test_dmg_stamp_acceptance.py tests/test_check_release_manifest.py tests/test_precommit_manifest_gate.py 2>&1 | tail -40`
+- `uv run pytest -q tests/test_release_updater_feed_shipped.py tests/test_dmg_stamp_acceptance.py tests/test_check_release_manifest.py tests/test_precommit_manifest_gate.py 2>&1 | tail -60`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
 Using CPython 3.12.13
 Creating virtual environment at: .venv
-   Building no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/69d053cebc0b4d3cbf0b190a1f40d333.90097.b59b63eb
-      Built no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/69d053cebc0b4d3cbf0b190a1f40d333.90097.b59b63eb
-Installed 68 packages in 243ms
+   Building no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/69d053cebc0b4d3cbf0b190a1f40d333.90097.5986d1c9
+      Built no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/69d053cebc0b4d3cbf0b190a1f40d333.90097.5986d1c9
+Installed 68 packages in 111ms
 ........................sss.ssss..................                       [100%]
-43 passed, 7 skipped in 12.73s
+43 passed, 7 skipped in 6.94s
 ```
+
+- `cd /Users/eyalgolan/.<redacted>/worktrees/69d053cebc0b4d3cbf0b190a1f40d333.90097.5986d1c9 uv run pytest tests/ -m repoguard -q 2>&1 | tail -40`
+
+```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+.....................................s.s.s.s.s.s.s.s.s.s................ [ 46%]
+..............................s..........................s.............. [ 93%]
+..........                                                               [100%]
+=============================== warnings summary ===============================
+src/<redacted>/testing/test_layers.py:35
+  /Users/eyalgolan/.<redacted>/worktrees/69d053cebc0b4d3cbf0b190a1f40d333.90097.5986d1c9/src/<redacted>/testing/test_layers.
+[... 158 of 1,297 characters omitted from the middle ...]
+src/<redacted>/testing/test_layers.py:89
+  /Users/eyalgolan/.<redacted>/worktrees/69d053cebc0b4d3cbf0b190a1f40d333.90097.5986d1c9/src/<redacted>/testing/test_layers.py:89: PytestCollectionWarning: cannot collect test class 'TestPlan' because it has a __init__ constructor (from: tests/test_test_layers.py)
+    @dataclass
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+142 passed, 13 skipped, 11678 deselected, 2 warnings in 12.21s
+```  
+  _excerpt - 1,283 characters of output in total_
 
 
 **Not verified:** everything below is a limit of this section, listed whether or not it bit this attempt.
