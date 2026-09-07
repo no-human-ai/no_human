@@ -11,7 +11,7 @@ import { AVAILABLE, FAILED, SKIPPED, UNAVAILABLE, UP_TO_DATE, createUpdater }
 import { SIGNED, UNSIGNED } from "./signing.cjs";
 
 /** Records every interaction, so a missing call is visible as an absence. */
-function fakeAutoUpdater({ version = "0.2.0", throws = null } = {}) {
+function fakeAutoUpdater({ version = "0.2.0", throws = null, downloadThrows = null } = {}) {
   const au = {
     autoDownload: true,              // electron-updater's real defaults, so a
     autoInstallOnAppQuit: true,      // failure to override them is detectable
@@ -26,7 +26,10 @@ function fakeAutoUpdater({ version = "0.2.0", throws = null } = {}) {
       if (throws) throw new Error(throws);
       return { updateInfo: { version, releaseNotes: "notes" } };
     },
-    async downloadUpdate() { au.downloadCalls += 1; },
+    async downloadUpdate() {
+      au.downloadCalls += 1;
+      if (downloadThrows) throw new Error(downloadThrows);
+    },
     quitAndInstall() { au.quitAndInstallCalls += 1; },
   };
   return au;
@@ -35,11 +38,11 @@ function fakeAutoUpdater({ version = "0.2.0", throws = null } = {}) {
 const T0 = 1_000_000_000;
 const DAY = 86_400_000;
 
-function harness({ plan, version = "0.2.0", state = {}, throws = null,
+function harness({ plan, version = "0.2.0", state = {}, throws = null, downloadThrows = null,
                    currentVersion = "0.1.0", isPackaged = true, now = T0 } = {}) {
   const disk = { ...state };
   const events = [];
-  const au = fakeAutoUpdater({ version, throws });
+  const au = fakeAutoUpdater({ version, throws, downloadThrows });
   const up = createUpdater({
     autoUpdater: au, plan, currentVersion, isPackaged,
     readState: () => ({ ...disk }),
@@ -214,6 +217,47 @@ test("a 404 latest.yml failure emits a short sentence and keeps the dump in rawE
   assert.match(manual.rawError, /browser_init/);
   assert.equal(events.length, 1);
   assert.doesNotMatch(events[0].error, /x-github-request-id/);
+});
+
+test("autoUpdater's own 'error' event emits a short sentence, keeping the dump in rawError", () => {
+  // AppUpdater emits "error" (then rethrows) on failures that happen outside
+  // check()'s try/catch — e.g. during its own retry/background work. The fake
+  // autoUpdater never fired this event before, so a regression that reverted
+  // this handler back to raw `error: String(err?.message ?? err)` was
+  // undetected: this is the FIRST thing a manual check's renderer would see.
+  const { up, au, events } = harness({ plan: SIGNED_PLAN });
+  up.configure();
+  const raw = "Cannot find latest.yml in the latest release artifacts "
+    + "(https://github.com/no-human-ai/no_human/releases/download/v0.2.2/latest.yml): "
+    + "HttpError: 404\n"
+    + 'Headers: {"x-github-request-id":"ABCD:1234:56789:ABCDEF:0123456"}\n'
+    + "    at createHttpError (.../electron-updater/out/util/httpExecutor.js:52:12)\n"
+    + "    at node:electron/js2c/browser_init:2:12345";
+  au.listeners.get("error")(new Error(raw));
+  assert.equal(events.length, 1);
+  assert.equal(events[0].mode, FAILED);
+  assert.doesNotMatch(events[0].error, /x-github-request-id/);
+  assert.doesNotMatch(events[0].error, /browser_init/);
+  assert.match(events[0].error, /Release update information is unavailable/);
+  assert.match(events[0].rawError, /x-github-request-id/,
+    "the raw dump must still reach rawError for the collapsed Details view");
+  assert.match(events[0].rawError, /browser_init/);
+});
+
+test("download()'s catch emits a short sentence, never the raw connection error", async () => {
+  // The fake never made downloadUpdate() throw before, so a revert of
+  // download()'s catch back to raw `error` text was undetected.
+  const raw = "net::ERR_CONNECTION_RESET";
+  const { up, events } = harness({ plan: SIGNED_PLAN, downloadThrows: raw });
+  up.configure();
+  await up.check();
+  const d = await up.download();
+  assert.equal(d.mode, FAILED);
+  assert.match(d.error, /Check your internet connection/,
+    "the user gets the short offline sentence, not the Chromium net:: code");
+  assert.equal(d.rawError, raw, "the raw code is kept, for a collapsed Details view");
+  assert.ok(events.some((e) => e.mode === FAILED && e.rawError === raw),
+    "the failure must also be emitted, not just returned");
 });
 
 test("an unpackaged dev run is skipped rather than reported as broken", async () => {

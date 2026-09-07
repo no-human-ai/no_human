@@ -108,11 +108,16 @@ export function updateMessage({ mode, latest, current, canAutoUpdate }) {
 // httpExecutor.js / node:electron/js2c/browser_init. None of that is
 // actionable by a user, so the raw text is classified here, in ONE place,
 // into a short sentence for the failure CLASS — never interpolated into it.
+//
+// Each sentence is exactly ONE claim: it names the failure class and nothing
+// the app has not established. "no-metadata" in particular must not promise a
+// new version (check() fails before isNewer() ever runs, so none is known)
+// or point at an action the failed card does not offer (its only action is
+// "check" — see web/src/updateNotice.js's `failed` branch).
 export const UPDATE_ERROR_MESSAGES = {
-  "no-metadata": "Release update information is unavailable. Try again later"
-    + " or download the new version from the releases page.",
+  "no-metadata": "Release update information is unavailable for this platform right now.",
   offline: "Check your internet connection and try again.",
-  server: "Update server is temporarily unavailable. Try again later.",
+  server: "Update server is temporarily unavailable.",
 };
 
 /**
@@ -134,7 +139,16 @@ export function classifyUpdateError(raw) {
   ) {
     return { category: "no-metadata", message: UPDATE_ERROR_MESSAGES["no-metadata"] };
   }
-  if (/\b(ENOTFOUND|ECONNREFUSED|ENETUNREACH|EAI_AGAIN|ENETDOWN|getaddrinfo)\b/.test(text)) {
+  // Node's http/dns codes cover a check run under plain Node (tests, and any
+  // non-packaged path); the packaged app's electron-updater 6.8.9 uses
+  // ElectronHttpExecutor, which goes through electron/net and surfaces
+  // Chromium's `net::ERR_*` family instead — no `.code` at all, just this
+  // string. Missing this family means a genuinely offline user reads "the
+  // server is down" instead of "check your connection".
+  if (
+    /\b(ENOTFOUND|ECONNREFUSED|ENETUNREACH|EAI_AGAIN|ENETDOWN|getaddrinfo)\b/.test(text)
+    || /net::ERR_(NAME_NOT_RESOLVED|INTERNET_DISCONNECTED|CONNECTION_REFUSED|CONNECTION_RESET|CONNECTION_TIMED_OUT|NETWORK_CHANGED|ADDRESS_UNREACHABLE)\b/.test(text)
+  ) {
     return { category: "offline", message: UPDATE_ERROR_MESSAGES.offline };
   }
   return { category: "server", message: UPDATE_ERROR_MESSAGES.server };

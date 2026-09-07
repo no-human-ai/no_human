@@ -138,6 +138,27 @@ test("network failures ask the user to check their connection", () => {
   }
 });
 
+test("Electron's own net:: errors are offline, not a server problem", () => {
+  // The packaged app's electron-updater (6.8.9) fetches through
+  // ElectronHttpExecutor (electron/net), whose errors carry NO `.code` and
+  // none of the node http/dns strings above — an unresolvable host, a
+  // refused port, and no connectivity at all come back as these exact
+  // Chromium strings. Measured against the bundled Electron binary; a
+  // regression here tells an offline user that GitHub is down.
+  for (const raw of [
+    "net::ERR_NAME_NOT_RESOLVED",
+    "net::ERR_INTERNET_DISCONNECTED",
+    "net::ERR_CONNECTION_REFUSED",
+    "net::ERR_CONNECTION_RESET",
+    "net::ERR_CONNECTION_TIMED_OUT",
+    "net::ERR_NETWORK_CHANGED",
+    "net::ERR_ADDRESS_UNREACHABLE",
+  ]) {
+    assert.match(updateErrorMessage(raw), /Check your internet connection/,
+      `expected an offline sentence for the Electron net error "${raw}"`);
+  }
+});
+
 test("other failures fall back to the server-unavailable sentence", () => {
   for (const raw of [
     "HttpError: 503", "ETIMEDOUT", "EACCES", "", null, undefined, {},
