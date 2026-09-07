@@ -2024,9 +2024,14 @@ def test_paths_falsy_new_file_lands_pinned_and_passes_strict(
     repo.create_branch("no-human/pub11", base="main")
     (work / "src" / "pkg" / "newmod.py").write_text("NEW = 1\n")
 
-    result = commit_with_manifest_repair(repo, None, "feat: add newmod")
+    repairs = []
+    result = commit_with_manifest_repair(
+        repo, None, "feat: add newmod",
+        on_repair=lambda p, note: repairs.append(p))
 
     assert result.sha
+    assert repairs, "proactive repair must report what it pinned"
+    assert "src/pkg/newmod.py" in repairs[0]
     committed = subprocess.run(
         ["git", "show", "--name-only", "--format=", "HEAD"],
         cwd=work, capture_output=True, text=True, check=True).stdout

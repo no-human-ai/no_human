@@ -701,7 +701,8 @@ def discover_repos(
                 # A NON_MAC_ROOTS candidate that does not exist is opportunistic
                 # (Desktop/Documents are not "the" clone location the way the
                 # conventional roots are) - dropping it here, before it reaches
-                # a walk_spec, keeps it out of roots_missing too.
+                # a walk_spec, keeps it out of roots_missing too. Pinned by
+                # tests/test_repo_discovery_platform_roots.py::test_non_mac_missing_desktop_and_documents_are_not_reported_missing.
                 if is_non_mac and not _exists(cr):
                     continue
                 candidate_roots.append((cr, depth))

@@ -384,6 +384,14 @@ def _stage_new_directory_deliverables(repo: GitRepo) -> None:
     ``_stage_untracked_for_approve``'s own doctrine — the caller decides
     what a staging failure means for the commit, this only stages what it
     safely can.
+
+    ``staged_dirs`` is derived from the INDEX (``git diff --cached``), not
+    from a paths list this function owns — unlike ``GitRepo.commit_paths``,
+    which derives the same "new directory" set from its own *paths*
+    argument. So a file a coder pre-staged into a NEW directory by hand
+    (before this function ever runs) widens the sweep by that directory's
+    non-code siblings too, even though nothing here was told about that
+    directory explicitly.
     """
     staged = repo._run(
         "diff", "--cached", "--name-only", check=False
@@ -453,7 +461,11 @@ def write_pending_manifest(
        *paths* unchanged (still falsy): ``_commit()``'s own
        ``commit_all()`` call re-sweeps (idempotent — everything relevant is
        already staged) and picks up the regenerated manifest along with
-       everything else.
+       everything else. On this route step 7's ``on_repair`` call is told
+       what actually landed in the index (``git diff --cached --name-only``,
+       ``RELEASE_MANIFEST.txt`` itself excluded) rather than an empty list,
+       so the ledger event names what was pinned even though the caller
+       passed no *paths* of its own.
     5. ``paths`` truthy — stage *paths* themselves. Reuses
        ``_stage_untracked_for_approve`` verbatim: it resolves each entry
        against the repo root (dropping anything outside it or ephemeral),
@@ -477,7 +489,9 @@ def write_pending_manifest(
     7. On a clean run, compare the manifest's bytes before and after.
        Unchanged — nothing to report (``--write`` rewrites unconditionally,
        so a mtime bump is not evidence; only a byte diff is). Changed —
-       call ``on_repair`` exactly once. When *paths* is truthy,
+       call ``on_repair`` exactly once — with the staged relative paths
+       (RELEASE_MANIFEST.txt excluded) on the falsy-*paths* route, per step
+       4 above, or with *paths* itself when truthy. When *paths* is truthy,
        ``RELEASE_MANIFEST.txt`` is appended (as an ABSOLUTE path —
        ``commit_paths`` resolves each entry against the process cwd, not
        the repo root) to the returned paths, so it is staged into this same
@@ -544,8 +558,21 @@ def write_pending_manifest(
         return paths
     if on_repair is not None:
         tail = (proc.stdout.strip() + "\n" + proc.stderr.strip()).strip()
+        if paths:
+            offenders = list(paths)
+        else:
+            try:
+                staged = repo._run(
+                    "diff", "--cached", "--name-only", check=False
+                ).splitlines()
+            except (GitError, OSError):
+                staged = []
+            offenders = [
+                s.strip() for s in staged
+                if s.strip() and s.strip() != "RELEASE_MANIFEST.txt"
+            ]
         on_repair(
-            list(paths) if paths else [],
+            offenders,
             "manifest re-pinned proactively by check_release_manifest.py "
             "--write: " + tail[:500],
         )

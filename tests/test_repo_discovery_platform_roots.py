@@ -60,6 +60,12 @@ def test_non_mac_scan_finds_windows_clone_locations(tmp_path):
     assert "scratch" in names
     assert "vs-proj" in names
     assert "unpacked" not in names, "Downloads must never be a root"
+    # roots_scanned reports the resolved home path, which differs from the
+    # unresolved ``home`` fixture on macOS (``tmp_path`` lives under
+    # ``/private/var``, not ``/var``) — resolve both sides before comparing.
+    scanned = {str(Path(p).resolve()) for p in res["roots_scanned"]}
+    for name in ("Documents", "Desktop", "source"):
+        assert str((home / name).resolve()) in scanned
 
 
 def test_macos_scan_skips_desktop_and_documents_entirely(tmp_path):
@@ -69,10 +75,30 @@ def test_macos_scan_skips_desktop_and_documents_entirely(tmp_path):
     # source/repos/vs-proj is still found: "source" is a conventional root on
     # every platform.
     assert names == {"vs-proj"}
+    touched = res["roots_scanned"] + res["roots_missing"]
     assert not any(
         str(home / "Documents") in s or str(home / "Desktop") in s
-        for s in res["roots_scanned"]
+        for s in touched
     )
+    assert {Path(t).name for t in touched} == set(CONVENTIONAL_ROOTS)
+
+
+def test_non_mac_missing_desktop_and_documents_are_not_reported_missing(tmp_path):
+    """Pins the ``is_non_mac and not _exists(cr): continue`` drop at
+    ``repo_discovery.py`` ~701-706: an ABSENT ``NON_MAC_ROOTS`` candidate
+    (Desktop/Documents) must never show up in ``roots_missing`` — unlike an
+    absent conventional root, which is reported as missing. Delete that drop
+    and this test goes red: both paths would then flow through the
+    ``walk_specs``/``missing.append`` path like any other candidate root."""
+    home = tmp_path / "home"
+    _fake_repo(home / "code" / "x")
+    res = discover_repos(home=home, darwin=False)
+    touched = res["roots_scanned"] + res["roots_missing"]
+    assert not any(t.endswith("Desktop") or t.endswith("Documents") for t in touched)
+    # A conventional root that is ALSO absent (e.g. "Projects") IS reported
+    # missing — proving the assertion above isn't vacuously true because
+    # nothing ever lands in roots_missing.
+    assert any(t.endswith("Projects") for t in res["roots_missing"])
 
 
 def test_darwin_none_follows_sys_platform(tmp_path, monkeypatch):
