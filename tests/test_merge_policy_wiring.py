@@ -33,14 +33,31 @@ import json
 import subprocess
 from pathlib import Path
 
+import pytest
 
 from no_human.config import load_config
 import no_human.core.merge_policy as merge_policy
+import no_human.core.orchestrator as orch_mod
 from no_human.core.orchestrator import Orchestrator
 from no_human.core.task import Task, TaskStatus
 from no_human.notify.slack import SlackNotifier
 from no_human.vcs.git import GitRepo
 from no_human.vcs.receipts import Receipt
+
+
+@pytest.fixture(autouse=True)
+def _no_real_ci_rollup_network_calls(monkeypatch):
+    """`Orchestrator._stamp_delivered_ci_status` (called at the end of every
+    `_finalize` run in this file, since every test here delivers a GitHub
+    PR) polls `ci_rollup.fetch_ci_rollup`, which shells out to `gh` for a
+    real network call. Default it to "no CI reported" for every test in
+    this file EXCEPT the ones that explicitly re-`monkeypatch` it below to
+    exercise the poll itself — the rest of this file predates that poll and
+    must stay deterministic/offline."""
+    async def _default(pr_url):
+        return None, ()
+
+    monkeypatch.setattr(orch_mod.ci_rollup, "fetch_ci_rollup", _default)
 
 
 class _Backend:
@@ -677,6 +694,173 @@ async def test_the_success_path_body_is_unchanged_by_the_single_gather(
     assert "NOT COMPUTED" not in body, body
     assert seen.get("evidence") is not None
     assert seen["evidence"].merge_policy_error is None, seen["evidence"].merge_policy_error
+
+
+# ---------------------------------------------------------------------------
+# `_stamp_delivered_ci_status`: the incident fix. A delivered GitHub PR's
+# real check rollup is polled at the awaiting_approval transition, written
+# to `task.context["ci_status"]`, and folded into the persisted verdict for
+# the delivered head.
+# ---------------------------------------------------------------------------
+
+def _six_of_six_setup(tmp_path):
+    """Seed a run that satisfies all 6 DEFAULT_POLICY rules EXCEPT `ci` —
+    the same seeding `test_policy_file_changed_in_this_diff_forces_the_warning_glyph`
+    uses for `tests_ran_and_passed` (no custom policy file, default 6
+    rules)."""
+    work = _repo_with_a_commit(tmp_path)
+    reviewed_sha = _git(work, "rev-parse", "HEAD")
+    ctx = _stamp({}, reviewed_sha)
+    return work, reviewed_sha, ctx
+
+
+async def test_a_failing_rollup_on_the_delivered_head_is_not_ready_and_names_the_check(
+    store, tmp_path, monkeypatch,
+):
+    """THE PLANT: a faked rollup FAILURE on the delivered head must persist a
+    NOT-ready verdict for that head, with the failing check's name in the
+    `ci` rule's detail string — the exact incident (PR #122, File-inventory
+    red on GitHub, merge policy showed "ready — 6 of 6")."""
+    work, reviewed_sha, ctx = _six_of_six_setup(tmp_path)
+
+    async def fake_fetch(pr_url):
+        return "failure", ("File inventory",)
+
+    monkeypatch.setattr(orch_mod.ci_rollup, "fetch_ci_rollup", fake_fetch)
+
+    def fake_open_pr(repo, branch, title, body, **kw):
+        return _FakePR("https://github.com/o/r/pull/122", repo.head_sha())
+
+    events: list[dict] = []
+    orch, task, attempt_id, out = await _finalize_task(
+        store, tmp_path, work, ctx, fake_open_pr, monkeypatch, events=events,
+        test_results={"ran": True, "passed": 1, "failed": 0})
+
+    assert out.status == TaskStatus.AWAITING_APPROVAL, out.detail
+    assert (task.context or {}).get("ci_status") == "failure"
+
+    mp = (task.context or {}).get("merge_policy") or {}
+    verdict = mp.get(reviewed_sha) or {}
+    assert verdict.get("ready") is False, verdict
+    ci_rule = next(r for r in verdict["rules"] if r["name"] == "ci")
+    assert ci_rule["passed"] is False, ci_rule
+    assert "File inventory" in ci_rule["detail"], ci_rule
+
+    # The post-CI verdict is the LAST `merge_policy` event emitted (it fires
+    # after the pre-delivery compute's own event).
+    mp_events = [e for e in events if e.get("kind") == "merge_policy"]
+    assert mp_events[-1]["ready"] is False, mp_events
+
+
+async def test_a_green_rollup_is_ready_six_of_six(store, tmp_path, monkeypatch):
+    """THE CONTROL: same setup, a green rollup ⇒ ready 6 of 6, and the
+    written `ci_status` reflects the polled "success"."""
+    work, reviewed_sha, ctx = _six_of_six_setup(tmp_path)
+
+    async def fake_fetch(pr_url):
+        return "success", ()
+
+    monkeypatch.setattr(orch_mod.ci_rollup, "fetch_ci_rollup", fake_fetch)
+
+    def fake_open_pr(repo, branch, title, body, **kw):
+        return _FakePR("https://github.com/o/r/pull/122", repo.head_sha())
+
+    orch, task, attempt_id, out = await _finalize_task(
+        store, tmp_path, work, ctx, fake_open_pr, monkeypatch,
+        test_results={"ran": True, "passed": 1, "failed": 0})
+
+    assert out.status == TaskStatus.AWAITING_APPROVAL, out.detail
+    assert (task.context or {}).get("ci_status") == "success"
+
+    mp = (task.context or {}).get("merge_policy") or {}
+    verdict = mp.get(reviewed_sha) or {}
+    assert verdict.get("ready") is True, verdict
+    assert verdict.get("summary", "").startswith("ready — 6 of 6"), verdict
+
+
+async def test_a_repo_with_no_checks_stays_tolerated(store, tmp_path, monkeypatch):
+    """A task with no delivered PR's rollup data (repo genuinely runs no CI)
+    keeps today's behaviour unchanged: `ci_status` is None, and the `ci`
+    rule detail is exactly the pre-existing tolerated string."""
+    work, reviewed_sha, ctx = _six_of_six_setup(tmp_path)
+
+    async def fake_fetch(pr_url):
+        return None, ()
+
+    monkeypatch.setattr(orch_mod.ci_rollup, "fetch_ci_rollup", fake_fetch)
+
+    def fake_open_pr(repo, branch, title, body, **kw):
+        return _FakePR("https://github.com/o/r/pull/122", repo.head_sha())
+
+    orch, task, attempt_id, out = await _finalize_task(
+        store, tmp_path, work, ctx, fake_open_pr, monkeypatch,
+        test_results={"ran": True, "passed": 1, "failed": 0})
+
+    assert out.status == TaskStatus.AWAITING_APPROVAL, out.detail
+    assert (task.context or {}).get("ci_status") is None
+
+    mp = (task.context or {}).get("merge_policy") or {}
+    verdict = mp.get(reviewed_sha) or {}
+    assert verdict.get("ready") is True, verdict
+    ci_rule = next(r for r in verdict["rules"] if r["name"] == "ci")
+    assert ci_rule["detail"] == "ci: none reported (tolerated)", ci_rule
+
+
+async def test_no_delivered_github_pr_never_polls(store, tmp_path, monkeypatch):
+    """A non-GitHub (e.g. GitLab) delivered PR never triggers the poll — the
+    delivery path is GitHub-only per `_stamp_delivered_ci_status`'s
+    `pr_watcher.parse_pr_url` gate."""
+    work, reviewed_sha, ctx = _six_of_six_setup(tmp_path)
+
+    calls = {"n": 0}
+
+    async def fake_fetch(pr_url):
+        calls["n"] += 1
+        return "success", ()
+
+    monkeypatch.setattr(orch_mod.ci_rollup, "fetch_ci_rollup", fake_fetch)
+
+    def fake_open_pr(repo, branch, title, body, **kw):
+        return _FakePR("https://gitlab.com/o/r/-/merge_requests/9", repo.head_sha())
+
+    orch, task, attempt_id, out = await _finalize_task(
+        store, tmp_path, work, ctx, fake_open_pr, monkeypatch,
+        test_results={"ran": True, "passed": 1, "failed": 0})
+
+    assert out.status == TaskStatus.AWAITING_APPROVAL, out.detail
+    assert calls["n"] == 0, "fetch_ci_rollup must not be called for a non-GitHub PR"
+    assert "ci_status" not in (task.context or {})
+
+
+async def test_a_rollup_fetch_failure_is_advisory_only(store, tmp_path, monkeypatch):
+    """A raising rollup fetch degrades to advisory: the task still reaches
+    AWAITING_APPROVAL, and the pre-CI verdict computed in `_finalize`
+    survives (never overwritten by a half-failed re-stamp)."""
+    work, reviewed_sha, ctx = _six_of_six_setup(tmp_path)
+
+    async def fake_fetch(pr_url):
+        raise RuntimeError("gh: rate limited")
+
+    monkeypatch.setattr(orch_mod.ci_rollup, "fetch_ci_rollup", fake_fetch)
+
+    def fake_open_pr(repo, branch, title, body, **kw):
+        return _FakePR("https://github.com/o/r/pull/122", repo.head_sha())
+
+    events: list[dict] = []
+    orch, task, attempt_id, out = await _finalize_task(
+        store, tmp_path, work, ctx, fake_open_pr, monkeypatch, events=events,
+        test_results={"ran": True, "passed": 1, "failed": 0})
+
+    assert out.status == TaskStatus.AWAITING_APPROVAL, out.detail
+    advisories = [e["text"] for e in events if e.get("kind") == "advisory"]
+    assert any(
+        "delivered PR CI status not polled" in a for a in advisories
+    ), advisories
+
+    mp = (task.context or {}).get("merge_policy") or {}
+    verdict = mp.get(reviewed_sha) or {}
+    # The pre-CI compute (ci: none reported, tolerated) survives untouched.
+    assert verdict.get("ready") is True, verdict
 
 
 # ---------------------------------------------------------------------------

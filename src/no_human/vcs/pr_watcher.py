@@ -582,6 +582,7 @@ async def default_pr_checks(ref: str) -> list[dict]:
         checks.append({
             "name": name, "status": status,
             "link": c.get("targetUrl") or c.get("detailsUrl") or "",
+            "required": bool(c.get("isRequired")),
         })
     return checks
 

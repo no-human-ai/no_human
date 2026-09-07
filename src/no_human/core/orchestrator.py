@@ -136,7 +136,7 @@ from ..vcs import (
     open_pr,
     promote_draft_pr,
 )
-from ..vcs import pr_watcher
+from ..vcs import ci_rollup, pr_watcher
 from ..vcs.push_hook import refresh_protected_patterns
 from ..vcs.receipts import verify_pr_receipt
 from ..vcs.task_pr import resolve_task_pr
@@ -6933,6 +6933,12 @@ class Orchestrator:
         # below. Wrapped like the two evidence blocks above it — a failure
         # here is an advisory note, never a reason this PR doesn't ship.
         merge_policy_dict: dict | None = None
+        # Kept in locals so `_stamp_delivered_ci_status` (called after PR
+        # delivery, below) can recompute the verdict for the delivered head
+        # with a refreshed `ci_state` without re-deriving `changed_paths` /
+        # `changed_lines` / tamper adjudications a second time.
+        policy_facts: merge_policy.GateFacts | None = None
+        policy_extra_problems: tuple[str, ...] = ()
         head_sha = (getattr(commit, "sha", "") or "").strip()
         # Gathered here, BEFORE the policy try-block, so a policy-compute
         # failure below can never change what `_pr_body` builds from — it
@@ -6976,24 +6982,26 @@ class Orchestrator:
                     f"the diff could not be read ({exc}) — max_changed_lines "
                     "could not be evaluated")
             repro_state = getattr(self, "_last_repro", None) or {}
+            policy_extra_problems = tuple(evidence_problems)
+            policy_facts = merge_policy.facts_from_evidence(
+                policy_evidence,
+                changed_paths=changed_paths,
+                changed_lines=changed_lines,
+                repro_verdict=repro_state.get("verdict"),
+                repro_required=bool(repro_state.get("required")),
+                # The RAW, unfiltered adjudication list — NOT
+                # `evidence.tamper`, which `_tamper_data` has already
+                # pre-filtered down to LEGITIMATE-only waivers. A
+                # TAMPERING/CANNOT_DECIDE fire must still be visible to
+                # `tamper_guard_clear` even though it never reaches the
+                # PR body.
+                tamper_adjudications=(task.context or {}).get(
+                    "tamper_adjudications"),
+            )
             verdict = merge_policy.evaluate_repo(
                 repo.path,
-                extra_problems=tuple(evidence_problems),
-                facts=merge_policy.facts_from_evidence(
-                    policy_evidence,
-                    changed_paths=changed_paths,
-                    changed_lines=changed_lines,
-                    repro_verdict=repro_state.get("verdict"),
-                    repro_required=bool(repro_state.get("required")),
-                    # The RAW, unfiltered adjudication list — NOT
-                    # `evidence.tamper`, which `_tamper_data` has already
-                    # pre-filtered down to LEGITIMATE-only waivers. A
-                    # TAMPERING/CANNOT_DECIDE fire must still be visible to
-                    # `tamper_guard_clear` even though it never reaches the
-                    # PR body.
-                    tamper_adjudications=(task.context or {}).get(
-                        "tamper_adjudications"),
-                ),
+                extra_problems=policy_extra_problems,
+                facts=policy_facts,
             )
             merge_policy_dict = verdict.as_dict()
             # Fold the verdict INTO the evidence object it was computed from,
@@ -7227,6 +7235,14 @@ class Orchestrator:
         for _url in (pr.url, *linked_pr_urls):
             await record_pr_opened(self.store, task.id, _url)
 
+        # Poll the delivered PR's GitHub check rollup and re-stamp the merge
+        # policy verdict for this head — see `_stamp_delivered_ci_status`'s
+        # docstring. Best-effort/advisory: never blocks reaching
+        # AWAITING_APPROVAL below.
+        await self._stamp_delivered_ci_status(
+            task, pr_url=pr.url, head_sha=head_sha, facts=policy_facts,
+            extra_problems=policy_extra_problems, repo=repo)
+
         await self._advance_after_review(
             task, TaskStatus.AWAITING_APPROVAL, attempt_id=attempt_id,
             branch=branch, base=base, commit=commit, pr_url=pr.url,
@@ -7243,6 +7259,54 @@ class Orchestrator:
         return TaskOutcome(task, pr_url=pr.url, status=TaskStatus.AWAITING_APPROVAL,
                            detail="PR opened; awaiting human approval",
                            report=(result.final_text or "").strip())
+
+    async def _stamp_delivered_ci_status(
+        self, task: Task, *, pr_url: str | None, head_sha: str,
+        facts: merge_policy.GateFacts | None,
+        extra_problems: tuple[str, ...], repo: GitRepo,
+    ) -> None:
+        """Poll the delivered PR's GitHub check rollup and write it onto the
+        task the moment it enters AWAITING_APPROVAL — this is the fix for
+        the incident where `_check_ci` always read `ci_state=None` (nothing
+        wrote `task.context["ci_status"]` on a GitHub-Actions repo; only the
+        enterprise `ci_runner` path did, via `_run_ci`).
+
+        Writes `task.context["ci_status"]` on every call (re-fetched on each
+        entry to AWAITING_APPROVAL, so a re-delivery catches a check that
+        finished or failed since the last poll). When a state was obtained,
+        also recomputes and re-persists the merge-policy verdict for THIS
+        head (`task.context["merge_policy"][head_sha]`) from the same
+        `facts`/`extra_problems` `_finalize` already computed, with
+        `ci_state`/`ci_failed_checks` refreshed — so the persisted verdict
+        (what the API's `merge_ready` and `nh approve` read) reflects the
+        real CI outcome, not the "none reported (tolerated)" default the
+        pre-delivery compute above necessarily used.
+
+        Best-effort/advisory only, like every other block in `_finalize`:
+        wrapped end-to-end so a `gh`/network failure, or any other error
+        here, can never fail a delivered PR or block reaching
+        AWAITING_APPROVAL.
+        """
+        if not pr_url or not head_sha or facts is None:
+            return
+        parsed = pr_watcher.parse_pr_url(pr_url)
+        if not parsed or parsed[0] != "github":
+            return
+        try:
+            state, failing = await ci_rollup.fetch_ci_rollup(pr_url)
+            task.context = await self.store.merge_context(
+                task.id, {"ci_status": state})
+            if state is not None:
+                verdict = merge_policy.evaluate_repo(
+                    repo.path,
+                    extra_problems=extra_problems,
+                    facts=replace(facts, ci_state=state, ci_failed_checks=failing),
+                )
+                task.context = await self.store.merge_context(
+                    task.id, {"merge_policy": {head_sha: verdict.as_dict()}})
+                self.emit("merge_policy", verdict.summary, ready=verdict.ready)
+        except Exception as exc:  # noqa: BLE001 — advisory only; never blocks
+            self._advisory(f"delivered PR CI status not polled: {exc}")
 
     #: Idempotency marker for the verification comment. An HTML comment: invisible
     #: in the rendered PR, greppable in the raw body. Same discipline as

@@ -123,6 +123,11 @@ class GateFacts:
     verifiers_ran: int = 0
     verifiers_failed: tuple[str, ...] = ()
     ci_state: str | None = None  # success/failure/pending/unknown/None
+    # Advisory detail only — names failing checks in `_check_ci`'s detail
+    # string. The pass/fail decision is still made from `ci_state` alone, so
+    # this field never affects `ready`; it is purely for the human-legible
+    # detail (e.g. "ci: failure (File inventory)").
+    ci_failed_checks: tuple[str, ...] = ()
     changed_paths: tuple[str, ...] = ()
     changed_lines: int = 0
     # True when the diff being evaluated itself edits the policy file
@@ -366,6 +371,17 @@ def _check_verifiers_all_satisfied(facts: GateFacts, _arg: Any) -> tuple[bool, s
     return False, f"{len(facts.verifiers_failed)} verifier{'s' if len(facts.verifiers_failed) != 1 else ''} failed: {', '.join(facts.verifiers_failed)}"
 
 
+def _format_failed_checks(names: tuple[str, ...]) -> str:
+    """Render failing check names as a detail suffix, e.g. ``" (File
+    inventory)"`` or ``" (a, b, c +2 more)"``. Empty ``names`` -> ``""`` (the
+    detail string is left exactly as it was before this field existed)."""
+    if not names:
+        return ""
+    shown = names[:3]
+    suffix = f" +{len(names) - 3} more" if len(names) > 3 else ""
+    return f" ({', '.join(shown)}{suffix})"
+
+
 def _check_ci(facts: GateFacts, arg: Any) -> tuple[bool, str]:
     state = facts.ci_state
     if arg == "success":
@@ -375,7 +391,7 @@ def _check_ci(facts: GateFacts, arg: Any) -> tuple[bool, str]:
             return False, "ci: none reported (strict mode requires success)"
         if state == "unknown":
             return False, "ci: unknown (strict mode requires success)"
-        return False, f"ci: {state}"
+        return False, f"ci: {state}{_format_failed_checks(facts.ci_failed_checks)}"
     # success_or_unknown
     if state == "success":
         return True, "ci: success"
@@ -383,7 +399,7 @@ def _check_ci(facts: GateFacts, arg: Any) -> tuple[bool, str]:
         return True, "ci: unknown (tolerated)"
     if state is None:
         return True, "ci: none reported (tolerated)"
-    return False, f"ci: {state}"
+    return False, f"ci: {state}{_format_failed_checks(facts.ci_failed_checks)}"
 
 
 def _check_paths_within(facts: GateFacts, arg: Any) -> tuple[bool, str]:
@@ -485,6 +501,7 @@ def facts_from_evidence(
     repro_verdict: str | None = None,
     repro_required: bool = False,
     tamper_adjudications: list[dict] | tuple[dict, ...] | None = None,
+    ci_failed_checks: list[str] | tuple[str, ...] | None = None,
 ) -> GateFacts:
     """Adapt a `core.pr_evidence.PrEvidence` (plus the facts it deliberately
     does not carry — changed paths/lines, and the repro gate's verdict,
@@ -553,6 +570,10 @@ def facts_from_evidence(
     ci_state = getattr(evidence, "ci_state", None)
     ci_state = str(ci_state) if ci_state else None
 
+    if ci_failed_checks is None:
+        ci_failed_checks = getattr(evidence, "ci_failed_checks", None) or ()
+    ci_failed_checks = tuple(str(n) for n in ci_failed_checks)
+
     policy_changed_in_diff = any(
         pathglob.normalize_path(p) == POLICY_RELPATH for p in changed_paths
     )
@@ -570,6 +591,7 @@ def facts_from_evidence(
         verifiers_ran=verifiers_ran,
         verifiers_failed=verifiers_failed,
         ci_state=ci_state,
+        ci_failed_checks=ci_failed_checks,
         changed_paths=tuple(changed_paths),
         changed_lines=changed_lines,
         policy_changed_in_diff=policy_changed_in_diff,
