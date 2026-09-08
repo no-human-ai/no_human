@@ -94,10 +94,11 @@ def run_setup_commands(
     marker from an earlier call). That second case guards a re-entry into the
     SAME worktree path — not a per-attempt saving. Task worktrees are minted
     one per RUN (`Orchestrator._worktree_path`, torn down in
-    `_run_task_body`'s `finally`) and setup runs once per `_drive_watched`,
-    before the attempt loop, so no caller today calls this twice on one path;
-    the marker only matters if that ever changes. Raises `WorktreeSetupError`
-    naming the failing command; never raises anything else."""
+    `_run_task_body`'s `finally`) and setup runs at most once per
+    `_drive_watched`, before the attempt loop, so no caller today calls this
+    twice on one path; the marker only matters if that ever changes. Raises
+    `WorktreeSetupError` naming the failing command; never raises anything
+    else."""
     normalized = [c.strip() for c in (cmds or []) if c and c.strip()]
     if not normalized:
         return []
