@@ -394,6 +394,12 @@ jobs:
       # command the one-line installer should run, pointed at the artefact.
       - name: Install the wheel the way a user would, and run it
         env:
+          # A built artefact launched outside pytest cannot see this runner's
+          # own CI markers, so it tagged itself environment=real and inflated
+          # the real-install count 1:1 (issue #120). NH_ENV is the highest
+          # precedence rule in telemetry.environment(), so declaring it here
+          # is immune to whatever strips the rest of the environment.
+          NH_ENV: ci
           UV_TOOL_DIR: ${{ runner.temp }}/uv-tools
           UV_TOOL_BIN_DIR: ${{ runner.temp }}/uv-bin
         run: |
@@ -461,6 +467,11 @@ jobs:
         run: docker build -f Dockerfile.mcp -t no-human-mcp:ci .
 
       - name: initialize + tools/list, inside the container
+        env:
+          # This job runs on EVERY ci.yml run and the container's own lifespan
+          # emits app_started; without this it tags environment=real (#120).
+          # The probe forwards NH_ENV into the container with `-e NH_ENV`.
+          NH_ENV: ci
         run: python3 packaging/mcp_handshake_probe.py no-human-mcp:ci
 
       # Last, because it is the slow one (a node stage builds the board) and a
@@ -929,6 +940,8 @@ jobs:
 
       # Outside the repo, with no toolchain: the frozen binary runs on its own.
       - name: The installed frozen server runs outside the repo
+        env:
+          NH_ENV: ci  # issue #120: a bundle cannot see the runner's CI markers
         run: cd / && /opt/no_human/resources/nh-server/nh --version
 
       # The product does not bundle the Claude Code CLI on any platform, and
@@ -964,6 +977,8 @@ jobs:
       # not inject --no-sandbox — a broken chrome-sandbox / userns setup fails
       # HERE, not only on a user's machine.
       - name: Installed app — first run -> board -> quit (throwaway HOME, Xvfb)
+        env:
+          NH_ENV: ci  # issue #120: a bundle cannot see the runner's CI markers
         run: |
           O="$RUNNER_TEMP/linux-acceptance"
           xvfb-run -a --server-args="-screen 0 1440x900x24" \
@@ -974,6 +989,8 @@ jobs:
       # runner has no FUSE. That sidesteps the two real-desktop frictions
       # (libfuse2, AppArmor userns) on purpose — they are Lane B's to observe.
       - name: AppImage — the same run, extracted
+        env:
+          NH_ENV: ci  # issue #120: a bundle cannot see the runner's CI markers
         run: |
           H="$(mktemp -d)"; O="$RUNNER_TEMP/linux-acceptance-appimage"
           A="$(ls "$PWD"/desktop/dist/no_human-*-linux-x86_64.AppImage)"; chmod +x "$A"
