@@ -120,7 +120,13 @@ FROZEN_FUNCTION_LINES = {
     # (see the file-total entry below) but nets `_run_attempt` itself
     # smaller than even the pre-incident-fix baseline. Measured on this
     # tree with the scanner below.
-    "core/orchestrator.py:Orchestrator._run_attempt": 2214,
+    # 2151 -> 2166 (+15, tightened from the stale 2214 pin above): the
+    # `_node_serial_rerun` call site + `serial_passed` guard in the
+    # plain-red branch — a cold `node --test` run gets one serial re-run
+    # of only its failing files before being blamed on the change (tasks
+    # ba602e95 / f8af7f46, 2026-09-08). Measured on this tree with the
+    # scanner below.
+    "core/orchestrator.py:Orchestrator._run_attempt": 2166,
     # 760 -> 778 (+18): dispatch-time intake-eval hoisted path — the `elif
     # ctx.get("eval_result")` branch that acts on a grill/wizard-stored
     # verdict (idempotency marker, cost/residual-gap comments) added inside
@@ -283,7 +289,11 @@ FROZEN_FUNCTION_CC = {
     # — `_run_attempt`'s own zero-diff site is now just the delegating call
     # plus its `if landed is not None:` check. Measured on this tree with
     # the scanner below.
-    "core/orchestrator.py:Orchestrator._run_attempt": 258,
+    # 232 -> 235 (+3, tightened from the stale 258 pin above): the
+    # `_node_serial_rerun` call site's `if serial_passed:` branch in the
+    # plain-red branch (tasks ba602e95 / f8af7f46, 2026-09-08). Measured on
+    # this tree with the scanner below.
+    "core/orchestrator.py:Orchestrator._run_attempt": 235,
     "core/orchestrator.py:Orchestrator._drive": 115,
     "agent/guard.py:_approve_denial": 81,
     # 73 -> 74 (+1): same cause as the LINES entry above — e922e9b4's landing
@@ -768,7 +778,12 @@ FROZEN_FILE_LINES = {
     # repo.head_sha())`, so the net line count lands back at 22585 — same
     # number as the flag, different (correct, flagless) mechanism. Measured
     # on this tree by the scanner's own metric.
-    "core/orchestrator.py": 22585,
+    # 22585 -> 22669 (+84): the new `_node_serial_rerun` sibling helper next
+    # to `_run_tests_once`, plus its ~13-line call site in `_run_attempt`'s
+    # plain-red branch — one serial re-run of only the failing files before
+    # a cold `node --test` run is blamed on the change (tasks ba602e95 /
+    # f8af7f46, 2026-09-08). Measured on this tree with the scanner below.
+    "core/orchestrator.py": 22669,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.
