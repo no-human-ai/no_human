@@ -1,44 +1,34 @@
 # How I verified this — full log
 
-_Harness-captured record for task `c066fde5`, commit `03494f195368d39fe3a177ab059d94a3880b24b0` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `c066fde5`, commit `11d4ebf89d8b8b56790404d54c4b7d3beccbf5b5` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ## How I verified this
-8 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
+6 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
 
 ### test
-- `npm test 2>&1 | tail -80`
+- `npm test 2>&1 | tail -30`
 
 ```
 ...
-# Subtest: an UNSIGNED build still reports the update, but refuses to install it
-ok 416 - an UNSIGNED build still reports the update, but refuses to install it
+# Subtest: an unpackaged dev run is skipped rather than reported as broken
+ok 426 - an unpackaged dev run is skipped rather than reported as broken
   ---
-  duration_ms: 0.509334
+  duration_ms: 0.078917
   ...
-# Subtest: Later is persisted, and the next launch is silent about that version
-ok 417 - Later is persisted, and the next launch is silent about that version
+# Subtest: install refuses until the bytes are actually on disk
+ok 427 - install refuses until the bytes are actually on disk
   ---
-  duration_ms: 0.196666
-  ...
-# Subtest: a newer release breaks through an earlier deferral
-ok 418 - a newer release breaks through an earlier deferral
-  ---
-  duration_ms: 0.0855
-  ...
-# Subtest: an explicit check bypasses both the throttle and a deferral
-ok 419 - an explicit check bypasses both the throttle and a 
-[... 1,546 of 2,685 characters omitted from the middle ...]
-ation_ms: 0.067334
+  duration_ms: 0.067166
   ...
 # Subtest: download progress and completion reach the listener
 ok 428 - download progress and completion reach the listener
   ---
-  duration_ms: 0.229916
+  duration_ms: 0.108292
   ...
 # Subtest: a listener that throws cannot take the updater down
 ok 429 - a listener that throws cannot take the updater down
   ---
-  duration_ms: 0.156583
+  duration_ms: 0.12025
   ...
 1..429
 # tests 429
@@ -48,83 +38,48 @@ ok 429 - a listener that throws cannot take the updater down
 # cancelled 0
 # skipped 1
 # todo 0
-# duration_ms 94256.148708
-```  
-  _excerpt - 2,685 characters of output in total_
+# duration_ms 94223.731709
+```
 
-- `npm test 2>&1 | tail -60`
+- `npm test 2>&1 | tail -15`
 
 ```
 ...
-# Subtest: backoffDelay: 1s, 2s, 4s, 8s, 16s, then capped at 30s forever
-ok 1607 - backoffDelay: 1s, 2s, 4s, 8s, 16s, then capped at 30s forever
-  ---
-  duration_ms: 0.671625
-  ...
-# Subtest: reconnect delays are 1s, 2s, 4s, 8s, 16s, then capped at 30s forever
-ok 1608 - reconnect delays are 1s, 2s, 4s, 8s, 16s, then capped at 30s forever
-  ---
-  duration_ms: 0.732041
-  ...
-# Subtest: socket.onerror triggers a reconnect
-ok 1609 - socket.onerror triggers a reconnect
-  ---
-  duration_ms: 0.0585
-  ...
-# Subtest: a paired error+close counts as ONE disconnect, not two
-ok 1610 - a paired error+close counts as ONE disconnect, not two
-  ---
-  duration_ms: 0.050083
-  ...
-# Subte
-[... 780 of 1,919 characters omitted from the middle ...]
-t cancels it and restarts backoff at 1s
-ok 1615 - a close during an in-flight snapshot cancels it and restarts backoff at 1s
-  ---
-  duration_ms: 0.1525
-  ...
 # Subtest: stop() is idempotent and leaves no pending timer or open socket
-ok 1616 - stop() is idempotent and leaves no pending timer or open socket
+ok 1617 - stop() is idempotent and leaves no pending timer or open socket
   ---
-  duration_ms: 0.158458
+  duration_ms: 0.228458
   ...
-1..1616
-# tests 1616
+1..1617
+# tests 1617
 # suites 0
-# pass 1616
+# pass 1617
 # fail 0
 # cancelled 0
 # skipped 0
 # todo 0
-# duration_ms 512.703166
-```  
-  _excerpt - 1,919 characters of output in total_
+# duration_ms 593.505708
+```
 
-- `cd .. && pwd && uv run pytest -q tests/test_readme_claims.py 2>&1 | tail -40`
+- `uv run pytest -q tests/test_readme_claims.py 2>&1 | tail -30`
 
 ```
-/Users/eyalgolan/.<redacted>/worktrees/c066fde5e5ce4303be843c2c7d4056fa.90097.74667539
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
 Using CPython 3.12.13
 Creating virtual environment at: .venv
-   Building no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/c066fde5e5ce4303be843c2c7d4056fa.90097.74667539
-      Built no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/c066fde5e5ce4303be843c2c7d4056fa.90097.74667539
-Installed 68 packages in 111ms
+   Building no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/c066fde5e5ce4303be843c2c7d4056fa.90097.8eb7e2f4
+      Built no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/c066fde5e5ce4303be843c2c7d4056fa.90097.8eb7e2f4
+Installed 68 packages in 167ms
 ............................s.s.s.s.s.s.s.s.s.s......................... [ 49%]
 .....................s..........................s....................... [ 99%]
 .                                                                        [100%]
-133 passed, 12 skipped in 4.76s
+133 passed, 12 skipped in 6.02s
 ```
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/c066fde5e5ce4303be843c2c7d4056fa.90097.74667539/desktop && npm test 2>&1 | tail -15`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/c066fde5e5ce4303be843c2c7d4056fa.90097.8eb7e2f4/desktop && npm test 2>&1 | tail -10`
 
 ```
 ...
-# Subtest: a listener that throws cannot take the updater down
-ok 429 - a listener that throws cannot take the updater down
-  ---
-  duration_ms: 0.141084
-  ...
 1..429
 # tests 429
 # suites 0
@@ -133,89 +88,48 @@ ok 429 - a listener that throws cannot take the updater down
 # cancelled 0
 # skipped 1
 # todo 0
-# duration_ms 94214.529833
+# duration_ms 94214.937542
 ```
 
-- `uv run pytest -q tests/test_readme_claims.py 2>&1 | tail -15`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/c066fde5e5ce4303be843c2c7d4056fa.90097.8eb7e2f4/web && npm test 2>&1 | tail -10`
 
 ```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `/Users/eyalgolan/.<redacted>/worktrees/c066fde5e5ce4303be843c2c7d4056fa.90097.74667539/.venv` and will be ignored; use `--active` to target the active environment instead
-ERROR: file or directory not found: tests/test_readme_claims.py
-
-
-no tests ran in 0.00s
-```
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/c066fde5e5ce4303be843c2c7d4056fa.90097.74667539 && uv run pytest -q tests/test_readme_claims.py 2>&1 | tail -15`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-............................s.s.s.s.s.s.s.s.s.s......................... [ 49%]
-.....................s..........................s....................... [ 99%]
-.                                                                        [100%]
-133 passed, 12 skipped in 4.86s
+...
+1..1617
+# tests 1617
+# suites 0
+# pass 1617
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 714.677458
 ```
 
 
 ### build
-- `npm run build 2>&1 | tail -60`
+- `npm run build 2>&1 | tail -20`
 
 ```
-> no-human-board@0.2.1 build
-> vite build
+dist/assets/-F63fjptAgt5VM-kVkqdyU8n1iEq131nj-otFQ-C05TWSE2.woff2                8.86 kB
+dist/assets/-F6qfjptAgt5VM-kVkqdyU8n3vAOwl5FgsAXHNlYzg-BRMVj9uZ.woff2            8.96 kB
+dist/assets/-F6pfjptAgt5VM-kVkqdyU8n1ioa23dgregdFOFh-DjXFaAjD.woff2              9.79 kB
+dist/assets/-F63fjptAgt5VM-kVkqdyU8n1i8q131nj-o-BJoXLJYV.woff2                  10.05 kB
+dist/assets/-F6qfjptAgt5VM-kVkqdyU8n3twJwlBFgsAXHNk-C820gu2e.woff2              10.06 kB
+dist/assets/-F6qfjptAgt5VM-kVkqdyU8n3vAOwlBFgsAXHNk-DpGnXj3s.woff2              10.12 kB
+dist/assets/-F6pfjptAgt5VM-kVkqdyU8n1ioa1XdgregdFA-BkxdLi3-.woff2               11.57 kB
+dist/assets/rP2Wp2ywxg089UriCZaSExdy3sGt9zz86GPwyKK58UfivUw4
+[... 509 of 1,648 characters omitted from the middle ...]
 
-vite v6.4.3 building for production...
-transforming...
-✓ 398 modules transformed.
-rendering chunks...
-computing gzip size...
-dist/index.html                                                                  0.66 kB │ gzip:   0.44 kB
-dist/assets/-F63fjptAgt5VM-kVkqdyU8n1iAq131nj-otFQ-DKn25-tQ.woff2                4.00 kB
-dist/assets/-F6qfjptAgt5VM-kVkqdyU8n3twJwl9FgsAXHNlYzg-B5e70VyC.woff2            4.04 kB
-dist/assets/-F6qfjptAgt5VM-kVkqdyU8n3vAOwl9FgsAXHNlYzg-Dky8cY56.woff2            4.12 kB
-dist/assets/-F6qfjptAgt5VM-kVkqdyU8n3vAOwl1FgsAXHNlYzg-hCF3fsXQ.woff2            4.32 kB
-dist/assets/-F6qfjptAgt5VM-kVkqdyU8n3twJwl1FgsAXHNlY
-[... 1,941 of 3,080 characters omitted from the middle ...]
-
-dist/assets/index-9BkG4C_n.js                                                  714.68 kB │ gzip: 218.43 kB
+dist/assets/index-r2OWxYBW.js                                                  714.75 kB │ gzip: 218.45 kB
 
 (!) Some chunks are larger than 500 kB after minification. Consider:
 - Using dynamic import() to code-split the application
 - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
 - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
-✓ built in 1.50s
+✓ built in 1.82s
 ```  
-  _excerpt - 3,080 characters of output in total_
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/c066fde5e5ce4303be843c2c7d4056fa.90097.74667539/web && npm run build 2>&1 | tail -10 && npm test 2>&1 | tail -15`
-
-```
-dist/assets/rP2Hp2ywxg089UriCZOIHTWEBlw-BNY05QUC.woff2                          62.56 kB
-dist/assets/index-mlI2nvMI.css                                                 161.61 kB │ gzip:  28.65 kB
-dist/assets/module-BBzDlm4e.js                                                 252.41 kB │ gzip:  83.36 kB
-dist/assets/index-9BkG4C_n.js                                                  714.68 kB │ gzip: 218.43 kB
-
-(!) Some chunks are larger than 500 kB after minification. Consider:
-- Using dynamic import() to code-split the application
-- Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
-- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
-✓ built in 2.32s
-  ...
-# Subtest: stop() is idempotent and leaves no pending timer or open socket
-ok 1616 - stop() is idempotent and leaves no pending timer or open socket
-  ---
-  duration_ms: 0.341291
-  ...
-1..1616
-# tests 1616
-# suites 0
-# pass 1616
-# fail 0
-# cancelled 0
-# skipped 0
-# todo 0
-# duration_ms 832.951667
-```
+  _excerpt - 1,648 characters of output in total_
 
 
 **Not verified:** everything below is a limit of this section, listed whether or not it bit this attempt.

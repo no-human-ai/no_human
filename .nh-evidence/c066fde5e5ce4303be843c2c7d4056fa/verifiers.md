@@ -1,12 +1,12 @@
 # Verifiers
 
-_Harness-captured record for task `c066fde5`, commit `03494f195368d39fe3a177ab059d94a3880b24b0` — not model-authored: no_human wrote this file from the deterministic verifier rules selected for this commit's files. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `c066fde5`, commit `11d4ebf89d8b8b56790404d54c4b7d3beccbf5b5` — not model-authored: no_human wrote this file from the deterministic verifier rules selected for this commit's files. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ```json
 [
   {
-    "comment": "No new or modified colors appear anywhere in the change \u2014 no hex, rgb, or hsl literals are added \u2014 so the theme-token requirement is satisfied vacuously and light/dark rendering is unaffected.",
-    "evidence": "The diff only touches update-subscription wiring (subscribeUpdates in updateNotice.js, Settings.jsx import/useEffect, and two lexical test files); it introduces no className, inline style, or CSS color literals at all.",
+    "comment": "There are no new or modified colors in this change at all \u2014 it is purely update-notice wiring and tests \u2014 so the constraint about theme-defined variables/utilities and no hard-coded color literals is satisfied vacuously.",
+    "evidence": "The diff only touches update-subscription logic (Settings.jsx imports/uses subscribeUpdates, updateNotice.js adds subscribeUpdates + SEED_UPDATE_MODES, plus two .test.mjs files). No JSX className, inline style, or CSS color is added or modified, and no hex/rgb/hsl literal appears anywhere in the change.",
     "file": "",
     "files_checked": [
       "web/src/Settings.jsx",
@@ -18,7 +18,7 @@ _Harness-captured record for task `c066fde5`, commit `03494f195368d39fe3a177ab05
     "no_verdict": false,
     "passed": true,
     "severity": "medium",
-    "tokens_used": 288,
+    "tokens_used": 395,
     "unavailable": false,
     "verifier_id": "board-uses-theme-tokens"
   }
