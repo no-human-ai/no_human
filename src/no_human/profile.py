@@ -118,6 +118,21 @@ class ProjectProfile:
             "ui_paths": ["web/**", "src/**/*.jsx", "src/**/*.tsx", "**/*.html", "**/*.css"],
         }
     )
+    # Prerequisite commands for a FRESH task worktree (gitignored build inputs
+    # a `git worktree add` checkout can never contain: node_modules,
+    # web/dist...). Run in order, from the worktree ROOT, ONCE per worktree,
+    # BEFORE any test command (`core/worktree.py`'s `run_setup_commands`,
+    # called from `Orchestrator._run_task_body` right after the worktree is
+    # acquired). A failing command fails the task as an infra/environment
+    # error naming the command — never a test failure.
+    #
+    # Operator-owned and trusted: read only from the CONFIRMED profile (DB row
+    # / `<repo>/.no_human/project.yml`, written via `nh repo setup-cmds`),
+    # NEVER from the repo's own untrusted `.no_human.yml`
+    # (`project_config.py`'s whitelist is deliberately not extended for this
+    # key) — an attacker-controlled repo must not be able to make an
+    # unattended run execute arbitrary shell.
+    setup_cmds: list[str] = field(default_factory=list)
 
     # --- serialization ---------------------------------------------------- #
 
@@ -145,6 +160,7 @@ class ProjectProfile:
             "default_lifetime_tokens": self.default_lifetime_tokens,
             "default_budget_unit": self.default_budget_unit,
             "ui_evidence": self.ui_evidence,
+            "setup_cmds": self.setup_cmds,
         }
 
     @classmethod
