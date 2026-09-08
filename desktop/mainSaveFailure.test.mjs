@@ -32,7 +32,16 @@ process.env.NH_ORIGIN = `http://127.0.0.1:${19800 + (process.pid % 120)}`;  // n
 // (main.mjs:573), which is waitForServer's deadline inside the
 // Promise.race at server.mjs:617-618. Pinned here so the sanity bound below
 // is expressed in the SAME constant the code waits on, not a literal.
-const SPAWN_PROBE_WINDOW_MS = 120000;
+// Kept SMALL (same seam value mainLateServer.test.mjs:67 already uses)
+// rather than the real 30000ms default (server.mjs:552): on EACCES the
+// race is decided by the child's 'error' event, but waitForServer's own
+// poll loop (server.mjs:84-93) is never cancelled when it loses that race
+// -- it keeps polling the dead origin on its own timers until this
+// deadline elapses, which holds the test process open for the full
+// window regardless of how fast the assertions below run. A small window
+// still gives ample margin over the ~ms-scale EACCES path while keeping
+// that unavoidable tail short.
+const SPAWN_PROBE_WINDOW_MS = 1000;
 process.env.NH_SPAWN_TIMEOUT_MS = String(SPAWN_PROBE_WINDOW_MS);
 
 const stub = await import("./testing/electronStub.mjs");
