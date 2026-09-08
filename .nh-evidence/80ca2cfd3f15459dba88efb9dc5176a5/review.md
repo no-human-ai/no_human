@@ -1,21 +1,22 @@
 # Independent review
 
-_Harness-captured record for task `80ca2cfd`, commit `3a737d81ce2e8593a6ff2776edffc3f3dc6fffbf` — not model-authored: no_human wrote this file from the fresh-context reviewer's checklist on this commit. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `80ca2cfd`, commit `87ba6697244799bfe3c06d87137aa66f826c4f0d` — not model-authored: no_human wrote this file from the fresh-context reviewer's checklist on this commit. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 <!-- no_human:review-checklist -->
-## Independent review — PASSED (2 rounds) on `3a737d8`
+## Independent review — PASSED (3 rounds) on `87ba669`
 _A different model, fresh context, commit, push and merge refused at the tool call, told to refute "done". This is the checklist the gate decided on; no_human never merges — a human does._
 
 | Severity | Finding | Where | Note |
 |---|---|---|---|
-| ✅ | retention gate excludes failed | `desktop/main.mjs:249` | Retention gate looks right and the test pins both halves — failed leaves lastUpdate untouched but still reaches the live push. No change needed, just noting I t |
-| ✅ | defer clears both surfaces only on persist | `desktop/main.mjs:889` | The persist-guarded clear is the right fix for Settings' Later leaving the board banner up. Nice that you split the success-path test into its own file with the |
+| ✅ | MAJOR-1 retention gate correct | `desktop/main.mjs:246` | Retention gate reads cleanly and the test coverage for 'failed never displaces an existing retained mode' is exactly the case that bit the last two rounds. No c |
+| ✅ | App getLastUpdate effect has no live-guard | `web/src/App.jsx:1131` | Settings guards its getLastUpdate promise with a live flag but the App copy doesn't. It's fine because App never unmounts, but if you ever mount this behind a c |
+| ✅ | tests angle did not run (reached no verdict) | — | advisory — the extra angle pass was skipped; the main review still gates |
 
 <details><summary>2 advisory findings (low/nit — never blocking)</summary>
 
 | Severity | Finding | Where | Note |
 |---|---|---|---|
-| ❌ low | maintainability: second authority for which update modes surface | `web/src/updateNotice.js:192` | updateBanner ends up being a second authority alongside updateNotice for which modes surface and what actions they offer — the mode gate and the two action arra |
-| ❌ low | silent-failure: Later discards deferUpdate failure | `web/src/App.jsx:1544` | The Later handler fires deferUpdate and throws away its result, but that call can come back {mode:"failed"} when the updater is unavailable — the deferral never |
+| ❌ low | maintainability: mode-decision split across updateNotice and updateBanner | `web/src/updateNotice.js:189` | updateBanner ends up being a second authority for how an update payload maps to tone/copy/actions, right next to updateNotice which already does this for the Se |
+| ❌ low | silent-failure: deferUpdate result discarded on board Later | `web/src/App.jsx:1560` | Later here throws away whatever deferUpdate resolves to, including the {mode:'failed'} the main handler returns when the updater isn't available. It's not dange |
 
 </details>
