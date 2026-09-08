@@ -108,14 +108,19 @@ FROZEN_FUNCTION_LINES = {
     # is that the pin is captured in `_run_attempt`'s own frame, before the
     # coder can influence it — a helper callable from elsewhere would weaken
     # that guarantee. Measured on this tree with the scanner below.
-    # 2210 -> 2253 (+43): send-back resume with zero diff now lands
-    # `AWAITING_APPROVAL` ("no changes needed") instead of a failure when the
-    # round resumed from a human send-back and an existing PR is found —
-    # kept inline in the `if resumed_commit is None:` block (not extracted)
-    # so the branch stays next to the failure path it replaces for that one
-    # case; extracting it would be the out-of-scope refactor the fix
-    # explicitly avoids. Measured on this tree with the scanner below.
-    "core/orchestrator.py:Orchestrator._run_attempt": 2253,
+    # 2210 -> 2253 (+43): an earlier, review-failed version of the send-back
+    # "no changes needed" fix kept the landing logic INLINE in the
+    # `if resumed_commit is None:` block, plus used `set_status(...,
+    # validate=False)` — a project-rule violation caught in review.
+    # 2253 -> 2214 (-39): the review fix delegates the landing decision to a
+    # new sibling method, `_land_no_changes_needed` (next to
+    # `_mechanical_round`), so the zero-diff call site shrinks to a ~4-line
+    # `landed = await self._land_no_changes_needed(...); if landed is not
+    # None: return landed`. The delegation costs lines in the new helper
+    # (see the file-total entry below) but nets `_run_attempt` itself
+    # smaller than even the pre-incident-fix baseline. Measured on this
+    # tree with the scanner below.
+    "core/orchestrator.py:Orchestrator._run_attempt": 2214,
     # 760 -> 778 (+18): dispatch-time intake-eval hoisted path — the `elif
     # ctx.get("eval_result")` branch that acts on a grill/wizard-stored
     # verdict (idempotency marker, cost/residual-gap comments) added inside
@@ -239,12 +244,15 @@ FROZEN_FUNCTION_CC = {
     # around the `ls_remote_exact` pin capture, plus the fail-closed
     # `if base_pin is None:` advisory branch when the pin doesn't resolve.
     # Measured on this tree with the scanner below.
-    # 257 -> 264 (+7): send-back resume with zero diff — the
-    # `if await self._send_back_resume_round(task):` / `if pr.url:` guard
-    # pair plus the inline conditional building `feedback_at` from the
-    # newest `send_back_feedback` entry. Measured on this tree with the
-    # scanner below.
-    "core/orchestrator.py:Orchestrator._run_attempt": 264,
+    # 257 -> 264 (+7): an earlier, review-failed version of the send-back
+    # "no changes needed" fix kept the guard pair (`_send_back_resume_round`
+    # / `pr.url`) inline in `_run_attempt` itself.
+    # 264 -> 258 (-6): the review fix delegates both guards, plus the
+    # validated status-transition branching, into `_land_no_changes_needed`
+    # — `_run_attempt`'s own zero-diff site is now just the delegating call
+    # plus its `if landed is not None:` check. Measured on this tree with
+    # the scanner below.
+    "core/orchestrator.py:Orchestrator._run_attempt": 258,
     "core/orchestrator.py:Orchestrator._drive": 115,
     "agent/guard.py:_approve_denial": 81,
     # 73 -> 74 (+1): same cause as the LINES entry above — e922e9b4's landing
@@ -572,11 +580,27 @@ FROZEN_FILE_LINES = {
     # failures correctly, and tags the max_attempts/tamper_blocked call
     # sites explicitly. Measured via `wc -l`/the scanner below; growth is
     # the minimal functional diff after trimming comments/docstrings.
-    # 21788 -> 21854 (+66): send-back resume with zero diff — the new
-    # `_send_back_resume_round` predicate helper (next to `_mechanical_round`)
-    # plus the inline "no changes needed" landing branch in `_run_attempt`'s
-    # zero-diff site. Measured via `wc -l`/the scanner below.
-    "core/orchestrator.py": 21854,
+    # 21788 -> 21854 (+66): an earlier, review-failed version of the
+    # send-back "no changes needed" fix added the `_send_back_resume_round`
+    # predicate helper (next to `_mechanical_round`) plus an inline landing
+    # branch in `_run_attempt`'s zero-diff site, and used
+    # `set_status(..., validate=False)` — a project-rule violation caught in
+    # review.
+    # 21854 -> 21915 (+61): the review fix rewrites `_send_back_resume_round`
+    # to parse both timestamps (`_parse_iso`) instead of comparing them as
+    # strings across two different formats, and extracts the landing
+    # decision into a new sibling method, `_land_no_changes_needed`, that
+    # reaches `AWAITING_APPROVAL` only via validated main-flow transitions
+    # (`TESTING` hop then `AWAITING_APPROVAL`, both `validate=True`) —
+    # `_run_attempt`'s own zero-diff site shrinks (see the function entries
+    # above) but the two helpers' expanded docstrings (recording the
+    # rejected lexical-comparison rule and the validated-transition
+    # reasoning) net the file larger overall. Measured on this tree with the
+    # scanner below (`len(text.splitlines())`, which is 3 more than `wc -l`
+    # on this file because of a pre-existing, unrelated raw-unicode
+    # line-separator regex literal at `_LINE_BREAKS`, ~line 19319, that
+    # Python's `str.splitlines()` — but not `wc -l` — treats as line breaks).
+    "core/orchestrator.py": 21915,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.

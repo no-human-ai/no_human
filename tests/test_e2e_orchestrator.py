@@ -6,6 +6,7 @@ case proves the tamper guard blocks a test-weakening change and escalates.
 """
 
 import json
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -34,6 +35,27 @@ def _git(cwd, *args):
 def _git_out(cwd, *args):
     return subprocess.run(["git", *args], cwd=cwd, check=True,
                           capture_output=True, text=True).stdout.strip()
+
+
+def _set_head_commit_date(work, when):
+    """Amend `work`'s HEAD commit so its author AND committer date is
+    exactly `when` (an ISO-8601 string git accepts verbatim, e.g.
+    `"2026-09-08T00:05:00+00:00"`), then force-push so `origin/main` — which
+    a fresh `checkout -B` reads its base from — carries the same head.
+    `_send_back_resume_round` reads the head's committer time via
+    `git log -1 --format=%cI`, so this is how tests control "did a commit
+    follow the feedback" without waiting on wall-clock time. Precedent for
+    the env-var pattern: tests/test_bench_task.py's `_commit` (author AND
+    committer date, since `rev-list --before`-style reads use committer
+    date); here it is an amend, not a fresh commit, because the fixture's
+    single "init" commit already has the tree this round's zero-diff run
+    must keep untouched."""
+    env = {**os.environ, "GIT_AUTHOR_DATE": when, "GIT_COMMITTER_DATE": when}
+    subprocess.run(
+        ["git", "commit", "--amend", "--no-edit"],
+        cwd=work, check=True, capture_output=True, env=env,
+    )
+    _git(work, "push", "--force", "origin", "main")
 
 
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -3636,7 +3658,10 @@ async def test_send_back_resume_with_no_changes_returns_to_awaiting_approval(
     treated as an ordinary zero-diff failure: attempt #7 was marked FAILED
     and attempt #8 was re-dispatched. A send-back resume with an existing PR
     must instead return the task to AWAITING_APPROVAL as "no changes needed",
-    without consuming another attempt slot."""
+    without consuming another attempt slot and without stamping
+    `mechanical_round` (that flag means a post-PASS MECHANICAL round and
+    would wrongly exempt this attempt's spend from the lifetime budget,
+    db.py ~2884-2892 — this is a normal, budget-counted attempt)."""
     cfg = _config(tmp_path)
     backend = _NoEditBackend()
     orch = Orchestrator(store, cfg.data, backend, SlackNotifier(None))
@@ -3644,20 +3669,26 @@ async def test_send_back_resume_with_no_changes_returns_to_awaiting_approval(
     ctx = t.context or {}
     ctx["pr_watch"] = "https://github.com/o/r/pull/7"
     ctx["send_back_feedback"] = [
-        {"at": "2026-06-01T00:00:00Z", "message": "please rename the flag"}
+        {"at": "2026-09-08T00:06:05.096374+00:00",
+         "message": "please rename the flag"}
     ]
     t.context = ctx
     await store.create_task(t)
 
-    # Seed the prior (delivering) attempt this round resumes FROM, backdated
-    # so the feedback above reads as having arrived AFTER it — the
-    # round-scoping discriminator `_send_back_resume_round` checks. Without
-    # this, `send_back_feedback`'s append-only, never-cleared shape would make
-    # every later zero-diff round look like a resume.
+    # The branch head must predate the feedback for the round to read as
+    # "already satisfies it" — `_send_back_resume_round` compares against
+    # the branch HEAD's committer time (`git log -1 --format=%cI`), not a
+    # prior attempt's `started_at` (which does not cover this incident:
+    # attempt 7 had no feedback newer than attempt 6's start).
+    _set_head_commit_date(bare_repo, "2026-09-08T00:05:00+00:00")
+
+    # Seed the prior (delivering) attempt this round resumes FROM — the
+    # incident's attempt #6, production-format `started_at` (SQLite
+    # `datetime('now')`: a space, not a 'T', no offset).
     prior_id = await store.create_attempt(t.id, 1)
     await store.update_attempt(
-        prior_id, status="succeeded", pr_url="https://github.com/o/r/pull/7",
-        started_at="2026-01-01T00:00:00Z",
+        prior_id, status="failed", pr_url="https://github.com/o/r/pull/7",
+        started_at="2026-09-08 00:06:31",
     )
     await store.set_status(t, TaskStatus.IMPLEMENTING, validate=False)
 
@@ -3678,39 +3709,23 @@ async def test_send_back_resume_with_no_changes_returns_to_awaiting_approval(
     new_row = attempts[-1]
     assert new_row["status"] == "succeeded"
     assert not new_row["failure_reason"]
-    assert int(new_row["mechanical_round"]) == 1
+    assert not int(new_row["mechanical_round"] or 0), (
+        "no_changes_needed must not stamp mechanical_round — that flag is "
+        "reserved for a post-PASS MECHANICAL round and would wrongly "
+        "exempt this attempt's spend from the lifetime budget"
+    )
 
 
-async def test_first_attempt_with_no_changes_still_fails(bare_repo, tmp_path, store):
-    """Control for the fix above: a FIRST attempt (no send-back resume) that
-    lands zero diff must keep today's existing failure/escalation behavior
-    byte-for-byte — this task has no `send_back_feedback` and no prior
-    attempt at all, so `_send_back_resume_round` must read False and the
-    ordinary failure path must run unchanged."""
-    from no_human.core.orchestrator import _NO_CHANGES_DETAIL
-
-    cfg = _config(tmp_path)
-    backend = _NoEditBackend()
-    orch = Orchestrator(store, cfg.data, backend, SlackNotifier(None))
-    t = Task.new("add feature", repo_path=str(bare_repo), kind="feature")
-    await store.create_task(t)
-
-    outcome = await orch.run_task(t)
-
-    assert outcome.status is TaskStatus.ESCALATED, outcome.detail
-    attempts = await store.list_attempts(t.id)
-    assert len(attempts) == 2
-    for a in attempts:
-        assert a["failure_reason"] == _NO_CHANGES_DETAIL
-
-
-async def test_stale_send_back_feedback_does_not_excuse_a_zero_diff(
+async def test_first_attempt_with_no_changes_still_fails_even_with_a_pr(
     bare_repo, tmp_path, store
 ):
-    """`send_back_feedback` is append-only and never cleared. A STALE entry —
-    older than the prior attempt it would need to postdate — must not excuse
-    a later, unrelated zero-diff round: `_send_back_resume_round` must read
-    False and the ordinary failure path must run."""
+    """Isolates the send-back guard alone. An earlier version of this test
+    had NO PR at all, so it stayed green even if `_send_back_resume_round`
+    were hardcoded to return True — the `if pr.url:` guard was never
+    reached, let alone exercised. Here a PR already exists (`ctx["pr_watch"]`
+    plus a prior attempt's `pr_url`) but there is no `send_back_feedback`
+    whatsoever, so `_send_back_resume_round` must read False on its own and
+    the ordinary failure/escalation path must run."""
     from no_human.core.orchestrator import _NO_CHANGES_DETAIL
 
     cfg = _config(tmp_path)
@@ -3719,17 +3734,100 @@ async def test_stale_send_back_feedback_does_not_excuse_a_zero_diff(
     t = Task.new("add feature", repo_path=str(bare_repo), kind="feature")
     ctx = t.context or {}
     ctx["pr_watch"] = "https://github.com/o/r/pull/7"
-    # Older than the prior attempt's started_at seeded below — stale.
-    ctx["send_back_feedback"] = [
-        {"at": "2025-01-01T00:00:00Z", "message": "an old, already-handled note"}
-    ]
     t.context = ctx
     await store.create_task(t)
 
     prior_id = await store.create_attempt(t.id, 1)
     await store.update_attempt(
-        prior_id, status="succeeded", pr_url="https://github.com/o/r/pull/7",
-        started_at="2026-01-01T00:00:00Z",
+        prior_id, status="failed", pr_url="https://github.com/o/r/pull/7",
+        started_at="2026-09-08 00:06:31",
+    )
+    await store.set_status(t, TaskStatus.IMPLEMENTING, validate=False)
+
+    outcome = await orch.run_task(t)
+
+    assert outcome.status is not TaskStatus.AWAITING_APPROVAL, outcome.detail
+    attempts = await store.list_attempts(t.id)
+    assert len(attempts) >= 2
+    for a in attempts[1:]:
+        assert a["failure_reason"] == _NO_CHANGES_DETAIL
+    reloaded = await store.get_task(t.id)
+    assert not (reloaded.context or {}).get("no_changes_needed")
+
+
+async def test_send_back_resume_without_a_pr_still_fails(bare_repo, tmp_path, store):
+    """Isolates the `pr.url` guard alone: valid, newer-than-head send-back
+    feedback and a prior attempt exist, but there is no PR anywhere (no
+    `pr_watch`/`pr_branch` context, no attempt `pr_url`, no draft) — there is
+    nothing to return the human to await approval on, so the round must
+    still fail with the ordinary zero-diff detail. Replacing `if pr.url:`
+    with `if True:` in `_land_no_changes_needed` flips this test red."""
+    from no_human.core.orchestrator import _NO_CHANGES_DETAIL
+
+    cfg = _config(tmp_path)
+    backend = _NoEditBackend()
+    orch = Orchestrator(store, cfg.data, backend, SlackNotifier(None))
+    t = Task.new("add feature", repo_path=str(bare_repo), kind="feature")
+    ctx = t.context or {}
+    ctx["send_back_feedback"] = [
+        {"at": "2026-09-08T00:06:05.096374+00:00",
+         "message": "please rename the flag"}
+    ]
+    t.context = ctx
+    await store.create_task(t)
+
+    _set_head_commit_date(bare_repo, "2026-09-08T00:05:00+00:00")
+
+    prior_id = await store.create_attempt(t.id, 1)
+    await store.update_attempt(
+        prior_id, status="failed", started_at="2026-09-08 00:06:31",
+    )
+    await store.set_status(t, TaskStatus.IMPLEMENTING, validate=False)
+
+    outcome = await orch.run_task(t)
+
+    assert outcome.status is not TaskStatus.AWAITING_APPROVAL, outcome.detail
+    attempts = await store.list_attempts(t.id)
+    assert attempts[-1]["failure_reason"] == _NO_CHANGES_DETAIL
+    reloaded = await store.get_task(t.id)
+    assert not (reloaded.context or {}).get("no_changes_needed")
+
+
+async def test_same_day_stale_send_back_does_not_excuse_a_zero_diff(
+    bare_repo, tmp_path, store
+):
+    """Guards the PARSED (not lexical) comparison. `send_back_feedback["at"]`
+    is stamped `datetime.now(timezone.utc).isoformat()` (`...T...+00:00`)
+    while `attempts.started_at` is SQLite `datetime('now')` (`... ...`, a
+    space, no 'T'/offset) — comparing them as plain strings is unsound
+    (`'T' > ' '` in ASCII means any same-day feedback would read as newer
+    than a same-day `started_at` regardless of actual time-of-day, db.py's
+    own hazard note ~4036-4040). This test's feedback (00:06:05) arrived
+    BEFORE a real commit landed at the branch head (00:30:00) on the SAME
+    UTC day — a later commit followed the feedback, so this round's zero
+    diff is a fresh failure, not an excused resume — and it must parse to
+    that answer correctly."""
+    from no_human.core.orchestrator import _NO_CHANGES_DETAIL
+
+    cfg = _config(tmp_path)
+    backend = _NoEditBackend()
+    orch = Orchestrator(store, cfg.data, backend, SlackNotifier(None))
+    t = Task.new("add feature", repo_path=str(bare_repo), kind="feature")
+    ctx = t.context or {}
+    ctx["pr_watch"] = "https://github.com/o/r/pull/7"
+    ctx["send_back_feedback"] = [
+        {"at": "2026-09-08T00:06:05.096374+00:00",
+         "message": "please rename the flag"}
+    ]
+    t.context = ctx
+    await store.create_task(t)
+
+    _set_head_commit_date(bare_repo, "2026-09-08T00:30:00+00:00")
+
+    prior_id = await store.create_attempt(t.id, 1)
+    await store.update_attempt(
+        prior_id, status="failed", pr_url="https://github.com/o/r/pull/7",
+        started_at="2026-09-08 00:06:31",
     )
     await store.set_status(t, TaskStatus.IMPLEMENTING, validate=False)
 
@@ -3740,6 +3838,52 @@ async def test_stale_send_back_feedback_does_not_excuse_a_zero_diff(
     new_row = attempts[-1]
     assert new_row["failure_reason"] == _NO_CHANGES_DETAIL
     assert not new_row.get("mechanical_round")
+    reloaded = await store.get_task(t.id)
+    assert not (reloaded.context or {}).get("no_changes_needed")
+
+
+async def test_send_back_resume_across_midnight_lands_awaiting_approval(
+    bare_repo, tmp_path, store
+):
+    """Guards that the comparison is done on PARSED INSTANTS, not on raw
+    timestamp strings, across a UTC day boundary induced by a non-UTC commit
+    timezone offset — a realistic shape, since a commit's committer date
+    (`%cI`) carries whatever local timezone offset the committer's clock
+    used. Branch head: `2026-09-08T02:00:00+03:00` == `2026-09-07T23:00:00`
+    UTC. Feedback: `2026-09-07T23:30:00+00:00`, i.e. 30 minutes AFTER the
+    head in real time, even though the head's ISO STRING carries the
+    LEXICALLY LARGER calendar date ("2026-09-08" > "2026-09-07"). A
+    comparison of the raw strings (or of only the date component) would
+    read the head as later and refuse the round; parsing both to aware
+    `datetime`s and comparing the instants gets it right."""
+    cfg = _config(tmp_path)
+    backend = _NoEditBackend()
+    orch = Orchestrator(store, cfg.data, backend, SlackNotifier(None))
+    t = Task.new("add feature", repo_path=str(bare_repo), kind="feature")
+    ctx = t.context or {}
+    ctx["pr_watch"] = "https://github.com/o/r/pull/7"
+    ctx["send_back_feedback"] = [
+        {"at": "2026-09-07T23:30:00+00:00", "message": "please rename the flag"}
+    ]
+    t.context = ctx
+    await store.create_task(t)
+
+    _set_head_commit_date(bare_repo, "2026-09-08T02:00:00+03:00")
+
+    prior_id = await store.create_attempt(t.id, 1)
+    await store.update_attempt(
+        prior_id, status="failed", pr_url="https://github.com/o/r/pull/7",
+        started_at="2026-09-07 23:05:00",
+    )
+    await store.set_status(t, TaskStatus.IMPLEMENTING, validate=False)
+
+    outcome = await orch.run_task(t)
+
+    assert outcome.status is TaskStatus.AWAITING_APPROVAL, outcome.detail
+    assert "no changes needed" in outcome.detail
+    reloaded = await store.get_task(t.id)
+    assert reloaded.status is TaskStatus.AWAITING_APPROVAL
+    assert (reloaded.context or {}).get("no_changes_needed")
 
 
 async def test_work_already_committed_on_the_branch_is_not_zero_diff(
