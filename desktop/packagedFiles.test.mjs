@@ -214,6 +214,23 @@ test("every dist script names the real config", () => {
   }
 });
 
+test("npm ci fetches the Electron binary — package.json declares the postinstall", () => {
+  // Electron >=42 ships no postinstall of its own; without one, the binary is
+  // fetched lazily on the first real `require("electron")`. In a cold
+  // `node --test desktop/*.test.mjs` that first require can land INSIDE the
+  // concurrent run and expire the stubbed-boot tests' fixed settle windows
+  // (a 20 s poll in mainSaveFailure.test.mjs, a 5 s sleep in
+  // mainLateServer.test.mjs — both measured red on a cold 2026-09-08 run).
+  // Warming the binary at install time keeps every test run's `dist/`
+  // already populated. A repeat `npm ci` wipes node_modules first, so the
+  // postinstall re-extracts from the local Electron cache; electron's own
+  // `isInstalled()` short-circuit applies to `npm install` and hand runs.
+  const postinstall = pkg.scripts?.postinstall;
+  assert.ok(postinstall, "no postinstall script — a cold test run can download Electron mid-boot");
+  assert.match(postinstall, /electron[\\/]install\.js|require\(['"]electron['"]\)/,
+    `postinstall does not invoke electron's own installer: ${postinstall}`);
+});
+
 test("the frozen server is actually shipped as extraResources", () => {
   // `files` is guarded above; the PAYLOAD was not. Deleting this block builds a
   // DMG that launches and can never start a server.
@@ -296,7 +313,8 @@ test("Electron's and Chromium's notices ship too, or the DMG is undistributable"
   // THE SECOND DEFECT, found 2026-08-22 while bumping Electron 38 -> 43.
   // Electron 42 removed the package's `postinstall` hook: `dist/` — where both
   // notices live — is now fetched on the FIRST EXECUTION of the electron
-  // binary, so `npm ci` leaves it absent. app-builder-lib's file matcher only
+  // binary, so a bare `npm ci` left it absent until this package's own
+  // postinstall (the test above) started fetching it. app-builder-lib's file matcher only
   // WARNS on a missing extraResources source, so a clean CI build packaged an
   // app with neither notice and exited 0. The content check above cannot see
   // it either: it is guarded by existsSync, which is now permanently false in

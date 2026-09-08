@@ -11,6 +11,7 @@
   "scripts": {
     "desktop": "electron .",
     "test": "node --test",
+    "postinstall": "node node_modules/electron/install.js",
     "dist": "node ../packaging/ensure-electron.mjs && node ../packaging/derive-icons.mjs && electron-builder --config electron-builder.config.cjs --mac --publish never",
     "dist:dir": "node ../packaging/ensure-electron.mjs && node ../packaging/derive-icons.mjs && electron-builder --config electron-builder.config.cjs --mac dir --publish never",
     "dist:bundled": "node ../packaging/ensure-electron.mjs && bash ../packaging/build-installer.sh && node ../packaging/derive-icons.mjs && electron-builder --config electron-builder.config.cjs --mac --publish never && bash ../packaging/make-dmg.sh",

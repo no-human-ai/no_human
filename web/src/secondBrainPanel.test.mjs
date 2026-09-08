@@ -93,11 +93,17 @@ test("the D2 explainer renders verbatim inside SecondBrainPanel", () => {
   const body = fnBody(settingsJsx, "function SecondBrainPanel(");
   // Split across JSX text nodes/whitespace in source, so match the load-
   // bearing clauses rather than one giant literal string.
-  assert.match(body, /Your second brain\. no_human learns from every task/);
+  assert.match(body, /Your memories\. no_human learns from every task/);
   assert.match(body, /what worked, what[\s\S]{0,40}broke, your repo's rules/);
   assert.match(body, /applies it automatically to the next[\s\S]{0,20}task\./);
   assert.match(body, /Nothing to approve\./);
   assert.match(body, /Review or pause anything here\./);
+});
+
+test("the panel title and empty state read 'Memories', not 'Second brain'", () => {
+  const body = fnBody(settingsJsx, "function SecondBrainPanel(");
+  assert.match(body, /<span className="panel-title-text">Memories<\/span>/);
+  assert.match(body, /Nothing learned yet\. Your memories fill in as tasks run/);
 });
 
 test("an 'Auto-managed' line states the daily cap and the 90-day retirement rule", () => {

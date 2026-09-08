@@ -1,7 +1,7 @@
 // The Settings "!" nudge: onboarding no longer walks the AI-learnings steps
 // (they left the wizard 2026-08-30), so a one-time nudge points the user at
 // Settings to finish their AI configuration — review rules, pick models, seed
-// the second brain. A "!" badge sits on the Settings nav row with the tooltip
+// their memories. A "!" badge sits on the Settings nav row with the tooltip
 // "Complete AI configuration", and a small popup prompts once after onboarding.
 //
 // Fix round (review, 2026-09-01): the badge and the popup are two SEPARATE

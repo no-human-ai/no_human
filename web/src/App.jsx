@@ -1300,7 +1300,7 @@ export default function App() {
       <div className="nh-aiconfig-nudge-title">Complete AI configuration</div>
       <div className="nh-aiconfig-nudge-body">
         Review your rules, pick the model for each role, and seed your
-        second brain — all in Settings.
+        memories — all in Settings.
       </div>
       <button
         type="button"
@@ -1508,7 +1508,7 @@ export default function App() {
               // the row body (which still opens on whatever pane was last
               // shown, and no longer clears the flag itself — see
               // handleSecondBrainOpened).
-              badgeAriaLabel="Complete AI configuration — open the Second-brain pane"
+              badgeAriaLabel="Complete AI configuration — open the Memories pane"
               onBadgeClick={aiConfigDone ? undefined : () => openSettings("learnings")}
               title={aiConfigDone ? undefined : "Complete AI configuration"}
               onClick={() => openSettings()}

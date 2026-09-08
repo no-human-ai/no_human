@@ -120,7 +120,12 @@ def main(argv: list[str]) -> int:
             print("--command needs a command", file=sys.stderr)
             return 2
     else:
-        cmd = ["docker", "run", "-i", "--rm", argv[0]]
+        # `-e NH_ENV` with NO value forwards the host's NH_ENV when it is set
+        # and passes nothing when it is not. Without it the container sees no
+        # CI marker at all, HOME is /root so the "dev" branch cannot catch it
+        # either, and the image's own lifespan tags `app_started` as
+        # environment=real — a CI run counted as an install (issue #120).
+        cmd = ["docker", "run", "-i", "--rm", "-e", "NH_ENV", argv[0]]
 
     probe = Probe(cmd)
     problems: list[str] = []

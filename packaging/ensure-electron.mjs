@@ -4,8 +4,10 @@
 // Electron 42 removed the package's `postinstall` hook. The binary and the
 // `dist/` directory beside it — which is where Electron's MIT notice and
 // Chromium's BSD notice live — are downloaded on the FIRST EXECUTION of the
-// electron binary instead. `npm ci` alone therefore leaves that directory
-// absent, and electron-builder only WARNS when an `extraResources` source is
+// electron binary instead. A bare `npm ci` therefore left that directory
+// absent until desktop/package.json's own postinstall started fetching it
+// (this script stays as the packaging-time backstop), and electron-builder
+// only WARNS when an `extraResources` source is
 // missing, so a clean CI build would package an app with no third-party
 // notices in it and exit 0.
 //
