@@ -692,7 +692,14 @@ FROZEN_FILE_LINES = {
     # `fast_forward_local_branch` isn't in this file, so isn't counted
     # here.
     # Re-measured on the fully rebased tree by the scanner's own metric.
-    "core/orchestrator.py": 22461,
+    # 22461 -> 22473 (+12): task c1a0416d follow-up — `_build_supervisor` now
+    # reads `task.context["send_back_feedback"]` inside a fail-closed
+    # try/except (falling back to the `SEND_BACK_UNREADABLE` sentinel on any
+    # exception) and threads it into the `SupervisorHook(...)` call, so the
+    # in-run supervisor tier can honour a human send-back that supersedes the
+    # original acceptance criteria instead of contradicting it. Measured on
+    # this tree by the scanner below.
+    "core/orchestrator.py": 22473,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.

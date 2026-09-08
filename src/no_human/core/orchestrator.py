@@ -44,7 +44,7 @@ from ..agent.claude_backend import (
     dewrap as _dewrap,
 )
 from ..agent.scope_guard import SCRATCH_DIR, is_agent_owned
-from ..agent.supervisor import SupervisorHook
+from ..agent.supervisor import SEND_BACK_UNREADABLE, SupervisorHook
 from ..agent.verification_receipts import KINDS
 from ..blockers import (
     CONSUMED_HUMAN_PROVENANCE,
@@ -15539,6 +15539,17 @@ class Orchestrator:
             except Exception:  # noqa: BLE001 — scope awareness is best-effort
                 declared_files = []
 
+        # A human send-back can AMEND or supersede an acceptance criterion
+        # (or a test pinning the superseded behaviour) — the supervisor must
+        # see the LATEST send-back, not just the original criteria text, or
+        # it steers the coder straight back to text a human already
+        # overruled. Fail CLOSED: if the field itself cannot be read, say so
+        # rather than silently treating it as "there is none".
+        try:
+            send_back_feedback = (task.context or {}).get("send_back_feedback")
+        except Exception:  # noqa: BLE001 — fail CLOSED: say we couldn't read it
+            send_back_feedback = SEND_BACK_UNREADABLE
+
         # Build rules text for the supervisor (same as the implementer sees).
         rules = self._format_active_memories() or ""
 
@@ -15644,6 +15655,7 @@ class Orchestrator:
             on_decision=on_decision,
             declared_files=declared_files,
             budget_status=budget_status,
+            send_back_feedback=send_back_feedback,
         )
 
     def _materialize_skills(self, repo_path: Path) -> list[str]:
