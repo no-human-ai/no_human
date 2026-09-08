@@ -637,7 +637,7 @@ Four mechanisms, concretely:
    learning rather than deleting it (a still-pending proposal keeps its old
    per-origin archive/delete behaviour). `POST /api/learnings/{id}/pause` and
    `POST /api/learnings/{id}/delete` (which archives, never a real delete)
-   are the Second-brain UI's direct actions; `POST .../restore` undoes either.
+   are the Memories UI's direct actions; `POST .../restore` undoes either.
    An auto-activated row (`confirmed_by = 'auto'`) also retires itself
    automatically after `retire_suggest_days` (default 90) unused — an
    operator-pinned or manually-added row can never match that query and so

@@ -70,7 +70,7 @@ for (const theme of ["dark", "light"]) {
   // Settings — every tab (expand a project card on the Projects tab)
   await nav("Settings"); await page.waitForTimeout(300);
   for (const [label, key] of [["Projects", "projects"], ["Rules", "rules"], ["Skills", "skills"],
-    ["Second brain", "learnings"], ["Integrations", "integrations"], ["Config", "config"]]) {
+    ["Memories", "learnings"], ["Integrations", "integrations"], ["Config", "config"]]) {
     if (await click(`.settings-tab:has-text('${label}')`)) {
       if (key === "projects") await click(".settings-page .project-card, .project-card");
       await shot(`settings-${key}-${theme}`);

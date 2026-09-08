@@ -40,13 +40,14 @@ const SECTIONS = [
   { key: "rules",     label: "Rules" },
   { key: "skills",    label: "Skills" },
   // Operator directive (D3, 2026-08-31; hotfix 2026-09-01): the learnings
-  // pane is now "Second brain" everywhere — this is its ONLY surface (the
+  // pane is now "Memories" everywhere (renamed from "Second brain" on
+  // 2026-09-08) — this is its ONLY surface (the
   // sidebar row and its own page were removed from App.jsx). Section `key`
   // stays "learnings" — it is the SettingsOverlay routing key, an internal
   // identifier the operator never sees, and changing it would break every
   // `?tab=learnings` deep link (FinishSetupCard, the "!" nudge) for no
   // visible benefit.
-  { key: "learnings", label: "Second brain" },
+  { key: "learnings", label: "Memories" },
   { key: "integrations", label: "Integrations" },
   { key: "models",    label: "Models" },
   { key: "workers",   label: "Workers" },
@@ -1096,14 +1097,14 @@ function SecondBrainPanel({ dailyCap, onOpenTask, onNavigateSection }) {
       <div className="memory-header">
         {/* See MemoryList: redundant with the overlay header's own title. */}
         <h3 className="memory-title">
-          <span className="panel-title-text">Second brain</span>
+          <span className="panel-title-text">Memories</span>
           {!loading && <span className="memory-count">{liveItems.length}</span>}
         </h3>
       </div>
       {/* D2 explainer, VERBATIM from the spec — this is the "!" nudge's real
           destination, not a rewrite of it. */}
       <p className="learning-explainer">
-        Your second brain. no_human learns from every task — what worked, what
+        Your memories. no_human learns from every task — what worked, what
         broke, your repo's rules — and applies it automatically to the next
         task. Nothing to approve. Review or pause anything here.
       </p>
@@ -1159,7 +1160,7 @@ function SecondBrainPanel({ dailyCap, onOpenTask, onNavigateSection }) {
             placeholder="Filter by title, content, type, origin or project…"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            aria-label="Filter what your second brain learned"
+            aria-label="Filter your memories"
           />
           <span className="learning-filter-count">
             {visible.length === liveItems.length
@@ -1172,7 +1173,7 @@ function SecondBrainPanel({ dailyCap, onOpenTask, onNavigateSection }) {
         <div className="settings-empty">Loading…</div>
       ) : liveItems.length === 0 ? (
         <div className="settings-empty">
-          Nothing learned yet. Your second brain fills in as tasks run —
+          Nothing learned yet. Your memories fill in as tasks run —
           check back after a few have gone through.
         </div>
       ) : visible.length === 0 ? (
@@ -1505,7 +1506,7 @@ function LegacyLearningQueuePanel() {
           tasks in the background; RetirementSweepJob retires unconfirmed ones
           after 45 days — so the brain maintains itself without asking you. */}
       <p className="learning-explainer">
-        Your second brain. <strong>Active</strong> rules and learnings are
+        Your memories. <strong>Active</strong> rules and learnings are
         applied automatically — the coder and reviewer read them on every task.
         New lessons are harvested from your tasks in the background, and unused
         ones retire on their own. Nothing acts until you confirm it.

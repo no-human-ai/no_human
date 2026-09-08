@@ -177,7 +177,7 @@ async def lifespan(app: FastAPI):
     # CSP is computed once per app start from the loaded config: strict by
     # default, widened by exactly the PostHog hosts when the operator opted in.
     app.state.csp = _build_csp(config.data)
-    # Opt-in telemetry (default OFF — record() no-ops without consent).
+    # Opt-OUT, default ON: config.py pins telemetry.enabled True (#120: this said OFF).
     try:
         from .. import telemetry as _telemetry
         _telemetry.record("app_started", config=config.data)
@@ -391,6 +391,14 @@ async def lifespan(app: FastAPI):
             await asyncio.wait_for(worker_task, timeout=budget)
         except asyncio.TimeoutError:
             log.warning("worker drain timed out after %.0fs", budget)
+    # Setup-mode flags are per-boot state on a PROCESS-WIDE `app` singleton
+    # (startup sets them :166-167). Closes the second-lifespan-cycle leak,
+    # not the `nh start` CliRunner incident (those flags are set outside
+    # this lifespan and torn down in `start()`'s own `finally` instead).
+    if hasattr(app.state, "setup_mode"):
+        del app.state.setup_mode
+    if hasattr(app.state, "setup_reason"):
+        del app.state.setup_reason
     # An externally-supplied store is owned by whoever connected it (`nh
     # start`'s `_go()`) — it closes it, not us, or `start()`'s own use of the
     # connection after `server.serve()` returns would hit a closed store.
@@ -4203,9 +4211,9 @@ async def list_learnings(
     `pause()`/`delete()` both work "on a row of any status" per their own
     docstrings — but a pending row that is also paused or archived already
     falls out of `pending()`'s result today, independent of this change; the
-    Second-brain UI never calls delete/pause against an unconfirmed row in
+    Memories UI never calls delete/pause against an unconfirmed row in
     the first place, so this is not a path either flag needs to reach.) The
-    Second-brain UI passes ``include_paused=true`` so a paused row stays
+    Memories UI passes ``include_paused=true`` so a paused row stays
     visible (with its own `Paused` chip) instead of vanishing the moment
     Pause is clicked, and ``include_archived=true`` so a just-deleted
     (archived) row is likewise recoverable from the same list's archived-
@@ -4269,7 +4277,7 @@ async def reject_learning(mem_id: str, request: Request) -> dict[str, Any]:
 
 @app.post("/api/learnings/{mem_id}/pause")
 async def pause_learning(mem_id: str, request: Request) -> dict[str, Any]:
-    """D3: the Second-brain UI's Pause action. The row stays (recoverable),
+    """D3: the Memories UI's Pause action. The row stays (recoverable),
     ``paused=1``, never injected again. Works on any row regardless of
     confirmed status; idempotent (pausing an already-paused row is a no-op
     200, not an error)."""
@@ -4284,7 +4292,7 @@ async def pause_learning(mem_id: str, request: Request) -> dict[str, Any]:
 
 @app.post("/api/learnings/{mem_id}/delete")
 async def delete_learning(mem_id: str, request: Request) -> dict[str, Any]:
-    """D3: the Second-brain UI's Delete action. Archives the row — never a
+    """D3: the Memories UI's Delete action. Archives the row — never a
     real ``DELETE FROM`` — mirroring `curator.py`'s never-deletes invariant;
     recoverable via ``POST /api/learnings/{id}/restore``."""
     store = _store(request)
@@ -4331,7 +4339,7 @@ async def restore_learning(mem_id: str, request: Request) -> dict[str, Any]:
 
     D3: ALSO undoes a Pause — `archived` and `paused` are independent flags
     (a row can be paused without ever being archived), and this is the
-    Second-brain UI's one Restore button for both, so a caller never has to
+    Memories UI's one Restore button for both, so a caller never has to
     know which inert state a row is in before clicking it. A row that is
     BOTH archived and paused (possible: retire, then pause it while it sits
     archived) is restored on both axes in one call.

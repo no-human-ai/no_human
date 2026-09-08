@@ -1342,7 +1342,7 @@ class LearningQueue:
         the explicit, always-archive verb the new UI's Delete button uses,
         on a row of any status. Records a ``learning_events`` audit row."""
         ok = await self.store.archive_memory(
-            mem_id, "deleted via the Second brain UI")
+            mem_id, "deleted via the Memories UI")
         if ok:
             await self._audit(mem_id, "delete")
         return ok

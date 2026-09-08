@@ -924,7 +924,15 @@ FROZEN_FILE_LINES = {
     # model: `_usable_profile`'s existing DB-first-then-file-fallback
     # behaviour for *running* an already-confirmed profile is untouched.
     # Measured via `wc -l src/no_human/cli/commands.py`.
-    "cli/commands.py": 8633,
+    # 8633 -> 8642 (+9): `start()`'s existing `finally` block now unwinds
+    # `setup_mode`/`setup_reason`/`_worker_opts` off the PROCESS-WIDE
+    # `_app.state` on every exit path (normal return, ctrl-c, or a test's
+    # stubbed `server.serve()`), not just the ones where uvicorn's ASGI
+    # lifespan actually fires — closes the "nh start tests leave setup_mode
+    # on the shared app" leak (`dashboard` is covered too, since it forwards
+    # to `start` via `ctx.invoke`). Measured via `wc -l
+    # src/no_human/cli/commands.py`.
+    "cli/commands.py": 8642,
     # api/app.py 5338 -> 5346 (+8): same budget-floor warning surfaced by
     # `send-back`/`reply` as `budget_warning` in the JSON response. Net cost
     # was trimmed from a naive +14 to +8 by computing `Bounds.from_config(...)`
@@ -1068,7 +1076,12 @@ FROZEN_FILE_LINES = {
     # configured `extra_scan_roots` stay home-contained) — comment only, no
     # behaviour change (task bf0cfd72, re-home). Measured on this merged tree
     # with the scanner below.
-    "api/app.py": 6140,
+    # 6140 -> 6148 (+8): lifespan shutdown tears down the per-boot
+    # setup-mode flags (`setup_mode`/`setup_reason`) so a second lifespan
+    # cycle in the same process never inherits them (task 302012e3) — one
+    # comment block and two hasattr/del pairs, nothing else in this file
+    # changed. Measured on this tree with the scanner below.
+    "api/app.py": 6148,
     # +51: W5 active-time phase writer (phase instrumentation).
     # +84: `list_escalations`/`list_review_fails`/`list_tamper_trips` — the
     # three new failure-signal sources the recurring learning harvest mines.

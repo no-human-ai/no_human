@@ -288,22 +288,31 @@ Node 22 (`desktop/package.json` sets `engines.node` to `>=22.12`).
 
 ```bash
 cd desktop
-npm ci --ignore-scripts
+npm ci
 node --test $(ls *.test.mjs | grep -v '^uiPages.test.mjs$')
 ```
 
 Nearly 400 tests; as above, the run's own `# tests` line is the figure to
-trust. `--ignore-scripts` skips Electron's postinstall, which downloads a
-platform binary of about 100 MB. The suite does not need it: Electron is
-stubbed through `desktop/testing/electronLoader.mjs`.
+trust. `npm ci` runs this package's own `postinstall`
+(`node node_modules/electron/install.js`), which fetches the platform binary
+(about 120 MB downloaded, about 300 MB extracted; served from the local
+Electron cache — `~/Library/Caches/electron` on macOS — when it is warm).
+Electron itself has shipped no postinstall since v42. Do not skip it with
+`--ignore-scripts`: the stubbed suite still reaches
+`node_modules/electron/index.js` through electron-updater's CJS
+`require("electron")`, so without the binary the first run downloads it
+*inside* the concurrent suite and the stubbed-boot tests' fixed settle
+windows (a 20 s poll in `mainSaveFailure.test.mjs`, a 5 s sleep in
+`mainLateServer.test.mjs`) can expire (measured 2026-09-08: a cold
+`--ignore-scripts` run failed those two files; the same tree passed once the
+binary was present).
 
 The one exception is `desktop/uiPages.test.mjs`, which spawns the real Electron
-binary to measure computed styles in a renderer. It needs a full install, so run
-it on its own:
+binary (not the stub) to measure computed styles in a renderer, so run it on
+its own:
 
 ```bash
 cd desktop
-npm ci
 node --test uiPages.test.mjs
 ```
 

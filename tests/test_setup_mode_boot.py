@@ -19,6 +19,10 @@ Setup mode's contract, exercised end to end here:
 """
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import os
+
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
@@ -296,3 +300,88 @@ def test_scrub_still_runs_on_the_missing_credential_path(monkeypatch, tmp_path):
         assert_subscription_mode(env_path=tmp_path / "nope.env")
 
     assert "ANTHROPIC_AUTH_TOKEN" not in __import__("os").environ
+
+
+# --------------------------------------------------------------------------- #
+# 9. A full lifespan cycle leaves no setup-mode flags on the shared app       #
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.asyncio
+async def test_lifespan_shutdown_leaves_no_setup_flags_on_the_shared_app(
+        tmp_path, monkeypatch):
+    """`nh start` pre-seeds `app.state.setup_mode`/`setup_reason` on the
+    PROCESS-WIDE `app` before building its server (src/no_human/cli/
+    commands.py:6877-6878); a real boot's lifespan startup then OR's them
+    together with what it re-derives (api/app.py's `lifespan`, :166-167).
+    This test is about a DIFFERENT leak than the `nh start` CliRunner
+    incident: that one is closed by `start()`'s own `finally` block
+    (commands.py:7014-7022), which tears the flags down on every exit path
+    even when the ASGI lifespan never fires (a stubbed `server.serve()`
+    returns immediately without it). Here, lifespan itself runs end to end —
+    the leak under test is a SECOND lifespan cycle (or any caller that never
+    opted in) inheriting flags a FIRST cycle's shutdown left behind, which is
+    exactly what lifespan's own shutdown teardown closes (mirroring this
+    whole module's `client` fixture teardown at :85, which works around the
+    same shape locally) — this test proves the lifespan-level leak is closed
+    at the source instead.
+
+    Runs the PRODUCTION `lifespan` on the module-level `app` itself, unlike
+    `_boot_real_worker` in tests/test_frozen_snapshot_guard.py (which
+    deliberately uses a THROWAWAY app to avoid wiring a live Scheduler into
+    the shared one) — the leak under test IS module-level app state, so a
+    throwaway app would not exercise it.
+    """
+    import importlib
+
+    # `import no_human.api.app as app_mod` would bind `app_mod` to the FastAPI
+    # OBJECT, not the module — `no_human/api/__init__.py`'s own
+    # `from .app import app` overwrites the `app` attribute Python's import
+    # system reads back off the parent package (same gotcha
+    # `_boot_real_worker` in tests/test_frozen_snapshot_guard.py works
+    # around the same way).
+    app_mod = importlib.import_module("no_human.api.app")
+    from no_human.config import load_config
+    from no_human.core import scheduler as sched_mod
+
+    cfg = load_config(tmp_path / "config.yaml")
+    cfg.data["database"]["path"] = str(tmp_path / "boot.db")
+    monkeypatch.setattr(app_mod, "load_config", lambda *a, **k: cfg)
+    # `lifespan` writes this back into os.environ; registering it with
+    # monkeypatch first is what gets it restored afterwards.
+    monkeypatch.setenv("PYTEST_XDIST_AUTO_NUM_WORKERS",
+                       os.environ.get("PYTEST_XDIST_AUTO_NUM_WORKERS", ""))
+
+    started = asyncio.Event()
+
+    async def _seam(self, *, stop, poll_interval=10.0):
+        started.set()
+        await stop.wait()
+
+    monkeypatch.setattr(sched_mod.Scheduler, "run_forever", _seam)
+
+    # `nh start`'s shape: the flags are already on the app before lifespan
+    # ever fires.
+    before = dict(getattr(app.state, "_state", app.state.__dict__))
+    app.state.setup_mode = True
+    app.state.setup_reason = "no credential on file"
+    try:
+        cm = app_mod.lifespan(app)
+        await cm.__aenter__()
+        try:
+            await asyncio.wait_for(started.wait(), timeout=5)
+        finally:
+            await cm.__aexit__(None, None, None)
+
+        assert not hasattr(app.state, "setup_mode")
+        assert not hasattr(app.state, "setup_reason")
+    # A dead/raised worker skips `lifespan`'s own `store.close()` — close it
+    # here too, whatever happened, or the aiosqlite thread outlives the test
+    # (mirrors `_unwind_real_worker` in tests/test_frozen_snapshot_guard.py).
+    finally:
+        store = getattr(app.state, "store", None)
+        if store is not None:
+            with contextlib.suppress(Exception):
+                await store.close()
+        bag = getattr(app.state, "_state", app.state.__dict__)
+        bag.clear()
+        bag.update(before)

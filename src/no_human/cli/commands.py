@@ -7011,6 +7011,15 @@ def start(host, port, workers, no_open):
         asyncio.run(_go())
     finally:
         _release_pid_lock()
+        # `_app` is the PROCESS-WIDE `api.app.app` singleton (imported above,
+        # not a per-call instance) — the three attributes set at :6873-6878
+        # are per-boot state that must die with this boot, on every exit path
+        # (normal return, ctrl-c, or a test's stubbed `server.serve()`), or a
+        # later caller in the same process (another CliRunner invocation, a
+        # hand-built test app sharing the module) reads a stale opt-in.
+        for _leftover in ("setup_mode", "setup_reason", "_worker_opts"):
+            if hasattr(_app.state, _leftover):
+                delattr(_app.state, _leftover)
 
 
 @cli.command("dashboard")

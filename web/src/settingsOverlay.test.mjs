@@ -27,7 +27,7 @@ test("the Config section is gone: no ConfigPanel, no config entry in the section
   assert.doesNotMatch(settingsJsx, /label:\s*["']Config["']/);
 });
 
-test("the section list covers Projects, Rules, Skills, Second brain, Integrations, Account, Updates", () => {
+test("the section list covers Projects, Rules, Skills, Memories, Integrations, Account, Updates", () => {
   // The name used to claim "exactly" while only checking presence, so adding a
   // section quietly made the title a lie. Both directions are asserted now:
   // every expected label is there, and the list holds nothing else.
@@ -35,12 +35,13 @@ test("the section list covers Projects, Rules, Skills, Second brain, Integration
   // is on by default and no longer surfaced in the UI, so the pane is gone.
   // "Models" is the model-picker pane (part 3 of 3): one row per role, fed by
   // GET /api/models — see modelsPanelView.test.mjs.
-  // "Second brain" (D3.2, 2026-09-01 hotfix): the learnings pane was renamed
+  // "Memories" (D3.2, 2026-09-01 hotfix; renamed from "Second brain" per the
+  // 2026-09-08 operator directive): the learnings pane was renamed
   // and is now the ONLY surface for it — see sidebarNav.test.mjs for the
   // sidebar-row removal this pairs with.
   // "Workers" (task 05a9cee0, re-home): re-homed out of ModelsPanel's old
   // WorkersRow into its own section — see workersPanelView.test.mjs.
-  const expected = ["Projects", "Rules", "Skills", "Second brain", "Integrations",
+  const expected = ["Projects", "Rules", "Skills", "Memories", "Integrations",
                     "Models", "Workers", "Account", "Updates"];
   for (const label of expected) {
     assert.match(settingsJsx, new RegExp(`label:\\s*["']${label}["']`), `missing section: ${label}`);

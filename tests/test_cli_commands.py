@@ -2653,6 +2653,41 @@ def test_start_does_not_clamp_or_warn_below_the_ceiling(tmp_path, monkeypatch):
     assert "3 worker(s)" in out, out
 
 
+def test_start_tears_down_its_boot_state_on_the_shared_app(tmp_path, monkeypatch):
+    """`nh start` seeds `_worker_opts`/`setup_mode`/`setup_reason` on the
+    PROCESS-WIDE `api.app.app` before it builds the server (commands.py
+    :6873-6878), outside the ASGI lifespan — so under a stubbed
+    `server.serve()` the lifespan's own shutdown never runs. The teardown in
+    `start()`'s `finally` (:7014-7022) is what makes that state die with the
+    boot: after the command returns the three attributes are gone, on the
+    normal exit and when `serve()` raises. Without it the next module to
+    import `app` (tests/test_local_model_preflight.py) read the stale opt-in
+    through `_require_credentials`'s `hasattr(state, "setup_mode")` gate and
+    503'd — the incident behind this test.
+    """
+    from no_human.api.app import app
+
+    cfg = _make_start_cfg_concurrent(tmp_path / "test.db")
+    _patch_start_scaffolding(monkeypatch, cfg)
+
+    result = CliRunner().invoke(
+        cli, ["start", "--no-open", "--port", "8420", "--workers", "2"])
+    assert result.exit_code == 0, result.output
+    for name in ("setup_mode", "setup_reason", "_worker_opts"):
+        assert not hasattr(app.state, name), (name, getattr(app.state, name, None))
+
+    class _RaisingServer(_FakeUvicornServer):
+        async def serve(self):
+            raise RuntimeError("bind failed")
+
+    monkeypatch.setattr(uvicorn, "Server", _RaisingServer)
+    result = CliRunner().invoke(
+        cli, ["start", "--no-open", "--port", "8420", "--workers", "2"])
+    assert result.exit_code != 0
+    for name in ("setup_mode", "setup_reason", "_worker_opts"):
+        assert not hasattr(app.state, name), (name, getattr(app.state, name, None))
+
+
 # --------------------------------------------------------------------------- #
 # nh serve --max-workers N — the ceiling is printed on THIS path too           #
 # --------------------------------------------------------------------------- #

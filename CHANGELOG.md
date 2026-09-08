@@ -6,6 +6,9 @@ All notable changes to no_human. The format follows
 
 ## [Unreleased]
 
+### Changed
+- Second brain is now called Memories.
+
 ## [0.2.2] — 2026-09-08
 
 Fixes for the Windows and Linux first-run findings that followed 0.2.1, and for
