@@ -294,6 +294,220 @@ async def test_pytest_failed_sections_are_surfaced(bare_repo, tmp_path, store):
 
 
 # --------------------------------------------------------------------------- #
+# Round-2 review BLOCKER: `_tap_failure_blocks` caps its return to           #
+# `_EXCERPT_MAX_TESTS` (3) for its own consumer (`prerequisite_reason_for`)  #
+# — but `failure_report_blocks` used to reuse that already-capped list       #
+# directly as the report's source, so a suite with MORE than 3 failing      #
+# tests silently dropped the 4th+ failure from both the `tests` event text  #
+# and the persisted `test_results.failure_blocks`, and the overflow line     #
+# could never fire because only <=3 (well under the 12000-char bound) ever  #
+# reached `render_failure_blocks`. Fixed by re-parsing every `not ok` block  #
+# off `full_output` (`_tap_blocks_uncapped`) for the report, while           #
+# `_tap_failure_blocks`'s 3-block cap is left unchanged for its existing     #
+# consumer.                                                                  #
+# --------------------------------------------------------------------------- #
+
+
+def _not_ok_numbered(n: int, i: int) -> str:
+    return (
+        f"not ok {n} - uniqueFailureSignature{i} asserts its own invariant "
+        "and fails deterministically every time\n"
+        "  ---\n"
+        f"  AssertionError: expected uniqueFailureSignature{i} to pass but "
+        "it did not\n"
+        f"  at desktop/failure{i}.test.mjs:{i}:1\n"
+        "  ---\n"
+    )
+
+
+def _five_failing_tap(total: int = 60) -> str:
+    fail_positions = {5: 1, 15: 2, 25: 3, 35: 4, 45: 5}
+    lines = []
+    for n in range(1, total + 1):
+        if n in fail_positions:
+            lines.append(_not_ok_numbered(n, fail_positions[n]))
+        else:
+            lines.append(_ok_block(n))
+    lines.append(f"1..{total}\n")
+    lines.append(f"# tests {total}\n")
+    lines.append(f"# pass {total - 5}\n")
+    lines.append("# fail 5\n")
+    return "".join(lines)
+
+
+async def test_all_five_failing_blocks_survive_not_just_the_first_three(
+    bare_repo, tmp_path, store,
+):
+    """Measured proof of the round-2 BLOCKER: on the pre-fix code, a TAP
+    stream with 5 `not ok` blocks left `_tap_failure_blocks` (and therefore
+    `failure_report_blocks`, which reused it) holding only 3 — the 4th and
+    5th failures vanished from both the `tests` event text and the persisted
+    `test_results.failure_blocks`, with no overflow line to even hint at the
+    loss (3 blocks is well under the 12000-char report budget). Fixed by
+    re-parsing every block off `full_output` for the report while
+    `TestRunResult.failure_blocks` (fed by the UNCHANGED `_tap_failure_blocks`)
+    keeps its own 3-block cap for `prerequisite_reason_for`.
+    """
+    tap = _five_failing_tap()
+    # `TestRunResult.failure_blocks` keeps the OLD 3-block cap — this is
+    # exactly what the unchanged `_tap_failure_blocks` still produces, and
+    # what `prerequisite_reason_for` still consumes. The report must still
+    # recover all 5 despite this field holding only 3.
+    capped = runner._tap_failure_blocks(tap)
+    assert len(capped) == 3, capped
+
+    tr = runner.TestRunResult(
+        ran=True, ok=False, passed=55, failed=5, errors=0,
+        command="node --test",
+        output=tap[-8000:],
+        full_output=tap,
+        failure_blocks=capped,
+    )
+
+    outcome, attempts, events, task = await _run_attempt_with_result(
+        store, tmp_path, bare_repo, tr)
+
+    test_events = [e for e in events if e["kind"] == "tests"]
+    assert test_events, events
+    text = test_events[0]["text"]
+    for i in range(1, 6):
+        assert f"uniqueFailureSignature{i}" in text, (i, text)
+
+    persisted = _persisted(attempts[-1])
+    blocks = persisted["failure_blocks"]
+    assert len(blocks) == 5, blocks
+    for i in range(1, 6):
+        assert any(f"uniqueFailureSignature{i}" in b for b in blocks), (i, blocks)
+
+
+# --------------------------------------------------------------------------- #
+# Round-2 review MAJOR: the class of bug behind the original incident exists #
+# one site over — `_environment_test_failure` and three per-site            #
+# invocation-error writes in the plain branch of `_run_attempt` each fire a  #
+# SECOND (or third) `update_attempt(..., test_results=...)` for the SAME     #
+# attempt row. `update_attempt` REPLACES the whole column rather than        #
+# merging it, so any of these writes that built its own dict from scratch    #
+# instead of the shared `base_test_results` silently dropped                 #
+# `failure_blocks` from the persisted record. Fixed by building the red      #
+# run's `test_results` dict ONCE (`base_test_results`, with                  #
+# `failure_blocks`) and reusing it (spread + override) at every later write. #
+# --------------------------------------------------------------------------- #
+
+
+def _not_ok_missing_package(n: int) -> str:
+    return (
+        f"not ok {n} - the plugin loads its runtime dependency before use\n"
+        "  ---\n"
+        "  error: Cannot find module 'left-pad'\n"
+        "  Require stack:\n"
+        "  - /repo/desktop/plugin.cjs\n"
+        "  ---\n"
+    )
+
+
+def _environment_tap(total: int = 30, at: int = 12) -> str:
+    lines = []
+    for n in range(1, total + 1):
+        if n == at:
+            lines.append(_not_ok_missing_package(n))
+        else:
+            lines.append(_ok_block(n))
+    lines.append(f"1..{total}\n")
+    return "".join(lines)
+
+
+async def test_the_environment_classifier_exit_keeps_its_failure_blocks(
+    bare_repo, tmp_path, store,
+):
+    """Measured proof of the round-2 MAJOR: on the pre-fix code, an
+    environment-routed red run persisted `['environment_error', 'errors',
+    'failed', 'failing_tests', 'ok', 'passed', 'ran', 'tamper_flag']` with NO
+    `failure_blocks` key at all — `_environment_test_failure`'s own
+    `update_attempt` write REPLACED the column the plain branch's first
+    write had just populated. Fixed by passing the same `base_test_results`
+    dict (which already carries `failure_blocks`) into
+    `_environment_test_failure` as its `test_results=` argument.
+    """
+    tap = _environment_tap()
+    tr = runner.TestRunResult(
+        ran=True, ok=False, passed=29, failed=1, errors=0,
+        command="node --test",
+        output=tap[-8000:],
+        full_output=tap,
+        failure_blocks=runner._tap_failure_blocks(tap),
+    )
+
+    outcome, attempts, events, task = await _run_attempt_with_result(
+        store, tmp_path, bare_repo, tr)
+
+    failed_rows = [a for a in attempts if a.get("status") == "failed"]
+    assert failed_rows, attempts
+    row = failed_rows[-1]
+    persisted = _persisted(row)
+    assert persisted.get("environment_error") is True, persisted
+    blocks = persisted.get("failure_blocks")
+    assert blocks, persisted
+    assert any("Cannot find module 'left-pad'" in b for b in blocks), blocks
+
+
+def _not_ok_module_not_found(n: int) -> str:
+    return (
+        f"not ok {n} - the added test cannot resolve its own import\n"
+        "  ---\n"
+        "  Error [ERR_MODULE_NOT_FOUND]: Cannot find module './widget.mjs'\n"
+        "  ---\n"
+    )
+
+
+def _invocation_error_tap(total: int = 10, at: int = 4) -> str:
+    lines = []
+    for n in range(1, total + 1):
+        if n == at:
+            lines.append(_not_ok_module_not_found(n))
+        else:
+            lines.append(_ok_block(n))
+    lines.append(f"1..{total}\n")
+    return "".join(lines)
+
+
+async def test_an_owned_invocation_error_exit_keeps_its_failure_blocks(
+    bare_repo, tmp_path, store,
+):
+    """Same class, one site over: an OWNED failing id that also matches
+    `_INVOCATION_ERROR_PATTERNS` bills the attempt directly from the plain
+    branch's own inline check (never consulting the base tree) — a further
+    `update_attempt(..., test_results=...)` write for the same attempt that,
+    pre-fix, built its dict from scratch and dropped `failure_blocks` the
+    same way the environment-classifier exit did above.
+    """
+    tap = _invocation_error_tap()
+    tr = runner.TestRunResult(
+        ran=True, ok=False, passed=9, failed=1, errors=0,
+        command="node --test",
+        output=tap[-8000:],
+        full_output=tap,
+        failure_blocks=runner._tap_failure_blocks(tap),
+        failing_tests=["desktop/widget.test.mjs"],
+        invocation_error=True,
+    )
+
+    outcome, attempts, events, task = await _run_attempt_with_result(
+        store, tmp_path, bare_repo, tr,
+        owned=["desktop/widget.test.mjs"],
+    )
+
+    assert outcome.status is TaskStatus.FAILED, outcome.detail
+    failed_rows = [a for a in attempts if a.get("status") == "failed"]
+    assert failed_rows, attempts
+    row = failed_rows[-1]
+    persisted = _persisted(row)
+    assert persisted.get("invocation_error") is True, persisted
+    blocks = persisted.get("failure_blocks")
+    assert blocks, persisted
+    assert any("ERR_MODULE_NOT_FOUND" in b for b in blocks), blocks
+
+
+# --------------------------------------------------------------------------- #
 # Bounding: each block capped, whole addition capped with an overflow line   #
 # --------------------------------------------------------------------------- #
 

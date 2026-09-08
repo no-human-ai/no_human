@@ -426,14 +426,16 @@ _TAP_NOT_OK_RE = re.compile(r"^\s*not ok \d+\b")
 _TAP_BLOCK_END_RE = re.compile(r"^\s*(?:not )?ok \d+\b|^\s*1\.\.\d+|^#|^\s*\.\.\.\s*$")
 
 
-def _tap_failure_blocks(output: str) -> list[str]:
-    """Node TAP `not ok N ...` blocks, each captured through its own YAML
-    terminator (`  ...`, the next `ok`/`not ok` line, the next `#` comment,
-    or the trailing `1..N` plan line) — off the FULL output, before any
-    `[-8000:]` tail truncates it. `[]` when *output* carries no `not ok`
-    line (not TAP, or a clean pytest run); never raises. Capped like
-    `_pytest_traceback_excerpts` (`_EXCERPT_MAX_TESTS` blocks, each through
-    `_cap_excerpt`) so a runaway TAP dump can't blow up state.
+def _tap_blocks_uncapped(output: str) -> list[str]:
+    """Every TAP `not ok N ...` block in *output*, in file order, with NO cap
+    on how many are returned (each block is still bounded to
+    `_EXCERPT_MAX_LINES`/`_EXCERPT_MAX_BYTES` via `_cap_excerpt`). Shared walk
+    behind `_tap_failure_blocks` (which slices this to `_EXCERPT_MAX_TESTS`
+    for its existing consumers — `TestRunResult.failure_blocks`,
+    `prerequisite_reason_for`) and `failure_report_blocks` (which needs every
+    failing block for the `tests` event / artefact — round-2 review BLOCKER:
+    a suite with more than `_EXCERPT_MAX_TESTS` failures silently dropped the
+    4th+ from the reported evidence when it reused the already-capped list).
     """
     if not output:
         return []
@@ -450,7 +452,19 @@ def _tap_failure_blocks(output: str) -> list[str]:
             i = j
         else:
             i += 1
-    return blocks[:_EXCERPT_MAX_TESTS]
+    return blocks
+
+
+def _tap_failure_blocks(output: str) -> list[str]:
+    """Node TAP `not ok N ...` blocks, each captured through its own YAML
+    terminator (`  ...`, the next `ok`/`not ok` line, the next `#` comment,
+    or the trailing `1..N` plan line) — off the FULL output, before any
+    `[-8000:]` tail truncates it. `[]` when *output* carries no `not ok`
+    line (not TAP, or a clean pytest run); never raises. Capped like
+    `_pytest_traceback_excerpts` (`_EXCERPT_MAX_TESTS` blocks, each through
+    `_cap_excerpt`) so a runaway TAP dump can't blow up state.
+    """
+    return _tap_blocks_uncapped(output)[:_EXCERPT_MAX_TESTS]
 
 
 _TAP_NOT_OK_LINE_RE = re.compile(r"^\s*not ok \d+\s*-\s*(.+?)\s*$")
@@ -588,17 +602,25 @@ def failure_report_blocks(result: "TestRunResult") -> list[str]:
     event / artefact, each capped to `FAILURE_BLOCK_MAX_CHARS`. Pure, never
     raises.
 
-    Node: `result.failure_blocks` (already parsed off the untruncated output
-    by `_tap_failure_blocks` — not re-parsed here). Pytest (no
-    `failure_blocks`): the `FAILED …`/`ERROR …` lines of the short summary
-    section (same `_PYTEST_FAILED_ID` anchor `_pytest_failing_tests` reads,
-    applied to `full_output` when present so the block survives the same
-    `[-8000:]` tail `output` is always capped to), then one block per
+    Node: re-parses EVERY `not ok` block off `full_output` (`_tap_blocks_
+    uncapped`, not `result.failure_blocks` — that field is capped to
+    `_EXCERPT_MAX_TESTS` for its own consumer and reusing it here silently
+    dropped the 4th+ failing block from the report, round-2 review BLOCKER).
+    Falls back to `result.failure_blocks` when `full_output` is unset or
+    yields nothing (e.g. a hand-built result without `full_output`). Pytest
+    (no `failure_blocks`): the `FAILED …`/`ERROR …` lines of the short
+    summary section (same `_PYTEST_FAILED_ID` anchor `_pytest_failing_tests`
+    reads, applied to `full_output` when present so the block survives the
+    same `[-8000:]` tail `output` is always capped to), then one block per
     `traceback_excerpts` entry. `[]` when neither source has anything (an
     invocation error with no parsed blocks) — callers then fall back to the
     output tail.
     """
     if result.failure_blocks:
+        if result.full_output:
+            all_blocks = _tap_blocks_uncapped(result.full_output)
+            if all_blocks:
+                return [_cap_block(b) for b in all_blocks]
         return [_cap_block(b) for b in result.failure_blocks]
     blocks: list[str] = []
     full = result.full_output or result.output or ""

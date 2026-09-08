@@ -6522,6 +6522,7 @@ class Orchestrator:
                     total_errors=total_errors, failing_tests=failing_tests,
                     attempt_id=attempt_id, repo=repo, branch=branch, base=base,
                     test_cwd=test_cwd, commit=commit, result=result, stuck=stuck,
+                    blocks=blocks,
                 )
         else:
             # Offload the (blocking) test subprocess to a thread so concurrent tasks'
@@ -6554,15 +6555,25 @@ class Orchestrator:
                 ok=test_result.ok, cached=was_cached, failing_tests=failing_tests,
                 ran=test_result.ran, tests_log=artifact_path,
             )
+            # Built ONCE and reused (spread + override) at every later
+            # `update_attempt(..., test_results=...)` call this red run can
+            # reach below — `update_attempt` REPLACES the whole column
+            # (never merges it, see the comment further down), so any site
+            # that built its own dict from scratch instead of this one could
+            # silently drop `failure_blocks` from the persisted record
+            # (round-2 review MAJOR: exactly the incident this file exists
+            # to prevent, one level deeper than the billing-path sites
+            # already fixed).
+            base_test_results = {
+                "ran": test_result.ran, "ok": test_result.ok,
+                "passed": test_result.passed, "failed": test_result.failed,
+                "errors": test_result.errors, "tamper_flag": False,
+                "failing_tests": failing_tests,
+                "failure_blocks": blocks,
+            }
             await self.store.update_attempt(
                 attempt_id,
-                test_results={
-                    "ran": test_result.ran, "ok": test_result.ok,
-                    "passed": test_result.passed, "failed": test_result.failed,
-                    "errors": test_result.errors, "tamper_flag": False,
-                    "failing_tests": failing_tests,
-                    "failure_blocks": blocks,
-                },
+                test_results=base_test_results,
             )
             if test_result.ran and not test_result.ok:
                 # Ownership (cheap: a git-diff lookup, no test re-run) is
@@ -6594,12 +6605,7 @@ class Orchestrator:
                 env_outcome = await self._environment_test_failure(
                     task, result=test_result, attempt_id=attempt_id,
                     repo=repo, branch=branch,
-                    test_results={
-                        "ran": test_result.ran, "ok": test_result.ok,
-                        "passed": test_result.passed, "failed": test_result.failed,
-                        "errors": test_result.errors, "tamper_flag": False,
-                        "failing_tests": failing_tests,
-                    },
+                    test_results=base_test_results,
                     owned_failing=owned,
                 )
                 if env_outcome is not None:
@@ -6633,12 +6639,8 @@ class Orchestrator:
                         await self.store.update_attempt(
                             attempt_id, status="failed", failure_reason=detail,
                             test_results={
-                                "ran": test_result.ran, "ok": False,
-                                "passed": test_result.passed,
-                                "failed": test_result.failed,
-                                "errors": test_result.errors,
-                                "tamper_flag": False,
-                                "failing_tests": failing_tests,
+                                **base_test_results,
+                                "ok": False,
                                 "invocation_error": True,
                             },
                         )
@@ -6665,11 +6667,8 @@ class Orchestrator:
                         await self.store.update_attempt(
                             attempt_id, status="failed", failure_reason=detail,
                             test_results={
-                                "ran": test_result.ran, "ok": False,
-                                "passed": test_result.passed,
-                                "failed": test_result.failed,
-                                "errors": test_result.errors,
-                                "tamper_flag": False,
+                                **base_test_results,
+                                "ok": False,
                                 "invocation_error": True,
                                 "reproduces_on_base": False,
                             },
@@ -6688,22 +6687,15 @@ class Orchestrator:
                     )
                     await self.store.update_attempt(
                         attempt_id,
+                        # `update_attempt` REPLACES the `test_results` column
+                        # (db.py: `test_results = :test_results`), it does not
+                        # merge — so this write must carry every field the
+                        # earlier write held (`failing_tests`, `failure_
+                        # blocks`) or it silently drops them. `base_test_
+                        # results` is that one shared dict, built once above.
                         test_results={
-                            "ran": test_result.ran, "ok": False,
-                            "passed": test_result.passed, "failed": test_result.failed,
-                            "errors": test_result.errors, "tamper_flag": False,
-                            # 🔴 CARRY THE NAMES. `update_attempt` REPLACES the
-                            # `test_results` column (db.py: `test_results =
-                            # :test_results`), it does not merge — so this dict
-                            # overwrote the one written above, which was the only
-                            # one holding `failing_tests`. The PR body's
-                            # "- failing tests:" block was therefore unreachable
-                            # on the one path that actually reaches it: a partial
-                            # run whose counts are real and whose invocation also
-                            # stumbled. Rendering a name list nothing can populate
-                            # is the same dead code as the `or counted` clause
-                            # deleted from `_test_evidence_section`.
-                            "failing_tests": failing_tests,
+                            **base_test_results,
+                            "ok": False,
                             "invocation_error": True,
                             "reproduces_on_base": on_base,
                         },
@@ -6755,14 +6747,8 @@ class Orchestrator:
                         await self.store.update_attempt(
                             attempt_id,
                             test_results={
-                                "ran": test_result.ran, "ok": test_result.ok,
-                                "passed": test_result.passed,
-                                "failed": test_result.failed,
-                                "errors": test_result.errors,
-                                "tamper_flag": False,
-                                "failing_tests": failing_tests,
+                                **base_test_results,
                                 "pre_existing_failures": failing_tests,
-                                "failure_blocks": blocks,
                             },
                         )
                     else:
@@ -12140,6 +12126,7 @@ class Orchestrator:
         total_errors: int, failing_tests: list[str], attempt_id: str,
         repo: GitRepo | None, branch: str | None, base: str | None,
         test_cwd: "Path | None", commit, result, stuck: StuckDetector,
+        blocks: list[str] | None = None,
     ) -> TaskOutcome:
         """The layered-test-plan branch of `_run_attempt`, once a BLOCKING
         layer has failed. Extracted from `_run_attempt` (structural budget:
@@ -12151,6 +12138,13 @@ class Orchestrator:
         returns a TaskOutcome — entering this branch is itself already
         terminal, either via the environment classifier below or the
         billing path at the end.
+
+        `blocks`: the bounded failure blocks the caller already computed via
+        `_red_test_detail` for this same run. The `_environment_test_failure`
+        call below does its own `update_attempt(..., test_results=...)`,
+        which REPLACES the whole column — so this dict must carry
+        `failure_blocks` too, or it silently drops the ones the caller's
+        earlier aggregate write (`_run_attempt` ~6501) had just persisted.
         """
         from ..testing.test_layers import Gating as _Gating
 
@@ -12188,6 +12182,7 @@ class Orchestrator:
                 "errors": total_errors, "tamper_flag": False,
                 "layers": [lr.summary for lr in plan_result.layer_results],
                 "failing_tests": failing_tests,
+                "failure_blocks": blocks or [],
             },
             owned_failing=owned,
         )
