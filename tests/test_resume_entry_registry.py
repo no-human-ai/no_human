@@ -86,6 +86,13 @@ REGISTRY: dict[tuple[str, str], str] = {
     # opaque-target scan flags it; it never moves a task back to a
     # parked/terminal state, same as _run_attempt itself. Incident 6408aba0.
     ("core/orchestrator.py", "Orchestrator._advance_after_review"): INTERNAL,
+    # _land_no_changes_needed's second set_status call passes a plain
+    # variable (`target`, always TaskStatus.AWAITING_APPROVAL on this route),
+    # so the opaque-target scan flags it; it never moves a task back to a
+    # parked/terminal state, exactly like _advance_after_review — it lands a
+    # send-back-resume round that produced zero diff, going forward through
+    # TESTING (always legal from here) to AWAITING_APPROVAL.
+    ("core/orchestrator.py", "Orchestrator._land_no_changes_needed"): INTERNAL,
 }
 
 CLAIMABLE = {"PENDING", "IMPLEMENTING"}
@@ -313,6 +320,7 @@ STOP_REGISTRY: dict[tuple[str, str], str] = {
     ("core/orchestrator.py", "Orchestrator._honor_server_stop"): KEEPS,
     ("core/orchestrator.py", "Orchestrator._run_attempt"): STOP_INTERNAL,
     ("core/orchestrator.py", "Orchestrator._advance_after_review"): STOP_INTERNAL,
+    ("core/orchestrator.py", "Orchestrator._land_no_changes_needed"): STOP_INTERNAL,
 }
 
 

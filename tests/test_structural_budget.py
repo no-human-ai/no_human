@@ -600,7 +600,22 @@ FROZEN_FILE_LINES = {
     # on this file because of a pre-existing, unrelated raw-unicode
     # line-separator regex literal at `_LINE_BREAKS`, ~line 19319, that
     # Python's `str.splitlines()` — but not `wc -l` — treats as line breaks).
-    "core/orchestrator.py": 21915,
+    # 21915 -> 21920 (+5): round 3 fixes a still-broken rule — the round-2
+    # version compared feedback against the branch HEAD's git COMMITTER
+    # DATE, which reads False on the exact incident it was written for (a
+    # later attempt can commit and pass review well after the feedback,
+    # leaving the head's committer date newer than the feedback even though
+    # the branch already satisfies it). `_send_back_resume_round` is
+    # rewritten to read no_human-owned records instead: the newest
+    # `send_back_feedback` must be older than the latest `review_history`
+    # PASS recorded for the CURRENT head (`repo.head_sha()` for identity
+    # only, never a date). `_land_no_changes_needed` also closes the
+    # `TESTING` hop's `task_phases` row with an honest `no_tests_run`
+    # outcome instead of leaving it read like a real test ran, and reorders
+    # its writes so a refused status CAS leaves no stray `succeeded`
+    # attempt/`no_changes_needed` marker. Both helpers' docstrings were
+    # trimmed at the same time; the net is +5 lines.
+    "core/orchestrator.py": 21920,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.
