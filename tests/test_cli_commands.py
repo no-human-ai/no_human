@@ -2431,6 +2431,29 @@ def _make_start_cfg(db_path: Path, *, jira_enabled: bool):
     return _Cfg()
 
 
+@pytest.fixture
+def cleanup_app_state():
+    """`nh start` writes `_worker_opts`/`setup_mode`/`setup_reason` onto the
+    PROCESS-WIDE `api.app.app` before it builds the server; under CliRunner
+    the server is stubbed, so nothing ever tears them down and the next test
+    file to import `app` (tests/test_local_model_preflight.py) is read by
+    `_require_credentials` as having opted into the setup-mode gate and 503s.
+    Snapshot in, restore out — delete what the test added, restore what it
+    overwrote."""
+    from no_human.api.app import app
+
+    def _bag():
+        return getattr(app.state, "_state", app.state.__dict__)
+
+    before = dict(_bag())
+    try:
+        yield
+    finally:
+        bag = _bag()
+        bag.clear()
+        bag.update(before)
+
+
 def _patch_start_scaffolding(monkeypatch, cfg):
     import no_human.cli.commands as cmd_mod
 
@@ -2448,6 +2471,7 @@ def _patch_start_scaffolding(monkeypatch, cfg):
     return cmd_mod
 
 
+@pytest.mark.usefixtures("cleanup_app_state")
 def test_start_runs_jira_poller_when_enabled(tmp_path, monkeypatch):
     import no_human.intake.jira as jira_mod
     import no_human.intake.jira_poll as jira_poll_mod
@@ -2476,6 +2500,7 @@ def test_start_runs_jira_poller_when_enabled(tmp_path, monkeypatch):
     assert "jira intake" in result.output.lower()
 
 
+@pytest.mark.usefixtures("cleanup_app_state")
 def test_start_skips_jira_poller_when_disabled(tmp_path, monkeypatch):
     import no_human.intake.jira as jira_mod
     import no_human.intake.jira_poll as jira_poll_mod
@@ -2527,6 +2552,7 @@ def _make_start_cfg_linear(db_path: Path, *, linear_enabled: bool):
     return _Cfg()
 
 
+@pytest.mark.usefixtures("cleanup_app_state")
 def test_start_runs_linear_poller_when_enabled(tmp_path, monkeypatch):
     import no_human.intake.linear as linear_mod
     import no_human.intake.linear_poll as linear_poll_mod
@@ -2567,6 +2593,7 @@ def test_start_runs_linear_poller_when_enabled(tmp_path, monkeypatch):
     assert "jira" not in result.output.lower()
 
 
+@pytest.mark.usefixtures("cleanup_app_state")
 def test_start_skips_linear_poller_when_disabled(tmp_path, monkeypatch):
     import no_human.intake.linear as linear_mod
     import no_human.intake.linear_poll as linear_poll_mod
@@ -2616,6 +2643,7 @@ def _make_start_cfg_concurrent(db_path: Path):
     return _Cfg()
 
 
+@pytest.mark.usefixtures("cleanup_app_state")
 def test_start_prints_the_reason_when_it_clamps_the_worker_flag(tmp_path, monkeypatch):
     """`nh start --workers 64` was accepted in full and in silence. The clamp
     is only a guard if the operator is told the pool is not the width they
@@ -2637,6 +2665,7 @@ def test_start_prints_the_reason_when_it_clamps_the_worker_flag(tmp_path, monkey
     assert "4 worker(s)" in out, out
 
 
+@pytest.mark.usefixtures("cleanup_app_state")
 def test_start_does_not_clamp_or_warn_below_the_ceiling(tmp_path, monkeypatch):
     import os as _os
 

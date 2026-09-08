@@ -114,23 +114,18 @@ _WEB_DIST = _resolve_web_dist()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     config = load_config()
-    # Pin the loaded-code snapshot HERE, before anything can run, so it is the
-    # sha of what this process holds in memory rather than of whatever HEAD
-    # happens to be the first time something asks. The server never reloads:
-    # every attempt this process records will carry this value.
-    # Off the event loop: this is four git subprocesses (~294ms measured, and
-    # 40s in the worst case the timeouts allow). Startup is exactly when the
-    # loop has other things to do.
+    # Pin the loaded-code snapshot HERE, before anything can run, so every
+    # attempt this process records carries the sha of what's in memory now,
+    # not whatever HEAD is when first asked; the server never reloads. Off
+    # the event loop: ~294ms of git subprocesses (40s worst case).
     from ..core.build_info import loaded_code, staleness_note
     code = await asyncio.to_thread(loaded_code)
     app.state.loaded_code = code.descriptor
     log.info("loaded code: %s", code.descriptor)
-    # WARNING level on purpose: uvicorn runs at log_level="warning", so INFO is
-    # dropped and only the line that has something to say survives. Advisory —
-    # nothing below reads it, and no task is prevented from being claimed.
-    # This line alone is NOT the surface: it scrolls past at boot, and the case
-    # that matters is a server that has been up for hours. See the board banner
-    # fed by /api/worker/status.
+    # WARNING level on purpose: uvicorn runs at log_level="warning", so INFO
+    # is dropped. Advisory — nothing below reads it, and no task is blocked;
+    # the case that matters is a long-lived server, surfaced instead by the
+    # board banner fed by /api/worker/status.
     _startup_stale = await asyncio.to_thread(staleness_note, code)
     if _startup_stale:
         log.warning("%s", _startup_stale)
@@ -141,26 +136,22 @@ async def lifespan(app: FastAPI):
     # rather than reusing `_startup_stale` because HEAD (and thus the cache
     # key) can already differ by the time this line runs.
     await asyncio.to_thread(_loaded_code_stale)
-    # `nh start` may already have connected a shared Store to hand to its
-    # Jira/Linear intake pollers (started before uvicorn's ASGI lifespan
-    # fires) — reuse it instead of opening a SECOND aiosqlite connection to
-    # the same file. Two connections racing this lifespan's own connect+
-    # migrate, with no busy_timeout set, is what flooded a clean `nh start`
-    # with `sqlite3.OperationalError: database is locked` (KI, 2026-08-01).
-    # One-shot handoff (popped, not just read) so a later lifespan cycle in
-    # the same process never reuses an already-closed store.
+    # `nh start` may have already connected a shared Store for its Jira/
+    # Linear pollers (before uvicorn's ASGI lifespan fires) — reuse it to
+    # avoid a second connection racing this one (KI, 2026-08-01: unbounded
+    # `sqlite3.OperationalError: database is locked`). One-shot handoff
+    # (popped, not read) so a later lifespan cycle never reuses a closed store.
     external_store = getattr(app.state, "_external_store", None)
     if external_store is not None:
         del app.state._external_store
     store = external_store or await Store(config.db_path).connect()
     app.state.store = store
     app.state.config = config
-    # Setup mode: no subscription credential on file at all. `nh start` may
-    # already have computed this (setup_reason printed at boot, before this
-    # lifespan even fires) — OR it together with what THIS process sees now,
-    # so a credential added between CLI bootstrap and lifespan firing still
-    # lifts it, and a bare `TestClient(app)` construction (no CLI involved)
-    # gets its own correct answer.
+    # Setup mode: no subscription credential on file. `nh start` may already
+    # have computed this (setup_reason printed at boot) — OR it with what
+    # THIS process sees now, so a credential added between CLI bootstrap and
+    # lifespan firing still lifts it, and a bare `TestClient(app)` gets its
+    # own correct answer.
     from ..config import subscription_credential_missing
     _reason = subscription_credential_missing(config.data)
     app.state.setup_mode = bool(_reason) or bool(getattr(app.state, "setup_mode", False))
@@ -391,6 +382,15 @@ async def lifespan(app: FastAPI):
             await asyncio.wait_for(worker_task, timeout=budget)
         except asyncio.TimeoutError:
             log.warning("worker drain timed out after %.0fs", budget)
+    # Setup-mode flags are per-boot state on a PROCESS-WIDE singleton `app`
+    # (startup sets them ~:160). Left behind, a later caller that never
+    # opted in — a hand-built test app, a second lifespan cycle — is read by
+    # `_require_credentials`'s `hasattr(state, "setup_mode")` gate as opted
+    # in and 503s on an empty .env. Boot state dies with the boot.
+    if hasattr(app.state, "setup_mode"):
+        del app.state.setup_mode
+    if hasattr(app.state, "setup_reason"):
+        del app.state.setup_reason
     # An externally-supplied store is owned by whoever connected it (`nh
     # start`'s `_go()`) — it closes it, not us, or `start()`'s own use of the
     # connection after `server.serve()` returns would hit a closed store.
