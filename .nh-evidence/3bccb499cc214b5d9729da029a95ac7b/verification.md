@@ -1,30 +1,118 @@
 # How I verified this — full log
 
-_Harness-captured record for task `3bccb499`, commit `8a2413fd1753158e8db0f1c3d77a95c2b5510900` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `3bccb499`, commit `2df022b0630bcb47267c177e153be6ac7e0c21b9` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ## How I verified this
-2 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
+7 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
 
 ### test
-- `uv run pytest -q -p no:cacheprovider tests/test_red_run_failure_blocks.py 2>&1 | tail -100`
+- `uv run pytest -q -p no:cacheprovider tests/test_red_run_failure_blocks.py tests/test_missing_prereq_env_classification.py tests/test_base_tree_gate.py tests/test_flaky_rerun_attribution.py tests/test_test_layers.py 2>&1 | tail -60`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
 Using CPython 3.12.13
 Creating virtual environment at: .venv
-   Building no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/3bccb499cc214b5d9729da029a95ac7b.21285.1a042f4c
-      Built no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/3bccb499cc214b5d9729da029a95ac7b.21285.1a042f4c
-Installed 68 packages in 159ms
-.........                                                                [100%]
-9 passed in 10.63s
+   Building no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/3bccb499cc214b5d9729da029a95ac7b.21285.d1adaf16
+      Built no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/3bccb499cc214b5d9729da029a95ac7b.21285.d1adaf16
+Installed 68 packages in 100ms
+........................................................................ [ 80%]
+..................                                                       [100%]
+
+[... 373 of 1,512 characters omitted from the middle ...]
+est_layers.py)
+    @dataclass
+
+src/<redacted>/testing/test_layers.py:89
+  /Users/eyalgolan/.<redacted>/worktrees/3bccb499cc214b5d9729da029a95ac7b.21285.d1adaf16/src/<redacted>/testing/test_layers.py:89: PytestCollectionWarning: cannot collect test class 'TestPlan' because it has a __init__ constructor (from: tests/test_test_layers.py)
+    @dataclass
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+90 passed, 2 warnings in 44.83s
+```  
+  _excerpt - 1,494 characters of output in total_
+
+- `uv run pytest -q -p no:cacheprovider "tests/test_e2e_orchestrator.py::test_failed_tests_event_carries_the_output_tail" 2>&1 | tail -30`
+
+```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+.                                                                        [100%]
+1 passed in 0.44s
+```
+
+- `uv run pytest -q -p no:cacheprovider tests/test_red_run_failure_blocks.py 2>&1 | tail -80`
+
+```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+...........                                                              [100%]
+11 passed in 9.04s
+```
+
+- `uv run pytest -q -p no:cacheprovider tests/test_red_run_failure_blocks.py tests/test_missing_prereq_env_classification.py tests/test_base_tree_gate.py tests/test_flaky_rerun_attribution.py tests/test_test_layers.py tests/test_e2e_orchestrator.py::test_failed_tests_event_carries_the_output_tail 2>&1 | tail -60`
+
+```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+........................................................................ [ 77%]
+.....................                                                    [100%]
+=============================== warnings summary ===============================
+src/<redacted>/testing/test_layers.py:35
+  /Users/eyalgolan/.<redacted>/worktrees/3bccb499cc214b5d9729da029a95ac7b.21285.d1adaf16/src/<redacted>/testing/test_layers.py:35: PytestCollectionWarning: cannot collect test class 'TestLayer' because it has a __init__ constructor (from: tests/test_test_layers.py)
+    @dataclass
+
+src/<redacted>/testing/test_layers.py:89
+  /Users/eyalgolan/.<redacted>/worktrees/3bccb499cc214b5d9729da029a95ac7b.21285.d1adaf16/src/<redacted>/testing/test_layers.py:89: PytestCollectionWarning: cannot collect test class 'TestPlan' because it has a __init__ constructor (from: tests/test_test_layers.py)
+    @dataclass
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+93 passed, 2 warnings in 59.27s
 ```
 
 - `uv run pytest -q -p no:cacheprovider tests/test_structural_budget.py 2>&1 | tail -100`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+.....F............                                                       [100%]
+=================================== FAILURES ===================================
+________________________ test_no_frozen_entry_has_grown ________________________
+
+scanned = ({'agent/claude_backend.py:ClaudeBackend.stream': 407, 'blockers/landed_override.py:approve_landed_override': 315, 'bl... ...}, {'agent/guard.py': 2892, 'api/app.py': 6140, 'blockers/wake.py': 2757, 'cli/commands.py': 8633, ...}, 225
+[... 732 of 1,871 characters omitted from the middle ...]
+orches...atchets down'] == []
+E             
+E             Left contains one more item: 'core/orchestrator.py: frozen 22703, now 22718 (+15); this budget only ratchets down'
+E             Use -v to get more diff
+
+tests/test_structural_budget.py:1428: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_structural_budget.py::test_no_frozen_entry_has_grown - Asse...
+1 failed, 17 passed in 1.71s
+```  
+  _excerpt - 1,869 characters of output in total_
+
+- `uv run pytest -q -p no:cacheprovider tests/test_structural_budget.py 2>&1 | tail -40`
+
+```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
 ..................                                                       [100%]
-18 passed in 2.45s
+18 passed in 1.65s
+```
+
+- `uv run pytest -q -p no:cacheprovider tests/test_red_run_failure_blocks.py tests/test_missing_prereq_env_classification.py tests/test_base_tree_gate.py tests/test_flaky_rerun_attribution.py tests/test_test_layers.py tests/test_e2e_orchestrator.py::test_failed_tests_event_carries_the_output_tail tests/test_structural_budget.py 2>&1 | tail -30`
+
+```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+........................................................................ [ 64%]
+.......................................                                  [100%]
+=============================== warnings summary ===============================
+src/<redacted>/testing/test_layers.py:35
+  /Users/eyalgolan/.<redacted>/worktrees/3bccb499cc214b5d9729da029a95ac7b.21285.d1adaf16/src/<redacted>/testing/test_layers.py:35: PytestCollectionWarning: cannot collect test class 'TestLayer' because it has a __init__ constructor (from: tests/test_test_layers.py)
+    @dataclass
+
+src/<redacted>/testing/test_layers.py:89
+  /Users/eyalgolan/.<redacted>/worktrees/3bccb499cc214b5d9729da029a95ac7b.21285.d1adaf16/src/<redacted>/testing/test_layers.py:89: PytestCollectionWarning: cannot collect test class 'TestPlan' because it has a __init__ constructor (from: tests/test_test_layers.py)
+    @dataclass
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+111 passed, 2 warnings in 40.68s
 ```
 
 
