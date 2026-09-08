@@ -3701,6 +3701,55 @@ async def test_send_back_resume_with_no_changes_returns_to_awaiting_approval(
     )
 
 
+async def test_send_back_resume_uses_the_newest_qualifying_attempt_row(
+    bare_repo, tmp_path, store
+):
+    """Guards `newest = max(qualifying, key=started_at)`, not
+    `min(qualifying, ...)`. Two OTHER attempt rows both qualify (same
+    `commit_sha` == HEAD, `review_passed = 1`): an OLDER one whose
+    `started_at` is BEFORE the feedback, and a NEWER one whose `started_at`
+    is AFTER it. Every existing guard test seeds exactly one qualifying row,
+    so `max` -> `min` leaves them all green; only a row set shaped like this
+    one — where the oldest and newest qualifying rows fall on opposite sides
+    of the feedback — turns that mutation red. The newest row is what
+    matters, so the round must still land as `AWAITING_APPROVAL`."""
+    cfg = _config(tmp_path)
+    backend = _NoEditBackend()
+    orch = Orchestrator(store, cfg.data, backend, SlackNotifier(None))
+    t = Task.new("add feature", repo_path=str(bare_repo), kind="feature")
+    head_sha = GitRepo(bare_repo).head_sha()
+    ctx = t.context or {}
+    ctx["pr_watch"] = "https://github.com/o/r/pull/7"
+    ctx["send_back_feedback"] = [
+        {"at": "2026-09-08T00:06:05.096374+00:00",
+         "message": "please rename the flag"}
+    ]
+    t.context = ctx
+    await store.create_task(t)
+
+    older_id = await store.create_attempt(t.id, 1)
+    await store.update_attempt(
+        older_id, status="failed", pr_url="https://github.com/o/r/pull/7",
+        started_at="2026-09-08 00:00:00",
+        review_passed=1, commit_sha=head_sha,
+    )
+    newer_id = await store.create_attempt(t.id, 2)
+    await store.update_attempt(
+        newer_id, status="failed", pr_url="https://github.com/o/r/pull/7",
+        started_at="2026-09-08 00:06:31",
+        review_passed=1, commit_sha=head_sha,
+    )
+    await store.set_status(t, TaskStatus.IMPLEMENTING, validate=False)
+
+    outcome = await orch.run_task(t)
+
+    assert outcome.status is TaskStatus.AWAITING_APPROVAL, outcome.detail
+    assert "no changes needed" in outcome.detail
+    reloaded = await store.get_task(t.id)
+    assert reloaded.status is TaskStatus.AWAITING_APPROVAL
+    assert (reloaded.context or {}).get("no_changes_needed")
+
+
 async def test_first_attempt_with_no_changes_still_fails_even_with_a_pr(
     bare_repo, tmp_path, store
 ):

@@ -647,7 +647,22 @@ FROZEN_FILE_LINES = {
     # `len(text.splitlines())`: `wc -l` reads 22122; the scanner counts
     # 22125 — the same +3 NEL/LS/PS offset noted above, unrelated to this
     # diff. The scanner's metric (22125) is what is recorded here.
-    "core/orchestrator.py": 22125,
+    # 22125 -> 22272 (+147, conflict resolved on the rebased tree): the
+    # no-op
+    # send-back-resume feature (`_send_back_resume_round`,
+    # `_land_no_changes_needed`, and their `_run_attempt` call site)
+    # across all of its rounds, including round 5's replacement of the
+    # round-3 `task.context["review_history"]` read with a predicate
+    # keyed directly on the `attempts` table (`review_passed`,
+    # `commit_sha`, `started_at`) — the real incident's rows never carry
+    # a `review_history[].at` entry, so round 3's read could never have
+    # fired on the data it names. Measured via the scanner's own
+    # `len(Path(...).read_text().splitlines())` on this merged tree
+    # (`wc -l` reads 22024; the same pre-existing +3 NEL/LS/PS-regex
+    # offset noted above accounts for the gap).
+    # Re-measured on THIS merged tree by the scanner's own metric
+    # (len(read_text().splitlines()) = 22272).
+    "core/orchestrator.py": 22272,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.
