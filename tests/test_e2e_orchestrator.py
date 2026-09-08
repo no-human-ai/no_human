@@ -768,7 +768,8 @@ class FakeReviewer:
     async def review(self, task, *, repo_path, test_output="", held_out_output="",
                      before_ref="HEAD~1", after_ref="HEAD", **kwargs):
         self.calls.append({"task_id": task.id, "mode": kwargs.get("mode"),
-                           "claim_report": kwargs.get("claim_report")})
+                           "claim_report": kwargs.get("claim_report"),
+                           "reviewed_sha": kwargs.get("reviewed_sha")})
         if self._call_count is not None:
             self._call_count.append(1)
         return self._decision

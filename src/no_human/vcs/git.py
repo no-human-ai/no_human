@@ -1039,7 +1039,11 @@ class GitRepo:
         session starts; a caller that re-reads this at gate time instead of
         trusting the pin would let a force-push after pinning move the
         answer, which is exactly the laundering path this method exists to
-        avoid.
+        avoid. `fetch_remote_branch_sha` is a second, gate-time caller of
+        this same method — that is safe despite the warning above because
+        delivery only ever pushes a sha that has already been proven equal
+        to a PASS-stamped review sha (see `_assert_delivery_sha`); there is
+        no unreviewed history for a gate-time re-read to launder in.
         """
         if not ref.startswith("refs/") or ref.startswith("-"):
             return None
@@ -1064,6 +1068,127 @@ class GitRepo:
         if len(exact_shas) != 1:
             return None
         return next(iter(exact_shas))
+
+    def fetch_remote_branch_sha(self, branch: str, *, remote: str = "origin",
+                                 timeout: int = 30) -> str | None:
+        """The remote's CURRENT tip for `branch`, read live over the network —
+        never `refs/remotes/<remote>/<branch>`.
+
+        That tracking ref only reflects whatever this worktree last happened
+        to fetch — which can predate a push another attempt (or a human)
+        made to the same branch since the last fetch. This is a
+        forward-looking DIVERGENCE GUARD: it lets delivery notice a remote
+        that has moved out from under it (someone else pushed, or the
+        branch is protected) and refuse rather than push blind. It is not
+        what fixed the delivery-refusal incidents — those were caused by
+        the LOCAL branch ref lagging the reviewed commit (see
+        `fast_forward_local_branch`'s docstring), and this method was never
+        in that path: the pre-fix gate compared the local branch tip
+        against the review stamp and never read a remote or tracking ref at
+        all. `git ls-remote` (via `ls_remote_exact`) is the one read that
+        cannot be stale for the divergence check this method performs — it
+        always asks the remote.
+
+        Returns `None` for every unreadable/unreachable state — no remote
+        configured, network failure, auth failure, timeout, or the branch
+        never having been pushed (see `ls_remote_exact`'s docstring for the
+        full list it already collapses to `None`). `None` means "cannot
+        know", not "diverged" — callers must fail OPEN on it, exactly like
+        today's behaviour when there is nothing to compare against.
+
+        If the remote advertises a sha whose object isn't in this local
+        store yet, it's fetched into a private namespace so ancestry checks
+        can resolve it (see `_have_remote_commit` — never the tracking ref,
+        so this can't make a `force_with_lease` lease elsewhere vacuous). If
+        that fetch fails, the sha is still returned: an unresolvable object
+        makes `is_ancestor` answer False, which is the correct fail-CLOSED
+        answer for a caller deciding whether to push — "cannot prove it's an
+        ancestor" and "it isn't" must be treated the same way here.
+        """
+        remote_sha = self.ls_remote_exact(
+            f"refs/heads/{branch}", remote=remote, timeout=timeout)
+        if remote_sha is None:
+            return None
+        try:
+            self._have_remote_commit(remote, branch, remote_sha, timeout)
+        except (subprocess.TimeoutExpired, OSError):
+            pass  # best-effort fetch; an unresolved sha fails closed via is_ancestor
+        return remote_sha
+
+    def fast_forward_local_branch(self, branch: str, sha: str) -> bool:
+        """Advance local `branch` to `sha` IF `sha` is a descendant of its
+        current tip (or the branch has no tip yet). Never a reset, never a
+        force: returns `False` instead of discarding any commit.
+
+        Exists because the pre-fix delivery gate compared the stamped
+        review sha only against `repo.branch_sha(branch)` — the LOCAL
+        branch ref — and that ref can lag the commit that was actually
+        reviewed and stamped. Two ways this happens in the same worktree
+        the review ran in, no other checkout involved (linked worktrees
+        share `refs/heads`, so "a different checkout's branch ref" was
+        never the mechanism): HEAD was detached at the reviewed commit
+        while `refs/heads/<branch>` was never moved off the point it was
+        created at, or something reset the branch ref back to that creation
+        point after the reviewed commit was made. Either way `sha` is
+        already in this object store — reachable from HEAD, or fetched by
+        `fetch_remote_branch_sha` — the local branch ref just hasn't been
+        walked forward to it yet. Moving the ref here lets the ordinary push
+        path (`push`/`push_sha_fast_forward`) carry it without ever touching
+        history.
+
+        Refuses (`ProtectedBranch`) a `branch` matching `never_push_to`
+        BEFORE writing anything — `push_sha_fast_forward` has the same
+        check, but it runs after this method, so without a check here the
+        LOCAL protected ref would already have been advanced by the time
+        the push refuses.
+        """
+        try:
+            current = self.branch_sha(branch)
+        except GitError:
+            current = None
+        if current == sha:
+            return True
+        if current is not None and not self.is_ancestor(current, sha):
+            return False
+        if _branch_protected(branch, self.never_push_to):
+            raise ProtectedBranch(
+                f"refusing to fast-forward protected branch: {branch}")
+        if self.current_branch() == branch:
+            self._run("merge", "--ff-only", sha)
+        else:
+            args = ["update-ref", f"refs/heads/{branch}", sha]
+            if current is not None:
+                args.append(current)  # compare-and-swap: refuse a concurrent mover
+            self._run(*args)
+        return True
+
+    def push_sha_fast_forward(self, sha: str, branch: str, *,
+                               remote: str = "origin",
+                               set_upstream: bool = False) -> str:
+        """Push exactly `sha` to `remote`'s `branch`, fast-forward only —
+        never `--force`, never `--force-with-lease`.
+
+        `<sha>:refs/heads/<branch>` names the object explicitly rather than
+        pushing whatever the local branch ref currently resolves to, so a
+        caller that already proved `sha` is the reviewed commit (via
+        `fetch_remote_branch_sha` + `is_ancestor`) cannot be undone by a
+        concurrent local change to `branch` between that proof and this
+        call. Git itself refuses server-side if the remote moved to
+        something `sha` doesn't descend from since the caller's read — a
+        race is REJECTED, never silently overwritten. Idempotent: pushing a
+        sha the remote already has at that ref is a no-op ("Everything
+        up-to-date", exit 0). A genuine rejection raises the ordinary
+        `GitError`; callers convert that into a refusal, they never retry
+        with force.
+        """
+        if _branch_protected(branch, self.never_push_to):
+            raise ProtectedBranch(f"refusing to push protected branch: {branch}")
+        args = ["push"]
+        if set_upstream:
+            args += ["-u"]
+        args += [remote, f"{sha}:refs/heads/{branch}"]
+        self._run(*args)
+        return sha
 
     def remote_branch_relation(self, branch: str, *, remote: str = "origin",
                                 timeout: int = 30) -> str:

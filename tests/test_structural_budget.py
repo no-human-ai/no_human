@@ -178,7 +178,21 @@ FROZEN_FUNCTION_LINES = {
     # errored `AgentResult` via `_quota_signal`/`_infra_sdk_failure`, so
     # `_run_review` gained the `result.is_error` check and passes `result`
     # through on both `_judge_call` branches. Measured on this tree.
-    "core/orchestrator.py:Orchestrator._run_review": 394,
+    # 394 -> 417 (+23): task 90097 (round 3 of 0847f2c2, WIP-PARTIAL checkpoint
+    # routing). `_route_unjudged_head` sets a one-round `_unjudged_checkpoint_
+    # head` flag when it routes a `[WIP-BLOCKED]`/`[WIP-PARTIAL]` head to
+    # review because eligibility refused to credit it for free; `_run_review`
+    # reads (and resets) that flag and, when it is set and no reviewer is
+    # configured, raises `ReviewerUnavailable` instead of taking the
+    # `reviewer.allow_advisory` rubber-stamp branch — that branch exists for
+    # eval/replay flows that skip the gate ON PURPOSE, not for an unjudged
+    # checkpoint diff the loop itself flagged as needing a real verdict.
+    # Without this, the widened eligibility rule (WIP-PARTIAL treated exactly
+    # like WIP-BLOCKED) would route the loop's own abandoned WIP-PARTIAL
+    # half-work to review and, with no reviewer wired, advisory-pass it as
+    # `succeeded` one call later — exactly what `_already_satisfied_eligible`
+    # just refused to do. Measured on this tree.
+    "core/orchestrator.py:Orchestrator._run_review": 417,
     # 377 -> 398 (+21): quota-saturation mid-run halt. `bench_run` now builds
     # a `QuotaHaltDetector`, threads `halt.observe(score)`/`halt.scored(...)`
     # through the per-spec checkpoint save inside `_run_spec`, and prints the
@@ -267,7 +281,11 @@ FROZEN_FUNCTION_CC = {
     # 73 -> 74 (+1): same verifier-wall-park cause as the LINES entry above
     # — the added `result.is_error` branch is one more `If`. Measured on
     # this tree.
-    "core/orchestrator.py:Orchestrator._run_review": 74,
+    # 74 -> 75 (+1): task 90097 (round 3), same cause as the LINES entry
+    # above — the new `if unjudged_checkpoint_head:` branch that fails
+    # closed instead of taking the `allow_advisory` rubber stamp is one more
+    # `If`. Measured on this tree.
+    "core/orchestrator.py:Orchestrator._run_review": 75,
     # Crossed 60 (to 67) with the UI-evidence gate landed by task 389210fa.
     # 67 -> 70 (+3): follow-up to ce4d4a73 (#151) -- one new `if overlap:`
     # block (+1) plus two `stale.get(...) or []` BoolOps (+1 each). Measured
@@ -672,7 +690,52 @@ FROZEN_FILE_LINES = {
     # 18 insertions/4 deletions net +14, all agree): follow-up to ce4d4a73
     # (#151) -- should_rebase-driven preamble narration, overlapping_files
     # on the base_staleness emit, and the docstring/comment updates below.
-    "core/orchestrator.py": 22285,
+    # +172 (21880 -> 22052): "Delivery refuses reviewed commits" round 2.
+    # Corrects the wrong "stale/unfetched remote tip" / "different
+    # checkout" diagnosis in docstrings across git.py and this file
+    # (`_reconcile_remote_branch`, `_ahead_reviewed_candidate`,
+    # `_assert_delivery_sha`), replaces `_ahead_reviewed_candidate`'s
+    # lexicographic-`min()` tie-break with a HEAD-preferring,
+    # ancestry-aware selection that refuses on genuinely unrelated
+    # stamped candidates, and adds the `_review_history_records` /
+    # `_passing_review_shas_in_order` helpers `_ahead_reviewed_candidate`
+    # needs to prefer the newest round's stamp. `wc -l` reads 22049
+    # against this same scanner's 22052 (the pre-existing +3 offset noted
+    # above, unchanged).
+    # +4 (22052 -> 22056): task 0847f2c2 round-2 send-back — corrects
+    # `_passing_review_shas`'s docstring (it never consulted list order,
+    # `_ahead_reviewed_candidate` picks by DAG ancestry). `wc -l` reads
+    # 22053 against this same scanner's 22056 (same pre-existing +3
+    # offset). git.py's own `ProtectedBranch` check added in
+    # `fast_forward_local_branch` isn't in this file, so isn't counted
+    # here.
+    # 22461 -> 22542 (+81, `wc -l` reads 22539 against this same scanner's
+    # 22542, same +3 offset): task 90097 (round 3 of 0847f2c2, WIP-PARTIAL
+    # checkpoint routing). `_run_attempt` hoists a `_route_unjudged_head`
+    # call ahead of BOTH zero-diff terminals (the claim parse and the
+    # silent no-file-changes fall-through) so a wake/machine resume
+    # branching from its own `[WIP-BLOCKED]`/`[WIP-PARTIAL]` checkpoint is
+    # routed to a full review instead of burning the attempt;
+    # `_already_satisfied_eligible` gains the widened rule and its
+    # docstring is rewritten; two new methods, `_head_is_wip_checkpoint`
+    # (renamed/widened from `_head_is_blocked_checkpoint` to match both
+    # prefixes) and `_route_unjudged_head`, are added ahead of
+    # `_append_review_history`. Re-measured on the fully rebased tree
+    # (trunk's delivery fast-forward fix merged first, this task's
+    # checkpoint-routing fix on top) by the scanner's own metric.
+    # 22542 -> 22573 (+31): same task, same round. `_route_unjudged_head`
+    # gains the `_unjudged_checkpoint_head` flag it sets when routing a
+    # checkpoint head to review, and `_run_review` gains the read-then-reset
+    # of that flag plus the `if unjudged_checkpoint_head:` fail-closed branch
+    # — without it, a wake/machine resume off the loop's own abandoned
+    # `[WIP-PARTIAL]` checkpoint with no reviewer configured would reach the
+    # `reviewer.allow_advisory` rubber stamp and be credited `succeeded` one
+    # call after `_already_satisfied_eligible` refused to credit it for
+    # free (`tests/test_resume_wiring_round2.py::
+    # test_a_machine_resume_is_not_credited_as_human_gated` and
+    # `::test_a_revision_branch_sitting_on_an_abandoned_partial_is_not_
+    # credited`). Measured on this tree by the scanner's own metric.
+    "core/orchestrator.py": 22573,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.
