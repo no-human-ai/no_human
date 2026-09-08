@@ -191,7 +191,12 @@ FROZEN_FUNCTION_LINES = {
     # Grew to 371 when the UI-evidence prompt block landed (task 389210fa):
     # an inline enable+glob gate + the ui_evidence_block call. Reviewed on
     # its merits (the block is inert until a profile opts in); frozen here.
-    "core/orchestrator.py:Orchestrator._build_implement_prompt": 371,
+    # 371 -> 381 (+10): follow-up to ce4d4a73 (#151) -- the staleness
+    # narration now decides with `should_rebase(...)` instead of the bare
+    # `commits_behind >= threshold`, and names the overlapping files when a
+    # below-threshold overlap-triggered rebase failed to complete. Measured
+    # with the scanner below.
+    "core/orchestrator.py:Orchestrator._build_implement_prompt": 381,
     # 332 -> 333 (+1): pin-rederivation follow-up adds one
     # `pin_rederivation_note(card),` line to the markdown body list so the
     # published report carries the same recorded-branch/HEAD-fallback
@@ -244,7 +249,10 @@ FROZEN_FUNCTION_CC = {
     # this tree.
     "core/orchestrator.py:Orchestrator._run_review": 74,
     # Crossed 60 (to 67) with the UI-evidence gate landed by task 389210fa.
-    "core/orchestrator.py:Orchestrator._build_implement_prompt": 67,
+    # 67 -> 70 (+3): follow-up to ce4d4a73 (#151) -- one new `if overlap:`
+    # block (+1) plus two `stale.get(...) or []` BoolOps (+1 each). Measured
+    # with the scanner below.
+    "core/orchestrator.py:Orchestrator._build_implement_prompt": 70,
 }
 
 # 9 files > 2,500 lines.
@@ -596,7 +604,11 @@ FROZEN_FILE_LINES = {
     # regex literal -- unrelated to this diff, unchanged by this branch.)
     # The scanner's own metric is what this test compares against, so
     # that is the value recorded here, not `wc -l`'s.
-    "core/orchestrator.py": 21880,
+    # 21880 -> 21894 (+14, `wc -l` 21877 -> 21891, `git diff --numstat`
+    # 18 insertions/4 deletions net +14, all agree): follow-up to ce4d4a73
+    # (#151) -- should_rebase-driven preamble narration, overlapping_files
+    # on the base_staleness emit, and the docstring/comment updates below.
+    "core/orchestrator.py": 21894,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.

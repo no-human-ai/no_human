@@ -241,3 +241,40 @@ def test_refresh_stale_base_actually_consults_the_overlap():
         "a bare `behind >= BASE_STALENESS_REBASE_THRESHOLD` is back in "
         "_refresh_stale_base; the decision belongs in should_rebase so the "
         "count and the overlap cannot drift apart")
+
+
+def test_the_coder_preamble_decides_with_should_rebase_too():
+    """Follow-up to the above: `_refresh_stale_base` deciding with
+    `should_rebase` is not enough on its own — the coder-facing preamble in
+    `_build_implement_prompt` re-derives its OWN decision of whether to
+    narrate staleness, and until this follow-up it still used the bare
+    count. That meant a 1-4 commit overlapping gap whose rebase conflicted
+    was measured, attempted, and aborted, but the coder was told nothing and
+    paid the exact conflict round the overlap detection exists to prevent.
+    Pin the call site the same way as above, over the AST so a comment
+    mentioning `should_rebase` cannot satisfy this."""
+    src = Path(__file__).resolve().parents[1] / "src" / "no_human" / "core"
+    tree = ast.parse((src / "orchestrator.py").read_text(encoding="utf-8"))
+
+    fn = next(
+        (n for n in ast.walk(tree)
+         if isinstance(n, ast.FunctionDef)
+         and n.name == "_build_implement_prompt"), None)
+    assert fn is not None, "_build_implement_prompt is gone or was renamed"
+
+    called = {n.func.id for n in ast.walk(fn)
+              if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+    assert "should_rebase" in called, (
+        "_build_implement_prompt no longer decides the staleness narration "
+        "with should_rebase, so an overlap-triggered failed rebase (1-4 "
+        "commits, below threshold) narrates nothing to the coder")
+
+    compares = [n for n in ast.walk(fn) if isinstance(n, ast.Compare)]
+    bare = [n for n in compares
+            if any(isinstance(op, ast.GtE) for op in n.ops)
+            and isinstance(n.comparators[0], ast.Name)
+            and n.comparators[0].id == "BASE_STALENESS_REBASE_THRESHOLD"]
+    assert not bare, (
+        "a bare `commits_behind >= BASE_STALENESS_REBASE_THRESHOLD` is back "
+        "in _build_implement_prompt; a below-threshold overlapping gap that "
+        "fails to rebase must still narrate, which the bare count cannot do")
