@@ -311,13 +311,19 @@ async def test_lifespan_shutdown_leaves_no_setup_flags_on_the_shared_app(
         tmp_path, monkeypatch):
     """`nh start` pre-seeds `app.state.setup_mode`/`setup_reason` on the
     PROCESS-WIDE `app` before building its server (src/no_human/cli/
-    commands.py); a real boot's lifespan startup then OR's them together with
-    what it re-derives (api/app.py's `lifespan`, ~:166-167). Nothing cleared
-    them on the way out, so a later caller that never opted in — a hand-built
-    test app, a second lifespan cycle — was read by `_require_credentials`'s
-    `hasattr(state, "setup_mode")` gate as opted in and 503'd (the failure
-    this whole module's `client` fixture teardown at :81 works around locally
-    — this test proves the leak is closed at the source instead).
+    commands.py:6877-6878); a real boot's lifespan startup then OR's them
+    together with what it re-derives (api/app.py's `lifespan`, :158-159).
+    This test is about a DIFFERENT leak than the `nh start` CliRunner
+    incident: that one is closed by `start()`'s own `finally` block
+    (commands.py:7013-7022), which tears the flags down on every exit path
+    even when the ASGI lifespan never fires (a stubbed `server.serve()`
+    returns immediately without it). Here, lifespan itself runs end to end —
+    the leak under test is a SECOND lifespan cycle (or any caller that never
+    opted in) inheriting flags a FIRST cycle's shutdown left behind, which is
+    exactly what lifespan's own shutdown teardown closes (mirroring this
+    whole module's `client` fixture teardown at :85, which works around the
+    same shape locally) — this test proves the lifespan-level leak is closed
+    at the source instead.
 
     Runs the PRODUCTION `lifespan` on the module-level `app` itself, unlike
     `_boot_real_worker` in tests/test_frozen_snapshot_guard.py (which

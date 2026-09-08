@@ -114,10 +114,10 @@ _WEB_DIST = _resolve_web_dist()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     config = load_config()
-    # Pin the loaded-code snapshot HERE, before anything can run, so every
-    # attempt this process records carries the sha of what's in memory now,
-    # not whatever HEAD is when first asked; the server never reloads. Off
-    # the event loop: ~294ms of git subprocesses (40s worst case).
+    # Pin the loaded-code snapshot HERE, before anything can run, so it is
+    # the sha of what's in memory now, not whatever HEAD is when first
+    # asked; the server never reloads. Off the event loop: four git
+    # subprocesses (~294ms measured, 40s worst case the timeouts allow).
     from ..core.build_info import loaded_code, staleness_note
     code = await asyncio.to_thread(loaded_code)
     app.state.loaded_code = code.descriptor
@@ -136,22 +136,23 @@ async def lifespan(app: FastAPI):
     # rather than reusing `_startup_stale` because HEAD (and thus the cache
     # key) can already differ by the time this line runs.
     await asyncio.to_thread(_loaded_code_stale)
-    # `nh start` may have already connected a shared Store for its Jira/
-    # Linear pollers (before uvicorn's ASGI lifespan fires) — reuse it to
-    # avoid a second connection racing this one (KI, 2026-08-01: unbounded
-    # `sqlite3.OperationalError: database is locked`). One-shot handoff
-    # (popped, not read) so a later lifespan cycle never reuses a closed store.
+    # `nh start` may already have connected a shared Store for its Jira/
+    # Linear intake pollers (before uvicorn's ASGI lifespan fires) — reuse
+    # it instead of a second connection racing this lifespan's own connect+
+    # migrate with no busy_timeout set (KI, 2026-08-01: flooded a clean `nh
+    # start` with `sqlite3.OperationalError: database is locked`). One-shot
+    # handoff (popped) so a later lifespan cycle never reuses a closed store.
     external_store = getattr(app.state, "_external_store", None)
     if external_store is not None:
         del app.state._external_store
     store = external_store or await Store(config.db_path).connect()
     app.state.store = store
     app.state.config = config
-    # Setup mode: no subscription credential on file. `nh start` may already
-    # have computed this (setup_reason printed at boot) — OR it with what
-    # THIS process sees now, so a credential added between CLI bootstrap and
-    # lifespan firing still lifts it, and a bare `TestClient(app)` gets its
-    # own correct answer.
+    # Setup mode: no subscription credential on file at all. `nh start` may
+    # already have computed this (setup_reason printed at boot) — OR it with
+    # what THIS process sees now, so a credential added between CLI bootstrap
+    # and lifespan firing still lifts it, and a bare `TestClient(app)` gets
+    # its own correct answer.
     from ..config import subscription_credential_missing
     _reason = subscription_credential_missing(config.data)
     app.state.setup_mode = bool(_reason) or bool(getattr(app.state, "setup_mode", False))
@@ -382,11 +383,10 @@ async def lifespan(app: FastAPI):
             await asyncio.wait_for(worker_task, timeout=budget)
         except asyncio.TimeoutError:
             log.warning("worker drain timed out after %.0fs", budget)
-    # Setup-mode flags are per-boot state on a PROCESS-WIDE singleton `app`
-    # (startup sets them ~:160). Left behind, a later caller that never
-    # opted in — a hand-built test app, a second lifespan cycle — is read by
-    # `_require_credentials`'s `hasattr(state, "setup_mode")` gate as opted
-    # in and 503s on an empty .env. Boot state dies with the boot.
+    # Setup-mode flags are per-boot state on a PROCESS-WIDE `app` singleton
+    # (startup sets them :158-159). Closes the second-lifespan-cycle leak,
+    # not the `nh start` CliRunner incident (those flags are set outside
+    # this lifespan and torn down in `start()`'s own `finally` instead).
     if hasattr(app.state, "setup_mode"):
         del app.state.setup_mode
     if hasattr(app.state, "setup_reason"):
