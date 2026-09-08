@@ -53,13 +53,21 @@ def _mutate(cwd):
     )
 
 
-async def _run_attempt_with_result(store, tmp_path, bare_repo, tr, *, mutate=_mutate):
+async def _run_attempt_with_result(
+    store, tmp_path, bare_repo, tr, *, mutate=_mutate, owned=None,
+):
     """Drive the real `_run_attempt` with `_run_tests_once` stubbed to return
     *tr* — same pattern as `_run_attempt_with_stubbed_test_output` in
     `tests/test_missing_prereq_env_classification.py`, generalised to accept
     a caller-built `TestRunResult` directly (some cases here need fields
     `_tap_failure_blocks(output)` alone would not reproduce, e.g. a
     hand-supplied `traceback_excerpts` or an explicit `full_output`).
+
+    `owned`, when given, stubs `_owned_failing_tests` (same idiom as
+    `_run_attempt_with_stubbed_test_output`) so a red run can be routed
+    through the owned-attribution + billing path (`_failed_tests_outcome`'s
+    `owned_attr` branch) without needing a real git diff that names the
+    failing test id.
     """
     cfg = _config(tmp_path)
     events = []
@@ -76,8 +84,15 @@ async def _run_attempt_with_result(store, tmp_path, bare_repo, tr, *, mutate=_mu
     async def fake_run_tests_once(repo, cmd, cwd=None):
         return tr, False
 
+    async def fake_owned_failing_tests(repo, base, failing, *, cwd=None):
+        return list(owned)
+
     with patch.object(orch, "_run_tests_once", fake_run_tests_once):
-        outcome = await orch._run_attempt(task, repo, 1, "main")
+        if owned is not None:
+            with patch.object(orch, "_owned_failing_tests", fake_owned_failing_tests):
+                outcome = await orch._run_attempt(task, repo, 1, "main")
+        else:
+            outcome = await orch._run_attempt(task, repo, 1, "main")
 
     attempts = await store.list_attempts(task.id)
     return outcome, attempts, events, task
@@ -171,6 +186,62 @@ async def test_node_tap_failing_blocks_survive_a_ten_kilobyte_tail(bare_repo, tm
     blocks = persisted["failure_blocks"]
     assert any("mainSaveFailure persists" in b for b in blocks), blocks
     assert any("mainStartupFailure does not leak" in b for b in blocks), blocks
+
+
+async def test_an_owned_attributed_failure_keeps_its_blocks_through_billing(
+    bare_repo, tmp_path, store,
+):
+    """A red run whose failing id is OWNED by this attempt's own diff is
+    routed to `_failed_tests_outcome`'s `owned_attr` billing branch
+    (orchestrator.py ~12336-12359), not the plain branch's write (~6557-
+    6566). That branch calls `store.update_attempt(..., test_results=...)`
+    a SECOND time for the same attempt row — and `update_attempt` REPLACES
+    the whole `test_results` column rather than merging it (see the comment
+    on the pre-existing-excuse write above) — so unless this second write
+    also carries `failure_blocks`, it silently drops the blocks the first
+    write (plain branch) had just persisted. Same TAP fixture as the
+    kilobyte-tail test above, but with `failing_tests`/`_owned_failing_tests`
+    wired so `owned_attr` is non-empty and billing actually happens here.
+    """
+    tap = _big_tap()
+    tr = runner.TestRunResult(
+        ran=True, ok=False, passed=433, failed=2, errors=0,
+        command="node --test",
+        output=tap[-8000:],
+        full_output=tap,
+        failure_blocks=runner._tap_failure_blocks(tap),
+        failing_tests=["desktop/mainSaveFailure.test.mjs"],
+    )
+
+    outcome, attempts, events, task = await _run_attempt_with_result(
+        store, tmp_path, bare_repo, tr,
+        owned=["desktop/mainSaveFailure.test.mjs"],
+    )
+
+    # Confirms the run was actually billed through the owned branch, not
+    # excused some other way — otherwise this test would not be exercising
+    # `_failed_tests_outcome`'s owned_attr write at all.
+    assert outcome.status is TaskStatus.FAILED, outcome.detail
+    failed_rows = [a for a in attempts if a.get("status") == "failed"]
+    assert failed_rows, attempts
+    row = failed_rows[-1]
+    assert _persisted(row).get("owned_failures") == ["desktop/mainSaveFailure.test.mjs"], row
+
+    # Two "tests" events fire in this flow: the plain branch's first pass
+    # (carries the blocks, already covered by the kilobyte-tail test above)
+    # and `_failed_tests_outcome`'s owned-attribution note. Only the record
+    # PERSISTED to `attempts.test_results` (asserted below) is this test's
+    # subject — assert here only that a "tests" event exists and names the
+    # owned id, confirming the owned branch actually fired.
+    test_events = [e for e in events if e["kind"] == "tests"]
+    assert test_events, events
+    owned_events = [e for e in test_events if e.get("owned_failures")]
+    assert owned_events, events
+    assert any("mainSaveFailure persists" in e["text"] for e in test_events), test_events
+
+    persisted = _persisted(row)
+    blocks = persisted["failure_blocks"]
+    assert any("mainSaveFailure persists" in b for b in blocks), persisted
 
 
 # --------------------------------------------------------------------------- #

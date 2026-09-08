@@ -774,7 +774,14 @@ FROZEN_FILE_LINES = {
     # instead of the last 1200 bytes of the stream, and the full runner
     # output is written to an attempt-scoped `tests-attempt-<n>.log`
     # artifact. Measured on this tree by the scanner's own metric.
-    "core/orchestrator.py": 22691,
+    # 22691 -> 22703 (+12): `_failed_tests_outcome` gained a `blocks`
+    # parameter so its owned-failure and flaky-excused `update_attempt`
+    # calls carry `failure_blocks` too — those calls REPLACE the
+    # `test_results` column rather than merge it, so without this the
+    # blocks the plain branch had just written were dropped the moment a
+    # red run got attributed and billed. Measured on this tree by the
+    # scanner's own metric.
+    "core/orchestrator.py": 22703,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.

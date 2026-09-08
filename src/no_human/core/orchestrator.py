@@ -6779,7 +6779,7 @@ class Orchestrator:
                             failing_tests=failing_tests, attempt_id=attempt_id,
                             repo=repo, branch=branch, test_cmd=test_cmd,
                             test_cwd=test_cwd, commit=commit, result=result,
-                            stuck=stuck,
+                            stuck=stuck, blocks=blocks,
                         )
                         if outcome is not None:
                             return outcome
@@ -12231,6 +12231,7 @@ class Orchestrator:
         owned: list[str], failing_tests: list[str], attempt_id: str,
         repo: GitRepo | None, branch: str | None, test_cmd: str | None,
         test_cwd: "Path | None", commit, result, stuck: StuckDetector,
+        blocks: list[str] | None = None,
     ) -> TaskOutcome | None:
         """The single-run test-failure attribution + billing branch of
         `_run_attempt`, reached once a red run is not excused as pre-existing
@@ -12238,10 +12239,19 @@ class Orchestrator:
         Extracted verbatim (structural budget: see
         `tests/test_structural_budget.py`).
 
+        `blocks`: the bounded failure blocks `_red_test_detail` already
+        computed for this `test_result` at the call site. Every
+        `update_attempt(..., test_results=...)` call below REPLACES the
+        whole column (see the comment at the pre-existing-excuse write
+        above) rather than merging it, so each one must carry
+        `failure_blocks` itself or it silently drops the blocks the plain
+        branch just wrote — the incident this file exists to prevent.
+
         Returns None when the flaky-excuse path fires — nothing to bill, and
         the caller must fall through exactly as it always did; a real billing
         decision returns a TaskOutcome.
         """
+        blocks = blocks or []
         # Name the NEWLY-failing ids when the base check isolated
         # them (mixed run); otherwise (None → inconclusive/
         # fail-closed) fall back to all failing ids, byte-for-byte
@@ -12292,6 +12302,7 @@ class Orchestrator:
                     "tamper_flag": False,
                     "failing_tests": failing_tests,
                     "flaky_excused": flaky,
+                    "failure_blocks": blocks,
                 },
             )
             return None
@@ -12355,6 +12366,7 @@ class Orchestrator:
                     "tamper_flag": False,
                     "failing_tests": failing_tests,
                     "owned_failures": owned_attr,
+                    "failure_blocks": blocks,
                 },
             )
         else:
