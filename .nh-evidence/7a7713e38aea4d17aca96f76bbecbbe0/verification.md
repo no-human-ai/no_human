@@ -1,99 +1,60 @@
 # How I verified this — full log
 
-_Harness-captured record for task `7a7713e3`, commit `817bcb2c8be0d887dd515fc26e3353a595e1ba41` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `7a7713e3`, commit `85b7daa5dab9041bc3a41db363f1f5c72fbabb71` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ## How I verified this
-9 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
+2 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
 
 ### test
-- `uv run pytest -q tests/test_prompt_blocks.py -k "background_run" 2>&1 | tail -40`
+- `uv run pytest -q -n 4 tests/test_prompt_blocks.py tests/test_e2e_orchestrator.py tests/test_pr_body_truthfulness.py tests/test_pr_body_mechanical_changes.py tests/test_server_stop_checkpoint.py tests/test_structural_budget.py 2>&1 | tail -80`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
 Using CPython 3.12.13
 Creating virtual environment at: .venv
-   Building no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/7a7713e38aea4d17aca96f76bbecbbe0.21285.8e62a847
-      Built no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/7a7713e38aea4d17aca96f76bbecbbe0.21285.8e62a847
-Installed 68 packages in 65ms
-..                                                                       [100%]
-2 passed, 38 deselected in 3.12s
-```
+   Building no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/7a7713e38aea4d17aca96f76bbecbbe0.21285.ce62e994
+      Built no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/7a7713e38aea4d17aca96f76bbecbbe0.21285.ce62e994
+Installed 68 packages in 89ms
+bringing up nodes...
+bringing up nodes...
 
-- `uv run pytest -q tests/test_prompt_blocks.py 2>&1 | tail -20`
+........................................................................ [  5%]
+......................................
+[... 2,621 of 3,760 characters omitted from the middle ...]
+ []
+E             
+E             Left contains one more item: 'core/orchestrator.py: frozen 22771, now 22835 (+64); this budget only ratchets down'
+E             Use -v to get more diff
 
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-........................................                                 [100%]
-40 passed in 0.61s
-```
-
-- `uv run pytest -q tests/test_e2e_orchestrator.py -k "nudge or reformat" 2>&1 | tail -60`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-...........                                                              [100%]
-11 passed, 193 deselected in 8.39s
-```
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/7a7713e38aea4d17aca96f76bbecbbe0.21285.8e62a847 uv run pytest -q tests/test_e2e_orchestrator.py -k "deferring or zero_diff_deferral" 2>&1 | tail -80`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-..                                                                       [100%]
-2 passed, 205 deselected in 2.56s
-```
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/7a7713e38aea4d17aca96f76bbecbbe0.21285.8e62a847 uv run pytest -q tests/test_e2e_orchestrator.py -k "defer or nudge or reformat" 2>&1 | tail -100`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-..............                                                           [100%]
-14 passed, 193 deselected in 10.68s
-```
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/7a7713e38aea4d17aca96f76bbecbbe0.21285.8e62a847 uv run pytest -q tests/test_server_stop_checkpoint.py tests/test_prompt_blocks.py 2>&1 | tail -30`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-.....................................................................    [100%]
-69 passed in 4.82s
-```
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/7a7713e38aea4d17aca96f76bbecbbe0.21285.8e62a847 uv run pytest -q tests/test_structural_budget.py 2>&1 | tail -60`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-..................                                                       [100%]
-18 passed in 1.48s
-```
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/7a7713e38aea4d17aca96f76bbecbbe0.21285.8e62a847 uv run pytest -q -n 4 > /tmp/full_pytest_run.log 2>&1 & echo "started pid $!"`
-
-```
-started pid 78382
-```
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/7a7713e38aea4d17aca96f76bbecbbe0.21285.8e62a847 uv run pytest -q tests/test_pr_body_truthfulness.py tests/test_pr_body_mechanical_changes.py 2>&1 | tail -20`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-........................................................................ [  7%]
-........................................................................ [ 15%]
-........................................................................ [ 22%]
-........................................................................ [ 30%]
-........................................................................ [ 38%]
-........................................................................ [ 45%]
-......
-[... 221 of 1,360 characters omitted from the middle ...]
-..... [ 68%]
-........................................................ssssssssssssssss [ 76%]
-ssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssss [ 84%]
-ssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssss.s [ 91%]
-sssssssssssssssssssssssssssss.................................ssss...... [ 99%]
-......                                                                   [100%]
-750 passed, 192 skipped in 68.55s (0:01:08)
+tests/test_structural_budget.py:1423: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_structural_budget.py::test_no_frozen_entry_has_grown - Asse...
+1 failed, 1044 passed, 192 skipped in 91.68s (0:01:31)
 ```  
-  _excerpt - 1,358 characters of output in total_
+  _excerpt - 3,752 characters of output in total_
+
+- `uv run pytest -q -n 4 tests/test_prompt_blocks.py tests/test_e2e_orchestrator.py tests/test_pr_body_truthfulness.py tests/test_pr_body_mechanical_changes.py tests/test_server_stop_checkpoint.py tests/test_structural_budget.py 2>&1 | tail -20`
+
+```
+........................................................................ [  5%]
+........................................................................ [ 11%]
+........................................................................ [ 17%]
+........................................................................ [ 23%]
+........................................................................ [ 29%]
+........................................................................ [ 34%]
+........................................................................ [ 40%]
+........................................................................ [ 46%]
+...........................................
+[... 345 of 1,484 characters omitted from the middle ...]
+ssss [ 75%]
+ssssssssssssssssssssssssssssssssssssssssssssssssssssss.s.sssssssssssssss [ 81%]
+sssssssssssssss............................................ssss...ssssss [ 87%]
+sssssssssss............................................................. [ 93%]
+........................................................................ [ 98%]
+.............                                                            [100%]
+1045 passed, 192 skipped in 93.87s (0:01:33)
+```  
+  _excerpt - 1,484 characters of output in total_
 
 
 **Not verified:** everything below is a limit of this section, listed whether or not it bit this attempt.
