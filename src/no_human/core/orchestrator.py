@@ -6477,8 +6477,16 @@ class Orchestrator:
                 if lr.result
                 for name in (getattr(lr.result, "failing_tests", []) or [])
             ]
-            self.emit("tests", plan_result.summary, ok=plan_result.ok,
-                       failing_tests=failing_tests)
+            layer_results = [
+                lr.result for lr in plan_result.layer_results if lr.result is not None
+            ]
+            text, blocks, artifact_path = ("", [], "")
+            if not plan_result.ok:
+                text, blocks, artifact_path = self._red_test_detail(
+                    task, layer_results, attempt_n=attempt_seq)
+            self.emit("tests", plan_result.summary + (f"\n{text}" if text else ""),
+                       ok=plan_result.ok, failing_tests=failing_tests,
+                       tests_log=artifact_path)
             # Build aggregate test_results for the attempt record.
             total_passed = sum(
                 (lr.result.passed if lr.result else 0) for lr in plan_result.layer_results
@@ -6498,6 +6506,7 @@ class Orchestrator:
                     "errors": total_errors, "tamper_flag": False,
                     "layers": [lr.summary for lr in plan_result.layer_results],
                     "failing_tests": failing_tests,
+                    "failure_blocks": blocks,
                 },
             )
             if any_ran and not plan_result.ok:
@@ -6519,12 +6528,17 @@ class Orchestrator:
             # agent phases keep progressing on the event loop (Phase 7). The
             # reviewer already ran this exact command against this exact commit.
             test_result, was_cached = await self._run_tests_once(repo, test_cmd, cwd=test_cwd)
-            # On failure the event carries the output tail — "FAIL: 0 passed,
-            # 0 failed, 1 errors" with NO detail cost the 2026-07-11 triage an
-            # hour of reproduction (the record must name the failing thing).
-            fail_tail = ""
+            # On failure the event carries the failing blocks (node TAP `not
+            # ok` blocks / pytest FAILED sections), not the bare output tail —
+            # "FAIL: 0 passed, 0 failed, 1 errors" with NO detail cost the
+            # 2026-07-11 triage an hour of reproduction, and a later incident
+            # (2026-09-08) showed the [-1200:] tail itself was USELESS on a
+            # large suite: the failing blocks sit thousands of bytes before
+            # it. See `_red_test_detail`.
+            text, blocks, artifact_path = ("", [], "")
             if not test_result.ok:
-                fail_tail = (getattr(test_result, "output", "") or "")[-1200:]
+                text, blocks, artifact_path = self._red_test_detail(
+                    task, [test_result], attempt_n=attempt_seq)
             failing_tests = getattr(test_result, "failing_tests", []) or []
             # A run that found no command says so in the event too: the board
             # reads this line, and "no test command detected" with ok=True is
@@ -6536,9 +6550,9 @@ class Orchestrator:
                 "tests",
                 not_run + test_result.summary
                 + (" (reused the reviewer's run)" if was_cached else "")
-                + (f"\n{fail_tail}" if fail_tail else ""),
+                + (f"\n{text}" if text else ""),
                 ok=test_result.ok, cached=was_cached, failing_tests=failing_tests,
-                ran=test_result.ran,
+                ran=test_result.ran, tests_log=artifact_path,
             )
             await self.store.update_attempt(
                 attempt_id,
@@ -6547,6 +6561,7 @@ class Orchestrator:
                     "passed": test_result.passed, "failed": test_result.failed,
                     "errors": test_result.errors, "tamper_flag": False,
                     "failing_tests": failing_tests,
+                    "failure_blocks": blocks,
                 },
             )
             if test_result.ran and not test_result.ok:
@@ -6722,13 +6737,21 @@ class Orchestrator:
                     # we could not attribute. An owned id blocks this excuse too:
                     # a test the attempt itself modified is never pre-existing.
                     if newly_failing == [] and not owned:
+                        # A red run excused as pre-existing must still say
+                        # WHAT was red — `text`/`blocks`/`artifact_path` were
+                        # already computed above (this IS the same
+                        # `test_result`) by `_red_test_detail`; reused here
+                        # rather than recomputed so the artifact is written
+                        # exactly once per attempt.
                         note = (
                             "tests failed, but every failing test already fails "
                             "on the base tree — pre-existing, not introduced by "
                             "this change: " + ", ".join(failing_tests)
+                            + (f"\n{text}" if text else "")
                         )
                         self.emit("tests", note, ok=True,
-                                  failing_tests=failing_tests, pre_existing=True)
+                                  failing_tests=failing_tests, pre_existing=True,
+                                  tests_log=artifact_path)
                         await self.store.update_attempt(
                             attempt_id,
                             test_results={
@@ -6739,6 +6762,7 @@ class Orchestrator:
                                 "tamper_flag": False,
                                 "failing_tests": failing_tests,
                                 "pre_existing_failures": failing_tests,
+                                "failure_blocks": blocks,
                             },
                         )
                     else:
@@ -22117,6 +22141,88 @@ SIX of them read a checkpoint and TWO do not — but do
         except Exception as exc:  # noqa: BLE001 — advisory only
             self._advisory(f"verification artifact not written: {exc}")
             return ""
+
+    @staticmethod
+    def _test_output_artifact_path(
+        task_id: str, attempt_n: int | str | None,
+    ) -> Path:
+        """Where THIS attempt's FULL runner output (every `TestRunResult` the
+        run produced, untruncated) is written — same root/attempt-scoping
+        contract as `_verification_artifact_path` (attempt-scoped filename,
+        ``"unknown"`` fallback for a falsy `attempt_n`, never created here),
+        a sibling file next to that attempt's `verification-attempt-<n>.md`.
+
+        Exists because the incident this whole change fixes was a red run
+        whose failing block sat thousands of bytes before the `[-1200:]`
+        tail the `tests` event carried — the event/`test_results` render a
+        BOUNDED summary of the failure (`_red_test_detail`), and this file is
+        where the operator goes for the rest.
+        """
+        n = attempt_n if attempt_n not in (None, "") else "unknown"
+        return (NO_HUMAN_HOME / Orchestrator._ARTIFACTS_DIRNAME / task_id
+                / f"tests-attempt-{n}.log")
+
+    def _write_test_output_artifact(
+        self, task: Task, results: list, *, attempt_n: int | str | None,
+    ) -> str:
+        """Write every result in *results* (a run's `TestRunResult`s — one
+        for the plain branch, one per test-plan layer for the layered
+        branch) FULL untruncated output to this attempt's own artifact file
+        and return the ABSOLUTE path — modelled line-for-line on
+        `_write_verification_artifact`, same best-effort contract (a write
+        failure is advisory and must never cost the PR).
+
+        Returns "" WITHOUT writing anything when every result is ok (a green
+        run never gets a log file — the whole point is red-run evidence) or
+        when *results* is empty.
+        """
+        if not results or all(getattr(r, "ok", True) for r in results):
+            return ""
+        try:
+            path = self._test_output_artifact_path(task.id, attempt_n)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            content = "\n\n".join(
+                getattr(r, "full_output", "") or getattr(r, "output", "") or ""
+                for r in results
+            )
+            path.write_text(content, encoding="utf-8")
+            return str(path)
+        except Exception as exc:  # noqa: BLE001 — advisory only
+            self._advisory(f"test output artifact not written: {exc}")
+            return ""
+
+    def _red_test_detail(
+        self, task: Task, results: list, *, attempt_n: int | str | None,
+    ) -> tuple[str, list[str], str]:
+        """The ONE seam every red-run call site (the layered branch, the
+        plain `_run_tests_once` branch, and the base-tree pre-existing
+        recheck) uses to turn *results* into ``(text, blocks, artifact_path)``:
+
+        - ``blocks``: ``runner.failure_report_blocks`` over each result,
+          concatenated in order (node TAP `not ok` blocks / pytest FAILED
+          sections — never re-parsed here, see that function).
+        - ``text``: ``runner.render_failure_blocks(blocks)`` — bounded, with
+          an overflow line when blocks were dropped — naming the full-log
+          artifact this call also writes. When ``blocks`` is empty (an
+          invocation error with no parsed failure — the base-tree-gate
+          node-missing-deps shape), falls back to the last result's
+          ``output[-1200:]`` tail, BYTE-IDENTICAL to the behaviour this
+          replaces, so a run with nothing else to say keeps saying it.
+        - ``artifact_path``: the absolute path `_write_test_output_artifact`
+          wrote (or "" — advisory, never blocks the caller).
+        """
+        blocks: list[str] = []
+        for result in results:
+            blocks.extend(runner.failure_report_blocks(result))
+        text = runner.render_failure_blocks(blocks)
+        if not text and results:
+            text = (getattr(results[-1], "output", "") or "")[-1200:]
+        artifact_path = self._write_test_output_artifact(
+            task, results, attempt_n=attempt_n)
+        if artifact_path:
+            pointer = f"full test output: {self._display_path(artifact_path)}"
+            text = f"{text}\n{pointer}" if text else pointer
+        return text, blocks, artifact_path
 
     @staticmethod
     def _verification_section(

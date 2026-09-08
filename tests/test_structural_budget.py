@@ -768,7 +768,13 @@ FROZEN_FILE_LINES = {
     # repo.head_sha())`, so the net line count lands back at 22585 — same
     # number as the flag, different (correct, flagless) mechanism. Measured
     # on this tree by the scanner's own metric.
-    "core/orchestrator.py": 22585,
+    # 22585 -> 22691 (+106): a red test run's `tests` event now carries its
+    # FAILING blocks (`_red_test_detail`, `_test_output_artifact_path`,
+    # `_write_test_output_artifact` next to `_verification_artifact_path`)
+    # instead of the last 1200 bytes of the stream, and the full runner
+    # output is written to an attempt-scoped `tests-attempt-<n>.log`
+    # artifact. Measured on this tree by the scanner's own metric.
+    "core/orchestrator.py": 22691,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.

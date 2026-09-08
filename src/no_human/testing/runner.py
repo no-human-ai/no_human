@@ -69,6 +69,18 @@ def _kill_process_tree(proc: "subprocess.Popen") -> bool:
     return True
 
 
+# Tail-kept bound for `TestRunResult.full_output` — see that field's
+# docstring. 2MB is generous next to a real suite's captured output while
+# still ruling out an unbounded dump pinning itself into an attempt record.
+_FULL_OUTPUT_MAX_BYTES = 2_000_000
+
+
+def _cap_full_output(output: str) -> str:
+    if len(output) <= _FULL_OUTPUT_MAX_BYTES:
+        return output
+    return output[-_FULL_OUTPUT_MAX_BYTES:]
+
+
 @dataclass
 class TestRunResult:
     ran: bool
@@ -105,6 +117,14 @@ class TestRunResult:
     # node failure's own diagnostic text survives truncation —
     # `prerequisite_reason_for` reads this, never `.output` or `failing_tests`.
     failure_blocks: list[str] = field(default_factory=list)
+    # The untruncated capture behind `failure_blocks`/`failing_tests`, for the
+    # orchestrator's full-log artefact (`tests-attempt-<n>.log`). `output`
+    # itself is ALWAYS an `[-8000:]` tail at every construction site below, so
+    # it cannot back "the full runner output" — only this field can. Bounded
+    # by `_FULL_OUTPUT_MAX_BYTES` (tail-kept) so a runaway dump cannot pin
+    # megabytes into an attempt record the same way `output` is already
+    # bounded to 8000.
+    full_output: str = ""
 
     @property
     def summary(self) -> str:
@@ -544,6 +564,74 @@ def render_traceback_excerpts(excerpts: dict[str, str]) -> str:
     for name, excerpt in excerpts.items():
         parts.append(f"\n——— {name} ———\n{excerpt}")
     return "\n".join(parts)
+
+
+# Bounds for the orchestrator's `tests` event / artefact rendering of a red
+# run's failing evidence (SCRUM incident: the event carried the [-1200:] tail
+# of a 435-test TAP stream, which for that suite is trailing `ok` blocks and
+# the summary — never the `not ok` blocks sitting thousands of bytes earlier).
+FAILURE_BLOCK_MAX_CHARS = 1500
+FAILURE_REPORT_MAX_CHARS = 12000
+
+
+def _cap_block(text: str) -> str:
+    """Cap *text* to FAILURE_BLOCK_MAX_CHARS, mirroring `_cap_excerpt`'s
+    truncation-marker idiom (a different cap: this bounds a whole rendered
+    block, not a parsed excerpt, so it stays a separate constant/helper)."""
+    if len(text) <= FAILURE_BLOCK_MAX_CHARS:
+        return text
+    return text[:FAILURE_BLOCK_MAX_CHARS] + "\n… [truncated]"
+
+
+def failure_report_blocks(result: "TestRunResult") -> list[str]:
+    """The failing-block evidence for *result* to surface in the `tests`
+    event / artefact, each capped to `FAILURE_BLOCK_MAX_CHARS`. Pure, never
+    raises.
+
+    Node: `result.failure_blocks` (already parsed off the untruncated output
+    by `_tap_failure_blocks` — not re-parsed here). Pytest (no
+    `failure_blocks`): the `FAILED …`/`ERROR …` lines of the short summary
+    section (same `_PYTEST_FAILED_ID` anchor `_pytest_failing_tests` reads,
+    applied to `full_output` when present so the block survives the same
+    `[-8000:]` tail `output` is always capped to), then one block per
+    `traceback_excerpts` entry. `[]` when neither source has anything (an
+    invocation error with no parsed blocks) — callers then fall back to the
+    output tail.
+    """
+    if result.failure_blocks:
+        return [_cap_block(b) for b in result.failure_blocks]
+    blocks: list[str] = []
+    full = result.full_output or result.output or ""
+    section = _short_summary_section(full)
+    if section:
+        matches = [m.group(0) for m in _PYTEST_FAILED_ID.finditer(section)]
+        if matches:
+            blocks.append(_cap_block("\n".join(matches)))
+    for node_id, excerpt in (result.traceback_excerpts or {}).items():
+        blocks.append(_cap_block(f"——— {node_id} ———\n{excerpt}"))
+    return blocks
+
+
+def render_failure_blocks(blocks: list[str]) -> str:
+    """Join *blocks* for the `tests` event / artefact text: bounded to
+    `FAILURE_REPORT_MAX_CHARS`, with an explicit `... N more failing blocks`
+    line when the bound drops any. "" for an empty list, same contract as
+    `render_traceback_excerpts` so callers can append conditionally."""
+    if not blocks:
+        return ""
+    parts: list[str] = []
+    total = 0
+    for block in blocks:
+        added = len(block) + (2 if parts else 0)  # "\n\n" join separator
+        if parts and total + added > FAILURE_REPORT_MAX_CHARS:
+            break
+        parts.append(block)
+        total += added
+    text = "\n\n".join(parts)
+    remaining = len(blocks) - len(parts)
+    if remaining > 0:
+        text += f"\n\n... {remaining} more failing blocks"
+    return text
 
 
 # pytest-xdist's tmp-dir cleanup (TempPathFactory's session-scoped finalizer)
@@ -1224,13 +1312,15 @@ def run_tests(
                                  failing_tests=_failing_ids(
                                      output_r, repo_path=repo_path, work_dir=work_dir),
                                  passed_tests=_pytest_passed_tests(output_r),
-                                 failure_blocks=failure_blocks_r)
+                                 failure_blocks=failure_blocks_r,
+                                 full_output=_cap_full_output(output_r))
         failing_tests_r = _failing_ids(output_r, repo_path=repo_path, work_dir=work_dir)
         return TestRunResult(True, rc_r == 0, passed_r, failed_r, errors_r,
                              cmd, output_r[-8000:], failing_tests=failing_tests_r,
                              passed_tests=_pytest_passed_tests(output_r),
                              traceback_excerpts=_pytest_traceback_excerpts(output_r, failing_tests_r),
-                             failure_blocks=failure_blocks_r)
+                             failure_blocks=failure_blocks_r,
+                             full_output=_cap_full_output(output_r))
     if not ok and _is_invocation_error(rc, output, passed, failed, errors):
         retry_cmd = _fix_invocation(cmd, output, repo_path)
         if retry_cmd and retry_cmd != cmd:
@@ -1253,24 +1343,28 @@ def run_tests(
                                      failing_tests=_failing_ids(
                                          output2, repo_path=repo_path, work_dir=work_dir),
                                      passed_tests=_pytest_passed_tests(output2),
-                                     failure_blocks=failure_blocks2)
+                                     failure_blocks=failure_blocks2,
+                                     full_output=_cap_full_output(output2))
             failing_tests2 = _failing_ids(output2, repo_path=repo_path, work_dir=work_dir)
             return TestRunResult(True, ok2, passed2, failed2, errors2,
                                  retry_cmd, output2[-8000:],
                                  failing_tests=failing_tests2,
                                  passed_tests=_pytest_passed_tests(output2),
                                  traceback_excerpts=_pytest_traceback_excerpts(output2, failing_tests2),
-                                 failure_blocks=failure_blocks2)
+                                 failure_blocks=failure_blocks2,
+                                 full_output=_cap_full_output(output2))
         # No fixable retry — mark as invocation error
         return TestRunResult(True, False, passed, failed, errors,
                              cmd, output[-8000:], invocation_error=True,
                              failing_tests=failing_tests,
                              passed_tests=passed_tests,
-                             failure_blocks=failure_blocks)
+                             failure_blocks=failure_blocks,
+                             full_output=_cap_full_output(output))
     return TestRunResult(True, ok, passed, failed, errors, cmd, output[-8000:],
                          failing_tests=failing_tests, passed_tests=passed_tests,
                          traceback_excerpts=_pytest_traceback_excerpts(output, failing_tests),
-                         failure_blocks=failure_blocks)
+                         failure_blocks=failure_blocks,
+                         full_output=_cap_full_output(output))
 
 
 @dataclass
