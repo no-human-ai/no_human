@@ -6279,6 +6279,19 @@ class Orchestrator:
                 )
                 fail_output = (first_blocking_failure.result.output
                                if first_blocking_failure else "")
+                env_outcome = await self._environment_test_failure(
+                    task, output=fail_output, attempt_id=attempt_id,
+                    repo=repo, branch=branch,
+                    test_results={
+                        "ran": any_ran, "ok": plan_result.ok,
+                        "passed": total_passed, "failed": total_failed,
+                        "errors": total_errors, "tamper_flag": False,
+                        "layers": [lr.summary for lr in plan_result.layer_results],
+                        "failing_tests": failing_tests,
+                    },
+                )
+                if env_outcome is not None:
+                    return env_outcome
                 is_stuck = stuck.record(fail_output) if fail_output else False
                 detail = f"tests failed: {plan_result.summary}"
                 if failing_tests:
@@ -6347,6 +6360,25 @@ class Orchestrator:
                 },
             )
             if test_result.ran and not test_result.ok:
+                # `_is_invocation_error` (runner.py) already owns bare
+                # module/package resolution failures via the base-tree
+                # reproduction check just below — do not race it: only
+                # consult the new classifier when THAT machinery does not
+                # already claim this output, so `tests/test_base_tree_gate.py`
+                # keeps its existing AWAITING_APPROVAL/FAILED routing intact.
+                if not getattr(test_result, "invocation_error", False):
+                    env_outcome = await self._environment_test_failure(
+                        task, output=test_result.output, attempt_id=attempt_id,
+                        repo=repo, branch=branch,
+                        test_results={
+                            "ran": test_result.ran, "ok": test_result.ok,
+                            "passed": test_result.passed, "failed": test_result.failed,
+                            "errors": test_result.errors, "tamper_flag": False,
+                            "failing_tests": failing_tests,
+                        },
+                    )
+                    if env_outcome is not None:
+                        return env_outcome
                 if getattr(test_result, "invocation_error", False):
                     # B2 #4: "infrastructure" only if the BASE tree errors the
                     # same way. A coder-introduced import/collection breakage
@@ -11250,6 +11282,41 @@ class Orchestrator:
         except Exception as exc:  # noqa: BLE001 — never block review on this
             log.warning("merge-base(%s, HEAD) failed: %s", base, exc)
             return "HEAD~1"
+
+    async def _environment_test_failure(
+        self, task: Task, *, output: str, attempt_id: str, repo: GitRepo | None,
+        branch: str | None, test_results: dict,
+    ) -> TaskOutcome | None:
+        """A test run that never judged the diff because a BUILD PREREQUISITE
+        (installed node package, `npm run build` artefact, node_modules/dist
+        path) is absent from this checkout is an ENVIRONMENT error, not failed
+        code — retrying the coder cannot fix a missing prerequisite, it only
+        burns attempts (observed: a desktop `npm test` where `app-builder-lib`
+        was never installed and `web/dist` had never been built).
+
+        Returns None when `output` shows no such signature — the caller falls
+        through to today's behaviour byte-for-byte.
+        """
+        reason = runner.missing_prerequisite_reason(output or "")
+        if reason is None:
+            return None
+        detail = f"tests could not run: {reason}"
+        self.emit("tests", detail, ok=False, environment=True)
+        await self.store.update_attempt(
+            attempt_id, failure_reason=detail,
+            test_results={**test_results, "environment_error": True},
+        )
+        blocker = Blocker(
+            category=BlockerCategory.TRANSIENT_INFRA,
+            transient=True, confidence=0.9, goal=task.title,
+            root_cause_hypothesis=detail,
+            evidence=(output or "")[-1200:],
+            question="A build prerequisite is missing in this checkout (e.g. "
+                      "`npm ci`, or `npm run build` in web/). Install/build it, "
+                      "then `nh reply` to resume.",
+        )
+        return await self._raise_blocker(
+            task, blocker, repo=repo, branch=branch, escalate_now=True)
 
     async def _invocation_error_reproduces_on_base(
         self, repo: GitRepo, test_cmd: str | None, base: str | None,
