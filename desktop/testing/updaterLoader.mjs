@@ -1,13 +1,21 @@
 // Resolve hook for the defer-push test (mainUpdateDefer.test.mjs).
 //
 // electronLoader.mjs alone is not enough there: main.mjs's getUpdater() only
-// ever produces a real updater when `import("electron-updater")` succeeds, and
-// under that loader it never does (electron-updater is not installed in
-// desktop/node_modules, and even if it were, it reaches for app-update.yml and
-// the network at import time). That leaves nh:update-defer permanently on its
-// `!u` early-return path, which cannot exercise the push-after-defer()
-// ordering the test needs. This loader swaps in a FAKE updater instead, so
-// defer() itself is scriptable.
+// ever produces a real updater when `import("electron-updater")` succeeds.
+// electron-updater IS a declared, installed dependency (desktop/package.json)
+// — the reason getUpdater() still resolves null under electronLoader.mjs
+// alone is that electron-updater is CommonJS, and its own `require("electron")`
+// is a synchronous CJS require that bypasses this process's ESM `register()`
+// resolve hook entirely (that hook only intercepts `import()`/ESM
+// specifiers). It ends up reading off whatever the real "electron" package
+// exports outside an actual Electron process, throws (e.g. "Cannot read
+// properties of undefined (reading 'getVersion')"), and getUpdater()'s
+// try/catch turns that into a plain null. That leaves nh:update-defer
+// permanently on its `!u` early-return path, which cannot exercise the
+// push-after-defer() ordering the test needs. This loader swaps in a FAKE
+// updater instead (via the "./updater.mjs" and "electron-updater" redirects
+// below, both resolved through the dynamic `import()` that this hook DOES
+// see), so defer() itself is scriptable.
 export function resolve(specifier, context, next) {
   if (specifier === "electron") {
     return { url: new URL("./electronStub.mjs", import.meta.url).href,

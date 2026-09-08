@@ -51,8 +51,9 @@ test("a live push already delivered wins over the later retained pull", async ()
   let deliverPush;
   const desktop = {
     onUpdate: (cb) => { deliverPush = cb; return () => {}; },
-    // Resolves AFTER the push below fires, but only observably so via the
-    // microtask queue — the push call is synchronous in this test.
+    // Resolves AFTER the push below fires: the push call is synchronous in
+    // this test, and this promise only settles on a later macrotask turn
+    // (setTimeout), so the push is observably first regardless of ordering.
     getLastUpdate: () => new Promise((resolve) => {
       setTimeout(() => resolve(retained), 0);
     }),
@@ -64,6 +65,20 @@ test("a live push already delivered wins over the later retained pull", async ()
     "mutation: the seed uses `setUpdate(payload)` instead of the functional " +
     "`setUpdate((cur) => cur ?? payload)` form, so a live push that already " +
     "landed gets clobbered by the later-resolving retained pull");
+});
+
+test("a retained up-to-date must not seed a \"Checked just now\" card", async () => {
+  const box = stateBox(null);
+  const desktop = {
+    onUpdate: () => () => {},
+    getLastUpdate: async () => ({ mode: "up-to-date" }),
+  };
+  subscribeUpdates({ desktop, setUpdate: box.setUpdate });
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(box.get(), null,
+    "mutation: subscribeUpdates seeds ANY retained mode (including up-to-date) " +
+    "instead of only available/unavailable — an up-to-date fact retained hours " +
+    "ago would render updateNotice()'s stale \"Checked just now.\" line");
 });
 
 test("a null retained fact leaves the panel idle", async () => {

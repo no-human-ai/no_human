@@ -73,8 +73,13 @@ test("a failed automatic check does not displace the retained fact, but IS deliv
 });
 
 test("nh:update-defer with no updater available leaves retention and delivery untouched", async () => {
-  // This harness's getUpdater() always resolves null (electron-updater cannot
-  // initialise unpackaged), so nh:update-defer takes its early-return path —
+  // This harness's getUpdater() always resolves null — not because
+  // electron-updater is uninstalled or "cannot initialise unpackaged" (it is
+  // an installed dependency), but because electron-updater's own CJS
+  // `require("electron")` bypasses electronLoader.mjs's ESM resolve hook and
+  // throws reading a property (e.g. "Cannot read properties of undefined
+  // (reading 'getVersion')") off the real "electron" package instead — so
+  // nh:update-defer takes its early-return path —
   // proving the board's clear is gated on an ACTUAL persisted defer, not on
   // every click of "Later".
   const beforeSentCount = stub.calls.sent.length;

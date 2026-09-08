@@ -150,6 +150,18 @@ export function updateNotice({ inShell = false, current = null, update = null, c
 }
 
 /**
+ * Retained modes worth seeding a late-mounting surface with. This is
+ * DELIBERATELY narrower than updatePolicy.mjs's RETAINED_UPDATE_MODES (which
+ * also keeps "up-to-date", so a manual check that finds nothing can still be
+ * read back): "up-to-date" renders `updateNotice()`'s "Checked just now."
+ * line, which is only ever true of a LIVE push, never of a fact pulled back
+ * from retention — that fact could be hours old by the time a surface mounts
+ * and pulls it. "available"/"unavailable" carry no such time claim, so they
+ * are safe to seed from a pull of any age.
+ */
+const SEED_UPDATE_MODES = new Set(["available", "unavailable"]);
+
+/**
  * The shared push+pull subscription contract used by every surface that keeps
  * its own `update` state (the board's App.jsx, and Settings' UpdatesPanel):
  * subscribe to the LIVE push (`onUpdate`) and, in the same call, pull
@@ -157,10 +169,16 @@ export function updateNotice({ inShell = false, current = null, update = null, c
  * surface mounted — the startup check races the renderer, and a surface that
  * only pushed would show nothing for a fact retained before it existed.
  *
+ * The pull only ever seeds `available`/`unavailable` (see SEED_UPDATE_MODES)
+ * — the facts a late mount actually needs to catch up on. A retained
+ * "up-to-date" or "failed" is deliberately NOT replayed into state this way;
+ * a late mount showing nothing for those is correct (they are enrichments of
+ * a check the user asked for, not standing facts to catch up on).
+ *
  * The functional `setUpdate((cur) => cur ?? payload)` form is required, not
  * cosmetic: a live push that already landed must always win over the later-
- * resolving pull, even though the pull is issued first. Mirrors App.jsx's own
- * effect exactly (per ec924d81's out-of-scope note, nothing there changes).
+ * resolving pull, even though the pull is issued first. Mirrors the same
+ * cur-wins-over-pull shape App.jsx's own effect uses.
  *
  * @param {object}   s
  * @param {object}   s.desktop    window.nhDesktop, or undefined outside the shell
@@ -172,7 +190,7 @@ export function subscribeUpdates({ desktop, setUpdate } = {}) {
   if (!desktop || !setUpdate) return undefined;
   const off = desktop.onUpdate?.((payload) => setUpdate(payload));
   desktop.getLastUpdate?.().then((payload) => {
-    if (payload) setUpdate((cur) => cur ?? payload);
+    if (payload && SEED_UPDATE_MODES.has(payload.mode)) setUpdate((cur) => cur ?? payload);
   }).catch(() => {});
   return off;
 }

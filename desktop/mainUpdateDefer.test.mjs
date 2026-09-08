@@ -3,8 +3,12 @@
 // ("skipped"/"deferred") result — push the clear through sendUpdateEvent().
 //
 // mainUpdateLast.test.mjs already proves this handler's early-return path
-// (electronLoader.mjs's getUpdater() always resolves null there, since
-// electron-updater cannot initialise unpackaged); that leaves the ACTUAL push
+// (electronLoader.mjs's getUpdater() always resolves null there — not
+// because electron-updater is uninstalled or "cannot initialise unpackaged",
+// but because electron-updater's own CJS `require("electron")` bypasses that
+// loader's ESM resolve hook and throws reading a property, e.g.
+// "Cannot read properties of undefined (reading 'getVersion')", off the real
+// "electron" package instead); that leaves the ACTUAL push
 // — main.mjs ~:876-887 — completely unexercised. Deleting the
 // `sendUpdateEvent({mode:"skipped", reason:"deferred", ...})` call, or moving
 // it above `u.defer(version)`, still left that other file's desktop suite
