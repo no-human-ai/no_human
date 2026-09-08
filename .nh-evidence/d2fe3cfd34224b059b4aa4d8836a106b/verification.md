@@ -1,6 +1,6 @@
 # How I verified this — full log
 
-_Harness-captured record for task `d2fe3cfd`, commit `a5efb2ceae1e4bd92e2b9e8c2c19c5e6cc63809d` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `d2fe3cfd`, commit `06b261e77e741e02e0df992fa8ad3036b2435700` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ## How I verified this
 15 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
@@ -8,200 +8,223 @@ _Harness-captured record for task `d2fe3cfd`, commit `a5efb2ceae1e4bd92e2b9e8c2c
 **Not everything recorded is shown:** the 12 most recent of those listed are shown with their captured output, and the other 3 commands are shown as a command line only.
 
 ### test
+- `uv run pytest -q tests/test_delivery_fast_forward.py -k lagging 2>&1 | tail -20`
+  _output not shown - see the note above._
 - `uv run pytest -q tests/test_delivery_fast_forward.py 2>&1 | tail -40`
   _output not shown - see the note above._
-- `uv run pytest -q tests/test_egress_allowlist.py 2>&1 | tail -40`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/d2fe3cfd34224b059b4aa4d8836a106b.90097.6577f4d2 cp src/<redacted>/core/orchestrator.py /tmp/orch_backup.py python3 - <<'EOF' path = "src/<redacted>/core/orchestrat [... 329 of 672 characters omitted from the middle ...] t_local_fast_forward_failure_refuses_before_touching_the_remote 2>&1 | tail -20 cp /tmp/orch_backup.py src/<redacted>/core/orchestrator.py`
   _output not shown - see the note above._
-- `uv run pytest -q tests/test_egress_allowlist.py 2>&1 | tail -20`
-  _output not shown - see the note above._
-- `uv run pytest -q tests/test_delivery_fast_forward.py tests/test_delivery_pushes_reviewed_sha.py tests/test_rule_delivery.py tests/test_worktree_isolation.py tests/test_worktree_teardown.py 2>&1 | tail -40`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/d2fe3cfd34224b059b4aa4d8836a106b.90097.6577f4d2 diff /tmp/orch_backup.py src/<redacted>/core/orchestrator.py && echo "restored OK" uv run pytest -q tests/test_delivery_fast_forward.py 2>&1 | tail -10`
 
 ```
+restored OK
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-......................................................                   [100%]
-54 passed in 23.85s
+.........                                                                [100%]
+9 passed in 16.96s
 ```
 
-- `uv run pytest -q tests/test_delivery_fast_forward.py -v 2>&1 | tail -60`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/d2fe3cfd34224b059b4aa4d8836a106b.90097.6577f4d2 cp src/<redacted>/vcs/git.py /tmp/git_backup.py python3 - <<'EOF' path = "src/<redacted>/vcs/git.py" text = open(pa [... 433 of 776 characters omitted from the middle ...] est_fast_forward_local_branch_refuses_protected_branch_before_touching_ref 2>&1 | tail -20 cp /tmp/git_backup.py src/<redacted>/vcs/git.py`
 
 ```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-============================= test session starts ==============================
-platform darwin -- Python 3.12.13, pytest-9.1.1, pluggy-1.6.0
-<redacted> isolated HOME: /var/folders/1r/3r0rt1jd4j1456rsg_fh4d380000gn/T/nh-test-home-b1ejtr66
-rootdir: /Users/eyalgolan/.<redacted>/worktrees/d2fe3cfd34224b059b4aa4d8836a106b.90097.113f4b31
-configfile: pyproject.toml
-plugins: anyio-4.14.0, cov-7.1.0, xdist-3.8.0, asyncio-1.4.0, no-human-0.2.1
-asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
-collected 8 items
+_ test_fast_forward_local_branch_refuses_protected_branch_before_touching_ref __
 
-tests/test_delivery_fast_forward.py ........                             [100%]
+tmp_path = PosixPath('/private/var/folders/1r/3r0rt1jd4j1456rsg_fh4d380000gn/T/pytest-of-eyalgolan/pytest-35465/test_fast_forward_local_branch0')
 
-============================== 8 passed in 9.77s ===============================
-```
+    def test_fast_forward_local_branch_refuses_protected_branch_before_touching_ref(tmp_path):
+        work = _repo_with_a_commit(tmp_path)
+        creation_sha = _git(work, "rev-parse", "HEAD")
+        reviewed_sha = _commit(work, "feature.txt", "x\n", "add feature")
+        _git(work, "checkout", "-q", "--detach", reviewed_sha)
+        _git(work, "update-ref", f"refs/heads/{BRANCH}", creation_sha)
+    
+        repo = GitRepo(work, never_push_to=[BRANCH])
+>       with pytest.raises(ProtectedBranch):
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       Failed: DID NOT RAISE ProtectedBranch
 
-- `EC=/private/tmp/claude-501/-Users-eyalgolan-git-snc-master-no-human/<redacted>/scratchpad/review-main-ec924d81 cd "$EC" && uv run pytest -q tests/test_delivery_fast_forward.py::test_delivery_fast_forwards_a_lagging_local_branch_ref 2>&1 | tail -80`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-Using CPython 3.12.13
-Creating virtual environment at: .venv
-   Building no-human @ file:///private/tmp/claude-501/-Users-eyalgolan-git-snc-master-no-human/<redacted>/scratchpad/review-main-ec924d81
-      Built no-human @ file:///private/tmp/claude-501/-Users-eyalgolan-git-snc-master-no-human/<redacted>/scratchpad/review-main-ec924d81
-Installed 68 packages in 320ms
-F                                                                        [100%]
-=================================== FA
-[... 1,947 of 3,086 characters omitted from the middle ...]
-e31e326ce5441256787fb74efa is not the reviewed sha (passing rounds stamped: ['ad258c47dd6a3af45450225afc729ebcd18c0261']) (human_gated_resume=False)
+tests/test_delivery_fast_forward.py:549: Failed
 =========================== short test summary info ============================
-FAILED tests/test_delivery_fast_forward.py::test_delivery_fast_forwards_a_lagging_local_branch_ref
-1 failed in 5.59s
-Shell cwd was reset to /Users/eyalgolan/.<redacted>/worktrees/d2fe3cfd34224b059b4aa4d8836a106b.90097.113f4b31
-```  
-  _excerpt - 3,130 characters of output in total_
+FAILED tests/test_delivery_fast_forward.py::test_fast_forward_local_branch_refuses_protected_branch_before_touching_ref
+1 failed in 1.34s
+```
 
-- `A5=/private/tmp/claude-501/-Users-eyalgolan-git-snc-master-no-human/<redacted>/scratchpad/review-N-a5bdf9c4 cd "$A5" && uv run pytest -q tests/test_delivery_fast_forward.py::test_delivery_prefers_head_over_older_attempt_stamp 2>&1 | tail -100`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/d2fe3cfd34224b059b4aa4d8836a106b.90097.6577f4d2 diff /tmp/git_backup.py src/<redacted>/vcs/git.py && echo "restored OK" uv run pytest -q tests/test_delivery_fast_forward.py 2>&1 | tail -10`
 
 ```
+restored OK
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-F                                                                        [100%]
-=================================== FAILURES ===================================
-_____________ test_delivery_prefers_head_over_older_attempt_stamp ______________
-
-store = <<redacted>.core.db.Store object at 0x109483b90>
-tmp_path = PosixPath('/private/var/folders/1r/3r0rt1jd4j1456rsg_fh4d380000gn/T/pytest-of-eyalgolan/pytest-34736/test_delivery_prefers_head_ove0')
-monkeypatch = <_pytest.monkeypatch.Monke
-[... 3,141 of 4,280 characters omitted from the middle ...]
-eview checklist comment not posted: the delivering attempt row carries no review checklist (resumed delivery); the PR body's Evidence row is the record
-=========================== short test summary info ============================
-FAILED tests/test_delivery_fast_forward.py::test_delivery_prefers_head_over_older_attempt_stamp
-1 failed in 1.91s
-Shell cwd was reset to /Users/eyalgolan/.<redacted>/worktrees/d2fe3cfd34224b059b4aa4d8836a106b.90097.113f4b31
-```  
-  _excerpt - 4,270 characters of output in total_
-
-- `uv run pytest -q tests/test_delivery_fast_forward.py::test_delivery_fast_forwards_a_lagging_local_branch_ref 2>&1 | tail -60`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-F                                                                        [100%]
-=================================== FAILURES ===================================
-____________ test_delivery_fast_forwards_a_lagging_local_branch_ref ____________
-
-store = <<redacted>.core.db.Store object at 0x10dbbf920>
-tmp_path = PosixPath('/private/var/folders/1r/3r0rt1jd4j1456rsg_fh4d380000gn/T/pytest-of-eyalgolan/pytest-34746/test_delivery_fast_forwards_a_0')
-monkeypatch = <_pytest.monkeypatch.Monke
-[... 1,469 of 2,608 characters omitted from the middle ...]
-ERROR    <redacted>.orchestrator:orchestrator.py:6914 delivery refused: branch nh/attempt-1 tip 88781f6b91700572363a9eb82b49642da35941e2 is not the reviewed sha (passing rounds stamped: ['232bef2b64af878ebca4d163cec0f410362cd6ba']) (human_gated_resume=False)
-=========================== short test summary info ============================
-FAILED tests/test_delivery_fast_forward.py::test_delivery_fast_forwards_a_lagging_local_branch_ref
-1 failed in 2.17s
-```  
-  _excerpt - 2,602 characters of output in total_
-
-- `uv run pytest -q tests/test_delivery_fast_forward.py::test_delivery_fast_forwards_a_lagging_local_branch_ref 2>&1 | tail -60`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-F                                                                        [100%]
-=================================== FAILURES ===================================
-____________ test_delivery_fast_forwards_a_lagging_local_branch_ref ____________
-
-store = <<redacted>.core.db.Store object at 0x10b4c7b90>
-tmp_path = PosixPath('/private/var/folders/1r/3r0rt1jd4j1456rsg_fh4d380000gn/T/pytest-of-eyalgolan/pytest-34751/test_delivery_fast_forwards_a_0')
-monkeypatch = <_pytest.monkeypatch.Monke
-[... 1,760 of 2,899 characters omitted from the middle ...]
- log call -------------------------------
-ERROR    <redacted>.orchestrator:orchestrator.py:7187 push landed d21f66537772c291623afd98ef1a5c5c8cb55e1f but the reviewed/pre-push tip was 2e33be76c0c14ac8cde8a81c6256eb29bc95701a — the branch moved during delivery
-=========================== short test summary info ============================
-FAILED tests/test_delivery_fast_forward.py::test_delivery_fast_forwards_a_lagging_local_branch_ref
-1 failed in 2.50s
-```  
-  _excerpt - 2,893 characters of output in total_
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/d2fe3cfd34224b059b4aa4d8836a106b.90097.113f4b31 git diff --stat -- src/<redacted>/vcs/git.py src/<redacted>/core/orchestrator.py uv run pytest -q tests/test_delivery_fast_forward.py 2>&1 | tail -10`
-
-```
-src/<redacted>/core/orchestrator.py | 195 ++++++++++++++++++++++++++------------
- src/<redacted>/vcs/git.py           |  50 ++++++----
- 2 files changed, 166 insertions(+), 79 deletions(-)
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-........                                                                 [100%]
-8 passed in 9.74s
+.........                                                                [100%]
+9 passed in 13.33s
 ```
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/d2fe3cfd34224b059b4aa4d8836a106b.90097.113f4b31 git diff -- docs/security.md echo "---" uv run pytest -q tests/test_reanchor_citations.py tests/test_readme_claims.py 2>&1 | tail -30`
-
-```
-diff --git a/docs/security.md b/docs/security.md
-index 346b730c..9bc03d92 100644
---- a/docs/security.md
-+++ b/docs/security.md
-@@ -145,7 +145,7 @@ named here.
-   and line and quote the lines they are about. Same destination as the push.
- - **PR receipt and status polling** — `gh` / `glab` calls for the PR's head SHA
-   and its mergeability (`vcs/pr_watcher.py:default_pr_state`, `vcs/receipts.py`), plus
--  `git fetch origin` (`vcs/git.py:GitRepo._have_remote_commit:959`, `:GitRepo.fetch:1128`),
-+  `git fetch origin` (`vcs/git.py:GitRepo._have_remote_commit:959`, `:GitRepo.fetch:1244`),
-   while a task waits on CI or review.
-   These read; they send only the identifiers of a P
-[... 106 of 1,245 characters omitted from the middle ...]
-RTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-.................................s.s.s.s.s.s.s.s.s.s.................... [ 48%]
-..........................s..........................s.................. [ 96%]
-......                                                                   [100%]
-138 passed, 12 skipped in 5.07s
-```  
-  _excerpt - 1,243 characters of output in total_
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/d2fe3cfd34224b059b4aa4d8836a106b.90097.113f4b31 wc -l src/<redacted>/core/orchestrator.py uv run pytest -q tests/test_structural_budget.py 2>&1 | tail -60`
-
-```
-22049 src/<redacted>/core/orchestrator.py
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-.....F............                                                       [100%]
-=================================== FAILURES ===================================
-________________________ test_no_frozen_entry_has_grown ________________________
-
-scanned = ({'agent/claude_backend.py:ClaudeBackend.stream': 407, 'blockers/landed_override.py:approve_landed_override': 315, 'bl... ...}, {'agent/guard.py': 2892, 'api/app.py': 6140, 'blockers/wake.
-[... 779 of 1,918 characters omitted from the middle ...]
-rches...atchets down'] == []
-E             
-E             Left contains one more item: 'core/orchestrator.py: frozen 21880, now 22052 (+172); this budget only ratchets down'
-E             Use -v to get more diff
-
-tests/test_structural_budget.py:1243: AssertionError
-=========================== short test summary info ============================
-FAILED tests/test_structural_budget.py::test_no_frozen_entry_has_grown - Asse...
-1 failed, 17 passed in 2.15s
-```  
-  _excerpt - 1,914 characters of output in total_
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/d2fe3cfd34224b059b4aa4d8836a106b.90097.113f4b31 uv run pytest -q tests/test_structural_budget.py::test_no_frozen_entry_has_grown 2>&1 | grep "frozen 21880"`
-
-```
-E           AssertionError: core/orchestrator.py: frozen 21880, now 22052 (+172); this budget only ratchets down
-E             Left contains one more item: 'core/orchestrator.py: frozen 21880, now 22052 (+172); this budget only ratchets down'
-```
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/d2fe3cfd34224b059b4aa4d8836a106b.90097.113f4b31 uv run pytest -q tests/test_structural_budget.py 2>&1 | tail -20`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/d2fe3cfd34224b059b4aa4d8836a106b.90097.6577f4d2 uv run pytest -q tests/test_structural_budget.py 2>&1 | tail -30`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
 ..................                                                       [100%]
-18 passed in 2.69s
+18 passed in 2.91s
 ```
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/d2fe3cfd34224b059b4aa4d8836a106b.90097.113f4b31 uv run pytest -q tests/test_reanchor_citations.py tests/test_readme_claims.py tests/test_structural_budget.py tests [... 75 of 418 characters omitted from the middle ...] livery_pushes_reviewed_sha.py tests/test_rule_delivery.py tests/test_worktree_isolation.py tests/test_worktree_teardown.py 2>&1 | tail -20`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/d2fe3cfd34224b059b4aa4d8836a106b.90097.6577f4d2 echo "=== targeted tests ===" uv run pytest -q tests/test_egress_allowlist.py tests/test_reanchor_citations.py tests/test_readme_claims.py -p no:cacheprovider 2>&1 | tail -15 echo "=== wc app.py ===" wc -l src/<redacted>/api/app.py`
 
 ```
+=== targeted tests ===
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-.................................s.s.s.s.s.s.s.s.s.s.................... [ 29%]
-..........................s..........................s.................. [ 58%]
-........................................................................ [ 87%]
-................................                                         [100%]
-236 passed, 12 skipped in 58.38s
+.......................................................s.s.s.s.s.s.s.s.s [ 41%]
+.s..............................................s....................... [ 83%]
+...s........................                                             [100%]
+160 passed, 12 skipped in 43.55s
+=== wc app.py ===
+    6140 src/<redacted>/api/app.py
 ```
+
+- `VENV=/Users/eyalgolan/.<redacted>/worktrees/d2fe3cfd34224b059b4aa4d8836a106b.90097.6577f4d2/.venv cd /tmp/nh_0847f2c2_pre echo "=== ec924d81 (pre-fix baseline): lagging-ref test ===" PYTHONPATH=<redacted> $VENV/bin/python -m pytest -q tests/test_delivery_fast_forward.py -k "test_delivery_fast_forwards_a_lagging_local_branch_ref" -p no:cacheprovider 2>&1 | tail -40`
+
+```
+=== ec924d81 (pre-fix baseline): lagging-ref test ===
+____________ test_delivery_fast_forwards_a_lagging_local_branch_ref ____________
+
+store = <<redacted>.core.db.Store object at 0x10de08ec0>
+tmp_path = PosixPath('/private/var/folders/1r/3r0rt1jd4j1456rsg_fh4d380000gn/T/pytest-of-eyalgolan/pytest-35614/test_delivery_fast_forwards_a_0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x10dd8b620>
+
+    async def test_delivery_fast_forwards_a_lagging_local_branch_ref(store, tmp_path, monkeypatch):
+        work = _repo_with_a_commit(tmp_path)
+        creation_sha = _git(work, "rev-parse", "HEAD")
+        bare = _bare_remote(tmp_path)
+        _add_origin(work, bare)
+   
+[... 1,289 of 2,428 characters omitted from the middle ...]
+68ae720fc520 is not the reviewed sha (passing rounds stamped: ['ce5469d969b48f2850dfffdd199eaa0a6c566a7f']) (human_gated_resume=False)
+=========================== short test summary info ============================
+FAILED tests/test_delivery_fast_forward.py::test_delivery_fast_forwards_a_lagging_local_branch_ref
+1 failed, 8 deselected in 2.78s
+Shell cwd was reset to /Users/eyalgolan/.<redacted>/worktrees/d2fe3cfd34224b059b4aa4d8836a106b.90097.6577f4d2
+```  
+  _excerpt - 2,422 characters of output in total_
+
+- `VENV=/Users/eyalgolan/.<redacted>/worktrees/d2fe3cfd34224b059b4aa4d8836a106b.90097.6577f4d2/.venv cd /tmp/nh_0847f2c2_r1 echo "=== a5bdf9c4 (round-1 commit): prefers-HEAD tie-break test ===" PYTHONPATH=<redacted> $VENV/bin/python -m pytest -q tests/test_delivery_fast_forward.py -k "test_delivery_prefers_head_over_older_attempt_stamp" -p no:cacheprovider 2>&1 | tail -50`
+
+```
+=== a5bdf9c4 (round-1 commit): prefers-HEAD tie-break test ===
+        # lexicographically — the exact shape the old `min()` tie-break got
+        # wrong. Content-only variation; extremely likely to succeed in a few
+        # tries.
+        sha_a = sha_b = None
+        for i in range(50):
+            _git(work, "checkout", "-q", "--detach", tip0)
+            cand_a = _commit(work, "a.txt", f"a{i}\n", f"round 1 attempt {i}")
+            _git(work, "checkout", "-q", "--detach", tip0)
+            cand_b = _commit(work, "b.txt", f"b{i}\n", f"round 2 attempt {i}")
+            if cand_a < cand_b:
+                sha_a, sha_b = cand_a, cand_b
+                break
+        assert s
+[... 2,039 of 3,178 characters omitted from the middle ...]
+t comment not posted: the delivering attempt row carries no review checklist (resumed delivery); the PR body's Evidence row is the record
+=========================== short test summary info ============================
+FAILED tests/test_delivery_fast_forward.py::test_delivery_prefers_head_over_older_attempt_stamp
+1 failed, 8 deselected in 3.14s
+Shell cwd was reset to /Users/eyalgolan/.<redacted>/worktrees/d2fe3cfd34224b059b4aa4d8836a106b.90097.6577f4d2
+```  
+  _excerpt - 3,172 characters of output in total_
+
+- `VENV=/Users/eyalgolan/.<redacted>/worktrees/d2fe3cfd34224b059b4aa4d8836a106b.90097.6577f4d2/.venv cd /tmp/nh_0847f2c2_r1 echo "=== a5bdf9c4: lagging-ref test (should PASS per item 2 correction) ===" PYTHON [... 327 of 670 characters omitted from the middle ...] p/nh_0847f2c2_r1/src/<redacted>/vcs/git.py grep -n "def _ahead_reviewed_candidate" /tmp/nh_0847f2c2_r1/src/<redacted>/core/orchestrator.py`
+
+```
+=== a5bdf9c4: lagging-ref test (should PASS per item 2 correction) ===
+.                                                                        [100%]
+1 passed, 8 deselected in 2.29s
+=== grep confirming a5bdf9c4 already has fast_forward_local_branch + _ahead_reviewed_candidate ===
+1085:    def fast_forward_local_branch(self, branch: str, sha: str) -> bool:
+10511:    def _ahead_reviewed_candidate(self, repo, tip: str, shas: set[str]) -> str | None:
+Shell cwd was reset to /Users/eyalgolan/.<redacted>/worktrees/d2fe3cfd34224b059b4aa4d8836a106b.90097.6577f4d2
+```
+
+- `cd /Users/eyalgolan/.<redacted>/worktrees/d2fe3cfd34224b059b4aa4d8836a106b.90097.6577f4d2 echo "=== MUTATION 1: candidates -> [] in _ahead_reviewed_candidate ===" .venv/bin/python -m pytest -q tests/test_delivery_fast_forward.py -p no:cacheprovider 2>&1 | tail -30`
+
+```
+=== MUTATION 1: candidates -> [] in _ahead_reviewed_candidate ===
+            raise AssertionError("open_pr must not be called when the local "
+                                  "fast-forward itself fails")
+    
+        events: list[dict] = []
+        orch, task, attempt_id, out = await _finalize_task(
+            store, tmp_path, work, _stamp({}, reviewed_sha), must_not_push,
+            monkeypatch, events=events)
+    
+        assert out.status == TaskStatus.ESCALATED, out.detail
+        mismatches = [e for e in events if e.get("kind") == "delivery_sha_mismatch"]
+        assert mismatches, f"no delivery_sha_mismatch event: {events}"
+        text = mismatches[0]["text"]
+   
+[... 1,314 of 2,453 characters omitted from the middle ...]
+c113d29142']) (human_gated_resume=False)
+=========================== short test summary info ============================
+FAILED tests/test_delivery_fast_forward.py::test_delivery_fast_forwards_a_lagging_local_branch_ref
+FAILED tests/test_delivery_fast_forward.py::test_delivery_prefers_head_over_older_attempt_stamp
+FAILED tests/test_delivery_fast_forward.py::test_local_fast_forward_failure_refuses_before_touching_the_remote
+3 failed, 6 passed in 11.64s
+```  
+  _excerpt - 2,451 characters of output in total_
+
+- `cd /Users/eyalgolan/.<redacted>/worktrees/d2fe3cfd34224b059b4aa4d8836a106b.90097.6577f4d2 echo "=== MUTATION 2: fast_forward_local_branch -> no-op (return True) ===" .venv/bin/python -m pytest -q tests/test_delivery_fast_forward.py -p no:cacheprovider 2>&1 | tail -35`
+
+```
+=== MUTATION 2: fast_forward_local_branch -> no-op (return True) ===
+        events: list[dict] = []
+        orch, task, attempt_id, out = await _finalize_task(
+            store, tmp_path, work, _stamp({}, reviewed_sha), must_not_push,
+            monkeypatch, events=events)
+    
+        assert out.status == TaskStatus.ESCALATED, out.detail
+        mismatches = [e for e in events if e.get("kind") == "delivery_sha_mismatch"]
+>       assert mismatches, f"no delivery_sha_mismatch event: {events}"
+E       AssertionError: no delivery_sha_mismatch event: [{'source': 'orchestrator', 'kind': 'delivery_branch_fast_forwarded', 'text': 'nh/attempt-1: 737e8b65910c57eba1ef9e08e0c4d9e5ea
+[... 2,993 of 4,132 characters omitted from the middle ...]
+=
+FAILED tests/test_delivery_fast_forward.py::test_delivery_fast_forwards_a_lagging_local_branch_ref
+FAILED tests/test_delivery_fast_forward.py::test_delivery_prefers_head_over_older_attempt_stamp
+FAILED tests/test_delivery_fast_forward.py::test_local_fast_forward_failure_refuses_before_touching_the_remote
+FAILED tests/test_delivery_fast_forward.py::test_fast_forward_local_branch_refuses_protected_branch_before_touching_ref
+4 failed, 5 passed in 11.83s
+```  
+  _excerpt - 4,132 characters of output in total_
+
+- `cd /Users/eyalgolan/.<redacted>/worktrees/d2fe3cfd34224b059b4aa4d8836a106b.90097.6577f4d2 cp /tmp/git.py.bak src/<redacted>/vcs/git.py diff src/<redacted>/vcs/git.py /tmp/git.py.bak && echo "restored clean" echo "=== sanity: full delivery test file green again ===" .venv/bin/python -m pytest -q tests/test_delivery_fast_forward.py -p no:cacheprovider 2>&1 | tail -5`
+
+```
+restored clean
+=== sanity: full delivery test file green again ===
+.........                                                                [100%]
+9 passed in 14.01s
+```
+
+- `mkdir -p /tmp/nh_0847f2c2_base cd /Users/eyalgolan/.<redacted>/worktrees/d2fe3cfd34224b059b4aa4d8836a106b.90097.6577f4d2 git archive HEAD | tar -x -C /tmp/nh_0847f2c2_base cp tests/test_delivery_fast_forwa [... 403 of 746 characters omitted from the middle ...] re_touching_the_remote or test_fast_forward_local_branch_refuses_protected_branch_before_touching_ref" -p no:cacheprovider 2>&1 | tail -40`
+
+```
+=== base (a5efb2ce, pre-send-back src) + my new test assertions/test ===
+.F                                                                       [100%]
+=================================== FAILURES ===================================
+_ test_fast_forward_local_branch_refuses_protected_branch_before_touching_ref __
+
+tmp_path = PosixPath('/private/var/folders/1r/3r0rt1jd4j1456rsg_fh4d380000gn/T/pytest-of-eyalgolan/pytest-35642/test_fast_forward_local_branch0')
+
+    def test_fast_forward_local_branch_refuses_protected_branch_before_touching_ref(tmp_path):
+        work = _repo_with_a_commit(tmp_path)
+        creation_sha = _git(work, "rev-parse", "HEAD")
+        reviewed_sha = _c
+[... 321 of 1,460 characters omitted from the middle ...]
+^^^^^^^^
+E       Failed: DID NOT RAISE ProtectedBranch
+
+tests/test_delivery_fast_forward.py:549: Failed
+=========================== short test summary info ============================
+FAILED tests/test_delivery_fast_forward.py::test_fast_forward_local_branch_refuses_protected_branch_before_touching_ref
+1 failed, 1 passed, 7 deselected in 2.73s
+Shell cwd was reset to /Users/eyalgolan/.<redacted>/worktrees/d2fe3cfd34224b059b4aa4d8836a106b.90097.6577f4d2
+```  
+  _excerpt - 1,458 characters of output in total_
 
 
 **Not verified:** everything below is a limit of this section, listed whether or not it bit this attempt.
