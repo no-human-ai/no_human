@@ -2740,13 +2740,22 @@ Re-anchored again 2026-09-03 (fourth): the WIP-checkpoint resume-digest
     branch_name=branch) call in orchestrator.py, moving the citation from
     4801 to 4807; re-verified against the code, not carried forward blind.
     db.py:2306 is untouched by this change.
+
+    Re-anchored again 2026-09-08: the send-back resume-with-zero-diff fix
+    (the new `_send_back_resume_round` predicate helper next to
+    `_mechanical_round`, plus the inline "no changes needed" landing branch
+    at `_run_attempt`'s zero-diff site) added 23 net lines above
+    `_run_attempt`'s `update_attempt(attempt_id, branch_name=branch)` call
+    in orchestrator.py, moving the citation from 4807 to 4830; re-verified
+    against the code, not carried forward blind. db.py:2306 is untouched by
+    this change.
     """
     assert "db.py:2306" in known_issues_doc, (
         "the traceback no longer cites db.py:2306 — this test is pointed at "
         "stale text; re-derive from the current traceback"
     )
-    assert "orchestrator.py:4807" in known_issues_doc, (
-        "the traceback no longer cites orchestrator.py:4807 — this test is "
+    assert "orchestrator.py:4830" in known_issues_doc, (
+        "the traceback no longer cites orchestrator.py:4830 — this test is "
         "pointed at stale text; re-derive from the current traceback"
     )
 
@@ -2765,13 +2774,13 @@ Re-anchored again 2026-09-03 (fourth): the WIP-checkpoint resume-digest
     orch_src = ORCHESTRATOR_PY.read_text(encoding="utf-8")
     orch_body = _function_body_source(orch_src, "_run_attempt")
     orch_lines = orch_src.splitlines()
-    assert 1 <= 4807 <= len(orch_lines), "orchestrator.py is now shorter than line 4807"
-    assert "self.store.update_attempt(" in orch_lines[4806], (
-        f"orchestrator.py:4807 is now {orch_lines[4806]!r}, not the "
+    assert 1 <= 4830 <= len(orch_lines), "orchestrator.py is now shorter than line 4830"
+    assert "self.store.update_attempt(" in orch_lines[4829], (
+        f"orchestrator.py:4830 is now {orch_lines[4829]!r}, not the "
         f"update_attempt call the traceback names"
     )
     assert "self.store.update_attempt(" in orch_body, (
-        "line 4807 is no longer inside _run_attempt's body"
+        "line 4830 is no longer inside _run_attempt's body"
     )
 
 

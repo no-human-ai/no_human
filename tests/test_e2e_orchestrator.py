@@ -3612,6 +3612,136 @@ async def test_two_zero_diff_attempts_escalate_with_the_agents_reason(
     assert blocker["tried"]  # the per-attempt log, for the human reading it
 
 
+class _NoEditBackend:
+    """Delivers zero file changes and says the branch already has the change —
+    the shape of a round resumed from a send-back (`nh reject`) whose feedback
+    the branch already satisfies. No `capabilities` attribute (mirrors
+    `_AlternatingDudBackend`), so it gets no reformat nudge and lands directly
+    on the zero-diff site."""
+
+    async def run(self, prompt, *, cwd, max_turns, effort=None, resume=None,
+                  on_event=None, supervisor_hook=None, **kwargs):
+        return AgentResult(
+            final_text="The branch already contains this change.",
+            num_turns=2, is_error=False, tokens_used=400,
+            session_id="s", stop_reason="end_turn",
+        )
+
+
+async def test_send_back_resume_with_no_changes_returns_to_awaiting_approval(
+    bare_repo, tmp_path, store
+):
+    """Task 82644133 burned ~2.4M tokens because a round resumed from a
+    send-back that found the branch already satisfied the feedback was
+    treated as an ordinary zero-diff failure: attempt #7 was marked FAILED
+    and attempt #8 was re-dispatched. A send-back resume with an existing PR
+    must instead return the task to AWAITING_APPROVAL as "no changes needed",
+    without consuming another attempt slot."""
+    cfg = _config(tmp_path)
+    backend = _NoEditBackend()
+    orch = Orchestrator(store, cfg.data, backend, SlackNotifier(None))
+    t = Task.new("add feature", repo_path=str(bare_repo), kind="feature")
+    ctx = t.context or {}
+    ctx["pr_watch"] = "https://github.com/o/r/pull/7"
+    ctx["send_back_feedback"] = [
+        {"at": "2026-06-01T00:00:00Z", "message": "please rename the flag"}
+    ]
+    t.context = ctx
+    await store.create_task(t)
+
+    # Seed the prior (delivering) attempt this round resumes FROM, backdated
+    # so the feedback above reads as having arrived AFTER it — the
+    # round-scoping discriminator `_send_back_resume_round` checks. Without
+    # this, `send_back_feedback`'s append-only, never-cleared shape would make
+    # every later zero-diff round look like a resume.
+    prior_id = await store.create_attempt(t.id, 1)
+    await store.update_attempt(
+        prior_id, status="succeeded", pr_url="https://github.com/o/r/pull/7",
+        started_at="2026-01-01T00:00:00Z",
+    )
+    await store.set_status(t, TaskStatus.IMPLEMENTING, validate=False)
+
+    outcome = await orch.run_task(t)
+
+    assert outcome.status is TaskStatus.AWAITING_APPROVAL, outcome.detail
+    assert "no changes needed" in outcome.detail
+    assert outcome.pr_url == "https://github.com/o/r/pull/7"
+
+    reloaded = await store.get_task(t.id)
+    assert reloaded.status is TaskStatus.AWAITING_APPROVAL
+    assert (reloaded.context or {}).get("no_changes_needed")
+
+    attempts = await store.list_attempts(t.id)
+    assert len(attempts) == 2, (
+        "must not consume a new attempt slot / re-dispatch — "
+        f"got {len(attempts)} rows")
+    new_row = attempts[-1]
+    assert new_row["status"] == "succeeded"
+    assert not new_row["failure_reason"]
+    assert int(new_row["mechanical_round"]) == 1
+
+
+async def test_first_attempt_with_no_changes_still_fails(bare_repo, tmp_path, store):
+    """Control for the fix above: a FIRST attempt (no send-back resume) that
+    lands zero diff must keep today's existing failure/escalation behavior
+    byte-for-byte — this task has no `send_back_feedback` and no prior
+    attempt at all, so `_send_back_resume_round` must read False and the
+    ordinary failure path must run unchanged."""
+    from no_human.core.orchestrator import _NO_CHANGES_DETAIL
+
+    cfg = _config(tmp_path)
+    backend = _NoEditBackend()
+    orch = Orchestrator(store, cfg.data, backend, SlackNotifier(None))
+    t = Task.new("add feature", repo_path=str(bare_repo), kind="feature")
+    await store.create_task(t)
+
+    outcome = await orch.run_task(t)
+
+    assert outcome.status is TaskStatus.ESCALATED, outcome.detail
+    attempts = await store.list_attempts(t.id)
+    assert len(attempts) == 2
+    for a in attempts:
+        assert a["failure_reason"] == _NO_CHANGES_DETAIL
+
+
+async def test_stale_send_back_feedback_does_not_excuse_a_zero_diff(
+    bare_repo, tmp_path, store
+):
+    """`send_back_feedback` is append-only and never cleared. A STALE entry —
+    older than the prior attempt it would need to postdate — must not excuse
+    a later, unrelated zero-diff round: `_send_back_resume_round` must read
+    False and the ordinary failure path must run."""
+    from no_human.core.orchestrator import _NO_CHANGES_DETAIL
+
+    cfg = _config(tmp_path)
+    backend = _NoEditBackend()
+    orch = Orchestrator(store, cfg.data, backend, SlackNotifier(None))
+    t = Task.new("add feature", repo_path=str(bare_repo), kind="feature")
+    ctx = t.context or {}
+    ctx["pr_watch"] = "https://github.com/o/r/pull/7"
+    # Older than the prior attempt's started_at seeded below — stale.
+    ctx["send_back_feedback"] = [
+        {"at": "2025-01-01T00:00:00Z", "message": "an old, already-handled note"}
+    ]
+    t.context = ctx
+    await store.create_task(t)
+
+    prior_id = await store.create_attempt(t.id, 1)
+    await store.update_attempt(
+        prior_id, status="succeeded", pr_url="https://github.com/o/r/pull/7",
+        started_at="2026-01-01T00:00:00Z",
+    )
+    await store.set_status(t, TaskStatus.IMPLEMENTING, validate=False)
+
+    outcome = await orch.run_task(t)
+
+    assert outcome.status is not TaskStatus.AWAITING_APPROVAL, outcome.detail
+    attempts = await store.list_attempts(t.id)
+    new_row = attempts[-1]
+    assert new_row["failure_reason"] == _NO_CHANGES_DETAIL
+    assert not new_row.get("mechanical_round")
+
+
 async def test_work_already_committed_on_the_branch_is_not_zero_diff(
     bare_repo, tmp_path, store
 ):
