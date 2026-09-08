@@ -117,7 +117,7 @@ export function updateMessage({ mode, latest, current, canAutoUpdate }) {
 export const UPDATE_ERROR_MESSAGES = {
   "no-metadata": "Release update information is unavailable for this platform right now.",
   offline: "Check your internet connection and try again.",
-  server: "Update server is temporarily unavailable.",
+  server: "The update check failed; try again later.",
 };
 
 /**

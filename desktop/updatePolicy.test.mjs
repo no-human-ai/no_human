@@ -159,12 +159,12 @@ test("Electron's own net:: errors are offline, not a server problem", () => {
   }
 });
 
-test("other failures fall back to the server-unavailable sentence", () => {
+test("other failures fall back to the try-again-later sentence", () => {
   for (const raw of [
     "HttpError: 503", "ETIMEDOUT", "EACCES", "", null, undefined, {},
   ]) {
     assert.doesNotThrow(() => updateErrorMessage(raw));
-    assert.match(updateErrorMessage(raw), /Update server is temporarily unavailable/,
+    assert.match(updateErrorMessage(raw), /The update check failed; try again later/,
       `expected the conservative fallback for ${JSON.stringify(raw)}`);
   }
 });
