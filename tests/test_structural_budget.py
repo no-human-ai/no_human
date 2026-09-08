@@ -118,9 +118,15 @@ FROZEN_FUNCTION_LINES = {
     # `landed = await self._land_no_changes_needed(...); if landed is not
     # None: return landed`. The delegation costs lines in the new helper
     # (see the file-total entry below) but nets `_run_attempt` itself
-    # smaller than even the pre-incident-fix baseline. Measured on this
-    # tree with the scanner below.
-    "core/orchestrator.py:Orchestrator._run_attempt": 2214,
+    # smaller than even the pre-incident-fix baseline.
+    # 2214 -> 2164 (-50): round-3 review of the red-run failure-blocks fix —
+    # `_layered_tests_failed_outcome`'s call site collapsed the old
+    # `total_passed=`/`total_failed=`/`total_errors=`/`blocks=`/
+    # `blocks_dropped=` kwargs into passing the single already-built
+    # `layer_test_results` dict through, shrinking both the call site here
+    # and (see FROZEN_FUNCTION_CC below) the callee's branching. Measured on
+    # this tree with the scanner below.
+    "core/orchestrator.py:Orchestrator._run_attempt": 2164,
     # 760 -> 778 (+18): dispatch-time intake-eval hoisted path — the `elif
     # ctx.get("eval_result")` branch that acts on a grill/wizard-stored
     # verdict (idempotency marker, cost/residual-gap comments) added inside
@@ -281,9 +287,14 @@ FROZEN_FUNCTION_CC = {
     # 264 -> 258 (-6): the review fix delegates both guards, plus the
     # validated status-transition branching, into `_land_no_changes_needed`
     # — `_run_attempt`'s own zero-diff site is now just the delegating call
-    # plus its `if landed is not None:` check. Measured on this tree with
-    # the scanner below.
-    "core/orchestrator.py:Orchestrator._run_attempt": 258,
+    # plus its `if landed is not None:` check.
+    # 258 -> 235 (-23): round-3 review of the red-run failure-blocks fix —
+    # `_layered_tests_failed_outcome`'s call site collapsed the old
+    # `total_passed=`/`total_failed=`/`total_errors=`/`blocks=`/
+    # `blocks_dropped=` kwargs (and the branching that had built some of
+    # them) into passing the single already-built `layer_test_results` dict
+    # through. Measured on this tree with the scanner below.
+    "core/orchestrator.py:Orchestrator._run_attempt": 235,
     "core/orchestrator.py:Orchestrator._drive": 115,
     "agent/guard.py:_approve_denial": 81,
     # 73 -> 74 (+1): same cause as the LINES entry above — e922e9b4's landing
@@ -779,9 +790,13 @@ FROZEN_FILE_LINES = {
     # calls carry `failure_blocks` too — those calls REPLACE the
     # `test_results` column rather than merge it, so without this the
     # blocks the plain branch had just written were dropped the moment a
-    # red run got attributed and billed. Measured on this tree by the
-    # scanner's own metric.
-    "core/orchestrator.py": 22703,
+    # red run got attributed and billed.
+    # 22703 -> 22701 (-2): round-3 review of the above — the layered call
+    # site's dict-passthrough refactor (`_layered_tests_failed_outcome` now
+    # takes one `test_results` dict instead of five separate counts/blocks
+    # kwargs) trimmed a couple more lines than the fix itself added.
+    # Measured on this tree by the scanner's own metric.
+    "core/orchestrator.py": 22701,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.

@@ -6480,9 +6480,9 @@ class Orchestrator:
             layer_results = [
                 lr.result for lr in plan_result.layer_results if lr.result is not None
             ]
-            text, blocks, artifact_path = ("", [], "")
+            text, blocks, blocks_dropped, artifact_path = ("", [], 0, "")
             if not plan_result.ok:
-                text, blocks, artifact_path = self._red_test_detail(
+                text, blocks, blocks_dropped, artifact_path = self._red_test_detail(
                     task, layer_results, attempt_n=attempt_seq)
             self.emit("tests", plan_result.summary + (f"\n{text}" if text else ""),
                        ok=plan_result.ok, failing_tests=failing_tests,
@@ -6498,16 +6498,19 @@ class Orchestrator:
                 (lr.result.errors if lr.result else 0) for lr in plan_result.layer_results
             )
             any_ran = any(lr.result and lr.result.ran for lr in plan_result.layer_results)
+            # Named so it is PASSED THROUGH to `_layered_tests_failed_outcome`
+            # below, not rebuilt there (round-3 review: a second copy drifted).
+            layer_test_results = {
+                "ran": any_ran, "ok": plan_result.ok,
+                "passed": total_passed, "failed": total_failed,
+                "errors": total_errors, "tamper_flag": False,
+                "layers": [lr.summary for lr in plan_result.layer_results],
+                "failing_tests": failing_tests,
+                "failure_blocks": blocks,
+                "failure_blocks_dropped": blocks_dropped,
+            }
             await self.store.update_attempt(
-                attempt_id,
-                test_results={
-                    "ran": any_ran, "ok": plan_result.ok,
-                    "passed": total_passed, "failed": total_failed,
-                    "errors": total_errors, "tamper_flag": False,
-                    "layers": [lr.summary for lr in plan_result.layer_results],
-                    "failing_tests": failing_tests,
-                    "failure_blocks": blocks,
-                },
+                attempt_id, test_results=layer_test_results,
             )
             if any_ran and not plan_result.ok:
                 # Extracted to `_layered_tests_failed_outcome` (structural
@@ -6517,12 +6520,10 @@ class Orchestrator:
                 # terminal, either via the environment classifier or the
                 # billing path at the bottom of that method.
                 return await self._layered_tests_failed_outcome(
-                    task, plan_result=plan_result,
-                    total_passed=total_passed, total_failed=total_failed,
-                    total_errors=total_errors, failing_tests=failing_tests,
+                    task, plan_result=plan_result, test_results=layer_test_results,
+                    failing_tests=failing_tests,
                     attempt_id=attempt_id, repo=repo, branch=branch, base=base,
                     test_cwd=test_cwd, commit=commit, result=result, stuck=stuck,
-                    blocks=blocks,
                 )
         else:
             # Offload the (blocking) test subprocess to a thread so concurrent tasks'
@@ -6536,9 +6537,9 @@ class Orchestrator:
             # (2026-09-08) showed the [-1200:] tail itself was USELESS on a
             # large suite: the failing blocks sit thousands of bytes before
             # it. See `_red_test_detail`.
-            text, blocks, artifact_path = ("", [], "")
+            text, blocks, blocks_dropped, artifact_path = ("", [], 0, "")
             if not test_result.ok:
-                text, blocks, artifact_path = self._red_test_detail(
+                text, blocks, blocks_dropped, artifact_path = self._red_test_detail(
                     task, [test_result], attempt_n=attempt_seq)
             failing_tests = getattr(test_result, "failing_tests", []) or []
             # A run that found no command says so in the event too: the board
@@ -6570,6 +6571,7 @@ class Orchestrator:
                 "errors": test_result.errors, "tamper_flag": False,
                 "failing_tests": failing_tests,
                 "failure_blocks": blocks,
+                "failure_blocks_dropped": blocks_dropped,
             }
             await self.store.update_attempt(
                 attempt_id,
@@ -6766,6 +6768,7 @@ class Orchestrator:
                             repo=repo, branch=branch, test_cmd=test_cmd,
                             test_cwd=test_cwd, commit=commit, result=result,
                             stuck=stuck, blocks=blocks,
+                            blocks_dropped=blocks_dropped,
                         )
                         if outcome is not None:
                             return outcome
@@ -12122,29 +12125,20 @@ class Orchestrator:
         return list(attributed)
 
     async def _layered_tests_failed_outcome(
-        self, task: Task, *, plan_result, total_passed: int, total_failed: int,
-        total_errors: int, failing_tests: list[str], attempt_id: str,
+        self, task: Task, *, plan_result, test_results: dict,
+        failing_tests: list[str], attempt_id: str,
         repo: GitRepo | None, branch: str | None, base: str | None,
         test_cwd: "Path | None", commit, result, stuck: StuckDetector,
-        blocks: list[str] | None = None,
     ) -> TaskOutcome:
         """The layered-test-plan branch of `_run_attempt`, once a BLOCKING
-        layer has failed. Extracted from `_run_attempt` (structural budget:
-        it is capped at a frozen line/CC count — see
-        `tests/test_structural_budget.py`) — NOT verbatim: this body also
-        carries the ~19 lines of ownership/environment-classification logic
-        (the `owned` computation below and the `_environment_test_failure`
-        call it feeds) that a pure code-move would not have added. Always
-        returns a TaskOutcome — entering this branch is itself already
-        terminal, either via the environment classifier below or the
-        billing path at the end.
+        layer has failed (structural budget: extracted to keep `_run_attempt`
+        under its frozen line/CC cap — `tests/test_structural_budget.py`).
+        Always returns a TaskOutcome.
 
-        `blocks`: the bounded failure blocks the caller already computed via
-        `_red_test_detail` for this same run. The `_environment_test_failure`
-        call below does its own `update_attempt(..., test_results=...)`,
-        which REPLACES the whole column — so this dict must carry
-        `failure_blocks` too, or it silently drops the ones the caller's
-        earlier aggregate write (`_run_attempt` ~6501) had just persisted.
+        `test_results` is the SAME dict the caller already built and
+        persisted (`_run_attempt`'s `layer_test_results`) — passed through,
+        not rebuilt, since a second independently-built copy here previously
+        drifted from it (round-3 review MAJOR-2: missing `failure_blocks`).
         """
         from ..testing.test_layers import Gating as _Gating
 
@@ -12176,14 +12170,7 @@ class Orchestrator:
         env_outcome = await self._environment_test_failure(
             task, result=fail_result, attempt_id=attempt_id,
             repo=repo, branch=branch,
-            test_results={
-                "ran": True, "ok": plan_result.ok,
-                "passed": total_passed, "failed": total_failed,
-                "errors": total_errors, "tamper_flag": False,
-                "layers": [lr.summary for lr in plan_result.layer_results],
-                "failing_tests": failing_tests,
-                "failure_blocks": blocks or [],
-            },
+            test_results=test_results,
             owned_failing=owned,
         )
         if env_outcome is not None:
@@ -12226,7 +12213,7 @@ class Orchestrator:
         owned: list[str], failing_tests: list[str], attempt_id: str,
         repo: GitRepo | None, branch: str | None, test_cmd: str | None,
         test_cwd: "Path | None", commit, result, stuck: StuckDetector,
-        blocks: list[str] | None = None,
+        blocks: list[str] | None = None, blocks_dropped: int = 0,
     ) -> TaskOutcome | None:
         """The single-run test-failure attribution + billing branch of
         `_run_attempt`, reached once a red run is not excused as pre-existing
@@ -12234,13 +12221,15 @@ class Orchestrator:
         Extracted verbatim (structural budget: see
         `tests/test_structural_budget.py`).
 
-        `blocks`: the bounded failure blocks `_red_test_detail` already
-        computed for this `test_result` at the call site. Every
+        `blocks` / `blocks_dropped`: the BOUNDED failure blocks (and their
+        true drop count) `_red_test_detail` already computed for this
+        `test_result` at the call site. Every
         `update_attempt(..., test_results=...)` call below REPLACES the
         whole column (see the comment at the pre-existing-excuse write
         above) rather than merging it, so each one must carry
-        `failure_blocks` itself or it silently drops the blocks the plain
-        branch just wrote — the incident this file exists to prevent.
+        `failure_blocks`/`failure_blocks_dropped` itself or it silently
+        drops the blocks the plain branch just wrote — the incident this
+        file exists to prevent.
 
         Returns None when the flaky-excuse path fires — nothing to bill, and
         the caller must fall through exactly as it always did; a real billing
@@ -12298,6 +12287,7 @@ class Orchestrator:
                     "failing_tests": failing_tests,
                     "flaky_excused": flaky,
                     "failure_blocks": blocks,
+                    "failure_blocks_dropped": blocks_dropped,
                 },
             )
             return None
@@ -12362,6 +12352,7 @@ class Orchestrator:
                     "failing_tests": failing_tests,
                     "owned_failures": owned_attr,
                     "failure_blocks": blocks,
+                    "failure_blocks_dropped": blocks_dropped,
                 },
             )
         else:
@@ -22200,28 +22191,40 @@ SIX of them read a checkpoint and TWO do not — but do
 
     def _red_test_detail(
         self, task: Task, results: list, *, attempt_n: int | str | None,
-    ) -> tuple[str, list[str], str]:
+    ) -> tuple[str, list[str], int, str]:
         """The ONE seam every red-run call site (the layered branch, the
         plain `_run_tests_once` branch, and the base-tree pre-existing
-        recheck) uses to turn *results* into ``(text, blocks, artifact_path)``:
+        recheck) uses to turn *results* into
+        ``(text, kept_blocks, dropped_count, artifact_path)``:
 
-        - ``blocks``: ``runner.failure_report_blocks`` over each result,
-          concatenated in order (node TAP `not ok` blocks / pytest FAILED
-          sections — never re-parsed here, see that function).
-        - ``text``: ``runner.render_failure_blocks(blocks)`` — bounded, with
-          an overflow line when blocks were dropped — naming the full-log
-          artifact this call also writes. When ``blocks`` is empty (an
-          invocation error with no parsed failure — the base-tree-gate
-          node-missing-deps shape), falls back to the last result's
-          ``output[-1200:]`` tail, BYTE-IDENTICAL to the behaviour this
-          replaces, so a run with nothing else to say keeps saying it.
+        - ``kept_blocks`` / ``dropped_count``: ``runner.bound_failure_blocks``
+          over the FULL concatenation of ``runner.failure_report_blocks`` per
+          result (node TAP `not ok` blocks / pytest FAILED sections — never
+          re-parsed here, see that function) — the SAME bounded walk that
+          produces ``text``, so the persisted `test_results["failure_blocks"]`
+          a caller stores from ``kept_blocks`` always matches what the event
+          text (and the evidence ledger, which renders that same column)
+          actually shows. Persisting the full unbounded concatenation instead
+          (round-3 review MAJOR) let a 435-failure run write 672KB into one
+          `attempts.test_results` column while the text said "... 428 more".
+        - ``text``: joins ``kept_blocks`` with an explicit
+          ``... N more failing blocks`` line when ``dropped_count`` is
+          nonzero, naming the full-log artifact this call also writes. When
+          no blocks were parsed at all (an invocation error with no `not ok`
+          line — the base-tree-gate node-missing-deps shape), falls back to
+          the last result's ``output[-1200:]`` tail, BYTE-IDENTICAL to the
+          behaviour this replaces, so a run with nothing else to say keeps
+          saying it.
         - ``artifact_path``: the absolute path `_write_test_output_artifact`
           wrote (or "" — advisory, never blocks the caller).
         """
         blocks: list[str] = []
         for result in results:
             blocks.extend(runner.failure_report_blocks(result))
-        text = runner.render_failure_blocks(blocks)
+        kept_blocks, dropped = runner.bound_failure_blocks(blocks)
+        text = "\n\n".join(kept_blocks)
+        if dropped:
+            text += f"\n\n... {dropped} more failing blocks"
         if not text and results:
             text = (getattr(results[-1], "output", "") or "")[-1200:]
         artifact_path = self._write_test_output_artifact(
@@ -22229,7 +22232,7 @@ SIX of them read a checkpoint and TWO do not — but do
         if artifact_path:
             pointer = f"full test output: {self._display_path(artifact_path)}"
             text = f"{text}\n{pointer}" if text else pointer
-        return text, blocks, artifact_path
+        return text, kept_blocks, dropped, artifact_path
 
     @staticmethod
     def _verification_section(

@@ -27,7 +27,9 @@ import re
 from pathlib import Path
 from unittest.mock import patch
 
+from no_human.core import evidence_ledger
 from no_human.core.orchestrator import Orchestrator
+from no_human.core.pr_evidence import PrEvidence
 from no_human.core.task import Task, TaskStatus
 from no_human.notify.slack import SlackNotifier
 from no_human.testing import runner
@@ -603,3 +605,173 @@ async def test_a_green_run_emits_no_blocks_and_writes_no_file(bare_repo, tmp_pat
 
     log_path = Path.home() / ".no_human" / "artifacts" / task.id / "tests-attempt-1.log"
     assert not log_path.exists()
+
+
+# --------------------------------------------------------------------------- #
+# Round-3 review MAJOR: the PERSISTED `failure_blocks` list must be bounded   #
+# by the SAME walk as the rendered event text — not the full, unbounded      #
+# concatenation `_red_test_detail` used to return. A 435-failure TAP stream  #
+# persisted 435 blocks / 672KB into one `attempts.test_results` column (and, #
+# verbatim, into the evidence ledger's `tests.md`) while the event said      #
+# "... 428 more failing blocks". Fixed via `runner.bound_failure_blocks`,    #
+# the one walk both `render_failure_blocks` (text) and `_red_test_detail`    #
+# (persisted list) now share.                                               #
+# --------------------------------------------------------------------------- #
+
+
+def _not_ok_long(n: int, i: int) -> str:
+    diag_lines = "\n".join(
+        f"  diagnostic context line {i}-{j:03d} padded so this block "
+        "comfortably exceeds the per-block character cap on its own"
+        for j in range(45)
+    )
+    return (
+        f"not ok {n} - uniqueLongFailure{i} certain to exceed the per-block "
+        "cap after this many diagnostic lines\n"
+        "  ---\n"
+        f"  AssertionError: expected uniqueLongFailure{i} to pass but it did "
+        "not\n"
+        f"{diag_lines}\n"
+        "  ---\n"
+    )
+
+
+def _many_long_failing_tap(num_failures: int = 20, total: int = 400) -> str:
+    step = max(1, total // (num_failures + 1))
+    fail_positions = {(i * step): i for i in range(1, num_failures + 1)}
+    lines = []
+    for n in range(1, total + 1):
+        if n in fail_positions:
+            lines.append(_not_ok_long(n, fail_positions[n]))
+        else:
+            lines.append(_ok_block(n))
+    lines.append(f"1..{total}\n")
+    lines.append(f"# tests {total}\n")
+    lines.append(f"# pass {total - num_failures}\n")
+    lines.append(f"# fail {num_failures}\n")
+    return "".join(lines)
+
+
+async def test_persisted_failure_blocks_are_bounded_not_the_full_unbounded_list(
+    bare_repo, tmp_path, store,
+):
+    """Round-3 review MAJOR (the main fix). Uses `full_output` re-parsing —
+    not a hand-supplied `failure_blocks` — with 20 long `not ok` blocks
+    (comfortably more than the 9 the send-back asked for), each padded past
+    `FAILURE_BLOCK_MAX_CHARS` so only some of them fit under the whole-report
+    bound and a real drop happens: this exercises the exact re-parse path
+    (`runner.failure_report_blocks` off `full_output`) the incident hit, not
+    a synthetic `failure_blocks` list.
+    """
+    tap = _many_long_failing_tap(num_failures=20)
+    tr = runner.TestRunResult(
+        ran=True, ok=False, passed=380, failed=20, errors=0,
+        command="node --test",
+        output=tap[-8000:],
+        full_output=tap,
+        failure_blocks=runner._tap_failure_blocks(tap),
+    )
+
+    # Ground truth: the SAME bounded walk the fix ties text and persistence
+    # to, computed independently here so the assertions below are pinned to
+    # a real, measured drop rather than an assumption about the fixture.
+    all_blocks = runner.failure_report_blocks(tr)
+    assert len(all_blocks) >= 9, len(all_blocks)
+    expected_kept, expected_dropped = runner.bound_failure_blocks(all_blocks)
+    assert expected_dropped > 0, "fixture must actually overflow the bound"
+    assert len(expected_kept) < len(all_blocks)
+
+    outcome, attempts, events, task = await _run_attempt_with_result(
+        store, tmp_path, bare_repo, tr)
+
+    test_events = [e for e in events if e["kind"] == "tests"]
+    assert test_events, events
+    text = test_events[0]["text"]
+    assert f"... {expected_dropped} more failing blocks" in text, text
+
+    persisted = _persisted(attempts[-1])
+    assert persisted["failure_blocks"] == expected_kept, (
+        len(persisted["failure_blocks"]), len(expected_kept))
+    assert persisted["failure_blocks_dropped"] == expected_dropped, persisted
+
+    # The evidence ledger's tests.md is a raw JSON dump of this SAME
+    # `test_results` dict (`evidence_ledger.render_files`, whose `evidence.
+    # tests` is exactly `PrEvidence.tests`) — it must inherit the bound, not
+    # the full unbounded list this test proves was fixed above.
+    evidence = PrEvidence(tests=persisted)
+    files = evidence_ledger.render_files(
+        evidence, task_id=task.id, head_sha="deadbeef",
+        verification_md="", review_md="", assumptions_md="",
+    )
+    tests_md = files["tests.md"]
+    # Generous slack over the raw bound for JSON escaping/indentation and
+    # the other (small) fields in the dict — nowhere near the ~30KB+ the
+    # unbounded 20-block list would have produced.
+    assert len(tests_md) < runner.FAILURE_REPORT_MAX_CHARS + 4000, len(tests_md)
+
+
+# --------------------------------------------------------------------------- #
+# Round-3 send-back "also": the LAYERED branch's environment-classifier exit  #
+# (`_layered_tests_failed_outcome`'s `env_outcome` call) used to build its    #
+# OWN `test_results` dict instead of reusing the caller's already-built and   #
+# already-persisted one (`_run_attempt`'s `layer_test_results`, ~6501) — the  #
+# layered counterpart of `test_the_environment_classifier_exit_keeps_its_     #
+# failure_blocks` above, which proved the same class of bug in the PLAIN     #
+# branch. Drives the layered path the same way `tests/test_missing_prereq_   #
+# env_classification.py::test_layered_missing_prerequisite_never_retries`    #
+# does: stub `_resolve_test_plan` + `plan_runner.run_test_plan`.             #
+# --------------------------------------------------------------------------- #
+
+
+async def test_the_layered_environment_classifier_exit_keeps_its_failure_blocks(
+    bare_repo, tmp_path, store,
+):
+    from no_human.testing.plan_runner import LayerResult, PlanResult
+    import no_human.testing.plan_runner as plan_runner_mod
+    from no_human.testing.test_layers import Gating, TestLayer, TestPlan
+
+    tap = _environment_tap()
+    plan = TestPlan(layers=[
+        TestLayer(name="desktop", command="node --test", gating=Gating.BLOCKING),
+    ])
+    tr = runner.TestRunResult(
+        ran=True, ok=False, passed=29, failed=1, errors=0,
+        command="node --test", output=tap[-8000:],
+        full_output=tap,
+        failure_blocks=runner._tap_failure_blocks(tap),
+    )
+    lr = LayerResult(layer_name="desktop", gating=Gating.BLOCKING, result=tr)
+
+    def fake_run_test_plan(test_plan, task_repo, **kwargs):
+        return PlanResult(layer_results=[lr])
+
+    async def fake_resolve_test_plan(task):
+        return plan
+
+    cfg = _config(tmp_path)
+    events = []
+    orch = Orchestrator(store, cfg.data, FakeBackend(_mutate), SlackNotifier(None),
+                        event_sink=events.append)
+    task = Task.new("desktop npm test", repo_path=str(bare_repo))
+    await store.create_task(task)
+    await store.set_status(task, TaskStatus.CONTEXT)
+    await store.set_status(task, TaskStatus.PLANNING)
+    repo = GitRepo(bare_repo)
+
+    with patch.object(orch, "_resolve_test_plan", fake_resolve_test_plan), \
+         patch.object(plan_runner_mod, "run_test_plan", fake_run_test_plan):
+        outcome = await orch._run_attempt(task, repo, 1, "main")
+
+    assert outcome.detail.startswith("tests could not run:"), outcome.detail
+    attempts = await store.list_attempts(task.id)
+    assert attempts, "no attempt row persisted"
+    row = attempts[-1]
+    persisted = _persisted(row)
+    assert persisted.get("environment_error") is True, persisted
+    blocks = persisted.get("failure_blocks")
+    assert blocks, persisted
+    assert any("Cannot find module 'left-pad'" in b for b in blocks), blocks
+    # The layered aggregate write (`_run_attempt` ~6501) computed no drop for
+    # this small fixture — carried through unchanged, not dropped, by the
+    # pass-through refactor.
+    assert persisted.get("failure_blocks_dropped") == 0, persisted

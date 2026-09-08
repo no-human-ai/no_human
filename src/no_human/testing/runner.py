@@ -634,13 +634,20 @@ def failure_report_blocks(result: "TestRunResult") -> list[str]:
     return blocks
 
 
-def render_failure_blocks(blocks: list[str]) -> str:
-    """Join *blocks* for the `tests` event / artefact text: bounded to
-    `FAILURE_REPORT_MAX_CHARS`, with an explicit `... N more failing blocks`
-    line when the bound drops any. "" for an empty list, same contract as
-    `render_traceback_excerpts` so callers can append conditionally."""
-    if not blocks:
-        return ""
+def bound_failure_blocks(blocks: list[str]) -> tuple[list[str], int]:
+    """The ONE walk of *blocks* under `FAILURE_REPORT_MAX_CHARS` that both
+    `render_failure_blocks` (the rendered `tests` event text) and the
+    orchestrator's PERSISTED `test_results["failure_blocks"]` must agree on.
+
+    Round-3 review MAJOR: before this helper existed, the orchestrator
+    persisted the FULL unbounded `blocks` list (all of `failure_report_
+    blocks` concatenated across results) while only the rendered text was
+    bounded — a 435-failure TAP stream persisted 435 blocks / 672KB into a
+    single `attempts.test_results` column (and, verbatim, into the evidence
+    ledger's `tests.md`) while the event said "... 428 more failing
+    blocks". Returns `(kept, dropped_count)` so a caller can persist exactly
+    the blocks the text kept and record the true drop count alongside them.
+    """
     parts: list[str] = []
     total = 0
     for block in blocks:
@@ -649,8 +656,18 @@ def render_failure_blocks(blocks: list[str]) -> str:
             break
         parts.append(block)
         total += added
+    return parts, len(blocks) - len(parts)
+
+
+def render_failure_blocks(blocks: list[str]) -> str:
+    """Join *blocks* for the `tests` event / artefact text: bounded to
+    `FAILURE_REPORT_MAX_CHARS`, with an explicit `... N more failing blocks`
+    line when the bound drops any. "" for an empty list, same contract as
+    `render_traceback_excerpts` so callers can append conditionally."""
+    if not blocks:
+        return ""
+    parts, remaining = bound_failure_blocks(blocks)
     text = "\n\n".join(parts)
-    remaining = len(blocks) - len(parts)
     if remaining > 0:
         text += f"\n\n... {remaining} more failing blocks"
     return text
