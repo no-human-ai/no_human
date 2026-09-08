@@ -5,8 +5,8 @@ _Harness-captured record for task `80ca2cfd`, commit `6c93173b625a0f812dd3082257
 ```json
 [
   {
-    "comment": "No test functions were added or modified \u2014 the diff only updates line-number strings in the CITATION_TABLE constant, so the every-test-has-an-assertion requirement is vacuously satisfied, and every existing test in the file (e.g. test_config_table_documents_the_required_keys, test_blocker_category_count_matches_the_enum) already contains assert statements.",
-    "evidence": "The only change edits string values inside the module-level CITATION_TABLE tuple ('desktop/main.mjs:240'->':252' and ':1098'->':1114'); no test function body is added or modified.",
+    "comment": "No test function was added or modified; the change only touches module-level data, and every test function in the file already contains assert statements, so the requirement holds.",
+    "evidence": "The diff only edits string literals inside the module-level CITATION_TABLE tuple (e.g. \"desktop/main.mjs:240\" -> \"desktop/main.mjs:252\"), not the body of any test function.",
     "file": "tests/test_readme_claims.py",
     "files_checked": [
       "tests/test_readme_claims.py"
@@ -15,13 +15,13 @@ _Harness-captured record for task `80ca2cfd`, commit `6c93173b625a0f812dd3082257
     "no_verdict": false,
     "passed": true,
     "severity": "medium",
-    "tokens_used": 753,
+    "tokens_used": 369,
     "unavailable": false,
     "verifier_id": "tests-assert-something"
   },
   {
-    "comment": "The diff introduces no new hex/rgb/hsl color literals \u2014 the added CSS is purely layout, and the JSX/updateNotice changes reuse existing theme-aware classes that already resolve in both themes.",
-    "evidence": "New .nh-update-flow rule contains only layout props (display, gap: var(--sp-3), margin: 12px 16px 0) and no color literals; App.jsx/updateNotice.js reuse existing classes (nh-alarm, update-notice, update-${tone}, btn, btn-approve)",
+    "comment": "The added CSS and JSX introduce no new color literals; color comes entirely from reused existing classes (nh-alarm, update-notice, update-warn/info) built on theme variables defined for both themes.",
+    "evidence": "New .nh-update-flow rule uses only var(--sp-3) and layout props; className is `nh-alarm update-notice update-${tone} nh-update-flow` reusing existing tone classes \u2014 no hex/rgb/hsl literal added.",
     "file": "web/src/styles.css",
     "files_checked": [
       "web/src/App.jsx",
@@ -34,7 +34,7 @@ _Harness-captured record for task `80ca2cfd`, commit `6c93173b625a0f812dd3082257
     "no_verdict": false,
     "passed": true,
     "severity": "medium",
-    "tokens_used": 658,
+    "tokens_used": 538,
     "unavailable": false,
     "verifier_id": "board-uses-theme-tokens"
   }

@@ -3,42 +3,114 @@
 _Harness-captured record for task `80ca2cfd`, commit `6c93173b625a0f812dd308225708d60c36800ca6` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ## How I verified this
-7 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
+11 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
 
 ### test
-- `cd /Users/eyalgolan/.<redacted>/worktrees/80ca2cfd3f15459dba88efb9dc5176a5.90097.7ed24078/desktop npm test 2>&1 | tail -40`
+- `cd desktop && npm test 2>&1 | tail -60`
 
 ```
 ...
-# Subtest: autoUpdater's own 'error' event emits a short sentence, keeping the dump in rawError
-ok 419 - autoUpdater's own 'error' event emits a short sentence, keeping the dump in rawError
+# Subtest: being up to date is silent automatically and spoken when asked
+ok 407 - being up to date is silent automatically and spoken when asked
   ---
-  duration_ms: 0.06725
+  duration_ms: 0.479791
   ...
-# Subtest: download()'s catch emits a short sentence, never the raw connection error
-ok 420 - download()'s catch emits a short sentence, never the raw connection error
+# Subtest: the once-a-day throttle is recorded even when nothing is new
+ok 408 - the once-a-day throttle is recorded even when nothing is new
   ---
-  duration_ms: 0.118667
+  duration_ms: 0.145166
   ...
-# Subtest: an unpackaged dev run is skipped rather than reported as broken
-ok 421 - an unpackaged dev run is skipped rather than reported as broken
+# Subtest: a network failure is reported, never thrown, and never blocks
+ok 409 - a network failure is reported, never thrown, and never blocks
   ---
-  duration_ms: 0.079708
+  duration_ms: 0.435042
   ...
-# Subtest: install refuses until the bytes are actually on disk
+# Subtest: a 404 latest.yml failure emits a short sentence and keeps the dump in rawError
+ok 410 - a 404 latest.yml failure emits a short
+[... 825 of 1,964 characters omitted from the middle ...]
+uration_ms: 0.0675
+  ...
+# Subtest: download progress and completion reach the listener
+ok 415 - download progress and completion reach the listener
+  ---
+  duration_ms: 0.111542
+  ...
+# Subtest: a listener that throws cannot take the updater down
+ok 416 - a listener that throws cannot take the updater down
+  ---
+  duration_ms: 0.121959
+  ...
+1..416
+# tests 416
+# suites 0
+# pass 412
+# fail 3
+# cancelled 0
+# skipped 1
+# todo 0
+# duration_ms 94246.095709
+```  
+  _excerpt - 1,964 characters of output in total_
 
-[... 69 of 1,208 characters omitted from the middle ...]
- duration_ms: 0.066334
+- `cd desktop && npm test 2>&1 | grep -n "^not ok"`
+
+```
+(eval):cd:1: no such file or directory: desktop
+[the harness reported: 'No matches found']
+```
+
+- `npm test 2>&1 | grep -n "^not ok"`
+
+```
+598:not ok 17 - /Users/eyalgolan/.<redacted>/worktrees/80ca2cfd3f15459dba88efb9dc5176a5.90097.324a0610/desktop/mainUpdateDeferSuccess.test.mjs
+1045:not ok 191 - the config exports the config and nothing else, or electron-builder refuses to build
+2029:not ok 36 - /Users/eyalgolan/.<redacted>/worktrees/80ca2cfd3f15459dba88efb9dc5176a5.90097.324a0610/desktop/uiPages.test.mjs
+```
+
+- `npm test 2>&1 > /tmp/desktop_test_out.txt; sed -n '560,650p' /tmp/desktop_test_out.txt`
+
+```
+ok 104 - choosing LIGHT on the board persists it and re-colours the live chrome
+  ---
+  duration_ms: 0.223417
   ...
+# Subtest: the NEXT launch pre-paints the stored choice, so light users get no flash
+ok 105 - the NEXT launch pre-paints the stored choice, so light users get no flash
+  ---
+  duration_ms: 302.778791
+  ...
+# Subtest: the board actually CALLS the bridge — the chain has three links
+ok 106 - the board actually CALLS the bridge — the chain has three links
+  ---
+  duration_ms: 0.478792
+  ...
+# Subtest: switching back to dark persists dark — the default is not a one-way door
+ok 107 - switching back to dark persists dark — the default is not a one-way door
+  ---
+  dur
+[... 3,493 of 4,632 characters omitted from the middle ...]
+n/.<redacted>/worktrees/80ca2cfd3f15459dba88efb9dc5176a5.90097.324a0610/desktop/main.mjs:1108:5
+# electron-updater unavailable: Cannot find package 'electron-updater' imported from /Users/eyalgolan/.<redacted>/worktrees/80ca2cfd3f15459dba88efb9dc5176a5.90097.324a0610/desktop/main.mjs
+# Subtest: every update channel the preload calls is registered in main
+ok 115 - every update channel the preload calls is registered in main
+  ---
+  duration_ms: 0.281375
+```  
+  _excerpt - 4,606 characters of output in total_
+
+- `cd /Users/eyalgolan/.<redacted>/worktrees/80ca2cfd3f15459dba88efb9dc5176a5.90097.324a0610/desktop npm test 2>&1 | tail -20`
+
+```
+...
 # Subtest: download progress and completion reach the listener
 ok 423 - download progress and completion reach the listener
   ---
-  duration_ms: 0.108667
+  duration_ms: 0.116417
   ...
 # Subtest: a listener that throws cannot take the updater down
 ok 424 - a listener that throws cannot take the updater down
   ---
-  duration_ms: 0.124
+  duration_ms: 0.129208
   ...
 1..424
 # tests 424
@@ -48,153 +120,87 @@ ok 424 - a listener that throws cannot take the updater down
 # cancelled 0
 # skipped 1
 # todo 0
-# duration_ms 94233.60175
-```  
-  _excerpt - 1,208 characters of output in total_
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/80ca2cfd3f15459dba88efb9dc5176a5.90097.7ed24078/web npm test 2>&1 | tail -50`
-
-```
-...
-# Subtest: socket.onerror triggers a reconnect
-ok 1601 - socket.onerror triggers a reconnect
-  ---
-  duration_ms: 0.072875
-  ...
-# Subtest: a paired error+close counts as ONE disconnect, not two
-ok 1602 - a paired error+close counts as ONE disconnect, not two
-  ---
-  duration_ms: 0.05975
-  ...
-# Subtest: the reconnector never stops retrying
-ok 1603 - the reconnector never stops retrying
-  ---
-  duration_ms: 0.142667
-  ...
-# Subtest: on open, the init snapshot is re-fetched and delivered
-ok 1604 - on open, the init snapshot is re-fetched and delivered
-  ---
-  duration_ms: 0.126208
-  ...
-# Subtest: onSnapshot delivers the fresh snapshot verbatim — the stale array is not 
-[... 410 of 1,549 characters omitted from the middle ...]
-cancels it and restarts backoff at 1s
-ok 1607 - a close during an in-flight snapshot cancels it and restarts backoff at 1s
-  ---
-  duration_ms: 0.157625
-  ...
-# Subtest: stop() is idempotent and leaves no pending timer or open socket
-ok 1608 - stop() is idempotent and leaves no pending timer or open socket
-  ---
-  duration_ms: 0.165709
-  ...
-1..1608
-# tests 1608
-# suites 0
-# pass 1606
-# fail 2
-# cancelled 0
-# skipped 0
-# todo 0
-# duration_ms 450.937125
-```  
-  _excerpt - 1,549 characters of output in total_
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/80ca2cfd3f15459dba88efb9dc5176a5.90097.7ed24078/web npm test 2>&1 | grep -B2 -A 40 "not ok"`
-
-```
-...
-# Subtest: the built bundle carries no landed-override strings
-not ok 343 - the built bundle carries no landed-override strings
-  ---
-  duration_ms: 0.40875
-  location: '/Users/eyalgolan/.<redacted>/worktrees/80ca2cfd3f15459dba88efb9dc5176a5.90097.7ed24078/web/src/cancelFlow.test.mjs:62:1'
-  failureType: 'testCodeFailure'
-  error: 'web/dist/assets is missing — run `npm run build` in web/ first'
-  code: 'ERR_ASSERTION'
-  name: 'AssertionError'
-  operator: 'fail'
-  stack: |-
-    TestContext.<anonymous> (file:///Users/eyalgolan/.<redacted>/worktrees/80ca2cfd3f15459dba88efb9dc5176a5.90097.7ed24078/web/src/cancelFlow.test.mjs:64:12)
-    Test.runInAsyncScope (node:async_hook
-[... 2,606 of 3,745 characters omitted from the middle ...]
-l fall back to the kind map
-ok 556 - events with no source still fall back to the kind map
-  ---
-  duration_ms: 0.084209
-  ...
-# Subtest: the Planner node has a label (an unlabelled node renders blank)
-ok 557 - the Planner node has a label (an unlabelled node renders blank)
-  ---
-  duration_ms: 0.061958
-  ...
-# Subtest: eventLens extracts the lens, and only from a lensed planner
-ok 558 - eventLens extracts the lens, and only from a lensed planner
-  ---
-```  
-  _excerpt - 3,737 characters of output in total_
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/80ca2cfd3f15459dba88efb9dc5176a5.90097.7ed24078/web npm test 2>&1 | tail -20`
-
-```
-...
-# Subtest: a close during an in-flight snapshot cancels it and restarts backoff at 1s
-ok 1607 - a close during an in-flight snapshot cancels it and restarts backoff at 1s
-  ---
-  duration_ms: 0.15325
-  ...
-# Subtest: stop() is idempotent and leaves no pending timer or open socket
-ok 1608 - stop() is idempotent and leaves no pending timer or open socket
-  ---
-  duration_ms: 0.165625
-  ...
-1..1608
-# tests 1608
-# suites 0
-# pass 1608
-# fail 0
-# cancelled 0
-# skipped 0
-# todo 0
-# duration_ms 446.44
+# duration_ms 94208.469291
 ```
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/80ca2cfd3f15459dba88efb9dc5176a5.90097.7ed24078 which pytest uv python3 2>&1 uv run pytest tests/test_readme_claims.py -q 2>&1 | tail -40`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/80ca2cfd3f15459dba88efb9dc5176a5.90097.324a0610 uv run pytest tests/test_readme_claims.py -q 2>&1 | tail -30`
 
 ```
-/Users/eyalgolan/git/<redacted>-public/.venv/bin/pytest
-/Users/eyalgolan/.local/bin/uv
-/Users/eyalgolan/git/<redacted>-public/.venv/bin/python3
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
 Using CPython 3.12.13
 Creating virtual environment at: .venv
-   Building no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/80ca2cfd3f15459dba88efb9dc5176a5.90097.7ed24078
-      Built no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/80ca2cfd3f15459dba88efb9dc5176a5.90097.7ed24078
-Installed 68 packages in 96ms
+   Building no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/80ca2cfd3f15459dba88efb9dc5176a5.90097.324a0610
+      Built no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/80ca2cfd3f15459dba88efb9dc5176a5.90097.324a0610
+Installed 68 packages in 121ms
 ............................s.s.s.s.s.s.s.s.s.s......................... [ 49%]
 .....................s..........................s....................... [ 99%]
 .                                                                        [100%]
-133 passed, 12 skipped in 4.13s
+133 passed, 12 skipped in 5.19s
+```
+
+- `cd /Users/eyalgolan/.<redacted>/worktrees/80ca2cfd3f15459dba88efb9dc5176a5.90097.324a0610 && uv run pytest tests/test_readme_claims.py -q 2>&1 | tail -10 && echo "---manifest---" && uv run python scripts/check_release_manifest.py --strict 2>&1 | tail -5 && echo "---status---" && git status --short`
+
+```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+............................s.s.s.s.s.s.s.s.s.s......................... [ 49%]
+.....................s..........................s....................... [ 99%]
+.                                                                        [100%]
+133 passed, 12 skipped in 3.69s
+---manifest---
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+OK: 1535 file(s) match RELEASE_MANIFEST.txt
+---status---
 ```
 
 
 ### lint
-- `cd /Users/eyalgolan/.<redacted>/worktrees/80ca2cfd3f15459dba88efb9dc5176a5.90097.7ed24078/web npx eslint src/App.jsx src/Settings.jsx src/updateNotice.js src/updateNotice.test.mjs src/connectionBanner.js 2>&1 | tail -40`
-  _nothing was captured on stdout or stderr for this command._
-
-### build
-- `cd /Users/eyalgolan/.<redacted>/worktrees/80ca2cfd3f15459dba88efb9dc5176a5.90097.7ed24078/web npm run build 2>&1 | tail -30`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/80ca2cfd3f15459dba88efb9dc5176a5.90097.324a0610/web npx eslint src/App.jsx src/updateNotice.js src/updateNotice.test.mjs 2>&1 | cat -A | head -20 echo "EXIT CHECK DONE"`
 
 ```
+cat: illegal option -- A
+usage: cat [-belnstuv] [file ...]
+EXIT CHECK DONE
+```
+
+- `cd /Users/eyalgolan/.<redacted>/worktrees/80ca2cfd3f15459dba88efb9dc5176a5.90097.324a0610/web npx eslint src/App.jsx src/updateNotice.js src/updateNotice.test.mjs echo "EXIT: $?"`
+
+```
+EXIT: 0
+```
+
+- `cd /Users/eyalgolan/.<redacted>/worktrees/80ca2cfd3f15459dba88efb9dc5176a5.90097.324a0610/web npx eslint . 2>&1 | tail -40 echo "EXIT: $?"`
+
+```
+/Users/eyalgolan/.<redacted>/worktrees/80ca2cfd3f15459dba88efb9dc5176a5.90097.324a0610/web/src/Integrations.jsx
+  301:5  error  Definition for rule 'react-hooks/exhaustive-deps' was not found  react-hooks/exhaustive-deps
+
+/Users/eyalgolan/.<redacted>/worktrees/80ca2cfd3f15459dba88efb9dc5176a5.90097.324a0610/web/src/sidebarNav.test.mjs
+  117:3  warning  Unused eslint-disable directive (no problems were reported from 'no-misleading-character-class')
+
+✖ 2 problems (1 error, 1 warning)
+  0 errors and 1 warning potentially fixable with the `--fix` option.
+
+EXIT: 0
+```
+
+
+### build
+- `cd /Users/eyalgolan/.<redacted>/worktrees/80ca2cfd3f15459dba88efb9dc5176a5.90097.324a0610/web npm run build 2>&1 | tail -40`
+
+```
+vite v6.4.3 building for production...
+transforming...
+✓ 398 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                                                                  0.66 kB │ gzip:   0.44 kB
+dist/assets/-F63fjptAgt5VM-kVkqdyU8n1iAq131nj-otFQ-DKn25-tQ.woff2                4.00 kB
+dist/assets/-F6qfjptAgt5VM-kVkqdyU8n3twJwl9FgsAXHNlYzg-B5e70VyC.woff2            4.04 kB
+dist/assets/-F6qfjptAgt5VM-kVkqdyU8n3vAOwl9FgsAXHNlYzg-Dky8cY56.woff2            4.12 kB
 dist/assets/-F6qfjptAgt5VM-kVkqdyU8n3vAOwl1FgsAXHNlYzg-hCF3fsXQ.woff2            4.32 kB
 dist/assets/-F6qfjptAgt5VM-kVkqdyU8n3twJwl1FgsAXHNlYzg-CU9Da17h.woff2            4.34 kB
-dist/assets/-F63fjptAgt5VM-kVkqdyU8n1iIq131nj-otFQ-BKehAWor.woff2                4.35 kB
-dist/assets/-F6pfjptAgt5VM-kVkqdyU8n1ioa2ndgregdFOFh-D3ijpaJE.woff2              4.42 kB
-dist/assets/-F6pfjptAgt5VM-kVkqdyU8n1ioa2HdgregdFOFh-BgiqLiQn.woff2              5.13 kB
-dist/assets/-F63fjptAgt5VM-kVkqdyU8n1isq131nj-otFQ-DkeVBss5.woff2                5.48 kB
-dist/assets/-F6qfjptAgt5VM-kVkqdyU8n3twJwlRFgsAXHNlYzg-dnJBCtls.woff2            5.50 kB
-dist/assets/-F6qfjptAgt5VM-kVkqdyU8n3vAOwlRFgsAXHNlYzg-DiqaC
-[... 1,399 of 2,538 characters omitted from the middle ...]
+dist/a
+[... 1,898 of 3,037 characters omitted from the middle ...]
 
 dist/assets/index-D2_S0b0U.js                                                  714.70 kB │ gzip: 218.35 kB
 
@@ -202,9 +208,9 @@ dist/assets/index-D2_S0b0U.js                                                  7
 - Using dynamic import() to code-split the application
 - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
 - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
-✓ built in 1.28s
+✓ built in 1.73s
 ```  
-  _excerpt - 2,538 characters of output in total_
+  _excerpt - 3,037 characters of output in total_
 
 
 **Not verified:** everything below is a limit of this section, listed whether or not it bit this attempt.
