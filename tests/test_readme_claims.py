@@ -2001,7 +2001,7 @@ CITATION_TABLE = (
      "async function checkForUpdates("),
     ("security.md", "desktop/updater.mjs:116", "desktop/updater.mjs",
      "autoUpdater.checkForUpdates()"),
-    ("security.md", "desktop/main.mjs:1088", "desktop/main.mjs", "checkForUpdates()"),
+    ("security.md", "desktop/main.mjs:1089", "desktop/main.mjs", "checkForUpdates()"),
     ("security.md", "desktop/electron-builder.config.cjs:366",
      "desktop/electron-builder.config.cjs", '"github"'),
     ("security.md", "desktop/updater.mjs:68", "desktop/updater.mjs",

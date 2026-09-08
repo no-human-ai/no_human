@@ -786,8 +786,9 @@ ipcMain.handle("nh:claude-signin-status", async (event) => {
 // `auth status` already loggedIn:true): `setup-token` is unconditionally
 // browser OAuth with a loopback `/callback`, exposes no non-interactive flag,
 // and under the piped/non-TTY stdio this app would have to use writes NOTHING
-// to stdout/stderr — so no token could ever be read back even if the user
-// finished the flow in the opened tab before a bounded child's timeout fired.
+// to stdout/stderr while the listener is up, and a bounded child only ever
+// ends `{killed:true, code:143}` with both streams empty — so no token could
+// ever be read back.
 // A Windows 11 field report (no_human build bd70645a): 3 of 3 clicks opened
 // a `localhost:<port>/callback` tab and a 10-second probe found nothing
 // listening on that port (ERR_CONNECTION_REFUSED). See server.mjs's

@@ -54,8 +54,8 @@ export function labels(canReturn, mode = "subscription") {
 // clicks opened a `localhost:<port>/callback` tab and a 10-second probe
 // found nothing listening on that port (ERR_CONNECTION_REFUSED). So the
 // detected row never spawns anything: the click only reveals the
-// manual-paste instructions, which is the one path that actually works on
-// every platform.
+// manual-paste instructions, the path the shipped setup steps already
+// describe.
 
 /**
  * Copy for the "Use my existing Claude Code sign-in" row. Platform-neutral

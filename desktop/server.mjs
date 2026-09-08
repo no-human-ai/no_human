@@ -285,8 +285,8 @@ export async function resolveNodeBin(env = process.env, execFileFn = execFile,
  * `execFileFn` so tests never need a real `claude` binary. Never throws,
  * never logs stdout/stderr (nothing about a sign-in's status is a secret).
  *
- * This module deliberately has NO runner for `claude setup-token` and never
- * will. MEASURED (macOS, `claude` 2.1.263, `auth status` reporting
+ * This module deliberately has NO runner for `claude setup-token`.
+ * MEASURED (macOS, `claude` 2.1.263, `auth status` reporting
  * loggedIn:true): `setup-token` is unconditionally browser OAuth — it opens
  * a URL and waits on a loopback `/callback` — regardless of whether the CLI
  * is already signed in; `setup-token --help` exposes no non-interactive flag

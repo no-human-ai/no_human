@@ -12,7 +12,8 @@ All notable changes to no_human. The format follows
   non-interactive child with a 20s timeout; that command is unconditionally
   browser OAuth with a loopback `/callback` server and no non-interactive
   flag, so the opened tab (`http://localhost:<port>/callback`) had nothing to
-  connect to — refused instantly on a Windows field report (3/3 runs), and
+  connect to — refused (no listener appeared within 10s) on a Windows field
+  report (3/3 runs), and
   even where the loopback listener does bind (confirmed on macOS), the child
   writes nothing to stdout/stderr, so no token could ever have been read
   back either way. The row now launches nothing on any platform: clicking it

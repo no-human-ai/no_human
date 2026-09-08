@@ -359,8 +359,9 @@
     $("hint").textContent = copy.hint;
     $("cred-label").textContent = m === "api_key" ? "Anthropic API key" : "Subscription token";
     input.placeholder = m === "api_key" ? "sk-ant-api…" : "sk-ant-oat…";
-    // The 3 setup-token steps — and the "use existing sign-in" shortcut, which
-    // only ever produces a subscription token — only apply to that flow.
+    // The 3 setup-token steps — and the "use existing sign-in" row, which only
+    // reveals those same manual-paste steps for a subscription token — only
+    // apply to that flow.
     $("steps").style.display = m === "api_key" ? "none" : "";
     if (existingSignin) existingSignin.style.display = m === "api_key" ? "none" : "";
     setMsg("", null);   // a validation message for the OTHER mode would mislead

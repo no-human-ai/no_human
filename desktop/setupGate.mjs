@@ -110,10 +110,11 @@ export function classifySetupTokenOutput(input) {
     return { kind: "interactive" };
   }
   // A numeric non-zero exit is a real CLI failure ⇒ fixed error message.
-  // `code === null` (spawn/timeout — see runClaudeSetupToken) is NOT treated
-  // as a failure here: we don't know the CLI actually rejected anything, so
-  // it falls through to the safe default below (manual paste), matching
-  // server.mjs's documented timeout shape `{code:null, stderr:"timeout"}`.
+  // `code === null` (spawn/timeout) is NOT treated as a failure here: we
+  // don't know the CLI actually rejected anything, so it falls through to
+  // the safe default below (manual paste). This function still accepts a
+  // `{code: null, stderr: "timeout"}` shape as the contract for any caller
+  // that captures a timed-out spawn.
   if (typeof code === "number" && code !== 0) {
     return { kind: "error", message: CLI_FALLBACK_MESSAGE };
   }

@@ -293,7 +293,7 @@ test("nh:requirements reports resolved claude/node the same shape the setup scre
     "a missing claude must not report a version");
 });
 
-// --- Claude Code existing sign-in (nh:claude-signin-status / nh:claude-import-token) --- //
+// --- Claude Code existing sign-in (nh:claude-signin-status; nh:claude-import-token removed) --- //
 // resolveClaudeCli() (server.mjs) is called with NO arguments at every call site in
 // main.mjs, so it reads process.env / execFile / fs.existsSync FRESH on every
 // invocation — there is no memoized resolution to defeat. That lets each test below
