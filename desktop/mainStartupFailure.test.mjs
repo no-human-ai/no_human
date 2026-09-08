@@ -11,6 +11,8 @@ import test from "node:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { probe } from "./server.mjs";
+import { freePort } from "./testing/ports.mjs";
 
 register("./testing/electronLoader.mjs", import.meta.url);
 
@@ -19,7 +21,14 @@ const home = fs.mkdtempSync(path.join(os.tmpdir(), "nh-startfail-"));
 fs.mkdirSync(path.join(home, ".no_human"));
 process.env.HOME = home;
 process.env.USERPROFILE = home; // os.homedir() reads USERPROFILE on Windows (see mainIpc.test.mjs)
-process.env.NH_ORIGIN = `http://127.0.0.1:${19100 + (process.pid % 150)}`;
+const { origin: ORIGIN } = await freePort();
+process.env.NH_ORIGIN = ORIGIN;
+
+// Precondition, not an assumption: this test's whole premise is that the boot
+// probe finds nothing. If some other process holds this port, fail HERE with
+// this message rather than minutes later as inexplicable board-loaded assertions.
+assert.notEqual(await probe(ORIGIN), "up",
+  `${ORIGIN} answered a probe — this test requires NOTHING listening`);
 
 const rejections = [];
 process.on("unhandledRejection", (e) => rejections.push(e));

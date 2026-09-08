@@ -13,6 +13,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { probe } from "./server.mjs";
+import { freePort } from "./testing/ports.mjs";
 
 register("./testing/electronLoader.mjs", import.meta.url);
 
@@ -26,7 +28,14 @@ fs.chmodSync(fakeNh, 0o644);                 // deliberately not +x -> EACCES
 process.env.HOME = home;
 process.env.USERPROFILE = home; // os.homedir() reads USERPROFILE on Windows (see mainIpc.test.mjs)
 process.env.NH_BIN = fakeNh;
-process.env.NH_ORIGIN = `http://127.0.0.1:${19800 + (process.pid % 120)}`;  // nothing listening
+const { origin: ORIGIN } = await freePort();  // nothing listening
+process.env.NH_ORIGIN = ORIGIN;
+
+// Precondition, not an assumption: this test's whole premise is that the boot
+// probe finds nothing. If some other process holds this port, fail HERE with
+// this message rather than 20s later as "boot never reached the setup screen".
+assert.notEqual(await probe(ORIGIN), "up",
+  `${ORIGIN} answered a probe — this test requires NOTHING listening`);
 
 const stub = await import("./testing/electronStub.mjs");
 await import("./main.mjs");

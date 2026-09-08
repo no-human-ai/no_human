@@ -10,13 +10,11 @@ import { register } from "node:module";
 import assert from "node:assert/strict";
 import test from "node:test";
 import fs from "node:fs";
-import http from "node:http";
 import os from "node:os";
 import path from "node:path";
+import { listenOnFreePort } from "./testing/ports.mjs";
 
 register("./testing/electronLoader.mjs", import.meta.url);
-
-const PORT = 19300 + (process.pid % 200);
 
 const home = fs.mkdtempSync(path.join(os.tmpdir(), "nh-recovery-"));
 fs.mkdirSync(path.join(home, ".no_human"));
@@ -24,15 +22,14 @@ fs.writeFileSync(path.join(home, ".no_human", ".env"),
   "CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat-recovery\n");
 process.env.HOME = home;
 process.env.USERPROFILE = home; // os.homedir() reads USERPROFILE on Windows (see mainIpc.test.mjs)
-process.env.NH_ORIGIN = `http://127.0.0.1:${PORT}`;
 // NH_TEST_LOG diverts openExternal to a file; with it set in the ambient
 // environment the routing assertions below would pass vacuously.
 delete process.env.NH_TEST_LOG;
 
 // A server that answers the probe, so main.mjs takes the attach path — then the
 // load itself fails. No spawning involved.
-const server = http.createServer((_q, s) => s.end("[]"));
-await new Promise((r) => server.listen(PORT, "127.0.0.1", r));
+const { server, origin: ORIGIN } = await listenOnFreePort((_q, s) => s.end("[]"));
+process.env.NH_ORIGIN = ORIGIN;
 
 const rejections = [];
 process.on("unhandledRejection", (e) => rejections.push(e));

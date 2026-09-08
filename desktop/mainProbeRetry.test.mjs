@@ -12,15 +12,13 @@ import { register } from "node:module";
 import assert from "node:assert/strict";
 import test from "node:test";
 import fs from "node:fs";
-import http from "node:http";
 import os from "node:os";
 import path from "node:path";
+import { listenOnFreePort } from "./testing/ports.mjs";
 
 register("./testing/electronLoader.mjs", import.meta.url);
 
 const IS_WIN = process.platform === "win32";
-const PORT = 19800 + (process.pid % 150);
-const ORIGIN = `http://127.0.0.1:${PORT}`;
 
 const home = fs.mkdtempSync(path.join(os.tmpdir(), "nh-probe-retry-"));
 fs.mkdirSync(path.join(home, ".no_human"));
@@ -30,7 +28,6 @@ fs.writeFileSync(path.join(home, ".no_human", ".env"),
   "CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat-probe-retry\n");
 process.env.HOME = home;
 process.env.USERPROFILE = home; // os.homedir() reads USERPROFILE on Windows
-process.env.NH_ORIGIN = ORIGIN;
 delete process.env.NH_TEST_LOG;
 
 // If probe() wrongly reports "down" on the first launch, main.mjs falls
@@ -52,12 +49,12 @@ process.env.NH_BIN = bin;
 // after the first attempt's timeout) must pick up the second answer.
 let requestCount = 0;
 const heldSockets = [];
-const server = http.createServer((req, res) => {
+const { server, origin: ORIGIN } = await listenOnFreePort((req, res) => {
   requestCount += 1;
   if (requestCount === 1) { heldSockets.push(req.socket); return; }
   res.end("[]");
 });
-await new Promise((r) => server.listen(PORT, "127.0.0.1", r));
+process.env.NH_ORIGIN = ORIGIN;
 
 const rejections = [];
 process.on("unhandledRejection", (e) => rejections.push(e));

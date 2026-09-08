@@ -13,23 +13,21 @@ import { register } from "node:module";
 import assert from "node:assert/strict";
 import test from "node:test";
 import fs from "node:fs";
-import http from "node:http";
 import os from "node:os";
 import path from "node:path";
+import { listenOnFreePort } from "./testing/ports.mjs";
 
 register("./testing/electronLoader.mjs", import.meta.url);
 
-const PORT = 19900 + (process.pid % 90);
 const home = fs.mkdtempSync(path.join(os.tmpdir(), "nh-upd-"));
 fs.mkdirSync(path.join(home, ".no_human"));
 fs.writeFileSync(path.join(home, ".no_human", ".env"),
   "CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat-test\n");
 process.env.HOME = home;
 process.env.USERPROFILE = home; // os.homedir() reads USERPROFILE on Windows (see mainIpc.test.mjs)
-process.env.NH_ORIGIN = `http://127.0.0.1:${PORT}`;
 
-const server = http.createServer((q, s) => s.end("[]"));
-await new Promise((r) => server.listen(PORT, "127.0.0.1", r));
+const { server, port: PORT, origin: ORIGIN } = await listenOnFreePort((q, s) => s.end("[]"));
+process.env.NH_ORIGIN = ORIGIN;
 
 const stub = await import("./testing/electronStub.mjs");
 const main = await import("./main.mjs");

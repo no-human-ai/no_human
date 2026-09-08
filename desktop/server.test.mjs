@@ -12,6 +12,7 @@ import {
 } from "./server.mjs";
 import * as serverModule from "./server.mjs";
 import { MAC_KEYCHAIN_SERVICE } from "./setupGate.mjs";
+import { freePort } from "./testing/ports.mjs";
 
 function serve(handler) {
   return new Promise((resolve) => {
@@ -324,7 +325,7 @@ test("ensureServer: attaches without spawning when the server is up", async () =
 test("ensureServer: spawns a fake nh and waits until the port answers", async () => {
   // The fake `nh` starts a real HTTP server on a fixed port via node.
   const dir = mkdtempSync(join(tmpdir(), "nhbin-"));
-  const port = 18000 + (process.pid % 1000);
+  const { port } = await freePort();
   const { bin, args } = fakeNh(dir, `
 const http = require("node:http");
 setTimeout(() => {
@@ -584,7 +585,7 @@ test("ensureServer: the spawned server inherits the widened PATH",
     + "pure WINDOWS_CLI_HINT_DIRS mergePath test" : false },
   async () => {
   const dir = mkdtempSync(join(tmpdir(), "nhpath-"));
-  const port = 18400 + (process.pid % 400);
+  const { port } = await freePort();
   const out = join(dir, "path.txt");
   const { bin, args } = fakeNh(dir, `
 require("node:fs").writeFileSync(${JSON.stringify(out)}, process.env.PATH || "");
@@ -798,7 +799,7 @@ test("ensureServer: stops capturing once confirmed up, but keeps draining so the
   // action TERMINATES it on the very next write — Node silently swallows
   // EPIPE on stdout/stderr and would not catch a regression to destroy().
   const dir = mkdtempSync(join(tmpdir(), "nhdrain-"));
-  const port = 19000 + (process.pid % 900);
+  const { port } = await freePort();
   const fake = join(dir, "nh");
   writeFileSync(fake, `#!/bin/sh
 node -e "require('node:http').createServer(function(q,r){r.end('[]')}).listen(${port},'127.0.0.1')" &
