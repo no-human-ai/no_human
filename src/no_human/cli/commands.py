@@ -1540,6 +1540,74 @@ def repo_config(repo_path, assignments):
     asyncio.run(_go())
 
 
+@repo_group.command("setup-cmds")
+@click.argument("repo_path", type=click.Path(exists=True))
+@click.argument("cmds", nargs=-1)
+@click.option("--clear", is_flag=True, help="Remove every declared setup command.")
+def repo_setup_cmds(repo_path, cmds, clear):
+    """Set, clear, or inspect a repo profile's `setup_cmds` (see
+    docs/configuration.md).
+
+    nh repo setup-cmds REPO_PATH                 — inspect the current list
+    nh repo setup-cmds REPO_PATH 'cmd 1' 'cmd 2' — declare, replacing any list
+    nh repo setup-cmds REPO_PATH --clear         — remove every command
+
+    Prerequisite build steps for a FRESH task worktree — gitignored inputs
+    (node_modules, web/dist...) a `git worktree add` checkout can never
+    contain. Run in order, from the worktree root, once per worktree, before
+    any test command; a failing command fails the task as an infra error
+    naming the command. Operator-declared only: never derived, and never read
+    from the repo's own `.no_human.yml`.
+
+    Example, for a repo whose node suites need a web build before `desktop`
+    can run against it:
+
+        nh repo setup-cmds /path/to/repo \\
+          'npm --prefix web ci' 'npm --prefix web run build' \\
+          'npm --prefix desktop ci'
+    """
+    from ..profile import ProjectProfile
+
+    config, _ = _bootstrap(require_auth=False)
+    repo = str(Path(repo_path).expanduser().resolve())
+
+    if cmds and clear:
+        console.print("[red]pass commands or --clear, not both[/]")
+        sys.exit(1)
+
+    async def _go():
+        async with Store(config.db_path) as store:
+            profile = (
+                await store.get_profile(repo)
+                or ProjectProfile.load(repo)
+            )
+            if profile is None:
+                console.print(
+                    f"[red]no profile for {repo_path} — run `nh onboard "
+                    f"{repo_path}` first[/]"
+                )
+                sys.exit(1)
+            if not cmds and not clear:
+                if profile.setup_cmds:
+                    for c in profile.setup_cmds:
+                        console.print(c)
+                else:
+                    console.print("[dim](no setup_cmds declared)[/]")
+                return
+            profile.setup_cmds = [] if clear else list(cmds)
+            await store.upsert_profile(profile)
+            if profile.yaml_path().exists():
+                profile.save()
+            if clear:
+                console.print("[green]cleared[/] setup_cmds")
+            else:
+                console.print("[green]recorded[/] setup_cmds:")
+                for c in profile.setup_cmds:
+                    console.print(f"  {c}")
+
+    asyncio.run(_go())
+
+
 @task.command("list")
 def task_list():
     """List all tasks as a board."""
