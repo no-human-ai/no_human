@@ -142,6 +142,7 @@ from ..vcs.receipts import verify_pr_receipt
 from ..vcs.task_pr import resolve_task_pr
 from . import merge_policy
 from . import plan_gate
+from .base_staleness import base_gap_overlap, should_rebase, staleness_record
 from .bounds import (
     Bounds, ConvergenceTracker, QuotaExhausted, StuckDetector, api_wall_reason,
     error_signature, quota_reason, quota_signal,
@@ -3224,7 +3225,10 @@ class Orchestrator:
             self._advisory(f"base staleness check failed: {exc}")
             return
         rebased = False
-        if behind >= BASE_STALENESS_REBASE_THRESHOLD:
+        # A gap can be small and RELATED: three tasks in one evening each paid
+        # a conflict round on 1-3 commits that touched their own files (#141).
+        overlap = base_gap_overlap(repo, base, behind)
+        if should_rebase(behind, BASE_STALENESS_REBASE_THRESHOLD, overlap):
             try:
                 rebased = repo.rebase_onto(base)
             except Exception as exc:
@@ -3237,18 +3241,14 @@ class Orchestrator:
         # instead of losing that number to the post-rebase 0 it would
         # otherwise read — the exact defect a prior attempt's review caught.
         ctx = task.context or {}
-        ctx["base_staleness"] = {
-            "commits_behind": 0 if rebased else behind,
-            "was_behind": behind,
-            "rebased": rebased,
-        }
+        ctx["base_staleness"] = staleness_record(behind, rebased, overlap)
         task.context = ctx
         await self.store.update_task(task)
         self.emit(
             "base_staleness",
             f"branch {branch} is {behind} commit(s) behind {base}"
             + (" — rebased onto it" if rebased
-               else " — rebase skipped (conflict)" if behind >= BASE_STALENESS_REBASE_THRESHOLD
+               else " — rebase skipped (conflict)" if should_rebase(behind, BASE_STALENESS_REBASE_THRESHOLD, overlap)
                else ""),
             branch=branch,
             base=base,
