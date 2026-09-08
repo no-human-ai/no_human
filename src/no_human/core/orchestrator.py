@@ -928,8 +928,9 @@ def _parse_iso(value: str | None) -> datetime | None:
 #: a test main had already deleted. 5 is the smallest gap that has actually
 #: cost an attempt; 1 would rebase on nearly every retry (most gaps are noise
 #: — an unrelated commit landing on main mid-attempt), and 10 was tried and
-#: rejected because it excludes `db9da7f7` itself. Below the threshold the
-#: staleness is still measured and reported — only the rebase is gated.
+#: rejected because it excludes `db9da7f7` itself. Below the threshold a gap
+#: whose files intersect the branch's own is also rebased (`should_rebase`
+#: in `base_staleness.py`) — the count alone is not the gate.
 BASE_STALENESS_REBASE_THRESHOLD = 5
 
 
@@ -3202,7 +3203,9 @@ class Orchestrator:
         self, task: Task, repo: GitRepo, branch: str, base: str | None,
     ) -> None:
         """Measure this retry's branch against the current base; rebase past
-        `BASE_STALENESS_REBASE_THRESHOLD`.
+        `BASE_STALENESS_REBASE_THRESHOLD`, or below it when the two sides
+        touch the same files (`should_rebase`) — the record and event carry
+        `overlapping_files` so a below-threshold rebase is auditable.
 
         A retry that reuses its branch (`ctx['pr_branch']`) or resumes from a
         checkpoint meets whatever base it was cut from, forever, unless
@@ -3254,6 +3257,7 @@ class Orchestrator:
             base=base,
             commits_behind=behind,
             rebased=rebased,
+            overlapping_files=overlap,
         )
 
     def _agent_git_identity(self) -> dict[str, str]:
@@ -16943,7 +16947,12 @@ class Orchestrator:
                 "or re-fix something the base already resolved; check current "
                 "behavior before assuming a symptom is still present.\n\n"
             )
-        elif stale.get("commits_behind", 0) >= BASE_STALENESS_REBASE_THRESHOLD:
+        elif should_rebase(
+            stale.get("was_behind", stale.get("commits_behind", 0)),
+            BASE_STALENESS_REBASE_THRESHOLD,
+            stale.get("overlapping_files") or [],
+        ):
+            overlap = stale.get("overlapping_files") or []
             staleness_preamble = (
                 f"YOUR BRANCH IS {stale['commits_behind']} COMMIT(S) BEHIND the "
                 "current base and a rebase was attempted but did not complete "
@@ -16953,6 +16962,11 @@ class Orchestrator:
                 "assuming a symptom is still present, and consider merging or "
                 "rebasing yourself if that is the source of a failure.\n\n"
             )
+            if overlap:
+                staleness_preamble += (
+                    "Rebase could not complete due to overlapping changes in: "
+                    f"{', '.join(overlap)}\n\n"
+                )
 
         distilled_block = ""
         if distilled:
