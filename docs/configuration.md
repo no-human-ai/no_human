@@ -840,6 +840,34 @@ suggested again: manual config always wins. `nh doctor` names the same gap
 enable?") for any known repo that still has no `ui_evidence` configured; it is
 an advisory only and never affects doctor's exit code.
 
+## Isolation — per-task worktrees
+
+```yaml
+isolation:
+  enabled: true        # every task runs in its own throwaway `git worktree
+                        # add` checkout, never the operator's primary
+                        # checkout. On by default and independent of
+                        # `concurrency` above — parallelism defaults off, but
+                        # even a single-task run defaults to isolation ON so
+                        # an attempt's edits and a `[WIP-PARTIAL]` commit
+                        # never land in whatever the operator has checked
+                        # out.
+  worktree_root: null   # where per-task worktrees live. null ->
+                        # ~/.no_human/worktrees. `concurrency.worktree_root`
+                        # is still read for configs written before the
+                        # isolation/concurrency split.
+```
+
+Set `enabled: false` to deliberately run every task directly in the primary
+checkout instead — an attempt then edits whatever is actually checked out
+there. `concurrency.enabled` (parallel task workers) requires
+`isolation.enabled`: workers sharing one checkout would stomp each other's
+index and branch, so the pool refuses to start rather than silently
+downgrading when isolation is opted out. `setup_cmds` (below) never runs at
+all with isolation off — there is no fresh worktree to prepare, and the
+primary checkout already has whatever gitignored build state the operator
+built by hand.
+
 ## `setup_cmds` — build prerequisites for a fresh task worktree
 
 Isolated tasks run in a throwaway `git worktree add` checkout (see
@@ -868,10 +896,18 @@ is remembered per worktree (a marker in the worktree's git admin directory,
 never in the working tree itself) so a reused worktree does not re-run setup
 on every attempt.
 
-Operator-owned and trusted like the rest of the profile: it is read only from
-the confirmed profile, never from the repo's own untrusted `.no_human.yml` —
-a repo cannot declare its own `setup_cmds` and have an unattended run execute
-it. Set it with:
+Operator-owned and trusted like the rest of the profile — resolved via
+`Orchestrator._usable_profile` exactly like `test_cmd` is, no special case:
+that prefers the confirmed SQLite DB row and, ONLY when no DB row exists yet
+for the repo, falls back to reading `<repo>/.no_human/project.yml`. A
+`setup_cmds` list in that fallback file DOES run, same as `test_cmd` does —
+it is never read from the repo's own untrusted `.no_human.yml`
+(`project_config.py`'s whitelist deliberately excludes this key), which is a
+different file and not part of this trust chain at all. `nh repo setup-cmds`
+(the CLI below that WRITES this key) refuses to run unless a DB row already
+exists for the repo — "no profile for REPO_PATH — run `nh onboard REPO_PATH`
+first" — precisely so that command itself can never be the thing that turns
+a repo-internal file into a confirmed, trusted row. Set it with:
 
 ```
 nh repo setup-cmds REPO_PATH 'cmd 1' 'cmd 2' ...   # declare, replacing any list
