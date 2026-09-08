@@ -6,7 +6,6 @@ case proves the tamper guard blocks a test-weakening change and escalates.
 """
 
 import json
-import os
 import re
 import subprocess
 from pathlib import Path
@@ -3644,10 +3643,14 @@ async def test_send_back_resume_with_no_changes_returns_to_awaiting_approval(
     db.py ~2884-2892 — this is a normal, budget-counted attempt).
 
     This is the verbatim incident timeline: send-back feedback arrived at
-    00:06:05Z; attempt 6 then committed and PASSED an independent review on
-    that exact sha at 00:19:40Z; attempt 7 (modeled here) is a zero-diff
-    round on top of that same HEAD — the review PASS recorded on it is
-    newer than the feedback, so the branch already carries the answer.
+    00:06:05Z; attempt 6 then recorded an independent review PASS on the
+    current HEAD's `commit_sha` at `started_at` 00:06:31 (SQLite
+    `datetime('now')` — production format, a space, no `T`/offset); attempt
+    7 (modeled here) is a zero-diff round on top of that same HEAD — the
+    review PASS row is newer than the feedback, so the branch already
+    carries the answer. `review_history[].at` exists on no row created
+    before this rule, so it is not seeded here and is not read by the
+    predicate.
     """
     cfg = _config(tmp_path)
     backend = _NoEditBackend()
@@ -3660,11 +3663,6 @@ async def test_send_back_resume_with_no_changes_returns_to_awaiting_approval(
         {"at": "2026-09-08T00:06:05.096374+00:00",
          "message": "please rename the flag"}
     ]
-    ctx["review_history"] = [
-        {"round": 6, "sha": head_sha, "passed": True,
-         "at": "2026-09-08T00:19:40.000000+00:00",
-         "blocking": [], "advisory": []}
-    ]
     t.context = ctx
     await store.create_task(t)
 
@@ -3675,6 +3673,7 @@ async def test_send_back_resume_with_no_changes_returns_to_awaiting_approval(
     await store.update_attempt(
         prior_id, status="failed", pr_url="https://github.com/o/r/pull/7",
         started_at="2026-09-08 00:06:31",
+        review_passed=1, commit_sha=head_sha,
     )
     await store.set_status(t, TaskStatus.IMPLEMENTING, validate=False)
 
@@ -3742,8 +3741,9 @@ async def test_first_attempt_with_no_changes_still_fails_even_with_a_pr(
 
 
 async def test_send_back_resume_without_a_pr_still_fails(bare_repo, tmp_path, store):
-    """Isolates the `pr.url` guard alone: valid, newer-than-feedback review
-    PASS on the current HEAD and a prior attempt exist, but there is no PR
+    """Isolates the `pr.url` guard alone: a qualifying `attempts` row (an
+    independent review PASS on the current HEAD's `commit_sha`, `started_at`
+    newer than the feedback) and a prior attempt exist, but there is no PR
     anywhere (no `pr_watch`/`pr_branch` context, no attempt `pr_url`, no
     draft) — there is nothing to return the human to await approval on, so
     the round must still fail with the ordinary zero-diff detail. Replacing
@@ -3761,17 +3761,13 @@ async def test_send_back_resume_without_a_pr_still_fails(bare_repo, tmp_path, st
         {"at": "2026-09-08T00:06:05.096374+00:00",
          "message": "please rename the flag"}
     ]
-    ctx["review_history"] = [
-        {"round": 6, "sha": head_sha, "passed": True,
-         "at": "2026-09-08T00:19:40.000000+00:00",
-         "blocking": [], "advisory": []}
-    ]
     t.context = ctx
     await store.create_task(t)
 
     prior_id = await store.create_attempt(t.id, 1)
     await store.update_attempt(
-        prior_id, status="failed", started_at="2026-09-08 00:06:31",
+        prior_id, status="failed", started_at="2026-09-08 00:19:40",
+        review_passed=1, commit_sha=head_sha,
     )
     await store.set_status(t, TaskStatus.IMPLEMENTING, validate=False)
 
@@ -3788,16 +3784,16 @@ async def test_same_day_stale_send_back_does_not_excuse_a_zero_diff(
     bare_repo, tmp_path, store
 ):
     """Guards the PARSED (not lexical) comparison, and that the rule keys on
-    the review PASS being NEWER than the feedback, not merely "a PASS
-    exists somewhere". `send_back_feedback["at"]` is stamped
-    `datetime.now(timezone.utc).isoformat()` (`...T...+00:00`) while
-    `attempts.started_at` is SQLite `datetime('now')` (`... ...`, a space,
-    no 'T'/offset) — comparing them as plain strings is unsound. Here the
-    feedback (00:25:00) arrived AFTER the last recorded review PASS on the
-    current HEAD (00:19:40), on the SAME UTC day: the branch's most recent
-    accepted state predates the feedback, so it has not yet been shown to
-    satisfy it, and this round's zero diff is a fresh failure, not an
-    excused resume."""
+    the qualifying `attempts` row's `started_at` being NEWER than the
+    feedback, not merely "a PASS exists somewhere". `send_back_feedback["at"]`
+    is stamped `datetime.now(timezone.utc).isoformat()` (`...T...+00:00`)
+    while `attempts.started_at` is SQLite `datetime('now')` (`... ...`, a
+    space, no 'T'/offset) — comparing them as plain strings is unsound (a
+    lexical `'T' > ' '` would read backwards). Here the feedback (00:25:00)
+    arrived AFTER the qualifying row's `started_at` (00:06:31), on the SAME
+    UTC day: the branch's most recently reviewed state predates the
+    feedback, so it has not yet been shown to satisfy it, and this round's
+    zero diff is a fresh failure, not an excused resume."""
     from no_human.core.orchestrator import _NO_CHANGES_DETAIL
 
     cfg = _config(tmp_path)
@@ -3808,13 +3804,8 @@ async def test_same_day_stale_send_back_does_not_excuse_a_zero_diff(
     ctx = t.context or {}
     ctx["pr_watch"] = "https://github.com/o/r/pull/7"
     ctx["send_back_feedback"] = [
-        {"at": "2026-09-08T00:25:00.000000+00:00",
+        {"at": "2026-09-08T00:25:00+00:00",
          "message": "please rename the flag"}
-    ]
-    ctx["review_history"] = [
-        {"round": 6, "sha": head_sha, "passed": True,
-         "at": "2026-09-08T00:19:40.000000+00:00",
-         "blocking": [], "advisory": []}
     ]
     t.context = ctx
     await store.create_task(t)
@@ -3823,6 +3814,7 @@ async def test_same_day_stale_send_back_does_not_excuse_a_zero_diff(
     await store.update_attempt(
         prior_id, status="failed", pr_url="https://github.com/o/r/pull/7",
         started_at="2026-09-08 00:06:31",
+        review_passed=1, commit_sha=head_sha,
     )
     await store.set_status(t, TaskStatus.IMPLEMENTING, validate=False)
 
@@ -3837,31 +3829,28 @@ async def test_same_day_stale_send_back_does_not_excuse_a_zero_diff(
     assert not (reloaded.context or {}).get("no_changes_needed")
 
 
-async def test_review_pass_on_another_sha_does_not_excuse_a_zero_diff(
+async def test_a_review_failing_head_row_does_not_excuse_a_zero_diff(
     bare_repo, tmp_path, store
 ):
-    """The rule keys on the review PASS being recorded for the CURRENT HEAD,
-    not merely on any PASS newer than the feedback. Here `review_history`'s
-    last entry is a PASS newer than the feedback, but its `sha` names a
-    commit that is NOT the branch's current HEAD (the head moved, or the
-    row is stale) — the branch's actual tip was never independently
-    reviewed, so the round must still fail."""
+    """The rule keys on `review_passed == 1`, not merely on a row that
+    otherwise matches the current HEAD and postdates the feedback. Here the
+    only `attempts` row on the current HEAD's `commit_sha` has
+    `review_passed = 0` (an independent review that FAILED) — the branch's
+    actual tip was never accepted, so the round must still fail. Dropping
+    the `review_passed` filter from `_send_back_resume_round` flips this
+    test red."""
     from no_human.core.orchestrator import _NO_CHANGES_DETAIL
 
     cfg = _config(tmp_path)
     backend = _NoEditBackend()
     orch = Orchestrator(store, cfg.data, backend, SlackNotifier(None))
     t = Task.new("add feature", repo_path=str(bare_repo), kind="feature")
+    head_sha = GitRepo(bare_repo).head_sha()
     ctx = t.context or {}
     ctx["pr_watch"] = "https://github.com/o/r/pull/7"
     ctx["send_back_feedback"] = [
         {"at": "2026-09-08T00:06:05.096374+00:00",
          "message": "please rename the flag"}
-    ]
-    ctx["review_history"] = [
-        {"round": 6, "sha": "0" * 40, "passed": True,
-         "at": "2026-09-08T00:19:40.000000+00:00",
-         "blocking": [], "advisory": []}
     ]
     t.context = ctx
     await store.create_task(t)
@@ -3869,7 +3858,8 @@ async def test_review_pass_on_another_sha_does_not_excuse_a_zero_diff(
     prior_id = await store.create_attempt(t.id, 1)
     await store.update_attempt(
         prior_id, status="failed", pr_url="https://github.com/o/r/pull/7",
-        started_at="2026-09-08 00:06:31",
+        started_at="2026-09-08 00:19:40",
+        review_passed=0, commit_sha=head_sha,
     )
     await store.set_status(t, TaskStatus.IMPLEMENTING, validate=False)
 
@@ -3882,7 +3872,93 @@ async def test_review_pass_on_another_sha_does_not_excuse_a_zero_diff(
     assert not (reloaded.context or {}).get("no_changes_needed")
 
 
-async def test_no_changes_needed_writes_no_test_phase_row(
+async def test_no_attempt_row_for_the_current_head_does_not_excuse_a_zero_diff(
+    bare_repo, tmp_path, store
+):
+    """The rule keys on the review PASS being recorded for the CURRENT
+    HEAD's `commit_sha`, not merely on any PASS newer than the feedback.
+    Here the only `attempts` row that otherwise qualifies (`review_passed =
+    1`, `started_at` after the feedback) names a `commit_sha` that is NOT
+    the branch's current HEAD (the head moved, or the row is stale, exactly
+    like the incident's own attempts 1-5, which carry `review_passed = 1`
+    on other shas) — the branch's actual tip was never independently
+    reviewed, so the round must still fail. Dropping the `commit_sha` filter
+    flips this test red."""
+    from no_human.core.orchestrator import _NO_CHANGES_DETAIL
+
+    cfg = _config(tmp_path)
+    backend = _NoEditBackend()
+    orch = Orchestrator(store, cfg.data, backend, SlackNotifier(None))
+    t = Task.new("add feature", repo_path=str(bare_repo), kind="feature")
+    ctx = t.context or {}
+    ctx["pr_watch"] = "https://github.com/o/r/pull/7"
+    ctx["send_back_feedback"] = [
+        {"at": "2026-09-08T00:06:05.096374+00:00",
+         "message": "please rename the flag"}
+    ]
+    t.context = ctx
+    await store.create_task(t)
+
+    prior_id = await store.create_attempt(t.id, 1)
+    await store.update_attempt(
+        prior_id, status="failed", pr_url="https://github.com/o/r/pull/7",
+        started_at="2026-09-08 00:19:40",
+        review_passed=1, commit_sha="0" * 40,
+    )
+    await store.set_status(t, TaskStatus.IMPLEMENTING, validate=False)
+
+    outcome = await orch.run_task(t)
+
+    assert outcome.status is not TaskStatus.AWAITING_APPROVAL, outcome.detail
+    attempts = await store.list_attempts(t.id)
+    assert attempts[-1]["failure_reason"] == _NO_CHANGES_DETAIL
+    reloaded = await store.get_task(t.id)
+    assert not (reloaded.context or {}).get("no_changes_needed")
+
+
+async def test_an_unparsable_attempt_started_at_does_not_excuse_a_zero_diff(
+    bare_repo, tmp_path, store
+):
+    """Fails CLOSED on a malformed timestamp. Here the qualifying-looking
+    `attempts` row (`review_passed = 1`, `commit_sha` == HEAD) has a
+    `started_at` that `_parse_iso` cannot parse — treating an
+    unparsable/missing timestamp as "newer than the feedback" would let a
+    corrupt or partially-written row silently excuse a zero-diff round, so
+    the rule must return False instead."""
+    from no_human.core.orchestrator import _NO_CHANGES_DETAIL
+
+    cfg = _config(tmp_path)
+    backend = _NoEditBackend()
+    orch = Orchestrator(store, cfg.data, backend, SlackNotifier(None))
+    t = Task.new("add feature", repo_path=str(bare_repo), kind="feature")
+    head_sha = GitRepo(bare_repo).head_sha()
+    ctx = t.context or {}
+    ctx["pr_watch"] = "https://github.com/o/r/pull/7"
+    ctx["send_back_feedback"] = [
+        {"at": "2026-09-08T00:06:05.096374+00:00",
+         "message": "please rename the flag"}
+    ]
+    t.context = ctx
+    await store.create_task(t)
+
+    prior_id = await store.create_attempt(t.id, 1)
+    await store.update_attempt(
+        prior_id, status="failed", pr_url="https://github.com/o/r/pull/7",
+        started_at="not-a-timestamp",
+        review_passed=1, commit_sha=head_sha,
+    )
+    await store.set_status(t, TaskStatus.IMPLEMENTING, validate=False)
+
+    outcome = await orch.run_task(t)
+
+    assert outcome.status is not TaskStatus.AWAITING_APPROVAL, outcome.detail
+    attempts = await store.list_attempts(t.id)
+    assert attempts[-1]["failure_reason"] == _NO_CHANGES_DETAIL
+    reloaded = await store.get_task(t.id)
+    assert not (reloaded.context or {}).get("no_changes_needed")
+
+
+async def test_no_changes_needed_closes_the_testing_hop_as_no_tests_run(
     bare_repo, tmp_path, store
 ):
     """The landing route passes through `TESTING` as a transient, always-
@@ -3901,18 +3977,14 @@ async def test_no_changes_needed_writes_no_test_phase_row(
         {"at": "2026-09-08T00:06:05.096374+00:00",
          "message": "please rename the flag"}
     ]
-    ctx["review_history"] = [
-        {"round": 6, "sha": head_sha, "passed": True,
-         "at": "2026-09-08T00:19:40.000000+00:00",
-         "blocking": [], "advisory": []}
-    ]
     t.context = ctx
     await store.create_task(t)
 
     prior_id = await store.create_attempt(t.id, 1)
     await store.update_attempt(
         prior_id, status="failed", pr_url="https://github.com/o/r/pull/7",
-        started_at="2026-09-08 00:06:31",
+        started_at="2026-09-08 00:19:40",
+        review_passed=1, commit_sha=head_sha,
     )
     await store.set_status(t, TaskStatus.IMPLEMENTING, validate=False)
 
@@ -3945,18 +4017,14 @@ async def test_a_refused_status_write_records_no_no_changes_needed_marker(
         {"at": "2026-09-08T00:06:05.096374+00:00",
          "message": "please rename the flag"}
     ]
-    ctx["review_history"] = [
-        {"round": 6, "sha": head_sha, "passed": True,
-         "at": "2026-09-08T00:19:40.000000+00:00",
-         "blocking": [], "advisory": []}
-    ]
     t.context = ctx
     await store.create_task(t)
 
     prior_id = await store.create_attempt(t.id, 1)
     await store.update_attempt(
         prior_id, status="failed", pr_url="https://github.com/o/r/pull/7",
-        started_at="2026-09-08 00:06:31",
+        started_at="2026-09-08 00:19:40",
+        review_passed=1, commit_sha=head_sha,
     )
     await store.set_status(t, TaskStatus.IMPLEMENTING, validate=False)
 

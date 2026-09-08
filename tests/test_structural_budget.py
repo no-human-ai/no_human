@@ -615,7 +615,22 @@ FROZEN_FILE_LINES = {
     # its writes so a refused status CAS leaves no stray `succeeded`
     # attempt/`no_changes_needed` marker. Both helpers' docstrings were
     # trimmed at the same time; the net is +5 lines.
-    "core/orchestrator.py": 21920,
+    # 21920 -> 21935 (+15, measured via `len(Path(...).read_text().
+    # splitlines())`, the scanner's own metric — not `wc -l`, which reads
+    # 21932 on this file for the pre-existing raw-unicode line-separator
+    # regex reason noted above): round 5 replaces the round-3 predicate
+    # again — `review_history[].at` exists on no row created before this
+    # rule (the incident task never wrote one, so round 3's read could
+    # never have fired on the data it names). `_send_back_resume_round`
+    # now keys directly on the `attempts` table instead: some OTHER row
+    # (excluding the in-flight `self._active_attempt_id`) with
+    # `review_passed == 1` on the current HEAD's `commit_sha`,
+    # `started_at` (parsed via `_parse_iso`) newer than the newest
+    # `send_back_feedback` entry. `_land_no_changes_needed`'s `detail`
+    # string and docstring were updated to match; its control flow is
+    # unchanged. The longer docstring explaining why rounds 2 and 3 both
+    # failed on the real incident accounts for the net +15 lines.
+    "core/orchestrator.py": 21935,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.
