@@ -93,6 +93,61 @@ def test_rules_block_ci_line_only_without_integration_cmd():
     assert "Remote CI" not in build_rules_block("", "", None)
 
 
+def test_rules_block_says_background_runs_never_notify_this_session():
+    with_cmd = build_rules_block("uv run pytest -q", "", None)
+    for fragment in (
+        "never notify",
+        "no wake-up",
+        "FOREGROUND",
+        "before you write your final report",
+    ):
+        assert fragment in with_cmd
+    # Present regardless of test_cmd_str — a coder without a known test
+    # command must still be warned before it backgrounds its own checks.
+    no_cmd = build_rules_block("", "", None)
+    for fragment in (
+        "never notify",
+        "no wake-up",
+        "FOREGROUND",
+        "before you write your final report",
+    ):
+        assert fragment in no_cmd
+    # Regression guard: the adjacent standing bullet must survive untouched.
+    assert "NEVER babysit a long run" in with_cmd
+
+
+def test_the_background_run_rule_is_coder_only():
+    import ast
+    import inspect
+
+    from no_human.core import orchestrator
+    from no_human.core.task import Task
+    from no_human.review.reviewer import _build_review_prompt
+
+    review_prompt = _build_review_prompt(Task.new("t"), "diff", "", "")
+    assert "never notify" not in review_prompt
+
+    tree = ast.parse(inspect.getsource(orchestrator))
+    calls = []
+    stack = []
+
+    class _Visitor(ast.NodeVisitor):
+        def visit_FunctionDef(self, node):
+            stack.append(node)
+            self.generic_visit(node)
+            stack.pop()
+
+        visit_AsyncFunctionDef = visit_FunctionDef
+
+        def visit_Call(self, node):
+            if isinstance(node.func, ast.Name) and node.func.id == "build_rules_block":
+                calls.append(stack[-1].name if stack else None)
+            self.generic_visit(node)
+
+    _Visitor().visit(tree)
+    assert calls == ["_build_implement_prompt"]
+
+
 def test_profile_block_empty_when_no_profile():
     assert build_profile_block(None) == ""
 
