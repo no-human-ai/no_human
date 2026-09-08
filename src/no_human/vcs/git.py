@@ -838,6 +838,57 @@ class GitRepo:
             return False
         return self.head_sha() != before
 
+    def merge_base_into_branch(self, base: str) -> bool:
+        """Merge *base* into this branch. True iff the branch moved.
+
+        The counterpart to `rebase_onto` for a branch that has a pushed
+        remote tip: a rebase there would rewrite every commit on the branch,
+        making the previously pushed tip mutually unreachable with the new
+        head, so the delivery ancestor check (`is_ancestor(remote_tip,
+        target)` in `Orchestrator._reconcile_remote_branch`) can never pass
+        again. A merge commit does not have that problem — the resulting
+        head is a DESCENDANT of the branch's previous tip, so a remote tip
+        that equalled that previous tip stays an ancestor of the new head,
+        and `push_sha_fast_forward` can still land it fast-forward-only.
+        No force anywhere, here or downstream.
+
+        A CONFLICT aborts and returns False, and deliberately does NOT fall
+        back to rebasing — that would silently reintroduce the exact
+        non-ancestor delivery refusal this method exists to avoid. Losing a
+        retry to a merge conflict is worse than the staleness it would have
+        cured (same contract `rebase_onto` documents for its own conflicts);
+        the caller reports the staleness and proceeds un-merged.
+
+        `--no-ff` is deliberate, not incidental: it keeps a real merge
+        commit even in the rare case git could fast-forward instead, so the
+        record ("merged X into it") always matches what the history shows.
+        A plain fast-forward would also satisfy the ancestry property this
+        method exists for; `--no-ff` is chosen for that determinism.
+        """
+        ref = (self.resolve_commitish(base) if base else None) or base
+        if not ref:
+            return False
+        branch = self.current_branch()
+        before = self.head_sha()
+        try:
+            # Literal "merge" as the first argument, so the egress analyser
+            # resolves the channel to `exec:git merge`, not `exec:git
+            # <dynamic>` (see `_run`'s inline-argv comment above). "merge" is
+            # already in `_COMMIT_WRITING_SUBCOMMANDS`, so the identity scrub
+            # applies and the merge commit is attributed to this class's
+            # configured identity, not whatever the ambient env holds.
+            self._run(
+                "merge", "--no-ff", "-m",
+                f"Merge {base} into {branch} (base staleness)", ref,
+            )
+        except GitError:
+            # Unconditional and `check=False`: a failure that never started a
+            # merge must not raise a second exception here — same
+            # belt-and-braces stance as `rebase_onto`'s abort.
+            self._run("merge", "--abort", check=False)
+            return False
+        return self.head_sha() != before
+
     def head_commit(self, base: str) -> CommitResult:
         """Describe HEAD as a commit against *base* — for work already committed.
 

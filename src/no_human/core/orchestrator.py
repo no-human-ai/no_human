@@ -142,7 +142,9 @@ from ..vcs.receipts import verify_pr_receipt
 from ..vcs.task_pr import resolve_task_pr
 from . import merge_policy
 from . import plan_gate
-from .base_staleness import base_gap_overlap, should_rebase, staleness_record
+from .base_staleness import (
+    base_gap_overlap, should_rebase, staleness_mode, staleness_record,
+)
 from .bounds import (
     Bounds, ConvergenceTracker, QuotaExhausted, StuckDetector, api_wall_reason,
     error_signature, quota_reason, quota_signal,
@@ -3202,10 +3204,10 @@ class Orchestrator:
     async def _refresh_stale_base(
         self, task: Task, repo: GitRepo, branch: str, base: str | None,
     ) -> None:
-        """Measure this retry's branch against the current base; rebase past
+        """Measure this retry's branch against the current base; act past
         `BASE_STALENESS_REBASE_THRESHOLD`, or below it when the two sides
         touch the same files (`should_rebase`) — the record and event carry
-        `overlapping_files` so a below-threshold rebase is auditable.
+        `overlapping_files` so a below-threshold action is auditable.
 
         A retry that reuses its branch (`ctx['pr_branch']`) or resumes from a
         checkpoint meets whatever base it was cut from, forever, unless
@@ -3216,9 +3218,21 @@ class Orchestrator:
         resolved — true for both the reused-branch path and the fresh/resumed
         path, so this one call site covers both.
 
-        Never fails the attempt: a measurement or rebase failure degrades to
-        an advisory and the attempt proceeds with whatever could be measured
-        (possibly nothing).
+        REBASE vs MERGE is decided by `staleness_mode` off the branch's LIVE
+        remote tip (`fetch_remote_branch_sha`, never the possibly-stale
+        tracking ref): a branch nobody has fetched yet is rebased, exactly as
+        before. A branch with a pushed remote tip is MERGED instead — a
+        rebase there rewrites every commit, making that tip mutually
+        unreachable with the new head, which is exactly what made delivery
+        refuse a previously-pushed branch after every rebase ('remote tip
+        ... is not an ancestor of the reviewed sha'). A merge keeps the new
+        head a descendant of the old tip, so the tip stays an ancestor and
+        `_reconcile_remote_branch` can still fast-forward the remote to it —
+        no force anywhere.
+
+        Never fails the attempt: a measurement, fetch, rebase, or merge
+        failure degrades to an advisory and the attempt proceeds with
+        whatever could be measured (possibly nothing).
         """
         if not base:
             return
@@ -3227,36 +3241,59 @@ class Orchestrator:
         except Exception as exc:
             self._advisory(f"base staleness check failed: {exc}")
             return
-        rebased = False
+        rebased = merged = False
         # A gap can be small and RELATED: three tasks in one evening each paid
         # a conflict round on 1-3 commits that touched their own files (#141).
         overlap = base_gap_overlap(repo, base, behind)
-        if should_rebase(behind, BASE_STALENESS_REBASE_THRESHOLD, overlap):
+        try:
+            remote_tip = repo.fetch_remote_branch_sha(branch)
+        except Exception as exc:  # noqa: BLE001 — staleness must never raise
+            self._advisory(f"base staleness remote check failed: {exc}")
+            remote_tip = None
+        mode = (
+            staleness_mode(behind, BASE_STALENESS_REBASE_THRESHOLD, overlap, remote_tip)
+            if should_rebase(behind, BASE_STALENESS_REBASE_THRESHOLD, overlap)
+            else None
+        )
+        if mode == "merge":
+            try:
+                merged = repo.merge_base_into_branch(base)
+            except Exception as exc:
+                self._advisory(f"base merge failed: {exc}")
+                merged = False
+        elif mode == "rebase":
             try:
                 rebased = repo.rebase_onto(base)
             except Exception as exc:
                 self._advisory(f"base rebase failed: {exc}")
                 rebased = False
-        # `commits_behind` is CURRENT staleness (0 once rebased — the rebase
-        # replayed every local commit on top of `base`, so nothing remains
-        # behind it). `was_behind` is the measurement that justified acting,
+        # `commits_behind` is CURRENT staleness (0 once rebased/merged — the
+        # branch is now caught up with `base`, so nothing remains behind
+        # it). `was_behind` is the measurement that justified acting,
         # preserved so the coder preamble can say how stale the branch WAS
-        # instead of losing that number to the post-rebase 0 it would
+        # instead of losing that number to the post-action 0 it would
         # otherwise read — the exact defect a prior attempt's review caught.
         ctx = task.context or {}
-        ctx["base_staleness"] = staleness_record(behind, rebased, overlap)
+        ctx["base_staleness"] = staleness_record(
+            behind, rebased, overlap, mode=mode, merged=merged)
         task.context = ctx
         await self.store.update_task(task)
+        succeeded = merged if mode == "merge" else rebased if mode == "rebase" else False
+        if mode is None:
+            suffix = ""
+        elif succeeded:
+            suffix = f" — merged {base} into it" if mode == "merge" else " — rebased onto it"
+        else:
+            suffix = " — merge skipped (conflict)" if mode == "merge" else " — rebase skipped (conflict)"
         self.emit(
             "base_staleness",
-            f"branch {branch} is {behind} commit(s) behind {base}"
-            + (" — rebased onto it" if rebased
-               else " — rebase skipped (conflict)" if should_rebase(behind, BASE_STALENESS_REBASE_THRESHOLD, overlap)
-               else ""),
+            f"branch {branch} is {behind} commit(s) behind {base}" + suffix,
             branch=branch,
             base=base,
             commits_behind=behind,
             rebased=rebased,
+            merged=merged,
+            mode=mode,
             overlapping_files=overlap,
         )
 
@@ -17388,6 +17425,19 @@ class Orchestrator:
             staleness_preamble = (
                 "YOUR BRANCH WAS STALE AND HAS BEEN REBASED onto the current "
                 f"base (it was {stale.get('was_behind', stale.get('commits_behind'))} "
+                "commit(s) behind). A fix that landed on the base branch since "
+                "your branch was cut is now in your tree — do not re-diagnose "
+                "or re-fix something the base already resolved; check current "
+                "behavior before assuming a symptom is still present.\n\n"
+            )
+        elif stale.get("merged"):
+            # A pushed branch is brought up to date with a MERGE, not a
+            # rebase (see `staleness_mode`) — the coder still needs the same
+            # "don't re-fix what the base already resolved" narration, just
+            # worded for a merge commit instead of a replay.
+            staleness_preamble = (
+                "YOUR BRANCH WAS STALE AND THE CURRENT BASE HAS BEEN MERGED "
+                f"INTO IT (it was {stale.get('was_behind', stale.get('commits_behind'))} "
                 "commit(s) behind). A fix that landed on the base branch since "
                 "your branch was cut is now in your tree — do not re-diagnose "
                 "or re-fix something the base already resolved; check current "

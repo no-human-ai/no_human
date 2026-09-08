@@ -234,7 +234,13 @@ FROZEN_FUNCTION_LINES = {
     # `commits_behind >= threshold`, and names the overlapping files when a
     # below-threshold overlap-triggered rebase failed to complete. Measured
     # with the scanner below.
-    "core/orchestrator.py:Orchestrator._build_implement_prompt": 381,
+    # 381 -> 394 (+13): a rebased task branch could never be delivered (a
+    # rebase of an already-pushed branch makes the old remote tip mutually
+    # unreachable with the new head, so delivery's ancestor check refused
+    # it forever). `base_staleness` now merges instead of rebasing a pushed
+    # branch, and this preamble gained an `elif stale.get("merged")` branch
+    # narrating that case to the coder. Measured with the scanner below.
+    "core/orchestrator.py:Orchestrator._build_implement_prompt": 394,
     # 332 -> 333 (+1): pin-rederivation follow-up adds one
     # `pin_rederivation_note(card),` line to the markdown body list so the
     # published report carries the same recorded-branch/HEAD-fallback
@@ -303,7 +309,11 @@ FROZEN_FUNCTION_CC = {
     # 67 -> 70 (+3): follow-up to ce4d4a73 (#151) -- one new `if overlap:`
     # block (+1) plus two `stale.get(...) or []` BoolOps (+1 each). Measured
     # with the scanner below.
-    "core/orchestrator.py:Orchestrator._build_implement_prompt": 70,
+    # 70 -> 71 (+1): a rebased task branch could never be delivered (see the
+    # FROZEN_FUNCTION_LINES entry above for the incident) -- one new `elif
+    # stale.get("merged"):` branch narrates the merged case to the coder.
+    # Measured with the scanner below.
+    "core/orchestrator.py:Orchestrator._build_implement_prompt": 71,
 }
 
 # 9 files > 2,500 lines.
@@ -768,7 +778,13 @@ FROZEN_FILE_LINES = {
     # repo.head_sha())`, so the net line count lands back at 22585 — same
     # number as the flag, different (correct, flagless) mechanism. Measured
     # on this tree by the scanner's own metric.
-    "core/orchestrator.py": 22585,
+    # 22585 -> 22635 (+50): a rebased task branch could never be delivered
+    # (see the `_build_implement_prompt` entry above for the incident).
+    # `base_staleness.staleness_mode`/`GitRepo.merge_base_into_branch` add
+    # the merge path, and `_refresh_stale_base` dispatches merge vs rebase
+    # off the branch's live remote tip instead of rebasing unconditionally.
+    # Measured on this tree by the scanner's own metric.
+    "core/orchestrator.py": 22635,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.
