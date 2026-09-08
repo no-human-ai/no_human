@@ -784,7 +784,16 @@ FROZEN_FILE_LINES = {
     # the merge path, and `_refresh_stale_base` dispatches merge vs rebase
     # off the branch's live remote tip instead of rebasing unconditionally.
     # Measured on this tree by the scanner's own metric.
-    "core/orchestrator.py": 22635,
+    # 22635 -> 22661 (+26): `fetch_remote_branch_sha` returns `None` for BOTH
+    # "never pushed" and "remote unreadable" (timeout/auth/network), so a
+    # transient `ls-remote` failure against an ALREADY-PUSHED branch chose
+    # rebase and reproduced the very non-ancestor delivery refusal the merge
+    # path above exists to close. `_refresh_stale_base` now asks
+    # `GitRepo.remote_branch_confirmed_absent` before treating a falsy tip as
+    # "never pushed", and only that positive confirmation may choose rebase;
+    # every other falsy-tip case fails open to merge. Measured on this tree
+    # by the scanner's own metric.
+    "core/orchestrator.py": 22661,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.

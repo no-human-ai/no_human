@@ -218,6 +218,60 @@ async def test_a_merged_branch_still_clears_the_delivery_ancestor_gate(
 
 
 # --------------------------------------------------------------------------- #
+# THE FAILS-BEFORE TEST for the review finding: a transient failure to read
+# the live remote tip (network blip, auth hiccup, `ls-remote` timeout) is
+# INDISTINGUISHABLE, at the `fetch_remote_branch_sha` call site, from "never
+# pushed" — both return `None`. A branch that has genuinely been pushed must
+# still be MERGED, never rebased, when that read merely fails; only a
+# POSITIVE confirmation of absence (`remote_branch_confirmed_absent`) may
+# choose rebase. Before this fix, `staleness_mode` rebased on any falsy tip,
+# so this transient failure alone reintroduced the non-ancestor delivery
+# refusal for an already-pushed branch.
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.asyncio
+async def test_a_transient_fetch_failure_on_a_pushed_branch_still_merges(
+    repo, tmp_path, store, monkeypatch,
+):
+    remote_tip = _make_pushed_stale_branch(
+        repo, "no-human/t5", BASE_STALENESS_REBASE_THRESHOLD)
+    ctx = {"pr_branch": "no-human/t5"}
+
+    # Simulate the live remote-tip read failing (timeout/auth/network) even
+    # though the branch WAS pushed — exactly what a prior review caught:
+    # `fetch_remote_branch_sha` returns `None` for this, same as "never
+    # pushed". `remote_branch_confirmed_absent` is left real: it still asks
+    # the (real, reachable) origin directly and correctly reports the
+    # branch is NOT absent, so the fix must fall open to merge.
+    monkeypatch.setattr(GitRepo, "fetch_remote_branch_sha", lambda self, *a, **k: None)
+
+    def _boom(self, base):
+        raise AssertionError(
+            "rebase_onto must never be called when the remote tip merely "
+            "failed to be read on an already-pushed branch — that is "
+            "exactly the bug this fix closes")
+    monkeypatch.setattr(GitRepo, "rebase_onto", _boom)
+
+    t, events, orch = await _attempt(repo, tmp_path, store, monkeypatch, ctx)
+
+    evs = _staleness_events(events)
+    assert len(evs) == 1
+    ev = evs[0]
+    assert ev["mode"] == "merge"
+    assert ev["merged"] is True
+    assert ev["rebased"] is False
+
+    gr = GitRepo(repo)
+    _git(repo, "checkout", "-q", "no-human/t5")
+    head = gr.head_sha()
+    assert gr.is_ancestor(remote_tip, head), (
+        "a transient fetch failure on an already-pushed branch must still "
+        "merge, keeping the real (unreadable-at-decision-time) remote tip "
+        "an ancestor of the new head"
+    )
+
+
+# --------------------------------------------------------------------------- #
 # AC2: a branch that has NEVER been pushed still rebases — mode, event text
 # and behaviour are all unchanged for this case.
 # --------------------------------------------------------------------------- #
@@ -255,6 +309,42 @@ async def test_a_never_pushed_branch_still_rebases(
     assert staleness["rebased"] is True
     assert staleness["mode"] == "rebase"
     assert staleness["commits_behind"] == 0
+
+
+# --------------------------------------------------------------------------- #
+# `GitRepo.remote_branch_confirmed_absent` unit coverage: it must return
+# `True` ONLY when the remote was actually reached and positively reported no
+# such branch (or there is no remote to have been pushed to at all), and
+# `False` for every kind of "cannot tell" — never guessing "absent" for an
+# error.
+# --------------------------------------------------------------------------- #
+
+def test_remote_branch_confirmed_absent_distinguishes_absence_from_errors(repo):
+    gr = GitRepo(repo)
+
+    # Genuinely never pushed, remote reachable: positively confirmed absent.
+    assert gr.remote_branch_confirmed_absent("no-human/never-pushed") is True
+
+    # Pushed: reachable, and the remote reports it exists — not absent.
+    _git(repo, "checkout", "-q", "-b", "no-human/pushed")
+    (repo / "marker.py").write_text("# pushed\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "pushed branch")
+    _git(repo, "push", "-q", "-u", "origin", "no-human/pushed")
+    assert gr.remote_branch_confirmed_absent("no-human/pushed") is False
+
+    # No remote configured at all: nothing could have been pushed anywhere,
+    # so absence is safe to assume.
+    _git(repo, "remote", "remove", "origin")
+    assert gr.remote_branch_confirmed_absent("no-human/never-pushed") is True
+
+
+def test_remote_branch_confirmed_absent_fails_closed_on_an_unreachable_remote(repo):
+    # An unreachable remote (bad path — same shape as a network/auth
+    # failure: `git ls-remote` exits non-zero) must NOT be read as "absent".
+    _git(repo, "remote", "set-url", "origin", "/no/such/path/at/all.git")
+    gr = GitRepo(repo)
+    assert gr.remote_branch_confirmed_absent("no-human/anything") is False
 
 
 # --------------------------------------------------------------------------- #

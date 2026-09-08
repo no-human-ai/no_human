@@ -3230,6 +3230,16 @@ class Orchestrator:
         `_reconcile_remote_branch` can still fast-forward the remote to it —
         no force anywhere.
 
+        `fetch_remote_branch_sha` returns `None` for BOTH "never pushed" and
+        "remote unreadable" (network/auth failure, timeout). Rebasing on
+        every falsy tip would choose rebase for a transient fetch failure
+        against an already-pushed branch too, reintroducing the exact bug
+        this method fixes. So a falsy tip only chooses rebase when
+        `repo.remote_branch_confirmed_absent(branch)` POSITIVELY confirms
+        there is no such branch on the remote; any other falsy-tip case
+        (including that confirmation call itself failing) falls open to
+        merge, never rebase.
+
         Never fails the attempt: a measurement, fetch, rebase, or merge
         failure degrades to an advisory and the attempt proceeds with
         whatever could be measured (possibly nothing).
@@ -3250,8 +3260,24 @@ class Orchestrator:
         except Exception as exc:  # noqa: BLE001 — staleness must never raise
             self._advisory(f"base staleness remote check failed: {exc}")
             remote_tip = None
+        confirmed_never_pushed = False
+        if not remote_tip:
+            # `remote_tip` is `None` for BOTH "never pushed" and "remote
+            # unreadable" (see `fetch_remote_branch_sha`'s docstring) — only
+            # a POSITIVE confirmation of absence may choose rebase; anything
+            # else (including this check itself failing) must fail open to
+            # merge, never silently fall back to rebasing a branch that may
+            # in fact already be pushed.
+            try:
+                confirmed_never_pushed = repo.remote_branch_confirmed_absent(branch)
+            except Exception as exc:  # noqa: BLE001 — staleness must never raise
+                self._advisory(f"base staleness remote confirmation failed: {exc}")
+                confirmed_never_pushed = False
         mode = (
-            staleness_mode(behind, BASE_STALENESS_REBASE_THRESHOLD, overlap, remote_tip)
+            staleness_mode(
+                behind, BASE_STALENESS_REBASE_THRESHOLD, overlap, remote_tip,
+                confirmed_never_pushed=confirmed_never_pushed,
+            )
             if should_rebase(behind, BASE_STALENESS_REBASE_THRESHOLD, overlap)
             else None
         )

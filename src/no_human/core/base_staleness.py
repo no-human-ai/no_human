@@ -76,6 +76,7 @@ def should_rebase(behind: int, threshold: int, overlap: Iterable[str]) -> bool:
 
 def staleness_mode(
     behind: int, threshold: int, overlap: Iterable[str], remote_tip: str | None,
+    *, confirmed_never_pushed: bool = False,
 ) -> str | None:
     """How to bring a stale branch up to date, or ``None`` to leave it alone.
 
@@ -99,14 +100,29 @@ def staleness_mode(
 
     So: no action past `should_rebase`'s gate returns ``None``. A truthy
     `remote_tip` (the branch has been pushed — see
-    `GitRepo.fetch_remote_branch_sha`, which returns ``None`` for "never
-    pushed / unreadable") returns ``"merge"``. Otherwise (never pushed, or
-    the remote is unreadable and therefore indistinguishable from "never
-    pushed") returns ``"rebase"``, unchanged from today.
+    `GitRepo.fetch_remote_branch_sha`) returns ``"merge"``.
+
+    Otherwise `remote_tip` is `None`, which `fetch_remote_branch_sha`
+    returns for BOTH "never pushed" and "remote unreadable" (network/auth
+    failure, timeout) — collapsed together by design, see that method's
+    docstring. Those two cases must NOT be treated alike here: an earlier
+    version of this function rebased on any falsy `remote_tip`, so a
+    transient `ls-remote` timeout against an ALREADY-PUSHED branch chose
+    rebase, mutually unreaching its own remote tip and reproducing the very
+    non-ancestor delivery refusal this function exists to close — a fetch
+    failure must fail OPEN to the safe action (merge is always safe: an
+    extra merge commit on a branch that turns out to have never been pushed
+    is harmless, whereas a wrongful rebase is not undoable). So `"rebase"`
+    is returned ONLY when the caller can positively confirm, via
+    `GitRepo.remote_branch_confirmed_absent`, that there is no such branch
+    on the remote (`confirmed_never_pushed=True`); every other falsy-tip
+    case — including "cannot tell" — returns ``"merge"``.
     """
     if not should_rebase(behind, threshold, overlap):
         return None
-    return "merge" if remote_tip else "rebase"
+    if remote_tip:
+        return "merge"
+    return "rebase" if confirmed_never_pushed else "merge"
 
 
 def staleness_record(

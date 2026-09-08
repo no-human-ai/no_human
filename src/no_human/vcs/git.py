@@ -1166,6 +1166,46 @@ class GitRepo:
             pass  # best-effort fetch; an unresolved sha fails closed via is_ancestor
         return remote_sha
 
+    def remote_branch_confirmed_absent(self, branch: str, *, remote: str = "origin",
+                                        timeout: int = 30) -> bool:
+        """True only when the remote was actually REACHED and definitively
+        has no such branch — never for "cannot tell".
+
+        `fetch_remote_branch_sha`/`ls_remote_exact` collapse "never pushed"
+        and "remote unreadable" (network failure, auth failure, timeout) to
+        the same `None`, by design, for the reasons their docstrings give.
+        That collapse is exactly right for a caller that only needs to fail
+        open on "cannot know" — but a caller that is about to choose between
+        REBASE and MERGE cannot treat them the same: a rebase of a branch
+        that merely looks unreachable right now, but has in fact been
+        pushed, rewrites every commit and makes that real remote tip
+        mutually unreachable with the new head, reproducing the exact
+        non-ancestor delivery refusal ('remote tip ... is not an ancestor of
+        the reviewed sha') this feature exists to fix. So this method
+        answers a narrower, conservative question: did the remote
+        POSITIVELY confirm there is no such branch? Any error at all —
+        non-zero exit, empty-but-failed response, timeout, or `OSError` —
+        returns `False` ("cannot confirm absence"), never `True`.
+
+        No remote configured is the one case treated as a confirmed
+        absence: a branch that could never have been pushed from this
+        repository at all cannot be holding a remote tip anywhere, so a
+        rebase is safe.
+        """
+        if self.remote_url(remote) is None:
+            return True
+        try:
+            ls = subprocess.run(
+                ["git", "ls-remote", remote, f"refs/heads/{branch}"],
+                cwd=self.path, capture_output=True, text=True, timeout=timeout,
+                **hidden_console_kwargs(),
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            return False
+        if ls.returncode != 0:
+            return False
+        return not ls.stdout.strip()
+
     def fast_forward_local_branch(self, branch: str, sha: str) -> bool:
         """Advance local `branch` to `sha` IF `sha` is a descendant of its
         current tip (or the branch has no tip yet). Never a reset, never a

@@ -293,6 +293,7 @@ def test_a_pushed_branch_chooses_merge_and_an_unpushed_one_rebases():
     # Below the gate: no action regardless of remote state.
     assert staleness_mode(1, THRESHOLD, [], "deadbeef") is None
     assert staleness_mode(1, THRESHOLD, [], None) is None
+    assert staleness_mode(1, THRESHOLD, [], None, confirmed_never_pushed=True) is None
 
     # Past the gate, a truthy remote tip (the branch has been pushed) merges.
     assert staleness_mode(THRESHOLD, THRESHOLD, [], "deadbeef") == "merge"
@@ -300,10 +301,25 @@ def test_a_pushed_branch_chooses_merge_and_an_unpushed_one_rebases():
     # A below-threshold but overlapping, pushed gap also merges.
     assert staleness_mode(1, THRESHOLD, ["src/app.py"], "deadbeef") == "merge"
 
-    # Past the gate, no remote tip (never pushed, or unreadable) rebases —
-    # unchanged from before this fix.
-    assert staleness_mode(THRESHOLD, THRESHOLD, [], None) == "rebase"
-    assert staleness_mode(1, THRESHOLD, ["src/app.py"], None) == "rebase"
+    # Past the gate, a POSITIVELY confirmed absence (the remote was reached
+    # and definitively has no such branch) rebases — unchanged from before
+    # this fix, for the one case it is actually safe.
+    assert staleness_mode(
+        THRESHOLD, THRESHOLD, [], None, confirmed_never_pushed=True) == "rebase"
+    assert staleness_mode(
+        1, THRESHOLD, ["src/app.py"], None, confirmed_never_pushed=True) == "rebase"
+
+    # Past the gate, a falsy tip that is NOT confirmed absent — i.e. the
+    # remote could not be read (network/auth failure, timeout) and is
+    # therefore indistinguishable from "never pushed" — must fail OPEN to
+    # merge, never rebase. Before this fix, `staleness_mode` treated any
+    # falsy tip as "never pushed" and rebased here too, which reintroduces
+    # the exact non-ancestor delivery refusal this feature exists to close
+    # whenever a live `ls-remote` against an ALREADY-PUSHED branch times out.
+    assert staleness_mode(THRESHOLD, THRESHOLD, [], None) == "merge"
+    assert staleness_mode(1, THRESHOLD, ["src/app.py"], None) == "merge"
+    assert staleness_mode(
+        THRESHOLD, THRESHOLD, [], None, confirmed_never_pushed=False) == "merge"
 
 
 def test_staleness_record_zeroes_current_staleness_for_a_merge_too():
