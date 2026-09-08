@@ -4536,35 +4536,31 @@ class Orchestrator:
 
     async def _send_back_resume_round(self, task: Task, *, repo: GitRepo) -> bool:
         """Is the round in progress a resume of a human/reviewer SEND-BACK that
-        the branch already satisfies — i.e. no commit followed the feedback?
+        the branch already satisfies — i.e. an independent review already
+        PASSED the current HEAD after the feedback arrived?
 
-        An earlier version compared the newest ``send_back_feedback["at"]``
-        against the PREVIOUS ATTEMPT's ``started_at``. That does not cover
-        the incident it was written for: task 82644133's send-back (00:06:05)
-        was consumed by attempt 6 (started 00:06:31, failed post-review), and
-        the zero-diff round was attempt 7 (started 00:24:44) — the feedback
-        is OLDER than attempt 7's own predecessor's start, so "feedback newer
-        than the previous attempt's start" reads False and the round still
-        escalates. It also compared the two timestamps as PLAIN STRINGS
-        across formats that do not sort lexically the same as
-        chronologically: ``send_back_feedback`` entries are stamped
-        ``datetime.now(timezone.utc).isoformat()`` (``...T...+00:00``) while
-        ``attempts.started_at`` is SQLite ``datetime('now')`` (``... ...``, a
-        space, no offset) — ``'T' > ' '`` in ASCII, so any feedback on the
-        same UTC date as the newest prior attempt compares GREATER
-        regardless of actual order (db.py's own hazard note, ~4036-4040).
+        An earlier version compared the feedback time against the BRANCH
+        HEAD's git committer date. That is False on the very incident it was
+        written for: task 82644133's send-back arrived at 00:06:05Z, attempt
+        6 then committed ``dae99c22`` at 00:19:40Z (committer date) and
+        PASSED review on it, and attempt 7 (the zero-diff round that should
+        have landed here) never moved HEAD — ``dae99c22`` is still the tip.
+        ``feedback_at (00:06:05) > head_at (00:19:40)`` is False, so the old
+        rule fails closed on the exact case it exists for. Git metadata is
+        also the wrong source of truth here: a per-attempt staleness rebase
+        or any commit amend rewrites committer dates independently of when
+        the feedback or the review actually happened.
 
-        The rule here instead asks whether the branch already carries
-        everything pushed after the feedback arrived: the newest
-        ``send_back_feedback`` entry's ``at`` must be strictly newer than the
-        BRANCH HEAD's committer time. If no commit followed the feedback,
-        this round's zero diff is not a fresh failure — the branch was
-        already correct when the human/reviewer sent it back. Both
-        timestamps are PARSED (``_parse_iso``, ``datetime.fromisoformat``),
-        never compared as strings, so the two formats (and a UTC-day
-        boundary) always compare chronologically. Fails closed (returns
-        False) on anything unparseable or missing — an unreadable signal
-        must never be read as "resume".
+        The rule instead reads only no_human-owned records: the branch
+        already carries an independent review PASS, recorded on the CURRENT
+        HEAD, that was itself recorded AFTER the newest send-back feedback.
+        That PASS is the human's own reviewer having already accepted this
+        exact code, so a zero-diff round on top of it is not a fresh
+        failure. Both timestamps are PARSED (``_parse_iso``), never compared
+        as strings — ``send_back_feedback`` entries use
+        ``datetime.now(timezone.utc).isoformat()`` while some historical
+        ``review_history`` rows may lack an ``"at"`` entirely (pre-dating
+        this stamp); those fail closed onto the ordinary escalation path.
         """
         feedback = (task.context or {}).get("send_back_feedback") or []
         if not feedback or not isinstance(feedback[-1], dict):
@@ -4572,10 +4568,20 @@ class Orchestrator:
         feedback_at = _parse_iso(str(feedback[-1].get("at") or ""))
         if feedback_at is None:
             return False
-        head_at = _parse_iso(repo._run("log", "-1", "--format=%cI", check=False))
-        if head_at is None:
+        history = (task.context or {}).get("review_history") or []
+        if not history or not isinstance(history[-1], dict):
             return False
-        return feedback_at > head_at
+        last = history[-1]
+        if last.get("passed") is not True:
+            return False
+        sha = str(last.get("sha") or "").strip()
+        head_sha = repo.head_sha().strip()
+        if not sha or not head_sha or sha != head_sha:
+            return False
+        review_at = _parse_iso(str(last.get("at") or ""))
+        if review_at is None:
+            return False
+        return review_at > feedback_at
 
     async def _land_no_changes_needed(
         self, task: Task, *, repo: GitRepo, attempt_id: str, result: AgentResult,
@@ -4584,29 +4590,30 @@ class Orchestrator:
         changes needed", or return None to let the caller's ordinary
         failure/escalation path run.
 
-        Fires only when ALL of: (1) `_send_back_resume_round` — the branch
-        already carries everything pushed after the newest send-back
-        feedback; (2) an existing PR to return the human to
+        Fires only when ALL of: (1) `_send_back_resume_round` — an
+        independent review already PASSED this exact HEAD after the newest
+        send-back feedback; (2) an existing PR to return the human to
         (`resolve_task_pr`) — with no PR there is nothing to await approval
-        on; (3) `AWAITING_APPROVAL` is reachable from the task's CURRENT
-        status via the state machine's legal edges (checked before any
-        write, so a refusal leaves no half-landed row). Neither guard is
-        redundant: hardcoding (1) True still fails a first attempt with no
-        PR to return to; hardcoding (2) True still fails a send-back resume
-        with no PR — each is covered by its own isolating test.
+        on. Neither guard is redundant: hardcoding (1) True still fails a
+        first attempt with no PR to return to; hardcoding (2) True still
+        fails a send-back resume with no PR — each is covered by its own
+        isolating test.
 
-        RULE: never ``validate=False``. ``IMPLEMENTING -> AWAITING_APPROVAL``
-        (and ``REVIEWING -> AWAITING_APPROVAL``) are not legal single edges
-        (`core/task.py::_allowed_transitions`) — the normal PR-open path
-        (`_advance_after_review`) reaches `AWAITING_APPROVAL` through the
-        SAME validated main-flow edges used here: a hop to `TESTING` first
-        (legal from IMPLEMENTING/REVIEWING and every off-ramp-resumable
-        state), then `TESTING -> AWAITING_APPROVAL` (legal, main flow). No
-        `mechanical_round` stamp either — that flag means a post-PASS
-        MECHANICAL round (`_mechanical_round`) and exempts the round's token
-        spend from the lifetime budget (db.py ~2884-2892); this round is a
-        normal, budget-counted attempt that happens to need no new commit,
-        recorded with its own `no_changes_needed` context marker instead.
+        RULE: never ``validate=False``. `IMPLEMENTING`/`REVIEWING` ->
+        `AWAITING_APPROVAL` reaches the target through the same validated
+        main-flow edges the normal PR-open path uses: `TESTING` first, then
+        `TESTING -> AWAITING_APPROVAL` — both always legal from the states
+        this route can start in, so no reachability check is needed. No
+        commit runs on this route, so the `TESTING` hop's phase row (opened
+        by `set_status`, `db.py::_record_phase`) is closed immediately with
+        `no_tests_run` rather than left to read as a real test phase. Status
+        writes land BEFORE anything else is recorded, so a CAS refusal
+        (`set_status` returning ``None``) leaves no `succeeded` attempt row
+        and no `no_changes_needed` marker on a task that reads failed. No
+        `mechanical_round` stamp either — that flag exempts a post-PASS
+        MECHANICAL round's token spend from the lifetime budget (db.py
+        ~2884-2892); this round is a normal, budget-counted attempt that
+        happens to need no new commit.
         """
         if not await self._send_back_resume_round(task, repo=repo):
             return None
@@ -4615,14 +4622,15 @@ class Orchestrator:
             return None
 
         target = TaskStatus.AWAITING_APPROVAL
-        needs_testing_hop = False
         if task.status is not target:
-            if can_transition(task.status, target):
-                pass
-            elif can_transition(task.status, TaskStatus.TESTING):
-                needs_testing_hop = True
-            else:
-                return None  # unreachable legally -> fail closed, no write made
+            if await self.store.set_status(task, TaskStatus.TESTING) is None:
+                return None
+            await self.store.close_phase(
+                task.id, "no_tests_run",
+                reason="no changes needed — no test run in this round",
+            )
+            if await self.store.set_status(task, target) is None:
+                return None
 
         feedback = (task.context or {}).get("send_back_feedback") or []
         feedback_at = (
@@ -4646,14 +4654,6 @@ class Orchestrator:
         })
         task.context = merged
         self.emit("no_changes_needed", detail, pr_url=pr.url)
-
-        if task.status is not target:
-            if needs_testing_hop:
-                if await self.store.set_status(task, TaskStatus.TESTING) is None:
-                    return None
-            if await self.store.set_status(task, target) is None:
-                return None
-
         self.emit("state", detail, status=target.value)
         return TaskOutcome(task, status=target, pr_url=pr.url, detail=detail)
 
@@ -10892,6 +10892,10 @@ class Orchestrator:
         40-line diff, so the human was reading a verdict on code that is not in
         front of them. Stamping is the only thing that makes the two separable
         afterwards.
+
+        ``"at"`` records when THIS review concluded, so a later reader (e.g.
+        ``_send_back_resume_round``) can ask whether the PASS on the current
+        HEAD is newer than some other event, without trusting git metadata.
         """
         ctx = task.context or {}
         history = list(ctx.get("review_history") or [])
@@ -10899,6 +10903,7 @@ class Orchestrator:
             "round": len(history) + 1,
             "sha": (commit_sha or "").strip(),
             "passed": bool(decision.passed),
+            "at": _now(),
             "blocking": [
                 f"{i.label} — {i.evidence[:160]}" for i in decision.blocking_items[:5]
             ],
