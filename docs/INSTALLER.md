@@ -14,6 +14,19 @@ uv sync
 cd desktop && npm run dist:bundled
 ```
 
+`npm ci` (or `npm install`) in `desktop/` now fetches the Electron binary at
+install time, via a `postinstall` script (`node node_modules/electron/install.js`)
+in `desktop/package.json`. Electron itself has shipped no postinstall of its own
+since v42 — left alone, the binary is instead fetched lazily on the first real
+`require("electron")`, which for a packaging build is invisible but for a cold
+`node --test desktop/*.test.mjs` run landed *inside* the concurrent suite and
+starved the Electron-stub boot tests' 20 s settle windows. The install step is
+idempotent (electron's own `isInstalled()` check short-circuits once `dist/`
+and `path.txt` already match the installed version) and is served from the
+local Electron cache (`~/Library/Caches/electron` on macOS) when warm. Skip it
+with `npm ci --ignore-scripts` for a fast, Electron-stubbed test run — see
+`CONTRIBUTING.md`'s "Desktop shell" section.
+
 That runs three steps:
 
 1. `packaging/build-installer.sh` — builds `web/dist`, freezes the server via

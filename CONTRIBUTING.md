@@ -293,9 +293,14 @@ node --test $(ls *.test.mjs | grep -v '^uiPages.test.mjs$')
 ```
 
 Nearly 400 tests; as above, the run's own `# tests` line is the figure to
-trust. `--ignore-scripts` skips Electron's postinstall, which downloads a
-platform binary of about 100 MB. The suite does not need it: Electron is
-stubbed through `desktop/testing/electronLoader.mjs`.
+trust. A plain `npm ci` now runs this package's own `postinstall`
+(`node node_modules/electron/install.js`), which downloads the ~200 MB
+platform binary (served from `~/Library/Caches/electron` when warm) — since
+Electron 42 ships no postinstall of its own, and without one the binary is
+instead fetched lazily on the first real `require("electron")`, which can
+land inside a concurrent `node --test` run and starve the stubbed-boot
+tests' 20 s settle windows. `--ignore-scripts` skips that install. The suite
+does not need it: Electron is stubbed through `desktop/testing/electronLoader.mjs`.
 
 The one exception is `desktop/uiPages.test.mjs`, which spawns the real Electron
 binary to measure computed styles in a renderer. It needs a full install, so run

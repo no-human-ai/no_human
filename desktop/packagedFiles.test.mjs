@@ -214,6 +214,22 @@ test("every dist script names the real config", () => {
   }
 });
 
+test("npm ci fetches the Electron binary — package.json declares the postinstall", () => {
+  // Electron >=42 ships no postinstall of its own; without one, the binary is
+  // fetched lazily on the first real `require("electron")`. In a cold
+  // `node --test desktop/*.test.mjs` that first require can land INSIDE the
+  // concurrent run and starve the 20 s settle windows of the stubbed-boot
+  // tests (mainSaveFailure.test.mjs, mainStartupFailure.test.mjs). Warming
+  // the binary at install time keeps every test run's `dist/` already
+  // populated. electron/install.js's own `isInstalled()` check makes this
+  // idempotent: a repeat `npm ci` is a no-op once `dist/` and `path.txt`
+  // already match the installed version.
+  const postinstall = pkg.scripts?.postinstall;
+  assert.ok(postinstall, "no postinstall script — a cold test run can download Electron mid-boot");
+  assert.match(postinstall, /electron[\\/]install\.js|require\(['"]electron['"]\)/,
+    `postinstall does not invoke electron's own installer: ${postinstall}`);
+});
+
 test("the frozen server is actually shipped as extraResources", () => {
   // `files` is guarded above; the PAYLOAD was not. Deleting this block builds a
   // DMG that launches and can never start a server.

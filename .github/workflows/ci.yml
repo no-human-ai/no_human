@@ -491,9 +491,10 @@ jobs:
           cache: npm
           cache-dependency-path: desktop/package-lock.json
 
-      # --ignore-scripts skips Electron's postinstall, which fetches a ~100 MB
-      # platform binary. The suite does not need it: Electron is stubbed
-      # through desktop/testing/electronLoader.mjs.
+      # --ignore-scripts skips this package's postinstall (which runs
+      # Electron's own installer), fetching a ~100 MB platform binary. The
+      # suite does not need it: Electron is stubbed through
+      # desktop/testing/electronLoader.mjs.
       - run: npm ci --ignore-scripts
 
       # Icons are build OUTPUTS (untracked); packagedFiles.test.mjs checks the
