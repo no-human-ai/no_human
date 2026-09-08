@@ -4545,22 +4545,32 @@ class Orchestrator:
         6 then committed ``dae99c22`` at 00:19:40Z (committer date) and
         PASSED review on it, and attempt 7 (the zero-diff round that should
         have landed here) never moved HEAD — ``dae99c22`` is still the tip.
-        ``feedback_at (00:06:05) > head_at (00:19:40)`` is False, so the old
-        rule fails closed on the exact case it exists for. Git metadata is
+        ``feedback_at (00:06:05) > head_at (00:19:40)`` is False, so that
+        rule failed closed on the exact case it exists for. Git metadata is
         also the wrong source of truth here: a per-attempt staleness rebase
         or any commit amend rewrites committer dates independently of when
         the feedback or the review actually happened.
 
-        The rule instead reads only no_human-owned records: the branch
-        already carries an independent review PASS, recorded on the CURRENT
-        HEAD, that was itself recorded AFTER the newest send-back feedback.
-        That PASS is the human's own reviewer having already accepted this
-        exact code, so a zero-diff round on top of it is not a fresh
-        failure. Both timestamps are PARSED (``_parse_iso``), never compared
-        as strings — ``send_back_feedback`` entries use
-        ``datetime.now(timezone.utc).isoformat()`` while some historical
-        ``review_history`` rows may lack an ``"at"`` entirely (pre-dating
-        this stamp); those fail closed onto the ordinary escalation path.
+        A later version read ``task.context["review_history"]`` instead.
+        That is also False on the real data: task 82644133's attempts never
+        carry a ``review_history[].at`` entry at all — that field exists on
+        no row created before this rule — so the round-3 check could never
+        have fired on the incident it names.
+
+        The rule instead reads only the ``attempts`` table: does any OTHER
+        attempt row (excluding the one running right now) carry
+        ``review_passed == 1`` on the CURRENT HEAD's ``commit_sha``, with a
+        ``started_at`` newer than the newest ``send_back_feedback`` entry?
+        ``commit_sha`` is used for commit IDENTITY only, never for a date —
+        the round-2 committer-date rule was False on the incident precisely
+        because it tried to read a date off git. Both timestamps are PARSED
+        (``_parse_iso``), never compared as strings: ``send_back_feedback``
+        entries use ``datetime.now(timezone.utc).isoformat()`` (a ``T``, an
+        offset) while ``attempts.started_at`` is SQLite ``datetime('now')``
+        (a space, no ``T``, no offset) — ``_parse_iso`` treats the naive
+        SQLite form as UTC, so the comparison is between parsed instants,
+        never strings. (``review_history[].at`` is still WRITTEN by
+        ``_append_review_history`` — it is simply no longer read here.)
         """
         feedback = (task.context or {}).get("send_back_feedback") or []
         if not feedback or not isinstance(feedback[-1], dict):
@@ -4568,20 +4578,24 @@ class Orchestrator:
         feedback_at = _parse_iso(str(feedback[-1].get("at") or ""))
         if feedback_at is None:
             return False
-        history = (task.context or {}).get("review_history") or []
-        if not history or not isinstance(history[-1], dict):
-            return False
-        last = history[-1]
-        if last.get("passed") is not True:
-            return False
-        sha = str(last.get("sha") or "").strip()
         head_sha = repo.head_sha().strip()
-        if not sha or not head_sha or sha != head_sha:
+        if not head_sha:
             return False
-        review_at = _parse_iso(str(last.get("at") or ""))
-        if review_at is None:
+        rows = await self.store.list_attempts(task.id)
+        current_id = getattr(self, "_active_attempt_id", None)
+        qualifying = [
+            r for r in rows
+            if r.get("id") != current_id
+            and int(r.get("review_passed") or 0) == 1
+            and str(r.get("commit_sha") or "").strip() == head_sha
+        ]
+        if not qualifying:
             return False
-        return review_at > feedback_at
+        newest = max(qualifying, key=lambda r: str(r.get("started_at") or ""))
+        started = _parse_iso(str(newest.get("started_at") or ""))
+        if started is None:
+            return False
+        return started > feedback_at
 
     async def _land_no_changes_needed(
         self, task: Task, *, repo: GitRepo, attempt_id: str, result: AgentResult,
@@ -4590,8 +4604,9 @@ class Orchestrator:
         changes needed", or return None to let the caller's ordinary
         failure/escalation path run.
 
-        Fires only when ALL of: (1) `_send_back_resume_round` — an
-        independent review already PASSED this exact HEAD after the newest
+        Fires only when ALL of: (1) `_send_back_resume_round` — some OTHER
+        `attempts` row records an independent review PASS (`review_passed`)
+        on this exact HEAD's `commit_sha`, `started_at` after the newest
         send-back feedback; (2) an existing PR to return the human to
         (`resolve_task_pr`) — with no PR there is nothing to await approval
         on. Neither guard is redundant: hardcoding (1) True still fails a
@@ -4638,8 +4653,8 @@ class Orchestrator:
             if feedback and isinstance(feedback[-1], dict) else None
         )
         detail = (
-            "no changes needed — the branch already satisfies the "
-            "send-back feedback; PR unchanged, awaiting your review"
+            "no changes needed after the send-back; the head already "
+            "passed review"
         )
         await self.store.update_attempt(
             attempt_id, status="succeeded", failure_reason=None, pr_url=pr.url,
