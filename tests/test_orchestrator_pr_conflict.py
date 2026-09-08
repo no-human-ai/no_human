@@ -467,7 +467,26 @@ def test_frozen_entries_match_the_measured_tree():
 '''
 
 
-def _repo_with_budget_stub(tmp_path: Path) -> Path:
+# Preflight-shaped stub for `src/no_human/testing/structural_budget.py` --
+# PR #1035's planned extraction as it actually looks on trunk since 31a03c9f
+# (2026-09-04): frozen-path helpers only, NO `scan_tree`. Used (opt-in) by
+# `_repo_with_budget_stub(with_preflight_module=True)` to reproduce the
+# incident shape (tasks d256ae60/e9e90630, 2026-09-08) where `load_scanner`
+# used to prefer this file unconditionally and fail closed.
+_PREFLIGHT_MODULE_STUB = '''\
+"""Throwaway structural-budget PREFLIGHT helper stub -- mirrors the shape of
+the real src/no_human/testing/structural_budget.py (frozen_paths and
+friends), deliberately WITHOUT scan_tree, which the real module also lacks.
+"""
+from __future__ import annotations
+
+
+def frozen_paths(root):
+    return []
+'''
+
+
+def _repo_with_budget_stub(tmp_path: Path, *, with_preflight_module: bool = False) -> Path:
     """`_repo()` plus a `src/no_human/` subtree (one function, `grow`,
     already over the stub's own threshold) and a throwaway
     `tests/test_structural_budget.py` (`_BUDGET_STUB`) so tests can drive the
@@ -475,6 +494,11 @@ def _repo_with_budget_stub(tmp_path: Path) -> Path:
     `EXPORT_CLASSIFICATION.txt`'s `drop tests/**` count is bumped 1 -> 2 in
     the same commit (a second tracked file now matches it) -- `_repo()`
     itself, and every OTHER test that calls it directly, is untouched.
+
+    `with_preflight_module=True` additionally writes a scan_tree-less
+    `src/no_human/testing/structural_budget.py` (`_PREFLIGHT_MODULE_STUB`)
+    into this same base commit, so both branches built on top inherit it --
+    reproducing the real worktree shape `load_scanner` must fall through.
     """
     work = _repo(tmp_path)
     no_human = work / "src" / "no_human"
@@ -486,10 +510,17 @@ def _repo_with_budget_stub(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
     (work / "tests" / "test_structural_budget.py").write_text(_BUDGET_STUB, encoding="utf-8")
+    approve_paths = ["src/no_human/growing.py"]
+    if with_preflight_module:
+        testing_dir = no_human / "testing"
+        testing_dir.mkdir()
+        (testing_dir / "structural_budget.py").write_text(
+            _PREFLIGHT_MODULE_STUB, encoding="utf-8")
+        approve_paths.append("src/no_human/testing/structural_budget.py")
     _bump_drop_count(work, "tests/**", 2)
     _git(work, "add", "-A")
     _git(work, "commit", "-qm", "add src/no_human/growing.py + budget stub")
-    _approve(work, ["src/no_human/growing.py"])
+    _approve(work, approve_paths)
     _git(work, "add", "RELEASE_MANIFEST.txt")
     _git(work, "commit", "-qm", "pin growing.py")
     _git(work, "push", "-q", "origin", "HEAD:refs/heads/main")
@@ -1526,6 +1557,168 @@ async def test_a_classification_count_and_budget_conflict_resolve_together(
     assert v.returncode == 0, v.stdout + v.stderr
     ok, detail = run_budget_test(str(wt_check))
     assert ok, detail
+
+
+async def test_a_budget_conflict_resolves_when_the_real_module_lacks_scan_tree(tmp_path, monkeypatch):
+    """Bugfix regression, end to end: `src/no_human/testing/structural_budget.py`
+    HAS existed on trunk since 31a03c9f (2026-09-04), but only as PR #1035's
+    structural-budget PREFLIGHT helper (frozen_paths/touched_frozen/...) --
+    it has never defined `scan_tree`. Before this fix, `load_scanner`
+    preferred that (scan_tree-less) module unconditionally, `measure()`'s
+    `scanner.scan_tree(...)` call raised `AttributeError`, silently swallowed
+    to a bare `None`, and `_take_budget_hunks` escalated a purely numeric
+    FROZEN_FUNCTION_LINES conflict instead of mechanically resolving it
+    (tasks d256ae60/e9e90630, PRs #166/#169, 2026-09-08). This drives
+    `dc._take_budget_hunks` directly against a REAL merge (not the isolated
+    parser/predicate unit test in test_budget_conflict_numeric_only.py) on a
+    worktree carrying exactly that scan_tree-less real module."""
+    _use_stub_export_guard(monkeypatch)
+    work = _repo_with_budget_stub(tmp_path, with_preflight_module=True)
+
+    wt_f = tmp_path / "wt_feature"
+    _worktree(work, wt_f, "feature")
+    (wt_f / "src" / "no_human" / "growing.py").write_text(
+        "def grow():\n"
+        "    b = 0\n"
+        "    a = 1\n"
+        "    return a\n",
+        encoding="utf-8",
+    )
+    budget_path_f = wt_f / "tests" / "test_structural_budget.py"
+    budget_path_f.write_text(
+        budget_path_f.read_text(encoding="utf-8").replace(
+            '"growing.py:grow": 3,', '"growing.py:grow": 4,'
+        ),
+        encoding="utf-8",
+    )
+    _git(wt_f, "add", "-A")
+    _git(wt_f, "commit", "-qm", "feature grows grow() at the top")
+    branch_tip_sha = _git(wt_f, "rev-parse", "HEAD").stdout.strip()
+    _push_branch(work, wt_f, "feature")
+
+    (work / "src" / "no_human" / "growing.py").write_text(
+        "def grow():\n"
+        "    a = 1\n"
+        "    c = 2\n"
+        "    d = 3\n"
+        "    return a\n",
+        encoding="utf-8",
+    )
+    budget_path_m = work / "tests" / "test_structural_budget.py"
+    budget_path_m.write_text(
+        budget_path_m.read_text(encoding="utf-8").replace(
+            '"growing.py:grow": 3,', '"growing.py:grow": 5,'
+        ),
+        encoding="utf-8",
+    )
+    _git(work, "add", "-A")
+    _git(work, "commit", "-qm", "main grows grow() at the bottom")
+    _git(work, "push", "-q", "origin", "HEAD:refs/heads/main")
+
+    # sanity: growing.py itself auto-merges (non-overlapping insertions);
+    # neither branch here touches RELEASE_MANIFEST.txt (no _approve/pin
+    # step), so the ONLY conflicting path is the frozen entry line -- keeps
+    # this test's assertions confined to dc._take_budget_hunks itself.
+    paths = await dc.conflicting_paths(str(work), "main", "feature")
+    assert paths == {dc.BUDGET_TEST_PATH}
+
+    wt_m = tmp_path / "wt_merge"
+    _worktree(work, wt_m, "merge-check", "feature")
+    base_tip_sha = _git(work, "rev-parse", "main").stdout.strip()
+    merge = subprocess.run(
+        ["git", "merge", "--no-edit", base_tip_sha],
+        cwd=wt_m, capture_output=True, text=True,
+    )
+    assert merge.returncode != 0, merge.stdout + merge.stderr  # a genuine conflict
+
+    resolution, notes = dc._take_budget_hunks(wt_m, branch_tip_sha)
+    assert resolution is None, resolution.detail if resolution else None
+    assert notes == ["FROZEN_FUNCTION_LINES:growing.py:grow -> 6"]
+
+    frozen_text = (wt_m / "tests" / "test_structural_budget.py").read_text(encoding="utf-8")
+    # the TRUE merged-tree measurement (6 lines) -- neither branch's own
+    # declared, wrong, number (4 or 5).
+    assert '"growing.py:grow": 6,' in frozen_text
+
+    staged = subprocess.run(
+        ["git", "diff", "--cached", "--name-only"],
+        cwd=wt_m, capture_output=True, text=True, check=True,
+    ).stdout.split()
+    assert dc.BUDGET_TEST_PATH in staged
+
+
+async def test_a_budget_scanner_failure_detail_names_the_reason(tmp_path, monkeypatch):
+    """When the scanner `_take_budget_hunks` falls back to (`ours`'s own
+    `tests/test_structural_budget.py` copy, since the real module here again
+    lacks `scan_tree`) itself raises inside `scan_tree`, the returned
+    `DerivedResolution.detail` must name the concrete exception text -- not
+    the old bare "could not run the ... scanner against the merged tree"
+    sentence that gave zero signal about WHY (the exact swallowing this
+    bugfix removes; see `measure`'s `except Exception as exc: return None,
+    f"scan_tree failed ...: {exc!r}"`)."""
+    _use_stub_export_guard(monkeypatch)
+    work = _repo_with_budget_stub(tmp_path, with_preflight_module=True)
+
+    wt_f = tmp_path / "wt_feature"
+    _worktree(work, wt_f, "feature")
+    (wt_f / "src" / "no_human" / "growing.py").write_text(
+        "def grow():\n"
+        "    b = 0\n"
+        "    a = 1\n"
+        "    return a\n",
+        encoding="utf-8",
+    )
+    budget_path_f = wt_f / "tests" / "test_structural_budget.py"
+    broken = budget_path_f.read_text(encoding="utf-8").replace(
+        '"growing.py:grow": 3,', '"growing.py:grow": 4,'
+    ).replace(
+        "def scan_tree(root):\n",
+        "def scan_tree(root):\n    raise RuntimeError(\"boom-scanner-xyz\")\n",
+        1,
+    )
+    budget_path_f.write_text(broken, encoding="utf-8")
+    _git(wt_f, "add", "-A")
+    _git(wt_f, "commit", "-qm", "feature grows grow() and breaks its own scanner")
+    branch_tip_sha = _git(wt_f, "rev-parse", "HEAD").stdout.strip()
+    _push_branch(work, wt_f, "feature")
+
+    (work / "src" / "no_human" / "growing.py").write_text(
+        "def grow():\n"
+        "    a = 1\n"
+        "    c = 2\n"
+        "    d = 3\n"
+        "    return a\n",
+        encoding="utf-8",
+    )
+    budget_path_m = work / "tests" / "test_structural_budget.py"
+    budget_path_m.write_text(
+        budget_path_m.read_text(encoding="utf-8").replace(
+            '"growing.py:grow": 3,', '"growing.py:grow": 5,'
+        ),
+        encoding="utf-8",
+    )
+    _git(work, "add", "-A")
+    _git(work, "commit", "-qm", "main grows grow() at the bottom")
+    _git(work, "push", "-q", "origin", "HEAD:refs/heads/main")
+
+    paths = await dc.conflicting_paths(str(work), "main", "feature")
+    assert paths == {dc.BUDGET_TEST_PATH}
+
+    wt_m = tmp_path / "wt_merge2"
+    _worktree(work, wt_m, "merge-check-2", "feature")
+    base_tip_sha = _git(work, "rev-parse", "main").stdout.strip()
+    merge = subprocess.run(
+        ["git", "merge", "--no-edit", base_tip_sha],
+        cwd=wt_m, capture_output=True, text=True,
+    )
+    assert merge.returncode != 0, merge.stdout + merge.stderr  # a genuine conflict
+
+    resolution, notes = dc._take_budget_hunks(wt_m, branch_tip_sha)
+    assert notes == []
+    assert resolution is not None
+    assert resolution.ok is False
+    assert resolution.step == "budget"
+    assert "boom-scanner-xyz" in resolution.detail, resolution.detail
 
 
 async def test_a_count_conflict_that_also_flips_a_verb_opens_a_coder_round(store, tmp_path, monkeypatch):

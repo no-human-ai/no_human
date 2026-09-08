@@ -13,8 +13,12 @@ from the end-to-end mechanical-resolution tests in
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 from no_human.vcs.budget_conflict import (
     hunks_numeric_only,
+    load_scanner,
+    measure,
     parse_conflict_hunks,
     resolve_hunks,
 )
@@ -141,3 +145,98 @@ def test_unparseable_markers_refuse():
     assert parse_conflict_hunks(marker_outside_hunk) is None
     assert hunks_numeric_only(marker_outside_hunk) is False
     assert resolve_hunks(marker_outside_hunk, {}) is None
+
+
+# --------------------------------------------------------------------------- #
+# `load_scanner`/`measure` -- the loader that decides between the real
+# `src/no_human/testing/structural_budget.py` module (PR #1035's planned
+# extraction) and "ours"'s self-contained `tests/test_structural_budget.py`
+# copy. Bugfix: the real module has existed since 31a03c9f (2026-09-04) as a
+# PREFLIGHT helper (frozen_paths/touched_frozen/...) with no `scan_tree` --
+# preferring it unconditionally (as `load_scanner` used to) made `measure()`
+# fail closed on every worktree that has it, and the swallowed `AttributeError`
+# reported nothing but "could not run the scanner" (tasks d256ae60/e9e90630,
+# 2026-09-08). These tests drive `load_scanner`/`measure` directly against a
+# hand-built fake worktree -- no git, no real scanner.
+# --------------------------------------------------------------------------- #
+
+_PREFLIGHT_BODY = '''\
+"""Preflight helper stub -- no scan_tree, mirroring the real
+src/no_human/testing/structural_budget.py shape as of 31a03c9f."""
+from __future__ import annotations
+
+
+def frozen_paths(root):
+    return []
+'''
+
+_REAL_WITH_SCAN_TREE = '''\
+SENTINEL = "real-module"
+
+
+def scan_tree(root):
+    return {}, {}, {}, 0, 0
+'''
+
+_MINIMAL_SCANNER = '''\
+def scan_tree(root):
+    return {}, {}, {}, 0, 0
+'''
+
+_RAISING_SCANNER = '''\
+def scan_tree(root):
+    raise RuntimeError("boom-xyz")
+'''
+
+_BROKEN_SCANNER = "def scan_tree(:\n    pass\n"  # syntax error -- fails to load
+
+
+def _fake_worktree(tmp_path, real_body: str | None = None) -> Path:
+    """A minimal fake worktree: `<wt>/src/no_human/` with one trivial module
+    (so `Path(root) / "src" / "no_human"` exists), and -- when *real_body* is
+    given -- a `src/no_human/testing/structural_budget.py` carrying it, the
+    same path `load_scanner` prefers on a real worktree."""
+    wt = tmp_path / "wt"
+    no_human = wt / "src" / "no_human"
+    no_human.mkdir(parents=True)
+    (no_human / "trivial.py").write_text("x = 1\n", encoding="utf-8")
+    if real_body is not None:
+        testing_dir = no_human / "testing"
+        testing_dir.mkdir()
+        (testing_dir / "structural_budget.py").write_text(real_body, encoding="utf-8")
+    return wt
+
+
+def test_a_real_module_without_scan_tree_falls_back_to_the_ours_test_file(tmp_path):
+    wt = _fake_worktree(tmp_path, real_body=_PREFLIGHT_BODY)
+    measured, reason = measure(str(wt), _MINIMAL_SCANNER)
+    assert reason == ""
+    assert measured is not None
+    assert set(measured) == {
+        "FROZEN_FUNCTION_LINES", "FROZEN_FUNCTION_CC", "FROZEN_FILE_LINES",
+    }
+
+
+def test_load_scanner_prefers_the_real_module_when_it_has_scan_tree(tmp_path):
+    wt = _fake_worktree(tmp_path, real_body=_REAL_WITH_SCAN_TREE)
+    mod, reason = load_scanner(str(wt), _MINIMAL_SCANNER)
+    assert reason == ""
+    # a sentinel only the REAL module defines -- proves "ours" was not
+    # silently loaded instead.
+    assert getattr(mod, "SENTINEL", None) == "real-module"
+
+
+def test_a_raising_scan_tree_reports_the_exception_text(tmp_path):
+    wt = _fake_worktree(tmp_path)
+    measured, reason = measure(str(wt), _RAISING_SCANNER)
+    assert measured is None
+    assert "boom-xyz" in reason
+
+
+def test_no_scanner_at_all_names_both_attempts(tmp_path):
+    wt = _fake_worktree(tmp_path, real_body=_PREFLIGHT_BODY)
+    real_path = wt / "src" / "no_human" / "testing" / "structural_budget.py"
+    mod, reason = load_scanner(str(wt), _BROKEN_SCANNER)
+    assert mod is None
+    assert str(real_path) in reason
+    assert "scan_tree" in reason
