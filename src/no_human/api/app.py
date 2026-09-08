@@ -177,7 +177,7 @@ async def lifespan(app: FastAPI):
     # CSP is computed once per app start from the loaded config: strict by
     # default, widened by exactly the PostHog hosts when the operator opted in.
     app.state.csp = _build_csp(config.data)
-    # Opt-in telemetry (default OFF — record() no-ops without consent).
+    # Opt-OUT, default ON: config.py pins telemetry.enabled True (#120: this said OFF).
     try:
         from .. import telemetry as _telemetry
         _telemetry.record("app_started", config=config.data)
