@@ -74,7 +74,44 @@ _TEXT_BUFFER = 6   # recent assistant utterances kept for the assumption/skill c
 # a human send-back that failed to load is the ONE case where staying silent
 # steers the supervisor straight back to a criterion the send-back amended.
 SEND_BACK_UNREADABLE = "__send_back_unreadable__"
-_SEND_BACK_MAX = 3   # newest 3 entries, same bound as prompt_blocks.build_resume_digest
+_SEND_BACK_MAX = 3   # newest 3 HUMAN entries, same bound as prompt_blocks.build_resume_digest
+# Total rendered budget across all kept entries — NOT a per-message cap. A
+# per-message cap (the previous bug) truncated a human send-back mid-sentence
+# whenever it ran long (measured: a 3338-char incident send-back was cut
+# before its amendment clause even started). The newest entry is NEVER
+# truncated regardless of this budget; only OLDER entries are dropped
+# (never truncated) once the running total would exceed it.
+_SEND_BACK_TOTAL_BUDGET = 6000
+
+# Every writer of `send_back_feedback` that is NOT a human stamps a `source`:
+# repro gate (orchestrator.py `_fail`), tamper adjudication
+# (orchestrator.py), a PR rebase conflict, PR CI red, the CI_GATE
+# integration check (all three in blockers/wake.py), and a GitHub PR review
+# comment (blockers/wake.py, `author` is the reviewer's login, not "human").
+# The two human paths — the API's send-back endpoint (api/app.py) and `nh
+# reject` (cli/commands.py) — never set `source`. Filtering on "no source"
+# (rather than an allow-list of human source values, which don't exist) means
+# a future machine writer that forgets to appear in this set is still
+# excluded, as long as it sets ANY source — the one thing a human send-back
+# never has.
+_MACHINE_SEND_BACK_SOURCES = frozenset({
+    "repro_gate", "tamper_adjudication", "pr_conflict", "pr_ci", "ci_gate",
+    "pr_comment",
+})
+
+
+def _is_human_send_back(raw: Any) -> bool:
+    """True for a human-authored ``send_back_feedback`` entry.
+
+    Bare-string entries predate the ``source`` field (tolerated by
+    ``format_send_back_feedback`` for backward compatibility) and are treated
+    as human. Dict entries are human only when they carry no ``source`` —
+    see ``_MACHINE_SEND_BACK_SOURCES`` above for why this is a "no source"
+    check rather than a "source == human" allow-list.
+    """
+    if not isinstance(raw, dict):
+        return True
+    return not raw.get("source")
 
 # Phrases that signal the agent is asserting it CAN'T do something — the headline
 # failure ("I can't access the PR" when a skill/access exists). Deterministic,
@@ -241,38 +278,71 @@ def detect_inability(text: str, skills: list[str] | None) -> SupervisorDecision 
 
 
 def format_send_back_feedback(
-    entries: Any, limit: int = _SEND_BACK_MAX
+    entries: Any,
+    limit: int = _SEND_BACK_MAX,
+    total_budget: int = _SEND_BACK_TOTAL_BUDGET,
 ) -> tuple[str, bool]:
     """Render ``task.context["send_back_feedback"]`` for supervisor prompts.
 
     Returns ``(text, unreadable)``:
-      - ``("", False)`` when ``entries`` is falsy/empty — no block is emitted,
-        so prompts with no send-back history stay byte-identical to before.
+      - ``("", False)`` when ``entries`` is falsy/empty, or contains no HUMAN
+        entry — no block is emitted, so prompts with no send-back history
+        stay byte-identical to before.
       - ``("", True)`` when ``entries`` is the ``SEND_BACK_UNREADABLE``
         sentinel, is not a list, or rendering raises — fail CLOSED. A
         send-back that could not be read must never be silently treated as
         "there is none".
-      - otherwise, the last ``limit`` entries (oldest first, NEWEST LAST —
-        the most recent send-back is the one that supersedes) rendered one
-        per line: ``  - [{at}] {author}: {message}``. Bare-string entries are
+      - otherwise, the last ``limit`` HUMAN entries (``_is_human_send_back``
+        — machine writers like ``pr_conflict``/``ci_gate``/``pr_comment`` are
+        excluded so they can never evict the human amendment that actually
+        supersedes a criterion), oldest first / NEWEST LAST (the most recent
+        send-back is the one that supersedes), rendered one per line:
+        ``  - [{at}] {author}: {message}`` (author defaults to "human" — the
+        two human writers never stamp one). Bare-string entries are
         tolerated (rendered as the message, matching the convention already
         used for ``human_replies`` in ``prompt_blocks.build_resume_digest``).
+
+        Rendering is bounded by a TOTAL character budget, not a per-message
+        cap: the newest kept entry is never truncated, no matter how long,
+        because that is the one whose text (e.g. an "AMENDED" clause deep
+        into a multi-thousand-character message) supersedes the criteria.
+        Once the running total exceeds ``total_budget``, OLDER entries are
+        dropped whole (never truncated) and a leading
+        "(N older entries omitted)" line is added.
     """
     if not entries:
         return "", False
     if entries is SEND_BACK_UNREADABLE or not isinstance(entries, list):
         return "", True
     try:
-        rendered: list[str] = []
-        for raw in entries[-limit:]:
+        human_entries = [raw for raw in entries if _is_human_send_back(raw)]
+        if not human_entries:
+            return "", False
+        candidates = human_entries[-limit:]
+        # Walk newest → oldest so the ALWAYS-KEPT newest entry is decided
+        # (and rendered in full) first; reverse at the end for the
+        # oldest-first / newest-last display order.
+        kept_newest_first: list[str] = []
+        used = 0
+        omitted = 0
+        for raw in reversed(candidates):
             if isinstance(raw, dict):
                 at = str(raw.get("at") or "")
-                author = str(raw.get("author") or "")
+                author = str(raw.get("author") or "") or "human"
                 message = str(raw.get("message") or "")
             else:
-                at, author, message = "", "", str(raw)
-            message = " ".join(message.split())[:600]
-            rendered.append(f"  - [{at}] {author}: {message}")
+                at, author, message = "", "human", str(raw)
+            message = " ".join(message.split())
+            line = f"  - [{at}] {author}: {message}"
+            if kept_newest_first and used + len(line) > total_budget:
+                omitted += 1
+                continue
+            kept_newest_first.append(line)
+            used += len(line)
+        rendered = list(reversed(kept_newest_first))
+        if omitted:
+            noun = "entry" if omitted == 1 else "entries"
+            rendered.insert(0, f"  ({omitted} older {noun} omitted)")
         return "\n".join(rendered), False
     except Exception:  # noqa: BLE001 — fail CLOSED, never silently "none"
         return "", True

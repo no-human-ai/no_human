@@ -139,7 +139,12 @@ class TestNoEnforcementOfSupersededCriterion:
         )
         decision = await hook.evaluate()
 
+        # `decision.action == "continue"` alone would be tautological (the
+        # fake always returns SUPERVISOR_CONTINUE) — the real assertions are
+        # on the PROMPT the fake was handed: no instruction anywhere tells it
+        # to enforce the superseded criterion.
         assert decision.action == "continue"
+        assert decision.raw == "SUPERVISOR_CONTINUE"
         prompt = seen["prompt"]
         # The criterion text appears exactly once — under the criteria
         # heading — never repeated as a separate "enforce this" instruction.
@@ -219,3 +224,125 @@ class TestNoEnforcementOfSupersededCriterion:
             send_back_unreadable=True,
         )
         assert "COULD NOT BE READ" in unreadable_prompt
+
+
+# ── Review send-back on the previous round (70fcfcca) ──────────────────── #
+#
+# Two defects, both proven on task c1a0416d's OWN send_back_feedback rows:
+#   1. BLOCKER: a per-message 600-char cap cut the incident's 3338-char human
+#      send-back BEFORE its "AMENDED" clause even started.
+#   2. MAJOR: the block rendered every writer, human or machine — with the
+#      old 3-entry cap, two later machine notices (pr_conflict, pr_ci, ...)
+#      EVICTED the human amendment entirely.
+
+class TestSendBackRenderingRobustness:
+    def test_long_human_entry_is_never_truncated(self):
+        # Mirrors the incident shape: "AMENDED" at index 576, "[WIP-PARTIAL]"
+        # at 795, total length 3338 — well past the old 600-char per-message
+        # cap, which cut the text before either landmark.
+        prefix = "x" * 576
+        middle = "AMENDED" + ("y" * (795 - 576 - len("AMENDED")))
+        tail = "[WIP-PARTIAL] head must be treated like a [WIP-BLOCKED] head "
+        message = prefix + middle + tail
+        message += "z" * (3338 - len(message))
+        assert len(message) == 3338
+        assert message.index("AMENDED") == 576
+        assert message.index("[WIP-PARTIAL]") == 795
+
+        text, unreadable = format_send_back_feedback(
+            [{"at": "2026-09-08T08:06:16Z", "author": "human", "message": message}]
+        )
+        assert unreadable is False
+        assert "AMENDED" in text
+        assert "[WIP-PARTIAL]" in text
+        # The whole tail (well past the old 600-char cap) survives.
+        assert "must be treated like a [WIP-BLOCKED] head" in text
+
+        prompt = build_evaluation_prompt(
+            task_title="t", acceptance_criteria=[CRITERION], rules="",
+            profile_context="", window=[], total_calls=0,
+            send_back_feedback=text,
+        )
+        assert "AMENDED" in prompt
+        assert "[WIP-PARTIAL]" in prompt
+
+    def test_machine_entries_never_evict_the_human_amendment(self):
+        # Real shapes from the writers named in the send-back: `pr_conflict`
+        # (blockers/wake.py) and `pr_ci` (blockers/wake.py) both stamp a
+        # `source`; the human send-back (api/app.py / cli `nh reject`) never
+        # does. With the old 3-entry cap and no source filtering, these two
+        # machine entries pushed the human amendment out of the window.
+        entries = [
+            {"at": "2026-09-08T08:06:16Z", "author": "human", "message": AMENDMENT},
+            {
+                "at": "2026-09-08T08:10:00Z", "author": "pr_conflict",
+                "message": "The PR has a textual conflict with main.",
+                "source": "pr_conflict",
+            },
+            {
+                "at": "2026-09-08T08:12:00Z", "author": "ci",
+                "message": "The PR's CI is failing.",
+                "source": "pr_ci",
+            },
+        ]
+        text, unreadable = format_send_back_feedback(entries)
+        assert unreadable is False
+        assert AMENDMENT in text
+        assert "textual conflict with main" not in text
+        assert "CI is failing" not in text
+
+        prompt = build_evaluation_prompt(
+            task_title="t", acceptance_criteria=[CRITERION], rules="",
+            profile_context="", window=[], total_calls=0,
+            send_back_feedback=text,
+        )
+        assert AMENDMENT in prompt
+        assert "textual conflict with main" not in prompt
+
+    def test_human_entries_with_no_author_are_labelled_human(self):
+        # api/app.py and cli/commands.py write `{"at": ..., "message": ...}`
+        # with no `author` key at all — rendering that as `[at] : msg` (empty
+        # author) is a display bug even though the text itself is present.
+        text, unreadable = format_send_back_feedback(
+            [{"at": "2026-09-08T08:06:16Z", "message": AMENDMENT}]
+        )
+        assert unreadable is False
+        assert "] human:" in text
+
+    def test_every_named_machine_source_is_excluded(self):
+        # Every writer named in the review send-back — repro_gate
+        # (orchestrator.py), tamper_adjudication (orchestrator.py),
+        # pr_conflict/pr_ci/ci_gate/pr_comment (blockers/wake.py) — is
+        # excluded individually, not just "some machine entry got through".
+        from no_human.agent.supervisor import _MACHINE_SEND_BACK_SOURCES
+
+        assert _MACHINE_SEND_BACK_SOURCES == {
+            "repro_gate", "tamper_adjudication", "pr_conflict", "pr_ci",
+            "ci_gate", "pr_comment",
+        }
+        for source in _MACHINE_SEND_BACK_SOURCES:
+            entries = [
+                {"at": "1", "author": "human", "message": AMENDMENT},
+                {
+                    "at": "2", "author": "someone", "message": "machine notice",
+                    "source": source,
+                },
+            ]
+            text, unreadable = format_send_back_feedback(entries)
+            assert unreadable is False, source
+            assert AMENDMENT in text, source
+            assert "machine notice" not in text, source
+
+    def test_all_machine_entries_yields_no_block_not_unreadable(self):
+        # A task with ONLY machine send-back rows (no human entry yet) must
+        # render nothing — never the fail-closed "COULD NOT BE READ" path,
+        # which is reserved for entries we could not READ at all.
+        entries = [
+            {
+                "at": "x", "author": "pr_conflict", "message": "conflict",
+                "source": "pr_conflict",
+            },
+        ]
+        text, unreadable = format_send_back_feedback(entries)
+        assert text == ""
+        assert unreadable is False
