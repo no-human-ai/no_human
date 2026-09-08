@@ -6,6 +6,22 @@ All notable changes to no_human. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- **"Use my existing Claude Code sign-in" no longer opens a browser tab that
+  can never load.** The button used to run `claude setup-token` as a piped,
+  non-interactive child with a 20s timeout; that command is unconditionally
+  browser OAuth with a loopback `/callback` server and no non-interactive
+  flag, so the opened tab (`http://localhost:<port>/callback`) had nothing to
+  connect to — refused instantly on a Windows field report (3/3 runs), and
+  even where the loopback listener does bind (confirmed on macOS), the child
+  writes nothing to stdout/stderr, so no token could ever have been read
+  back either way. The row now launches nothing on any platform: clicking it
+  reveals the same manual-paste instructions every other path already uses,
+  naming `claude setup-token` explicitly so the step is copy-pasteable. The
+  `nh:claude-import-token` IPC channel and its only spawn site
+  (`runClaudeSetupToken`) are removed entirely rather than left registered
+  but unreachable.
+
 ## [0.2.1] — 2026-09-07
 
 Fixes for the first Windows users of the setup wizard, and for no_human's own

@@ -237,8 +237,8 @@
   </p>
 </main>
 <script type="module">
-  import { codexKeyToSend, dismissTarget, labels, parseCanReturn, requirementLine,
-           saveDisabled, saveProgress } from "./setupUi.mjs";
+  import { codexKeyToSend, dismissTarget, existingSignInCopy, labels, parseCanReturn,
+           requirementLine, saveDisabled, saveProgress } from "./setupUi.mjs";
 
   const $ = (id) => document.getElementById(id);
   const input = $("token"), msg = $("msg"), save = $("save"), reveal = $("reveal");
@@ -284,21 +284,26 @@
   // "Use my existing Claude Code sign-in": a read-only status probe, safe to
   // call on load — it never runs `setup-token` and never writes anything. The
   // row itself is built ONLY when detected (see the note above #steps) so the
-  // undetected DOM — and its tab order — are byte-for-byte unchanged.
+  // undetected DOM — and its tab order — are byte-for-byte unchanged. The
+  // click handler below is local and IPC-free — see setupUi.mjs's
+  // existingSignInCopy for why: `claude setup-token` is unconditional browser
+  // OAuth with no non-interactive path, so this row can only point at the
+  // manual-paste steps, never run anything itself.
   let existingSignin = null, useExisting = null, existingNote = null;
 
   function renderExistingSignin() {
     if (existingSignin) return;   // idempotent: never double-insert
+    const copy = existingSignInCopy();
     existingSignin = document.createElement("div");
     existingSignin.id = "existing-signin";
     useExisting = document.createElement("button");
     useExisting.type = "button";
     useExisting.id = "use-existing";
-    useExisting.textContent = "Use my existing Claude Code sign-in";
+    useExisting.textContent = copy.button;
     existingNote = document.createElement("p");
     existingNote.className = "hint";
     existingNote.id = "existing-note";
-    existingNote.textContent = "Detected a Claude Code sign-in on this computer.";
+    existingNote.textContent = copy.note;
     existingSignin.append(useExisting, existingNote);
     $("steps").before(existingSignin);
     // Match #steps' own subscription-only visibility rule (set once here;
@@ -307,35 +312,10 @@
     useExisting.addEventListener("click", onUseExistingClick);
   }
 
-  async function onUseExistingClick() {
-    if (!window.nhSetup) {
-      setMsg("Desktop bridge unavailable — reopen no_human.", "error");
-      return;
-    }
-    useExisting.disabled = true;
-    setMsg("Getting a token from Claude Code…", "ok");
-    let res;
-    try {
-      res = await window.nhSetup.importClaudeSignIn();
-    } catch (err) {
-      res = { ok: false, error: String((err && err.message) || err) };
-    }
-    if (res && res.ok) {
-      setMsg("Connected. Opening no_human…", "ok");
-      return; // main process swaps this window to the board, same as manual save
-    }
-    if (res && res.interactive) {
-      // Fall back to the manual paste path: keep the steps list visible, point
-      // at the one remaining step, re-enable the button, and focus the field.
-      existingNote.textContent =
-        "Couldn't finish that automatically — run the step below, then paste the token.";
-      useExisting.disabled = false;
-      input.focus();
-      setMsg("", null);
-      return;
-    }
-    setMsg((res && res.error) || "Could not get a token from Claude Code.", "error");
-    useExisting.disabled = false;
+  function onUseExistingClick() {
+    existingNote.textContent = existingSignInCopy().guidance;
+    $("steps").style.display = "";   // subscription mode only, same rule as today
+    input.focus();
   }
 
   (async () => {

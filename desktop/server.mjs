@@ -283,8 +283,24 @@ export async function resolveNodeBin(env = process.env, execFileFn = execFile,
  * command could not be run at all (spawn failure or timeout) — callers must
  * treat `null` the same as "unknown", not as "signed out". Injectable
  * `execFileFn` so tests never need a real `claude` binary. Never throws,
- * never logs stdout/stderr (nothing about a sign-in's status is a secret,
- * but the discipline is kept uniform with runClaudeSetupToken below).
+ * never logs stdout/stderr (nothing about a sign-in's status is a secret).
+ *
+ * This module deliberately has NO runner for `claude setup-token` and never
+ * will. MEASURED (macOS, `claude` 2.1.263, `auth status` reporting
+ * loggedIn:true): `setup-token` is unconditionally browser OAuth — it opens
+ * a URL and waits on a loopback `/callback` — regardless of whether the CLI
+ * is already signed in; `setup-token --help` exposes no non-interactive flag
+ * or env var to skip that. Spawned the way this module spawns everything
+ * else (`stdin:"ignore"`, `windowsHide:true`, piped stdio, non-TTY) it
+ * writes NOTHING to stdout/stderr even once the loopback server is up, so no
+ * token could ever be read back from its output; a bounded child only ever
+ * ends in `{killed:true, code:143}` at the timeout with both streams empty.
+ * A Windows 11 field report (no_human build bd70645a): 3 of 3 clicks opened
+ * a `localhost:<port>/callback` tab and a 10-second probe found nothing
+ * listening on that port (ERR_CONNECTION_REFUSED). The only supported way to
+ * mint a token is the user running
+ * `claude setup-token` themselves in their own terminal and pasting the
+ * result — see setupUi.mjs's `existingSignInCopy()`.
  */
 export async function claudeAuthStatus(cliPath, execFileFn = execFile) {
   return new Promise((resolve) => {
@@ -294,36 +310,6 @@ export async function claudeAuthStatus(cliPath, execFileFn = execFile) {
                  (err) => resolve(err ? (typeof err.code === "number" ? err.code : null) : 0));
     } catch {
       resolve(null);
-    }
-  });
-}
-
-/**
- * Run `claude setup-token` and hand back its raw exit code and captured
- * streams for setupGate's classifySetupTokenOutput to interpret — this
- * function does no interpretation itself and never logs either stream (the
- * whole point of the split is that a secret can pass through here without
- * ever reaching console/log output). `stdin: "ignore"` so a CLI that wants
- * an interactive prompt fails fast/exits rather than hanging the handler;
- * the 20s timeout is the same backstop, surfaced as the `{code:null,
- * stdout:"", stderr:"timeout"}` shape on a kill so the caller can tell a
- * timeout apart from a clean empty run.
- */
-export async function runClaudeSetupToken(cliPath, execFileFn = execFile) {
-  return new Promise((resolve) => {
-    try {
-      execFileFn(cliPath, ["setup-token"],
-                 { timeout: 20000, windowsHide: true, stdin: "ignore" },
-                 (err, stdout, stderr) => {
-        if (err && err.killed) {
-          resolve({ code: null, stdout: "", stderr: "timeout" });
-          return;
-        }
-        const code = err ? (typeof err.code === "number" ? err.code : null) : 0;
-        resolve({ code, stdout: stdout || "", stderr: stderr || "" });
-      });
-    } catch {
-      resolve({ code: null, stdout: "", stderr: "timeout" });
     }
   });
 }

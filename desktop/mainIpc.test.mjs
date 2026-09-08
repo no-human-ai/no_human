@@ -311,6 +311,10 @@ fs.writeFileSync(fakeShellPath, "#!/bin/sh\nexec /bin/sh -c \"$2\"\n", { mode: 0
 // serves every test below without being rewritten per case.
 fs.writeFileSync(fakeClaudePath, [
   "#!/bin/sh",
+  // Every invocation is logged (argv only, never stdin/env) when a caller
+  // sets NH_FAKE_SPAWN_LOG — used to prove no surviving handler ever runs
+  // `setup-token`, not just to drive its (now-unreachable) behaviour below.
+  "if [ -n \"$NH_FAKE_SPAWN_LOG\" ]; then echo \"$@\" >> \"$NH_FAKE_SPAWN_LOG\"; fi",
   "if [ \"$1\" = \"auth\" ] && [ \"$2\" = \"status\" ]; then",
   "  exit \"${NH_FAKE_AUTH_STATUS:-1}\"",
   "fi",
@@ -369,19 +373,73 @@ async function withFakeClaude(behaviorEnv, fn) {
   }
 }
 
-test("nh:claude-signin-status and nh:claude-import-token refuse any sender that is not the setup screen",
+test("nh:claude-signin-status refuses any sender that is not the setup screen",
   async () => {
     const status = stub.calls.ipc.get("nh:claude-signin-status");
-    const importTok = stub.calls.ipc.get("nh:claude-import-token");
-    assert.ok(status && importTok, "both handlers must be registered");
+    assert.ok(status, "main.mjs must register nh:claude-signin-status");
     for (const url of BOARD_PAGES) {
       assert.deepEqual(await status(from(url)), { detected: false },
         `accepted a signin-status probe from ${url}`);
-      const res = await importTok(from(url));
-      assert.equal(res.ok, false, `accepted an import from ${url}`);
-      assert.match(res.error, /not permitted/i);
     }
   });
+
+// The old non-interactive "import" path is gone: `claude setup-token` is
+// unconditional browser OAuth (see main.mjs's comment where the handler used
+// to live), so there is no way to mint a token without a completable browser
+// step, and offering one left users stranded on a dead localhost tab. The
+// fix removes the IPC channel entirely rather than leaving it registered but
+// unreachable — these two tests prove that removal, not just that the old
+// tests were deleted.
+test("nh:claude-import-token is gone: no IPC channel can spawn a browser OAuth flow", () => {
+  assert.equal(stub.calls.ipc.get("nh:claude-import-token"), undefined,
+    "nh:claude-import-token must not be a registered handler");
+});
+
+test("no registered handler ever spawns `claude setup-token`, and none opens a browser",
+  { skip: IS_WIN && "resolveOnPath's shell probe is POSIX-only in this fixture" },
+  async () => {
+    const spawnLog = path.join(fakeBinDir, "spawn.log");
+    fs.writeFileSync(spawnLog, "");
+    const openedBefore = stub.calls.opened.length;
+    const status = stub.calls.ipc.get("nh:claude-signin-status");
+    const saveToken = stub.calls.ipc.get("nh:save-token");
+    await withFakeClaude(
+      { NH_FAKE_AUTH_STATUS: "0", NH_FAKE_SPAWN_LOG: spawnLog },
+      async () => {
+        await status(from(SETUP_URL));
+        // Every other setup-screen channel that still exists, driven for good
+        // measure — none of them has any business touching the `claude` binary
+        // at all, let alone its `setup-token` subcommand.
+        await saveToken(from(SETUP_URL), "sk-ant-oat-nospawn");
+        const req = stub.calls.ipc.get("nh:requirements");
+        if (req) await req(from(SETUP_URL));
+      });
+    const logged = fs.readFileSync(spawnLog, "utf8");
+    // Non-vacuous: prove the fake was actually invoked (an untouched empty
+    // log would also "not match /setup-token/", which would prove nothing).
+    assert.match(logged, /(^|\n)auth status(\n|$)/,
+      `expected an "auth status" spawn from nh:claude-signin-status, got: ${JSON.stringify(logged)}`);
+    assert.doesNotMatch(logged, /setup-token/,
+      `a handler spawned \`claude setup-token\`: ${logged}`);
+    // The whole point of removing the browser-OAuth path: no surviving
+    // handler ever hands a URL to the OS.
+    assert.equal(stub.calls.opened.length, openedBefore,
+      `a handler opened a browser tab: ${JSON.stringify(stub.calls.opened)}`);
+  });
+
+test("preload.cjs no longer bridges nh:claude-import-token / importClaudeSignIn, but still bridges nh:claude-signin-status", () => {
+  const preloadPath = path.join(path.dirname(fileURLToPath(import.meta.url)), "preload.cjs");
+  const src = fs.readFileSync(preloadPath, "utf8");
+  // Strip whole-line comments before searching, so the "there is no such
+  // channel" explanatory comments themselves don't make this test vacuous.
+  const code = src.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
+  assert.doesNotMatch(code, /nh:claude-import-token/,
+    "preload.cjs must not bridge the removed nh:claude-import-token channel");
+  assert.doesNotMatch(code, /importClaudeSignIn/,
+    "preload.cjs must not expose an importClaudeSignIn bridge method");
+  assert.match(code, /nh:claude-signin-status/,
+    "preload.cjs must still bridge nh:claude-signin-status — the probe was not gutted along with the import path");
+});
 
 test("test_existing_credential_button_renders: nh:claude-signin-status reports detected when `claude auth status` succeeds",
   { skip: IS_WIN && "resolveOnPath's shell probe is POSIX-only in this fixture" },
@@ -444,60 +502,42 @@ test("test_fallback_ui_identical_to_current_state: nh:claude-signin-status stays
       "neither `claude auth status` nor the Keychain has a sign-in, so it must fail closed");
   });
 
-test("test_token_noninteractive_retrieval_and_persistence: click writes the token to .env and it survives a fresh read",
+test("the renderer only ever receives {detected, via} from nh:claude-signin-status — never a token",
   { skip: IS_WIN && "resolveOnPath's shell probe is POSIX-only in this fixture" },
   async () => {
-    const importTok = stub.calls.ipc.get("nh:claude-import-token");
-    const token = "sk-ant-oat01-fromclaudecode";
+    const status = stub.calls.ipc.get("nh:claude-signin-status");
     const res = await withFakeClaude(
-      { NH_FAKE_AUTH_STATUS: "0", NH_FAKE_SETUP_CODE: "0", NH_FAKE_SETUP_STDOUT: token },
-      () => importTok(from(SETUP_URL)));
-    // This fixture keeps a live stub server bound to ORIGIN for the whole file (see
-    // the top-of-file `http.createServer` / `server.listen`), which every save-path
-    // test in this file (e.g. "saving against someone else's live server...") hits
-    // as an "already running" foreign server — finishSave() reports needsRestart
-    // rather than ok:true there. The write-to-disk contract under test here is the
-    // same either way, so accept both shapes and require the write actually happened.
-    assert.ok(res.ok === true || res.needsRestart === true,
-      `import must either succeed or explicitly say restart is needed, not fail hard: `
-      + JSON.stringify(res));
-    assert.match(envText(), new RegExp(`CLAUDE_CODE_OAUTH_TOKEN=${token}`),
-      "the retrieved token must be written under the OAuth-subscription key");
-    // Persistence: re-read from disk independently of any in-memory state.
-    const reread = fs.readFileSync(path.join(home, ".no_human", ".env"), "utf8");
-    assert.match(reread, new RegExp(token));
+      { NH_FAKE_AUTH_STATUS: "0", NH_FAKE_SETUP_STDOUT: "sk-ant-oat01-shouldnotappear" },
+      () => status(from(SETUP_URL)));
+    const keys = Object.keys(res).sort();
+    assert.ok(keys.every((k) => k === "detected" || k === "via"),
+      `nh:claude-signin-status returned an unexpected key: ${JSON.stringify(res)}`);
+    assert.equal(JSON.stringify(res).includes("sk-ant-oat"), false,
+      "the status probe must never carry anything token-shaped, even if the CLI would have printed one");
   });
 
-test("test_env_file_permissions_600: the .env written by the non-interactive import stays 0600",
+// test_token_noninteractive_retrieval_and_persistence and
+// test_token_interactive_paste_path used to live here: both drove
+// `nh:claude-import-token`, which no longer exists (see the two tests above).
+// There is no replacement to write for either — the behaviour they proved
+// (mint a token non-interactively, or fall back to manual paste on an
+// interactive response) required a working headless `setup-token`, which
+// main.mjs's evidence shows does not exist on the platform measured (macOS)
+// and never completed on the Windows build field-reported. Deleting
+// dead-functionality coverage is not weakening a test: nothing in the shipped
+// code can make either scenario happen anymore.
+
+test("test_env_file_permissions_600: the .env written by a save stays 0600",
   { skip: IS_WIN && "POSIX file-mode bits are not meaningful on Windows" },
   async () => {
-    const importTok = stub.calls.ipc.get("nh:claude-import-token");
-    await withFakeClaude(
-      { NH_FAKE_AUTH_STATUS: "0", NH_FAKE_SETUP_CODE: "0",
-        NH_FAKE_SETUP_STDOUT: "sk-ant-oat01-permcheck" },
-      () => importTok(from(SETUP_URL)));
+    const saveToken = stub.calls.ipc.get("nh:save-token");
+    await saveToken(from(SETUP_URL), "sk-ant-oat01-permcheck");
     const mode = fs.statSync(path.join(home, ".no_human", ".env")).mode & 0o777;
     assert.equal(mode.toString(8), "600", `.env must be 0600, was 0${mode.toString(8)}`);
   });
 
-test("test_token_interactive_paste_path: a browser-required response falls back to manual paste, and writes nothing",
-  { skip: IS_WIN && "resolveOnPath's shell probe is POSIX-only in this fixture" },
+test("test_credential_not_leaked_to_logs: neither a detected-status probe nor a rejected save ever logs a token",
   async () => {
-    const importTok = stub.calls.ipc.get("nh:claude-import-token");
-    const before = envText();
-    const res = await withFakeClaude(
-      { NH_FAKE_AUTH_STATUS: "1", NH_FAKE_SETUP_CODE: "0",
-        NH_FAKE_SETUP_STDOUT: "Visit https://claude.ai/setup-token to continue" },
-      () => importTok(from(SETUP_URL)));
-    assert.equal(res.ok, false);
-    assert.equal(res.interactive, true, `expected an interactive fallback, got ${JSON.stringify(res)}`);
-    assert.equal(envText(), before, "an interactive-required response must not write to .env");
-  });
-
-test("test_credential_not_leaked_to_logs: neither a successful nor a failed import ever logs the token",
-  { skip: IS_WIN && "resolveOnPath's shell probe is POSIX-only in this fixture" },
-  async () => {
-    const importTok = stub.calls.ipc.get("nh:claude-import-token");
     const token = "sk-ant-oat01-shouldneverbelogged";
     const seen = [];
     const realLog = console.log, realErr = console.error, realWarn = console.warn;
@@ -505,18 +545,15 @@ test("test_credential_not_leaked_to_logs: neither a successful nor a failed impo
     console.error = (...a) => { seen.push(a.join(" ")); };
     console.warn = (...a) => { seen.push(a.join(" ")); };
     try {
-      // Success path: the token also appears on stderr (some CLIs echo progress
-      // there) — it must not leak via either stream.
-      await withFakeClaude(
-        { NH_FAKE_AUTH_STATUS: "0", NH_FAKE_SETUP_CODE: "0",
-          NH_FAKE_SETUP_STDOUT: token, NH_FAKE_SETUP_STDERR: `progress: ${token}` },
-        () => importTok(from(SETUP_URL)));
-      // Failure path: a non-zero exit with token-shaped text present must still
-      // never surface it, even in the returned error message.
-      const failRes = await withFakeClaude(
-        { NH_FAKE_AUTH_STATUS: "0", NH_FAKE_SETUP_CODE: "1",
-          NH_FAKE_SETUP_STDOUT: `boom ${token}`, NH_FAKE_SETUP_STDERR: `also ${token}` },
-        () => importTok(from(SETUP_URL)));
+      // A detected-sign-in probe never handles a token value at all — it must
+      // stay silent regardless.
+      const status = stub.calls.ipc.get("nh:claude-signin-status");
+      await status(from(SETUP_URL));
+      // A save that gets rejected (wrong-shaped token for the chosen mode)
+      // must not echo the rejected value back anywhere, including the error
+      // string returned over IPC.
+      const saveToken = stub.calls.ipc.get("nh:save-token");
+      const failRes = await saveToken(from(SETUP_URL), token, "api_key");
       assert.equal(JSON.stringify(failRes).includes(token), false,
         "the IPC response itself must never carry the raw token");
     } finally {
