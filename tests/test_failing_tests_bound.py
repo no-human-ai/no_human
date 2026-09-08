@@ -187,6 +187,25 @@ async def test_the_ledgers_tests_md_is_bounded_by_the_same_column(
     assert len(tests_md) < 100_000
 
 
+async def test_the_pr_body_summary_header_shows_the_true_total_not_just_the_bound(
+    bare_repo, tmp_path, store,
+):
+    # Regression: the `<details><summary>` header used to be built from
+    # `len(failing)` — the PERSISTED (bounded) count — so a 1000-failure run
+    # announced "200 failing tests" in the header while the expanded body's
+    # "…and N more" line correctly named the true remainder. The header and
+    # the detail must agree on the same true total.
+    ids = _make_ids(_TOTAL)
+    _outcome, attempts, _events = await _run_attempt_with_many_failures(
+        store, tmp_path, bare_repo, ids)
+    persisted = _persisted(attempts[-1])
+
+    section = Orchestrator._test_evidence_section(persisted)
+    assert f"<details><summary>{_TOTAL} failing tests</summary>" in section
+    assert f"…and {_TOTAL - 10} more" in section
+    assert f"<details><summary>{_BOUND} failing tests</summary>" not in section
+
+
 async def test_the_base_tree_and_ownership_checks_still_receive_the_full_list(
     bare_repo, tmp_path, store,
 ):
