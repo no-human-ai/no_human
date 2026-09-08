@@ -104,6 +104,29 @@ def _make_stale_pr_branch(work, name, n):
     _git(work, "checkout", "-q", name)
 
 
+_CALC = "def add(a, b):\n    return a + b\n"
+
+
+def _make_overlapping_pr_branch(work, name, n):
+    """A branch `n` commits behind `main` where main's commits touch the SAME
+    file the branch changed — the #141 shape: a gap too small for the
+    threshold whose files nonetheless collide.
+
+    The two sides edit opposite ends of `calc.py` so the rebase itself can
+    apply cleanly; what is under test is the DECISION to rebase, not git's
+    merge algorithm."""
+    _git(work, "checkout", "-q", "-b", name)
+    (work / "calc.py").write_text(_CALC + "\n\ndef mul(a, b):\n    return a * b\n")
+    _git(work, "add", "-A")
+    _git(work, "commit", "-m", "PR work on calc.py")
+    _git(work, "checkout", "-q", "main")
+    for i in range(n):
+        (work / "calc.py").write_text(f"# main header {i}\n" + _CALC)
+        _git(work, "add", "-A")
+        _git(work, "commit", "-m", f"main also edits calc.py {i}")
+    _git(work, "checkout", "-q", name)
+
+
 async def _attempt(repo, tmp_path, store, monkeypatch, ctx, *, attempt_n=1):
     """Drive the REAL `_run_attempt` through the branch decision and
     `_refresh_stale_base`, then stop before the coder session."""
@@ -224,7 +247,37 @@ async def test_a_branch_at_base_is_not_rebased_and_does_no_extra_git_work(
     assert evs[0]["rebased"] is False
     assert t.context["base_staleness"] == {
         "commits_behind": 0, "was_behind": 0, "rebased": False,
+        "overlapping_files": [],
     }
+
+
+@pytest.mark.asyncio
+async def test_a_small_gap_that_touches_the_branchs_own_files_is_rebased(
+    repo, tmp_path, store, monkeypatch,
+):
+    """Issue #141. A 1-commit gap is far below the threshold and was ignored,
+    so three tasks in one evening each paid a full conflict-resolution round
+    at the approve gate on gaps whose files collided with their own.
+
+    The count alone cannot tell this from the disjoint 4-commit gap in the
+    test above, which must still NOT rebase; the file overlap can."""
+    assert BASE_STALENESS_REBASE_THRESHOLD == 5
+    _make_overlapping_pr_branch(repo, "no-human/t1", 1)
+    ctx = {"pr_branch": "no-human/t1"}
+
+    t, events, _att = await _attempt(repo, tmp_path, store, monkeypatch, ctx)
+
+    evs = _staleness_events(events)
+    assert len(evs) == 1
+    assert evs[0]["rebased"] is True, (
+        "a 1-commit gap touching the branch's own files was not rebased, so "
+        "the conflict round is still waiting at the approve gate"
+    )
+    staleness = t.context["base_staleness"]
+    assert staleness["was_behind"] == 1
+    assert staleness["overlapping_files"] == ["calc.py"], (
+        "the record must say WHY a below-threshold gap was acted on"
+    )
 
 
 # --------------------------------------------------------------------------- #

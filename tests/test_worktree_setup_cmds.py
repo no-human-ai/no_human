@@ -395,7 +395,15 @@ async def test_setup_events_reach_the_event_sink_from_the_worker_thread(
 # --------------------------------------------------------------------------- #
 
 
-def test_setup_runs_once_per_worktree(live_checkout, tmp_path):
+def test_a_second_call_on_the_same_worktree_path_is_a_no_op(
+    live_checkout, tmp_path,
+):
+    """This is the ONLY re-entry the marker guards: two `run_setup_commands`
+    calls given the SAME worktree path. No production caller does this
+    today — `Orchestrator._worktree_path` mints a fresh path per RUN (torn
+    down in `_run_task_body`'s `finally`), and `_drive_watched` calls
+    `_run_worktree_setup` exactly once, before the attempt loop. The marker
+    exists for a future/embedded re-entry, not a per-attempt saving."""
     from no_human.core.worktree import run_setup_commands
 
     wt = _make_worktree(live_checkout, tmp_path)
@@ -407,7 +415,7 @@ def test_setup_runs_once_per_worktree(live_checkout, tmp_path):
     assert counter.read_text() == "x"
 
     second = run_setup_commands(wt, cmds)
-    assert second == [], "setup ran a second time in the same worktree"
+    assert second == [], "a second call on the same path re-ran setup"
     assert counter.read_text() == "x", (
         "the setup command actually executed a second time")
 
@@ -818,3 +826,36 @@ def test_docstrings_state_the_real_trust_model():
     doc = Orchestrator._run_worktree_setup.__doc__ or ""
     assert "can never" not in doc
     assert "project.yml" in doc
+
+
+def test_marker_wording_does_not_promise_a_per_attempt_saving():
+    """The marker's docstring/docs used to say a reused worktree "does not
+    re-run setup on every attempt" — a saving no production path can ever
+    exercise: `Orchestrator._worktree_path` mints a fresh path per RUN (see
+    `_run_task_body`'s comment "One directory per RUN, not per task", torn
+    down in its `finally`), and `_drive_watched` calls `_run_worktree_setup`
+    exactly once, before the attempt loop. The marker only guards a second
+    `run_setup_commands` call on the SAME worktree path — a re-entry no
+    caller performs today. Both the docstring and the docs must say that,
+    not the stale per-attempt claim."""
+    from no_human.core.worktree import run_setup_commands
+
+    doc = run_setup_commands.__doc__ or ""
+    assert "on every attempt" not in doc
+    assert "reused worktree" not in doc
+    assert "same" in doc.lower() and "path" in doc.lower(), (
+        "docstring must frame the marker as guarding a re-entry on the "
+        "SAME worktree path")
+
+    docs_path = (
+        Path(__file__).resolve().parents[1] / "docs" / "configuration.md"
+    )
+    text = docs_path.read_text()
+    start = text.index("## `setup_cmds`")
+    end = text.index("\n## ", start + 1)
+    section = text[start:end]
+
+    assert "on every attempt" not in section
+    assert "reused worktree" not in section
+    assert "per-attempt saving" in section, (
+        "docs must say the marker is not a per-attempt saving")

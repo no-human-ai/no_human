@@ -382,17 +382,57 @@ def test_the_gate_mention_scan_is_not_quadratic():
     """Review round 6 found a NEW quadratic of the same class this rule had
     already removed once: the whole command was unmasked once PER SEGMENT.
     3.4 s against a 138 ms base on a realistic 800-line script, inside a
-    PreToolUse hook. Hoisted out of the loop. Loose bound — the shape, not a
-    machine."""
-    script = "\n".join(
-        f'echo "line {i}" $VAR{i} && grep -n "x" f{i}.txt' for i in range(800))
-    start = time.monotonic()
-    guard.evaluate("Bash", {"command": script}, forbidden_paths=FORBIDDEN,
-                   never_push_to=PROTECTED, readonly=False)
-    elapsed = time.monotonic() - start
-    assert elapsed < 0.6, (
-        f"{elapsed:.3f}s on an 800-line script — the gate-mention scan is "
-        "unmasking the whole command once per segment again")
+    PreToolUse hook. Hoisted out of the loop. Loose bound: the shape, not a
+    machine.
+
+    That is what the docstring said, but the assertion was a machine:
+    `elapsed < 0.6` of wall clock. Shared runners landed 0.64 to 0.72 s on
+    good code and took 3 of the last 12 ci.yml runs red with it, one of them
+    a JS-only PR (issue #125). Between 0.6 s and the multi-second regression
+    this exists to catch, only flakes live.
+
+    So measure the shape. Doubling the input doubles a linear scan and
+    quadruples a quadratic one, and the runner's speed cancels out of a
+    ratio. Measured on this rule, on one machine: linear 1.70 to 2.39 over 15
+    samples; the quadratic put back by hand 3.87 to 3.97 over 3 (t400 4.4 s,
+    t800 17.5 s). The 3.0 bound sits between, 26% clear of the observed
+    linear worst case and 22% under the observed quadratic best.
+
+    `process_time`, not `monotonic`, so a scheduler preemption inside either
+    half does not enter the ratio.
+
+    A ratio cannot see a UNIFORM slowdown, which the old bound could, so a
+    wall-clock check survives as a backstop, at a value chosen never to
+    flake: 3.0 s is about 10x what the 800-line scan costs and about 6x under
+    what the reintroduced quadratic cost."""
+    def script(lines):
+        return "\n".join(
+            f'echo "line {i}" $VAR{i} && grep -n "x" f{i}.txt'
+            for i in range(lines))
+
+    def cpu_seconds(text):
+        start = time.process_time()
+        guard.evaluate("Bash", {"command": text}, forbidden_paths=FORBIDDEN,
+                       never_push_to=PROTECTED, readonly=False)
+        return time.process_time() - start
+
+    # Warm the regex caches. Under `-n 4` this test can be the first in its
+    # worker to reach `guard.evaluate`, and a one-time cost paid inside the
+    # 400-line half would flatter the ratio.
+    cpu_seconds(script(50))
+
+    small = cpu_seconds(script(400))
+    large = cpu_seconds(script(800))
+    ratio = large / small
+    assert ratio < 3.0, (
+        f"{small:.3f}s at 400 lines, {large:.3f}s at 800, ratio {ratio:.2f}: "
+        "doubling the input did much more than double the work, so the "
+        "gate-mention scan is unmasking the whole command once per segment "
+        "again")
+    assert large < 3.0, (
+        f"{large:.3f}s of CPU on an 800-line script, against roughly 0.3s "
+        "when this bound was written. The ratio above passed, so this is not "
+        "the quadratic; something has made the whole scan far slower")
 
 
 def test_a_backslash_newline_is_a_continuation_not_a_separator():

@@ -780,6 +780,31 @@ class GitRepo:
         except ValueError:
             return 0
 
+    def files_changed_since_fork(
+        self, base: str, *, on_base: bool = False,
+    ) -> list[str]:
+        """The files one SIDE changed since this branch and *base* forked.
+
+        ``on_base=False`` gives what this branch changed; ``on_base=True``
+        gives what *base* gained in the same window, which is the gap a
+        staleness check is about.
+
+        Three-dot on purpose, for the reason `head_commit` already records: a
+        two-dot ``base HEAD`` reports commits that landed on *base* since we
+        branched as deletions of ours, so it returns the union of both sides
+        and every gap would look like an overlap.
+
+        An unmeasurable base is ``[]``, never an exception — the same "cannot
+        prove it is not a reason to raise out of a staleness check"
+        convention as `commits_behind`.
+        """
+        ref = (self.resolve_commitish(base) if base else None) or base
+        if not ref:
+            return []
+        rng = f"HEAD...{ref}" if on_base else f"{ref}...HEAD"
+        out = self._run("diff", "--name-only", rng, check=False)
+        return [f for f in out.splitlines() if f]
+
     def rebase_onto(self, base: str) -> bool:
         """Replay this branch's commits onto *base*. True iff the branch moved.
 
