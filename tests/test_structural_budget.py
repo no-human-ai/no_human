@@ -776,7 +776,16 @@ FROZEN_FILE_LINES = {
     # `_abort_during_nudge`, and one guard-set pop in
     # `_begin_attempt_accounting`. Measured on this tree by the scanner's own
     # metric (`scan_source` on `src/no_human/core/orchestrator.py`).
-    "core/orchestrator.py": 22771,
+    # 22771 -> 22835 (+64): send-back fix on the same ticket — split
+    # `_REPORT_NUDGE` into a background/generic opener pair plus the
+    # `_looks_like_background_wait` helper (the false "waiting on a
+    # background command" framing was fixed), an `is_error`/`stop_reason`
+    # guard (`_REPORT_NUDGE_ABNORMAL_STOP_REASONS`) so an erroring nudge
+    # reply can never be read as a report, and the matching docstring/emit
+    # text in `_report_nudge`. `_report_nudge` itself is still well under
+    # the per-function threshold. Measured on this tree by the scanner's
+    # own metric (`scan_source` on `src/no_human/core/orchestrator.py`).
+    "core/orchestrator.py": 22835,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.

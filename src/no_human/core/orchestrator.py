@@ -1004,28 +1004,64 @@ _NUDGE_TIMEOUT_S = 120.0
 #: `backend.nudges` filtering works the same way for both.
 _REPORT_NUDGE_MARKER = "there is no notification and no wake-up"
 
-#: The one follow-up a coder gets when its final report defers to a
-#: notification that will never arrive (INCIDENT: a coder ran verification
-#: with `run_in_background` and ended its turn "wait[ing] for the background
-#: task notification to arrive" — no such notification exists, so the attempt
-#: delivered with no report and review failed on missing evidence). This does
-#: NOT ask the coder to do more work: the diff is already non-empty, so
-#: whatever it did is done — it asks only for the report that was owed at the
-#: end of the turn that already happened.
-_REPORT_NUDGE = (
+#: `max_turns=1` below is one assistant response — not enough to start a
+#: background verification run AND poll it to completion AND write a report.
+#: An earlier draft of this nudge asked for exactly that and, measured
+#: against the real backend, that turn ends as an error (`error_max_turns`)
+#: whenever the coder actually tries it — which is the shape
+#: `_report_nudge`'s `is_error`/stop-reason guard below exists to catch, not
+#: something this prompt should invite. It also cannot generally "read the
+#: background run's log": that process was a subprocess of the CODER turn,
+#: which has already exited, and its output only survives if it was
+#: redirected to a file. So this asks for neither: only the report of what
+#: the session already established, honestly marking anything unverified.
+_REPORT_NUDGE_OPENER_BACKGROUND = (
     "Your last message ended by waiting on a background command — but "
-    f"{_REPORT_NUDGE_MARKER} for this session, and none is coming. If a "
-    "verification run is still going, poll it to completion with Bash now "
-    "(read its output/log/exit code directly; do not start a new background "
-    "run). Then write the final report the task asked for: one `CRITERION: "
-    "<text> — MET | NOT-MET — evidence: <file:line or command+output>` line "
-    "per acceptance criterion, self-contained. Change nothing else; do not "
-    "edit files."
+)
+#: The other shape that reaches this nudge: a short non-deferring completion
+#: (e.g. "Done.") that `_is_non_report_summary` flags on length alone. The
+#: background-run framing above is simply false there, so the opener is
+#: chosen per reply by `_looks_like_background_wait` rather than hard-coded.
+_REPORT_NUDGE_OPENER_GENERIC = (
+    "Your last message did not read as the completion report this task "
+    "needs — "
+)
+_REPORT_NUDGE = (
+    f"{_REPORT_NUDGE_MARKER} for this session, and none is coming, so "
+    "waiting further will not produce one. Do not start a new verification "
+    "run to answer this. Write the final report the task asked for now, "
+    "based on what you have already established: one `CRITERION: <text> — "
+    "MET | NOT-MET — evidence: <file:line or command+output>` line per "
+    "acceptance criterion, self-contained, with an honest NOT-MET for "
+    "anything you did not verify. Change nothing else; do not edit files."
 )
 
 #: Wall-clock ceiling for that one turn — the same reasoning as
-#: `_NUDGE_TIMEOUT_S`: this polls/restates, it does not do new work.
+#: `_NUDGE_TIMEOUT_S`: this restates a verdict already reached, it does not
+#: do new work.
 _REPORT_NUDGE_TIMEOUT_S = 120.0
+
+#: Stop reasons that mean the nudge turn was cut off or failed rather than
+#: reaching a normal end-of-turn — the same precedent as
+#: `_PLANNER_TRUNCATED_STOP_REASONS` / `reviewer._TRUNCATED_STOP_REASONS`.
+#: A reply ending this way is not a report even when its TEXT happens to
+#: dodge `_is_non_report_summary` (measured: "Claude Code returned an error
+#: result: error_max_turns" and "Reached maximum number of turns (1)" both
+#: classify as non_report=False on the pinned classifier) — so `_report_nudge`
+#: checks this independently of that classifier, exactly as the coder path
+#: gates on `result.is_error` before ever reading `final_text` as a verdict.
+_REPORT_NUDGE_ABNORMAL_STOP_REASONS = ("max_turns", "max_tokens", "error", "refusal")
+
+
+def _looks_like_background_wait(text: str) -> bool:
+    """True when `text` actually names a background run/notification, as
+    opposed to any other shape `_is_non_report_summary` flags (e.g. a bare
+    "Done."). Selects `_report_nudge`'s OPENER sentence only — it is never
+    consulted by the classifier itself and never widens what counts as a
+    non-report.
+    """
+    low = text.lower()
+    return "background" in low and re.search(r"wait|notif|wake", low) is not None
 
 #: NOTE (drift): the file names in this text are a hand-kept SUMMARY of
 #: `complexity._INSTRUCTION_ROOTS` + `_REPO_INSTRUCTION_FILES` +
@@ -9540,9 +9576,19 @@ class Orchestrator:
           session to write one; if that reply is STILL a non-report, this
           returns None and today's rendering stands.
         * **Once per attempt, ever.** Keyed on `attempt_id`.
-        * **No new work is licensed.** The instruction is poll-then-report;
-          the snapshot/revert below is the enforcement, exactly as
-          `_reformat_nudge`'s.
+        * **No new work is licensed.** The instruction asks only for a report
+          of what the session already established (see `_REPORT_NUDGE`'s own
+          comment for why it does not ask the coder to poll a background run
+          within this turn); the snapshot/revert below is the enforcement,
+          exactly as `_reformat_nudge`'s.
+        * **A reply that did not reach a normal end-of-turn is not a report,
+          whatever its text says.** `is_error` or an abnormal `stop_reason`
+          (`_REPORT_NUDGE_ABNORMAL_STOP_REASONS`) is checked BEFORE
+          `_is_non_report_summary` gets a vote — measured against the real
+          backend, "Claude Code returned an error result: error_max_turns"
+          and "Reached maximum number of turns (1)" both read as a report to
+          that classifier, so trusting it alone here would let an errored
+          nudge overwrite a real deferral with error prose.
 
         Fail-closed on the resume capability, the worktree snapshot/revert,
         the HEAD-move check, and the sink's three controls being re-raised
@@ -9572,8 +9618,8 @@ class Orchestrator:
         nudged.add(attempt_id)
         self.emit(
             "report_nudge",
-            "final report deferred to a background-run notification that "
-            "will never arrive — one turn to poll to completion and report",
+            "final report did not read as a completion report — one turn, "
+            "on the same session, to write the report it already owed",
         )
         before = self._worktree_state(repo)
         head_before = repo.head_sha()
@@ -9587,12 +9633,16 @@ class Orchestrator:
                           "cache_creation_tokens", "output_tokens")
             }
 
+        opener = (_REPORT_NUDGE_OPENER_BACKGROUND
+                  if _looks_like_background_wait(final)
+                  else _REPORT_NUDGE_OPENER_GENERIC)
+        prompt = opener + _REPORT_NUDGE
         bounds = self.config.get("bounds") or {}
         nudge = None
         try:
             nudge = await asyncio.wait_for(
                 self.backend.run(
-                    _REPORT_NUDGE, cwd=repo.path, max_turns=1, effort="low",
+                    prompt, cwd=repo.path, max_turns=1, effort="low",
                     resume=session, on_event=self._agent_sink,
                 ),
                 timeout=min(
@@ -9627,6 +9677,20 @@ class Orchestrator:
             cache_read_tokens=getattr(nudge, "cache_read_tokens", None),
             cache_creation_tokens=getattr(nudge, "cache_creation_tokens", None),
         )
+        # Billed above either way (the nudge turn genuinely spent whatever it
+        # spent), but an errored or truncated reply is not a report, whatever
+        # its TEXT says — checked BEFORE `_is_non_report_summary` gets a vote.
+        # See the docstring bullet: both real SDK error texts measured against
+        # that classifier read as "a report", which would let error prose
+        # overwrite a real deferral in `attempts.full_final_text`/the PR body.
+        stop = (getattr(nudge, "stop_reason", None) or "").lower()
+        if (getattr(nudge, "is_error", False)
+                or stop in _REPORT_NUDGE_ABNORMAL_STOP_REASONS):
+            self._advisory(
+                "report nudge ended abnormally "
+                f"(is_error={getattr(nudge, 'is_error', False)}, "
+                f"stop_reason={stop or None!r}); discarding its reply")
+            return None
         reply = (getattr(nudge, "final_text", "") or "").strip()
         if not reply or self._is_non_report_summary(self._clean_summary(reply)):
             return None

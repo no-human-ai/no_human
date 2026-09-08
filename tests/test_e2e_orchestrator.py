@@ -4962,6 +4962,84 @@ async def test_a_reply_that_still_defers_gets_no_second_nudge_and_renders_as_tod
     assert len(backend.nudges) == 1, backend.prompts
 
 
+class ErroringReportNudgeBackend(DeferringCoderBackend):
+    """The nudge turn itself ends abnormally — the shape measured against
+    the real backend (send-back on 817bcb2c, BLOCKER): `_is_non_report_summary`
+    reads "Claude Code returned an error result: error_max_turns" as a
+    REPORT, because it names no deferral phrase and clears the length bar.
+    Left unchecked, `_report_nudge` would let this error text overwrite a
+    genuine deferral in `full_final_text`/the PR body. Proves the `is_error`/
+    `stop_reason` guard runs BEFORE that classifier ever gets a vote on the
+    nudge's reply."""
+
+    ERROR_TEXT = "Claude Code returned an error result: error_max_turns"
+
+    async def run(self, prompt, *, cwd, max_turns, effort=None, resume=None,
+                   on_event=None, supervisor_hook=None, **kwargs):
+        self.calls.append({"prompt": prompt, "resume": resume,
+                            "max_turns": max_turns, "effort": effort})
+        if resume is not None:
+            return AgentResult(final_text=self.ERROR_TEXT, num_turns=1,
+                                is_error=True, tokens_used=40, session_id="s",
+                                stop_reason="max_turns")
+        (Path(cwd) / "calc.py").write_text(
+            "def mul(a, b):\n    return a * b\n"
+        )
+        return AgentResult(final_text=self._first, num_turns=5, is_error=False,
+                            tokens_used=100, session_id="s", stop_reason="end_turn")
+
+
+async def test_a_nudge_reply_that_errors_is_discarded_not_read_as_a_report(
+    bare_repo, tmp_path, store, monkeypatch
+):
+    """BLOCKER (send-back on 817bcb2c): an errored nudge reply must not be
+    read as a report just because its TEXT dodges `_is_non_report_summary`.
+    Billed either way (the turn genuinely spent tokens); its error prose
+    never reaches `full_final_text` or the PR body, and the deferral's
+    original words survive untouched."""
+    from no_human.core import orchestrator as orch_mod
+
+    opens: list[dict] = []
+
+    def fake_open_pr(repo, branch, title, body, **kwargs):
+        opens.append({"body": body})
+        return PrResult(url="https://example.invalid/pr/1", kind="local",
+                         branch=branch)
+
+    monkeypatch.setattr(orch_mod, "open_pr", fake_open_pr)
+
+    cfg = _config(tmp_path)
+    backend = ErroringReportNudgeBackend()
+    orch = Orchestrator(store, cfg.data, backend, SlackNotifier(None))
+    t = Task.new("add mul()", repo_path=str(bare_repo), kind="feature")
+    t.acceptance_criteria = ["mul(a,b) returns product"]
+    await store.create_task(t)
+
+    outcome = await orch.run_task(t)
+
+    assert len(backend.nudges) == 1, backend.prompts
+    assert outcome.status is TaskStatus.AWAITING_APPROVAL, outcome
+    attempts = await store.list_attempts(t.id)
+    assert len(attempts) == 1
+    # Billed (the nudge turn genuinely spent tokens)...
+    assert attempts[-1]["tokens_used"] == 140, attempts[-1]  # 100 + 40
+    # ...but its error text never becomes the report — the deferral's own
+    # words are what full_final_text still holds.
+    assert attempts[-1]["full_final_text"] == DeferringCoderBackend.DEFER
+    assert opens, "no PR body captured"
+    body = opens[-1]["body"]
+    assert Orchestrator._NO_SUMMARY_NOTE in body
+    assert ErroringReportNudgeBackend.ERROR_TEXT not in body
+    # ONE nudge, ever — an error reply doesn't buy a retry.
+    second = await orch._report_nudge(
+        t, AgentResult(final_text=DeferringCoderBackend.DEFER, num_turns=1,
+                       is_error=False, tokens_used=1, session_id="s",
+                       stop_reason="end_turn"),
+        repo=GitRepo(bare_repo), attempt_id=attempts[-1]["id"])
+    assert second is None
+    assert len(backend.nudges) == 1, backend.prompts
+
+
 async def test_a_zero_diff_deferral_is_not_report_nudged(bare_repo, tmp_path, store):
     """`_report_nudge` is exclusively for a NON-empty diff; a coder that
     edited nothing is `_reformat_nudge`'s territory, unchanged."""
