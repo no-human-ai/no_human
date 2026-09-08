@@ -1564,6 +1564,15 @@ class Orchestrator:
         # not once per `_usable_profile` call — it is called 6+ times per
         # attempt.
         self._profile_divergence_warned: bool = False
+        # Side channel from `_run_task_body`'s worktree branch to
+        # `_drive_watched`: the freshly-acquired worktree path to run
+        # `setup_cmds` in, or `None` off the isolation-off branch.
+        # `_drive_watched` keeps its public `(task, repo)` signature — tests
+        # replace it wholesale with two-arg fakes — so the path travels as an
+        # attribute instead of a keyword argument. Consumed (reset to `None`)
+        # the moment `_drive_watched` reads it, so it is single-use and a
+        # stale value can never leak into a later call.
+        self._pending_setup_path: Path | None = None
 
     # ----------------------------- events ---------------------------------- #
 
@@ -2678,13 +2687,17 @@ class Orchestrator:
                 "isolation.enabled: false to work in the checkout on purpose."
             ), reason_category="infra")
         try:
-            # `setup_cmds` runs INSIDE `_drive_watched` (setup_in=wt_path), not
-            # here — that keeps the cancellation watcher alive across it, so
-            # `nh task cancel` during a long `npm ci` is observed instead of
-            # being invisible for up to len(cmds) x SETUP_TIMEOUT_S. See
-            # `_run_worktree_setup`. The isolation-off call site above passes
-            # no `setup_in`, which is exactly why setup_cmds never run there.
-            return await self._drive_watched(task, repo, setup_in=wt_path)
+            # `setup_cmds` runs INSIDE `_drive_watched`, not here — that keeps
+            # the cancellation watcher alive across it, so `nh task cancel`
+            # during a long `npm ci` is observed instead of being invisible
+            # for up to len(cmds) x SETUP_TIMEOUT_S. See `_run_worktree_setup`.
+            # Handed off via `self._pending_setup_path` (consumed on read,
+            # single-use) rather than a keyword argument, so `_drive_watched`
+            # keeps its plain `(task, repo)` signature. The isolation-off call
+            # site above never sets it, which is exactly why setup_cmds never
+            # run there.
+            self._pending_setup_path = wt_path
+            return await self._drive_watched(task, repo)
         finally:
             # Only ever OUR OWN directory. `wt_path` is unique to this run, so
             # no concurrent attempt of the same task can be inside it — that
@@ -2698,7 +2711,7 @@ class Orchestrator:
     # ------------------------ cooperative cancellation --------------------- #
 
     async def _drive_watched(
-        self, task: Task, repo: GitRepo, *, setup_in: Path | None = None,
+        self, task: Task, repo: GitRepo,
     ) -> TaskOutcome:
         """Run the attempt loop with a cancellation watcher alive beside it.
 
@@ -2706,12 +2719,16 @@ class Orchestrator:
         kept burning tokens until it finished on its own. The watcher turns that
         row into a signal the loop actually observes.
 
-        ``setup_in`` (worktree-isolated runs only) runs the profile's
-        `setup_cmds` HERE, with the watcher already alive, rather than before
-        this method is entered — a cancel arriving during a long `npm ci`
-        would otherwise go unobserved until the command finishes.
+        Worktree-isolated runs hand off the fresh worktree path via
+        `self._pending_setup_path` (set by `_run_task_body` just before this
+        call, consumed here) rather than a keyword argument, so this method
+        keeps its plain `(task, repo)` signature. When set, the profile's
+        `setup_cmds` run HERE, with the watcher already alive, rather than
+        before this method is entered — a cancel arriving during a long
+        `npm ci` would otherwise go unobserved until the command finishes.
         """
         self._cancel_reason = None
+        setup_in, self._pending_setup_path = self._pending_setup_path, None
         watcher = asyncio.create_task(self._watch_for_cancel(task.id))
         try:
             if setup_in is not None:
@@ -2740,11 +2757,14 @@ class Orchestrator:
         worker thread, polling the cheap cancel boundary (`_pending_cancel`,
         the same one `_drive`'s own entry uses) instead of just awaiting it —
         the loop otherwise cannot observe `nh task cancel` for as long as the
-        command runs. Resolved via `_usable_profile` on purpose: it is the
-        confirmed/policy-gated profile, so an unconfirmed or repo-supplied
-        file can never get to run shell in this worktree. Returns an outcome
-        to short-circuit `_drive_watched` (cancelled or failed), or ``None``
-        to fall through to `_drive`."""
+        command runs. Resolved via `_usable_profile` on purpose: a DB row wins
+        when one exists; with no row, `_usable_profile` falls back to the
+        repo's `.no_human/project.yml`, and that file's `setup_cmds` run here
+        exactly as its `test_cmd` already does elsewhere — same trust
+        surface, no more, no less; either way `_profile_usable_under_policy`
+        still gates it (confirmed, or proven under `auto_confirm_proven`).
+        Returns an outcome to short-circuit `_drive_watched` (cancelled or
+        failed), or ``None`` to fall through to `_drive`."""
         prof = await self._usable_profile(repo.path)
         cmds = list(getattr(prof, "setup_cmds", None) or []) if prof else []
         if not cmds:

@@ -27,6 +27,7 @@ each test file's fixtures self-contained.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import os
 import subprocess
 import time
@@ -90,8 +91,10 @@ def _finished(task):
 
 def _confirmed_profile(repo_path, **overrides):
     """A profile that clears `_profile_usable_under_policy` (human-confirmed,
-    with a proven test command) — the only kind `_usable_profile` will ever
-    hand `setup_cmds` off of."""
+    with a proven test command). `_usable_profile` hands `setup_cmds` off of
+    either a DB row (preferred when one exists) or — with no row — the repo's
+    own `.no_human/project.yml`, gated the same way either time; this helper
+    builds the profile object either side of that lookup uses."""
     from no_human.profile import ProjectProfile
 
     fields = dict(
@@ -318,10 +321,12 @@ async def test_setup_cmds_never_run_with_isolation_disabled(
     live_checkout, tmp_path, store,
 ):
     """`setup_cmds` only ever runs from `Orchestrator._run_worktree_setup`,
-    reached only via `_drive_watched(task, repo, setup_in=wt_path)` — the
-    isolation-ON call site in `_run_task_body`. With isolation off,
-    `_drive_watched(task, main_repo)` is called with no `setup_in` at all, so
-    a declared `setup_cmds` command must never touch the live checkout."""
+    reached only when `_run_task_body`'s isolation-ON call site sets
+    `orch._pending_setup_path` before calling `_drive_watched(task, repo)` —
+    `_drive_watched` keeps a plain `(task, repo)` signature and consumes that
+    attribute itself. With isolation off, `_pending_setup_path` is never set
+    (stays `None`), so a declared `setup_cmds` command must never touch the
+    live checkout."""
     sentinel = live_checkout / "sentinel.txt"
     await store.upsert_profile(_confirmed_profile(
         live_checkout, setup_cmds=[f"touch {sentinel}"],
@@ -745,3 +750,71 @@ def test_repo_setup_cmds_cli_records_the_commands(tmp_path, monkeypatch):
         "repo", "setup-cmds", str(repo), "some cmd", "--clear",
     ])
     assert both.exit_code != 0
+
+
+# --------------------------------------------------------------------------- #
+# Round 4: `_drive_watched` keeps `(task, repo)`; trust-model docstrings      #
+# --------------------------------------------------------------------------- #
+
+
+def test_drive_watched_signature_is_task_repo():
+    """The fakes in test_worktree_isolation.py / test_worktree_teardown.py
+    replace `_drive_watched` wholesale with plain `(task, repo)` callables —
+    a `setup_in` (or any other) keyword would TypeError every one of them.
+    The worktree setup path hands off via `orch._pending_setup_path` instead
+    (see `_run_task_body` / `_drive_watched`), so the signature never needs
+    to grow."""
+    from no_human.core.orchestrator import Orchestrator
+
+    params = list(inspect.signature(Orchestrator._drive_watched).parameters)
+    assert params == ["self", "task", "repo"]
+
+
+async def test_setup_runs_in_the_worktree(live_checkout, tmp_path, store):
+    """`_run_task_body`'s worktree branch sets `_pending_setup_path` to the
+    fresh worktree path immediately before calling `_drive_watched(task,
+    repo)`; `_drive_watched` consumes (reads, then clears) it before handing
+    off to `_run_worktree_setup`. Stubs `_run_worktree_setup` itself (rather
+    than `_drive`) to observe exactly the path it is called with, and checks
+    the attribute is cleared both during and after the call so a stale value
+    can never leak into a later run."""
+    await store.upsert_profile(_confirmed_profile(
+        live_checkout, setup_cmds=["true"],
+    ))
+    orch = _orchestrator(store, _cfg(tmp_path))
+    t = await _task(store, live_checkout)
+
+    seen = {}
+
+    async def _fake_setup(task, repo, wt_path):
+        seen["wt_path"] = wt_path
+        seen["pending_during_call"] = orch._pending_setup_path
+        return None
+
+    async def _capture(task, repo):
+        return _finished(task)
+
+    orch._run_worktree_setup = _fake_setup
+    orch._drive = _capture
+    outcome = await orch.run_task(t)
+
+    assert outcome.status is TaskStatus.DONE, outcome.detail
+    assert seen["wt_path"] is not None
+    assert seen["wt_path"] != live_checkout
+    assert seen["pending_during_call"] is None, (
+        "_pending_setup_path was not consumed before _run_worktree_setup ran")
+    assert orch._pending_setup_path is None, (
+        "_pending_setup_path was left set after the drive completed")
+
+
+def test_docstrings_state_the_real_trust_model():
+    """MAJOR-2: `_run_worktree_setup`'s docstring used to claim an
+    unconfirmed or repo-supplied file 'can never get to run shell in this
+    worktree' — false: with no DB row, `_usable_profile` falls back to the
+    repo's own `.no_human/project.yml`, and a `confirmed: true` file's
+    `setup_cmds` run exactly as its `test_cmd` already does."""
+    from no_human.core.orchestrator import Orchestrator
+
+    doc = Orchestrator._run_worktree_setup.__doc__ or ""
+    assert "can never" not in doc
+    assert "project.yml" in doc
