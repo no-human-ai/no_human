@@ -150,6 +150,34 @@ export function updateNotice({ inShell = false, current = null, update = null, c
 }
 
 /**
+ * The shared push+pull subscription contract used by every surface that keeps
+ * its own `update` state (the board's App.jsx, and Settings' UpdatesPanel):
+ * subscribe to the LIVE push (`onUpdate`) and, in the same call, pull
+ * `getLastUpdate()` to catch up on a version FACT that fired before this
+ * surface mounted — the startup check races the renderer, and a surface that
+ * only pushed would show nothing for a fact retained before it existed.
+ *
+ * The functional `setUpdate((cur) => cur ?? payload)` form is required, not
+ * cosmetic: a live push that already landed must always win over the later-
+ * resolving pull, even though the pull is issued first. Mirrors App.jsx's own
+ * effect exactly (per ec924d81's out-of-scope note, nothing there changes).
+ *
+ * @param {object}   s
+ * @param {object}   s.desktop    window.nhDesktop, or undefined outside the shell
+ * @param {Function} s.setUpdate  the surface's own update-state setter
+ * @returns {Function|undefined}  the push subscription's unsubscribe, or
+ *                                undefined when there is no desktop bridge
+ */
+export function subscribeUpdates({ desktop, setUpdate } = {}) {
+  if (!desktop || !setUpdate) return undefined;
+  const off = desktop.onUpdate?.((payload) => setUpdate(payload));
+  desktop.getLastUpdate?.().then((payload) => {
+    if (payload) setUpdate((cur) => cur ?? payload);
+  }).catch(() => {});
+  return off;
+}
+
+/**
  * What the BOARD (not Settings) shows about an update, or `null` to show
  * nothing. A strictly narrower view than updateNotice() above: the board is
  * not a place to explain "checked once a day" or spell out a raw error dump,

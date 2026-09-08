@@ -30,7 +30,7 @@ import {
 import { retireCandidates } from "./learningRetire.js";
 import { useEscapeKey } from "./useEscapeKey.js";
 import { pluralize } from "./pluralize.js";
-import { updateNotice } from "./updateNotice.js";
+import { updateNotice, subscribeUpdates } from "./updateNotice.js";
 import IntegrationsPanel from "./Integrations.jsx";
 import ModelsPanel from "./ModelsPanel.jsx";
 import WorkersPanel from "./WorkersPanel.jsx";
@@ -75,7 +75,10 @@ function UpdatesPanel() {
   const desktop = typeof window !== "undefined" ? window.nhDesktop : undefined;
   const inShell = Boolean(desktop?.shell);
 
-  useEffect(() => desktop?.onUpdate?.((payload) => setUpdate(payload)), [desktop]);
+  // Pushes the live update AND pulls getLastUpdate() to seed from a fact
+  // retained before this panel mounted (e.g. a startup check that finished
+  // before the operator ever opened Settings) — see updateNotice.js.
+  useEffect(() => subscribeUpdates({ desktop, setUpdate }), [desktop]);
 
   useEffect(() => {
     if (inShell) return undefined;
