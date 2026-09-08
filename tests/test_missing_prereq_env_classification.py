@@ -36,6 +36,7 @@ This file has three halves:
 
 import contextlib
 import json as _json
+import shlex
 from pathlib import Path
 from unittest.mock import patch
 
@@ -432,3 +433,218 @@ async def test_layered_missing_prerequisite_never_retries(bare_repo, tmp_path, s
     assert row["status"] == "failed", row["status"]
     assert row["infra_failure"] == 1
     assert _persisted(row)["environment_error"] is True
+
+
+async def test_layered_ownership_gate_bills_an_owned_failing_id(bare_repo, tmp_path, store):
+    # Round-3 review MAJOR: the layered gate's OWNERSHIP check (orchestrator.py
+    # `_layered_tests_failed_outcome`, the `_owned_failing_tests` call gated on
+    # `runner.prerequisite_reason_for(fail_result) is not None`) had no test at
+    # all — only its escalation sibling above did. Same incident TAP, same
+    # prerequisite signature, but this time `failing_tests` names an id this
+    # attempt's own diff added — it must never be excused as environment (or
+    # pre-existing): it can only ever be BILLED, same as the single-run gate's
+    # `test_..._never_excused` case already covers for that call site.
+    from no_human.testing.plan_runner import LayerResult, PlanResult
+    import no_human.testing.plan_runner as plan_runner_mod
+    from no_human.testing.test_layers import Gating, TestLayer, TestPlan
+
+    tap = _incident_tap()
+    plan = TestPlan(layers=[
+        TestLayer(name="desktop", command="node --test", gating=Gating.BLOCKING),
+    ])
+    tr = runner.TestRunResult(
+        ran=True, ok=False, passed=415, failed=2, errors=0,
+        command="node --test", output=tap[-8000:],
+        failure_blocks=runner._tap_failure_blocks(tap),
+        failing_tests=["x.test.mjs::it fails"],
+    )
+    lr = LayerResult(layer_name="desktop", gating=Gating.BLOCKING, result=tr)
+
+    def fake_run_test_plan(test_plan, task_repo, **kwargs):
+        return PlanResult(layer_results=[lr])
+
+    async def fake_resolve_test_plan(task):
+        return plan
+
+    def _mutate_node_test(cwd):
+        (cwd / "x.test.mjs").write_text("// this attempt's own edit\n")
+
+    cfg = _config(tmp_path)
+    orch = Orchestrator(store, cfg.data, FakeBackend(_mutate_node_test), SlackNotifier(None))
+    task = Task.new("desktop npm test", repo_path=str(bare_repo))
+    await store.create_task(task)
+    await store.set_status(task, TaskStatus.CONTEXT)
+    await store.set_status(task, TaskStatus.PLANNING)
+    repo = GitRepo(bare_repo)
+
+    with patch.object(orch, "_resolve_test_plan", fake_resolve_test_plan), \
+         patch.object(plan_runner_mod, "run_test_plan", fake_run_test_plan):
+        outcome = await orch._run_attempt(task, repo, 1, "main")
+
+    assert outcome.status is TaskStatus.FAILED, outcome.detail
+    assert not outcome.detail.startswith("tests could not run:"), outcome.detail
+    assert outcome.detail.startswith("tests failed:"), outcome.detail
+
+    attempts = await store.list_attempts(task.id)
+    assert len(attempts) == 1, [a.get("failure_reason") for a in attempts]
+    row = attempts[0]
+    assert row["status"] == "failed", row["status"]
+    assert not row["failure_reason"].startswith("tests could not run:")
+    assert row["infra_failure"] in (0, None, False), (
+        "an id this attempt's own diff added must be BILLED, never waved "
+        "through as environment, even though its text carries the same "
+        "prerequisite signature the sibling escalation test above uses: "
+        + str(row)
+    )
+    assert _persisted(row).get("environment_error") is not True
+
+
+# --------------------------------------------------------------------------- #
+# Round-3 review BLOCKER: real runner, not a hand-built TestRunResult         #
+# --------------------------------------------------------------------------- #
+#
+# Every gate test above stubs `_run_tests_once` with a hand-built
+# `runner.TestRunResult(...)` that never sets `invocation_error` — which is
+# exactly why round 2's suite never caught the BLOCKER: the incident TAP's
+# "Cannot find module" text ALSO matches `runner._INVOCATION_ERROR_PATTERNS`,
+# so the REAL `runner.run_tests()` sets `invocation_error=True` on it. Before
+# the fix, the single-run gate only consulted the prerequisite classifier
+# `if not invocation_error`, so this exact incident skipped the classifier
+# entirely and fell into the base-tree reproduction check instead — which (a
+# fixed, diff-independent `cat` command reproduces identically on base)
+# reported "genuinely environmental" and let the attempt SUCCEED with a PR
+# opened. Worse than before: a SILENT pass on a build-prerequisite failure.
+# These three tests drive the REAL runner end to end (a fake `test_cmd` that
+# `cat`s the incident TAP and exits 1) to prove: (1) the escalation now wins
+# regardless of `invocation_error`, (2) a real assertion failure with no
+# prerequisite signature still takes the normal failed-attempt route, and
+# (3) the reorder is load-bearing — disable the classifier and the old,
+# wrong, silent-pass behaviour comes back.
+
+
+def _orch(store, tmp_path, backend):
+    cfg = _config(tmp_path)
+    # One attempt is enough to prove the gate; retries would just repeat it.
+    cfg.data["bounds"] = {"max_attempts": 1}
+    return Orchestrator(store, cfg.data, backend, SlackNotifier(None))
+
+
+async def test_incident_tap_escalates_as_environment_through_the_real_runner(
+    bare_repo, tmp_path, store
+):
+    """The incident TAP is 417 lines — too large for an inline `printf` test_cmd
+    (see `tests/test_base_tree_gate.py`'s tiny one), so it is written to a temp
+    file and `cat`; the shell `test_cmd` runs with `shell=True` (`runner.
+    _run_shell`), so a compound `cat <path>; exit 1` command works exactly
+    like a real broken node test script would."""
+    tap_path = tmp_path / "incident.tap"
+    tap_path.write_text(_incident_tap())
+    node_err_cmd = f"cat {shlex.quote(str(tap_path))}; exit 1"
+
+    from no_human.profile import ProjectProfile
+    prof = ProjectProfile(
+        repo_path=str(bare_repo), ecosystem="node",
+        test_cmd=node_err_cmd,
+        derived_from=["test"], proven={"test_cmd": True}, confirmed=True,
+    )
+    await store.upsert_profile(prof)
+
+    orch = _orch(store, tmp_path, FakeBackend(_mutate))
+    t = Task.new("desktop npm test", repo_path=str(bare_repo))
+    await store.create_task(t)
+
+    outcome = await orch.run_task(t)
+
+    # The classifier wins outright: TRANSIENT_INFRA blocker, never a PR, and
+    # exactly one attempt row — never AWAITING_APPROVAL with a PR opened
+    # (the old, buggy, silent-pass shape this test guards against).
+    assert outcome.detail.startswith("tests could not run:"), outcome.detail
+    assert outcome.off_ramp is True
+    assert outcome.status is not TaskStatus.FAILED
+    assert outcome.status is not TaskStatus.AWAITING_APPROVAL
+    assert outcome.pr_url is None
+
+    attempts = await store.list_attempts(t.id)
+    assert len(attempts) == 1, [a.get("failure_reason") for a in attempts]
+    row = attempts[0]
+    assert row["failure_reason"].startswith("tests could not run:")
+    assert row["status"] == "failed", row["status"]
+    assert row["infra_failure"] == 1
+    assert _persisted(row)["environment_error"] is True
+
+
+async def test_assertion_only_tap_takes_the_normal_route(bare_repo, tmp_path, store):
+    """Positive control for the fix above: a TAP with only a real assertion
+    failure (no prerequisite signature anywhere in it) must still fail the
+    attempt normally — the reorder must not turn EVERY red node run into an
+    environment escalation, only ones the classifier actually matches."""
+    node_assert_cmd = (
+        "printf 'not ok 3 - the button renders disabled\\n"
+        "  ---\\n"
+        "  AssertionError: expected 2 to equal 3\\n"
+        "  ---\\n"
+        "1..3\\n# tests 3\\n# pass 2\\n# fail 1\\n'; exit 1"
+    )
+    from no_human.profile import ProjectProfile
+    prof = ProjectProfile(
+        repo_path=str(bare_repo), ecosystem="node",
+        test_cmd=node_assert_cmd,
+        derived_from=["test"], proven={"test_cmd": True}, confirmed=True,
+    )
+    await store.upsert_profile(prof)
+
+    orch = _orch(store, tmp_path, FakeBackend(_mutate))
+    t = Task.new("desktop npm test", repo_path=str(bare_repo))
+    await store.create_task(t)
+
+    outcome = await orch.run_task(t)
+
+    assert outcome.status is not TaskStatus.AWAITING_APPROVAL
+    assert outcome.pr_url is None
+    attempts = await store.list_attempts(t.id)
+    row = attempts[-1]
+    assert row["status"] == "failed", row["status"]
+    assert not (row["failure_reason"] or "").startswith("tests could not run:"), row
+    assert _persisted(row).get("environment_error") is not True
+
+
+async def test_prerequisite_gate_is_load_bearing(bare_repo, tmp_path, store, monkeypatch):
+    """Mutation test: with `runner.prerequisite_reason_for` disabled (always
+    None, as if round 3's reorder fix were reverted or the classifier never
+    fired), the exact same incident-TAP scenario as the first test above must
+    fall through to the OLD path — the base-tree reproduction check — and
+    reach the old, wrong, silent-pass verdict: AWAITING_APPROVAL with a PR
+    opened. This proves the reorder in the single-run gate (orchestrator.py,
+    `_run_attempt`) is load-bearing, not incidental: disabling only the
+    classifier flips the outcome, with nothing else in the test changed."""
+    import no_human.testing.runner as runner_mod
+    monkeypatch.setattr(runner_mod, "prerequisite_reason_for", lambda *a, **kw: None)
+
+    tap_path = tmp_path / "incident.tap"
+    tap_path.write_text(_incident_tap())
+    node_err_cmd = f"cat {shlex.quote(str(tap_path))}; exit 1"
+
+    from no_human.profile import ProjectProfile
+    prof = ProjectProfile(
+        repo_path=str(bare_repo), ecosystem="node",
+        test_cmd=node_err_cmd,
+        derived_from=["test"], proven={"test_cmd": True}, confirmed=True,
+    )
+    await store.upsert_profile(prof)
+
+    orch = _orch(store, tmp_path, FakeBackend(_mutate))
+    t = Task.new("desktop npm test", repo_path=str(bare_repo))
+    await store.create_task(t)
+
+    outcome = await orch.run_task(t)
+
+    # Same shape as test_base_tree_gate.py's
+    # test_node_missing_deps_invocation_error_does_not_fail_attempt: a fixed,
+    # diff-independent command reproduces identically on the base tree, so
+    # the base-tree check calls it "genuinely environmental" and proceeds —
+    # the exact silent-pass behaviour the reorder fix eliminates.
+    assert outcome.status is TaskStatus.AWAITING_APPROVAL
+    assert outcome.pr_url is not None
+    attempts = await store.list_attempts(t.id)
+    assert len(attempts) == 1
+    assert attempts[-1]["status"] != "failed"

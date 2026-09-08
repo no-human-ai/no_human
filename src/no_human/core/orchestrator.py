@@ -6311,36 +6311,45 @@ class Orchestrator:
                 },
             )
             if test_result.ran and not test_result.ok:
-                # `_is_invocation_error` (runner.py) already owns bare
-                # module/package resolution failures via the base-tree
-                # reproduction check just below — do not race it: only
-                # consult the new classifier when THAT machinery does not
-                # already claim this output, so `tests/test_base_tree_gate.py`
-                # keeps its existing AWAITING_APPROVAL/FAILED routing intact.
-                owned: list[str] = []
-                if not getattr(test_result, "invocation_error", False):
-                    # Ownership (cheap: a git-diff lookup, no test re-run) is
-                    # computed BEFORE the environment classifier and reused
-                    # below for pre-existing/flaky/billing attribution — an
-                    # owned failing id (this attempt's own diff touches the
-                    # failing test) must never be excused as environment just
-                    # because its text happens to contain a prerequisite
-                    # signature (round-2 review MAJOR-4).
-                    owned = await self._owned_failing_tests(
-                        repo, base, failing_tests, cwd=test_cwd)
-                    env_outcome = await self._environment_test_failure(
-                        task, result=test_result, attempt_id=attempt_id,
-                        repo=repo, branch=branch,
-                        test_results={
-                            "ran": test_result.ran, "ok": test_result.ok,
-                            "passed": test_result.passed, "failed": test_result.failed,
-                            "errors": test_result.errors, "tamper_flag": False,
-                            "failing_tests": failing_tests,
-                        },
-                        owned_failing=owned,
-                    )
-                    if env_outcome is not None:
-                        return env_outcome
+                # Ownership (cheap: a git-diff lookup, no test re-run) is
+                # computed BEFORE either classifier below and reused for
+                # pre-existing/flaky/billing attribution — an owned failing
+                # id (this attempt's own diff touches the failing test) must
+                # never be excused as environment just because its text
+                # happens to contain a prerequisite signature (round-2 review
+                # MAJOR-4).
+                owned = await self._owned_failing_tests(
+                    repo, base, failing_tests, cwd=test_cwd)
+                # The prerequisite signature (round 2) OWNS the missing-
+                # build-prerequisite class outright — checked UNCONDITIONALLY,
+                # ahead of `invocation_error` below, so it wins even when the
+                # same text ALSO matches `_INVOCATION_ERROR_PATTERNS` ("Cannot
+                # find module" matches both). Gating this on `not
+                # invocation_error` (as before) let the real 417-test incident
+                # — whose "Cannot find module" text sets invocation_error=True
+                # — skip the classifier entirely and fall into the base-tree
+                # check below, which reported "genuinely environmental" and
+                # let the attempt SUCCEED with a PR opened: worse than failing
+                # loud, a SILENT pass on a build-prerequisite failure
+                # (round-3 review BLOCKER). The base-tree reproduction check
+                # remains the owner only for outputs with NO prerequisite
+                # signature — `test_node_missing_deps_invocation_error_does_
+                # not_fail_attempt` (tests/test_base_tree_gate.py) has zero
+                # `not ok` lines, so `prerequisite_reason_for` returns None
+                # and it still rides that path unchanged.
+                env_outcome = await self._environment_test_failure(
+                    task, result=test_result, attempt_id=attempt_id,
+                    repo=repo, branch=branch,
+                    test_results={
+                        "ran": test_result.ran, "ok": test_result.ok,
+                        "passed": test_result.passed, "failed": test_result.failed,
+                        "errors": test_result.errors, "tamper_flag": False,
+                        "failing_tests": failing_tests,
+                    },
+                    owned_failing=owned,
+                )
+                if env_outcome is not None:
+                    return env_outcome
                 if getattr(test_result, "invocation_error", False):
                     # B2 #4: "infrastructure" only if the BASE tree errors the
                     # same way. A coder-introduced import/collection breakage
@@ -11218,6 +11227,13 @@ class Orchestrator:
         undeterminable (review F1). A CLEAN base run stays trustworthy: if
         the suite runs without any setup, the attempt tree erroring is on
         the change.
+
+        Only reached when `_environment_test_failure` (prerequisite-
+        signature classifier) already declined — i.e. the invocation error's
+        output carries NO build-prerequisite signature. A signature match
+        wins outright regardless of `invocation_error` (round-3 review
+        BLOCKER); this function is the fallback for the invocation errors
+        that are left over.
         """
         import tempfile
 
@@ -11270,6 +11286,16 @@ class Orchestrator:
         repo root; a cwd outside the repo cannot own anything in its diff.
         Blocking subprocess work, so run off the event loop. Never raises:
         any failure here must not fail an attempt that would otherwise pass.
+
+        Node ids get FILE-level ownership (no AST for `.mjs`), Python ids
+        get per-function ownership (`ownership.parse_node_id`) — see that
+        module's docstring. Either way this is fail-closed: an id that
+        cannot be attributed (no location, ambiguous path, parse failure)
+        is simply never returned here, so it is never excused as
+        environment or pre-existing — it can only ever be BILLED to the
+        attempt (round-3 review MAJOR: node ids used to never appear in
+        `failing_tests` at all, making this function a permanent no-op for
+        node runs).
         """
         if not failing_tests:
             return []

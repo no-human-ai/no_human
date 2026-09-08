@@ -567,7 +567,21 @@ FROZEN_FILE_LINES = {
     # own frozen line/CC entry, per this file's own gate above — the file
     # total grows only because two new methods now carry the extracted
     # code's comments/docstrings that used to live inline.
-    "core/orchestrator.py": 21963,
+    # 21963 -> 21989 (+26) 2026-09-08: round-3 review fix. Two BLOCKER/MAJOR
+    # findings, no new call sites: (1) `_environment_test_failure`'s gate is
+    # now consulted unconditionally instead of `if not invocation_error`, so
+    # a prerequisite signature wins even when the text also matches
+    # `_INVOCATION_ERROR_PATTERNS` (own docstring paragraph on `owned_failing`
+    # explaining why an owned id is still never excused); (2)
+    # `_layered_tests_failed_outcome`'s ownership gate and `_owned_failing_tests`
+    # both grew a comment/docstring paragraph on node ids now reaching
+    # `failing_tests` (`_node_tap_failing_tests`, `no_human/testing/runner.py`)
+    # instead of always being `[]`, so file-level ownership
+    # (`ownership.parse_file_scoped_id`) is no longer a permanent no-op for
+    # node runs. `_run_attempt` itself is unchanged (neither frozen
+    # function-line/CC entry above moved) — the growth is comments/docstrings
+    # only, same shape as the 21788 -> 21963 entry above.
+    "core/orchestrator.py": 21989,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.
