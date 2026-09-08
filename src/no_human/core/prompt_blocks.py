@@ -955,6 +955,11 @@ def build_rules_block(
            f"    after you finish — your job is the scoped evidence, not the marathon.\n"
            if test_cmd_str else
            "  - Run the project's test suite and confirm all tests pass before finishing.\n")
+        + ("  - BACKGROUND COMMANDS: a run started with `run_in_background`, `&`, or nohup\n"
+           "    will never notify this session and there is no wake-up if your turn ends\n"
+           "    while it is still running — the attempt ends with no report. Run\n"
+           "    verification in the FOREGROUND, or poll it to completion with Bash,\n"
+           "    before you write your final report.\n")
         + ("  - REPRO MANIFEST: "
            + ("this repo's gate is set to required, so write\n"
               if repro_mode == "required" else

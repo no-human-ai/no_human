@@ -427,6 +427,11 @@ def test_every_coder_sink_session_has_a_stated_stop_disposition():
         "_run_attempt": 1,
         # the zero-diff reformat nudge: same catch, same attempt_id
         "_reformat_nudge": 1,
+        # the report nudge (RECOVERY for a coder that deferred its report on
+        # a non-empty diff): same catch, same attempt_id — called from
+        # _run_attempt's non-zero-diff branch, mirrors _reformat_nudge's
+        # disposition exactly
+        "_report_nudge": 1,
         # the repro-gate corrective round (PR #533): CancelRequested is
         # re-raised out of the round, caught by _run_attempt's gate-step
         # handler, and routed to _honor_cancel(attempt_id=) — mid-session

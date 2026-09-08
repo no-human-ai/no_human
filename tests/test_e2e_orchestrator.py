@@ -18,6 +18,7 @@ from no_human.cli.commands import _review_pass_evidence
 from no_human.config import load_config
 from no_human.core.orchestrator import (
     Orchestrator, _REFORMAT_NUDGE, _REFORMAT_NUDGE_MARKER,
+    _REPORT_NUDGE, _REPORT_NUDGE_MARKER,
 )
 from no_human.core.task import Task, TaskStatus
 from no_human.notify.slack import SlackNotifier
@@ -4801,6 +4802,180 @@ async def test_no_nudge_without_a_session_to_continue(bare_repo, tmp_path, store
         attempt_id=await store.create_attempt(t.id, 3)) is None
 
     assert backend.calls == []
+
+
+# ── The report nudge: a coder that ends its turn waiting on a background-run
+#    notification that will never arrive must not deliver with no report ──
+
+class DeferringCoderBackend:
+    """Edits a real file — a NON-empty diff — then ends its turn deferring to
+    a background-run notification that will never arrive: task f073bfee's
+    attempt-2 final text, verbatim. `restated` is what it says when asked (on
+    its own session, via `resume`) to poll and report."""
+
+    DEFER = ("I'll just wait for the background task notification to arrive "
+              "rather than polling.")
+    REPORT = "CRITERION: mul(a,b) returns product — MET — evidence: calc.py:4\n"
+    capabilities = RESUMABLE
+
+    def __init__(self, restated: str = REPORT, first: str = DEFER):
+        self.calls: list[dict] = []
+        self._restated = restated
+        self._first = first
+
+    @property
+    def prompts(self) -> list[str]:
+        return [c["prompt"] for c in self.calls]
+
+    @property
+    def nudges(self) -> list[dict]:
+        return [c for c in self.calls if _REPORT_NUDGE_MARKER in c["prompt"]]
+
+    async def run(self, prompt, *, cwd, max_turns, effort=None, resume=None,
+                   on_event=None, supervisor_hook=None, **kwargs):
+        self.calls.append({"prompt": prompt, "resume": resume,
+                            "max_turns": max_turns, "effort": effort})
+        if resume is not None:
+            return AgentResult(final_text=self._restated, num_turns=1,
+                                is_error=False, tokens_used=40, session_id="s",
+                                stop_reason="end_turn")
+        (Path(cwd) / "calc.py").write_text(
+            "def mul(a, b):\n    return a * b\n"
+        )
+        return AgentResult(final_text=self._first, num_turns=5, is_error=False,
+                            tokens_used=100, session_id="s", stop_reason="end_turn")
+
+
+class DeferringCoderBackendZeroDiff(DeferringCoderBackend):
+    """Same deferral text, but writes nothing — a zero diff. `_report_nudge`
+    is exclusively for a coder that DID the work and merely deferred its
+    report; a zero diff is `_reformat_nudge`'s territory, proven above."""
+
+    async def run(self, prompt, *, cwd, max_turns, effort=None, resume=None,
+                   on_event=None, supervisor_hook=None, **kwargs):
+        self.calls.append({"prompt": prompt, "resume": resume,
+                            "max_turns": max_turns, "effort": effort})
+        if resume is not None:
+            return AgentResult(final_text=self._restated, num_turns=1,
+                                is_error=False, tokens_used=40, session_id="s",
+                                stop_reason="end_turn")
+        return AgentResult(final_text=self._first, num_turns=5, is_error=False,
+                            tokens_used=100, session_id="s", stop_reason="end_turn")
+
+
+async def test_a_coder_that_ends_deferring_to_a_notification_is_nudged_once_and_the_report_reaches_the_pr(
+    bare_repo, tmp_path, store, monkeypatch
+):
+    """RECOVERY half of the fix (INCIDENT task f073bfee): a coder ran
+    verification via `run_in_background` and ended its turn "I'll just wait
+    for the background task notification to arrive rather than polling" —
+    no such notification exists. The diff is real; only the report was
+    missing. One nudge, on the SAME session, recovers it before the PR
+    ships — the PREVENTION half (the coder system-prompt bullet) is proven
+    separately in test_prompt_blocks.py."""
+    from no_human.core import orchestrator as orch_mod
+
+    opens: list[dict] = []
+
+    def fake_open_pr(repo, branch, title, body, **kwargs):
+        opens.append({"body": body})
+        return PrResult(url="https://example.invalid/pr/1", kind="local",
+                         branch=branch)
+
+    monkeypatch.setattr(orch_mod, "open_pr", fake_open_pr)
+
+    cfg = _config(tmp_path)
+    backend = DeferringCoderBackend()
+    events: list = []
+    orch = Orchestrator(store, cfg.data, backend, SlackNotifier(None),
+                         event_sink=events.append)
+    t = Task.new("add mul()", repo_path=str(bare_repo), kind="feature")
+    t.acceptance_criteria = ["mul(a,b) returns product"]
+    await store.create_task(t)
+
+    outcome = await orch.run_task(t)
+
+    assert len(backend.nudges) == 1, backend.prompts
+    nudge = backend.nudges[0]
+    assert nudge["resume"] == "s"
+    assert nudge["max_turns"] == 1
+    assert nudge["effort"] == "low"
+    assert outcome.status is TaskStatus.AWAITING_APPROVAL, outcome
+    # The replacement report reaches the outcome directly (raw final_text,
+    # rebound after the nudge — see `dataclasses.replace` in `_run_attempt`).
+    assert outcome.report == DeferringCoderBackend.REPORT.strip()
+    attempts = await store.list_attempts(t.id)
+    assert len(attempts) == 1
+    assert attempts[-1]["status"] == "succeeded"
+    # The nudge's spend bills additively onto the coder's own, never dropped.
+    assert attempts[-1]["tokens_used"] == 140, attempts[-1]  # 100 + 40
+    assert opens, "no PR body captured"
+    body = opens[-1]["body"]
+    assert "mul(a,b) returns product" in body
+    assert "calc.py:4" in body
+    assert "No implementation summary was produced" not in body
+    assert any(e.get("kind") == "report_nudge" for e in events), events
+
+
+async def test_a_reply_that_still_defers_gets_no_second_nudge_and_renders_as_today(
+    bare_repo, tmp_path, store, monkeypatch
+):
+    """The rescue is one turn, not a negotiation: a reply that is STILL a
+    non-report falls through unchanged to today's rendering
+    (`_NO_SUMMARY_NOTE` — the diff is real, so the mechanical fallback
+    applies here, not the no-mechanical `_NO_SUMMARY_BLOCK`)."""
+    from no_human.core import orchestrator as orch_mod
+
+    opens: list[dict] = []
+
+    def fake_open_pr(repo, branch, title, body, **kwargs):
+        opens.append({"body": body})
+        return PrResult(url="https://example.invalid/pr/1", kind="local",
+                         branch=branch)
+
+    monkeypatch.setattr(orch_mod, "open_pr", fake_open_pr)
+
+    cfg = _config(tmp_path)
+    backend = DeferringCoderBackend(restated=DeferringCoderBackend.DEFER)
+    orch = Orchestrator(store, cfg.data, backend, SlackNotifier(None))
+    t = Task.new("add mul()", repo_path=str(bare_repo), kind="feature")
+    t.acceptance_criteria = ["mul(a,b) returns product"]
+    await store.create_task(t)
+
+    outcome = await orch.run_task(t)
+
+    assert len(backend.nudges) == 1, backend.prompts
+    assert outcome.status is TaskStatus.AWAITING_APPROVAL, outcome
+    attempts = await store.list_attempts(t.id)
+    assert len(attempts) == 1
+    assert attempts[-1]["status"] == "succeeded"
+    assert opens, "no PR body captured"
+    assert Orchestrator._NO_SUMMARY_NOTE in opens[-1]["body"]
+    assert DeferringCoderBackend.DEFER not in opens[-1]["body"]
+    # ONE nudge, ever, for this attempt — a second direct call is a no-op.
+    second = await orch._report_nudge(
+        t, AgentResult(final_text=DeferringCoderBackend.DEFER, num_turns=1,
+                       is_error=False, tokens_used=1, session_id="s",
+                       stop_reason="end_turn"),
+        repo=GitRepo(bare_repo), attempt_id=attempts[-1]["id"])
+    assert second is None
+    assert len(backend.nudges) == 1, backend.prompts
+
+
+async def test_a_zero_diff_deferral_is_not_report_nudged(bare_repo, tmp_path, store):
+    """`_report_nudge` is exclusively for a NON-empty diff; a coder that
+    edited nothing is `_reformat_nudge`'s territory, unchanged."""
+    cfg = _config(tmp_path)
+    backend = DeferringCoderBackendZeroDiff()
+    orch = Orchestrator(store, cfg.data, backend, SlackNotifier(None))
+    t = Task.new("add mul()", repo_path=str(bare_repo), kind="feature")
+    t.acceptance_criteria = ["mul(a,b) returns product"]
+    t.context = {"eval_result": {"verdict": "accept"}}
+    await store.create_task(t)
+
+    await orch.run_task(t)
+
+    assert backend.nudges == [], backend.prompts
 
 
 class SneakyNudgeBackend(WrongShapeBackend):

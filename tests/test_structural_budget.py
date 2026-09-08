@@ -768,7 +768,15 @@ FROZEN_FILE_LINES = {
     # repo.head_sha())`, so the net line count lands back at 22585 — same
     # number as the flag, different (correct, flagless) mechanism. Measured
     # on this tree by the scanner's own metric.
-    "core/orchestrator.py": 22585,
+    # 22585 -> 22771 (+186): the background-run report nudge (task f073bfee
+    # RECOVERY) — new module constants `_REPORT_NUDGE_MARKER`/`_REPORT_NUDGE`/
+    # `_REPORT_NUDGE_TIMEOUT_S`, the new `Orchestrator._report_nudge` method
+    # (126 lines, well under the per-function threshold), its call site in
+    # `_run_attempt`'s non-zero-diff branch, one docstring sentence in
+    # `_abort_during_nudge`, and one guard-set pop in
+    # `_begin_attempt_accounting`. Measured on this tree by the scanner's own
+    # metric (`scan_source` on `src/no_human/core/orchestrator.py`).
+    "core/orchestrator.py": 22771,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.
