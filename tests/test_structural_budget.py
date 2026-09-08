@@ -178,16 +178,33 @@ FROZEN_FUNCTION_LINES = {
     # errored `AgentResult` via `_quota_signal`/`_infra_sdk_failure`, so
     # `_run_review` gained the `result.is_error` check and passes `result`
     # through on both `_judge_call` branches. Measured on this tree.
-    # 394 -> 417 (+23) -> 394 (-23): task 90097 (round 4 of 0847f2c2) removed
-    # the round-3 unjudged-checkpoint-head instance flag — an out-of-brief,
-    # undisclosed instance flag with a lifetime hole (armed by
-    # `_route_unjudged_head`, only ever consumed by the NEXT `_run_review`
-    # call, so it stayed armed across every non-review exit in between).
-    # `_route_unjudged_head` still routes an unjudged `[WIP-BLOCKED]`/
-    # `[WIP-PARTIAL]` head to a full review; whether that review is
-    # advisory-skipped now depends only on `reviewer.allow_advisory`, same as
-    # every other diff. Measured on this tree.
-    "core/orchestrator.py:Orchestrator._run_review": 394,
+    # 394 -> 425 (+31): task 90097 (round 4 of 0847f2c2) removed the round-3
+    # unjudged-checkpoint-head instance flag — an out-of-brief, undisclosed
+    # instance flag with a lifetime hole (armed by `_route_unjudged_head`,
+    # only ever consumed by the NEXT `_run_review` call, so it stayed armed
+    # across every non-review exit in between). Deleting the flag with no
+    # replacement (measured 394, matching the pre-flag value) turned out to
+    # be UNSAFE: `_run_review`'s no-reviewer/`allow_advisory` branch would
+    # then unconditionally rubber-stamp a routed diff, which silently
+    # re-broke two pre-existing honesty-gate tests
+    # (`tests/test_resume_wiring.py::
+    # test_inherited_work_is_not_credited_as_a_do_nothing_attempts_own` and
+    # `tests/test_blocker_challenge.py::
+    # test_an_empty_attempt_after_a_challenge_is_not_credited`) that rely on
+    # exactly this call fail-closing an unjudged own-partial checkpoint.
+    # Restoring the safety property without a flag or a new parameter: the
+    # advisory branch now asks `self._is_own_partial(repo, task.context or
+    # {}, repo.head_sha())` directly — the SAME stateless rule
+    # `_run_attempt` already uses to decide `branched_from_own_partial`,
+    # re-derived fresh from `repo`/`task.context` on every call (no
+    # `self` flag, no threaded parameter). `_route_unjudged_head` only ever
+    # routes a head for which that call is true, and nothing commits
+    # between the routing and this call, so HEAD is still that checkpoint —
+    # asking again here tells an unreviewed own-partial apart from a
+    # human-gated resume (which reports False, so it keeps the advisory
+    # freebie) without threading anything between the two calls. Measured
+    # on this tree.
+    "core/orchestrator.py:Orchestrator._run_review": 425,
     # 377 -> 398 (+21): quota-saturation mid-run halt. `bench_run` now builds
     # a `QuotaHaltDetector`, threads `halt.observe(score)`/`halt.scored(...)`
     # through the per-spec checkpoint save inside `_run_spec`, and prints the
@@ -276,10 +293,12 @@ FROZEN_FUNCTION_CC = {
     # 73 -> 74 (+1): same verifier-wall-park cause as the LINES entry above
     # — the added `result.is_error` branch is one more `If`. Measured on
     # this tree.
-    # 74 -> 75 (+1) -> 74 (-1): task 90097 (round 4), same cause as the LINES
-    # entry above — removing the `if unjudged_checkpoint_head:` branch round
-    # 3 added takes the extra `If` back out. Measured on this tree.
-    "core/orchestrator.py:Orchestrator._run_review": 74,
+    # 74 -> 77 (+3): task 90097 (round 4), same cause as the LINES entry
+    # above — the flag's `if unjudged_checkpoint_head:` branch is replaced
+    # by a `try/except Exception` around `self._is_own_partial(...)` plus
+    # its own `if own_unjudged_partial:` branch (one extra `If` for the
+    # `except`, one for the guard). Measured on this tree.
+    "core/orchestrator.py:Orchestrator._run_review": 77,
     # Crossed 60 (to 67) with the UI-evidence gate landed by task 389210fa.
     # 67 -> 70 (+3): follow-up to ce4d4a73 (#151) -- one new `if overlap:`
     # block (+1) plus two `stale.get(...) or []` BoolOps (+1 each). Measured
@@ -718,20 +737,31 @@ FROZEN_FILE_LINES = {
     # `_append_review_history`. Re-measured on the fully rebased tree
     # (trunk's delivery fast-forward fix merged first, this task's
     # checkpoint-routing fix on top) by the scanner's own metric.
-    # 22542 -> 22573 (+31) -> 22542 (-31): task 90097 (round 4, same
-    # incident). Round 3's unjudged-checkpoint-head instance flag — set in
-    # `_route_unjudged_head`, read-then-reset in `_run_review`, guarding a
-    # `ReviewerUnavailable` fail-closed branch — is removed: an undisclosed,
-    # out-of-brief instance flag with a lifetime hole (armed across every
-    # non-review exit between the hoist and the next `_run_review` call).
-    # `_route_unjudged_head` still routes the checkpoint head to a full
-    # review; `tests/test_resume_wiring_round2.py::
+    # 22542 -> 22573 (+31): task 90097 (round 4, same incident). Round 3's
+    # unjudged-checkpoint-head instance flag — set in `_route_unjudged_head`,
+    # read-then-reset in `_run_review`, guarding a `ReviewerUnavailable`
+    # fail-closed branch — is removed: an undisclosed, out-of-brief instance
+    # flag with a lifetime hole (armed across every non-review exit between
+    # the hoist and the next `_run_review` call). `tests/
+    # test_resume_wiring_round2.py::
     # test_a_machine_resume_is_not_credited_as_human_gated` and
     # `::test_a_revision_branch_sitting_on_an_abandoned_partial_is_not_
     # credited` now cover that routing with a FakeReviewer that fails the
-    # diff, instead of relying on this flag. Measured on this tree by the
-    # scanner's own metric.
-    "core/orchestrator.py": 22542,
+    # diff, instead of relying on this flag. Deleting the flag outright
+    # (net -31, back to a measured 22542) reopened a different, pre-existing
+    # bug: the no-reviewer/`allow_advisory` branch in `_run_review` then
+    # rubber-stamped a routed diff unconditionally, silently re-breaking two
+    # honesty-gate tests outside this ticket's file list (`tests/
+    # test_resume_wiring.py::
+    # test_inherited_work_is_not_credited_as_a_do_nothing_attempts_own` and
+    # `tests/test_blocker_challenge.py::
+    # test_an_empty_attempt_after_a_challenge_is_not_credited`). The flag is
+    # replaced, not restored: `_run_review` now re-derives the same fact
+    # statelessly via `self._is_own_partial(repo, task.context or {},
+    # repo.head_sha())`, so the net line count lands back at 22573 — same
+    # number as the flag, different (correct, flagless) mechanism. Measured
+    # on this tree by the scanner's own metric.
+    "core/orchestrator.py": 22573,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.

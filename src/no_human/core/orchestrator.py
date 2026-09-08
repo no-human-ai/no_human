@@ -12808,6 +12808,16 @@ class Orchestrator:
         hard gate into a rubber stamp — silently, and exactly when it mattered.
         Eval and replay flows that deliberately skip the gate must say so with
         ``reviewer.allow_advisory``, and even then it is announced on the board.
+
+        The advisory skip is narrowed by ``_is_own_partial`` (the SAME rule
+        `_run_attempt` uses to decide whether a zero-diff resume is this
+        loop's own abandoned partial): when the current HEAD is the loop's
+        own unreviewed checkpoint — a `[WIP-PARTIAL]`/`[WIP-BLOCKED]` commit
+        no human gated — no coder turn ran in THIS call to produce it, so
+        there is nothing here for the advisory pass-through to bless. Taking
+        the freebie anyway would credit exactly the unreviewed half-work
+        `_route_unjudged_head` routed here to be judged. Derived fresh from
+        `repo`/`task.context` on every call — no flag, no `self` state.
         """
         # Delivery-sha gate marker (_assert_delivery_sha): reset at the top of
         # every review round so a PASS-through set by an earlier attempt can
@@ -12849,6 +12859,27 @@ class Orchestrator:
                     "Passing the gate advisory-style would make it a rubber "
                     "stamp. Wire a reviewer, or set reviewer.allow_advisory=true "
                     "for eval/replay flows that skip the gate on purpose."
+                )
+            # The advisory freebie must not launder an unjudged checkpoint
+            # head. `_route_unjudged_head` only ever routes a head for which
+            # `_is_own_partial` is true (see `_run_attempt`: it is reached
+            # exactly when `branched_from_own_partial` left `resumed_commit`
+            # `None`), and nothing commits between that routing and this
+            # call — HEAD is still the checkpoint. Asking the SAME question
+            # again here, from `repo`/`task.context` alone, tells an
+            # unreviewed own-partial apart from a human-gated resume (which
+            # `_is_own_partial` reports False for, so it keeps the freebie)
+            # without any flag threaded between the two calls.
+            try:
+                own_unjudged_partial = self._is_own_partial(
+                    repo, task.context or {}, repo.head_sha())
+            except Exception:
+                own_unjudged_partial = False
+            if own_unjudged_partial:
+                raise ReviewerUnavailable(
+                    "no reviewer is configured, and this head is an unjudged "
+                    "checkpoint routed to full review. Advisory pass-through "
+                    "would credit unreviewed half-work — wire a reviewer."
                 )
             self.emit(
                 "review_advisory",
