@@ -90,6 +90,15 @@ class TestRunResult:
     # never "nothing passed", so every consumer must treat it as evidence that
     # is present or absent, not as a count.
     passed_tests: list[str] = field(default_factory=list)
+    # Node TAP `not ok` blocks, parsed off the FULL captured output for the
+    # same reason as `passed_tests` above: the `[-8000:]` tail every branch
+    # below carries drops the failing blocks of any suite with a few hundred
+    # tests after them (the incident this exists for: 417 tests, failures at
+    # ordinals 182/343, ~14-45KB from the end). `failing_tests` stays `[]` for
+    # node (pytest-only parser), so this is the ONLY place a node failure's
+    # own text survives truncation — `prerequisite_reason_for` reads this,
+    # never `.output`.
+    failure_blocks: list[str] = field(default_factory=list)
 
     @property
     def summary(self) -> str:
@@ -387,6 +396,37 @@ def _pytest_traceback_excerpts(
     return {node_id: _cap_excerpt(body) for node_id, body, _idx in indexed}
 
 
+_TAP_NOT_OK_RE = re.compile(r"^\s*not ok \d+\b")
+_TAP_BLOCK_END_RE = re.compile(r"^\s*(?:not )?ok \d+\b|^\s*1\.\.\d+|^#|^\s*\.\.\.\s*$")
+
+
+def _tap_failure_blocks(output: str) -> list[str]:
+    """Node TAP `not ok N ...` blocks, each captured through its own YAML
+    terminator (`  ...`, the next `ok`/`not ok` line, the next `#` comment,
+    or the trailing `1..N` plan line) — off the FULL output, before any
+    `[-8000:]` tail truncates it. `[]` when *output* carries no `not ok`
+    line (not TAP, or a clean pytest run); never raises. Capped like
+    `_pytest_traceback_excerpts` (`_EXCERPT_MAX_TESTS` blocks, each through
+    `_cap_excerpt`) so a runaway TAP dump can't blow up state.
+    """
+    if not output:
+        return []
+    lines = output.splitlines()
+    blocks: list[str] = []
+    i, n = 0, len(lines)
+    while i < n:
+        if _TAP_NOT_OK_RE.match(lines[i]):
+            start = i
+            j = i + 1
+            while j < n and not _TAP_BLOCK_END_RE.match(lines[j]):
+                j += 1
+            blocks.append(_cap_excerpt("\n".join(lines[start:j])))
+            i = j
+        else:
+            i += 1
+    return blocks[:_EXCERPT_MAX_TESTS]
+
+
 def render_traceback_excerpts(excerpts: dict[str, str]) -> str:
     """Human-readable, non-truncated rendering of *excerpts* for the
     ``attempt_failed`` event text. Returns "" when empty so callers can
@@ -526,9 +566,16 @@ _MISSING_PREREQUISITE_RULES: tuple[tuple[re.Pattern, str], ...] = (
     # bare specifier only: "./foo.mjs" is a file THIS change may have deleted.
     (re.compile(r"Cannot find (?:module|package) ['\"]([^'\"./][^'\"]*)['\"]"),
      "a node package is not installed: {0}"),
-    (re.compile(r"([^\s'\"]+) is missing - run `npm run build`"),
+    # The real artefact/test text uses an em dash (`web/src/cancelFlow.test.mjs:64`,
+    # bytes e2 80 94), not a hyphen — match hyphen, en dash and em dash so the
+    # actual incident bytes are not silently missed.
+    (re.compile(r"([^\s'\"]+) is missing [-–—] run `npm run build`"),
      "a build artefact was never built: {0}"),
     (re.compile(r"ENOENT[^\n]*?((?:[\w.@/-]*/)?(?:node_modules|dist)(?:/[\w.@-]+)*)"),
+     "a build/install path is missing: {0}"),
+    # Same signature, opposite order: `spawnSync …/node_modules/.bin/foo ENOENT`
+    # names the path BEFORE the errno, not after.
+    (re.compile(r"((?:[\w.@/-]*/)?(?:node_modules|dist)(?:/[\w.@-]+)*)[^\n]*?ENOENT"),
      "a build/install path is missing: {0}"),
 )
 
@@ -544,6 +591,29 @@ def missing_prerequisite_reason(output: str) -> str | None:
         match = pattern.search(output or "")
         if match:
             return template.format(match.group(1))
+    return None
+
+
+def prerequisite_reason_for(result: "TestRunResult") -> str | None:
+    """Same rule list as `missing_prerequisite_reason`, scoped to the FAILING
+    content only: `result.failure_blocks` (node TAP blocks parsed off the
+    untruncated output, see `_tap_failure_blocks`), then — for pytest —
+    `result.traceback_excerpts`. Deliberately never `result.output`: that is
+    an [-8000:] tail that may not contain the failure at all, and even when
+    it does, a signature sitting in unrelated PASSING output must not excuse
+    a real failure elsewhere in the same run (the product-review defect this
+    replaces). None when neither carries a signature — the failing tests
+    here were not judgements of the diff is a claim only the failing
+    evidence itself may make.
+    """
+    for block in result.failure_blocks:
+        reason = missing_prerequisite_reason(block)
+        if reason is not None:
+            return reason
+    for excerpt in (result.traceback_excerpts or {}).values():
+        reason = missing_prerequisite_reason(excerpt)
+        if reason is not None:
+            return reason
     return None
 
 
@@ -1008,6 +1078,7 @@ def run_tests(
     # Parsed off the FULL captured output, like the failing ids above — the
     # [-8000:] tail each result carries below would drop most of an -rA summary.
     passed_tests = _pytest_passed_tests(output)
+    failure_blocks = _tap_failure_blocks(output)
     ok = rc == 0
     if not ok and failed == 0 and errors == 0 and not failing_tests and _is_teardown_race(output):
         # INFRA, not a coder-bug: the tests already passed (the anchored
@@ -1027,6 +1098,7 @@ def run_tests(
             return TestRunResult(True, False, 0, 0, 1, cmd,
                                  f"timed out after {timeout}s")
         passed_r, failed_r, errors_r = _parse_test_output(cmd, output_r)
+        failure_blocks_r = _tap_failure_blocks(output_r)
         if rc_r != 0 and _is_invocation_error(rc_r, output_r, passed_r, failed_r, errors_r):
             # KEEP THE NAMES. `_is_invocation_error` returns True even with real
             # counts (the "2335 passed, 1 failed" node case just above), so this
@@ -1036,12 +1108,14 @@ def run_tests(
             return TestRunResult(True, False, passed_r, failed_r, errors_r,
                                  cmd, output_r[-8000:], invocation_error=True,
                                  failing_tests=_pytest_failing_tests(output_r),
-                                 passed_tests=_pytest_passed_tests(output_r))
+                                 passed_tests=_pytest_passed_tests(output_r),
+                                 failure_blocks=failure_blocks_r)
         failing_tests_r = _pytest_failing_tests(output_r)
         return TestRunResult(True, rc_r == 0, passed_r, failed_r, errors_r,
                              cmd, output_r[-8000:], failing_tests=failing_tests_r,
                              passed_tests=_pytest_passed_tests(output_r),
-                             traceback_excerpts=_pytest_traceback_excerpts(output_r, failing_tests_r))
+                             traceback_excerpts=_pytest_traceback_excerpts(output_r, failing_tests_r),
+                             failure_blocks=failure_blocks_r)
     if not ok and _is_invocation_error(rc, output, passed, failed, errors):
         retry_cmd = _fix_invocation(cmd, output, repo_path)
         if retry_cmd and retry_cmd != cmd:
@@ -1055,27 +1129,32 @@ def run_tests(
                 return TestRunResult(True, False, 0, 0, 1, retry_cmd,
                                      f"timed out after {timeout}s")
             passed2, failed2, errors2 = _parse_test_output(retry_cmd, output2)
+            failure_blocks2 = _tap_failure_blocks(output2)
             ok2 = rc2 == 0
             if _is_invocation_error(rc2, output2, passed2, failed2, errors2):
                 return TestRunResult(True, False, passed2, failed2, errors2,
                                      retry_cmd, output2[-8000:],
                                      invocation_error=True,
                                      failing_tests=_pytest_failing_tests(output2),
-                                     passed_tests=_pytest_passed_tests(output2))
+                                     passed_tests=_pytest_passed_tests(output2),
+                                     failure_blocks=failure_blocks2)
             failing_tests2 = _pytest_failing_tests(output2)
             return TestRunResult(True, ok2, passed2, failed2, errors2,
                                  retry_cmd, output2[-8000:],
                                  failing_tests=failing_tests2,
                                  passed_tests=_pytest_passed_tests(output2),
-                                 traceback_excerpts=_pytest_traceback_excerpts(output2, failing_tests2))
+                                 traceback_excerpts=_pytest_traceback_excerpts(output2, failing_tests2),
+                                 failure_blocks=failure_blocks2)
         # No fixable retry — mark as invocation error
         return TestRunResult(True, False, passed, failed, errors,
                              cmd, output[-8000:], invocation_error=True,
                              failing_tests=failing_tests,
-                             passed_tests=passed_tests)
+                             passed_tests=passed_tests,
+                             failure_blocks=failure_blocks)
     return TestRunResult(True, ok, passed, failed, errors, cmd, output[-8000:],
                          failing_tests=failing_tests, passed_tests=passed_tests,
-                         traceback_excerpts=_pytest_traceback_excerpts(output, failing_tests))
+                         traceback_excerpts=_pytest_traceback_excerpts(output, failing_tests),
+                         failure_blocks=failure_blocks)
 
 
 @dataclass

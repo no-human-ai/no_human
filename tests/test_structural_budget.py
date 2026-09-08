@@ -560,7 +560,14 @@ FROZEN_FILE_LINES = {
     # failures correctly, and tags the max_attempts/tamper_blocked call
     # sites explicitly. Measured via `wc -l`/the scanner below; growth is
     # the minimal functional diff after trimming comments/docstrings.
-    "core/orchestrator.py": 21788,
+    # 21788 -> 21963 (+175): round-2 environment-error-classification fix.
+    # `_run_attempt`'s two failure-billing call sites were extracted into
+    # `_layered_tests_failed_outcome` and `_failed_tests_outcome` (own
+    # docstrings + comments) so `_run_attempt` itself nets DOWN against its
+    # own frozen line/CC entry, per this file's own gate above — the file
+    # total grows only because two new methods now carry the extracted
+    # code's comments/docstrings that used to live inline.
+    "core/orchestrator.py": 21963,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.
