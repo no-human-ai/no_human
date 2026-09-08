@@ -898,9 +898,11 @@ Each command gets up to 30 minutes (a cold `npm ci` is minutes, not seconds).
 A non-zero exit, a timeout, or a command that cannot even be spawned fails
 the task immediately as an **infra/environment error naming the exact
 command** — never a test failure, and the test command never runs. Success
-is remembered per worktree (a marker in the worktree's git admin directory,
-never in the working tree itself) so a reused worktree does not re-run setup
-on every attempt.
+is recorded in a marker file in the worktree's git admin directory (never in
+the working tree itself, so it never shows in `git status`). That marker
+only makes a second call on the *same* worktree path a no-op — it is not a
+per-attempt saving: every run gets its own fresh worktree, and setup runs
+once per run, before the first attempt.
 
 Operator-owned and trusted like the rest of the profile — resolved via
 `Orchestrator._usable_profile` exactly like `test_cmd` is, no special case:
