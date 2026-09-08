@@ -91,6 +91,11 @@ contextBridge.exposeInMainWorld("nhDesktop", {
   downloadUpdate: () => ipcRenderer.invoke("nh:update-download"),
   installUpdate: () => ipcRenderer.invoke("nh:update-install"),
   deferUpdate: (version) => ipcRenderer.invoke("nh:update-defer", version),
+  // A pull alongside the push above: `onUpdate` only sees events fired while a
+  // subscriber is mounted, and the automatic startup check fires before the
+  // board has mounted one. This lets a panel that mounts late — or the shell
+  // itself, on load — ask what the last result was.
+  getLastUpdate: () => ipcRenderer.invoke("nh:update-last"),
   // The board's light/dark choice, mirrored to the main process. It is the
   // renderer that owns the theme (localStorage), but only the main process can
   // colour the window frame and the Windows title-bar controls — and it has to

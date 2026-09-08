@@ -6880,6 +6880,22 @@ a.so-chip-value:hover { color: var(--accent-300); }
   font-size: 0.85em;
 }
 
+/* The same Settings > Updates callout above, hosted in the board page's own
+   flow (App.jsx renders it as a normal block below `.nh-main-bar`, gated on
+   `page === "board"`; it is not rendered on any other page) instead of a
+   fixed overlay. NOT `position: fixed` — an earlier round reused
+   .nh-stale-banner's fixed strip with pointer-events re-enabled, which
+   covered "+ New Task" and the top bar until the user clicked Later. */
+.nh-update-flow {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+  margin: 12px 16px 0;
+  flex: 0 0 auto;
+}
+.nh-update-flow .update-actions { margin-top: 0; margin-left: auto; }
+
 /* ── The night ledger — what no_human did while you were away ───────────── */
 /* Sits in the sidebar's dead zone between nav and outcomes. Numerals are
    monospace: counts and costs are this product's currency, and the tabular

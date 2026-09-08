@@ -148,3 +148,62 @@ export function updateNotice({ inShell = false, current = null, update = null, c
     version,
   };
 }
+
+/**
+ * The board-shell notice for an update the AUTOMATIC startup check found —
+ * the fix for the defect this module exists to close: that check's one
+ * "nh:update" push fires before Settings' UpdatesPanel (its only subscriber)
+ * ever mounts, so a result nobody was listening for used to vanish. The main
+ * process now retains it (main.mjs's `lastUpdate`) and the shell seeds from
+ * that on load; this is the pure decision of whether to show it there.
+ *
+ * Deliberately covers "available" AND "unavailable" — the reported incident
+ * was the unsigned case ("this build is not code-signed…"), whose mode is
+ * "unavailable". Both mean "a newer version exists"; every other mode
+ * (up-to-date, failed, downloading, downloaded) stays board-silent, same as
+ * today — an automatic-check failure must never surface outside Settings.
+ *
+ * Shown only on the board page, below `.nh-main-bar`, as a normal in-flow
+ * block (not rendered on any other page) — the same `.nh-alarm update-notice`
+ * callout Settings' Updates panel uses — never a fixed strip. An earlier
+ * round reused `.nh-stale-banner`, whose `pointer-events: none` contract
+ * keeps that fixed strip from ever eating clicks; overlaying it with a
+ * clickable banner instead covered "+ New Task" and the top bar until the
+ * user clicked Later.
+ *
+ * `actions` differ by mode: "available" offers a persisted "later" (the same
+ * defer Settings' Updates panel calls) alongside "details"; "unavailable" has
+ * no persisted defer to offer (Settings itself only offers the download page
+ * there), so it gets "downloads" plus a session-only "dismiss" that writes
+ * nothing.
+ *
+ * @param {object} s
+ * @param {object} s.update           the last payload (from onUpdate or getLastUpdate), or null
+ * @param {string} s.dismissedVersion the version the user last clicked "Later"/"Dismiss" on, this session
+ * @returns {null|{text:string,version:string,className:string,role:string,tone:string,actions:string[]}}
+ */
+export function updateBanner({ update = null, dismissedVersion = null } = {}) {
+  if (!update) return null;
+  if (update.mode !== "available" && update.mode !== "unavailable") return null;
+  const version = update.latest ?? null;
+  if (!version) return null;
+  if (dismissedVersion && dismissedVersion === version) return null;
+
+  const tone = update.mode === "unavailable" ? "warn" : "info";
+  // main already computed the exact sentence via updateMessage; fall back to
+  // the same copy updateNotice() would show, so the two surfaces never drift.
+  const text = update.message
+    || updateNotice({ inShell: true, current: update.current, update }).title;
+  const actions = update.mode === "unavailable"
+    ? ["downloads", "dismiss"]
+    : ["details", "later"];
+
+  return {
+    text,
+    version,
+    className: `nh-alarm update-notice update-${tone} nh-update-flow`,
+    role: "status",
+    tone,
+    actions,
+  };
+}

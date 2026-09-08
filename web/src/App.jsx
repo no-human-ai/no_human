@@ -30,6 +30,7 @@ import { tasksReducer } from "./tasksReducer.js";
 import useIsPhone from "./useIsPhone.js";
 import { createReconnector } from "./wsReconnect.js";
 import { connectionBanner } from "./connectionBanner.js";
+import { updateBanner } from "./updateNotice.js";
 import { drainChip, formatPausedUntil } from "./drainChip.js";
 import { initialDrainReadout, nextDrainReadout, readoutPayload } from "./drainReadout.js";
 import { useEscapeKey } from "./useEscapeKey.js";
@@ -860,6 +861,12 @@ export default function App() {
   // Which Settings pane to open on — set when a Finish-setup item is clicked so
   // the overlay lands on the matching pane; null means "wherever it last was".
   const [settingsTab, setSettingsTab] = useState(null);
+  // The last update result (from the live "nh:update" push or the retained
+  // "nh:update-last" pull — see the effect below) and the version the user
+  // clicked "Later" on THIS session, so the board-shell notice can hide it
+  // without touching the persisted once-a-day/defer state main.mjs owns.
+  const [update, setUpdate] = useState(null);
+  const [updateDismissed, setUpdateDismissed] = useState(null);
   // The Settings "!" nudge (AI-learnings left onboarding 2026-08-30) is TWO
   // separate acknowledgements, each its own localStorage bit (aiConfigNudge.js)
   // — review fix round, 2026-09-01: collapsing them into one made the popup
@@ -1109,6 +1116,21 @@ export default function App() {
     return off;
   }, []);
 
+  // The automatic startup update check fires its ONE "nh:update" push before
+  // this component (or Settings' UpdatesPanel) has mounted, so a subscriber
+  // added only here would still miss it. Subscribe for anything that arrives
+  // AFTER mount, and separately pull whatever main.mjs already retained
+  // (nh:update-last) for anything that arrived BEFORE — the functional
+  // setUpdate form means whichever one lands first wins, and the other is a
+  // harmless no-op.
+  useEffect(() => {
+    const d = window.nhDesktop;
+    if (!d) return undefined;
+    const off = d.onUpdate?.((p) => setUpdate(p));
+    d.getLastUpdate?.().then((p) => { if (p) setUpdate((cur) => cur ?? p); }).catch(() => {});
+    return off;
+  }, []);
+
   // Resolve the head of the backlog queue into a composer seed. The FULL issue
   // is fetched first (the browse list truncates description at 2000 chars);
   // if that fetch fails the list brief already in hand stands — a truncated
@@ -1227,6 +1249,11 @@ export default function App() {
   // "Working (N)" figure agrees with the board instead of its own count.
   const sidebarCounts = deriveCounts(tasks);
   const banner = connectionBanner(wsPhase);
+  // The board-shell notice for an update the automatic startup check found —
+  // see updateNotice.js's updateBanner() for why "unavailable" (the unsigned
+  // case) is included alongside "available", and why every other mode stays
+  // silent here exactly as it already is in Settings.
+  const updateBar = updateBanner({ update, dismissedVersion: updateDismissed });
   // One-time nudge from the "!" — shown after onboarding until Settings
   // opens on ANY pane or the popup is dismissed (`popupDismissed`, a
   // strictly weaker condition than the badge's own `aiConfigDone` above —
@@ -1485,11 +1512,65 @@ export default function App() {
             mobile nav's viewport, so at phone width it renders in flow here
             instead, above the board on every page. */}
         {isPhone && aiConfigNudge}
+        {/* The automatic startup update check's result (rendered just below,
+            gated on `page === "board"`) — shown only on the board page, as a
+            normal in-flow block below `.nh-main-bar`, not a fixed overlay:
+            an earlier round reused .nh-stale-banner's fixed strip with
+            pointer-events re-enabled, which covered "+ New Task" and the top
+            bar until the user clicked Later. It is not rendered on
+            Backlog/Done/Failed/Stats/About at all, so it can never occupy
+            Windows' top-40px `titleBarOverlay` strip — only `.nh-main-bar`
+            (board-only) has clearance there. "Later" pushes the SAME
+            persisted defer the Updates panel's own "Later" uses — main.mjs
+            clears its retained result and pushes {mode:"skipped"} only
+            after the defer actually persisted, which is what makes both
+            surfaces clear together; `setUpdateDismissed` only hides this
+            copy early, before that round-trip lands. The unsigned
+            ("unavailable") card has no persisted defer to offer, so
+            "Dismiss" there is session-only and writes nothing. */}
         {page === "board" && (
           <div className="nh-main-bar">
             <OverviewStrip tasks={tasks} />
             <DrainReadoutChip readout={drainReadout} />
             <button className="btn btn-new-task" aria-haspopup="dialog" aria-expanded={showNewTask} onClick={() => setShowNewTask(true)}>+ New Task</button>
+          </div>
+        )}
+        {page === "board" && updateBar && (
+          <div className={updateBar.className} role={updateBar.role} data-tone={updateBar.tone}>
+            <span>{updateBar.text}</span>
+            <div className="update-actions">
+              {updateBar.actions.includes("details") && (
+                <button type="button" className="btn btn-approve" onClick={() => openSettings("updates")}>
+                  See details
+                </button>
+              )}
+              {updateBar.actions.includes("downloads") && (
+                <button
+                  type="button"
+                  className="btn btn-approve"
+                  onClick={() => window.open("https://github.com/no-human-ai/no_human/releases", "_blank", "noopener,noreferrer")}
+                >
+                  Open downloads
+                </button>
+              )}
+              {updateBar.actions.includes("later") && (
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={() => {
+                    setUpdateDismissed(updateBar.version);
+                    window.nhDesktop?.deferUpdate?.(updateBar.version);
+                  }}
+                >
+                  Later
+                </button>
+              )}
+              {updateBar.actions.includes("dismiss") && (
+                <button type="button" className="btn" onClick={() => setUpdateDismissed(updateBar.version)}>
+                  Dismiss
+                </button>
+              )}
+            </div>
           </div>
         )}
         {page === "board" && (
