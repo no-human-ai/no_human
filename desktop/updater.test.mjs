@@ -11,7 +11,8 @@ import { AVAILABLE, FAILED, SKIPPED, UNAVAILABLE, UP_TO_DATE, createUpdater }
 import { SIGNED, UNSIGNED } from "./signing.cjs";
 
 /** Records every interaction, so a missing call is visible as an absence. */
-function fakeAutoUpdater({ version = "0.2.0", throws = null, downloadThrows = null } = {}) {
+function fakeAutoUpdater({ version = "0.2.0", throws = null, downloadThrows = null,
+                            downloadEmits = false } = {}) {
   const au = {
     autoDownload: true,              // electron-updater's real defaults, so a
     autoInstallOnAppQuit: true,      // failure to override them is detectable
@@ -29,6 +30,13 @@ function fakeAutoUpdater({ version = "0.2.0", throws = null, downloadThrows = nu
     async downloadUpdate() {
       au.downloadCalls += 1;
       if (downloadThrows) throw new Error(downloadThrows);
+      if (downloadEmits) {
+        // MacUpdater's real ordering: dispatchUpdateDownloaded() fires
+        // BEFORE downloadUpdate()'s own promise resolves
+        // (node_modules/electron-updater/out/MacUpdater.js:219-226).
+        au.listeners.get("download-progress")?.({ percent: 100 });
+        au.listeners.get("update-downloaded")?.({ version });
+      }
     },
     quitAndInstall() { au.quitAndInstallCalls += 1; },
   };
@@ -39,10 +47,11 @@ const T0 = 1_000_000_000;
 const DAY = 86_400_000;
 
 function harness({ plan, version = "0.2.0", state = {}, throws = null, downloadThrows = null,
+                   downloadEmits = false,
                    currentVersion = "0.1.0", isPackaged = true, now = T0 } = {}) {
   const disk = { ...state };
   const events = [];
-  const au = fakeAutoUpdater({ version, throws, downloadThrows });
+  const au = fakeAutoUpdater({ version, throws, downloadThrows, downloadEmits });
   const up = createUpdater({
     autoUpdater: au, plan, currentVersion, isPackaged,
     readState: () => ({ ...disk }),
@@ -293,6 +302,24 @@ test("download progress and completion reach the listener", async () => {
   const progress = events.find((e) => e.mode === "downloading");
   assert.equal(progress.percent, 43, "progress must be reported to the UI");
   assert.ok(events.some((e) => e.mode === "downloaded"));
+});
+
+test("download() reports downloaded when the event beat its own promise", async () => {
+  // MacUpdater resolves downloadUpdate() only AFTER dispatching
+  // update-downloaded (node_modules/electron-updater/out/MacUpdater.js:219-226).
+  // If download() blindly returns "downloading" after the await, that reply
+  // reaches the renderer LAST and overwrites the live "downloaded" card with a
+  // stale "downloading… 0%" one that has no actions (web/src/Settings.jsx:104,
+  // web/src/updateNotice.js:64-73).
+  const { up, events } = harness({ plan: SIGNED_PLAN, downloadEmits: true });
+  up.configure();
+  await up.check();
+  const d = await up.download();
+  assert.equal(d.mode, "downloaded",
+    "the reply must reflect the state downloadUpdate() actually resolved in");
+  assert.equal(d.latest, "0.2.0");
+  assert.equal(events.at(-1).mode, "downloaded",
+    "the reply must not be older than the last event the renderer already applied");
 });
 
 test("a listener that throws cannot take the updater down", async () => {

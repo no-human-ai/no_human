@@ -174,6 +174,14 @@ export function createUpdater({
     if (!pending) return { mode: FAILED, error: "no update has been found yet" };
     try {
       await autoUpdater.downloadUpdate();
+      // MacUpdater resolves downloadUpdate() only AFTER it has dispatched
+      // update-downloaded (node_modules/electron-updater/out/MacUpdater.js:219-226),
+      // so by the time this reply reaches the renderer the "downloaded" event has
+      // already been emitted. Returning "downloading" here made Settings.jsx
+      // (web/src/Settings.jsx:104) overwrite the live downloaded card with a stale
+      // reply, rendering updateNotice's downloading branch with no actions.
+      // Report the state we are ACTUALLY in.
+      if (downloaded) return { mode: "downloaded", latest: pending.version };
       return { mode: "downloading", latest: pending.version };
     } catch (err) {
       const raw = String(err?.message ?? err);
