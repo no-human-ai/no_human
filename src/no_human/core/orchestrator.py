@@ -22619,13 +22619,16 @@ SIX of them read a checkpoint and TWO do not — but do
                     k = len(failing)
                     # `k` counts only the PERSISTED (bounded) ids — add back
                     # `failing_tests_dropped` (ids truncated before this row
-                    # ever saw them) so the remainder count stays honest.
+                    # ever saw them) so `total` — used in BOTH the summary
+                    # header and the remainder count — stays honest instead
+                    # of the header advertising just the bounded `k`.
                     dropped = int(test_evidence.get("failing_tests_dropped") or 0)
-                    lines.append(f"<details><summary>{k} failing test"
-                                 f"{'s' if k != 1 else ''}</summary>\n")
+                    total = k + dropped
+                    lines.append(f"<details><summary>{total} failing test"
+                                 f"{'s' if total != 1 else ''}</summary>\n")
                     lines += [f"- `{f}`" for f in failing[:10]]
-                    if k - 10 + dropped > 0:
-                        lines.append(f"- …and {k - 10 + dropped} more")
+                    if total - 10 > 0:
+                        lines.append(f"- …and {total - 10} more")
                     lines.append("\n</details>")
             if test_evidence.get("invocation_error"):
                 # The counts above are real and stay. But the runner ALSO hit a

@@ -778,7 +778,13 @@ FROZEN_FILE_LINES = {
     # recording the true remainder as `failing_tests_dropped`. In-memory
     # attribution (`_newly_failing_vs_base`, `_owned_failing_tests`) is
     # unchanged — see tests/test_failing_tests_bound.py.
-    "core/orchestrator.py": 22653,
+    # frozen 22653, now 22656 (+3): `_test_evidence_section`'s <details>
+    # summary header was still built from `k` (the PERSISTED/bounded count)
+    # instead of `total = k + failing_tests_dropped`, so a 96,465-failure run
+    # would announce "200 failing tests" in the header while the expanded
+    # "…and N more" line correctly named the true remainder — fixed to use
+    # `total` in both places.
+    "core/orchestrator.py": 22656,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.
