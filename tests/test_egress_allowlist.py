@@ -328,16 +328,21 @@ GIT_SUBCOMMANDS: dict[str, tuple[str, str]] = {
     "ls-tree": (LOCAL, "reads a local tree"),
     "for-each-ref": (LOCAL, "reads local refs"),
     "symbolic-ref": (LOCAL, "reads/writes HEAD"),
+    "update-ref": (LOCAL, "writes a ref under .git; the CAS form takes an "
+                          "old value and refuses a concurrent mover — no "
+                          "remote named, nothing leaves the machine"),
     "merge-base": (LOCAL, "walks local history"),
     "merge-tree": (LOCAL, "three-way merges two local commits; with "
                           "--write-tree it writes the result to the local "
                           "object store and prints its OID — no remote, no "
                           "worktree, no ref moved"),
     # LOCAL because the only call sites in this tree are `merge --squash
-    # <local branch>` and `merge --abort` (vcs/approve_merge.py:361/:363) —
-    # both operate on a ref already in the local object store, no remote
-    # named. `git pull` (fetch + merge) stays EXTERNAL below; if `merge`
-    # ever gains a remote-naming call site here, this row is wrong.
+    # <local branch>` and `merge --abort` (vcs/approve_merge.py:361/:363),
+    # and `merge --ff-only <local sha>` (vcs/git.py's
+    # `fast_forward_local_branch`) — all three operate on a ref/sha already
+    # in the local object store, no remote named. `git pull` (fetch + merge)
+    # stays EXTERNAL below; if `merge` ever gains a remote-naming call site
+    # here, this row is wrong.
     "merge": (LOCAL, "merges a local ref into the worktree; contacts a "
                      "remote only via `pull`, which stays EXTERNAL"),
     # LOCAL because the only call sites in this tree are `rebase <local base>`

@@ -1039,7 +1039,11 @@ class GitRepo:
         session starts; a caller that re-reads this at gate time instead of
         trusting the pin would let a force-push after pinning move the
         answer, which is exactly the laundering path this method exists to
-        avoid.
+        avoid. `fetch_remote_branch_sha` is a second, gate-time caller of
+        this same method — that is safe despite the warning above because
+        delivery only ever pushes a sha that has already been proven equal
+        to a PASS-stamped review sha (see `_assert_delivery_sha`); there is
+        no unreviewed history for a gate-time re-read to launder in.
         """
         if not ref.startswith("refs/") or ref.startswith("-"):
             return None
@@ -1071,15 +1075,19 @@ class GitRepo:
         never `refs/remotes/<remote>/<branch>`.
 
         That tracking ref only reflects whatever this worktree last happened
-        to fetch — which can predate a push another attempt (or a human) made
-        to the same branch, or predate this same attempt's own earlier push
-        if this call runs in a different checkout of the repo. Comparing a
-        reviewed sha against that cached value instead of asking the remote
-        is exactly how two genuinely-landed pushes were refused as "not the
-        reviewed sha" and re-dispatched from scratch: `origin/no-human/<id>`
-        already pointed at the reviewed commit, but the refusal quoted the
-        branch's creation point. `git ls-remote` (via `ls_remote_exact`) is
-        the one read that cannot be stale — it always asks the remote.
+        to fetch — which can predate a push another attempt (or a human)
+        made to the same branch since the last fetch. This is a
+        forward-looking DIVERGENCE GUARD: it lets delivery notice a remote
+        that has moved out from under it (someone else pushed, or the
+        branch is protected) and refuse rather than push blind. It is not
+        what fixed the delivery-refusal incidents — those were caused by
+        the LOCAL branch ref lagging the reviewed commit (see
+        `fast_forward_local_branch`'s docstring), and this method was never
+        in that path: the pre-fix gate compared the local branch tip
+        against the review stamp and never read a remote or tracking ref at
+        all. `git ls-remote` (via `ls_remote_exact`) is the one read that
+        cannot be stale for the divergence check this method performs — it
+        always asks the remote.
 
         Returns `None` for every unreadable/unreachable state — no remote
         configured, network failure, auth failure, timeout, or the branch
@@ -1112,13 +1120,27 @@ class GitRepo:
         current tip (or the branch has no tip yet). Never a reset, never a
         force: returns `False` instead of discarding any commit.
 
-        Exists for the case where the process asserting delivery is not the
-        same worktree the review ran in: `branch`'s local ref can still sit
-        at the branch's creation point while `sha` (the reviewed commit) is
-        only reachable via the task worktree that shares this object store,
-        or was just fetched by `fetch_remote_branch_sha`. Moving the ref here
-        lets the ordinary push path (`push`/`push_sha_fast_forward`) carry it
-        without ever touching history.
+        Exists because the pre-fix delivery gate compared the stamped
+        review sha only against `repo.branch_sha(branch)` — the LOCAL
+        branch ref — and that ref can lag the commit that was actually
+        reviewed and stamped. Two ways this happens in the same worktree
+        the review ran in, no other checkout involved (linked worktrees
+        share `refs/heads`, so "a different checkout's branch ref" was
+        never the mechanism): HEAD was detached at the reviewed commit
+        while `refs/heads/<branch>` was never moved off the point it was
+        created at, or something reset the branch ref back to that creation
+        point after the reviewed commit was made. Either way `sha` is
+        already in this object store — reachable from HEAD, or fetched by
+        `fetch_remote_branch_sha` — the local branch ref just hasn't been
+        walked forward to it yet. Moving the ref here lets the ordinary push
+        path (`push`/`push_sha_fast_forward`) carry it without ever touching
+        history.
+
+        Refuses (`ProtectedBranch`) a `branch` matching `never_push_to`
+        BEFORE writing anything — `push_sha_fast_forward` has the same
+        check, but it runs after this method, so without a check here the
+        LOCAL protected ref would already have been advanced by the time
+        the push refuses.
         """
         try:
             current = self.branch_sha(branch)
@@ -1128,6 +1150,9 @@ class GitRepo:
             return True
         if current is not None and not self.is_ancestor(current, sha):
             return False
+        if _branch_protected(branch, self.never_push_to):
+            raise ProtectedBranch(
+                f"refusing to fast-forward protected branch: {branch}")
         if self.current_branch() == branch:
             self._run("merge", "--ff-only", sha)
         else:
