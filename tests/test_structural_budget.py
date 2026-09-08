@@ -108,7 +108,14 @@ FROZEN_FUNCTION_LINES = {
     # is that the pin is captured in `_run_attempt`'s own frame, before the
     # coder can influence it — a helper callable from elsewhere would weaken
     # that guarantee. Measured on this tree with the scanner below.
-    "core/orchestrator.py:Orchestrator._run_attempt": 2210,
+    # 2210 -> 2253 (+43): send-back resume with zero diff now lands
+    # `AWAITING_APPROVAL` ("no changes needed") instead of a failure when the
+    # round resumed from a human send-back and an existing PR is found —
+    # kept inline in the `if resumed_commit is None:` block (not extracted)
+    # so the branch stays next to the failure path it replaces for that one
+    # case; extracting it would be the out-of-scope refactor the fix
+    # explicitly avoids. Measured on this tree with the scanner below.
+    "core/orchestrator.py:Orchestrator._run_attempt": 2253,
     # 760 -> 778 (+18): dispatch-time intake-eval hoisted path — the `elif
     # ctx.get("eval_result")` branch that acts on a grill/wizard-stored
     # verdict (idempotency marker, cost/residual-gap comments) added inside
@@ -232,7 +239,12 @@ FROZEN_FUNCTION_CC = {
     # around the `ls_remote_exact` pin capture, plus the fail-closed
     # `if base_pin is None:` advisory branch when the pin doesn't resolve.
     # Measured on this tree with the scanner below.
-    "core/orchestrator.py:Orchestrator._run_attempt": 257,
+    # 257 -> 264 (+7): send-back resume with zero diff — the
+    # `if await self._send_back_resume_round(task):` / `if pr.url:` guard
+    # pair plus the inline conditional building `feedback_at` from the
+    # newest `send_back_feedback` entry. Measured on this tree with the
+    # scanner below.
+    "core/orchestrator.py:Orchestrator._run_attempt": 264,
     "core/orchestrator.py:Orchestrator._drive": 115,
     "agent/guard.py:_approve_denial": 81,
     # 73 -> 74 (+1): same cause as the LINES entry above — e922e9b4's landing
@@ -560,7 +572,11 @@ FROZEN_FILE_LINES = {
     # failures correctly, and tags the max_attempts/tamper_blocked call
     # sites explicitly. Measured via `wc -l`/the scanner below; growth is
     # the minimal functional diff after trimming comments/docstrings.
-    "core/orchestrator.py": 21788,
+    # 21788 -> 21854 (+66): send-back resume with zero diff — the new
+    # `_send_back_resume_round` predicate helper (next to `_mechanical_round`)
+    # plus the inline "no changes needed" landing branch in `_run_attempt`'s
+    # zero-diff site. Measured via `wc -l`/the scanner below.
+    "core/orchestrator.py": 21854,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.

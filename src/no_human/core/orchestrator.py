@@ -4442,6 +4442,29 @@ class Orchestrator:
             return False
         return True
 
+    async def _send_back_resume_round(self, task: Task) -> bool:
+        """Is the round in progress a resume of a human/reviewer SEND-BACK?
+
+        Round-scoped on purpose: ``send_back_feedback`` is append-only and never
+        cleared, so presence alone would make every later attempt of the loop
+        look like a send-back resume. The newest entry must have arrived AFTER
+        the previous attempt row started — i.e. a human sent the work back
+        between that attempt and this one.
+        """
+        feedback = (task.context or {}).get("send_back_feedback") or []
+        if not feedback or not isinstance(feedback[-1], dict):
+            return False
+        feedback_at = str(feedback[-1].get("at") or "")
+        if not feedback_at:
+            return False
+        rows = await self.store.list_attempts(task.id)
+        current_id = getattr(self, "_active_attempt_id", None)
+        prior = [row for row in rows if row.get("id") != current_id]
+        if not prior:
+            return False
+        prev_started_at = max(str(row.get("started_at") or "") for row in prior)
+        return feedback_at > prev_started_at
+
     async def _budget_frozen_by_pass(self, task: Task) -> bool:
         """Is lifetime-budget enforcement frozen for the round about to run?
 
@@ -5783,6 +5806,49 @@ class Orchestrator:
                             attempt_n=attempt_n, result=result, base=base,
                         )
             if resumed_commit is None:
+                # A round resumed from a human/reviewer send-back that lands
+                # zero diff is not the same failure as a first attempt going
+                # nowhere — the branch may already satisfy the feedback (the
+                # human's PR is already correct). Only take this exit when
+                # there is an existing PR to return the human to; with no PR
+                # there is nothing to await approval on, so the ordinary
+                # failure path below still runs (fail closed).
+                if await self._send_back_resume_round(task):
+                    pr = await resolve_task_pr(self.store, task)
+                    if pr.url:
+                        feedback = (task.context or {}).get(
+                            "send_back_feedback") or []
+                        feedback_at = (
+                            feedback[-1].get("at")
+                            if feedback and isinstance(feedback[-1], dict)
+                            else None
+                        )
+                        detail = (
+                            "no changes needed — the branch already "
+                            "satisfies the send-back feedback; PR unchanged, "
+                            "awaiting your review"
+                        )
+                        await self.store.update_attempt(
+                            attempt_id, status="succeeded", failure_reason=None,
+                            mechanical_round=1, pr_url=pr.url,
+                        )
+                        merged = await self.store.merge_context(task.id, {
+                            "no_changes_needed": {
+                                "at": _now(),
+                                "feedback_at": feedback_at,
+                                "pr_url": pr.url,
+                                "agent_text": (result.final_text or "").strip()[:2000],
+                            },
+                        })
+                        task.context = merged
+                        self.emit("no_changes_needed", detail, pr_url=pr.url)
+                        await self.store.set_status(
+                            task, TaskStatus.AWAITING_APPROVAL, validate=False)
+                        self.emit("state", detail, status="awaiting_approval")
+                        return TaskOutcome(
+                            task, status=TaskStatus.AWAITING_APPROVAL,
+                            pr_url=pr.url, detail=detail,
+                        )
                 detail = _NO_CHANGES_DETAIL
                 # Keep what the agent SAID. Task d9d458b5 explained three times
                 # that the work was already committed and that it would not
