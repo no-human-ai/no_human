@@ -18,7 +18,7 @@ test("every branch returns a known tone and a non-empty title", () => {
     { inShell: true, current: "0.1.0", update: { mode: "downloading", percent: 10 } },
     { inShell: true, current: "0.1.0", update: { mode: "downloaded", latest: "0.2.0" } },
     { inShell: true, current: "0.1.0", update: { mode: "up-to-date" } },
-    { inShell: true, current: "0.1.0", update: { mode: "failed", error: "x" } },
+    { inShell: true, current: "0.1.0", update: { mode: "failed", error: "x", rawError: "y" } },
   ];
   for (const c of cases) {
     const n = updateNotice(c);
@@ -139,13 +139,48 @@ test("an unknown version is rendered as unknown, never invented", () => {
 });
 
 test("a failed check surfaces the reason and offers a retry", () => {
+  // desktop/updatePolicy.mjs has already classified the raw electron-updater
+  // error into a short sentence by the time it reaches here — `error` is that
+  // sentence, and the raw dump (headers, request id, stack) rides separately
+  // in `rawError`. This panel must never re-classify or promote the raw text
+  // onto the primary line.
   const n = updateNotice({
     inShell: true, current: "0.1.0",
-    update: { mode: "failed", error: "getaddrinfo ENOTFOUND" },
+    update: {
+      mode: "failed",
+      error: "Check your internet connection and try again.",
+      rawError: "getaddrinfo ENOTFOUND github.com\n"
+        + 'Headers: {"x-github-request-id":"ABCD:1234:56789"}',
+    },
   });
   assert.equal(n.tone, "error");
-  assert.match(n.detail, /ENOTFOUND/, "the real cause must reach the user");
+  assert.equal(n.detail, "Check your internet connection and try again.");
+  assert.doesNotMatch(n.detail, /ENOTFOUND|x-github-request-id/,
+    "the raw dump must never appear on the primary line");
+  assert.match(n.details, /ENOTFOUND/, "the raw text must still be reachable");
+  assert.match(n.details, /x-github-request-id/);
   assert.deepEqual(n.actions, ["check"]);
+});
+
+test("a failed check with no rawError renders no collapsed details", () => {
+  const n = updateNotice({
+    inShell: true, current: "0.1.0",
+    update: { mode: "failed", error: "The updater component is not available in this build." },
+  });
+  assert.equal(n.details, null);
+});
+
+test("the raw error is rendered only inside a collapsed <details>", () => {
+  // No React renderer in this harness — read the source the same way the
+  // "Settings actually sources the version" test above does.
+  const src = readFileSync(fileURLToPath(new URL("./Settings.jsx", import.meta.url)), "utf8");
+  assert.match(src, /<details className="update-raw">/,
+    "the raw error must be wrapped in a collapsed <details> element");
+  assert.match(src, /\{view\.details\}/, "the raw text must come from view.details");
+  const detailsBlock = src.slice(src.indexOf('<details className="update-raw">'));
+  const openTag = detailsBlock.slice(0, detailsBlock.indexOf(">") + 1);
+  assert.doesNotMatch(openTag, /\bopen\b/,
+    "the details element must be closed by default, never above the fold");
 });
 
 test("the default state explains the policy rather than showing nothing", () => {

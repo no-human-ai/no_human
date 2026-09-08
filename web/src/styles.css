@@ -6863,6 +6863,22 @@ a.so-chip-value:hover { color: var(--accent-300); }
   margin-top: var(--sp-3);
   flex-wrap: wrap;
 }
+/* The raw electron-updater dump (headers, status, stack) — collapsed by
+   default so it never sits above the fold; opt-in reading only. */
+.update-raw {
+  margin-top: var(--sp-2);
+  font-weight: 400;
+  color: var(--text-dim);
+}
+.update-raw summary { cursor: pointer; }
+.update-raw pre {
+  margin-top: var(--sp-2);
+  max-height: 12em;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 0.85em;
+}
 
 /* The same Settings > Updates callout above, hosted in the board's own flow
    (App.jsx renders it as a normal block inside .nh-main, ahead of the top
