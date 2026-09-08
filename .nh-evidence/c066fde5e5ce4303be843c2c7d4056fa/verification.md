@@ -1,54 +1,42 @@
 # How I verified this — full log
 
-_Harness-captured record for task `c066fde5`, commit `11d4ebf89d8b8b56790404d54c4b7d3beccbf5b5` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `c066fde5`, commit `c3d260723d095402471e35210c45396cae025074` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ## How I verified this
-6 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
+5 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
 
 ### test
-- `npm test 2>&1 | tail -30`
+- `npm test 2>&1 | tail -40`
 
 ```
 ...
-# Subtest: an unpackaged dev run is skipped rather than reported as broken
-ok 426 - an unpackaged dev run is skipped rather than reported as broken
+# Subtest: the reconnector never stops retrying
+ok 1612 - the reconnector never stops retrying
   ---
-  duration_ms: 0.078917
+  duration_ms: 0.139167
   ...
-# Subtest: install refuses until the bytes are actually on disk
-ok 427 - install refuses until the bytes are actually on disk
+# Subtest: on open, the init snapshot is re-fetched and delivered
+ok 1613 - on open, the init snapshot is re-fetched and delivered
   ---
-  duration_ms: 0.067166
+  duration_ms: 0.119
   ...
-# Subtest: download progress and completion reach the listener
-ok 428 - download progress and completion reach the listener
+# Subtest: onSnapshot delivers the fresh snapshot verbatim — the stale array is not merged into
+ok 1614 - onSnapshot delivers the fresh snapshot verbatim — the stale array is not merged into
   ---
-  duration_ms: 0.108292
+  duration_ms: 0.091208
   ...
-# Subtest: a listener that throws cannot take the updater down
-ok 429 - a listener that throws cannot take the updater down
+# Subtest: a failing snapshot fetch retries on a shorter backoff and never publishes 'live'
+ok 1615 - a failing snapshot fetch retries on a shorter backoff
+[... 112 of 1,251 characters omitted from the middle ...]
+cancels it and restarts backoff at 1s
+ok 1616 - a close during an in-flight snapshot cancels it and restarts backoff at 1s
   ---
-  duration_ms: 0.12025
+  duration_ms: 0.153333
   ...
-1..429
-# tests 429
-# suites 0
-# pass 428
-# fail 0
-# cancelled 0
-# skipped 1
-# todo 0
-# duration_ms 94223.731709
-```
-
-- `npm test 2>&1 | tail -15`
-
-```
-...
 # Subtest: stop() is idempotent and leaves no pending timer or open socket
 ok 1617 - stop() is idempotent and leaves no pending timer or open socket
   ---
-  duration_ms: 0.228458
+  duration_ms: 0.160917
   ...
 1..1617
 # tests 1617
@@ -58,43 +46,31 @@ ok 1617 - stop() is idempotent and leaves no pending timer or open socket
 # cancelled 0
 # skipped 0
 # todo 0
-# duration_ms 593.505708
-```
+# duration_ms 651.514791
+```  
+  _excerpt - 1,251 characters of output in total_
 
-- `uv run pytest -q tests/test_readme_claims.py 2>&1 | tail -30`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/c066fde5e5ce4303be843c2c7d4056fa.90097.14270e6e && uv run pytest -q tests/test_readme_claims.py 2>&1 | tail -30`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
 Using CPython 3.12.13
 Creating virtual environment at: .venv
-   Building no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/c066fde5e5ce4303be843c2c7d4056fa.90097.8eb7e2f4
-      Built no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/c066fde5e5ce4303be843c2c7d4056fa.90097.8eb7e2f4
-Installed 68 packages in 167ms
+   Building no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/c066fde5e5ce4303be843c2c7d4056fa.90097.14270e6e
+      Built no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/c066fde5e5ce4303be843c2c7d4056fa.90097.14270e6e
+Installed 68 packages in 121ms
 ............................s.s.s.s.s.s.s.s.s.s......................... [ 49%]
 .....................s..........................s....................... [ 99%]
 .                                                                        [100%]
-133 passed, 12 skipped in 6.02s
+133 passed, 12 skipped in 5.18s
 ```
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/c066fde5e5ce4303be843c2c7d4056fa.90097.8eb7e2f4/desktop && npm test 2>&1 | tail -10`
+- `cd web && npm test 2>&1 | tail -12`
 
 ```
-...
-1..429
-# tests 429
-# suites 0
-# pass 428
-# fail 0
-# cancelled 0
-# skipped 1
-# todo 0
-# duration_ms 94214.937542
-```
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/c066fde5e5ce4303be843c2c7d4056fa.90097.8eb7e2f4/web && npm test 2>&1 | tail -10`
-
-```
-...
+---
+  duration_ms: 0.280167
+  ...
 1..1617
 # tests 1617
 # suites 0
@@ -103,23 +79,45 @@ Installed 68 packages in 167ms
 # cancelled 0
 # skipped 0
 # todo 0
-# duration_ms 714.677458
+# duration_ms 539.166334
+```
+
+- `cd /Users/eyalgolan/.<redacted>/worktrees/c066fde5e5ce4303be843c2c7d4056fa.90097.14270e6e && uv run pytest -q tests/test_readme_claims.py 2>&1 | tail -5 && echo "---manifest---" && python scripts/check_release_manifest.py --strict && echo "---final diff stat---" && git diff --stat`
+
+```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+............................s.s.s.s.s.s.s.s.s.s......................... [ 49%]
+.....................s..........................s....................... [ 99%]
+.                                                                        [100%]
+133 passed, 12 skipped in 3.48s
+---manifest---
+OK: 1540 file(s) match RELEASE_MANIFEST.txt
+---final diff stat---
+ CHANGELOG.md                     | 6 +++---
+ RELEASE_MANIFEST.txt             | 6 +++---
+ desktop/mainUpdateDefer.test.mjs | 6 +++---
+ desktop/mainUpdateLast.test.mjs  | 2 +-
+ 4 files changed, 10 insertions(+), 10 deletions(-)
 ```
 
 
 ### build
-- `npm run build 2>&1 | tail -20`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/c066fde5e5ce4303be843c2c7d4056fa.90097.14270e6e/web && npm run build 2>&1 | tail -40`
 
 ```
-dist/assets/-F63fjptAgt5VM-kVkqdyU8n1iEq131nj-otFQ-C05TWSE2.woff2                8.86 kB
-dist/assets/-F6qfjptAgt5VM-kVkqdyU8n3vAOwl5FgsAXHNlYzg-BRMVj9uZ.woff2            8.96 kB
-dist/assets/-F6pfjptAgt5VM-kVkqdyU8n1ioa23dgregdFOFh-DjXFaAjD.woff2              9.79 kB
-dist/assets/-F63fjptAgt5VM-kVkqdyU8n1i8q131nj-o-BJoXLJYV.woff2                  10.05 kB
-dist/assets/-F6qfjptAgt5VM-kVkqdyU8n3twJwlBFgsAXHNk-C820gu2e.woff2              10.06 kB
-dist/assets/-F6qfjptAgt5VM-kVkqdyU8n3vAOwlBFgsAXHNk-DpGnXj3s.woff2              10.12 kB
-dist/assets/-F6pfjptAgt5VM-kVkqdyU8n1ioa1XdgregdFA-BkxdLi3-.woff2               11.57 kB
-dist/assets/rP2Wp2ywxg089UriCZaSExdy3sGt9zz86GPwyKK58UfivUw4
-[... 509 of 1,648 characters omitted from the middle ...]
+vite v6.4.3 building for production...
+transforming...
+✓ 398 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                                                                  0.66 kB │ gzip:   0.44 kB
+dist/assets/-F63fjptAgt5VM-kVkqdyU8n1iAq131nj-otFQ-DKn25-tQ.woff2                4.00 kB
+dist/assets/-F6qfjptAgt5VM-kVkqdyU8n3twJwl9FgsAXHNlYzg-B5e70VyC.woff2            4.04 kB
+dist/assets/-F6qfjptAgt5VM-kVkqdyU8n3vAOwl9FgsAXHNlYzg-Dky8cY56.woff2            4.12 kB
+dist/assets/-F6qfjptAgt5VM-kVkqdyU8n3vAOwl1FgsAXHNlYzg-hCF3fsXQ.woff2            4.32 kB
+dist/assets/-F6qfjptAgt5VM-kVkqdyU8n3twJwl1FgsAXHNlYzg-CU9Da17h.woff2            4.34 kB
+dist/a
+[... 1,898 of 3,037 characters omitted from the middle ...]
 
 dist/assets/index-r2OWxYBW.js                                                  714.75 kB │ gzip: 218.45 kB
 
@@ -127,9 +125,9 @@ dist/assets/index-r2OWxYBW.js                                                  7
 - Using dynamic import() to code-split the application
 - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
 - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
-✓ built in 1.82s
+✓ built in 2.03s
 ```  
-  _excerpt - 1,648 characters of output in total_
+  _excerpt - 3,037 characters of output in total_
 
 
 **Not verified:** everything below is a limit of this section, listed whether or not it bit this attempt.
