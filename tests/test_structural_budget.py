@@ -768,7 +768,17 @@ FROZEN_FILE_LINES = {
     # repo.head_sha())`, so the net line count lands back at 22585 — same
     # number as the flag, different (correct, flagless) mechanism. Measured
     # on this tree by the scanner's own metric.
-    "core/orchestrator.py": 22585,
+    # frozen 22585, now 22653 (+68): the failing-tests persistence bound
+    # (`_MAX_PERSISTED_FAILING_TESTS`, `_bounded_failing_ids`,
+    # `_bounded_test_results`) — a real incident persisted a 96,465-id
+    # `failing_tests` list as a 966KB `attempts.test_results` row and a
+    # 1.36MB ledger `tests.md`; every persisted/emitted write site now wraps
+    # its dict in `_bounded_test_results` (or bounds the `failing_tests=`
+    # emit kwarg via `_bounded_failing_ids`), capping ids at 200 and
+    # recording the true remainder as `failing_tests_dropped`. In-memory
+    # attribution (`_newly_failing_vs_base`, `_owned_failing_tests`) is
+    # unchanged — see tests/test_failing_tests_bound.py.
+    "core/orchestrator.py": 22653,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.

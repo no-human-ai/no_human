@@ -874,6 +874,58 @@ _VERIFIER_TIMEOUT = 180
 _VERIFIER_RETRY_MIN_TIMEOUT = 60
 _VERIFIER_RETRY_TIMEOUT = max(_VERIFIER_RETRY_MIN_TIMEOUT, _VERIFIER_TIMEOUT // 2)
 
+#: A red run on a large suite can carry tens of thousands of failing ids —
+#: measured incident: 96,465 one-line failures persisted a 966KB
+#: `attempts.test_results` row (953KB of it `failing_tests` alone) and a
+#: 1.36MB ledger `tests.md`. In-memory attribution (`_newly_failing_vs_base`,
+#: `_owned_failing_tests`) still needs the FULL list — only what is
+#: persisted/emitted/rendered is bounded, at 200: enough ids for a human to
+#: triage without opening the raw run, small enough that the worst case never
+#: threatens the column/ledger size again.
+_MAX_PERSISTED_FAILING_TESTS = 200
+
+
+def _bounded_failing_ids(ids: "list[str] | None") -> "tuple[list[str], int]":
+    """Keep the first `_MAX_PERSISTED_FAILING_TESTS` ids; return (kept,
+    dropped-count). Used only at PERSISTENCE/emission sites — never on the
+    list handed to the base-tree/ownership checks, which need every id."""
+    ids = list(ids or [])
+    if len(ids) <= _MAX_PERSISTED_FAILING_TESTS:
+        return ids, 0
+    return ids[:_MAX_PERSISTED_FAILING_TESTS], len(ids) - _MAX_PERSISTED_FAILING_TESTS
+
+
+def _bounded_test_results(test_results: dict) -> dict:
+    """Copy of *test_results* whose id lists are bounded for PERSISTENCE (the
+    `attempts.test_results` column, which the `tests` event and the evidence
+    ledger's `tests.md` both mirror verbatim).
+
+    `failing_tests` and, with the same bound, its sibling id lists in the
+    same dict (`pre_existing_failures`, `owned_failures`, `flaky_excused`)
+    are truncated to the first `_MAX_PERSISTED_FAILING_TESTS`.
+    `failing_tests_dropped` is set to the true remainder only when
+    `failing_tests` actually got truncated — small runs stay byte-identical
+    to before this bound existed.
+
+    Idempotent: re-wrapping an already-bounded dict truncates nothing
+    further and does not clobber an existing `failing_tests_dropped` —
+    `_environment_test_failure` re-spreads a dict its caller already
+    bounded, and that second wrap must be a no-op.
+    """
+    out = dict(test_results)
+    failing_tests = out.get("failing_tests")
+    dropped = 0
+    if failing_tests:
+        kept, dropped = _bounded_failing_ids(failing_tests)
+        out["failing_tests"] = kept
+    for key in ("pre_existing_failures", "owned_failures", "flaky_excused"):
+        if out.get(key):
+            out[key], _ = _bounded_failing_ids(out[key])
+    if dropped:
+        out["failing_tests_dropped"] = dropped
+    return out
+
+
 # INCIDENT (2026-08-20 16:54 UTC, personal2 profile): three reviewer sessions
 # — 365b7868, 624c3184, 5ca0e5d8 — died within eleven seconds of each other
 # with the bare, causeless "Claude Code returned an error result: success"
@@ -6477,8 +6529,10 @@ class Orchestrator:
                 if lr.result
                 for name in (getattr(lr.result, "failing_tests", []) or [])
             ]
+            _kept, _dropped = _bounded_failing_ids(failing_tests)
             self.emit("tests", plan_result.summary, ok=plan_result.ok,
-                       failing_tests=failing_tests)
+                       failing_tests=_kept,
+                       **({"failing_tests_dropped": _dropped} if _dropped else {}))
             # Build aggregate test_results for the attempt record.
             total_passed = sum(
                 (lr.result.passed if lr.result else 0) for lr in plan_result.layer_results
@@ -6492,13 +6546,13 @@ class Orchestrator:
             any_ran = any(lr.result and lr.result.ran for lr in plan_result.layer_results)
             await self.store.update_attempt(
                 attempt_id,
-                test_results={
+                test_results=_bounded_test_results({
                     "ran": any_ran, "ok": plan_result.ok,
                     "passed": total_passed, "failed": total_failed,
                     "errors": total_errors, "tamper_flag": False,
                     "layers": [lr.summary for lr in plan_result.layer_results],
                     "failing_tests": failing_tests,
-                },
+                }),
             )
             if any_ran and not plan_result.ok:
                 # Extracted to `_layered_tests_failed_outcome` (structural
@@ -6532,22 +6586,24 @@ class Orchestrator:
             not_run = ("NOT RUN — " if not test_result.ran
                        and not getattr(test_result, "invocation_error", False)
                        else "")
+            _kept, _dropped = _bounded_failing_ids(failing_tests)
             self.emit(
                 "tests",
                 not_run + test_result.summary
                 + (" (reused the reviewer's run)" if was_cached else "")
                 + (f"\n{fail_tail}" if fail_tail else ""),
-                ok=test_result.ok, cached=was_cached, failing_tests=failing_tests,
+                ok=test_result.ok, cached=was_cached, failing_tests=_kept,
                 ran=test_result.ran,
+                **({"failing_tests_dropped": _dropped} if _dropped else {}),
             )
             await self.store.update_attempt(
                 attempt_id,
-                test_results={
+                test_results=_bounded_test_results({
                     "ran": test_result.ran, "ok": test_result.ok,
                     "passed": test_result.passed, "failed": test_result.failed,
                     "errors": test_result.errors, "tamper_flag": False,
                     "failing_tests": failing_tests,
-                },
+                }),
             )
             if test_result.ran and not test_result.ok:
                 # Ownership (cheap: a git-diff lookup, no test re-run) is
@@ -6579,12 +6635,12 @@ class Orchestrator:
                 env_outcome = await self._environment_test_failure(
                     task, result=test_result, attempt_id=attempt_id,
                     repo=repo, branch=branch,
-                    test_results={
+                    test_results=_bounded_test_results({
                         "ran": test_result.ran, "ok": test_result.ok,
                         "passed": test_result.passed, "failed": test_result.failed,
                         "errors": test_result.errors, "tamper_flag": False,
                         "failing_tests": failing_tests,
-                    },
+                    }),
                     owned_failing=owned,
                 )
                 if env_outcome is not None:
@@ -6613,11 +6669,13 @@ class Orchestrator:
                             "tree is never consulted: " + ", ".join(owned)
                         )
                         stuck.record(test_result.output or detail)
+                        _kept, _dropped = _bounded_failing_ids(failing_tests)
                         self.emit("tests", detail, ok=False,
-                                  failing_tests=failing_tests)
+                                  failing_tests=_kept,
+                                  **({"failing_tests_dropped": _dropped} if _dropped else {}))
                         await self.store.update_attempt(
                             attempt_id, status="failed", failure_reason=detail,
-                            test_results={
+                            test_results=_bounded_test_results({
                                 "ran": test_result.ran, "ok": False,
                                 "passed": test_result.passed,
                                 "failed": test_result.failed,
@@ -6625,7 +6683,7 @@ class Orchestrator:
                                 "tamper_flag": False,
                                 "failing_tests": failing_tests,
                                 "invocation_error": True,
-                            },
+                            }),
                         )
                         return TaskOutcome(
                             task, status=TaskStatus.FAILED, detail=detail
@@ -6649,7 +6707,7 @@ class Orchestrator:
                         self.emit("tests", detail, ok=False)
                         await self.store.update_attempt(
                             attempt_id, status="failed", failure_reason=detail,
-                            test_results={
+                            test_results=_bounded_test_results({
                                 "ran": test_result.ran, "ok": False,
                                 "passed": test_result.passed,
                                 "failed": test_result.failed,
@@ -6657,7 +6715,7 @@ class Orchestrator:
                                 "tamper_flag": False,
                                 "invocation_error": True,
                                 "reproduces_on_base": False,
-                            },
+                            }),
                         )
                         return TaskOutcome(
                             task, status=TaskStatus.FAILED, detail=detail
@@ -6673,7 +6731,7 @@ class Orchestrator:
                     )
                     await self.store.update_attempt(
                         attempt_id,
-                        test_results={
+                        test_results=_bounded_test_results({
                             "ran": test_result.ran, "ok": False,
                             "passed": test_result.passed, "failed": test_result.failed,
                             "errors": test_result.errors, "tamper_flag": False,
@@ -6691,7 +6749,7 @@ class Orchestrator:
                             "failing_tests": failing_tests,
                             "invocation_error": True,
                             "reproduces_on_base": on_base,
-                        },
+                        }),
                     )
                 else:
                     # A plain red run used to fail the attempt with NO check
@@ -6727,11 +6785,13 @@ class Orchestrator:
                             "on the base tree — pre-existing, not introduced by "
                             "this change: " + ", ".join(failing_tests)
                         )
+                        _kept, _dropped = _bounded_failing_ids(failing_tests)
                         self.emit("tests", note, ok=True,
-                                  failing_tests=failing_tests, pre_existing=True)
+                                  failing_tests=_kept, pre_existing=True,
+                                  **({"failing_tests_dropped": _dropped} if _dropped else {}))
                         await self.store.update_attempt(
                             attempt_id,
-                            test_results={
+                            test_results=_bounded_test_results({
                                 "ran": test_result.ran, "ok": test_result.ok,
                                 "passed": test_result.passed,
                                 "failed": test_result.failed,
@@ -6739,7 +6799,7 @@ class Orchestrator:
                                 "tamper_flag": False,
                                 "failing_tests": failing_tests,
                                 "pre_existing_failures": failing_tests,
-                            },
+                            }),
                         )
                     else:
                         # Extracted to `_failed_tests_outcome` (structural
@@ -11726,7 +11786,7 @@ class Orchestrator:
         await self.store.update_attempt(
             attempt_id, status="failed", failure_reason=detail,
             infra_failure=1,
-            test_results={**test_results, "environment_error": True},
+            test_results=_bounded_test_results({**test_results, "environment_error": True}),
         )
         evidence = "\n\n".join(result.failure_blocks) if result is not None else ""
         blocker = Blocker(
@@ -12158,13 +12218,13 @@ class Orchestrator:
         env_outcome = await self._environment_test_failure(
             task, result=fail_result, attempt_id=attempt_id,
             repo=repo, branch=branch,
-            test_results={
+            test_results=_bounded_test_results({
                 "ran": True, "ok": plan_result.ok,
                 "passed": total_passed, "failed": total_failed,
                 "errors": total_errors, "tamper_flag": False,
                 "layers": [lr.summary for lr in plan_result.layer_results],
                 "failing_tests": failing_tests,
-            },
+            }),
             owned_failing=owned,
         )
         if env_outcome is not None:
@@ -12255,12 +12315,14 @@ class Orchestrator:
                 "bounded re-run — flaky on this tree, not "
                 "attributed to this change: " + ", ".join(flaky)
             )
+            _kept, _dropped = _bounded_failing_ids(failing_tests)
             self.emit("tests", note, ok=True,
-                      failing_tests=failing_tests,
-                      flaky_excused=flaky)
+                      failing_tests=_kept,
+                      flaky_excused=flaky,
+                      **({"failing_tests_dropped": _dropped} if _dropped else {}))
             await self.store.update_attempt(
                 attempt_id,
-                test_results={
+                test_results=_bounded_test_results({
                     "ran": test_result.ran, "ok": test_result.ok,
                     "passed": test_result.passed,
                     "failed": test_result.failed,
@@ -12268,7 +12330,7 @@ class Orchestrator:
                     "tamper_flag": False,
                     "failing_tests": failing_tests,
                     "flaky_excused": flaky,
-                },
+                }),
             )
             return None
         is_stuck = stuck.record(test_result.output)
@@ -12310,20 +12372,22 @@ class Orchestrator:
         if excerpt_block:
             detail += "\n" + excerpt_block
         if owned_attr:
+            _kept, _dropped = _bounded_failing_ids(failing_tests)
             self.emit(
                 "tests",
                 "tests failed on test(s) this change added or "
                 "modified — not excusable as flaky or "
                 "pre-existing: " + ", ".join(owned_attr),
                 ok=False,
-                failing_tests=failing_tests,
+                failing_tests=_kept,
                 owned_failures=owned_attr,
+                **({"failing_tests_dropped": _dropped} if _dropped else {}),
             )
             await self.store.update_attempt(
                 attempt_id,
                 status="failed",
                 failure_reason=detail,
-                test_results={
+                test_results=_bounded_test_results({
                     "ran": test_result.ran, "ok": test_result.ok,
                     "passed": test_result.passed,
                     "failed": test_result.failed,
@@ -12331,7 +12395,7 @@ class Orchestrator:
                     "tamper_flag": False,
                     "failing_tests": failing_tests,
                     "owned_failures": owned_attr,
-                },
+                }),
             )
         else:
             await self.store.update_attempt(attempt_id, status="failed", failure_reason=detail)
@@ -22553,11 +22617,15 @@ SIX of them read a checkpoint and TWO do not — but do
                            for f in (test_evidence.get("failing_tests") or []) if f]
                 if failing:
                     k = len(failing)
+                    # `k` counts only the PERSISTED (bounded) ids — add back
+                    # `failing_tests_dropped` (ids truncated before this row
+                    # ever saw them) so the remainder count stays honest.
+                    dropped = int(test_evidence.get("failing_tests_dropped") or 0)
                     lines.append(f"<details><summary>{k} failing test"
                                  f"{'s' if k != 1 else ''}</summary>\n")
                     lines += [f"- `{f}`" for f in failing[:10]]
-                    if k > 10:
-                        lines.append(f"- …and {k - 10} more")
+                    if k - 10 + dropped > 0:
+                        lines.append(f"- …and {k - 10 + dropped} more")
                     lines.append("\n</details>")
             if test_evidence.get("invocation_error"):
                 # The counts above are real and stay. But the runner ALSO hit a
