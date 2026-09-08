@@ -6,9 +6,12 @@ import http from "node:http";
 import test from "node:test";
 
 import {
-  classifyBackendFailure, configuredPort, isAppOrigin, makeOutputCapture,
-  probe, spawnOptionsFor, tailDetail, waitForServer,
+  classifyBackendFailure, claudeAuthStatus, configuredPort, isAppOrigin,
+  macClaudeKeychainExists, makeOutputCapture, probe, spawnOptionsFor,
+  tailDetail, waitForServer,
 } from "./server.mjs";
+import * as serverModule from "./server.mjs";
+import { MAC_KEYCHAIN_SERVICE } from "./setupGate.mjs";
 
 function serve(handler) {
   return new Promise((resolve) => {
@@ -124,6 +127,41 @@ test("isAppOrigin: same-origin stays in-window, everything else leaves", () => {
   assert.equal(isAppOrigin("https://code.example.com/x/pull/1", o), false);
   assert.equal(isAppOrigin("http://127.0.0.1:9999/", o), false);
   assert.equal(isAppOrigin("not a url", o), false);
+});
+
+test("server.mjs exports no setup-token runner", () => {
+  // runClaudeSetupToken (the only spawn site for `claude setup-token`) is
+  // deleted, not merely unused — this asserts the removal directly against
+  // the module's own export surface, so a future re-add would have to
+  // knowingly edit this test rather than silently resurrect a dead spawn.
+  const names = Object.keys(serverModule);
+  assert.ok(!names.includes("runClaudeSetupToken"),
+    `server.mjs still exports runClaudeSetupToken: ${names.join(",")}`);
+  for (const name of names) {
+    assert.doesNotMatch(name.toLowerCase(), /setuptoken/,
+      `unexpected setup-token-shaped export: ${name}`);
+  }
+});
+
+test("claudeAuthStatus / macClaudeKeychainExists spawn only read-only argv, never setup-token", async () => {
+  const calls = [];
+  const fakeExec = (bin, args, opts, cb) => {
+    calls.push({ bin, args });
+    cb(null, "", "");
+  };
+  await claudeAuthStatus("/usr/local/bin/claude", fakeExec);
+  await macClaudeKeychainExists(fakeExec, "darwin");
+  assert.equal(calls.length, 2, `expected exactly 2 spawns, got ${JSON.stringify(calls)}`);
+  for (const call of calls) {
+    assert.doesNotMatch(call.args.join(" "), /setup-token/,
+      `a read-only status probe must never invoke setup-token: ${JSON.stringify(call)}`);
+  }
+  // The two argv shapes are exactly what each function's doc comment claims:
+  // `auth status` (no flags that could mutate anything) and a Keychain
+  // existence-only lookup (no `-w`, which is what would print the secret).
+  assert.deepEqual(calls[0].args, ["auth", "status"]);
+  assert.deepEqual(calls[1].args,
+    ["find-generic-password", "-s", MAC_KEYCHAIN_SERVICE]);
 });
 
 // ------------------------------ E2 tests ---------------------------------- //
