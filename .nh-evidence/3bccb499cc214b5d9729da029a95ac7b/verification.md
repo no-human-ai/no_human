@@ -1,125 +1,30 @@
 # How I verified this — full log
 
-_Harness-captured record for task `3bccb499`, commit `b4e8abf8b4e42445a329a73940c12f2555a39c2a` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `3bccb499`, commit `8a2413fd1753158e8db0f1c3d77a95c2b5510900` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ## How I verified this
-9 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
+2 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
 
 ### test
-- `uv run pytest tests/test_structural_budget.py -q 2>&1 | tail -80`
+- `uv run pytest -q -p no:cacheprovider tests/test_red_run_failure_blocks.py 2>&1 | tail -100`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-.....F............                                                       [100%]
-=================================== FAILURES ===================================
-________________________ test_no_frozen_entry_has_grown ________________________
+Using CPython 3.12.13
+Creating virtual environment at: .venv
+   Building no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/3bccb499cc214b5d9729da029a95ac7b.21285.1a042f4c
+      Built no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/3bccb499cc214b5d9729da029a95ac7b.21285.1a042f4c
+Installed 68 packages in 159ms
+.........                                                                [100%]
+9 passed in 10.63s
+```
 
-scanned = ({'agent/claude_backend.py:ClaudeBackend.stream': 407, 'blockers/landed_override.py:approve_landed_override': 315, 'bl... ...}, {'agent/guard.py': 2892, 'api/app.py': 6140, 'blockers/wake.py': 2757, 'cli/commands.py': 8633, ...}, 225
-[... 732 of 1,871 characters omitted from the middle ...]
-orches...atchets down'] == []
-E             
-E             Left contains one more item: 'core/orchestrator.py: frozen 22691, now 22703 (+12); this budget only ratchets down'
-E             Use -v to get more diff
-
-tests/test_structural_budget.py:1421: AssertionError
-=========================== short test summary info ============================
-FAILED tests/test_structural_budget.py::test_no_frozen_entry_has_grown - Asse...
-1 failed, 17 passed in 3.28s
-```  
-  _excerpt - 1,869 characters of output in total_
-
-- `uv run pytest tests/test_structural_budget.py -q 2>&1 | tail -40`
+- `uv run pytest -q -p no:cacheprovider tests/test_structural_budget.py 2>&1 | tail -100`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
 ..................                                                       [100%]
-18 passed in 3.28s
-```
-
-- `uv run pytest tests/test_red_run_failure_blocks.py -q 2>&1 | tail -80`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-.F....                                                                   [100%]
-=================================== FAILURES ===================================
-______ test_an_owned_attributed_failure_keeps_its_blocks_through_billing _______
-
-bare_repo = PosixPath('/private/var/folders/1r/3r0rt1jd4j1456rsg_fh4d380000gn/T/pytest-of-eyalgolan/pytest-37710/test_an_owned_attributed_failu0/work')
-tmp_path = PosixPath('/private/var/folders/1r/3r0rt1jd4j1456rsg_fh4d380000gn/T/pytest-of-ey
-[... 2,868 of 4,007 characters omitted from the middle ...]
-y enforced by the PreToolUse lexical guard here
-WARNING  <redacted>.orchestrator:orchestrator.py:1916 advisory: draft PR before review skipped: only GitHub is idempotent and draft-by-default. A PR-body criterion will fail honestly here.
-=========================== short test summary info ============================
-FAILED tests/test_red_run_failure_blocks.py::test_an_owned_attributed_failure_keeps_its_blocks_through_billing
-1 failed, 5 passed in 6.04s
-```  
-  _excerpt - 3,999 characters of output in total_
-
-- `uv run pytest tests/test_red_run_failure_blocks.py -q 2>&1 | tail -60`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-......                                                                   [100%]
-6 passed in 8.83s
-```
-
-- `uv run pytest tests/test_red_run_failure_blocks.py::test_an_owned_attributed_failure_keeps_its_blocks_through_billing -q 2>&1 | tail -40`
-
-```
-)
-    
-        outcome, attempts, events, task = await _run_attempt_with_result(
-            store, tmp_path, bare_repo, tr,
-            owned=["desktop/mainSaveFailure.test.mjs"],
-        )
-    
-        # Confirms the run was actually billed through the owned branch, not
-        # excused some other way — otherwise this test would not be exercising
-        # `_failed_tests_outcome`'s owned_attr write at all.
-        assert outcome.status is TaskStatus.FAILED, outcome.detail
-        failed_rows = [a for a in attempts if a.get("status") == "failed"]
-        assert failed_rows, attempts
-        row = failed_rows[-1]
-        assert _persisted(row).get("owned_failures") 
-[... 1,265 of 2,404 characters omitted from the middle ...]
-nch is only enforced by the PreToolUse lexical guard here
-WARNING  <redacted>.orchestrator:orchestrator.py:1916 advisory: draft PR before review skipped: only GitHub is idempotent and draft-by-default. A PR-body criterion will fail honestly here.
-=========================== short test summary info ============================
-FAILED tests/test_red_run_failure_blocks.py::test_an_owned_attributed_failure_keeps_its_blocks_through_billing
-1 failed in 2.34s
-```  
-  _excerpt - 2,400 characters of output in total_
-
-- `uv run pytest tests/test_red_run_failure_blocks.py -q 2>&1 | tail -20`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-......                                                                   [100%]
-6 passed in 6.91s
-```
-
-- `uv run pytest tests/test_flaky_rerun_attribution.py -q 2>&1 | tail -40`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-..................                                                       [100%]
-18 passed in 18.86s
-```
-
-- `uv run pytest tests/test_missing_prereq_env_classification.py tests/test_structural_budget.py -q 2>&1 | tail -40`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-.......................................                                  [100%]
-39 passed in 15.96s
-```
-
-- `uv run pytest tests/test_e2e_orchestrator.py::test_failed_tests_event_carries_the_output_tail -q 2>&1 | tail -20`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-.                                                                        [100%]
-1 passed in 0.72s
+18 passed in 2.45s
 ```
 
 
