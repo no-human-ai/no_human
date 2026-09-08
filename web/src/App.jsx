@@ -30,6 +30,7 @@ import { tasksReducer } from "./tasksReducer.js";
 import useIsPhone from "./useIsPhone.js";
 import { createReconnector } from "./wsReconnect.js";
 import { connectionBanner } from "./connectionBanner.js";
+import { updateBanner } from "./updateNotice.js";
 import { drainChip, formatPausedUntil } from "./drainChip.js";
 import { initialDrainReadout, nextDrainReadout, readoutPayload } from "./drainReadout.js";
 import { useEscapeKey } from "./useEscapeKey.js";
@@ -784,6 +785,12 @@ export default function App() {
   // "live" only after a fresh snapshot is delivered — a socket that is open
   // over stale data is exactly the incident, not a healthy state.
   const [wsPhase, setWsPhase] = useState("connecting");
+  // The board's own copy of the update notice: `update` is whatever main last
+  // reported (live push, or the retained fact pulled on mount — see the
+  // effect below); `updateDismissed` is this SESSION's local "Later"/"Dismiss"
+  // hide, keyed by version so a genuinely newer release still gets through.
+  const [update, setUpdate] = useState(null);
+  const [updateDismissed, setUpdateDismissed] = useState(null);
   const prevTasksRef = useRef([]);
   const [fetchError, setFetchError] = useState(null);
   const [showNewTask, setShowNewTask] = useState(false);
@@ -1109,6 +1116,23 @@ export default function App() {
     return off;
   }, []);
 
+  // The board's own update notice. `onUpdate` is the live push (menu-driven
+  // manual checks, the automatic startup check, Settings' "Later"); the
+  // `getLastUpdate` pull catches this component up on a version FACT that
+  // fired before it mounted — never on a `failed` automatic check, which
+  // main.mjs's retainedUpdate() never remembers in the first place (see
+  // desktop/updatePolicy.mjs). The functional update means a live push
+  // always wins over the retained pull, even if the pull resolves later.
+  useEffect(() => {
+    const d = window.nhDesktop;
+    if (!d) return undefined;
+    const off = d.onUpdate?.((payload) => setUpdate(payload));
+    d.getLastUpdate?.().then((payload) => {
+      if (payload) setUpdate((cur) => cur ?? payload);
+    }).catch(() => {});
+    return off;
+  }, []);
+
   // Resolve the head of the backlog queue into a composer seed. The FULL issue
   // is fetched first (the browse list truncates description at 2000 chars);
   // if that fetch fails the list brief already in hand stands — a truncated
@@ -1227,6 +1251,29 @@ export default function App() {
   // "Working (N)" figure agrees with the board instead of its own count.
   const sidebarCounts = deriveCounts(tasks);
   const banner = connectionBanner(wsPhase);
+  const updateBar = updateBanner({ update, dismissedVersion: updateDismissed });
+  const onUpdateAction = (action) => {
+    if (action === "details") { openSettings("updates"); return; }
+    if (action === "later") {
+      // Both surfaces converge on the SAME persisted defer (main.mjs's
+      // nh:update-defer), so Settings' own "Later" clears this board copy
+      // too — see desktop/main.mjs's nh:update-defer handler. The local hide
+      // is optimistic: it must not wait on the IPC round trip to feel instant.
+      setUpdateDismissed(updateBar.version);
+      window.nhDesktop?.deferUpdate?.(updateBar.version);
+      return;
+    }
+    if (action === "downloads") {
+      window.open("https://github.com/no-human-ai/no_human/releases", "_blank",
+        "noopener,noreferrer");
+      return;
+    }
+    if (action === "dismiss") {
+      // The unsigned-build case has no persisted defer to reuse — there is
+      // nothing for Settings to clear later, so this hide is session-only.
+      setUpdateDismissed(updateBar.version);
+    }
+  };
   // One-time nudge from the "!" — shown after onboarding until Settings
   // opens on ANY pane or the popup is dismissed (`popupDismissed`, a
   // strictly weaker condition than the badge's own `aiConfigDone` above —
@@ -1490,6 +1537,33 @@ export default function App() {
             <OverviewStrip tasks={tasks} />
             <DrainReadoutChip readout={drainReadout} />
             <button className="btn btn-new-task" aria-haspopup="dialog" aria-expanded={showNewTask} onClick={() => setShowNewTask(true)}>+ New Task</button>
+          </div>
+        )}
+        {/* A plain flow child of .nh-main, rendered AFTER .nh-main-bar and
+            BEFORE <Board> — never `position: fixed` like .nh-stale-banner
+            above. That banner sits over the top bar on purpose (a dead
+            websocket has to be visible everywhere); an update is not an
+            emergency, and PR #147's attempt reused .nh-stale-banner's fixed
+            positioning, which overlapped .nh-main-bar and ate its clicks.
+            Do not reuse it here. */}
+        {page === "board" && updateBar && (
+          <div className={updateBar.className} data-tone={updateBar.tone} role={updateBar.role}>
+            <span className="nh-update-banner-text">{updateBar.text}</span>
+            <div className="update-actions">
+              {updateBar.actions.map((action) => (
+                <button
+                  key={action}
+                  type="button"
+                  className={action === "later" || action === "dismiss" ? "btn" : "btn btn-approve"}
+                  onClick={() => onUpdateAction(action)}
+                >
+                  {action === "details" ? "See details"
+                    : action === "downloads" ? "Open downloads"
+                    : action === "later" ? "Later"
+                    : "Dismiss"}
+                </button>
+              ))}
+            </div>
           </div>
         )}
         {page === "board" && (

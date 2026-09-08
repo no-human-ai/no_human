@@ -840,6 +840,100 @@ suggested again: manual config always wins. `nh doctor` names the same gap
 enable?") for any known repo that still has no `ui_evidence` configured; it is
 an advisory only and never affects doctor's exit code.
 
+## Isolation — per-task worktrees
+
+```yaml
+isolation:
+  enabled: true        # every task runs in its own throwaway `git worktree
+                        # add` checkout, never the operator's primary
+                        # checkout. On by default and independent of
+                        # `concurrency` above — parallelism defaults off, but
+                        # even a single-task run defaults to isolation ON so
+                        # an attempt's edits and a `[WIP-PARTIAL]` commit
+                        # never land in whatever the operator has checked
+                        # out.
+  worktree_root: null   # where per-task worktrees live. null ->
+                        # ~/.no_human/worktrees. `concurrency.worktree_root`
+                        # is still read for configs written before the
+                        # isolation/concurrency split.
+```
+
+Set `enabled: false` to deliberately run every task directly in the primary
+checkout instead — an attempt then edits whatever is actually checked out
+there. `concurrency.enabled` (parallel task workers) requires
+`isolation.enabled`: workers sharing one checkout would stomp each other's
+index and branch, so a pool wider than one worker is never silently allowed
+when isolation is opted out — but the two entry points respond differently.
+`nh serve` (`resolve_serve_pool`, `scheduler.py`) refuses to start outright
+and exits with an error naming the switch to flip. `nh start` / the server
+lifespan (`resolve_max_workers`, `scheduler.py`, called from `api/app.py`)
+instead downgrades to 1 worker and logs a warning rather than refusing to
+start — the same collision is prevented either way, just with a harder or
+softer failure mode depending on which command asked for the pool.
+`setup_cmds` (below) never runs at all with isolation off — there is no
+fresh worktree to prepare, and the primary checkout already has whatever
+gitignored build state the operator built by hand.
+
+## `setup_cmds` — build prerequisites for a fresh task worktree
+
+Isolated tasks run in a throwaway `git worktree add` checkout (see
+`isolation.enabled` above), which structurally cannot contain anything
+gitignored — `node_modules`, a built `web/dist`, and similar. A repo whose
+test suite needs those has no way to get them without this key.
+
+`setup_cmds` (default: empty list) is a per-repo profile field — declared on
+`<repo>/.no_human/project.yml` (and its mirrored DB row), never in
+`~/.no_human/config.yaml` — listing shell commands to run, in order, from the
+worktree ROOT, once per fresh worktree, before any test command:
+
+```yaml
+# <repo>/.no_human/project.yml
+setup_cmds:
+  - "npm --prefix web ci"
+  - "npm --prefix web run build"
+  - "npm --prefix desktop ci"
+```
+
+Each command gets up to 30 minutes (a cold `npm ci` is minutes, not seconds).
+A non-zero exit, a timeout, or a command that cannot even be spawned fails
+the task immediately as an **infra/environment error naming the exact
+command** — never a test failure, and the test command never runs. Success
+is remembered per worktree (a marker in the worktree's git admin directory,
+never in the working tree itself) so a reused worktree does not re-run setup
+on every attempt.
+
+Operator-owned and trusted like the rest of the profile — resolved via
+`Orchestrator._usable_profile` exactly like `test_cmd` is, no special case:
+that prefers any DB row over the fallback file — an unconfirmed row is still
+returned by `store.get_profile`, still fails `_profile_usable_under_policy`,
+and yields `None` with **no** file fallback, so a repo cannot get its
+`.no_human/project.yml` trusted just by having someone else's unconfirmed row
+sit in the DB. Only when there is no DB row at all for the repo does it fall
+back to reading `<repo>/.no_human/project.yml`. A
+`setup_cmds` list in that fallback file DOES run, same as `test_cmd` does —
+it is never read from the repo's own untrusted `.no_human.yml`
+(`project_config.py`'s whitelist deliberately excludes this key), which is a
+different file and not part of this trust chain at all. `nh repo setup-cmds`
+(the CLI below that WRITES this key) refuses to run unless a DB row already
+exists for the repo — "no profile for REPO_PATH — run `nh onboard REPO_PATH`
+first" — precisely so that command itself can never be the thing that turns
+a repo-internal file into a confirmed, trusted row. Set it with:
+
+```
+nh repo setup-cmds REPO_PATH 'cmd 1' 'cmd 2' ...   # declare, replacing any list
+nh repo setup-cmds REPO_PATH                       # inspect the current list
+nh repo setup-cmds REPO_PATH --clear               # remove every command
+```
+
+For example, this repo's own desktop/web node suites need a web build before
+`desktop`'s packaged-app tests can see it; an operator running no_human
+against this repo declares that with:
+
+```
+nh repo setup-cmds /path/to/no_human-public \
+  'npm --prefix web ci' 'npm --prefix web run build' 'npm --prefix desktop ci'
+```
+
 ## Timeouts read straight from your config
 
 Two ceilings are read the same way and default generously so a legitimately

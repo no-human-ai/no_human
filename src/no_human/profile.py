@@ -118,6 +118,30 @@ class ProjectProfile:
             "ui_paths": ["web/**", "src/**/*.jsx", "src/**/*.tsx", "**/*.html", "**/*.css"],
         }
     )
+    # Prerequisite commands for a FRESH task worktree (gitignored build inputs
+    # a `git worktree add` checkout can never contain: node_modules,
+    # web/dist...). Run in order, from the worktree ROOT, ONCE per worktree,
+    # inside the watched phase of the attempt loop, BEFORE any test command
+    # (`core/worktree.py`'s `run_setup_commands`, called from
+    # `Orchestrator._run_worktree_setup`, itself called from
+    # `_drive_watched` so `nh task cancel` is observed during setup too). A
+    # failing command fails the task as an infra/environment error naming the
+    # command — never a test failure.
+    #
+    # Trust model (measured, matches `test_cmd` exactly — this key has no
+    # special case): resolved via `Orchestrator._usable_profile`, which
+    # prefers the SQLite DB row and, ONLY when no DB row exists for the repo,
+    # falls back to reading `<repo>/.no_human/project.yml`. A `setup_cmds`
+    # list in that fallback file DOES run — the file is not re-validated
+    # against the DB, it is simply the whole profile when no DB row is
+    # present. `nh repo setup-cmds` (the CLI for declaring this key) refuses
+    # to run unless a DB row already exists precisely so that command itself
+    # can never be the thing that manufactures trust from a repo-owned file.
+    # NEVER read from the repo's own untrusted `.no_human.yml`
+    # (`project_config.py`'s whitelist is deliberately not extended for this
+    # key) — that file's `apply_repo_config` merge point is not in this
+    # trust chain at all.
+    setup_cmds: list[str] = field(default_factory=list)
 
     # --- serialization ---------------------------------------------------- #
 
@@ -145,6 +169,7 @@ class ProjectProfile:
             "default_lifetime_tokens": self.default_lifetime_tokens,
             "default_budget_unit": self.default_budget_unit,
             "ui_evidence": self.ui_evidence,
+            "setup_cmds": self.setup_cmds,
         }
 
     @classmethod
@@ -216,6 +241,38 @@ _MACHINE_MANAGED_FIELDS = frozenset({
     "default_lifetime_tokens",
     "default_budget_unit",
 })
+
+# Fields an operator sets by hand (via the CLI or the onboarding API's confirm
+# step) that a re-derive must never silently wipe. `nh onboard` / `POST
+# /api/onboarding/repos/onboard` rebuild a ProjectProfile from freshly
+# detected ecosystem/test-command evidence each time they run — before these
+# helpers existed, that rebuild carried `ui_evidence` forward by hand in one
+# call site and dropped `setup_cmds` entirely in the other, so re-onboarding a
+# repo silently erased commands an operator had declared with
+# `nh repo setup-cmds`. Both call sites should use these instead of
+# hand-rolling the carry-forward.
+OPERATOR_OWNED_FIELDS = ("ui_evidence", "setup_cmds")
+
+
+def operator_carry_kwargs(prior: "ProjectProfile | None") -> dict[str, Any]:
+    """Constructor kwargs that carry `OPERATOR_OWNED_FIELDS` forward from
+    `prior` (the profile before a re-derive), so a fresh `ProjectProfile(...)`
+    built from newly detected evidence does not lose operator-set fields.
+    Returns `{}` when there is no prior profile."""
+    if prior is None:
+        return {}
+    return {name: getattr(prior, name) for name in OPERATOR_OWNED_FIELDS}
+
+
+def carry_operator_fields(fresh: "ProjectProfile", prior: "ProjectProfile | None") -> None:
+    """Mutate `fresh` in place, copying `OPERATOR_OWNED_FIELDS` from `prior`
+    onto it. For call sites that already have a constructed `fresh` object
+    (e.g. one loaded from a request body) rather than building it fresh via
+    `operator_carry_kwargs`. No-op when there is no prior profile."""
+    if prior is None:
+        return
+    for name in OPERATOR_OWNED_FIELDS:
+        setattr(fresh, name, getattr(prior, name))
 
 
 def profile_divergence(

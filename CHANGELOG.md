@@ -6,6 +6,38 @@ All notable changes to no_human. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- **The startup update check no longer leaves a stuck error notice, and the
+  board can now tell you about an update at all.** An automatic (app-driven)
+  update check that fails — no network at launch, GitHub briefly
+  unreachable — used to persist a "Could not check for updates" error the
+  same way a real update would, which is misleading noise (the operator
+  never asked for anything). Automatic failures are no longer retained: only
+  actual version facts (available/unavailable/up-to-date) are; a *manual*
+  "Check for updates" still surfaces its error exactly as before, unchanged,
+  via the existing error card. Separately, the task board itself now shows a
+  small in-flow notice when an update is available or can't auto-install
+  (it never did before — only Settings did), rendered as a normal
+  document-flow element after the top bar rather than overlaid on top of it.
+  Clicking "Later" — from Settings or from the board — now clears the notice
+  on the board too, for the rest of the current session; it can resurface on
+  the next launch.
+- **"Use my existing Claude Code sign-in" no longer opens a browser tab that
+  can never load.** The button used to run `claude setup-token` as a piped,
+  non-interactive child with a 20s timeout; that command is unconditionally
+  browser OAuth with a loopback `/callback` server and no non-interactive
+  flag, so the opened tab (`http://localhost:<port>/callback`) had nothing to
+  connect to — refused (no listener appeared within 10s) on a Windows field
+  report (3/3 runs), and
+  even where the loopback listener does bind (confirmed on macOS), the child
+  writes nothing to stdout/stderr, so no token could ever have been read
+  back either way. The row now launches nothing on any platform: clicking it
+  reveals the same manual-paste instructions every other path already uses,
+  naming `claude setup-token` explicitly so the step is copy-pasteable. The
+  `nh:claude-import-token` IPC channel and its only spawn site
+  (`runClaudeSetupToken`) are removed entirely rather than left registered
+  but unreachable.
+
 ## [0.2.1] — 2026-09-07
 
 Fixes for the first Windows users of the setup wizard, and for no_human's own

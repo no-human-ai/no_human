@@ -37,11 +37,107 @@ import asyncio
 import logging
 import shutil
 from pathlib import Path
+from typing import Callable
 
 from ..testing import runner
 from .task import TERMINAL_STATES, TaskStatus
 
 log = logging.getLogger("no_human.worktree")
+
+# npm ci in a cold worktree (no shared cache) is minutes, not seconds — this
+# is a per-COMMAND ceiling, not a whole-chain one.
+SETUP_TIMEOUT_S = 1800
+# Lives in the worktree's git ADMIN dir (see `_read_gitdir_target`), never in
+# the working tree itself — so it never shows up in `git status`, never
+# collides with a repo file, and is never a candidate residual file for the
+# reviewer's scope guard.
+SETUP_MARKER_NAME = "no_human_setup_done"
+
+
+class WorktreeSetupError(RuntimeError):
+    """A profile-declared `setup_cmds` entry failed, timed out, or could not
+    be spawned. Always names the exact command — the orchestrator surfaces
+    this as an infra/environment failure, never a test failure."""
+
+    def __init__(self, command: str, detail: str):
+        self.command = command
+        self.detail = detail
+        super().__init__(f"setup command failed: {command} — {detail}")
+
+
+def _setup_marker_path(worktree_path: Path) -> Path | None:
+    """Resolve the git ADMIN dir for a linked worktree so the idempotency
+    marker never lands in the working tree. Returns ``None`` when it cannot
+    be resolved — the caller's fallback is "no marker, always run", never
+    "guess a path and maybe collide with something else"."""
+    git_entry = Path(worktree_path) / ".git"
+    admin_dir = _read_gitdir_target(Path(worktree_path))
+    if admin_dir is not None:
+        return admin_dir / SETUP_MARKER_NAME
+    if git_entry.is_dir():
+        return git_entry / SETUP_MARKER_NAME
+    return None
+
+
+def run_setup_commands(
+    worktree_path: Path,
+    cmds: list[str],
+    *,
+    emit: Callable[..., None] | None = None,
+    timeout: int = SETUP_TIMEOUT_S,
+) -> list[str]:
+    """Run a profile's `setup_cmds` in order, from the worktree ROOT, once per
+    fresh worktree — the build prerequisites (`npm ci`, `npm run build`...) a
+    `git worktree add` checkout can never contain because they are
+    gitignored. Returns the commands actually run (``[]`` when there was
+    nothing to do, or when a reused worktree's marker says this already
+    happened). Raises `WorktreeSetupError` naming the failing command; never
+    raises anything else."""
+    normalized = [c.strip() for c in (cmds or []) if c and c.strip()]
+    if not normalized:
+        return []
+
+    worktree_path = Path(worktree_path)
+    marker = _setup_marker_path(worktree_path)
+    if marker is not None and marker.exists():
+        log.info("worktree setup SKIPPED for %s — marker already present at %s",
+                  worktree_path, marker)
+        if emit is not None:
+            emit("worktree_setup_skipped", f"already ran in {worktree_path}")
+        return []
+
+    for cmd in normalized:
+        log.info("worktree setup: running %r in %s", cmd, worktree_path)
+        if emit is not None:
+            emit("worktree_setup_running", cmd)
+        # Reuse runner._run_shell rather than a second `subprocess.run(...,
+        # timeout=)` here: a bare subprocess.run only kills the shell on
+        # timeout, leaving grandchildren (e.g. `sleep 40` under `sh -c`)
+        # orphaned at ppid 1 — measured. _run_shell spawns in its own process
+        # group (_NEW_GROUP_KWARGS), registers under the worktree path
+        # (runner._register) so teardown_worktree's terminate_running(wt_path)
+        # reaps anything still alive, and on timeout kills the WHOLE tree via
+        # _kill_process_tree/killpg instead of just the shell.
+        try:
+            rc, output, timed_out = runner._run_shell(
+                cmd, worktree_path, timeout, runner._env_for(worktree_path))
+        except OSError as exc:
+            raise WorktreeSetupError(cmd, f"could not start: {exc}")
+        if timed_out:
+            raise WorktreeSetupError(cmd, f"timed out after {timeout}s")
+        if rc != 0:
+            tail = (output or "").strip()[-200:]
+            raise WorktreeSetupError(
+                cmd, f"exit {rc}: {tail}" if tail else f"exit {rc}")
+
+    if marker is not None:
+        try:
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.write_text("\n".join(normalized))
+        except OSError as exc:  # noqa: BLE001 — marker write must never fail the task
+            log.warning("could not write setup marker at %s: %s", marker, exc)
+    log.info("worktree setup OK for %s: %d command(s)", worktree_path, len(normalized))
+    return normalized
 
 # Worktree paths THIS PROCESS is currently running a task in. Only the reaper
 # and the janitor read it, and only to answer one question: "is this

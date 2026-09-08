@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   compareVersions, deferVersion, dueForCheck, isNewer, shouldNotify, updateMessage,
+  updateErrorMessage, retainedUpdate,
 } from "./updatePolicy.mjs";
 
 test("version comparison orders releases, including uneven segment counts", () => {
@@ -98,4 +99,110 @@ test("the unsigned message states the cause instead of just failing", () => {
   assert.match(updateMessage({ mode: "up-to-date", current: "0.1.0" }), /up to date/);
   assert.match(updateMessage({ mode: "available", latest: "0.2.0",
                                current: "0.1.0", canAutoUpdate: true }), /0\.2\.0/);
+});
+
+test("a raw electron-updater HttpError never reaches the user", () => {
+  // A realistic dump of what electron-updater's HttpError.message actually
+  // contains: the URL, the status, the full response headers, and a
+  // node/electron stack trace — exactly the artefact this bug leaked to the
+  // Settings card.
+  const raw = "Cannot find latest.yml in the latest release artifacts "
+    + "(https://github.com/no-human-ai/no_human/releases/download/v0.2.2/latest.yml): "
+    + "HttpError: 404\n"
+    + 'Headers: {"cache-control":"no-cache","content-security-policy":"default-src '
+    + '\'none\'","x-github-request-id":"ABCD:1234:56789:ABCDEF:0123456"}\n'
+    + "    at createHttpError (/Applications/no_human.app/Contents/Resources/app.asar"
+    + "/node_modules/electron-updater/out/util/httpExecutor.js:52:12)\n"
+    + "    at node:electron/js2c/browser_init:2:12345";
+
+  const msg = updateErrorMessage(raw);
+  assert.match(msg, /Release update information is unavailable/);
+
+  for (const forbidden of [
+    "x-github-request-id", "content-security-policy", "browser_init",
+    "httpExecutor", "HttpError", "latest.yml",
+  ]) {
+    assert.doesNotMatch(msg, new RegExp(forbidden.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+      `the primary message must not contain "${forbidden}"`);
+  }
+});
+
+test("network failures ask the user to check their connection", () => {
+  for (const raw of [
+    "ENOTFOUND", "ECONNREFUSED", "ENETUNREACH",
+    "getaddrinfo ENOTFOUND github.com",
+    new Error("connect ECONNREFUSED 127.0.0.1:443"),
+  ]) {
+    assert.match(updateErrorMessage(raw), /Check your internet connection/,
+      `expected an offline sentence for ${raw}`);
+  }
+});
+
+test("Electron's own net:: errors are offline, not a server problem", () => {
+  // The packaged app's electron-updater (6.8.9) fetches through
+  // ElectronHttpExecutor (electron/net), whose errors carry NO `.code` and
+  // none of the node http/dns strings above — an unresolvable host, a
+  // refused port, and no connectivity at all come back as these exact
+  // Chromium strings. Measured against the bundled Electron binary; a
+  // regression here tells an offline user that GitHub is down.
+  for (const raw of [
+    "net::ERR_NAME_NOT_RESOLVED",
+    "net::ERR_INTERNET_DISCONNECTED",
+    "net::ERR_CONNECTION_REFUSED",
+    "net::ERR_CONNECTION_RESET",
+    "net::ERR_CONNECTION_TIMED_OUT",
+    "net::ERR_NETWORK_CHANGED",
+    "net::ERR_ADDRESS_UNREACHABLE",
+  ]) {
+    assert.match(updateErrorMessage(raw), /Check your internet connection/,
+      `expected an offline sentence for the Electron net error "${raw}"`);
+  }
+});
+
+test("other failures fall back to the try-again-later sentence", () => {
+  for (const raw of [
+    "HttpError: 503", "ETIMEDOUT", "EACCES", "", null, undefined, {},
+  ]) {
+    assert.doesNotThrow(() => updateErrorMessage(raw));
+    assert.match(updateErrorMessage(raw), /The update check failed; try again later/,
+      `expected the conservative fallback for ${JSON.stringify(raw)}`);
+  }
+});
+
+// retainedUpdate() — the retention half of "automatic failures are quiet".
+// updater.mjs's unconditional autoUpdater.on("error") emits {mode:"failed"}
+// for the AUTOMATIC startup check too, so this is the ONE place that decides
+// what a late-mounting renderer inherits.
+test("a failed check never displaces a retained version fact", () => {
+  const available = { mode: "available", latest: "0.3.0" };
+  const failed = { mode: "failed", error: "x", rawError: "y" };
+  assert.deepEqual(retainedUpdate(available, failed), available,
+    "an automatic failure must leave the previously-known fact alone");
+});
+
+test("a failed check from nothing retained stays nothing retained", () => {
+  const failed = { mode: "failed", error: "x", rawError: "y" };
+  assert.equal(retainedUpdate(null, failed), null,
+    "a failed AUTOMATIC startup check must never become the board's first notice");
+});
+
+test("a failed check never displaces a retained up-to-date", () => {
+  const uptodate = { mode: "up-to-date", current: "0.1.0", latest: "0.1.0" };
+  const failed = { mode: "failed", error: "x" };
+  assert.deepEqual(retainedUpdate(uptodate, failed), uptodate);
+});
+
+test("a persisted deferral clears the retained notice", () => {
+  const available = { mode: "available", latest: "0.3.0" };
+  const skipped = { mode: "skipped", reason: "deferred", latest: "0.3.0" };
+  assert.equal(retainedUpdate(available, skipped), null,
+    "Settings' Later must clear whatever version fact was retained");
+});
+
+test("version facts themselves ARE retained", () => {
+  for (const mode of ["available", "unavailable", "up-to-date"]) {
+    const event = { mode, latest: "0.3.0" };
+    assert.deepEqual(retainedUpdate(null, event), event);
+    assert.deepEqual(retainedUpdate({ mode: "up-to-date" }, event), event);
+  }
 });

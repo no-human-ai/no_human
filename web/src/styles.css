@@ -6863,6 +6863,50 @@ a.so-chip-value:hover { color: var(--accent-300); }
   margin-top: var(--sp-3);
   flex-wrap: wrap;
 }
+/* The raw electron-updater dump (headers, status, stack) — collapsed by
+   default so it never sits above the fold; opt-in reading only. */
+.update-raw {
+  margin-top: var(--sp-2);
+  font-weight: 400;
+  color: var(--text-dim);
+}
+.update-raw summary { cursor: pointer; }
+.update-raw pre {
+  margin-top: var(--sp-2);
+  max-height: 12em;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 0.85em;
+}
+
+/* The BOARD's own update notice (App.jsx), distinct from .nh-alarm above: a
+   plain flow child of .nh-main, rendered after .nh-main-bar. Deliberately NO
+   `position`, `z-index`, or `pointer-events` — .nh-stale-banner (fixed, atop
+   everything) is the overlap bug this exists to avoid; an update is
+   information, not an emergency that must survive scrolling under the top
+   bar. Only tokens defined in BOTH the dark and light blocks, same rule as
+   the Settings panel above (themeVars.test.mjs). */
+.nh-update-banner {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-3);
+  margin: 0 0 var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--blue);
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--blue) 12%, transparent);
+  color: var(--text-hi);
+}
+.nh-update-banner[data-tone="warn"] {
+  border-color: var(--state-waiting);
+  background: color-mix(in oklab, var(--state-waiting) 12%, transparent);
+}
+.nh-update-banner-text {
+  font-weight: 500;
+  margin-right: auto;
+}
 
 /* ── The night ledger — what no_human did while you were away ───────────── */
 /* Sits in the sidebar's dead zone between nav and outcomes. Numerals are

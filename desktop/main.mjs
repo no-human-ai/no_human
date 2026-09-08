@@ -9,7 +9,7 @@
 import { app, BrowserWindow, ipcMain, Menu, nativeImage, nativeTheme, shell, Tray } from "electron";
 import { hasCredential, setAuthMode, validateOpenAiKey, writeCredential, writeOpenAiKey } from "./tokenStore.mjs";
 import {
-  isSetupUrl, claudeCredentialPaths, detectSignIn, classifySetupTokenOutput, redact,
+  isSetupUrl, claudeCredentialPaths, detectSignIn, redact,
 } from "./setupGate.mjs";
 import { restartFailedMessage } from "./setupUi.mjs";
 import {
@@ -22,7 +22,7 @@ import { parseBadgeCount, overlayBadgeBitmap } from "./badge.mjs";
 import { buildMenuTemplate } from "./menu.mjs";
 import { docPage } from "./docRender.mjs";
 import { createUpdater } from "./updater.mjs";
-import { updateMessage } from "./updatePolicy.mjs";
+import { retainedUpdate, updateMessage } from "./updatePolicy.mjs";
 import { readUpdateState, writeUpdateState } from "./updateState.mjs";
 import { normalizeTheme, readTheme, themeColors, writeTheme } from "./themeState.mjs";
 import fs from "node:fs";
@@ -40,7 +40,6 @@ import {
   probe,
   resolveClaudeCli,
   resolveNodeBin,
-  runClaudeSetupToken,
   stopServer,
 } from "./server.mjs";
 
@@ -192,6 +191,9 @@ export function packagedSigning() {
 }
 
 let updater = null;
+// The last version FACT (never a bare "failed"), for a renderer that mounts
+// after the event already fired — see retainedUpdate()'s doc for why.
+let lastUpdate = null;
 
 // electron-updater is imported LAZILY and never at module scope: it touches
 // app.getVersion() and app-update.yml on import, which throws in an unpackaged
@@ -224,16 +226,25 @@ async function getUpdater() {
 
 // The board renders the notice; the shell never puts a modal in the way. An
 // update is information, not an interruption.
-function sendUpdateEvent(payload) {
+//
+// Exported so tests can drive it directly: the retention decision matters
+// even though nothing in this file's own IPC surface can trigger an
+// AUTOMATIC "failed" event (only a real electron-updater "error" can, and
+// that never initialises in an unpackaged run).
+export function sendUpdateEvent(payload) {
+  const event = {
+    ...payload,
+    message: updateMessage({
+      mode: payload.mode, latest: payload.latest,
+      current: payload.current ?? app.getVersion(),
+      canAutoUpdate: payload.canAutoUpdate,
+    }),
+  };
+  // Retention is gated; delivery is not — a live Settings panel must still
+  // see the failure that a late mount must never inherit.
+  lastUpdate = retainedUpdate(lastUpdate, event);
   if (win && !win.isDestroyed()) {
-    win.webContents.send("nh:update", {
-      ...payload,
-      message: updateMessage({
-        mode: payload.mode, latest: payload.latest,
-        current: payload.current ?? app.getVersion(),
-        canAutoUpdate: payload.canAutoUpdate,
-      }),
-    });
+    win.webContents.send("nh:update", event);
   }
 }
 
@@ -241,7 +252,7 @@ async function checkForUpdates({ manual = false } = {}) {
   const u = await getUpdater();
   if (!u) {
     if (manual) {
-      sendUpdateEvent({ mode: "failed",
+      sendUpdateEvent({ mode: "failed", rawError: null,
         error: "The updater component is not available in this build." });
     }
     return null;
@@ -689,12 +700,12 @@ function fromSetupScreen(event) {
   return isSetupUrl(event.senderFrame?.url ?? "", SETUP_FILE);
 }
 
-// Shared "a credential just changed" tail for nh:save-token AND
-// nh:claude-import-token below: decide whether the already-running server
-// needs a restart (it read its token once at bootstrap, so writing a new one
-// is otherwise inert until it restarts), restart it if so, then navigate back
-// to the board. ONE function so the two entry points — manual paste and the
-// "use my existing sign-in" import — can never diverge on this logic.
+// Shared "a credential just changed" tail for nh:save-token, the only
+// entry point that ever writes a credential (see the removed
+// nh:claude-import-token note below): decide whether the already-running
+// server needs a restart (it read its token once at bootstrap, so writing a
+// new one is otherwise inert until it restarts), restart it if so, then
+// navigate back to the board.
 // ownsAnything covers a boot still in flight: saveAction on lifecycle.state
 // alone saw "nothing running" mid-boot and returned "proceed", so the user
 // was told "Connected" over a server started with the old token. ONE
@@ -756,7 +767,8 @@ ipcMain.handle("nh:save-token", async (event, value, mode, openaiKey) => {
     // preserving write leaves the Claude token and every other .env line alone.
     if (oaiKey) writeOpenAiKey(oaiKey);
   } catch (err) {
-    return { ok: false, error: err.message };
+    // redact() so a pasted credential can never ride out in an error string.
+    return { ok: false, error: redact(err.message, value) };
   }
   return finishSave();
 });
@@ -781,30 +793,21 @@ ipcMain.handle("nh:claude-signin-status", async (event) => {
   return detectSignIn({ cliPath, authStatusCode, storeExists });
 });
 
-// token.html -> main. AC2/AC3: runs `claude setup-token` on an explicit user
-// click ONLY — never on screen load, since it may mint a new token on the
-// vendor side. Non-interactive success persists exactly like a manual paste
-// (same writeCredential/setAuthMode, same finishSave tail); anything else
-// reports {interactive:true} so the renderer falls back to the paste field.
-// The token value itself never crosses back to the renderer, and no
-// console.* call anywhere in this handler touches either captured stream —
-// on failure the caller only ever sees a fixed or redacted message.
-ipcMain.handle("nh:claude-import-token", async (event) => {
-  if (!fromSetupScreen(event)) return { ok: false, error: "not permitted" };
-  const cliPath = await resolveClaudeCli();
-  if (!cliPath) return { ok: false, interactive: true };
-  const r = classifySetupTokenOutput(await runClaudeSetupToken(cliPath));
-  if (r.kind !== "token") {
-    return { ok: false, interactive: r.kind === "interactive", error: r.message };
-  }
-  try {
-    writeCredential(r.token, "subscription");
-    setAuthMode("subscription");
-  } catch (err) {
-    return { ok: false, error: redact(err.message, r.token) };
-  }
-  return finishSave();
-});
+// There is deliberately no "nh:claude-import-token" (or any other) IPC
+// channel that runs `claude setup-token`. MEASURED (macOS, `claude` 2.1.263,
+// `auth status` already loggedIn:true): `setup-token` is unconditionally
+// browser OAuth with a loopback `/callback`, exposes no non-interactive flag,
+// and under the piped/non-TTY stdio this app would have to use writes NOTHING
+// to stdout/stderr while the listener is up, and a bounded child only ever
+// ends `{killed:true, code:143}` with both streams empty — so no token could
+// ever be read back.
+// A Windows 11 field report (no_human build bd70645a): 3 of 3 clicks opened
+// a `localhost:<port>/callback` tab and a 10-second probe found nothing
+// listening on that port (ERR_CONNECTION_REFUSED). See server.mjs's
+// claudeAuthStatus doc comment for the full evidence. The only supported
+// path to a subscription token is the user
+// running `claude setup-token` themselves in a terminal and pasting the
+// result into nh:save-token above — see setupUi.mjs's existingSignInCopy().
 
 // token.html -> main. First-run requirements check: the Agent SDK shells out
 // to `claude` for EVERY task (agent/backend_check.py) and no_human never
@@ -873,8 +876,20 @@ ipcMain.handle("nh:update-install", async () => {
 ipcMain.handle("nh:update-defer", async (_event, version) => {
   const u = await getUpdater();
   if (!u) return { mode: "failed", error: "the updater is unavailable" };
-  return u.defer(version);
+  const result = u.defer(version);
+  if (result?.mode !== "skipped") return result;   // nothing persisted → nothing to clear
+  // The one push that lets Settings' "Later" clear the BOARD's own copy of
+  // the notice too: sendUpdateEvent runs the "skipped"/"deferred" payload
+  // through retainedUpdate(), which nulls the retained fact and delivers the
+  // clear live to whichever surface is mounted.
+  sendUpdateEvent({ mode: "skipped", reason: "deferred", latest: version });
+  return result;
 });
+
+// The pull half of "the board renders the notice": a renderer that mounts (or
+// remounts) after sendUpdateEvent already fired needs a way to catch up on
+// the last version FACT rather than starting notice-free forever.
+ipcMain.handle("nh:update-last", async () => lastUpdate);
 
 /**
  * The win32 title-bar overlay for a theme. On win32 `hiddenInset` degrades to a

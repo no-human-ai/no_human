@@ -5351,7 +5351,7 @@ async def onboarding_onboard_repo(
         raise HTTPException(422, f"{body.repo_path!r} is not a git repository")
 
     from ..onboard import DeclarationDeriver, derive_required_credentials, OnboardEngine
-    from ..profile import ProjectProfile
+    from ..profile import ProjectProfile, operator_carry_kwargs
 
     derived = await asyncio.to_thread(DeclarationDeriver().derive, repo)
     vcs_host, vcs_remote = await asyncio.to_thread(OnboardEngine._derive_vcs, repo)
@@ -5388,14 +5388,12 @@ async def onboarding_onboard_repo(
     # `confirmed` (the human's "use this repo") holds while the test command it
     # was confirmed against is still proven; otherwise the gate has nothing to run.
     carry_confirmed = bool(prior and prior.confirmed and carried_proven.get("test_cmd"))
-    # ui_evidence must survive a re-derive the same way proofs do: this
-    # endpoint builds a brand-new ProjectProfile on every call, and
-    # store.upsert_profile REPLACES the whole DB row from it — omitting
-    # ui_evidence here would silently wipe a manually-configured (or
-    # previously offered-and-accepted) ui_evidence block on every re-onboard.
-    carry_kwargs: dict[str, Any] = {}
-    if prior:
-        carry_kwargs["ui_evidence"] = dict(prior.ui_evidence)
+    # Operator-owned fields (ui_evidence, setup_cmds) must survive a re-derive
+    # the same way proofs do: this endpoint builds a brand-new ProjectProfile
+    # on every call, and store.upsert_profile REPLACES the whole DB row from
+    # it — omitting them here would silently wipe a manually-configured
+    # ui_evidence block or declared setup_cmds on every re-onboard.
+    carry_kwargs = operator_carry_kwargs(prior)
     profile = ProjectProfile(
         repo_path=str(repo),
         ecosystem=derived.ecosystem,
@@ -5509,6 +5507,7 @@ async def onboarding_prove_repo(body: RepoProveRequest, request: Request):
         raise HTTPException(422, f"{body.repo_path!r} is not a git repository")
 
     from ..onboard import DeclarationDeriver, OnboardEngine
+    from ..profile import carry_operator_fields
 
     github_hosts = (config.data.get("git") or {}).get("github_hosts") or ["github.com"]
     overrides = {"test": body.test_cmd or "", "install": body.install_cmd or "",
@@ -5534,6 +5533,7 @@ async def onboarding_prove_repo(body: RepoProveRequest, request: Request):
             # Never inherit an earlier confirm: the command may have changed, so
             # the human re-confirms against THIS evidence.
             prof.confirmed = False
+            carry_operator_fields(prof, await store.get_profile(str(repo)))  # survive OnboardEngine's fresh rebuild
             await store.upsert_profile(prof)
             try:
                 prof.save()

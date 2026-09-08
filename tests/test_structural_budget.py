@@ -560,7 +560,43 @@ FROZEN_FILE_LINES = {
     # failures correctly, and tags the max_attempts/tamper_blocked call
     # sites explicitly. Measured via `wc -l`/the scanner below; growth is
     # the minimal functional diff after trimming comments/docstrings.
-    "core/orchestrator.py": 21788,
+    # 21788 -> 21860 (+72, corrected from a stale "+69" -- `wc -l`, the
+    # scanner and `git diff --numstat` all agreed at +72 measured on that
+    # tree): profile-declared worktree setup commands, MAJOR-2 fix -- setup
+    # ran *inside* `_drive_watched` via a `setup_in` kwarg and the new
+    # `_run_worktree_setup` helper, so the cancellation watcher was already
+    # alive and `nh task cancel` was observed during a long setup command
+    # instead of being ignored for its whole duration. The helper resolves
+    # `_usable_profile`, marshals every `run_setup_commands` emit onto the
+    # loop thread with `loop.call_soon_threadsafe(self.emit, ...)` (the
+    # worker thread from `asyncio.to_thread` is not safe to call
+    # `self.emit` from directly), polls `_pending_cancel` against the
+    # module-level `_CANCEL_POLL_SECONDS`, and kills the setup process tree
+    # via `runner.terminate_running(wt_path)` + `_honor_cancel` on cancel.
+    # 21860 -> 21880 (+20): round 4 fix. The `setup_in` kwarg above made
+    # `_drive_watched` a 3-arg method, which TypeErrors the plain
+    # `(task, repo)` fakes in tests/test_worktree_isolation.py and
+    # tests/test_worktree_teardown.py -- those two files are never edited,
+    # so `_drive_watched` is restored to exactly that signature and the
+    # worktree path now travels via a single-use instance attribute
+    # (`self._pending_setup_path`, set by `_run_task_body`'s worktree
+    # branch immediately before the call, consumed -- read then cleared --
+    # the moment `_drive_watched` runs) instead of a keyword argument.
+    # Also corrects `_run_worktree_setup`'s docstring, which used to claim
+    # a repo-supplied `.no_human/project.yml` "can never get to run shell
+    # in this worktree" -- false: with no DB row, `_usable_profile` falls
+    # back to that file, and its `setup_cmds` run exactly as its
+    # `test_cmd` already does.
+    # Measured via the scanner's own `len(text.splitlines())`: `wc -l`
+    # reads 21877 against origin/main's 21785 (+92); `git diff --numstat
+    # origin/main` reports 94 insertions/2 deletions (net +92 too); the
+    # scanner counts 21880 against origin/main's 21788 (+92) -- all three
+    # agree. (The scanner runs 3 higher than `wc -l` throughout, on the
+    # single pre-existing NEL/LS/PS characters inside the `_LINE_BREAKS`
+    # regex literal -- unrelated to this diff, unchanged by this branch.)
+    # The scanner's own metric is what this test compares against, so
+    # that is the value recorded here, not `wc -l`'s.
+    "core/orchestrator.py": 21880,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.
@@ -679,7 +715,16 @@ FROZEN_FILE_LINES = {
     # `rules`/`skills`. The command bodies live in the new
     # `cli/verifiers_cmd.py`, not here, to keep this file's growth to just
     # the registration. Measured via `wc -l src/no_human/cli/commands.py`.
-    "cli/commands.py": 8567,
+    # 8567 -> 8633 (+66): profile-declared worktree setup commands,
+    # MAJOR-3 fix — `nh repo setup-cmds` now refuses to write a DB row
+    # when none already exists ("run `nh onboard <repo>` first"), naming
+    # the exact operator remedy, instead of letting a repo's own
+    # `.no_human/project.yml` confer trust into a fresh CONFIRMED row.
+    # The command's docstring was also rewritten to state the true trust
+    # model: `_usable_profile`'s existing DB-first-then-file-fallback
+    # behaviour for *running* an already-confirmed profile is untouched.
+    # Measured via `wc -l src/no_human/cli/commands.py`.
+    "cli/commands.py": 8633,
     # api/app.py 5338 -> 5346 (+8): same budget-floor warning surfaced by
     # `send-back`/`reply` as `budget_warning` in the JSON response. Net cost
     # was trimmed from a naive +14 to +8 by computing `Bounds.from_config(...)`

@@ -6,8 +6,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { CLI_INSTALL_LINE, codexKeyToSend, dismissTarget, labels, parseCanReturn,
-         requirementLine, restartFailedMessage, saveDisabled, saveProgress } from "./setupUi.mjs";
+import { CLI_INSTALL_LINE, codexKeyToSend, dismissTarget, existingSignInCopy, labels,
+         parseCanReturn, requirementLine, restartFailedMessage, saveDisabled,
+         saveProgress } from "./setupUi.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -63,6 +64,14 @@ test("labels: no mode's copy disparages the other (claims discipline, D4)", () =
         `labels(${canReturn}, ${mode}) must describe, not disparage`);
     }
   }
+  // Same claims discipline applies to the existing-sign-in row's copy — it
+  // must describe the manual-paste path it points at, not disparage it as a
+  // fallback.
+  const copy = existingSignInCopy();
+  for (const text of [copy.button, copy.note, copy.guidance]) {
+    assert.doesNotMatch(text, /will not work|would bill the metered/i,
+      "existingSignInCopy() must describe, not disparage");
+  }
 });
 
 test("saveProgress: never claims to stop an old server on first run", () => {
@@ -102,6 +111,45 @@ test("the first-run screen's copy is platform-neutral — it ships on macOS, Win
   const html = fs.readFileSync(path.join(here, "token.html"), "utf8");
   assert.doesNotMatch(html, /this Mac\b/,
     "token.html says 'this Mac' — a Linux/Windows user reads that on first run (seen on Ubuntu 24.04, 2026-08-18)");
+  // The existing-sign-in row's copy ships on the same three platforms — no
+  // OS-specific terminal app name or path shape.
+  const copy = existingSignInCopy();
+  for (const text of [copy.button, copy.note, copy.guidance]) {
+    assert.doesNotMatch(text, /\bMac\b|Terminal\.app|PowerShell|cmd\.exe/,
+      `existingSignInCopy() must stay platform-neutral, got: ${text}`);
+  }
+});
+
+test("the existing-sign-in copy promises only what happens locally", () => {
+  const copy = existingSignInCopy();
+  // It must name the actual command so the instruction is copy-pasteable...
+  assert.match(copy.note, /claude setup-token/);
+  assert.match(copy.guidance, /claude setup-token/);
+  // ...tell the user to paste the result themselves...
+  assert.match(copy.guidance, /paste/i);
+  // ...and never claim no_human does anything automatically — the row only
+  // ever reveals the same manual-paste field every other path uses.
+  for (const text of [copy.button, copy.note, copy.guidance]) {
+    assert.doesNotMatch(text, /automatic|import|we'll open|opening it for you/i,
+      `existingSignInCopy() overpromises automation: ${text}`);
+  }
+
+  // Source-level guardrails on token.html itself: the deleted IPC-driven
+  // click handler and its "couldn't finish automatically" copy must not
+  // reappear, #steps (the manual-paste instructions the click reveals) must
+  // still exist, and "use-existing" must only ever be built inside
+  // renderExistingSignin — never as static markup that could render before
+  // detection completes.
+  const html = fs.readFileSync(path.join(here, "token.html"), "utf8");
+  assert.doesNotMatch(html, /importClaudeSignIn/,
+    "token.html must not call the deleted nh:claude-import-token bridge method");
+  assert.doesNotMatch(html, /Couldn't finish that automatically/,
+    "the old IPC-failure copy must be gone along with the IPC call it described");
+  assert.match(html, /id="steps"/,
+    "the manual-paste instructions the click reveals must still exist");
+  const useExistingOccurrences = html.split('id = "use-existing"').length - 1;
+  assert.equal(useExistingOccurrences, 1,
+    "\"use-existing\" must be built exactly once, inside renderExistingSignin");
 });
 
 test("requirementLine: an OK claude names its version and where it was found", () => {

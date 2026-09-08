@@ -158,7 +158,13 @@ from .pricing import (
 from .pricing import weighted_tokens as _weighted_tokens
 from .pr_evidence import PrEvidence, visible_chars
 from .task import IllegalTransition, Task, TaskSpec, TaskStatus
-from .worktree import _LIVE_WORKTREES, reset_agent_workspace, teardown_worktree
+from .worktree import (
+    _LIVE_WORKTREES,
+    WorktreeSetupError,
+    reset_agent_workspace,
+    run_setup_commands,
+    teardown_worktree,
+)
 
 log = logging.getLogger("no_human.orchestrator")
 
@@ -1558,6 +1564,15 @@ class Orchestrator:
         # not once per `_usable_profile` call — it is called 6+ times per
         # attempt.
         self._profile_divergence_warned: bool = False
+        # Side channel from `_run_task_body`'s worktree branch to
+        # `_drive_watched`: the freshly-acquired worktree path to run
+        # `setup_cmds` in, or `None` off the isolation-off branch.
+        # `_drive_watched` keeps its public `(task, repo)` signature — tests
+        # replace it wholesale with two-arg fakes — so the path travels as an
+        # attribute instead of a keyword argument. Consumed (reset to `None`)
+        # the moment `_drive_watched` reads it, so it is single-use and a
+        # stale value can never leak into a later call.
+        self._pending_setup_path: Path | None = None
 
     # ----------------------------- events ---------------------------------- #
 
@@ -2672,6 +2687,16 @@ class Orchestrator:
                 "isolation.enabled: false to work in the checkout on purpose."
             ), reason_category="infra")
         try:
+            # `setup_cmds` runs INSIDE `_drive_watched`, not here — that keeps
+            # the cancellation watcher alive across it, so `nh task cancel`
+            # during a long `npm ci` is observed instead of being invisible
+            # for up to len(cmds) x SETUP_TIMEOUT_S. See `_run_worktree_setup`.
+            # Handed off via `self._pending_setup_path` (consumed on read,
+            # single-use) rather than a keyword argument, so `_drive_watched`
+            # keeps its plain `(task, repo)` signature. The isolation-off call
+            # site above never sets it, which is exactly why setup_cmds never
+            # run there.
+            self._pending_setup_path = wt_path
             return await self._drive_watched(task, repo)
         finally:
             # Only ever OUR OWN directory. `wt_path` is unique to this run, so
@@ -2685,16 +2710,31 @@ class Orchestrator:
 
     # ------------------------ cooperative cancellation --------------------- #
 
-    async def _drive_watched(self, task: Task, repo: GitRepo) -> TaskOutcome:
+    async def _drive_watched(
+        self, task: Task, repo: GitRepo,
+    ) -> TaskOutcome:
         """Run the attempt loop with a cancellation watcher alive beside it.
 
         `nh task pause` used to flip a DB row that nothing read, so a paused task
         kept burning tokens until it finished on its own. The watcher turns that
         row into a signal the loop actually observes.
+
+        Worktree-isolated runs hand off the fresh worktree path via
+        `self._pending_setup_path` (set by `_run_task_body` just before this
+        call, consumed here) rather than a keyword argument, so this method
+        keeps its plain `(task, repo)` signature. When set, the profile's
+        `setup_cmds` run HERE, with the watcher already alive, rather than
+        before this method is entered — a cancel arriving during a long
+        `npm ci` would otherwise go unobserved until the command finishes.
         """
         self._cancel_reason = None
+        setup_in, self._pending_setup_path = self._pending_setup_path, None
         watcher = asyncio.create_task(self._watch_for_cancel(task.id))
         try:
+            if setup_in is not None:
+                early = await self._run_worktree_setup(task, repo, setup_in)
+                if early is not None:
+                    return early
             return await self._drive(task, repo)
         except QuotaExhausted as exc:
             # The attempt loop parks its own quota walls, but everything BEFORE
@@ -2708,6 +2748,58 @@ class Orchestrator:
             with contextlib.suppress(asyncio.CancelledError):
                 await watcher
             await self._flush_orphaned_aux_usage(task)
+
+    async def _run_worktree_setup(
+        self, task: Task, repo: GitRepo, wt_path: Path,
+    ) -> TaskOutcome | None:
+        """Run the profile's `setup_cmds` (gitignored build prerequisites a
+        fresh `git worktree add` checkout structurally cannot contain) in a
+        worker thread, polling the cheap cancel boundary (`_pending_cancel`,
+        the same one `_drive`'s own entry uses) instead of just awaiting it —
+        the loop otherwise cannot observe `nh task cancel` for as long as the
+        command runs. Resolved via `_usable_profile` on purpose: a DB row wins
+        when one exists; with no row, `_usable_profile` falls back to the
+        repo's `.no_human/project.yml`, and that file's `setup_cmds` run here
+        exactly as its `test_cmd` already does elsewhere — same trust
+        surface, no more, no less; either way `_profile_usable_under_policy`
+        still gates it (confirmed, or proven under `auto_confirm_proven`).
+        Returns an outcome to short-circuit `_drive_watched` (cancelled or
+        failed), or ``None`` to fall through to `_drive`."""
+        prof = await self._usable_profile(repo.path)
+        cmds = list(getattr(prof, "setup_cmds", None) or []) if prof else []
+        if not cmds:
+            return None
+        self.emit("worktree_setup", f"running {len(cmds)} setup command(s)")
+        # `run_setup_commands` calls `emit` from the `to_thread` worker, and
+        # `self.emit` is not thread-safe (scheduler.py's `_sink` sets an
+        # asyncio.Event) — marshal each call back onto this loop.
+        loop = asyncio.get_running_loop()
+        def _threadsafe_emit(kind: str, text: str = "") -> None:
+            loop.call_soon_threadsafe(self.emit, kind, text)
+        worker = asyncio.create_task(asyncio.to_thread(
+            run_setup_commands, wt_path, cmds, emit=_threadsafe_emit))
+        try:
+            while not worker.done():
+                await asyncio.wait({worker}, timeout=_CANCEL_POLL_SECONDS)
+                if worker.done():
+                    break
+                pending = await self._pending_cancel(task)
+                if pending:
+                    # Kills the setup process TREE now — the loop below would
+                    # otherwise still be waiting on it when the task is
+                    # reported parked.
+                    runner.terminate_running(wt_path)
+                    with contextlib.suppress(Exception):
+                        await worker
+                    return await self._honor_cancel(task, repo, None, pending)
+            await worker
+        except WorktreeSetupError as exc:
+            return await self._fail(task, (
+                f"worktree setup command failed: {exc.command} — "
+                f"{exc.detail}. Declared as `setup_cmds` on the profile "
+                f"for {task.repo_path}; fix it with `nh repo setup-cmds`."
+            ), reason_category="infra")
+        return None
 
     async def _flush_orphaned_aux_usage(self, task: Task) -> None:
         """Book out-of-band role spend that no attempt row ever drained.

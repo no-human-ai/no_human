@@ -7,7 +7,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { TONES, updateNotice } from "./updateNotice.js";
+import { TONES, updateBanner, updateNotice } from "./updateNotice.js";
 
 test("every branch returns a known tone and a non-empty title", () => {
   const cases = [
@@ -18,7 +18,7 @@ test("every branch returns a known tone and a non-empty title", () => {
     { inShell: true, current: "0.1.0", update: { mode: "downloading", percent: 10 } },
     { inShell: true, current: "0.1.0", update: { mode: "downloaded", latest: "0.2.0" } },
     { inShell: true, current: "0.1.0", update: { mode: "up-to-date" } },
-    { inShell: true, current: "0.1.0", update: { mode: "failed", error: "x" } },
+    { inShell: true, current: "0.1.0", update: { mode: "failed", error: "x", rawError: "y" } },
   ];
   for (const c of cases) {
     const n = updateNotice(c);
@@ -139,13 +139,48 @@ test("an unknown version is rendered as unknown, never invented", () => {
 });
 
 test("a failed check surfaces the reason and offers a retry", () => {
+  // desktop/updatePolicy.mjs has already classified the raw electron-updater
+  // error into a short sentence by the time it reaches here — `error` is that
+  // sentence, and the raw dump (headers, request id, stack) rides separately
+  // in `rawError`. This panel must never re-classify or promote the raw text
+  // onto the primary line.
   const n = updateNotice({
     inShell: true, current: "0.1.0",
-    update: { mode: "failed", error: "getaddrinfo ENOTFOUND" },
+    update: {
+      mode: "failed",
+      error: "Check your internet connection and try again.",
+      rawError: "getaddrinfo ENOTFOUND github.com\n"
+        + 'Headers: {"x-github-request-id":"ABCD:1234:56789"}',
+    },
   });
   assert.equal(n.tone, "error");
-  assert.match(n.detail, /ENOTFOUND/, "the real cause must reach the user");
+  assert.equal(n.detail, "Check your internet connection and try again.");
+  assert.doesNotMatch(n.detail, /ENOTFOUND|x-github-request-id/,
+    "the raw dump must never appear on the primary line");
+  assert.match(n.details, /ENOTFOUND/, "the raw text must still be reachable");
+  assert.match(n.details, /x-github-request-id/);
   assert.deepEqual(n.actions, ["check"]);
+});
+
+test("a failed check with no rawError renders no collapsed details", () => {
+  const n = updateNotice({
+    inShell: true, current: "0.1.0",
+    update: { mode: "failed", error: "The updater component is not available in this build." },
+  });
+  assert.equal(n.details, null);
+});
+
+test("the raw error is rendered only inside a collapsed <details>", () => {
+  // No React renderer in this harness — read the source the same way the
+  // "Settings actually sources the version" test above does.
+  const src = readFileSync(fileURLToPath(new URL("./Settings.jsx", import.meta.url)), "utf8");
+  assert.match(src, /<details className="update-raw">/,
+    "the raw error must be wrapped in a collapsed <details> element");
+  assert.match(src, /\{view\.details\}/, "the raw text must come from view.details");
+  const detailsBlock = src.slice(src.indexOf('<details className="update-raw">'));
+  const openTag = detailsBlock.slice(0, detailsBlock.indexOf(">") + 1);
+  assert.doesNotMatch(openTag, /\bopen\b/,
+    "the details element must be closed by default, never above the fold");
 });
 
 test("the default state explains the policy rather than showing nothing", () => {
@@ -159,4 +194,97 @@ test("it never throws on a malformed payload", () => {
     assert.doesNotThrow(() => updateNotice({ inShell: true, current: "0.1.0", update }));
   }
   assert.doesNotThrow(() => updateNotice());
+});
+
+// updateBanner() — the BOARD's strictly narrower view. AC1: an automatic
+// startup check's failure must never reach the board, while Settings'
+// updateNotice() (exercised above) still surfaces that SAME failure via the
+// existing error card unchanged — this is the one test proving both halves
+// at once, so a future edit cannot fix one surface by breaking the other.
+test("a failed check produces no board banner, while Settings still surfaces it", () => {
+  const failed = { mode: "failed", error: "Check your internet connection and try again.", rawError: "y" };
+
+  assert.equal(updateBanner({ update: failed }), null,
+    "an automatic check's failure must never become a board notice");
+
+  const settingsView = updateNotice({ inShell: true, current: "0.1.0", update: failed });
+  assert.equal(settingsView.tone, "error");
+  assert.deepEqual(settingsView.actions, ["check"],
+    "a manual 'Check for updates' must still be able to retry from the SAME error card");
+  assert.equal(settingsView.detail, failed.error);
+});
+
+test("updateBanner never fabricates copy for modes it declines", () => {
+  for (const update of [
+    null, {}, { mode: "downloading", percent: 10 }, { mode: "downloaded", latest: "0.2.0" },
+    { mode: "up-to-date" }, { mode: "skipped", reason: "deferred", latest: "0.2.0" },
+  ]) {
+    assert.equal(updateBanner({ update }), null, `mode ${update?.mode} must render nothing on the board`);
+  }
+});
+
+// AC2: Settings' "Later" must clear the BOARD notice, not just Settings' own
+// view. App.jsx converges both surfaces onto the SAME `dismissedVersion` (see
+// updateBanner's second parameter) driven by the one nh:update push that
+// follows a persisted defer — this pins the pure decision that click relies on.
+test("a dismissed/deferred version clears the board banner for that version only", () => {
+  const available = { mode: "available", latest: "0.2.1" };
+  assert.ok(updateBanner({ update: available }), "sanity: the version is bannerable before any dismissal");
+  assert.equal(updateBanner({ update: available, dismissedVersion: "0.2.1" }), null,
+    "the exact version Later was clicked for must be hidden");
+
+  // A newer release than the one that was dismissed must still get through —
+  // dismissing 0.2.1 must not permanently silence the board.
+  const newer = { mode: "available", latest: "0.3.0" };
+  assert.ok(updateBanner({ update: newer, dismissedVersion: "0.2.1" }),
+    "a version beyond the dismissed one must still be announced");
+});
+
+test("the persisted-deferral event itself (mode: skipped) never becomes a banner", () => {
+  // main.mjs's nh:update-defer pushes {mode:"skipped", reason:"deferred", ...}
+  // over the very same nh:update channel Settings and the board both read —
+  // that push must not itself paint a banner while it is clearing one.
+  const skipped = { mode: "skipped", reason: "deferred", latest: "0.2.1" };
+  assert.equal(updateBanner({ update: skipped }), null);
+});
+
+// AC3: the notice must render in normal document flow after `.nh-main-bar`,
+// and its CSS must contain none of `.nh-stale-banner`'s overlapping
+// positioning. Read straight from source, the same pattern the "raw error is
+// rendered only inside a collapsed <details>" test above already uses — there
+// is no React renderer in this harness.
+test("the update banner is wired in App.jsx as a flow sibling AFTER .nh-main-bar, not inside it", () => {
+  const src = readFileSync(fileURLToPath(new URL("./App.jsx", import.meta.url)), "utf8");
+
+  const mainBarIdx = src.indexOf('className="nh-main-bar"');
+  assert.ok(mainBarIdx >= 0, "the top bar element must exist");
+
+  const bannerIdx = src.indexOf("updateBar.className");
+  assert.ok(bannerIdx >= 0, "the banner must render updateBar's own className, not a hardcoded one");
+  assert.ok(bannerIdx > mainBarIdx,
+    "the update banner must be wired AFTER .nh-main-bar in source order, as a following sibling");
+
+  // The banner's own `<div>` must close before <Board> opens — i.e. it is not
+  // nested inside the .nh-main-bar div (which is already closed by then).
+  // (Searched from bannerIdx: an explanatory code comment right above the
+  // banner also mentions "<Board>" in prose, before the real JSX tag.)
+  const boardIdx = src.indexOf("<Board", bannerIdx);
+  assert.ok(boardIdx > bannerIdx, "the banner must be rendered before <Board>");
+
+  assert.doesNotMatch(src.slice(bannerIdx, boardIdx), /nh-stale-banner/,
+    "the update banner must not reuse .nh-stale-banner's fixed-position styling");
+});
+
+test("the .nh-update-banner rule renders in flow — no fixed/absolute positioning, no z-index, no pointer-events gate", () => {
+  const css = readFileSync(fileURLToPath(new URL("./styles.css", import.meta.url)), "utf8");
+
+  const start = css.indexOf(".nh-update-banner {");
+  assert.ok(start >= 0, "the .nh-update-banner rule must exist");
+  const end = css.indexOf("}", start);
+  const rule = css.slice(start, end);
+
+  assert.doesNotMatch(rule, /position\s*:/, "must not be taken out of flow with position");
+  assert.doesNotMatch(rule, /z-index\s*:/, "must not layer over the top bar");
+  assert.doesNotMatch(rule, /pointer-events\s*:/,
+    "must not borrow .nh-stale-banner's click-through trick");
 });

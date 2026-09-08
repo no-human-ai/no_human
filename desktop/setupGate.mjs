@@ -90,6 +90,15 @@ const CLI_FALLBACK_MESSAGE =
  * A non-zero exit with no recognizable content returns a FIXED message —
  * never the captured bytes — so nothing the CLI printed can leak into the
  * UI or a log via this path.
+ *
+ * No production path calls this today: `setup-token` is unconditional
+ * browser OAuth with no non-interactive flag, and under the piped/non-TTY
+ * stdio this app would have to use it writes nothing to either stream even
+ * once its loopback listener is up (MEASURED — see server.mjs's
+ * claudeAuthStatus doc comment) — so `runClaudeSetupToken` was removed
+ * rather than kept unreachable. This function, and the fixed-message /
+ * never-echo-captured-bytes discipline it encodes, stays exported as the
+ * pinned contract ANY future token-handling path must satisfy.
  */
 export function classifySetupTokenOutput(input) {
   const { code, stdout, stderr } = input || {};
@@ -101,10 +110,11 @@ export function classifySetupTokenOutput(input) {
     return { kind: "interactive" };
   }
   // A numeric non-zero exit is a real CLI failure ⇒ fixed error message.
-  // `code === null` (spawn/timeout — see runClaudeSetupToken) is NOT treated
-  // as a failure here: we don't know the CLI actually rejected anything, so
-  // it falls through to the safe default below (manual paste), matching
-  // server.mjs's documented timeout shape `{code:null, stderr:"timeout"}`.
+  // `code === null` (spawn/timeout) is NOT treated as a failure here: we
+  // don't know the CLI actually rejected anything, so it falls through to
+  // the safe default below (manual paste). This function still accepts a
+  // `{code: null, stderr: "timeout"}` shape as the contract for any caller
+  // that captures a timed-out spawn.
   if (typeof code === "number" && code !== 0) {
     return { kind: "error", message: CLI_FALLBACK_MESSAGE };
   }
@@ -112,8 +122,9 @@ export function classifySetupTokenOutput(input) {
 }
 
 /** Replaces every occurrence of `secret` in `text` with `***`. Defensive —
- * used at the one place main.mjs might otherwise surface a raw error string
- * that happened to echo back a token. */
+ * used everywhere main.mjs might otherwise surface a raw error string that
+ * happened to echo back a pasted credential; `nh:save-token`'s catch is the
+ * live caller now that the `setup-token` import path is gone. */
 export function redact(text, secret) {
   const t = typeof text === "string" ? text : "";
   if (!secret) return t;
