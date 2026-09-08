@@ -11153,14 +11153,6 @@ class Orchestrator:
             f"an unreviewed diff ({why}) — routing to a full independent "
             "review of the branch diff",
         )
-        # Consumed (and reset) at the top of the very next `_run_review` call:
-        # a no-reviewer/`allow_advisory` gate normally rubber-stamps a diff
-        # with `passed=True`, which would make THIS routing a no-op the
-        # instant no reviewer is wired — the [WIP-BLOCKED]/[WIP-PARTIAL] head
-        # eligibility just refused to credit for free gets credited for free
-        # one call later anyway. A genuinely unjudged checkpoint diff needs an
-        # actual verdict, so the advisory rubber stamp must not apply to it.
-        self._unjudged_checkpoint_head = True
         return repo.head_commit(base)
 
     async def _append_review_history(
@@ -12823,13 +12815,6 @@ class Orchestrator:
         # below sets it True — every other exit (held-out fail, real reviewer
         # run) leaves it False, meaning "a stamp is required".
         self._review_gate_advisory = False
-        # Captured, then reset, before anything else in this call: this method
-        # runs exactly once per review round, so reading-then-clearing here
-        # scopes the flag to the ONE round `_route_unjudged_head` set it for —
-        # a coder retry inside the same attempt starts its next round with it
-        # cleared, same lifetime as `_review_gate_advisory` above.
-        unjudged_checkpoint_head = getattr(self, "_unjudged_checkpoint_head", False)
-        self._unjudged_checkpoint_head = False
         # Held-out first (B2 #8): deterministic, cheap, and independent of the
         # reviewer — including advisory mode, which skips the LLM reviewer but
         # must not skip a verifiable signal that already exists on disk. This
@@ -12858,22 +12843,6 @@ class Orchestrator:
             )
 
         if self.reviewer is None:
-            if unjudged_checkpoint_head:
-                # `reviewer.allow_advisory` exists for eval/replay flows that
-                # skip the gate ON PURPOSE — not for a [WIP-BLOCKED]/
-                # [WIP-PARTIAL] checkpoint head `_route_unjudged_head` sent
-                # here BECAUSE no completed review has ever judged it. Passing
-                # it advisory-style would credit the loop's own abandoned
-                # half-work (or an unreviewed resume) for free, one call after
-                # eligibility refused to do exactly that — fail closed instead,
-                # same as the unconditional no-reviewer/no-advisory case below.
-                raise ReviewerUnavailable(
-                    "no reviewer is configured, so this unjudged checkpoint "
-                    "head cannot be verified. reviewer.allow_advisory does "
-                    "not apply here: it would rubber-stamp a diff the "
-                    "already-satisfied gate explicitly refused to credit "
-                    "without a real review. Wire a reviewer to resolve it."
-                )
             if not (self.config.get("reviewer") or {}).get("allow_advisory", False):
                 raise ReviewerUnavailable(
                     "no reviewer is configured, so the review gate cannot run. "
