@@ -1,113 +1,32 @@
 # How I verified this — full log
 
-_Harness-captured record for task `515fad56`, commit `5c3fd6081dd056735c8ac7d46a6538eac620343e` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `515fad56`, commit `647f49c4284fca387a44f50f9c4138b071ebdc16` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ## How I verified this
-8 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
+15 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
+
+**Not everything recorded is shown:** the 12 most recent of those listed are shown with their captured output, and the other 3 commands are shown as a command line only.
 
 ### test
-- `python -m pytest tests/test_readme_claims.py -q 2>&1 | tail -30`
-
-```
-............................s.s.s.s.s.s.s.s.s.s......................... [ 49%]
-.....................s..........................s....................... [ 99%]
-.                                                                        [100%]
-133 passed, 12 skipped in 2.82s
-```
-
-- `git add RELEASE_MANIFEST.txt cd desktop && npm test 2>&1 | tail -40`
-
-```
-...
-# Subtest: the once-a-day throttle is recorded even when nothing is new
-ok 397 - the once-a-day throttle is recorded even when nothing is new
-  ---
-  duration_ms: 0.205125
-  ...
-# Subtest: a network failure is reported, never thrown, and never blocks
-ok 398 - a network failure is reported, never thrown, and never blocks
-  ---
-  duration_ms: 0.248792
-  ...
-# Subtest: an unpackaged dev run is skipped rather than reported as broken
-ok 399 - an unpackaged dev run is skipped rather than reported as broken
-  ---
-  duration_ms: 0.073542
-  ...
-# Subtest: install refuses until the bytes are actually on disk
-ok 400 - install refuses until the bytes are actually on disk
-  ---
-  duration_ms: 0.0865
-  ...
-# Subtest: download progress and completion reach the listener
-ok 401 - download progress and completion reach the listener
-  ---
-  duration_ms: 0.108584
-  ...
-# Subtest: a listener that throws cannot take the updater down
-ok 402 - a listener that throws cannot take the updater down
-  ---
-  duration_ms: 0.108333
-  ...
-1..402
-# tests 402
-# suites 0
-# pass 399
-# fail 2
-# cancelled 0
-# skipped 1
-# todo 0
-# duration_ms 94246.915584
-```
-
-- `npm test 2>&1 | grep -B2 -A40 "^not ok"`
-
-```
-...
-# Subtest: the config exports the config and nothing else, or electron-builder refuses to build
-not ok 184 - the config exports the config and nothing else, or electron-builder refuses to build
-  ---
-  duration_ms: 0.165208
-  location: '/Users/eyalgolan/.<redacted>/worktrees/515fad568a1144fda77b4350f74c9b5c.90097.8207278a/desktop/packagedFiles.test.mjs:814:1'
-  failureType: 'testCodeFailure'
-  error: |-
-    Cannot find module 'app-builder-lib/scheme.json'
-    Require stack:
-    - /Users/eyalgolan/.<redacted>/worktrees/515fad568a1144fda77b4350f74c9b5c.90097.8207278a/desktop/packagedFiles.test.mjs
-  code: 'MODULE_NOT_FOUND'
-  stack: |-
-    Module._resolveFilename (node:i
-[... 2,490 of 3,629 characters omitted from the middle ...]
--
-  duration_ms: 0.138541
-  ...
-# Subtest: an explicit Check for Updates always answers, deferral or not
-ok 378 - an explicit Check for Updates always answers, deferral or not
-  ---
-  duration_ms: 0.113
-  ...
-# Subtest: deferVersion does not mutate the state it was handed
-ok 379 - deferVersion does not mutate the state it was handed
-  ---
-  duration_ms: 0.054833
-  ...
-# Subtest: the daily throttle allows the first check and blocks a second same-day one
-```  
-  _excerpt - 3,617 characters of output in total_
-
-- `npm test 2>&1 | tail -20`
+- `cd desktop && npm test 2>&1 | tail -60`
+  _output not shown - see the note above._
+- `cd desktop && npm test 2>&1 | grep -B5 "^not ok"`
+  _output not shown - see the note above._
+- `pwd; npm test 2>&1 | grep -n -B8 "^not ok"`
+  _output not shown - see the note above._
+- `cd /Users/eyalgolan/.<redacted>/worktrees/515fad568a1144fda77b4350f74c9b5c.90097.d6e9217c/desktop && npm test 2>&1 | tail -20`
 
 ```
 ...
 # Subtest: download progress and completion reach the listener
 ok 409 - download progress and completion reach the listener
   ---
-  duration_ms: 0.116584
+  duration_ms: 0.207167
   ...
 # Subtest: a listener that throws cannot take the updater down
 ok 410 - a listener that throws cannot take the updater down
   ---
-  duration_ms: 0.111208
+  duration_ms: 0.168208
   ...
 1..410
 # tests 410
@@ -117,101 +36,117 @@ ok 410 - a listener that throws cannot take the updater down
 # cancelled 0
 # skipped 1
 # todo 0
-# duration_ms 94205.703334
+# duration_ms 94247.080583
 ```
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/515fad568a1144fda77b4350f74c9b5c.90097.8207278a/web && npm test 2>&1 | tail -40`
-
-```
-...
-# Subtest: the reconnector never stops retrying
-ok 1574 - the reconnector never stops retrying
-  ---
-  duration_ms: 0.202125
-  ...
-# Subtest: on open, the init snapshot is re-fetched and delivered
-ok 1575 - on open, the init snapshot is re-fetched and delivered
-  ---
-  duration_ms: 0.133792
-  ...
-# Subtest: onSnapshot delivers the fresh snapshot verbatim — the stale array is not merged into
-ok 1576 - onSnapshot delivers the fresh snapshot verbatim — the stale array is not merged into
-  ---
-  duration_ms: 0.095166
-  ...
-# Subtest: a failing snapshot fetch retries on a shorter backoff and never publishes 'live'
-ok 1577 - a failing snapshot fetch retries on a shorter back
-[... 115 of 1,254 characters omitted from the middle ...]
-cancels it and restarts backoff at 1s
-ok 1578 - a close during an in-flight snapshot cancels it and restarts backoff at 1s
-  ---
-  duration_ms: 0.149375
-  ...
-# Subtest: stop() is idempotent and leaves no pending timer or open socket
-ok 1579 - stop() is idempotent and leaves no pending timer or open socket
-  ---
-  duration_ms: 0.158792
-  ...
-1..1579
-# tests 1579
-# suites 0
-# pass 1571
-# fail 8
-# cancelled 0
-# skipped 0
-# todo 0
-# duration_ms 406.713167
-```  
-  _excerpt - 1,254 characters of output in total_
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/515fad568a1144fda77b4350f74c9b5c.90097.8207278a && git diff --stat HEAD -- web/ | tail -5 echo "---" cd web && npm test 2>&1 | grep -B2 -A25 "^not ok" | head -250`
-
-```
----
-  ...
-# Subtest: the built bundle carries no landed-override strings
-not ok 343 - the built bundle carries no landed-override strings
-  ---
-  duration_ms: 0.555834
-  location: '/Users/eyalgolan/.<redacted>/worktrees/515fad568a1144fda77b4350f74c9b5c.90097.8207278a/web/src/cancelFlow.test.mjs:62:1'
-  failureType: 'testCodeFailure'
-  error: 'web/dist/assets is missing — run `npm run build` in web/ first'
-  code: 'ERR_ASSERTION'
-  name: 'AssertionError'
-  operator: 'fail'
-  stack: |-
-    TestContext.<anonymous> (file:///Users/eyalgolan/.<redacted>/worktrees/515fad568a1144fda77b4350f74c9b5c.90097.8207278a/web/src/cancelFlow.test.mjs:64:12)
-    Test.runInAsyncScope (node:async
-[... 8,618 of 9,757 characters omitted from the middle ...]
-odules/esm/loader:640:38)
-    ModuleLoader.getModuleJobForImport (node:internal/modules/esm/loader:264:38)
-    ModuleJob._link (node:internal/modules/esm/module_job:168:49)
-  ...
-# Subtest: queued/running keep polling; done/failed stop
-ok 1559 - queued/running keep polling; done/failed stop
-  ---
-  duration_ms: 0.6285
-  ...
-# Subtest: a failed job exposes its error verbatim
-ok 1560 - a failed job exposes its error verbatim
-  ---
-  duration_ms: 0.114625
-```  
-  _excerpt - 9,719 characters of output in total_
-
-- `npm test 2>&1 | tail -20`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/515fad568a1144fda77b4350f74c9b5c.90097.d6e9217c && { [ -e web/node_modules ] || ln -sfn "$(dirname "$(git rev-parse --git-common-dir)")/web/node_modules" web/node_modules; } && cd web && npm test 2>&1 | tail -20`
 
 ```
 ...
 # Subtest: a close during an in-flight snapshot cancels it and restarts backoff at 1s
 ok 1595 - a close during an in-flight snapshot cancels it and restarts backoff at 1s
   ---
-  duration_ms: 0.196917
+  duration_ms: 0.23375
   ...
 # Subtest: stop() is idempotent and leaves no pending timer or open socket
 ok 1596 - stop() is idempotent and leaves no pending timer or open socket
   ---
-  duration_ms: 0.221458
+  duration_ms: 0.214167
+  ...
+1..1596
+# tests 1596
+# suites 0
+# pass 1594
+# fail 2
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 649.873166
+```
+
+- `npm test 2>&1 | grep -n -B3 "^not ok"`
+
+```
+1715-  duration_ms: 0.174334
+1716-  ...
+1717-# Subtest: the built bundle carries no landed-override strings
+1718:not ok 343 - the built bundle carries no landed-override strings
+--
+2781-  duration_ms: 0.061042
+2782-  ...
+2783-# Subtest: the built board bundle retains the label map (weaker than: the board is wired up — see KNOWN LIMIT above)
+2784:not ok 553 - the built board bundle retains the label map (weaker than: the board is wired up — see KNOWN LIMIT above)
+```
+
+- `npm test 2>&1 | sed -n '1700,1720p'`
+
+```
+duration_ms: 0.6285
+  ...
+# Subtest: a blank reason submits as null, a typed reason is trimmed and clamped to 500
+ok 340 - a blank reason submits as null, a typed reason is trimmed and clamped to 500
+  ---
+  duration_ms: 0.124625
+  ...
+# Subtest: clampReason matches submitCancel's own clamping
+ok 341 - clampReason matches submitCancel's own clamping
+  ---
+  duration_ms: 1.384084
+  ...
+# Subtest: submitCancel reports ok:false on a rejected api call, never throws
+ok 342 - submitCancel reports ok:false on a rejected api call, never throws
+  ---
+  duration_ms: 0.17375
+  ...
+# Subtest: the built bundle carries no landed-override strings
+not ok 343 - the built bundle carries no landed-override strings
+  ---
+  duration_ms: 0.369875
+```
+
+- `npm test 2>&1 | sed -n '1720,1760p'`
+
+```
+duration_ms: 0.35125
+  location: '/Users/eyalgolan/.<redacted>/worktrees/515fad568a1144fda77b4350f74c9b5c.90097.d6e9217c/web/src/cancelFlow.test.mjs:62:1'
+  failureType: 'testCodeFailure'
+  error: 'web/dist/assets is missing — run `npm run build` in web/ first'
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  operator: 'fail'
+  stack: |-
+    TestContext.<anonymous> (file:///Users/eyalgolan/.<redacted>/worktrees/515fad568a1144fda77b4350f74c9b5c.90097.d6e9217c/web/src/cancelFlow.test.mjs:64:12)
+    Test.runInAsyncScope (node:async_hooks:206:9)
+    Test.run (node:internal/test_runner/test:796:25)
+    Test.processPendingSubtests (node:internal/test_runner/test:526:18)
+    Te
+[... 584 of 1,723 characters omitted from the middle ...]
+ longer one
+ok 346 - the token-variable cap fits a max-length derived var but clips a longer one
+  ---
+  duration_ms: 0.132791
+  ...
+# Subtest: non-strings pass through so null/undefined render as nothing
+ok 347 - non-strings pass through so null/undefined render as nothing
+  ---
+  duration_ms: 0.039792
+  ...
+# Subtest: the distinguishing number moves to the front
+ok 348 - the distinguishing number moves to the front
+  ---
+  duration_ms: 0.836459
+  ...
+```  
+  _excerpt - 1,719 characters of output in total_
+
+- `cd /Users/eyalgolan/.<redacted>/worktrees/515fad568a1144fda77b4350f74c9b5c.90097.d6e9217c/web && npm test 2>&1 | tail -15`
+
+```
+...
+# Subtest: stop() is idempotent and leaves no pending timer or open socket
+ok 1596 - stop() is idempotent and leaves no pending timer or open socket
+  ---
+  duration_ms: 0.285208
   ...
 1..1596
 # tests 1596
@@ -221,28 +156,109 @@ ok 1596 - stop() is idempotent and leaves no pending timer or open socket
 # cancelled 0
 # skipped 0
 # todo 0
-# duration_ms 450.073958
+# duration_ms 553.660458
+```
+
+- `uv run pytest tests/test_readme_claims.py -q -k citation 2>&1 | tail -30`
+
+```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+Using CPython 3.12.13
+Creating virtual environment at: .venv
+   Building no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/515fad568a1144fda77b4350f74c9b5c.90097.d6e9217c
+      Built no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/515fad568a1144fda77b4350f74c9b5c.90097.d6e9217c
+Installed 68 packages in 419ms
+......................s..........................s.......                [100%]
+55 passed, 2 skipped, 88 deselected in 6.17s
+```
+
+- `uv run pytest tests/test_readme_claims.py -q 2>&1 | tail -15`
+
+```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+............................s.s.s.s.s.s.s.s.s.s......................... [ 49%]
+.....................s..........................s....................... [ 99%]
+.                                                                        [100%]
+133 passed, 12 skipped in 2.36s
+```
+
+- `cd /Users/eyalgolan/.<redacted>/worktrees/515fad568a1144fda77b4350f74c9b5c.90097.d6e9217c/desktop && npm test 2>&1 | tail -12`
+
+```
+---
+  duration_ms: 0.116875
+  ...
+1..410
+# tests 410
+# suites 0
+# pass 409
+# fail 0
+# cancelled 0
+# skipped 1
+# todo 0
+# duration_ms 94225.103167
+```
+
+- `uv run pytest tests/ -m repoguard -q 2>&1 | tail -20`
+
+```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+.....................................s.s.s.s.s.s.s.s.s.s................ [ 46%]
+..............................s..........................s.............. [ 93%]
+..........                                                               [100%]
+=============================== warnings summary ===============================
+src/<redacted>/testing/test_layers.py:35
+  /Users/eyalgolan/.<redacted>/worktrees/515fad568a1144fda77b4350f74c9b5c.90097.d6e9217c/src/<redacted>/testing/test_layers.
+[... 158 of 1,297 characters omitted from the middle ...]
+src/<redacted>/testing/test_layers.py:89
+  /Users/eyalgolan/.<redacted>/worktrees/515fad568a1144fda77b4350f74c9b5c.90097.d6e9217c/src/<redacted>/testing/test_layers.py:89: PytestCollectionWarning: cannot collect test class 'TestPlan' because it has a __init__ constructor (from: tests/test_test_layers.py)
+    @dataclass
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+142 passed, 13 skipped, 11678 deselected, 2 warnings in 27.49s
+```  
+  _excerpt - 1,283 characters of output in total_
+
+- `cd /Users/eyalgolan/.<redacted>/worktrees/515fad568a1144fda77b4350f74c9b5c.90097.d6e9217c/desktop && npm test 2>&1 | tail -10 echo "=== web ===" cd /Users/eyalgolan/.<redacted>/worktrees/515fad568a1144fda77b4350f74c9b5c.90097.d6e9217c/web && npm test 2>&1 | tail -10`
+
+```
+...
+1..410
+# tests 410
+# suites 0
+# pass 409
+# fail 0
+# cancelled 0
+# skipped 1
+# todo 0
+# duration_ms 94256.187625
+=== web ===
+  ...
+1..1596
+# tests 1596
+# suites 0
+# pass 1596
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 453.711292
 ```
 
 
 ### build
-- `npm ci 2>&1 | tail -15 && npm run build 2>&1 | tail -30`
+- `npm run build 2>&1 | tail -20`
 
 ```
-added 310 packages, and audited 311 packages in 1s
-
-128 packages are looking for funding
-  run `npm fund` for details
-
-found 0 vulnerabilities
-dist/assets/-F6qfjptAgt5VM-kVkqdyU8n3vAOwl1FgsAXHNlYzg-hCF3fsXQ.woff2            4.32 kB
-dist/assets/-F6qfjptAgt5VM-kVkqdyU8n3twJwl1FgsAXHNlYzg-CU9Da17h.woff2            4.34 kB
-dist/assets/-F63fjptAgt5VM-kVkqdyU8n1iIq131nj-otFQ-BKehAWor.woff2                4.35 kB
-dist/assets/-F6pfjptAgt5VM-kVkqdyU8n1ioa2ndgregdFOFh-D3ijpaJE.woff2              4.42 kB
-dist/assets/-F6pfjptAgt5VM-kVkqdyU8n1ioa2HdgregdFOFh-BgiqLiQn.woff2              5.13 kB
-dist/assets/-F63fjptAgt5VM-kVkqdyU8n1isq131nj-otFQ-DkeVBss5.woff2                5.48 kB
-dist/a
-[... 1,542 of 2,681 characters omitted from the middle ...]
+dist/assets/-F63fjptAgt5VM-kVkqdyU8n1iEq131nj-otFQ-C05TWSE2.woff2                8.86 kB
+dist/assets/-F6qfjptAgt5VM-kVkqdyU8n3vAOwl5FgsAXHNlYzg-BRMVj9uZ.woff2            8.96 kB
+dist/assets/-F6pfjptAgt5VM-kVkqdyU8n1ioa23dgregdFOFh-DjXFaAjD.woff2              9.79 kB
+dist/assets/-F63fjptAgt5VM-kVkqdyU8n1i8q131nj-o-BJoXLJYV.woff2                  10.05 kB
+dist/assets/-F6qfjptAgt5VM-kVkqdyU8n3twJwlBFgsAXHNk-C820gu2e.woff2              10.06 kB
+dist/assets/-F6qfjptAgt5VM-kVkqdyU8n3vAOwlBFgsAXHNk-DpGnXj3s.woff2              10.12 kB
+dist/assets/-F6pfjptAgt5VM-kVkqdyU8n1ioa1XdgregdFA-BkxdLi3-.woff2               11.57 kB
+dist/assets/rP2Wp2ywxg089UriCZaSExdy3sGt9zz86GPwyKK58UfivUw4
+[... 509 of 1,648 characters omitted from the middle ...]
 
 dist/assets/index-CjkfTM_a.js                                                  712.60 kB │ gzip: 217.79 kB
 
@@ -250,14 +266,15 @@ dist/assets/index-CjkfTM_a.js                                                  7
 - Using dynamic import() to code-split the application
 - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
 - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
-✓ built in 1.22s
+✓ built in 1.83s
 ```  
-  _excerpt - 2,681 characters of output in total_
+  _excerpt - 1,648 characters of output in total_
 
 
 **Not verified:** everything below is a limit of this section, listed whether or not it bit this attempt.
 
 - no command recognised as e2e, http, typecheck, lint was recorded
+- 3 commands listed above are shown without their captured output: only the 12 most recent carry it
 - an entry shows that a command LINE was submitted to the shell and what came back - never that the check recognised inside it RAN, and never that it was the RIGHT command: `pytest -k test_nothing` prints a clean run, and a recorded command line may name a check the shell never reached yet is still counted - TEN SHAPES WERE DRIVEN against bash 3.2.57 with the check replaced by a marker-printing stub and the marker was absent in every one: a failed `&&`, a taken `||`, an `exit`, an `exec`, an `exit` inside a `source`d script, a syntax error that aborts the REST of the line, a multi-line `if false`, a `case` that matches nothing, `set -e` aborting an earlier command, and `set -u` on an unset variable; that list is MEASURED, NOT EXHAUSTIVE, because this module is not bash, so a kind this section does NOT list as missing is a kind some recorded line named, which is not the same as a kind that ran
 - the text is the coder's: the session chose the command string and, through `echo`/`printf`, can choose the output too. Both are shown as inert text, and no entry ASSERTS a pass, a fail, or an exit status - `pytest -q | tail -3` exits with `tail`'s status, `Error: Exit code 1` is a line IN THE OUTPUT, and where the harness reported a timeout or an interruption instead of output that report is appended to the captured text in square brackets. Read the output
 - recognition reads the command line ONLY - it never looks inside what a command runs, so `bash -c 'uv run pytest -q'` leaves no receipt at all while `make test` leaves one that names `make` and not the recipe it ran; and the other way, a check merely NAMED in a heredoc body, or in a quoted string that happens to spell a shell separator, can be recorded as though it ran
