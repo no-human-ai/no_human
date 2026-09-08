@@ -157,7 +157,7 @@ from .pricing import (
 )
 from .pricing import weighted_tokens as _weighted_tokens
 from .pr_evidence import PrEvidence, visible_chars
-from .task import IllegalTransition, Task, TaskSpec, TaskStatus
+from .task import IllegalTransition, Task, TaskSpec, TaskStatus, can_transition
 from .worktree import _LIVE_WORKTREES, reset_agent_workspace, teardown_worktree
 
 log = logging.getLogger("no_human.orchestrator")
@@ -4442,28 +4442,128 @@ class Orchestrator:
             return False
         return True
 
-    async def _send_back_resume_round(self, task: Task) -> bool:
-        """Is the round in progress a resume of a human/reviewer SEND-BACK?
+    async def _send_back_resume_round(self, task: Task, *, repo: GitRepo) -> bool:
+        """Is the round in progress a resume of a human/reviewer SEND-BACK that
+        the branch already satisfies — i.e. no commit followed the feedback?
 
-        Round-scoped on purpose: ``send_back_feedback`` is append-only and never
-        cleared, so presence alone would make every later attempt of the loop
-        look like a send-back resume. The newest entry must have arrived AFTER
-        the previous attempt row started — i.e. a human sent the work back
-        between that attempt and this one.
+        An earlier version compared the newest ``send_back_feedback["at"]``
+        against the PREVIOUS ATTEMPT's ``started_at``. That does not cover
+        the incident it was written for: task 82644133's send-back (00:06:05)
+        was consumed by attempt 6 (started 00:06:31, failed post-review), and
+        the zero-diff round was attempt 7 (started 00:24:44) — the feedback
+        is OLDER than attempt 7's own predecessor's start, so "feedback newer
+        than the previous attempt's start" reads False and the round still
+        escalates. It also compared the two timestamps as PLAIN STRINGS
+        across formats that do not sort lexically the same as
+        chronologically: ``send_back_feedback`` entries are stamped
+        ``datetime.now(timezone.utc).isoformat()`` (``...T...+00:00``) while
+        ``attempts.started_at`` is SQLite ``datetime('now')`` (``... ...``, a
+        space, no offset) — ``'T' > ' '`` in ASCII, so any feedback on the
+        same UTC date as the newest prior attempt compares GREATER
+        regardless of actual order (db.py's own hazard note, ~4036-4040).
+
+        The rule here instead asks whether the branch already carries
+        everything pushed after the feedback arrived: the newest
+        ``send_back_feedback`` entry's ``at`` must be strictly newer than the
+        BRANCH HEAD's committer time. If no commit followed the feedback,
+        this round's zero diff is not a fresh failure — the branch was
+        already correct when the human/reviewer sent it back. Both
+        timestamps are PARSED (``_parse_iso``, ``datetime.fromisoformat``),
+        never compared as strings, so the two formats (and a UTC-day
+        boundary) always compare chronologically. Fails closed (returns
+        False) on anything unparseable or missing — an unreadable signal
+        must never be read as "resume".
         """
         feedback = (task.context or {}).get("send_back_feedback") or []
         if not feedback or not isinstance(feedback[-1], dict):
             return False
-        feedback_at = str(feedback[-1].get("at") or "")
-        if not feedback_at:
+        feedback_at = _parse_iso(str(feedback[-1].get("at") or ""))
+        if feedback_at is None:
             return False
-        rows = await self.store.list_attempts(task.id)
-        current_id = getattr(self, "_active_attempt_id", None)
-        prior = [row for row in rows if row.get("id") != current_id]
-        if not prior:
+        head_at = _parse_iso(repo._run("log", "-1", "--format=%cI", check=False))
+        if head_at is None:
             return False
-        prev_started_at = max(str(row.get("started_at") or "") for row in prior)
-        return feedback_at > prev_started_at
+        return feedback_at > head_at
+
+    async def _land_no_changes_needed(
+        self, task: Task, *, repo: GitRepo, attempt_id: str, result: AgentResult,
+    ) -> TaskOutcome | None:
+        """Land a send-back-resume round that produced zero diff as "no
+        changes needed", or return None to let the caller's ordinary
+        failure/escalation path run.
+
+        Fires only when ALL of: (1) `_send_back_resume_round` — the branch
+        already carries everything pushed after the newest send-back
+        feedback; (2) an existing PR to return the human to
+        (`resolve_task_pr`) — with no PR there is nothing to await approval
+        on; (3) `AWAITING_APPROVAL` is reachable from the task's CURRENT
+        status via the state machine's legal edges (checked before any
+        write, so a refusal leaves no half-landed row). Neither guard is
+        redundant: hardcoding (1) True still fails a first attempt with no
+        PR to return to; hardcoding (2) True still fails a send-back resume
+        with no PR — each is covered by its own isolating test.
+
+        RULE: never ``validate=False``. ``IMPLEMENTING -> AWAITING_APPROVAL``
+        (and ``REVIEWING -> AWAITING_APPROVAL``) are not legal single edges
+        (`core/task.py::_allowed_transitions`) — the normal PR-open path
+        (`_advance_after_review`) reaches `AWAITING_APPROVAL` through the
+        SAME validated main-flow edges used here: a hop to `TESTING` first
+        (legal from IMPLEMENTING/REVIEWING and every off-ramp-resumable
+        state), then `TESTING -> AWAITING_APPROVAL` (legal, main flow). No
+        `mechanical_round` stamp either — that flag means a post-PASS
+        MECHANICAL round (`_mechanical_round`) and exempts the round's token
+        spend from the lifetime budget (db.py ~2884-2892); this round is a
+        normal, budget-counted attempt that happens to need no new commit,
+        recorded with its own `no_changes_needed` context marker instead.
+        """
+        if not await self._send_back_resume_round(task, repo=repo):
+            return None
+        pr = await resolve_task_pr(self.store, task)
+        if not pr.url:
+            return None
+
+        target = TaskStatus.AWAITING_APPROVAL
+        needs_testing_hop = False
+        if task.status is not target:
+            if can_transition(task.status, target):
+                pass
+            elif can_transition(task.status, TaskStatus.TESTING):
+                needs_testing_hop = True
+            else:
+                return None  # unreachable legally -> fail closed, no write made
+
+        feedback = (task.context or {}).get("send_back_feedback") or []
+        feedback_at = (
+            feedback[-1].get("at")
+            if feedback and isinstance(feedback[-1], dict) else None
+        )
+        detail = (
+            "no changes needed — the branch already satisfies the "
+            "send-back feedback; PR unchanged, awaiting your review"
+        )
+        await self.store.update_attempt(
+            attempt_id, status="succeeded", failure_reason=None, pr_url=pr.url,
+        )
+        merged = await self.store.merge_context(task.id, {
+            "no_changes_needed": {
+                "at": _now(),
+                "feedback_at": feedback_at,
+                "pr_url": pr.url,
+                "agent_text": (result.final_text or "").strip()[:2000],
+            },
+        })
+        task.context = merged
+        self.emit("no_changes_needed", detail, pr_url=pr.url)
+
+        if task.status is not target:
+            if needs_testing_hop:
+                if await self.store.set_status(task, TaskStatus.TESTING) is None:
+                    return None
+            if await self.store.set_status(task, target) is None:
+                return None
+
+        self.emit("state", detail, status=target.value)
+        return TaskOutcome(task, status=target, pr_url=pr.url, detail=detail)
 
     async def _budget_frozen_by_pass(self, task: Task) -> bool:
         """Is lifetime-budget enforcement frozen for the round about to run?
@@ -5806,49 +5906,10 @@ class Orchestrator:
                             attempt_n=attempt_n, result=result, base=base,
                         )
             if resumed_commit is None:
-                # A round resumed from a human/reviewer send-back that lands
-                # zero diff is not the same failure as a first attempt going
-                # nowhere — the branch may already satisfy the feedback (the
-                # human's PR is already correct). Only take this exit when
-                # there is an existing PR to return the human to; with no PR
-                # there is nothing to await approval on, so the ordinary
-                # failure path below still runs (fail closed).
-                if await self._send_back_resume_round(task):
-                    pr = await resolve_task_pr(self.store, task)
-                    if pr.url:
-                        feedback = (task.context or {}).get(
-                            "send_back_feedback") or []
-                        feedback_at = (
-                            feedback[-1].get("at")
-                            if feedback and isinstance(feedback[-1], dict)
-                            else None
-                        )
-                        detail = (
-                            "no changes needed — the branch already "
-                            "satisfies the send-back feedback; PR unchanged, "
-                            "awaiting your review"
-                        )
-                        await self.store.update_attempt(
-                            attempt_id, status="succeeded", failure_reason=None,
-                            mechanical_round=1, pr_url=pr.url,
-                        )
-                        merged = await self.store.merge_context(task.id, {
-                            "no_changes_needed": {
-                                "at": _now(),
-                                "feedback_at": feedback_at,
-                                "pr_url": pr.url,
-                                "agent_text": (result.final_text or "").strip()[:2000],
-                            },
-                        })
-                        task.context = merged
-                        self.emit("no_changes_needed", detail, pr_url=pr.url)
-                        await self.store.set_status(
-                            task, TaskStatus.AWAITING_APPROVAL, validate=False)
-                        self.emit("state", detail, status="awaiting_approval")
-                        return TaskOutcome(
-                            task, status=TaskStatus.AWAITING_APPROVAL,
-                            pr_url=pr.url, detail=detail,
-                        )
+                landed = await self._land_no_changes_needed(
+                    task, repo=repo, attempt_id=attempt_id, result=result)
+                if landed is not None:
+                    return landed
                 detail = _NO_CHANGES_DETAIL
                 # Keep what the agent SAID. Task d9d458b5 explained three times
                 # that the work was already committed and that it would not
