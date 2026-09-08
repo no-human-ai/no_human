@@ -6,6 +6,11 @@ All notable changes to no_human. The format follows
 
 ## [Unreleased]
 
+## [0.2.2] — 2026-09-08
+
+Fixes for the Windows and Linux first-run findings that followed 0.2.1, and for
+the defects in no_human's own attempt loop that were costing retries.
+
 ### Fixed
 - **The board can now tell you about an update at all, and a late-mounting
   window no longer misses one.** The startup check's *outcome* was never kept
@@ -41,6 +46,52 @@ All notable changes to no_human. The format follows
   `nh:claude-import-token` IPC channel and its only spawn site
   (`runClaudeSetupToken`) are removed entirely rather than left registered
   but unreachable.
+- **"Check for updates" errors are one sentence with a collapsed Details
+  element.** A raw HttpError dump with request ids no longer appears; genuine
+  offline errors say "Check your internet connection and try again.", a
+  missing update feed says so, anything else says the check failed. (add2ad22)
+- **A proxy failure on "Check for updates" says "Could not reach the update
+  server through your network or proxy settings."** instead of the generic
+  "The update check failed; try again later." (4aaac4e0)
+- Desktop tests take OS-assigned ports, and the failed-spawn test asserts
+  the mechanism instead of a wall-clock bound, so the Windows CI job no
+  longer fails on a port collision or a slow cold run. (b694fcf7, 154960f2)
+- **The CI build's Windows and Linux artefacts include the update-feed files
+  (`latest.yml`, `latest-linux.yml`) that the in-app "Check for updates"
+  fetches.** A release without them failed every check on those platforms
+  with HttpError 404; auto-install stays off on those unsigned builds (they
+  stamp `nhCanAutoUpdate` false; the signed macOS build is unchanged).
+  (72ca3a0b)
+
+### Attempt loop (why tasks retried or escalated)
+- **Task worktrees can declare build prerequisites** (`setup_cmds` in the
+  project profile) so node suites no longer fail on a missing `node_modules`
+  or an unbuilt `web/dist`. (5760cef4, 53c9931a)
+- **A node suite that cannot start because a prerequisite is missing
+  escalates as an environment error instead of opening a PR without test
+  evidence; a failing test the change owns is always billed, even when its
+  text matches an invocation-error pattern.** (e9dd5e07)
+- **A send-back that needs no change returns the task to approval** instead
+  of failing the attempt and re-dispatching from scratch. (75335986)
+- **Delivery fast-forwards a task branch whose local ref lags the reviewed
+  commit, and never delivers an older attempt's review stamp over the commit
+  HEAD sits at.** (b21a507e)
+- **A retry's branch is rebased onto a stale base when the gap is small but
+  touches the branch's own files**, not only past the five-commit threshold;
+  the regenerated `RELEASE_MANIFEST.txt` never counts as an overlap. (ce4d4a73)
+- **The coder is told when an overlap-triggered rebase did not complete**,
+  naming the files both sides changed. (e10c2647)
+- **A resume onto an unreviewed WIP checkpoint routes its diff to the full
+  review** instead of failing the attempt or escalating with a false
+  "already implemented?" hypothesis when the resumed coder adds nothing.
+  (b9fb6c80)
+- **The structural-budget conflict resolver loads the scanner it needs**, so
+  a budget-entry merge conflict is resolved in-run instead of escalating
+  with "could not run the scanner". (c2786983)
+- **The in-run supervisor honours the latest human send-back** and never
+  lets a machine-generated entry evict it. (c27ae704)
+- The KNOWN_ISSUES traceback is cited by symbol, not line number, so
+  unrelated edits stop turning the citation test red. (bea67855)
 
 ## [0.2.1] — 2026-09-07
 

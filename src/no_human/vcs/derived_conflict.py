@@ -844,12 +844,12 @@ def _take_budget_hunks(worktree_path: Path, branch_tip_sha: str,
     ours_proc = _sh(["git", "show", f"{branch_tip_sha}:{BUDGET_TEST_PATH}"],
                     cwd=worktree_path)
     ours_blob_text = ours_proc.stdout if ours_proc.returncode == 0 else ""
-    measured = measure(str(worktree_path), ours_blob_text)
+    measured, why = measure(str(worktree_path), ours_blob_text)
     if measured is None:
         return DerivedResolution(
             ok=False, step="budget",
             detail=_cap(f"could not run the {BUDGET_TEST_PATH} scanner "
-                        "against the merged tree")
+                        f"against the merged tree: {why}")
         ), []
     resolved = resolve_hunks(text, measured)
     if resolved is None:

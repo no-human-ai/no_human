@@ -127,6 +127,24 @@ def _make_overlapping_pr_branch(work, name, n):
     _git(work, "checkout", "-q", name)
 
 
+def _make_conflicting_overlap_branch(work, name):
+    """A 1-commit gap where both sides rewrite the SAME line of `calc.py`
+    differently, so the rebase attempted for the overlap genuinely CONFLICTS
+    — unlike `_make_overlapping_pr_branch`, whose edits are on disjoint lines
+    and apply cleanly. This is the case the overlap detection was meant to
+    catch (#141) but whose conflict outcome ce4d4a73 never narrated: the
+    coder must still be told, by name, which file collided."""
+    _git(work, "checkout", "-q", "-b", name)
+    (work / "calc.py").write_text("def add(a, b):\n    return a + b + 1\n")
+    _git(work, "add", "-A")
+    _git(work, "commit", "-m", "branch rewrites the return line")
+    _git(work, "checkout", "-q", "main")
+    (work / "calc.py").write_text("def add(a, b):\n    return b + a\n")
+    _git(work, "add", "-A")
+    _git(work, "commit", "-m", "main rewrites the return line differently")
+    _git(work, "checkout", "-q", name)
+
+
 async def _attempt(repo, tmp_path, store, monkeypatch, ctx, *, attempt_n=1):
     """Drive the REAL `_run_attempt` through the branch decision and
     `_refresh_stale_base`, then stop before the coder session."""
@@ -278,6 +296,51 @@ async def test_a_small_gap_that_touches_the_branchs_own_files_is_rebased(
     assert staleness["overlapping_files"] == ["calc.py"], (
         "the record must say WHY a below-threshold gap was acted on"
     )
+
+
+@pytest.mark.asyncio
+async def test_a_conflicting_overlap_rebase_still_tells_the_coder(
+    repo, tmp_path, store, monkeypatch,
+):
+    """The exact case #141 was filed about, closed by ce4d4a73, and reopened
+    by this follow-up: a 1-commit gap overlapping the branch's own files is
+    detected and a rebase is attempted, but the rebase itself CONFLICTS. The
+    tree must come back clean, the record and event must carry
+    `overlapping_files`, and the coder-facing preamble — which ce4d4a73 still
+    gated on the bare `commits_behind >= threshold` and so said nothing at
+    all for this case — must name the file that collided."""
+    assert BASE_STALENESS_REBASE_THRESHOLD == 5
+    _make_conflicting_overlap_branch(repo, "no-human/t1")
+    ctx = {"pr_branch": "no-human/t1"}
+
+    t, events, attempt = await _attempt(repo, tmp_path, store, monkeypatch, ctx)
+    # `_attempt` patches `_build_implement_prompt` to stop the attempt early;
+    # undo that before calling the real method below.
+    monkeypatch.undo()
+
+    assert attempt["failure_reason"] is None
+
+    evs = _staleness_events(events)
+    assert len(evs) == 1
+    assert evs[0]["commits_behind"] == 1
+    assert evs[0]["rebased"] is False
+    assert evs[0]["overlapping_files"] == ["calc.py"]
+
+    assert t.context["base_staleness"] == {
+        "commits_behind": 1, "was_behind": 1, "rebased": False,
+        "overlapping_files": ["calc.py"],
+    }
+
+    status = subprocess.run(
+        ["git", "status", "--porcelain=v1"], cwd=repo,
+        capture_output=True, text=True, check=True,
+    ).stdout
+    assert status == "", f"a conflict must not leave a rebase in progress: {status!r}"
+
+    prompt = _orch()._build_implement_prompt(_task(context=t.context), "/tmp/repo")
+    assert "1 COMMIT(S) BEHIND" in prompt
+    assert "did not complete" in prompt.lower()
+    assert "calc.py" in prompt
 
 
 # --------------------------------------------------------------------------- #

@@ -44,7 +44,7 @@ from ..agent.claude_backend import (
     dewrap as _dewrap,
 )
 from ..agent.scope_guard import SCRATCH_DIR, is_agent_owned
-from ..agent.supervisor import SupervisorHook
+from ..agent.supervisor import SEND_BACK_UNREADABLE, SupervisorHook
 from ..agent.verification_receipts import KINDS
 from ..blockers import (
     CONSUMED_HUMAN_PROVENANCE,
@@ -928,8 +928,9 @@ def _parse_iso(value: str | None) -> datetime | None:
 #: a test main had already deleted. 5 is the smallest gap that has actually
 #: cost an attempt; 1 would rebase on nearly every retry (most gaps are noise
 #: — an unrelated commit landing on main mid-attempt), and 10 was tried and
-#: rejected because it excludes `db9da7f7` itself. Below the threshold the
-#: staleness is still measured and reported — only the rebase is gated.
+#: rejected because it excludes `db9da7f7` itself. Below the threshold a gap
+#: whose files intersect the branch's own is also rebased (`should_rebase`
+#: in `base_staleness.py`) — the count alone is not the gate.
 BASE_STALENESS_REBASE_THRESHOLD = 5
 
 
@@ -3202,7 +3203,9 @@ class Orchestrator:
         self, task: Task, repo: GitRepo, branch: str, base: str | None,
     ) -> None:
         """Measure this retry's branch against the current base; rebase past
-        `BASE_STALENESS_REBASE_THRESHOLD`.
+        `BASE_STALENESS_REBASE_THRESHOLD`, or below it when the two sides
+        touch the same files (`should_rebase`) — the record and event carry
+        `overlapping_files` so a below-threshold rebase is auditable.
 
         A retry that reuses its branch (`ctx['pr_branch']`) or resumes from a
         checkpoint meets whatever base it was cut from, forever, unless
@@ -3254,6 +3257,7 @@ class Orchestrator:
             base=base,
             commits_behind=behind,
             rebased=rebased,
+            overlapping_files=overlap,
         )
 
     def _agent_git_identity(self) -> dict[str, str]:
@@ -4533,6 +4537,144 @@ class Orchestrator:
         if failed is not None and _attempt_recency(failed) > _attempt_recency(row):
             return False
         return True
+
+    async def _send_back_resume_round(self, task: Task, *, repo: GitRepo) -> bool:
+        """Is the round in progress a resume of a human/reviewer SEND-BACK that
+        the branch already satisfies — i.e. an independent review already
+        PASSED the current HEAD after the feedback arrived?
+
+        An earlier version compared the feedback time against the BRANCH
+        HEAD's git committer date. That is False on the very incident it was
+        written for: task 82644133's send-back arrived at 00:06:05Z, attempt
+        6 then committed ``dae99c22`` at 00:19:40Z (committer date) and
+        PASSED review on it, and attempt 7 (the zero-diff round that should
+        have landed here) never moved HEAD — ``dae99c22`` is still the tip.
+        ``feedback_at (00:06:05) > head_at (00:19:40)`` is False, so that
+        rule failed closed on the exact case it exists for. Git metadata is
+        also the wrong source of truth here: a per-attempt staleness rebase
+        or any commit amend rewrites committer dates independently of when
+        the feedback or the review actually happened.
+
+        A later version read ``task.context["review_history"]`` instead.
+        That is also False on the real data: task 82644133's attempts never
+        carry a ``review_history[].at`` entry at all — that field exists on
+        no row created before this rule — so the round-3 check could never
+        have fired on the incident it names.
+
+        The rule instead reads only the ``attempts`` table: does any OTHER
+        attempt row (excluding the one running right now) carry
+        ``review_passed == 1`` on the CURRENT HEAD's ``commit_sha``, with a
+        ``started_at`` newer than the newest ``send_back_feedback`` entry?
+        ``commit_sha`` is used for commit IDENTITY only, never for a date —
+        the round-2 committer-date rule was False on the incident precisely
+        because it tried to read a date off git. Both timestamps are PARSED
+        (``_parse_iso``), never compared as strings: ``send_back_feedback``
+        entries use ``datetime.now(timezone.utc).isoformat()`` (a ``T``, an
+        offset) while ``attempts.started_at`` is SQLite ``datetime('now')``
+        (a space, no ``T``, no offset) — ``_parse_iso`` treats the naive
+        SQLite form as UTC, so the comparison is between parsed instants,
+        never strings. (``review_history[].at`` is still WRITTEN by
+        ``_append_review_history`` — it is simply no longer read here.)
+        """
+        feedback = (task.context or {}).get("send_back_feedback") or []
+        if not feedback or not isinstance(feedback[-1], dict):
+            return False
+        feedback_at = _parse_iso(str(feedback[-1].get("at") or ""))
+        if feedback_at is None:
+            return False
+        head_sha = repo.head_sha().strip()
+        if not head_sha:
+            return False
+        rows = await self.store.list_attempts(task.id)
+        current_id = getattr(self, "_active_attempt_id", None)
+        qualifying = [
+            r for r in rows
+            if r.get("id") != current_id
+            and int(r.get("review_passed") or 0) == 1
+            and str(r.get("commit_sha") or "").strip() == head_sha
+        ]
+        if not qualifying:
+            return False
+        newest = max(qualifying, key=lambda r: str(r.get("started_at") or ""))
+        started = _parse_iso(str(newest.get("started_at") or ""))
+        if started is None:
+            return False
+        return started > feedback_at
+
+    async def _land_no_changes_needed(
+        self, task: Task, *, repo: GitRepo, attempt_id: str, result: AgentResult,
+    ) -> TaskOutcome | None:
+        """Land a send-back-resume round that produced zero diff as "no
+        changes needed", or return None to let the caller's ordinary
+        failure/escalation path run.
+
+        Fires only when ALL of: (1) `_send_back_resume_round` — some OTHER
+        `attempts` row records an independent review PASS (`review_passed`)
+        on this exact HEAD's `commit_sha`, `started_at` after the newest
+        send-back feedback; (2) an existing PR to return the human to
+        (`resolve_task_pr`) — with no PR there is nothing to await approval
+        on. Neither guard is redundant: hardcoding (1) True still fails a
+        first attempt with no PR to return to; hardcoding (2) True still
+        fails a send-back resume with no PR — each is covered by its own
+        isolating test.
+
+        RULE: never ``validate=False``. `IMPLEMENTING`/`REVIEWING` ->
+        `AWAITING_APPROVAL` reaches the target through the same validated
+        main-flow edges the normal PR-open path uses: `TESTING` first, then
+        `TESTING -> AWAITING_APPROVAL` — both always legal from the states
+        this route can start in, so no reachability check is needed. No
+        commit runs on this route, so the `TESTING` hop's phase row (opened
+        by `set_status`, `db.py::_record_phase`) is closed immediately with
+        `no_tests_run` rather than left to read as a real test phase. Status
+        writes land BEFORE anything else is recorded, so a CAS refusal
+        (`set_status` returning ``None``) leaves no `succeeded` attempt row
+        and no `no_changes_needed` marker on a task that reads failed. No
+        `mechanical_round` stamp either — that flag exempts a post-PASS
+        MECHANICAL round's token spend from the lifetime budget (db.py
+        ~2884-2892); this round is a normal, budget-counted attempt that
+        happens to need no new commit.
+        """
+        if not await self._send_back_resume_round(task, repo=repo):
+            return None
+        pr = await resolve_task_pr(self.store, task)
+        if not pr.url:
+            return None
+
+        target = TaskStatus.AWAITING_APPROVAL
+        if task.status is not target:
+            if await self.store.set_status(task, TaskStatus.TESTING) is None:
+                return None
+            await self.store.close_phase(
+                task.id, "no_tests_run",
+                reason="no changes needed — no test run in this round",
+            )
+            if await self.store.set_status(task, target) is None:
+                return None
+
+        feedback = (task.context or {}).get("send_back_feedback") or []
+        feedback_at = (
+            feedback[-1].get("at")
+            if feedback and isinstance(feedback[-1], dict) else None
+        )
+        detail = (
+            "no changes needed after the send-back; the head already "
+            "passed review"
+        )
+        await self.store.update_attempt(
+            attempt_id, status="succeeded", failure_reason=None, pr_url=pr.url,
+        )
+        merged = await self.store.merge_context(task.id, {
+            "no_changes_needed": {
+                "at": _now(),
+                "feedback_at": feedback_at,
+                "pr_url": pr.url,
+                "agent_text": (result.final_text or "").strip()[:2000],
+            },
+        })
+        task.context = merged
+        self.emit("no_changes_needed", detail, pr_url=pr.url)
+        self.emit("state", detail, status=target.value)
+        return TaskOutcome(task, status=target, pr_url=pr.url, detail=detail)
 
     async def _budget_frozen_by_pass(self, task: Task) -> bool:
         """Is lifetime-budget enforcement frozen for the round about to run?
@@ -5818,6 +5960,18 @@ class Orchestrator:
                 and not branched_from_own_partial
                 else None
             )
+            # Incidents 0847f2c2 (claim terminal) and d256ae60 (silent
+            # terminal), both 2026-09-08: a wake/machine resume branching from
+            # its OWN checkpoint sets `branched_from_own_partial` above, so
+            # `resumed_commit` is still `None` even though the branch head may
+            # carry a `[WIP-BLOCKED]`/`[WIP-PARTIAL]` diff no review ever
+            # judged. Route it to the full review BEFORE the claim parse below
+            # gets a chance to burn the attempt on a subject
+            # `_already_satisfied_subject` structurally refuses, and before
+            # the silent zero-diff fall-through fails it as "no file changes"
+            # when there plainly are some.
+            if resumed_commit is None and base:
+                resumed_commit = self._route_unjudged_head(task, repo, base)
             if resumed_commit is None:
                 # A fully-cited ALREADY-SATISFIED claim is the one zero-diff
                 # completion that is not a failure: verify it against the code
@@ -5853,28 +6007,21 @@ class Orchestrator:
                             task, repo, attempt_id, exc, result=result,
                             branch=branch)
                 if claim is not None:
-                    eligible, why = self._already_satisfied_eligible(
-                        task, repo, base)
-                    if not eligible:
-                        # The branch carries a diff no completed verdict
-                        # covers. The claim is not a substitute for the review
-                        # that never finished — send the real diff through the
-                        # full gate. Never a silent downgrade: the board must
-                        # show why a claim path became a review path.
-                        self._emit_review(
-                            "already_satisfied_ineligible",
-                            "resumed attempt claims ALREADY-SATISFIED but its "
-                            f"branch head carries an unreviewed diff ({why}) "
-                            "— routing to a full independent review of the "
-                            "branch diff",
-                        )
-                        resumed_commit = repo.head_commit(base)
-                    else:
-                        return await self._gate_already_satisfied(
-                            task, repo, attempt_id, claim, branch=branch,
-                            attempt_n=attempt_n, result=result, base=base,
-                        )
+                    # Ineligibility can no longer be true here: the hoisted
+                    # `_route_unjudged_head` call above already routed every
+                    # unjudged-diff head to review before this claim was even
+                    # parsed, so whatever survives to this point is either a
+                    # no-diff claim or a head a completed review already
+                    # passed — both eligible by construction.
+                    return await self._gate_already_satisfied(
+                        task, repo, attempt_id, claim, branch=branch,
+                        attempt_n=attempt_n, result=result, base=base,
+                    )
             if resumed_commit is None:
+                landed = await self._land_no_changes_needed(
+                    task, repo=repo, attempt_id=attempt_id, result=result)
+                if landed is not None:
+                    return landed
                 detail = _NO_CHANGES_DETAIL
                 # Keep what the agent SAID. Task d9d458b5 explained three times
                 # that the work was already committed and that it would not
@@ -6354,55 +6501,19 @@ class Orchestrator:
                 },
             )
             if any_ran and not plan_result.ok:
-                from ..testing.test_layers import Gating as _Gating
-
-                # `plan_result.ok` is False iff a BLOCKING layer failed
-                # (advisory failures never flip it) — so the layer that
-                # EXPLAINS the failure is the first BLOCKING one, not merely
-                # the first layer with a bad result (an earlier advisory
-                # layer may have failed too without stopping the plan). ONE
-                # lookup feeds both stuck detection and the excerpt below, so
-                # the two can never name different layers.
-                first_blocking_failure = next(
-                    (lr for lr in plan_result.layer_results
-                     if lr.gating == _Gating.BLOCKING and lr.result
-                     and not lr.result.ok),
-                    None,
+                # Extracted to `_layered_tests_failed_outcome` (structural
+                # budget: keeps `_run_attempt` under its frozen line/CC cap —
+                # tests/test_structural_budget.py). Always returns a
+                # TaskOutcome: entering this branch is itself already
+                # terminal, either via the environment classifier or the
+                # billing path at the bottom of that method.
+                return await self._layered_tests_failed_outcome(
+                    task, plan_result=plan_result,
+                    total_passed=total_passed, total_failed=total_failed,
+                    total_errors=total_errors, failing_tests=failing_tests,
+                    attempt_id=attempt_id, repo=repo, branch=branch, base=base,
+                    test_cwd=test_cwd, commit=commit, result=result, stuck=stuck,
                 )
-                fail_output = (first_blocking_failure.result.output
-                               if first_blocking_failure else "")
-                is_stuck = stuck.record(fail_output) if fail_output else False
-                detail = f"tests failed: {plan_result.summary}"
-                if failing_tests:
-                    detail += " — " + ", ".join(failing_tests)
-                if is_stuck:
-                    self.emit("stuck", "same failure signature repeated; resetting context")
-                # The stuck note is the one-line triage summary — it must sit
-                # on the summary line, BEFORE the excerpt, or it is unreadable
-                # in every consumer that shows the head.
-                stuck_note = stuck.stuck_reason
-                if stuck_note:
-                    detail += f" — {stuck_note}"
-                elif is_stuck:
-                    detail += " — same failure signature repeated across attempts"
-                # D1.1: the ROOT CAUSE only — the first failing BLOCKING
-                # layer's own traceback_block, tail-capped to 1200 chars
-                # (same discipline as `fail_tail` below). A downstream
-                # layer's traceback (dependent on the same failure) used to
-                # be concatenated in too, uncapped (SCRUM-40 parity) — the
-                # multi-KB, root-cause-buried `failure_reason` this replaces.
-                excerpt = (getattr(first_blocking_failure.result,
-                                   "traceback_block", "")
-                           if first_blocking_failure else "")
-                if excerpt:
-                    detail += "\n" + excerpt[-1200:]
-                await self.store.update_attempt(attempt_id, status="failed", failure_reason=detail)
-                # Same handoff as the review-FAIL path above: the commit is
-                # real, coder-produced work — hand it to the next attempt.
-                await self._persist_handoff(
-                    task, result, repo, wip_sha=commit.sha if commit else "",
-                    gate="tests", gate_detail=detail, own_partial=True)
-                return TaskOutcome(task, status=TaskStatus.FAILED, detail=detail)
         else:
             # Offload the (blocking) test subprocess to a thread so concurrent tasks'
             # agent phases keep progressing on the event loop (Phase 7). The
@@ -6439,7 +6550,86 @@ class Orchestrator:
                 },
             )
             if test_result.ran and not test_result.ok:
+                # Ownership (cheap: a git-diff lookup, no test re-run) is
+                # computed BEFORE either classifier below and reused for
+                # pre-existing/flaky/billing attribution — an owned failing
+                # id (this attempt's own diff touches the failing test) must
+                # never be excused as environment just because its text
+                # happens to contain a prerequisite signature (round-2 review
+                # MAJOR-4).
+                owned = await self._owned_failing_tests(
+                    repo, base, failing_tests, cwd=test_cwd)
+                # The prerequisite signature (round 2) OWNS the missing-
+                # build-prerequisite class outright — checked UNCONDITIONALLY,
+                # ahead of `invocation_error` below, so it wins even when the
+                # same text ALSO matches `_INVOCATION_ERROR_PATTERNS` ("Cannot
+                # find module" matches both). Gating this on `not
+                # invocation_error` (as before) let the real 417-test incident
+                # — whose "Cannot find module" text sets invocation_error=True
+                # — skip the classifier entirely and fall into the base-tree
+                # check below, which reported "genuinely environmental" and
+                # let the attempt SUCCEED with a PR opened: worse than failing
+                # loud, a SILENT pass on a build-prerequisite failure
+                # (round-3 review BLOCKER). The base-tree reproduction check
+                # remains the owner only for outputs with NO prerequisite
+                # signature — `test_node_missing_deps_invocation_error_does_
+                # not_fail_attempt` (tests/test_base_tree_gate.py) has zero
+                # `not ok` lines, so `prerequisite_reason_for` returns None
+                # and it still rides that path unchanged.
+                env_outcome = await self._environment_test_failure(
+                    task, result=test_result, attempt_id=attempt_id,
+                    repo=repo, branch=branch,
+                    test_results={
+                        "ran": test_result.ran, "ok": test_result.ok,
+                        "passed": test_result.passed, "failed": test_result.failed,
+                        "errors": test_result.errors, "tamper_flag": False,
+                        "failing_tests": failing_tests,
+                    },
+                    owned_failing=owned,
+                )
+                if env_outcome is not None:
+                    return env_outcome
                 if getattr(test_result, "invocation_error", False):
+                    # `owned` (computed above, before `_environment_test_
+                    # failure`) is diff-based and independent of what the
+                    # base tree does, so it must win here too, BEFORE the
+                    # base-tree check below ever runs — checked first, same
+                    # reasoning as the unconditional prerequisite-signature
+                    # gate above it. Without this an OWNED failing id whose
+                    # text also matches `_INVOCATION_ERROR_PATTERNS` (e.g.
+                    # "Cannot find module" from a test the attempt itself
+                    # added) fell through to `_invocation_error_reproduces_
+                    # on_base`, which reports "genuinely environmental" and
+                    # let the attempt SUCCEED with a PR — silently excusing
+                    # exactly the coder-owned failure that
+                    # `_environment_test_failure` above already declined to
+                    # touch (it returns None whenever `owned_failing` is
+                    # non-empty) (round-4 review MAJOR-1).
+                    if owned:
+                        detail = (
+                            "tests failed: this change's own test(s) failed "
+                            "and also matched an invocation-error pattern — "
+                            "ownership always bills the attempt, the base "
+                            "tree is never consulted: " + ", ".join(owned)
+                        )
+                        stuck.record(test_result.output or detail)
+                        self.emit("tests", detail, ok=False,
+                                  failing_tests=failing_tests)
+                        await self.store.update_attempt(
+                            attempt_id, status="failed", failure_reason=detail,
+                            test_results={
+                                "ran": test_result.ran, "ok": False,
+                                "passed": test_result.passed,
+                                "failed": test_result.failed,
+                                "errors": test_result.errors,
+                                "tamper_flag": False,
+                                "failing_tests": failing_tests,
+                                "invocation_error": True,
+                            },
+                        )
+                        return TaskOutcome(
+                            task, status=TaskStatus.FAILED, detail=detail
+                        )
                     # B2 #4: "infrastructure" only if the BASE tree errors the
                     # same way. A coder-introduced import/collection breakage
                     # used to ride this advisory path straight into a PR with
@@ -6517,13 +6707,13 @@ class Orchestrator:
                         repo, test_cmd, base, failing_tests, cwd=test_cwd,
                         env_dependent=bool((task.config or {}).get("env_setup")),
                     )
-                    # Ownership: does THIS attempt's own diff name the failing
-                    # test function itself (added or modified, per-function not
-                    # per-file)? An owned id can never be excused as flaky or
-                    # pre-existing — the flaky/pre-existing excuses classify by
-                    # TREE, never by whether the current attempt wrote the test.
-                    owned = await self._owned_failing_tests(
-                        repo, base, failing_tests, cwd=test_cwd)
+                    # `owned` was already computed above (before the
+                    # environment-error check) and is reused here — does THIS
+                    # attempt's own diff name the failing test function itself
+                    # (added or modified, per-function not per-file)? An owned
+                    # id can never be excused as flaky or pre-existing — the
+                    # flaky/pre-existing excuses classify by TREE, never by
+                    # whether the current attempt wrote the test.
                     # `newly_failing == []` is the ONLY excuse path: the base
                     # check RAN and every failing id was already red on base. An
                     # empty `failing_tests` (unparseable red) or an inconclusive
@@ -6552,130 +6742,23 @@ class Orchestrator:
                             },
                         )
                     else:
-                        # Name the NEWLY-failing ids when the base check isolated
-                        # them (mixed run); otherwise (None → inconclusive/
-                        # fail-closed) fall back to all failing ids, byte-for-byte
-                        # the prior message — plus any owned id, which is always
-                        # billed and never excused regardless of tree evidence.
-                        attributed = _attributed_ids(failing_tests, newly_failing, owned)
-                        # ONE more piece of evidence before we bill the attempt.
-                        # The base check reads ONE run of the base tree, so for a
-                        # LOAD-DEPENDENT flake it is a coin flip: base happened to
-                        # pass → the id lands here as "newly failing" and the coder
-                        # is charged for a failure it did not cause. The tiebreaker
-                        # that does not depend on which tree got lucky is the
-                        # CHANGE tree itself — see `_flaky_on_rerun`: the ids on
-                        # their own, then the whole suite again, both here. An
-                        # owned id skips the re-run entirely: `_flaky_on_rerun` is
-                        # all-or-nothing over `attributed`, so its presence forces
-                        # FAIL regardless of what the re-run would show, and
-                        # skipping also saves the stage-2 full-suite cost.
-                        flaky = None if owned else await self._flaky_on_rerun(
-                            repo, test_cmd, attributed, cwd=test_cwd,
+                        # Extracted to `_failed_tests_outcome` (structural
+                        # budget: keeps `_run_attempt` under its frozen
+                        # line/CC cap — tests/test_structural_budget.py).
+                        # `None` means the flaky-excuse path fired (nothing
+                        # to bill) and control should fall through exactly as
+                        # it always did — only a real billing decision
+                        # returns a TaskOutcome here.
+                        outcome = await self._failed_tests_outcome(
+                            task, test_result=test_result,
+                            newly_failing=newly_failing, owned=owned,
+                            failing_tests=failing_tests, attempt_id=attempt_id,
+                            repo=repo, branch=branch, test_cmd=test_cmd,
+                            test_cwd=test_cwd, commit=commit, result=result,
+                            stuck=stuck,
                         )
-                        # The helper answers all-or-nothing by construction. This
-                        # re-checks the coverage anyway so that a future partial
-                        # answer BILLS rather than silently excusing the rest —
-                        # fail-closed is a property of the call site too.
-                        if flaky and not [t for t in attributed if t not in set(flaky)]:
-                            # Every id we were about to bill went green on the
-                            # re-run. Same excuse shape as the pre-existing block
-                            # above: the attempt is NOT failed, and the reason is
-                            # on the record in BOTH the event stream and
-                            # `test_results` — an excuse nobody can see is a
-                            # silent pass, the one thing this path must never be.
-                            note = (
-                                "tests failed, then passed on an identical "
-                                "bounded re-run — flaky on this tree, not "
-                                "attributed to this change: " + ", ".join(flaky)
-                            )
-                            self.emit("tests", note, ok=True,
-                                      failing_tests=failing_tests,
-                                      flaky_excused=flaky)
-                            await self.store.update_attempt(
-                                attempt_id,
-                                test_results={
-                                    "ran": test_result.ran, "ok": test_result.ok,
-                                    "passed": test_result.passed,
-                                    "failed": test_result.failed,
-                                    "errors": test_result.errors,
-                                    "tamper_flag": False,
-                                    "failing_tests": failing_tests,
-                                    "flaky_excused": flaky,
-                                },
-                            )
-                        else:
-                            is_stuck = stuck.record(test_result.output)
-                            detail = f"tests failed: {test_result.summary}"
-                            if attributed:
-                                detail += " — " + ", ".join(attributed)
-                            if newly_failing:
-                                detail += " (newly failing vs the base tree)"
-                            owned_attr = [t for t in attributed if t in set(owned)]
-                            if owned_attr:
-                                detail += (
-                                    " — this change's own test(s): "
-                                    + ", ".join(owned_attr)
-                                )
-                            if is_stuck:
-                                self.emit("stuck", "same failure signature repeated; resetting context")
-                            # Same ordering rule as the layered path: note before excerpt.
-                            stuck_note = stuck.stuck_reason
-                            if stuck_note:
-                                detail += f" — {stuck_note}"
-                            elif is_stuck:
-                                detail += " — same failure signature repeated across attempts"
-                            # Show tracebacks only for the ids we actually blame the
-                            # change for: on a mixed run the excerpt must not carry a
-                            # pre-existing failure's traceback, or it would contradict
-                            # the attribution line above. When the base check was
-                            # inconclusive (newly_failing is None → all ids blamed)
-                            # keep the full block, byte-for-byte the prior behaviour.
-                            # An owned id must always keep its traceback even when
-                            # newly_failing narrowed the set some other way.
-                            excerpts = getattr(test_result, "traceback_excerpts", {}) or {}
-                            if owned:
-                                keep = set(attributed)
-                                excerpts = {k: v for k, v in excerpts.items() if k in keep}
-                            elif newly_failing:
-                                keep = set(newly_failing)
-                                excerpts = {k: v for k, v in excerpts.items() if k in keep}
-                            excerpt_block = runner.render_traceback_excerpts(excerpts)
-                            if excerpt_block:
-                                detail += "\n" + excerpt_block
-                            if owned_attr:
-                                self.emit(
-                                    "tests",
-                                    "tests failed on test(s) this change added or "
-                                    "modified — not excusable as flaky or "
-                                    "pre-existing: " + ", ".join(owned_attr),
-                                    ok=False,
-                                    failing_tests=failing_tests,
-                                    owned_failures=owned_attr,
-                                )
-                                await self.store.update_attempt(
-                                    attempt_id,
-                                    status="failed",
-                                    failure_reason=detail,
-                                    test_results={
-                                        "ran": test_result.ran, "ok": test_result.ok,
-                                        "passed": test_result.passed,
-                                        "failed": test_result.failed,
-                                        "errors": test_result.errors,
-                                        "tamper_flag": False,
-                                        "failing_tests": failing_tests,
-                                        "owned_failures": owned_attr,
-                                    },
-                                )
-                            else:
-                                await self.store.update_attempt(attempt_id, status="failed", failure_reason=detail)
-                            # Same handoff as the other two gate-failure sites:
-                            # the commit is real, coder-produced work — hand it
-                            # to the next attempt instead of discarding it.
-                            await self._persist_handoff(
-                                task, result, repo, wip_sha=commit.sha if commit else "",
-                                gate="tests", gate_detail=detail, own_partial=True)
-                            return TaskOutcome(task, status=TaskStatus.FAILED, detail=detail)
+                        if outcome is not None:
+                            return outcome
 
         # --- CI (if configured): push branch first, then trigger pipeline ---
         if self.ci_runner is None:
@@ -10530,13 +10613,12 @@ class Orchestrator:
                 lines.append(f"  - {ans[:400]}")
         return "\n".join(lines)
 
-    def _passing_review_shas(self, task: Task) -> set[str]:
-        """Every sha a PASSing review round stamped into ``review_history``.
-
-        Factored out of the parsing `_already_satisfied_eligible` already did
-        (kept there untouched — see that method's docstring) so
-        `_assert_delivery_sha` can reuse the same tolerant parsing without
-        depending on that method's orphan-recovery-only gating.
+    def _review_history_records(self, task: Task) -> list[dict]:
+        """Tolerant parse of ``task.context["review_history"]`` into a list
+        of dicts, in list order (oldest round first, newest last) — the
+        same tolerant parsing `_already_satisfied_eligible` already did
+        (kept there untouched — see that method's docstring), factored out
+        so `_passing_review_shas_in_order` can reuse it.
         """
         history = (task.context or {}).get("review_history")
         if isinstance(history, str):
@@ -10547,13 +10629,138 @@ class Orchestrator:
                 history = None
         if not isinstance(history, list):
             history = []
-        return {
-            str(rec.get("sha")).strip()
-            for rec in history
-            if isinstance(rec, dict)
-            and rec.get("passed") is True
-            and str(rec.get("sha") or "").strip()
-        }
+        return [rec for rec in history if isinstance(rec, dict)]
+
+    def _passing_review_shas_in_order(self, task: Task) -> list[str]:
+        """Every sha a PASSing review round stamped into ``review_history``,
+        oldest to newest by list index — the same order `_append_review_history`
+        appends in, which is also the order rounds actually ran (this field
+        is task-lifetime, so a PREVIOUS attempt's PASS stamp can still be
+        present here). De-duplicated, keeping each sha's LAST occurrence so a
+        sha stamped again in a later round sorts as newest.
+        """
+        seen: dict[str, None] = {}
+        for rec in self._review_history_records(task):
+            if rec.get("passed") is True:
+                sha = str(rec.get("sha") or "").strip()
+                if sha:
+                    seen.pop(sha, None)
+                    seen[sha] = None
+        return list(seen)
+
+    def _passing_review_shas(self, task: Task) -> set[str]:
+        """Every sha a PASSing review round stamped into ``review_history``.
+
+        Set form of `_passing_review_shas_in_order`, for callers that only
+        need membership. `_ahead_reviewed_candidate` doesn't consult list
+        order either — after the `head_sha` preference, it picks by DAG
+        ancestry (a candidate that is a strict ancestor of another is
+        superseded), not by which round appended first; `_passing_review_
+        shas_in_order`'s order only matters to its own de-dup (a sha stamped
+        again in a later round keeps that later position).
+        """
+        return set(self._passing_review_shas_in_order(task))
+
+    def _reconcile_remote_branch(
+        self, repo, branch: str, target: str, *, human_gated_resume: bool,
+    ) -> None:
+        """Fetch `branch`'s LIVE remote tip and reconcile it with `target`
+        (a sha already proven to be the reviewed commit) before delivery
+        proceeds to push.
+
+        The fetch (`fetch_remote_branch_sha`) is a network read that never
+        trusts `refs/remotes/<remote>/<branch>` — see that method's
+        docstring: it is a forward-looking divergence guard, not the fix for
+        the delivery-refusal incidents (those were a LOCAL branch-ref lag —
+        see `fast_forward_local_branch`'s docstring — and this method's
+        network read was never in that path). Three outcomes:
+
+        * remote tip is `None` (no remote / never pushed / unreachable) or
+          already equals `target` — nothing to do, fail open exactly like
+          today's behaviour when there is nothing to compare against.
+        * remote tip is an ancestor of `target` — the remote is simply
+          BEHIND the reviewed commit (a normal, expected state: the local
+          branch was just fast-forwarded to `target` by the caller and the
+          remote hasn't seen that push yet). Fast-forward the remote branch
+          itself to `target` and proceed; this is additive-only, never a
+          force.
+        * otherwise — the remote holds a commit `target` does not descend
+          from, a genuine divergence. Refuse, naming the sha this method
+          just fetched (never a stale cached value).
+        """
+        remote_tip = repo.fetch_remote_branch_sha(branch)
+        if remote_tip is None or remote_tip == target:
+            return
+        if repo.is_ancestor(remote_tip, target):
+            try:
+                repo.push_sha_fast_forward(target, branch)
+            except (ProtectedBranch, GitError) as exc:
+                raise ReviewedShaMismatch(
+                    f"delivery refused: could not fast-forward {branch} to "
+                    f"reviewed sha {target}: {exc}") from exc
+            self.emit(
+                "delivery_branch_fast_forwarded",
+                f"{branch}: {remote_tip} -> {target}",
+            )
+            return
+        raise ReviewedShaMismatch(
+            f"delivery refused: branch {branch} remote tip {remote_tip} "
+            f"(fetched) is not an ancestor of the reviewed sha {target} "
+            f"(human_gated_resume={human_gated_resume})")
+
+    def _ahead_reviewed_candidate(
+        self, repo, tip: str, ordered_shas: list[str], *, head_sha: str | None,
+    ) -> str | None:
+        """Which stamped sha, if any, is `tip` an ancestor of?
+
+        Handles the LOCAL branch-ref lag this method exists to fix: the
+        pre-fix gate compared the review stamp only against
+        `repo.branch_sha(branch)`, so a `branch` ref left sitting at its
+        creation point — because HEAD was detached at the reviewed commit,
+        or something reset the ref back — read as "not the reviewed sha"
+        even though the reviewed commit was a descendant of it, reachable in
+        this same object store. `is_ancestor` is False on a sha that doesn't
+        resolve at all, so a stamped-but-garbage sha is silently excluded
+        rather than raising.
+
+        When several stamped shas are candidates, `head_sha` (this attempt's
+        actual `repo.head_sha()`) wins outright if it is one of them — the
+        commit that was just reviewed and stamped for THIS attempt is always
+        preferred over a stamp left by a previous attempt or an earlier round
+        of this one, regardless of git-DAG shape. Never a lexicographic
+        `min()`: that tie-break picks whichever sha's hex text sorts first,
+        which has nothing to do with which one was actually reviewed most
+        recently, and can deliver an older attempt's commit over the one
+        HEAD is actually sitting at.
+
+        Absent a `head_sha` match, candidates that are strict ancestors of
+        another candidate are dropped (a later PASS stamp on the same line
+        of history supersedes an earlier one). If exactly one candidate
+        survives, it wins. If more than one survives, they are unrelated —
+        neither is an ancestor of the other, meaning they diverged at some
+        historical commit — and there is no principled way to choose between
+        them; this raises `ReviewedShaMismatch` naming both shas rather than
+        guessing.
+        """
+        candidates = [s for s in ordered_shas if repo.is_ancestor(tip, s)]
+        if not candidates:
+            return None
+        if head_sha is not None and head_sha in candidates:
+            return head_sha
+        survivors = [
+            cand for cand in candidates
+            if not any(
+                other != cand and repo.is_ancestor(cand, other)
+                for other in candidates
+            )
+        ]
+        if len(survivors) == 1:
+            return survivors[0]
+        raise ReviewedShaMismatch(
+            f"delivery refused: branch tip {tip} is an ancestor of multiple "
+            f"unrelated stamped shas ({', '.join(survivors)}) and none "
+            f"matches this attempt's reviewed HEAD ({head_sha!r}) — cannot "
+            f"determine which to deliver")
 
     def _assert_delivery_sha(
         self, task: Task, repo, branch: str, *, human_gated_resume: bool = False,
@@ -10561,11 +10768,28 @@ class Orchestrator:
         """Fail closed unless the branch tip about to be pushed is exactly a
         sha a passing review round stamped (or the review gate ran advisory
         no-reviewer pass-through this attempt, in which case no diff was ever
-        judged and no stamp can exist).
+        judged and no stamp can exist) — or provably a descendant reachable
+        from it once the LOCAL branch ref is fast-forwarded and the remote is
+        consulted (see `_ahead_reviewed_candidate` and
+        `_reconcile_remote_branch`).
 
-        Exact string equality only — never `is_ancestor` — same rationale as
-        `_already_satisfied_eligible`: an ancestor match would let a PASS on
-        an earlier commit cover code added after it.
+        Exact string equality (or a proven fast-forward TO that exact sha)
+        only — never a bare `is_ancestor` pass — same rationale as
+        `_already_satisfied_eligible`: an ancestor match alone would let a
+        PASS on an earlier commit cover code added after it. The pre-fix
+        version of this gate compared the stamp only against
+        `repo.branch_sha(branch)` — the LOCAL branch ref — and never read a
+        remote or tracking ref at all; when that local ref lagged the
+        reviewed commit (HEAD detached at review time, or the ref reset to
+        its creation point), a genuinely reviewed, PASSing commit was
+        refused and its task re-dispatched from scratch. The fix is to
+        fast-forward the local ref to the reviewed sha FIRST — see
+        `fast_forward_local_branch` — before ever touching the remote, so
+        that lag can no longer cause a refusal. The remote is still FETCHED
+        live before any comparison against it — never a cached
+        `refs/remotes/<remote>/<branch>` value — but that guards against a
+        genuinely different problem (the remote diverging or being
+        protected), not the local-ref-lag this gate used to get wrong.
         """
         try:
             tip = repo.branch_sha(branch)
@@ -10580,17 +10804,52 @@ class Orchestrator:
                 "reviewer.allow_advisory=true), so nothing was ever reviewed",
             )
             return tip
-        shas = self._passing_review_shas(task)
+        ordered_shas = self._passing_review_shas_in_order(task)
+        shas = set(ordered_shas)
         if not shas:
             raise ReviewedShaMismatch(
                 f"no review round stamped a sha for this task "
                 f"(human_gated_resume={human_gated_resume})")
-        if tip not in shas:
+        if tip in shas:
+            self._reconcile_remote_branch(
+                repo, branch, tip, human_gated_resume=human_gated_resume)
+            return tip
+        try:
+            head_sha = repo.head_sha()
+        except GitError:
+            head_sha = None
+        candidate = self._ahead_reviewed_candidate(
+            repo, tip, ordered_shas, head_sha=head_sha)
+        if candidate is None:
             raise ReviewedShaMismatch(
                 f"delivery refused: branch {branch} tip {tip} is not the "
                 f"reviewed sha (passing rounds stamped: {sorted(shas)}) "
                 f"(human_gated_resume={human_gated_resume})")
-        return tip
+        # The subsequent `open_pr` pushes whatever `branch` locally resolves
+        # to, not `candidate` directly — the local ref must actually BE at
+        # the reviewed sha or unreviewed commits would ship. Fast-forward the
+        # LOCAL ref BEFORE touching the remote: this is the fix itself (see
+        # docstring above), and it means a failure here can be reported as a
+        # sha mismatch without any remote side effect having happened yet.
+        # A `False`/`GitError` here means `tip` carries commits `candidate`
+        # doesn't (the branch moved forward with unreviewed work after the
+        # stamp), or a concurrent mover raced the compare-and-swap — refuse,
+        # unchanged message, exactly like `tip not in shas` above.
+        try:
+            moved = repo.fast_forward_local_branch(branch, candidate)
+        except GitError as exc:
+            raise ReviewedShaMismatch(
+                f"delivery refused: branch {branch} tip {tip} is not the "
+                f"reviewed sha (passing rounds stamped: {sorted(shas)}) "
+                f"(human_gated_resume={human_gated_resume}): {exc}") from exc
+        if not moved:
+            raise ReviewedShaMismatch(
+                f"delivery refused: branch {branch} tip {tip} is not the "
+                f"reviewed sha (passing rounds stamped: {sorted(shas)}) "
+                f"(human_gated_resume={human_gated_resume})")
+        self._reconcile_remote_branch(
+            repo, branch, candidate, human_gated_resume=human_gated_resume)
+        return candidate
 
     async def _already_satisfied_subject(
         self, task: Task, repo, *, base: str | None, branch: str | None,
@@ -10748,42 +11007,65 @@ class Orchestrator:
         the pipeline ran only the citation check. Constraint #3 was bypassed by
         the crash seam.
 
-        Scoped to THAT seam, not to every resume. `_recover_orphans` is the only
-        writer of `resume_from.by == "orphan_recovery"` (`scheduler.py`'s
-        `_ORPHANABLE` is CONTEXT/PLANNING/REVIEWING/TESTING — IMPLEMENTING is not
-        in it), so this stamp exists only when one of THOSE phases was killed and
-        requeued: a genuinely interrupted review (or context/planning/testing) —
-        exactly this incident's shape. `_honor_server_stop` writes the
-        IMPLEMENTING twin, ``by == "server_stop"``: a graceful stop mid-coder
-        leaves a [WIP-PARTIAL] diff no review has judged, so a zero-diff claim
-        on top of it is the same laundering shape.
-        `worktree.salvage_dead_worktrees` writes the hard-kill twin,
-        ``by == "hard_kill_salvage"`` — a SIGKILL mid-coder leaves the same
-        unjudged [WIP-PARTIAL] diff, so the same gate applies. All three
-        values live in `blockers.MACHINE_REQUEUE_PROVENANCE`, which is what
-        this gate reads — a fourth machine writer must join that set, not
-        this docstring. A
-        `wake` resume (CI-fix, quota, timer) or a
-        human-gated `nh reply` never had a review in flight to interrupt, and its
-        already-reviewed escape (D15, `test_the_already_satisfied_escape_fires_
-        for_that_same_wake_resume`) must not be re-litigated by this gate.
+        the crash seam. `_honor_server_stop` (``by == "server_stop"``) and
+        `worktree.salvage_dead_worktrees` (``by == "hard_kill_salvage"``) leave the
+        same shape: a [WIP-PARTIAL] diff no review has judged. All three values
+        live in `blockers.MACHINE_REQUEUE_PROVENANCE`.
 
-        Rule, keyed on the COMMIT SHA and not on whether a review ever started:
-          * not an orphan-recovery resume -> eligible (nothing here to interrupt);
-          * orphan-recovery resume, no diff vs base -> eligible (the ordinary
-            already-satisfied case: there is nothing to review, the claim IS the
-            deliverable);
-          * orphan-recovery resume, diff vs base, AND a review_history round
-            stamped with THIS exact head sha and passed=True -> eligible (the
-            diff has already been judged);
-          * orphan-recovery resume, diff vs base, no such round -> INELIGIBLE. A
+        Two more incidents, 2026-09-08, widened the rule from provenance alone to
+        the HEAD as well:
+
+        * task 0847f2c2 (the claim terminal): a `wake` resume branched from its
+          OWN `[WIP-BLOCKED]` checkpoint (quota-parked mid-attempt). The old rule
+          read `wake` as eligible on provenance alone, so the coder's re-verified
+          ALREADY-SATISFIED claim went to `_gate_already_satisfied` — which
+          structurally refuses a `[WIP-BLOCKED]` subject (`_already_satisfied_
+          subject`, ~10674) — and the attempt was `failed` with "already-satisfied
+          claim refused" instead of reviewing the finished work already on the
+          branch.
+        * task d256ae60 (the silent terminal): the same shape, but the resumed
+          coder turn ended with plain prose instead of a parseable claim, so
+          `claim is None` and the eligibility check was never reached at all —
+          `resumed_commit` stayed `None` straight through to `_NO_CHANGES_DETAIL`,
+          failing the attempt twice and escalating with a false "acceptance
+          criteria are already satisfied" hypothesis.
+
+        A THIRD incident, same date, on the neighbouring subject: a `[WIP-PARTIAL]`
+        checkpoint (a wake/quota park mid-coder, no HUMAN gate) off the ship ref
+        fails `_already_satisfied_subject` (~10674) exactly as a `[WIP-BLOCKED]`
+        one does — incidents A (claim terminal) and B (silent terminal) verbatim,
+        just on the other subject. There is no shape in which a `[WIP-PARTIAL]`
+        head off the ship ref is safe to route through the claim gate: whoever
+        resumed it, `_already_satisfied_subject` refuses it identically, so both
+        terminals must reach the full review just as they do for `[WIP-BLOCKED]`.
+
+        Rule, keyed on the HEAD — its review stamp and its checkpoint SHAPE — and
+        provenance only within that shape. `_already_satisfied_eligible` returns
+        ``(False, "no completed review verdict recorded for this commit")`` IFF
+        ``commits_ahead(base) > 0`` AND no `review_history` round has
+        ``sha == head`` with ``passed is True`` AND (the head subject starts with
+        ``[WIP-BLOCKED]`` OR ``[WIP-PARTIAL]`` OR ``resume_from.by`` is in
+        `MACHINE_REQUEUE_PROVENANCE`); it returns ``(True, "")`` otherwise:
+          * no diff vs base -> eligible (the ordinary already-satisfied case:
+            there is nothing to review, the claim IS the deliverable);
+          * diff vs base, AND a review_history round stamped with THIS exact head
+            sha and passed=True -> eligible (the diff has already been judged);
+          * diff vs base, no such round, AND (the head's subject is a
+            `[WIP-BLOCKED]` or `[WIP-PARTIAL]` checkpoint, `_head_is_wip_
+            checkpoint`, OR the resume provenance is in
+            `MACHINE_REQUEUE_PROVENANCE`) -> INELIGIBLE. Either checkpoint
+            subject off the ship ref fails `_already_satisfied_subject`
+            (incidents A/B on `[WIP-BLOCKED]`, the neighbouring incident above on
+            `[WIP-PARTIAL]`); the three machine provenances mark a review that was
+            genuinely interrupted mid-flight (8c8b36b5 and its twins). A
             `review_start` with no verdict is not a verdict.
-        Fails CLOSED: an unreadable base/head, an absent or unparsable history,
-        an unstamped round -> ineligible, i.e. a full review runs.
+          * diff vs base, no such round, an ORDINARY subject (neither checkpoint
+            prefix), non-machine provenance -> eligible — D15's escape
+            (`test_the_already_satisfied_escape_fires_for_that_same_wake_resume`),
+            which must not be re-litigated by this gate.
+        Fails CLOSED: an unreadable base/head/subject, an absent or unparsable
+        history, an unstamped round -> ineligible, i.e. a full review runs.
         """
-        resume_by = ((task.context or {}).get("resume_from") or {}).get("by")
-        if resume_by not in MACHINE_REQUEUE_PROVENANCE:
-            return True, ""
         try:
             head = repo.head_sha()
         except Exception:  # noqa: BLE001 — unreadable head ⇒ fail closed
@@ -10814,7 +11096,64 @@ class Orchestrator:
         )
         if matched:
             return True, ""
-        return False, "no completed review verdict recorded for this commit"
+        resume_by = ((task.context or {}).get("resume_from") or {}).get("by")
+        if (resume_by in MACHINE_REQUEUE_PROVENANCE
+                or self._head_is_wip_checkpoint(repo, head)):
+            return False, "no completed review verdict recorded for this commit"
+        return True, ""
+
+    @staticmethod
+    def _head_is_wip_checkpoint(repo, sha: str) -> bool:
+        """Is ``sha`` a ``[WIP-BLOCKED]`` OR ``[WIP-PARTIAL]`` checkpoint — a
+        quota/human park or a wake/quota park mid-attempt — a subject
+        `_already_satisfied_subject` (~10674) refuses whenever the commit is
+        not also on the ship ref (~10665)?
+
+        Routing such a head to the claim gate off the ship ref is guaranteed
+        to burn the attempt (task 0847f2c2 on `[WIP-BLOCKED]`; the neighbouring
+        2026-09-08 incident on `[WIP-PARTIAL]` — same subject refusal, same
+        burn), so `_already_satisfied_eligible` treats either checkpoint shape
+        the same as a machine-requeue provenance regardless of who resumed it.
+        Both prefixes are refused identically by `_already_satisfied_subject`
+        off the ship ref, so there is no shape in which only one of them is
+        safe here — widening from `[WIP-BLOCKED]`-only to both prefixes is the
+        whole fix. Fails CLOSED on an unreadable subject: an unreadable head
+        must not buy the claim escape, same rationale as `_is_wip_partial`
+        (~17967), whose sibling check this is.
+        """
+        try:
+            subject = repo._run(
+                "log", "-1", "--format=%s", sha, "--", check=True) or ""
+        except Exception:  # noqa: BLE001 — unreadable ⇒ assume the unsafe side
+            return True
+        return subject.strip().startswith(("[WIP-BLOCKED]", "[WIP-PARTIAL]"))
+
+    def _route_unjudged_head(self, task: Task, repo, base: str) -> CommitResult | None:
+        """`CommitResult` when this zero-diff attempt's branch head carries a
+        diff no completed review has judged — else ``None``.
+
+        Hoisted into `_run_attempt` before BOTH zero-diff terminals so a
+        `branched_from_own_partial` resume (`_is_own_partial`, ~17843 — every
+        `wake`/machine resume whose sha matches its own `resume_from`) cannot
+        reach either one on an unjudged diff: incident 0847f2c2 (claim
+        terminal, a fully-cited claim was refused by `_already_satisfied_
+        subject`'s `[WIP-BLOCKED]` check) and incident d256ae60 (silent
+        terminal, no claim parsed at all, so the old code never even asked
+        eligibility and fell straight to `_NO_CHANGES_DETAIL`), plus the
+        neighbouring `[WIP-PARTIAL]` incident on the same date and shape. All
+        are the SAME defect: an unreviewed diff sat at head and neither
+        terminal ever sent it to a reviewer.
+        """
+        eligible, why = self._already_satisfied_eligible(task, repo, base)
+        if eligible:
+            return None
+        self._emit_review(
+            "already_satisfied_ineligible",
+            "resumed attempt added nothing new and its branch head carries "
+            f"an unreviewed diff ({why}) — routing to a full independent "
+            "review of the branch diff",
+        )
+        return repo.head_commit(base)
 
     async def _append_review_history(
         self, task: Task, decision, *, commit_sha: str = "",
@@ -10829,6 +11168,9 @@ class Orchestrator:
         40-line diff, so the human was reading a verdict on code that is not in
         front of them. Stamping is the only thing that makes the two separable
         afterwards.
+
+        ``"at"`` records when THIS review concluded. Nothing reads it today:
+        `_send_back_resume_round` keys on the `attempts` table instead.
         """
         ctx = task.context or {}
         history = list(ctx.get("review_history") or [])
@@ -10836,6 +11178,7 @@ class Orchestrator:
             "round": len(history) + 1,
             "sha": (commit_sha or "").strip(),
             "passed": bool(decision.passed),
+            "at": _now(),
             "blocking": [
                 f"{i.label} — {i.evidence[:160]}" for i in decision.blocking_items[:5]
             ],
@@ -11343,6 +11686,66 @@ class Orchestrator:
             log.warning("merge-base(%s, HEAD) failed: %s", base, exc)
             return "HEAD~1"
 
+    async def _environment_test_failure(
+        self, task: Task, *, result: "runner.TestRunResult | None",
+        attempt_id: str, repo: GitRepo | None, branch: str | None,
+        test_results: dict, owned_failing: list[str],
+    ) -> TaskOutcome | None:
+        """A test run that never judged the diff because a BUILD PREREQUISITE
+        (installed node package, `npm run build` artefact, node_modules/dist
+        path) is absent from this checkout is an ENVIRONMENT error, not failed
+        code — retrying the coder cannot fix a missing prerequisite, it only
+        burns attempts (observed: a desktop `npm test` where `app-builder-lib`
+        was never installed and `web/dist` had never been built).
+
+        `owned_failing`: any failing test id THIS attempt's own diff added or
+        modified. An owned id is never excused — the classifier is not even
+        consulted — because a real coder-caused failure can coincidentally
+        contain one of the matched signatures in its own text (a test that
+        asserts on an error MESSAGE mentioning "ENOENT" or "is missing", for
+        instance), and "an owned failing id is never excused" must hold
+        regardless of what its text happens to say (round-2 review MAJOR-4).
+
+        Classification reads `result.failure_blocks` / `.traceback_excerpts`
+        (`runner.prerequisite_reason_for`) — the FAILING content only, parsed
+        off the untruncated run — never `result.output`, which is an
+        `[-8000:]` tail that a suite of any size can push the actual failure
+        clean out of (round-2 review BLOCKER-1).
+
+        Returns None when `owned_failing` is non-empty, or when the failing
+        content shows no prerequisite signature — the caller falls through to
+        today's behaviour byte-for-byte.
+        """
+        if owned_failing:
+            return None
+        reason = runner.prerequisite_reason_for(result) if result is not None else None
+        if reason is None:
+            return None
+        detail = f"tests could not run: {reason}"
+        self.emit("tests", detail, ok=False, environment=True)
+        await self.store.update_attempt(
+            attempt_id, status="failed", failure_reason=detail,
+            infra_failure=1,
+            test_results={**test_results, "environment_error": True},
+        )
+        evidence = "\n\n".join(result.failure_blocks) if result is not None else ""
+        blocker = Blocker(
+            category=BlockerCategory.TRANSIENT_INFRA,
+            transient=True, confidence=0.9, goal=task.title,
+            root_cause_hypothesis=detail,
+            evidence=(evidence or (result.output if result is not None else ""))[-1200:],
+            # A resume does NOT reuse this attempt's worktree — it spins up a
+            # NEW one seeded from the PRIMARY checkout (`runner._ensure_node_deps`
+            # / `_ensure_forced_build_artifacts` run there, not here), so the
+            # human has to act in the primary checkout, not "this checkout"
+            # (which no longer exists by the time they read this).
+            question="A build prerequisite is missing in the primary checkout "
+                      "(e.g. `npm ci`, or `npm run build` in web/). Install/"
+                      "build it there, then `nh reply` to resume.",
+        )
+        return await self._raise_blocker(
+            task, blocker, repo=repo, branch=branch, escalate_now=True)
+
     async def _invocation_error_reproduces_on_base(
         self, repo: GitRepo, test_cmd: str | None, base: str | None,
         cwd: "Path | None" = None, env_dependent: bool = False,
@@ -11363,6 +11766,13 @@ class Orchestrator:
         undeterminable (review F1). A CLEAN base run stays trustworthy: if
         the suite runs without any setup, the attempt tree erroring is on
         the change.
+
+        Only reached when `_environment_test_failure` (prerequisite-
+        signature classifier) already declined — i.e. the invocation error's
+        output carries NO build-prerequisite signature. A signature match
+        wins outright regardless of `invocation_error` (round-3 review
+        BLOCKER); this function is the fallback for the invocation errors
+        that are left over.
         """
         import tempfile
 
@@ -11415,6 +11825,16 @@ class Orchestrator:
         repo root; a cwd outside the repo cannot own anything in its diff.
         Blocking subprocess work, so run off the event loop. Never raises:
         any failure here must not fail an attempt that would otherwise pass.
+
+        Node ids get FILE-level ownership (no AST for `.mjs`), Python ids
+        get per-function ownership (`ownership.parse_node_id`) — see that
+        module's docstring. Either way this is fail-closed: an id that
+        cannot be attributed (no location, ambiguous path, parse failure)
+        is simply never returned here, so it is never excused as
+        environment or pre-existing — it can only ever be BILLED to the
+        attempt (round-3 review MAJOR: node ids used to never appear in
+        `failing_tests` at all, making this function a permanent no-op for
+        node runs).
         """
         if not failing_tests:
             return []
@@ -11690,6 +12110,238 @@ class Orchestrator:
         if suite is None or not _all_green(suite):
             return None  # deterministic at suite scope, or unproven → billed
         return list(attributed)
+
+    async def _layered_tests_failed_outcome(
+        self, task: Task, *, plan_result, total_passed: int, total_failed: int,
+        total_errors: int, failing_tests: list[str], attempt_id: str,
+        repo: GitRepo | None, branch: str | None, base: str | None,
+        test_cwd: "Path | None", commit, result, stuck: StuckDetector,
+    ) -> TaskOutcome:
+        """The layered-test-plan branch of `_run_attempt`, once a BLOCKING
+        layer has failed. Extracted from `_run_attempt` (structural budget:
+        it is capped at a frozen line/CC count — see
+        `tests/test_structural_budget.py`) — NOT verbatim: this body also
+        carries the ~19 lines of ownership/environment-classification logic
+        (the `owned` computation below and the `_environment_test_failure`
+        call it feeds) that a pure code-move would not have added. Always
+        returns a TaskOutcome — entering this branch is itself already
+        terminal, either via the environment classifier below or the
+        billing path at the end.
+        """
+        from ..testing.test_layers import Gating as _Gating
+
+        # `plan_result.ok` is False iff a BLOCKING layer failed
+        # (advisory failures never flip it) — so the layer that
+        # EXPLAINS the failure is the first BLOCKING one, not merely
+        # the first layer with a bad result (an earlier advisory
+        # layer may have failed too without stopping the plan). ONE
+        # lookup feeds both stuck detection and the excerpt below, so
+        # the two can never name different layers.
+        first_blocking_failure = next(
+            (lr for lr in plan_result.layer_results
+             if lr.gating == _Gating.BLOCKING and lr.result
+             and not lr.result.ok),
+            None,
+        )
+        fail_result = first_blocking_failure.result if first_blocking_failure else None
+        fail_output = fail_result.output if fail_result else ""
+        # Ownership is a cheap git-diff lookup (no subprocess test run), but
+        # it is only worth making when the failing content actually carries
+        # a prerequisite-signature candidate — the common case (a real code
+        # failure with no such text) never pays for a git call it cannot use.
+        # An owned failing id must never be excused as environment
+        # (round-2 review MAJOR-4), so this has to run BEFORE the classifier.
+        owned: list[str] = []
+        if fail_result is not None and runner.prerequisite_reason_for(fail_result) is not None:
+            owned = await self._owned_failing_tests(
+                repo, base, failing_tests, cwd=test_cwd)
+        env_outcome = await self._environment_test_failure(
+            task, result=fail_result, attempt_id=attempt_id,
+            repo=repo, branch=branch,
+            test_results={
+                "ran": True, "ok": plan_result.ok,
+                "passed": total_passed, "failed": total_failed,
+                "errors": total_errors, "tamper_flag": False,
+                "layers": [lr.summary for lr in plan_result.layer_results],
+                "failing_tests": failing_tests,
+            },
+            owned_failing=owned,
+        )
+        if env_outcome is not None:
+            return env_outcome
+        is_stuck = stuck.record(fail_output) if fail_output else False
+        detail = f"tests failed: {plan_result.summary}"
+        if failing_tests:
+            detail += " — " + ", ".join(failing_tests)
+        if is_stuck:
+            self.emit("stuck", "same failure signature repeated; resetting context")
+        # The stuck note is the one-line triage summary — it must sit
+        # on the summary line, BEFORE the excerpt, or it is unreadable
+        # in every consumer that shows the head.
+        stuck_note = stuck.stuck_reason
+        if stuck_note:
+            detail += f" — {stuck_note}"
+        elif is_stuck:
+            detail += " — same failure signature repeated across attempts"
+        # D1.1: the ROOT CAUSE only — the first failing BLOCKING
+        # layer's own traceback_block, tail-capped to 1200 chars
+        # (same discipline as `fail_tail` below). A downstream
+        # layer's traceback (dependent on the same failure) used to
+        # be concatenated in too, uncapped (SCRUM-40 parity) — the
+        # multi-KB, root-cause-buried `failure_reason` this replaces.
+        excerpt = (getattr(first_blocking_failure.result,
+                           "traceback_block", "")
+                   if first_blocking_failure else "")
+        if excerpt:
+            detail += "\n" + excerpt[-1200:]
+        await self.store.update_attempt(attempt_id, status="failed", failure_reason=detail)
+        # Same handoff as the review-FAIL path above: the commit is
+        # real, coder-produced work — hand it to the next attempt.
+        await self._persist_handoff(
+            task, result, repo, wip_sha=commit.sha if commit else "",
+            gate="tests", gate_detail=detail, own_partial=True)
+        return TaskOutcome(task, status=TaskStatus.FAILED, detail=detail)
+
+    async def _failed_tests_outcome(
+        self, task: Task, *, test_result, newly_failing: list[str] | None,
+        owned: list[str], failing_tests: list[str], attempt_id: str,
+        repo: GitRepo | None, branch: str | None, test_cmd: str | None,
+        test_cwd: "Path | None", commit, result, stuck: StuckDetector,
+    ) -> TaskOutcome | None:
+        """The single-run test-failure attribution + billing branch of
+        `_run_attempt`, reached once a red run is not excused as pre-existing
+        (`newly_failing == [] and not owned`, checked by the caller).
+        Extracted verbatim (structural budget: see
+        `tests/test_structural_budget.py`).
+
+        Returns None when the flaky-excuse path fires — nothing to bill, and
+        the caller must fall through exactly as it always did; a real billing
+        decision returns a TaskOutcome.
+        """
+        # Name the NEWLY-failing ids when the base check isolated
+        # them (mixed run); otherwise (None → inconclusive/
+        # fail-closed) fall back to all failing ids, byte-for-byte
+        # the prior message — plus any owned id, which is always
+        # billed and never excused regardless of tree evidence.
+        attributed = _attributed_ids(failing_tests, newly_failing, owned)
+        # ONE more piece of evidence before we bill the attempt.
+        # The base check reads ONE run of the base tree, so for a
+        # LOAD-DEPENDENT flake it is a coin flip: base happened to
+        # pass → the id lands here as "newly failing" and the coder
+        # is charged for a failure it did not cause. The tiebreaker
+        # that does not depend on which tree got lucky is the
+        # CHANGE tree itself — see `_flaky_on_rerun`: the ids on
+        # their own, then the whole suite again, both here. An
+        # owned id skips the re-run entirely: `_flaky_on_rerun` is
+        # all-or-nothing over `attributed`, so its presence forces
+        # FAIL regardless of what the re-run would show, and
+        # skipping also saves the stage-2 full-suite cost.
+        flaky = None if owned else await self._flaky_on_rerun(
+            repo, test_cmd, attributed, cwd=test_cwd,
+        )
+        # The helper answers all-or-nothing by construction. This
+        # re-checks the coverage anyway so that a future partial
+        # answer BILLS rather than silently excusing the rest —
+        # fail-closed is a property of the call site too.
+        if flaky and not [t for t in attributed if t not in set(flaky)]:
+            # Every id we were about to bill went green on the
+            # re-run. Same excuse shape as the pre-existing block
+            # above: the attempt is NOT failed, and the reason is
+            # on the record in BOTH the event stream and
+            # `test_results` — an excuse nobody can see is a
+            # silent pass, the one thing this path must never be.
+            note = (
+                "tests failed, then passed on an identical "
+                "bounded re-run — flaky on this tree, not "
+                "attributed to this change: " + ", ".join(flaky)
+            )
+            self.emit("tests", note, ok=True,
+                      failing_tests=failing_tests,
+                      flaky_excused=flaky)
+            await self.store.update_attempt(
+                attempt_id,
+                test_results={
+                    "ran": test_result.ran, "ok": test_result.ok,
+                    "passed": test_result.passed,
+                    "failed": test_result.failed,
+                    "errors": test_result.errors,
+                    "tamper_flag": False,
+                    "failing_tests": failing_tests,
+                    "flaky_excused": flaky,
+                },
+            )
+            return None
+        is_stuck = stuck.record(test_result.output)
+        detail = f"tests failed: {test_result.summary}"
+        if attributed:
+            detail += " — " + ", ".join(attributed)
+        if newly_failing:
+            detail += " (newly failing vs the base tree)"
+        owned_attr = [t for t in attributed if t in set(owned)]
+        if owned_attr:
+            detail += (
+                " — this change's own test(s): "
+                + ", ".join(owned_attr)
+            )
+        if is_stuck:
+            self.emit("stuck", "same failure signature repeated; resetting context")
+        # Same ordering rule as the layered path: note before excerpt.
+        stuck_note = stuck.stuck_reason
+        if stuck_note:
+            detail += f" — {stuck_note}"
+        elif is_stuck:
+            detail += " — same failure signature repeated across attempts"
+        # Show tracebacks only for the ids we actually blame the
+        # change for: on a mixed run the excerpt must not carry a
+        # pre-existing failure's traceback, or it would contradict
+        # the attribution line above. When the base check was
+        # inconclusive (newly_failing is None → all ids blamed)
+        # keep the full block, byte-for-byte the prior behaviour.
+        # An owned id must always keep its traceback even when
+        # newly_failing narrowed the set some other way.
+        excerpts = getattr(test_result, "traceback_excerpts", {}) or {}
+        if owned:
+            keep = set(attributed)
+            excerpts = {k: v for k, v in excerpts.items() if k in keep}
+        elif newly_failing:
+            keep = set(newly_failing)
+            excerpts = {k: v for k, v in excerpts.items() if k in keep}
+        excerpt_block = runner.render_traceback_excerpts(excerpts)
+        if excerpt_block:
+            detail += "\n" + excerpt_block
+        if owned_attr:
+            self.emit(
+                "tests",
+                "tests failed on test(s) this change added or "
+                "modified — not excusable as flaky or "
+                "pre-existing: " + ", ".join(owned_attr),
+                ok=False,
+                failing_tests=failing_tests,
+                owned_failures=owned_attr,
+            )
+            await self.store.update_attempt(
+                attempt_id,
+                status="failed",
+                failure_reason=detail,
+                test_results={
+                    "ran": test_result.ran, "ok": test_result.ok,
+                    "passed": test_result.passed,
+                    "failed": test_result.failed,
+                    "errors": test_result.errors,
+                    "tamper_flag": False,
+                    "failing_tests": failing_tests,
+                    "owned_failures": owned_attr,
+                },
+            )
+        else:
+            await self.store.update_attempt(attempt_id, status="failed", failure_reason=detail)
+        # Same handoff as the other two gate-failure sites:
+        # the commit is real, coder-produced work — hand it
+        # to the next attempt instead of discarding it.
+        await self._persist_handoff(
+            task, result, repo, wip_sha=commit.sha if commit else "",
+            gate="tests", gate_detail=detail, own_partial=True)
+        return TaskOutcome(task, status=TaskStatus.FAILED, detail=detail)
 
     async def _run_tests_once(
         self, repo: GitRepo, test_cmd: str | None, cwd: "Path | None" = None,
@@ -12156,6 +12808,16 @@ class Orchestrator:
         hard gate into a rubber stamp — silently, and exactly when it mattered.
         Eval and replay flows that deliberately skip the gate must say so with
         ``reviewer.allow_advisory``, and even then it is announced on the board.
+
+        The advisory skip is narrowed by ``_is_own_partial`` (the SAME rule
+        `_run_attempt` uses to decide whether a zero-diff resume is this
+        loop's own abandoned partial): when the current HEAD is the loop's
+        own unreviewed checkpoint — a `[WIP-PARTIAL]`/`[WIP-BLOCKED]` commit
+        no human gated — no coder turn ran in THIS call to produce it, so
+        there is nothing here for the advisory pass-through to bless. Taking
+        the freebie anyway would credit exactly the unreviewed half-work
+        `_route_unjudged_head` routed here to be judged. Derived fresh from
+        `repo`/`task.context` on every call — no flag, no `self` state.
         """
         # Delivery-sha gate marker (_assert_delivery_sha): reset at the top of
         # every review round so a PASS-through set by an earlier attempt can
@@ -12197,6 +12859,27 @@ class Orchestrator:
                     "Passing the gate advisory-style would make it a rubber "
                     "stamp. Wire a reviewer, or set reviewer.allow_advisory=true "
                     "for eval/replay flows that skip the gate on purpose."
+                )
+            # The advisory freebie must not launder an unjudged checkpoint
+            # head. `_route_unjudged_head` only ever routes a head for which
+            # `_is_own_partial` is true (see `_run_attempt`: it is reached
+            # exactly when `branched_from_own_partial` left `resumed_commit`
+            # `None`), and nothing commits between that routing and this
+            # call — HEAD is still the checkpoint. Asking the SAME question
+            # again here, from `repo`/`task.context` alone, tells an
+            # unreviewed own-partial apart from a human-gated resume (which
+            # `_is_own_partial` reports False for, so it keeps the freebie)
+            # without any flag threaded between the two calls.
+            try:
+                own_unjudged_partial = self._is_own_partial(
+                    repo, task.context or {}, repo.head_sha())
+            except Exception:
+                own_unjudged_partial = False
+            if own_unjudged_partial:
+                raise ReviewerUnavailable(
+                    "no reviewer is configured, and this head is an unjudged "
+                    "checkpoint routed to full review. Advisory pass-through "
+                    "would credit unreviewed half-work — wire a reviewer."
                 )
             self.emit(
                 "review_advisory",
@@ -14968,6 +15651,17 @@ class Orchestrator:
             except Exception:  # noqa: BLE001 — scope awareness is best-effort
                 declared_files = []
 
+        # A human send-back can AMEND or supersede an acceptance criterion
+        # (or a test pinning the superseded behaviour) — the supervisor must
+        # see the LATEST send-back, not just the original criteria text, or
+        # it steers the coder straight back to text a human already
+        # overruled. Fail CLOSED: if the field itself cannot be read, say so
+        # rather than silently treating it as "there is none".
+        try:
+            send_back_feedback = (task.context or {}).get("send_back_feedback")
+        except Exception:  # noqa: BLE001 — fail CLOSED: say we couldn't read it
+            send_back_feedback = SEND_BACK_UNREADABLE
+
         # Build rules text for the supervisor (same as the implementer sees).
         rules = self._format_active_memories() or ""
 
@@ -15073,6 +15767,7 @@ class Orchestrator:
             on_decision=on_decision,
             declared_files=declared_files,
             budget_status=budget_status,
+            send_back_feedback=send_back_feedback,
         )
 
     def _materialize_skills(self, repo_path: Path) -> list[str]:
@@ -16698,7 +17393,12 @@ class Orchestrator:
                 "or re-fix something the base already resolved; check current "
                 "behavior before assuming a symptom is still present.\n\n"
             )
-        elif stale.get("commits_behind", 0) >= BASE_STALENESS_REBASE_THRESHOLD:
+        elif should_rebase(
+            stale.get("was_behind", stale.get("commits_behind", 0)),
+            BASE_STALENESS_REBASE_THRESHOLD,
+            stale.get("overlapping_files") or [],
+        ):
+            overlap = stale.get("overlapping_files") or []
             staleness_preamble = (
                 f"YOUR BRANCH IS {stale['commits_behind']} COMMIT(S) BEHIND the "
                 "current base and a rebase was attempted but did not complete "
@@ -16708,6 +17408,11 @@ class Orchestrator:
                 "assuming a symptom is still present, and consider merging or "
                 "rebasing yourself if that is the source of a failure.\n\n"
             )
+            if overlap:
+                staleness_preamble += (
+                    "Rebase did not complete; both sides changed: "
+                    f"{', '.join(overlap)}\n\n"
+                )
 
         distilled_block = ""
         if distilled:

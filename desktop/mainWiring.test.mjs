@@ -16,11 +16,13 @@ import os from "node:os";
 import path from "node:path";
 import { execSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { probe } from "./server.mjs";
+import { freePort } from "./testing/ports.mjs";
 const HERE = fileURLToPath(new URL(".", import.meta.url));
 
 register("./testing/electronLoader.mjs", import.meta.url);
 
-const PORT = 19700 + (process.pid % 200);
+const { port: PORT, origin: ORIGIN } = await freePort();
 const MARK = `nhWiring${process.pid}`;
 
 /** A temp HOME with a token, plus a fake `nh` that binds PORT and obeys SIGTERM. */
@@ -42,7 +44,7 @@ setInterval(() => {}, 1000);
   fs.chmodSync(bin, 0o755);
   process.env.HOME = home;                 // BEFORE importing main.mjs
   process.env.USERPROFILE = home; // os.homedir() reads USERPROFILE on Windows (see mainIpc.test.mjs)
-  process.env.NH_ORIGIN = `http://127.0.0.1:${PORT}`;
+  process.env.NH_ORIGIN = ORIGIN;
   process.env.NH_BIN = bin;
   return home;
 }
@@ -72,6 +74,12 @@ if (ON_WINDOWS) {
 // One module instance is shared: main.mjs has top-level side effects.
 const home = bootstrapEnv();
 const stub = await import("./testing/electronStub.mjs");
+// Precondition, not an assumption: this test's whole premise is that nothing
+// answers ORIGIN until the fake `nh` (spawned by main.mjs below) binds it. If
+// some other process already holds this port, fail HERE with this message
+// rather than in an inscrutable "server never attached" assertion later.
+assert.notEqual(await probe(ORIGIN), "up",
+  `${ORIGIN} answered a probe — this test requires NOTHING listening yet`);
 const main = await import("./main.mjs");
 stub.fireReady();
 // Wait for whenReady -> createWindow -> loadBoardOrError -> ensureServer to

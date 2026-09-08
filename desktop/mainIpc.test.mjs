@@ -10,14 +10,13 @@ import { register } from "node:module";
 import assert from "node:assert/strict";
 import test from "node:test";
 import fs from "node:fs";
-import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { listenOnFreePort } from "./testing/ports.mjs";
 
 register("./testing/electronLoader.mjs", import.meta.url);
 
-const PORT = 19500 + (process.pid % 150);
 const home = fs.mkdtempSync(path.join(os.tmpdir(), "nh-ipc-"));
 fs.mkdirSync(path.join(home, ".no_human"));
 fs.writeFileSync(path.join(home, ".no_human", ".env"),
@@ -27,7 +26,6 @@ process.env.HOME = home;
 // WRITES THROUGH to the operator's real ~/.no_human (observed: a fixture token
 // landed in the real .env and flipped the real config.yaml to api_key mode).
 process.env.USERPROFILE = home;
-process.env.NH_ORIGIN = `http://127.0.0.1:${PORT}`;
 delete process.env.NH_TEST_LOG;      // must not divert the routing under test
 
 // A live server so main.mjs attaches instead of spawning anything.
@@ -36,12 +34,12 @@ let probes = 0;
 // other test never touches /api/repos, so its default of no known repos is
 // the one they run against.
 let knownRepos = "[]";
-const server = http.createServer((q, s) => {
+const { server, port: PORT, origin: ORIGIN } = await listenOnFreePort((q, s) => {
   if (q.url.split("?")[0] === "/api/tasks") probes += 1;   // one per navigation run
   if (q.url === "/api/repos") { s.end(knownRepos); return; }
   s.end("[]");
 });
-await new Promise((r) => server.listen(PORT, "127.0.0.1", r));
+process.env.NH_ORIGIN = ORIGIN;
 
 const stub = await import("./testing/electronStub.mjs");
 await import("./main.mjs");

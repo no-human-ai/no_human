@@ -144,6 +144,7 @@ export function retainedUpdate(prev, event) {
 export const UPDATE_ERROR_MESSAGES = {
   "no-metadata": "Release update information is unavailable for this platform right now.",
   offline: "Check your internet connection and try again.",
+  proxy: "Could not reach the update server through your network or proxy settings.",
   server: "The update check failed; try again later.",
 };
 
@@ -177,6 +178,26 @@ export function classifyUpdateError(raw) {
     || /net::ERR_(NAME_NOT_RESOLVED|INTERNET_DISCONNECTED|CONNECTION_REFUSED|CONNECTION_RESET|CONNECTION_TIMED_OUT|NETWORK_CHANGED|ADDRESS_UNREACHABLE)\b/.test(text)
   ) {
     return { category: "offline", message: UPDATE_ERROR_MESSAGES.offline };
+  }
+  // Chromium reports a failure to reach/negotiate with the configured PROXY
+  // distinctly from a dead local network (net/base/net_error_list.h):
+  // ERR_PROXY_CONNECTION_FAILED (-130, could not create a connection to the
+  // proxy server), ERR_TUNNEL_CONNECTION_FAILED (-111, a tunnel through the
+  // proxy could not be established) and ERR_SOCKS_CONNECTION_FAILED (-120,
+  // failed to connect to the SOCKS proxy for a target host). A dead HTTP or
+  // SOCKS proxy yields the first; a CONNECT-refusing proxy yields the second
+  // (both reproduced with the bundled Electron).
+  // MEASURED on Windows (19397ed2) with a per-user WinINET proxy pointing at
+  // 127.0.0.1:1: the card's Details showed exactly
+  // `net::ERR_PROXY_CONNECTION_FAILED`, which fell through to "server" and
+  // told the user to "try again later" for a failure GitHub had no part in.
+  // Not folded into "offline": the user's internet may be perfectly fine, so
+  // "check your internet connection" sends them to the wrong setting; the
+  // actionable object is their proxy/network configuration.
+  if (
+    /net::ERR_(PROXY_CONNECTION_FAILED|TUNNEL_CONNECTION_FAILED|SOCKS_CONNECTION_FAILED)\b/.test(text)
+  ) {
+    return { category: "proxy", message: UPDATE_ERROR_MESSAGES.proxy };
   }
   return { category: "server", message: UPDATE_ERROR_MESSAGES.server };
 }

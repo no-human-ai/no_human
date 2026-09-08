@@ -15,9 +15,11 @@ Also pinned here, each a defect round 2 demonstrated:
   narrowing the zero-diff gate to "human-gated resume" made every "LGTM" / CI-fix
   revision that correctly changed nothing fail as fabrication, burning two
   attempts and paging a human;
-* a `resume_from` that names a [WIP-PARTIAL] must NOT be credited — the gate must
-  key on the commit's SHAPE, because `_checkpoint_wip` returns HEAD when the tree
-  is clean, so `resume_from.sha` can name a partial the loop wrote itself;
+* a `resume_from` that names a [WIP-PARTIAL] must NOT be credited for free — the
+  gate keys on the commit's SHAPE, because `_checkpoint_wip` returns HEAD when the
+  tree is clean, so `resume_from.sha` can name a partial the loop wrote itself; a
+  head of that shape is instead routed to a full independent review, whose
+  verdict decides delivery;
 * an abort's checkpoint write must not clobber `resume_from`, which the CLI writes
   from another process while the attempt runs.
 """
@@ -28,7 +30,8 @@ from no_human.core.orchestrator import Orchestrator, StuckAbort
 from no_human.core.task import Task, TaskStatus
 from no_human.notify.slack import SlackNotifier
 
-from .test_e2e_orchestrator import _config, _git, bare_repo  # noqa: F401
+from .test_e2e_orchestrator import (  # noqa: F401
+    ChecklistItem, FakeReviewer, ReviewDecision, _config, _git, bare_repo)
 from .test_resume_wiring import ScriptedBackend, _ok, _tree  # noqa: F401
 
 
@@ -164,8 +167,11 @@ async def test_a_revision_branch_sitting_on_an_abandoned_partial_is_not_credited
     """The other half. On a reused PR branch nothing records who produced HEAD, and
     every [WIP-PARTIAL] writer commits onto whatever branch the attempt is on —
     including that PR branch. So a revision CAN start on the loop's own abandoned
-    partial, and crediting it opens a PR on work no attempt produced while
-    `unproductive_streak` never increments. Here the subject IS the only signal.
+    partial: `_head_is_wip_checkpoint` makes `_already_satisfied_eligible` refuse
+    to credit it for free, and `_route_unjudged_head` routes the branch diff to a
+    full independent review instead. "Not credited" now means the reviewer judged
+    the half-work and FAILED it, so nothing is delivered — a rejecting
+    `FakeReviewer` stands in for that verdict here.
     """
     _git(bare_repo, "checkout", "-b", "nh/revision")
     _commit_on_main(bare_repo, "half.py", "raise NotImplementedError\n",
@@ -176,20 +182,32 @@ async def test_a_revision_branch_sitting_on_an_abandoned_partial_is_not_credited
     def changes_nothing(cwd):
         return _ok("I reviewed the code and believe it is already complete.")
 
+    reviewer = FakeReviewer(ReviewDecision(passed=False, checklist=[
+        ChecklistItem("the half-work is not a finished change", False,
+                      "half.py: raise NotImplementedError")]))
     orch = Orchestrator(store, _config(tmp_path).data,
-                        ScriptedBackend(changes_nothing), SlackNotifier(None))
+                        ScriptedBackend(changes_nothing), SlackNotifier(None),
+                        reviewer=reviewer)
     t = Task.new("revision sitting on an abandoned partial", repo_path=str(bare_repo))
     t.context = {"pr_branch": "nh/revision"}
     await store.create_task(t)
-    await orch.run_task(t)
+    outcome = await orch.run_task(t)
 
     final = await store.get_task(t.id)
     attempts = await store.list_attempts(t.id)
+    assert [c for c in reviewer.calls if c["mode"] != "already_satisfied"], (
+        "the routed diff was never sent to the reviewer at all")
+    assert attempts and all(a["task_id"] == t.id for a in attempts), (
+        "routing must have run an attempt for this task")
     assert not [a for a in attempts if a["status"] == "succeeded"], (
         "an attempt that edited nothing was credited with the abandoned partial "
         f"its PR branch happened to sit on: {[(a['attempt_number'], a['status']) for a in attempts]}")
+    assert not [a for a in attempts if a.get("pr_url")], (
+        f"a PR URL was recorded for a diff the reviewer failed: {attempts}")
+    assert outcome.pr_url is None, (
+        "the run outcome carries a PR URL for a diff the reviewer failed")
     assert final.status is not TaskStatus.AWAITING_APPROVAL, (
-        "a PR was advanced for work no attempt produced")
+        "a PR was advanced for a diff the reviewer failed")
 
 
 async def test_recording_a_checkpoint_does_not_erase_a_concurrent_resume_from(
@@ -389,9 +407,12 @@ async def test_a_machine_resume_is_not_credited_as_human_gated(
     five autonomous paths (`after:` is a pure timer, `quota_refreshed` fires on a
     clock, plus auto-rebase, CI-fix and gate rungs).
 
-    So a TIMER can put a [WIP-PARTIAL] into `resume_from`, and crediting that
-    opens a PR on abandoned half-work no attempt produced while
-    `unproductive_streak` never increments.
+    So a TIMER can put a [WIP-PARTIAL] into `resume_from` — but the gate no
+    longer refuses that shape on provenance. `_head_is_wip_checkpoint` catches
+    it regardless of who resumed it, and `_route_unjudged_head` sends the
+    branch diff to a full independent review. "Not credited" now means the
+    reviewer judged the machine-resumed half-work and FAILED it, so nothing is
+    delivered — a rejecting `FakeReviewer` stands in for that verdict here.
     """
     partial = _commit_on_main(
         bare_repo, "half.py", "raise NotImplementedError\n",
@@ -403,8 +424,12 @@ async def test_a_machine_resume_is_not_credited_as_human_gated(
     def changes_nothing(cwd):
         return _ok("I reviewed the code and believe it is already complete.")
 
+    reviewer = FakeReviewer(ReviewDecision(passed=False, checklist=[
+        ChecklistItem("the half-work is not a finished change", False,
+                      "half.py: raise NotImplementedError")]))
     orch = Orchestrator(store, _config(tmp_path).data,
-                        ScriptedBackend(changes_nothing), SlackNotifier(None))
+                        ScriptedBackend(changes_nothing), SlackNotifier(None),
+                        reviewer=reviewer)
     t = Task.new("machine resume must not be credited", repo_path=str(bare_repo))
     # Exactly what wake.py writes: the checkpoint plus its machine provenance.
     t.context = {
@@ -413,16 +438,24 @@ async def test_a_machine_resume_is_not_credited_as_human_gated(
         "base_branch": "base-behind",
     }
     await store.create_task(t)
-    await orch.run_task(t)
+    outcome = await orch.run_task(t)
 
     final = await store.get_task(t.id)
     attempts = await store.list_attempts(t.id)
+    assert [c for c in reviewer.calls if c["mode"] != "already_satisfied"], (
+        "the routed diff was never sent to the reviewer at all")
+    assert attempts and all(a["task_id"] == t.id for a in attempts), (
+        "routing must have run an attempt for this task")
     assert not [a for a in attempts if a["status"] == "succeeded"], (
         "an attempt that edited nothing was credited with a [WIP-PARTIAL] that a "
         f"TIMER — not a human — put in resume_from: "
         f"{[(a['attempt_number'], a['status']) for a in attempts]}")
+    assert not [a for a in attempts if a.get("pr_url")], (
+        f"a PR URL was recorded for a diff the reviewer failed: {attempts}")
+    assert outcome.pr_url is None, (
+        "the run outcome carries a PR URL for a diff the reviewer failed")
     assert final.status is not TaskStatus.AWAITING_APPROVAL, (
-        "a PR was advanced on work no attempt produced")
+        "a PR was advanced on a diff the reviewer failed")
 
 
 async def test_a_human_gated_resume_on_a_pr_branch_is_still_credited(

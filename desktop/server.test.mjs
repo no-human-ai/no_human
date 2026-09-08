@@ -12,6 +12,7 @@ import {
 } from "./server.mjs";
 import * as serverModule from "./server.mjs";
 import { MAC_KEYCHAIN_SERVICE } from "./setupGate.mjs";
+import { freePort } from "./testing/ports.mjs";
 
 function serve(handler) {
   return new Promise((resolve) => {
@@ -119,6 +120,34 @@ test("waitForServer: resolves true once the server comes up", async () => {
 
 test("waitForServer: false past the deadline", async () => {
   assert.equal(await waitForServer("http://127.0.0.1:1", 400, 100), false);
+});
+
+test("waitForServer: an aborted signal stops the poll loop, not just the return value", async () => {
+  let count = 0;
+  // A plain 500 (not connection-refused/timeout) is "down" in exactly one
+  // probe() call — probe() only retries on "unreachable" — so `count` tracks
+  // probe attempts 1:1, making the post-abort assertion below exact.
+  const { srv, origin } = await serve((_req, res) => {
+    count += 1;
+    res.statusCode = 500; res.end();
+  });
+  try {
+    const ctrl = new AbortController();
+    const t0 = Date.now();
+    const p = waitForServer(origin, 30000, 100, { signal: ctrl.signal });
+    while (count < 1) await new Promise((r) => setTimeout(r, 5));
+    ctrl.abort();
+    assert.equal(await p, false);
+    assert.ok(Date.now() - t0 < 300,
+      `abort must resolve within ~1 interval, took ${Date.now() - t0}ms`);
+    const after = count;
+    await new Promise((r) => setTimeout(r, 3 * 100));
+    // The mechanism assertion: the loop itself is gone, not merely the
+    // already-settled return value. On the pre-fix code waitForServer ignores
+    // the 4th argument entirely, so it keeps probing every 100ms regardless.
+    assert.equal(count, after,
+      `probe count grew from ${after} to ${count} after abort — loop was not cancelled`);
+  } finally { srv.close(); }
 });
 
 test("isAppOrigin: same-origin stays in-window, everything else leaves", () => {
@@ -324,7 +353,7 @@ test("ensureServer: attaches without spawning when the server is up", async () =
 test("ensureServer: spawns a fake nh and waits until the port answers", async () => {
   // The fake `nh` starts a real HTTP server on a fixed port via node.
   const dir = mkdtempSync(join(tmpdir(), "nhbin-"));
-  const port = 18000 + (process.pid % 1000);
+  const { port } = await freePort();
   const { bin, args } = fakeNh(dir, `
 const http = require("node:http");
 setTimeout(() => {
@@ -370,6 +399,44 @@ test("ensureServer: failed resolution reports nh-not-found without spawning", as
     spawnTimeoutMs: 500 });
   assert.equal(state.status, "failed");
   assert.equal(state.reason, "nh-not-found");
+});
+
+test("ensureServer: a spawn error stops the start-probe loop instead of polling out the window",
+  { skip: IS_WIN ? "POSIX exec permission bits" : false }, async () => {
+  // Mirrors mainSaveFailure.test.mjs's recipe: a binary that EXISTS (so
+  // resolveNhBin returns it) but has no +x bit, so spawn() emits EACCES.
+  const dir = mkdtempSync(join(tmpdir(), "nheacces-"));
+  const notExecutable = join(dir, "nh");
+  writeFileSync(notExecutable, "#!/bin/sh\nexit 0\n");
+  chmodSync(notExecutable, 0o644);
+  let count = 0;
+  // Answers "down" so the post-race confirmation probe (server.mjs:619)
+  // still finds it not up and the reason resolves through spawn-error.
+  const { srv, origin } = await serve((_req, res) => {
+    count += 1;
+    res.statusCode = 500; res.end();
+  });
+  try {
+    const state = await ensureServer({
+      origin, env: { NH_BIN: notExecutable }, nhArgs: [], spawnTimeoutMs: 30000 });
+    assert.equal(state.status, "failed");
+    assert.equal(state.reason, "spawn-error");
+    // A short grace period, well under one 500ms interval: ensureServer's own
+    // pre-spawn "already up?" probe (server.mjs:578) and a waitForServer
+    // probe that was already in flight when the race was decided may still
+    // be settling on the microtask queue the instant ensureServer resolves.
+    // That is normal completion of work already started, not a new loop
+    // iteration — waiting here lets it land before the snapshot below.
+    await new Promise((r) => setTimeout(r, 150));
+    const after = count;
+    // Three real 500ms intervals: on the pre-fix code the orphaned
+    // waitForServer loop keeps probing every 500ms for the remainder of the
+    // 30s spawnTimeoutMs, so `count` would keep climbing here.
+    await new Promise((r) => setTimeout(r, 3 * 500));
+    assert.equal(count, after,
+      `probe count grew from ${after} to ${count} after ensureServer resolved — ` +
+      `the losing waitForServer was not cancelled`);
+  } finally { srv.close(); }
 });
 
 test("stopServer: ONLY kills a spawned child — attached/failed states are never killed", () => {
@@ -584,7 +651,7 @@ test("ensureServer: the spawned server inherits the widened PATH",
     + "pure WINDOWS_CLI_HINT_DIRS mergePath test" : false },
   async () => {
   const dir = mkdtempSync(join(tmpdir(), "nhpath-"));
-  const port = 18400 + (process.pid % 400);
+  const { port } = await freePort();
   const out = join(dir, "path.txt");
   const { bin, args } = fakeNh(dir, `
 require("node:fs").writeFileSync(${JSON.stringify(out)}, process.env.PATH || "");
@@ -798,7 +865,7 @@ test("ensureServer: stops capturing once confirmed up, but keeps draining so the
   // action TERMINATES it on the very next write — Node silently swallows
   // EPIPE on stdout/stderr and would not catch a regression to destroy().
   const dir = mkdtempSync(join(tmpdir(), "nhdrain-"));
-  const port = 19000 + (process.pid % 900);
+  const { port } = await freePort();
   const fake = join(dir, "nh");
   writeFileSync(fake, `#!/bin/sh
 node -e "require('node:http').createServer(function(q,r){r.end('[]')}).listen(${port},'127.0.0.1')" &

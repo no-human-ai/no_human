@@ -32,9 +32,9 @@ import { register } from "node:module";
 import assert from "node:assert/strict";
 import test from "node:test";
 import fs from "node:fs";
-import http from "node:http";
 import os from "node:os";
 import path from "node:path";
+import { listenOnFreePort } from "./testing/ports.mjs";
 
 // BEFORE main.mjs is imported — createWindow reads process.platform at call time
 // but the module is loaded and the window created in one go below.
@@ -42,7 +42,6 @@ Object.defineProperty(process, "platform", { value: "win32", configurable: true 
 
 register("./testing/electronLoader.mjs", import.meta.url);
 
-const PORT = 19900 + (process.pid % 90);
 // A private HOME, so nothing in this test can read or write the operator's real
 // ~/.no_human.
 const home = fs.mkdtempSync(path.join(os.tmpdir(), "nh-theme-home-"));
@@ -50,11 +49,10 @@ fs.mkdirSync(path.join(home, ".no_human"));
 fs.writeFileSync(path.join(home, ".no_human", ".env"),
   "CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat-theme\n");
 process.env.HOME = home;
-process.env.NH_ORIGIN = `http://127.0.0.1:${PORT}`;
 
 // A live server so main.mjs ATTACHES instead of spawning a real nh.
-const server = http.createServer((_q, s) => { s.end("[]"); });
-await new Promise((r) => server.listen(PORT, "127.0.0.1", r));
+const { server, origin: ORIGIN } = await listenOnFreePort((_q, s) => { s.end("[]"); });
+process.env.NH_ORIGIN = ORIGIN;
 
 const stub = await import("./testing/electronStub.mjs");
 // A userData dir of THIS test's own. The stub's default is a fixed path under

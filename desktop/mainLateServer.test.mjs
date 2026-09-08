@@ -20,12 +20,13 @@ import test from "node:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { probe } from "./server.mjs";
+import { freePort } from "./testing/ports.mjs";
 
 register("./testing/electronLoader.mjs", import.meta.url);
 
 const IS_WIN = process.platform === "win32";
-const PORT = 19500 + (process.pid % 150);
-const ORIGIN = `http://127.0.0.1:${PORT}`;
+const { port: PORT, origin: ORIGIN } = await freePort();
 
 const home = fs.mkdtempSync(path.join(os.tmpdir(), "nh-late-"));
 fs.mkdirSync(path.join(home, ".no_human"));
@@ -65,6 +66,13 @@ process.env.NH_BIN = sh;
 // the background re-probe window generous — the server binds at ~2s, well inside
 // it, so the board loads within a couple of seconds.
 process.env.NH_SPAWN_TIMEOUT_MS = "1000";
+
+// Precondition, not an assumption: this test's whole premise is that nothing
+// answers the port until the fake `nh` binds it ~2s in. If some other process
+// already holds it, fail HERE with this message rather than in an inscrutable
+// error-page/board-load assertion later.
+assert.notEqual(await probe(ORIGIN), "up",
+  `${ORIGIN} answered a probe — this test requires NOTHING listening yet`);
 
 const rejections = [];
 process.on("unhandledRejection", (e) => rejections.push(e));

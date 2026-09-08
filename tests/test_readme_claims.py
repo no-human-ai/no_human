@@ -1988,7 +1988,7 @@ CITATION_TABLE = (
      '"gh", "pr", "view"'),
     ("security.md", "vcs/git.py:GitRepo._have_remote_commit:959", "vcs/git.py",
      '"git", "fetch"'),
-    ("security.md", ":GitRepo.fetch:1128", "vcs/git.py", '["fetch", remote]'),
+    ("security.md", ":GitRepo.fetch:1253", "vcs/git.py", '["fetch", remote]'),
     ("security.md", "cli/commands.py:merge_stack_run:2931", "cli/commands.py",
      '"gh", "pr", "merge"'),
     ("security.md", "cli/commands.py:approve:5151", "cli/commands.py",
@@ -2596,204 +2596,75 @@ def test_every_line_citation_currently_resolves_exactly():
 
 
 def test_known_issues_traceback_cites_the_functions_it_names(known_issues_doc):
-    """The plain-text traceback in KNOWN_ISSUES.md names `db.py:2296` inside
-    `update_attempt` and `orchestrator.py:4683` inside `_run_attempt` — not
-    backtick-wrapped, so the generic citation table above cannot see them.
-    Checked directly against the AST so a refactor that moves either call is
-    caught rather than silently believed.
+    """The plain-text traceback in KNOWN_ISSUES.md names `Store.update_attempt`
+    and `Orchestrator._run_attempt` — not backtick-wrapped, so the generic
+    citation table above cannot see them. Checked directly against the AST
+    (via `_function_body_source`) so a refactor that moves either call inside
+    its function is caught, without pinning to an absolute line number.
 
-    Re-anchored 2026-09-01: P5's `list_tasks(limit=, offset=)` pagination and
-    its review-round-1 `rowid DESC` tie-break together added 18 lines above
-    this call inside db.py (most recently to 2103 on the P5 merge); the citation is re-verified
-    against the code, not carried forward blind.
-
-    Re-anchored again 2026-09-01: the local-backend infra classifier
-    (`_park_local_infra`, the coder call site, and the `_park_quota` guard)
-    added lines above this call inside orchestrator.py, moving it from 4559
-    to 4566; re-verified against the code, not carried forward blind.
-
-    Re-anchored again 2026-09-03 (second): `record_cancel_reason` and its
-    callers added 47 lines above `update_attempt`'s commit in db.py, moving
-    the citation from 2188 to 2235; re-verified against the code, not
-    carried forward blind.
-
-    Re-anchored again 2026-09-03: the reviewer role-backend disclosure work
-    added 24 lines above `_run_attempt`'s update_attempt call in
-    orchestrator.py, moving the citation from 4599 to 4623; re-verified
-    against the code, not carried forward blind.
-
-    Re-anchored again 2026-09-02 (second): `reconcile_landed_terminal`
-    (the terminal failed/cancelled landed-evidence pass) added 85 lines above
-    `update_attempt`'s commit in db.py, moving the citation from 2103 to
-    2188; re-verified against the code, not carried forward blind.
-
-    Re-anchored again 2026-09-02: the profile-divergence advisory's
-    `_profile_divergence_warned` latch, added in `Orchestrator.__init__`,
-    pushed every later line in the file down by 5, moving this citation from
-    4566 to 4571; re-verified against the code, not carried forward blind.
-
-    Re-anchored again 2026-09-02 (rebase): the declared-repro-files-committed
-    preflight (`repro_send_back_message`'s helper text, `_declared_files_
-    preflight`, `_DECLARED_FILES_ROUND_TURNS`, `declared_files_send_back_
-    message`, and the `_repro_gate_step`/`_repro_corrective_round` wiring)
-    added 28 lines above this call inside orchestrator.py during the rebase
-    onto origin/main, moving it from 4571 to 4599; re-verified against the
-    code, not carried forward blind.
-
-    Re-anchored again 2026-09-03 (second): the reviewer role-backend
-    disclosure-rendering slice (`_emit_models` dropping the appended
-    `detail` suffix in favour of the `role_backends` kwarg alone, plus its
-    updated docstring) added 2 net lines above `_run_attempt`'s
-    `update_attempt(attempt_id, branch_name=branch)` call inside
-    orchestrator.py, moving the citation from 4623 to 4625; re-verified
-    against the code, not carried forward blind.
-
-    Re-anchored again 2026-09-03 (third): the approval-supersede write
-    site — `_write_status`'s CASE-clause stamp of
-    `context.approval_superseded_at` (all three CAS branches), the
-    in-process mirror, and the docstring explaining the contract — added
-    61 lines above `update_attempt`'s commit in db.py, moving the citation
-    from 2235 to 2296; re-verified against the code, not carried forward
-    blind. `_run_attempt`'s call site in orchestrator.py is untouched by
-    this change and stays at 4625.
-
-    Re-anchored again 2026-09-04: the dispatch-time intake-eval hoisted
-    path (the `elif ctx.get("eval_result")` branch that acts on a
-    grill/wizard-stored verdict, plus its cost/residual-gap comments)
-    added 18 lines above `_run_attempt`'s `update_attempt` call inside
-    `_drive`, earlier in orchestrator.py, moving the citation from 4625
-    to 4643; re-verified against the code, not carried forward blind.
-
-    Re-anchored again 2026-09-03 (fourth): the structural-budget preflight
-    (`structural_budget_send_back_message`, `_structural_budget_preflight`,
-    and its call site between the repro gate and the draft-PR open — one
-    bounded corrective round when a diff grows a frozen
-    `tests/test_structural_budget.py` entry, so the re-anchor lands before
-    review instead of costing a whole extra attempt) added 34 lines above
-
-Re-anchored again 2026-09-03 (fourth): the WIP-checkpoint resume-digest
-    sentence (`build_resume_digest`'s `base` kwarg, kept) was tried together
-    with a one-turn already-satisfied correction (`_wip_claim_correction`,
-    `_WIP_SUBJECT_REASON`, `_WIP_CLAIM_CORRECTION`) that briefly moved this
-    citation to 4648; the correction turn was WITHDRAWN on independent
-    review (task bf645f3a: coder sessions never resume across attempts, so a
-    same-session correction turn cannot fix a cross-attempt mistake, and its
-    abort-exception path had no handler at its call site) and removed along
-    with its constants and test registration — see
-    `tests/test_already_satisfied_wip_correction.py`. `_run_attempt`'s call
-    site in orchestrator.py is back at 4625, its original line; the `base`
-    threading and the `attempt_n` handoff write that stayed neither added
-    nor removed lines above this call. `update_attempt`'s call site in
-    db.py is untouched by this change and stays at 2296.
-
-    Re-home merge 2026-09-04 (279c03c5): the WIP resume-digest change and the intake-eval/preflight chain now live on one tree; the call measures at 4683 here — re-verified against the code, not carried forward blind.
-    `_run_attempt`'s `update_attempt(attempt_id, branch_name=branch)` call
-    in orchestrator.py, moving the citation from 4625 to 4659; re-verified
-    against the code, not carried forward blind. db.py:2296 is untouched by
-    this change.
-
-    Re-anchored again 2026-09-04 (fifth): the follow-up widening of the
-    structural-budget preflight (`scanned_root`/`touches_scanned_root`
-    alongside `frozen_paths`/`touched_frozen` so a brand-new offender or a
-    stale frozen entry also buys a corrective round, plus the generalized
-    `structural_budget_send_back_message` naming whichever paths triggered
-    it) added 22 lines above `_run_attempt`'s
-    `update_attempt(attempt_id, branch_name=branch)` call in
-    orchestrator.py, moving the citation from 4659 to 4681; re-verified
-    against the code, not carried forward blind. db.py:2296 is untouched by
-    this change.
-
-    Re-anchored again 2026-09-04 (re-home merge): both the intake-eval
-    hoisted path (+18) and the structural-budget preflight chain (+34, +22)
-    now live on one tree; the call measures at 4683 here — re-verified
-    against the code, not carried forward blind.
-
-    Re-anchored again 2026-09-04 (second): the lifetime-cap follow-ups
-    (`latest_review_attempt`/`latest_failed_attempt`, the `_attempt_recency`
-    helper beside `_MECHANICAL_FEEDBACK_SOURCES`, `_mechanical_round`'s third
-    conjunct, and the `_budget_exhausted_blocker` last-failure sentence)
-    added 29 net lines above `_run_attempt`'s `update_attempt(attempt_id,
-    branch_name=branch)` call in orchestrator.py, moving the citation from
-    4683 to 4712; re-verified against the code, not carried forward blind.
-    db.py:2296 sits above the new `latest_review_attempt`/
-    `latest_failed_attempt` helpers (added near :2469) and is untouched by
-    this change.
-
-    Re-anchored again 2026-09-04 (attribution guard, rebased onto the
-    lifetime-cap follow-ups above): the base-sha pin hardening added three
-    helpers ahead of `_run_attempt` in the file (`_base_exclusion_refs`, the
-    `base_pin`-aware paragraph on `_foreign_authored_commits`, and the
-    `ls_remote_exact` pin capture plus its fail-closed advisory branch
-    inside `_run_attempt` itself) — 89 net lines above the 4683 baseline on
-    its own — which combined with the lifetime-cap follow-ups' 29 lines
-    moves `self.store.update_attempt(attempt_id, branch_name=branch)` to
-    4801 in orchestrator.py. The same change added `base_pin_sha` to
-    `Store._ensure_task_columns`'s additive-column dict in db.py, ahead of
-    `update_attempt`, moving its `await self.db.commit()` from 2296 to 2306
-    (the lifetime-cap helpers sit above this call and do not shift it
-    further). Both re-verified against the code, not carried forward blind.
-
-    Re-anchored again 2026-09-04 (sixth): the task_failed telemetry
-    reason_category wiring (_fail's new keyword-only param, the
-    _telemetry_hook resolution, and the tagged self._fail(...) call sites)
-    added 6 net lines above _run_attempt's update_attempt(attempt_id,
-    branch_name=branch) call in orchestrator.py, moving the citation from
-    4801 to 4807; re-verified against the code, not carried forward blind.
-    db.py:2306 is untouched by this change.
-
-    Re-anchored again 2026-09-08: profile-declared worktree setup commands —
-    the new `Orchestrator._run_worktree_setup` helper (resolving
-    `_usable_profile`, marshalling `run_setup_commands`'s emits onto the loop
-    thread via `call_soon_threadsafe`, and honouring a cancel mid-setup) sits
-    entirely ABOVE `_run_attempt` in orchestrator.py, adding 72 net lines
-    ahead of it and moving this citation from 4807 to 4879.
-
-    Re-anchored again 2026-09-08 (round 4): that helper first shipped behind
-    a `_drive_watched(task, repo, *, setup_in=None)` keyword seam, which
-    TypeErrors the plain `(task, repo)` fakes `test_worktree_isolation.py`
-    and `test_worktree_teardown.py` install over `_drive_watched` — those
-    two files are never edited, so `_drive_watched` is restored to exactly
-    that two-arg signature and the worktree path now travels via a
-    single-use instance attribute (`self._pending_setup_path`, set by
-    `_run_task_body`'s worktree branch immediately before the call and
-    consumed — read then cleared — the moment `_drive_watched` runs) instead
-    of a keyword argument. That attribute and its consume-on-read logic add
-    20 more net lines above `_run_attempt`, moving this citation from 4879
-    to 4899; re-verified against the code, not carried forward blind.
-    `_run_attempt`'s own body, and db.py:2306, are both untouched by this
-    change.
+    The citation is deliberately symbolic: this entry describes a class of
+    defect, not a specific build, and an absolute line number carries no
+    information for a reader of KNOWN_ISSUES.md. Pinning to a line number in
+    a 21,900-line file that keeps growing above `_run_attempt` meant this
+    test was re-anchored twenty times and went red on unrelated commits that
+    merely added lines above it; naming the frames symbolically removes that
+    churn without losing the ability to verify the citation against the code.
     """
-    assert "db.py:2306" in known_issues_doc, (
-        "the traceback no longer cites db.py:2306 — this test is pointed at "
-        "stale text; re-derive from the current traceback"
+    assert (
+        "src/no_human/core/db.py in Store.update_attempt" in known_issues_doc
+    ), (
+        "the traceback no longer names db.py's Store.update_attempt frame — "
+        "this test is pointed at stale text; re-derive from the current "
+        "traceback"
     )
-    assert "orchestrator.py:4899" in known_issues_doc, (
-        "the traceback no longer cites orchestrator.py:4899 — this test is "
-        "pointed at stale text; re-derive from the current traceback"
+    assert (
+        "src/no_human/core/orchestrator.py in Orchestrator._run_attempt"
+        in known_issues_doc
+    ), (
+        "the traceback no longer names orchestrator.py's "
+        "Orchestrator._run_attempt frame — this test is pointed at stale "
+        "text; re-derive from the current traceback"
+    )
+    assert "await self.db.commit()" in known_issues_doc, (
+        "the traceback no longer quotes the commit statement it blames"
+    )
+    assert (
+        "self.store.update_attempt(attempt_id, branch_name=branch)"
+        in known_issues_doc
+    ), "the traceback no longer quotes the update_attempt call it blames"
+
+    match = re.search(
+        r"```\nsqlite3\.OperationalError: cannot commit transaction.*?\n```",
+        known_issues_doc,
+        re.DOTALL,
+    )
+    assert match is not None, (
+        "could not find the commit-in-progress traceback's fenced block — "
+        "positive control failed, this test may be passing vacuously"
+    )
+    traceback_block = match.group(0)
+    assert "sqlite3.OperationalError" in traceback_block
+    assert re.search(r"\.py:\d", traceback_block) is None, (
+        f"the traceback block still cites an absolute line number: "
+        f"{traceback_block!r} — this entry describes a class of defect, "
+        f"not a specific build, and must cite the frames symbolically"
     )
 
     db_src = (REPO / "src" / "no_human" / "core" / "db.py").read_text(encoding="utf-8")
     db_body = _function_body_source(db_src, "update_attempt")
-    db_lines = db_src.splitlines()
-    assert 1 <= 2306 <= len(db_lines), "db.py is now shorter than line 2306"
-    assert db_lines[2305].strip() == "await self.db.commit()", (
-        f"db.py:2306 is now {db_lines[2305]!r}, not the commit the traceback "
-        f"names"
-    )
     assert "await self.db.commit()" in db_body, (
-        "line 2306 is no longer inside update_attempt's body"
+        "Store.update_attempt no longer contains `await self.db.commit()` — "
+        "re-derive the traceback from the current code"
     )
 
     orch_src = ORCHESTRATOR_PY.read_text(encoding="utf-8")
     orch_body = _function_body_source(orch_src, "_run_attempt")
-    orch_lines = orch_src.splitlines()
-    assert 1 <= 4899 <= len(orch_lines), "orchestrator.py is now shorter than line 4899"
-    assert "self.store.update_attempt(" in orch_lines[4898], (
-        f"orchestrator.py:4899 is now {orch_lines[4898]!r}, not the "
-        f"update_attempt call the traceback names"
-    )
-    assert "self.store.update_attempt(" in orch_body, (
-        "line 4899 is no longer inside _run_attempt's body"
+    assert (
+        "self.store.update_attempt(attempt_id, branch_name=branch)" in orch_body
+    ), (
+        "Orchestrator._run_attempt no longer contains "
+        "`self.store.update_attempt(attempt_id, branch_name=branch)` — "
+        "re-derive the traceback from the current code"
     )
 
 

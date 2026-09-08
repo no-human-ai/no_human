@@ -243,11 +243,14 @@ def resolve_hunks(merged_text: str, measured: dict) -> tuple[str, list[str]] | N
     return "".join(out_lines), notes
 
 
-def _load_module_from_path(name: str, path: Path):
+def _load_module_from_path(name: str, path: Path) -> tuple[object | None, str]:
+    """Returns `(module, "")` on success, `(None, reason)` on failure — the
+    reason names the path and the underlying error so a caller can surface
+    it instead of swallowing it (see `load_scanner`/`measure`)."""
     try:
         spec = importlib.util.spec_from_file_location(name, path)
         if spec is None or spec.loader is None:
-            return None
+            return None, f"no import spec for {path}"
         module = importlib.util.module_from_spec(spec)
         # `tests/test_structural_budget.py` decorates `Entry` with
         # `@dataclass(frozen=True)`, and the dataclass machinery resolves
@@ -263,31 +266,45 @@ def _load_module_from_path(name: str, path: Path):
             spec.loader.exec_module(module)
         finally:
             sys.modules.pop(name, None)
-        return module
-    except Exception:
-        return None
+        return module, ""
+    except Exception as exc:
+        return None, f"cannot load {path}: {exc!r}"
 
 
-def load_scanner(worktree_path: str, ours_blob_text: str):
-    """Load the scanner code (`scan_tree`/`scan_source`/…). Prefers the
-    production module at `src/no_human/testing/structural_budget.py` if
-    present (PR #1035's planned extraction); falls back to loading "ours"'s
-    own copy of `tests/test_structural_budget.py` as a throwaway module —
-    that file is self-contained (the scanner lives inside it today) and
-    "ours" is the side whose conflict we are resolving, so it is the
-    faithful copy of the scanner as of this branch."""
+def load_scanner(worktree_path: str, ours_blob_text: str) -> tuple[object | None, str]:
+    """Load the scanner code (`scan_tree`/`scan_source`/…) and return
+    `(module, "")`, or `(None, reason)` naming why nothing usable was found.
+
+    Prefers the production module at
+    `src/no_human/testing/structural_budget.py` — but ONLY when it actually
+    exposes `scan_tree`. Bugfix context: that path has existed since
+    31a03c9f (2026-09-04) as PR #1035's structural-budget PREFLIGHT helper
+    (`frozen_paths`, `touched_frozen`, …) — it has never defined `scan_tree`,
+    so blindly preferring it (as this used to do) always fails the load
+    closed and hid the true fallback (tasks d256ae60/e9e90630, 2026-09-08).
+    Falls back to loading "ours"'s own copy of `tests/test_structural_budget.py`
+    as a throwaway module — that file is self-contained (the scanner lives
+    inside it today) and "ours" is the side whose conflict we are resolving,
+    so it is the faithful copy of the scanner as of this branch."""
     real = Path(worktree_path) / "src" / "no_human" / "testing" / "structural_budget.py"
+    real_reason = ""
     if real.exists():
-        return _load_module_from_path("nh_budget_scanner_real", real)
+        mod, reason = _load_module_from_path("nh_budget_scanner_real", real)
+        if mod is not None and hasattr(mod, "scan_tree"):
+            return mod, ""
+        real_reason = reason or f"scanner module {real} has no scan_tree"
+
     tmp_path: Path | None = None
+    ours_mod = None
+    ours_reason = ""
     try:
         fd, tmp_name = tempfile.mkstemp(suffix=".py")
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(ours_blob_text)
         tmp_path = Path(tmp_name)
-        return _load_module_from_path("nh_budget_scanner_tmp", tmp_path)
-    except Exception:
-        return None
+        ours_mod, ours_reason = _load_module_from_path("nh_budget_scanner_tmp", tmp_path)
+    except Exception as exc:
+        ours_reason = f"cannot write ours {BUDGET_TEST_PATH} copy: {exc!r}"
     finally:
         if tmp_path is not None:
             try:
@@ -295,23 +312,34 @@ def load_scanner(worktree_path: str, ours_blob_text: str):
             except OSError:
                 pass
 
+    if ours_mod is not None and hasattr(ours_mod, "scan_tree"):
+        return ours_mod, ""
+    if ours_mod is not None:
+        ours_reason = f"ours {BUDGET_TEST_PATH} copy has no scan_tree"
+    elif not ours_reason:
+        ours_reason = f"ours {BUDGET_TEST_PATH} copy failed to load"
 
-def measure(worktree_path: str, ours_blob_text: str) -> dict | None:
+    if real_reason:
+        return None, f"{real_reason}; ours {BUDGET_TEST_PATH} copy: {ours_reason}"
+    return None, ours_reason
+
+
+def measure(worktree_path: str, ours_blob_text: str) -> tuple[dict | None, str]:
     """Run the scanner against `<worktree_path>/src/no_human` and return
-    ``{"FROZEN_FUNCTION_LINES": {...}, "FROZEN_FUNCTION_CC": {...},
-    "FROZEN_FILE_LINES": {...}}`` (each an offenders-only dict, exactly what
-    `scan_tree` itself returns), or `None` if the scanner cannot be loaded or
-    run."""
-    scanner = load_scanner(worktree_path, ours_blob_text)
+    ``({"FROZEN_FUNCTION_LINES": {...}, "FROZEN_FUNCTION_CC": {...},
+    "FROZEN_FILE_LINES": {...}}, "")`` (each an offenders-only dict, exactly
+    what `scan_tree` itself returns), or `(None, reason)` — naming why —
+    if the scanner cannot be loaded or run."""
+    scanner, reason = load_scanner(worktree_path, ours_blob_text)
     if scanner is None:
-        return None
+        return None, reason
     try:
         scanned = scanner.scan_tree(Path(worktree_path) / "src" / "no_human")
-    except Exception:
-        return None
+    except Exception as exc:
+        return None, f"scan_tree failed on the merged tree: {exc!r}"
     if not isinstance(scanned, tuple) or len(scanned) < 3:
-        return None
-    return {name: dict(scanned[idx]) for name, idx in _DICT_TO_MEASURE.items()}
+        return None, f"scan_tree returned an unexpected shape: {repr(scanned)[:200]}"
+    return {name: dict(scanned[idx]) for name, idx in _DICT_TO_MEASURE.items()}, ""
 
 
 def run_budget_test(worktree_path: str, timeout: int = _BUDGET_TEST_TIMEOUT_S) -> tuple[bool, str]:

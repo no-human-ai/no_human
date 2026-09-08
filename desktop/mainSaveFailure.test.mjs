@@ -13,6 +13,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { probe } from "./server.mjs";
+import { freePort } from "./testing/ports.mjs";
 
 register("./testing/electronLoader.mjs", import.meta.url);
 
@@ -26,7 +28,21 @@ fs.chmodSync(fakeNh, 0o644);                 // deliberately not +x -> EACCES
 process.env.HOME = home;
 process.env.USERPROFILE = home; // os.homedir() reads USERPROFILE on Windows (see mainIpc.test.mjs)
 process.env.NH_BIN = fakeNh;
-process.env.NH_ORIGIN = `http://127.0.0.1:${19800 + (process.pid % 120)}`;  // nothing listening
+const { origin: ORIGIN } = await freePort();  // nothing listening
+process.env.NH_ORIGIN = ORIGIN;
+
+// Precondition, not an assumption: this test's whole premise is that the boot
+// probe finds nothing. If some other process holds this port, fail HERE with
+// this message rather than 20s later as "boot never reached the setup screen".
+assert.notEqual(await probe(ORIGIN), "up",
+  `${ORIGIN} answered a probe — this test requires NOTHING listening`);
+// No NH_SPAWN_TIMEOUT_MS pin here: on EACCES the race inside ensureServer is
+// decided by the child's 'error' event (server.mjs:619-620, 633-635 area),
+// and the losing waitForServer poll loop is now cancelled via an
+// AbortSignal the instant that race is decided (server.mjs:89-107 loop,
+// :632/:641 abort call) instead of polling the dead origin on its own timers
+// for the rest of spawnTimeoutMs. So this test runs against the real 30000ms
+// default (server.mjs:567 / main.mjs:54-55) and still finishes in ~2s.
 
 const stub = await import("./testing/electronStub.mjs");
 await import("./main.mjs");
@@ -67,9 +83,7 @@ test("a token saved against a server that cannot start reports the failure", asy
   assert.ok(handler, "main.mjs must register nh:save-token");
   const setupUrl = pathToFileURL(path.join(HERE, "token.html")).href;
 
-  const started = Date.now();
   const res = await handler({ senderFrame: { url: setupUrl } }, "sk-ant-oat-cannot-start");
-  const elapsed = Date.now() - started;
 
   assert.equal(res.ok, false,
     "reporting ok here paints 'Connected. Opening no_human…' over an error page");
@@ -77,6 +91,22 @@ test("a token saved against a server that cannot start reports the failure", asy
   // The token itself IS saved — only the server failed.
   assert.match(fs.readFileSync(path.join(home, ".no_human", ".env"), "utf8"),
     /sk-ant-oat-cannot-start/);
-  assert.ok(elapsed < 8000,
-    `this path must be fast (spawn fails immediately); took ${elapsed}ms`);
+  // MECHANISM, not a stopwatch. On EACCES the child's 'error' event resolves
+  // the spawnErrored branch of ensureServer's Promise.race
+  // (server.mjs:619-620, 633-635) and the reason maps to "spawn-error"
+  // (server.mjs:649-654). Had the handler not resolved through that event,
+  // the reason would read "backend-exited" (the child's 'close' also fires
+  // on EACCES, server.mjs:628-631) or "spawn-timeout" (neither event won and
+  // waitForServer ran out its deadline) -- so this string IS the assertion
+  // that no probe window was awaited. It also proves no late-server re-probe
+  // was scheduled: main.mjs:593-594 polls only for "spawn-timeout". There is
+  // deliberately NO elapsed-time bound: this path measures ~0.9s warm, and
+  // the incident that filed this change recorded 22.8s on a cold first run
+  // under concurrent Electron-stub boot (2026-09-08), so any bound measures
+  // the machine, not the code (#125).
+  assert.match(res.error, /\(spawn-error\)/,
+    `the failed-spawn path must resolve through the child's 'error' event, ` +
+    `not the 30000ms default start-probe window; got: ${res.error}`);
+  assert.doesNotMatch(res.error, /spawn-timeout/,
+    "spawn-timeout means the handler sat through waitForServer's deadline");
 });

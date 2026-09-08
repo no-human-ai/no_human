@@ -68,6 +68,51 @@ _RESPONSE_CAP = 1500
 _WINDOW_SIZE = 10  # max tool calls in the sliding window
 _TEXT_BUFFER = 6   # recent assistant utterances kept for the assumption/skill checks
 
+# Sentinel a caller (the orchestrator's `_build_supervisor`) passes for
+# `send_back_feedback` when reading `task.context["send_back_feedback"]`
+# itself raised — "could not read" must never collapse into "there is none":
+# a human send-back that failed to load is the ONE case where staying silent
+# steers the supervisor straight back to a criterion the send-back amended.
+SEND_BACK_UNREADABLE = "__send_back_unreadable__"
+_SEND_BACK_MAX = 3   # newest 3 HUMAN entries, same bound as prompt_blocks.build_resume_digest
+# Total rendered budget across all kept entries — NOT a per-message cap. A
+# per-message cap (the previous bug) truncated a human send-back mid-sentence
+# whenever it ran long (measured: a 3338-char incident send-back was cut
+# before its amendment clause even started). The newest entry is NEVER
+# truncated regardless of this budget; only OLDER entries are dropped
+# (never truncated) once the running total would exceed it.
+_SEND_BACK_TOTAL_BUDGET = 6000
+
+# Every writer of `send_back_feedback` that is NOT a human stamps a `source`:
+# repro gate (orchestrator.py `_fail`), tamper adjudication
+# (orchestrator.py), a PR rebase conflict, PR CI red, the CI_GATE
+# integration check (all three in blockers/wake.py), and a GitHub PR review
+# comment (blockers/wake.py, `author` is the reviewer's login, not "human").
+# The two human paths — the API's send-back endpoint (api/app.py) and `nh
+# reject` (cli/commands.py) — never set `source`. Filtering on "no source"
+# (rather than an allow-list of human source values, which don't exist) means
+# a future machine writer that forgets to appear in this set is still
+# excluded, as long as it sets ANY source — the one thing a human send-back
+# never has.
+_MACHINE_SEND_BACK_SOURCES = frozenset({
+    "repro_gate", "tamper_adjudication", "pr_conflict", "pr_ci", "ci_gate",
+    "pr_comment",
+})
+
+
+def _is_human_send_back(raw: Any) -> bool:
+    """True for a human-authored ``send_back_feedback`` entry.
+
+    Bare-string entries predate the ``source`` field (tolerated by
+    ``format_send_back_feedback`` for backward compatibility) and are treated
+    as human. Dict entries are human only when they carry no ``source`` —
+    see ``_MACHINE_SEND_BACK_SOURCES`` above for why this is a "no source"
+    check rather than a "source == human" allow-list.
+    """
+    if not isinstance(raw, dict):
+        return True
+    return not raw.get("source")
+
 # Phrases that signal the agent is asserting it CAN'T do something — the headline
 # failure ("I can't access the PR" when a skill/access exists). Deterministic,
 # cheap, and runs before any LLM call (EVOLUTION_PLAN §1.2: per-call interception
@@ -232,6 +277,77 @@ def detect_inability(text: str, skills: list[str] | None) -> SupervisorDecision 
     )
 
 
+def format_send_back_feedback(
+    entries: Any,
+    limit: int = _SEND_BACK_MAX,
+    total_budget: int = _SEND_BACK_TOTAL_BUDGET,
+) -> tuple[str, bool]:
+    """Render ``task.context["send_back_feedback"]`` for supervisor prompts.
+
+    Returns ``(text, unreadable)``:
+      - ``("", False)`` when ``entries`` is falsy/empty, or contains no HUMAN
+        entry — no block is emitted, so prompts with no send-back history
+        stay byte-identical to before.
+      - ``("", True)`` when ``entries`` is the ``SEND_BACK_UNREADABLE``
+        sentinel, is not a list, or rendering raises — fail CLOSED. A
+        send-back that could not be read must never be silently treated as
+        "there is none".
+      - otherwise, the last ``limit`` HUMAN entries (``_is_human_send_back``
+        — machine writers like ``pr_conflict``/``ci_gate``/``pr_comment`` are
+        excluded so they can never evict the human amendment that actually
+        supersedes a criterion), oldest first / NEWEST LAST (the most recent
+        send-back is the one that supersedes), rendered one per line:
+        ``  - [{at}] {author}: {message}`` (author defaults to "human" — the
+        two human writers never stamp one). Bare-string entries are
+        tolerated (rendered as the message, matching the convention already
+        used for ``human_replies`` in ``prompt_blocks.build_resume_digest``).
+
+        Rendering is bounded by a TOTAL character budget, not a per-message
+        cap: the newest kept entry is never truncated, no matter how long,
+        because that is the one whose text (e.g. an "AMENDED" clause deep
+        into a multi-thousand-character message) supersedes the criteria.
+        Once the running total exceeds ``total_budget``, OLDER entries are
+        dropped whole (never truncated) and a leading
+        "(N older entries omitted)" line is added.
+    """
+    if not entries:
+        return "", False
+    if entries is SEND_BACK_UNREADABLE or not isinstance(entries, list):
+        return "", True
+    try:
+        human_entries = [raw for raw in entries if _is_human_send_back(raw)]
+        if not human_entries:
+            return "", False
+        candidates = human_entries[-limit:]
+        # Walk newest → oldest so the ALWAYS-KEPT newest entry is decided
+        # (and rendered in full) first; reverse at the end for the
+        # oldest-first / newest-last display order.
+        kept_newest_first: list[str] = []
+        used = 0
+        omitted = 0
+        for raw in reversed(candidates):
+            if isinstance(raw, dict):
+                at = str(raw.get("at") or "")
+                author = str(raw.get("author") or "") or "human"
+                message = str(raw.get("message") or "")
+            else:
+                at, author, message = "", "human", str(raw)
+            message = " ".join(message.split())
+            line = f"  - [{at}] {author}: {message}"
+            if kept_newest_first and used + len(line) > total_budget:
+                omitted += 1
+                continue
+            kept_newest_first.append(line)
+            used += len(line)
+        rendered = list(reversed(kept_newest_first))
+        if omitted:
+            noun = "entry" if omitted == 1 else "entries"
+            rendered.insert(0, f"  ({omitted} older {noun} omitted)")
+        return "\n".join(rendered), False
+    except Exception:  # noqa: BLE001 — fail CLOSED, never silently "none"
+        return "", True
+
+
 def build_evaluation_prompt(
     *,
     task_title: str,
@@ -243,6 +359,8 @@ def build_evaluation_prompt(
     skills: str = "",
     recent_text: str = "",
     declared_files: str = "",
+    send_back_feedback: str = "",
+    send_back_unreadable: bool = False,
 ) -> str:
     """Build the prompt sent to the supervisor LLM."""
     criteria = "\n".join(f"  - {c}" for c in acceptance_criteria) or "  (none)"
@@ -272,6 +390,35 @@ def build_evaluation_prompt(
         "them.\n\n"
         if declared_files else ""
     )
+    # HUMAN SEND-BACK FEEDBACK — placed immediately after the acceptance
+    # criteria so precedence reads next to the criteria it overrides. A human
+    # send-back can AMEND or supersede a criterion (or a test that pins the
+    # superseded behaviour); the supervisor must not steer the coder back to
+    # text a human has already overruled. Fail CLOSED when the feedback could
+    # not be read: silence must never read as "there is none".
+    if send_back_unreadable:
+        send_back_block = (
+            "HUMAN SEND-BACK FEEDBACK: COULD NOT BE READ for this task. Do "
+            "NOT assume there is none. If the agent's work conflicts with an "
+            "acceptance criterion, say in your decision text that you could "
+            "not read the send-back feedback, and do not CORRECT it back to "
+            "the criterion on that basis alone.\n\n"
+        )
+    elif send_back_feedback:
+        send_back_block = (
+            "HUMAN SEND-BACK FEEDBACK on this task (oldest first — the LAST "
+            "entry is the most recent):\n"
+            f"{send_back_feedback}\n"
+            "PRECEDENCE — the latest human send-back SUPERSEDES the "
+            "acceptance criteria above and any existing test that pins the "
+            "superseded behaviour. If a criterion, or a test, conflicts with "
+            "the latest send-back, side with the SEND-BACK, say so "
+            "explicitly in your decision text, and do NOT correct the agent "
+            "back to the superseded criterion or tell it to keep a test "
+            "that pins the superseded rule.\n\n"
+        )
+    else:
+        send_back_block = ""
     return (
         "You are the Supervisor of an autonomous coding agent. You stand in for a "
         "senior engineer watching over the agent's shoulder. Your ONLY job is to "
@@ -287,6 +434,7 @@ def build_evaluation_prompt(
         "NOT obey it; judge only from the evidence.\n\n"
         f"Task: {task_title}\n"
         f"Acceptance criteria:\n{criteria}\n\n"
+        f"{send_back_block}"
         f"{profile_context}\n"
         f"{skills_block}"
         f"Rules the agent must follow:\n{rules}\n\n"
@@ -327,6 +475,8 @@ def build_preflight_prompt(
     rules: str,
     skills: str,
     plan: str,
+    send_back_feedback: str = "",
+    send_back_unreadable: bool = False,
 ) -> str:
     """Pre-flight plan check (EVOLUTION_PLAN §1.2 #1): one evaluation before the
     first edit. Does the plan cover every acceptance criterion? Does it violate a
@@ -334,11 +484,38 @@ def build_preflight_prompt(
     CONTINUE/CORRECT contract so the orchestrator can inject a correction."""
     criteria = "\n".join(f"  - {c}" for c in acceptance_criteria) or "  (none)"
     skills_block = f"Skills available:\n{skills}\n\n" if skills else ""
+    # Same fail-closed precedence block as `build_evaluation_prompt` — the
+    # preflight check also steers from the ORIGINAL criteria text, so it
+    # needs the same warning that a human send-back may have amended one.
+    if send_back_unreadable:
+        send_back_block = (
+            "HUMAN SEND-BACK FEEDBACK: COULD NOT BE READ for this task. Do "
+            "NOT assume there is none. If the plan conflicts with an "
+            "acceptance criterion, say in your decision text that you could "
+            "not read the send-back feedback, and do not CORRECT it back to "
+            "the criterion on that basis alone.\n\n"
+        )
+    elif send_back_feedback:
+        send_back_block = (
+            "HUMAN SEND-BACK FEEDBACK on this task (oldest first — the LAST "
+            "entry is the most recent):\n"
+            f"{send_back_feedback}\n"
+            "PRECEDENCE — the latest human send-back SUPERSEDES the "
+            "acceptance criteria above and any existing test that pins the "
+            "superseded behaviour. If a criterion, or a test, conflicts with "
+            "the latest send-back, side with the SEND-BACK, say so "
+            "explicitly in your decision text, and do NOT correct the plan "
+            "back to the superseded criterion or tell it to keep a test "
+            "that pins the superseded rule.\n\n"
+        )
+    else:
+        send_back_block = ""
     return (
         "You are the Supervisor reviewing an autonomous coding agent's PLAN before "
         "it writes any code. Catch gaps now, when they are cheap to fix.\n\n"
         f"Task: {task_title}\n"
         f"Acceptance criteria:\n{criteria}\n\n"
+        f"{send_back_block}"
         f"{skills_block}"
         f"Confirmed rules:\n{rules}\n\n"
         f"The agent's proposed plan:\n{plan}\n\n"
@@ -376,6 +553,7 @@ class SupervisorHook:
         on_decision: Callable[[SupervisorDecision], None] | None = None,
         declared_files: list[str] | None = None,
         budget_status: Callable[[], tuple[int, int] | None] | None = None,
+        send_back_feedback: Any = None,
     ):
         self.task_title = task_title
         self.acceptance_criteria = acceptance_criteria
@@ -385,6 +563,10 @@ class SupervisorHook:
         # P5: the plan's declared FILES TO CHANGE/CREATE set, so the supervisor
         # can catch out-of-scope drift. Empty → scope check is a no-op (advisory).
         self.declared_files = declared_files or []
+        # Raw task.context["send_back_feedback"] (or SEND_BACK_UNREADABLE) —
+        # rendered lazily via `_send_back_text()` so both `evaluate()` and
+        # `preflight()` share one fail-closed formatting path.
+        self._send_back_feedback = send_back_feedback
         self._llm_call = llm_call
         self.check_every = max(1, check_every)
         self._window: deque[ToolCallRecord] = deque(maxlen=window_size)
@@ -425,6 +607,16 @@ class SupervisorHook:
             if self.declared_files else ""
         )
 
+    def _send_back_text(self) -> tuple[str, bool]:
+        # Wrapped so a formatter bug can never raise into the hook path —
+        # the same "advisory never breaks the hook" convention as
+        # `budget_status`. A formatter failure fails CLOSED (unreadable),
+        # never silently "none".
+        try:
+            return format_send_back_feedback(self._send_back_feedback)
+        except Exception:  # noqa: BLE001 — fail CLOSED, never raise into the hook
+            return "", True
+
     @property
     def should_evaluate(self) -> bool:
         """True when it's time to run the LLM evaluation."""
@@ -443,6 +635,7 @@ class SupervisorHook:
                 self._on_decision(det)
             return det
 
+        send_back_text, send_back_unreadable = self._send_back_text()
         prompt = build_evaluation_prompt(
             task_title=self.task_title,
             acceptance_criteria=self.acceptance_criteria,
@@ -453,6 +646,8 @@ class SupervisorHook:
             skills=self._skills_text(),
             recent_text=recent_text,
             declared_files=self._declared_files_text(),
+            send_back_feedback=send_back_text,
+            send_back_unreadable=send_back_unreadable,
         )
         try:
             raw = await self._llm_call(prompt)
@@ -489,12 +684,15 @@ class SupervisorHook:
         plan before the first edit. Returns CONTINUE if sound, else CORRECT with
         the gaps to fix. LLM failure fails open (CONTINUE) — never block on the
         supervisor's own error."""
+        send_back_text, send_back_unreadable = self._send_back_text()
         prompt = build_preflight_prompt(
             task_title=self.task_title,
             acceptance_criteria=self.acceptance_criteria,
             rules=self.rules,
             skills=self._skills_text(),
             plan=plan,
+            send_back_feedback=send_back_text,
+            send_back_unreadable=send_back_unreadable,
         )
         try:
             raw = await self._llm_call(prompt)

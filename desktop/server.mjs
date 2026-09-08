@@ -80,13 +80,28 @@ export async function probe(origin = DEFAULT_ORIGIN, timeoutMs = 1500, retryDela
 
 /**
  * Poll until the server is up or the deadline passes. Resolves true when up.
+ *
+ * `signal` lets a caller racing this against something else (ensureServer
+ * races it against the spawned child's 'error'/'close' events) cancel the
+ * loop the instant the race is decided, instead of it probing the dead
+ * origin every intervalMs until deadlineMs elapses for nothing.
  */
 export async function waitForServer(origin = DEFAULT_ORIGIN, deadlineMs = 20000,
-                                    intervalMs = 500) {
+                                    intervalMs = 500, { signal } = {}) {
   const t0 = Date.now();
-  while (Date.now() - t0 < deadlineMs) {
+  while (!signal?.aborted && Date.now() - t0 < deadlineMs) {
     if ((await probe(origin)) === "up") return true;
-    await new Promise((r) => setTimeout(r, intervalMs));
+    if (signal?.aborted) return false;
+    await new Promise((resolve) => {
+      if (signal?.aborted) { resolve(); return; }
+      const t = setTimeout(done, intervalMs);
+      function done() {
+        clearTimeout(t);
+        signal?.removeEventListener?.("abort", done);
+        resolve();
+      }
+      signal?.addEventListener?.("abort", done, { once: true });
+    });
   }
   return false;
 }
@@ -614,8 +629,16 @@ export async function ensureServer({
     child.once("close", (code, signal) => {
       if (code !== 0 || signal) resolve("spawn-exited");
     }));
+  const waitAbort = new AbortController();
   const raced = await Promise.race(
-    [waitForServer(origin, spawnTimeoutMs), spawnErrored, spawnExited]);
+    [waitForServer(origin, spawnTimeoutMs, 500, { signal: waitAbort.signal }),
+      spawnErrored, spawnExited]);
+  // The race is decided the instant this resolves — abort unconditionally so
+  // a losing waitForServer stops probing the dead origin immediately instead
+  // of polling every 500ms for the remainder of spawnTimeoutMs (30s default)
+  // for nothing. A no-op when waitForServer itself won (it has already
+  // returned true and isn't looking at the signal anymore).
+  waitAbort.abort();
   if (raced === "spawn-error" || (await probe(origin)) !== "up") {
     // NOT killed here: a slow-booting nh may still be about to win the port,
     // and killing it from inside ensureServer would race a legitimately

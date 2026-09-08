@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   compareVersions, deferVersion, dueForCheck, isNewer, shouldNotify, updateMessage,
-  updateErrorMessage, retainedUpdate,
+  updateErrorMessage, retainedUpdate, classifyUpdateError, UPDATE_ERROR_MESSAGES,
 } from "./updatePolicy.mjs";
 
 test("version comparison orders releases, including uneven segment counts", () => {
@@ -156,6 +156,55 @@ test("Electron's own net:: errors are offline, not a server problem", () => {
   ]) {
     assert.match(updateErrorMessage(raw), /Check your internet connection/,
       `expected an offline sentence for the Electron net error "${raw}"`);
+  }
+});
+
+test("a dead proxy is named as a proxy problem, not the server", () => {
+  // MEASURED on Windows (19397ed2 build) with a per-user WinINET proxy
+  // pointing at 127.0.0.1:1, confirmed against the bundled Electron probe:
+  // the card's Details showed exactly this string.
+  const raw = "net::ERR_PROXY_CONNECTION_FAILED";
+  const result = classifyUpdateError(raw);
+  assert.equal(result.category, "proxy");
+  assert.equal(result.message,
+    "Could not reach the update server through your network or proxy settings.");
+  assert.doesNotMatch(result.message, /try again later/,
+    "a proxy failure must not read as a server-side one");
+  assert.doesNotMatch(result.message, /internet connection/,
+    "the user's internet may be fine; only the proxy path is broken");
+});
+
+test("a failed HTTPS tunnel through a proxy is a proxy problem, not the server", () => {
+  // Sibling of ERR_PROXY_CONNECTION_FAILED in net/base/net_error_list.h: the
+  // CONNECT tunnel through the proxy failed, distinct from the proxy itself
+  // being unreachable but equally not GitHub's fault.
+  const raw = "net::ERR_TUNNEL_CONNECTION_FAILED";
+  const result = classifyUpdateError(raw);
+  assert.equal(result.category, "proxy");
+  assert.equal(result.message,
+    "Could not reach the update server through your network or proxy settings.");
+  assert.doesNotMatch(result.message, /try again later/);
+  assert.doesNotMatch(result.message, /internet connection/);
+});
+
+test("a failed SOCKS proxy connection is a proxy problem, not the server", () => {
+  // Sibling of ERR_PROXY_CONNECTION_FAILED in net/base/net_error_list.h: the
+  // connection to a configured SOCKS proxy could not be established.
+  const raw = "net::ERR_SOCKS_CONNECTION_FAILED";
+  const result = classifyUpdateError(raw);
+  assert.equal(result.category, "proxy");
+  assert.equal(result.message,
+    "Could not reach the update server through your network or proxy settings.");
+  assert.doesNotMatch(result.message, /try again later/);
+  assert.doesNotMatch(result.message, /internet connection/);
+});
+
+test("an unrelated net::ERR_ string is still a server problem", () => {
+  for (const raw of ["net::ERR_CERT_DATE_INVALID", "net::ERR_FILE_NOT_FOUND"]) {
+    const result = classifyUpdateError(raw);
+    assert.equal(result.category, "server",
+      `expected ${raw} to remain a server problem, not proxy or offline`);
+    assert.equal(result.message, UPDATE_ERROR_MESSAGES.server);
   }
 });
 

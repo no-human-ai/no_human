@@ -108,7 +108,19 @@ FROZEN_FUNCTION_LINES = {
     # is that the pin is captured in `_run_attempt`'s own frame, before the
     # coder can influence it — a helper callable from elsewhere would weaken
     # that guarantee. Measured on this tree with the scanner below.
-    "core/orchestrator.py:Orchestrator._run_attempt": 2210,
+    # 2210 -> 2253 (+43): an earlier, review-failed version of the send-back
+    # "no changes needed" fix kept the landing logic INLINE in the
+    # `if resumed_commit is None:` block, plus used `set_status(...,
+    # validate=False)` — a project-rule violation caught in review.
+    # 2253 -> 2214 (-39): the review fix delegates the landing decision to a
+    # new sibling method, `_land_no_changes_needed` (next to
+    # `_mechanical_round`), so the zero-diff call site shrinks to a ~4-line
+    # `landed = await self._land_no_changes_needed(...); if landed is not
+    # None: return landed`. The delegation costs lines in the new helper
+    # (see the file-total entry below) but nets `_run_attempt` itself
+    # smaller than even the pre-incident-fix baseline. Measured on this
+    # tree with the scanner below.
+    "core/orchestrator.py:Orchestrator._run_attempt": 2214,
     # 760 -> 778 (+18): dispatch-time intake-eval hoisted path — the `elif
     # ctx.get("eval_result")` branch that acts on a grill/wizard-stored
     # verdict (idempotency marker, cost/residual-gap comments) added inside
@@ -166,7 +178,33 @@ FROZEN_FUNCTION_LINES = {
     # errored `AgentResult` via `_quota_signal`/`_infra_sdk_failure`, so
     # `_run_review` gained the `result.is_error` check and passes `result`
     # through on both `_judge_call` branches. Measured on this tree.
-    "core/orchestrator.py:Orchestrator._run_review": 394,
+    # 394 -> 425 (+31): task 90097 (round 4 of 0847f2c2) removed the round-3
+    # unjudged-checkpoint-head instance flag — an out-of-brief, undisclosed
+    # instance flag with a lifetime hole (armed by `_route_unjudged_head`,
+    # only ever consumed by the NEXT `_run_review` call, so it stayed armed
+    # across every non-review exit in between). Deleting the flag with no
+    # replacement (measured 394, matching the pre-flag value) turned out to
+    # be UNSAFE: `_run_review`'s no-reviewer/`allow_advisory` branch would
+    # then unconditionally rubber-stamp a routed diff, which silently
+    # re-broke two pre-existing honesty-gate tests
+    # (`tests/test_resume_wiring.py::
+    # test_inherited_work_is_not_credited_as_a_do_nothing_attempts_own` and
+    # `tests/test_blocker_challenge.py::
+    # test_an_empty_attempt_after_a_challenge_is_not_credited`) that rely on
+    # exactly this call fail-closing an unjudged own-partial checkpoint.
+    # Restoring the safety property without a flag or a new parameter: the
+    # advisory branch now asks `self._is_own_partial(repo, task.context or
+    # {}, repo.head_sha())` directly — the SAME stateless rule
+    # `_run_attempt` already uses to decide `branched_from_own_partial`,
+    # re-derived fresh from `repo`/`task.context` on every call (no
+    # `self` flag, no threaded parameter). `_route_unjudged_head` only ever
+    # routes a head for which that call is true, and nothing commits
+    # between the routing and this call, so HEAD is still that checkpoint —
+    # asking again here tells an unreviewed own-partial apart from a
+    # human-gated resume (which reports False, so it keeps the advisory
+    # freebie) without threading anything between the two calls. Measured
+    # on this tree.
+    "core/orchestrator.py:Orchestrator._run_review": 425,
     # 377 -> 398 (+21): quota-saturation mid-run halt. `bench_run` now builds
     # a `QuotaHaltDetector`, threads `halt.observe(score)`/`halt.scored(...)`
     # through the per-spec checkpoint save inside `_run_spec`, and prints the
@@ -191,7 +229,12 @@ FROZEN_FUNCTION_LINES = {
     # Grew to 371 when the UI-evidence prompt block landed (task 389210fa):
     # an inline enable+glob gate + the ui_evidence_block call. Reviewed on
     # its merits (the block is inert until a profile opts in); frozen here.
-    "core/orchestrator.py:Orchestrator._build_implement_prompt": 371,
+    # 371 -> 381 (+10): follow-up to ce4d4a73 (#151) -- the staleness
+    # narration now decides with `should_rebase(...)` instead of the bare
+    # `commits_behind >= threshold`, and names the overlapping files when a
+    # below-threshold overlap-triggered rebase failed to complete. Measured
+    # with the scanner below.
+    "core/orchestrator.py:Orchestrator._build_implement_prompt": 381,
     # 332 -> 333 (+1): pin-rederivation follow-up adds one
     # `pin_rederivation_note(card),` line to the markdown body list so the
     # published report carries the same recorded-branch/HEAD-fallback
@@ -232,7 +275,15 @@ FROZEN_FUNCTION_CC = {
     # around the `ls_remote_exact` pin capture, plus the fail-closed
     # `if base_pin is None:` advisory branch when the pin doesn't resolve.
     # Measured on this tree with the scanner below.
-    "core/orchestrator.py:Orchestrator._run_attempt": 257,
+    # 257 -> 264 (+7): an earlier, review-failed version of the send-back
+    # "no changes needed" fix kept the guard pair (`_send_back_resume_round`
+    # / `pr.url`) inline in `_run_attempt` itself.
+    # 264 -> 258 (-6): the review fix delegates both guards, plus the
+    # validated status-transition branching, into `_land_no_changes_needed`
+    # — `_run_attempt`'s own zero-diff site is now just the delegating call
+    # plus its `if landed is not None:` check. Measured on this tree with
+    # the scanner below.
+    "core/orchestrator.py:Orchestrator._run_attempt": 258,
     "core/orchestrator.py:Orchestrator._drive": 115,
     "agent/guard.py:_approve_denial": 81,
     # 73 -> 74 (+1): same cause as the LINES entry above — e922e9b4's landing
@@ -242,9 +293,17 @@ FROZEN_FUNCTION_CC = {
     # 73 -> 74 (+1): same verifier-wall-park cause as the LINES entry above
     # — the added `result.is_error` branch is one more `If`. Measured on
     # this tree.
-    "core/orchestrator.py:Orchestrator._run_review": 74,
+    # 74 -> 77 (+3): task 90097 (round 4), same cause as the LINES entry
+    # above — the flag's `if unjudged_checkpoint_head:` branch is replaced
+    # by a `try/except Exception` around `self._is_own_partial(...)` plus
+    # its own `if own_unjudged_partial:` branch (one extra `If` for the
+    # `except`, one for the guard). Measured on this tree.
+    "core/orchestrator.py:Orchestrator._run_review": 77,
     # Crossed 60 (to 67) with the UI-evidence gate landed by task 389210fa.
-    "core/orchestrator.py:Orchestrator._build_implement_prompt": 67,
+    # 67 -> 70 (+3): follow-up to ce4d4a73 (#151) -- one new `if overlap:`
+    # block (+1) plus two `stale.get(...) or []` BoolOps (+1 each). Measured
+    # with the scanner below.
+    "core/orchestrator.py:Orchestrator._build_implement_prompt": 70,
 }
 
 # 9 files > 2,500 lines.
@@ -596,7 +655,120 @@ FROZEN_FILE_LINES = {
     # regex literal -- unrelated to this diff, unchanged by this branch.)
     # The scanner's own metric is what this test compares against, so
     # that is the value recorded here, not `wc -l`'s.
-    "core/orchestrator.py": 21880,
+    # 21880 -> 22081 (+201): merge of environment-error classification
+    # rounds 1-3 (no-human/a6cc4d39 @ fed228cc) on top of the setup_cmds
+    # entry immediately above, additive with it (disjoint code regions):
+    # round 2 (+175) extracted `_run_attempt`'s two failure-billing call
+    # sites into `_layered_tests_failed_outcome` and `_failed_tests_outcome`
+    # (own docstrings/comments, so `_run_attempt` itself nets DOWN against
+    # its own frozen line/CC entry below); round 3 (+26) made
+    # `_environment_test_failure`'s gate unconditional instead of `if not
+    # invocation_error`, plus a comment/docstring paragraph each on
+    # `owned_failing` and on node ids now reaching `failing_tests`
+    # (`_node_tap_failing_tests`, `no_human/testing/runner.py`).
+    # 22081 -> 22125 (+44) round-4 review fix, same merge: (1) MAJOR-1 —
+    # `owned` (computed before `_environment_test_failure`, see
+    # `_owned_failing_tests`) must win over the `invocation_error` branch's
+    # base-tree check too, checked in `_run_attempt` right after the
+    # `getattr(test_result, "invocation_error", False)` guard and BEFORE
+    # `_invocation_error_reproduces_on_base` is awaited — previously an
+    # owned id whose text also matched `_INVOCATION_ERROR_PATTERNS` (e.g.
+    # "Cannot find module" from a test the attempt itself added) fell
+    # through to that base-tree check, which reports "genuinely
+    # environmental" against a diff-independent command and let the attempt
+    # SUCCEED with a PR opened; (2) MINOR-2 — `_layered_tests_failed_
+    # outcome`'s docstring corrected: it claimed "Extracted verbatim" but
+    # carries ~19 lines of ownership/environment-classification logic a
+    # pure code-move would not have added. `_run_attempt`'s own frozen
+    # line/CC entry below is unchanged by either fix (the new code lives
+    # inside the existing `if getattr(test_result, "invocation_error", ...)`
+    # branch, no new call site). Measured via the scanner's own
+    # `len(text.splitlines())`: `wc -l` reads 22122; the scanner counts
+    # 22125 — the same +3 NEL/LS/PS offset noted above, unrelated to this
+    # diff. The scanner's metric (22125) is what is recorded here.
+    # 22125 -> 22271 (+146, on top of the environment-error entry above,
+    # disjoint code regions): the no-op
+    # send-back-resume feature (`_send_back_resume_round`,
+    # `_land_no_changes_needed`, and their `_run_attempt` call site)
+    # across all of its rounds, including round 5's replacement of the
+    # round-3 `task.context["review_history"]` read with a predicate
+    # keyed directly on the `attempts` table (`review_passed`,
+    # `commit_sha`, `started_at`) — the real incident's rows never carry
+    # a `review_history[].at` entry, so round 3's read could never have
+    # fired on the data it names. Measured via the scanner's own
+    # `len(Path(...).read_text().splitlines())` on this merged tree
+    # (`wc -l` reads 22268; the same pre-existing +3 NEL/LS/PS-regex
+    # offset noted above accounts for the gap).
+    # 22271 -> 22285 (+14, `wc -l` 22268 -> 22282, `git diff --numstat`
+    # 18 insertions/4 deletions net +14, all agree): follow-up to ce4d4a73
+    # (#151) -- should_rebase-driven preamble narration, overlapping_files
+    # on the base_staleness emit, and the docstring/comment updates below.
+    # +172 (21880 -> 22052): "Delivery refuses reviewed commits" round 2.
+    # Corrects the wrong "stale/unfetched remote tip" / "different
+    # checkout" diagnosis in docstrings across git.py and this file
+    # (`_reconcile_remote_branch`, `_ahead_reviewed_candidate`,
+    # `_assert_delivery_sha`), replaces `_ahead_reviewed_candidate`'s
+    # lexicographic-`min()` tie-break with a HEAD-preferring,
+    # ancestry-aware selection that refuses on genuinely unrelated
+    # stamped candidates, and adds the `_review_history_records` /
+    # `_passing_review_shas_in_order` helpers `_ahead_reviewed_candidate`
+    # needs to prefer the newest round's stamp. `wc -l` reads 22049
+    # against this same scanner's 22052 (the pre-existing +3 offset noted
+    # above, unchanged).
+    # +4 (22052 -> 22056): task 0847f2c2 round-2 send-back — corrects
+    # `_passing_review_shas`'s docstring (it never consulted list order,
+    # `_ahead_reviewed_candidate` picks by DAG ancestry). `wc -l` reads
+    # 22053 against this same scanner's 22056 (same pre-existing +3
+    # offset). git.py's own `ProtectedBranch` check added in
+    # `fast_forward_local_branch` isn't in this file, so isn't counted
+    # here.
+    # Re-measured on the fully rebased tree by the scanner's own metric.
+    # 22461 -> 22473 (+12): task c1a0416d follow-up — `_build_supervisor` now
+    # reads `task.context["send_back_feedback"]` inside a fail-closed
+    # try/except (falling back to the `SEND_BACK_UNREADABLE` sentinel on any
+    # exception) and threads it into the `SupervisorHook(...)` call, so the
+    # in-run supervisor tier can honour a human send-back that supersedes the
+    # original acceptance criteria instead of contradicting it. Measured on
+    # this tree by the scanner below.
+    # 22473 -> 22554 (+81, `wc -l` reads 22551 against this same scanner's
+    # 22554, same +3 offset): task 90097 (round 3 of 0847f2c2, WIP-PARTIAL
+    # checkpoint routing). `_run_attempt` hoists a `_route_unjudged_head`
+    # call ahead of BOTH zero-diff terminals (the claim parse and the
+    # silent no-file-changes fall-through) so a wake/machine resume
+    # branching from its own `[WIP-BLOCKED]`/`[WIP-PARTIAL]` checkpoint is
+    # routed to a full review instead of burning the attempt;
+    # `_already_satisfied_eligible` gains the widened rule and its
+    # docstring is rewritten; two new methods, `_head_is_wip_checkpoint`
+    # (renamed/widened from `_head_is_blocked_checkpoint` to match both
+    # prefixes) and `_route_unjudged_head`, are added ahead of
+    # `_append_review_history`. Re-measured on the fully rebased tree
+    # (trunk's delivery fast-forward fix merged first, this task's
+    # checkpoint-routing fix on top) by the scanner's own metric.
+    # 22554 -> 22585 (+31, `wc -l` 22582): task 90097 (round 4, same incident). Round 3's
+    # unjudged-checkpoint-head instance flag — set in `_route_unjudged_head`,
+    # read-then-reset in `_run_review`, guarding a `ReviewerUnavailable`
+    # fail-closed branch — is removed: an undisclosed, out-of-brief instance
+    # flag with a lifetime hole (armed across every non-review exit between
+    # the hoist and the next `_run_review` call). `tests/
+    # test_resume_wiring_round2.py::
+    # test_a_machine_resume_is_not_credited_as_human_gated` and
+    # `::test_a_revision_branch_sitting_on_an_abandoned_partial_is_not_
+    # credited` now cover that routing with a FakeReviewer that fails the
+    # diff, instead of relying on this flag. Deleting the flag outright
+    # (net -31, back to a measured 22554 on the merged tree) reopened a different, pre-existing
+    # bug: the no-reviewer/`allow_advisory` branch in `_run_review` then
+    # rubber-stamped a routed diff unconditionally, silently re-breaking two
+    # honesty-gate tests outside this ticket's file list (`tests/
+    # test_resume_wiring.py::
+    # test_inherited_work_is_not_credited_as_a_do_nothing_attempts_own` and
+    # `tests/test_blocker_challenge.py::
+    # test_an_empty_attempt_after_a_challenge_is_not_credited`). The flag is
+    # replaced, not restored: `_run_review` now re-derives the same fact
+    # statelessly via `self._is_own_partial(repo, task.context or {},
+    # repo.head_sha())`, so the net line count lands back at 22585 — same
+    # number as the flag, different (correct, flagless) mechanism. Measured
+    # on this tree by the scanner's own metric.
+    "core/orchestrator.py": 22585,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.
