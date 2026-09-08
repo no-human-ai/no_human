@@ -94,7 +94,7 @@ class TestRunResult:
     # same reason as `passed_tests` above: the `[-8000:]` tail every branch
     # below carries drops the failing blocks of any suite with a few hundred
     # tests after them (the incident this exists for: 417 tests, failures at
-    # ordinals 182/343, 11,284 and 35,642 bytes from the end respectively —
+    # ordinals 182/343, 35,642 and 11,284 bytes from the end respectively —
     # see tests/test_missing_prereq_env_classification.py's `_incident_tap`
     # / `test_the_incident_signatures_are_outside_the_eight_kilobyte_tail`,
     # both measured, round-4 review MINOR-3). `failing_tests` is populated

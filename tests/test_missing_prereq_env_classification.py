@@ -38,7 +38,7 @@ import contextlib
 import json as _json
 import shlex
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from no_human.core.orchestrator import Orchestrator
 from no_human.core.task import Task, TaskStatus
@@ -775,7 +775,20 @@ async def test_owned_invocation_error_bills_the_attempt_through_the_real_runner(
     await store.set_status(t, TaskStatus.PLANNING)
     repo = GitRepo(bare_repo)
 
-    outcome = await orch._run_attempt(t, repo, 1, "main")
+    # round-4 send-back MAJOR-1: the outcome alone does not pin the ORDER —
+    # a base-tree check that happens to also say "environmental" (this TAP's
+    # `cat`-based command is diff-independent, so it would) can still land on
+    # the same FAILED verdict by accident. Spy on `_invocation_error_
+    # reproduces_on_base` (mocked so it never spawns the real base-tree
+    # subprocess) and assert it is never even CALLED on the owned path —
+    # orchestrator.py:6461's `if owned:` must return before line 6490 awaits
+    # it. Hoisting the base-tree call above `if owned:` leaves every
+    # assertion below this line green (the mock still answers True) but
+    # flips `assert_not_called()` red — verified by hand against this exact
+    # tree (see the coder's final report).
+    base_tree_check = AsyncMock(return_value=True)
+    with patch.object(orch, "_invocation_error_reproduces_on_base", base_tree_check):
+        outcome = await orch._run_attempt(t, repo, 1, "main")
 
     # Ownership wins outright: billed as a real test failure, never the
     # environment escalation, never a PR — the exact shape the old,
@@ -783,6 +796,7 @@ async def test_owned_invocation_error_bills_the_attempt_through_the_real_runner(
     assert not outcome.detail.startswith("tests could not run:"), outcome.detail
     assert outcome.status is TaskStatus.FAILED, outcome.detail
     assert outcome.pr_url is None
+    base_tree_check.assert_not_called()
 
     attempts = await store.list_attempts(t.id)
     assert len(attempts) == 1, [a.get("failure_reason") for a in attempts]
@@ -819,11 +833,20 @@ async def test_owned_control_same_tap_without_owning_the_file_still_escalates(
     t = Task.new("desktop npm test", repo_path=str(bare_repo))
     await store.create_task(t)
 
-    outcome = await orch.run_task(t)
+    # Same spy as the owned test's sibling above: unchanged-behaviour check.
+    # Here the escalation comes from `_environment_test_failure` itself (this
+    # TAP's `web/dist` block is a prerequisite signature too, independent of
+    # ownership), so `_invocation_error_reproduces_on_base` was never reached
+    # even before the round-4 fix — pinning that adding the owned-first check
+    # did not newly wire this control's escalation through the base tree.
+    base_tree_check = AsyncMock(return_value=True)
+    with patch.object(orch, "_invocation_error_reproduces_on_base", base_tree_check):
+        outcome = await orch.run_task(t)
 
     assert outcome.detail.startswith("tests could not run:"), outcome.detail
     assert outcome.status is TaskStatus.ESCALATED
     assert outcome.pr_url is None
+    base_tree_check.assert_not_called()
 
     attempts = await store.list_attempts(t.id)
     assert len(attempts) == 1, [a.get("failure_reason") for a in attempts]
