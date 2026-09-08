@@ -838,6 +838,57 @@ class GitRepo:
             return False
         return self.head_sha() != before
 
+    def merge_base_into_branch(self, base: str) -> bool:
+        """Merge *base* into this branch. True iff the branch moved.
+
+        The counterpart to `rebase_onto` for a branch that has a pushed
+        remote tip: a rebase there would rewrite every commit on the branch,
+        making the previously pushed tip mutually unreachable with the new
+        head, so the delivery ancestor check (`is_ancestor(remote_tip,
+        target)` in `Orchestrator._reconcile_remote_branch`) can never pass
+        again. A merge commit does not have that problem — the resulting
+        head is a DESCENDANT of the branch's previous tip, so a remote tip
+        that equalled that previous tip stays an ancestor of the new head,
+        and `push_sha_fast_forward` can still land it fast-forward-only.
+        No force anywhere, here or downstream.
+
+        A CONFLICT aborts and returns False, and deliberately does NOT fall
+        back to rebasing — that would silently reintroduce the exact
+        non-ancestor delivery refusal this method exists to avoid. Losing a
+        retry to a merge conflict is worse than the staleness it would have
+        cured (same contract `rebase_onto` documents for its own conflicts);
+        the caller reports the staleness and proceeds un-merged.
+
+        `--no-ff` is deliberate, not incidental: it keeps a real merge
+        commit even in the rare case git could fast-forward instead, so the
+        record ("merged X into it") always matches what the history shows.
+        A plain fast-forward would also satisfy the ancestry property this
+        method exists for; `--no-ff` is chosen for that determinism.
+        """
+        ref = (self.resolve_commitish(base) if base else None) or base
+        if not ref:
+            return False
+        branch = self.current_branch()
+        before = self.head_sha()
+        try:
+            # Literal "merge" as the first argument, so the egress analyser
+            # resolves the channel to `exec:git merge`, not `exec:git
+            # <dynamic>` (see `_run`'s inline-argv comment above). "merge" is
+            # already in `_COMMIT_WRITING_SUBCOMMANDS`, so the identity scrub
+            # applies and the merge commit is attributed to this class's
+            # configured identity, not whatever the ambient env holds.
+            self._run(
+                "merge", "--no-ff", "-m",
+                f"Merge {base} into {branch} (base staleness)", ref,
+            )
+        except GitError:
+            # Unconditional and `check=False`: a failure that never started a
+            # merge must not raise a second exception here — same
+            # belt-and-braces stance as `rebase_onto`'s abort.
+            self._run("merge", "--abort", check=False)
+            return False
+        return self.head_sha() != before
+
     def head_commit(self, base: str) -> CommitResult:
         """Describe HEAD as a commit against *base* — for work already committed.
 
@@ -1114,6 +1165,46 @@ class GitRepo:
         except (subprocess.TimeoutExpired, OSError):
             pass  # best-effort fetch; an unresolved sha fails closed via is_ancestor
         return remote_sha
+
+    def remote_branch_confirmed_absent(self, branch: str, *, remote: str = "origin",
+                                        timeout: int = 30) -> bool:
+        """True only when the remote was actually REACHED and definitively
+        has no such branch — never for "cannot tell".
+
+        `fetch_remote_branch_sha`/`ls_remote_exact` collapse "never pushed"
+        and "remote unreadable" (network failure, auth failure, timeout) to
+        the same `None`, by design, for the reasons their docstrings give.
+        That collapse is exactly right for a caller that only needs to fail
+        open on "cannot know" — but a caller that is about to choose between
+        REBASE and MERGE cannot treat them the same: a rebase of a branch
+        that merely looks unreachable right now, but has in fact been
+        pushed, rewrites every commit and makes that real remote tip
+        mutually unreachable with the new head, reproducing the exact
+        non-ancestor delivery refusal ('remote tip ... is not an ancestor of
+        the reviewed sha') this feature exists to fix. So this method
+        answers a narrower, conservative question: did the remote
+        POSITIVELY confirm there is no such branch? Any error at all —
+        non-zero exit, empty-but-failed response, timeout, or `OSError` —
+        returns `False` ("cannot confirm absence"), never `True`.
+
+        No remote configured is the one case treated as a confirmed
+        absence: a branch that could never have been pushed from this
+        repository at all cannot be holding a remote tip anywhere, so a
+        rebase is safe.
+        """
+        if self.remote_url(remote) is None:
+            return True
+        try:
+            ls = subprocess.run(
+                ["git", "ls-remote", remote, f"refs/heads/{branch}"],
+                cwd=self.path, capture_output=True, text=True, timeout=timeout,
+                **hidden_console_kwargs(),
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            return False
+        if ls.returncode != 0:
+            return False
+        return not ls.stdout.strip()
 
     def fast_forward_local_branch(self, branch: str, sha: str) -> bool:
         """Advance local `branch` to `sha` IF `sha` is a descendant of its

@@ -28,6 +28,7 @@ from no_human.core.base_staleness import (
     base_gap_overlap,
     overlapping_paths,
     should_rebase,
+    staleness_mode,
     staleness_record,
 )
 from no_human.vcs.git import GitRepo
@@ -278,3 +279,66 @@ def test_the_coder_preamble_decides_with_should_rebase_too():
         "a bare `commits_behind >= BASE_STALENESS_REBASE_THRESHOLD` is back "
         "in _build_implement_prompt; a below-threshold overlapping gap that "
         "fails to rebase must still narrate, which the bare count cannot do")
+
+
+# --------------------------------------------------------------------------- #
+# A rebased task branch can never be delivered: a pushed, behind branch must
+# be MERGED (not rebased), or delivery's ancestor check refuses it forever.
+# --------------------------------------------------------------------------- #
+
+def test_a_pushed_branch_chooses_merge_and_an_unpushed_one_rebases():
+    """Pure table over `staleness_mode`, no git involved — the git-backed
+    proof that a merge actually keeps the remote tip an ancestor lives in
+    `tests/test_base_staleness_pushed_branch.py`."""
+    # Below the gate: no action regardless of remote state.
+    assert staleness_mode(1, THRESHOLD, [], "deadbeef") is None
+    assert staleness_mode(1, THRESHOLD, [], None) is None
+    assert staleness_mode(1, THRESHOLD, [], None, confirmed_never_pushed=True) is None
+
+    # Past the gate, a truthy remote tip (the branch has been pushed) merges.
+    assert staleness_mode(THRESHOLD, THRESHOLD, [], "deadbeef") == "merge"
+    assert staleness_mode(THRESHOLD + 90, THRESHOLD, [], "deadbeef") == "merge"
+    # A below-threshold but overlapping, pushed gap also merges.
+    assert staleness_mode(1, THRESHOLD, ["src/app.py"], "deadbeef") == "merge"
+
+    # Past the gate, a POSITIVELY confirmed absence (the remote was reached
+    # and definitively has no such branch) rebases — unchanged from before
+    # this fix, for the one case it is actually safe.
+    assert staleness_mode(
+        THRESHOLD, THRESHOLD, [], None, confirmed_never_pushed=True) == "rebase"
+    assert staleness_mode(
+        1, THRESHOLD, ["src/app.py"], None, confirmed_never_pushed=True) == "rebase"
+
+    # Past the gate, a falsy tip that is NOT confirmed absent — i.e. the
+    # remote could not be read (network/auth failure, timeout) and is
+    # therefore indistinguishable from "never pushed" — must fail OPEN to
+    # merge, never rebase. Before this fix, `staleness_mode` treated any
+    # falsy tip as "never pushed" and rebased here too, which reintroduces
+    # the exact non-ancestor delivery refusal this feature exists to close
+    # whenever a live `ls-remote` against an ALREADY-PUSHED branch times out.
+    assert staleness_mode(THRESHOLD, THRESHOLD, [], None) == "merge"
+    assert staleness_mode(1, THRESHOLD, ["src/app.py"], None) == "merge"
+    assert staleness_mode(
+        THRESHOLD, THRESHOLD, [], None, confirmed_never_pushed=False) == "merge"
+
+
+def test_staleness_record_zeroes_current_staleness_for_a_merge_too():
+    """`commits_behind` reads 0 once the branch is caught up, whichever path
+    got it there — a merge and a rebase are equally "not behind" afterward."""
+    rec = staleness_record(THRESHOLD, False, [], mode="merge", merged=True)
+    assert rec["commits_behind"] == 0
+    assert rec["was_behind"] == THRESHOLD
+    assert rec["rebased"] is False
+    assert rec["merged"] is True
+    assert rec["mode"] == "merge"
+
+    # A no-op/failed attempt keeps the exact pre-merge-awareness shape, so
+    # the exact-dict-equality assertions in test_retry_base_staleness.py
+    # (written before `staleness_record` learned about merging) still hold.
+    rec_noop = staleness_record(0, False, [])
+    assert rec_noop == {
+        "commits_behind": 0, "was_behind": 0, "rebased": False,
+        "overlapping_files": [],
+    }
+    assert "mode" not in rec_noop
+    assert "merged" not in rec_noop

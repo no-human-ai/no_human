@@ -74,23 +74,89 @@ def should_rebase(behind: int, threshold: int, overlap: Iterable[str]) -> bool:
     return behind >= threshold or bool(list(overlap))
 
 
+def staleness_mode(
+    behind: int, threshold: int, overlap: Iterable[str], remote_tip: str | None,
+    *, confirmed_never_pushed: bool = False,
+) -> str | None:
+    """How to bring a stale branch up to date, or ``None`` to leave it alone.
+
+    A REBASE rewrites every commit on the branch. That is harmless for a
+    branch nobody has fetched yet, but once the branch has a pushed remote
+    tip, rewriting it makes that tip mutually unreachable with the new head
+    — the tip can never again be an ancestor of HEAD. Delivery
+    (`Orchestrator._reconcile_remote_branch`) proves exactly that ancestry
+    before it will push, so a rebase of an already-pushed branch guarantees
+    delivery refuses it later: 'remote tip ... is not an ancestor of the
+    reviewed sha', even though the push guard is correctly refusing to force
+    a non-fast-forward push it never should. That contradiction — rebase now,
+    get refused at delivery — is the defect this function closes.
+
+    A MERGE commit avoids it: the new head is a descendant of the branch's
+    previous tip, so a remote tip that equalled that previous tip stays an
+    ancestor of the new head, and `push_sha_fast_forward` can still land it
+    fast-forward-only, no force anywhere. The merge runs base -> branch, on
+    the task's own branch; it never touches `never_push_to` and never merges
+    into main.
+
+    So: no action past `should_rebase`'s gate returns ``None``. A truthy
+    `remote_tip` (the branch has been pushed — see
+    `GitRepo.fetch_remote_branch_sha`) returns ``"merge"``.
+
+    Otherwise `remote_tip` is `None`, which `fetch_remote_branch_sha`
+    returns for BOTH "never pushed" and "remote unreadable" (network/auth
+    failure, timeout) — collapsed together by design, see that method's
+    docstring. Those two cases must NOT be treated alike here: an earlier
+    version of this function rebased on any falsy `remote_tip`, so a
+    transient `ls-remote` timeout against an ALREADY-PUSHED branch chose
+    rebase, mutually unreaching its own remote tip and reproducing the very
+    non-ancestor delivery refusal this function exists to close — a fetch
+    failure must fail OPEN to the safe action (merge is always safe: an
+    extra merge commit on a branch that turns out to have never been pushed
+    is harmless, whereas a wrongful rebase is not undoable). So `"rebase"`
+    is returned ONLY when the caller can positively confirm, via
+    `GitRepo.remote_branch_confirmed_absent`, that there is no such branch
+    on the remote (`confirmed_never_pushed=True`); every other falsy-tip
+    case — including "cannot tell" — returns ``"merge"``.
+    """
+    if not should_rebase(behind, threshold, overlap):
+        return None
+    if remote_tip:
+        return "merge"
+    return "rebase" if confirmed_never_pushed else "merge"
+
+
 def staleness_record(
     behind: int, rebased: bool, overlap: Iterable[str],
+    *, mode: str | None = None, merged: bool = False,
 ) -> dict:
     """The `task.context['base_staleness']` payload.
 
-    ``commits_behind`` is CURRENT staleness, so a successful rebase makes it
-    0: the rebase replayed every local commit on top of the base and nothing
-    remains behind it. ``was_behind`` preserves the measurement that justified
-    acting, which a prior review caught being lost to that post-rebase 0.
-    ``overlapping_files`` records WHY a below-threshold gap was acted on, so
-    the decision is auditable after the fact instead of being inferred from a
-    commit count that did not reach the threshold.
+    ``commits_behind`` is CURRENT staleness, so bringing the branch up to
+    date by EITHER path (a successful rebase OR a successful merge) makes it
+    0: nothing remains behind `base` afterward. ``was_behind`` preserves the
+    measurement that justified acting, which a prior review caught being
+    lost to that post-rebase 0. ``overlapping_files`` records WHY a
+    below-threshold gap was acted on, so the decision is auditable after the
+    fact instead of being inferred from a commit count that did not reach
+    the threshold.
+
+    ``mode`` and ``merged`` are added ONLY when an action actually
+    SUCCEEDED (``rebased or merged``). A no-op (below threshold, nothing to
+    do) or a failed/conflicted attempt is already fully described by
+    ``rebased=False`` — exactly as it was before this function learned about
+    merging — so the record's shape for those cases is unchanged and every
+    existing caller/test that pins it (positionally, or byte-for-byte) keeps
+    working. Only the new, successful merge path — and the successful-rebase
+    path, symmetrically — gains the extra detail.
     """
     shared = sorted(overlap)
-    return {
-        "commits_behind": 0 if rebased else behind,
+    record = {
+        "commits_behind": 0 if (rebased or merged) else behind,
         "was_behind": behind,
         "rebased": rebased,
         "overlapping_files": shared,
     }
+    if rebased or merged:
+        record["mode"] = mode
+        record["merged"] = merged
+    return record
