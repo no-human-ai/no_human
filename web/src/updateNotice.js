@@ -163,12 +163,14 @@ export function updateNotice({ inShell = false, current = null, update = null, c
  * (up-to-date, failed, downloading, downloaded) stays board-silent, same as
  * today — an automatic-check failure must never surface outside Settings.
  *
- * Rendered IN FLOW as a normal block in the board layout (a sibling ahead of
- * the top bar inside `.nh-main`), the same `.nh-alarm update-notice` callout
- * Settings' Updates panel uses — never a fixed strip. An earlier round reused
- * `.nh-stale-banner`, whose `pointer-events: none` contract keeps that fixed
- * strip from ever eating clicks; overlaying it with a clickable banner instead
- * covered "+ New Task" and the top bar until the user clicked Later.
+ * Rendered IN FLOW as a normal block in the board layout (a sibling BELOW
+ * the top bar inside `.nh-main`, not above it — Windows' titleBarOverlay
+ * min/max/close buttons occupy the top 40px and only `.nh-main-bar` clears
+ * them), the same `.nh-alarm update-notice` callout Settings' Updates panel
+ * uses — never a fixed strip. An earlier round reused `.nh-stale-banner`,
+ * whose `pointer-events: none` contract keeps that fixed strip from ever
+ * eating clicks; overlaying it with a clickable banner instead covered
+ * "+ New Task" and the top bar until the user clicked Later.
  *
  * `actions` differ by mode: "available" offers a persisted "later" (the same
  * defer Settings' Updates panel calls) alongside "details"; "unavailable" has

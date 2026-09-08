@@ -6881,10 +6881,15 @@ a.so-chip-value:hover { color: var(--accent-300); }
 }
 
 /* The same Settings > Updates callout above, hosted in the board's own flow
-   (App.jsx renders it as a normal block inside .nh-main, ahead of the top
-   bar) instead of a fixed overlay. NOT `position: fixed` — an earlier round
-   reused .nh-stale-banner's fixed strip with pointer-events re-enabled, which
-   covered "+ New Task" and the top bar until the user clicked Later. */
+   (App.jsx renders it as a normal block inside .nh-main, BELOW .nh-main-bar)
+   instead of a fixed overlay. NOT `position: fixed` — an earlier round reused
+   .nh-stale-banner's fixed strip with pointer-events re-enabled, which
+   covered "+ New Task" and the top bar until the user clicked Later.
+   It sits below .nh-main-bar, not above it: Windows draws its titleBarOverlay
+   min/max/close buttons over the top 40px of the window, and .nh-main-bar is
+   the only element with clearance from that strip (see the win32 padding-right
+   rule above) — placing this notice above the bar put its right-aligned
+   buttons under those window controls on the unsigned ("unavailable") build. */
 .nh-update-flow {
   display: flex;
   align-items: center;

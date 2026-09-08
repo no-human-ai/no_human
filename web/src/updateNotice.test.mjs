@@ -288,13 +288,13 @@ const appSrc = readFileSync(fileURLToPath(new URL("./App.jsx", import.meta.url))
 // These two are static source-analysis, not a mount: there is no jsdom/React
 // renderer in this repo (settingsOverlay.test.mjs), so they cannot prove an
 // event delivered before mount actually reaches the screen. That proof lives
-// in desktop/mainUpdateLast.test.mjs ("an 'unavailable' result with no
-// subscriber is retained" and friends), which exercises the real IPC
-// retention path end to end. What these CAN and must prove is that the
-// resolved payload is not silently discarded — a mutation that keeps the
-// getLastUpdate() call but drops its argument (e.g. `cur ?? null`) would
-// still pass a bare "getLastUpdate was called" check, so the pattern below
-// requires the payload variable itself to reach setUpdate.
+// in desktop/mainUpdateLast.test.mjs ("an update event with no subscriber is
+// still retained" and friends), which exercises the real IPC retention path
+// end to end. What these CAN and must prove is that the resolved payload is
+// not silently discarded — a mutation that keeps the getLastUpdate() call but
+// drops its argument (e.g. `cur ?? null`) would still pass a bare
+// "getLastUpdate was called" check, so the pattern below requires the payload
+// variable itself to reach setUpdate.
 
 test("UpdatesPanel calls getLastUpdate and writes its payload into state", () => {
   const panel = settingsSrc.match(/function UpdatesPanel\(\)[\s\S]*?\n}\n/)?.[0] ?? "";
@@ -314,15 +314,46 @@ test("the shell calls getLastUpdate and writes its payload into state", () => {
     "the resolved payload (p) must be the value written into state, not discarded");
   assert.match(appSrc, /updateBanner\(/,
     "App.jsx must call updateBanner to decide whether to render the notice");
-  // Rendered as a normal block inside .nh-main (ahead of the top bar), not
-  // fixed over the connection banner's slot — see MAJOR-3.
-  const flowSite = appSrc.match(/<h1 className="sr-only">[\s\S]*?<\/h1>[\s\S]{0,1200}?\{updateBar[\s\S]*?\)\}/);
+  // Rendered as a normal block inside .nh-main, BELOW .nh-main-bar (not fixed
+  // over the connection banner's slot, and not above the bar either — see
+  // MAJOR-1/MAJOR-3: Windows' titleBarOverlay controls only clear .nh-main-bar).
+  const flowSite = appSrc.match(/<h1 className="sr-only">[\s\S]*?<\/h1>[\s\S]{0,2500}?\{updateBar[\s\S]*?\)\}/);
   assert.ok(flowSite,
-    "the update notice must be rendered in flow inside .nh-main, right after the page heading");
+    "the update notice must be rendered in flow inside .nh-main, below the page heading");
+  const mainBarThenUpdateBar = appSrc.match(/nh-main-bar[\s\S]{0,2000}?\{updateBar/);
+  assert.ok(mainBarThenUpdateBar,
+    "the notice must render AFTER .nh-main-bar in source order, so it sits below it — " +
+    "above it, the notice's right-aligned buttons fall under Windows' titleBarOverlay " +
+    "min/max/close controls, which only .nh-main-bar clears");
 });
 
 test("Later defers through the existing bridge", () => {
   const laterButton = appSrc.match(/updateBar[\s\S]{0,400}?deferUpdate\?\.\([^)]*\)/);
   assert.ok(laterButton,
     "the Later button must call the existing deferUpdate bridge with the banner's version");
+});
+
+test("Later's onClick calls deferUpdate; Dismiss's does not", () => {
+  // MAJOR-2 (round 2, follow-up): a mutation that makes the unsigned card's
+  // session-only "Dismiss" ALSO call deferUpdate would still leave the whole
+  // web suite green, since nothing else here exercises the click. Assert the
+  // lexical shape of each button's own onClick body — the only proof possible
+  // without a DOM renderer (see the file-level comment above).
+  // Locate each button by its actions.includes(...) gate rather than by the
+  // exact shape of its onClick (single-expression vs block body), so a
+  // reformat can't make this test merely fail to find its target instead of
+  // exercising the assertion it exists to make.
+  const laterIdx = appSrc.indexOf('includes("later")');
+  assert.ok(laterIdx !== -1, "could not locate the Later button's actions gate");
+  const laterBlock = appSrc.slice(laterIdx, laterIdx + 400);
+  assert.match(laterBlock, /\bLater\b/, "sanity: the Later button's own text must be in range");
+  assert.match(laterBlock, /deferUpdate\?\.\(/,
+    "positive control: Later's onClick must call deferUpdate — proves the pattern below can fail");
+
+  const dismissIdx = appSrc.indexOf('includes("dismiss")');
+  assert.ok(dismissIdx !== -1, "could not locate the Dismiss button's actions gate");
+  const dismissBlock = appSrc.slice(dismissIdx, dismissIdx + 400);
+  assert.match(dismissBlock, /\bDismiss\b/, "sanity: the Dismiss button's own text must be in range");
+  assert.doesNotMatch(dismissBlock, /deferUpdate/,
+    "the unsigned card's session-only Dismiss must never call deferUpdate — it writes nothing");
 });

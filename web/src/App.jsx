@@ -1507,18 +1507,35 @@ export default function App() {
             : page === "about" ? "About no_human"
             : "Settings"}
         </h1>
+        {/* Phone-only host for the AI-config nudge (built above, near
+            `banner`) — the sidebar foot it uses on desktop sits outside the
+            mobile nav's viewport, so at phone width it renders in flow here
+            instead, above the board on every page. */}
+        {isPhone && aiConfigNudge}
+        {page === "board" && (
+          <div className="nh-main-bar">
+            <OverviewStrip tasks={tasks} />
+            <DrainReadoutChip readout={drainReadout} />
+            <button className="btn btn-new-task" aria-haspopup="dialog" aria-expanded={showNewTask} onClick={() => setShowNewTask(true)}>+ New Task</button>
+          </div>
+        )}
         {/* The automatic startup update check's result — rendered IN FLOW as a
-            normal block ahead of the top bar, not a fixed overlay: an earlier
+            normal block BELOW the top bar, not a fixed overlay: an earlier
             round reused .nh-stale-banner's fixed strip with pointer-events
             re-enabled, which covered "+ New Task" and the top bar until the
-            user clicked Later. "Later" pushes the SAME persisted defer the
-            Updates panel's own "Later" uses — main.mjs clears its retained
-            result and pushes {mode:"skipped"} only after the defer actually
-            persisted, which is what makes both surfaces clear together;
-            `setUpdateDismissed` only hides this copy early, before that
-            round-trip lands. The unsigned ("unavailable") card has no
-            persisted defer to offer, so "Dismiss" there is session-only and
-            writes nothing. */}
+            user clicked Later. It sits below .nh-main-bar (not above it, next
+            to the sr-only heading) so it never shares Windows' top 40px
+            titleBarOverlay strip — .nh-main-bar is the only element with
+            clearance from those min/max/close buttons (see the win32 rule in
+            styles.css), so anything placed above it there is at risk of
+            rendering right under them, unclickable. "Later" pushes the SAME
+            persisted defer the Updates panel's own "Later" uses — main.mjs
+            clears its retained result and pushes {mode:"skipped"} only after
+            the defer actually persisted, which is what makes both surfaces
+            clear together; `setUpdateDismissed` only hides this copy early,
+            before that round-trip lands. The unsigned ("unavailable") card
+            has no persisted defer to offer, so "Dismiss" there is
+            session-only and writes nothing (never calls deferUpdate). */}
         {updateBar && (
           <div className={updateBar.className} role={updateBar.role} data-tone={updateBar.tone}>
             <span>{updateBar.text}</span>
@@ -1555,18 +1572,6 @@ export default function App() {
                 </button>
               )}
             </div>
-          </div>
-        )}
-        {/* Phone-only host for the AI-config nudge (built above, near
-            `banner`) — the sidebar foot it uses on desktop sits outside the
-            mobile nav's viewport, so at phone width it renders in flow here
-            instead, above the board on every page. */}
-        {isPhone && aiConfigNudge}
-        {page === "board" && (
-          <div className="nh-main-bar">
-            <OverviewStrip tasks={tasks} />
-            <DrainReadoutChip readout={drainReadout} />
-            <button className="btn btn-new-task" aria-haspopup="dialog" aria-expanded={showNewTask} onClick={() => setShowNewTask(true)}>+ New Task</button>
           </div>
         )}
         {page === "board" && (
