@@ -512,9 +512,20 @@ SERVER_STOP_REASON = "__server_stop__"
 #: hard kill mid-IMPLEMENTING (``hard_kill_salvage``,
 #: `core.worktree.salvage_dead_worktrees` — the startup salvage of a worktree
 #: whose owner pid died un-gracefully to SIGKILL/OOM/crash; the hard-kill twin
-#: of ``server_stop``). The already-satisfied gate reads this set: a zero-diff
-#: claim over a diff no completed review judged must route to a full review on
-#: any of these paths.
+#: of ``server_stop``). The already-satisfied gate (`Orchestrator.
+#: _already_satisfied_eligible`) reads this set, but membership in it is only
+#: ONE of two ways a head becomes ineligible for the zero-diff claim escape —
+#: the other is the head's own checkpoint SHAPE, a ``[WIP-BLOCKED]`` OR
+#: ``[WIP-PARTIAL]`` subject (`_head_is_wip_checkpoint`), which applies
+#: regardless of provenance (incident 0847f2c2, 2026-09-08: a ``wake`` resume
+#: onto its own ``[WIP-BLOCKED]`` checkpoint is not in this set, yet must be
+#: just as ineligible, because a ``[WIP-BLOCKED]`` subject off the ship ref
+#: routinely fails `_already_satisfied_subject`; the same measurement holds
+#: verbatim for ``[WIP-PARTIAL]`` — `_already_satisfied_subject` refuses both
+#: subjects identically off the ship ref, so both must be routed to the full
+#: review). A zero-diff attempt over a diff no completed review judged must
+#: route to a full review whenever EITHER condition holds — read together
+#: they are the whole rule, not this set alone.
 MACHINE_REQUEUE_PROVENANCE = frozenset(
     {"orphan_recovery", "server_stop", "hard_kill_salvage"}
 )

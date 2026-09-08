@@ -79,8 +79,34 @@ async def test_already_satisfied_gate_treats_server_stop_like_orphan_recovery(
 
 async def test_already_satisfied_gate_still_ignores_a_wake_resume(
         store, bare_repo, tmp_path):
-    """Control: the gate is scoped to machine REQUEUES. A wake resume never
-    had a review in flight to interrupt (D15) and stays eligible."""
+    """Control: an ORDINARY subject on `wake` never had a review in flight to
+    interrupt (D15) and stays eligible — the gate that requires a full
+    review is keyed on the head's own shape (a `[WIP-BLOCKED]`/`[WIP-PARTIAL]`
+    checkpoint subject, or a machine-requeue provenance), not on `wake`
+    provenance alone."""
+    orch, _backend, task, repo = await _run_one_attempt(
+        store, bare_repo, tmp_path, _incident_result())
+    base = repo.head_sha()
+    _git(bare_repo, "checkout", "-q", "-b", "no-human/work")
+    (bare_repo / "work.py").write_text("work\n")
+    _git(bare_repo, "add", "work.py")
+    _git(bare_repo, "commit", "-qm", "add the feature")
+    task.context = await store.merge_context(
+        task.id, {"resume_from": resume_provenance(
+            {"sha": _head(bare_repo), "branch": "no-human/work"}, "wake")})
+
+    eligible, _why = orch._already_satisfied_eligible(task, repo, base)
+
+    assert eligible is True
+
+
+async def test_already_satisfied_gate_treats_a_partial_checkpoint_wake_resume_as_ineligible(
+        store, bare_repo, tmp_path):
+    """Round 3: a `[WIP-PARTIAL]` head is refused by `_already_satisfied_
+    subject` identically to a `[WIP-BLOCKED]` head off the ship ref, so a
+    wake resume that branches from its own `[WIP-PARTIAL]` checkpoint must
+    be ineligible for the claim escape — same as `[WIP-BLOCKED]` — even
+    though `wake` itself is not a machine-requeue provenance."""
     orch, _backend, task, repo = await _run_one_attempt(
         store, bare_repo, tmp_path, _incident_result())
     base = repo.head_sha()
@@ -92,9 +118,9 @@ async def test_already_satisfied_gate_still_ignores_a_wake_resume(
         task.id, {"resume_from": resume_provenance(
             {"sha": _head(bare_repo), "branch": "no-human/work"}, "wake")})
 
-    eligible, _why = orch._already_satisfied_eligible(task, repo, base)
+    eligible, why = orch._already_satisfied_eligible(task, repo, base)
 
-    assert eligible is True
+    assert eligible is False and why
 
 
 # --------------------------------------------------------------------------- #
