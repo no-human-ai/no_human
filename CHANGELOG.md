@@ -10,9 +10,9 @@ All notable changes to no_human. The format follows
 - **The board can now tell you about an update at all, and a late-mounting
   window no longer misses one.** The startup check's *outcome* was never kept
   for a surface that mounted later — `updater.mjs` already persisted
-  `{deferredVersion, lastCheckAt}` and wrote `lastCheckAt` on every automatic
-  check, but no version FACT (available/unavailable/up-to-date/failed) was
-  ever handed to a window that mounted (or remounted) after a check had
+  `{deferredVersion, lastCheckAt}` and wrote `lastCheckAt` after every check
+  that got an answer, but no version FACT (available/unavailable/up-to-date)
+  was ever handed to a window that mounted (or remounted) after a check had
   already run, so it stayed notice-free for the rest of the session. That
   fact is now retained and handed to any surface that pulls it on mount; an
   automatic (app-driven) check that merely *fails* is deliberately excluded

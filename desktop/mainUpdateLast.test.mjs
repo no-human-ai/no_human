@@ -73,7 +73,7 @@ test("a failed automatic check does not displace the retained fact, but IS deliv
 });
 
 test("nh:update-defer with no updater available leaves retention and delivery untouched", async () => {
-  // This harness's getUpdater() always resolves null — not because
+  // main.mjs's getUpdater() always resolves null here — not because
   // electron-updater is uninstalled or "cannot initialise unpackaged" (it is
   // an installed dependency), but because electron-updater's own CJS
   // `require("electron")` bypasses electronLoader.mjs's ESM resolve hook and

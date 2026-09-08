@@ -3,10 +3,10 @@
 // ("skipped"/"deferred") result — push the clear through sendUpdateEvent().
 //
 // mainUpdateLast.test.mjs already proves this handler's early-return path
-// (electronLoader.mjs's getUpdater() always resolves null there — not
+// (main.mjs's getUpdater() always resolves null there — not
 // because electron-updater is uninstalled or "cannot initialise unpackaged",
-// but because electron-updater's own CJS `require("electron")` bypasses that
-// loader's ESM resolve hook and throws reading a property, e.g.
+// but because electron-updater's own CJS `require("electron")` bypasses
+// electronLoader.mjs's ESM resolve hook and throws reading a property, e.g.
 // "Cannot read properties of undefined (reading 'getVersion')", off the real
 // "electron" package instead); that leaves the ACTUAL push
 // — main.mjs ~:876-887 — completely unexercised. Deleting the
