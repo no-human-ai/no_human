@@ -127,7 +127,15 @@ FROZEN_FUNCTION_LINES = {
     # 2164 -> 2192 (+28): the background-run report nudge's call site in
     # `_run_attempt`'s committed-diff path (task 7a7713e3, landed on top of
     # 3bccb499's 2164). Measured on this tree with the scanner below.
-    "core/orchestrator.py:Orchestrator._run_attempt": 2192,
+    # 2192 -> 2200 (+8): the failing-tests persistence bound's wrapper
+    # tokens inside `_run_attempt`'s own body — `_kept, _dropped =
+    # _bounded_failing_ids(...)` at each `tests` emit site and
+    # `test_results=_bounded_test_results({...})` at each `update_attempt`
+    # call it makes directly (the rest of the bound's write sites live in
+    # `_layered_tests_failed_outcome`/`_failed_tests_outcome`, which have
+    # their own frozen entries). Measured on this tree with the scanner
+    # below.
+    "core/orchestrator.py:Orchestrator._run_attempt": 2200,
     # 760 -> 778 (+18): dispatch-time intake-eval hoisted path — the `elif
     # ctx.get("eval_result")` branch that acts on a grill/wizard-stored
     # verdict (idempotency marker, cost/residual-gap comments) added inside
@@ -296,7 +304,12 @@ FROZEN_FUNCTION_CC = {
     # 235 -> 240 (+5): the report-nudge call site's try/except and its
     # once-guard in `_run_attempt` (task 7a7713e3, landed on top of 3bccb499's
     # 235). Measured on this tree with the scanner below.
-    "core/orchestrator.py:Orchestrator._run_attempt": 240,
+    # 240 -> 244 (+4): the failing-tests persistence bound adds one `if
+    # dropped:`-shaped branch per bounded `emit`/`update_attempt` call site
+    # inside `_run_attempt` itself (the `**({"failing_tests_dropped": ...}
+    # if _dropped else {})` kwarg spread). Measured on this tree with the
+    # scanner below.
+    "core/orchestrator.py:Orchestrator._run_attempt": 244,
     "core/orchestrator.py:Orchestrator._drive": 115,
     "agent/guard.py:_approve_denial": 81,
     # 73 -> 74 (+1): same cause as the LINES entry above — e922e9b4's landing
@@ -805,7 +818,18 @@ FROZEN_FILE_LINES = {
     # `_abort_during_nudge` docstring sentence and the guard-set pop in
     # `_begin_attempt_accounting`), landed on top of 3bccb499's 22699.
     # Measured on this tree by the scanner's own metric.
-    "core/orchestrator.py": 22952,
+    # 22952 -> 23020 (+68): the failing-tests persistence bound
+    # (`_MAX_PERSISTED_FAILING_TESTS`, `_bounded_failing_ids`,
+    # `_bounded_test_results`) — a real incident persisted a 96,465-id
+    # `failing_tests` list as a 966KB `attempts.test_results` row and a
+    # 1.36MB ledger `tests.md`; every persisted/emitted write site now wraps
+    # its dict in `_bounded_test_results` (or bounds the `failing_tests=`
+    # emit kwarg via `_bounded_failing_ids`), capping ids at 200 and
+    # recording the true remainder as `failing_tests_dropped`. In-memory
+    # attribution (`_newly_failing_vs_base`, `_owned_failing_tests`) is
+    # unchanged — see tests/test_failing_tests_bound.py. Measured on this
+    # tree by the scanner's own metric.
+    "core/orchestrator.py": 23020,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.
