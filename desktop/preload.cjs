@@ -91,6 +91,9 @@ contextBridge.exposeInMainWorld("nhDesktop", {
   downloadUpdate: () => ipcRenderer.invoke("nh:update-download"),
   installUpdate: () => ipcRenderer.invoke("nh:update-install"),
   deferUpdate: (version) => ipcRenderer.invoke("nh:update-defer", version),
+  // The push (onUpdate) misses every event fired before a renderer mounts —
+  // the board's own notice needs this matching pull to catch up.
+  getLastUpdate: () => ipcRenderer.invoke("nh:update-last"),
   // The board's light/dark choice, mirrored to the main process. It is the
   // renderer that owns the theme (localStorage), but only the main process can
   // colour the window frame and the Windows title-bar controls — and it has to

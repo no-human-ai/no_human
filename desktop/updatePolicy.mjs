@@ -101,6 +101,33 @@ export function updateMessage({ mode, latest, current, canAutoUpdate }) {
   return "";
 }
 
+/**
+ * Modes that state a FACT about versions, and so are worth handing to a
+ * renderer that mounts after the event already fired (a late Settings open,
+ * or the board's own late-mount pull below).
+ */
+export const RETAINED_UPDATE_MODES = new Set(["available", "unavailable", "up-to-date"]);
+
+/**
+ * What a late-mounting subscriber should be told: the last version FACT, or
+ * null if none has landed yet. `updater.mjs` registers an unconditional
+ * `autoUpdater.on("error")` that emits `{mode:"failed"}` for the AUTOMATIC
+ * startup check too (its own `check()` only emits FAILED when `manual`) — so
+ * retaining a failure here would resurrect a red "Could not check for
+ * updates" card on every later mount, for a check the user never asked for.
+ * A failure is therefore never retained: it leaves whatever fact (or absence
+ * of one) was already on record. Live delivery of the event is untouched —
+ * this only gates what gets REMEMBERED for someone who was not listening.
+ *
+ * A persisted "Later" (`{mode:"skipped", reason:"deferred"}`) clears the
+ * record outright: the operator dismissed the notice, so a late mount must
+ * not resurrect it either.
+ */
+export function retainedUpdate(prev, event) {
+  if (event?.mode === "skipped" && event?.reason === "deferred") return null;
+  return RETAINED_UPDATE_MODES.has(event?.mode) ? event : (prev ?? null);
+}
+
 // electron-updater's HttpError.message embeds the response headers and a
 // node/electron stack trace verbatim — Cannot find latest.yml in the latest
 // release artifacts (...): HttpError: 404, followed by cache-control,

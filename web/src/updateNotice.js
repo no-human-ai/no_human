@@ -148,3 +148,46 @@ export function updateNotice({ inShell = false, current = null, update = null, c
     version,
   };
 }
+
+/**
+ * What the BOARD (not Settings) shows about an update, or `null` to show
+ * nothing. A strictly narrower view than updateNotice() above: the board is
+ * not a place to explain "checked once a day" or spell out a raw error dump,
+ * and — the whole point — a `failed` automatic check must never put anything
+ * here. Settings' `updateNotice()` still renders that failure unchanged; this
+ * function does not re-derive or duplicate that copy, it simply declines it.
+ *
+ * @param {object}  s
+ * @param {object}  s.update            the last payload from the shell, or null
+ * @param {string}  s.dismissedVersion  the version the board itself hid this
+ *                                      session (App.jsx's local "Later"/"Dismiss")
+ */
+export function updateBanner({ update = null, dismissedVersion = null } = {}) {
+  const mode = update?.mode ?? null;
+  if (mode !== "available" && mode !== "unavailable") return null;
+  if (update?.latest && update.latest === dismissedVersion) return null;
+
+  const text = update.latest
+    ? `no_human ${update.latest} is available.`
+    : "A new version of no_human is available.";
+
+  if (mode === "unavailable") {
+    return {
+      className: "nh-update-banner",
+      tone: "warn",
+      role: "status",
+      version: update.latest,
+      text,
+      actions: ["details", "downloads", "dismiss"],
+    };
+  }
+
+  return {
+    className: "nh-update-banner",
+    tone: "info",
+    role: "status",
+    version: update.latest,
+    text,
+    actions: ["details", "later"],
+  };
+}

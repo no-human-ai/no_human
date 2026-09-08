@@ -22,7 +22,7 @@ import { parseBadgeCount, overlayBadgeBitmap } from "./badge.mjs";
 import { buildMenuTemplate } from "./menu.mjs";
 import { docPage } from "./docRender.mjs";
 import { createUpdater } from "./updater.mjs";
-import { updateMessage } from "./updatePolicy.mjs";
+import { retainedUpdate, updateMessage } from "./updatePolicy.mjs";
 import { readUpdateState, writeUpdateState } from "./updateState.mjs";
 import { normalizeTheme, readTheme, themeColors, writeTheme } from "./themeState.mjs";
 import fs from "node:fs";
@@ -191,6 +191,9 @@ export function packagedSigning() {
 }
 
 let updater = null;
+// The last version FACT (never a bare "failed"), for a renderer that mounts
+// after the event already fired — see retainedUpdate()'s doc for why.
+let lastUpdate = null;
 
 // electron-updater is imported LAZILY and never at module scope: it touches
 // app.getVersion() and app-update.yml on import, which throws in an unpackaged
@@ -223,16 +226,25 @@ async function getUpdater() {
 
 // The board renders the notice; the shell never puts a modal in the way. An
 // update is information, not an interruption.
-function sendUpdateEvent(payload) {
+//
+// Exported so tests can drive it directly: the retention decision matters
+// even though nothing in this file's own IPC surface can trigger an
+// AUTOMATIC "failed" event (only a real electron-updater "error" can, and
+// that never initialises in an unpackaged run).
+export function sendUpdateEvent(payload) {
+  const event = {
+    ...payload,
+    message: updateMessage({
+      mode: payload.mode, latest: payload.latest,
+      current: payload.current ?? app.getVersion(),
+      canAutoUpdate: payload.canAutoUpdate,
+    }),
+  };
+  // Retention is gated; delivery is not — a live Settings panel must still
+  // see the failure that a late mount must never inherit.
+  lastUpdate = retainedUpdate(lastUpdate, event);
   if (win && !win.isDestroyed()) {
-    win.webContents.send("nh:update", {
-      ...payload,
-      message: updateMessage({
-        mode: payload.mode, latest: payload.latest,
-        current: payload.current ?? app.getVersion(),
-        canAutoUpdate: payload.canAutoUpdate,
-      }),
-    });
+    win.webContents.send("nh:update", event);
   }
 }
 
@@ -864,8 +876,20 @@ ipcMain.handle("nh:update-install", async () => {
 ipcMain.handle("nh:update-defer", async (_event, version) => {
   const u = await getUpdater();
   if (!u) return { mode: "failed", error: "the updater is unavailable" };
-  return u.defer(version);
+  const result = u.defer(version);
+  if (result?.mode !== "skipped") return result;   // nothing persisted → nothing to clear
+  // The one push that lets Settings' "Later" clear the BOARD's own copy of
+  // the notice too: sendUpdateEvent runs the "skipped"/"deferred" payload
+  // through retainedUpdate(), which nulls the retained fact and delivers the
+  // clear live to whichever surface is mounted.
+  sendUpdateEvent({ mode: "skipped", reason: "deferred", latest: version });
+  return result;
 });
+
+// The pull half of "the board renders the notice": a renderer that mounts (or
+// remounts) after sendUpdateEvent already fired needs a way to catch up on
+// the last version FACT rather than starting notice-free forever.
+ipcMain.handle("nh:update-last", async () => lastUpdate);
 
 /**
  * The win32 title-bar overlay for a theme. On win32 `hiddenInset` degrades to a

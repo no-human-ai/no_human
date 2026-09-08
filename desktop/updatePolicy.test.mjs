@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   compareVersions, deferVersion, dueForCheck, isNewer, shouldNotify, updateMessage,
-  updateErrorMessage,
+  updateErrorMessage, retainedUpdate,
 } from "./updatePolicy.mjs";
 
 test("version comparison orders releases, including uneven segment counts", () => {
@@ -166,5 +166,43 @@ test("other failures fall back to the try-again-later sentence", () => {
     assert.doesNotThrow(() => updateErrorMessage(raw));
     assert.match(updateErrorMessage(raw), /The update check failed; try again later/,
       `expected the conservative fallback for ${JSON.stringify(raw)}`);
+  }
+});
+
+// retainedUpdate() — the retention half of "automatic failures are quiet".
+// updater.mjs's unconditional autoUpdater.on("error") emits {mode:"failed"}
+// for the AUTOMATIC startup check too, so this is the ONE place that decides
+// what a late-mounting renderer inherits.
+test("a failed check never displaces a retained version fact", () => {
+  const available = { mode: "available", latest: "0.3.0" };
+  const failed = { mode: "failed", error: "x", rawError: "y" };
+  assert.deepEqual(retainedUpdate(available, failed), available,
+    "an automatic failure must leave the previously-known fact alone");
+});
+
+test("a failed check from nothing retained stays nothing retained", () => {
+  const failed = { mode: "failed", error: "x", rawError: "y" };
+  assert.equal(retainedUpdate(null, failed), null,
+    "a failed AUTOMATIC startup check must never become the board's first notice");
+});
+
+test("a failed check never displaces a retained up-to-date", () => {
+  const uptodate = { mode: "up-to-date", current: "0.1.0", latest: "0.1.0" };
+  const failed = { mode: "failed", error: "x" };
+  assert.deepEqual(retainedUpdate(uptodate, failed), uptodate);
+});
+
+test("a persisted deferral clears the retained notice", () => {
+  const available = { mode: "available", latest: "0.3.0" };
+  const skipped = { mode: "skipped", reason: "deferred", latest: "0.3.0" };
+  assert.equal(retainedUpdate(available, skipped), null,
+    "Settings' Later must clear whatever version fact was retained");
+});
+
+test("version facts themselves ARE retained", () => {
+  for (const mode of ["available", "unavailable", "up-to-date"]) {
+    const event = { mode, latest: "0.3.0" };
+    assert.deepEqual(retainedUpdate(null, event), event);
+    assert.deepEqual(retainedUpdate({ mode: "up-to-date" }, event), event);
   }
 });
