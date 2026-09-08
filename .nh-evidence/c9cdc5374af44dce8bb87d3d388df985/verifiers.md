@@ -1,28 +1,28 @@
 # Verifiers
 
-_Harness-captured record for task `c9cdc537`, commit `70fcfcca6e006e9747f4342ad23594c1e55a1a4b` — not model-authored: no_human wrote this file from the deterministic verifier rules selected for this commit's files. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `c9cdc537`, commit `6f2df64dc49af2c8e7c686399deb0cd51e3fd8b2` — not model-authored: no_human wrote this file from the deterministic verifier rules selected for this commit's files. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ```json
 [
   {
-    "comment": "All ten new test functions carry assertions (assert statements checking prompt contents, unreadable flags, decision.action, ordering, etc.); no assertion-free test was added or modified.",
-    "evidence": "Every added test method in test_supervisor_send_back.py contains at least one assert, e.g. test_formatter_tolerates_bare_string_entries has 'assert unreadable is False' and 'assert \"just a bare string message\" in text'; the change to test_structural_budget.py is only a frozen dict value, not a test function.",
+    "comment": "All test functions in the new file contain at least one assertion, and no other test function was modified (test_structural_budget.py only changed a module-level dict value), so the statement holds.",
+    "evidence": "Every added test method contains assert statements, e.g. test_all_machine_entries_yields_no_block_not_unreadable ends with `assert text == \"\"` and `assert unreadable is False`.",
     "file": "tests/test_supervisor_send_back.py",
     "files_checked": [
       "tests/test_structural_budget.py",
       "tests/test_supervisor_send_back.py"
     ],
-    "line": 44,
+    "line": 348,
     "no_verdict": false,
     "passed": true,
     "severity": "medium",
-    "tokens_used": 637,
+    "tokens_used": 483,
     "unavailable": false,
     "verifier_id": "tests-assert-something"
   },
   {
-    "comment": "The change only reads task context and forwards send_back_feedback to the supervisor; it introduces no task-status write at all, so it cannot bypass set_status via update_task(validate=False).",
-    "evidence": "The only new/modified code reads `send_back_feedback = (task.context or {}).get(\"send_back_feedback\")` and passes it to `SupervisorHook`; there are no `update_task(...)` calls, no `validate=False`, and no task status writes anywhere in the diff.",
+    "comment": "The change is purely read-only (fetching send_back_feedback for the supervisor) plus an import; it introduces no task-status writes at all, so it cannot bypass set_status via update_task(validate=False).",
+    "evidence": "The diff only adds an import (SEND_BACK_UNREADABLE) and reads `send_back_feedback = (task.context or {}).get(\"send_back_feedback\")`, then passes it to the SupervisorHook constructor; no update_task or status-write call is added or modified.",
     "file": "src/no_human/core/orchestrator.py",
     "files_checked": [
       "src/no_human/core/orchestrator.py"
@@ -31,7 +31,7 @@ _Harness-captured record for task `c9cdc537`, commit `70fcfcca6e006e9747f4342ad2
     "no_verdict": false,
     "passed": true,
     "severity": "high",
-    "tokens_used": 377,
+    "tokens_used": 380,
     "unavailable": false,
     "verifier_id": "no-unvalidated-status-write"
   }
