@@ -840,6 +840,54 @@ suggested again: manual config always wins. `nh doctor` names the same gap
 enable?") for any known repo that still has no `ui_evidence` configured; it is
 an advisory only and never affects doctor's exit code.
 
+## `setup_cmds` — build prerequisites for a fresh task worktree
+
+Isolated tasks run in a throwaway `git worktree add` checkout (see
+`isolation.enabled` above), which structurally cannot contain anything
+gitignored — `node_modules`, a built `web/dist`, and similar. A repo whose
+test suite needs those has no way to get them without this key.
+
+`setup_cmds` (default: empty list) is a per-repo profile field — declared on
+`<repo>/.no_human/project.yml` (and its mirrored DB row), never in
+`~/.no_human/config.yaml` — listing shell commands to run, in order, from the
+worktree ROOT, once per fresh worktree, before any test command:
+
+```yaml
+# <repo>/.no_human/project.yml
+setup_cmds:
+  - "npm --prefix web ci"
+  - "npm --prefix web run build"
+  - "npm --prefix desktop ci"
+```
+
+Each command gets up to 30 minutes (a cold `npm ci` is minutes, not seconds).
+A non-zero exit, a timeout, or a command that cannot even be spawned fails
+the task immediately as an **infra/environment error naming the exact
+command** — never a test failure, and the test command never runs. Success
+is remembered per worktree (a marker in the worktree's git admin directory,
+never in the working tree itself) so a reused worktree does not re-run setup
+on every attempt.
+
+Operator-owned and trusted like the rest of the profile: it is read only from
+the confirmed profile, never from the repo's own untrusted `.no_human.yml` —
+a repo cannot declare its own `setup_cmds` and have an unattended run execute
+it. Set it with:
+
+```
+nh repo setup-cmds REPO_PATH 'cmd 1' 'cmd 2' ...   # declare, replacing any list
+nh repo setup-cmds REPO_PATH                       # inspect the current list
+nh repo setup-cmds REPO_PATH --clear               # remove every command
+```
+
+For example, this repo's own desktop/web node suites need a web build before
+`desktop`'s packaged-app tests can see it; an operator running no_human
+against this repo declares that with:
+
+```
+nh repo setup-cmds /path/to/no_human-public \
+  'npm --prefix web ci' 'npm --prefix web run build' 'npm --prefix desktop ci'
+```
+
 ## Timeouts read straight from your config
 
 Two ceilings are read the same way and default generously so a legitimately

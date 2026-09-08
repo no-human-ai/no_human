@@ -158,7 +158,13 @@ from .pricing import (
 from .pricing import weighted_tokens as _weighted_tokens
 from .pr_evidence import PrEvidence, visible_chars
 from .task import IllegalTransition, Task, TaskSpec, TaskStatus
-from .worktree import _LIVE_WORKTREES, reset_agent_workspace, teardown_worktree
+from .worktree import (
+    _LIVE_WORKTREES,
+    WorktreeSetupError,
+    reset_agent_workspace,
+    run_setup_commands,
+    teardown_worktree,
+)
 
 log = logging.getLogger("no_human.orchestrator")
 
@@ -2672,6 +2678,28 @@ class Orchestrator:
                 "isolation.enabled: false to work in the checkout on purpose."
             ), reason_category="infra")
         try:
+            # Prerequisite build steps the profile declares (`setup_cmds`) —
+            # gitignored inputs (node_modules, web/dist...) a fresh `git
+            # worktree add` checkout structurally cannot contain. Resolved
+            # via `_usable_profile` on purpose: it is the confirmed/policy-
+            # gated profile, so an unconfirmed or repo-supplied file can
+            # never get to run shell in this worktree. Runs once (per
+            # `run_setup_commands`'s marker), before anything test-shaped.
+            try:
+                prof = await self._usable_profile(repo.path)
+                setup_cmds = list(getattr(prof, "setup_cmds", None) or []) if prof else []
+                if setup_cmds:
+                    self.emit(
+                        "worktree_setup",
+                        f"running {len(setup_cmds)} setup command(s)")
+                    await asyncio.to_thread(
+                        run_setup_commands, wt_path, setup_cmds, emit=self.emit)
+            except WorktreeSetupError as exc:
+                return await self._fail(task, (
+                    f"worktree setup command failed: {exc.command} — "
+                    f"{exc.detail}. Declared as `setup_cmds` on the profile "
+                    f"for {task.repo_path}; fix it with `nh repo setup-cmds`."
+                ), reason_category="infra")
             return await self._drive_watched(task, repo)
         finally:
             # Only ever OUR OWN directory. `wt_path` is unique to this run, so
