@@ -232,7 +232,23 @@ FROZEN_FUNCTION_CC = {
     # around the `ls_remote_exact` pin capture, plus the fail-closed
     # `if base_pin is None:` advisory branch when the pin doesn't resolve.
     # Measured on this tree with the scanner below.
-    "core/orchestrator.py:Orchestrator._run_attempt": 257,
+    # 257 -> 258 (+1): incidents 0847f2c2/d256ae60 (2026-09-08) — the hoisted
+    # `if resumed_commit is None and base:` call to the new
+    # `_route_unjudged_head` check, added before BOTH zero-diff terminals so
+    # a wake/machine resume branched from its OWN `[WIP-BLOCKED]` checkpoint
+    # can no longer reach the claim gate (which structurally refuses that
+    # subject) or the silent "no file changes" fall-through on an unjudged
+    # diff. This replaced the old `if not eligible: ... else: ...` inside the
+    # claim-parsing block (a wash on FUNCTION_LINES — no net change, still
+    # 2210 — but a net +1 on CC: the removed `if not eligible` was -1, the
+    # new `if ... and base` is +2 for its own `If` node plus its `BoolOp`).
+    # The `and base` guard mirrors the existing `resumed_commit` computation
+    # immediately above it (gates on `base` first) rather than relying on
+    # `_already_satisfied_eligible`'s own internal `bool(base) and ...`
+    # short-circuit, so an ordinary (non-resumed) attempt with no `base` at
+    # all does not pay a new `repo.head_sha()` subprocess call it did not
+    # make before. Measured on this tree with the scanner below.
+    "core/orchestrator.py:Orchestrator._run_attempt": 258,
     "core/orchestrator.py:Orchestrator._drive": 115,
     "agent/guard.py:_approve_denial": 81,
     # 73 -> 74 (+1): same cause as the LINES entry above — e922e9b4's landing
@@ -596,7 +612,16 @@ FROZEN_FILE_LINES = {
     # regex literal -- unrelated to this diff, unchanged by this branch.)
     # The scanner's own metric is what this test compares against, so
     # that is the value recorded here, not `wc -l`'s.
-    "core/orchestrator.py": 21880,
+    # 21880 -> 21947 (+67): incidents 0847f2c2/d256ae60 (2026-09-08, the
+    # `[WIP-BLOCKED]`-checkpoint routing fix) — the new `_head_is_blocked_
+    # checkpoint` staticmethod and `_route_unjudged_head` method (with their
+    # docstrings), the hoisted call site in `_run_attempt`, and the widened
+    # `_already_satisfied_eligible` docstring/body (keyed on the HEAD's
+    # shape, not provenance alone). `git diff --numstat` on this file: 126
+    # insertions, 59 deletions (net +67) -- `wc -l` reads 21944 against this
+    # branch's pre-fix 21877 (+67 too, same +3 scanner/`wc -l` offset noted
+    # above). Measured on this tree with the scanner below.
+    "core/orchestrator.py": 21947,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.

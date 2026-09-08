@@ -5818,6 +5818,17 @@ class Orchestrator:
                 and not branched_from_own_partial
                 else None
             )
+            # Incidents 0847f2c2 (claim terminal) and d256ae60 (silent
+            # terminal), both 2026-09-08: a wake/machine resume branching from
+            # its OWN checkpoint sets `branched_from_own_partial` above, so
+            # `resumed_commit` is still `None` even though the branch head may
+            # carry a `[WIP-BLOCKED]` diff no review ever judged. Route it to
+            # the full review BEFORE the claim parse below gets a chance to
+            # burn the attempt on a subject `_already_satisfied_subject`
+            # structurally refuses, and before the silent zero-diff fall-through
+            # fails it as "no file changes" when there plainly are some.
+            if resumed_commit is None and base:
+                resumed_commit = self._route_unjudged_head(task, repo, base)
             if resumed_commit is None:
                 # A fully-cited ALREADY-SATISFIED claim is the one zero-diff
                 # completion that is not a failure: verify it against the code
@@ -5853,27 +5864,16 @@ class Orchestrator:
                             task, repo, attempt_id, exc, result=result,
                             branch=branch)
                 if claim is not None:
-                    eligible, why = self._already_satisfied_eligible(
-                        task, repo, base)
-                    if not eligible:
-                        # The branch carries a diff no completed verdict
-                        # covers. The claim is not a substitute for the review
-                        # that never finished — send the real diff through the
-                        # full gate. Never a silent downgrade: the board must
-                        # show why a claim path became a review path.
-                        self._emit_review(
-                            "already_satisfied_ineligible",
-                            "resumed attempt claims ALREADY-SATISFIED but its "
-                            f"branch head carries an unreviewed diff ({why}) "
-                            "— routing to a full independent review of the "
-                            "branch diff",
-                        )
-                        resumed_commit = repo.head_commit(base)
-                    else:
-                        return await self._gate_already_satisfied(
-                            task, repo, attempt_id, claim, branch=branch,
-                            attempt_n=attempt_n, result=result, base=base,
-                        )
+                    # Ineligibility can no longer be true here: the hoisted
+                    # `_route_unjudged_head` call above already routed every
+                    # unjudged-diff head to review before this claim was even
+                    # parsed, so whatever survives to this point is either a
+                    # no-diff claim or a head a completed review already
+                    # passed — both eligible by construction.
+                    return await self._gate_already_satisfied(
+                        task, repo, attempt_id, claim, branch=branch,
+                        attempt_n=attempt_n, result=result, base=base,
+                    )
             if resumed_commit is None:
                 detail = _NO_CHANGES_DETAIL
                 # Keep what the agent SAID. Task d9d458b5 explained three times
@@ -10746,44 +10746,60 @@ class Orchestrator:
         the task, the coder correctly added nothing to a branch that already
         carried the whole diff, and the claim path took it to awaiting_approval —
         the pipeline ran only the citation check. Constraint #3 was bypassed by
-        the crash seam.
+        the crash seam. `_honor_server_stop` (``by == "server_stop"``) and
+        `worktree.salvage_dead_worktrees` (``by == "hard_kill_salvage"``) leave the
+        same shape: a [WIP-PARTIAL] diff no review has judged. All three values
+        live in `blockers.MACHINE_REQUEUE_PROVENANCE`.
 
-        Scoped to THAT seam, not to every resume. `_recover_orphans` is the only
-        writer of `resume_from.by == "orphan_recovery"` (`scheduler.py`'s
-        `_ORPHANABLE` is CONTEXT/PLANNING/REVIEWING/TESTING — IMPLEMENTING is not
-        in it), so this stamp exists only when one of THOSE phases was killed and
-        requeued: a genuinely interrupted review (or context/planning/testing) —
-        exactly this incident's shape. `_honor_server_stop` writes the
-        IMPLEMENTING twin, ``by == "server_stop"``: a graceful stop mid-coder
-        leaves a [WIP-PARTIAL] diff no review has judged, so a zero-diff claim
-        on top of it is the same laundering shape.
-        `worktree.salvage_dead_worktrees` writes the hard-kill twin,
-        ``by == "hard_kill_salvage"`` — a SIGKILL mid-coder leaves the same
-        unjudged [WIP-PARTIAL] diff, so the same gate applies. All three
-        values live in `blockers.MACHINE_REQUEUE_PROVENANCE`, which is what
-        this gate reads — a fourth machine writer must join that set, not
-        this docstring. A
-        `wake` resume (CI-fix, quota, timer) or a
-        human-gated `nh reply` never had a review in flight to interrupt, and its
-        already-reviewed escape (D15, `test_the_already_satisfied_escape_fires_
-        for_that_same_wake_resume`) must not be re-litigated by this gate.
+        Two more incidents, 2026-09-08, widened the rule from provenance alone to
+        the HEAD as well:
 
-        Rule, keyed on the COMMIT SHA and not on whether a review ever started:
-          * not an orphan-recovery resume -> eligible (nothing here to interrupt);
-          * orphan-recovery resume, no diff vs base -> eligible (the ordinary
-            already-satisfied case: there is nothing to review, the claim IS the
-            deliverable);
-          * orphan-recovery resume, diff vs base, AND a review_history round
-            stamped with THIS exact head sha and passed=True -> eligible (the
-            diff has already been judged);
-          * orphan-recovery resume, diff vs base, no such round -> INELIGIBLE. A
-            `review_start` with no verdict is not a verdict.
-        Fails CLOSED: an unreadable base/head, an absent or unparsable history,
-        an unstamped round -> ineligible, i.e. a full review runs.
+        * task 0847f2c2 (the claim terminal): a `wake` resume branched from its
+          OWN `[WIP-BLOCKED]` checkpoint (quota-parked mid-attempt). The old rule
+          read `wake` as eligible on provenance alone, so the coder's re-verified
+          ALREADY-SATISFIED claim went to `_gate_already_satisfied` — which
+          structurally refuses a `[WIP-BLOCKED]` subject (`_already_satisfied_
+          subject`, ~10674) — and the attempt was `failed` with "already-satisfied
+          claim refused" instead of reviewing the finished work already on the
+          branch.
+        * task d256ae60 (the silent terminal): the same shape, but the resumed
+          coder turn ended with plain prose instead of a parseable claim, so
+          `claim is None` and the eligibility check was never reached at all —
+          `resumed_commit` stayed `None` straight through to `_NO_CHANGES_DETAIL`,
+          failing the attempt twice and escalating with a false "acceptance
+          criteria are already satisfied" hypothesis.
+
+        Both incidents are the SAME defect: a `[WIP-BLOCKED]` head can never pass
+        `_already_satisfied_subject`, so routing it to the claim gate — on ANY
+        provenance, claimed or silent — is guaranteed to burn the attempt on a
+        diff a full review would have happily judged. A `wake`/`human`/
+        `consumed_human` resume onto an ORDINARY commit is a different shape: it
+        never had a review in flight to interrupt, and its already-reviewed
+        escape (D15, `test_the_already_satisfied_escape_fires_for_that_same_
+        wake_resume`) must not be re-litigated by this gate — nor must a `wake`
+        resume onto a `[WIP-PARTIAL]` head (`test_server_stop_checkpoint.py::
+        test_already_satisfied_gate_still_ignores_a_wake_resume` pins that shape
+        eligible too).
+
+        Rule, keyed on the HEAD — its review stamp and its checkpoint SHAPE — and
+        provenance only within that shape:
+          * no diff vs base -> eligible (the ordinary already-satisfied case:
+            there is nothing to review, the claim IS the deliverable);
+          * diff vs base, AND a review_history round stamped with THIS exact head
+            sha and passed=True -> eligible (the diff has already been judged);
+          * diff vs base, no such round, AND (the head's subject is a
+            `[WIP-BLOCKED]` checkpoint OR the resume provenance is in
+            `MACHINE_REQUEUE_PROVENANCE`) -> INELIGIBLE. A `[WIP-BLOCKED]` head
+            can never satisfy `_already_satisfied_subject`, so sending it to the
+            claim gate can only burn the attempt (0847f2c2); the three machine
+            provenances mark a review that was genuinely interrupted mid-flight
+            (8c8b36b5 and its twins). A `review_start` with no verdict is not a
+            verdict.
+          * diff vs base, no such round, ordinary subject, non-machine
+            provenance -> eligible (D15's escape).
+        Fails CLOSED: an unreadable base/head/subject, an absent or unparsable
+        history, an unstamped round -> ineligible, i.e. a full review runs.
         """
-        resume_by = ((task.context or {}).get("resume_from") or {}).get("by")
-        if resume_by not in MACHINE_REQUEUE_PROVENANCE:
-            return True, ""
         try:
             head = repo.head_sha()
         except Exception:  # noqa: BLE001 — unreadable head ⇒ fail closed
@@ -10814,7 +10830,58 @@ class Orchestrator:
         )
         if matched:
             return True, ""
-        return False, "no completed review verdict recorded for this commit"
+        resume_by = ((task.context or {}).get("resume_from") or {}).get("by")
+        if (resume_by in MACHINE_REQUEUE_PROVENANCE
+                or self._head_is_blocked_checkpoint(repo, head)):
+            return False, "no completed review verdict recorded for this commit"
+        return True, ""
+
+    @staticmethod
+    def _head_is_blocked_checkpoint(repo, sha: str) -> bool:
+        """Is ``sha`` a ``[WIP-BLOCKED]`` checkpoint — a quota/human park mid-
+        attempt whose subject `_already_satisfied_subject` (~10674) can never
+        accept?
+
+        Routing such a head to the claim gate is guaranteed to burn the attempt
+        (task 0847f2c2), so `_already_satisfied_eligible` treats it the same as
+        a machine-requeue provenance regardless of who resumed it. Fails CLOSED
+        on an unreadable subject: an unreadable head must not buy the claim
+        escape, same rationale as `_is_wip_partial` (~17893), whose sibling
+        check this is — deliberately NOT widened to `[WIP-PARTIAL]`, which stays
+        eligible on `wake` (`test_server_stop_checkpoint.py:82`).
+        """
+        try:
+            subject = repo._run(
+                "log", "-1", "--format=%s", sha, "--", check=True) or ""
+        except Exception:  # noqa: BLE001 — unreadable ⇒ assume the unsafe side
+            return True
+        return subject.strip().startswith("[WIP-BLOCKED]")
+
+    def _route_unjudged_head(self, task: Task, repo, base: str) -> CommitResult | None:
+        """`CommitResult` when this zero-diff attempt's branch head carries a
+        diff no completed review has judged — else ``None``.
+
+        Hoisted into `_run_attempt` before BOTH zero-diff terminals so a
+        `branched_from_own_partial` resume (`_is_own_partial`, ~17769 — every
+        `wake`/machine resume whose sha matches its own `resume_from`) cannot
+        reach either one on an unjudged diff: incident 0847f2c2 (claim
+        terminal, a fully-cited claim was refused by `_already_satisfied_
+        subject`'s `[WIP-BLOCKED]` check) and incident d256ae60 (silent
+        terminal, no claim parsed at all, so the old code never even asked
+        eligibility and fell straight to `_NO_CHANGES_DETAIL`). Both incidents
+        are 2026-09-08, both are the SAME defect: an unreviewed diff sat at
+        head and neither terminal ever sent it to a reviewer.
+        """
+        eligible, why = self._already_satisfied_eligible(task, repo, base)
+        if eligible:
+            return None
+        self._emit_review(
+            "already_satisfied_ineligible",
+            "resumed attempt added nothing new and its branch head carries "
+            f"an unreviewed diff ({why}) — routing to a full independent "
+            "review of the branch diff",
+        )
+        return repo.head_commit(base)
 
     async def _append_review_history(
         self, task: Task, decision, *, commit_sha: str = "",
