@@ -223,18 +223,31 @@ async function getUpdater() {
 }
 
 // The board renders the notice; the shell never puts a modal in the way. An
-// update is information, not an interruption.
-function sendUpdateEvent(payload) {
-  if (win && !win.isDestroyed()) {
-    win.webContents.send("nh:update", {
-      ...payload,
-      message: updateMessage({
-        mode: payload.mode, latest: payload.latest,
-        current: payload.current ?? app.getVersion(),
-        canAutoUpdate: payload.canAutoUpdate,
-      }),
-    });
-  }
+// update is information, not an interruption. `lastUpdate` retains the last
+// payload so a renderer that mounts late can still ask, via "nh:update-last".
+let lastUpdate = null;
+
+// Retained for a late mount ONLY when the result is a fact about versions.
+// updater.mjs registers an UNCONDITIONAL autoUpdater.on("error") listener
+// (updater.mjs:78-81) that emits {mode:"failed"} even for the automatic
+// startup check — check() itself only emits FAILED when manual. Retaining
+// that turned Settings > Updates on mount into a red "Could not check for
+// updates" where trunk showed the neutral card, so "failed" (and the
+// transient downloading/downloaded/skipped modes) leave `lastUpdate` alone.
+// A manual check's FAILED still reaches the live push below, unchanged.
+const RETAINED_UPDATE_MODES = new Set(["available", "unavailable", "up-to-date"]);
+
+export function sendUpdateEvent(payload) {
+  const event = {
+    ...payload,
+    message: updateMessage({
+      mode: payload.mode, latest: payload.latest,
+      current: payload.current ?? app.getVersion(),
+      canAutoUpdate: payload.canAutoUpdate,
+    }),
+  };
+  if (RETAINED_UPDATE_MODES.has(event.mode)) lastUpdate = event;
+  if (win && !win.isDestroyed()) win.webContents.send("nh:update", event);
 }
 
 async function checkForUpdates({ manual = false } = {}) {
@@ -873,8 +886,20 @@ ipcMain.handle("nh:update-install", async () => {
 ipcMain.handle("nh:update-defer", async (_event, version) => {
   const u = await getUpdater();
   if (!u) return { mode: "failed", error: "the updater is unavailable" };
-  return u.defer(version);
+  const result = u.defer(version);
+  if (result?.mode !== "skipped") return result; // nothing persisted -> nothing to clear
+  // The defer PERSISTED. The board's own state still holds the
+  // available/unavailable payload, so without a push its notice stays up for
+  // the session when "Later" was clicked in Settings. Push the deferral (both
+  // surfaces read "skipped" as nothing-to-show) and drop the retained result
+  // so a panel mounting later is not re-notified.
+  lastUpdate = null;
+  sendUpdateEvent({ mode: "skipped", reason: "deferred",
+    latest: result.latest ?? version, current: app.getVersion() });
+  return result;
 });
+
+ipcMain.handle("nh:update-last", () => lastUpdate);
 
 /**
  * The win32 title-bar overlay for a theme. On win32 `hiddenInset` degrades to a
