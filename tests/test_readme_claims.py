@@ -1989,11 +1989,11 @@ CITATION_TABLE = (
     ("security.md", "vcs/git.py:GitRepo._have_remote_commit:934", "vcs/git.py",
      '"git", "fetch"'),
     ("security.md", ":GitRepo.fetch:1103", "vcs/git.py", '["fetch", remote]'),
-    ("security.md", "cli/commands.py:merge_stack_run:2865", "cli/commands.py",
+    ("security.md", "cli/commands.py:merge_stack_run:2931", "cli/commands.py",
      '"gh", "pr", "merge"'),
-    ("security.md", "cli/commands.py:approve:5085", "cli/commands.py",
+    ("security.md", "cli/commands.py:approve:5151", "cli/commands.py",
      '_refuse_agent_gate_act("approve")'),
-    ("security.md", ":merge_stack_run:2835", "cli/commands.py",
+    ("security.md", ":merge_stack_run:2901", "cli/commands.py",
      '_refuse_agent_gate_act("merge_stack_run")'),
     ("security.md", "updates.py:44", "updates.py", "PYPI_JSON_URL"),
     ("security.md", "updates.py:57", "updates.py", "DISABLE_ENV_VAR"),
@@ -2041,10 +2041,10 @@ CITATION_TABLE = (
     ("security.md", "history/extractor.py:65-72", "history/extractor.py",
      "csrf_token"),
     # docs/eval.md
-    ("eval.md", "src/no_human/cli/commands.py:bench_run:7633",
+    ("eval.md", "src/no_human/cli/commands.py:bench_run:7699",
      "src/no_human/cli/commands.py", "different --trials are not resumed"),
-    ("eval.md", ":bench_run:7784", "src/no_human/cli/commands.py", "asyncio.gather"),
-    ("eval.md", ":bench_run:7662", "src/no_human/cli/commands.py",
+    ("eval.md", ":bench_run:7850", "src/no_human/cli/commands.py", "asyncio.gather"),
+    ("eval.md", ":bench_run:7728", "src/no_human/cli/commands.py",
      "(sc.task_id, sc.trial)"),
     ("eval.md", "src/no_human/eval/northstar_card.py:NorthStarCard.pass_k_rate:456",
      "src/no_human/eval/northstar_card.py", "def pass_k_rate("),
@@ -2740,13 +2740,23 @@ Re-anchored again 2026-09-03 (fourth): the WIP-checkpoint resume-digest
     branch_name=branch) call in orchestrator.py, moving the citation from
     4801 to 4807; re-verified against the code, not carried forward blind.
     db.py:2306 is untouched by this change.
+
+    Re-anchored again 2026-09-08: profile-declared worktree setup commands —
+    the new `Orchestrator._run_worktree_setup` helper (resolving
+    `_usable_profile`, marshalling `run_setup_commands`'s emits onto the loop
+    thread via `call_soon_threadsafe`, and honouring a cancel mid-setup) and
+    the `_drive_watched(task, repo, *, setup_in=None)` seam that calls it sit
+    entirely ABOVE `_run_attempt` in orchestrator.py, adding 72 net lines
+    ahead of it and moving this citation from 4807 to 4879; re-verified
+    against the code, not carried forward blind. `_run_attempt`'s own body,
+    and db.py:2306, are both untouched by this change.
     """
     assert "db.py:2306" in known_issues_doc, (
         "the traceback no longer cites db.py:2306 — this test is pointed at "
         "stale text; re-derive from the current traceback"
     )
-    assert "orchestrator.py:4807" in known_issues_doc, (
-        "the traceback no longer cites orchestrator.py:4807 — this test is "
+    assert "orchestrator.py:4879" in known_issues_doc, (
+        "the traceback no longer cites orchestrator.py:4879 — this test is "
         "pointed at stale text; re-derive from the current traceback"
     )
 
@@ -2765,13 +2775,13 @@ Re-anchored again 2026-09-03 (fourth): the WIP-checkpoint resume-digest
     orch_src = ORCHESTRATOR_PY.read_text(encoding="utf-8")
     orch_body = _function_body_source(orch_src, "_run_attempt")
     orch_lines = orch_src.splitlines()
-    assert 1 <= 4807 <= len(orch_lines), "orchestrator.py is now shorter than line 4807"
-    assert "self.store.update_attempt(" in orch_lines[4806], (
-        f"orchestrator.py:4807 is now {orch_lines[4806]!r}, not the "
+    assert 1 <= 4879 <= len(orch_lines), "orchestrator.py is now shorter than line 4879"
+    assert "self.store.update_attempt(" in orch_lines[4878], (
+        f"orchestrator.py:4879 is now {orch_lines[4878]!r}, not the "
         f"update_attempt call the traceback names"
     )
     assert "self.store.update_attempt(" in orch_body, (
-        "line 4807 is no longer inside _run_attempt's body"
+        "line 4879 is no longer inside _run_attempt's body"
     )
 
 

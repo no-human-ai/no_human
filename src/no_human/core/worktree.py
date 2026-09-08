@@ -36,7 +36,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import shutil
-import subprocess
 from pathlib import Path
 from typing import Callable
 
@@ -111,20 +110,25 @@ def run_setup_commands(
         log.info("worktree setup: running %r in %s", cmd, worktree_path)
         if emit is not None:
             emit("worktree_setup_running", cmd)
+        # Reuse runner._run_shell rather than a second `subprocess.run(...,
+        # timeout=)` here: a bare subprocess.run only kills the shell on
+        # timeout, leaving grandchildren (e.g. `sleep 40` under `sh -c`)
+        # orphaned at ppid 1 — measured. _run_shell spawns in its own process
+        # group (_NEW_GROUP_KWARGS), registers under the worktree path
+        # (runner._register) so teardown_worktree's terminate_running(wt_path)
+        # reaps anything still alive, and on timeout kills the WHOLE tree via
+        # _kill_process_tree/killpg instead of just the shell.
         try:
-            result = subprocess.run(
-                cmd, shell=True, cwd=str(worktree_path),
-                capture_output=True, text=True, timeout=timeout,
-            )
-        except subprocess.TimeoutExpired:
-            raise WorktreeSetupError(cmd, f"timed out after {timeout}s")
+            rc, output, timed_out = runner._run_shell(
+                cmd, worktree_path, timeout, runner._env_for(worktree_path))
         except OSError as exc:
             raise WorktreeSetupError(cmd, f"could not start: {exc}")
-        if result.returncode != 0:
-            tail = (result.stderr or result.stdout or "").strip()[-200:]
+        if timed_out:
+            raise WorktreeSetupError(cmd, f"timed out after {timeout}s")
+        if rc != 0:
+            tail = (output or "").strip()[-200:]
             raise WorktreeSetupError(
-                cmd, f"exit {result.returncode}: {tail}" if tail
-                else f"exit {result.returncode}")
+                cmd, f"exit {rc}: {tail}" if tail else f"exit {rc}")
 
     if marker is not None:
         try:

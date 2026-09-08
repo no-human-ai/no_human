@@ -560,7 +560,29 @@ FROZEN_FILE_LINES = {
     # failures correctly, and tags the max_attempts/tamper_blocked call
     # sites explicitly. Measured via `wc -l`/the scanner below; growth is
     # the minimal functional diff after trimming comments/docstrings.
-    "core/orchestrator.py": 21788,
+    # 21788 -> 21857 (+69): profile-declared worktree setup commands,
+    # MAJOR-2 fix — setup now runs *inside* `_drive_watched` (new
+    # `setup_in` kwarg) via the new `_run_worktree_setup` helper, so the
+    # cancellation watcher is already alive and `nh task cancel` is
+    # observed during a long setup command instead of being ignored for
+    # its whole duration. The helper resolves `_usable_profile`, marshals
+    # every `run_setup_commands` emit onto the loop thread with
+    # `loop.call_soon_threadsafe(self.emit, ...)` (the worker thread from
+    # `asyncio.to_thread` is not safe to call `self.emit` from directly),
+    # polls `_pending_cancel` against the module-level
+    # `_CANCEL_POLL_SECONDS`, and kills the setup process tree via
+    # `runner.terminate_running(wt_path)` + `_honor_cancel` on cancel.
+    # Measured via the scanner's own `len(text.splitlines())`: `wc -l` reads
+    # 21857 (the true +69 from this diff, confirmed via `git diff
+    # origin/main`), but the scanner's `str.splitlines()` also breaks on the
+    # single pre-existing NEL/LS/PS characters (`\x85`/` `/` `)
+    # sitting inside the `_LINE_BREAKS` regex literal at what is now line
+    # ~19264 — unrelated to this diff, present since 2026-08-07 per `git
+    # blame` (commit fe0f5377c) and unchanged by this branch — so the
+    # scanner counts 21860, 3 higher than `wc -l`. The scanner's own metric
+    # is what this test compares against, so that is the value recorded
+    # here, not `wc -l`'s.
+    "core/orchestrator.py": 21860,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.
@@ -679,7 +701,16 @@ FROZEN_FILE_LINES = {
     # `rules`/`skills`. The command bodies live in the new
     # `cli/verifiers_cmd.py`, not here, to keep this file's growth to just
     # the registration. Measured via `wc -l src/no_human/cli/commands.py`.
-    "cli/commands.py": 8567,
+    # 8567 -> 8633 (+66): profile-declared worktree setup commands,
+    # MAJOR-3 fix — `nh repo setup-cmds` now refuses to write a DB row
+    # when none already exists ("run `nh onboard <repo>` first"), naming
+    # the exact operator remedy, instead of letting a repo's own
+    # `.no_human/project.yml` confer trust into a fresh CONFIRMED row.
+    # The command's docstring was also rewritten to state the true trust
+    # model: `_usable_profile`'s existing DB-first-then-file-fallback
+    # behaviour for *running* an already-confirmed profile is untouched.
+    # Measured via `wc -l src/no_human/cli/commands.py`.
+    "cli/commands.py": 8633,
     # api/app.py 5338 -> 5346 (+8): same budget-floor warning surfaced by
     # `send-back`/`reply` as `budget_warning` in the JSON response. Net cost
     # was trimmed from a naive +14 to +8 by computing `Bounds.from_config(...)`

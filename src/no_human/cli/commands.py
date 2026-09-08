@@ -1556,8 +1556,11 @@ def repo_setup_cmds(repo_path, cmds, clear):
     (node_modules, web/dist...) a `git worktree add` checkout can never
     contain. Run in order, from the worktree root, once per worktree, before
     any test command; a failing command fails the task as an infra error
-    naming the command. Operator-declared only: never derived, and never read
-    from the repo's own `.no_human.yml`.
+    naming the command. This command writes the DB row (and mirrors to
+    `project.yml` only when that file already exists) — it never reads the
+    repo's own `project.yml` or `.no_human.yml` to CONFER trust: with no DB
+    row yet, it refuses rather than treat a repo-internal file as if an
+    operator had run `nh onboard`.
 
     Example, for a repo whose node suites need a web build before `desktop`
     can run against it:
@@ -1566,8 +1569,6 @@ def repo_setup_cmds(repo_path, cmds, clear):
           'npm --prefix web ci' 'npm --prefix web run build' \\
           'npm --prefix desktop ci'
     """
-    from ..profile import ProjectProfile
-
     config, _ = _bootstrap(require_auth=False)
     repo = str(Path(repo_path).expanduser().resolve())
 
@@ -1577,10 +1578,7 @@ def repo_setup_cmds(repo_path, cmds, clear):
 
     async def _go():
         async with Store(config.db_path) as store:
-            profile = (
-                await store.get_profile(repo)
-                or ProjectProfile.load(repo)
-            )
+            profile = await store.get_profile(repo)
             if profile is None:
                 console.print(
                     f"[red]no profile for {repo_path} — run `nh onboard "
