@@ -10612,13 +10612,12 @@ class Orchestrator:
                 lines.append(f"  - {ans[:400]}")
         return "\n".join(lines)
 
-    def _passing_review_shas(self, task: Task) -> set[str]:
-        """Every sha a PASSing review round stamped into ``review_history``.
-
-        Factored out of the parsing `_already_satisfied_eligible` already did
-        (kept there untouched — see that method's docstring) so
-        `_assert_delivery_sha` can reuse the same tolerant parsing without
-        depending on that method's orphan-recovery-only gating.
+    def _review_history_records(self, task: Task) -> list[dict]:
+        """Tolerant parse of ``task.context["review_history"]`` into a list
+        of dicts, in list order (oldest round first, newest last) — the
+        same tolerant parsing `_already_satisfied_eligible` already did
+        (kept there untouched — see that method's docstring), factored out
+        so `_passing_review_shas_in_order` can reuse it.
         """
         history = (task.context or {}).get("review_history")
         if isinstance(history, str):
@@ -10629,13 +10628,138 @@ class Orchestrator:
                 history = None
         if not isinstance(history, list):
             history = []
-        return {
-            str(rec.get("sha")).strip()
-            for rec in history
-            if isinstance(rec, dict)
-            and rec.get("passed") is True
-            and str(rec.get("sha") or "").strip()
-        }
+        return [rec for rec in history if isinstance(rec, dict)]
+
+    def _passing_review_shas_in_order(self, task: Task) -> list[str]:
+        """Every sha a PASSing review round stamped into ``review_history``,
+        oldest to newest by list index — the same order `_append_review_history`
+        appends in, which is also the order rounds actually ran (this field
+        is task-lifetime, so a PREVIOUS attempt's PASS stamp can still be
+        present here). De-duplicated, keeping each sha's LAST occurrence so a
+        sha stamped again in a later round sorts as newest.
+        """
+        seen: dict[str, None] = {}
+        for rec in self._review_history_records(task):
+            if rec.get("passed") is True:
+                sha = str(rec.get("sha") or "").strip()
+                if sha:
+                    seen.pop(sha, None)
+                    seen[sha] = None
+        return list(seen)
+
+    def _passing_review_shas(self, task: Task) -> set[str]:
+        """Every sha a PASSing review round stamped into ``review_history``.
+
+        Set form of `_passing_review_shas_in_order`, for callers that only
+        need membership. `_ahead_reviewed_candidate` doesn't consult list
+        order either — after the `head_sha` preference, it picks by DAG
+        ancestry (a candidate that is a strict ancestor of another is
+        superseded), not by which round appended first; `_passing_review_
+        shas_in_order`'s order only matters to its own de-dup (a sha stamped
+        again in a later round keeps that later position).
+        """
+        return set(self._passing_review_shas_in_order(task))
+
+    def _reconcile_remote_branch(
+        self, repo, branch: str, target: str, *, human_gated_resume: bool,
+    ) -> None:
+        """Fetch `branch`'s LIVE remote tip and reconcile it with `target`
+        (a sha already proven to be the reviewed commit) before delivery
+        proceeds to push.
+
+        The fetch (`fetch_remote_branch_sha`) is a network read that never
+        trusts `refs/remotes/<remote>/<branch>` — see that method's
+        docstring: it is a forward-looking divergence guard, not the fix for
+        the delivery-refusal incidents (those were a LOCAL branch-ref lag —
+        see `fast_forward_local_branch`'s docstring — and this method's
+        network read was never in that path). Three outcomes:
+
+        * remote tip is `None` (no remote / never pushed / unreachable) or
+          already equals `target` — nothing to do, fail open exactly like
+          today's behaviour when there is nothing to compare against.
+        * remote tip is an ancestor of `target` — the remote is simply
+          BEHIND the reviewed commit (a normal, expected state: the local
+          branch was just fast-forwarded to `target` by the caller and the
+          remote hasn't seen that push yet). Fast-forward the remote branch
+          itself to `target` and proceed; this is additive-only, never a
+          force.
+        * otherwise — the remote holds a commit `target` does not descend
+          from, a genuine divergence. Refuse, naming the sha this method
+          just fetched (never a stale cached value).
+        """
+        remote_tip = repo.fetch_remote_branch_sha(branch)
+        if remote_tip is None or remote_tip == target:
+            return
+        if repo.is_ancestor(remote_tip, target):
+            try:
+                repo.push_sha_fast_forward(target, branch)
+            except (ProtectedBranch, GitError) as exc:
+                raise ReviewedShaMismatch(
+                    f"delivery refused: could not fast-forward {branch} to "
+                    f"reviewed sha {target}: {exc}") from exc
+            self.emit(
+                "delivery_branch_fast_forwarded",
+                f"{branch}: {remote_tip} -> {target}",
+            )
+            return
+        raise ReviewedShaMismatch(
+            f"delivery refused: branch {branch} remote tip {remote_tip} "
+            f"(fetched) is not an ancestor of the reviewed sha {target} "
+            f"(human_gated_resume={human_gated_resume})")
+
+    def _ahead_reviewed_candidate(
+        self, repo, tip: str, ordered_shas: list[str], *, head_sha: str | None,
+    ) -> str | None:
+        """Which stamped sha, if any, is `tip` an ancestor of?
+
+        Handles the LOCAL branch-ref lag this method exists to fix: the
+        pre-fix gate compared the review stamp only against
+        `repo.branch_sha(branch)`, so a `branch` ref left sitting at its
+        creation point — because HEAD was detached at the reviewed commit,
+        or something reset the ref back — read as "not the reviewed sha"
+        even though the reviewed commit was a descendant of it, reachable in
+        this same object store. `is_ancestor` is False on a sha that doesn't
+        resolve at all, so a stamped-but-garbage sha is silently excluded
+        rather than raising.
+
+        When several stamped shas are candidates, `head_sha` (this attempt's
+        actual `repo.head_sha()`) wins outright if it is one of them — the
+        commit that was just reviewed and stamped for THIS attempt is always
+        preferred over a stamp left by a previous attempt or an earlier round
+        of this one, regardless of git-DAG shape. Never a lexicographic
+        `min()`: that tie-break picks whichever sha's hex text sorts first,
+        which has nothing to do with which one was actually reviewed most
+        recently, and can deliver an older attempt's commit over the one
+        HEAD is actually sitting at.
+
+        Absent a `head_sha` match, candidates that are strict ancestors of
+        another candidate are dropped (a later PASS stamp on the same line
+        of history supersedes an earlier one). If exactly one candidate
+        survives, it wins. If more than one survives, they are unrelated —
+        neither is an ancestor of the other, meaning they diverged at some
+        historical commit — and there is no principled way to choose between
+        them; this raises `ReviewedShaMismatch` naming both shas rather than
+        guessing.
+        """
+        candidates = [s for s in ordered_shas if repo.is_ancestor(tip, s)]
+        if not candidates:
+            return None
+        if head_sha is not None and head_sha in candidates:
+            return head_sha
+        survivors = [
+            cand for cand in candidates
+            if not any(
+                other != cand and repo.is_ancestor(cand, other)
+                for other in candidates
+            )
+        ]
+        if len(survivors) == 1:
+            return survivors[0]
+        raise ReviewedShaMismatch(
+            f"delivery refused: branch tip {tip} is an ancestor of multiple "
+            f"unrelated stamped shas ({', '.join(survivors)}) and none "
+            f"matches this attempt's reviewed HEAD ({head_sha!r}) — cannot "
+            f"determine which to deliver")
 
     def _assert_delivery_sha(
         self, task: Task, repo, branch: str, *, human_gated_resume: bool = False,
@@ -10643,11 +10767,28 @@ class Orchestrator:
         """Fail closed unless the branch tip about to be pushed is exactly a
         sha a passing review round stamped (or the review gate ran advisory
         no-reviewer pass-through this attempt, in which case no diff was ever
-        judged and no stamp can exist).
+        judged and no stamp can exist) — or provably a descendant reachable
+        from it once the LOCAL branch ref is fast-forwarded and the remote is
+        consulted (see `_ahead_reviewed_candidate` and
+        `_reconcile_remote_branch`).
 
-        Exact string equality only — never `is_ancestor` — same rationale as
-        `_already_satisfied_eligible`: an ancestor match would let a PASS on
-        an earlier commit cover code added after it.
+        Exact string equality (or a proven fast-forward TO that exact sha)
+        only — never a bare `is_ancestor` pass — same rationale as
+        `_already_satisfied_eligible`: an ancestor match alone would let a
+        PASS on an earlier commit cover code added after it. The pre-fix
+        version of this gate compared the stamp only against
+        `repo.branch_sha(branch)` — the LOCAL branch ref — and never read a
+        remote or tracking ref at all; when that local ref lagged the
+        reviewed commit (HEAD detached at review time, or the ref reset to
+        its creation point), a genuinely reviewed, PASSing commit was
+        refused and its task re-dispatched from scratch. The fix is to
+        fast-forward the local ref to the reviewed sha FIRST — see
+        `fast_forward_local_branch` — before ever touching the remote, so
+        that lag can no longer cause a refusal. The remote is still FETCHED
+        live before any comparison against it — never a cached
+        `refs/remotes/<remote>/<branch>` value — but that guards against a
+        genuinely different problem (the remote diverging or being
+        protected), not the local-ref-lag this gate used to get wrong.
         """
         try:
             tip = repo.branch_sha(branch)
@@ -10662,17 +10803,52 @@ class Orchestrator:
                 "reviewer.allow_advisory=true), so nothing was ever reviewed",
             )
             return tip
-        shas = self._passing_review_shas(task)
+        ordered_shas = self._passing_review_shas_in_order(task)
+        shas = set(ordered_shas)
         if not shas:
             raise ReviewedShaMismatch(
                 f"no review round stamped a sha for this task "
                 f"(human_gated_resume={human_gated_resume})")
-        if tip not in shas:
+        if tip in shas:
+            self._reconcile_remote_branch(
+                repo, branch, tip, human_gated_resume=human_gated_resume)
+            return tip
+        try:
+            head_sha = repo.head_sha()
+        except GitError:
+            head_sha = None
+        candidate = self._ahead_reviewed_candidate(
+            repo, tip, ordered_shas, head_sha=head_sha)
+        if candidate is None:
             raise ReviewedShaMismatch(
                 f"delivery refused: branch {branch} tip {tip} is not the "
                 f"reviewed sha (passing rounds stamped: {sorted(shas)}) "
                 f"(human_gated_resume={human_gated_resume})")
-        return tip
+        # The subsequent `open_pr` pushes whatever `branch` locally resolves
+        # to, not `candidate` directly — the local ref must actually BE at
+        # the reviewed sha or unreviewed commits would ship. Fast-forward the
+        # LOCAL ref BEFORE touching the remote: this is the fix itself (see
+        # docstring above), and it means a failure here can be reported as a
+        # sha mismatch without any remote side effect having happened yet.
+        # A `False`/`GitError` here means `tip` carries commits `candidate`
+        # doesn't (the branch moved forward with unreviewed work after the
+        # stamp), or a concurrent mover raced the compare-and-swap — refuse,
+        # unchanged message, exactly like `tip not in shas` above.
+        try:
+            moved = repo.fast_forward_local_branch(branch, candidate)
+        except GitError as exc:
+            raise ReviewedShaMismatch(
+                f"delivery refused: branch {branch} tip {tip} is not the "
+                f"reviewed sha (passing rounds stamped: {sorted(shas)}) "
+                f"(human_gated_resume={human_gated_resume}): {exc}") from exc
+        if not moved:
+            raise ReviewedShaMismatch(
+                f"delivery refused: branch {branch} tip {tip} is not the "
+                f"reviewed sha (passing rounds stamped: {sorted(shas)}) "
+                f"(human_gated_resume={human_gated_resume})")
+        self._reconcile_remote_branch(
+            repo, branch, candidate, human_gated_resume=human_gated_resume)
+        return candidate
 
     async def _already_satisfied_subject(
         self, task: Task, repo, *, base: str | None, branch: str | None,

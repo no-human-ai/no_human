@@ -672,7 +672,27 @@ FROZEN_FILE_LINES = {
     # 18 insertions/4 deletions net +14, all agree): follow-up to ce4d4a73
     # (#151) -- should_rebase-driven preamble narration, overlapping_files
     # on the base_staleness emit, and the docstring/comment updates below.
-    "core/orchestrator.py": 22285,
+    # +172 (21880 -> 22052): "Delivery refuses reviewed commits" round 2.
+    # Corrects the wrong "stale/unfetched remote tip" / "different
+    # checkout" diagnosis in docstrings across git.py and this file
+    # (`_reconcile_remote_branch`, `_ahead_reviewed_candidate`,
+    # `_assert_delivery_sha`), replaces `_ahead_reviewed_candidate`'s
+    # lexicographic-`min()` tie-break with a HEAD-preferring,
+    # ancestry-aware selection that refuses on genuinely unrelated
+    # stamped candidates, and adds the `_review_history_records` /
+    # `_passing_review_shas_in_order` helpers `_ahead_reviewed_candidate`
+    # needs to prefer the newest round's stamp. `wc -l` reads 22049
+    # against this same scanner's 22052 (the pre-existing +3 offset noted
+    # above, unchanged).
+    # +4 (22052 -> 22056): task 0847f2c2 round-2 send-back — corrects
+    # `_passing_review_shas`'s docstring (it never consulted list order,
+    # `_ahead_reviewed_candidate` picks by DAG ancestry). `wc -l` reads
+    # 22053 against this same scanner's 22056 (same pre-existing +3
+    # offset). git.py's own `ProtectedBranch` check added in
+    # `fast_forward_local_branch` isn't in this file, so isn't counted
+    # here.
+    # Re-measured on the fully rebased tree by the scanner's own metric.
+    "core/orchestrator.py": 22461,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.
