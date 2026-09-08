@@ -513,6 +513,40 @@ def _parse_test_output(command: str, output: str) -> tuple[int, int, int]:
     return _parse_pytest(output)
 
 
+#: A test run that died because a BUILD PREREQUISITE is absent from this
+#: checkout is an ENVIRONMENT error, not failed code: nothing about the diff
+#: was judged, so retrying the coder just burns attempts (observed: a desktop
+#: `npm test` where `app-builder-lib` was not installed and `web/dist` had
+#: never been built — 2 of 410 tests red, judged "tests failed", retried 3x).
+#: Deliberately a SHORT, EXPLICIT list of node/build-artefact signatures.
+#: Python's ModuleNotFoundError/ImportError are NOT here — a coder-introduced
+#: import breakage is owned by the base-tree gate
+#: (`_invocation_error_reproduces_on_base`) and must keep failing the attempt.
+_MISSING_PREREQUISITE_RULES: tuple[tuple[re.Pattern, str], ...] = (
+    # bare specifier only: "./foo.mjs" is a file THIS change may have deleted.
+    (re.compile(r"Cannot find (?:module|package) ['\"]([^'\"./][^'\"]*)['\"]"),
+     "a node package is not installed: {0}"),
+    (re.compile(r"([^\s'\"]+) is missing - run `npm run build`"),
+     "a build artefact was never built: {0}"),
+    (re.compile(r"ENOENT[^\n]*?((?:[\w.@/-]*/)?(?:node_modules|dist)(?:/[\w.@-]+)*)"),
+     "a build/install path is missing: {0}"),
+)
+
+
+def missing_prerequisite_reason(output: str) -> str | None:
+    """Why this run could not START because a build prerequisite is absent —
+    or None when the output shows a real test failure.
+
+    One function, one list: every consumer classifies identically, and the
+    tests observe it through the verdict string the caller builds from it.
+    """
+    for pattern, template in _MISSING_PREREQUISITE_RULES:
+        match = pattern.search(output or "")
+        if match:
+            return template.format(match.group(1))
+    return None
+
+
 _INVOCATION_ERROR_PATTERNS = re.compile(
     r"error: unrecognized arguments"
     r"|no tests ran"
