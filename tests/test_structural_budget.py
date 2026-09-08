@@ -120,7 +120,14 @@ FROZEN_FUNCTION_LINES = {
     # (see the file-total entry below) but nets `_run_attempt` itself
     # smaller than even the pre-incident-fix baseline. Measured on this
     # tree with the scanner below.
-    "core/orchestrator.py:Orchestrator._run_attempt": 2214,
+    # 2214 -> 2150 (-64, rebase of incidents 0847f2c2/d256ae60 onto the
+    # send-back-resume landing above): the hoisted `_route_unjudged_head`
+    # call site is 2 lines; the old inline `eligible, why = self.
+    # _already_satisfied_eligible(...)` / `if not eligible: ... else: ...`
+    # block it replaced (moved into `_already_satisfied_eligible` itself)
+    # was larger, so `_run_attempt` shrinks net. Measured on this rebased
+    # tree with the scanner below.
+    "core/orchestrator.py:Orchestrator._run_attempt": 2150,
     # 760 -> 778 (+18): dispatch-time intake-eval hoisted path — the `elif
     # ctx.get("eval_result")` branch that acts on a grill/wizard-stored
     # verdict (idempotency marker, cost/residual-gap comments) added inside
@@ -252,7 +259,25 @@ FROZEN_FUNCTION_CC = {
     # — `_run_attempt`'s own zero-diff site is now just the delegating call
     # plus its `if landed is not None:` check. Measured on this tree with
     # the scanner below.
-    "core/orchestrator.py:Orchestrator._run_attempt": 258,
+    # 258 -> REMEASURED (rebase of incidents 0847f2c2/d256ae60, 2026-09-08,
+    # onto the send-back-resume landing above): the hoisted
+    # `if resumed_commit is None and base:` call to the new
+    # `_route_unjudged_head` check, added before BOTH zero-diff terminals so
+    # a wake/machine resume branched from its OWN `[WIP-BLOCKED]` checkpoint
+    # can no longer reach the claim gate (which structurally refuses that
+    # subject) or the silent "no file changes" fall-through on an unjudged
+    # diff. This replaced the old `if not eligible: ... else: ...` inside the
+    # claim-parsing block. The `and base` guard mirrors the existing
+    # `resumed_commit` computation immediately above it (gates on `base`
+    # first) rather than relying on `_already_satisfied_eligible`'s own
+    # internal `bool(base) and ...` short-circuit, so an ordinary
+    # (non-resumed) attempt with no `base` at all does not pay a new
+    # `repo.head_sha()` subprocess call it did not make before. The
+    # deletion of the old inline `if not eligible: ... else: ...` (2
+    # branches) more than offsets the new hoisted `if ... and base:` (1
+    # branch), so `_run_attempt`'s own CC drops net despite the incident
+    # fix. Measured on this rebased tree with the scanner below: 258 -> 232.
+    "core/orchestrator.py:Orchestrator._run_attempt": 232,
     "core/orchestrator.py:Orchestrator._drive": 115,
     "agent/guard.py:_approve_denial": 81,
     # 73 -> 74 (+1): same cause as the LINES entry above — e922e9b4's landing
@@ -660,7 +685,19 @@ FROZEN_FILE_LINES = {
     # `len(Path(...).read_text().splitlines())` on this merged tree
     # (`wc -l` reads 22268; the same pre-existing +3 NEL/LS/PS-regex
     # offset noted above accounts for the gap).
-    "core/orchestrator.py": 22271,
+    # 22271 -> 22338 (+67, rebase of incidents 0847f2c2/d256ae60, the
+    # `[WIP-BLOCKED]`-checkpoint routing fix, onto the send-back-resume
+    # landing above): the new `_head_is_blocked_checkpoint` staticmethod and
+    # `_route_unjudged_head` method (with their docstrings), the hoisted
+    # call site in `_run_attempt`, and the widened `_already_satisfied_
+    # eligible` docstring/body (keyed on the HEAD's shape, not provenance
+    # alone) — disjoint code regions from the send-back-resume feature, so
+    # additive with it. `git diff --numstat 75335986` on this file: 126
+    # insertions, 59 deletions (net +67); `wc -l` reads 22335 (+67 too,
+    # the same pre-existing +3 NEL/LS/PS scanner offset noted throughout
+    # this table). Measured on this rebased tree with the scanner below.
+    "core/orchestrator.py": 22338,
+
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.
