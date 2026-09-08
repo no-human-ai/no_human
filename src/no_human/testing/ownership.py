@@ -22,6 +22,20 @@ byte-for-byte behaviour rather than accusing a test it could not read.
 Fixture ownership is DIRECT ONLY (a test naming a changed fixture as its own
 parameter, or via `@pytest.mark.usefixtures(...)`) — never transitive through
 the fixture's own dependencies.
+
+Ownership is intentionally ASYMMETRIC by ecosystem. `.py` ids get the
+precise per-function treatment above (`parse_node_id` + `_is_owned`'s rules
+1/3/4/5: added file, changed span, or direct fixture). Everything else
+(node/TAP ids — `not ok N - name` has no `.py` to run an AST over) gets
+`parse_file_scoped_id` + FILE-level ownership instead: owned iff the diff
+touched the id's file at all, regardless of which line. That is coarser —
+it over-attributes relative to the Python path — but over-attribution only
+ever BILLS an attempt (an owned id is never excused as environment or
+pre-existing); it can never manufacture an excuse. So the coarser direction
+is still the fail-closed one, not a hole: a node id this module cannot even
+resolve to a file (no ``::``, an absolute path, one that escapes the repo
+root) is simply never returned as owned, same as any other unattributable
+id.
 """
 
 from __future__ import annotations
@@ -74,6 +88,30 @@ def parse_node_id(node_id: str) -> tuple[str, tuple[str, ...], str] | None:
     func_name = rest[-1]
     class_chain = tuple(rest[:-1])
     return rel_path, class_chain, func_name
+
+
+def parse_file_scoped_id(node_id: str) -> str | None:
+    """File-level companion to `parse_node_id`, for ids whose path is NOT
+    ``.py`` — node/TAP ids, where there is no AST to run over ``.mjs`` so
+    ownership can only ever be FILE-level (see module docstring).
+
+    Splits on the first ``::`` and returns the path when it is relative,
+    non-empty, and normalizes inside the repo root. None otherwise: no
+    ``::`` at all (a bare name carries no file to check — never ownable),
+    an absolute path, a path escaping the repo root, or a ``.py`` path
+    (those stay on the precise per-function `parse_node_id` path above).
+    """
+    if "::" not in node_id:
+        return None
+    rel_path = node_id.split("::", 1)[0]
+    if not rel_path or rel_path.endswith(".py"):
+        return None
+    if posixpath.isabs(rel_path):
+        return None
+    norm = posixpath.normpath(rel_path)
+    if norm == ".." or norm.startswith("../"):
+        return None
+    return rel_path
 
 
 def _diff_status(
@@ -223,6 +261,23 @@ def _span_intersects(span: tuple[int, int] | None, lines: set[int]) -> bool:
     return any(start <= ln <= end for ln in lines)
 
 
+def _is_owned_file_scoped(node_id: str, status: dict[str, str]) -> bool:
+    """Non-Python (node/TAP) ownership — the coarse, file-level half of the
+    asymmetric split described in the module docstring: owned iff the diff
+    touched the id's file at all (added or modified), regardless of which
+    line. A failing id cannot live in a file the diff DELETED. No AST for
+    `.mjs`, so there is no span/fixture check left to narrow it further —
+    unlike `_is_owned` below, which is per-function for `.py`.
+    """
+    rel_path = parse_file_scoped_id(node_id)
+    if rel_path is None:
+        return False
+    file_status = status.get(rel_path)
+    if file_status is None or file_status == "D":
+        return False
+    return True
+
+
 def _is_owned(
     node_id: str,
     status: dict[str, str],
@@ -231,7 +286,7 @@ def _is_owned(
 ) -> bool:
     parsed = parse_node_id(node_id)
     if parsed is None:
-        return False
+        return _is_owned_file_scoped(node_id, status)
     rel_path, class_chain, func_name = parsed
     file_status = status.get(rel_path)
 
@@ -307,6 +362,12 @@ def owned_failing_ids(
     rather than accusatory. Any per-id resolution error resolves toward "not
     owned" unless the file itself was added, in which case it is owned
     regardless of content (fail closed).
+
+    Node/TAP ids (see module docstring) go through the same fail-closed
+    contract as `.py` ids: an id `parse_file_scoped_id` cannot resolve to an
+    in-repo relative path (no ``::``, absolute, escapes the repo root) is
+    never returned here — it can only ever be BILLED to the attempt by the
+    caller, never excused as environment or pre-existing.
     """
     node_ids = list(node_ids)
     if not node_ids:
@@ -359,5 +420,9 @@ def owned_failing_ids(
             log.warning("ownership: resolution failed for %r", node_id, exc_info=True)
             parsed = parse_node_id(lookup)
             if parsed is not None and status.get(parsed[0]) == "A":
+                owned.append(node_id)
+                continue
+            file_scoped = parse_file_scoped_id(lookup)
+            if file_scoped is not None and status.get(file_scoped) == "A":
                 owned.append(node_id)
     return owned

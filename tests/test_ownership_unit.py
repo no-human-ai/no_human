@@ -229,6 +229,96 @@ def test_total_resolution_failure_owns_nothing(tmp_path):
     )
 
 
+def test_node_id_owned_when_the_diff_modifies_or_adds_its_file(tmp_path):
+    """Round-3 review MAJOR: `runner` used to never populate `failing_tests`
+    for node runs, so a node id could never even reach `owned_failing_ids` —
+    this exercises the file-scoped half of `_is_owned`'s dispatch
+    (`parse_file_scoped_id` / `_is_owned_file_scoped`) directly, off the same
+    real two-commit git repo harness as every `.py` case above, no stubbing."""
+    root = _repo(tmp_path, "node_file_scoped")
+    (root / "x.test.mjs").write_text("// base\n")
+    (root / "untouched.test.mjs").write_text("// never touched\n")
+    _commit(root, "base: x.test.mjs, untouched.test.mjs")
+
+    (root / "x.test.mjs").write_text("// modified by this attempt\n")
+    (root / "y.test.mjs").write_text("// a brand new node test file\n")
+    _commit(root, "modify x.test.mjs, add y.test.mjs")
+
+    owned = ownership.owned_failing_ids(
+        root, "HEAD~1", "HEAD",
+        [
+            "x.test.mjs::it fails",          # file MODIFIED -> owned
+            "y.test.mjs::a new failure",      # file ADDED -> owned
+            "untouched.test.mjs::a failure",  # file untouched -> not owned
+        ],
+    )
+    assert owned == ["x.test.mjs::it fails", "y.test.mjs::a new failure"], owned
+
+
+def test_node_id_deleted_file_is_never_owned(tmp_path):
+    root = _repo(tmp_path, "node_deleted")
+    (root / "z.test.mjs").write_text("// base\n")
+    _commit(root, "base: z.test.mjs")
+
+    (root / "z.test.mjs").unlink()
+    _commit(root, "delete z.test.mjs")
+
+    owned = ownership.owned_failing_ids(
+        root, "HEAD~1", "HEAD", ["z.test.mjs::a failure"],
+    )
+    assert owned == [], (
+        "a failing id cannot live in a file the diff DELETED: " + str(owned)
+    )
+
+
+def test_node_id_without_a_location_is_never_owned_fail_closed(tmp_path):
+    """A node TAP failure with no `location:` line (a bare name, no `::`) has
+    no file for `parse_file_scoped_id` to resolve — fail-closed: it is never
+    returned as owned, even when the diff adds every file in the repo. This
+    must NOT be read as "safe to excuse" — an id ownership cannot resolve is
+    only ever billed to the attempt by the caller, never excused as
+    environment or pre-existing (see `owned_failing_ids`'s docstring)."""
+    root = _repo(tmp_path, "node_bare_name")
+    (root / "a.test.mjs").write_text("// base\n")
+    _commit(root, "base")
+    (root / "a.test.mjs").write_text("// modified\n")
+    _commit(root, "modify a.test.mjs")
+
+    owned = ownership.owned_failing_ids(
+        root, "HEAD~1", "HEAD", ["a bare failing test name with no file at all"],
+    )
+    assert owned == [], owned
+
+
+def test_node_id_with_an_absolute_or_escaping_path_is_never_owned(tmp_path):
+    root = _repo(tmp_path, "node_abs_or_escape")
+    (root / "b.test.mjs").write_text("// base\n")
+    _commit(root, "base")
+    (root / "b.test.mjs").write_text("// modified\n")
+    _commit(root, "modify b.test.mjs")
+
+    owned = ownership.owned_failing_ids(
+        root, "HEAD~1", "HEAD",
+        [
+            "/abs/b.test.mjs::it fails",
+            "../escapes/b.test.mjs::it fails",
+        ],
+    )
+    assert owned == [], owned
+
+
+def test_parse_file_scoped_id_rejects_python_paths_and_bad_shapes():
+    from no_human.testing.ownership import parse_file_scoped_id
+    assert parse_file_scoped_id("no_double_colon_here") is None
+    assert parse_file_scoped_id("test_x.py::test_a") is None, (
+        ".py paths stay on the precise per-function parse_node_id path"
+    )
+    assert parse_file_scoped_id("/abs/x.test.mjs::name") is None
+    assert parse_file_scoped_id("../escapes/x.test.mjs::name") is None
+    assert parse_file_scoped_id("x.test.mjs::name") == "x.test.mjs"
+    assert parse_file_scoped_id("web/src/x.test.mjs::name") == "web/src/x.test.mjs"
+
+
 def test_parse_node_id_rejects_shapes_that_are_not_a_python_test_id():
     assert ownership.parse_node_id("no_colons_here") is None
     assert ownership.parse_node_id("not_python.txt::test_x") is None

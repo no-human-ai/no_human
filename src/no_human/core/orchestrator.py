@@ -6354,55 +6354,19 @@ class Orchestrator:
                 },
             )
             if any_ran and not plan_result.ok:
-                from ..testing.test_layers import Gating as _Gating
-
-                # `plan_result.ok` is False iff a BLOCKING layer failed
-                # (advisory failures never flip it) — so the layer that
-                # EXPLAINS the failure is the first BLOCKING one, not merely
-                # the first layer with a bad result (an earlier advisory
-                # layer may have failed too without stopping the plan). ONE
-                # lookup feeds both stuck detection and the excerpt below, so
-                # the two can never name different layers.
-                first_blocking_failure = next(
-                    (lr for lr in plan_result.layer_results
-                     if lr.gating == _Gating.BLOCKING and lr.result
-                     and not lr.result.ok),
-                    None,
+                # Extracted to `_layered_tests_failed_outcome` (structural
+                # budget: keeps `_run_attempt` under its frozen line/CC cap —
+                # tests/test_structural_budget.py). Always returns a
+                # TaskOutcome: entering this branch is itself already
+                # terminal, either via the environment classifier or the
+                # billing path at the bottom of that method.
+                return await self._layered_tests_failed_outcome(
+                    task, plan_result=plan_result,
+                    total_passed=total_passed, total_failed=total_failed,
+                    total_errors=total_errors, failing_tests=failing_tests,
+                    attempt_id=attempt_id, repo=repo, branch=branch, base=base,
+                    test_cwd=test_cwd, commit=commit, result=result, stuck=stuck,
                 )
-                fail_output = (first_blocking_failure.result.output
-                               if first_blocking_failure else "")
-                is_stuck = stuck.record(fail_output) if fail_output else False
-                detail = f"tests failed: {plan_result.summary}"
-                if failing_tests:
-                    detail += " — " + ", ".join(failing_tests)
-                if is_stuck:
-                    self.emit("stuck", "same failure signature repeated; resetting context")
-                # The stuck note is the one-line triage summary — it must sit
-                # on the summary line, BEFORE the excerpt, or it is unreadable
-                # in every consumer that shows the head.
-                stuck_note = stuck.stuck_reason
-                if stuck_note:
-                    detail += f" — {stuck_note}"
-                elif is_stuck:
-                    detail += " — same failure signature repeated across attempts"
-                # D1.1: the ROOT CAUSE only — the first failing BLOCKING
-                # layer's own traceback_block, tail-capped to 1200 chars
-                # (same discipline as `fail_tail` below). A downstream
-                # layer's traceback (dependent on the same failure) used to
-                # be concatenated in too, uncapped (SCRUM-40 parity) — the
-                # multi-KB, root-cause-buried `failure_reason` this replaces.
-                excerpt = (getattr(first_blocking_failure.result,
-                                   "traceback_block", "")
-                           if first_blocking_failure else "")
-                if excerpt:
-                    detail += "\n" + excerpt[-1200:]
-                await self.store.update_attempt(attempt_id, status="failed", failure_reason=detail)
-                # Same handoff as the review-FAIL path above: the commit is
-                # real, coder-produced work — hand it to the next attempt.
-                await self._persist_handoff(
-                    task, result, repo, wip_sha=commit.sha if commit else "",
-                    gate="tests", gate_detail=detail, own_partial=True)
-                return TaskOutcome(task, status=TaskStatus.FAILED, detail=detail)
         else:
             # Offload the (blocking) test subprocess to a thread so concurrent tasks'
             # agent phases keep progressing on the event loop (Phase 7). The
@@ -6439,7 +6403,86 @@ class Orchestrator:
                 },
             )
             if test_result.ran and not test_result.ok:
+                # Ownership (cheap: a git-diff lookup, no test re-run) is
+                # computed BEFORE either classifier below and reused for
+                # pre-existing/flaky/billing attribution — an owned failing
+                # id (this attempt's own diff touches the failing test) must
+                # never be excused as environment just because its text
+                # happens to contain a prerequisite signature (round-2 review
+                # MAJOR-4).
+                owned = await self._owned_failing_tests(
+                    repo, base, failing_tests, cwd=test_cwd)
+                # The prerequisite signature (round 2) OWNS the missing-
+                # build-prerequisite class outright — checked UNCONDITIONALLY,
+                # ahead of `invocation_error` below, so it wins even when the
+                # same text ALSO matches `_INVOCATION_ERROR_PATTERNS` ("Cannot
+                # find module" matches both). Gating this on `not
+                # invocation_error` (as before) let the real 417-test incident
+                # — whose "Cannot find module" text sets invocation_error=True
+                # — skip the classifier entirely and fall into the base-tree
+                # check below, which reported "genuinely environmental" and
+                # let the attempt SUCCEED with a PR opened: worse than failing
+                # loud, a SILENT pass on a build-prerequisite failure
+                # (round-3 review BLOCKER). The base-tree reproduction check
+                # remains the owner only for outputs with NO prerequisite
+                # signature — `test_node_missing_deps_invocation_error_does_
+                # not_fail_attempt` (tests/test_base_tree_gate.py) has zero
+                # `not ok` lines, so `prerequisite_reason_for` returns None
+                # and it still rides that path unchanged.
+                env_outcome = await self._environment_test_failure(
+                    task, result=test_result, attempt_id=attempt_id,
+                    repo=repo, branch=branch,
+                    test_results={
+                        "ran": test_result.ran, "ok": test_result.ok,
+                        "passed": test_result.passed, "failed": test_result.failed,
+                        "errors": test_result.errors, "tamper_flag": False,
+                        "failing_tests": failing_tests,
+                    },
+                    owned_failing=owned,
+                )
+                if env_outcome is not None:
+                    return env_outcome
                 if getattr(test_result, "invocation_error", False):
+                    # `owned` (computed above, before `_environment_test_
+                    # failure`) is diff-based and independent of what the
+                    # base tree does, so it must win here too, BEFORE the
+                    # base-tree check below ever runs — checked first, same
+                    # reasoning as the unconditional prerequisite-signature
+                    # gate above it. Without this an OWNED failing id whose
+                    # text also matches `_INVOCATION_ERROR_PATTERNS` (e.g.
+                    # "Cannot find module" from a test the attempt itself
+                    # added) fell through to `_invocation_error_reproduces_
+                    # on_base`, which reports "genuinely environmental" and
+                    # let the attempt SUCCEED with a PR — silently excusing
+                    # exactly the coder-owned failure that
+                    # `_environment_test_failure` above already declined to
+                    # touch (it returns None whenever `owned_failing` is
+                    # non-empty) (round-4 review MAJOR-1).
+                    if owned:
+                        detail = (
+                            "tests failed: this change's own test(s) failed "
+                            "and also matched an invocation-error pattern — "
+                            "ownership always bills the attempt, the base "
+                            "tree is never consulted: " + ", ".join(owned)
+                        )
+                        stuck.record(test_result.output or detail)
+                        self.emit("tests", detail, ok=False,
+                                  failing_tests=failing_tests)
+                        await self.store.update_attempt(
+                            attempt_id, status="failed", failure_reason=detail,
+                            test_results={
+                                "ran": test_result.ran, "ok": False,
+                                "passed": test_result.passed,
+                                "failed": test_result.failed,
+                                "errors": test_result.errors,
+                                "tamper_flag": False,
+                                "failing_tests": failing_tests,
+                                "invocation_error": True,
+                            },
+                        )
+                        return TaskOutcome(
+                            task, status=TaskStatus.FAILED, detail=detail
+                        )
                     # B2 #4: "infrastructure" only if the BASE tree errors the
                     # same way. A coder-introduced import/collection breakage
                     # used to ride this advisory path straight into a PR with
@@ -6517,13 +6560,13 @@ class Orchestrator:
                         repo, test_cmd, base, failing_tests, cwd=test_cwd,
                         env_dependent=bool((task.config or {}).get("env_setup")),
                     )
-                    # Ownership: does THIS attempt's own diff name the failing
-                    # test function itself (added or modified, per-function not
-                    # per-file)? An owned id can never be excused as flaky or
-                    # pre-existing — the flaky/pre-existing excuses classify by
-                    # TREE, never by whether the current attempt wrote the test.
-                    owned = await self._owned_failing_tests(
-                        repo, base, failing_tests, cwd=test_cwd)
+                    # `owned` was already computed above (before the
+                    # environment-error check) and is reused here — does THIS
+                    # attempt's own diff name the failing test function itself
+                    # (added or modified, per-function not per-file)? An owned
+                    # id can never be excused as flaky or pre-existing — the
+                    # flaky/pre-existing excuses classify by TREE, never by
+                    # whether the current attempt wrote the test.
                     # `newly_failing == []` is the ONLY excuse path: the base
                     # check RAN and every failing id was already red on base. An
                     # empty `failing_tests` (unparseable red) or an inconclusive
@@ -6552,130 +6595,23 @@ class Orchestrator:
                             },
                         )
                     else:
-                        # Name the NEWLY-failing ids when the base check isolated
-                        # them (mixed run); otherwise (None → inconclusive/
-                        # fail-closed) fall back to all failing ids, byte-for-byte
-                        # the prior message — plus any owned id, which is always
-                        # billed and never excused regardless of tree evidence.
-                        attributed = _attributed_ids(failing_tests, newly_failing, owned)
-                        # ONE more piece of evidence before we bill the attempt.
-                        # The base check reads ONE run of the base tree, so for a
-                        # LOAD-DEPENDENT flake it is a coin flip: base happened to
-                        # pass → the id lands here as "newly failing" and the coder
-                        # is charged for a failure it did not cause. The tiebreaker
-                        # that does not depend on which tree got lucky is the
-                        # CHANGE tree itself — see `_flaky_on_rerun`: the ids on
-                        # their own, then the whole suite again, both here. An
-                        # owned id skips the re-run entirely: `_flaky_on_rerun` is
-                        # all-or-nothing over `attributed`, so its presence forces
-                        # FAIL regardless of what the re-run would show, and
-                        # skipping also saves the stage-2 full-suite cost.
-                        flaky = None if owned else await self._flaky_on_rerun(
-                            repo, test_cmd, attributed, cwd=test_cwd,
+                        # Extracted to `_failed_tests_outcome` (structural
+                        # budget: keeps `_run_attempt` under its frozen
+                        # line/CC cap — tests/test_structural_budget.py).
+                        # `None` means the flaky-excuse path fired (nothing
+                        # to bill) and control should fall through exactly as
+                        # it always did — only a real billing decision
+                        # returns a TaskOutcome here.
+                        outcome = await self._failed_tests_outcome(
+                            task, test_result=test_result,
+                            newly_failing=newly_failing, owned=owned,
+                            failing_tests=failing_tests, attempt_id=attempt_id,
+                            repo=repo, branch=branch, test_cmd=test_cmd,
+                            test_cwd=test_cwd, commit=commit, result=result,
+                            stuck=stuck,
                         )
-                        # The helper answers all-or-nothing by construction. This
-                        # re-checks the coverage anyway so that a future partial
-                        # answer BILLS rather than silently excusing the rest —
-                        # fail-closed is a property of the call site too.
-                        if flaky and not [t for t in attributed if t not in set(flaky)]:
-                            # Every id we were about to bill went green on the
-                            # re-run. Same excuse shape as the pre-existing block
-                            # above: the attempt is NOT failed, and the reason is
-                            # on the record in BOTH the event stream and
-                            # `test_results` — an excuse nobody can see is a
-                            # silent pass, the one thing this path must never be.
-                            note = (
-                                "tests failed, then passed on an identical "
-                                "bounded re-run — flaky on this tree, not "
-                                "attributed to this change: " + ", ".join(flaky)
-                            )
-                            self.emit("tests", note, ok=True,
-                                      failing_tests=failing_tests,
-                                      flaky_excused=flaky)
-                            await self.store.update_attempt(
-                                attempt_id,
-                                test_results={
-                                    "ran": test_result.ran, "ok": test_result.ok,
-                                    "passed": test_result.passed,
-                                    "failed": test_result.failed,
-                                    "errors": test_result.errors,
-                                    "tamper_flag": False,
-                                    "failing_tests": failing_tests,
-                                    "flaky_excused": flaky,
-                                },
-                            )
-                        else:
-                            is_stuck = stuck.record(test_result.output)
-                            detail = f"tests failed: {test_result.summary}"
-                            if attributed:
-                                detail += " — " + ", ".join(attributed)
-                            if newly_failing:
-                                detail += " (newly failing vs the base tree)"
-                            owned_attr = [t for t in attributed if t in set(owned)]
-                            if owned_attr:
-                                detail += (
-                                    " — this change's own test(s): "
-                                    + ", ".join(owned_attr)
-                                )
-                            if is_stuck:
-                                self.emit("stuck", "same failure signature repeated; resetting context")
-                            # Same ordering rule as the layered path: note before excerpt.
-                            stuck_note = stuck.stuck_reason
-                            if stuck_note:
-                                detail += f" — {stuck_note}"
-                            elif is_stuck:
-                                detail += " — same failure signature repeated across attempts"
-                            # Show tracebacks only for the ids we actually blame the
-                            # change for: on a mixed run the excerpt must not carry a
-                            # pre-existing failure's traceback, or it would contradict
-                            # the attribution line above. When the base check was
-                            # inconclusive (newly_failing is None → all ids blamed)
-                            # keep the full block, byte-for-byte the prior behaviour.
-                            # An owned id must always keep its traceback even when
-                            # newly_failing narrowed the set some other way.
-                            excerpts = getattr(test_result, "traceback_excerpts", {}) or {}
-                            if owned:
-                                keep = set(attributed)
-                                excerpts = {k: v for k, v in excerpts.items() if k in keep}
-                            elif newly_failing:
-                                keep = set(newly_failing)
-                                excerpts = {k: v for k, v in excerpts.items() if k in keep}
-                            excerpt_block = runner.render_traceback_excerpts(excerpts)
-                            if excerpt_block:
-                                detail += "\n" + excerpt_block
-                            if owned_attr:
-                                self.emit(
-                                    "tests",
-                                    "tests failed on test(s) this change added or "
-                                    "modified — not excusable as flaky or "
-                                    "pre-existing: " + ", ".join(owned_attr),
-                                    ok=False,
-                                    failing_tests=failing_tests,
-                                    owned_failures=owned_attr,
-                                )
-                                await self.store.update_attempt(
-                                    attempt_id,
-                                    status="failed",
-                                    failure_reason=detail,
-                                    test_results={
-                                        "ran": test_result.ran, "ok": test_result.ok,
-                                        "passed": test_result.passed,
-                                        "failed": test_result.failed,
-                                        "errors": test_result.errors,
-                                        "tamper_flag": False,
-                                        "failing_tests": failing_tests,
-                                        "owned_failures": owned_attr,
-                                    },
-                                )
-                            else:
-                                await self.store.update_attempt(attempt_id, status="failed", failure_reason=detail)
-                            # Same handoff as the other two gate-failure sites:
-                            # the commit is real, coder-produced work — hand it
-                            # to the next attempt instead of discarding it.
-                            await self._persist_handoff(
-                                task, result, repo, wip_sha=commit.sha if commit else "",
-                                gate="tests", gate_detail=detail, own_partial=True)
-                            return TaskOutcome(task, status=TaskStatus.FAILED, detail=detail)
+                        if outcome is not None:
+                            return outcome
 
         # --- CI (if configured): push branch first, then trigger pipeline ---
         if self.ci_runner is None:
@@ -11343,6 +11279,66 @@ class Orchestrator:
             log.warning("merge-base(%s, HEAD) failed: %s", base, exc)
             return "HEAD~1"
 
+    async def _environment_test_failure(
+        self, task: Task, *, result: "runner.TestRunResult | None",
+        attempt_id: str, repo: GitRepo | None, branch: str | None,
+        test_results: dict, owned_failing: list[str],
+    ) -> TaskOutcome | None:
+        """A test run that never judged the diff because a BUILD PREREQUISITE
+        (installed node package, `npm run build` artefact, node_modules/dist
+        path) is absent from this checkout is an ENVIRONMENT error, not failed
+        code — retrying the coder cannot fix a missing prerequisite, it only
+        burns attempts (observed: a desktop `npm test` where `app-builder-lib`
+        was never installed and `web/dist` had never been built).
+
+        `owned_failing`: any failing test id THIS attempt's own diff added or
+        modified. An owned id is never excused — the classifier is not even
+        consulted — because a real coder-caused failure can coincidentally
+        contain one of the matched signatures in its own text (a test that
+        asserts on an error MESSAGE mentioning "ENOENT" or "is missing", for
+        instance), and "an owned failing id is never excused" must hold
+        regardless of what its text happens to say (round-2 review MAJOR-4).
+
+        Classification reads `result.failure_blocks` / `.traceback_excerpts`
+        (`runner.prerequisite_reason_for`) — the FAILING content only, parsed
+        off the untruncated run — never `result.output`, which is an
+        `[-8000:]` tail that a suite of any size can push the actual failure
+        clean out of (round-2 review BLOCKER-1).
+
+        Returns None when `owned_failing` is non-empty, or when the failing
+        content shows no prerequisite signature — the caller falls through to
+        today's behaviour byte-for-byte.
+        """
+        if owned_failing:
+            return None
+        reason = runner.prerequisite_reason_for(result) if result is not None else None
+        if reason is None:
+            return None
+        detail = f"tests could not run: {reason}"
+        self.emit("tests", detail, ok=False, environment=True)
+        await self.store.update_attempt(
+            attempt_id, status="failed", failure_reason=detail,
+            infra_failure=1,
+            test_results={**test_results, "environment_error": True},
+        )
+        evidence = "\n\n".join(result.failure_blocks) if result is not None else ""
+        blocker = Blocker(
+            category=BlockerCategory.TRANSIENT_INFRA,
+            transient=True, confidence=0.9, goal=task.title,
+            root_cause_hypothesis=detail,
+            evidence=(evidence or (result.output if result is not None else ""))[-1200:],
+            # A resume does NOT reuse this attempt's worktree — it spins up a
+            # NEW one seeded from the PRIMARY checkout (`runner._ensure_node_deps`
+            # / `_ensure_forced_build_artifacts` run there, not here), so the
+            # human has to act in the primary checkout, not "this checkout"
+            # (which no longer exists by the time they read this).
+            question="A build prerequisite is missing in the primary checkout "
+                      "(e.g. `npm ci`, or `npm run build` in web/). Install/"
+                      "build it there, then `nh reply` to resume.",
+        )
+        return await self._raise_blocker(
+            task, blocker, repo=repo, branch=branch, escalate_now=True)
+
     async def _invocation_error_reproduces_on_base(
         self, repo: GitRepo, test_cmd: str | None, base: str | None,
         cwd: "Path | None" = None, env_dependent: bool = False,
@@ -11363,6 +11359,13 @@ class Orchestrator:
         undeterminable (review F1). A CLEAN base run stays trustworthy: if
         the suite runs without any setup, the attempt tree erroring is on
         the change.
+
+        Only reached when `_environment_test_failure` (prerequisite-
+        signature classifier) already declined — i.e. the invocation error's
+        output carries NO build-prerequisite signature. A signature match
+        wins outright regardless of `invocation_error` (round-3 review
+        BLOCKER); this function is the fallback for the invocation errors
+        that are left over.
         """
         import tempfile
 
@@ -11415,6 +11418,16 @@ class Orchestrator:
         repo root; a cwd outside the repo cannot own anything in its diff.
         Blocking subprocess work, so run off the event loop. Never raises:
         any failure here must not fail an attempt that would otherwise pass.
+
+        Node ids get FILE-level ownership (no AST for `.mjs`), Python ids
+        get per-function ownership (`ownership.parse_node_id`) — see that
+        module's docstring. Either way this is fail-closed: an id that
+        cannot be attributed (no location, ambiguous path, parse failure)
+        is simply never returned here, so it is never excused as
+        environment or pre-existing — it can only ever be BILLED to the
+        attempt (round-3 review MAJOR: node ids used to never appear in
+        `failing_tests` at all, making this function a permanent no-op for
+        node runs).
         """
         if not failing_tests:
             return []
@@ -11690,6 +11703,238 @@ class Orchestrator:
         if suite is None or not _all_green(suite):
             return None  # deterministic at suite scope, or unproven → billed
         return list(attributed)
+
+    async def _layered_tests_failed_outcome(
+        self, task: Task, *, plan_result, total_passed: int, total_failed: int,
+        total_errors: int, failing_tests: list[str], attempt_id: str,
+        repo: GitRepo | None, branch: str | None, base: str | None,
+        test_cwd: "Path | None", commit, result, stuck: StuckDetector,
+    ) -> TaskOutcome:
+        """The layered-test-plan branch of `_run_attempt`, once a BLOCKING
+        layer has failed. Extracted from `_run_attempt` (structural budget:
+        it is capped at a frozen line/CC count — see
+        `tests/test_structural_budget.py`) — NOT verbatim: this body also
+        carries the ~19 lines of ownership/environment-classification logic
+        (the `owned` computation below and the `_environment_test_failure`
+        call it feeds) that a pure code-move would not have added. Always
+        returns a TaskOutcome — entering this branch is itself already
+        terminal, either via the environment classifier below or the
+        billing path at the end.
+        """
+        from ..testing.test_layers import Gating as _Gating
+
+        # `plan_result.ok` is False iff a BLOCKING layer failed
+        # (advisory failures never flip it) — so the layer that
+        # EXPLAINS the failure is the first BLOCKING one, not merely
+        # the first layer with a bad result (an earlier advisory
+        # layer may have failed too without stopping the plan). ONE
+        # lookup feeds both stuck detection and the excerpt below, so
+        # the two can never name different layers.
+        first_blocking_failure = next(
+            (lr for lr in plan_result.layer_results
+             if lr.gating == _Gating.BLOCKING and lr.result
+             and not lr.result.ok),
+            None,
+        )
+        fail_result = first_blocking_failure.result if first_blocking_failure else None
+        fail_output = fail_result.output if fail_result else ""
+        # Ownership is a cheap git-diff lookup (no subprocess test run), but
+        # it is only worth making when the failing content actually carries
+        # a prerequisite-signature candidate — the common case (a real code
+        # failure with no such text) never pays for a git call it cannot use.
+        # An owned failing id must never be excused as environment
+        # (round-2 review MAJOR-4), so this has to run BEFORE the classifier.
+        owned: list[str] = []
+        if fail_result is not None and runner.prerequisite_reason_for(fail_result) is not None:
+            owned = await self._owned_failing_tests(
+                repo, base, failing_tests, cwd=test_cwd)
+        env_outcome = await self._environment_test_failure(
+            task, result=fail_result, attempt_id=attempt_id,
+            repo=repo, branch=branch,
+            test_results={
+                "ran": True, "ok": plan_result.ok,
+                "passed": total_passed, "failed": total_failed,
+                "errors": total_errors, "tamper_flag": False,
+                "layers": [lr.summary for lr in plan_result.layer_results],
+                "failing_tests": failing_tests,
+            },
+            owned_failing=owned,
+        )
+        if env_outcome is not None:
+            return env_outcome
+        is_stuck = stuck.record(fail_output) if fail_output else False
+        detail = f"tests failed: {plan_result.summary}"
+        if failing_tests:
+            detail += " — " + ", ".join(failing_tests)
+        if is_stuck:
+            self.emit("stuck", "same failure signature repeated; resetting context")
+        # The stuck note is the one-line triage summary — it must sit
+        # on the summary line, BEFORE the excerpt, or it is unreadable
+        # in every consumer that shows the head.
+        stuck_note = stuck.stuck_reason
+        if stuck_note:
+            detail += f" — {stuck_note}"
+        elif is_stuck:
+            detail += " — same failure signature repeated across attempts"
+        # D1.1: the ROOT CAUSE only — the first failing BLOCKING
+        # layer's own traceback_block, tail-capped to 1200 chars
+        # (same discipline as `fail_tail` below). A downstream
+        # layer's traceback (dependent on the same failure) used to
+        # be concatenated in too, uncapped (SCRUM-40 parity) — the
+        # multi-KB, root-cause-buried `failure_reason` this replaces.
+        excerpt = (getattr(first_blocking_failure.result,
+                           "traceback_block", "")
+                   if first_blocking_failure else "")
+        if excerpt:
+            detail += "\n" + excerpt[-1200:]
+        await self.store.update_attempt(attempt_id, status="failed", failure_reason=detail)
+        # Same handoff as the review-FAIL path above: the commit is
+        # real, coder-produced work — hand it to the next attempt.
+        await self._persist_handoff(
+            task, result, repo, wip_sha=commit.sha if commit else "",
+            gate="tests", gate_detail=detail, own_partial=True)
+        return TaskOutcome(task, status=TaskStatus.FAILED, detail=detail)
+
+    async def _failed_tests_outcome(
+        self, task: Task, *, test_result, newly_failing: list[str] | None,
+        owned: list[str], failing_tests: list[str], attempt_id: str,
+        repo: GitRepo | None, branch: str | None, test_cmd: str | None,
+        test_cwd: "Path | None", commit, result, stuck: StuckDetector,
+    ) -> TaskOutcome | None:
+        """The single-run test-failure attribution + billing branch of
+        `_run_attempt`, reached once a red run is not excused as pre-existing
+        (`newly_failing == [] and not owned`, checked by the caller).
+        Extracted verbatim (structural budget: see
+        `tests/test_structural_budget.py`).
+
+        Returns None when the flaky-excuse path fires — nothing to bill, and
+        the caller must fall through exactly as it always did; a real billing
+        decision returns a TaskOutcome.
+        """
+        # Name the NEWLY-failing ids when the base check isolated
+        # them (mixed run); otherwise (None → inconclusive/
+        # fail-closed) fall back to all failing ids, byte-for-byte
+        # the prior message — plus any owned id, which is always
+        # billed and never excused regardless of tree evidence.
+        attributed = _attributed_ids(failing_tests, newly_failing, owned)
+        # ONE more piece of evidence before we bill the attempt.
+        # The base check reads ONE run of the base tree, so for a
+        # LOAD-DEPENDENT flake it is a coin flip: base happened to
+        # pass → the id lands here as "newly failing" and the coder
+        # is charged for a failure it did not cause. The tiebreaker
+        # that does not depend on which tree got lucky is the
+        # CHANGE tree itself — see `_flaky_on_rerun`: the ids on
+        # their own, then the whole suite again, both here. An
+        # owned id skips the re-run entirely: `_flaky_on_rerun` is
+        # all-or-nothing over `attributed`, so its presence forces
+        # FAIL regardless of what the re-run would show, and
+        # skipping also saves the stage-2 full-suite cost.
+        flaky = None if owned else await self._flaky_on_rerun(
+            repo, test_cmd, attributed, cwd=test_cwd,
+        )
+        # The helper answers all-or-nothing by construction. This
+        # re-checks the coverage anyway so that a future partial
+        # answer BILLS rather than silently excusing the rest —
+        # fail-closed is a property of the call site too.
+        if flaky and not [t for t in attributed if t not in set(flaky)]:
+            # Every id we were about to bill went green on the
+            # re-run. Same excuse shape as the pre-existing block
+            # above: the attempt is NOT failed, and the reason is
+            # on the record in BOTH the event stream and
+            # `test_results` — an excuse nobody can see is a
+            # silent pass, the one thing this path must never be.
+            note = (
+                "tests failed, then passed on an identical "
+                "bounded re-run — flaky on this tree, not "
+                "attributed to this change: " + ", ".join(flaky)
+            )
+            self.emit("tests", note, ok=True,
+                      failing_tests=failing_tests,
+                      flaky_excused=flaky)
+            await self.store.update_attempt(
+                attempt_id,
+                test_results={
+                    "ran": test_result.ran, "ok": test_result.ok,
+                    "passed": test_result.passed,
+                    "failed": test_result.failed,
+                    "errors": test_result.errors,
+                    "tamper_flag": False,
+                    "failing_tests": failing_tests,
+                    "flaky_excused": flaky,
+                },
+            )
+            return None
+        is_stuck = stuck.record(test_result.output)
+        detail = f"tests failed: {test_result.summary}"
+        if attributed:
+            detail += " — " + ", ".join(attributed)
+        if newly_failing:
+            detail += " (newly failing vs the base tree)"
+        owned_attr = [t for t in attributed if t in set(owned)]
+        if owned_attr:
+            detail += (
+                " — this change's own test(s): "
+                + ", ".join(owned_attr)
+            )
+        if is_stuck:
+            self.emit("stuck", "same failure signature repeated; resetting context")
+        # Same ordering rule as the layered path: note before excerpt.
+        stuck_note = stuck.stuck_reason
+        if stuck_note:
+            detail += f" — {stuck_note}"
+        elif is_stuck:
+            detail += " — same failure signature repeated across attempts"
+        # Show tracebacks only for the ids we actually blame the
+        # change for: on a mixed run the excerpt must not carry a
+        # pre-existing failure's traceback, or it would contradict
+        # the attribution line above. When the base check was
+        # inconclusive (newly_failing is None → all ids blamed)
+        # keep the full block, byte-for-byte the prior behaviour.
+        # An owned id must always keep its traceback even when
+        # newly_failing narrowed the set some other way.
+        excerpts = getattr(test_result, "traceback_excerpts", {}) or {}
+        if owned:
+            keep = set(attributed)
+            excerpts = {k: v for k, v in excerpts.items() if k in keep}
+        elif newly_failing:
+            keep = set(newly_failing)
+            excerpts = {k: v for k, v in excerpts.items() if k in keep}
+        excerpt_block = runner.render_traceback_excerpts(excerpts)
+        if excerpt_block:
+            detail += "\n" + excerpt_block
+        if owned_attr:
+            self.emit(
+                "tests",
+                "tests failed on test(s) this change added or "
+                "modified — not excusable as flaky or "
+                "pre-existing: " + ", ".join(owned_attr),
+                ok=False,
+                failing_tests=failing_tests,
+                owned_failures=owned_attr,
+            )
+            await self.store.update_attempt(
+                attempt_id,
+                status="failed",
+                failure_reason=detail,
+                test_results={
+                    "ran": test_result.ran, "ok": test_result.ok,
+                    "passed": test_result.passed,
+                    "failed": test_result.failed,
+                    "errors": test_result.errors,
+                    "tamper_flag": False,
+                    "failing_tests": failing_tests,
+                    "owned_failures": owned_attr,
+                },
+            )
+        else:
+            await self.store.update_attempt(attempt_id, status="failed", failure_reason=detail)
+        # Same handoff as the other two gate-failure sites:
+        # the commit is real, coder-produced work — hand it
+        # to the next attempt instead of discarding it.
+        await self._persist_handoff(
+            task, result, repo, wip_sha=commit.sha if commit else "",
+            gate="tests", gate_detail=detail, own_partial=True)
+        return TaskOutcome(task, status=TaskStatus.FAILED, detail=detail)
 
     async def _run_tests_once(
         self, repo: GitRepo, test_cmd: str | None, cwd: "Path | None" = None,

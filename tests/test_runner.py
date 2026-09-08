@@ -1242,3 +1242,158 @@ def test_fixable_retry_that_hits_an_invocation_error_keeps_the_names(
         "'- failing tests:' block cannot render for this run")
     assert any("test_needs_the_dep" in f for f in result.failing_tests), (
         result.failing_tests)
+
+
+# --- node TAP failing-id parsing (round-3 review MAJOR) ---------------------
+#
+# `runner` only ever had `_pytest_failing_tests`, so `failing_tests` stayed
+# `[]` for every node run — the per-test ownership gate
+# (`ownership.owned_failing_ids` / orchestrator's `_owned_failing_tests`) was
+# a silent no-op for the whole ecosystem, because there was never an id to
+# look up. `_node_tap_failing_tests` / `_failing_ids` fix that.
+
+
+def test_node_tap_failing_ids_and_locations():
+    from no_human.testing.runner import _node_tap_failing_tests
+
+    output = (
+        "TAP version 13\n"
+        "ok 1 - the button renders enabled\n"
+        "not ok 2 - the built board bundle retains the label map\n"
+        "  ---\n"
+        "  error: expected 'true' to be truthy\n"
+        "  location: '/repo/web/src/eventLabels.test.mjs:12:3'\n"
+        "  ...\n"
+        "ok 3 - a skipped-looking name that still passed\n"
+        "not ok 4 - todo not yet implemented # TODO\n"
+        "  ---\n"
+        "  error: not implemented\n"
+        "  ...\n"
+        "not ok 5 - flaky under load # SKIP flaky\n"
+        "  ---\n"
+        "  ...\n"
+        "not ok 6 - a failure with no location line at all\n"
+        "  ---\n"
+        "  error: boom\n"
+        "  ...\n"
+        "1..6\n"
+        "# tests 6\n"
+        "# pass 2\n"
+        "# fail 2\n"
+    )
+
+    ids = _node_tap_failing_tests(output, repo_path=Path("/repo"), work_dir=Path("/repo"))
+
+    # SKIP/TODO-directive blocks are not failures and are dropped.
+    assert ids == [
+        "web/src/eventLabels.test.mjs::the built board bundle retains the label map",
+        "a failure with no location line at all",
+    ]
+
+
+def test_node_tap_failing_ids_relativize_against_work_dir_first():
+    from no_human.testing.runner import _node_tap_failing_tests
+
+    output = (
+        "not ok 1 - name\n"
+        "  ---\n"
+        "  location: '/repo/worktrees/attempt-1/src/x.test.mjs:1:1'\n"
+        "  ...\n"
+    )
+    ids = _node_tap_failing_tests(
+        output,
+        repo_path=Path("/repo"),
+        work_dir=Path("/repo/worktrees/attempt-1"),
+    )
+    assert ids == ["src/x.test.mjs::name"]
+
+
+def test_node_tap_failing_ids_is_deduplicated_and_ordered():
+    from no_human.testing.runner import _node_tap_failing_tests
+
+    output = (
+        "not ok 1 - dup name\n"
+        "  ---\n"
+        "  location: '/repo/x.test.mjs:1:1'\n"
+        "  ...\n"
+        "not ok 2 - dup name\n"
+        "  ---\n"
+        "  location: '/repo/x.test.mjs:1:1'\n"
+        "  ...\n"
+    )
+    ids = _node_tap_failing_tests(output, repo_path=Path("/repo"), work_dir=Path("/repo"))
+    assert ids == ["x.test.mjs::dup name"]
+
+
+def test_node_tap_failing_ids_empty_on_no_not_ok_line():
+    from no_human.testing.runner import _node_tap_failing_tests
+    assert _node_tap_failing_tests("ok 1 - all good\n# pass 1\n# fail 0\n") == []
+    assert _node_tap_failing_tests("") == []
+
+
+def test_failing_ids_prefers_pytest_and_falls_back_to_node_tap():
+    from no_human.testing.runner import _failing_ids
+
+    pytest_out = "FAILED tests/test_x.py::test_y - AssertionError: boom\n"
+    assert _failing_ids(pytest_out) == ["tests/test_x.py::test_y"]
+
+    node_out = (
+        "not ok 1 - a node failure\n"
+        "  ---\n"
+        "  location: '/repo/x.test.mjs:1:1'\n"
+        "  ...\n"
+    )
+    assert _failing_ids(
+        node_out, repo_path=Path("/repo"), work_dir=Path("/repo"),
+    ) == ["x.test.mjs::a node failure"]
+
+
+def test_run_tests_populates_failing_tests_on_a_node_run(tmp_path):
+    """End to end through the real `run_tests()`: a node TAP failure with a
+    `location:` line must show up in `TestRunResult.failing_tests` — before
+    this fix it was always `[]` for node, which made
+    `_owned_failing_tests`/`ownership.owned_failing_ids` a permanent no-op for
+    the whole ecosystem (round-3 review MAJOR)."""
+    script = tmp_path / "fake_node_test.sh"
+    test_file = tmp_path / "x.test.mjs"
+    test_file.write_text("// pretend node test file\n")
+    script.write_text(
+        "#!/bin/sh\n"
+        "cat <<TAPEOF\n"
+        "TAP version 13\n"
+        "not ok 1 - it fails\n"
+        "  ---\n"
+        f"  location: '{test_file}:3:1'\n"
+        "  ...\n"
+        "1..1\n"
+        "# tests 1\n"
+        "# pass 0\n"
+        "# fail 1\n"
+        "TAPEOF\n"
+        "exit 1\n"
+    )
+    script.chmod(0o755)
+
+    result = run_tests(tmp_path, str(script))
+
+    assert result.failing_tests == ["x.test.mjs::it fails"], result.failing_tests
+
+
+def test_dist_enoent_rule_has_a_word_boundary():
+    """The bare `dist` alternative in the ENOENT rules must not match a
+    substring of an unrelated name (`redistribute.json`) while still matching
+    the real build-output directory (`web/dist/assets`) — round-3 review
+    MINOR."""
+    from no_human.testing.runner import missing_prerequisite_reason
+
+    false_positive = (
+        "Error: ENOENT: no such file or directory, open "
+        "'/repo/config/redistribute.json'\n"
+    )
+    assert missing_prerequisite_reason(false_positive) is None
+
+    true_positive = (
+        "Error: ENOENT: no such file or directory, open "
+        "'/repo/web/dist/assets/index.js'\n"
+    )
+    assert missing_prerequisite_reason(true_positive) is not None

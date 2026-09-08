@@ -596,7 +596,38 @@ FROZEN_FILE_LINES = {
     # regex literal -- unrelated to this diff, unchanged by this branch.)
     # The scanner's own metric is what this test compares against, so
     # that is the value recorded here, not `wc -l`'s.
-    "core/orchestrator.py": 21880,
+    # 21880 -> 22081 (+201): merge of environment-error classification
+    # rounds 1-3 (no-human/a6cc4d39 @ fed228cc) on top of the setup_cmds
+    # entry immediately above, additive with it (disjoint code regions):
+    # round 2 (+175) extracted `_run_attempt`'s two failure-billing call
+    # sites into `_layered_tests_failed_outcome` and `_failed_tests_outcome`
+    # (own docstrings/comments, so `_run_attempt` itself nets DOWN against
+    # its own frozen line/CC entry below); round 3 (+26) made
+    # `_environment_test_failure`'s gate unconditional instead of `if not
+    # invocation_error`, plus a comment/docstring paragraph each on
+    # `owned_failing` and on node ids now reaching `failing_tests`
+    # (`_node_tap_failing_tests`, `no_human/testing/runner.py`).
+    # 22081 -> 22125 (+44) round-4 review fix, same merge: (1) MAJOR-1 —
+    # `owned` (computed before `_environment_test_failure`, see
+    # `_owned_failing_tests`) must win over the `invocation_error` branch's
+    # base-tree check too, checked in `_run_attempt` right after the
+    # `getattr(test_result, "invocation_error", False)` guard and BEFORE
+    # `_invocation_error_reproduces_on_base` is awaited — previously an
+    # owned id whose text also matched `_INVOCATION_ERROR_PATTERNS` (e.g.
+    # "Cannot find module" from a test the attempt itself added) fell
+    # through to that base-tree check, which reports "genuinely
+    # environmental" against a diff-independent command and let the attempt
+    # SUCCEED with a PR opened; (2) MINOR-2 — `_layered_tests_failed_
+    # outcome`'s docstring corrected: it claimed "Extracted verbatim" but
+    # carries ~19 lines of ownership/environment-classification logic a
+    # pure code-move would not have added. `_run_attempt`'s own frozen
+    # line/CC entry below is unchanged by either fix (the new code lives
+    # inside the existing `if getattr(test_result, "invocation_error", ...)`
+    # branch, no new call site). Measured via the scanner's own
+    # `len(text.splitlines())`: `wc -l` reads 22122; the scanner counts
+    # 22125 — the same +3 NEL/LS/PS offset noted above, unrelated to this
+    # diff. The scanner's metric (22125) is what is recorded here.
+    "core/orchestrator.py": 22125,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.
