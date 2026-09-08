@@ -27,6 +27,13 @@ process.env.HOME = home;
 process.env.USERPROFILE = home; // os.homedir() reads USERPROFILE on Windows (see mainIpc.test.mjs)
 process.env.NH_BIN = fakeNh;
 process.env.NH_ORIGIN = `http://127.0.0.1:${19800 + (process.pid % 120)}`;  // nothing listening
+// The server-start probe window the handler itself awaits: main.mjs:54-55
+// reads NH_SPAWN_TIMEOUT_MS and passes it to ensureServer as spawnTimeoutMs
+// (main.mjs:573), which is waitForServer's deadline inside the
+// Promise.race at server.mjs:617-618. Pinned here so the sanity bound below
+// is expressed in the SAME constant the code waits on, not a literal.
+const SPAWN_PROBE_WINDOW_MS = 120000;
+process.env.NH_SPAWN_TIMEOUT_MS = String(SPAWN_PROBE_WINDOW_MS);
 
 const stub = await import("./testing/electronStub.mjs");
 await import("./main.mjs");
@@ -77,6 +84,22 @@ test("a token saved against a server that cannot start reports the failure", asy
   // The token itself IS saved — only the server failed.
   assert.match(fs.readFileSync(path.join(home, ".no_human", ".env"), "utf8"),
     /sk-ant-oat-cannot-start/);
-  assert.ok(elapsed < 8000,
-    `this path must be fast (spawn fails immediately); took ${elapsed}ms`);
+  // MECHANISM, not a stopwatch. On EACCES the child's 'error' event resolves
+  // the spawnErrored branch of ensureServer's Promise.race
+  // (server.mjs:604-605, 617-618) and reason maps to "spawn-error"
+  // (server.mjs:626-631). Had the handler instead sat through the start
+  // probe, waitForServer would have won the race and the reason would read
+  // "spawn-timeout" — so this string IS the assertion that no probe window
+  // was awaited. It also proves no late-server re-probe was scheduled:
+  // main.mjs:592-596 polls only for "spawn-timeout".
+  assert.match(res.error, /\(spawn-error\)/,
+    `the failed-spawn path must resolve through the child's 'error' event, ` +
+    `not the ${SPAWN_PROBE_WINDOW_MS}ms start-probe window; got: ${res.error}`);
+  assert.doesNotMatch(res.error, /spawn-timeout/,
+    "spawn-timeout means the handler sat through waitForServer's deadline");
+  // Sanity backstop only, in the probe window's own units (see #125/#134:
+  // a literal wall-clock bound measures the machine, not the code).
+  assert.ok(elapsed < SPAWN_PROBE_WINDOW_MS,
+    `the handler awaited the whole start-probe window ` +
+    `(${elapsed}ms >= ${SPAWN_PROBE_WINDOW_MS}ms)`);
 });
