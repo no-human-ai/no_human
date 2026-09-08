@@ -35,7 +35,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import shutil
+import subprocess
+import sys
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Callable
 
@@ -125,8 +129,15 @@ def run_setup_commands(
         # reaps anything still alive, and on timeout kills the WHOLE tree via
         # _kill_process_tree/killpg instead of just the shell.
         try:
+            # `_env_for` inherits this process's VIRTUAL_ENV and only
+            # overrides it when the worktree ALREADY has a venv, so on a fresh
+            # worktree these commands ran against the shared checkout's venv:
+            # the same defect as env_setup, on a path added after that fix was
+            # written (#128). `isolate_attempt_env` is applied last so it sees
+            # whatever `_env_for` resolved.
             rc, output, timed_out = runner._run_shell(
-                cmd, worktree_path, timeout, runner._env_for(worktree_path))
+                cmd, worktree_path, timeout,
+                isolate_attempt_env(worktree_path, runner._env_for(worktree_path)))
         except OSError as exc:
             raise WorktreeSetupError(cmd, f"could not start: {exc}")
         if timed_out:
@@ -156,6 +167,19 @@ def run_setup_commands(
 # decides what is safe to DELETE. Serialising attempts would be the wrong
 # fix: overlap is legitimate, the shared path was the defect.
 _LIVE_WORKTREES: set[str] = set()
+
+#: uv honours BOTH of these, so pinning one and leaving the other is a way a
+#: redirect leaks back to the shared venv. **pip honours NEITHER**: it installs
+#: into the interpreter it is running under, and a bare ``pip`` is chosen by
+#: PATH. Pinning these two is therefore only half the job, and
+#: `_prepend_venv_bin` is the other half. Measured on review of PR #145 with
+#: two real venvs: with both variables pinned to the worktree but PATH still
+#: leading with the shared venv's bin, ``pip install -e .`` rewrote the SHARED
+#: venv's .pth, pin and all.
+_VENV_KEYS = ("VIRTUAL_ENV", "UV_PROJECT_ENVIRONMENT")
+#: Where an interpreter and its console scripts live inside a venv.
+_VENV_BIN = "Scripts" if os.name == "nt" else "bin"
+_PY_PROJECT_MARKERS = ("pyproject.toml", "setup.py", "setup.cfg")
 
 
 def is_agent_worktree(
@@ -331,6 +355,184 @@ def _read_gitdir_target(entry: Path) -> Path | None:
             target = line.split(":", 1)[1].strip()
             return Path(target) if target else None
     return None
+
+
+def _is_linked_worktree(path: Path) -> bool:
+    """True when ``path`` is a LINKED worktree, whose ``.git`` is a file
+    carrying a ``gitdir:`` line, and not a primary checkout, whose ``.git`` is
+    a directory. The distinction is the whole safety boundary here: a primary
+    checkout is the operator's own tree and its venv is theirs, so nothing
+    below may repoint it. ``isolation.enabled: false`` runs an attempt
+    straight in the primary checkout, and this returns False there."""
+    return (path / ".git").is_file() and _read_gitdir_target(path) is not None
+
+
+def _inherited_venv(env: Mapping[str, str]) -> Path | None:
+    """The venv an inherited environment already names, if any."""
+    for key in _VENV_KEYS:
+        value = env.get(key)
+        if value:
+            return Path(value)
+    return None
+
+
+def _is_within(child: Path, parent: Path) -> bool:
+    try:
+        child.resolve().relative_to(parent.resolve())
+    except (ValueError, OSError):
+        return False
+    return True
+
+
+def isolate_attempt_env(
+    repo_path, env: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    """The environment for a subprocess this process runs inside an attempt.
+
+    PART of #128, not all of it: the incident that raised the issue came from
+    the CODER session (``uv run --active`` inside the worktree), which this
+    does not touch. 0 of 939 tasks have ever configured ``env_setup``, so what
+    this establishes is the invariant for the commands the ORCHESTRATOR itself
+    runs, not a fix for the observed event. The coder half belongs to
+    ``agent/venv_install_guard``.
+
+    An attempt's ``env_setup`` used to run with ``cwd`` set to the worktree and
+    no ``env`` at all, so it inherited this process's ``VIRTUAL_ENV`` — which
+    names the SHARED checkout's ``.venv``. An editable install from inside the
+    worktree therefore rewrote that shared venv's ``.pth`` to a path under the
+    worktree, and when the worktree was later torn down every fresh ``nh``
+    process died with ``ModuleNotFoundError`` while the already-running server,
+    holding its modules in memory, kept working and hid it (issue #128).
+
+    ``venv_install_guard`` names this same residual in its own module
+    docstring, and says closing it needs the environment scoped BEFORE the
+    command runs rather than a smarter command pattern. This is that scoping,
+    for the commands the ORCHESTRATOR itself runs.
+
+    The pin applies only when all of these hold, so that ordinary runs are
+    untouched:
+
+    * ``repo_path`` is a linked worktree. With ``isolation.enabled: false``
+      there is no worktree and the primary checkout is the operator's own.
+    * the inherited environment actually names a venv. Nothing to displace
+      otherwise.
+    * that venv lies OUTSIDE the worktree. A venv already inside it is the
+      isolation this function exists to create.
+
+    When it does apply, both ``VIRTUAL_ENV`` and ``UV_PROJECT_ENVIRONMENT`` are
+    pointed at ``<worktree>/.venv``, and that venv is created if the worktree
+    looks like a Python project. It has to be created rather than merely
+    named: ``uv pip install`` does not build a missing environment, it fails
+    with "Python interpreter not found" (measured), and a pin with no venv
+    behind it would turn a corrupting install into a failing one.
+
+    Creation failure is NOT a reason to fall back to the shared venv. Falling
+    back is precisely the bug. The pin stands, the command fails loudly, and
+    the operator's venv survives.
+    """
+    root = Path(repo_path)
+    result = dict(os.environ if env is None else env)
+    if not _is_linked_worktree(root):
+        return result
+    current = _inherited_venv(result)
+    if current is None or _is_within(current, root):
+        return result
+
+    target = root / ".venv"
+    if not target.exists() and any(
+            (root / name).is_file() for name in _PY_PROJECT_MARKERS):
+        _create_venv(target, current)
+    for key in _VENV_KEYS:
+        result[key] = str(target)
+    _prepend_venv_bin(result, target)
+    return result
+
+
+def _prepend_venv_bin(env: dict[str, str], venv: Path) -> None:
+    """Put ``venv``'s bin directory at the FRONT of ``PATH``, in place.
+
+    The two variables above route uv. They do NOT route pip, which installs
+    into whichever interpreter is running it, and a bare ``pip`` is resolved by
+    PATH. ``runner._env_for`` prepends a worktree venv only when one ALREADY
+    exists at the moment it is called, which on a fresh worktree it does not,
+    so PATH still led with the shared venv the server was started from and
+    ``pip install -e .`` rewrote THAT venv's ``.pth`` with the pin fully in
+    place (measured on review of PR #145).
+
+    Only prepended once the venv exists on disk: pointing PATH at a directory
+    that was never built would shadow nothing and hide the real failure behind
+    a confusing one.
+    """
+    bin_dir = venv / _VENV_BIN
+    if not bin_dir.is_dir():
+        return
+    current = env.get("PATH", "")
+    entry = str(bin_dir)
+    if current.split(os.pathsep)[:1] == [entry]:
+        return
+    env["PATH"] = entry + (os.pathsep + current if current else "")
+
+
+def _builder_python(displaced: Path | None) -> str | None:
+    """The interpreter that can BUILD a venv, or ``None`` if none is usable.
+
+    Normally ``sys.executable``. But in a PyInstaller build ``sys.executable``
+    is the frozen ``nh`` binary, not a Python: ``nh -m venv <path>`` re-enters
+    the click CLI and exits 2 without creating anything (measured on review of
+    PR #145). ``testing/repro_gate.py::_pytest_python`` already carries this
+    scar for pytest, where the same mistake produced a confident but FALSE
+    verdict; this is the same fallback for venv creation.
+
+    The venv being DISPLACED is tried first: the caller only pins when the
+    inherited environment already names one, so it exists by construction and
+    is a real interpreter. Then ``python3``/``python`` on PATH.
+    """
+    if not getattr(sys, "frozen", False):
+        return sys.executable
+    if displaced is not None:
+        for sub, name in ((("Scripts",), "python.exe"), (("bin",), "python")):
+            candidate = displaced.joinpath(*sub, name)
+            if candidate.is_file():
+                return str(candidate)
+    for name in ("python3", "python"):
+        found = shutil.which(name)
+        if found:
+            return found
+    return None
+
+
+def _create_venv(target: Path, displaced: Path | None = None) -> None:
+    """Build the worktree's own venv with the standard library's ``venv``
+    module, and deliberately not with ``uv venv``.
+
+    ``uv venv`` may FETCH an interpreter, which would put a network call
+    inside an attempt's environment setup and would need a line in
+    ``tests/test_egress_allowlist.py`` declaring it. ``sys.executable -m
+    venv`` provably cannot leave the machine, so there is no egress here to
+    declare. The venv it writes is an ordinary one and ``uv pip install``
+    installs into it happily.
+
+    Best effort and never raises: if it cannot be built the caller still pins
+    to it, so the attempt's own command fails instead of the operator's venv
+    being rewritten."""
+    python = _builder_python(displaced)
+    if python is None:
+        log.warning(
+            "no usable interpreter to build a venv at %s (frozen build with "
+            "no python on PATH); the attempt's environment commands will fail "
+            "rather than write to the shared venv", target)
+        return
+    try:
+        proc = subprocess.run([python, "-m", "venv", str(target)],
+                              capture_output=True, text=True, timeout=120)
+        failed = getattr(proc, "returncode", 1) != 0
+    except (OSError, subprocess.SubprocessError) as exc:
+        log.debug("worktree venv: %s -m venv failed: %s", python, exc)
+        failed = True
+    if failed:
+        log.warning(
+            "could not create a venv at %s; the attempt's environment "
+            "commands will fail rather than write to the shared venv", target)
 
 
 async def sweep_stale_worktrees(
