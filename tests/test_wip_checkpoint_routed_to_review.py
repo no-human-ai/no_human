@@ -53,10 +53,18 @@ def _blocked_checkpoint(bare_repo, *, filename="feature.py",
     """The live shape (0847f2c2 / d256ae60): a `[WIP-BLOCKED]` checkpoint one
     commit ahead of the base branch, with no review verdict ever recorded
     against it — a quota/human park mid-attempt, not the loop's own
-    abandoned partial."""
+    abandoned partial.
+
+    Deliberately does NOT push the checkpoint itself to `origin/main`: doing
+    so would leave the checkpoint ON the ship ref, and `_already_satisfied_
+    subject`'s `on_ship_ref` check (`repo.is_ancestor`, ~10660) accepts
+    ANY subject once the head is on the ship ref, bypassing the very
+    `[WIP-BLOCKED]` refusal these incidents depend on. `origin/main` is left
+    at the checkpoint's PARENT (the state the `bare_repo` fixture already
+    pushed), so the checkpoint sits one commit ahead of it, off the ship ref
+    — the actual incident shape."""
     sha = _commit_on_main(bare_repo, filename, body,
                           "[WIP-BLOCKED] parked by the quota wall")
-    _git(bare_repo, "push", "origin", "main")
     _git(bare_repo, "branch", "-f", "base-behind", "HEAD~1")
     _git(bare_repo, "push", "origin", "base-behind")
     return sha
@@ -79,11 +87,12 @@ async def test_a_wake_resume_from_a_blocked_checkpoint_reviews_it_instead_of_no_
     def says_nothing_left(cwd):
         return _ok("CI is green now, nothing left to change.")
 
+    events: list[dict] = []
     reviewer = FakeReviewer(ReviewDecision(passed=True, checklist=[
         ChecklistItem("feature() returns 1", True, "feature.py:2 returns 1")]))
     orch = Orchestrator(store, _config(tmp_path).data,
                         ScriptedBackend(says_nothing_left), SlackNotifier(None),
-                        reviewer=reviewer)
+                        event_sink=events.append, reviewer=reviewer)
     t = Task.new("resumed on a blocked checkpoint, coder is silent",
                  repo_path=str(bare_repo))
     t.acceptance_criteria = ["feature() returns 1"]
@@ -103,6 +112,11 @@ async def test_a_wake_resume_from_a_blocked_checkpoint_reviews_it_instead_of_no_
         "terminal fell straight through to 'no file changes'")
     assert not any(c["mode"] == "already_satisfied" for c in reviewer.calls), (
         f"a silent (non-claim) turn must never reach the claim gate: {reviewer.calls}")
+    assert any(c.get("reviewed_sha") == sha for c in reviewer.calls), (
+        f"the full review did not judge the checkpoint head {sha}: {reviewer.calls}")
+    ineligible_events = [e for e in events if e.get("kind") == "already_satisfied_ineligible"]
+    assert ineligible_events, (
+        f"no already_satisfied_ineligible event was emitted: {events}")
     attempts = await store.list_attempts(t.id)
     assert not any(
         a["status"] == "failed"
@@ -134,11 +148,12 @@ async def test_a_fully_cited_claim_over_a_blocked_checkpoint_routes_to_the_full_
     def files_the_claim(cwd):
         return _ok(claim)
 
+    events: list[dict] = []
     reviewer = FakeReviewer(ReviewDecision(passed=True, checklist=[
         ChecklistItem("feature() returns 1", True, "feature.py:2 returns 1")]))
     orch = Orchestrator(store, _config(tmp_path).data,
                         ScriptedBackend(files_the_claim), SlackNotifier(None),
-                        reviewer=reviewer)
+                        event_sink=events.append, reviewer=reviewer)
     t = Task.new("resumed on a blocked checkpoint, coder files a claim",
                  repo_path=str(bare_repo))
     t.acceptance_criteria = ["feature() returns 1"]
@@ -157,6 +172,11 @@ async def test_a_fully_cited_claim_over_a_blocked_checkpoint_routes_to_the_full_
         "a [WIP-BLOCKED] head's claim reached the claim gate, which "
         f"structurally refuses it: {reviewer.calls}")
     assert reviewer.calls, "the claim's diff never reached a full review"
+    assert any(c.get("reviewed_sha") == sha for c in reviewer.calls), (
+        f"the full review did not judge the checkpoint head {sha}: {reviewer.calls}")
+    ineligible_events = [e for e in events if e.get("kind") == "already_satisfied_ineligible"]
+    assert ineligible_events, (
+        f"no already_satisfied_ineligible event was emitted: {events}")
     attempts = await store.list_attempts(t.id)
     assert not any(
         a["status"] == "failed"

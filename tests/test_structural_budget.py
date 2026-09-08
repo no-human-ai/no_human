@@ -695,8 +695,25 @@ FROZEN_FILE_LINES = {
     # additive with it. `git diff --numstat 75335986` on this file: 126
     # insertions, 59 deletions (net +67); `wc -l` reads 22335 (+67 too,
     # the same pre-existing +3 NEL/LS/PS scanner offset noted throughout
-    # this table). Measured on this rebased tree with the scanner below.
-    "core/orchestrator.py": 22338,
+    # this table). This is the same-day fix's FIRST landing (equivalent to
+    # this branch's pre-rebase 21880 -> 21947 step), before the widen-then-
+    # revert correction below.
+    # 22338 -> 22345 (+7): same 2026-09-08 fix, corrected after independent
+    # review. `_head_is_blocked_checkpoint` was briefly widened to also match
+    # `[WIP-PARTIAL]`, which would have made a `wake` resume onto its own
+    # `[WIP-PARTIAL]` checkpoint ineligible — contradicting the standing
+    # control `test_server_stop_checkpoint.py::test_already_satisfied_gate_
+    # still_ignores_a_wake_resume` (that shape never had a review in flight
+    # to interrupt on `wake`, unlike the machine-requeue provenances). Reverted
+    # to `[WIP-BLOCKED]`-only, with the docstrings of `_already_satisfied_
+    # eligible`, `_head_is_blocked_checkpoint`, and `_route_unjudged_head`
+    # rewritten to state that scope explicitly and to correct two stale
+    # sibling-line citations (`_is_own_partial`/`_is_wip_partial`). Net +7
+    # lines, docstrings/comments only — no behavior or CC change; `_run_attempt`
+    # itself did not move. `git diff --numstat` on this file (pre-rebase): 38
+    # insertions, 31 deletions (net +7). Measured on this rebased tree with
+    # the scanner below.
+    "core/orchestrator.py": 22345,
 
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo

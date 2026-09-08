@@ -10847,17 +10847,17 @@ class Orchestrator:
           failing the attempt twice and escalating with a false "acceptance
           criteria are already satisfied" hypothesis.
 
-        Both incidents are the SAME defect: a `[WIP-BLOCKED]` head can never pass
-        `_already_satisfied_subject`, so routing it to the claim gate — on ANY
-        provenance, claimed or silent — is guaranteed to burn the attempt on a
-        diff a full review would have happily judged. A `wake`/`human`/
-        `consumed_human` resume onto an ORDINARY commit is a different shape: it
-        never had a review in flight to interrupt, and its already-reviewed
-        escape (D15, `test_the_already_satisfied_escape_fires_for_that_same_
-        wake_resume`) must not be re-litigated by this gate — nor must a `wake`
-        resume onto a `[WIP-PARTIAL]` head (`test_server_stop_checkpoint.py::
-        test_already_satisfied_gate_still_ignores_a_wake_resume` pins that shape
-        eligible too).
+        Both incidents are the SAME defect: a `[WIP-BLOCKED]` checkpoint subject
+        sitting off the ship ref routinely fails `_already_satisfied_subject`
+        (~10674), so routing it to the claim gate — on ANY provenance, claimed
+        or silent — risks burning the attempt on a diff a full review would have
+        happily judged. A `wake`/`human`/`consumed_human` resume onto an
+        ORDINARY commit (or its own `[WIP-PARTIAL]` checkpoint — that shape never
+        had a review in flight to interrupt on those provenances) is a different
+        shape: its already-reviewed escape (D15, `test_the_already_satisfied_
+        escape_fires_for_that_same_wake_resume`; and `test_server_stop_
+        checkpoint.py::test_already_satisfied_gate_still_ignores_a_wake_resume`
+        for the `[WIP-PARTIAL]` case) must not be re-litigated by this gate.
 
         Rule, keyed on the HEAD — its review stamp and its checkpoint SHAPE — and
         provenance only within that shape:
@@ -10867,14 +10867,17 @@ class Orchestrator:
             sha and passed=True -> eligible (the diff has already been judged);
           * diff vs base, no such round, AND (the head's subject is a
             `[WIP-BLOCKED]` checkpoint OR the resume provenance is in
-            `MACHINE_REQUEUE_PROVENANCE`) -> INELIGIBLE. A `[WIP-BLOCKED]` head
-            can never satisfy `_already_satisfied_subject`, so sending it to the
-            claim gate can only burn the attempt (0847f2c2); the three machine
-            provenances mark a review that was genuinely interrupted mid-flight
-            (8c8b36b5 and its twins). A `review_start` with no verdict is not a
-            verdict.
-          * diff vs base, no such round, ordinary subject, non-machine
-            provenance -> eligible (D15's escape).
+            `MACHINE_REQUEUE_PROVENANCE`) -> INELIGIBLE. A `[WIP-BLOCKED]`
+            subject off the ship ref fails `_already_satisfied_subject`
+            (0847f2c2); the three machine provenances mark a review that was
+            genuinely interrupted mid-flight (8c8b36b5 and its twins, which
+            leave a `[WIP-PARTIAL]` head) — deliberately NOT widened to treat
+            every `[WIP-PARTIAL]` head as ineligible on its own, since a `wake`
+            resume onto one never had a review in flight to interrupt
+            (`test_server_stop_checkpoint.py:82`). A `review_start` with no
+            verdict is not a verdict.
+          * diff vs base, no such round, ordinary or `[WIP-PARTIAL]` subject,
+            non-machine provenance -> eligible (D15's escape).
         Fails CLOSED: an unreadable base/head/subject, an absent or unparsable
         history, an unstamped round -> ineligible, i.e. a full review runs.
         """
@@ -10916,17 +10919,21 @@ class Orchestrator:
 
     @staticmethod
     def _head_is_blocked_checkpoint(repo, sha: str) -> bool:
-        """Is ``sha`` a ``[WIP-BLOCKED]`` checkpoint — a quota/human park mid-
-        attempt whose subject `_already_satisfied_subject` (~10674) can never
-        accept?
+        """Is ``sha`` a ``[WIP-BLOCKED]`` checkpoint — a quota/human park
+        mid-attempt — a subject `_already_satisfied_subject` (~10674) refuses
+        whenever the commit is not also on the ship ref (~10665)?
 
-        Routing such a head to the claim gate is guaranteed to burn the attempt
-        (task 0847f2c2), so `_already_satisfied_eligible` treats it the same as
-        a machine-requeue provenance regardless of who resumed it. Fails CLOSED
-        on an unreadable subject: an unreadable head must not buy the claim
-        escape, same rationale as `_is_wip_partial` (~17893), whose sibling
-        check this is — deliberately NOT widened to `[WIP-PARTIAL]`, which stays
-        eligible on `wake` (`test_server_stop_checkpoint.py:82`).
+        Routing such a head to the claim gate off the ship ref is guaranteed
+        to burn the attempt (task 0847f2c2), so `_already_satisfied_eligible`
+        treats it the same as a machine-requeue provenance regardless of who
+        resumed it. Deliberately NOT widened to ``[WIP-PARTIAL]``: a `wake`
+        resume onto its own `[WIP-PARTIAL]` checkpoint stays eligible
+        (`test_server_stop_checkpoint.py::test_already_satisfied_gate_still_
+        ignores_a_wake_resume`, :82) — that shape never had a review in
+        flight to interrupt on `wake`, unlike the machine-requeue provenances
+        that do carry a `[WIP-PARTIAL]` head. Fails CLOSED on an unreadable
+        subject: an unreadable head must not buy the claim escape, same
+        rationale as `_is_wip_partial` (~17967), whose sibling check this is.
         """
         try:
             subject = repo._run(
@@ -10940,7 +10947,7 @@ class Orchestrator:
         diff no completed review has judged — else ``None``.
 
         Hoisted into `_run_attempt` before BOTH zero-diff terminals so a
-        `branched_from_own_partial` resume (`_is_own_partial`, ~17769 — every
+        `branched_from_own_partial` resume (`_is_own_partial`, ~17843 — every
         `wake`/machine resume whose sha matches its own `resume_from`) cannot
         reach either one on an unjudged diff: incident 0847f2c2 (claim
         terminal, a fully-cited claim was refused by `_already_satisfied_

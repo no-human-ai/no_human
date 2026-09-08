@@ -519,10 +519,15 @@ SERVER_STOP_REASON = "__server_stop__"
 #: `_head_is_blocked_checkpoint`), which applies regardless of provenance
 #: (incident 0847f2c2, 2026-09-08: a ``wake`` resume onto its own
 #: ``[WIP-BLOCKED]`` checkpoint is not in this set, yet must be just as
-#: ineligible, because that subject can never pass `_already_satisfied_
-#: subject`). A zero-diff attempt over a diff no completed review judged must
-#: route to a full review whenever EITHER condition holds — read together they
-#: are the whole rule, not this set alone.
+#: ineligible, because a ``[WIP-BLOCKED]`` subject off the ship ref routinely
+#: fails `_already_satisfied_subject`). A zero-diff attempt over a diff no
+#: completed review judged must route to a full review whenever EITHER
+#: condition holds — read together they are the whole rule, not this set
+#: alone. Deliberately does NOT extend to ``[WIP-PARTIAL]``: a ``wake``
+#: resume onto its own ``[WIP-PARTIAL]`` checkpoint never had a review in
+#: flight to interrupt and stays eligible
+#: (`test_server_stop_checkpoint.py::test_already_satisfied_gate_still_
+#: ignores_a_wake_resume`).
 MACHINE_REQUEUE_PROVENANCE = frozenset(
     {"orphan_recovery", "server_stop", "hard_kill_salvage"}
 )
