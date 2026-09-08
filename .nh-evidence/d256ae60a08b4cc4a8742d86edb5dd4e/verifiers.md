@@ -1,12 +1,12 @@
 # Verifiers
 
-_Harness-captured record for task `d256ae60`, commit `fc4b09fa06acf1f37d626c24701242733313b981` — not model-authored: no_human wrote this file from the deterministic verifier rules selected for this commit's files. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `d256ae60`, commit `eb353f95108afc14fd29c83f5ca9f3f07e56fbf2` — not model-authored: no_human wrote this file from the deterministic verifier rules selected for this commit's files. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ```json
 [
   {
-    "comment": "All nine new test functions in test_e2e_orchestrator.py and the two modified tests in test_readme_claims.py each contain multiple assert statements; the changes in test_resume_entry_registry.py and test_structural_budget.py are only registry/frozen-dict data edits, not test functions.",
-    "evidence": "Every added test (e.g. test_send_back_resume_with_no_changes_returns_to_awaiting_approval) contains assert statements such as `assert outcome.status is TaskStatus.AWAITING_APPROVAL, outcome.detail`",
+    "comment": "All ten newly added test functions contain multiple assertions, and the modified readme-claims tests retain assert statements; the registry/budget file changes only edit module-level data dicts, not test functions.",
+    "evidence": "Every added test function in test_e2e_orchestrator.py ends with assert statements, e.g. 'assert outcome.status is TaskStatus.AWAITING_APPROVAL, outcome.detail'",
     "file": "tests/test_e2e_orchestrator.py",
     "files_checked": [
       "tests/test_e2e_orchestrator.py",
@@ -14,26 +14,26 @@ _Harness-captured record for task `d256ae60`, commit `fc4b09fa06acf1f37d626c2470
       "tests/test_resume_entry_registry.py",
       "tests/test_structural_budget.py"
     ],
-    "line": 3648,
+    "line": 3651,
     "no_verdict": false,
     "passed": true,
     "severity": "medium",
-    "tokens_used": 949,
+    "tokens_used": 950,
     "unavailable": false,
     "verifier_id": "tests-assert-something"
   },
   {
-    "comment": "All status transitions in the new _land_no_changes_needed method go through set_status (TESTING then AWAITING_APPROVAL); no update_task with validate=False is introduced, and the only other store writes (update_attempt, merge_context, close_phase) are not status writes.",
-    "evidence": "if await self.store.set_status(task, TaskStatus.TESTING) is None: return None ... if await self.store.set_status(task, target) is None: return None",
+    "comment": "All new status writes use set_status (TESTING then AWAITING_APPROVAL), enforcing the transition table; the only other writes are update_attempt and merge_context, which do not change task status. No update_task with validate=False exists.",
+    "evidence": "await self.store.set_status(task, TaskStatus.TESTING) ... await self.store.set_status(task, target) \u2014 both status transitions in _land_no_changes_needed go through set_status; no update_task(validate=False) appears in the diff.",
     "file": "src/no_human/core/orchestrator.py",
     "files_checked": [
       "src/no_human/core/orchestrator.py"
     ],
-    "line": 4533,
+    "line": 4653,
     "no_verdict": false,
     "passed": true,
     "severity": "high",
-    "tokens_used": 676,
+    "tokens_used": 734,
     "unavailable": false,
     "verifier_id": "no-unvalidated-status-write"
   }

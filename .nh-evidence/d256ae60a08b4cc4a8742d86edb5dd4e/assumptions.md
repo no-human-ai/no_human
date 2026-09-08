@@ -1,6 +1,6 @@
 # Assumptions
 
-_Harness-captured record for task `d256ae60`, commit `fc4b09fa06acf1f37d626c24701242733313b981` — not model-authored: no_human wrote this file from the intake step's recorded questions and assumptions. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `d256ae60`, commit `eb353f95108afc14fd29c83f5ca9f3f07e56fbf2` — not model-authored: no_human wrote this file from the intake step's recorded questions and assumptions. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 > ⚠️ **Unresolved:** Two consecutive attempts ended without editing any file. Either the acceptance criteria are already satisfied by the existing code, or the agent cannot identify the change to make.
 
