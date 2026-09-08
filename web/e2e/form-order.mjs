@@ -193,7 +193,7 @@ if (await settingsNav.count()) {
   // 2026-07-18 run against an older UI that did have a `.settings-tab` nav and a
   // Config section. Reading stale artifacts as current evidence is the same mistake
   // as trusting a file:line without re-checking it.
-  for (const label of ["Projects", "Rules", "Skills", "Second brain", "Integrations", "Account"]) {
+  for (const label of ["Projects", "Rules", "Skills", "Memories", "Integrations", "Account"]) {
     const tab = page.locator(`.settings-overlay-navitem:has-text('${label}')`);
     // A tab that cannot be opened is a FAILURE, not a skip. A silent skip is
     // indistinguishable from a pass, and that is the bug class this file exists for.

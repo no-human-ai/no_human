@@ -112,7 +112,7 @@ async def test_active_excludes_paused_by_default_but_include_paused_surfaces_it(
 
 
 @pytest.mark.asyncio
-async def test_active_excludes_archived_by_default_but_include_archived_surfaces_it(queue):
+async def test_active_excludes_archived_by_default_but_include_archived_surfaces_it(queue, store):
     """D3.2 review-round fix: Delete only archives (`LearningQueue.delete`),
     never a real DELETE FROM — but a caller with no way to ask for the
     archived row back makes that recoverability theoretical. Mirrors
@@ -127,6 +127,11 @@ async def test_active_excludes_archived_by_default_but_include_archived_surfaces
     with_archived = await queue.active(include_archived=True)
     assert [r["id"] for r in with_archived] == [mem_id]
     assert with_archived[0]["archived"] == 1
+    # 2026-09-08 rename: the feature is "Memories" everywhere a user reads
+    # it, including the archive audit trail `archive_memory` appends to
+    # `content` on delete.
+    archived_row = await store.find_memory(mem_id)
+    assert "[archived: deleted via the Memories UI]" in archived_row["content"]
 
 
 @pytest.mark.asyncio
