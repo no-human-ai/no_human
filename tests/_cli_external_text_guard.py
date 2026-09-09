@@ -75,12 +75,14 @@ def _dataclass_fields(cls, *, exclude: set[str]) -> set[str]:
 #: Task fields NOT in this set: `status` (a `TaskStatus` enum, closed
 #: vocabulary), `context`/`plan`/`config` (internal dict state, not rendered
 #: as free text at these call sites), `created_at`/`updated_at`/
-#: `wake_check_at` (program-stamped timestamps), `parent_id`/`follows_id`
-#: (internal ids, not user-authored text).
+#: `wake_check_at` (program-stamped timestamps), `id`/`parent_id`/
+#: `follows_id` (internal ids the program itself mints with
+#: `uuid.uuid4().hex` — see `Task.create` — not user- or model-authored
+#: text and structurally incapable of carrying a bracket).
 TASK_TEXT_FIELDS = _dataclass_fields(Task, exclude={
     "status", "context", "plan", "config",
     "created_at", "updated_at", "wake_check_at",
-    "parent_id", "follows_id",
+    "id", "parent_id", "follows_id",
 })
 
 #: Blocker fields NOT in this set: `category` (enum), `transient` (bool),

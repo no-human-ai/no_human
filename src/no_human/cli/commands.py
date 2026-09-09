@@ -2610,7 +2610,7 @@ def rules_list():
             for m in items:
                 import json as _json
                 tags = ", ".join(_json.loads(m.get("tags") or "[]"))
-                table.add_row(m["id"][:8], m["type"], m["title"][:60], tags[:40])
+                table.add_row(m["id"][:8], m["type"], esc(m["title"][:60]), tags[:40])
             console.print(table)
 
     asyncio.run(_go())
@@ -2778,7 +2778,7 @@ def playbook_list():
             table.add_column("project", style="dim")
             for p in items:
                 trg = ", ".join(_json.loads(p.get("trigger_keywords") or "[]"))
-                table.add_row(p["id"][:8], p["title"][:50], trg[:40],
+                table.add_row(p["id"][:8], esc(p["title"][:50]), trg[:40],
                               (p.get("project") or "global")[:30])
             console.print(table)
 
@@ -2941,7 +2941,7 @@ def merge_stack_run(project, squash):
                 proc = subprocess.run(["gh", "pr", "merge", pr, method], capture_output=True, text=True)
                 if proc.returncode != 0:
                     console.print(f"[red]merge failed[/] (needs a rebase or CI is "
-                                  f"red): {proc.stderr.strip()[:200]}")
+                                  f"red): {esc(proc.stderr.strip()[:200])}")
                     console.print("  resolve it, then re-run `nh merge-stack run`.")
                     break
                 merged.add(pr)
@@ -2983,7 +2983,7 @@ def skills_list():
             for m in items:
                 import json as _json
                 tags = ", ".join(_json.loads(m.get("tags") or "[]"))
-                table.add_row(m["id"][:8], m["type"], m["title"][:60], tags[:40])
+                table.add_row(m["id"][:8], m["type"], esc(m["title"][:60]), tags[:40])
             console.print(table)
 
     asyncio.run(_go())
@@ -3439,14 +3439,14 @@ def ci_gate_run(task_id, poll_interval, namespace):
                     console.print("[red]gate step failed[/] (see logs)")
                     sys.exit(1)
                 if outcome.action == "skip":
-                    console.print(f"[yellow]nothing to do:[/] {outcome.reason}")
+                    console.print(f"[yellow]nothing to do:[/] {esc(outcome.reason)}")
                     return
                 if action == "ci_gate_passed":
                     console.print(f"[bold green]Enterprise CI integration PASSED[/] — "
-                                  f"{outcome.web_url}")
+                                  f"{esc(outcome.web_url)}")
                     return
                 if action in ("escalated_ci_gate", "escalated_ci_gate_refused"):
-                    console.print(f"[bold red]escalated:[/] {outcome.reason}")
+                    console.print(f"[bold red]escalated:[/] {esc(outcome.reason)}")
                     sys.exit(1)
                 if action == "resumed":
                     console.print(
@@ -3486,17 +3486,17 @@ def blocked(full):
                     cat = b.category.value if b else "?"
                     console.print(
                         f"[bold]{t.id[:8]}[/] [yellow]{t.status.value}[/] "
-                        f"[magenta]{cat}[/] — {t.title}"
+                        f"[magenta]{cat}[/] — {esc(t.title)}"
                     )
                     if b and b.question:
-                        console.print(f"  [cyan]Q:[/] {b.question}")
+                        console.print(f"  [cyan]Q:[/] {esc(b.question)}")
                         for i, opt in enumerate(b.options, 1):
                             hint = " [dim](applies a change)[/]" if opt.action else ""
-                            console.print(f"     [{i}] {opt.label}{hint}")
+                            console.print(f"     [{i}] {esc(opt.label)}{hint}")
                     if b and b.wake_condition:
-                        console.print(f"  [dim]wake: {b.wake_condition}[/]")
+                        console.print(f"  [dim]wake: {esc(b.wake_condition)}[/]")
                     if full and b:
-                        console.print(render_report(b, task_title=t.title, task_id=t.id))
+                        console.print(esc(render_report(b, task_title=t.title, task_id=t.id)))
                     console.print(
                         f"  [dim]reply:[/] nh reply {t.id[:8]} \"<answer>\""
                     )
@@ -3621,7 +3621,7 @@ def reply(task_id, answer, choose, run):
                     )
                     if proposed:
                         console.print(f"[dim]captured a learning from your reply "
-                                      f"({category}) — confirm with `nh learnings`[/]")
+                                      f"({esc(category)}) — confirm with `nh learnings`[/]")
             # A terminal option (SCRUM-22: "stop — keep the work parked as-is")
             # means exactly that: record the answer, apply nothing else, and
             # LEAVE the task in its parked state. Resuming here is what
@@ -4533,8 +4533,13 @@ def recall(query, limit, include_pending, all_projects):
             table.add_column("kind")
             table.add_column("id")
             table.add_column("summary")
-            for kind, rid, summary in rows[:limit]:
-                table.add_row(kind, rid, summary)
+            # `summary_text` (not `summary`): each `rows` entry was already
+            # escaped at the point it was appended (lines above); reusing the
+            # name `summary` here would make the AST guard (which taints by
+            # name across the whole function) flag this as unescaped, when
+            # it is in fact already-escaped text arriving a second time.
+            for kind, rid, summary_text in rows[:limit]:
+                table.add_row(kind, rid, summary_text)
             console.print(table)
             if len(rows) > limit:
                 console.print(f"[dim]…and {len(rows) - limit} more (raise --limit)[/]")
@@ -4693,8 +4698,8 @@ def agents(show_all):
                 color = status_colors.get(status_str, "dim")
                 styled = f"[{color}]{status_str}[/]" if color else status_str
                 table.add_row(
-                    t.id[:8], styled, t.kind, att_n, last_turns, last_tokens,
-                    t.title[:50], repo_name[:20],
+                    t.id[:8], styled, esc(t.kind), att_n, last_turns, last_tokens,
+                    esc(t.title[:50]), esc(repo_name[:20]),
                 )
             console.print(table)
 
@@ -4910,7 +4915,7 @@ async def _approve_go_ready(config, assume_yes, land_one):
 
         for t, pr_url, passed, total in ready:
             console.print(
-                f"{t.id[:8]} · {t.title} · rules {passed}/{total} · {pr_url}"
+                f"{t.id[:8]} · {esc(t.title)} · rules {passed}/{total} · {pr_url}"
             )
 
         if not assume_yes:
@@ -4940,7 +4945,7 @@ async def _approve_go_ready(config, assume_yes, land_one):
                 detail = result.stderr if (result is not None and result.stderr) else outcome["evidence"]
                 console.print(
                     f"[bold red]stopped at[/] {t.id[:8]} — step {step!r}"
-                    + (f":\n{detail}" if detail else "")
+                    + (f":\n{esc(detail)}" if detail else "")
                 )
                 console.print(f"landed {landed}/{len(ready)} before stopping.")
                 sys.exit(1)
@@ -4973,7 +4978,7 @@ async def _approve_go_landed(config, task_id, landed_sha, justification, base_br
                 store, t, landed_sha, justification or "",
                 base=base_branch)
         except OverrideRefused as exc:
-            console.print(f"[bold red]refused:[/] {exc.reason}")
+            console.print(f"[bold red]refused:[/] {esc(exc.reason)}")
             sys.exit(1)
         residue = result["residue"]
         residue_text = ", ".join(residue) if residue else "none"
@@ -5019,7 +5024,7 @@ async def _approve_go_single(config, task_id, land_one):
                 "claim confirmed; no code change was needed. Task done."
             )
             if evidence:
-                console.print(f"  [dim]{evidence}[/]")
+                console.print(f"  [dim]{esc(evidence)}[/]")
             return
 
         if tag == "already_satisfied_unlanded":
@@ -5030,7 +5035,7 @@ async def _approve_go_single(config, task_id, land_one):
             # once the issue named in `evidence` is resolved, can land it.
             console.print(
                 f"[yellow]approved[/] {t.id[:8]} — already satisfied claim "
-                f"confirmed, but could not be landed automatically: {evidence}. "
+                f"confirmed, but could not be landed automatically: {esc(evidence)}. "
                 "Task remains awaiting_approval — land it manually, or re-run "
                 "`nh approve` once resolved."
             )
@@ -5075,7 +5080,7 @@ async def _approve_go_single(config, task_id, land_one):
 
         if tag == "precondition":
             console.print(
-                f"[bold red]cannot merge:[/] preconditions — {evidence}. "
+                f"[bold red]cannot merge:[/] preconditions — {esc(evidence)}. "
                 "Approval recorded; task remains awaiting_approval."
             )
             sys.exit(1)
@@ -5090,7 +5095,7 @@ async def _approve_go_single(config, task_id, land_one):
 
         if tag == "failed":
             console.print(
-                f"[bold red]merge FAILED[/] at step {result.step!r}:\n{result.stderr}"
+                f"[bold red]merge FAILED[/] at step {result.step!r}:\n{esc(result.stderr)}"
             )
             if result.gate_reason:
                 # The reason already rides in `result.stderr` when the
@@ -5099,7 +5104,7 @@ async def _approve_go_single(config, task_id, land_one):
                 # say which gate the run was headed for — echo it explicitly
                 # so a full-gate failure is never mistaken for the (cheaper,
                 # more common) focused one.
-                console.print(f"  gate: {result.gate_reason}")
+                console.print(f"  gate: {esc(result.gate_reason)}")
             console.print(
                 "Approval recorded; task remains awaiting_approval. Fix the "
                 "issue and re-run `nh approve`."
@@ -5112,7 +5117,7 @@ async def _approve_go_single(config, task_id, land_one):
             f"{result.landed_sha[:12]} onto the default branch. Task done."
         )
         if result.gate_reason:
-            console.print(f"  gate: {result.gate_reason}")
+            console.print(f"  gate: {esc(result.gate_reason)}")
         landing_note = outcome.get("landing_note") or ""
         if landing_note:
             console.print(f"  [dim]{landing_note}[/]")
@@ -5514,10 +5519,10 @@ def diff(task_id):
                     timeout=15,
                 )
                 if result.returncode == 0:
-                    console.print(result.stdout or "[dim](empty diff)[/]")
+                    console.print(esc(result.stdout) if result.stdout else "[dim](empty diff)[/]")
                 else:
                     console.print(
-                        f"[yellow]git diff failed:[/] {result.stderr.strip()}\n"
+                        f"[yellow]git diff failed:[/] {esc(result.stderr.strip())}\n"
                         f"[dim]commit: {sha}  branch: "
                         f"{next((a['branch_name'] for a in reversed(attempts) if a.get('branch_name')), '?')}[/]"
                     )
@@ -5610,7 +5615,7 @@ def investigate(question, repo, show_id):
                 if not findings:
                     console.print("[dim]no report yet — investigation not complete[/]")
                     return
-                console.rule(f"[bold]investigation report — {t.title[:60]}")
+                console.rule(f"[bold]investigation report — {esc(t.title[:60])}")
                 console.print(escape(str(findings)), soft_wrap=True, emoji=False)
                 return
             if not question:
@@ -5644,7 +5649,7 @@ def logs(task_id):
                 print_no_task_matching(task_id)
                 sys.exit(1)
             console.print(
-                f"[bold]{t.id[:8]}[/] [blue]{t.status.value}[/] — {t.title}"
+                f"[bold]{t.id[:8]}[/] [blue]{t.status.value}[/] — {esc(t.title)}"
             )
             attempts = await store.list_attempts(t.id)
             if not attempts:
@@ -6243,7 +6248,7 @@ def learnings(confirm_id, reject_id, active, harvest, harvest_project,
                 origin_tag = f" [cyan]({origin})[/]" if origin else ""
                 console.print(
                     f"[bold]{m['id'][:8]}[/] [magenta]{m['type']}[/]"
-                    f"{origin_tag} {m['title']}"
+                    f"{origin_tag} {esc(m['title'])}"
                 )
                 # BLAST RADIUS, on the same screen as the confirm command.
                 # A memory with project=NULL is GLOBAL — `list_memories`
@@ -6370,7 +6375,7 @@ def history(days, output, analyze, json_out, roots):
         table.add_column("Msgs", justify="right", width=6)
         for i, t in enumerate(transcripts, 1):
             table.add_row(str(i), t.created[:10],
-                          getattr(t, "source", "") or "windsurf", t.title,  # term-ok: internal source tag names the real IDE
+                          getattr(t, "source", "") or "windsurf", esc(t.title),  # term-ok: internal source tag names the real IDE
                           str(len(t.messages)))
         console.print(table)
 
@@ -6420,7 +6425,7 @@ def history(days, output, analyze, json_out, roots):
                     if mid:
                         proposed += 1
                         console.print(
-                            f"  [magenta]{f.category}[/] {f.title[:60]}"
+                            f"  [magenta]{f.category}[/] {esc(f.title[:60])}"
                         )
                 if dropped_pii:
                     console.print(
@@ -6495,7 +6500,7 @@ def _print_visual_walks(console, d) -> None:
     walks_ok = wrow["available"] and wrow.get("chromium") == "present"
     walks_colour = "green" if walks_ok else "yellow"
     walks_hint = "" if wrow["available"] else "  [dim](nh doctor --fix-walks to enable)[/]"
-    console.print(f"[{walks_colour}]{wrow['line']}[/]{walks_hint}")
+    console.print(f"[{walks_colour}]{esc(wrow['line'])}[/]{walks_hint}")
 
     for row in d.ui_evidence:
         name = Path(row["repo_path"]).name
@@ -6590,7 +6595,7 @@ def doctor(verbose, verify_auth, fix_walks, dry_run):
                 f"binary may be missing — re-run: `{chromium_remedy}`[/]")
             return
 
-        console.print(f"[yellow]{row['line']}[/]")
+        console.print(f"[yellow]{esc(row['line'])}[/]")
         if dry_run:
             console.print("plan (nothing will be installed):")
             console.print(walks_plan_description())

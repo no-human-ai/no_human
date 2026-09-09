@@ -442,7 +442,7 @@ def propose_cmd(task_id: str, repo: str, apply_: bool, severity: str) -> None:
                 used_ids.add(vid)
 
                 if vid in existing_ids:
-                    console.print(f"[yellow]skipped[/] {vid} — already defined")
+                    console.print(f"[yellow]skipped[/] {esc(vid)} — already defined")
                     continue
 
                 sev = f.severity if f.severity in _KNOWN_SEVERITIES else severity
@@ -450,7 +450,7 @@ def propose_cmd(task_id: str, repo: str, apply_: bool, severity: str) -> None:
                 entry = {"id": vid, "statement": statement, "paths": [f.file], "severity": sev}
                 _verifier, problem = validate_entry(entry, origin="propose")
                 if problem:
-                    console.print(f"[red]skipped[/] {vid} — {problem}")
+                    console.print(f"[red]skipped[/] {esc(vid)} — {esc(problem)}")
                     continue
                 candidates.append(entry)
 
