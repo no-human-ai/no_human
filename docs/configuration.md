@@ -668,8 +668,9 @@ ever disagree in either direction, and `web/src/telemetry.test.mjs`'s
 disclosure sweep fails if any `posthog.capture(...)` call site in `web/src`
 sends an event name not listed here.
 
-There are exactly seven possible event kinds, six sent by the server and one
-by the browser:
+There are exactly nine possible event kinds, eight sent by the server and one
+by the browser. Full contract (every closed value set, spelled out) lives in
+`docs/TELEMETRY.md`; this table is the summary:
 
 | Event | Channel | Props |
 |---|---|---|
@@ -679,12 +680,26 @@ by the browser:
 | `task_failed` | server | `category`, `reason_category`, `environment` |
 | `approve_clicked` | server | `environment` |
 | `feature_used` | server | `name`, `environment` |
+| `task_ended` | server | `outcome`, `attempts`, `duration_bucket`, `environment` |
+| `tasks_orphaned` | server | `count_bucket`, `environment` |
 | `screen_viewed` | browser | `screen` (the lane name — `board`/`backlog`/`done`/`failed`/`stats`/`settings`/…, never content) |
 
 `task_failed`'s `reason_category` is a CLOSED enum — one of
 `budget_exhausted`, `review_failed`, `max_attempts`, `infra`,
 `tamper_blocked`, `blocker_parked`, `other` — never free text; that closure
 is the privacy guarantee (no failure detail ever leaves the machine).
+
+`task_ended` is the ONE terminal event for every task end that is not
+`task_completed` (done/awaiting_approval) or `task_failed`: its `outcome` is
+a CLOSED enum — one of `escalated`, `parked_quota`, `parked_infra`,
+`needs_answer`, `cancelled` — never free text, and never includes
+`interrupted`: an app/server closed mid-run cannot emit a terminal event at
+the moment it dies, so that case is instead counted, in aggregate, by
+`tasks_orphaned` on the NEXT server start. `tasks_orphaned`'s `count_bucket`
+is also a CLOSED enum — one of `0`, `1`, `2-5`, `6+` — a bucketed count of
+non-terminal tasks with no live attempt at startup (a dead heartbeat, or an
+attempt a graceful stop closed `interrupted`), never
+the precise number.
 
 Every server event also carries `environment` (`real`/`bench`/`test`/`ci`/
 `dev`), classified fresh per event by `telemetry.environment()` — an
@@ -713,7 +728,7 @@ PostHog's `identify()`.
 enabled in the PostHog client init (`web/src/telemetry.js`, operator decision
 2026-09-03), so PostHog's own `$autocapture`/`$pageview`/`$pageleave`/
 `$dead_click`/`$$heatmap`/`$web_vitals`/`$exception` events are collected
-alongside the app's own events. The seven event kinds in the table above are
+alongside the app's own events. The nine event kinds in the table above are
 scoped to what the app itself sends via `posthog.capture(...)`; the disclosure
 sweep (`web/src/telemetry.test.mjs`) only ever checks those. Autocapture's
 `$el_text` (the text of the clicked/changed element) is bounded by the

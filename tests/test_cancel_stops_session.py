@@ -27,6 +27,7 @@ import pytest
 from click.testing import CliRunner
 from httpx import ASGITransport, AsyncClient
 
+from no_human import telemetry
 from no_human.core.db import Store
 from no_human.core.orchestrator import Orchestrator
 from no_human.core.scheduler import Scheduler
@@ -110,6 +111,31 @@ async def test_request_task_cancel_stops_the_live_session_within_one_tick(
     row = attempts[-1]
     assert row["status"] == "failed"
     assert "cancelled" in (row["failure_reason"] or "")
+
+
+async def test_request_task_cancel_fires_task_ended_cancelled_exactly_once(
+        store, bare_repo, tmp_path, monkeypatch):
+    """MAJOR-1(a): the REAL hard-cancel path (`request_task_cancel` cancelling
+    a live `_run_attempt`, not a synthetic kind fed straight into the sink)
+    must reach `Orchestrator._telemetry_hook` and emit exactly one
+    `task_ended(outcome="cancelled")` -- the gap this whole feature closes."""
+    sent = []
+    monkeypatch.setattr(
+        telemetry, "record",
+        lambda kind, config=None, **props: sent.append((kind, props)))
+
+    orch, backend, task, attempt_task = await _live_attempt(store, bare_repo, tmp_path)
+
+    stopped = orch.request_task_cancel(task.id, "operator cancelled")
+    assert stopped is True
+    await asyncio.wait_for(attempt_task, timeout=5)
+
+    terminal = [(k, p) for k, p in sent
+                if k in ("task_ended", "task_completed", "task_failed")]
+    assert len(terminal) == 1, f"expected exactly one terminal event, got {terminal}"
+    kind, props = terminal[0]
+    assert kind == "task_ended"
+    assert props["outcome"] == "cancelled"
 
 
 async def test_request_task_cancel_is_false_with_no_live_session(
@@ -294,6 +320,60 @@ async def test_api_cancel_reports_not_found_when_there_is_no_scheduler_at_all(
     assert "cancel_session_not_found" in kinds
 
 
+async def test_api_cancel_of_a_queued_task_fires_task_ended_cancelled(
+        api_client, api_store, monkeypatch):
+    """MAJOR-1(b): cancelling a queued/parked task through the REAL
+    `POST /api/tasks/{id}/cancel` endpoint (no scheduler, so no live
+    in-process session -- exactly `cancel_task`'s `sched is None` /
+    `stopped=False` shape) must fire `task_ended(outcome="cancelled")` via
+    `telemetry.record_task_cancelled`, the shared helper -- not a synthetic
+    call, the actual HTTP route the board and `nh task cancel` both use."""
+    sent = []
+    monkeypatch.setattr(
+        telemetry, "record",
+        lambda kind, config=None, **props: sent.append((kind, props)))
+
+    t = await _seed_task(api_store, status=TaskStatus.PENDING)
+
+    r = await api_client.post(f"/api/tasks/{t.id}/cancel")
+    assert r.status_code == 200
+
+    terminal = [(k, p) for k, p in sent
+                if k in ("task_ended", "task_completed", "task_failed")]
+    assert len(terminal) == 1, f"expected exactly one terminal event, got {terminal}"
+    kind, props = terminal[0]
+    assert kind == "task_ended"
+    assert props["outcome"] == "cancelled"
+
+
+async def test_api_cancel_of_a_live_task_does_not_double_fire_task_ended(
+        api_client, api_store, monkeypatch):
+    """The mirror of the test above: when a live in-process session IS found
+    (`stopped=True`), the endpoint itself must NOT also fire `task_ended` --
+    that is `_run_attempt`'s own `CancelledError` branch's job, asynchronously,
+    moments later. Firing it here too would double-count the one cancel."""
+    from no_human.api.app import app as fastapi_app
+
+    sent = []
+    monkeypatch.setattr(
+        telemetry, "record",
+        lambda kind, config=None, **props: sent.append((kind, props)))
+
+    t = await _seed_task(api_store)
+
+    fastapi_app.state.scheduler = SimpleNamespace(
+        inflight=set(), get_live_status=lambda _id: None,
+        request_task_cancel=lambda task_id, reason: True,
+    )
+
+    r = await api_client.post(f"/api/tasks/{t.id}/cancel")
+    assert r.status_code == 200
+
+    terminal = [(k, p) for k, p in sent
+                if k in ("task_ended", "task_completed", "task_failed")]
+    assert terminal == []
+
+
 # --------------------------------------------------------------------------- #
 # Criterion 4 — `nh task cancel` and `POST /api/tasks/{id}/cancel` share the  #
 # same path (CLI commands call asyncio.run() internally so this is sync).    #
@@ -351,6 +431,53 @@ def test_cli_task_cancel_hits_the_same_server_cancel_path_as_the_api(
     assert result.exit_code == 0
     assert seen["task_id"] == task_id
     assert "the server stopped" in result.output
+
+
+def test_cli_task_cancel_of_a_queued_task_fires_task_ended_cancelled(
+        tmp_path, monkeypatch):
+    """MAJOR-1(b): `nh task cancel` on a queued task with no server active
+    (`_server_owns_worker` False, so the CLI's own direct
+    `store.set_status(..., FAILED, ...)` write runs — real code path, not a
+    synthetic sink call) must fire `task_ended(outcome="cancelled")` via the
+    same shared `telemetry.record_task_cancelled` helper the API endpoint
+    uses."""
+    import no_human.cli.commands as cmd_mod
+
+    db_path = tmp_path / "test.db"
+
+    async def _seed():
+        async with Store(db_path) as s:
+            t = Task.new("do a thing", repo_path="/tmp/repo")
+            await s.create_task(t)
+            return t.id
+
+    task_id = asyncio.run(_seed())
+
+    sent = []
+    monkeypatch.setattr(
+        telemetry, "record",
+        lambda kind, config=None, **props: sent.append((kind, props)))
+
+    cfg = _StubCfg()
+    cfg.db_path = db_path
+
+    monkeypatch.setattr(cmd_mod, "_server_owns_worker", lambda _cfg: False)
+    monkeypatch.setattr(cmd_mod, "load_config", lambda: cfg)
+    monkeypatch.setattr(cmd_mod, "assert_subscription_mode", lambda **kw: None)
+
+    runner = CliRunner()
+    result = runner.invoke(cmd_mod.cli, ["task", "cancel", task_id],
+                            catch_exceptions=False)
+
+    assert result.exit_code == 0
+    assert "cancelled" in result.output
+
+    terminal = [(k, p) for k, p in sent
+                if k in ("task_ended", "task_completed", "task_failed")]
+    assert len(terminal) == 1, f"expected exactly one terminal event, got {terminal}"
+    kind, props = terminal[0]
+    assert kind == "task_ended"
+    assert props["outcome"] == "cancelled"
 
 
 def test_post_server_cancel_posts_to_the_exact_cancel_route(monkeypatch):

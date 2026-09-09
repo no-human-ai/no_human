@@ -995,6 +995,49 @@ test("a genuinely red run with no excuse recorded never renders clean", () => {
   assert.notEqual(v.label, "clean");
 });
 
+// A THIRD row shape: `_run_review`'s pre-review block writes `classified:
+// false` before TESTING — the sole classifier of a red run — ever runs.
+// When the reviewer FAILS for an unrelated reason, `_run_attempt` returns
+// before TESTING classifies it, so this is what the attempt view sees. It
+// was never billed as a failure and never excused — the gate never graded
+// it at all — so it must render distinctly from a billed "failed" row.
+test("a pre-review row the tests step never classified renders distinctly from a billed failure", () => {
+  const unclassified = testResultVerdict({
+    ran: true, ok: false, passed: 0, failed: 1, errors: 0, tamper_flag: false,
+    classified: false,
+  });
+  assert.equal(unclassified.tone, "unclassified");
+  assert.notEqual(unclassified.tone, "failed");
+  assert.match(unclassified.label, /pre-review/);
+
+  const billed = testResultVerdict({
+    ran: true, ok: false, passed: 0, failed: 1, errors: 0, tamper_flag: false,
+    classified: true,
+  });
+  assert.equal(billed.tone, "failed");
+  assert.notEqual(billed.label, unclassified.label);
+});
+
+test("a test_results row with no classified key at all renders exactly as before (byte-identical, no regression)", () => {
+  const clean = testResultVerdict({
+    ran: true, ok: true, passed: 7638, failed: 0, errors: 0, tamper_flag: false,
+  });
+  assert.equal(clean.tone, "clean");
+  assert.equal(clean.label, "clean");
+
+  const excused = testResultVerdict({
+    ran: true, ok: false, passed: 7637, failed: 1, errors: 0, tamper_flag: false,
+    failing_tests: ["tests/test_flaky.py::test_x"],
+    pre_existing_failures: ["tests/test_flaky.py::test_x"],
+  });
+  assert.equal(excused.tone, "excused");
+
+  const failed = testResultVerdict({
+    ran: true, ok: false, passed: 100, failed: 3, errors: 0, tamper_flag: false,
+  });
+  assert.equal(failed.tone, "failed");
+});
+
 test("tamper-flagged results render no test-result verdict badge (the tamper banner owns that message)", () => {
   assert.equal(testResultVerdict({ ran: true, ok: false, failed: 1, tamper_flag: true }), null);
 });

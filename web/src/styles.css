@@ -4008,6 +4008,7 @@ a.so-chip-value:hover { color: var(--accent-300); }
 .verdict-clean { font-size: 12px; color: var(--green); }
 .verdict-excused { font-size: 12px; color: var(--warn); }
 .verdict-failed { font-size: 12px; color: var(--red); }
+.verdict-unclassified { font-size: 12px; color: var(--text-dim); }
 .so-repo-path  { font-family: var(--font-mono); font-size: 12px; color: var(--text-dim); }
 
 /* Task info (source/kind/priority/cancelled/escalation) — the facts the
