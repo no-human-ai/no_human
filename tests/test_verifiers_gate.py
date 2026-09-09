@@ -1,8 +1,10 @@
 """Verifiers (review/verifiers.py) wired into `Orchestrator._run_review`.
 
-Verifiers run BEFORE the agentic reviewer, merge into the round monotonically
-(a passing verifier adds nothing; a failing one — `no_verdict` included —
-ends the round without spending reviewer tokens), and every verdict is
+Verifiers run BEFORE the agentic reviewer. A verifier that ANSWERS FAIL ends
+the round without spending reviewer tokens; a verifier that reaches no
+verdict even after its one bounded retry (`no_verdict`/`unavailable`) is
+advisory only — it is recorded and reported, but the round still proceeds to
+the agentic reviewer, exactly as a passing verifier would. Every verdict is
 persisted to `attempts.verifier_results` and `task.context["verifier_results"]`
 keyed by the commit sha they judged.
 
@@ -18,8 +20,6 @@ import json
 import subprocess
 from pathlib import Path
 
-import pytest
-
 import no_human.core.orchestrator as orchestrator_module
 from no_human.agent.backend import AgentResult
 from no_human.core.orchestrator import (
@@ -32,7 +32,6 @@ from no_human.core.orchestrator import (
 from no_human.core.task import Task
 from no_human.notify.slack import SlackNotifier
 from no_human.review.reviewer import ReviewDecision as RD
-from no_human.review.reviewer import ReviewerUnavailable
 from no_human.review.selfcheck import ChecklistItem as CI
 from no_human.vcs.git import GitRepo
 
@@ -192,15 +191,17 @@ async def test_a_failing_verifier_ends_the_round_before_the_reviewer(store, tmp_
     assert round_1["sha"] == repo.head_sha()
 
 
-async def test_no_verdict_escalates_instead_of_failing_the_round(store, tmp_path):
-    """This used to be `test_no_verdict_fails_closed`, and its old name told
-    the whole bug: a judge that never reaches a verdict was rendered as a
-    FAILING checklist item — a defect nobody found, billed to the coder as
-    one to fix. That is the exact anti-pattern `reviewer.py`'s
-    `ReviewerUnavailable` exists to stop for the agentic reviewer; this test
-    now asserts the verifier gate mirrors it: one bounded retry, and if the
-    retry ALSO reaches no verdict, the round escalates (raises) instead of
-    returning a failing `ReviewDecision`."""
+async def test_no_verdict_is_advisory_and_the_round_continues_to_the_reviewer(
+    store, tmp_path,
+):
+    """This used to be `test_no_verdict_escalates_instead_of_failing_the_round`
+    (and before that `test_no_verdict_fails_closed`): a judge that never
+    reaches a verdict was first rendered as a FAILING checklist item, then
+    made to escalate the whole task — in both cases charging an infra gap in
+    the gate to the coder, either as a defect nobody found or as a human
+    interrupt over nothing. A verifier that cannot answer is neither: it is
+    recorded (advisory) and the round proceeds to the agentic reviewer
+    exactly as it would for an all-pass round."""
     work = _repo_with_a_verifier(tmp_path, VERIFIER_YAML)
     repo = GitRepo(work)
     reviewer = FakeReviewer((None, "timed out"))
@@ -211,28 +212,52 @@ async def test_no_verdict_escalates_instead_of_failing_the_round(store, tmp_path
     await store.create_task(task)
     attempt_id = await store.create_attempt(task.id, 1)
 
-    with pytest.raises(ReviewerUnavailable) as excinfo:
-        await orch._run_review(task, repo, attempt_id, base="main")
+    decision = await orch._run_review(task, repo, attempt_id, base="main")
 
     assert reviewer.bounded_calls == 2, (
         "one bounded retry — not zero (would skip the retry) and not more "
         "(would keep retrying an unavailable judge forever)")
-    assert reviewer.review_calls == 0, (
-        "an unavailable verifier must never reach the agentic reviewer")
+    assert reviewer.review_calls == 1, (
+        "an unavailable verifier is advisory — the round must still reach "
+        "the agentic reviewer")
+    assert decision.passed is True, (
+        "the attempt must not be failed or escalated over a verifier that "
+        "never answered")
+    assert decision.verifiers[0]["no_verdict"] is True
+    assert decision.verifiers[0]["unavailable"] is True
 
-    # Both strings are user-facing (PR/stream text) — pinned in full on
-    # purpose, so a reword is a conscious edit, not an accidental drift.
-    assert str(excinfo.value) == (
-        "1 verifier(s) reached no verdict after a bounded retry, and none "
-        "of the other verifiers this round failed: no-todo. Escalating "
-        "instead of charging the coder for a defect nobody found.")
-
+    # User-facing (PR/stream) text — pinned in full on purpose, so a reword
+    # is a conscious edit, not an accidental drift.
     (unavailable_event,) = [e for e in events if e["kind"] == "verifiers_unavailable"]
     assert unavailable_event["text"] == (
-        "1 verifier(s) reached no verdict after a bounded retry, and no "
-        "other verifier this round failed: no-todo")
+        "1 verifier(s) reached no verdict after a bounded retry — advisory, "
+        "the review continues: no-todo")
     assert unavailable_event["advisory"] is True
     assert unavailable_event["source"] == REVIEWER_ROLE
+
+
+async def test_no_verdict_persists_on_the_attempt_row_and_in_task_context(
+    store, tmp_path,
+):
+    work = _repo_with_a_verifier(tmp_path, VERIFIER_YAML)
+    repo = GitRepo(work)
+    reviewer = FakeReviewer((None, "timed out"))
+    orch = _orch(store, tmp_path, reviewer)
+
+    task = Task.new("t", repo_path=str(work))
+    await store.create_task(task)
+    attempt_id = await store.create_attempt(task.id, 1)
+
+    await orch._run_review(task, repo, attempt_id, base="main")
+
+    (attempt,) = await store.list_attempts(task.id)
+    persisted = json.loads(attempt["verifier_results"])
+    assert len(persisted) == 1
+    assert persisted[0]["no_verdict"] is True
+    assert persisted[0]["verifier_id"] == "no-todo"
+
+    ctx_results = task.context["verifier_results"][repo.head_sha()]
+    assert ctx_results == persisted
 
 
 async def test_no_verdict_then_a_real_verdict_uses_the_retry_result(store, tmp_path):
@@ -300,8 +325,7 @@ async def test_the_bounded_retry_window_is_one_shorter_call_both_ways(store, tmp
     await store.create_task(task2)
     attempt_id2 = await store.create_attempt(task2.id, 1)
 
-    with pytest.raises(ReviewerUnavailable):
-        await orch2._run_review(task2, repo2, attempt_id2, base="main")
+    await orch2._run_review(task2, repo2, attempt_id2, base="main")
 
     assert reviewer2.bounded_calls == 2
     assert reviewer2.bounded_timeouts == [_VERIFIER_TIMEOUT, _VERIFIER_RETRY_TIMEOUT]

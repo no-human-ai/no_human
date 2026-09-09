@@ -16,10 +16,8 @@ phrase) keeps today's behaviour untouched.
 import pytest
 
 from no_human.agent.claude_backend import AgentResult
-from no_human.blockers.taxonomy import BlockerCategory
 from no_human.core.bounds import QuotaExhausted
 from no_human.core.task import Task, TaskStatus
-from no_human.review.reviewer import ReviewerUnavailable
 from no_human.review.verifiers import Verifier, run_verifiers
 from no_human.vcs.git import GitRepo
 
@@ -118,11 +116,15 @@ async def test_verifier_quota_wall_raises_instead_of_escalating(store, tmp_path)
         "a quota-parked round must never reach the agentic reviewer")
 
 
-async def test_verifier_non_quota_no_verdict_still_escalates(store, tmp_path):
+async def test_verifier_non_quota_no_verdict_is_advisory_not_reclassified_as_quota(
+        store, tmp_path):
     """Negative control: a genuinely unparseable/broken verifier judge (no
-    quota phrase) must keep today's behaviour — no-verdict, bounded retry
-    consumed, and (after exhausting the retry) `ReviewerUnavailable` —
-    never silently reclassified as a quota park."""
+    quota phrase) must still spend the bounded retry and record a genuine
+    no-verdict — never silently reclassified as a quota park. Separately
+    (see `test_verifiers_gate.py::
+    test_no_verdict_is_advisory_and_the_round_continues_to_the_reviewer`),
+    a no-verdict outcome is advisory: it does not raise `ReviewerUnavailable`
+    or end the attempt, and the round proceeds to the agentic reviewer."""
     work = _repo_with_a_verifier(tmp_path, VERIFIER_YAML)
     from no_human.vcs.git import GitRepo
     repo = GitRepo(work)
@@ -133,11 +135,15 @@ async def test_verifier_non_quota_no_verdict_still_escalates(store, tmp_path):
     await store.create_task(task)
     attempt_id = await store.create_attempt(task.id, 1)
 
-    with pytest.raises(ReviewerUnavailable):
-        await orch._run_review(task, repo, attempt_id, base="main")
+    decision = await orch._run_review(task, repo, attempt_id, base="main")
 
     assert reviewer.bounded_calls == 2, (
         "the bounded retry must still be spent on a genuine no-verdict")
+    assert reviewer.review_calls == 1, (
+        "advisory no-verdict must not skip the agentic reviewer")
+    assert decision.passed is True
+    assert decision.verifiers[0]["no_verdict"] is True
+    assert decision.verifiers[0]["unavailable"] is True
 
 
 # ── full pipeline: the whole task parks paused_quota, not FAILED/escalated ── #
@@ -305,12 +311,16 @@ async def test_a_judge_exception_naming_an_overloaded_api_parks_not_escalates():
         )
 
 
-async def test_a_malformed_verdict_still_escalates_novel_unknown(store, tmp_path):
+async def test_a_malformed_verdict_is_advisory_not_reclassified_as_quota(store, tmp_path):
     """Guard against over-widening: a judge that RAN and answered, but with
     nothing parseable as a VERIFIER_JSON block (no quota/API-wall text
-    anywhere in it), must still exhaust the bounded retry and escalate
-    NOVEL_UNKNOWN — exactly today's behaviour, pinned byte-for-byte against
-    `test_verifiers_gate.py::test_no_verdict_escalates_instead_of_failing_the_round`."""
+    anywhere in it), must still exhaust the bounded retry and be recorded as
+    a genuine no-verdict — never reclassified as a quota park. It is
+    advisory only, so it does not raise or escalate; pinned against
+    `test_verifiers_gate.py::
+    test_no_verdict_is_advisory_and_the_round_continues_to_the_reviewer`,
+    which this used to contradict (this test previously asserted the
+    now-fixed escalate-to-NOVEL_UNKNOWN behaviour byte-for-byte)."""
     work = _repo_with_a_verifier(tmp_path, VERIFIER_YAML)
     repo = GitRepo(work)
     reviewer = FakeReviewer("not a VERIFIER_JSON block at all")
@@ -320,21 +330,18 @@ async def test_a_malformed_verdict_still_escalates_novel_unknown(store, tmp_path
     await store.create_task(task)
     attempt_id = await store.create_attempt(task.id, 1)
 
-    with pytest.raises(ReviewerUnavailable) as excinfo:
-        await orch._run_review(task, repo, attempt_id, base="main")
+    decision = await orch._run_review(task, repo, attempt_id, base="main")
 
-    assert str(excinfo.value) == (
-        "1 verifier(s) reached no verdict after a bounded retry, and none "
-        "of the other verifiers this round failed: no-todo. Escalating "
-        "instead of charging the coder for a defect nobody found.")
     assert reviewer.bounded_calls == 2
+    assert reviewer.review_calls == 1, (
+        "advisory no-verdict must not skip the agentic reviewer")
+    assert decision.passed is True
+    assert decision.verifiers[0]["no_verdict"] is True
+    assert decision.verifiers[0]["unavailable"] is True
 
-    detail = str(excinfo.value)
-    outcome = await orch._escalate_reviewer_unavailable(task, detail)
-    escalated = await store.get_task(task.id)
-
-    assert outcome.status == TaskStatus.ESCALATED
-    assert escalated.blocker["category"] == BlockerCategory.NOVEL_UNKNOWN.value
+    task_after = await store.get_task(task.id)
+    assert task_after.status != TaskStatus.ESCALATED
+    assert task_after.blocker is None
 
 
 async def test_the_wall_park_resumes_into_the_same_verifier_round_uncharged(

@@ -27,17 +27,21 @@ result is persisted onto the attempt (``attempts.verifier_results``) and the
 task's context, keyed by the reviewed commit sha. A genuinely failing
 verifier ends the round with a failing ``ReviewDecision`` — built via
 ``to_checklist_item`` — without the agentic reviewer ever running; a round
-whose only failures are ``unavailable`` raises ``ReviewerUnavailable``
-instead, so it escalates rather than reads as a coder-facing finding.
+whose only failures are ``unavailable`` is advisory: it is reported via one
+``verifiers_unavailable`` event and the round continues to the agentic
+reviewer exactly as it would for an all-pass round, since a verifier that
+cannot answer is an infrastructure gap in the gate, not evidence about the
+change.
 
 A ``no_verdict`` result gets exactly ONE bounded retry (mirroring
 ``reviewer.py``'s own retry-then-``ReviewerUnavailable`` pattern rather than
 inventing a second policy). If the retry also reaches no verdict, the
 result is additionally marked ``unavailable=True``: the caller
-(``orchestrator.py``'s ``_run_review``) must treat that as an infra/config
-signal to escalate, NEVER as a coder-facing high-severity finding — the
-verdict still renders as "not satisfied" (fail-closed is unchanged), but it
-must not be billed to the coder as a defect nobody found. See
+(``orchestrator.py``'s ``_run_review``) treats that as an infra/config
+signal that is advisory only, NEVER as a coder-facing high-severity finding
+and NEVER as a reason to escalate or end the attempt — the verdict still
+renders as "not satisfied" (fail-closed is unchanged), but it must not be
+billed to the coder as a defect nobody found. See
 ``_classify_unavailable`` for the transport-failure vs. malformed-response
 distinction used to word the escalation message. A judge failure whose text
 carries a subscription usage-limit signal (``core.bounds.quota_signal``) is
@@ -540,7 +544,8 @@ def to_checklist_item(result: VerifierResult) -> ChecklistItem:
         # judge is an infra/config signal, not a review finding, so it is
         # advisory severity — it still renders as not-passed (never "OK"),
         # it just does not block on its own. The caller (orchestrator) is
-        # what actually escalates this round instead of failing it.
+        # what actually lets the round continue to the agentic reviewer
+        # instead of failing it.
         severity = "low"
     elif result.no_verdict:
         severity = "high"

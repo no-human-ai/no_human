@@ -80,16 +80,26 @@ match the changed files and puts each one, independently, to a fresh
 bounded judge call (max one turn) with the diff and read-only file access.
 Every verdict is recorded — pass or fail, with `evidence`, `file`/`line`
 when it names one, and which files it actually checked — never only the
-failures. A verifier that returns no parseable verdict (a timeout, a crash,
-an unparseable response) fails closed, the same posture as the agentic
-reviewer itself.
+failures. A verifier judge that reaches no parseable verdict (a timeout, a
+crash, an unparseable response) gets exactly one bounded retry. If the retry
+*also* reaches no verdict, the outcome is recorded as `no_verdict`/
+`unavailable` on that verifier's result — it still renders as "not
+satisfied" in the checklist (fail-closed at the per-rule level is
+unchanged) — but it is **advisory only**: it is reported as one advisory log
+line and a `⚠️` row in the PR Evidence table, `_run_review` does not
+escalate the task or end the attempt over it, and the round proceeds to the
+agentic reviewer exactly as it would if every verifier had passed. A
+verifier that never reaches a verdict is an infrastructure gap in the gate,
+not evidence about the change, so it must never be charged to the coder as a
+defect nobody found.
 
-The merge into the review decision is monotonic, not advisory noise the
-reviewer can talk itself past: **any** failing verifier ends the round
-before the agentic reviewer ever runs, appearing on the checklist as
-`rule:<verifier id>`. Only when every selected verifier is satisfied does the
-round proceed to the reviewer, and its own findings still apply on top. Every
-verifier verdict is persisted on the attempt row (`attempts.verifier_results`)
+The merge into the review decision is monotonic for **answered** verdicts,
+not advisory noise the reviewer can talk itself past: **any** verifier that
+*answers* FAIL ends the round before the agentic reviewer ever runs,
+appearing on the checklist as `rule:<verifier id>`. Only a genuine FAIL
+short-circuits the round this way — a no-verdict-after-retry outcome does
+not, even when it is the only failing result that round. Every verifier
+verdict is persisted on the attempt row (`attempts.verifier_results`)
 and keyed into `task.context.verifier_results` by the commit SHA it judged,
 so a later attempt's verdicts never overwrite an earlier one's. The same
 verdicts render twice for a human: as a `Verifiers` row in the PR body's
@@ -111,8 +121,12 @@ none of its subcommands make a model call, a network call, or construct an
 `run_verifiers`.
 
 - `nh verifiers list [--repo] [--json]` — prints every configured verifier
-  (repo + global, repo wins on id collision) and any load problems. Always
-  exits 0; it is a read-only inspection command.
+  (repo + global, repo wins on id collision) and any load problems, plus a
+  `runs` / `no verdict` count per verifier (`no_verdict_count` in `--json`)
+  aggregated read-only from every persisted attempt's `verifier_results`, so
+  an operator can spot a verifier that never answers. Always exits 0 — a
+  missing or unreadable DB degrades the counts to zero rather than failing;
+  it is a read-only inspection command.
 - `nh verifiers add --id ID --statement TEXT --path GLOB [--path GLOB ...]
   [--severity high] [--repo] [--global/-g]` — additively defines a new
   verifier. It never rewrites the whole YAML file, only appends the new

@@ -99,6 +99,23 @@ def _seed_task(db_path: Path, *, review_checklist=None, draft_review_comments=No
     return asyncio.run(_go())
 
 
+def _seed_attempt_with_verifier_results(db_path: Path, results: list, *,
+                                         title="Test task") -> str:
+    """Create a task + one attempt whose `verifier_results` column holds
+    `results` (a list of verifier-result dicts, as `_run_review` persists
+    them). `Store.update_attempt` JSON-encodes list/dict field values
+    transparently, so `results` is passed straight through, not
+    pre-serialized."""
+    async def _go():
+        async with Store(db_path) as s:
+            t = Task.new(title, repo_path="/tmp/repo")
+            await s.create_task(t)
+            attempt_id = await s.create_attempt(t.id, 1)
+            await s.update_attempt(attempt_id, verifier_results=results)
+            return t.id
+    return asyncio.run(_go())
+
+
 # --------------------------------------------------------------------------- #
 # nh verifiers list                                                           #
 # --------------------------------------------------------------------------- #
@@ -106,7 +123,8 @@ def _seed_task(db_path: Path, *, review_checklist=None, draft_review_comments=No
 def test_list_prints_configured_verifiers(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     _write_verifiers(repo, _ONE_RULE)
-    runner = _runner(tmp_path, monkeypatch)
+    db = tmp_path / "test.db"
+    runner = _runner(tmp_path, monkeypatch, db_path=db)
 
     result = runner.invoke(cli, ["verifiers", "list", "--repo", str(repo)])
 
@@ -117,7 +135,8 @@ def test_list_prints_configured_verifiers(tmp_path, monkeypatch):
 def test_list_json_emits_machine_readable_output(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     _write_verifiers(repo, _ONE_RULE)
-    runner = _runner(tmp_path, monkeypatch)
+    db = tmp_path / "test.db"
+    runner = _runner(tmp_path, monkeypatch, db_path=db)
 
     result = runner.invoke(cli, ["verifiers", "list", "--repo", str(repo), "--json"])
 
@@ -131,7 +150,8 @@ def test_list_json_emits_machine_readable_output(tmp_path, monkeypatch):
 def test_list_with_no_config_is_a_clean_empty_state(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     repo.mkdir()
-    runner = _runner(tmp_path, monkeypatch)
+    db = tmp_path / "test.db"
+    runner = _runner(tmp_path, monkeypatch, db_path=db)
 
     result = runner.invoke(cli, ["verifiers", "list", "--repo", str(repo)])
 
@@ -142,12 +162,77 @@ def test_list_with_no_config_is_a_clean_empty_state(tmp_path, monkeypatch):
 def test_list_surfaces_problems_but_still_exits_0(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     _write_verifiers(repo, "verifiers:\n  - id: 'Not Valid!!'\n    statement: x\n    paths: a\n")
-    runner = _runner(tmp_path, monkeypatch)
+    db = tmp_path / "test.db"
+    runner = _runner(tmp_path, monkeypatch, db_path=db)
 
     result = runner.invoke(cli, ["verifiers", "list", "--repo", str(repo)])
 
     assert result.exit_code == 0, result.output
     assert "invalid id" in result.output.lower()
+
+
+def test_list_shows_a_no_verdict_count_per_verifier(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    _write_verifiers(repo, _ONE_RULE)
+    db = tmp_path / "test.db"
+    _seed_attempt_with_verifier_results(db, [
+        {"verifier_id": "rule-one", "passed": True, "no_verdict": False, "unavailable": False},
+    ])
+    _seed_attempt_with_verifier_results(db, [
+        {"verifier_id": "rule-one", "passed": False, "no_verdict": True, "unavailable": True},
+    ])
+    runner = _runner(tmp_path, monkeypatch, db_path=db)
+
+    result = runner.invoke(cli, ["verifiers", "list", "--repo", str(repo)])
+
+    assert result.exit_code == 0, result.output
+    (row,) = [line for line in result.output.splitlines() if "rule-one" in line]
+    assert "2" in row, f"expected a runs count of 2 in: {row!r}"
+    assert "1" in row, f"expected a no-verdict count of 1 in: {row!r}"
+
+
+def test_list_json_includes_runs_and_no_verdict_count(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    _write_verifiers(repo, _ONE_RULE)
+    db = tmp_path / "test.db"
+    _seed_attempt_with_verifier_results(db, [
+        {"verifier_id": "rule-one", "passed": True, "no_verdict": False, "unavailable": False},
+    ])
+    _seed_attempt_with_verifier_results(db, [
+        {"verifier_id": "rule-one", "passed": False, "no_verdict": True, "unavailable": True},
+    ])
+    runner = _runner(tmp_path, monkeypatch, db_path=db)
+
+    result = runner.invoke(cli, ["verifiers", "list", "--repo", str(repo), "--json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    (v,) = payload["verifiers"]
+    assert v["id"] == "rule-one"
+    assert v["runs"] == 2
+    assert v["no_verdict_count"] == 1
+    # Pre-existing keys must survive unchanged.
+    assert v["statement"] == "First rule statement."
+    assert v["severity"]
+    assert v["source"]
+    assert v["source_file"]
+
+
+def test_list_without_a_readable_db_still_exits_0_with_zero_counts(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    _write_verifiers(repo, _ONE_RULE)
+    # A directory, not a file: aiosqlite can't open it as a database, so
+    # `_no_verdict_counts` must degrade to zero rather than raising.
+    unreadable_db = tmp_path
+    runner = _runner(tmp_path, monkeypatch, db_path=unreadable_db)
+
+    result = runner.invoke(cli, ["verifiers", "list", "--repo", str(repo), "--json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    (v,) = payload["verifiers"]
+    assert v["runs"] == 0
+    assert v["no_verdict_count"] == 0
 
 
 # --------------------------------------------------------------------------- #
