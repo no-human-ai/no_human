@@ -13,6 +13,7 @@ from no_human.agent.scope_guard import (
     check_scope,
     commit_time_checks,
     is_agent_owned,
+    is_outside_repo,
     parse_plan_files,
     scratch_redirect,
 )
@@ -206,6 +207,52 @@ def test_scratch_redirect_silent_on_the_repro_manifest():
 
 def test_scratch_redirect_ignores_ordinary_paths():
     assert scratch_redirect("src/foo.py") is None
+
+
+# ── is_outside_repo ───────────────────────────────────────────────────── #
+
+def test_is_outside_repo_tmp_path_is_outside(tmp_path):
+    """Task 0ab78498 attempt 1: 15 edits of `/tmp/dcrace/harness.mjs`, a
+    harness script written NEXT TO the repo, not in it."""
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    assert is_outside_repo("/tmp/dcrace/harness.mjs", str(repo_root))
+
+
+def test_is_outside_repo_linked_worktree_file_is_inside(tmp_path):
+    """A linked git worktree is passed in as the repo root itself, so any
+    file inside it — including one with a `.no_human` path component, the
+    shape `~/.no_human/worktrees/<task_id>` takes — is inside."""
+    worktree = tmp_path / ".no_human" / "worktrees" / "task-1"
+    worktree.mkdir(parents=True)
+    src = worktree / "src" / "calc.py"
+    src.parent.mkdir()
+    src.write_text("x = 1\n")
+    assert not is_outside_repo(str(src), str(worktree))
+
+
+def test_is_outside_repo_relative_and_unknown_root_count_as_inside():
+    # No known repo root: nothing can be classified as outside.
+    assert not is_outside_repo("/tmp/dcrace/harness.mjs")
+    assert not is_outside_repo("/tmp/dcrace/harness.mjs", "")
+    # Relative paths are relative to the worktree cwd, i.e. already inside.
+    assert not is_outside_repo("calc.py", "/repo")
+    assert not is_outside_repo("src/calc.py", "/repo")
+
+
+def test_a_symlink_from_outside_into_the_repo_cannot_escape(tmp_path):
+    """A symlink planted outside the repo that points AT a real repo file
+    resolves under the root via `os.path.realpath` and still counts as
+    inside — a symlink must not be usable to escape the tier either way."""
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    real_file = repo_root / "calc.py"
+    real_file.write_text("x = 1\n")
+    outside_dir = tmp_path / "elsewhere"
+    outside_dir.mkdir()
+    link = outside_dir / "calc.py"
+    link.symlink_to(real_file)
+    assert not is_outside_repo(str(link), str(repo_root))
 
 
 # ── ScopeGuardHook ────────────────────────────────────────────────────── #

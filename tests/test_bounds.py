@@ -204,8 +204,6 @@ def test_hard_stuck_edit_loop_at_abort_threshold():
     assert "edit-loop" in d.hard_stuck_reason
 
 
-<<<<<<< HEAD
-=======
 def test_hard_edit_count_resets_after_a_changed_test_outcome():
     """task f6e626fd: an edit followed by a test run whose outcome STATUS
     changed is progress — the hard-tier per-file count resets to 1, so the
@@ -311,10 +309,13 @@ def test_absolute_edit_ceiling_fires_even_under_sustained_progress():
     progress-gated `edit_abort` tier every time — by design, since each
     round IS observed progress — but the raw, never-reset `_edit_counts`
     this class already keeps for the advisory tier keeps climbing, and
-    `edit_ceiling` reads it unconditionally. (Recorded corpus attempts
-    77f12aab/86f70e12, task c19a376c, showed exactly this sustained
-    ok/failed flapping pattern on one file; this is the backstop that
-    still bounds it if it runs long enough.)"""
+    `edit_ceiling` reads it unconditionally. (A corpus replay of recorded
+    attempts 77f12aab/86f70e12, task c19a376c, against this fixed detector
+    found the OPPOSITE of a ceiling-fire: both stop aborting altogether —
+    the progress-gated tier tops out at 3-6 and the raw count at 14-15,
+    never reaching `edit_ceiling`=30 — a genuine-convergence case, not this
+    one. This test's ceiling scenario is exercised directly, synthetically,
+    below.)"""
     d = StuckDetector()
     aborted_at = None
     for i in range(60):
@@ -345,6 +346,41 @@ def test_unjoinable_test_result_is_not_progress():
     assert d.hard_stuck_reason is not None
 
 
+def test_a_run_with_no_test_activity_at_all_still_aborts():
+    """AC4: a sequence with no test run at all (never calls `note_test_run`/
+    `record_test_outcome`) must still hard-abort at `edit_abort` — the
+    progress gate only ever LIFTS the count on an observed outcome change, it
+    never blocks the tier from firing when there is no test activity to
+    observe."""
+    d = StuckDetector()
+    for _ in range(d.edit_abort - 1):
+        d.record_edit("/a.py")
+    assert d.hard_stuck_reason is None
+    d.record_edit("/a.py")
+    assert d.hard_stuck_reason is not None
+    assert "edit-loop" in d.hard_stuck_reason
+
+
+def test_an_empty_or_unparsable_test_result_is_not_progress():
+    """AC4: an empty (`""`) or degenerate (missing `result_chars`, unparsable
+    `exit_code`) test outcome still yields a STABLE summary string via
+    `_test_run_summary`/`record_test_outcome` — repeating the SAME degenerate
+    summary is therefore not progress, and the hard tier still fires at
+    `edit_abort`."""
+    d = StuckDetector()
+    # `record_edit` consumes the progress flag set by the PREVIOUS call's
+    # `record_test_outcome`, so with the two interleaved one edit-call behind
+    # (round 0's "changed" reset lands on round 1's edit, not round 0's), one
+    # extra round beyond `edit_abort` is needed to actually reach the ceiling.
+    for i in range(d.edit_abort + 1):
+        d.record_edit("/a.py")
+        d.note_test_run(f"call-{i}")
+        changed = d.record_test_outcome(f"call-{i}", "")
+        assert changed is (i == 0)  # only the very first observation is "new"
+    assert d.hard_stuck_reason is not None
+    assert "edit-loop" in d.hard_stuck_reason
+
+
 def test_advisory_edit_tier_still_reports_the_raw_count():
     """The advisory tier (`stuck_reason`, raw `_edit_counts`) must be totally
     unaffected by progress: it still fires purely on the raw per-file count,
@@ -363,7 +399,6 @@ def test_advisory_edit_tier_still_reports_the_raw_count():
     assert "edit-loop" in d.stuck_reason
 
 
->>>>>>> 39e9ca1f (Edit-loop abort requires no progress between edits, not an edit count)
 def test_hard_stuck_sustained_ping_pong():
     d = StuckDetector()
     for _ in range(5):  # 10 alternating calls — advisory, not abort

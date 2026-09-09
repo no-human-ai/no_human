@@ -43,7 +43,7 @@ from ..agent.claude_backend import (
     ClaudeBackend,
     dewrap as _dewrap,
 )
-from ..agent.scope_guard import SCRATCH_DIR, is_agent_owned
+from ..agent.scope_guard import SCRATCH_DIR, is_agent_owned, is_outside_repo
 from ..agent.supervisor import SEND_BACK_UNREADABLE, SupervisorHook
 from ..agent.verification_receipts import KINDS
 from ..blockers import (
@@ -503,18 +503,38 @@ def _summarize_tool_sig(tool: str, inp: dict) -> str:
 
 
 #: Common test-runner invocations, matched against a Bash tool call's raw
-#: command by `ConvergenceTracker` (P2). This is the closest cheap proxy the
-#: live event stream has for "a test result appeared": `tool_result` events
-#: never carry output text (`claude_backend._exit_status`'s docstring — only
-#: size, and an exit code on failure, by design), so whether the run PASSED
-#: cannot be read from the stream at all. Running one of these commands is
-#: itself evidence the attempt is verifying, not just looking around; it is
-#: not narrowed to project-specific commands because the convergence signal
-#: only needs "some test framework ran", not which one.
+#: command. ONE shared predicate feeds BOTH `ConvergenceTracker.mark_progress`
+#: (P2) and `StuckDetector`'s progress-gated hard edit-loop tier
+#: (`StuckDetector.note_test_run`, via `_note_test_activity` below) — this
+#: used to be two regexes (a stricter one here, a separate broader
+#: `_HARNESS_RUN_RE` feeding only the edit tier); that split let a coder
+#: whose runner is a harness script read as making no progress to whichever
+#: guard still used the narrower set, so it was collapsed into this one.
+#: This is the closest cheap proxy the live event stream has for "a test
+#: result appeared": `tool_result` events never carry output text
+#: (`claude_backend._exit_status`'s docstring — only size, and an exit code
+#: on failure, by design), so whether the run PASSED cannot be read from the
+#: stream at all. Running one of these commands is itself evidence the
+#: attempt is verifying, not just looking around.
+#:
+#: `node <script>` (task 0ab78498 attempt 1/2: `node /tmp/dcrace/harness.mjs`;
+#: f6e626fd attempt 1: `node web/e2e/dead-click-race.mjs`) is a POSITIONAL
+#: file argument only — `node\s+(?!-)\S+` requires the token right after
+#: `node` to not start with `-`, so `node -e '...'`, `node --require x` and
+#: `node --inspect` (utility/flag invocations, not a test/harness run) do
+#: NOT match; `node --test` still matches via its own alternative.
+#: `npm run <script>` counts ONLY for the test-adjacent script names
+#: `test`/`check`/`verify`/`spec` — `npm run build`, `npm run lint`,
+#: `npm run deploy` and any other script name are deliberately excluded as
+#: non-test executables (this subsumes the old bare `npm\s+(run\s+)?test`;
+#: `npm test` without `run` still matches via its own alternative).
+#: `npx playwright` is the third harness shape the incidents above used.
+#: Not narrowed to project-specific commands otherwise because the
+#: convergence signal only needs "some test framework ran", not which one.
 _TEST_RUNNER_RE = re.compile(
-    r"\b(pytest|py\.test|unittest|npm\s+(run\s+)?test|yarn\s+test|"
-    r"pnpm\s+test|node\s+--test|go\s+test|cargo\s+test|mvn\s+test|"
-    r"gradle\s+test|rspec|jest|vitest)\b"
+    r"\b(pytest|py\.test|unittest|npm\s+test|npm\s+run\s+(test|check|verify|spec)|"
+    r"yarn\s+test|pnpm\s+test|node\s+--test|node\s+(?!-)\S+|npx\s+playwright|"
+    r"go\s+test|cargo\s+test|mvn\s+test|gradle\s+test|rspec|jest|vitest)\b"
 )
 
 #: Leading tokens that make a shell segment a read-only SEARCH/INSPECTION,
@@ -567,54 +587,7 @@ def _looks_like_test_run(command: str) -> bool:
     return False
 
 
-<<<<<<< HEAD
-=======
-#: Broader harness invocations recognized ONLY by `StuckDetector`'s
-#: progress-gated hard edit-loop tier (task f6e626fd) — NOT by
-#: `ConvergenceTracker`/`_looks_like_test_run`, which stay exactly as P2
-#: defined them (`_TEST_RUNNER_RE` above is untouched). f6e626fd attempt 1
-#: drove its e2e harness as a bare `node <script>.mjs` (no `--test` flag,
-#: so `_TEST_RUNNER_RE` never matched it) piped through `grep`/`tail` for a
-#: human-readable summary; this additive regex also covers
-#: `npm run <script>` (any script name, not just literally "test") and
-#: `npx playwright ...` — the other two harness shapes the send-back named.
-#: Deliberately broader than `_TEST_RUNNER_RE`: over-recognizing a non-test
-#: `node`/`npm run` command here only means `StuckDetector.record_test_outcome`
-#: gets one more exit-status compare to make — it still requires the
-#: OUTCOME to differ for that comparison to count as progress, so a false
-#: positive here cannot manufacture progress that did not happen.
-_HARNESS_RUN_RE = re.compile(r"\bnode\s+\S|\bnpm\s+run\s+\S|\bnpx\s+playwright\b")
-
-
-def _looks_like_harness_run(command: str) -> bool:
-    """True when *command* runs something `StuckDetector` should treat as a
-    test/verification invocation, beyond `_looks_like_test_run`'s stricter
-    P2 set (see `_HARNESS_RUN_RE`). Only feeds `StuckDetector.note_test_run`
-    (`_note_test_activity`) — never `ConvergenceTracker.mark_progress`, whose
-    P2 gating this function does not touch. Same read-only-segment skipping
-    as `_looks_like_test_run`: a `grep node` or `git log` mentioning these
-    tools by name is still not evidence anything ran.
-    """
-    if not command:
-        return False
-    for segment in _SHELL_SEGMENT_RE.split(command):
-        segment = segment.strip()
-        if not segment:
-            continue
-        tokens = segment.split()
-        if not tokens:
-            continue
-        lead = tokens[0]
-        if lead in _READ_ONLY_LEADING_TOKENS:
-            continue
-        if lead == "git" and len(tokens) > 1 and tokens[1] in _GIT_READ_ONLY_SUBCOMMANDS:
-            continue
-        if _HARNESS_RUN_RE.search(segment):
-            return True
-    return False
-
-
-def _test_run_summary(meta: dict) -> str:
+def _test_run_summary(meta: dict | None) -> str:
     """A human-readable, comparable outcome for one test-runner invocation.
 
     Rendered from `tool_result` meta ALONE — the SDK never delivers output
@@ -623,13 +596,19 @@ def _test_run_summary(meta: dict) -> str:
     result states one, else ``ok``/``failed`` from `is_error`, plus
     `result_chars`. Two test-runner calls with the SAME outcome produce a
     byte-identical string here; `StuckDetector.record_test_outcome` compares
-    consecutive strings to decide whether an edit-loop is real progress or
-    the SAME failure repeated (task f6e626fd).
+    consecutive strings (via `bounds._status_only`, which strips the chars
+    tail) to decide whether an edit-loop is real progress or the SAME
+    failure repeated (task f6e626fd).
 
+    Tolerates a missing/garbage `meta` so a degenerate `tool_result` still
+    yields a STABLE string rather than raising: `meta=None` reads as `{}`,
+    a missing `result_chars` reads as `0`, and a non-int `exit_code` is
+    still rendered via the same f-string (str()'d) rather than crashing.
     Undercounts the same way `ConvergenceTracker`'s docstring already
     documents for this seam: an outcome that changes WITHOUT changing its
     length or its error/success status reads as unchanged.
     """
+    meta = meta or {}
     is_error = bool(meta.get("is_error", False))
     exit_code = meta.get("exit_code")
     status = (f"exit {exit_code}" if exit_code is not None
@@ -637,7 +616,6 @@ def _test_run_summary(meta: dict) -> str:
     return f"{status}, {meta.get('result_chars', 0)} chars"
 
 
->>>>>>> 39e9ca1f (Edit-loop abort requires no progress between edits, not an edit count)
 # How often the watcher re-reads `tasks.cancel_requested` while a task runs.
 # The agent session is the only thing being interrupted, and it emits events far
 # faster than this, so the operator's `nh task pause` lands within a few seconds.
@@ -2500,8 +2478,6 @@ class Orchestrator:
             return scoped[1]
         return None
 
-<<<<<<< HEAD
-=======
     def _note_test_activity(self, event: AgentEvent) -> None:
         """Feed a recognized test-runner `tool_use`/`tool_result` pair to
         BOTH convergence signals this seam has: `ConvergenceTracker.mark_progress`
@@ -2511,15 +2487,23 @@ class Orchestrator:
         `getattr`/`_active_convergence()` so a bare `Orchestrator.__new__`
         test fixture (no `_stuck`/`_convergence` set) stays safe.
 
-        `StuckDetector.note_test_run` is fed by a WIDER predicate than
-        `ConvergenceTracker.mark_progress` — `_looks_like_test_run(command)
-        or _looks_like_harness_run(command)` — because f6e626fd's own
-        incident drove its e2e harness as a bare `node <script>.mjs`
-        (`_looks_like_harness_run`'s gap; see its docstring), which
-        `_looks_like_test_run`'s stricter P2 set never matched.
-        `mark_progress`'s gating is intentionally left on
-        `_looks_like_test_run` alone — P2's convergence signal is out of
-        scope for this change.
+        A SINGLE predicate, `_looks_like_test_run` (backed by the shared
+        `_TEST_RUNNER_RE`), gates both signals — there is no separate,
+        wider "harness" predicate for `StuckDetector` alone. That two-tier
+        split existed for one round and was collapsed here: it let a coder
+        whose test runner is a harness script (`node <script>.mjs`, no
+        `--test` flag) register as making no progress to whichever guard
+        still used the narrower set. Task 0ab78498 attempt 2 measured the
+        cost of leaving the CONVERGENCE side narrow — 96 recorded Bash
+        calls, 14 of them repeated `node /tmp/dcrace/harness.mjs` runs, 22
+        Reads, 7 Edits, killed by `ConvergenceTracker` at "no file edit or
+        test run in 40 turns" (recorded `failure_reason`: "non-converging-
+        abort: no file edit or test run in 40 turns (turn 122, threshold
+        80, window 40)") because the then-current `_TEST_RUNNER_RE` matched
+        `node --test`/`npm run test` but not a bare `node <script>`. Widening
+        the shared predicate makes `ConvergenceTracker` slightly easier to
+        keep alive on that shape — the intended correction, not an
+        oversight (see its docstring).
         """
         detector = getattr(self, "_stuck", None)
         if event.kind == "tool_use" and event.tool_name in ("Bash", "Terminal"):
@@ -2529,16 +2513,13 @@ class Orchestrator:
                 conv = self._active_convergence()
                 if conv is not None:
                     conv.mark_progress()
-            if detector is not None and (
-                _looks_like_test_run(command) or _looks_like_harness_run(command)
-            ):
-                detector.note_test_run(event.meta.get("tool_use_id"))
+                if detector is not None:
+                    detector.note_test_run(event.meta.get("tool_use_id"))
         elif event.kind == "tool_result" and detector is not None:
             detector.record_test_outcome(
                 event.meta.get("tool_use_id"), _test_run_summary(event.meta)
             )
 
->>>>>>> 39e9ca1f (Edit-loop abort requires no progress between edits, not an edit count)
     def _agent_sink(self, event: AgentEvent, *, role: str = CODER_ROLE) -> None:
         self._sink(
             {
@@ -2724,6 +2705,11 @@ class Orchestrator:
             # so edits there are neither committable nor a doom signal. Counting
             # them killed task 61406d02: the coder drafted in `.no_human/`, the
             # scope guard told it to revert, and the rewrite tripped the edit-loop.
+            # Paths outside the repo root entirely are the same class for the
+            # same reason: nothing written there can ever reach a commit either.
+            # Task 0ab78498 attempt 1 was hard-aborted on 15 edits of
+            # `/tmp/dcrace/harness.mjs`, a harness script the coder wrote next
+            # to the repo, not in it.
             #
             # The repo root is REQUIRED here: a concurrency worktree lives at
             # `~/.no_human/worktrees/<task_id>`, so every source file inside it has
@@ -2732,7 +2718,7 @@ class Orchestrator:
             # silently switch off.
             repo_root = getattr(self, "_active_repo_root", "")
             if path:
-                if not is_agent_owned(path, repo_root):
+                if not (is_agent_owned(path, repo_root) or is_outside_repo(path, repo_root)):
                     if not hasattr(self, "_agent_edited_files"):
                         self._agent_edited_files: set[str] = set()
                     self._agent_edited_files.add(str(path))
@@ -2762,16 +2748,10 @@ class Orchestrator:
                     conv = self._active_convergence()
                     if conv is not None:
                         conv.mark_progress()
-        # P2: a test-runner invocation is the other convergence signal — see
-        # `ConvergenceTracker`'s docstring for why "the command ran" is the
-        # honest proxy available here, not "a new result appeared".
-        if event.kind == "tool_use" and event.tool_name in ("Bash", "Terminal"):
-            command = (event.tool_input or {}).get("command") or (
-                event.tool_input or {}).get("cmd") or ""
-            if _looks_like_test_run(command):
-                conv = self._active_convergence()
-                if conv is not None:
-                    conv.mark_progress()
+        # P2 + R2.3 Layer 1: a recognized test-runner invocation/outcome is fed
+        # to both the convergence tracker and the hard edit tier's progress
+        # gate — see `_note_test_activity`.
+        self._note_test_activity(event)
         # Hard tier (ARCH_REVIEW B2 #1): checked AFTER both record paths so an
         # edit-tool event counts toward both detectors before the verdict.
         # Advisory fires above are telemetry; this one has teeth — the raise

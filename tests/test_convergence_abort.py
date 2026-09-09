@@ -507,6 +507,81 @@ def test_a_git_log_mentioning_a_runner_is_not_progress(store, tmp_path):
             orch._agent_sink(_USAGE, role=CODER_ROLE)
 
 
+def test_a_node_harness_run_keeps_the_convergence_tracker_alive(store, tmp_path):
+    """AC3: replays the recorded 0ab78498 attempt-2 shape — many bare
+    `node <script>` harness runs, few edits. A positional `node` invocation
+    (no leading flag) is a recognized test-runner call and must count as
+    convergence progress the same as `pytest`."""
+    orch = _orch(store, tmp_path, worker={
+        "convergence_check_after_turns": 5, "convergence_window_turns": 3,
+    })
+    orch._active_task_id = "task-1"
+    tracker = ConvergenceTracker.from_config(orch.config.get("worker"))
+    _arm(orch, tracker)
+    node_run = AgentEvent("tool_use", tool_name="Bash",
+                          tool_input={"command": "node /tmp/dcrace/harness.mjs"})
+
+    for i in range(30):
+        orch._agent_sink(_read(i), role=CODER_ROLE)
+        if i % 2 == 0:  # every 2 turns — inside the window=3
+            orch._agent_sink(node_run, role=CODER_ROLE)
+        orch._agent_sink(_USAGE, role=CODER_ROLE)  # must never raise
+    assert tracker.non_converging_reason is None
+    assert tracker._turns == 30
+
+
+def test_node_eval_and_non_test_npm_scripts_are_not_progress(store, tmp_path):
+    """AC3/intake Q&A: `node -e`/`node --require` (flag forms, not a
+    positional script path) and `npm run build`/`npm run lint`/`npm run
+    deploy` (not test-adjacent) must NOT count as progress — only a bare
+    `node <script>` and `npm run (test|check|verify|spec)` do."""
+    orch = _orch(store, tmp_path, worker={
+        "convergence_check_after_turns": 5, "convergence_window_turns": 3,
+    })
+    orch._active_task_id = "task-1"
+    _arm(orch, ConvergenceTracker.from_config(orch.config.get("worker")))
+    non_progress = [
+        AgentEvent("tool_use", tool_name="Bash",
+                   tool_input={"command": "node -e \"console.log(1)\""}),
+        AgentEvent("tool_use", tool_name="Bash",
+                   tool_input={"command": "node --require ./setup.js app.js"}),
+        AgentEvent("tool_use", tool_name="Bash", tool_input={"command": "npm run build"}),
+        AgentEvent("tool_use", tool_name="Bash", tool_input={"command": "npm run lint"}),
+        AgentEvent("tool_use", tool_name="Bash", tool_input={"command": "npm run deploy"}),
+    ]
+
+    with pytest.raises(ConvergenceAbort):
+        for i in range(20):
+            orch._agent_sink(non_progress[i % len(non_progress)], role=CODER_ROLE)
+            orch._agent_sink(_USAGE, role=CODER_ROLE)
+
+
+def test_npx_playwright_and_npm_run_test_adjacent_scripts_are_progress(store, tmp_path):
+    """AC3: `npx playwright` and test-adjacent `npm run (test|check|verify|
+    spec)` are both recognized by the ONE shared predicate and keep the
+    tracker alive, matching `pytest`/`node <script>`."""
+    orch = _orch(store, tmp_path, worker={
+        "convergence_check_after_turns": 5, "convergence_window_turns": 3,
+    })
+    orch._active_task_id = "task-1"
+    tracker = ConvergenceTracker.from_config(orch.config.get("worker"))
+    _arm(orch, tracker)
+    progress = [
+        AgentEvent("tool_use", tool_name="Bash",
+                   tool_input={"command": "npx playwright test"}),
+        AgentEvent("tool_use", tool_name="Bash",
+                   tool_input={"command": "npm run verify"}),
+    ]
+
+    for i in range(30):
+        orch._agent_sink(_read(i), role=CODER_ROLE)
+        if i % 2 == 0:  # every 2 turns — inside the window=3
+            orch._agent_sink(progress[i % len(progress)], role=CODER_ROLE)
+        orch._agent_sink(_USAGE, role=CODER_ROLE)  # must never raise
+    assert tracker.non_converging_reason is None
+    assert tracker._turns == 30
+
+
 # ------------------------------ end to end ----------------------------------- #
 
 

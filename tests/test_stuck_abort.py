@@ -84,8 +84,6 @@ def test_only_the_implementer_session_stuck_aborts(store, tmp_path, role):
         orch._agent_sink(ev, role=role)  # must not raise
 
 
-<<<<<<< HEAD
-=======
 def test_converging_edit_test_loop_never_hard_aborts(store, tmp_path):
     """AC1 (task f6e626fd): edit / test-run-with-CHANGING-outcome / edit on
     ONE file for 20 iterations through the real orchestrator sink must raise
@@ -126,10 +124,12 @@ def test_converging_edit_test_loop_never_hard_aborts(store, tmp_path):
 
 
 def test_identical_test_output_still_hard_aborts_with_summaries(store, tmp_path):
-    """AC2: edit / test-run-with-IDENTICAL-output / edit on one file up to
-    the hard threshold still raises StuckAbort, and the message carries the
-    last two test summaries as evidence the outcome really did not change."""
-    orch = _orch(store, tmp_path)
+    """AC2/AC4: edit / test-run-with-IDENTICAL-output / edit on one file up to
+    the hard threshold still raises StuckAbort, and both the exception AND
+    the emitted `stuck` event text (via the `events` sink) carry the last two
+    test summaries as evidence the outcome really did not change."""
+    events = []
+    orch = _orch(store, tmp_path, events=events)
     orch._active_task_id = "task-1"
     orch._stuck = StuckDetector()
     edit_abort = orch._stuck.edit_abort
@@ -158,6 +158,126 @@ def test_identical_test_output_still_hard_aborts_with_summaries(store, tmp_path)
     assert "edit-loop" in str(excinfo.value)
     assert "no observed progress" in str(excinfo.value)
     assert "failed, 40 chars" in str(excinfo.value)
+    stuck_events = [e for e in events if e.get("kind") == "stuck"]
+    assert stuck_events, "no `stuck` event reached the sink"
+    assert "no observed progress" in stuck_events[-1]["text"]
+    assert "failed, 40 chars" in stuck_events[-1]["text"]
+
+
+def test_ab_rewrite_loop_with_differing_content_still_aborts_and_names_the_tier(store, tmp_path):
+    """AC1: alternating rewrites of TWO files, each edit's content genuinely
+    different from the one before it (not a byte-identical retry), with a
+    test run after every edit whose STATUS genuinely flips every round —
+    real, sustained progress by the tier's own definition. The progress-
+    gated hard tier (`edit-loop: ... no observed progress`) therefore never
+    once crosses `edit_abort`; what still ends the attempt is the ABSOLUTE
+    per-file ceiling reading the raw, never-reset count — cross-file
+    alternation does not, and never will, dodge that backstop (task
+    a50b8b6c/3adc13f5's escape route). The raised exception names the tier
+    that actually fired and carries neither ping-pong nor doom-loop text."""
+    orch = _orch(store, tmp_path)
+    orch._active_task_id = "task-1"
+    orch._stuck = StuckDetector()
+    with pytest.raises(StuckAbort) as excinfo:
+        for i in range(70):
+            path = "a.py" if i % 2 == 0 else "b.py"
+            orch._agent_sink(
+                AgentEvent("tool_use", tool_name="Edit",
+                           tool_input={"file_path": path, "new_string": f"content-{i}"}),
+                role=CODER_ROLE,
+            )
+            orch._agent_sink(
+                AgentEvent("tool_use", tool_name="Bash",
+                           tool_input={"command": f"pytest -k iter{i}"},
+                           meta={"tool_use_id": f"call-{i}"}),
+                role=CODER_ROLE,
+            )
+            orch._agent_sink(
+                AgentEvent("tool_result",
+                           meta={"tool_use_id": f"call-{i}",
+                                 "is_error": (i % 2 == 0),
+                                 "result_chars": 10 + i}),
+                role=CODER_ROLE,
+            )
+    assert "absolute per-file ceiling" in str(excinfo.value)
+    assert "ping-pong" not in str(excinfo.value)
+    assert "doom-loop" not in str(excinfo.value)
+
+
+def test_edits_outside_the_repo_root_do_not_hard_abort(store, tmp_path):
+    """AC2: replays the recorded 0ab78498 attempt-1 shape — 15 edits of
+    `/tmp/dcrace/harness.mjs`, a harness script the coder wrote NEXT TO the
+    repo, not inside it. Edits outside the repo root must not feed the edit
+    counter at all, the same way agent-owned paths already don't."""
+    orch = _orch(store, tmp_path)
+    orch._active_task_id = "task-1"
+    orch._active_repo_root = str(tmp_path)
+    orch._stuck = StuckDetector()
+    for i in range(15):
+        orch._agent_sink(
+            AgentEvent("tool_use", tool_name="Edit",
+                       tool_input={"file_path": "/tmp/dcrace/harness.mjs",
+                                   "new_string": f"v{i}"}),
+            role=CODER_ROLE,
+        )  # must not raise
+    assert "/tmp/dcrace/harness.mjs" not in orch._stuck._edit_counts
+    assert orch._stuck.hard_stuck_reason is None
+
+
+def test_edits_inside_the_repo_root_still_count(store, tmp_path):
+    """AC2 counterpart: a file inside the repo root — including a nested
+    subdirectory, the shape a linked git worktree's files take — is still
+    counted normally; only paths genuinely outside the root are excused."""
+    orch = _orch(store, tmp_path)
+    orch._active_task_id = "task-1"
+    orch._active_repo_root = str(tmp_path)
+    orch._stuck = StuckDetector()
+    inside_path = str(tmp_path / "src" / "calc.py")
+    for i in range(orch._stuck.edit_abort - 1):
+        orch._agent_sink(
+            AgentEvent("tool_use", tool_name="Edit",
+                       tool_input={"file_path": inside_path, "new_string": f"v{i}"}),
+            role=CODER_ROLE,
+        )
+    assert orch._stuck.hard_stuck_reason is None
+    with pytest.raises(StuckAbort, match="edit-loop"):
+        orch._agent_sink(
+            AgentEvent("tool_use", tool_name="Edit",
+                       tool_input={"file_path": inside_path, "new_string": "last"}),
+            role=CODER_ROLE,
+        )
+
+
+def test_a_node_harness_run_is_a_progress_signal_for_the_edit_tier(store, tmp_path):
+    """AC3: a bare `node <script>` invocation (no `--test` flag) — the shape
+    task 0ab78498's harness runs and f6e626fd's `node web/e2e/dead-click-
+    race.mjs` both used — is recognized by the shared predicate and feeds
+    `StuckDetector.note_test_run`/`record_test_outcome` exactly like `pytest`
+    does: a genuinely changing outcome across repeated runs still resets the
+    hard edit tier."""
+    orch = _orch(store, tmp_path)
+    orch._active_task_id = "task-1"
+    orch._stuck = StuckDetector()
+    for i in range(20):
+        orch._agent_sink(
+            AgentEvent("tool_use", tool_name="Edit",
+                       tool_input={"file_path": "calc.py", "new_string": f"v{i}"}),
+            role=CODER_ROLE,
+        )
+        orch._agent_sink(
+            AgentEvent("tool_use", tool_name="Bash",
+                       tool_input={"command": "node /tmp/dcrace/harness.mjs"},
+                       meta={"tool_use_id": f"call-{i}"}),
+            role=CODER_ROLE,
+        )
+        orch._agent_sink(
+            AgentEvent("tool_result",
+                       meta={"tool_use_id": f"call-{i}",
+                             "is_error": (i % 2 == 0),
+                             "result_chars": 100 + i}),
+            role=CODER_ROLE,
+        )
+    assert orch._stuck.hard_stuck_reason is None
 
 
 def test_doom_loop_and_ping_pong_aborts_unchanged(store, tmp_path):
@@ -184,7 +304,6 @@ def test_doom_loop_and_ping_pong_aborts_unchanged(store, tmp_path):
             orch2._agent_sink(edit_b, role=CODER_ROLE)
 
 
->>>>>>> 39e9ca1f (Edit-loop abort requires no progress between edits, not an edit count)
 def test_sink_aborts_when_spend_crosses_the_remaining_budget(store, tmp_path):
     # The ceiling is in COST-WEIGHTED tokens (core.pricing), so each event is
     # worth 300 fresh x1.0 + 300 cache-read x0.1 = 330, not its raw 600.

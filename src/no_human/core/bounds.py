@@ -207,7 +207,8 @@ class StuckDetector:
     appending corrections to a stale one.
 
     Three detection layers (R2.3, AgentPatterns):
-      1. **Edit-count per file** — same file edited ≥ ``edit_threshold`` times.
+      1. **Edit-count per file** — same file edited ≥ ``edit_threshold`` times
+         (advisory, raw count) / the HARD tier's progress-gated twin below.
       2. **Doom-loop** — identical tool+input repeated consecutively.
       3. **Ping-pong** — A-B-A-B alternating pattern (R2.1, Broker).
     The hard iteration cap (``max_turns``) is Layer 3 — outside this class.
@@ -222,7 +223,21 @@ class StuckDetector:
     # orchestrator's sink — work checkpointed, bounded loop retries with fresh
     # context). Set far above the advisory tier so they fire only on
     # unambiguous runaways: 9 identical consecutive calls, one file edited
-    # 15×, or 12 consecutive calls alternating between the same two actions.
+    # 15× WITH NO OBSERVED PROGRESS (see `record_edit`/`record_test_outcome`
+    # below — the tier now resets a file's hard count only on a recognised
+    # test-runner invocation whose outcome STATUS changed since the last one).
+    # task f6e626fd attempt 1 was hard-aborted on a raw 15-edit count of
+    # `web/e2e/dead-click-race.mjs`; the round-1 review measured only 2 of its
+    # 117 Bash calls were recognised as test runs by the THEN-current
+    # predicate, both before the loop started, so whether that attempt's test
+    # outcome changed across the loop is NOT established by the recorded
+    # stream — this comment used to claim otherwise and that claim is struck.
+    # What IS established: the widened shared predicate (`_TEST_RUNNER_RE`)
+    # now recognises the `node <script>.mjs` harness form that attempt used,
+    # so a re-run under the current code would at least see its test-runner
+    # calls. 61406d02 remains the documented agent-owned-path casualty of the
+    # same earlier raw-count-only rule (see `scope_guard.py`), or 12
+    # consecutive calls alternating between the same two actions.
     doom_loop_abort: int = 9
     edit_abort: int = 15
     ping_pong_abort_window: int = 12
@@ -237,15 +252,16 @@ class StuckDetector:
     # fire on a run with NO progress signal at all; a file edited twice that
     # many times, even with real test-outcome churn between edits, has
     # exhausted more attempts on one file than any single-file fix in the
-    # measured corpus needed (see `.no_human/scratch/diagnose.py` — no
-    # genuine non-abort corpus attempt drives one file's raw edit count
-    # anywhere near 30).
+    # measured corpus needed (see the 26/27-attempt "stuck-abort: edit-loop"
+    # corpus replay run against this detector, PR body — no genuine
+    # non-abort corpus attempt drives one file's raw edit count anywhere
+    # near 30).
     edit_ceiling: int = 30
     _seen: dict[str, int] = field(default_factory=dict)
     _last: str | None = None
     _tool_signatures: list[str] = field(default_factory=list)
     _consecutive_repeats: int = 0
-    # R2.3 Layer 1: per-file edit counts.
+    # R2.3 Layer 1: per-file edit counts (raw — advisory tier only).
     _edit_counts: dict[str, int] = field(default_factory=dict)
     # HARD tier's own per-file counter: unlike `_edit_counts` above, this one
     # resets to 1 whenever `record_edit` observes progress since the file's
@@ -378,7 +394,6 @@ class StuckDetector:
         """Up to the last 2 recorded test-outcome summaries, most recent last."""
         return list(self._test_summaries)
 
->>>>>>> 39e9ca1f (Edit-loop abort requires no progress between edits, not an edit count)
     def detect_ping_pong(self, window: int = 4) -> bool:
         """R2.1: detect an A-B-A-B alternating pattern in the last ``window``
         tool calls (4 = advisory; ``ping_pong_abort_window`` = hard)."""
@@ -419,13 +434,12 @@ class StuckDetector:
                 f"doom-loop: identical tool call repeated "
                 f"{self._consecutive_repeats}× consecutively"
             )
-        hot = [(f, c) for f, c in self._edit_counts.items()
+        # Progress-gated: `_hard_edit_counts`, not the raw `_edit_counts` the
+        # advisory tier above reads — see `record_edit`.
+        hot = [(f, c) for f, c in self._hard_edit_counts.items()
                if c >= self.edit_abort]
         if hot:
             path, count = max(hot, key=lambda fc: fc[1])
-<<<<<<< HEAD
-            return f"edit-loop: {path} edited {count}×"
-=======
             reason = f"edit-loop: {path} edited {count}× with no observed progress"
             if self._test_summaries:
                 reason += " — last test outcomes: " + " → ".join(self._test_summaries)
@@ -440,7 +454,6 @@ class StuckDetector:
             if self._test_summaries:
                 reason += " — last test outcomes: " + " → ".join(self._test_summaries)
             return reason
->>>>>>> 39e9ca1f (Edit-loop abort requires no progress between edits, not an edit count)
         if self.detect_ping_pong(self.ping_pong_abort_window):
             return (
                 f"ping-pong: alternating between two actions for "
@@ -454,13 +467,10 @@ class StuckDetector:
         self._tool_signatures.clear()
         self._consecutive_repeats = 0
         self._edit_counts.clear()
-<<<<<<< HEAD
-=======
         self._hard_edit_counts.clear()
         self._progress_since_last_edit = False
         self._test_summaries.clear()
         self._pending_test_runs.clear()
->>>>>>> 39e9ca1f (Edit-loop abort requires no progress between edits, not an edit count)
 
 
 @dataclass
@@ -511,6 +521,19 @@ class ConvergenceTracker:
     accepted trade-offs of a cheap, mid-attempt, no-tool-result-text signal —
     named here so a future reader does not re-derive "never overcounts" as
     fact.
+
+    "Test-runner Bash invocation" above is `orchestrator._looks_like_test_run`
+    against the SAME shared `_TEST_RUNNER_RE` the hard edit tier's
+    `note_test_run` reads (task 0ab78498 attempt 2: 96 recorded Bash calls, 14
+    of them repeated `node /tmp/dcrace/harness.mjs` runs, 22 Reads, 7 Edits,
+    killed by this tracker at "no file edit or test run in 40 turns"
+    (recorded `failure_reason`: "non-converging-abort: no file edit or test
+    run in 40 turns (turn 122, threshold 80, window 40)") because the
+    then-current predicate matched `node --test`/`npm run test` but not a
+    bare `node <script>` harness). Widening the shared predicate to recognise
+    that form makes this tracker slightly easier to keep alive on a coder
+    whose test runner is a harness script — the intended correction, not an
+    oversight.
 
     Two knobs, both under ``worker.*`` (not ``bounds.*`` — this is a
     kill-switched heuristic sitting BESIDE the hard caps, not one of them):

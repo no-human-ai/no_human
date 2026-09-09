@@ -19,6 +19,7 @@ testable and cost zero latency beyond the file reads.
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -74,6 +75,45 @@ def is_agent_owned(path: str | Path, repo_root: str | Path = "") -> bool:
     if any(part in AGENT_OWNED_DIRS for part in rel.parts):
         return True
     return rel.name in AGENT_OWNED_FILES
+
+
+def is_outside_repo(path: str | Path, repo_root: str | Path = "") -> bool:
+    """True when *path* is not part of this checkout at all — not agent-owned,
+    just outside the repo (task 0ab78498 attempt 1: 15 edits of
+    ``/tmp/dcrace/harness.mjs``, a harness script the coder wrote next to the
+    repo, killed the attempt for an "edit loop" on a path nothing in the repo
+    could ever see).
+
+    Without a known *repo_root* nothing can be classified as outside, so this
+    returns False (count it) — same fallback as `is_agent_owned`, needed for
+    the pre-`_active_repo_root` callers and existing sink tests that pass bare
+    relative paths like ``"calc.py"``. A relative *path* is likewise always
+    False: it is relative to the worktree cwd, i.e. already inside.
+
+    An absolute *path* is inside if EITHER the raw path is under the raw root
+    OR ``os.path.realpath(path)`` is under ``os.path.realpath(repo_root)``;
+    otherwise it is outside. That union is what makes a symlink unusable as an
+    escape hatch both ways: a symlink planted outside the repo that points at
+    a real repo file resolves under the root and still counts as inside, while
+    platform root symlinks (macOS's ``/tmp`` -> ``/private/tmp``) don't wrongly
+    evict a real repo file just because its raw form doesn't textually match a
+    resolved root. A linked git worktree is passed in as *repo_root* itself,
+    so any file inside it is trivially inside on the raw comparison alone.
+    """
+    if not repo_root:
+        return False
+    p = Path(str(path).removeprefix("./"))
+    if not p.is_absolute():
+        return False
+    root = Path(repo_root)
+    if p.is_relative_to(root):
+        return False
+    try:
+        resolved_p = Path(os.path.realpath(p))
+        resolved_root = Path(os.path.realpath(root))
+    except OSError:
+        return True  # raw comparison above already said "not under root"
+    return not resolved_p.is_relative_to(resolved_root)
 
 
 def scratch_redirect(

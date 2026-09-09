@@ -1068,7 +1068,6 @@ FROZEN_FILE_LINES = {
     # never routes QUOTA to `blocked`, only to `paused_quota`), a small net
     # decrease folded into this same total. Measured on this tree by the
     # scanner's own metric.
-<<<<<<< HEAD
     # round 3 and the landing hand-finish (+10 over the merged 23633): the
     # unreachable `blocked`/`USER_PAUSED` mapping is removed as well (that
     # category is harness-only and its only writer is the pause path,
@@ -1099,20 +1098,28 @@ FROZEN_FILE_LINES = {
     # `failing_tests_dropped: 300`. The comment now says so and names the
     # follow-up (task 4a23ed43). Measured on this tree by the scanner's own
     # metric.
-    "core/orchestrator.py": 23730,
-=======
-    # 23609 -> 23666 (+57) 2026-09-09: re-derived edit-loop fix, round 2
-    # (reviewer send-back property 4) — the new `_HARNESS_RUN_RE`/
-    # `_looks_like_harness_run` module function (plus its defending
-    # docstring), which lets `StuckDetector.note_test_run` recognize the
-    # bare `node <script>.mjs` / `npm run <script>` / `npx playwright ...`
-    # invocations f6e626fd's own incident actually used, and the
-    # `_note_test_activity` docstring explaining the wider OR predicate.
-    # `ConvergenceTracker`/`_looks_like_test_run`/`_TEST_RUNNER_RE` are
-    # untouched — this is additive, not a rewrite. Measured on this tree by
-    # the scanner's own metric (`len(Path(...).read_text().splitlines())`).
-    "core/orchestrator.py": 23666,
->>>>>>> 39e9ca1f (Edit-loop abort requires no progress between edits, not an edit count)
+    # 23730 -> 23818 (+88) 2026-09-09: edit-loop/convergence progress fix —
+    # `_TEST_RUNNER_RE` widened in place (no separate `_HARNESS_RUN_RE`) to
+    # recognize a bare `node <script>` positional harness run, test-adjacent
+    # `npm run (test|check|verify|spec)`, and `npx playwright`, feeding BOTH
+    # `ConvergenceTracker.mark_progress` and `StuckDetector.note_test_run`
+    # through the one shared `_looks_like_test_run` predicate; `_agent_sink`'s
+    # inline Bash/tool_result handling was replaced with a single call to
+    # `_note_test_activity`, which now does that dual dispatch itself; and the
+    # Write/Edit/MultiEdit/NotebookEdit branch gates `_agent_edited_files`/
+    # `record_edit` on `is_agent_owned(...) or is_outside_repo(...)`, so an
+    # edit to a path outside the repo root (task 0ab78498 attempt 1) is
+    # counted as convergence progress but not as a committable, loop-able
+    # edit. Measured on this tree by the scanner's own metric.
+    # 23818 -> 23820 (+2): `_note_test_activity`'s docstring cited an
+    # unverified "154 Bash calls, 29 Reads, 15 Edits" for task 0ab78498
+    # attempt 2; a direct query against the recorded `task_events` for that
+    # attempt's window found 96 Bash calls (14 of them repeated
+    # `node /tmp/dcrace/harness.mjs`), 22 Reads, 7 Edits instead, so the
+    # comment now cites those measured counts and the recorded
+    # `failure_reason` verbatim. Measured on this tree by the scanner's own
+    # metric.
+    "core/orchestrator.py": 23820,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.
