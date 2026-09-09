@@ -753,8 +753,14 @@ class GitRepo:
             r for r in rel_paths
             if not (repo_root / r).exists() and not (repo_root / r).is_symlink()
         ]
+        # `check=True` (default) is load-bearing here: this lookup DROPS
+        # paths from the commit, so it must fail closed. A `check=False`
+        # lookup would return "" on any non-zero exit (e.g. one poison
+        # pathspec in `missing`), emptying `tracked` and misclassifying
+        # every tracked deletion in the batch as "untracked" — silently
+        # dropping real work instead of raising.
         if missing:
-            tracked_out = self._run("ls-files", "-z", "--", *missing, check=False)
+            tracked_out = self._run("ls-files", "-z", "--", *missing)
             tracked = {t for t in tracked_out.split("\0") if t}
             dropped = [r for r in missing if r not in tracked]
             if dropped:

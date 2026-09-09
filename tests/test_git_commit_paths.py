@@ -250,3 +250,36 @@ def test_add_failing_for_another_reason_still_raises(repo_with_bare_remote):
     secret.write_text("shh\n")
     with pytest.raises(GitError, match="ignore"):
         repo.commit_paths([str(secret)], "try to add an ignored file")
+
+
+def test_ls_files_failure_does_not_silently_drop_a_tracked_deletion(
+    repo_with_bare_remote,
+):
+    """The tracked/untracked lookup must fail CLOSED: if `git ls-files`
+    itself errors (a poison pathspec anywhere in the missing-paths batch),
+    the lookup must not be treated as "nothing is tracked" — that would
+    misclassify a genuinely tracked deletion as untracked and silently drop
+    it from the commit, reporting success while HEAD still carries the
+    file. A single odd path must not suppress every tracked deletion in the
+    same batch; it must raise instead, exactly like the pre-fix base."""
+    repo = GitRepo(repo_with_bare_remote)
+    repo.create_branch("no-human/poison-pathspec", base="main")
+    doomed = repo.path / "doomed.py"
+    doomed.write_text("y = 1\n")
+    repo.commit_paths([str(doomed)], "add doomed.py")
+    doomed.unlink()
+    # A pathspec-magic-shaped filename ("zzz" is not a real magic word) makes
+    # `git ls-files -z --` exit 128 for the WHOLE batch it's a part of.
+    poison = repo.path / ":(zzz)nope.py"
+    with pytest.raises(GitError):
+        repo.commit_paths([str(doomed), str(poison)], "remove doomed.py")
+    status = subprocess.run(
+        ["git", "show", "--name-status", "--format=", "HEAD"],
+        cwd=repo.path, capture_output=True, text=True,
+    ).stdout
+    assert "D\tdoomed.py" not in status
+    tracked = subprocess.run(
+        ["git", "ls-files", "--", "doomed.py"],
+        cwd=repo.path, capture_output=True, text=True,
+    ).stdout
+    assert "doomed.py" in tracked
