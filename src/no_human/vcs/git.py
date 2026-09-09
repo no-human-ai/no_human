@@ -8,6 +8,7 @@ branch (never_push_to).
 from __future__ import annotations
 
 import fnmatch
+import logging
 import os
 import re
 import subprocess
@@ -20,6 +21,8 @@ from typing import Iterator
 from ..proc import hidden_console_kwargs
 from .outbound_scrub import scrub_outbound
 from .push_hook import install_pre_push_guard
+
+log = logging.getLogger("no_human.vcs")
 
 
 # Patterns stripped from commit messages to prevent AI attribution leaking
@@ -736,6 +739,29 @@ class GitRepo:
         # stages exactly what we intend.
         rel_paths = [r for r in dict.fromkeys(rel_paths)
                      if not self._is_ephemeral_path(r)]
+        # A path the coder CREATED and then DELETED inside the same attempt (a
+        # scratch probe it cleaned up after itself) is neither on disk nor in
+        # the index, so `git add` exits 128 on the whole pathspec list and
+        # takes the attempt with it (measured 2026-09-09, task f6e626fd:
+        # "pathspec 'web/__probe_tmp.mjs' did not match any files"). Drop only
+        # paths that are BOTH gone from the worktree AND untracked. A TRACKED
+        # path that was deleted stays in the list: `git add` of a tracked
+        # deletion stages the removal, which is real work. Deliberately not a
+        # blanket `--ignore-missing`/error-swallow: an add that fails for any
+        # other reason must still raise.
+        missing = [
+            r for r in rel_paths
+            if not (repo_root / r).exists() and not (repo_root / r).is_symlink()
+        ]
+        if missing:
+            tracked_out = self._run("ls-files", "-z", "--", *missing, check=False)
+            tracked = {t for t in tracked_out.split("\0") if t}
+            dropped = [r for r in missing if r not in tracked]
+            if dropped:
+                rel_paths = [r for r in rel_paths if r not in set(dropped)]
+                log.info(
+                    "Dropped %d untracked paths: %s", len(dropped), ", ".join(dropped)
+                )
         if rel_paths:
             self._run("add", "--", *rel_paths)
         # If no files were actually staged (e.g. agent only used Bash to

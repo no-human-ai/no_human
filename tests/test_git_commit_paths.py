@@ -9,11 +9,12 @@ never flagged it either. See `src/no_human/vcs/git.py`'s `commit_paths` and
 `uncommitted_source_files` docstrings for the fix and its discriminator.
 """
 
+import logging
 import subprocess
 
 import pytest
 
-from no_human.vcs import GitRepo
+from no_human.vcs import GitError, GitRepo
 
 
 def _git(cwd, *args):
@@ -183,3 +184,69 @@ def test_root_commit_with_no_head_caret_still_flags_a_leftover(repo_with_bare_re
     repo = GitRepo(work)
     leftover = repo.uncommitted_source_files()
     assert "eval/x/REPORT.md" in leftover
+
+
+def test_created_then_deleted_untracked_probe_does_not_kill_the_commit(
+    repo_with_bare_remote, caplog
+):
+    """Measured 2026-09-09, task f6e626fd: a scratch probe script the coder
+    creates and then cleans up (`unlink()`s) in the same attempt is neither
+    on disk nor in the index by the time commit_paths runs. Before the fix,
+    passing it to `git add --` alongside a real edit killed the WHOLE commit
+    with a 128 pathspec error, escalating an otherwise-successful attempt."""
+    repo = GitRepo(repo_with_bare_remote)
+    repo.create_branch("no-human/probe-cleanup", base="main")
+    app = repo.path / "app.py"
+    app.write_text("x = 2\n")
+    probe = repo.path / "__probe_tmp.mjs"
+    probe.write_text("// scratch\n")
+    probe.unlink()
+    with caplog.at_level(logging.INFO, logger="no_human.vcs"):
+        repo.commit_paths([str(app), str(probe)], "edit app, clean up probe")
+    files = _committed_files(repo.path)
+    assert "app.py" in files
+    assert "__probe_tmp.mjs" not in files
+    dropped_records = [r for r in caplog.records if r.message.startswith("Dropped")]
+    assert len(dropped_records) == 1
+    assert dropped_records[0].message == "Dropped 1 untracked paths: __probe_tmp.mjs"
+
+
+def test_tracked_file_deleted_during_the_attempt_is_still_staged_as_a_deletion(
+    repo_with_bare_remote, caplog
+):
+    """A path that IS tracked at HEAD but was deleted during the attempt is a
+    different case from the created-then-deleted probe above: `git add` of a
+    tracked deletion stages real work (the removal), so it must stay in the
+    add list even though it's absent from the working tree."""
+    repo = GitRepo(repo_with_bare_remote)
+    repo.create_branch("no-human/tracked-delete", base="main")
+    doomed = repo.path / "doomed.py"
+    doomed.write_text("y = 1\n")
+    repo.commit_paths([str(doomed)], "add doomed.py")
+    doomed.unlink()
+    with caplog.at_level(logging.INFO, logger="no_human.vcs"):
+        repo.commit_paths([str(doomed)], "remove doomed.py")
+    files = _committed_files(repo.path)
+    assert "doomed.py" in files
+    status = subprocess.run(
+        ["git", "show", "--name-status", "--format=", "HEAD"],
+        cwd=repo.path, capture_output=True, text=True,
+    ).stdout
+    assert "D\tdoomed.py" in status
+    dropped_records = [r for r in caplog.records if r.message.startswith("Dropped")]
+    assert dropped_records == []
+
+
+def test_add_failing_for_another_reason_still_raises(repo_with_bare_remote):
+    """The new filter only drops paths that are BOTH absent from the working
+    tree AND untracked. A path that is present on disk but ignored by
+    .gitignore is never dropped by the filter, so `git add` still fails on it
+    with its original error — the fix must not swallow that."""
+    repo = GitRepo(repo_with_bare_remote)
+    repo.create_branch("no-human/ignored-add-fails", base="main")
+    (repo.path / ".gitignore").write_text("secret.txt\n")
+    repo.commit_paths([str(repo.path / ".gitignore")], "add gitignore")
+    secret = repo.path / "secret.txt"
+    secret.write_text("shh\n")
+    with pytest.raises(GitError, match="ignore"):
+        repo.commit_paths([str(secret)], "try to add an ignored file")
