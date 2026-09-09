@@ -70,6 +70,20 @@ against a policy pattern. It instead:
      these subsumes ``cd``/``pushd``/subshell-group operands without
      needing to thread a running "current directory" through segments,
      which is exactly the thread that broke in verdict 3.
+     Also deliberately NOT a signal: a BARE installer NAME token that is
+     merely the sub-invocation-position prefix of an outer resolved
+     installer (``uv pip install -e .``, ``python -m pip install foo`` —
+     the inner ``pip`` is never itself an executed program from this
+     command's argv, ``uv``/``python`` are). Measured 2026-09-09 in a task
+     worktree whose ambient ``VIRTUAL_ENV`` was that worktree's own
+     ``.venv``: the inner bare ``pip`` resolved via ``shutil.which`` to
+     that ambient venv's ``bin/pip`` regardless of the session ``cwd``
+     passed to :func:`denial_reason`, so :func:`_effective_prefixes` added
+     the AMBIENT venv as a candidate and denied an install that only ever
+     targeted ``cwd`` — see :func:`_subcommand_scan`'s ``skipped`` return
+     and its use in :func:`denial_reason`. An explicitly SPELLED inner
+     path (``uv run /primary/.venv/bin/pip install foo``) is unaffected —
+     it is a real executable location and keeps its candidate.
      Deliberately NOT a signal: the merely-INHERITED ``VIRTUAL_ENV``/
      ``UV_PROJECT_ENVIRONMENT`` value (``env["VIRTUAL_ENV"]`` when the
      command never assigns it itself). A structural-guard review round
@@ -347,17 +361,20 @@ def _flag_value(tok: str, nxt: str | None, flags: frozenset[str]) -> str | None:
     return None
 
 
-def _mutating_subcommand(tokens: list[str], start: int) -> str | None:
-    """The subcommand `tokens[start]` (a RESOLVED installer) would invoke,
-    or None.
+def _subcommand_scan(tokens: list[str], start: int) -> tuple[str | None, list[int]]:
+    """Scan right from `tokens[start]` (a RESOLVED installer), returning the
+    subcommand it would invoke (or None) AND the indices of any further
+    installer-NAME tokens skipped along the way.
 
     Scans right from the installer token, skipping (a) flags, (b) the value
     token of a value-taking flag (`_VALUE_FLAGS`), (c) `VAR=value`
     assignments, and (d) further installer NAMES (`uv pip install`, `python
-    -m pip install` — the inner name is a sub-invocation prefix, not a
-    subcommand). Stops at the first segment break: a subcommand never
-    crosses `;`/`&&`/`|`/`(`/`)`/newline — the installer at `start` has no
-    subcommand in that case.
+    -m pip install` — the inner name is a sub-invocation prefix of the outer
+    program, not a separately executed program; its index is recorded in the
+    returned list so callers can decide whether its ambient-PATH location is
+    a genuine write-target signal). Stops at the first segment break: a
+    subcommand never crosses `;`/`&&`/`|`/`(`/`)`/newline — the installer at
+    `start` has no subcommand in that case.
 
     Positionless within THIS bounded walk only in the sense that flag/value
     adjacency (not argv index) drives it, same as `_effective_prefixes`'s
@@ -367,10 +384,11 @@ def _mutating_subcommand(tokens: list[str], start: int) -> str | None:
     """
     n = len(tokens)
     i = start + 1
+    skipped: list[int] = []
     while i < n:
         tok = tokens[i]
         if tok in _SEGMENT_BREAKS:
-            return None
+            return None, skipped
         head = tok.split("=", 1)[0]
         if "=" in tok and head in _ENV_VARS:
             i += 1
@@ -385,10 +403,19 @@ def _mutating_subcommand(tokens: list[str], start: int) -> str | None:
             i += 2 if tok in _VALUE_FLAGS else 1
             continue
         if _is_installer_name(tok):
+            skipped.append(i)
             i += 1
             continue
-        return tok
-    return None
+        return tok, skipped
+    return None, skipped
+
+
+def _mutating_subcommand(tokens: list[str], start: int) -> str | None:
+    """The subcommand `tokens[start]` (a RESOLVED installer) would invoke, or
+    None. Thin wrapper over `_subcommand_scan` for callers that only need
+    the subcommand, not the skipped inner-installer-name indices."""
+    subcommand, _skipped = _subcommand_scan(tokens, start)
+    return subcommand
 
 
 def _effective_prefixes(
@@ -524,12 +551,34 @@ def denial_reason(cmd: str, *, cwd: str | None, env: Mapping[str, str] | None = 
     # add`) but "does a RESOLVED installer's own adjacent subcommand mutate"
     # — both halves (the executable and the subcommand) are structural, no
     # text pattern is matched against `cmd` for this decision.
-    intent = any(
-        _mutating_subcommand(tokens, i) in _MUTATING_SUBCOMMANDS
-        for i, _ in resolved_positions
-    )
+    #
+    # Each scan also names the indices of any inner installer-NAME tokens it
+    # walked past on the way to a subcommand (`uv pip install`, `python -m
+    # pip install`). A BARE inner name in that position (raw token has no
+    # `/`) is a sub-invocation prefix of the outer program, not itself an
+    # executed binary — it never appears on argv as a separate program, so
+    # its ambient-PATH resolution is not a write-target signal; the outer
+    # program's own resolved location (plus `cwd`/explicit flags/
+    # VIRTUAL_ENV=, all still in play) decides instead. An explicitly
+    # SPELLED inner path (`uv run /primary/.venv/bin/pip install foo`) is a
+    # real executable location and keeps its candidate — `_is_installer_name`
+    # tests the raw token, so a path-spelled inner name already halts the
+    # walk (see `_subcommand_scan`) and is never added to `skipped`.
+    # Measured (this worktree, ambient VIRTUAL_ENV under this worktree's own
+    # `.venv`): `uv pip install -e .` resolves the inner bare `pip` via
+    # `shutil.which` to this session's OWN venv, which `_effective_prefixes`
+    # then added as a candidate outside a differently-located session cwd —
+    # the false denial this fix removes.
+    scans = [_subcommand_scan(tokens, i) for i, _ in resolved_positions]
+    intent = any(subcommand in _MUTATING_SUBCOMMANDS for subcommand, _ in scans)
     if not intent:
         return None
+    sub_name_positions = {
+        j for _, skipped in scans for j in skipped if "/" not in tokens[j]
+    }
+    target_installers = [
+        resolved for i, resolved in resolved_positions if i not in sub_name_positions
+    ]
 
     for tok in tokens:
         if any(ch in tok for ch in _UNRESOLVABLE_CHARS):
@@ -552,7 +601,7 @@ def denial_reason(cmd: str, *, cwd: str | None, env: Mapping[str, str] | None = 
     if cwd_real is None:
         return f"blocked: session worktree {cwd!r} could not be resolved."
 
-    candidates = _effective_prefixes(tokens, cwd, installers)
+    candidates = _effective_prefixes(tokens, cwd, target_installers)
     if not candidates:
         return (
             f"blocked: could not resolve where this install would write, "

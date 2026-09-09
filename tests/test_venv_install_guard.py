@@ -219,14 +219,66 @@ def test_control_production_env_uv_commands_stay_allowed(tmp_path):
     an env that already correctly points at the worktree), this test uses
     `prod_env` with `cwd=wt` — the actual production shape — so it would
     have failed against the code the reviewer rejected and must pass now.
+
+    Extended (venv-install-guard bugfix, 2026-09-09): `uv pip install -e .`
+    and `uv pip install foo` are added here too. Under the OLD code these
+    were MUTATING commands that got denied under `prod_env` — not because
+    `uv`'s own target resolution pointed outside `cwd` (it didn't; `uv`/
+    `uvx` are exempt from the "venv owning this installer" signal), but
+    because the inner bare `pip` NAME (a sub-invocation prefix of `uv`,
+    never itself an executed program from this argv) resolved via ambient
+    PATH to `prod_env`'s venv and was wrongly treated as a second signal.
+    That was this ticket's exact bug: judging the session cwd's install by
+    an ambient-env artifact. They must be allowed now.
     """
     primary, primary_venv, wt, wt_venv, prod_env, wt_env = _session(tmp_path)
-    cases = ["uv sync", "uv run pytest -q"]
+    cases = ["uv sync", "uv run pytest -q", "uv pip install -e .", "uv pip install foo"]
     for cmd in cases:
         r = venv_install_guard.denial_reason(cmd, cwd=wt, env=prod_env)
         assert r is None, f"must stay allowed under production env: {cmd} — {r}"
         d = _ev("Bash", {"command": cmd}, cwd=wt, env=prod_env)
         assert d.allow, f"must stay allowed via evaluate(): {cmd} — {d.reason}"
+
+
+def test_uv_pip_install_via_inner_pip_name_is_allowed_and_narrowing_is_bounded(tmp_path):
+    """Pinned regression test for the bug this ticket fixes, plus the
+    "still-denied twins" proving the fix only narrows the ambient-PATH
+    signal (drops a bare, sub-invocation-position inner installer NAME) and
+    does not weaken anything else:
+
+    - An EXPLICIT `--python`/`-p` flag pointing at the primary venv's own
+      python is still a target signal (untouched code path) — still denied.
+    - An EXPLICITLY SPELLED inner path (`uv run {primary_venv}/bin/pip ...`)
+      is a real executable location, not a bare name — still denied.
+    - `env -i pip install foo` / `sudo -H pip install foo` (bare, STANDALONE
+      installer invocations, not a sub-invocation-position inner name behind
+      a resolved outer installer) are untouched by this fix and remain
+      covered by `test_verdict1_wrapper_and_nested_shell_installs_are_denied`
+      — referenced, not duplicated, here.
+    """
+    primary, primary_venv, wt, wt_venv, prod_env, wt_env = _session(tmp_path)
+
+    # The fix: cwd is in-tree, uv's own resolution is exempt, and the inner
+    # bare "pip" name is no longer itself a target-signal.
+    allowed = ["uv pip install -e .", "uv pip install foo"]
+    for cmd in allowed:
+        r = venv_install_guard.denial_reason(cmd, cwd=wt, env=prod_env)
+        assert r is None, f"must be allowed: {cmd} — {r}"
+        d = _ev("Bash", {"command": cmd}, cwd=wt, env=prod_env)
+        assert d.allow, f"must be allowed via evaluate(): {cmd} — {d.reason}"
+
+    # Still denied: an explicit flag value, or an explicitly spelled inner
+    # path, both name the primary venv directly — never merely a bare name.
+    still_denied = [
+        f"uv pip install --python {primary_venv}/bin/python foo",
+        f"uv run {primary_venv}/bin/pip install foo",
+    ]
+    for cmd in still_denied:
+        r = venv_install_guard.denial_reason(cmd, cwd=wt, env=prod_env)
+        assert r is not None, f"must still be denied: {cmd}"
+        assert str(primary_venv) in r, f"denial must name the primary venv: {cmd} — {r}"
+        d = _ev("Bash", {"command": cmd}, cwd=wt, env=prod_env)
+        assert not d.allow, f"must be blocked via evaluate(): {cmd}"
 
 
 # ---------------------------------------------------------------------------
@@ -367,9 +419,26 @@ def test_mutating_word_as_argument_is_not_install_intent(tmp_path):
 
 
 def test_subcommand_is_found_past_flags_and_inner_installer_name(tmp_path):
+    """`python -m pip install foo` stays denied through PYTHON's own
+    resolved-venv signal (unaffected by this fix). `uv --directory
+    {primary} sync` and `pip --no-cache-dir install foo` stay denied through
+    their own outer-installer/flag signals (also unaffected).
+
+    `uv pip install foo` moved out of `denied` (fix for the bug this ticket
+    closes, measured 2026-09-09): under the OLD code this was denied only
+    because the inner bare `pip` NAME (a sub-invocation prefix of `uv`,
+    never itself an executed program) resolved via ambient PATH to
+    `primary_venv/bin/pip`, and THAT venv — not `uv`'s own target
+    resolution — was treated as a write-target candidate. `uv` resolves its
+    real target via `cwd` (already in-tree here) / an explicit
+    --target/--prefix/--project flag / a command-level `VIRTUAL_ENV=`
+    assignment — all still fully enforced, see
+    `test_uv_pip_install_via_inner_pip_name_is_allowed_and_narrowing_is_bounded`
+    for the still-denied twins proving the narrowing is bounded, not
+    removed.
+    """
     primary, primary_venv, wt, wt_venv, prod_env, wt_env = _session(tmp_path)
     denied = [
-        "uv pip install foo",
         "python -m pip install foo",
         f"uv --directory {primary} sync",
         "pip --no-cache-dir install foo",
@@ -384,6 +453,12 @@ def test_subcommand_is_found_past_flags_and_inner_installer_name(tmp_path):
         "uv pip list",
         "uv pip show foo",
         "python -m pip list",
+        # The inner bare "pip" is still walked past to find "install" as the
+        # mutating subcommand (intent detection is unaffected) — but that
+        # inner NAME is no longer itself a target-signal, so with no
+        # explicit --target/--prefix/--project/VIRTUAL_ENV= this resolves
+        # via cwd (in-tree) alone and is correctly allowed.
+        "uv pip install foo",
     ]
     for cmd in allowed:
         r = venv_install_guard.denial_reason(cmd, cwd=wt, env=prod_env)

@@ -4,6 +4,7 @@ import ast
 import dataclasses
 import os
 import re
+import stat
 import sys
 import time
 import tempfile
@@ -2330,21 +2331,35 @@ def test_gits_own_global_options_do_not_break_legitimate_commands():
 # only — never the real repo venv.
 # --------------------------------------------------------------------------- #
 
+def _make_venv_bin(venv_dir):
+    """Give `venv_dir` a real `pyvenv.cfg` marker plus executable-bit
+    python/pip/uv binaries — mirrors `tests/test_venv_install_guard.py`'s
+    `_mkvenv`, which the venv-owning-installer probe (`_venv_root_of`) and
+    `shutil.which` both require: an empty, non-executable file is not enough
+    to resolve as "the venv owning this executable" or as something PATH
+    lookup will find, so fixtures built that way silently under-tested the
+    ambient-env resolution paths this bugfix touches."""
+    bindir = venv_dir / "bin"
+    bindir.mkdir(parents=True)
+    (venv_dir / "pyvenv.cfg").write_text("home = /usr/bin\n")
+    for name in ("python", "python3", "pip", "pip3", "uv"):
+        path = bindir / name
+        path.write_text("#!/bin/sh\nexit 0\n")
+        st = os.stat(path)
+        os.chmod(path, st.st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+
+
 def _fake_primary_checkout(tmp_path):
     primary = tmp_path / "primary"
     (primary / "src" / "no_human").mkdir(parents=True)
     (primary / "src" / "no_human" / "__init__.py").write_text("")
-    (primary / ".venv" / "bin").mkdir(parents=True)
-    (primary / ".venv" / "bin" / "python").write_text("")
-    (primary / ".venv" / "bin" / "pip").write_text("")
+    _make_venv_bin(primary / ".venv")
     return primary
 
 
 def _fake_worktree(tmp_path):
     worktree = tmp_path / "worktree"
-    (worktree / ".venv" / "bin").mkdir(parents=True)
-    (worktree / ".venv" / "bin" / "python").write_text("")
-    (worktree / ".venv" / "bin" / "pip").write_text("")
+    _make_venv_bin(worktree / ".venv")
     return worktree
 
 
@@ -2407,10 +2422,28 @@ def test_the_refusal_names_the_worktree_venv_alternative(tmp_path, monkeypatch):
 
 
 def test_installs_into_the_worktree_own_venv_are_allowed(tmp_path, monkeypatch):
-    """Negative control: the guard is not a blanket install ban."""
+    """Negative control: the guard is not a blanket install ban.
+
+    `env=` pinned explicitly (bugfix, 2026-09-09): a coder session's own
+    ambient `VIRTUAL_ENV`/`PATH` correctly point at ITS OWN worktree venv —
+    exactly what's pinned here — so an install that targets the session
+    `cwd` stays allowed. Before this fix, this test instead INHERITED
+    `os.environ` (`env=None` default), which happened to also be this
+    worktree's own venv when run here, by coincidence of the runner rather
+    than by anything the guard actually verified — the AC's "judges the
+    session cwd, not the ambient venv" bug: a `~/.no_human/worktrees/...`
+    task worktree's ambient venv sits at a DIFFERENT path than the fake
+    `worktree` built per-test, so `uv pip install -e .`'s inner bare `pip`
+    resolved via the real ambient PATH to the real worktree's `.venv`,
+    outside the fake `worktree` `cwd`, and was wrongly denied.
+    """
     primary = _fake_primary_checkout(tmp_path)
     worktree = _fake_worktree(tmp_path)
     monkeypatch.setattr(guard, "_primary_checkout", lambda: primary)
+    ambient_env = {
+        "PATH": f"{worktree}/.venv/bin:/usr/bin:/bin",
+        "VIRTUAL_ENV": f"{worktree}/.venv",
+    }
 
     allowed = [
         "uv pip install -e .",
@@ -2421,7 +2454,8 @@ def test_installs_into_the_worktree_own_venv_are_allowed(tmp_path, monkeypatch):
     ]
     for cmd in allowed:
         d = guard.evaluate("Bash", {"command": cmd}, forbidden_paths=FORBIDDEN,
-                           never_push_to=PROTECTED, cwd=str(worktree))
+                           never_push_to=PROTECTED, cwd=str(worktree),
+                           env=ambient_env)
         assert d.allow is True, f"must stay allowed: {cmd} — {d.reason}"
 
 
@@ -2460,14 +2494,19 @@ def test_unknown_cwd_and_unresolvable_targets_are_refused(tmp_path, monkeypatch)
 
     # A packaged/non-editable install: nothing to protect, never a false
     # denial. `sys.prefix` is also neutralised here so this test is not at
-    # the mercy of whatever venv happens to be running pytest.
+    # the mercy of whatever venv happens to be running pytest — and (bugfix,
+    # 2026-09-09) `env=` is now pinned to a resolvable-but-venv-less PATH
+    # too, for the same reason: the default `env=None` -> `os.environ` would
+    # resolve `pip` via THIS process's real ambient PATH, which inside a
+    # `~/.no_human/worktrees/...` task worktree owns a real venv unrelated
+    # to `other` — an ambient-env leak, not a judgement of `cwd`.
     other = tmp_path / "not-a-venv"
     other.mkdir()
     monkeypatch.setattr(guard, "_primary_checkout", lambda: None)
     monkeypatch.setattr(sys, "prefix", str(other))
     d = guard.evaluate("Bash", {"command": "pip install -e ."},
                        forbidden_paths=FORBIDDEN, never_push_to=PROTECTED,
-                       cwd=str(other))
+                       cwd=str(other), env={"PATH": _REAL_PATH})
     assert d.allow is True
 
 
@@ -2509,7 +2548,42 @@ def test_protected_venvs_excludes_anything_under_the_session_cwd(tmp_path, monke
 # below asserts that shape is untouched instead.
 # --------------------------------------------------------------------------- #
 
-_REAL_PATH = os.environ.get("PATH", "/usr/bin:/bin")
+def _make_resolvable_but_venv_less_path():
+    """A PATH where `python`/`pip`/`uv` are genuinely resolvable via
+    `shutil.which` (exercising the "resolvable" branch of the
+    `path_state` tests below) but where NONE of them own a venv (no
+    `pyvenv.cfg` two directories up) — i.e. deterministically "an ordinary
+    machine" (see `_venv_root_of`), regardless of the real host or worktree
+    this test happens to run in.
+
+    Bugfix note (venv-install-guard, 2026-09-09): this used to be
+    `os.environ.get("PATH", ...)` — the actual ambient PATH of whatever
+    process runs this test. That is exactly the ambient-env-inheritance
+    anti-pattern this bugfix removes from the guard's own source: inside a
+    `~/.no_human/worktrees/<task>.<pid>.<hash>/` task worktree, the real
+    ambient PATH's `pip`/`python`/`uv` resolve into THAT worktree's own
+    real, `pyvenv.cfg`-bearing `.venv` — an unrelated, real venv that has
+    nothing to do with any test's fake `cwd` — which made
+    `test_unknown_cwd_and_unresolvable_targets_are_refused`,
+    `test_worktree_targeted_installs_are_unchanged_by_the_dash_m_widening`
+    and `test_a_literal_argument_named_then_does_not_trigger_keyword_
+    stripping` fail in every task worktree while passing on a plain
+    developer checkout with no activated venv on PATH. Per this task's own
+    principle ("if ambient env is genuinely needed anywhere, a test must
+    set it explicitly rather than inherit it"), this builds a stand-in PATH
+    instead of reading the inherited one.
+    """
+    bindir = tempfile.mkdtemp(prefix="no_human_guard_test_bin_")
+    for name in ("python", "python3", "pip", "pip3", "uv", "uvx"):
+        path = os.path.join(bindir, name)
+        with open(path, "w") as f:
+            f.write("#!/bin/sh\nexit 0\n")
+        st = os.stat(path)
+        os.chmod(path, st.st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    return f"{bindir}:/usr/bin:/bin"
+
+
+_REAL_PATH = _make_resolvable_but_venv_less_path()
 
 #: `{primary}` is filled in with the fake primary checkout's path per-test.
 _UV_M_DENY = [
@@ -2781,10 +2855,24 @@ def test_reviewer_proven_grouping_punctuation_bypasses_are_refused(tmp_path, mon
 def test_installs_into_the_worktrees_own_venv_stay_allowed_inside_groups(tmp_path, monkeypatch):
     """Negative control: the grouping-punctuation fix must not turn into a
     blanket refusal — an install that lands in the task worktree's own
-    .venv is still allowed, even wrapped in a subshell/group."""
+    .venv is still allowed, even wrapped in a subshell/group.
+
+    `env=` pinned explicitly (bugfix, 2026-09-09), defense-in-depth: this
+    already passed with the inherited `os.environ` (`env=None` default)
+    because every command here either resolves via `cwd` alone or names an
+    explicit `{worktree}/.venv/...` path — see
+    `test_installs_into_the_worktree_own_venv_are_allowed` above for the
+    sibling that DID inherit a false denial from the ambient env. Pinned
+    here too so the whole `-k own_venv` selection is env-independent, per
+    this task's own principle.
+    """
     primary = _fake_primary_checkout(tmp_path)
     worktree = _fake_worktree(tmp_path)
     monkeypatch.setattr(guard, "_primary_checkout", lambda: primary)
+    ambient_env = {
+        "PATH": f"{worktree}/.venv/bin:/usr/bin:/bin",
+        "VIRTUAL_ENV": f"{worktree}/.venv",
+    }
 
     allowed = [
         "uv pip install -e .",
@@ -2795,8 +2883,73 @@ def test_installs_into_the_worktrees_own_venv_stay_allowed_inside_groups(tmp_pat
     ]
     for cmd in allowed:
         d = guard.evaluate("Bash", {"command": cmd}, forbidden_paths=FORBIDDEN,
-                           never_push_to=PROTECTED, cwd=str(worktree))
+                           never_push_to=PROTECTED, cwd=str(worktree),
+                           env=ambient_env)
         assert d.allow is True, f"must stay allowed: {cmd!r} — {d.reason}"
+
+
+def test_own_venv_installs_stay_allowed_under_an_agent_owned_ambient_venv(tmp_path, monkeypatch):
+    """Pinned regression test for this ticket's bug: the guard must resolve
+    an install's target from the SESSION's `cwd`, never from the ambient
+    `VIRTUAL_ENV`/`PATH` — even when that ambient env is shaped exactly like
+    a real `no_human` task worktree's own venv
+    (`~/.no_human/worktrees/<task>.<pid>.<hash>/.venv`), which is a REAL,
+    `pyvenv.cfg`-owning venv, just not the one the session `cwd` names.
+
+    Positive controls prove the narrowing is bounded, not a blanket allow:
+    installs that genuinely target the PRIMARY venv (by explicit path,
+    `--python` flag, or `cd`) stay denied and the reason names the primary
+    venv; and a bare, standalone `pip install foo` (no outer installer to
+    exempt it) — a genuinely ambient-targeted install — stays denied too,
+    naming the ambient venv it actually resolves to.
+    """
+    primary = _fake_primary_checkout(tmp_path)
+    worktree = _fake_worktree(tmp_path)
+    monkeypatch.setattr(guard, "_primary_checkout", lambda: primary)
+
+    agent_venv = tmp_path / ".no_human" / "worktrees" / "7590cb0b.80855.a8cc15bd" / ".venv"
+    _make_venv_bin(agent_venv)
+    ambient_env = {
+        "PATH": f"{agent_venv}/bin:/usr/bin:/bin",
+        "VIRTUAL_ENV": str(agent_venv),
+    }
+
+    allowed = [
+        "uv pip install -e .",
+        "uv sync",
+        "uv run pytest -q",
+        f"{worktree}/.venv/bin/pip install foo",
+        f"(cd {worktree} && uv sync)",
+    ]
+    for cmd in allowed:
+        d = guard.evaluate("Bash", {"command": cmd}, forbidden_paths=FORBIDDEN,
+                           never_push_to=PROTECTED, cwd=str(worktree),
+                           env=ambient_env)
+        assert d.allow is True, f"must stay allowed: {cmd!r} — {d.reason}"
+
+    # Positive controls: installs that genuinely target the primary venv
+    # still get caught, same ambient agent-owned venv.
+    still_denied_naming_primary = [
+        f"{primary}/.venv/bin/pip install foo",
+        f"uv pip install --python {primary}/.venv/bin/python foo",
+        f"cd {primary} && uv sync",
+    ]
+    for cmd in still_denied_naming_primary:
+        d = guard.evaluate("Bash", {"command": cmd}, forbidden_paths=FORBIDDEN,
+                           never_push_to=PROTECTED, cwd=str(worktree),
+                           env=ambient_env)
+        assert d.allow is False, f"must still be refused: {cmd!r}"
+        assert str(primary) in d.reason, f"must name the primary venv: {cmd!r} — {d.reason}"
+
+    # Positive control: a genuinely ambient-targeted, standalone bare
+    # install (no outer installer to exempt it) still resolves to — and is
+    # denied for — the ambient agent-owned venv itself, proving the
+    # narrowing only drops the phantom sub-invocation-name signal, not the
+    # ambient-PATH signal for an actually-executed bare installer.
+    d = guard.evaluate("Bash", {"command": "pip install foo"}, forbidden_paths=FORBIDDEN,
+                       never_push_to=PROTECTED, cwd=str(worktree), env=ambient_env)
+    assert d.allow is False, f"must still be refused: {d}"
+    assert str(agent_venv) in d.reason, f"must name the ambient venv: {d.reason}"
 
 
 def test_parens_inside_a_quoted_argument_do_not_over_block(tmp_path, monkeypatch):
@@ -2909,9 +3062,17 @@ def test_a_literal_argument_named_then_does_not_trigger_keyword_stripping(tmp_pa
         "echo do install foo",
         "echo we do not run pip install here",
     ]
+    # `env=` pinned (bugfix, 2026-09-09): the default `env=None` ->
+    # `os.environ` would resolve the bare `pip` token via THIS process's
+    # real ambient PATH — inside a `~/.no_human/worktrees/...` task
+    # worktree that's a real, `pyvenv.cfg`-owning venv unrelated to the
+    # fake `worktree` this test builds, an ambient-env leak having nothing
+    # to do with what this test actually checks (keyword-stripping
+    # position), not a judgement of `cwd`.
     for cmd in allowed:
         d = guard.evaluate("Bash", {"command": cmd}, forbidden_paths=FORBIDDEN,
-                           never_push_to=PROTECTED, cwd=str(worktree))
+                           never_push_to=PROTECTED, cwd=str(worktree),
+                           env={"PATH": _REAL_PATH})
         assert d.allow is True, f"must stay allowed: {cmd!r} — {d.reason}"
 
 
