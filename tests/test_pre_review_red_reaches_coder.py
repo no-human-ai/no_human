@@ -57,6 +57,7 @@ base-tree git operations, so they stay fast and deterministic while still
 exercising the exact code paths TESTING runs.
 """
 
+import json
 from unittest.mock import AsyncMock, patch
 
 from no_human.core import orchestrator as orch_mod
@@ -66,6 +67,8 @@ from no_human.core.orchestrator import (
     _FAILING_TEST_ID_CAP,
     _PRE_REVIEW_RED_LABEL,
 )
+from no_human.learning.queue import _INFRA_FINDING_MARKERS, LearningQueue
+from no_human.learning.failures import load_failure_records
 from no_human.core.prompt_blocks import build_resume_digest
 from no_human.core.task import Task, TaskStatus
 from no_human.notify.slack import SlackNotifier
@@ -629,3 +632,236 @@ async def test_one_round_red_pre_review_run_does_not_equalise_d6_pass_rates(
     assert outcome.status is TaskStatus.AWAITING_APPROVAL, outcome.detail
     assert len(reviewer.calls) == 3
     assert not (t.context or {}).get("stagnation_detected"), t.context
+
+
+# ── single-write invariant (task 30a97d8a): the excused pre-existing/flaky
+# path must write ONE artifact and emit exactly TWO `tests` events — the
+# pre-review block's and TESTING's own — never a redundant second render of
+# the SAME cached `test_result` at review time. ─────────────────────────── #
+
+
+async def test_excused_red_run_writes_one_artifact_and_emits_two_tests_events(
+    bare_repo, tmp_path, store,
+):
+    """AC-1: on the excused pre-existing/flaky path, `_red_test_detail` (the
+    ONE seam that renders failure blocks AND writes the `tests-attempt-N.log`
+    artifact) must be called exactly ONCE for the round — the pre-review
+    block renders the cached red `test_result` first, and TESTING's plain
+    branch reuses that render (by IDENTITY: its own `test_result` IS the
+    same object) instead of calling `_red_test_detail` a second time. Two
+    `tests` events still fire — the pre-review visibility emit and TESTING's
+    own excuse emit — pre-review first, but only ONE artifact write backs
+    them both.
+    """
+    tr = _red_result()
+    reviewer = _PassesEverything()
+    flaky_id = "tests/test_calc.py::test_mul"
+
+    with (
+        patch.object(Orchestrator, "_owned_failing_tests",
+                     AsyncMock(return_value=[])),
+        patch.object(Orchestrator, "_newly_failing_vs_base",
+                     AsyncMock(return_value=[flaky_id])),
+        patch.object(Orchestrator, "_flaky_on_rerun",
+                     AsyncMock(return_value=[flaky_id])),
+        patch.object(Orchestrator, "_red_test_detail", autospec=True,
+                     side_effect=Orchestrator._red_test_detail) as red_detail_mock,
+    ):
+        outcome, attempts, events, task, orch = await _run_attempt_with_result_and_reviewer(
+            store, tmp_path, bare_repo, tr, reviewer)
+
+    assert outcome.status is TaskStatus.AWAITING_APPROVAL, outcome.detail
+
+    # Exactly one render/write, no matter that both the pre-review block and
+    # TESTING's plain branch process this same red `test_result`.
+    assert red_detail_mock.call_count == 1, red_detail_mock.call_args_list
+
+    tests_events = [e for e in events if e["kind"] == "tests"]
+    assert len(tests_events) == 2, events
+    assert "pre-review" in tests_events[0]["text"], tests_events
+    assert tests_events[0]["ok"] is False, tests_events
+    # TESTING's own emit — the flaky-excuse note, never a second red render.
+    assert tests_events[1].get("flaky_excused") == [flaky_id], tests_events
+
+
+async def test_the_test_runner_is_called_once_per_round_on_the_excused_path(
+    bare_repo, tmp_path, store, monkeypatch,
+):
+    """AC-3: the excused path's cache reuse must stay a REUSE. `_run_tests_once`
+    ITSELF is called twice by design — once from `_run_review`'s pre-review
+    block, once from TESTING (B3's docstring on `_run_tests_once` says so
+    outright) — but its own `_test_cache` (keyed on repo path/head sha/cmd/
+    cwd) must make the SECOND call a cache hit, so the real runner
+    (`runner.run_tests`, the actual subprocess-spawning call) fires exactly
+    ONCE per round even when the pre-review run is RED and excused at
+    TESTING. Same idiom as `tests/test_e2e_orchestrator.py::
+    test_the_suite_runs_once_per_attempt_not_twice`'s `_count_test_runs`,
+    replicated locally for the excused-red path that test doesn't cover.
+    No base recheck or extra run is introduced at review time (the 03267ead
+    regression this whole fix avoids repeating)."""
+    tr = _red_result()
+    reviewer = _PassesEverything()
+    flaky_id = "tests/test_calc.py::test_mul"
+    cfg = _config(tmp_path)
+    events = []
+    orch = Orchestrator(store, cfg.data, FakeBackend(_mutate), SlackNotifier(None),
+                        event_sink=events.append, reviewer=reviewer)
+    task = Task.new("desktop npm test", repo_path=str(bare_repo))
+    await store.create_task(task)
+    await store.set_status(task, TaskStatus.CONTEXT)
+    await store.set_status(task, TaskStatus.PLANNING)
+    repo = GitRepo(bare_repo)
+
+    calls: list[str] = []
+
+    def counting_run_tests(repo_path, test_cmd=None, *a, **kw):
+        calls.append(str(test_cmd))
+        return tr
+
+    monkeypatch.setattr("no_human.core.orchestrator.runner.run_tests", counting_run_tests)
+
+    with (
+        patch.object(Orchestrator, "_owned_failing_tests",
+                     AsyncMock(return_value=[])),
+        patch.object(Orchestrator, "_newly_failing_vs_base",
+                     AsyncMock(return_value=[flaky_id])),
+        patch.object(Orchestrator, "_flaky_on_rerun",
+                     AsyncMock(return_value=[flaky_id])),
+    ):
+        outcome = await orch._run_attempt(task, repo, 1, "main")
+
+    assert len(calls) == 1, calls
+    assert outcome.status is TaskStatus.AWAITING_APPROVAL, outcome.detail
+
+
+async def test_pre_review_row_is_unclassified_until_testing_overwrites_it(
+    bare_repo, tmp_path, store,
+):
+    """AC-2: the pre-review block's `test_results` row carries an explicit
+    `classified: False` marker. When the review FAILs for an unrelated
+    reason and TESTING never runs, that marker persists as False — the
+    board's attempt view must be able to tell "the gate never graded this"
+    apart from a genuine billed failure (pinned separately by
+    `web/src/slideOverSummary.test.mjs`). When TESTING DOES run (the excused
+    path below), it overwrites the marker to True.
+    """
+    # (a) review FAILs for an unrelated reason — TESTING never runs — the
+    # marker persists as False.
+    tr = _red_result()
+    reviewer = _FailsOnUnrelatedFinding()
+    outcome, attempts, events, task, orch = await _run_attempt_with_result_and_reviewer(
+        store, tmp_path, bare_repo, tr, reviewer)
+    assert outcome.status is TaskStatus.FAILED, outcome.detail
+    persisted = attempts[-1]["test_results"]
+    persisted = json.loads(persisted) if isinstance(persisted, str) else (persisted or {})
+    assert persisted.get("classified") is False, persisted
+
+    # (b) the excused path — TESTING DOES run — overwrites the marker to True.
+    tr2 = _red_result()
+    reviewer2 = _PassesEverything()
+    flaky_id = "tests/test_calc.py::test_mul"
+    with (
+        patch.object(Orchestrator, "_owned_failing_tests",
+                     AsyncMock(return_value=[])),
+        patch.object(Orchestrator, "_newly_failing_vs_base",
+                     AsyncMock(return_value=[flaky_id])),
+        patch.object(Orchestrator, "_flaky_on_rerun",
+                     AsyncMock(return_value=[flaky_id])),
+    ):
+        outcome2, attempts2, events2, task2, orch2 = await _run_attempt_with_result_and_reviewer(
+            store, tmp_path, bare_repo, tr2, reviewer2)
+    assert outcome2.status is TaskStatus.AWAITING_APPROVAL, outcome2.detail
+    final_rows = [a for a in attempts2 if a.get("test_results")]
+    final = final_rows[-1]["test_results"]
+    final = json.loads(final) if isinstance(final, str) else (final or {})
+    assert final.get("classified") is True, final
+
+
+def test_the_learning_marker_matches_the_orchestrator_label():
+    """AC-4: `learning/queue.py`'s `_INFRA_FINDING_MARKERS` excludes the
+    harness's own pre-review red-run row the same way D6's `_reviewer_items`
+    already does, via a hardcoded literal (avoiding a `learning` <->
+    `core.orchestrator` import cycle) — this pins that literal against the
+    real `_PRE_REVIEW_RED_LABEL` constant so the two can never drift apart
+    silently."""
+    assert _PRE_REVIEW_RED_LABEL.lower() in _INFRA_FINDING_MARKERS
+
+
+async def test_the_harness_row_is_not_learned_as_a_review_finding(
+    bare_repo, tmp_path, store,
+):
+    """AC-4, proposal half: `LearningQueue._build_from_review` filters every
+    finding through `_is_infra_finding` before EITHER the dedupe key or the
+    proposal body is built (same idiom as `tests/test_review_learning.py`'s
+    `test_reviewer_crash_sentinel_is_not_learned`, replicated locally rather
+    than by editing that file — see PLAN.md). The harness's own pre-review
+    red-run row must never surface in the learned content or evidence, and
+    must never shift the dedupe key a bare occurrence of the real finding
+    (with no harness row riding along) would produce — riding alongside a
+    real finding must not even change WHICH queue entry a recurrence
+    collapses onto.
+    """
+    real_finding = {
+        "label": "error handling",
+        "evidence": "calc.py:4 mul() does not validate its inputs",
+        "file": "calc.py", "line": 4,
+    }
+    harness_finding = {
+        "label": _PRE_REVIEW_RED_LABEL,
+        "evidence": "the harness's own pre-review test run was RED — "
+                    "failing: tests/test_calc.py::test_mul",
+        "file": None, "line": None,
+    }
+    task = Task.new("desktop npm test", repo_path=str(bare_repo))
+    await store.create_task(task)
+    queue = LearningQueue(store)
+
+    baseline = await queue._build_from_review(
+        task, findings=[real_finding], attempt=1, review_round=1, distill=None)
+    with_harness_row = await queue._build_from_review(
+        task, findings=[harness_finding, real_finding], attempt=1,
+        review_round=1, distill=None)
+
+    assert baseline is not None and with_harness_row is not None
+    # The row does not move the key: a recurrence of the SAME real finding,
+    # with or without the harness row riding along, collapses onto the SAME
+    # queue entry.
+    assert with_harness_row.dedupe_key == baseline.dedupe_key
+    assert _PRE_REVIEW_RED_LABEL not in with_harness_row.content, with_harness_row.content
+    assert all(
+        f["label"] != _PRE_REVIEW_RED_LABEL
+        for f in with_harness_row.evidence["findings"]
+    ), with_harness_row.evidence
+
+    # Feed the harness row ALONE — nothing learnable, no proposal at all.
+    alone = await queue._build_from_review(
+        task, findings=[harness_finding], attempt=1, review_round=1, distill=None)
+    assert alone is None
+
+
+async def test_the_harness_row_never_enters_the_review_fail_ledger(
+    bare_repo, tmp_path, store,
+):
+    """AC-4, ledger half: `learning/failures.py::load_failure_records` walks
+    every FAILed attempt's persisted review checklist through the SAME
+    `_is_infra_finding` filter `_build_from_review` uses. Drive a real FAIL
+    round the way the incident happened — a red pre-review run, and a
+    reviewer that FAILs for an unrelated reason — so `_run_review` staples
+    the `_PRE_REVIEW_RED_LABEL` row onto the SAME persisted `review_checklist`
+    as the reviewer's own real finding (`_pre_review_red_checklist_item`,
+    `core/orchestrator.py`). The harness row must never surface as a
+    `CorrectionRecord` in the review-fail ledger, while the real finding
+    riding alongside it still does.
+    """
+    tr = _red_result()
+    reviewer = _FailsOnUnrelatedFinding()
+
+    outcome, attempts, events, task, orch = await _run_attempt_with_result_and_reviewer(
+        store, tmp_path, bare_repo, tr, reviewer)
+    assert outcome.status is TaskStatus.FAILED, outcome.detail
+
+    records = await load_failure_records(store, project=str(bare_repo))
+    messages = [r.message for r in records]
+    assert messages, "the FAIL round's checklist never reached the ledger at all"
+    assert not any(_PRE_REVIEW_RED_LABEL in m for m in messages), messages
+    assert any("error handling" in m for m in messages), messages

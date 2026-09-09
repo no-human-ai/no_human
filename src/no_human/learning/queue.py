@@ -136,15 +136,26 @@ NON_LEARNABLE_CATEGORIES = frozenset({
 # A reviewer FAIL is QUALITY-shaped by construction: the gate judges a diff
 # against the acceptance criteria, so its findings carry no failure category
 # and NON_LEARNABLE_CATEGORIES above — transient infra, quota, budget, missing
-# access — cannot apply to them. There is exactly ONE infra-shaped verdict this
-# path can produce: the fail-closed sentinel the orchestrator writes when the
-# REVIEWER ITSELF crashes (`ChecklistItem("reviewer run", False, "reviewer
-# crashed: …")`). That is an environment failure wearing a finding's clothes,
-# and learning it would file an SDK outage in the human's confirm queue as a
-# durable lesson about the repo. It is filtered for the same reason the
-# categories above are, and it is the only such case — anything the reviewer
-# genuinely found is learnable.
-_INFRA_FINDING_MARKERS = ("reviewer crashed", "reviewer run", "reviewerunavailable")
+# access — cannot apply to them. There are exactly TWO harness-authored rows
+# this path can produce that are not reviewer findings at all:
+#
+#   1. The fail-closed sentinel the orchestrator writes when the REVIEWER
+#      ITSELF crashes (`ChecklistItem("reviewer run", False, "reviewer
+#      crashed: …")`) — an environment failure wearing a finding's clothes.
+#   2. The `_PRE_REVIEW_RED_LABEL` ("pre-review test run") row `_run_review`
+#      staples onto an already-FAILED decision so a red test the harness's
+#      OWN pre-review run found (never graded by the reviewer, never
+#      classified by TESTING — see `core/orchestrator.py`'s `_run_review`
+#      pre-review block) still reaches the coder's next-round prompt.
+#
+# Learning either would file a harness artefact — an SDK outage, or the
+# harness's own unclassified test run — in the human's confirm queue as a
+# durable lesson about the repo. Both are filtered for the same reason the
+# categories above are; anything the reviewer genuinely found is learnable.
+_INFRA_FINDING_MARKERS = (
+    "reviewer crashed", "reviewer run", "reviewerunavailable",
+    "pre-review test run",
+)
 
 _MAX_FINDINGS = 3        # the blocking few; the gate already orders by severity
 _MAX_EVIDENCE = 200      # chars of cited evidence kept per finding
