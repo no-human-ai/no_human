@@ -1,174 +1,129 @@
 # How I verified this — full log
 
-_Harness-captured record for task `717d7da5`, commit `c4f717d8be0c74a490d0ab6dbd8767d8c3b5a109` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `717d7da5`, commit `ce2630bac3094afbd7b013175c4e9deaa9763620` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ## How I verified this
-16 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
-
-**Not everything recorded is shown:** the 12 most recent of those listed are shown with their captured output, and the other 4 commands are shown as a command line only.
+11 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
 
 ### test
-- `cd /Users/eyalgolan/.<redacted>/worktrees/717d7da5d367449c933a197c1f5c6b73.98644.67fd3347 uv run pytest -q tests/test_pushed_tip_rewrite_guard.py tests/test_base_conflict_merge_instruction.py tests/test_base_staleness_pushed_branch.py 2>&1 | tail -40`
-  _output not shown - see the note above._
-- `cd /Users/eyalgolan/.<redacted>/worktrees/717d7da5d367449c933a197c1f5c6b73.98644.67fd3347 uv run pytest -q tests/test_guard.py 2>&1 | tail -20`
-  _output not shown - see the note above._
-- `cd /Users/eyalgolan/.<redacted>/worktrees/717d7da5d367449c933a197c1f5c6b73.98644.67fd3347 uv run pytest -q tests/test_structural_budget.py 2>&1 | tail -60`
-  _output not shown - see the note above._
-- `cd /Users/eyalgolan/.<redacted>/worktrees/717d7da5d367449c933a197c1f5c6b73.98644.67fd3347 uv run pytest -q tests/test_structural_budget.py 2>&1 | tail -20`
-  _output not shown - see the note above._
-- `cd /Users/eyalgolan/.<redacted>/worktrees/717d7da5d367449c933a197c1f5c6b73.98644.67fd3347 sed -i.bak 's/"agent\/guard.py": 2907,/"agent\/guard.py": 2906,/' tests/test_structural_budget.py uv run pytest -q  [... 76 of 419 characters omitted from the middle ...] -20 mv tests/test_structural_budget.py.bak tests/test_structural_budget.py grep -n '"agent/guard.py": 290' tests/test_structural_budget.py`
+- `uv run pytest -q tests/test_pushed_tip_rewrite_guard.py::test_an_unresolvable_reset_target_is_denied_unless_it_is_an_existing_path 2>&1 | tail -40`
 
 ```
-def test_no_frozen_entry_has_grown(scanned):
-        function_lines, function_cc, file_lines, _, _ = scanned
-        checks = [
-            (function_lines, FROZEN_FUNCTION_LINES, MAX_FUNCTION_LINES, "FROZEN_FUNCTION_LINES"),
-            (function_cc, FROZEN_FUNCTION_CC, MAX_FUNCTION_CC, "FROZEN_FUNCTION_CC"),
-            (file_lines, FROZEN_FILE_LINES, MAX_FILE_LINES, "FROZEN_FILE_LINES"),
-        ]
-        for measured, frozen, threshold, name in checks:
-            _, grown, _ = offenders(measured, frozen, threshold, name)
->           assert grown == [], "\n".join(grown)
-E           AssertionError: agent/guard.py: frozen 2906, now 2907 (+1); this budget only ratchets down
-E           assert ['agent/guard...atchets down'] == []
-E             
-E             Left contains one more item: 'agent/guard.py: frozen 2906, now 2907 (+1); this budget only ratchets down'
-E             Use -v to get more diff
-
-tests/test_structural_budget.py:1700: AssertionError
-=========================== short test summary info ============================
-FAILED tests/test_structural_budget.py::test_no_frozen_entry_has_grown - Asse...
-1 failed in 1.18s
-1488:    "agent/guard.py": 2907,
-```
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/717d7da5d367449c933a197c1f5c6b73.98644.67fd3347 uv run pytest -q tests/test_pushed_tip_rewrite_guard.py 2>&1 | tail -40`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-........                                                                 [100%]
-8 passed in 2.11s
-```
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/717d7da5d367449c933a197c1f5c6b73.98644.67fd3347 uv run pytest -q tests/test_guard.py tests/test_base_conflict_merge_instruction.py tests/test_base_staleness_pushed_branch.py 2>&1 | tail -40`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-........................................................................ [ 25%]
-........................................................................ [ 51%]
-........................................................................ [ 77%]
-...............................................................          [100%]
-279 passed in 10.65s
-```
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/717d7da5d367449c933a197c1f5c6b73.98644.67fd3347 uv run pytest -q tests/test_pushed_tip_rewrite_guard.py 2>&1 | tail -80`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-.............                                                            [100%]
-13 passed in 10.20s
-```
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/717d7da5d367449c933a197c1f5c6b73.98644.67fd3347 mkdir -p /tmp/basecheck cp src/<redacted>/agent/pushed_tip_guard.py /tmp/pushed_tip_guard_fixed.py git show 093ff0f [... 380 of 723 characters omitted from the middle ...] test_no_git_subprocess_for_non_rewrite_commands 2>&1 | tail -60 cp /tmp/pushed_tip_guard_fixed.py src/<redacted>/agent/pushed_tip_guard.py`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-.FF                                                                      [100%]
+F                                                                        [100%]
 =================================== FAILURES ===================================
-_ test_every_rewrite_form_on_a_pushed_branch_is_denied_naming_the_tip_and_the_merge _
+__ test_an_unresolvable_reset_target_is_denied_unless_it_is_an_existing_path ___
 
-harness_repo = <function harness_repo.<locals>.make at 0x10c20bc40>
+harness_repo = <function harness_repo.<locals>.make at 0x10e3f13a0>
 
-    def test_every_rewrite_form_on_a_pushed_branch_is_denied_naming_the_tip_and_the_merge(
+    def test_an_unresolvable_reset_target_is_denied_unless_it_is_an_existing_path(
         harness_repo,
     ):
-        for cmd in _DENIED_FORMS:
-            wor
-[... 2,974 of 4,113 characters omitted from the middle ...]
-tatus' triggered 3 subprocess call(s)
-E           assert 3 == 0
+        """MAJOR from the c4f717d8 review: `target_denies`'s `if not resolved:
+        return False` let ANY unresolvable target through — a shell variable or
+        a command substitution the guard sees as a literal, un-expanded string
+        (`$(git rev-p
+[... 1,093 of 2,232 characters omitted from the middle ...]
+ reset --soft $(git rev-parse HEAD~2)' should be denied
+E           assert True is False
+E            +  where True = GuardDecision(allow=True, reason='', severity=None).allow
 
-tests/test_pushed_tip_rewrite_guard.py:260: AssertionError
+tests/test_pushed_tip_rewrite_guard.py:208: AssertionError
 =========================== short test summary info ============================
-FAILED tests/test_pushed_tip_rewrite_guard.py::test_every_rewrite_form_on_a_pushed_branch_is_denied_naming_the_tip_and_the_merge
-FAILED tests/test_pushed_tip_rewrite_guard.py::test_no_git_subprocess_for_non_rewrite_commands
-2 failed, 1 passed in 1.83s
+FAILED tests/test_pushed_tip_rewrite_guard.py::test_an_unresolvable_reset_target_is_denied_unless_it_is_an_existing_path
+1 failed in 13.10s
 ```  
-  _excerpt - 4,111 characters of output in total_
+  _excerpt - 2,232 characters of output in total_
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/717d7da5d367449c933a197c1f5c6b73.98644.67fd3347 uv run pytest -q tests/test_pushed_tip_rewrite_guard.py::test_the_reset_to_base_rows_get_the_pushed_tip_message_not_the_generic_one 2>&1 | tail -30`
+- `uv run pytest -q tests/test_pushed_tip_rewrite_guard.py::test_an_unresolvable_reset_target_is_denied_unless_it_is_an_existing_path 2>&1 | tail -40`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
 .                                                                        [100%]
-1 passed in 1.07s
+1 passed in 2.10s
 ```
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/717d7da5d367449c933a197c1f5c6b73.98644.67fd3347 cp src/<redacted>/agent/pushed_tip_guard.py /tmp/pushed_tip_guard_fixed2.py git show 093ff0fb:src/<redacted>/agent/ [... 148 of 491 characters omitted from the middle ...] get_the_pushed_tip_message_not_the_generic_one 2>&1 | tail -40 cp /tmp/pushed_tip_guard_fixed2.py src/<redacted>/agent/pushed_tip_guard.py`
-
-```
-harness_repo = <function harness_repo.<locals>.make at 0x10df579c0>
-
-    def test_the_reset_to_base_rows_get_the_pushed_tip_message_not_the_generic_one(
-        harness_repo,
-    ):
-        """Criterion 2: the old `_is_strictly_below_tip` asked "is the target an
-        ancestor of the tip" instead of "is the tip an ancestor of the target".
-        Those agree whenever the target is a strict ancestor of the tip, so the
-        bug only shows once the base has moved on independently — exactly the
-        incident's shape (main advanced while the branch was out for review),
-        which is what this test reproduces: `origin/main` here is DIVERGED from
-        the pushed branc
-[... 1,097 of 2,236 characters omitted from the middle ...]
-.. origin/main'
-E             
-E             'destructive git command blocked' is contained here:
-E               destructive git command blocked: git reset --hard origin/main
-
-tests/test_pushed_tip_rewrite_guard.py:178: AssertionError
-=========================== short test summary info ============================
-FAILED tests/test_pushed_tip_rewrite_guard.py::test_the_reset_to_base_rows_get_the_pushed_tip_message_not_the_generic_one
-1 failed in 0.85s
-```  
-  _excerpt - 2,236 characters of output in total_
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/717d7da5d367449c933a197c1f5c6b73.98644.67fd3347 uv run pytest -q tests/test_pushed_tip_rewrite_guard.py 2>&1 | tail -20`
+- `uv run pytest -q tests/test_pushed_tip_rewrite_guard.py 2>&1 | tail -60`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-.............                                                            [100%]
-13 passed in 10.42s
+..............                                                           [100%]
+14 passed in 20.17s
 ```
 
-- `uv run pytest -q tests/test_base_conflict_merge_instruction.py 2>&1 | tail -30`
+- `uv run pytest -q tests/test_pushed_tip_rewrite_guard.py 2>&1 | tail -20`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-....                                                                     [100%]
-4 passed in 1.62s
+...............                                                          [100%]
+15 passed in 24.09s
 ```
 
-- `uv run pytest -q tests/test_pushed_tip_rewrite_guard.py tests/test_guard.py tests/test_base_conflict_merge_instruction.py tests/test_base_staleness_pushed_branch.py 2>&1 | tail -30`
+- `uv run pytest -q tests/test_pushed_tip_rewrite_guard.py tests/test_guard.py tests/test_base_conflict_merge_instruction.py tests/test_base_staleness_pushed_branch.py 2>&1 | tail -60`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
 ........................................................................ [ 24%]
-........................................................................ [ 49%]
+........................................................................ [ 48%]
 ........................................................................ [ 73%]
-........................................................................ [ 98%]
-....                                                                     [100%]
-292 passed in 20.38s
+........................................................................ [ 97%]
+......                                                                   [100%]
+294 passed in 31.65s
 ```
 
-- `uv run pytest -q tests/test_structural_budget.py 2>&1 | tail -40`
+- `python3 -c "import ast; ast.parse(open('src/<redacted>/core/orchestrator.py').read())" && echo "SYNTAX OK" && uv run pytest -q tests/test_structural_budget.py 2>&1 | tail -60`
+
+```
+SYNTAX OK
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+.....F............                                                       [100%]
+=================================== FAILURES ===================================
+________________________ test_no_frozen_entry_has_grown ________________________
+
+scanned = ({'agent/claude_backend.py:ClaudeBackend.stream': 407, 'blockers/landed_override.py:approve_landed_override': 315, 'bl... ...}, {'agent/guard.py': 2911, 'api/app.py': 6148, 'blockers/wake.py': 2757, 'cli/commands.py': 8642,
+[... 778 of 1,917 characters omitted from the middle ...]
+own'] == []
+E             
+E             Left contains one more item: 'core/orchestrator.py:Orchestrator._finalize: frozen 437, now 441 (+4); this budget only ratchets down'
+E             Use -v to get more diff
+
+tests/test_structural_budget.py:1705: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_structural_budget.py::test_no_frozen_entry_has_grown - Asse...
+1 failed, 17 passed in 2.45s
+```  
+  _excerpt - 1,915 characters of output in total_
+
+- `uv run pytest -q tests/test_structural_budget.py 2>&1 | tail -60`
+
+```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+.....F............                                                       [100%]
+=================================== FAILURES ===================================
+________________________ test_no_frozen_entry_has_grown ________________________
+
+scanned = ({'agent/claude_backend.py:ClaudeBackend.stream': 407, 'blockers/landed_override.py:approve_landed_override': 315, 'bl... ...}, {'agent/guard.py': 2911, 'api/app.py': 6148, 'blockers/wake.py': 2757, 'cli/commands.py': 8642, ...}, 226
+[... 730 of 1,869 characters omitted from the middle ...]
+/orches...atchets down'] == []
+E             
+E             Left contains one more item: 'core/orchestrator.py: frozen 23613, now 23617 (+4); this budget only ratchets down'
+E             Use -v to get more diff
+
+tests/test_structural_budget.py:1711: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_structural_budget.py::test_no_frozen_entry_has_grown - Asse...
+1 failed, 17 passed in 1.82s
+```  
+  _excerpt - 1,867 characters of output in total_
+
+- `uv run pytest -q tests/test_structural_budget.py 2>&1 | tail -60`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
 ..................                                                       [100%]
-18 passed in 1.76s
+18 passed in 1.91s
 ```
 
-- `uv run pytest -q tests/test_pushed_tip_rewrite_guard.py tests/test_guard.py tests/test_base_conflict_merge_instruction.py tests/test_base_staleness_pushed_branch.py tests/test_structural_budget.py 2>&1 | tail -15`
+- `uv run pytest -q tests/test_pushed_tip_rewrite_guard.py tests/test_guard.py tests/test_base_conflict_merge_instruction.py tests/test_base_staleness_pushed_branch.py tests/test_structural_budget.py 2>&1 | tail -30`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
@@ -176,15 +131,37 @@ warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not mat
 ........................................................................ [ 46%]
 ........................................................................ [ 69%]
 ........................................................................ [ 92%]
-......................                                                   [100%]
-310 passed in 25.66s
+........................                                                 [100%]
+312 passed in 33.19s
+```
+
+- `uv run pytest -q tests/test_draft_pr_force_after_rebase.py 2>&1 | tail -30`
+
+```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+.....                                                                    [100%]
+5 passed in 1.07s
+```
+
+- `\ echo "=== FINAL GATE: scoped tests ===" && \ uv run pytest -q tests/test_pushed_tip_rewrite_guard.py tests/test_guard.py tests/test_base_conflict_merge_instruction.py tests/test_base_staleness_pushed_bra [... 76 of 419 characters omitted from the middle ...] e.py 2>&1 | tail -15 && \ echo "=== RELEASE MANIFEST --strict ===" && \ python3 scripts/check_release_manifest.py --strict 2>&1 | tail -10`
+
+```
+=== FINAL GATE: scoped tests ===
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+........................................................................ [ 22%]
+........................................................................ [ 45%]
+........................................................................ [ 68%]
+........................................................................ [ 90%]
+.............................                                            [100%]
+317 passed in 32.13s
+=== RELEASE MANIFEST --strict ===
+OK: 1561 file(s) match RELEASE_MANIFEST.txt
 ```
 
 
 **Not verified:** everything below is a limit of this section, listed whether or not it bit this attempt.
 
 - no command recognised as e2e, http, typecheck, lint, build was recorded - and a recorded command is shown with its middle omitted, so a check inside the omitted part cannot be ruled out
-- 4 commands listed above are shown without their captured output: only the 12 most recent carry it
 - an entry shows that a command LINE was submitted to the shell and what came back - never that the check recognised inside it RAN, and never that it was the RIGHT command: `pytest -k test_nothing` prints a clean run, and a recorded command line may name a check the shell never reached yet is still counted - TEN SHAPES WERE DRIVEN against bash 3.2.57 with the check replaced by a marker-printing stub and the marker was absent in every one: a failed `&&`, a taken `||`, an `exit`, an `exec`, an `exit` inside a `source`d script, a syntax error that aborts the REST of the line, a multi-line `if false`, a `case` that matches nothing, `set -e` aborting an earlier command, and `set -u` on an unset variable; that list is MEASURED, NOT EXHAUSTIVE, because this module is not bash, so a kind this section does NOT list as missing is a kind some recorded line named, which is not the same as a kind that ran
 - the text is the coder's: the session chose the command string and, through `echo`/`printf`, can choose the output too. Both are shown as inert text, and no entry ASSERTS a pass, a fail, or an exit status - `pytest -q | tail -3` exits with `tail`'s status, `Error: Exit code 1` is a line IN THE OUTPUT, and where the harness reported a timeout or an interruption instead of output that report is appended to the captured text in square brackets. Read the output
 - recognition reads the command line ONLY - it never looks inside what a command runs, so `bash -c 'uv run pytest -q'` leaves no receipt at all while `make test` leaves one that names `make` and not the recipe it ran; and the other way, a check merely NAMED in a heredoc body, or in a quoted string that happens to spell a shell separator, can be recorded as though it ran
