@@ -85,11 +85,17 @@ def test_only_the_implementer_session_stuck_aborts(store, tmp_path, role):
 
 
 def test_converging_edit_test_loop_never_hard_aborts(store, tmp_path):
-    """AC1 (task f6e626fd): edit / test-run-with-CHANGING-output / edit on
+    """AC1 (task f6e626fd): edit / test-run-with-CHANGING-outcome / edit on
     ONE file for 20 iterations through the real orchestrator sink must raise
-    no StuckAbort — every test run reports a DIFFERENT outcome than the one
-    before it, so every edit that follows is observed progress, not a loop,
-    however far past the raw `edit_abort` (15) count it runs."""
+    no StuckAbort — every test run reports a genuinely DIFFERENT STATUS
+    (failed vs ok, not merely a different byte count) than the one before
+    it, so every edit that follows is observed progress, not a loop, however
+    far past the raw `edit_abort` (15) count it runs.
+
+    Byte-size-only churn is deliberately NOT enough to count as progress
+    (see `test_bounds.py::test_byte_size_alone_is_not_progress` and the
+    send-back's property 5) — this test alternates the actual `is_error`
+    status each round so the outcome really does change."""
     orch = _orch(store, tmp_path)
     orch._active_task_id = "task-1"
     orch._stuck = StuckDetector()
@@ -107,8 +113,9 @@ def test_converging_edit_test_loop_never_hard_aborts(store, tmp_path):
         )
         orch._agent_sink(
             AgentEvent("tool_result",
-                       meta={"tool_use_id": f"call-{i}", "is_error": True,
-                             "result_chars": 100 + i}),  # changes every call
+                       meta={"tool_use_id": f"call-{i}",
+                             "is_error": (i % 2 == 0),  # status flips every call
+                             "result_chars": 100 + i}),
             role=CODER_ROLE,
         )
     # 20 edits to calc.py — well past edit_abort (15) — and no StuckAbort above.

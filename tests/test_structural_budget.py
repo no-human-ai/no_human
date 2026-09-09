@@ -1004,7 +1004,17 @@ FROZEN_FILE_LINES = {
     # `_agent_sink` to stay under MAX_FUNCTION_LINES), and doc comments at the
     # edit branch and the P2 rewiring site. Measured on this tree by the
     # scanner's own metric.
-    "core/orchestrator.py": 23609,
+    # 23609 -> 23666 (+57) 2026-09-09: re-derived edit-loop fix, round 2
+    # (reviewer send-back property 4) — the new `_HARNESS_RUN_RE`/
+    # `_looks_like_harness_run` module function (plus its defending
+    # docstring), which lets `StuckDetector.note_test_run` recognize the
+    # bare `node <script>.mjs` / `npm run <script>` / `npx playwright ...`
+    # invocations f6e626fd's own incident actually used, and the
+    # `_note_test_activity` docstring explaining the wider OR predicate.
+    # `ConvergenceTracker`/`_looks_like_test_run`/`_TEST_RUNNER_RE` are
+    # untouched — this is additive, not a rewrite. Measured on this tree by
+    # the scanner's own metric (`len(Path(...).read_text().splitlines())`).
+    "core/orchestrator.py": 23666,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.

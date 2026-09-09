@@ -567,6 +567,51 @@ def _looks_like_test_run(command: str) -> bool:
     return False
 
 
+#: Broader harness invocations recognized ONLY by `StuckDetector`'s
+#: progress-gated hard edit-loop tier (task f6e626fd) — NOT by
+#: `ConvergenceTracker`/`_looks_like_test_run`, which stay exactly as P2
+#: defined them (`_TEST_RUNNER_RE` above is untouched). f6e626fd attempt 1
+#: drove its e2e harness as a bare `node <script>.mjs` (no `--test` flag,
+#: so `_TEST_RUNNER_RE` never matched it) piped through `grep`/`tail` for a
+#: human-readable summary; this additive regex also covers
+#: `npm run <script>` (any script name, not just literally "test") and
+#: `npx playwright ...` — the other two harness shapes the send-back named.
+#: Deliberately broader than `_TEST_RUNNER_RE`: over-recognizing a non-test
+#: `node`/`npm run` command here only means `StuckDetector.record_test_outcome`
+#: gets one more exit-status compare to make — it still requires the
+#: OUTCOME to differ for that comparison to count as progress, so a false
+#: positive here cannot manufacture progress that did not happen.
+_HARNESS_RUN_RE = re.compile(r"\bnode\s+\S|\bnpm\s+run\s+\S|\bnpx\s+playwright\b")
+
+
+def _looks_like_harness_run(command: str) -> bool:
+    """True when *command* runs something `StuckDetector` should treat as a
+    test/verification invocation, beyond `_looks_like_test_run`'s stricter
+    P2 set (see `_HARNESS_RUN_RE`). Only feeds `StuckDetector.note_test_run`
+    (`_note_test_activity`) — never `ConvergenceTracker.mark_progress`, whose
+    P2 gating this function does not touch. Same read-only-segment skipping
+    as `_looks_like_test_run`: a `grep node` or `git log` mentioning these
+    tools by name is still not evidence anything ran.
+    """
+    if not command:
+        return False
+    for segment in _SHELL_SEGMENT_RE.split(command):
+        segment = segment.strip()
+        if not segment:
+            continue
+        tokens = segment.split()
+        if not tokens:
+            continue
+        lead = tokens[0]
+        if lead in _READ_ONLY_LEADING_TOKENS:
+            continue
+        if lead == "git" and len(tokens) > 1 and tokens[1] in _GIT_READ_ONLY_SUBCOMMANDS:
+            continue
+        if _HARNESS_RUN_RE.search(segment):
+            return True
+    return False
+
+
 def _test_run_summary(meta: dict) -> str:
     """A human-readable, comparable outcome for one test-runner invocation.
 
@@ -2361,6 +2406,16 @@ class Orchestrator:
         `StuckDetector.record_edit`/`record_test_outcome`). Guarded with
         `getattr`/`_active_convergence()` so a bare `Orchestrator.__new__`
         test fixture (no `_stuck`/`_convergence` set) stays safe.
+
+        `StuckDetector.note_test_run` is fed by a WIDER predicate than
+        `ConvergenceTracker.mark_progress` — `_looks_like_test_run(command)
+        or _looks_like_harness_run(command)` — because f6e626fd's own
+        incident drove its e2e harness as a bare `node <script>.mjs`
+        (`_looks_like_harness_run`'s gap; see its docstring), which
+        `_looks_like_test_run`'s stricter P2 set never matched.
+        `mark_progress`'s gating is intentionally left on
+        `_looks_like_test_run` alone — P2's convergence signal is out of
+        scope for this change.
         """
         detector = getattr(self, "_stuck", None)
         if event.kind == "tool_use" and event.tool_name in ("Bash", "Terminal"):
@@ -2370,8 +2425,10 @@ class Orchestrator:
                 conv = self._active_convergence()
                 if conv is not None:
                     conv.mark_progress()
-                if detector is not None:
-                    detector.note_test_run(event.meta.get("tool_use_id"))
+            if detector is not None and (
+                _looks_like_test_run(command) or _looks_like_harness_run(command)
+            ):
+                detector.note_test_run(event.meta.get("tool_use_id"))
         elif event.kind == "tool_result" and detector is not None:
             detector.record_test_outcome(
                 event.meta.get("tool_use_id"), _test_run_summary(event.meta)
