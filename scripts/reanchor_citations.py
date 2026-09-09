@@ -72,6 +72,22 @@ class Unfixable:
     reason: str
 
 
+def cited_source_specs(rows) -> set[str]:
+    """Every CITATION_TABLE resolve-path column value, pure and read-only.
+
+    The harness's own cheap `ast`-based reader
+    (`no_human.testing.citations.cited_source_files`) parses this same
+    column straight out of the CITATION_TABLE source text, without
+    importing this file or `tests/test_readme_claims.py` as Python — so it
+    can decide, at zero cost, whether a diff touched a cited file at all
+    before ever shelling out to this script's own `--check`. Both readers
+    are pinned against each other by test as the single source of truth for
+    "which source files carry a citation": if this table's shape ever
+    changes, both readers must agree on the new one.
+    """
+    return {row[2] for row in rows}
+
+
 def _new_spec(tail: str, found_line: int) -> str:
     """The replacement `line` or `line-line` spec, preserving the cited
     range's original length (a shift moves the whole span, it does not
@@ -235,6 +251,10 @@ def main(argv: list[str] | None = None) -> int:
     mode.add_argument("--apply", action="store_true",
                        help="rewrite the doc and CITATION_TABLE row for "
                             "every drifted citation")
+    mode.add_argument("--cited-files", action="store_true",
+                       help="read-only: list every CITATION_TABLE "
+                            "resolve-path spec, one per line, and exit — "
+                            "no drift check, writes nothing")
     args = ap.parse_args(argv)
 
     try:
@@ -243,6 +263,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"FAIL: could not load tests/test_readme_claims.py: {exc}")
         print("VERDICT=FAIL")
         return 2
+
+    if args.cited_files:
+        for spec in sorted(cited_source_specs(mod.CITATION_TABLE)):
+            print(spec)
+        return 0
 
     drifts, unfixable = plan(mod, mod.CITATION_TABLE)
 

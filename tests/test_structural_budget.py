@@ -140,7 +140,12 @@ FROZEN_FUNCTION_LINES = {
     # pre-review block may already have written its own copy of the artifact
     # instead of claiming a single write. Measured on this tree with the
     # scanner below.
-    "core/orchestrator.py:Orchestrator._run_attempt": 2223,
+    # 2223 -> 2243 (+20): the citation-drift preflight call site — try/except
+    # CancelRequested/BudgetAbort/StuckAbort/ConvergenceAbort routing around
+    # `self._citation_drift_preflight(...)`, mirroring the structural-budget
+    # preflight call site immediately above it. Measured on this tree with
+    # the scanner below.
+    "core/orchestrator.py:Orchestrator._run_attempt": 2243,
     # 760 -> 778 (+18): dispatch-time intake-eval hoisted path — the `elif
     # ctx.get("eval_result")` branch that acts on a grill/wizard-stored
     # verdict (idempotency marker, cost/residual-gap comments) added inside
@@ -390,7 +395,10 @@ FROZEN_FUNCTION_CC = {
     # 243 -> 247 (+4): 99fa5ba5 (bounded failing_tests and joins at
     # every write site; the carried dropped count reaches the coder prompt)
     # landed on top of cf6f6c19. Measured on this tree by the scanner's own metric.
-    "core/orchestrator.py:Orchestrator._run_attempt": 247,
+    # 247 -> 250 (+3): the citation-drift preflight call site (same edit as
+    # the FROZEN_FUNCTION_LINES entry above) adds one more try/except arm.
+    # Measured on this tree with the scanner below.
+    "core/orchestrator.py:Orchestrator._run_attempt": 250,
     # Landing of 4e0299ad: unchanged at 115 — the harness row is dropped by
     # the comprehension filter inside `_reviewer_items`, which the scanner
     # counts the same as the `if` it replaced (the first landing pass had a
@@ -998,7 +1006,14 @@ FROZEN_FILE_LINES = {
     # 23556 -> 23564 (+8): second landing pass (`_reviewer_items` shared by
     # both D6 halves; comments name it). Measured on this tree by the
     # scanner's own metric.
-    "core/orchestrator.py": 23564,
+    # 23564 -> 23783 (+219): the citation-drift preflight fix — the new
+    # `Orchestrator._citation_drift_preflight` method (mirroring
+    # `_structural_budget_preflight` immediately above it), its call site in
+    # `_run_attempt`, `citation_send_back_message`,
+    # `_CITATION_ROUND_TURNS`/`_CITATION_ROUND_SCOPE_NOTE`/
+    # `_citation_round_out_of_scope`, and the `no_human.testing.citations`
+    # import. Measured on this tree by the scanner's own metric.
+    "core/orchestrator.py": 23783,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.

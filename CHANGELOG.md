@@ -6,6 +6,22 @@ All notable changes to no_human. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- **A diff that only shifts a cited doc line number no longer burns a whole
+  attempt.** `docs/security.md`/`docs/eval.md`/`docs/KNOWN_ISSUES.md` and
+  `tests/test_readme_claims.py`'s `CITATION_TABLE` citations that drift out
+  from under an otherwise-fine change used to sail through review and only
+  fail later, in the post-review full-suite run — costing an entire attempt
+  on something `scripts/reanchor_citations.py --apply` fixes mechanically in
+  seconds. A new `Orchestrator._citation_drift_preflight` now runs before
+  review, right after the structural-budget preflight it mirrors: it's a
+  no-op (no subprocess, no LLM call) unless the diff touched a file some
+  citation points at, and on fixable drift it buys exactly one bounded
+  corrective round on the same branch telling the coder to run
+  `scripts/reanchor_citations.py --apply` and commit — the harness itself
+  never runs `--apply`. Unfixable drift, or a script/runtime error, fails
+  the attempt immediately with no round spent.
+
 ### Changed
 - Second brain is now called Memories.
 

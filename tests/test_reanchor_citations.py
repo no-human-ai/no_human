@@ -171,3 +171,72 @@ def test_check_mode_is_clean_on_this_tree():
     assert result.returncode == 0, result.stdout + result.stderr
     assert "VERDICT=OK" in result.stdout
     assert before == after, "--check must never modify a file"
+
+
+def test_cited_source_specs_is_the_resolve_path_column():
+    """`cited_source_specs` is the single source of truth
+    `no_human.testing.citations.cited_source_files` pairs against (see that
+    function's own docstring) — it must be exactly the resolve-path (index
+    2) column of every row, deduplicated, nothing more."""
+    rows = (
+        ("a.md", "pkg/x.py:1", "pkg/x.py", "tok"),
+        ("b.md", "y.py:2", "y.py", "tok2"),
+        ("c.md", "pkg/x.py:9", "pkg/x.py", "tok3"),  # same resolve_path again
+    )
+    assert ra.cited_source_specs(rows) == {"pkg/x.py", "y.py"}
+
+
+def test_cited_files_mode_lists_them_and_writes_nothing():
+    """`--cited-files` is read-only, like `--check` — same mtime-probe idiom
+    as `test_check_mode_is_clean_on_this_tree` — and lists every resolve-path
+    spec from the real CITATION_TABLE, one per line, sorted."""
+    docs = [REPO / "docs" / d for d in ("security.md", "eval.md", "KNOWN_ISSUES.md")]
+    table_path = REPO / "tests" / "test_readme_claims.py"
+    watched = docs + [table_path]
+    before = {p: p.stat().st_mtime_ns for p in watched}
+
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT), "--cited-files"],
+        capture_output=True, text=True, check=False,
+    )
+
+    after = {p: p.stat().st_mtime_ns for p in watched}
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert before == after, "--cited-files must never modify a file"
+    lines = [line for line in result.stdout.splitlines() if line.strip()]
+    assert lines == sorted(lines)
+    assert lines, "the real CITATION_TABLE cites at least one source file"
+
+
+def test_the_harness_reader_agrees_with_the_script_on_this_tree():
+    """`no_human.testing.citations.cited_source_files` (an `ast`-only read,
+    never importing this file or `tests/test_readme_claims.py`) must resolve
+    to exactly the same repo-relative path set as the script's own
+    `--cited-files`, re-resolved through the harness's own `_resolve_one` —
+    the two readers are pinned against each other as the single source of
+    truth for "which source files carry a citation" (see
+    `cited_source_specs`'s own docstring).
+
+    One spec, `ci_gate/enrich.py`, is excluded from this parity check: this
+    checkout's own `tests/test_readme_claims.py` (`_ABSENT_OK`) already
+    exempts it from resolution — the file is "drop-classified but real" in a
+    private fork and genuinely absent here. Both readers correctly skip an
+    unresolvable spec rather than raising (fail-open, per each one's own
+    docstring), so it is expected to be missing from BOTH sets, not a
+    disagreement between them.
+    """
+    from no_human.testing import citations
+
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT), "--cited-files"],
+        capture_output=True, text=True, check=True,
+    )
+    specs = {line.strip() for line in result.stdout.splitlines() if line.strip()}
+    specs -= {"ci_gate/enrich.py"}
+    resolved_from_script = set()
+    for spec in specs:
+        hit = citations._resolve_one(REPO, spec)
+        assert hit is not None, f"harness reader cannot resolve {spec!r}"
+        resolved_from_script.add(hit)
+
+    assert resolved_from_script == citations.cited_source_files(REPO)
