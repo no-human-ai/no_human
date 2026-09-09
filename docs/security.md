@@ -241,7 +241,7 @@ named here.
   and `CodexBackend._child_env()` — with an
   env-var mark that is inherited by every descendant of that session, no
   matter how it is invoked. `nh approve` and `nh merge-stack run`
-  (`_refuse_agent_gate_act`, `cli/commands.py:approve:5160`, `:merge_stack_run:2910`) refuse before
+  (`_refuse_agent_gate_act`, `cli/commands.py:approve:5175`, `:merge_stack_run:2910`) refuse before
   `_bootstrap` runs when the calling process carries that mark, and an HTTP
   middleware in `api/app.py` (`_refuse_marked_gate_acts`, by `_csp_header`)
   refuses

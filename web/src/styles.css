@@ -6247,9 +6247,10 @@ a.so-chip-value:hover { color: var(--accent-300); }
   font-size: 13px; color: var(--red, #ef4444); padding: 3px 0;
 }
 /* A verifier with no verdict (advisory) is neither a pass nor a genuine
-   failure — same slate used by .checklist-item.advisory, so it never reads
+   failure — reuses the existing --text-dim token (the board's muted/faint
+   meta colour, already themed for both dark and light), so it never reads
    as a blocking red failure in the Verifiers list. */
-.unmet-item.advisory, .ci-icon.advisory { color: #7a869a; }
+.unmet-item.advisory, .ci-icon.advisory { color: var(--text-dim); }
 
 /* ReviewTab "Merge policy" block (mergePolicyRows, slideOverSummary.js) —
    advisory display of core/merge_policy.py's verdict for the current head. */
