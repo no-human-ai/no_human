@@ -253,7 +253,7 @@ async def test_the_pre_existing_excuse_path_is_bounded_too(bare_repo, tmp_path, 
     # site, the one write that carries BOTH `failing_tests` and
     # `pre_existing_failures` in the same dict.
     ids = _make_ids(_TOTAL)
-    _outcome, attempts, _events = await _run_attempt_with_many_failures(
+    _outcome, attempts, events = await _run_attempt_with_many_failures(
         store, tmp_path, bare_repo, ids, newly_failing=[], owned=[])
 
     row = attempts[-1]
@@ -262,6 +262,15 @@ async def test_the_pre_existing_excuse_path_is_bounded_too(bare_repo, tmp_path, 
     assert len(persisted["failing_tests"]) == _BOUND
     assert len(persisted["pre_existing_failures"]) == _BOUND
     assert persisted["failing_tests_dropped"] == _DROPPED
+
+    # MAJOR-2: the excuse NOTE text (built via `_bounded_join_ids`,
+    # orchestrator.py:6977) must be bounded too, not just the id lists.
+    tests_events = [e for e in events if e.get("kind") == "tests"]
+    assert tests_events
+    note = tests_events[-1]["text"]
+    assert ids[0] in note
+    assert ids[_BOUND] not in note, "the excuse note text must be bounded too"
+    assert "… and 800 more" in note
 
 
 # --------------------------------------------------------------------------- #
@@ -478,6 +487,13 @@ async def test_flaky_excuse_bounds_kwargs_and_column(bare_repo, tmp_path, store)
     assert last["failing_tests"] == ids[:_BOUND]
     assert last["failing_tests_dropped"] == _DROPPED
 
+    # MAJOR-2: the flaky-excuse NOTE text (built via `_bounded_join_ids`,
+    # orchestrator.py:12669) must be bounded too, not just the id lists.
+    note = last["text"]
+    assert ids[0] in note
+    assert ids[_BOUND] not in note, "the flaky-excuse note text must be bounded too"
+    assert "… and 800 more" in note
+
 
 async def test_owned_billing_bounds_kwargs_and_column(bare_repo, tmp_path, store):
     """Owned ids that are ALSO newly-failing vs base bill the attempt via
@@ -510,6 +526,14 @@ async def test_owned_billing_bounds_kwargs_and_column(bare_repo, tmp_path, store
     assert last["owned_failures_dropped"] == _DROPPED
     assert last["failing_tests"] == ids[:_BOUND]
     assert last["failing_tests_dropped"] == _DROPPED
+
+    # MAJOR-2: the event MESSAGE text itself (built via `_bounded_join_ids`,
+    # orchestrator.py:12745) must be bounded too — a separate join from the
+    # `detail`/failure_reason string asserted above.
+    note = last["text"]
+    assert ids[0] in note
+    assert ids[_BOUND] not in note, "the event message text must be bounded too"
+    assert "… and 800 more" in note
 
 
 # --------------------------------------------------------------------------- #
