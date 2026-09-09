@@ -1098,7 +1098,21 @@ FROZEN_FILE_LINES = {
     # `failing_tests_dropped: 300`. The comment now says so and names the
     # follow-up (task 4a23ed43). Measured on this tree by the scanner's own
     # metric.
-    "core/orchestrator.py": 23730,
+    # 23730 -> 23727 (-3) (task 4a23ed43): that follow-up itself — the
+    # pre-review write in `_run_review` now goes through
+    # `_bounded_test_results` too (tenth call site for real), and the
+    # helper's comment was rewritten to say so instead of describing the
+    # gap. The rewritten comment is three lines shorter than the one it
+    # replaced. Measured on this tree by the scanner's own metric.
+    # 23727 -> 23731 (+4): landing hand-finish — the branch's new comment
+    # said "Every `test_results` write goes through this helper now",
+    # dropping the scoping word the line it replaced had. Measured by an
+    # AST walk over every `store.update_attempt(..., test_results=...)`
+    # call: eleven writes, ten wrapped, one deliberately not — the
+    # tamper-fire row, which carries no id list and must not be stamped
+    # classified. The comment now says that. Measured on this tree by the
+    # scanner's own metric.
+    "core/orchestrator.py": 23731,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.

@@ -932,21 +932,22 @@ def _bounded_test_results(test_results: dict) -> dict:
                 out[f"{key}_dropped"] = dropped_sibling
     if dropped:
         out["failing_tests_dropped"] = dropped
-    # Every TESTING-side `test_results` write (layered, plain, invocation-
-    # error, pre-existing excuse, environment, flaky excuse, owned/billing —
-    # nine call sites) goes through this helper. `_run_review`'s pre-review
-    # write does not: it stamps `classified: False` itself. That also means
-    # its `failing_tests` is NOT bounded the way this helper bounds the
-    # TESTING rows — measured: 500 failing ids persist whole there while the
-    # TESTING row for the same run keeps 200 and records
-    # `failing_tests_dropped: 300`. That predates this change (the bounding
-    # work covered the TESTING sites) and is filed as task 4a23ed43; do not
-    # read this comment as saying the pre-review row is bounded.
+    # Ten of the eleven `store.update_attempt(..., test_results=...)` writes
+    # go through this helper: the nine TESTING-side call sites (layered,
+    # plain, invocation-error, pre-existing excuse, environment, flaky
+    # excuse, owned/billing) plus `_run_review`'s pre-review write, which
+    # passes an explicit `classified: False`. A red run with 500 failing ids
+    # now keeps 200 in BOTH rows and records `failing_tests_dropped: 300` in
+    # both, same as any other call site. The eleventh is deliberate:
+    # `_handle_tamper_fire`'s `_fail_attempt` row carries no id list at all
+    # (`{"tamper_flag": True, "reasons": [...]}`), and wrapping it would
+    # stamp `classified: True` on a row the tests step never classified.
     # `setdefault` — not unconditional
-    # overwrite — so a caller that already set `classified` explicitly
-    # (there is none today) is not silently reversed, and so re-wrapping an
-    # already-bounded dict (`_environment_test_failure` re-spreads one its
-    # caller already bounded) stays idempotent.
+    # overwrite — so a caller that already sets `classified` explicitly (the
+    # pre-review write does, deliberately, to `False`) is not silently
+    # reversed, and so re-wrapping an already-bounded dict
+    # (`_environment_test_failure` re-spreads one its caller already
+    # bounded) stays idempotent.
     out.setdefault("classified", True)
     return out
 
@@ -13855,7 +13856,7 @@ class Orchestrator:
             # persists, and the board must render that "never classified"
             # state distinctly from a billed failure (`web/src/
             # slideOverSummary.js`'s `testResultVerdict`).
-            await self.store.update_attempt(attempt_id, test_results={
+            await self.store.update_attempt(attempt_id, test_results=_bounded_test_results({
                 "ran": test_result.ran, "ok": test_result.ok,
                 "passed": test_result.passed, "failed": test_result.failed,
                 "errors": test_result.errors, "tamper_flag": False,
@@ -13863,7 +13864,7 @@ class Orchestrator:
                 "failure_blocks": blocks,
                 "failure_blocks_dropped": blocks_dropped,
                 "classified": False,
-            })
+            }))
 
         def _pre_review_red_checklist_item() -> ChecklistItem | None:
             # Shared by every `_run_review` exit that returns a `ReviewDecision`

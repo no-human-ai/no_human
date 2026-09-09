@@ -16,10 +16,11 @@ every id: this file proves both halves of that split with a single real
 import contextlib
 import json as _json
 import shlex
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from no_human.core import evidence_ledger
-from no_human.core.orchestrator import Orchestrator
+from no_human.core import orchestrator as orchestrator
+from no_human.core.orchestrator import Orchestrator, _bounded_test_results
 from no_human.core.pr_evidence import PrEvidence
 from no_human.core.task import Task, TaskStatus
 from no_human.notify.slack import SlackNotifier
@@ -28,6 +29,11 @@ from no_human.vcs import GitRepo
 
 from .test_e2e_orchestrator import FakeBackend, _config, bare_repo  # noqa: F401
 from .test_missing_prereq_env_classification import _not_ok_cannot_find_module  # noqa: F401
+from .test_pre_review_red_reaches_coder import (  # noqa: F401
+    _FailsOnUnrelatedFinding,
+    _PassesEverything,
+    _run_attempt_with_result_and_reviewer,
+)
 
 #: Comfortably over the 200-id bound, and matches the ticket's dropped-count
 #: math (1000 - 200 = 800) so the assertions below read as the incident math,
@@ -629,3 +635,87 @@ async def test_pathological_scale_event_text_and_failure_reason_stay_under_16kb(
         msg = ev.get("text") or ""
         assert len(msg.encode("utf-8")) < 16_000, (
             f"tests event text is {len(msg.encode('utf-8'))} bytes")
+
+
+# ── the tenth call site: `_run_review`'s pre-review write (task 4a23ed43) ── #
+
+
+def test_the_bounding_helper_preserves_an_explicit_unclassified_marker():
+    """Pins the `setdefault` behaviour the pre-review fix relies on, rather
+    than assuming it: an explicit `classified: False` in the input dict
+    survives `_bounded_test_results` untouched, while a dict that never sets
+    `classified` still comes back `True` (the TESTING-side default)."""
+    ids = _make_ids(501)
+
+    out = _bounded_test_results({"failing_tests": ids, "classified": False})
+    assert out["classified"] is False
+    assert len(out["failing_tests"]) == orchestrator._MAX_PERSISTED_FAILING_TESTS
+    assert out["failing_tests_dropped"] == 501 - orchestrator._MAX_PERSISTED_FAILING_TESTS
+
+    out_default = _bounded_test_results({"failing_tests": ids})
+    assert out_default["classified"] is True
+
+
+async def test_the_pre_review_row_is_bounded_and_still_unclassified(
+    bare_repo, tmp_path, store,
+):
+    """AC: a red PRE-REVIEW run with 500 failing ids must persist at most
+    `_MAX_PERSISTED_FAILING_TESTS` (200) ids plus a `failing_tests_dropped`
+    count, and must still stamp `classified: False` — the same shape every
+    TESTING-side write already has, via the same `_bounded_test_results`
+    helper (task 4a23ed43). Drives the real `_run_attempt`, exactly as
+    `test_pre_review_row_is_unclassified_until_testing_overwrites_it` does,
+    so the review-FAILs-for-an-unrelated-reason branch returns before
+    TESTING ever overwrites the column — this is red at the merge base on
+    the length/dropped assertions (the pre-review write persisted the raw
+    500-id list there).
+    """
+    ids = [f"tests/test_many.py::test_{i}" for i in range(500)]
+    tr = runner.TestRunResult(
+        ran=True, ok=False, passed=0, failed=500, errors=0,
+        command="pytest -q",
+        output="500 failed in 1.00s\n",
+        full_output="",
+        failure_blocks=["FAILED " + ids[0]],
+        failing_tests=ids,
+    )
+    reviewer = _FailsOnUnrelatedFinding()
+
+    outcome, attempts, _events, _task, _orch = await _run_attempt_with_result_and_reviewer(
+        store, tmp_path, bare_repo, tr, reviewer)
+
+    assert outcome.status is TaskStatus.FAILED, outcome.detail
+    row = _persisted(attempts[-1])
+    assert len(row["failing_tests"]) == orchestrator._MAX_PERSISTED_FAILING_TESTS, row
+    assert row["failing_tests"] == ids[:orchestrator._MAX_PERSISTED_FAILING_TESTS], row
+    assert row["failing_tests_dropped"] == 500 - orchestrator._MAX_PERSISTED_FAILING_TESTS, row
+    assert row["classified"] is False, row
+
+    # TESTING row for the SAME shape of run must stay unchanged: the excused
+    # path (owned=[], newly_failing=all, flaky=all) overwrites the column
+    # and lands at the identical bound, but `classified: True`.
+    tr2 = runner.TestRunResult(
+        ran=True, ok=False, passed=0, failed=500, errors=0,
+        command="pytest -q",
+        output="500 failed in 1.00s\n",
+        full_output="",
+        failure_blocks=["FAILED " + ids[0]],
+        failing_tests=ids,
+    )
+    reviewer2 = _PassesEverything()
+    with (
+        patch.object(Orchestrator, "_owned_failing_tests",
+                     AsyncMock(return_value=[])),
+        patch.object(Orchestrator, "_newly_failing_vs_base",
+                     AsyncMock(return_value=ids)),
+        patch.object(Orchestrator, "_flaky_on_rerun",
+                     AsyncMock(return_value=ids)),
+    ):
+        outcome2, attempts2, _events2, _task2, _orch2 = await _run_attempt_with_result_and_reviewer(
+            store, tmp_path, bare_repo, tr2, reviewer2)
+
+    final_rows = [a for a in attempts2 if a.get("test_results")]
+    final = _persisted(final_rows[-1])
+    assert len(final["failing_tests"]) == orchestrator._MAX_PERSISTED_FAILING_TESTS, final
+    assert final["failing_tests_dropped"] == 500 - orchestrator._MAX_PERSISTED_FAILING_TESTS, final
+    assert final["classified"] is True, final
