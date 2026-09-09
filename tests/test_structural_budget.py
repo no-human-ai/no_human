@@ -255,7 +255,14 @@ FROZEN_FUNCTION_LINES = {
     # it forever). `base_staleness` now merges instead of rebasing a pushed
     # branch, and this preamble gained an `elif stale.get("merged")` branch
     # narrating that case to the coder. Measured with the scanner below.
-    "core/orchestrator.py:Orchestrator._build_implement_prompt": 394,
+    # 394 -> 423 (+29, 2026-09-09): a coder must never rebase an
+    # already-pushed task branch when the base merge conflicts — this
+    # function gained an `elif stale.get("merge_conflict")` preamble branch
+    # (narrating the skipped merge and pointing at
+    # `base_merge_conflict_instruction`) plus the local `base_staleness`
+    # read that threads `base_merge_conflict=` into `build_rules_block`.
+    # Measured with the scanner below.
+    "core/orchestrator.py:Orchestrator._build_implement_prompt": 423,
     # 332 -> 333 (+1): pin-rederivation follow-up adds one
     # `pin_rederivation_note(card),` line to the markdown body list so the
     # published report carries the same recorded-branch/HEAD-fallback
@@ -340,7 +347,13 @@ FROZEN_FUNCTION_CC = {
     # FROZEN_FUNCTION_LINES entry above for the incident) -- one new `elif
     # stale.get("merged"):` branch narrates the merged case to the coder.
     # Measured with the scanner below.
-    "core/orchestrator.py:Orchestrator._build_implement_prompt": 71,
+    # 71 -> 79 (+8, 2026-09-09): the "never rebase a pushed branch" fix's
+    # new `elif stale.get("merge_conflict")` branch plus the `if overlap`
+    # inside it, and the `if _stale_for_rules.get("merge_conflict") else`
+    # conditional feeding `base_merge_conflict=` into `build_rules_block`
+    # (see the FROZEN_FUNCTION_LINES entry above). Measured with the scanner
+    # below.
+    "core/orchestrator.py:Orchestrator._build_implement_prompt": 79,
 }
 
 # 9 files > 2,500 lines.
@@ -866,7 +879,13 @@ FROZEN_FILE_LINES = {
     # 23285 -> 23403 (+118): 99fa5ba5 (bounded failing_tests and joins at
     # every write site; the carried dropped count reaches the coder prompt)
     # landed on top of cf6f6c19. Measured on this tree by the scanner's own metric.
-    "core/orchestrator.py": 23403,
+    # 23403 -> 23452 (+49, 2026-09-09): "never rebase a pushed task branch"
+    # fix — `base_merge_conflict_instruction` import, `_refresh_stale_base`'s
+    # `base_pin` kwarg/docstring/conflict-suffix branch, and
+    # `_build_implement_prompt`'s new merge-conflict preamble branch and
+    # `build_rules_block(base_merge_conflict=...)` threading. Measured on
+    # this tree by the scanner's own metric.
+    "core/orchestrator.py": 23452,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.
@@ -1311,7 +1330,12 @@ FROZEN_FILE_LINES = {
     # timeout/xargs/nice/stdbuf (and siblings) for the scan-severity check
     # only, so a wrapped `find … -delete` in a denied compound classifies
     # DESTRUCTIVE instead of HYGIENE. Local sibling list, `_WRAPPERS` untouched.
-    "agent/guard.py": 2892,
+    # 2892 -> 2907 (+15, 2026-09-09): "never rebase a pushed task branch" fix
+    # -- the new `pushed_tip_guard` import and the docstring bullet plus the
+    # `pushed_reason = pushed_tip_guard.denial_reason(...)` check inserted
+    # ahead of `_GIT_DESTRUCTIVE` in `evaluate`. Measured on this tree by the
+    # scanner's own metric.
+    "agent/guard.py": 2907,
     # +44: idle-path recover_quota_cooldown gate in tick() and the
     # never-shorten-a-live-wall guard in _run — the quota-wall storm cost fix.
     # +129: `HarvestJob` — the cadence job (`due()`/`maybe_run()`) that runs

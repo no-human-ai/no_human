@@ -16,6 +16,11 @@ Blocks, before execution:
   - git that overwrites or discards WORKING-TREE content the agent did not
     create (`git stash`, `git restore`, `git checkout -- <path>`, `git clean
     -fd`, `git checkout-index -f`, ...) — in every session, coder included
+  - rewriting a branch that is already PUSHED (`git rebase`, `git rebase
+    --continue`, `git reset --hard`/`--merge`/`--keep` below the pushed tip)
+    — delivery only ever fast-forwards a branch's remote ref, so a rebase
+    there can never be delivered; the denial names the pushed tip and tells
+    the coder to `git merge` the base instead (2026-09-09, pushed_tip_guard)
   - interactive prompts (`AskUserQuestion`) — nobody is at the keyboard (§22)
   - background polling (`Monitor`, `TaskStop`, `ToolSearch`) in a read-only
     session — a planner does not need to busy-wait on its own subagents
@@ -49,7 +54,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Mapping
 
-from . import fs_roots, venv_install_guard
+from . import fs_roots, pushed_tip_guard, venv_install_guard
 
 # Read the platform through a constant, never an inline `os.name` test, so the
 # Windows branch below is reachable from a test on any host.
@@ -2805,6 +2810,16 @@ def evaluate(
                 "the agent never edits it.", severity=GUARD_DESTRUCTIVE)
         if _RM_RF.search(cmd):
             return GuardDecision(False, f"destructive command blocked (rm -rf): {cmd}", severity=GUARD_DESTRUCTIVE)
+        # Must run BEFORE `_GIT_DESTRUCTIVE` (which already matches `reset
+        # --hard <ref>` lexically, with a generic message) and before
+        # `_git_worktree_denial` (which matches every clobbering git form,
+        # `rebase` included, also with a generic message): this is the only
+        # one of the three that names the pushed tip and the merge
+        # alternative, so it has to get first refusal or its message can
+        # never surface.
+        pushed_reason = pushed_tip_guard.denial_reason(_git_invocations(cmd), cwd)
+        if pushed_reason:
+            return GuardDecision(False, pushed_reason, severity=GUARD_DESTRUCTIVE)
         if _GIT_DESTRUCTIVE.search(cmd):
             return GuardDecision(False, f"destructive git command blocked: {cmd}", severity=GUARD_DESTRUCTIVE)
         # Applies to EVERY session, coder included — see the block comment on

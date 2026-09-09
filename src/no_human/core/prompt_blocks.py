@@ -881,11 +881,26 @@ def supervisor_channel_tag() -> str:
     return f"[SUPERVISOR:{_SUPERVISOR_NONCE}]"
 
 
+def base_merge_conflict_instruction(base_ref: str) -> str:
+    """The ONE wording for 'the base merge conflicted — merge it yourself'.
+    Shared by the base_staleness event text, the implement-prompt preamble and
+    the coder rules block so the three can never drift apart."""
+    return (
+        f"Run the MERGE yourself: `git merge {base_ref}`, resolve the conflicts, "
+        "then `git add` them and `git commit`. Do NOT rebase and do NOT "
+        "`git reset --hard` — this branch is already pushed, and delivery is "
+        "fast-forward-only against the pushed tip: a rebase rewrites the pushed "
+        "commits, the tip stops being an ancestor of your head, and the work "
+        "cannot be delivered at all. The guard refuses a rebase here."
+    )
+
+
 def build_rules_block(
     test_cmd_str: str, integration_cmd_str: str, ci_name: str | None,
     routing_rules: list[dict] | None = None,
     repro_mode: str = "advisory",
     repo_path: str | Path | None = None,
+    base_merge_conflict: str | None = None,
 ) -> str:
     """The implement-prompt Rules section. ``ci_name`` is the remote CI runner's
     name, or None when there is none (mirrors ``self.ci_runner``).
@@ -909,7 +924,17 @@ def build_rules_block(
     ``test_commands`` globs the orchestrator's gate uses). When present, the
     coder is told to run the suite MATCHING its change instead of the
     repo-wide default — a web-only helper must not run (and then wait on)
-    the whole backend suite (task 70e3bd1b burned ~10 of 22 turns that way)."""
+    the whole backend suite (task 70e3bd1b burned ~10 of 22 turns that way).
+
+    ``base_merge_conflict`` is set to the pinned base sha ONLY when this
+    attempt's base-refresh just skipped a merge for a conflict — see
+    `Orchestrator._refresh_stale_base`. When truthy, one extra bullet is
+    appended carrying `base_merge_conflict_instruction`'s wording, with an
+    explicit carve-out from the "Do NOT run any git command" rule above (for
+    this one operation only) so the two bullets do not contradict each
+    other. When `None` (the default — every attempt that is not mid a
+    skipped conflict), the returned string is byte-identical to before this
+    parameter existed."""
     routing_block = ""
     if routing_rules:
         rows = "".join(
@@ -925,6 +950,13 @@ def build_rules_block(
                 f"    If ALL files you changed match one rule, that rule's command IS\n"
                 f"    your final gate — do NOT also run the repo-wide default.\n"
             )
+    conflict_block = ""
+    if base_merge_conflict:
+        conflict_block = (
+            "  - BASE MERGE CONFLICT (this overrides the 'Do NOT run any git\n"
+            "    command' rule above, for this one operation only): "
+            + base_merge_conflict_instruction(base_merge_conflict) + "\n"
+        )
     return (
         "Rules:\n"
         "  CRITICAL — NEVER SKIP A TASK. Everything the user gives you, you CAN do.\n"
@@ -1062,6 +1094,7 @@ def build_rules_block(
         "    could break, then address it before you make the change — not after.\n"
         "  - Review every change as a staff engineer would. No sloppy patches, no\n"
         "    unrequested abstractions, no scope creep.\n"
+        + conflict_block
     )
 
 
