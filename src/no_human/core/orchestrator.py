@@ -567,6 +567,29 @@ def _looks_like_test_run(command: str) -> bool:
     return False
 
 
+def _test_run_summary(meta: dict) -> str:
+    """A human-readable, comparable outcome for one test-runner invocation.
+
+    Rendered from `tool_result` meta ALONE — the SDK never delivers output
+    text on the wire (`claude_backend._exit_status`'s docstring, by design,
+    so a printed credential is never captured): `exit_code` when a FAILED
+    result states one, else ``ok``/``failed`` from `is_error`, plus
+    `result_chars`. Two test-runner calls with the SAME outcome produce a
+    byte-identical string here; `StuckDetector.record_test_outcome` compares
+    consecutive strings to decide whether an edit-loop is real progress or
+    the SAME failure repeated (task f6e626fd).
+
+    Undercounts the same way `ConvergenceTracker`'s docstring already
+    documents for this seam: an outcome that changes WITHOUT changing its
+    length or its error/success status reads as unchanged.
+    """
+    is_error = bool(meta.get("is_error", False))
+    exit_code = meta.get("exit_code")
+    status = (f"exit {exit_code}" if exit_code is not None
+              else ("failed" if is_error else "ok"))
+    return f"{status}, {meta.get('result_chars', 0)} chars"
+
+
 # How often the watcher re-reads `tasks.cancel_requested` while a task runs.
 # The agent session is the only thing being interrupted, and it emits events far
 # faster than this, so the operator's `nh task pause` lands within a few seconds.
@@ -2330,6 +2353,30 @@ class Orchestrator:
             return scoped[1]
         return None
 
+    def _note_test_activity(self, event: AgentEvent) -> None:
+        """Feed a recognized test-runner `tool_use`/`tool_result` pair to
+        BOTH convergence signals this seam has: `ConvergenceTracker.mark_progress`
+        (P2 — "the command ran") and `StuckDetector`'s progress-gated hard
+        edit-loop tier (task f6e626fd — "the command's outcome CHANGED"; see
+        `StuckDetector.record_edit`/`record_test_outcome`). Guarded with
+        `getattr`/`_active_convergence()` so a bare `Orchestrator.__new__`
+        test fixture (no `_stuck`/`_convergence` set) stays safe.
+        """
+        detector = getattr(self, "_stuck", None)
+        if event.kind == "tool_use" and event.tool_name in ("Bash", "Terminal"):
+            command = (event.tool_input or {}).get("command") or (
+                event.tool_input or {}).get("cmd") or ""
+            if _looks_like_test_run(command):
+                conv = self._active_convergence()
+                if conv is not None:
+                    conv.mark_progress()
+                if detector is not None:
+                    detector.note_test_run(event.meta.get("tool_use_id"))
+        elif event.kind == "tool_result" and detector is not None:
+            detector.record_test_outcome(
+                event.meta.get("tool_use_id"), _test_run_summary(event.meta)
+            )
+
     def _agent_sink(self, event: AgentEvent, *, role: str = CODER_ROLE) -> None:
         self._sink(
             {
@@ -2531,7 +2578,10 @@ class Orchestrator:
                     conv = self._active_convergence()
                     if conv is not None:
                         conv.mark_progress()
-                    # R2.3 Layer 1: per-file edit count.
+                    # R2.3 Layer 1: per-file edit count. `record_edit` bumps
+                    # both the advisory raw count (below) and the hard-tier
+                    # count that resets on observed progress — f6e626fd; see
+                    # `StuckDetector.record_edit` / `_note_test_activity`.
                     detector = getattr(self, "_stuck", None)
                     if detector is not None and detector.record_edit(str(path)):
                         self.emit(
@@ -2553,16 +2603,11 @@ class Orchestrator:
                     conv = self._active_convergence()
                     if conv is not None:
                         conv.mark_progress()
-        # P2: a test-runner invocation is the other convergence signal — see
-        # `ConvergenceTracker`'s docstring for why "the command ran" is the
-        # honest proxy available here, not "a new result appeared".
-        if event.kind == "tool_use" and event.tool_name in ("Bash", "Terminal"):
-            command = (event.tool_input or {}).get("command") or (
-                event.tool_input or {}).get("cmd") or ""
-            if _looks_like_test_run(command):
-                conv = self._active_convergence()
-                if conv is not None:
-                    conv.mark_progress()
+        # P2 / f6e626fd: a test-runner tool_use/tool_result pair is the other
+        # convergence signal AND the StuckDetector hard-tier progress signal —
+        # see `_note_test_activity`.
+        if event.kind in ("tool_use", "tool_result"):
+            self._note_test_activity(event)
         # Hard tier (ARCH_REVIEW B2 #1): checked AFTER both record paths so an
         # edit-tool event counts toward both detectors before the verdict.
         # Advisory fires above are telemetry; this one has teeth — the raise

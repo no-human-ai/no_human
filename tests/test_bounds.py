@@ -204,6 +204,82 @@ def test_hard_stuck_edit_loop_at_abort_threshold():
     assert "edit-loop" in d.hard_stuck_reason
 
 
+def test_hard_edit_count_resets_after_a_changed_test_outcome():
+    """task f6e626fd: an edit followed by a test run whose outcome CHANGED
+    is progress — the hard-tier per-file count resets to 1, so the loop
+    never crosses `edit_abort` no matter how many (edit, test) rounds it
+    takes, as long as each test run's outcome differs from the last."""
+    d = StuckDetector()
+    for i in range(20):
+        d.record_edit("/a.py")
+        d.note_test_run(f"call-{i}")
+        assert d.record_test_outcome(f"call-{i}", f"exit 1, {i} chars") is True
+        assert d.hard_stuck_reason is None
+
+
+def test_identical_test_outcome_is_not_progress():
+    """The counterpart: a test run whose outcome is byte-identical to the
+    previous one is NOT progress — the hard tier still fires at
+    `edit_abort`, and the reason text carries the last two summaries."""
+    d = StuckDetector()
+    d.record_edit("/a.py")
+    d.note_test_run("call-0")
+    assert d.record_test_outcome("call-0", "exit 1, 40 chars") is True  # first ever
+    d.record_edit("/a.py")  # progress consumed here -> hard count resets to 1
+    d.note_test_run("call-1")
+    assert d.record_test_outcome("call-1", "exit 1, 40 chars") is False  # identical
+    for _ in range(d.edit_abort - 2):
+        d.record_edit("/a.py")
+    assert d.hard_stuck_reason is None
+    d.record_edit("/a.py")
+    assert d.hard_stuck_reason is not None
+    assert "edit-loop" in d.hard_stuck_reason
+    assert "no observed progress" in d.hard_stuck_reason
+    assert "exit 1, 40 chars" in d.hard_stuck_reason
+
+
+def test_editing_a_different_file_in_between_resets_the_hard_count():
+    d = StuckDetector()
+    for _ in range(d.edit_abort - 1):
+        d.record_edit("/a.py")
+    assert d.hard_stuck_reason is None
+    d.record_edit("/b.py")  # a different file in between — progress for /a.py
+    for _ in range(d.edit_abort - 1):
+        d.record_edit("/a.py")
+    assert d.hard_stuck_reason is None  # reset by the /b.py edit, still under abort
+
+
+def test_unjoinable_test_result_is_not_progress():
+    """A `tool_result` whose id was never registered by `note_test_run` (an
+    unpaired backend, or one with no test-runner recognized) must not count
+    as progress — preserves the pre-existing fallback behaviour."""
+    d = StuckDetector()
+    assert d.record_test_outcome("never-registered", "exit 1, 40 chars") is False
+    for _ in range(d.edit_abort - 1):
+        d.record_edit("/a.py")
+    assert d.hard_stuck_reason is None
+    d.record_edit("/a.py")
+    assert d.hard_stuck_reason is not None
+
+
+def test_advisory_edit_tier_still_reports_the_raw_count():
+    """The advisory tier (`stuck_reason`, raw `_edit_counts`) must be totally
+    unaffected by progress: it still fires purely on the raw per-file count,
+    even while the hard tier keeps resetting on progress."""
+    d = StuckDetector(edit_threshold=3)
+    d.record_edit("/a.py")
+    d.note_test_run("c0")
+    d.record_test_outcome("c0", "exit 1, 1 chars")
+    d.record_edit("/a.py")
+    d.note_test_run("c1")
+    d.record_test_outcome("c1", "exit 1, 2 chars")  # progress each time
+    assert d.hard_stuck_reason is None  # hard tier: no loop, resets each time
+    assert d.record_edit("/a.py") is True  # advisory: raw count hit threshold=3
+    assert d._edit_counts["/a.py"] == 3
+    assert d.stuck_reason is not None
+    assert "edit-loop" in d.stuck_reason
+
+
 def test_hard_stuck_sustained_ping_pong():
     d = StuckDetector()
     for _ in range(5):  # 10 alternating calls — advisory, not abort

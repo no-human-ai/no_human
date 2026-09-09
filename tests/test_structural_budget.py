@@ -998,7 +998,13 @@ FROZEN_FILE_LINES = {
     # 23556 -> 23564 (+8): second landing pass (`_reviewer_items` shared by
     # both D6 halves; comments name it). Measured on this tree by the
     # scanner's own metric.
-    "core/orchestrator.py": 23564,
+    # 23564 -> 23609 (+45) 2026-09-09: task f6e626fd's edit-loop progress
+    # rule — the `_test_run_summary` module function, the `_note_test_activity`
+    # helper method (moved the old inline test-run/convergence block out of
+    # `_agent_sink` to stay under MAX_FUNCTION_LINES), and doc comments at the
+    # edit branch and the P2 rewiring site. Measured on this tree by the
+    # scanner's own metric.
+    "core/orchestrator.py": 23609,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.

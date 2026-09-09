@@ -196,7 +196,8 @@ class StuckDetector:
     appending corrections to a stale one.
 
     Three detection layers (R2.3, AgentPatterns):
-      1. **Edit-count per file** — same file edited ≥ ``edit_threshold`` times.
+      1. **Edit-count per file** — same file edited ≥ ``edit_threshold`` times
+         (advisory, raw count) / the HARD tier's progress-gated twin below.
       2. **Doom-loop** — identical tool+input repeated consecutively.
       3. **Ping-pong** — A-B-A-B alternating pattern (R2.1, Broker).
     The hard iteration cap (``max_turns``) is Layer 3 — outside this class.
@@ -211,7 +212,12 @@ class StuckDetector:
     # orchestrator's sink — work checkpointed, bounded loop retries with fresh
     # context). Set far above the advisory tier so they fire only on
     # unambiguous runaways: 9 identical consecutive calls, one file edited
-    # 15×, or 12 consecutive calls alternating between the same two actions.
+    # 15× WITH NO OBSERVED PROGRESS (see `record_edit`/`record_test_outcome`
+    # below — task f6e626fd attempt 1 was hard-aborted on a raw 15-edit count
+    # while demonstrably converging on a Playwright harness against a test
+    # runner reporting a DIFFERENT outcome each time; 61406d02 was the
+    # earlier casualty of the same raw-count-only rule), or 12 consecutive
+    # calls alternating between the same two actions.
     doom_loop_abort: int = 9
     edit_abort: int = 15
     ping_pong_abort_window: int = 12
@@ -219,8 +225,25 @@ class StuckDetector:
     _last: str | None = None
     _tool_signatures: list[str] = field(default_factory=list)
     _consecutive_repeats: int = 0
-    # R2.3 Layer 1: per-file edit counts.
+    # R2.3 Layer 1: per-file edit counts (raw — advisory tier only).
     _edit_counts: dict[str, int] = field(default_factory=dict)
+    # HARD tier's own per-file counter: unlike `_edit_counts` above, this one
+    # resets to 1 whenever `record_edit` observes progress since the file's
+    # previous edit (a changed test outcome, or a different file edited in
+    # between) — see `record_edit`. An edit LOOP is edits whose observed
+    # outcome does not change; edits that keep converging on a fix, however
+    # many, are not one, however many test runs it takes.
+    _hard_edit_counts: dict[str, int] = field(default_factory=dict)
+    _last_edited_file: str | None = None
+    _progress_since_last_edit: bool = False
+    # Up to the last 2 test-outcome summaries (most recent last), carried
+    # into the hard `edit-loop` reason so a human can see the outcome really
+    # did not change.
+    _test_summaries: list[str] = field(default_factory=list)
+    # tool_use_id -> True, for a Bash/Terminal call recognized as a
+    # test-runner invocation whose matching `tool_result` has not arrived
+    # yet. Bounded so a long attempt cannot grow it unbounded.
+    _pending_test_runs: dict[str, bool] = field(default_factory=dict)
 
     def record(self, error_text: str) -> bool:
         """Record a failure. Return True if we are now stuck (reset context)."""
@@ -253,9 +276,74 @@ class StuckDetector:
         return self._consecutive_repeats >= self.doom_loop_threshold
 
     def record_edit(self, file_path: str) -> bool:
-        """R2.3 Layer 1: track per-file edit count. Return True if looping."""
+        """R2.3 Layer 1: track per-file edit count. Return True if the
+        ADVISORY tier fires (raw count, unchanged by progress).
+
+        Also maintains the HARD tier's own progress-gated counter
+        (`_hard_edit_counts`, read by `hard_stuck_reason`): it resets to 1
+        whenever this edit followed observed progress since the file's
+        previous edit — a test-runner invocation whose outcome summary
+        changed (`record_test_outcome` set `_progress_since_last_edit`), or
+        a DIFFERENT file being edited in between. Progress is consumed here
+        (reset to False) so it counts for exactly the one edit that follows
+        it.
+        """
         self._edit_counts[file_path] = self._edit_counts.get(file_path, 0) + 1
+        progressed = self._progress_since_last_edit or (
+            self._last_edited_file is not None
+            and self._last_edited_file != file_path
+        )
+        self._hard_edit_counts[file_path] = (
+            1 if progressed else self._hard_edit_counts.get(file_path, 0) + 1
+        )
+        self._last_edited_file = file_path
+        self._progress_since_last_edit = False
         return self._edit_counts[file_path] >= self.edit_threshold
+
+    def note_test_run(self, tool_use_id: str | None) -> None:
+        """Record a Bash/Terminal call recognized as a test-runner
+        invocation, pending the matching `tool_result` (`record_test_outcome`).
+        A missing/empty id is ignored — unjoinable, so it can never register
+        as progress (the fallback is today's behaviour: no progress signal)."""
+        if not tool_use_id:
+            return
+        self._pending_test_runs[tool_use_id] = True
+        if len(self._pending_test_runs) > 32:
+            oldest = next(iter(self._pending_test_runs))
+            del self._pending_test_runs[oldest]
+
+    def record_test_outcome(self, tool_use_id: str | None, summary: str) -> bool:
+        """Resolve a pending test run and compare its outcome to the
+        previous one. Return True iff this is PROGRESS: `tool_use_id` was
+        registered by `note_test_run` (a `tool_result` whose id was never
+        seen as a test run — an unpaired backend, or one that emits no
+        result at all — is NOT progress; that is the existing fallback,
+        preserved on purpose) AND the outcome `summary` differs from the
+        last recorded one (or none has been recorded yet).
+
+        `summary` is expected to be `_test_run_summary`'s exit-status +
+        output-size string, not pass/fail counts — the event stream never
+        carries test output text (`claude_backend._exit_status`'s
+        docstring: only size, and an exit code on failure, by design, so a
+        printed credential is never captured), so "5 passed, 2 failed" is
+        not obtainable here; exit status + size is the honest, available
+        proxy for "the outcome changed."
+        """
+        if not tool_use_id or tool_use_id not in self._pending_test_runs:
+            return False
+        del self._pending_test_runs[tool_use_id]
+        changed = not self._test_summaries or self._test_summaries[-1] != summary
+        self._test_summaries.append(summary)
+        if len(self._test_summaries) > 2:
+            self._test_summaries = self._test_summaries[-2:]
+        if changed:
+            self._progress_since_last_edit = True
+        return changed
+
+    @property
+    def last_test_summaries(self) -> list[str]:
+        """Up to the last 2 recorded test-outcome summaries, most recent last."""
+        return list(self._test_summaries)
 
     def detect_ping_pong(self, window: int = 4) -> bool:
         """R2.1: detect an A-B-A-B alternating pattern in the last ``window``
@@ -297,11 +385,16 @@ class StuckDetector:
                 f"doom-loop: identical tool call repeated "
                 f"{self._consecutive_repeats}× consecutively"
             )
-        hot = [(f, c) for f, c in self._edit_counts.items()
+        # Progress-gated: `_hard_edit_counts`, not the raw `_edit_counts` the
+        # advisory tier above reads — see `record_edit`.
+        hot = [(f, c) for f, c in self._hard_edit_counts.items()
                if c >= self.edit_abort]
         if hot:
             path, count = max(hot, key=lambda fc: fc[1])
-            return f"edit-loop: {path} edited {count}×"
+            reason = f"edit-loop: {path} edited {count}× with no observed progress"
+            if self._test_summaries:
+                reason += " — last test outcomes: " + " → ".join(self._test_summaries)
+            return reason
         if self.detect_ping_pong(self.ping_pong_abort_window):
             return (
                 f"ping-pong: alternating between two actions for "
@@ -315,6 +408,11 @@ class StuckDetector:
         self._tool_signatures.clear()
         self._consecutive_repeats = 0
         self._edit_counts.clear()
+        self._hard_edit_counts.clear()
+        self._last_edited_file = None
+        self._progress_since_last_edit = False
+        self._test_summaries.clear()
+        self._pending_test_runs.clear()
 
 
 @dataclass
