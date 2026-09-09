@@ -8,7 +8,11 @@
 // keepFocusInDialog.test.mjs.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { DEAD_CLICK_IGNORE_SELECTORS, isDeadClickIgnored } from "./deadClickFilter.js";
+import {
+  DEAD_CLICK_IGNORE_SELECTORS,
+  isDeadClickIgnored,
+  deadClickBeforeSend,
+} from "./deadClickFilter.js";
 
 function el(tag, opts = {}) {
   const attrs = opts.attributes || {};
@@ -102,4 +106,138 @@ test("the selector list and the predicate agree", () => {
   for (const sel of ["button", "a", '[role="button"]']) {
     assert.ok(!DEAD_CLICK_IGNORE_SELECTORS.includes(sel), `unexpectedly ignoring: ${sel}`);
   }
+});
+
+// ── dead-click ordering-race filter ─────────────────────────────────────────
+// Measured 2026-09-09 in real Chromium with posthog-js 1.417.1 and replay on:
+// button dead clicks the ignorelist above deliberately leaves alone are the
+// module's own mutation-vs-click stamp ordering race, not real dead controls.
+// deadClickBeforeSend (wired as posthog's before_send in telemetry.js) drops
+// exactly that artefact and nothing else. See deadClickFilter.js's header.
+
+const EVENT_TS = 1_700_000_000_000;
+
+function deadClick(props) {
+  return { event: "$dead_click", properties: { ...props }, timestamp: "2026-09-09T00:00:00.000Z" };
+}
+
+test("drops the ordering-race artefact at gaps of 0, 3 and 12 ms", () => {
+  for (const gap of [0, 3, 12]) {
+    const ev = deadClick({
+      $dead_click_event_timestamp: EVENT_TS,
+      $dead_click_last_mutation_timestamp: EVENT_TS - gap,
+    });
+    assert.equal(deadClickBeforeSend(ev), null, `gap ${gap}ms should be dropped`);
+  }
+});
+
+test("keeps a genuine mutation timeout (3600 ms gap)", () => {
+  const ev = deadClick({
+    $dead_click_event_timestamp: EVENT_TS,
+    $dead_click_last_mutation_timestamp: EVENT_TS - 3600,
+  });
+  assert.equal(deadClickBeforeSend(ev), ev);
+});
+
+test("keeps a dead click with no last-mutation stamp", () => {
+  const missing = deadClick({ $dead_click_event_timestamp: EVENT_TS });
+  assert.equal(deadClickBeforeSend(missing), missing);
+
+  const undef = deadClick({
+    $dead_click_event_timestamp: EVENT_TS,
+    $dead_click_last_mutation_timestamp: undefined,
+  });
+  assert.equal(deadClickBeforeSend(undef), undef);
+});
+
+test("keeps a dead click that carries a mutation delay", () => {
+  const withDelay = deadClick({
+    $dead_click_event_timestamp: EVENT_TS,
+    $dead_click_last_mutation_timestamp: EVENT_TS,
+    $dead_click_mutation_delay_ms: 2590,
+  });
+  assert.equal(deadClickBeforeSend(withDelay), withDelay);
+
+  // A present-but-zero delay is still "present" — only an ABSENT delay
+  // (== null) is eligible for the race-window drop.
+  const zeroDelay = deadClick({
+    $dead_click_event_timestamp: EVENT_TS,
+    $dead_click_last_mutation_timestamp: EVENT_TS,
+    $dead_click_mutation_delay_ms: 0,
+  });
+  assert.equal(deadClickBeforeSend(zeroDelay), zeroDelay);
+});
+
+test("keeps a negative gap, and respects the [0, 100] ms boundary", () => {
+  const negative = deadClick({
+    $dead_click_event_timestamp: EVENT_TS,
+    $dead_click_last_mutation_timestamp: EVENT_TS + 5, // last mutation AFTER the event stamp
+  });
+  assert.equal(deadClickBeforeSend(negative), negative);
+
+  const at101 = deadClick({
+    $dead_click_event_timestamp: EVENT_TS,
+    $dead_click_last_mutation_timestamp: EVENT_TS - 101,
+  });
+  assert.equal(deadClickBeforeSend(at101), at101);
+
+  const at100 = deadClick({
+    $dead_click_event_timestamp: EVENT_TS,
+    $dead_click_last_mutation_timestamp: EVENT_TS - 100,
+  });
+  assert.equal(deadClickBeforeSend(at100), null);
+});
+
+test("leaves non-dead-click events untouched", () => {
+  const autocapture = { event: "$autocapture", properties: {} };
+  assert.equal(deadClickBeforeSend(autocapture), autocapture);
+
+  // Race-shaped properties under the WRONG event name must not match.
+  const deadSwipe = {
+    event: "$dead_swipe",
+    properties: {
+      $dead_swipe_event_timestamp: EVENT_TS,
+      $dead_swipe_last_mutation_timestamp: EVENT_TS,
+    },
+  };
+  assert.equal(deadClickBeforeSend(deadSwipe), deadSwipe);
+
+  const heatmap = { event: "$$heatmap", properties: {} };
+  assert.equal(deadClickBeforeSend(heatmap), heatmap);
+
+  const screenViewed = { event: "screen_viewed", properties: { screen: "board" } };
+  assert.equal(deadClickBeforeSend(screenViewed), screenViewed);
+
+  const pageview = { event: "$pageview", properties: {} };
+  assert.equal(deadClickBeforeSend(pageview), pageview);
+});
+
+test("is total: null/undefined/garbage in, same value out", () => {
+  assert.equal(deadClickBeforeSend(null), null);
+  assert.equal(deadClickBeforeSend(undefined), undefined);
+
+  const empty = {};
+  assert.equal(deadClickBeforeSend(empty), empty);
+
+  const noProps = { event: "$dead_click" };
+  assert.equal(deadClickBeforeSend(noProps), noProps);
+
+  const throwsOnProperties = {
+    event: "$dead_click",
+    get properties() {
+      throw new Error("boom");
+    },
+  };
+  assert.doesNotThrow(() => deadClickBeforeSend(throwsOnProperties));
+  assert.equal(deadClickBeforeSend(throwsOnProperties), throwsOnProperties);
+});
+
+test("does not mutate the event", () => {
+  const ev = deadClick({
+    $dead_click_event_timestamp: EVENT_TS,
+    $dead_click_last_mutation_timestamp: EVENT_TS - 3600,
+  });
+  const before = JSON.parse(JSON.stringify(ev));
+  deadClickBeforeSend(ev);
+  assert.deepEqual(ev, before);
 });

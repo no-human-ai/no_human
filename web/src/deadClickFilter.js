@@ -4,21 +4,64 @@
 // Planner/Supervisor and the backend override), 4 more on `<input>`. Opening
 // a native dropdown or focusing a field mutates nothing in the DOM, scrolls
 // nothing and changes no selection, so posthog-js's dead-click heuristic
-// flags every one of them — burying the real dead controls: a Continue
-// button in onboarding's Repositories step, the theme toggle, the Settings
-// "Updates" tab, the "How to find this" tooltip button, a close button, a
-// status label.
+// flags every one of them.
 //
 // `DEAD_CLICK_IGNORE_SELECTORS` is handed to posthog-js's own
 // `capture_dead_clicks.css_selector_ignorelist`, which posthog matches
-// against the click target and every one of its ancestors. `isDeadClickIgnored`
-// is the same rule expressed as a pure, unit-testable predicate — the
-// executable spec for the list, not something posthog runs itself.
+// against the click target and every one of its ancestors — this removes
+// native form controls AT THE SOURCE: posthog never even queues them as dead-
+// click candidates. `isDeadClickIgnored` is the same rule expressed as a
+// pure, unit-testable predicate — the executable spec for the list, not
+// something posthog runs itself. It deliberately diverges from the flat CSS
+// list on one point: posthog's selector match has no early exit, so a
+// `<button>` nested inside an associated `<label for=...>` is matched by
+// `label[for]` and ignored by posthog; this predicate gives the `<button>`
+// itself priority and reports it. That is posthog's own behaviour to know
+// about, not a gap this file closes — the app has no such markup today.
 //
 // posthog-js's DEFAULT ignorelist is `[".ph-no-capture", ".ph-no-deadclick"]`.
 // Handing it a custom list REPLACES the default rather than extending it, so
 // both are re-listed here — dropping them would start reporting dead clicks
 // inside every ph-no-capture block (Board cards, TaskTable body, SlideOver).
+//
+// The ignorelist above only ever covered NATIVE CONTROLS. The button dead
+// clicks it deliberately leaves alone (a Continue button, the theme toggle, a
+// tab) turned out to be a SEPARATE problem: detector artefacts of an ordering
+// race in posthog-js 1.417.1 itself, measured 2026-09-09 in real Chromium
+// with session replay on: 9 of 9 clicks on React buttons that visibly
+// re-render were reported `$dead_click` (1 of 9 with replay off), and on the
+// real project (event 560622) 38 of the last 40 `$dead_click` events carried
+// `$dead_click_last_mutation_timestamp − $dead_click_event_timestamp` in
+// `[-12, 0] ms` with no `$dead_click_mutation_delay_ms` at all — versus
+// genuinely dead controls in the harness at -3.6 s / -10.8 s / -14.4 s or no
+// mutation stamp. The module's own source (dist/dead-clicks-autocapture.js)
+// explains the mechanism: `_lastMutation` is stamped when the
+// MutationObserver CALLBACK runs — the microtask right after React flushes
+// the click's own update — while `click.timestamp` is stamped later, in a
+// window bubble-phase click listener, and `mutationDelayMs` is only computed
+// when `click.timestamp <= _lastMutation`. rrweb's per-click recording puts
+// 1-12 ms between the two stamps, so on a genuinely synchronous React
+// re-render the click's own mutation is already in the past by the time
+// `click.timestamp` is stamped, the delay is never computed, and the
+// candidate times out dead at the absolute timeout
+// (`mutation_threshold_ms * 1.1` = 2750 ms).
+//
+// Falsy-zero read (established, not assumed): the only falsy-zero guard in
+// that path is `this._lastMutation && click.timestamp <= this._lastMutation`
+// — it only discards a literal epoch-0 `_lastMutation`, unreachable here. The
+// *alive* check itself, `isNumber(mutationDelayMs) && mutationDelayMs <
+// mutation_threshold_ms`, treats a computed 0 ms delay as alive correctly, so
+// that path does not explain the 15-of-38 measured events sitting at exactly
+// 0 ms. `deadClickBeforeSend` below (in `[0, 100]`, inclusive of 0 for that
+// reason) reports this as a harness observation, not a proven mechanism for
+// the exact-0 case.
+//
+// Fix: `deadClickBeforeSend`, wired as posthog-js's own `before_send` init
+// option in telemetry.js, drops a `$dead_click` client-side when it has no
+// `$dead_click_mutation_delay_ms` and its own event-minus-last-mutation gap
+// falls in that race window — genuine timeouts (a large gap, or a present
+// mutation delay) are untouched. This does NOT cover `capture_heatmaps`'s own
+// dead-click layer — see telemetry.js for that disclosure.
 export const DEAD_CLICK_IGNORE_SELECTORS = [
   ".ph-no-capture",
   ".ph-no-deadclick",
@@ -90,10 +133,14 @@ export function isDeadClickIgnored(node) {
         // An unassociated label does not short-circuit; it may itself sit
         // inside a form control's subtree (kept walking below).
       } else if (tag === "BUTTON" || tag === "A" || roleOf(el) === "button") {
-        // Deliberate divergence from the flat CSS list (which has no early
-        // exit): a <button> nested inside an associated <label> is ignored
-        // by posthog's selector match but kept here — the app has no such
-        // markup, and this only ever loses noise, never a real button.
+        // Divergence from posthog's own behaviour: posthog's flat
+        // css_selector_ignorelist match has no early exit, so its own scan
+        // would match `label[for]` on an ancestor and ignore a <button>
+        // nested inside an associated <label> too. This predicate instead
+        // gives the nearest interactive element (the <button> itself)
+        // priority and reports it — the app has no such markup today, so
+        // this only ever documents where the two disagree, never removes a
+        // real button from production traffic.
         return false;
       }
       const parent = el.parentElement;
@@ -105,6 +152,46 @@ export function isDeadClickIgnored(node) {
   } catch {
     return false;
   }
+}
+
+// The measured race window (see the header comment above): a $dead_click
+// with no computed mutation delay and an event-minus-last-mutation gap in
+// [0, DEAD_CLICK_RACE_WINDOW_MS] is the ordering artefact, not a real dead
+// control. Inclusive of 0 — 15 of the 38 measured artefacts sit exactly
+// there and the source read does not explain why; the harness observes it.
+export const DEAD_CLICK_RACE_WINDOW_MS = 100;
+
+/**
+ * Pure predicate: is this captured $dead_click event the posthog-js
+ * mutation-vs-click stamp ordering race (see the header), rather than a
+ * genuinely dead control?
+ *
+ * Fails open (returns false → the event is kept) on anything malformed, so a
+ * hostile/unexpected event can never throw into the caller.
+ */
+export function isDeadClickRaceArtifact(event) {
+  try {
+    if (!event || event.event !== "$dead_click") return false;
+    const props = event.properties ?? {};
+    if (props.$dead_click_mutation_delay_ms != null) return false;
+    const eventTs = props.$dead_click_event_timestamp;
+    const mutationTs = props.$dead_click_last_mutation_timestamp;
+    if (!Number.isFinite(eventTs) || !Number.isFinite(mutationTs)) return false;
+    const gap = eventTs - mutationTs;
+    return gap >= 0 && gap <= DEAD_CLICK_RACE_WINDOW_MS;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * posthog-js `before_send` option (see telemetry.js): drops the ordering-race
+ * artefact, returns every other event unchanged — same object reference,
+ * including a non-$dead_click event, `null` or `undefined` (a `before_send`
+ * chain may already be passing those through).
+ */
+export function deadClickBeforeSend(event) {
+  return isDeadClickRaceArtifact(event) ? null : event;
 }
 
 export default isDeadClickIgnored;

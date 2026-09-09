@@ -13,10 +13,29 @@
 //    would be task titles, repo names, file paths, PR text — is bounded by
 //    the `ph-no-capture` blocks below, not by the channel being off. See the
 //    published event list in docs/configuration.md. Dead-click capture stays
-//    on, but native form controls (select/input/textarea/option/associated
-//    label) are excluded from the ignorelist in ./deadClickFilter.js — a
-//    2026-09-09 PostHog triage found opening a dropdown or focusing a field
-//    was flagged as a dead click 26+4 out of ~40 times, burying real ones.
+//    on. Native form controls (select/input/textarea/option/associated
+//    label) are ON the ignorelist in ./deadClickFilter.js, so posthog never
+//    even queues them as dead-click candidates — a 2026-09-09 PostHog triage
+//    found opening a dropdown or focusing a field was flagged as a dead
+//    click 26+4 out of ~40 times, burying real ones.
+//    The button dead clicks the ignorelist deliberately leaves alone turned
+//    out to be a second, unrelated problem: posthog-js 1.417.1's own
+//    mutation-vs-click stamp ordering race flags a synchronously
+//    re-rendering React button as dead (mechanism and measurements in
+//    deadClickFilter.js's header comment). `before_send: deadClickBeforeSend`
+//    below — posthog-js's own sanctioned init option — drops a `$dead_click`
+//    client-side only when it carries no `$dead_click_mutation_delay_ms` and
+//    its event-minus-last-mutation gap sits in [0, 100] ms; every other
+//    event, including genuine mutation timeouts, passes through unchanged.
+//    Not done, and deliberately so: no `*_threshold_ms` change (that would
+//    move the detector's global sensitivity, not fix the ordering race) and
+//    no `.ph-no-deadclick` on any button (that would silence the very
+//    buttons the race is measured on).
+//    Known gap: `capture_heatmaps: true` runs its OWN `DeadClicksAutocapture`
+//    instance (posthog-js's heatmaps.ts) whose `__onCapture` feeds the
+//    `$$heatmap` buffer directly, never `capture('$dead_click')` — so the
+//    heatmaps dead-click layer is NOT filtered by `before_send` and still
+//    carries this race. Not fixed here.
 //  - MASKED REPLAY: recordings capture the app's OWN interface only. All
 //    inputs are masked, and PostHog's own `.ph-no-capture` (whole-block) is
 //    hand-applied to every element that renders operator content: task
@@ -31,7 +50,7 @@
 //    device id. `person_profiles: "always"` keys one person per install id;
 //    still no human identity, no `identify()` call.
 import { fetchVersion } from "./api.js";
-import { DEAD_CLICK_IGNORE_SELECTORS } from "./deadClickFilter.js";
+import { DEAD_CLICK_IGNORE_SELECTORS, deadClickBeforeSend } from "./deadClickFilter.js";
 
 let posthog = null; // the initialized client, or null when not consented
 let started = false;
@@ -79,6 +98,10 @@ export async function initTelemetry(cfg, { importer } = {}) {
       capture_pageview: true,
       capture_pageleave: true,
       capture_dead_clicks: { css_selector_ignorelist: DEAD_CLICK_IGNORE_SELECTORS },
+      // Drops the mutation-vs-click ordering-race artefact (see the header
+      // comment above and deadClickFilter.js) client-side, before the event
+      // is batched. Does not reach capture_heatmaps's own dead-click layer.
+      before_send: deadClickBeforeSend,
       capture_heatmaps: true,
       capture_performance: true,
       capture_exceptions: true,

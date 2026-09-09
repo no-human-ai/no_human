@@ -4,7 +4,7 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { initTelemetry, telemetryConsent, captureScreen, _resetForTests } from "./telemetry.js";
-import { DEAD_CLICK_IGNORE_SELECTORS } from "./deadClickFilter.js";
+import { DEAD_CLICK_IGNORE_SELECTORS, deadClickBeforeSend } from "./deadClickFilter.js";
 
 const SRC = dirname(fileURLToPath(import.meta.url));
 const WEB = join(SRC, "..");
@@ -85,6 +85,7 @@ test("consent → posthog-js imported once, init gets the exact masking options"
     capture_pageview: true,
     capture_pageleave: true,
     capture_dead_clicks: { css_selector_ignorelist: DEAD_CLICK_IGNORE_SELECTORS },
+    before_send: deadClickBeforeSend,
     capture_heatmaps: true,
     capture_performance: true,
     capture_exceptions: true,
@@ -129,6 +130,37 @@ test("consent → posthog-js imported once, init gets the exact masking options"
   // screen views carry the lane NAME only
   captureScreen("board");
   assert.deepEqual(fake.calls.capture, [["screen_viewed", { screen: "board" }]]);
+  _resetForTests();
+});
+
+test("init wires the dead-click race filter as before_send", async () => {
+  _resetForTests();
+  const fake = fakePosthogModule();
+  const importer = async () => fake.module;
+  const cfg = {
+    telemetry: { enabled: true, posthog_publishable: "phc_x", posthog_host: "https://us.i.posthog.com" },
+  };
+  await initTelemetry(cfg, { importer });
+  const [, options] = fake.calls.init[0];
+  assert.equal(typeof options.before_send, "function");
+
+  const artefact = {
+    event: "$dead_click",
+    properties: {
+      $dead_click_event_timestamp: 1_700_000_000_000,
+      $dead_click_last_mutation_timestamp: 1_700_000_000_000 - 3,
+    },
+  };
+  assert.equal(options.before_send(artefact), null);
+
+  const genuine = {
+    event: "$dead_click",
+    properties: {
+      $dead_click_event_timestamp: 1_700_000_000_000,
+      $dead_click_last_mutation_timestamp: 1_700_000_000_000 - 3600,
+    },
+  };
+  assert.equal(options.before_send(genuine), genuine);
   _resetForTests();
 });
 
