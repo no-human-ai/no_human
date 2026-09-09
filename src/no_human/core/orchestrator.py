@@ -114,6 +114,7 @@ from .prompt_blocks import (
     EXPORT_CLASSIFICATION_FILE,
     DistillationError,
     _export_gate_rule,
+    base_merge_conflict_instruction,
     build_distilled_state,
     build_intake_qa_block,
     build_memories_block,
@@ -3474,6 +3475,7 @@ class Orchestrator:
 
     async def _refresh_stale_base(
         self, task: Task, repo: GitRepo, branch: str, base: str | None,
+        *, base_pin: str | None = None,
     ) -> None:
         """Measure this retry's branch against the current base; act past
         `BASE_STALENESS_REBASE_THRESHOLD`, or below it when the two sides
@@ -3514,6 +3516,13 @@ class Orchestrator:
         Never fails the attempt: a measurement, fetch, rebase, or merge
         failure degrades to an advisory and the attempt proceeds with
         whatever could be measured (possibly nothing).
+
+        `base_pin` is the base branch's sha the caller already pinned before
+        the coder session started (`ls_remote_exact`, resolved once at the
+        top of the attempt — this method never re-reads the ref). It is
+        threaded into the conflict-path record/event/message so the coder is
+        told the exact sha to `git merge`, not just the branch name, which
+        could have moved again by the time they read the prompt.
         """
         if not base:
             return
@@ -3607,7 +3616,7 @@ class Orchestrator:
         ctx = task.context or {}
         ctx["base_staleness"] = staleness_record(
             behind, rebased, overlap, mode=mode, merged=merged,
-            diverged=diverged)
+            diverged=diverged, base_pin=base_pin)
         task.context = ctx
         await self.store.update_task(task)
         succeeded = merged if mode == "merge" else rebased if mode == "rebase" else False
@@ -3615,8 +3624,19 @@ class Orchestrator:
             suffix = ""
         elif succeeded:
             suffix = f" — merged {base} into it" if mode == "merge" else " — rebased onto it"
+        elif mode == "merge":
+            # Conflict on the merge path: tell the coder to finish the merge
+            # themselves, never to rebase — a rebase here rewrites the
+            # pushed tip out of HEAD's ancestry and delivery can never
+            # fast-forward it again (see the class docstring above). The
+            # literal substring "merge skipped (conflict)" is pinned by
+            # existing tests — keep it verbatim.
+            suffix = (
+                " — merge skipped (conflict); "
+                + base_merge_conflict_instruction(base_pin or base)
+            )
         else:
-            suffix = " — merge skipped (conflict)" if mode == "merge" else " — rebase skipped (conflict)"
+            suffix = " — rebase skipped (conflict)"
         self.emit(
             "base_staleness",
             f"branch {branch} is {behind} commit(s) behind {base}" + suffix,
@@ -5447,7 +5467,7 @@ class Orchestrator:
                 "exclusion window this attempt"
             )
 
-        await self._refresh_stale_base(task, repo, branch, base)
+        await self._refresh_stale_base(task, repo, branch, base, base_pin=base_pin)
 
         # PR-F Gate 2: create matching branches in linked repos so changes
         # there land on their own deterministic branch (never_push_to honoured).
@@ -18070,12 +18090,21 @@ class Orchestrator:
             test_cmd_str = self.config["tests"]["command"]
         integration_cmd_str = getattr(prof, "integration_test_cmd", "") if prof else ""
 
+        # Read `base_staleness` locally here — `ctx = task.context or {}` is
+        # not assigned until later in this function (do not reorder that
+        # assignment) — so a merge-conflict this attempt can still be named
+        # in the "Rules:" block: `base_merge_conflict_instruction` overrides
+        # the generic "Do NOT run any git command" rule for this one case.
+        _stale_for_rules = (task.context or {}).get("base_staleness") or {}
         rules = build_rules_block(
             test_cmd_str, integration_cmd_str,
             self.ci_runner.name if self.ci_runner is not None else None,
             routing_rules=list(getattr(prof, "test_commands", None) or []),
             repro_mode=self.config.get("repro_gate", {}).get("mode", "advisory"),
             repo_path=work_dir or task.repo_path,
+            base_merge_conflict=(
+                _stale_for_rules.get("base_pin") or None
+            ) if _stale_for_rules.get("merge_conflict") else None,
         )
         # Append confirmed rules + skills from the learning queue (Phase G).
         extra = self._format_active_memories()
@@ -18342,6 +18371,26 @@ class Orchestrator:
                 "or re-fix something the base already resolved; check current "
                 "behavior before assuming a symptom is still present.\n\n"
             )
+        elif stale.get("merge_conflict"):
+            # The merge path (pushed branch) hit a conflict and was left for
+            # the coder — this is the ONE case where the coder must run git
+            # themselves, and it must be a MERGE, never a rebase: this
+            # branch has a pushed tip, and delivery only ever fast-forwards
+            # against it (see `base_merge_conflict_instruction`).
+            overlap = stale.get("overlapping_files") or []
+            staleness_preamble = (
+                f"YOUR BRANCH IS {stale['commits_behind']} COMMIT(S) BEHIND the current "
+                "base. The harness tried to merge the base in for you and stopped on a "
+                "CONFLICT, leaving your tree clean and untouched. "
+                + base_merge_conflict_instruction(
+                    stale.get("base_pin") or "the current base")
+                + "\n\n"
+            )
+            if overlap:
+                staleness_preamble += (
+                    "Merge did not complete; both sides changed: "
+                    f"{', '.join(overlap)}\n\n"
+                )
         elif should_rebase(
             stale.get("was_behind", stale.get("commits_behind", 0)),
             BASE_STALENESS_REBASE_THRESHOLD,
