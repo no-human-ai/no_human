@@ -147,6 +147,49 @@ def test_wrapped_and_compound_spellings_are_caught(repo):
         assert tip in d.reason, f"{cmd!r} -> {d.reason}"
 
 
+def test_rebase_continue_is_denied_while_a_rebase_is_actually_in_progress(repo):
+    """The incident's real sequence: `git rebase origin/main` (already
+    denied by the tests above, but a coder could bypass a single check, or
+    this guard could regress) leaves the repo mid-rebase with a conflict —
+    HEAD detached, `.git/rebase-merge` or `.git/rebase-apply` present — and
+    *then* `git rebase --continue` runs. `_current_branch`'s plain
+    `symbolic-ref` fails on the detached HEAD; the guard must still resolve
+    the branch (and its pushed tip) via the on-disk rebase state, or this
+    exact command — the one named in the incident and the ticket — is
+    let through although the branch was pushed."""
+    tip = _make_pushed_branch(repo)
+
+    # Advance origin/main with a change that conflicts with the pushed
+    # branch's own edits to the same file.
+    _git(repo, "checkout", "-q", "main")
+    (repo / "f.txt").write_text("main-conflict\n")
+    _git(repo, "commit", "-aq", "-m", "main change")
+    _git(repo, "push", "-q", "origin", "main")
+    _git(repo, "checkout", "-q", "feature")
+
+    result = subprocess.run(
+        ["git", "rebase", "origin/main"], cwd=str(repo),
+        capture_output=True, text=True,
+    )
+    assert result.returncode != 0, (
+        "setup expected a conflicting rebase, got: "
+        f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    )
+    # Confirm the setup actually reached the state this test is about:
+    # HEAD detached, mid-rebase.
+    branch_ref = subprocess.run(
+        ["git", "symbolic-ref", "--quiet", "--short", "HEAD"],
+        cwd=str(repo), capture_output=True, text=True,
+    )
+    assert branch_ref.returncode != 0, "expected a detached HEAD mid-rebase"
+
+    d = _ev("git rebase --continue", cwd=str(repo))
+    assert d.allow is False
+    assert d.severity == guard.GUARD_DESTRUCTIVE
+    assert tip in d.reason
+    assert "git merge" in d.reason
+
+
 def test_a_detached_head_and_a_bare_reset_hard_fall_through(repo):
     _make_pushed_branch(repo)
     _git(repo, "checkout", "-q", "--detach", "HEAD")

@@ -21,9 +21,15 @@ loss of coverage — just a difference in how "pushed" is confirmed.
 
 Failure policy is **fail OPEN**, deliberately inverted from most of this
 guard package's conservative-deny convention: a missing cwd, a non-git
-directory, a detached HEAD, no remotes, no tracking ref, a failed git
-invocation, or a timeout — every one of these returns ``None`` (no
-denial), never a raise. Two things justify that: this rule is an *addition*
+directory, a detached HEAD that isn't mid-rebase, no remotes, no tracking
+ref, a failed git invocation, or a timeout — every one of these returns
+``None`` (no denial), never a raise. A detached HEAD *during* a rebase is
+the one case resolved rather than treated as failure: ``git rebase
+--continue`` only ever runs while a rebase is in progress, and git detaches
+HEAD for that whole duration (see ``_rebase_head_name``), so failing open
+there would silently defeat the ``--continue`` denial in the exact
+situation it exists to catch. Two things justify the rest staying open:
+this rule is an *addition*
 stacked on top of ``guard._git_worktree_denial``, which already
 independently blocks every tree-clobbering git form regardless of what this
 module decides; and a false positive here would break the legitimate
@@ -36,6 +42,7 @@ truly was never pushed) applies instead.
 
 from __future__ import annotations
 
+import os
 import subprocess
 
 _ABORT_LIKE = ("--abort", "--skip", "--autostash")
@@ -80,8 +87,37 @@ def _git_ok(cwd: str, *args: str, timeout: float = 5) -> bool:
     return proc.returncode == 0
 
 
+def _rebase_head_name(cwd: str) -> str | None:
+    """`git rebase --continue` only ever runs while a rebase is IN
+    PROGRESS, and git detaches HEAD for the duration of a rebase (both the
+    apply and merge backends) — so `symbolic-ref HEAD` can't name the
+    branch there. Both backends record the branch being rebased in
+    `<git-dir>/rebase-merge/head-name` or `<git-dir>/rebase-apply/head-name`
+    as `refs/heads/<branch>` for exactly this duration. Reads the file
+    directly (not a git subcommand) since `git symbolic-ref` refuses a
+    detached HEAD outright; returns None outside a rebase or on any
+    filesystem hiccup, never raises."""
+    git_dir = _git(cwd, "rev-parse", "--git-dir")
+    if not git_dir:
+        return None
+    git_dir = git_dir if os.path.isabs(git_dir) else os.path.join(cwd, git_dir)
+    for state_dir in ("rebase-merge", "rebase-apply"):
+        try:
+            with open(os.path.join(git_dir, state_dir, "head-name"), "r") as f:
+                ref = f.read().strip()
+        except OSError:
+            continue
+        if ref.startswith("refs/heads/"):
+            return ref[len("refs/heads/"):]
+    return None
+
+
 def _current_branch(cwd: str) -> str | None:
-    return _git(cwd, "symbolic-ref", "--quiet", "--short", "HEAD") or None
+    return (
+        _git(cwd, "symbolic-ref", "--quiet", "--short", "HEAD")
+        or _rebase_head_name(cwd)
+        or None
+    )
 
 
 def _remotes(cwd: str) -> list[str]:
