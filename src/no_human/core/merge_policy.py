@@ -122,6 +122,12 @@ class GateFacts:
     repro_required: bool = False
     verifiers_ran: int = 0
     verifiers_failed: tuple[str, ...] = ()
+    # Verifiers that reached no verdict after their bounded retry (the judge
+    # was actually asked and never answered). Advisory only — never makes
+    # `_check_verifiers_all_satisfied` fail — but tracked distinctly so a
+    # human-legible detail string can name them without being conflated with
+    # a genuine FAIL, per `verifiers_failed` above.
+    verifiers_unavailable: tuple[str, ...] = ()
     ci_state: str | None = None  # success/failure/pending/unknown/None
     # Advisory detail only — names failing checks in `_check_ci`'s detail
     # string. The pass/fail decision is still made from `ci_state` alone, so
@@ -366,9 +372,16 @@ def _check_repro_gate(facts: GateFacts, arg: Any) -> tuple[bool, str]:
 def _check_verifiers_all_satisfied(facts: GateFacts, _arg: Any) -> tuple[bool, str]:
     if facts.verifiers_ran == 0:
         return True, "0 verifiers ran"
-    if not facts.verifiers_failed:
-        return True, f"{facts.verifiers_ran} verifiers, none failed"
-    return False, f"{len(facts.verifiers_failed)} verifier{'s' if len(facts.verifiers_failed) != 1 else ''} failed: {', '.join(facts.verifiers_failed)}"
+    if facts.verifiers_failed:
+        return False, f"{len(facts.verifiers_failed)} verifier{'s' if len(facts.verifiers_failed) != 1 else ''} failed: {', '.join(facts.verifiers_failed)}"
+    if facts.verifiers_unavailable:
+        n = len(facts.verifiers_unavailable)
+        return (
+            True,
+            f"{facts.verifiers_ran} verifiers, none failed "
+            f"({n} no verdict (advisory): {', '.join(facts.verifiers_unavailable)})",
+        )
+    return True, f"{facts.verifiers_ran} verifiers, none failed"
 
 
 def _format_failed_checks(names: tuple[str, ...]) -> str:
@@ -560,10 +573,20 @@ def facts_from_evidence(
 
     verifiers = getattr(evidence, "verifiers", None) or []
     verifiers_ran = len(verifiers)
+    # An unavailable (no-verdict-after-retry) verifier is advisory, not a
+    # failure — it must not land in `verifiers_failed` (which drives
+    # `_check_verifiers_all_satisfied`'s ready=False), but it is also not a
+    # pass, so it gets its own bucket rather than being silently dropped.
     verifiers_failed = tuple(
         sorted(
             str(v.get("verifier_id", "")) for v in verifiers
-            if isinstance(v, dict) and not v.get("passed")
+            if isinstance(v, dict) and not v.get("passed") and not v.get("unavailable")
+        )
+    )
+    verifiers_unavailable = tuple(
+        sorted(
+            str(v.get("verifier_id", "")) for v in verifiers
+            if isinstance(v, dict) and v.get("unavailable")
         )
     )
 
@@ -590,6 +613,7 @@ def facts_from_evidence(
         repro_required=repro_required,
         verifiers_ran=verifiers_ran,
         verifiers_failed=verifiers_failed,
+        verifiers_unavailable=verifiers_unavailable,
         ci_state=ci_state,
         ci_failed_checks=ci_failed_checks,
         changed_paths=tuple(changed_paths),

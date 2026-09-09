@@ -218,6 +218,34 @@ def test_list_json_includes_runs_and_no_verdict_count(tmp_path, monkeypatch):
     assert v["source_file"]
 
 
+def test_list_no_verdict_count_excludes_the_no_matching_hunks_case(tmp_path, monkeypatch):
+    """MINOR regression: the deterministic "no matching hunks in the diff"
+    outcome (`review/verifiers.py`'s `run_verifiers`) sets `no_verdict=True`
+    but never makes a judge call at all, so `unavailable` stays `False`. A
+    verifier that was never asked did not fail to answer — only a row where
+    the judge WAS asked and still never answered (`unavailable=True`) may
+    count toward the no-verdict column. Before the fix this counted by
+    `no_verdict` alone and reported 1 even though 0 judge calls happened."""
+    repo = tmp_path / "repo"
+    _write_verifiers(repo, _ONE_RULE)
+    db = tmp_path / "test.db"
+    _seed_attempt_with_verifier_results(db, [
+        {"verifier_id": "rule-one", "passed": False, "no_verdict": True, "unavailable": False},
+    ])
+    runner = _runner(tmp_path, monkeypatch, db_path=db)
+
+    result = runner.invoke(cli, ["verifiers", "list", "--repo", str(repo), "--json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    (v,) = payload["verifiers"]
+    assert v["runs"] == 1
+    assert v["no_verdict_count"] == 0, (
+        "a no-matching-hunks row (no judge call made) must not count as a "
+        "verifier that failed to answer"
+    )
+
+
 def test_list_without_a_readable_db_still_exits_0_with_zero_counts(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     _write_verifiers(repo, _ONE_RULE)

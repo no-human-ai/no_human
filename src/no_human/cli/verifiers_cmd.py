@@ -240,7 +240,13 @@ async def _no_verdict_counts(db_path) -> dict[str, dict[str, int]]:
                     continue
                 entry = counts.setdefault(vid, {"runs": 0, "no_verdict": 0})
                 entry["runs"] += 1
-                if r.get("no_verdict"):
+                # `unavailable`, not `no_verdict`: `no_verdict` alone is also
+                # set by the deterministic "no matching hunks in the diff"
+                # case, where no judge call is ever made — a verifier that
+                # was never asked did not fail to answer. `unavailable` is
+                # only set once a no-verdict result survives the bounded
+                # retry, i.e. the judge WAS asked and still never answered.
+                if r.get("unavailable"):
                     entry["no_verdict"] += 1
     return counts
 

@@ -337,6 +337,35 @@ def test_verifiers_all_satisfied_fail_names_verifier():
     assert "v1" in v.detail
 
 
+def test_verifiers_all_satisfied_pass_unavailable_only_is_advisory():
+    """A verifier that reached no verdict after its bounded retry is
+    advisory, not a failure — an unavailable-only round must stay ready
+    (unlike an entry in `verifiers_failed`, which blocks), and the detail
+    string must still name it so an operator can see which one never
+    answered."""
+    v = _one(
+        Rule("verifiers_all_satisfied"),
+        _facts(verifiers_ran=1, verifiers_failed=(), verifiers_unavailable=("no-todo",)),
+    )
+    assert v.passed
+    assert "no-todo" in v.detail
+
+
+def test_verifiers_all_satisfied_fail_even_with_unavailable_present():
+    """A genuine failure still blocks even when an unrelated verifier that
+    round was merely unavailable — the two states must not cancel out."""
+    v = _one(
+        Rule("verifiers_all_satisfied"),
+        _facts(
+            verifiers_ran=2,
+            verifiers_failed=("v1",),
+            verifiers_unavailable=("v2",),
+        ),
+    )
+    assert not v.passed
+    assert "v1" in v.detail
+
+
 # --------------------------------------------------------------------- #
 # repro_gate, both modes
 # --------------------------------------------------------------------- #
@@ -899,6 +928,42 @@ def test_facts_from_evidence_verifiers_absent_is_zero_ran():
     facts = facts_from_evidence(ev, tamper_adjudications=[])
     assert facts.verifiers_ran == 0
     assert facts.verifiers_failed == ()
+
+
+def test_facts_from_evidence_unavailable_verifier_is_not_failed():
+    """The MAJOR regression this reproduces: a verifier that reached no
+    verdict after its bounded retry (`unavailable: True`) must NOT land in
+    `verifiers_failed` — that field drives `verifiers_all_satisfied`'s
+    ready=False, and an advisory-only round must stay ready. Before the fix
+    this asserted `facts.verifiers_failed == ("no-todo",)`, which is exactly
+    the incident: `MERGE POLICY ready: False` / "1 of 6 rules failed" for a
+    round where the coder did nothing wrong."""
+    ev = _Evidence(
+        verifiers=[{"verifier_id": "no-todo", "passed": False, "unavailable": True}]
+    )
+    facts = facts_from_evidence(ev, tamper_adjudications=[])
+    assert facts.verifiers_ran == 1
+    assert facts.verifiers_failed == ()
+    assert facts.verifiers_unavailable == ("no-todo",)
+    v = _one(Rule("verifiers_all_satisfied"), facts)
+    assert v.passed
+
+
+def test_facts_from_evidence_unavailable_and_genuinely_failed_both_tracked():
+    ev = _Evidence(
+        verifiers=[
+            {"verifier_id": "no-todo", "passed": False, "unavailable": True},
+            {"verifier_id": "no-secrets", "passed": False, "unavailable": False},
+            {"verifier_id": "ok", "passed": True},
+        ]
+    )
+    facts = facts_from_evidence(ev, tamper_adjudications=[])
+    assert facts.verifiers_ran == 3
+    assert facts.verifiers_failed == ("no-secrets",)
+    assert facts.verifiers_unavailable == ("no-todo",)
+    v = _one(Rule("verifiers_all_satisfied"), facts)
+    assert not v.passed
+    assert "no-secrets" in v.detail
 
 
 def test_facts_from_evidence_ci_success():

@@ -189,16 +189,36 @@ class PrEvidence:
         module's own boundary is "never import the review package", and that
         holds for the verifiers module too — the shape is duplicated here on
         purpose rather than crossing it.
+
+        An unavailable verifier (no verdict after its bounded retry) is its
+        own third state — neither a pass nor a genuine failure — and must
+        read as such here too, not be folded into "failed".
         """
         if not self.verifiers:
             return None
         total = len(self.verifiers)
         failed = sorted(
-            v.get("verifier_id", "") for v in self.verifiers if not v.get("passed")
+            v.get("verifier_id", "") for v in self.verifiers
+            if not v.get("passed") and not v.get("unavailable")
         )
-        if not failed:
+        unavailable = sorted(
+            v.get("verifier_id", "") for v in self.verifiers if v.get("unavailable")
+        )
+        if not failed and not unavailable:
             return f"{total} of {total} satisfied"
-        return f"{len(failed)} of {total} failed — {', '.join(failed)}"
+        if failed:
+            detail = f"{len(failed)} of {total} failed — {', '.join(failed)}"
+            if unavailable:
+                detail += (
+                    f"; {len(unavailable)} no verdict (advisory) — "
+                    f"{', '.join(unavailable)}"
+                )
+            return detail
+        checked = total - len(unavailable)
+        return (
+            f"{checked} of {total} satisfied, {len(unavailable)} no verdict "
+            f"(advisory) — {', '.join(unavailable)}"
+        )
 
     def merge_policy_pin(self) -> str | None:
         """The merge-ready policy's own summary sentence — re-derived nowhere

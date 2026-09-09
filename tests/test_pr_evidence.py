@@ -171,6 +171,29 @@ def test_verifiers_pin_renders_the_summary_line_shape():
     assert one_fail.verifiers_pin() == "1 of 2 failed — b"
 
 
+def test_verifiers_pin_distinguishes_unavailable_from_genuinely_failed():
+    """MAJOR regression: an unavailable (no-verdict-after-retry) verifier
+    must read as its own third state in the pin TEXT, not as a failure —
+    before the fix this produced the misleading `"1 of 1 failed — no-todo"`
+    for a purely advisory round (task's own dogfood incident)."""
+    unavailable_only = PrEvidence(verifiers=[
+        _verifier_dict(verifier_id="no-todo", passed=False, unavailable=True),
+    ])
+    pin = unavailable_only.verifiers_pin()
+    assert pin is not None
+    assert "failed" not in pin
+    assert "no verdict" in pin and "no-todo" in pin
+
+    mixed = PrEvidence(verifiers=[
+        _verifier_dict(verifier_id="no-print", passed=False),
+        _verifier_dict(verifier_id="flaky-rule", passed=False, unavailable=True),
+    ])
+    mixed_pin = mixed.verifiers_pin()
+    assert mixed_pin is not None
+    assert "1 of 2 failed — no-print" in mixed_pin
+    assert "no verdict" in mixed_pin and "flaky-rule" in mixed_pin
+
+
 def test_the_evidence_table_carries_a_verifiers_row(store, tmp_path):
     """AC 1 / AC 6: the verifiers row sits in the Evidence table (between
     the review row and the tamper section, per `_evidence_section`'s
@@ -226,6 +249,14 @@ def test_an_unavailable_verifier_renders_distinctly_from_a_genuine_failure(
     assert "| Verifiers | ⚠️" in ev, (
         "an unavailable-only round must not render the genuine-failure glyph")
     assert "❌" not in ev
+    # The pin TEXT (not just the glyph) must not read as a failure either —
+    # this is the exact misleading string the dogfood incident reported:
+    # "1 of 1 failed — no-todo" for a purely advisory round. Scope the check
+    # to the Verifiers row itself, not the whole Evidence block, so this
+    # can't accidentally key off unrelated text elsewhere in the table.
+    verifiers_row = next(line for line in ev.splitlines() if line.startswith("| Verifiers |"))
+    assert "failed" not in verifiers_row
+    assert "no verdict" in verifiers_row and "flaky-rule" in verifiers_row
     # Per-item: the unavailable rule's own bullet carries the warning glyph,
     # never the genuine-failure one. Bullets (not the summary table row,
     # which is checked above) start with "- ".
@@ -257,6 +288,12 @@ def test_a_genuine_failure_keeps_its_glyph_alongside_an_unavailable_sibling(
     ev = body.split("## Evidence\n", 1)[1].split("\n## ", 1)[0]
     assert "| Verifiers | ❌" in ev, (
         "a genuine failure in the round must keep the genuine-failure glyph")
+    # The pin text must name the genuine failure as "failed" but the
+    # unavailable sibling separately as advisory no-verdict — never both
+    # folded into the same failed count.
+    verifiers_row = next(line for line in ev.splitlines() if line.startswith("| Verifiers |"))
+    assert "1 of 2 failed — no-print" in verifiers_row
+    assert "no verdict" in verifiers_row and "flaky-rule" in verifiers_row
     # Per-item bullets (not the summary table row, which lists every failed
     # id — including the unavailable one — under the shared ❌ glyph): the
     # genuine failure's own bullet is ❌, the unavailable sibling's is ⚠️.

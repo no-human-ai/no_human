@@ -83,15 +83,16 @@ when it names one, and which files it actually checked — never only the
 failures. A verifier judge that reaches no parseable verdict (a timeout, a
 crash, an unparseable response) gets exactly one bounded retry. If the retry
 *also* reaches no verdict, the outcome is recorded as `no_verdict`/
-`unavailable` on that verifier's result — it still renders as "not
-satisfied" in the checklist (fail-closed at the per-rule level is
-unchanged) — but it is **advisory only**: it is reported as one advisory log
-line and a `⚠️` row in the PR Evidence table, `_run_review` does not
-escalate the task or end the attempt over it, and the round proceeds to the
-agentic reviewer exactly as it would if every verifier had passed. A
-verifier that never reaches a verdict is an infrastructure gap in the gate,
-not evidence about the change, so it must never be charged to the coder as a
-defect nobody found.
+`unavailable` on that verifier's result — it is **advisory only**: unlike a
+genuine FAIL it does not add a `rule:<verifier id>` item to the reviewer's
+checklist, it is reported as one advisory log line and a `⚠️` row in the PR
+Evidence table, `_run_review` does not escalate the task or end the attempt
+over it, and the round proceeds to the agentic reviewer exactly as it would
+if every verifier had passed. A verifier that never reaches a verdict is an
+infrastructure gap in the gate, not evidence about the change, so it must
+never be charged to the coder as a defect nobody found — merge-policy's
+`verifiers_all_satisfied` check treats an unavailable-only round as ready,
+naming the unavailable verifiers in its detail rather than blocking on them.
 
 The merge into the review decision is monotonic for **answered** verdicts,
 not advisory noise the reviewer can talk itself past: **any** verifier that
@@ -104,7 +105,9 @@ and keyed into `task.context.verifier_results` by the commit SHA it judged,
 so a later attempt's verdicts never overwrite an earlier one's. The same
 verdicts render twice for a human: as a `Verifiers` row in the PR body's
 Evidence table (`core/pr_evidence.py`'s `verifiers_pin()` — `"N of N
-satisfied"` or `"K of N failed — id1, id2"`, folded behind a `<details>` list
+satisfied"`, `"K of N failed — id1, id2"`, or, when one or more reached no
+verdict, a variant naming them separately as `"no verdict (advisory)"` rather
+than folding them into the failed count, folded behind a `<details>` list
 of every rule), and as a per-verifier list in the board's Review tab. No
 `.no_human/verifiers.yaml` (repo or global), verifiers disabled in config, no
 usable diff, or a changed-path set that matches none of the loaded rules all

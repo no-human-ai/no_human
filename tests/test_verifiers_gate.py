@@ -20,6 +20,8 @@ import json
 import subprocess
 from pathlib import Path
 
+import pytest
+
 import no_human.core.orchestrator as orchestrator_module
 from no_human.agent.backend import AgentResult
 from no_human.core.orchestrator import (
@@ -32,6 +34,7 @@ from no_human.core.orchestrator import (
 from no_human.core.task import Task
 from no_human.notify.slack import SlackNotifier
 from no_human.review.reviewer import ReviewDecision as RD
+from no_human.review.reviewer import ReviewerUnavailable
 from no_human.review.selfcheck import ChecklistItem as CI
 from no_human.vcs.git import GitRepo
 
@@ -489,6 +492,48 @@ async def test_verifier_spend_lands_on_the_review_usage_columns(store, tmp_path)
     attempt_id2 = await store.create_attempt(task2.id, 1)
     decision2 = await orch2._run_review(task2, repo, attempt_id2, base="main")
     assert decision2.tokens_used == 500
+
+
+async def test_verifier_spend_survives_a_reviewer_that_is_also_unavailable(
+    store, tmp_path,
+):
+    """MINOR regression: when the agentic reviewer is ALSO unavailable the
+    same round (e.g. it times out right after a passing/advisory verifier
+    round), `_run_review` re-raises `ReviewerUnavailable` without carrying
+    the verifier spend — the caller's usage accounting then sees 0/0/0/None
+    for a round that genuinely spent tokens on the verifier judge call.
+    The verifier spend must be ADDED onto whatever the reviewer's own
+    exception already carries, not dropped."""
+    work = _repo_with_a_verifier(tmp_path, VERIFIER_YAML)
+    repo = GitRepo(work)
+
+    class _UnavailableReviewer(FakeReviewer):
+        async def review(self, task, **kw):
+            self.review_calls += 1
+            exc = ReviewerUnavailable("reviewer reached no verdict")
+            exc.tokens_used = 1000
+            exc.cache_read_tokens = 20
+            exc.cache_creation_tokens = 10
+            exc.output_tokens = 200
+            raise exc
+
+    reviewer = _UnavailableReviewer(_ok_json(passed=True))
+    orch = _orch(store, tmp_path, reviewer)
+    task = Task.new("t", repo_path=str(work))
+    await store.create_task(task)
+    attempt_id = await store.create_attempt(task.id, 1)
+
+    with pytest.raises(ReviewerUnavailable) as excinfo:
+        await orch._run_review(task, repo, attempt_id, base="main")
+
+    exc = excinfo.value
+    # Verifier judge call spent 500/10/5/100 (FakeReviewer's fixed
+    # AgentResult, see `_run_bounded`); the reviewer's own exception already
+    # carried 1000/20/10/200 — the two must be summed, not either one alone.
+    assert exc.tokens_used == 1500
+    assert exc.cache_read_tokens == 30
+    assert exc.cache_creation_tokens == 15
+    assert exc.output_tokens == 300
 
 
 async def test_verifier_results_persist_on_the_attempt_row_and_in_task_context(
