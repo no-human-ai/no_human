@@ -777,6 +777,26 @@ ALLOWLIST: dict[str, dict[str, Allowed]] = {
                   "`web/src` — and only when `NH_NO_AUTO_BUILD` is unset; "
                   "set it to fall back to a warning instead"),
     },
+    "core/worktree.py": {
+        # `_create_venv` runs `[sys.executable, "-m", "venv", <path>]`. The
+        # argv is a literal list, but argv[0] is `sys.executable` rather than
+        # a name, so the analyzer cannot classify it in PROGRAMS and reports
+        # `<dynamic>`. The program is THIS interpreter and the module is the
+        # standard library's own `venv`, which creates a directory and copies
+        # or symlinks the interpreter. It opens no socket.
+        #
+        # `uv venv` was the first choice here and was deliberately dropped for
+        # exactly this reason: it MAY fetch an interpreter, which would put a
+        # real network call inside an attempt's environment setup. Declaring
+        # that would have been honest; not making the call at all is better.
+        "exec:<dynamic>": Allowed(
+            "nothing outside this machine — `sys.executable -m venv` builds "
+            "the worktree's own venv so an attempt's editable install cannot "
+            "rewrite the shared checkout's .venv (issue #128)",
+            _ON + "fires only inside a LINKED worktree whose inherited "
+                  "VIRTUAL_ENV points outside it, and only when that "
+                  "worktree carries a pyproject.toml/setup.py/setup.cfg"),
+    },
     "updates.py": {
         "http:urllib.request": Allowed(
             "https://pypi.org/pypi/no-human/json — no identifier, no repo name",
