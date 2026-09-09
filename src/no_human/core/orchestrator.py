@@ -1611,6 +1611,32 @@ def _attributed_ids(
     return [t for t in failing if t in keep]
 
 
+# emit() kinds that end a task without going through the "done"/"awaiting_approval"
+# or "failed" off-ramps — see `Orchestrator._telemetry_hook`'s `task_ended` branch.
+_TASK_END_KINDS = ("escalated", "paused_quota", "cancelled", "awaiting_input", "blocked")
+
+
+def _task_end_outcome(kind: str, blocker_category: str) -> str:
+    """Map a `_TASK_END_KINDS` emit kind (+ `blocker_category` for the
+    ambiguous "blocked" kind) onto a `telemetry.TASK_END_OUTCOMES` value.
+    See `docs/TELEMETRY.md` for the full table this mirrors.
+    """
+    if kind == "escalated":
+        return "escalated"
+    if kind == "paused_quota":
+        return "parked_quota"
+    if kind == "cancelled":
+        return "cancelled"
+    if kind == "awaiting_input":
+        return "needs_answer"
+    cat = (blocker_category or "").strip().upper()  # kind == "blocked"
+    if cat == "USER_PAUSED":
+        return "cancelled"
+    if cat in ("TRANSIENT_INFRA", "QUOTA", "DEPENDENCY_WAIT"):
+        return "parked_infra"
+    return "needs_answer"  # safe default: a human is waited on
+
+
 class Orchestrator:
     # Pause before the single PR-open retry (transient forge trouble). A class
     # attribute so tests zero it instead of eating a real 30s sleep (EH1) —
@@ -1816,6 +1842,19 @@ class Orchestrator:
                                  reason_category=telemetry.failure_reason_category(
                                      meta.get("reason_category"),
                                      meta.get("blocker_category")))
+            elif (kind in _TASK_END_KINDS
+                  and not getattr(self, "_tel_terminal_sent", False)):
+                # Every other terminal off-ramp (escalated / parked on quota
+                # or infra / needs a human answer / cancelled) — see
+                # docs/TELEMETRY.md. Same once-only latch as above.
+                self._tel_terminal_sent = True
+                started = getattr(self, "_tel_started_at", None)
+                bucket = (telemetry.duration_bucket((time.time() - started) / 60)
+                          if started else "unknown")
+                telemetry.record(
+                    "task_ended", config=self.config,
+                    outcome=_task_end_outcome(kind, str(meta.get("blocker_category") or "")),
+                    attempts=getattr(self, "_tel_attempts", 0), duration_bucket=bucket)
         except Exception:
             pass
 

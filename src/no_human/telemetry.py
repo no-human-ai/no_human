@@ -51,7 +51,21 @@ _ALLOWED_EVENTS: dict[str, frozenset[str]] = {
     "task_failed": frozenset({"category", "reason_category", "environment"}),
     "approve_clicked": frozenset({"environment"}),
     "feature_used": frozenset({"name", "environment"}),
+    "task_ended": frozenset({"outcome", "attempts", "duration_bucket", "environment"}),
+    "tasks_orphaned": frozenset({"count_bucket", "environment"}),
 }
+
+# Event names the DEPLOYED first-party Lambda accepts (as of 2026-08-16).
+# `task_ended`/`tasks_orphaned` are new and have NOT shipped server-side yet;
+# the Lambda 400s a batch WHOLESALE on one unknown event name and a rejected
+# batch stays queued forever, so `flush()` drops them on the `kind ==
+# "lambda"` wire path only, until the server-side allowlist ships. PostHog
+# (the default destination, and where this triage data actually comes from)
+# accepts everything in `_ALLOWED_EVENTS` and is unaffected.
+_LAMBDA_EVENTS = frozenset({
+    "app_started", "task_created", "task_completed", "task_failed",
+    "approve_clicked", "feature_used",
+})
 
 # Closed enum of `task_failed`'s `reason_category` prop — a machine-readable
 # failure PATTERN, never free text (no task id, title, repo name, or detail
@@ -61,12 +75,35 @@ FAILURE_REASON_CATEGORIES = frozenset({
     "tamper_blocked", "blocker_parked", "other",
 })
 
+# Closed enum of `task_ended`'s `outcome` prop — every non-done/non-failed way
+# a task can stop reaching a human's attention, never free text. Deliberately
+# does NOT include "interrupted": an app/server closed mid-run cannot emit a
+# terminal event at the moment it dies, so that case is instead detected and
+# reported once, in aggregate, as `tasks_orphaned` on the NEXT server start.
+TASK_END_OUTCOMES = frozenset({
+    "escalated", "parked_quota", "parked_infra", "needs_answer", "cancelled",
+})
+
+# Closed enum of `tasks_orphaned`'s `count_bucket` prop — a bucketed count,
+# never the precise number (which could, in principle, correlate with a
+# specific install's fleet size).
+ORPHAN_COUNT_BUCKETS = frozenset({"0", "1", "2-5", "6+"})
+
+# Mirror of `duration_bucket()`'s return values, for value-validating
+# `task_ended.duration_bucket`. `task_completed.duration_bucket` (produced by
+# the very same `duration_bucket()`) is deliberately left unvalidated here —
+# `task_completed` must stay byte-identical, including its validation.
+DURATION_BUCKETS = frozenset({"<10m", "10-30m", "30-60m", ">60m", "unknown"})
+
 # Mirror of the first-party Lambda's per-event-prop VALUE validation, for
 # props whose value space is itself a closed enum (currently just
 # `task_failed.reason_category`). kind/prop NAME validation lives in
 # `_ALLOWED_EVENTS`; this is the additional VALUE-level check.
 _ALLOWED_PROP_VALUES: dict[tuple[str, str], frozenset[str]] = {
     ("task_failed", "reason_category"): FAILURE_REASON_CATEGORIES,
+    ("task_ended", "outcome"): TASK_END_OUTCOMES,
+    ("task_ended", "duration_bucket"): DURATION_BUCKETS,
+    ("tasks_orphaned", "count_bucket"): ORPHAN_COUNT_BUCKETS,
 }
 
 # Recognized CI platform markers (intake-resolved: covers ~95% of CI
@@ -155,6 +192,18 @@ def duration_bucket(minutes: float) -> str:
     if minutes < 60:
         return "30-60m"
     return ">60m"
+
+
+def orphan_bucket(n: int) -> str:
+    """Bucket an orphan-task count for `tasks_orphaned.count_bucket` so no
+    precise fleet-size-correlated count ever leaves the machine."""
+    if n <= 0:
+        return "0"
+    if n == 1:
+        return "1"
+    if n <= 5:
+        return "2-5"
+    return "6+"
 
 
 # Maps `no_human.blockers.taxonomy.BlockerCategory` member NAMES (not the
@@ -481,6 +530,13 @@ def flush(section: dict[str, Any] | None = None,
             # every later flush until drop-oldest eviction. Non-conforming
             # events are dropped here like corrupt JSON lines are.
             if not _sendable(event):
+                continue
+            # Temporary, until the server-side allowlist ships (see
+            # `_LAMBDA_EVENTS`): an event unknown to the deployed Lambda is
+            # dropped on the lambda wire path only, same as a non-conforming
+            # event — never allowed to wedge the queue behind it. PostHog
+            # ships every event in `_ALLOWED_EVENTS`.
+            if kind == "lambda" and event.get("name") not in _LAMBDA_EVENTS:
                 continue
             events.append(event)
         if not events:

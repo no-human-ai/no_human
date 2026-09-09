@@ -111,6 +111,20 @@ def _resolve_web_dist() -> Path:
 _WEB_DIST = _resolve_web_dist()
 
 
+async def _record_tasks_orphaned(store, config) -> None:
+    """One `tasks_orphaned` per server start — bucketed count of mid-run
+    tasks whose attempt heartbeat is dead (the app/server was closed
+    mid-run and never came back to close them out; see docs/TELEMETRY.md).
+    Always emitted, including bucket "0": a zero is a meaningful metric
+    state (it says the previous shutdown was clean). Read-only and
+    fail-open: this must never block boot."""
+    from ..core.scheduler import count_dead_attempt_tasks
+    from .. import telemetry
+    dead = await count_dead_attempt_tasks(store)
+    telemetry.record("tasks_orphaned", config=config.data,
+                      count_bucket=telemetry.orphan_bucket(dead))
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     config = load_config()
@@ -181,6 +195,17 @@ async def lifespan(app: FastAPI):
     try:
         from .. import telemetry as _telemetry
         _telemetry.record("app_started", config=config.data)
+    except Exception:
+        pass
+    # `tasks_orphaned`: count mid-run tasks orphaned by the app/server having
+    # been closed mid-run (docs/TELEMETRY.md) — the terminal-event case that
+    # cannot fire at the moment it happens. Own try/except so neither this
+    # nor `app_started` above can suppress the other. Read-only, once per
+    # server start, BEFORE the scheduler below runs any recovery sweep, so
+    # the count reflects what was actually found dead rather than what the
+    # sweep has already fixed up.
+    try:
+        await _record_tasks_orphaned(store, config)
     except Exception:
         pass
 

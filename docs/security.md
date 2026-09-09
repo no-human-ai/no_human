@@ -327,8 +327,9 @@ named here.
   defect, not a design.
 - **Usage telemetry** (`telemetry.py`): a closed allowlist of event names —
   `app_started`, `task_created`, `task_completed`, `task_failed`,
-  `approve_clicked`, `feature_used` — each carrying only the props listed in
-  `docs/configuration.md` "Usage insights", an anonymous uuid4
+  `approve_clicked`, `feature_used`, `task_ended`, `tasks_orphaned` — each
+  carrying only the props listed in `docs/configuration.md` "Usage insights"
+  (and the full contract in `docs/TELEMETRY.md`), an anonymous uuid4
   `telemetry.instance_id` and the app version. POSTed via `urllib.request` to
   `https://us.i.posthog.com/batch/` (`telemetry.posthog_host`) with the
   publishable client token, or to `telemetry.endpoint` when you set one
