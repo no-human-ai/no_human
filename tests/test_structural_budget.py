@@ -127,7 +127,12 @@ FROZEN_FUNCTION_LINES = {
     # 2164 -> 2192 (+28): the background-run report nudge's call site in
     # `_run_attempt`'s committed-diff path (task 7a7713e3, landed on top of
     # 3bccb499's 2164). Measured on this tree with the scanner below.
-    "core/orchestrator.py:Orchestrator._run_attempt": 2192,
+    # 2192 -> 2212 (+20): the `_node_serial_rerun` call site + `serial_passed`
+    # guard in the plain-red branch — a cold `node --test` run gets one
+    # serial re-run of only its failing files before being blamed on the
+    # change (tasks ba602e95 / f8af7f46, 2026-09-08). Measured on this tree
+    # with the scanner below.
+    "core/orchestrator.py:Orchestrator._run_attempt": 2212,
     # 760 -> 778 (+18): dispatch-time intake-eval hoisted path — the `elif
     # ctx.get("eval_result")` branch that acts on a grill/wizard-stored
     # verdict (idempotency marker, cost/residual-gap comments) added inside
@@ -302,7 +307,10 @@ FROZEN_FUNCTION_CC = {
     # 235 -> 240 (+5): the report-nudge call site's try/except and its
     # once-guard in `_run_attempt` (task 7a7713e3, landed on top of 3bccb499's
     # 235). Measured on this tree with the scanner below.
-    "core/orchestrator.py:Orchestrator._run_attempt": 240,
+    # 240 -> 243 (+3): the `_node_serial_rerun` call site's `if serial_passed:`
+    # branch in the plain-red branch (tasks ba602e95 / f8af7f46, 2026-09-08).
+    # Measured on this tree with the scanner below.
+    "core/orchestrator.py:Orchestrator._run_attempt": 243,
     "core/orchestrator.py:Orchestrator._drive": 115,
     "agent/guard.py:_approve_denial": 81,
     # 73 -> 74 (+1): same cause as the LINES entry above — e922e9b4's landing
@@ -823,6 +831,11 @@ FROZEN_FILE_LINES = {
     # before treating a falsy tip as never pushed (only that positive
     # confirmation may choose rebase). Landed on top of 7a7713e3's 22952.
     # Measured on this tree by the scanner's own metric.
+    # 23028 -> 23117 (+89): the new `_node_serial_rerun` sibling helper next
+    # to `_run_tests_once`, plus its call site in `_run_attempt`'s plain-red
+    # branch — one serial re-run of only the failing files before a cold
+    # `node --test` run is blamed on the change (tasks ba602e95 / f8af7f46,
+    # 2026-09-08). Measured on this tree by the scanner's own metric.
     # 23028 -> 23064 (+36): a task branch whose remote tip is already
     # diverged from HEAD (neither ancestor nor descendant — the 7a7713e3
     # local-rebase shape) was merged by `_refresh_stale_base` with no
@@ -831,7 +844,7 @@ FROZEN_FILE_LINES = {
     # advisory naming both shas; `diverged` threads into `staleness_record`
     # and the `base_staleness` event. Landed on top of this task's own
     # 23028. Measured on this tree by the scanner's own metric.
-    "core/orchestrator.py": 23064,
+    "core/orchestrator.py": 23153,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.

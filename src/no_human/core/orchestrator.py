@@ -6733,6 +6733,15 @@ class Orchestrator:
                 text, blocks, blocks_dropped, artifact_path = self._red_test_detail(
                     task, [test_result], attempt_n=attempt_seq)
             failing_tests = getattr(test_result, "failing_tests", []) or []
+            # Node's default parallel test runner can turn a cold-cache
+            # Electron boot into a red suite that passes on any serial
+            # re-run (tasks ba602e95 / f8af7f46, 2026-09-08). Re-run ONLY
+            # the failing files once, serially, before this red result is
+            # attributed to the change.
+            serial_extra = await self._node_serial_rerun(
+                repo, test_cmd, test_result, failing_tests, cwd=test_cwd)
+            serial_extra = serial_extra or {}
+            serial_passed = bool(serial_extra.get("ok_after_serial_rerun"))
             # A run that found no command says so in the event too: the board
             # reads this line, and "no test command detected" with ok=True is
             # the shape a human should be able to spot without opening the PR.
@@ -6747,6 +6756,16 @@ class Orchestrator:
                 ok=test_result.ok, cached=was_cached, failing_tests=failing_tests,
                 ran=test_result.ran, tests_log=artifact_path,
             )
+            # Deliberately emitted AFTER the red summary above: the
+            # concurrent run's red result must land on the record first,
+            # then the serial-rerun excusal — pinned by the event-order
+            # assertion in tests/test_orchestrator_serial_rerun.py.
+            if serial_passed:
+                self.emit("tests", f"{len(failing_tests)} test(s) failed under "
+                          "concurrency and passed on a serial re-run: "
+                          + ", ".join(failing_tests)
+                          + " — not counted against this change",
+                          ok=True, serial_rerun_passed=list(failing_tests))
             # Built ONCE and reused (spread + override) at every later
             # `update_attempt(..., test_results=...)` call this red run can
             # reach below — `update_attempt` REPLACES the whole column
@@ -6763,12 +6782,13 @@ class Orchestrator:
                 "failing_tests": failing_tests,
                 "failure_blocks": blocks,
                 "failure_blocks_dropped": blocks_dropped,
+                **serial_extra,
             }
             await self.store.update_attempt(
                 attempt_id,
                 test_results=base_test_results,
             )
-            if test_result.ran and not test_result.ok:
+            if test_result.ran and not test_result.ok and not serial_passed:
                 # Ownership (cheap: a git-diff lookup, no test re-run) is
                 # computed BEFORE either classifier below and reused for
                 # pre-existing/flaky/billing attribution — an owned failing
@@ -12750,6 +12770,75 @@ class Orchestrator:
         )
         self._test_cache[key] = result
         return result, False
+
+    async def _node_serial_rerun(
+        self, repo: GitRepo, test_cmd: str | None,
+        test_result: "runner.TestRunResult", failing_tests: list[str],
+        *, cwd: "Path | None" = None,
+    ) -> dict | None:
+        """One serial re-run of ONLY the failing files, `node --test` only.
+
+        Incident (tasks ba602e95 / f8af7f46, 2026-09-08): a cold `node_modules`
+        downloads the Electron binary mid-suite, so node's default PARALLEL
+        runner turns that one cold run red on files that pass on any later,
+        serial run (root fix: task 5c5e3361). Re-run ONLY the failing files,
+        ONCE, serially, before that red result is attributed to the change.
+        Pytest and the layered path never reach this: the `"node --test" in
+        test_cmd` check below is the only gate, mirroring `_flaky_on_rerun`'s
+        `"pytest" in cmd` gate on the other side of the same branch.
+
+        Returns ``None`` when the path does not apply (pytest, no failing
+        ids, or already green); otherwise a dict to merge into the attempt's
+        `test_results` — ``serial_rerun_passed`` + ``ok_after_serial_rerun``
+        on an unambiguous green re-run, ``serial_rerun_failed`` otherwise
+        (fail-closed: an exception, a non-run, red, or a runner-substituted
+        command all count as still-failed, same doctrine as
+        `_flaky_on_rerun`'s substitution guard).
+        """
+        if not (test_result.ran and not test_result.ok and failing_tests
+                and test_cmd and "node --test" in test_cmd):
+            return None
+        files: list[str] = []
+        for tid in failing_tests:
+            path = (tid or "").split("::", 1)[0].strip()
+            if path and path not in files:
+                files.append(path)
+        if not files:
+            return None
+        # Split on "&&" but KEEP the separators, so only the segment that
+        # runs `node --test` is rewritten — the `&& uv run pytest ... -m
+        # repoguard` tail is rejoined byte-for-byte.
+        segments = re.split(r"(\s*&&\s*)", test_cmd)
+        rewritten = False
+        for i, seg in enumerate(segments):
+            if "node --test" in seg:
+                idx = seg.index("node --test")
+                segments[i] = (
+                    seg[:idx] + "node --test --test-concurrency=1 "
+                    + " ".join(shlex.quote(f) for f in files)
+                )
+                rewritten = True
+                break
+        if not rewritten:
+            return None
+        bounded_cmd = "".join(segments)
+        primary = self._primary_repo_path(repo.path)
+        source_repo = Path(primary) if primary else None
+        ids = list(failing_tests)
+        try:
+            result = await asyncio.to_thread(
+                runner.run_tests, repo.path, bounded_cmd, cwd=cwd,
+                source_repo=source_repo,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("node serial re-run failed: %s", exc)
+            return {"serial_rerun_failed": ids}
+        if (not result.ran or getattr(result, "invocation_error", False)
+                or not result.ok
+                or (getattr(result, "command", "")
+                    and "--test-concurrency=1" not in result.command)):
+            return {"serial_rerun_failed": ids}
+        return {"serial_rerun_passed": ids, "ok_after_serial_rerun": True}
 
     # 🔴 C5: A DRAFT AN ATTEMPT WALKED AWAY FROM IS STILL AN OPEN PR.
     # One task left #106, #107 and #111 open at once: none referencing the
