@@ -211,7 +211,27 @@ FROZEN_FUNCTION_LINES = {
     # human-gated resume (which reports False, so it keeps the advisory
     # freebie) without threading anything between the two calls. Measured
     # on this tree.
-    "core/orchestrator.py:Orchestrator._run_review": 425,
+    # 425 -> 512 (+87): fix for "a red pre-review test run reaches the coder
+    # even when the review fails" — a red pre-review run now emits its own
+    # `tests` event/`test_results` write (via the existing
+    # `_red_test_detail`) unconditional of the review verdict, hands the
+    # reviewer a bounded `failing_test_ids`/`failing_test_ids_dropped` kwarg
+    # pair, and the nested `_pre_review_red_checklist_item()` helper (whose
+    # body counts toward this function per the scanner's own nested-function
+    # rule) appends an un-demotable synthetic `ChecklistItem` at all three
+    # `ReviewDecision`-returning exits (the LLM-reviewer path, the
+    # `genuinely_failed` verifier early-return, and the reviewer-crash
+    # `except Exception` handler) so a red run can be neither demoted by a
+    # PASS verdict nor dropped when a verifier or the reviewer session fails
+    # first. Measured on this tree with the scanner below.
+    # 512 -> 522 (+10): same fix, second pass — the pre-review block now
+    # calls the new `_pre_review_red_is_blocking` (a separate, non-nested
+    # method, so its own body does NOT count here) to compute whether the
+    # red run genuinely blocks the round, mirroring TESTING's own
+    # ownership/environment/base-tree classification instead of treating
+    # every red pre-review run as unconditionally blocking. Measured on
+    # this tree with the scanner below.
+    "core/orchestrator.py:Orchestrator._run_review": 522,
     # 377 -> 398 (+21): quota-saturation mid-run halt. `bench_run` now builds
     # a `QuotaHaltDetector`, threads `halt.observe(score)`/`halt.scored(...)`
     # through the per-spec checkpoint save inside `_run_spec`, and prints the
@@ -272,6 +292,15 @@ FROZEN_FUNCTION_LINES = {
     # (97a9fd79b) also lives in this function. Measured on this merged tree
     # with the scanner below.
     "vcs/derived_conflict.py:_resolve_in_worktree": 324,
+    # NEW (322, > 300): fix for "a red pre-review test run reaches the coder
+    # even when the review fails" — `_build_review_prompt` gains the
+    # `failing_test_ids`/`failing_test_ids_dropped` keyword-only params and
+    # the fixed, deterministic `failing_ids_section` block (independent of
+    # the 4,000-char `_OUTPUT_CAP`'d `test_output` excerpt, applied by the
+    # caller, not this function) that lists the harness's own pre-review
+    # failing test ids and tells the reviewer a PASS verdict over them will
+    # be rejected regardless. Measured on this tree with the scanner below.
+    "review/reviewer.py:_build_review_prompt": 322,
 }
 
 # 5 functions with estimated cyclomatic complexity > 60.
@@ -317,7 +346,16 @@ FROZEN_FUNCTION_CC = {
     # by a `try/except Exception` around `self._is_own_partial(...)` plus
     # its own `if own_unjudged_partial:` branch (one extra `If` for the
     # `except`, one for the guard). Measured on this tree.
-    "core/orchestrator.py:Orchestrator._run_review": 77,
+    # 77 -> 88 (+11): fix for "a red pre-review test run reaches the coder
+    # even when the review fails" - same cause as the LINES entry above: the
+    # pre-review-red detection if/emission, the nested
+    # `_pre_review_red_checklist_item()` helper's own `if pre_review_red` /
+    # `if pre_review_failing_ids` / `else` branches (counted toward the
+    # enclosing function per the scanner's nested-function rule), and the
+    # three `if pre_review_item is not None:` guards at each
+    # `ReviewDecision`-returning exit. Measured on this tree with the
+    # scanner below.
+    "core/orchestrator.py:Orchestrator._run_review": 88,
     # Crossed 60 (to 67) with the UI-evidence gate landed by task 389210fa.
     # 67 -> 70 (+3): follow-up to ce4d4a73 (#151) -- one new `if overlap:`
     # block (+1) plus two `stale.get(...) or []` BoolOps (+1 each). Measured
@@ -823,7 +861,25 @@ FROZEN_FILE_LINES = {
     # before treating a falsy tip as never pushed (only that positive
     # confirmation may choose rebase). Landed on top of 7a7713e3's 22952.
     # Measured on this tree by the scanner's own metric.
-    "core/orchestrator.py": 23028,
+    # 23028 -> 23134 (+106): fix for "a red pre-review test run reaches the
+    # coder even when the review fails" — `_run_review` now emits its own
+    # `tests` event/`test_results` write for a red pre-review run (via the
+    # existing `_red_test_detail`), the `_FAILING_TEST_ID_CAP`/
+    # `_bound_failing_test_ids` module-level helper, and the
+    # `_pre_review_red_checklist_item()` nested helper shared by all three
+    # `ReviewDecision`-returning exits so a red run cannot be demoted by a
+    # PASS verdict or dropped by a verifier/crash early-return. Measured on
+    # this tree with the scanner below.
+    # 23134 -> 23182 (+48): same fix, second pass — a pre-review red run
+    # used to force-fail the round unconditionally, which wrongly blocked a
+    # pre-existing/environmental red run (e.g. a collection error that
+    # reproduces identically on the base tree) that TESTING itself would
+    # have excused or escalated differently. New `_pre_review_red_is_
+    # blocking` mirrors TESTING's own classification (`_owned_failing_
+    # tests`, `runner.prerequisite_reason_for`, `_invocation_error_
+    # reproduces_on_base`, `_newly_failing_vs_base`) so the two gates agree.
+    # Measured on this tree with the scanner below.
+    "core/orchestrator.py": 23182,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.
@@ -1249,7 +1305,13 @@ FROZEN_FILE_LINES = {
     # 2915 -> 2945 (+30): reviewer-backend construction honoring the explicit
     # Settings choice (6d part 1). Measured on the merge result with the
     # scanner below, never summed.
-    "review/reviewer.py": 2945,
+    # 2945 -> 2974 (+29): fix for "a red pre-review test run reaches the
+    # coder even when the review fails" — `_build_review_prompt` and
+    # `review()` (gate mode) gain the `failing_test_ids`/
+    # `failing_test_ids_dropped` keyword-only params and the fixed
+    # `failing_ids_section` template, independent of the 4,000-char
+    # `_OUTPUT_CAP`'d excerpt. Measured on this tree with the scanner below.
+    "review/reviewer.py": 2974,
     # 2706 -> 2711 (+5): pre-existing red on main at 03b262d23 (e922e9b4's
     # landing, change-scoped tests missed the ratchet) — repaired, measured,
     # on this merge; same cause as the two function-level wake.py bumps above.
