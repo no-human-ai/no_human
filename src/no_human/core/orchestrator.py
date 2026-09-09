@@ -164,7 +164,7 @@ from .task import IllegalTransition, Task, TaskSpec, TaskStatus
 from .worktree import (
     _LIVE_WORKTREES,
     WorktreeSetupError,
-    reset_agent_workspace,
+    isolate_attempt_env, reset_agent_workspace,
     run_setup_commands,
     teardown_worktree,
 )
@@ -5459,7 +5459,7 @@ class Orchestrator:
                     # Run with env-export wrapper so we can capture exported vars.
                     proc = subprocess.run(
                         cmd, shell=True, capture_output=True, text=True,
-                        timeout=120, cwd=str(repo.path),
+                        timeout=120, cwd=str(repo.path), env=isolate_attempt_env(repo.path),
                     )
                     if proc.returncode != 0:
                         detail = (f"env_setup failed (rc={proc.returncode}): "
@@ -5560,8 +5560,8 @@ class Orchestrator:
                     self.emit("env_teardown", f"running {len(teardown_cmds)} teardown command(s)")
                     for cmd in teardown_cmds:
                         try:
-                            subprocess.run(cmd, shell=True, capture_output=True,
-                                           timeout=60, cwd=str(repo.path))
+                            subprocess.run(cmd, shell=True, capture_output=True, timeout=60,
+                                           cwd=str(repo.path), env=isolate_attempt_env(repo.path))
                         except Exception:  # noqa: BLE001 — teardown is best-effort
                             log.warning("env_teardown command failed: %s", cmd[:80])
         except (asyncio.TimeoutError, TimeoutError) as exc:
