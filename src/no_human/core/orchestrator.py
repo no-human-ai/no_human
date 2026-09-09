@@ -3337,6 +3337,40 @@ class Orchestrator:
             except Exception as exc:  # noqa: BLE001 — staleness must never raise
                 self._advisory(f"base staleness remote confirmation failed: {exc}")
                 confirmed_never_pushed = False
+        diverged = False
+        if remote_tip:
+            # A tip that is neither an ancestor nor a descendant of HEAD was
+            # ALREADY diverged before this attempt touched the branch (e.g. a
+            # prior local rebase after the push) — the merge below cannot fix
+            # that; delivery's ancestor gate (`_reconcile_remote_branch`) will
+            # still refuse the branch afterward with 'remote tip ... is not
+            # an ancestor of the reviewed sha'. This is observation only: it
+            # never changes `mode`, never skips the merge, never fails the
+            # attempt. If `remote_tip` could not be resolved locally (a
+            # best-effort object, not guaranteed present), both `is_ancestor`
+            # calls return False and this reports `diverged=True` for an
+            # unresolvable tip too — the correct fail-loud direction, since
+            # an unresolvable remote tip will fail delivery's ancestor gate
+            # identically, and the advisory below names both shas so an
+            # operator can tell.
+            try:
+                head = repo.head_sha()
+                diverged = not (
+                    repo.is_ancestor(remote_tip, head)
+                    or repo.is_ancestor(head, remote_tip)
+                )
+            except Exception as exc:  # noqa: BLE001 — staleness must never raise
+                self._advisory(f"base staleness divergence check failed: {exc}")
+                diverged = False
+            if diverged:
+                self._advisory(
+                    f"branch {branch} has ALREADY diverged from its remote "
+                    f"tip: remote tip {remote_tip} is neither an ancestor "
+                    f"nor a descendant of HEAD {head} — delivery will "
+                    "refuse this branch ('remote tip ... is not an ancestor "
+                    "of the reviewed sha') until the remote tip is "
+                    "reconciled; the base merge below does not fix that."
+                )
         mode = (
             staleness_mode(
                 behind, BASE_STALENESS_REBASE_THRESHOLD, overlap, remote_tip,
@@ -3365,7 +3399,8 @@ class Orchestrator:
         # otherwise read — the exact defect a prior attempt's review caught.
         ctx = task.context or {}
         ctx["base_staleness"] = staleness_record(
-            behind, rebased, overlap, mode=mode, merged=merged)
+            behind, rebased, overlap, mode=mode, merged=merged,
+            diverged=diverged)
         task.context = ctx
         await self.store.update_task(task)
         succeeded = merged if mode == "merge" else rebased if mode == "rebase" else False
@@ -3385,6 +3420,7 @@ class Orchestrator:
             merged=merged,
             mode=mode,
             overlapping_files=overlap,
+            diverged=diverged,
         )
 
     def _agent_git_identity(self) -> dict[str, str]:

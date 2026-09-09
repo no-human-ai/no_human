@@ -823,7 +823,15 @@ FROZEN_FILE_LINES = {
     # before treating a falsy tip as never pushed (only that positive
     # confirmation may choose rebase). Landed on top of 7a7713e3's 22952.
     # Measured on this tree by the scanner's own metric.
-    "core/orchestrator.py": 23028,
+    # 23028 -> 23064 (+36): a task branch whose remote tip is already
+    # diverged from HEAD (neither ancestor nor descendant — the 7a7713e3
+    # local-rebase shape) was merged by `_refresh_stale_base` with no
+    # signal that delivery would later refuse it. `_refresh_stale_base` now
+    # detects that divergence before the merge/rebase dispatch and emits an
+    # advisory naming both shas; `diverged` threads into `staleness_record`
+    # and the `base_staleness` event. Landed on top of this task's own
+    # 23028. Measured on this tree by the scanner's own metric.
+    "core/orchestrator.py": 23064,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.

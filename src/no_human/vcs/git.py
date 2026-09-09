@@ -864,11 +864,21 @@ class GitRepo:
         record ("merged X into it") always matches what the history shows.
         A plain fast-forward would also satisfy the ancestry property this
         method exists for; `--no-ff` is chosen for that determinism.
+
+        Refuses (`ProtectedBranch`) when the current branch matches
+        `never_push_to`, checked before any git invocation, so a refusal
+        touches no ref. Today this method is reachable only through the
+        `create_branch`-guarded `pr_branch`, so no current caller can hit
+        this; the guard is defence in depth mirroring the sibling write
+        paths (`commit_all`, `push`, ...) rather than a behaviour change.
         """
+        branch = self.current_branch()
+        if _branch_protected(branch, self.never_push_to):
+            raise ProtectedBranch(
+                f"refusing to merge into protected branch: {branch}")
         ref = (self.resolve_commitish(base) if base else None) or base
         if not ref:
             return False
-        branch = self.current_branch()
         before = self.head_sha()
         try:
             # Literal "merge" as the first argument, so the egress analyser

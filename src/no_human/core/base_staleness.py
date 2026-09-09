@@ -127,7 +127,7 @@ def staleness_mode(
 
 def staleness_record(
     behind: int, rebased: bool, overlap: Iterable[str],
-    *, mode: str | None = None, merged: bool = False,
+    *, mode: str | None = None, merged: bool = False, diverged: bool = False,
 ) -> dict:
     """The `task.context['base_staleness']` payload.
 
@@ -148,6 +148,15 @@ def staleness_record(
     existing caller/test that pins it (positionally, or byte-for-byte) keeps
     working. Only the new, successful merge path — and the successful-rebase
     path, symmetrically — gains the extra detail.
+
+    ``diverged`` is added (as ``True``) ONLY when the caller found the live
+    remote tip to be neither an ancestor nor a descendant of HEAD — a branch
+    already in that state before this attempt touched it. It is independent
+    of ``mode``/``merged``: it describes a pre-existing fact about the
+    remote, not the outcome of the merge this call recorded, so it is
+    present whenever true regardless of whether the merge above it
+    succeeded. Absent (not `False`) when the branch is not diverged, same
+    shape convention as ``mode``/``merged``.
     """
     shared = sorted(overlap)
     record = {
@@ -159,4 +168,6 @@ def staleness_record(
     if rebased or merged:
         record["mode"] = mode
         record["merged"] = merged
+    if diverged:
+        record["diverged"] = True
     return record
