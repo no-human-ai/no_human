@@ -48,7 +48,7 @@ def _recorder(monkeypatch):
         ("paused_quota", {}, "parked_quota"),
         ("blocked", {"blocker_category": "TRANSIENT_INFRA"}, "parked_infra"),
         ("awaiting_input", {"blocker_category": "AMBIGUITY"}, "needs_answer"),
-        ("cancelled", {}, "cancelled"),
+        ("cancelled_hard", {}, "cancelled"),
     ],
 )
 def test_each_end_state_emits_exactly_one_task_ended(monkeypatch, kind, meta, outcome):
@@ -63,6 +63,21 @@ def test_each_end_state_emits_exactly_one_task_ended(monkeypatch, kind, meta, ou
     name, props = terminal[0]
     assert name == "task_ended"
     assert props == {"outcome": outcome, "attempts": 1, "duration_bucket": "<10m"}
+
+
+def test_cooperative_pause_kind_is_not_terminal(monkeypatch):
+    # `_honor_cancel`'s cooperative PAUSE emits kind="cancelled" (status set to
+    # BLOCKED, resumable via `nh task resume`) -- distinct from the hard-cancel
+    # kind="cancelled_hard" emitted by `_run_attempt`'s `CancelledError`
+    # branch. It must never reach `task_ended`: it isn't an end state.
+    sent = _recorder(monkeypatch)
+    stub = _Stub()
+    stub._telemetry_hook("kind", {"task_kind": "feature"})
+    stub._telemetry_hook("attempt_start", {})
+    stub._telemetry_hook("cancelled", {"status": "blocked"})
+
+    terminal = [(k, p) for k, p in sent if k in ("task_ended", "task_completed", "task_failed")]
+    assert terminal == []
 
 
 def test_blocked_user_paused_is_cancelled_and_unknown_category_needs_answer(monkeypatch):
@@ -121,6 +136,58 @@ def test_done_and_failed_are_unchanged(monkeypatch):
     assert failed_props[0] == {"category": "failed", "reason_category": "infra"}
 
 
+def test_pr_open_delivery_path_emits_task_completed(monkeypatch):
+    # MAJOR-3: `_open_pr`'s ordinary successful-delivery leg never emits
+    # kind="state" for AWAITING_APPROVAL -- only kind="pr_open" carrying
+    # status="awaiting_approval" alongside it (see `_open_pr`,
+    # orchestrator.py). Before the fix, this path never produced
+    # `task_completed` at all: only `nh approve`'s kind="state"/status="done"
+    # did.
+    sent = _recorder(monkeypatch)
+    stub = _Stub()
+    stub._telemetry_hook("kind", {"task_kind": "feature"})
+    stub._telemetry_hook("attempt_start", {})
+    stub._telemetry_hook("pr_open", {"pr_kind": "github", "status": "awaiting_approval"})
+
+    terminal = [(k, p) for k, p in sent if k in ("task_ended", "task_completed", "task_failed")]
+    assert len(terminal) == 1
+    name, props = terminal[0]
+    assert name == "task_completed"
+    assert props == {"status": "awaiting_approval", "attempts": 1, "duration_bucket": "<10m"}
+
+
+def test_pr_open_then_nh_approve_done_does_not_double_fire(monkeypatch):
+    # The `pr_open` delivery event fires `task_completed` once; a LATER
+    # `nh approve` on the same live orchestrator instance (kind="state",
+    # status="done") must not fire a second one -- the once-only
+    # `_tel_terminal_sent` latch already guards this for every other pair,
+    # this just pins it for the new pr_open trigger specifically.
+    sent = _recorder(monkeypatch)
+    stub = _Stub()
+    stub._telemetry_hook("kind", {"task_kind": "feature"})
+    stub._telemetry_hook("attempt_start", {})
+    stub._telemetry_hook("pr_open", {"pr_kind": "github", "status": "awaiting_approval"})
+    stub._telemetry_hook("state", {"status": "done"})
+
+    terminal = [(k, p) for k, p in sent if k in ("task_ended", "task_completed", "task_failed")]
+    assert len(terminal) == 1
+    assert terminal[0][0] == "task_completed"
+    assert terminal[0][1]["status"] == "awaiting_approval"
+
+
+def test_pr_open_without_awaiting_approval_status_is_not_terminal(monkeypatch):
+    # A linked-repo PR (`self.emit("pr_open", ..., pr_kind=lr_pr.kind)`, no
+    # `status` kwarg at all) must not be mistaken for the delivery event.
+    sent = _recorder(monkeypatch)
+    stub = _Stub()
+    stub._telemetry_hook("kind", {"task_kind": "feature"})
+    stub._telemetry_hook("attempt_start", {})
+    stub._telemetry_hook("pr_open", {"pr_kind": "github"})
+
+    terminal = [(k, p) for k, p in sent if k in ("task_ended", "task_completed", "task_failed")]
+    assert terminal == []
+
+
 def test_attempts_and_duration_bucket_ride_along(monkeypatch):
     sent = _recorder(monkeypatch)
     stub = _Stub()
@@ -177,6 +244,44 @@ async def test_two_dead_attempts_are_counted(store):
     await store.db.commit()
 
     assert await count_dead_attempt_tasks(store) == 2
+
+
+@pytest.mark.asyncio
+async def test_interrupted_attempt_with_no_open_attempt_counts_as_dead(store):
+    # `_honor_server_stop` (graceful `nh stop` / clean app quit) closes the
+    # open attempt as status='interrupted' and leaves the task non-terminal
+    # with NO open attempt at all -- there is no live attempt to go stale, so
+    # the ordinary staleness gate never fires and the task was previously
+    # under-counted ("dead=1 of 3" in the reviewer's repro). The interrupted
+    # status itself is definitive: count it unconditionally, regardless of
+    # how fresh task.updated_at looks (e.g. right after a restart).
+    gracefully_stopped = Task.new("mid-run, gracefully interrupted", repo_path="/r")
+    await store.create_task(gracefully_stopped)
+    await store.set_status(gracefully_stopped, TaskStatus.IMPLEMENTING, validate=False)
+    await store.create_attempt(gracefully_stopped.id, 1)
+    await store.update_attempt(
+        (await store.latest_open_attempt(gracefully_stopped.id))["id"],
+        status="interrupted", failure_reason="server stop")
+    # Fresh updated_at -- must still count, since there is no open attempt to
+    # judge liveness from at all.
+    await store.db.execute(
+        "UPDATE tasks SET updated_at = ? WHERE id = ?",
+        (datetime.now(timezone.utc).isoformat(), gracefully_stopped.id))
+    await store.db.commit()
+
+    # Control: an ordinary retry -- last attempt closed 'failed', not
+    # 'interrupted', with a fresh second open attempt in progress. Must not
+    # be double counted or miscounted as dead.
+    ordinary_retry = Task.new("mid-run, between two normal attempts", repo_path="/r")
+    await store.create_task(ordinary_retry)
+    await store.set_status(ordinary_retry, TaskStatus.IMPLEMENTING, validate=False)
+    await store.create_attempt(ordinary_retry.id, 1)
+    await store.update_attempt(
+        (await store.latest_open_attempt(ordinary_retry.id))["id"],
+        status="failed", failure_reason="transient")
+    await store.create_attempt(ordinary_retry.id, 2)
+
+    assert await count_dead_attempt_tasks(store) == 1
 
 
 @pytest.mark.asyncio

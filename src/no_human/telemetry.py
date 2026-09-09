@@ -389,6 +389,51 @@ def record(kind: str, config: dict[str, Any] | None = None, **props: Any) -> Non
         return  # fail-open
 
 
+async def record_task_cancelled(store: Any, task: Any,
+                                 config: dict[str, Any] | None = None) -> None:
+    """Fire `task_ended(outcome="cancelled")` for a task cancelled OUT OF
+    PROCESS -- i.e. by a caller with no live `Orchestrator` to hand the
+    `attempts/duration_bucket` bookkeeping `_telemetry_hook` normally carries
+    (`_tel_attempts`, `_tel_started_at`), because there either never was a
+    running attempt (a queued/PENDING task) or the orchestrator instance that
+    ran it is gone (a hard cancel handled by a fresh process).
+
+    Shared by every call site that writes a task's status to FAILED as a
+    cancellation directly (`api.app.cancel_task`, `cli.commands.task_cancel`)
+    so the same lookup — never duplicated — backs both. Recomputes both props
+    from durable storage instead of in-memory state:
+
+    * `attempts` — `store.count_attempts(task.id)`, the row count.
+    * `duration_bucket` — minutes between `task.created_at` and now, bucketed
+      the same way `_telemetry_hook` does for the in-process path. Falls back
+      to `"unknown"` (a real bucket, see `DURATION_BUCKETS`) if `created_at`
+      is missing or unparsable, rather than guessing.
+
+    Fail-open, like `record()` itself: a telemetry hiccup must never surface
+    as a failure to cancel a task. Never raises.
+    """
+    try:
+        try:
+            attempts = int(await store.count_attempts(task.id))
+        except Exception:  # noqa: BLE001 — fail-open estimate
+            attempts = 0
+        bucket = "unknown"
+        created_at = getattr(task, "created_at", None)
+        if created_at:
+            try:
+                started = datetime.fromisoformat(created_at)
+                if started.tzinfo is None:
+                    started = started.replace(tzinfo=timezone.utc)
+                minutes = (datetime.now(timezone.utc) - started).total_seconds() / 60
+                bucket = duration_bucket(minutes)
+            except (ValueError, TypeError):
+                bucket = "unknown"
+        record("task_ended", config, outcome="cancelled", attempts=attempts,
+               duration_bucket=bucket)
+    except Exception:
+        log.warning("record_task_cancelled: failed", exc_info=True)
+
+
 def _append(event: dict[str, Any]) -> None:
     path = _queue_path()
     with _LOCK:

@@ -2272,6 +2272,18 @@ async def cancel_task(
     # it running for the rest of the attempt.
     sched = _sched(request)
     stopped = bool(sched is not None and sched.request_task_cancel(task.id, reason))
+    if not stopped:
+        # No live in-process session for THIS cancel to stop (queued/parked,
+        # or the orchestrator that owned it is simply gone) -- there is no
+        # `_run_attempt` unwind coming to fire `task_ended` itself, so this
+        # endpoint is the only place that ever will. When `stopped` is True,
+        # `_run_attempt`'s own `CancelledError` branch (kind="cancelled_hard")
+        # fires it instead, in-process, moments from now -- firing here too
+        # would double-count the same cancel.
+        from .. import telemetry as _telemetry
+        cfg = getattr(request.app.state, "config", None)
+        await _telemetry.record_task_cancelled(
+            store, task, config=cfg.data if cfg is not None else {})
     # Best-effort fallback for anything pkill CAN see (e.g. a pytest
     # subprocess spawned under the worktree) — kept unconditionally since it
     # is harmless when nothing matches, but it is no longer the primary

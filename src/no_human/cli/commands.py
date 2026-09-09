@@ -2236,6 +2236,15 @@ def task_cancel(task_id, reason):
                     "cancel", prior_status=prior_status, prior_blocker=prior_blocker,
                     reason=reason, actor="cli"),
             )
+            # Unconditional (unlike the API endpoint's mirror of this same
+            # helper, which is gated on `not stopped`): this branch only ever
+            # runs when there is NO live server-owned session to cancel — the
+            # `_server_owns_worker(...) and t.status in _ACTIVE_STATES` branch
+            # above already returned for that case. So there is no in-process
+            # `_run_attempt` unwind that could fire `task_ended` on its own;
+            # this direct write is the only place that ever will.
+            from .. import telemetry
+            await telemetry.record_task_cancelled(store, t, config=config.data)
             console.print(f"[red]cancelled[/] {t.id[:8]} — reason: {reason}")
 
     asyncio.run(_go())

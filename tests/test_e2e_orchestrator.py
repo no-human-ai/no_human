@@ -98,7 +98,7 @@ def _config(tmp_path):
     return cfg
 
 
-async def test_full_pipeline_opens_local_pr(bare_repo, tmp_path, store):
+async def test_full_pipeline_opens_local_pr(bare_repo, tmp_path, store, monkeypatch):
     def mutate(cwd):
         # add a real feature + a real test (no tampering)
         (cwd / "calc.py").write_text(
@@ -119,6 +119,15 @@ async def test_full_pipeline_opens_local_pr(bare_repo, tmp_path, store):
     t.acceptance_criteria = ["mul(a,b) returns a*b"]
     await store.create_task(t)
 
+    # MAJOR-3 green path: the REAL `_telemetry_hook`, on a real Orchestrator
+    # run through the ordinary successful-delivery leg (no synthetic kind fed
+    # into the sink) -- `task_completed` must fire exactly once.
+    from no_human import telemetry
+    sent = []
+    monkeypatch.setattr(
+        telemetry, "record",
+        lambda kind, config=None, **props: sent.append((kind, props)))
+
     outcome = await orch.run_task(t)
 
     assert outcome.status is TaskStatus.AWAITING_APPROVAL
@@ -138,6 +147,13 @@ async def test_full_pipeline_opens_local_pr(bare_repo, tmp_path, store):
     assert "ci_skipped" in kinds
     ci_skipped = [e for e in events if e["kind"] == "ci_skipped"]
     assert ci_skipped and ci_skipped[0].get("remote_ci") is False
+
+    terminal = [(k, p) for k, p in sent
+                if k in ("task_ended", "task_completed", "task_failed")]
+    assert len(terminal) == 1, f"expected exactly one terminal event, got {terminal}"
+    name, props = terminal[0]
+    assert name == "task_completed"
+    assert props["status"] == "awaiting_approval"
 
 
 async def test_receipt_survives_main_moving_after_the_push(

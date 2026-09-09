@@ -1613,7 +1613,15 @@ def _attributed_ids(
 
 # emit() kinds that end a task without going through the "done"/"awaiting_approval"
 # or "failed" off-ramps — see `Orchestrator._telemetry_hook`'s `task_ended` branch.
-_TASK_END_KINDS = ("escalated", "paused_quota", "cancelled", "awaiting_input", "blocked")
+#
+# NOTE: "cancelled" (the kind `_honor_cancel` emits for a cooperative PAUSE —
+# status BLOCKED, resumable with `nh task resume`) is deliberately NOT in this
+# tuple: that path is not an end. "cancelled_hard" is the HARD cancel
+# (`request_task_cancel` -> the `asyncio.CancelledError` branch in
+# `_run_attempt`) — genuinely terminal, so it is the one that counts here.
+_TASK_END_KINDS = (
+    "escalated", "paused_quota", "cancelled_hard", "awaiting_input", "blocked",
+)
 
 
 def _task_end_outcome(kind: str, blocker_category: str) -> str:
@@ -1625,14 +1633,14 @@ def _task_end_outcome(kind: str, blocker_category: str) -> str:
         return "escalated"
     if kind == "paused_quota":
         return "parked_quota"
-    if kind == "cancelled":
+    if kind == "cancelled_hard":
         return "cancelled"
     if kind == "awaiting_input":
         return "needs_answer"
     cat = (blocker_category or "").strip().upper()  # kind == "blocked"
     if cat == "USER_PAUSED":
         return "cancelled"
-    if cat in ("TRANSIENT_INFRA", "QUOTA", "DEPENDENCY_WAIT"):
+    if cat in ("TRANSIENT_INFRA", "DEPENDENCY_WAIT"):
         return "parked_infra"
     return "needs_answer"  # safe default: a human is waited on
 
@@ -1821,9 +1829,20 @@ class Orchestrator:
                         "test_gap", "unknown") else "other")
             elif kind == "attempt_start":
                 self._tel_attempts = getattr(self, "_tel_attempts", 0) + 1
-            elif (kind == "state"
+            elif (kind in ("state", "pr_open")
                   and meta.get("status") in ("done", "awaiting_approval")
                   and not getattr(self, "_tel_terminal_sent", False)):
+                # The ORDINARY successful-delivery path (`_open_pr`) never
+                # emits kind="state" for the AWAITING_APPROVAL leg at all —
+                # only kind="pr_open" with `status="awaiting_approval"`
+                # riding along (every `self.emit("pr_open", ...,
+                # status="awaiting_approval")` call site, e.g. `_open_pr`
+                # itself and the already-satisfied/draft-promotion path).
+                # Without `pr_open` here, `task_completed` only ever fired via
+                # `nh approve` (kind="state", status="done") — never on the
+                # far more common "PR opened, awaiting human approval" leg.
+                # Props are unchanged either way: `meta["status"]` is read
+                # the same way regardless of which kind carried it.
                 self._tel_terminal_sent = True
                 started = getattr(self, "_tel_started_at", None)
                 bucket = (telemetry.duration_bucket((time.time() - started) / 60)
@@ -5811,6 +5830,17 @@ class Orchestrator:
                 **self._pop_aux_usage(),
             )
             self.emit("agent_error", detail, error_class="cancelled")
+            # Terminal telemetry: this IS the real hard-cancel end state (a
+            # human explicitly cancelled a live attempt) — fire it here,
+            # in-process, rather than relying on whatever caller happened to
+            # invoke `request_task_cancel` (an HTTP handler, a bare
+            # orchestrator-level call in a test, ...) to also flip the task's
+            # DB status and infer telemetry from that. `_telemetry_hook`'s
+            # `_tel_terminal_sent` latch keeps this to exactly one event even
+            # if `_run_attempt` is somehow re-entered. Distinct kind from
+            # `_honor_cancel`'s "cancelled" (a cooperative PAUSE, resumable,
+            # not an end) — see `_TASK_END_KINDS`'s note.
+            self.emit("cancelled_hard", detail, status="failed")
             # off_ramp=True: a human explicitly cancelled — `_drive`'s retry
             # test (`status != FAILED or off_ramp`) would otherwise start a
             # fresh attempt on the very next loop iteration, in the same

@@ -135,7 +135,18 @@ FROZEN_FUNCTION_LINES = {
     # 2212 -> 2220 (+8): 99fa5ba5 (bounded failing_tests and joins at
     # every write site; the carried dropped count reaches the coder prompt)
     # landed on top of cf6f6c19. Measured on this tree by the scanner's own metric.
-    "core/orchestrator.py:Orchestrator._run_attempt": 2220,
+    # 2220 -> 2231 (+11): terminal telemetry for real task-end states
+    # (MAJOR-1(a)) — a `self.emit("cancelled_hard", ...)` call right in the
+    # `CancelledError` except-block, plus its explanatory comment
+    # distinguishing this hard-cancel end state from `_honor_cancel`'s
+    # cooperative-pause `kind="cancelled"` (not an end, not counted here).
+    # Kept inline rather than split out, matching the base-pin precedent
+    # above: this IS the hard-cancel unwind's own frame, and firing the
+    # once-only terminal event from anywhere else would mean re-deriving
+    # "was this attempt actually torn down" from state instead of just
+    # being on the code path that tore it down. Measured on this tree with
+    # the scanner below.
+    "core/orchestrator.py:Orchestrator._run_attempt": 2231,
     # 760 -> 778 (+18): dispatch-time intake-eval hoisted path — the `elif
     # ctx.get("eval_result")` branch that acts on a grill/wizard-stored
     # verdict (idempotency marker, cost/residual-gap comments) added inside
@@ -871,7 +882,21 @@ FROZEN_FILE_LINES = {
     # `_task_end_outcome`, and the new `task_ended` branch appended after
     # the existing `failed` branch in `_telemetry_hook`. Measured on this
     # tree by the scanner's own metric.
-    "core/orchestrator.py": 23442,
+    # 23442 -> 23472 (+30): reviewer round 2 fixes on the above — (1) the
+    # real hard-cancel end state now actually fires terminal telemetry
+    # in-process (`cancelled_hard` emit + comment in `_run_attempt`'s
+    # `CancelledError` branch, the round-1 version never wired this in);
+    # (2) `_telemetry_hook`'s `task_completed` branch is broadened from
+    # `kind == "state"` to `kind in ("state", "pr_open")` (plus its
+    # explanatory comment) so the ordinary PR-opened delivery leg —
+    # `_open_pr`'s `kind="pr_open"`/`status="awaiting_approval"` emit,
+    # which never had a companion `kind="state"` event — actually reaches
+    # `task_completed`, not only `nh approve`'s `done` leg; (3) the dead
+    # `blocked`/`QUOTA` branch in `_task_end_outcome` is removed (taxonomy.py
+    # never routes QUOTA to `blocked`, only to `paused_quota`), a small net
+    # decrease folded into this same total. Measured on this tree by the
+    # scanner's own metric.
+    "core/orchestrator.py": 23472,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.
@@ -1007,7 +1032,15 @@ FROZEN_FILE_LINES = {
     # on the shared app" leak (`dashboard` is covered too, since it forwards
     # to `start` via `ctx.invoke`). Measured via `wc -l
     # src/no_human/cli/commands.py`.
-    "cli/commands.py": 8642,
+    # 8642 -> 8651 (+9): MAJOR-1(b) — `task_cancel`'s direct-write branch
+    # (queued/parked task, no live server-owned session) now calls the
+    # shared `telemetry.record_task_cancelled(store, t, config=config.data)`
+    # helper right after its `store.set_status(..., FAILED, ...)` write, plus
+    # its local `from .. import telemetry` import and explanatory comment —
+    # this is the only branch that can ever fire `task_ended(outcome=
+    # cancelled)` for a task with no live in-process attempt at all. Measured
+    # via `wc -l src/no_human/cli/commands.py`.
+    "cli/commands.py": 8651,
     # api/app.py 5338 -> 5346 (+8): same budget-floor warning surfaced by
     # `send-back`/`reply` as `budget_warning` in the JSON response. Net cost
     # was trimmed from a naive +14 to +8 by computing `Bounds.from_config(...)`
@@ -1161,7 +1194,15 @@ FROZEN_FILE_LINES = {
     # attempt heartbeat is dead (an app/server closed mid-run). Called once
     # from `lifespan`, after `app_started`. Measured on this tree with the
     # scanner below.
-    "api/app.py": 6171,
+    # 6171 -> 6183 (+12): MAJOR-1(b) — `cancel_task`, right after computing
+    # `stopped`, now calls the shared `telemetry.record_task_cancelled`
+    # helper when `not stopped` (no live in-process session found for this
+    # cancel — a queued/parked task, or the owning orchestrator is gone),
+    # so `task_ended(outcome=cancelled)` fires for THIS out-of-process cancel
+    # path too, gated to avoid double-firing against `_run_attempt`'s own
+    # in-process `cancelled_hard` emit when `stopped` is True. Measured on
+    # this tree with the scanner below.
+    "api/app.py": 6183,
     # +51: W5 active-time phase writer (phase instrumentation).
     # +84: `list_escalations`/`list_review_fails`/`list_tamper_trips` — the
     # three new failure-signal sources the recurring learning harvest mines.
@@ -1242,7 +1283,14 @@ FROZEN_FILE_LINES = {
     # `Store._ensure_task_columns`'s `wanted` dict (attribution guard
     # hardening) plus its explanatory comment. Measured on this merged tree
     # with the scanner below.
-    "core/db.py": 5092,
+    # 5092 -> 5112 (+20): MINOR-1 — `Store.latest_attempt(task_id)`, the
+    # reliable `ORDER BY started_at DESC, rowid DESC LIMIT 1` recency lookup
+    # (unfiltered by status) that `count_dead_attempt_tasks` needs to find a
+    # non-terminal task's most-recent attempt even when it has no OPEN
+    # attempt at all — the gracefully-interrupted-by-`_honor_server_stop`
+    # case. Placed next to `latest_open_attempt`/`latest_review_attempt`, its
+    # existing siblings. Measured on this tree with the scanner below.
+    "core/db.py": 5112,
     # +71: set_local_backend_fields — the config-write helper for the Settings
     # pane's local coder-backend fields (llm.local_model / llm.local_base_url).
     # +75: Codex account config helpers.
@@ -1362,7 +1410,13 @@ FROZEN_FILE_LINES = {
     # `count_dead_attempt_tasks` (mid-run tasks with an open attempt and a
     # dead heartbeat, for the `tasks_orphaned` startup event). Mutates
     # nothing. Measured on this tree with the scanner below.
-    "core/scheduler.py": 3083,
+    # 3083 -> 3098 (+15): MINOR-1 — `count_dead_attempt_tasks` also counts a
+    # non-terminal task with NO open attempt at all whose most-recent attempt
+    # (`store.latest_attempt`) is `status == "interrupted"` — the graceful
+    # `_honor_server_stop` close leaves exactly this shape, and the old
+    # open-attempt-only staleness check under-counted it. Still read-only:
+    # counts, never mutates. Measured on this tree with the scanner below.
+    "core/scheduler.py": 3098,
 }
 
 

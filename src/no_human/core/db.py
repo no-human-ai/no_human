@@ -2476,6 +2476,26 @@ class Store:
         )
         return dict(row) if row else None
 
+    async def latest_attempt(self, task_id: str) -> dict[str, Any] | None:
+        """The NEWEST attempt row regardless of status, or None if the task
+        has never had one.
+
+        Same ``(started_at, rowid)`` recency as `latest_open_attempt` above
+        (attempt_number is not recency — see that docstring). Unlike
+        `latest_open_attempt`, this is not filtered to ``status =
+        'in_progress'``: it answers "what did we do to this task most
+        recently", which is what tells apart a task with no open attempt
+        because its last one was gracefully closed as ``interrupted`` (the
+        app/server shut down mid-run) from one simply between two normal
+        attempts (last one closed as an ordinary ``failed`` retry).
+        """
+        row = await self._fetchone(
+            "SELECT * FROM attempts WHERE task_id = ? "
+            "ORDER BY started_at DESC, rowid DESC LIMIT 1",
+            (task_id,),
+        )
+        return dict(row) if row else None
+
     async def latest_review_attempt(self, task_id: str) -> dict[str, Any] | None:
         """The NEWEST attempt row that recorded a review verdict, or None if
         no attempt ever recorded one.
