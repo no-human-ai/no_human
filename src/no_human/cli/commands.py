@@ -22,6 +22,7 @@ from rich.markup import escape
 from rich.table import Table
 
 from . import print_path_error, stdio_is_interactive
+from .render import esc
 from .. import __version__
 from ..agent.claude_backend import ClaudeBackend
 from ..agent.backend import make_backend, resolve_backend_name, SUPPORTED_BACKENDS
@@ -351,7 +352,7 @@ def _refuse_agent_gate_act(act: str) -> None:
     try:
         refuse_if_marked(act)
     except GateRefused as exc:
-        console.print(f"[bold red]refused:[/] {exc.reason}")
+        console.print(f"[bold red]refused:[/] {esc(exc.reason)}")
         sys.exit(2)
 
 
@@ -501,18 +502,18 @@ async def _run_cli_grill(config, task: Task, store=None) -> Task:
             task.context = ctx
             console.print()
             console.rule("[bold green]scoping complete")
-            console.print(f"  [bold]Title:[/] {task.title}")
+            console.print(f"  [bold]Title:[/] {esc(task.title)}")
             if task.description:
-                console.print(f"  [bold]Description:[/] {task.description[:200]}")
+                console.print(f"  [bold]Description:[/] {esc(task.description[:200])}")
             for i, ac in enumerate(task.acceptance_criteria, 1):
-                console.print(f"  [green]AC{i}:[/] {ac}")
+                console.print(f"  [green]AC{esc(i)}:[/] {esc(ac)}")
             console.print()
             return task
 
         # GrillQuestion — show and get answer
-        console.print(f"[bold yellow]Q{step.round}:[/] {step.question}")
+        console.print(f"[bold yellow]Q{step.round}:[/] {esc(step.question)}")
         for s in step.suggestions:
-            console.print(f"  [cyan]{s}[/]")
+            console.print(f"  [cyan]{esc(s)}[/]")
         answer = click.prompt("Your answer", default="")
         if not answer.strip():
             answer = "Proceed with what we have"
@@ -1094,7 +1095,7 @@ def task_add(source, title, repo, description, criteria, external_id, kind, link
                     t = await _run_cli_grill(config, t, store)
             elif source:
                 ref = parse_source(source)
-                console.print(f"[blue]ingesting[/] {ref.kind}: {ref.ref}")
+                console.print(f"[blue]ingesting[/] {esc(ref.kind)}: {esc(ref.ref)}")
                 try:
                     t = ingest_from_url(source, config.data)
                 except Exception as exc:  # noqa: BLE001
@@ -1138,7 +1139,7 @@ def task_add(source, title, repo, description, criteria, external_id, kind, link
             # pick an implement-shaped --kind or drop the test-bearing ask.
             mismatch = kind_criteria_mismatch(t.kind, t.acceptance_criteria)
             if mismatch:
-                console.print(f"[red]intake refused:[/] {mismatch}")
+                console.print(f"[red]intake refused:[/] {esc(mismatch)}")
                 console.print(
                     "[dim]pass an explicit --kind (e.g. feature/bugfix) that "
                     "ships the demanded artifact, or drop the test-bearing "
@@ -1158,8 +1159,8 @@ def task_add(source, title, repo, description, criteria, external_id, kind, link
             prof = await store.get_profile(t.repo_path) or ProjectProfile.load(t.repo_path)
             t.config = apply_default_task_config(prof, t.config)
             await store.create_task(t)
-            console.print(f"[green]created task[/] [bold]{t.id[:8]}[/] — {t.title}")
-            console.print(f"  [magenta]kind:[/] {t.kind}  [dim]({verdict.reason})[/]")
+            console.print(f"[green]created task[/] [bold]{t.id[:8]}[/] — {esc(t.title)}")
+            console.print(f"  [magenta]kind:[/] {esc(t.kind)}  [dim]({esc(verdict.reason)})[/]")
             if backend:
                 console.print(f"  [cyan]backend:[/] {backend}")
             if t.linked_repos:
@@ -1180,9 +1181,9 @@ def task_add(source, title, repo, description, criteria, external_id, kind, link
                 console.print(
                     "[yellow]⚠ repo profile not usable[/] — test command will be "
                     "auto-detected (may be wrong). Run both:\n"
-                    f"  [bold]nh onboard {t.repo_path}[/]"
+                    f"  [bold]nh onboard {esc(t.repo_path)}[/]"
                     "            [dim]# derive + prove[/]\n"
-                    f"  [bold]nh onboard {t.repo_path} --confirm[/]"
+                    f"  [bold]nh onboard {esc(t.repo_path)} --confirm[/]"
                     "  [dim]# then confirm[/]",
                     soft_wrap=True,
                 )
@@ -1233,7 +1234,7 @@ def task_context(task_id):
             t.context = {**(t.context or {}), "gathered": ctx.to_dict()}
             await store.update_task(t)
             for c in ctx.chunks:
-                console.print(f"[cyan]\\[{c.source}][/] {c.title}  [dim]{c.ref}[/]")
+                console.print(f"[cyan]\\[{esc(c.source)}][/] {esc(c.title)}  [dim]{esc(c.ref)}[/]")
             if ctx.errors:
                 for src, err in ctx.errors.items():
                     console.print(f"[yellow]! {src}: {err}[/]")
@@ -1272,7 +1273,7 @@ def task_tier(task_id):
                 from ..core.complexity import compute_tier
                 tier, signals = compute_tier(t, moa_cfg)
                 predicted = True
-            console.print(f"[bold]{t.id}[/]  {t.title}")
+            console.print(f"[bold]{t.id}[/]  {esc(t.title)}")
             console.print(format_tier_summary(
                 tier, signals,
                 predicted=predicted,
@@ -1642,8 +1643,8 @@ def task_list():
                 color = status_colors.get(status_str, "")
                 styled_status = f"[{color}]{status_str}[/]" if color else status_str
                 table.add_row(
-                    t.id[:8], t.kind, styled_status, att_n, last_turns,
-                    t.title[:50], repo_name[:20],
+                    t.id[:8], esc(t.kind), styled_status, att_n, last_turns,
+                    esc(t.title[:50]), esc(repo_name[:20]),
                     "✓" if pr_url else "",
                 )
             console.print(table)
@@ -1663,7 +1664,7 @@ def task_show(task_id):
             if not t:
                 print_no_task_matching(task_id)
                 return
-            console.print(f"[bold]{t.id}[/]  [blue]{t.status.value}[/]  [magenta]{t.kind}[/]")
+            console.print(f"[bold]{t.id}[/]  [blue]{t.status.value}[/]  [magenta]{esc(t.kind)}[/]")
             events = await store.list_events(t.id)
             if is_waiting_for_slot(events, status=t.status.value):
                 waits = [e for e in events if e.get("kind") == slot_wait.KIND]
@@ -1673,20 +1674,20 @@ def task_show(task_id):
                     console.print(f"[magenta]{slot_wait.pool_paused_text(pause)}[/]")
                 elif stats is None:
                     console.print(
-                        f"[blue]{waits[-1]['text']}[/] "
+                        f"[blue]{esc(waits[-1]['text'])}[/] "
                         f"[dim]({slot_wait.STALE_POOL_NOTE})[/]")
                 else:
-                    console.print(f"[blue]{waits[-1]['text']}[/]")
-            console.print(f"title: {t.title}")
+                    console.print(f"[blue]{esc(waits[-1]['text'])}[/]")
+            console.print(f"title: {esc(t.title)}")
             if t.description:
-                console.print(f"description: {t.description}")
+                console.print(f"description: {esc(t.description)}")
             if t.acceptance_criteria:
                 console.print("acceptance criteria:")
                 for c in t.acceptance_criteria:
-                    console.print(f"  - {c}")
-            console.print(f"repo: {t.repo_path}")
+                    console.print(f"  - {esc(c)}")
+            console.print(f"repo: {esc(t.repo_path)}")
             if t.blocker:
-                console.print(f"[red]blocker:[/] {t.blocker}")
+                console.print(f"[red]blocker:[/] {esc(t.blocker)}")
             lat = (t.blocker or {}).get("escalation_latency") if t.blocker else None
             if lat and t.status is TaskStatus.ESCALATED:
                 console.print(
@@ -2044,7 +2045,7 @@ def task_restore_approval(task_id, reason):
                             if not tip_passed:
                                 console.print(
                                     "[yellow]blocked task's review does not "
-                                    f"match its branch tip — {tip_evidence}"
+                                    f"match its branch tip — {esc(tip_evidence)}"
                                     "[/]")
                                 sys.exit(1)
                             tip_note = tip_evidence

@@ -25,6 +25,7 @@ from rich.table import Table
 
 from ..config import NO_HUMAN_HOME, load_config
 from ..core.db import Store
+from .render import esc
 from ..review.reviewer import findings_from_checklist
 from ..review.verifiers import (
     filter_diff,
@@ -303,7 +304,7 @@ def list_cmd(repo: str, as_json: bool) -> None:
     table.add_column("no verdict")
     for v in report.verifiers:
         c = _counts_for(v.id)
-        table.add_row(v.id, v.severity, ", ".join(v.paths), v.source, str(c["runs"]), str(c["no_verdict"]))
+        table.add_row(esc(v.id), v.severity, ", ".join(v.paths), esc(v.source), str(c["runs"]), str(c["no_verdict"]))
     console.print(table)
 
 
@@ -394,17 +395,17 @@ def check_cmd(repo: str, against: str | None, paths: tuple) -> None:
     selected_ids = {v.id for v in selected}
     for v in report.verifiers:
         if v.id not in selected_ids:
-            console.print(f"  {v.id}: [dim]not selected[/]")
+            console.print(f"  {esc(v.id)}: [dim]not selected[/]")
             continue
         if diff_text is not None:
             hunks, _files = filter_diff(diff_text, v.paths)
             if not hunks:
                 console.print(
-                    f"  {v.id}: [yellow]selected, no matching hunks — "
+                    f"  {esc(v.id)}: [yellow]selected, no matching hunks — "
                     "would fail closed as no_verdict[/]"
                 )
                 continue
-        console.print(f"  {v.id}: [green]selected[/]")
+        console.print(f"  {esc(v.id)}: [green]selected[/]")
 
     console.print(
         f"[dim]{len(selected)} of {len(report.verifiers)} verifier(s) select "
@@ -485,10 +486,10 @@ def propose_cmd(task_id: str, repo: str, apply_: bool, severity: str) -> None:
 
             for f in findings:
                 if f.label and f.label.startswith("rule:"):
-                    console.print(f"[dim]skipped[/] {f.label} — a verifier's own verdict")
+                    console.print(f"[dim]skipped[/] {esc(f.label)} — a verifier's own verdict")
                     continue
                 if not f.file:
-                    console.print(f"[dim]skipped[/] (no file cited) {_one_line(f.text)[:60]!r}")
+                    console.print(f"[dim]skipped[/] (no file cited) {esc(repr(_one_line(f.text)[:60]))}")
                     continue
 
                 base_slug = _slugify(f.label or f.text)
