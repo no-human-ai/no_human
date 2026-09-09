@@ -1,196 +1,144 @@
 # How I verified this — full log
 
-_Harness-captured record for task `70f5109f`, commit `6f01a34cea8c0bcea3a1e7749811f9224dfc1c13` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `70f5109f`, commit `29a1a1bb6151c6ad75258fc6cded07008b42003e` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ## How I verified this
-11 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
+7 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
 
 ### test
-- `uv run pytest -q tests/test_verifiers_gate.py 2>&1 | tail -80`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/70f5109f5117496e8c613a19f5b2e6f6.98644.58db132b uv run pytest -q tests/test_structural_budget.py -k "grown or new_oversized" 2>&1 | tail -60`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-Using CPython 3.12.13
-Creating virtual environment at: .venv
-   Building no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/70f5109f5117496e8c613a19f5b2e6f6.98644.5c8cc784
-      Built no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/70f5109f5117496e8c613a19f5b2e6f6.98644.5c8cc784
-Installed 68 packages in 123ms
-...............                                                          [100%]
-15 passed in 10.45s
-```
-
-- `uv run pytest -q tests/test_verifiers_cli.py 2>&1 | tail -60`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-.................................                                        [100%]
-33 passed in 1.46s
-```
-
-- `uv run pytest -q tests/test_verifiers_gate.py tests/test_verifiers.py tests/test_verifiers_cli.py tests/test_verifier_quota_park.py 2>&1 | tail -60`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-........................................................................ [ 61%]
-......................................F....F.                            [100%]
+..F                                                                      [100%]
 =================================== FAILURES ===================================
-______________ test_verifier_non_quota_no_verdict_still_escalates ______________
+________________________ test_no_frozen_entry_has_grown ________________________
 
-store = <<redacted>.core.db.Store object at 0x10e68af00>
-tmp_path = PosixPath('/private/var/folders/1r/3r0rt1jd4j1456rsg_fh4d380000gn/T/pytest-of-eyalgolan/pytest-
-[... 2,194 of 3,333 characters omitted from the middle ...]
- excinfo:
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-E       Failed: DID NOT RAISE ReviewerUnavailable
+scanned = ({'agent/claude_backend.py:ClaudeBackend.stream': 407, 'blockers/landed_override.py:approve_landed_override': 315, 'bl... ...}, {'agent/guard.py': 2892, 'api/app.py': 6148, 'blockers/wake.py': 2757, 'cli/commands.py': 8642, ...}, 225
+[... 788 of 1,927 characters omitted from the middle ...]
+         
+E             Left contains one more item: 'core/orchestrator.py:Orchestrator._run_review: frozen 544, now 556 (+12); this budget only ratchets down'
+E             Use -v to get more diff
 
-tests/test_verifier_quota_park.py:323: Failed
+tests/test_structural_budget.py:1676: AssertionError
 =========================== short test summary info ============================
-FAILED tests/test_verifier_quota_park.py::test_verifier_non_quota_no_verdict_still_escalates
-FAILED tests/test_verifier_quota_park.py::test_a_malformed_verdict_still_escalates_novel_unknown
-2 failed, 115 passed in 13.64s
+FAILED tests/test_structural_budget.py::test_no_frozen_entry_has_grown - Asse...
+1 failed, 2 passed, 15 deselected in 1.34s
 ```  
-  _excerpt - 3,325 characters of output in total_
+  _excerpt - 1,925 characters of output in total_
 
-- `uv run pytest -q tests/test_verifiers_gate.py tests/test_verifiers.py tests/test_verifiers_cli.py tests/test_verifier_quota_park.py 2>&1 | tail -40`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/70f5109f5117496e8c613a19f5b2e6f6.98644.58db132b uv run pytest -q tests/test_structural_budget.py 2>&1 | tail -40`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-........................................................................ [ 61%]
-.............................................                            [100%]
-117 passed in 15.04s
-```
+.....F............                                                       [100%]
+=================================== FAILURES ===================================
+________________________ test_no_frozen_entry_has_grown ________________________
 
-- `uv run pytest -q \   "tests/test_verifiers_gate.py::test_no_verdict_is_advisory_and_the_round_continues_to_the_reviewer" \   "tests/test_verifiers_gate.py::test_no_verdict_persists_on_the_attempt_row_and_in_task_context" \   2>&1 | tail -60`
+scanned = ({'agent/claude_backend.py:ClaudeBackend.stream': 407, 'blockers/landed_override.py:approve_landed_override': 315, 'bl... ...}, {'agent/guard.py': 2892, 'api/app.py': 6148, 'blockers/wake.py': 2757, 'cli/commands.py': 8642, ...}, 225
+[... 732 of 1,871 characters omitted from the middle ...]
+orches...atchets down'] == []
+E             
+E             Left contains one more item: 'core/orchestrator.py: frozen 23564, now 23579 (+15); this budget only ratchets down'
+E             Use -v to get more diff
 
-```
-# bounded retry (`r.unavailable`) is an infra gap in the gate, not
-        # evidence about the change — it never escalates the task or ends the
-        # attempt. Split it out from genuine failures so a round that ALSO has
-        # a real violation still fails on that violation (never silently
-        # dropped just because another rule was unavailable), and a round
-        # with ONLY unavailable rules is recorded and reported, then
-        # continues to the agentic reviewer like any other passing gate.
-        genuinely_failed = [r for r in failed_verifiers if not r.unavailable]
-        unavailable_verifiers = [r for r in failed_verifiers if r.unavailable]
-     
-[... 2,562 of 3,701 characters omitted from the middle ...]
-nd failed: no-todo. Escalating instead of charging the coder for a defect nobody found.
-
-src/<redacted>/core/orchestrator.py:13924: ReviewerUnavailable
+tests/test_structural_budget.py:1676: AssertionError
 =========================== short test summary info ============================
-FAILED tests/test_verifiers_gate.py::test_no_verdict_is_advisory_and_the_round_continues_to_the_reviewer
-FAILED tests/test_verifiers_gate.py::test_no_verdict_persists_on_the_attempt_row_and_in_task_context
-2 failed in 1.70s
+FAILED tests/test_structural_budget.py::test_no_frozen_entry_has_grown - Asse...
+1 failed, 17 passed in 2.12s
 ```  
-  _excerpt - 3,760 characters of output in total_
+  _excerpt - 1,869 characters of output in total_
 
-- `uv run pytest -q \   "tests/test_verifiers_gate.py::test_no_verdict_is_advisory_and_the_round_continues_to_the_reviewer" \   "tests/test_verifiers_gate.py::test_no_verdict_persists_on_the_attempt_row_and_in_task_context" \   2>&1 | tail -20 echo ---MANIFEST--- uv run python scripts/check_release_manifest.py 2>&1 | tail -10`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/70f5109f5117496e8c613a19f5b2e6f6.98644.58db132b uv run pytest -q tests/test_structural_budget.py::test_no_frozen_entry_has_grown 2>&1 | tail -20`
+
+```
+def test_no_frozen_entry_has_grown(scanned):
+        function_lines, function_cc, file_lines, _, _ = scanned
+        checks = [
+            (function_lines, FROZEN_FUNCTION_LINES, MAX_FUNCTION_LINES, "FROZEN_FUNCTION_LINES"),
+            (function_cc, FROZEN_FUNCTION_CC, MAX_FUNCTION_CC, "FROZEN_FUNCTION_CC"),
+            (file_lines, FROZEN_FILE_LINES, MAX_FILE_LINES, "FROZEN_FILE_LINES"),
+        ]
+        for measured, frozen, threshold, name in checks:
+            _, grown, _ = offenders(measured, frozen, threshold, name)
+>           assert grown == [], "\n".join(grown)
+E           AssertionError: core/orchestrator.py: frozen 23564, now 23579 (+15); this budget only ratchets down
+E           assert ['core/orches...atchets down'] == []
+E             
+E             Left contains one more item: 'core/orchestrator.py: frozen 23564, now 23579 (+15); this budget only ratchets down'
+E             Use -v to get more diff
+
+tests/test_structural_budget.py:1676: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_structural_budget.py::test_no_frozen_entry_has_grown - Asse...
+1 failed in 1.25s
+```
+
+- `cd /Users/eyalgolan/.<redacted>/worktrees/70f5109f5117496e8c613a19f5b2e6f6.98644.58db132b uv run pytest -q tests/test_structural_budget.py 2>&1 | tail -20`
+
+```
+def test_no_frozen_entry_has_grown(scanned):
+        function_lines, function_cc, file_lines, _, _ = scanned
+        checks = [
+            (function_lines, FROZEN_FUNCTION_LINES, MAX_FUNCTION_LINES, "FROZEN_FUNCTION_LINES"),
+            (function_cc, FROZEN_FUNCTION_CC, MAX_FUNCTION_CC, "FROZEN_FUNCTION_CC"),
+            (file_lines, FROZEN_FILE_LINES, MAX_FILE_LINES, "FROZEN_FILE_LINES"),
+        ]
+        for measured, frozen, threshold, name in checks:
+            _, grown, _ = offenders(measured, frozen, threshold, name)
+>           assert grown == [], "\n".join(grown)
+E           AssertionError: core/orchestrator.py:Orchestrator._run_review: frozen 89, now 92 (+3);
+[... 76 of 1,215 characters omitted from the middle ...]
+own'] == []
+E             
+E             Left contains one more item: 'core/orchestrator.py:Orchestrator._run_review: frozen 89, now 92 (+3); this budget only ratchets down'
+E             Use -v to get more diff
+
+tests/test_structural_budget.py:1676: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_structural_budget.py::test_no_frozen_entry_has_grown - Asse...
+1 failed, 17 passed in 2.41s
+```  
+  _excerpt - 1,215 characters of output in total_
+
+- `cd /Users/eyalgolan/.<redacted>/worktrees/70f5109f5117496e8c613a19f5b2e6f6.98644.58db132b uv run pytest -q tests/test_structural_budget.py 2>&1 | tail -20`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-..                                                                       [100%]
-2 passed in 2.08s
----MANIFEST---
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-OK: 1558 file(s) match RELEASE_MANIFEST.txt
+..................                                                       [100%]
+18 passed in 3.19s
 ```
 
-- `uv run pytest -q tests/test_verifiers_gate.py tests/test_verifiers.py tests/test_verifiers_cli.py tests/test_verifier_quota_park.py 2>&1 | tail -20 echo ---MANIFEST--- uv run python scripts/check_release_manifest.py 2>&1 | tail -10`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/70f5109f5117496e8c613a19f5b2e6f6.98644.58db132b uv run pytest -q tests/test_verifiers_gate.py tests/test_verifiers.py tests/test_verifiers_cli.py tests/test_verifier_quota_park.py tests/test_merge_policy.py tests/test_pr_evidence.py 2>&1 | tail -40`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-........................................................................ [ 61%]
-.............................................                            [100%]
-117 passed in 14.81s
----MANIFEST---
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-OK: 1558 file(s) match RELEASE_MANIFEST.txt
+........................................................................ [ 25%]
+........................................................................ [ 51%]
+........................................................................ [ 77%]
+...............................................................          [100%]
+279 passed in 16.30s
 ```
 
-- `uv run pytest -q tests/test_verifiers_cli.py -k "no_verdict_count or shows_a_no_verdict" -v 2>&1 | tail -20`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/70f5109f5117496e8c613a19f5b2e6f6.98644.58db132b uv run pytest -q tests/test_merge_policy.py::test_facts_from_evidence_unavailable_verifier_is_not_failed -v 2>&1 | tail -10`
 
 ```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-============================= test session starts ==============================
-platform darwin -- Python 3.12.13, pytest-9.1.1, pluggy-1.6.0
-<redacted> isolated HOME: /var/folders/1r/3r0rt1jd4j1456rsg_fh4d380000gn/T/nh-test-home-rwfcy3r7
-rootdir: /Users/eyalgolan/.<redacted>/worktrees/70f5109f5117496e8c613a19f5b2e6f6.98644.5c8cc784
+<redacted> isolated HOME: /var/folders/1r/3r0rt1jd4j1456rsg_fh4d380000gn/T/nh-test-home-5dq58th3
+rootdir: /Users/eyalgolan/.<redacted>/worktrees/70f5109f5117496e8c613a19f5b2e6f6.98644.58db132b
 configfile: pyproject.toml
 plugins: anyio-4.14.0, no-human-0.2.2, cov-7.1.0, xdist-3.8.0, asyncio-1.4.0
 asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
-collected 33 items / 31 deselected / 2 selected
+collected 1 item
 
-tests/test_verifiers_cli.py ..                                           [100%]
+tests/test_merge_policy.py .                                             [100%]
 
-======================= 2 passed, 31 deselected in 0.61s =======================
+============================== 1 passed in 0.68s ===============================
 ```
-
-- `uv run pytest -q -n 4 tests/test_verifiers_gate.py tests/test_verifiers.py tests/test_verifiers_cli.py tests/test_verifier_quota_park.py 2>&1 | tail -15`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-bringing up nodes...
-bringing up nodes...
-
-........................................................................ [ 61%]
-.............................................                            [100%]
-117 passed in 5.56s
-```
-
-
-### lint
-- `uv run ruff check src/<redacted>/core/orchestrator.py src/<redacted>/review/verifiers.py src/<redacted>/cli/verifiers_cmd.py tests/test_verifiers_gate.py tests/test_verifiers_cli.py tests/test_verifier_quota_park.py 2>&1 | tail -60`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-error: Failed to spawn: `ruff`
-  Caused by: No such file or directory (os error 2)
-```
-
-- `(uv run --with ruff ruff check src/<redacted>/core/orchestrator.py src/<redacted>/review/verifiers.py src/<redacted>/cli/verifiers_cmd.py tests/test_verifiers_gate.py tests/test_verifiers_cli.py tests/test_verifier_quota_park.py 2>&1 | tail -80)`
-
-```
-37 |
-   - from .test_e2e_orchestrator import _config  # noqa: F401
-38 + from .test_e2e_orchestrator import _config
-39 |
-   |
-
-I001 [*] Import block is un-sorted or un-formatted
-   --> tests/test_verifiers_gate.py:137:5
-    |
-135 |       cfg.data["reviewer"]["allow_advisory"] = False
-136 |       cfg.data.setdefault("tests", {})["command"] = tests_cmd
-137 | /     from <redacted>.core.orchestrator import Orchestrator as _Orch
-138 | |     from .test_e2e_orchestrator import FakeBackend
-    | |__________________________________________________^
-139 |       kwargs = {}
-140 |       if events is not None:
-    |
-help: Organize imports
-    |
-137 |     from <redacted>.core.orchestrator 
-[... 1,885 of 3,024 characters omitted from the middle ...]
-,
-586 |         "_VERIFIER_RETRY_MIN_TIMEOUT": _VERIFIER_RETRY_MIN_TIMEOUT,
-    |
-help: Remove unused `noqa` directive
-    |
-583 |     # imported `_VERIFIER_RETRY_TIMEOUT` exactly.
-    -     real = eval(code, {  # noqa: S307 - trusted source, own repo file
-584 +     real = eval(code, {
-585 |         "max": max, "min": min,
-    |
-
-Found 172 errors.
-[*] 102 fixable with the `--fix` option (31 hidden fixes can be enabled with the `--unsafe-fixes` option).
-```  
-  _excerpt - 3,016 characters of output in total_
 
 
 **Not verified:** everything below is a limit of this section, listed whether or not it bit this attempt.
 
-- no command recognised as e2e, http, typecheck, build was recorded
+- no command recognised as e2e, http, typecheck, lint, build was recorded
 - an entry shows that a command LINE was submitted to the shell and what came back - never that the check recognised inside it RAN, and never that it was the RIGHT command: `pytest -k test_nothing` prints a clean run, and a recorded command line may name a check the shell never reached yet is still counted - TEN SHAPES WERE DRIVEN against bash 3.2.57 with the check replaced by a marker-printing stub and the marker was absent in every one: a failed `&&`, a taken `||`, an `exit`, an `exec`, an `exit` inside a `source`d script, a syntax error that aborts the REST of the line, a multi-line `if false`, a `case` that matches nothing, `set -e` aborting an earlier command, and `set -u` on an unset variable; that list is MEASURED, NOT EXHAUSTIVE, because this module is not bash, so a kind this section does NOT list as missing is a kind some recorded line named, which is not the same as a kind that ran
 - the text is the coder's: the session chose the command string and, through `echo`/`printf`, can choose the output too. Both are shown as inert text, and no entry ASSERTS a pass, a fail, or an exit status - `pytest -q | tail -3` exits with `tail`'s status, `Error: Exit code 1` is a line IN THE OUTPUT, and where the harness reported a timeout or an interruption instead of output that report is appended to the captured text in square brackets. Read the output
 - recognition reads the command line ONLY - it never looks inside what a command runs, so `bash -c 'uv run pytest -q'` leaves no receipt at all while `make test` leaves one that names `make` and not the recipe it ran; and the other way, a check merely NAMED in a heredoc body, or in a quoted string that happens to spell a shell separator, can be recorded as though it ran

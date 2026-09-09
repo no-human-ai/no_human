@@ -1,13 +1,11 @@
 # Independent review
 
-_Harness-captured record for task `70f5109f`, commit `6f01a34cea8c0bcea3a1e7749811f9224dfc1c13` — not model-authored: no_human wrote this file from the fresh-context reviewer's checklist on this commit. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `70f5109f`, commit `29a1a1bb6151c6ad75258fc6cded07008b42003e` — not model-authored: no_human wrote this file from the fresh-context reviewer's checklist on this commit. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 <!-- no_human:review-checklist -->
-## Independent review — PASSED (1 round) on `6f01a34`
+## Independent review — PASSED (3 rounds) on `29a1a1b`
 _A different model, fresh context, commit, push and merge refused at the tool call, told to refute "done". This is the checklist the gate decided on; no_human never merges — a human does._
 
 | Severity | Finding | Where | Note |
 |---|---|---|---|
-| ✅ | no-verdict FAIL vs unavailable split correct | `src/no_human/core/orchestrator.py:13915` | Split between genuinely_failed and unavailable reads cleanly and the FAIL short-circuit is untouched. Nothing to change here. |
-| ✅ | perf-methodology acceptance criterion not demonstrably met | `docs/verification.md:80` | The perf/complexity-methodology criterion is essentially unaddressable here since the change only removes an escalation branch and the PR body is templated. I'd |
-| ✅ | list surfaces a 'runs' column beyond the asked no-verdict count | `src/no_human/cli/verifiers_cmd.py:297` | Adding runs alongside no_verdict is a reasonable read since a raw no-verdict count without a denominator is hard to interpret. Fine to keep. |
+| ✅ | AC6 perf-methodology can't be authored into the template PR body | `tests/test_structural_budget.py:273` | AC6 wants the perf/complexity methodology written into the PR description, but the body is template-generated so there's nowhere for you to put it. The structur |

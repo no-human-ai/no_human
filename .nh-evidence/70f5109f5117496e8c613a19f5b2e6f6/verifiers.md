@@ -1,14 +1,16 @@
 # Verifiers
 
-_Harness-captured record for task `70f5109f`, commit `6f01a34cea8c0bcea3a1e7749811f9224dfc1c13` — not model-authored: no_human wrote this file from the deterministic verifier rules selected for this commit's files. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `70f5109f`, commit `29a1a1bb6151c6ad75258fc6cded07008b42003e` — not model-authored: no_human wrote this file from the deterministic verifier rules selected for this commit's files. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ```json
 [
   {
-    "comment": "All test functions added or changed in this diff contain assert statements; the modified list_* tests only gained a db_path line but retained their existing asserts, and the retry-window test that dropped pytest.raises still asserts on bounded_calls/timeouts.",
-    "evidence": "Every added/modified test carries assertions, e.g. test_no_verdict_persists_on_the_attempt_row_and_in_task_context: 'assert len(persisted) == 1' and 'assert persisted[0][\"no_verdict\"] is True'; test_list_without_a_readable_db_still_exits_0_with_zero_counts: 'assert v[\"runs\"] == 0'. The only non-test addition (_seed_attempt_with_verifier_results) is a helper, not a test function.",
+    "comment": "All new and modified test functions across the five touched files contain assertions; the only helper functions added do not start with test_ and are correctly out of scope.",
+    "evidence": "Every added/modified test function carries at least one assert (e.g. test_verifiers_all_satisfied_pass_unavailable_only_is_advisory: `assert v.passed`; the modified test_the_bounded_retry_window_is_one_shorter_call_both_ways retains `assert reviewer2.bounded_calls == 2`); helpers like `_seed_attempt_with_verifier_results` are not test functions.",
     "file": "",
     "files_checked": [
+      "tests/test_merge_policy.py",
+      "tests/test_pr_evidence.py",
       "tests/test_verifier_quota_park.py",
       "tests/test_verifiers_cli.py",
       "tests/test_verifiers_gate.py"
@@ -17,22 +19,24 @@ _Harness-captured record for task `70f5109f`, commit `6f01a34cea8c0bcea3a1e77498
     "no_verdict": false,
     "passed": true,
     "severity": "medium",
-    "tokens_used": 1060,
+    "tokens_used": 2020,
     "unavailable": false,
     "verifier_id": "tests-assert-something"
   },
   {
-    "comment": "The modified code neither adds nor changes any task-status write; it merely converts an unavailable-verifier escalation into an advisory pass-through, so there is no update_task(validate=False) status write to violate the statement.",
-    "evidence": "The diff only edits comments and removes a `raise exc` (ReviewerUnavailable) block in the verifier-handling path of Orchestrator; it adds no status-writing code at all \u2014 no call to update_task(validate=False) or any status write appears in the added lines.",
-    "file": "src/no_human/core/orchestrator.py",
+    "comment": "No new or modified line in the change set writes a task status at all \u2014 there are no update_task or set_status calls in the diff \u2014 so the statement holds vacuously: nothing bypasses the transition table via validate=False.",
+    "evidence": "The diff touches only merge_policy.py (adds verifiers_unavailable bucket), orchestrator.py (removes a ReviewerUnavailable raise, adds _carry_usage token-folding on verifier no-verdict), and pr_evidence.py (verifiers_pin rendering). None of these hunks contain any call to update_task or set_status, let alone update_task(..., validate=False).",
+    "file": "",
     "files_checked": [
-      "src/no_human/core/orchestrator.py"
+      "src/no_human/core/merge_policy.py",
+      "src/no_human/core/orchestrator.py",
+      "src/no_human/core/pr_evidence.py"
     ],
-    "line": 13917,
+    "line": 0,
     "no_verdict": false,
     "passed": true,
     "severity": "high",
-    "tokens_used": 512,
+    "tokens_used": 603,
     "unavailable": false,
     "verifier_id": "no-unvalidated-status-write"
   }
