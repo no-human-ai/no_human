@@ -91,6 +91,8 @@ def test_allowlist_is_the_documented_closed_set():
         "task_failed": frozenset({"category", "reason_category", "environment"}),
         "approve_clicked": frozenset({"environment"}),
         "feature_used": frozenset({"name", "environment"}),
+        "task_ended": frozenset({"outcome", "attempts", "duration_bucket", "environment"}),
+        "tasks_orphaned": frozenset({"count_bucket", "environment"}),
     }
 
 
@@ -201,6 +203,56 @@ def test_task_failed_still_carries_environment(temp_home, no_thread, monkeypatch
     props = json.loads(line)["props"]
     assert props["environment"] == "ci"
     assert props["reason_category"] == "infra"
+
+
+# --- task_ended / tasks_orphaned -------------------------------------------- #
+
+def test_task_ended_accepts_every_outcome(temp_home, no_thread):
+    for value in telemetry.TASK_END_OUTCOMES:
+        telemetry.record("task_ended", config={"telemetry": _ENABLED},
+                         outcome=value, attempts=1, duration_bucket="<10m")
+    path = temp_home / ".no_human" / "telemetry-queue.jsonl"
+    lines = [json.loads(ln) for ln in path.read_text().splitlines() if ln.strip()]
+    sent_outcomes = {ev["props"]["outcome"] for ev in lines}
+    assert sent_outcomes == set(telemetry.TASK_END_OUTCOMES)
+
+
+def test_task_ended_rejects_free_text_outcome():
+    for bad in ("interrupted", "ESCALATED", "task abc123 escalated"):
+        with pytest.raises(ValueError, match="not allowed"):
+            telemetry.record("task_ended", config={"telemetry": _ENABLED},
+                             outcome=bad, attempts=1, duration_bucket="<10m")
+        # Validated even when disabled — an out-of-enum value is a privacy
+        # bug regardless of consent state.
+        with pytest.raises(ValueError, match="not allowed"):
+            telemetry.record(
+                "task_ended", config={"telemetry": {"enabled": False}},
+                outcome=bad, attempts=1, duration_bucket="<10m")
+
+
+def test_tasks_orphaned_rejects_free_text_count_bucket():
+    for bad in ("3", "many", "-1"):
+        with pytest.raises(ValueError, match="not allowed"):
+            telemetry.record("tasks_orphaned", config={"telemetry": _ENABLED},
+                             count_bucket=bad)
+
+
+def test_new_events_are_dropped_on_the_lambda_wire_until_the_server_ships(
+    temp_home, no_network, no_thread,
+):
+    """`task_ended`/`tasks_orphaned` are valid client-side (PostHog gets
+    them) but must not reach the deployed Lambda yet — it 400s a whole batch
+    on one unknown event name."""
+    telemetry.record("task_ended", config={"telemetry": _ENABLED},
+                     outcome="escalated", attempts=1, duration_bucket="<10m")
+    telemetry.record("tasks_orphaned", config={"telemetry": _ENABLED},
+                     count_bucket="0")
+    n = telemetry.flush(_ENABLED)
+    assert n == 0
+    assert no_network == []
+    path = temp_home / ".no_human" / "telemetry-queue.jsonl"
+    remaining = [ln for ln in path.read_text().splitlines() if ln.strip()]
+    assert remaining == []  # all-dropped batch is deleted, never re-POSTed
 
 
 # ------------------------- consent gate ----------------------------------- #
@@ -543,10 +595,16 @@ def test_poisoned_queue_line_is_dropped_not_wedging(temp_home, no_network,
 def test_client_allowlist_matches_the_deployed_lambda_contract():
     """CONTRACT FIXTURE — the hosted ingestion endpoint validates batches
     WHOLESALE against its own closed allowlist, so a client-side event the
-    server doesn't know silently 400s every batch (the server carries the
-    mirror of this pin). This is the server's allowlist as deployed
-    2026-08-16; if this test fails you are adding a client event — ship the
-    server-side allowlist change FIRST, then update this fixture."""
+    server doesn't know silently 400s every batch. This is the server's
+    allowlist as deployed 2026-08-16; if this test fails you are adding an
+    event the deployed Lambda should accept — ship the server-side allowlist
+    change FIRST, then update this fixture.
+
+    `task_ended`/`tasks_orphaned` are valid client-side (`_ALLOWED_EVENTS`,
+    PostHog gets them) but are NOT yet in this deployed contract — they are
+    kept out of the outgoing Lambda batch by `_LAMBDA_EVENTS` (see
+    telemetry.py, docs/TELEMETRY.md) until the server ships them.
+    """
     # "environment" is a client-side-only addition (stripped by
     # _strip_environment before the Lambda ever sees it — the server's
     # allowlist itself is unchanged); it's still listed here because this
@@ -559,7 +617,14 @@ def test_client_allowlist_matches_the_deployed_lambda_contract():
         "approve_clicked": frozenset({"environment"}),
         "feature_used": frozenset({"name", "environment"}),
     }
-    assert telemetry._ALLOWED_EVENTS == deployed_lambda_events
+    assert telemetry._LAMBDA_EVENTS == set(deployed_lambda_events)
+    assert {k: v for k, v in telemetry._ALLOWED_EVENTS.items()
+            if k in telemetry._LAMBDA_EVENTS} == deployed_lambda_events
+    # Not-yet-shipped events are the EXACT difference — nothing else is held
+    # back, and the two new events are not silently forgotten either.
+    assert set(telemetry._ALLOWED_EVENTS) - telemetry._LAMBDA_EVENTS == {
+        "task_ended", "tasks_orphaned",
+    }
     # The server also regex-validates `version` (semver-ish, MAJOR.MINOR.
     # PATCH + optional short suffix) and 400s the whole batch otherwise —
     # a release-versioning change must trip THIS test, not the fleet.
@@ -636,22 +701,21 @@ def test_all_poisoned_batch_is_deleted_without_posting(temp_home, no_network,
 # The browser channel (`web/src/telemetry.js`) sends one extra event kind,
 # `screen_viewed`, that the server's closed allowlist deliberately never
 # accepts (it would open the ingest path to it — see telemetry.py's module
-# docstring). These two tests pin the DOCUMENTED list in docs/configuration.md
-# against `_ALLOWED_EVENTS` in both directions, so a server event can't ship
+# docstring). These tests pin the DOCUMENTED list in both docs/configuration.md
+# (the user-facing summary) and docs/TELEMETRY.md (the full contract) against
+# `_ALLOWED_EVENTS` in both directions, so a server event can't ship
 # undocumented and a stale doc entry can't survive a removed event either.
 
-_DOCS_PATH = Path(__file__).resolve().parent.parent / "docs" / "configuration.md"
+_DOCS_ROOT = Path(__file__).resolve().parent.parent / "docs"
+_DOC_PATHS = (_DOCS_ROOT / "configuration.md", _DOCS_ROOT / "TELEMETRY.md")
 
 
-def _configuration_doc_text() -> str:
-    return _DOCS_PATH.read_text(encoding="utf-8")
-
-
-def test_every_server_event_kind_is_documented():
-    doc = _configuration_doc_text()
+@pytest.mark.parametrize("doc_path", _DOC_PATHS, ids=lambda p: p.name)
+def test_every_server_event_kind_is_documented(doc_path):
+    doc = doc_path.read_text(encoding="utf-8")
     missing_events = [name for name in telemetry._ALLOWED_EVENTS if name not in doc]
     assert missing_events == [], (
-        f"event kind(s) not listed in docs/configuration.md: {missing_events}"
+        f"event kind(s) not listed in {doc_path.name}: {missing_events}"
     )
     all_props = {prop for props in telemetry._ALLOWED_EVENTS.values() for prop in props}
     missing_props = [
@@ -659,19 +723,20 @@ def test_every_server_event_kind_is_documented():
         if not re.search(rf"`{re.escape(prop)}`", doc)
     ]
     assert missing_props == [], (
-        f"prop name(s) not listed (as `backticked`) in docs/configuration.md: {missing_props}"
+        f"prop name(s) not listed (as `backticked`) in {doc_path.name}: {missing_props}"
     )
 
 
-def test_documented_list_has_no_phantom_events():
-    doc = _configuration_doc_text()
+@pytest.mark.parametrize("doc_path", _DOC_PATHS, ids=lambda p: p.name)
+def test_documented_list_has_no_phantom_events(doc_path):
+    doc = doc_path.read_text(encoding="utf-8")
     documented = {
         m.group(1)
         for m in re.finditer(r"`([a-z_]+)`\s*\|\s*(?:server|browser)\s*\|", doc)
     }
     published = set(telemetry._ALLOWED_EVENTS) | {"screen_viewed"}
     assert documented == published, (
-        "docs/configuration.md's event table disagrees with the actual "
+        f"{doc_path.name}'s event table disagrees with the actual "
         f"published set — documented={documented!r} published={published!r}"
     )
 

@@ -1649,6 +1649,50 @@ def _attributed_ids(
     return [t for t in failing if t in keep]
 
 
+# emit() kinds that end a task without going through the "done"/"awaiting_approval"
+# or "failed" off-ramps — see `Orchestrator._telemetry_hook`'s `task_ended` branch.
+#
+# NOTE: "cancelled" (the kind `_honor_cancel` emits for a cooperative PAUSE —
+# status BLOCKED, resumable with `nh task resume`) is deliberately NOT in this
+# tuple: that path is not an end. "cancelled_hard" is the HARD cancel
+# (`request_task_cancel` -> the `asyncio.CancelledError` branch in
+# `_run_attempt`) — genuinely terminal, so it is the one that counts here.
+_TASK_END_KINDS = (
+    "escalated", "paused_quota", "cancelled_hard", "awaiting_input", "blocked",
+)
+
+
+def _task_end_outcome(kind: str, blocker_category: str) -> str:
+    """Map a `_TASK_END_KINDS` emit kind (+ `blocker_category` for the
+    ambiguous "blocked" kind) onto a `telemetry.TASK_END_OUTCOMES` value.
+    See `docs/TELEMETRY.md` for the full table this mirrors.
+
+    A PAUSE never reaches here, so `USER_PAUSED` is not mapped below. Four
+    sites stamp that category — `_honor_cancel` (which emits kind
+    "cancelled", deliberately NOT in `_TASK_END_KINDS`, because a pause is
+    resumable and so is not a task end), `nh task pause`
+    (`cli/commands.py`), `POST /pause` and the HOLD endpoint
+    (`api/app.py`) — and none of them can reach this mapper: the three
+    outside the orchestrator write the task's columns straight through the
+    store and call no orchestrator at all, so nothing on those paths emits
+    into `_telemetry_hook`. `USER_PAUSED` is
+    also harness-only (`blockers.taxonomy.HARNESS_ONLY_CATEGORIES`); an
+    agent-claimed one is demoted by `report.parse_blocker`.
+    """
+    if kind == "escalated":
+        return "escalated"
+    if kind == "paused_quota":
+        return "parked_quota"
+    if kind == "cancelled_hard":
+        return "cancelled"
+    if kind == "awaiting_input":
+        return "needs_answer"
+    cat = (blocker_category or "").strip().upper()  # kind == "blocked"
+    if cat in ("TRANSIENT_INFRA", "DEPENDENCY_WAIT"):
+        return "parked_infra"
+    return "needs_answer"  # safe default: a human is waited on
+
+
 class Orchestrator:
     # Pause before the single PR-open retry (transient forge trouble). A class
     # attribute so tests zero it instead of eating a real 30s sleep (EH1) —
@@ -1843,9 +1887,25 @@ class Orchestrator:
                         "test_gap", "unknown") else "other")
             elif kind == "attempt_start":
                 self._tel_attempts = getattr(self, "_tel_attempts", 0) + 1
-            elif (kind == "state"
+            elif (kind in ("state", "pr_open")
                   and meta.get("status") in ("done", "awaiting_approval")
                   and not getattr(self, "_tel_terminal_sent", False)):
+                # The ORDINARY successful-delivery path (`_open_pr`) never
+                # emits kind="state" for the AWAITING_APPROVAL leg at all —
+                # only kind="pr_open" with `status="awaiting_approval"`
+                # riding along (every `self.emit("pr_open", ...,
+                # status="awaiting_approval")` call site, e.g. `_open_pr`
+                # itself and the already-satisfied/draft-promotion path).
+                # Without `pr_open` here, `task_completed` only ever fired
+                # from the orchestrator's OWN kind="state"/status="done"
+                # emits (`_run_attempt`'s done leg and the code-review
+                # paths) — never on the far more common "PR opened,
+                # awaiting human approval" leg. `nh approve` is not one of
+                # those: it writes DONE through the store (api/app.py, no
+                # Orchestrator is constructed there), so it never reaches
+                # this sink at all.
+                # Props are unchanged either way: `meta["status"]` is read
+                # the same way regardless of which kind carried it.
                 self._tel_terminal_sent = True
                 started = getattr(self, "_tel_started_at", None)
                 bucket = (telemetry.duration_bucket((time.time() - started) / 60)
@@ -1864,6 +1924,19 @@ class Orchestrator:
                                  reason_category=telemetry.failure_reason_category(
                                      meta.get("reason_category"),
                                      meta.get("blocker_category")))
+            elif (kind in _TASK_END_KINDS
+                  and not getattr(self, "_tel_terminal_sent", False)):
+                # Every other terminal off-ramp (escalated / parked on quota
+                # or infra / needs a human answer / cancelled) — see
+                # docs/TELEMETRY.md. Same once-only latch as above.
+                self._tel_terminal_sent = True
+                started = getattr(self, "_tel_started_at", None)
+                bucket = (telemetry.duration_bucket((time.time() - started) / 60)
+                          if started else "unknown")
+                telemetry.record(
+                    "task_ended", config=self.config,
+                    outcome=_task_end_outcome(kind, str(meta.get("blocker_category") or "")),
+                    attempts=getattr(self, "_tel_attempts", 0), duration_bucket=bucket)
         except Exception:
             pass
 
@@ -5831,6 +5904,17 @@ class Orchestrator:
                 **self._pop_aux_usage(),
             )
             self.emit("agent_error", detail, error_class="cancelled")
+            # Terminal telemetry: this IS the real hard-cancel end state (a
+            # human explicitly cancelled a live attempt) — fire it here,
+            # in-process, rather than relying on whatever caller happened to
+            # invoke `request_task_cancel` (an HTTP handler, a bare
+            # orchestrator-level call in a test, ...) to also flip the task's
+            # DB status and infer telemetry from that. `_telemetry_hook`'s
+            # `_tel_terminal_sent` latch keeps this to exactly one event even
+            # if `_run_attempt` is somehow re-entered. Distinct kind from
+            # `_honor_cancel`'s "cancelled" (a cooperative PAUSE, resumable,
+            # not an end) — see `_TASK_END_KINDS`'s note.
+            self.emit("cancelled_hard", detail, status="failed")
             # off_ramp=True: a human explicitly cancelled — `_drive`'s retry
             # test (`status != FAILED or off_ramp`) would otherwise start a
             # fresh attempt on the very next loop iteration, in the same
