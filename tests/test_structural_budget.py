@@ -1242,7 +1242,15 @@ FROZEN_FILE_LINES = {
     # this is the only branch that can ever fire `task_ended(outcome=
     # cancelled)` for a task with no live in-process attempt at all. Measured
     # via `wc -l src/no_human/cli/commands.py`.
-    "cli/commands.py": 8651,
+    # 8651 -> 8666 (+15): "a verifier with no verdict is advisory" review
+    # send-back MINOR-2 — `_verifiers_advisory_note()` (a new module-level
+    # helper) pulls the `verifiers_all_satisfied` rule's "N no verdict
+    # (advisory): ..." parenthetical out of its detail text, and
+    # `_approve_find_ready`/`_approve_go_ready` thread it through so
+    # `nh approve --ready`'s one-line summary no longer silently drops the
+    # only signal telling the operator a verifier never answered. Measured
+    # via `wc -l src/no_human/cli/commands.py`.
+    "cli/commands.py": 8666,
     # api/app.py 5338 -> 5346 (+8): same budget-floor warning surfaced by
     # `send-back`/`reply` as `budget_warning` in the JSON response. Net cost
     # was trimmed from a naive +14 to +8 by computing `Bounds.from_config(...)`
