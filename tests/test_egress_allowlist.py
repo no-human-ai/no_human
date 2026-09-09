@@ -822,6 +822,23 @@ ALLOWLIST: dict[str, dict[str, Allowed]] = {
             "whatever the repo's test command / pytest runs",
             _ON + "the bugfix repro gate runs the repo's own tests"),
     },
+    # Per vcs/manifest_repair.py's precedent above: the program is the TARGET
+    # REPO's own `scripts/reanchor_citations.py`, run read-only (`--check`,
+    # never `--apply`), and only once `Orchestrator._citation_drift_preflight`
+    # has already established the diff touched a file some citation points
+    # at. It dials nothing — `--check` reads the working tree and prints.
+    "testing/citations.py": {
+        "exec:<dynamic>": Allowed(
+            "the TARGET REPO's own `scripts/reanchor_citations.py`, run as "
+            "`[sys.executable, <repo>/scripts/reanchor_citations.py, "
+            "'--check']` inside the task worktree (120s timeout) — the "
+            "committed script only reads the working tree and its own "
+            "table and dials nothing",
+            _ON + "unconditional and fail-open, like the structural-budget "
+                  "preflight: costs nothing for a repo without this "
+                  "convention, and only shells out once a diff has already "
+                  "touched a cited source file"),
+    },
     # This module used to hold a THIRD channel: `_probe_github_ambient` shelled
     # out to `gh auth status` — measured 1700-2036 ms, a network round-trip —
     # from `ambient_available("github")`, on a default install, when GitHub was
