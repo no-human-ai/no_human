@@ -385,7 +385,18 @@ FROZEN_FUNCTION_LINES = {
     # harness's testing step classifies it (the earlier text promised a
     # rejection that an excused red never gets). Measured on this tree with
     # the scanner below.
-    "review/reviewer.py:_build_review_prompt": 327,
+    # 327 -> 342 (+15): follow-up to 4e0299ad — the section gave the reviewer
+    # NO indication the ids were unattributed at review time, so a critical
+    # verdict was ordered unconditionally. 86b5bf3d round 3 and 70f5109f
+    # round 4 were both failed on `tests/test_guard.py`'s environmental
+    # redness (168cb43f) for tests neither coder touched. Reworded the
+    # comment above `failing_ids_section` and its text to say the harness
+    # has NOT yet attributed the ids, a base-tree-red id is not this
+    # change's defect, the post-review TESTING step decides, and "critical
+    # severity" applies only when the diff plausibly explains the failure.
+    # No classification, base checkout, or extra test run added at review
+    # time. Measured on this tree with the scanner below.
+    "review/reviewer.py:_build_review_prompt": 342,
 }
 
 # 5 functions with estimated cyclomatic complexity > 60.
@@ -1584,7 +1595,14 @@ FROZEN_FILE_LINES = {
     # Measured on this tree with the scanner below.
     # 2978 -> 2979 (+1): the corrected failing-ids sentence at landing.
     # Measured on this tree by the scanner's own metric.
-    "review/reviewer.py": 2979,
+    # 2979 -> 2994 (+15): follow-up to 4e0299ad — the failing-ids section now
+    # says the harness has NOT yet attributed these ids to the diff, that a
+    # base-tree-red id is not this change's defect, that the post-review
+    # TESTING step decides, and conditions "critical severity" on the diff
+    # plausibly explaining the failure (see the matching FROZEN_FUNCTION_
+    # LINES entry for `_build_review_prompt` for the incident this fixes).
+    # Measured on this tree with the scanner below.
+    "review/reviewer.py": 2994,
     # 2706 -> 2711 (+5): pre-existing red on main at 03b262d23 (e922e9b4's
     # landing, change-scoped tests missed the ratchet) — repaired, measured,
     # on this merge; same cause as the two function-level wake.py bumps above.

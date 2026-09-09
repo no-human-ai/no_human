@@ -914,6 +914,15 @@ def _build_review_prompt(
     # run. This section exists so the reviewer grades the diff with the same
     # facts the coder will eventually see, not to be the thing that fails
     # the round by itself.
+    #
+    # UNATTRIBUTED on purpose: `_newly_failing_vs_base`, `_owned_failing_
+    # tests` and `_flaky_on_rerun` run only in the post-review TESTING step
+    # — classifying here was tried and sent back (429b471f/03267ead) because
+    # it starved the flaky tiebreaker. Without this wording the reviewer
+    # graded a test that is red on every worktree for environmental reasons
+    # as a critical, diff-caused defect: 86b5bf3d round 3 and 70f5109f round
+    # 4 both failed on the `tests/test_guard.py` redness filed separately as
+    # 168cb43f, for tests neither coder touched nor could fix.
     failing_ids_section = ""
     if failing_test_ids:
         ids_line = ", ".join(failing_test_ids)
@@ -922,12 +931,18 @@ def _build_review_prompt(
         failing_ids_section = (
             "\nFailing tests in this tree (from the harness's own run, not an "
             f"opinion): {ids_line}\n"
-            "These are FACTS the test runner produced BEFORE this review, not a "
-            "claim to weigh against the diff. Grade this at critical severity "
-            "unless a checklist item you are already reporting covers the same "
-            "failure — a PASS here cannot excuse it: on any round the review "
-            "passes, the harness's own post-review testing step classifies and "
-            "bills or excuses this red run itself.\n"
+            "These are FACTS the test runner produced BEFORE this review, but "
+            "the harness has NOT yet attributed them to this diff. A failing "
+            "id that also fails on the base tree is not this change's defect, "
+            "and the post-review testing step — not this review — is what "
+            "decides that (it classifies against the base tree and re-runs "
+            "for flakiness). Grade a failing id at critical severity only "
+            "when the diff plausibly explains it; otherwise report it as an "
+            "observation, not a blocking finding, unless a checklist item "
+            "you are already reporting covers the same failure — a PASS "
+            "here cannot excuse it: on any round the review passes, the "
+            "harness's own post-review testing step classifies and bills "
+            "or excuses this red run itself.\n"
         )
     profile_section = (
         f"\nProject profile (use these conventions as a baseline):\n{profile_context}\n"

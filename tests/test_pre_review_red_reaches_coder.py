@@ -449,6 +449,21 @@ async def test_build_review_prompt_carries_fixed_failing_ids_section(bare_repo, 
     assert "(+3 more, not shown)" in prompt
     assert "a PASS here cannot excuse it" in prompt
 
+    # The section must say the harness has NOT yet attributed these ids to
+    # the diff (round-1 send-back on 429b471f/03267ead rejected classifying
+    # here — that starved the flaky tiebreaker), that a base-tree-red test
+    # is not this change's defect, that the post-review TESTING step is
+    # what decides, and that "critical severity" is conditioned on the diff
+    # plausibly explaining the failure rather than unconditional. Incidents:
+    # 86b5bf3d round 3 and 70f5109f round 4 were both failed by the reviewer
+    # on the environmental `tests/test_guard.py` redness (168cb43f) despite
+    # neither coder touching those tests.
+    assert "has NOT yet attributed" in prompt
+    assert "base tree" in prompt
+    assert "post-review testing step" in prompt
+    assert "only when the diff plausibly explains it" in prompt
+    assert "observation, not a blocking finding" in prompt
+
     # No failing ids → no fixed section at all (byte-identical to before for
     # every call site that never had a red pre-review run).
     prompt_clean = _build_review_prompt(
@@ -509,6 +524,79 @@ async def test_pre_review_ids_are_bounded_at_the_call_site(
     assert ids[_FAILING_TEST_ID_CAP - 1] in evidence, evidence[-200:]
     assert ids[_FAILING_TEST_ID_CAP] not in evidence, evidence[-200:]
     assert "(+1 more)" in evidence, evidence[-200:]
+
+
+class _PassesButSnapshotsAttribution(_PassesEverything):
+    """Wraps `_PassesEverything` to snapshot the await_count of the three
+    TESTING-only attribution helpers at the moment `review()` runs — proves
+    the review path itself calls none of them (AC2). The mocks ARE awaited
+    later, by TESTING, on this same PASS-over-red round: the built-in
+    positive control that the patch targets are live, not inert."""
+
+    def __init__(self, owned_mock, newly_mock, flaky_mock):
+        super().__init__()
+        self._owned_mock = owned_mock
+        self._newly_mock = newly_mock
+        self._flaky_mock = flaky_mock
+        self.snapshots: dict[str, int] = {}
+
+    async def review(self, task, *, repo_path, test_output="", held_out_output="",
+                      before_ref="HEAD~1", after_ref="HEAD", **kwargs):
+        self.snapshots = {
+            "owned": self._owned_mock.await_count,
+            "newly": self._newly_mock.await_count,
+            "flaky": self._flaky_mock.await_count,
+        }
+        return await super().review(
+            task, repo_path=repo_path, test_output=test_output,
+            held_out_output=held_out_output, before_ref=before_ref,
+            after_ref=after_ref, **kwargs)
+
+
+async def test_the_review_path_does_not_attribute_the_red_run(
+    bare_repo, tmp_path, store,
+):
+    """AC2 pin: the review path calls none of the three TESTING-only
+    attribution helpers (`_owned_failing_tests`, `_newly_failing_vs_base`,
+    `_flaky_on_rerun`) — no classification, no base-tree checkout, no extra
+    test run at review time. The round-1 send-back on 429b471f/03267ead
+    rejected doing this classification at review time because it starved
+    the flaky tiebreaker (see module docstring); this pins that the fix
+    stays that way even though the prompt wording (this task) now talks
+    about base-tree attribution in prose.
+
+    Uses a non-owned, base-green id so TESTING's own plain-red path goes on
+    to call all three helpers for real after the (PASSing) review returns —
+    the mocks being awaited by the end of the round is the positive control
+    proving the patch targets are live, not dead code the review path never
+    reaches either way.
+    """
+    tr = _red_result()
+    flaky_id = "tests/test_calc.py::test_mul"
+
+    owned_mock = AsyncMock(return_value=[])
+    newly_mock = AsyncMock(return_value=[flaky_id])
+    flaky_mock = AsyncMock(return_value=[flaky_id])
+    reviewer = _PassesButSnapshotsAttribution(owned_mock, newly_mock, flaky_mock)
+
+    with (
+        patch.object(Orchestrator, "_owned_failing_tests", owned_mock),
+        patch.object(Orchestrator, "_newly_failing_vs_base", newly_mock),
+        patch.object(Orchestrator, "_flaky_on_rerun", flaky_mock),
+    ):
+        outcome, attempts, events, task, orch = await _run_attempt_with_result_and_reviewer(
+            store, tmp_path, bare_repo, tr, reviewer)
+
+    # At the moment review() ran, none of the three had been awaited yet.
+    assert reviewer.snapshots == {"owned": 0, "newly": 0, "flaky": 0}, reviewer.snapshots
+
+    # Positive control: TESTING went on to call them for real on this same
+    # round (reached because the review PASSed) — the patches were live.
+    owned_mock.assert_awaited()
+    newly_mock.assert_awaited()
+    flaky_mock.assert_awaited()
+
+    assert outcome.status is TaskStatus.AWAITING_APPROVAL, outcome.detail
 
 
 async def test_persistent_red_pre_review_run_does_not_trip_d6_stagnation(
