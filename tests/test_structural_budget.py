@@ -1119,7 +1119,17 @@ FROZEN_FILE_LINES = {
     # comment now cites those measured counts and the recorded
     # `failure_reason` verbatim. Measured on this tree by the scanner's own
     # metric.
-    "core/orchestrator.py": 23820,
+    # 23820 -> 23824 (+4): that "14... repeated `node /tmp/dcrace/harness.mjs`
+    # runs" count was itself wrong — it counted every recorded Bash call that
+    # merely mentions `harness.mjs` (including read-only `grep`/`wc`
+    # inspections of the script), not calls that actually execute it.
+    # Re-running the current `_looks_like_test_run` against the recorded
+    # attempt-2 stream matches exactly 7 commands, all genuine
+    # `node /tmp/dcrace/harness.mjs` executions; the other 7 "harness.mjs"
+    # mentions are grep/wc reads that `_looks_like_test_run` correctly does
+    # not match. The docstring now cites 7 and explains the discrepancy.
+    # Measured on this tree by the scanner's own metric.
+    "core/orchestrator.py": 23824,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.

@@ -2495,8 +2495,12 @@ class Orchestrator:
         `--test` flag) register as making no progress to whichever guard
         still used the narrower set. Task 0ab78498 attempt 2 measured the
         cost of leaving the CONVERGENCE side narrow — 96 recorded Bash
-        calls, 14 of them repeated `node /tmp/dcrace/harness.mjs` runs, 22
-        Reads, 7 Edits, killed by `ConvergenceTracker` at "no file edit or
+        calls, 7 of them genuine `node /tmp/dcrace/harness.mjs` runs (the
+        other 7 commands that merely mention `harness.mjs` are read-only
+        `grep`/`wc` inspections of the script, not executions of it — this
+        comment used to say "14", conflating the two; re-running the
+        current `_looks_like_test_run` against the recorded stream gives 7),
+        22 Reads, 7 Edits, killed by `ConvergenceTracker` at "no file edit or
         test run in 40 turns" (recorded `failure_reason`: "non-converging-
         abort: no file edit or test run in 40 turns (turn 122, threshold
         80, window 40)") because the then-current `_TEST_RUNNER_RE` matched
