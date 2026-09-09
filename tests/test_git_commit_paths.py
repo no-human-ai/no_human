@@ -261,18 +261,27 @@ def test_ls_files_failure_does_not_silently_drop_a_tracked_deletion(
     misclassify a genuinely tracked deletion as untracked and silently drop
     it from the commit, reporting success while HEAD still carries the
     file. A single odd path must not suppress every tracked deletion in the
-    same batch; it must raise instead, exactly like the pre-fix base."""
+    same batch; it must raise instead, exactly like the pre-fix base.
+
+    A real edit (`app.py`) rides alongside so the explicit `git add` call is
+    what's exercised — not the "nothing staged -> stage_all()" fallback,
+    which would mask the drop by staging the deletion anyway via its broad
+    `add -A -- .` and make the bug invisible to a naive repro."""
     repo = GitRepo(repo_with_bare_remote)
     repo.create_branch("no-human/poison-pathspec", base="main")
     doomed = repo.path / "doomed.py"
     doomed.write_text("y = 1\n")
     repo.commit_paths([str(doomed)], "add doomed.py")
     doomed.unlink()
+    app = repo.path / "app.py"
+    app.write_text("x = 2\n")
     # A pathspec-magic-shaped filename ("zzz" is not a real magic word) makes
     # `git ls-files -z --` exit 128 for the WHOLE batch it's a part of.
     poison = repo.path / ":(zzz)nope.py"
     with pytest.raises(GitError):
-        repo.commit_paths([str(doomed), str(poison)], "remove doomed.py")
+        repo.commit_paths(
+            [str(app), str(doomed), str(poison)], "edit app, remove doomed.py"
+        )
     status = subprocess.run(
         ["git", "show", "--name-status", "--format=", "HEAD"],
         cwd=repo.path, capture_output=True, text=True,
