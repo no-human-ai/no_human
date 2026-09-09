@@ -1,0 +1,14 @@
+# Assumptions
+
+_Harness-captured record for task `a9db9cba`, commit `1684b3a870aefaa604f0852d85b248b5947212c0` — not model-authored: no_human wrote this file from the intake step's recorded questions and assumptions. It records what the gate produced; it is not a verdict of the model that wrote the code._
+
+<details><summary>⚠️ 5 assumptions made on your behalf — verify at review</summary>
+
+- **Q:** Which repository contains this code, and how should the agent access it? Provide the git URL, branch/path, and any required credentials. **A:** HUMAN-GATED: not self-answerable
+- **Q:** In the plain-red branch's failing_tests variable (after the red test_result is received), what is the data structure? Are node test IDs formatted as 'filepath::testname' strings in a list, or another format? **A:** A concrete node test_cmd reaching the plain-red branch follows: '[symlink setup] && node --test file1.mjs file2.mjs && uv run pytest -q -m repoguard' (e.g., 'ln -sf ../.node_modules node_modules && node --test desktop/mainSaveFailure.test.mjs desktop/mainStartupFailure.test.mjs && uv run pytest -q -m repoguard'). Parse by splitting on '&&', identify the 'node --test' segment, and replace the file _(assumption)_
+- **Q:** Can you provide a concrete example of a test_cmd that reaches the plain-red branch and contains 'node --test'? Show the full compound command structure (node_modules prelude, node --test <files> portion, pytest --repoguard tail) so we know exactly what to parse and how to replace '<files>' reliably. **A:** Tests events are emitted by appending event dicts to a collection (e.g., events.append({'type': 'tests', 'message': '...'}) or similar). The event object contains a 'message' field with structured text. The pattern observed in the task is: construct the message string 'N test(s) failed under concurrency and passed on a serial re-run: <ids> - not counted against this change' and emit it as an event _(assumption)_
+- **Q:** Show the current code pattern for emitting tests events in orchestrator.py: what is the event object/method, what fields or parameters does an event require, and how is the message text constructed? **A:** attempts.test_results is a dict containing 'ok' (boolean, False if concurrent run failed), and fields for pass/fail counts. Store serial re-run outcomes as sibling booleans: 'serial_rerun_passed' (true if the serial re-run succeeded), 'serial_rerun_failed' (true if the serial re-run still failed), and 'ok_after_serial_rerun' (true if serial re-run resolved the failure). Keep 'ok' False to reflect _(assumption)_
+- **Q:** What is the exact structure of the attempts.test_results object? Show where to add serial_rerun_passed, serial_rerun_failed, and ok_after_serial_rerun (booleans? counts? as sibling fields to ok?). **A:** (unanswered)
+
+</details>
+
