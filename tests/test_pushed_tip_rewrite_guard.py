@@ -180,6 +180,52 @@ def test_the_reset_to_base_rows_get_the_pushed_tip_message_not_the_generic_one(
         assert tip in d.reason, d.reason
 
 
+def test_an_unresolvable_reset_target_is_denied_unless_it_is_an_existing_path(
+    harness_repo,
+):
+    """MAJOR from the c4f717d8 review: `target_denies`'s `if not resolved:
+    return False` let ANY unresolvable target through — a shell variable or
+    a command substitution the guard sees as a literal, un-expanded string
+    (`$(git rev-parse HEAD~2)`), not just the legitimate `git reset
+    <pathspec>` case. Executed proof of the bug's real-world effect:
+    `sh -c 'git reset --soft $(git rev-parse HEAD~2)'` leaves the pushed tip
+    NOT an ancestor of the branch (delivery would refuse it), yet the old
+    predicate allowed it. The fix: unresolvable denies UNLESS the operand
+    names an existing path in the worktree (git's own pathspec fallback for
+    a bare `git reset <path>`, which must stay allowed and never moves the
+    branch)."""
+    work, tip = harness_repo()
+    (work / "f.txt").write_text("mutated for the pathspec case\n")
+
+    for cmd in (
+        "git reset --soft $(git rev-parse HEAD~2)",
+        "git reset --hard $(git rev-parse HEAD~2)",
+        "git reset --keep $(git rev-parse HEAD~2)",
+        "git reset --merge $(git rev-parse HEAD~2)",
+        "git reset --soft $SOME_SHELL_VAR",
+    ):
+        d = _ev(cmd, cwd=str(work))
+        assert d.allow is False, f"{cmd!r} should be denied"
+        assert tip in d.reason, f"{cmd!r} -> {d.reason}"
+        assert "git merge" in d.reason, f"{cmd!r} -> {d.reason}"
+
+    # Executed proof, not just the static verdict: the shell actually
+    # expands the substitution before git ever sees it, and the resulting
+    # reset really does strand the tip.
+    subprocess.run(
+        ["sh", "-c", "git reset --soft $(git rev-parse HEAD~2)"],
+        cwd=work, check=True, capture_output=True, text=True,
+    )
+    assert not _is_ancestor(work, tip, "HEAD")
+
+    # Control: a bare `git reset <existing path>` stays allowed — this is
+    # git's own pathspec reading of an unresolvable reset operand, and it
+    # never moves the branch.
+    work2, _tip2 = harness_repo()
+    d = _ev("git reset f.txt", cwd=str(work2))
+    assert d.allow is True, d.reason
+
+
 def test_allowed_forms_keep_the_pushed_tip_an_ancestor_of_head(harness_repo):
     # git reset --hard HEAD: a no-op relative to the tip.
     work, tip = harness_repo()
@@ -246,6 +292,21 @@ def test_a_never_pushed_branch_keeps_every_form_allowed(repo):
     for cmd in forms:
         assert pushed_tip_guard.denial_reason(
             guard._git_invocations(cmd), str(repo)) is None, cmd
+
+
+def test_update_ref_stdin_is_denied_outright_on_a_pushed_branch(harness_repo):
+    """MINOR-2 from the c4f717d8 review: `--stdin` feeds the actual ref
+    updates to git on stdin, invisible to this argv-only phase — a bare
+    `git update-ref --stdin` could rewrite refs/heads/<branch> with no
+    operand on the command line to inspect. It must not fall through
+    unclassified (None); deny outright, like the other OUTRIGHT forms,
+    whenever a pushed tip exists."""
+    work, tip = harness_repo()
+    d = _ev("git update-ref --stdin", cwd=str(work))
+    assert d.allow is False
+    assert d.severity == guard.GUARD_DESTRUCTIVE
+    assert tip in d.reason
+    assert "git merge" in d.reason
 
 
 def test_no_git_subprocess_for_non_rewrite_commands(harness_repo, monkeypatch):
