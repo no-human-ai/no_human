@@ -15,6 +15,7 @@ function verifier(overrides = {}) {
     verifier_id: "no-todo",
     passed: true,
     no_verdict: false,
+    unavailable: false,
     evidence: "no TODOs found",
     file: "",
     line: 0,
@@ -73,7 +74,7 @@ test("summary shape matches core/pr_evidence.py's verifiers_pin() wording exactl
 test("a passing row carries id, ok, and a filesChecked count — no location or comment", () => {
   const { rows } = verifierRows([verifier({ verifier_id: "no-todo", files_checked: ["a.py", "b.py", "c.py"] })]);
   assert.deepEqual(rows, [
-    { id: "no-todo", ok: true, filesChecked: 3, location: "", comment: "" },
+    { id: "no-todo", ok: true, advisory: false, filesChecked: 3, location: "", comment: "" },
   ]);
 });
 
@@ -84,7 +85,7 @@ test("a failing row carries file:line as location and evidence as comment", () =
   assert.deepEqual(rows, [
     // files_checked is still whatever the verifier recorded, even on a
     // failure — filesChecked is not a pass-only field, only location/comment are.
-    { id: "no-print", ok: false, filesChecked: 2, location: "c.py:4", comment: "found a print()" },
+    { id: "no-print", ok: false, advisory: false, filesChecked: 2, location: "c.py:4", comment: "found a print()" },
   ]);
 });
 
@@ -117,6 +118,48 @@ test("no_verdict (fail-closed) rows still render as a failing row — no special
   assert.equal(rows[0].ok, false);
   assert.equal(rows[0].id, "no-todo");
   assert.match(summary, /1 of 1 failed — no-todo/);
+});
+
+// ── unavailable (no-verdict-after-retry) rows are advisory, not failed ──────
+// This is the board-side half of the no_human bugfix: a verifier that never
+// reached a verdict is advisory, and the round continues to the reviewer
+// rather than escalating — the PR body says so (verifiers_pin() in
+// core/pr_evidence.py), and this list must never contradict it by painting
+// the row red as if the verifier had actually answered FAIL.
+
+test("an unavailable verifier alone renders as advisory, not failed — 'N of N satisfied, M no verdict (advisory)'", () => {
+  const { rows, summary } = verifierRows([
+    verifier({ verifier_id: "no-todo", passed: false, unavailable: true, evidence: "" }),
+  ]);
+  assert.equal(rows[0].ok, false);
+  assert.equal(rows[0].advisory, true);
+  assert.equal(summary, "0 of 1 satisfied, 1 no verdict (advisory) — no-todo");
+});
+
+test("a mixed round keeps a genuine failure red and lists the unavailable verifier separately, advisory", () => {
+  const results = [
+    verifier({ verifier_id: "rule-a", passed: false, evidence: "actually failed" }),
+    verifier({ verifier_id: "rule-b", passed: false, unavailable: true, evidence: "" }),
+  ];
+  const { rows, summary } = verifierRows(results);
+  const failedRow = rows.find((r) => r.id === "rule-a");
+  const advisoryRow = rows.find((r) => r.id === "rule-b");
+  assert.equal(failedRow.ok, false);
+  assert.equal(failedRow.advisory, false);
+  assert.equal(advisoryRow.ok, false);
+  assert.equal(advisoryRow.advisory, true);
+  // The genuine failure must not be diluted into a shared "2 of 2 failed" —
+  // only rule-a counts toward the failed total.
+  assert.equal(summary, "1 of 2 failed — rule-a; 1 no verdict (advisory) — rule-b");
+});
+
+test("an all-pass round with an unavailable verifier is not reported as fully satisfied", () => {
+  const results = [
+    verifier({ verifier_id: "no-todo", passed: true }),
+    verifier({ verifier_id: "no-print", passed: false, unavailable: true, evidence: "" }),
+  ];
+  const { summary } = verifierRows(results);
+  assert.equal(summary, "1 of 2 satisfied, 1 no verdict (advisory) — no-print");
 });
 
 test("row order mirrors input order (only the failed-ids list in the summary is sorted)", () => {

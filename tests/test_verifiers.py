@@ -1022,6 +1022,31 @@ def test_summary_line_empty_all_pass_and_failures_sorted():
     assert summary_line(mixed) == "2 of 3 failed — m, z"
 
 
+def test_summary_line_treats_an_unavailable_verifier_as_advisory_not_failed():
+    # An unavailable-only round reads as satisfied-with-a-caveat, never as
+    # a failure — the round it feeds (orchestrator._run_review) continues
+    # to the reviewer, so its own event must not say "failed".
+    unavailable_only = [
+        VerifierResult("no-todo", False, "", "", 0, "", "high", [], 0, "", True, True),
+    ]
+    assert summary_line(unavailable_only) == (
+        "0 of 1 satisfied, 1 no verdict (advisory) — no-todo"
+    )
+
+
+def test_summary_line_a_genuine_failure_is_never_diluted_by_an_unavailable_sibling():
+    # Mixed round: one rule genuinely failed, one never reached a verdict.
+    # The failed count must count only the genuine failure — the sibling's
+    # unavailability is reported, not blamed on the coder.
+    mixed = [
+        VerifierResult("rule-a", False, "boom", "f.py", 1, "", "high", [], 0, "", False, False),
+        VerifierResult("rule-b", False, "", "", 0, "", "high", [], 0, "", True, True),
+    ]
+    assert summary_line(mixed) == (
+        "1 of 2 failed — rule-a; 1 no verdict (advisory) — rule-b"
+    )
+
+
 def test_to_checklist_item_label_and_fields():
     result = VerifierResult("rule-x", False, "ev", "f.py", 3, "cm", "critical", ["f.py"], 0, "", False)
     item = to_checklist_item(result)

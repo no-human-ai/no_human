@@ -4846,12 +4846,26 @@ def _ready_batch_non_merge_message(tag, outcome):
     return tag
 
 
+def _verifiers_advisory_note(rules) -> str:
+    """The ``verifiers_all_satisfied`` rule's own detail text already names
+    any no-verdict (advisory) verifier inline, e.g. "3 verifiers, none
+    failed (1 no verdict (advisory): no-todo)" — pull out just that
+    parenthetical so a one-line `--ready` summary doesn't silently drop the
+    one signal telling the operator a verifier never answered."""
+    for r in rules:
+        if isinstance(r, dict) and r.get("name") == "verifiers_all_satisfied":
+            m = re.search(r"\d+ no verdict \(advisory\): [^)]+", str(r.get("detail") or ""))
+            return m.group(0) if m else ""
+    return ""
+
+
 async def _approve_find_ready(store, config):
     """Discover every AWAITING_APPROVAL task whose merge-policy verdict is
     ready for its CURRENT head sha — re-resolving the head so a verdict
     stamped for an older commit, or one whose policy file changed in the
-    diff, is excluded. Returns [(task, pr_url, rules_passed, rules_total)]
-    in the order `store.list_tasks()` returned them (discovery order)."""
+    diff, is excluded. Returns [(task, pr_url, rules_passed, rules_total,
+    verifiers_advisory_note)] in the order `store.list_tasks()` returned
+    them (discovery order)."""
     from ..vcs.git import GitError, GitRepo
     from ..vcs.task_pr import resolve_task_pr
 
@@ -4888,7 +4902,7 @@ async def _approve_find_ready(store, config):
         rules = mp.get("rules") or []
         total = len(rules)
         passed = sum(1 for r in rules if isinstance(r, dict) and r.get("passed"))
-        ready.append((t, resolved.url, passed, total))
+        ready.append((t, resolved.url, passed, total, _verifiers_advisory_note(rules)))
     return ready
 
 
@@ -4907,9 +4921,10 @@ async def _approve_go_ready(config, assume_yes, land_one):
             console.print("[dim]no awaiting_approval task is merge-ready for its current head.[/]")
             return
 
-        for t, pr_url, passed, total in ready:
+        for t, pr_url, passed, total, advisory in ready:
+            note = f" · {advisory}" if advisory else ""
             console.print(
-                f"{t.id[:8]} · {t.title} · rules {passed}/{total} · {pr_url}"
+                f"{t.id[:8]} · {t.title} · rules {passed}/{total}{note} · {pr_url}"
             )
 
         if not assume_yes:
@@ -4930,7 +4945,7 @@ async def _approve_go_ready(config, assume_yes, land_one):
         # unavailable) — the batch must keep walking, not stop, or
         # `--ready --yes` would abort at task 1 on any host without
         # `gh` installed even though nothing actually failed.
-        for t, pr_url, passed, total in ready:
+        for t, pr_url, passed, total, advisory in ready:
             outcome = await land_one(store, t)
             tag = outcome["tag"]
             result = outcome["result"]

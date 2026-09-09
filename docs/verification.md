@@ -83,12 +83,18 @@ when it names one, and which files it actually checked — never only the
 failures. A verifier judge that reaches no parseable verdict (a timeout, a
 crash, an unparseable response) gets exactly one bounded retry. If the retry
 *also* reaches no verdict, the outcome is recorded as `no_verdict`/
-`unavailable` on that verifier's result — it is **advisory only**: unlike a
-genuine FAIL it does not add a `rule:<verifier id>` item to the reviewer's
-checklist, it is reported as one advisory log line and a `⚠️` row in the PR
-Evidence table, `_run_review` does not escalate the task or end the attempt
-over it, and the round proceeds to the agentic reviewer exactly as it would
-if every verifier had passed. A verifier that never reaches a verdict is an
+`unavailable` on that verifier's result — it is **advisory only**: it never
+causes the round to fail or escalate on its own, it is reported as one
+advisory log line and a `⚠️` row in the PR Evidence table, and the round
+proceeds to the agentic reviewer. On a round where no *other* verifier
+answered FAIL, it does not add a `rule:<verifier id>` item to the reviewer's
+checklist at all — `_run_review` does not escalate the task or end the
+attempt, and the round proceeds to the agentic reviewer exactly as it would
+if every verifier had passed. On a round where another verifier *does*
+answer FAIL, the unavailable one still rides along on that failing round's
+own checklist (at advisory/`low` severity, per `to_checklist_item`) so it
+stays visible rather than silently disappearing — it just never fails the
+round by itself. A verifier that never reaches a verdict is an
 infrastructure gap in the gate, not evidence about the change, so it must
 never be charged to the coder as a defect nobody found — merge-policy's
 `verifiers_all_satisfied` check treats an unavailable-only round as ready,

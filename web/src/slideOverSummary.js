@@ -927,23 +927,48 @@ export function defaultOpenSection(task) {
 // (column never populated for this attempt), `[]` (verifiers ran, matched
 // nothing), and any non-array all render as "nothing to show" rather than
 // an empty section.
+//
+// A verifier that reached NO VERDICT after its bounded retry (`unavailable:
+// true`) is its own third state — neither a pass nor a genuine failure —
+// and must read as such here too, not be folded into "failed": the board's
+// Review tab must never disagree with the PR body's Evidence row about what
+// actually happened this round (`verifiers_pin()` in core/pr_evidence.py is
+// the wording this mirrors). The pre-existing "no matching hunks in the
+// diff" `no_verdict` case (never `unavailable`) still renders as a genuine
+// failure — that classification is unchanged.
 export function verifierRows(results) {
   if (!Array.isArray(results) || results.length === 0) return null;
   const total = results.length;
   const failedIds = results
-    .filter((r) => !r?.passed)
+    .filter((r) => !r?.passed && !r?.unavailable)
     .map((r) => String(r?.verifier_id ?? ""))
     .sort();
-  const summary = failedIds.length
-    ? `${failedIds.length} of ${total} failed — ${failedIds.join(", ")}`
-    : `${total} of ${total} satisfied`;
+  const advisoryIds = results
+    .filter((r) => !!r?.unavailable)
+    .map((r) => String(r?.verifier_id ?? ""))
+    .sort();
+  let summary;
+  if (!failedIds.length && !advisoryIds.length) {
+    summary = `${total} of ${total} satisfied`;
+  } else if (failedIds.length) {
+    summary = `${failedIds.length} of ${total} failed — ${failedIds.join(", ")}`;
+    if (advisoryIds.length) {
+      summary += `; ${advisoryIds.length} no verdict (advisory) — ${advisoryIds.join(", ")}`;
+    }
+  } else {
+    const checked = total - advisoryIds.length;
+    summary = `${checked} of ${total} satisfied, ${advisoryIds.length} no verdict `
+      + `(advisory) — ${advisoryIds.join(", ")}`;
+  }
   const rows = results.map((r) => {
+    const advisory = !!r?.unavailable;
     const ok = !!r?.passed;
     const file = r?.file ?? "";
     const line = r?.line ?? null;
     return {
       id: String(r?.verifier_id ?? ""),
       ok,
+      advisory,
       filesChecked: Array.isArray(r?.files_checked) ? r.files_checked.length : 0,
       // Only a failure names a location/comment — a pass has nothing to
       // point at, and rendering an empty location on every row would read

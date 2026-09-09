@@ -2947,14 +2947,24 @@ function ReviewTab({ task, diff, onOpenSection }) {
             <div className="so-section-label">Verifiers — {vr.summary}</div>
             <ul className="unmet-list">
               {vr.rows.map((r, i) => (
-                <li key={i} className={`unmet-item ${r.ok ? "pass" : "fail"}`}>
-                  <span className={`ci-icon ${r.ok ? "" : "fail"}`}>
-                    {r.ok ? <IconCheck size={12} /> : <IconX size={12} />}
+                // A verifier that never reached a verdict (r.advisory) is
+                // neither a pass nor a genuine failure — it gets the same
+                // "advisory" modifier/icon as a low-severity checklist item
+                // (checklistRowClass/IconInfo below) so this tab never
+                // disagrees with the PR body about whether the round failed.
+                <li
+                  key={i}
+                  className={`unmet-item ${r.ok ? "pass" : r.advisory ? "advisory" : "fail"}`}
+                >
+                  <span className={`ci-icon ${r.ok ? "" : r.advisory ? "advisory" : "fail"}`}>
+                    {r.ok ? <IconCheck size={12} /> : r.advisory ? <IconInfo size={12} /> : <IconX size={12} />}
                   </span>
                   <span>
                     {r.id}
                     {r.ok
                       ? ` — ${r.filesChecked} file${r.filesChecked === 1 ? "" : "s"}`
+                      : r.advisory
+                      ? " — no verdict (advisory)"
                       : `${r.location ? ` — ${r.location}` : ""}${r.comment ? ` — ${r.comment}` : ""}`}
                   </span>
                 </li>

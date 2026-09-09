@@ -6246,6 +6246,10 @@ a.so-chip-value:hover { color: var(--accent-300); }
   display: flex; align-items: center; gap: 6px;
   font-size: 13px; color: var(--red, #ef4444); padding: 3px 0;
 }
+/* A verifier with no verdict (advisory) is neither a pass nor a genuine
+   failure — same slate used by .checklist-item.advisory, so it never reads
+   as a blocking red failure in the Verifiers list. */
+.unmet-item.advisory, .ci-icon.advisory { color: #7a869a; }
 
 /* ReviewTab "Merge policy" block (mergePolicyRows, slideOverSummary.js) —
    advisory display of core/merge_policy.py's verdict for the current head. */

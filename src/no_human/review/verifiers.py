@@ -122,11 +122,13 @@ class VerifierResult:
     no_verdict: bool = False
     # True only when a `no_verdict` result survived the one bounded retry
     # `run_verifiers` gives it. This is the infra/config signal: the round
-    # must escalate (`ReviewerUnavailable`), never fail closed as a coder
-    # finding — the exact anti-pattern `reviewer.py`'s docstring names. The
-    # pre-existing "no matching hunks in the diff" no_verdict case never
-    # calls the judge at all, so it can never become `unavailable`: retrying
-    # a deterministic diff-filter result would not change the outcome.
+    # records it as advisory and CONTINUES to the agentic reviewer, never
+    # fails closed as a coder finding — the exact anti-pattern
+    # `reviewer.py`'s docstring names. A verifier that cannot answer is not
+    # evidence about the change. The pre-existing "no matching hunks in the
+    # diff" no_verdict case never calls the judge at all, so it can never
+    # become `unavailable`: retrying a deterministic diff-filter result
+    # would not change the outcome, and it still fails the round closed.
     unavailable: bool = False
 
     def as_dict(self) -> dict[str, Any]:
@@ -710,10 +712,24 @@ async def run_verifiers(
 
 
 def summary_line(results: list[VerifierResult]) -> str:
+    """Mirrors `core/pr_evidence.py`'s `verifiers_pin()` wording exactly: an
+    unavailable (no-verdict-after-retry) verifier is its own advisory third
+    state, never folded into "failed" — a mixed round with one genuine
+    failure and one unavailable rule must not read as "2 of 2 failed"."""
     if not results:
         return ""
     total = len(results)
-    failed = sorted(r.verifier_id for r in results if not r.passed)
-    if not failed:
+    failed = sorted(r.verifier_id for r in results if not r.passed and not r.unavailable)
+    unavailable = sorted(r.verifier_id for r in results if r.unavailable)
+    if not failed and not unavailable:
         return f"{total} of {total} satisfied"
-    return f"{len(failed)} of {total} failed — {', '.join(failed)}"
+    if failed:
+        line = f"{len(failed)} of {total} failed — {', '.join(failed)}"
+        if unavailable:
+            line += f"; {len(unavailable)} no verdict (advisory) — {', '.join(unavailable)}"
+        return line
+    checked = total - len(unavailable)
+    return (
+        f"{checked} of {total} satisfied, {len(unavailable)} no verdict "
+        f"(advisory) — {', '.join(unavailable)}"
+    )
