@@ -125,6 +125,94 @@ def read_manifest(repo_path: Path) -> list[str]:
     return [str(t).strip() for t in tests if str(t).strip()]
 
 
+def task_manifest_path(task_id: str, *, home: Path | None = None) -> Path:
+    """Where THIS TASK's repro manifest is persisted, outside any worktree.
+
+    ``.no_human/**`` is gitignored and excluded from every commit (see this
+    module's docstring), so a passing gate's manifest lives only as
+    untracked state in the attempt's worktree. A worktree re-created for
+    the same task (new pid -> new ``~/.no_human/worktrees/<task>.<pid>.<hash>``)
+    starts without it — this is the per-task copy that survives that,
+    living under the same ``artifacts/<task_id>/`` directory the
+    verification log already writes to.
+
+    ``NO_HUMAN_HOME`` is imported lazily (only when *home* is omitted) so
+    this module keeps its "no orchestrator, no config at import time"
+    posture — tests pass an explicit ``home=tmp_path`` instead.
+    """
+    if home is None:
+        from ..config import NO_HUMAN_HOME
+        home = NO_HUMAN_HOME
+    return Path(home) / "artifacts" / task_id / "repro_tests.json"
+
+
+def persist_manifest(repo_path: Path, task_id: str, *, home: Path | None = None) -> bool:
+    """Copy the worktree's manifest to the per-task store. True on success.
+
+    Only when the worktree copy exists AND is well-formed
+    (:func:`manifest_problem` is ``None``) — a junk or missing manifest must
+    never be enshrined as the task's record. Idempotent (last-write-wins on
+    a single file) and best-effort: any ``OSError`` degrades to ``False``,
+    never raises.
+    """
+    src = repo_path / MANIFEST
+    if not src.is_file() or manifest_problem(repo_path) is not None:
+        return False
+    dst = task_manifest_path(task_id, home=home)
+    try:
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_bytes(src.read_bytes())
+    except OSError:
+        return False
+    return True
+
+
+def restore_manifest(repo_path: Path, task_id: str, *, home: Path | None = None) -> bool:
+    """Copy the persisted per-task manifest into a worktree lacking one.
+
+    Returns ``True`` only when a file was actually written. Never overwrites
+    a worktree copy that already exists (the live tree always wins — this
+    never clobbers what the coder wrote this attempt) and never restores a
+    persisted copy that does not parse clean (re-validated the same way
+    :func:`persist_manifest` does, via a scratch directory so the checked
+    copy is byte-identical to what gets written). Best-effort: any
+    ``OSError`` degrades to ``False``, never raises.
+    """
+    dst = repo_path / MANIFEST
+    if dst.is_file():
+        return False
+    src = task_manifest_path(task_id, home=home)
+    if not src.is_file():
+        return False
+    try:
+        data = src.read_bytes()
+    except OSError:
+        return False
+    tmp = Path(tempfile.mkdtemp(prefix="nh-repro-restore-"))
+    try:
+        (tmp / MANIFEST).parent.mkdir(parents=True, exist_ok=True)
+        (tmp / MANIFEST).write_bytes(data)
+        if manifest_problem(tmp) is not None or not read_manifest(tmp):
+            return False
+    except OSError:
+        return False
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    try:
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_bytes(data)
+    except OSError:
+        return False
+    return True
+
+
+def has_persisted_manifest(task_id: str, *, home: Path | None = None) -> bool:
+    """True when this task's gate has passed at least once before — the
+    fact a lost-manifest regenerate nudge is gated on (there is nothing to
+    "regenerate" without a prior pass)."""
+    return task_manifest_path(task_id, home=home).is_file()
+
+
 def _test_files(tests: list[str]) -> list[str]:
     """The file part of each pytest node id, deduplicated, order kept."""
     seen: dict[str, None] = {}

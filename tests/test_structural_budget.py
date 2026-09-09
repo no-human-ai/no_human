@@ -853,6 +853,23 @@ FROZEN_FILE_LINES = {
     # `diverged` record in `_refresh_stale_base` (task e83b0b6d), landed on
     # top of a9db9cba's 23117. Measured on this tree by the scanner's own
     # metric.
+    # 23117 -> 23246 (+129, `len(Path(...).read_text().splitlines())`, the
+    # scanner's own metric): a re-created worktree's `.no_human/**` is
+    # gitignored, so a repro manifest a passing gate wrote there was
+    # untracked, per-worktree state that a worktree re-create (new pid ->
+    # new path) silently lost. Added `_restore_repro_manifest` next to
+    # `_repro_gate_step`, its call site in `_run_task_body` right after
+    # `_acquire_worktree`, the gate-time zero-LLM-spend restore backstop and
+    # one-turn/`effort="low"` regenerate nudge (`_REPRO_REGENERATE_NUDGE`)
+    # inside `_repro_gate_step`, the persist-on-pass call in its `_run_gate`
+    # closure, and the new `effort` override on `_repro_corrective_round`
+    # (2026-09-09).
+    # (the branch's entry above was measured on a9db9cba's 23117; landed on top
+    # of e83b0b6d's 23153 → +129 here.) Measured on this tree by the
+    # scanner's own metric.
+    # 23282 -> 23285 (+3): landing edits — the regenerate-nudge prompt says
+    # "no usable manifest (missing or malformed)" and its once-guard is popped
+    # at the attempt boundary like `_reformat_nudged`/`_report_nudged`.
     # 22952 -> 23020 (+68): the failing-tests persistence bound
     # (`_MAX_PERSISTED_FAILING_TESTS`, `_bounded_failing_ids`,
     # `_bounded_test_results`) — a real incident persisted a 96,465-id
@@ -878,7 +895,7 @@ FROZEN_FILE_LINES = {
     # under 16KB alongside the already-bounded persisted/emitted id lists.
     # Net of the helper's own def+docstring plus each call-site's one-token
     # wrap. Measured on this tree by the scanner's own metric.
-    "core/orchestrator.py": 23271,
+    "core/orchestrator.py": 23403,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.
