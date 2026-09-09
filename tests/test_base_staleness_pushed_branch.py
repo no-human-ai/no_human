@@ -577,6 +577,53 @@ async def test_a_conflicting_merge_does_not_fail_the_attempt_and_never_falls_bac
 
 
 # --------------------------------------------------------------------------- #
+# THE end-to-end FAILS-BEFORE test for the bug this task fixes: a coder that
+# (wrongly) rebases after a skipped merge must be BOTH stopped by the guard
+# AND, independent of the guard, the branch as the harness left it must still
+# satisfy the delivery ancestor predicate — before this fix nothing told the
+# coder not to rebase, and the guard did not refuse it either.
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.asyncio
+async def test_a_pushed_branch_behind_a_conflicting_main_ends_with_the_remote_tip_an_ancestor_of_head(
+    repo, tmp_path, store, monkeypatch,
+):
+    from no_human.agent import guard
+
+    remote_tip = _make_pushed_conflicting_branch(repo, "no-human/t6")
+    ctx = {"pr_branch": "no-human/t6"}
+
+    t, events, orch = await _attempt(repo, tmp_path, store, monkeypatch, ctx)
+
+    evs = _staleness_events(events)
+    assert len(evs) == 1
+    assert evs[0]["merged"] is False
+
+    gr = GitRepo(repo)
+    _git(repo, "checkout", "-q", "no-human/t6")
+    head = gr.head_sha()
+
+    # The delivery ancestor predicate: the tip already on the remote before
+    # this attempt touched the branch is still an ancestor of HEAD — a
+    # rebase (had the coder run one, or had the harness fallen back to one)
+    # would break this.
+    assert gr.is_ancestor(remote_tip, head), (
+        "the pushed remote tip is no longer an ancestor of HEAD after a "
+        "skipped merge — delivery would refuse this branch"
+    )
+
+    # And independent of the harness's own behavior above: the guard itself
+    # must refuse a coder that tries to rebase this same branch.
+    d = guard.evaluate(
+        "Bash", {"command": "git rebase origin/main"},
+        forbidden_paths=[], never_push_to=["main"], cwd=str(repo),
+    )
+    assert d.allow is False
+    assert remote_tip in d.reason
+    assert "git merge" in d.reason
+
+
+# --------------------------------------------------------------------------- #
 # AC3: no force-push anywhere in the two files this fix touched.
 # --------------------------------------------------------------------------- #
 
