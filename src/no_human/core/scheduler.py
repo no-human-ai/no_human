@@ -2615,6 +2615,67 @@ class Scheduler:
         return True
 
 
+# Mid-run statuses counted for the `tasks_orphaned` telemetry event (app.py,
+# server start). Deliberately wider than `Scheduler._ORPHANABLE`: that set
+# omits IMPLEMENTING because it self-recovers via the claim path, but for
+# "how many attempts did the closed app kill" telemetry we want every
+# mid-run status, IMPLEMENTING included.
+MID_RUN_STATUSES = (
+    TaskStatus.CONTEXT, TaskStatus.PLANNING, TaskStatus.IMPLEMENTING,
+    TaskStatus.REVIEWING, TaskStatus.TESTING,
+)
+
+
+async def count_dead_attempt_tasks(
+    store, *, stale_after_s: float = Scheduler._STRANDED_GRACE_S,
+) -> int:
+    """Count `MID_RUN_STATUSES` tasks with NO live attempt — i.e. the
+    app/server was closed mid-run and never came back to close it out.
+
+    Two ways a task ends up with no live attempt:
+
+    * An open attempt whose heartbeat (newest of row `updated_at` / newest
+      `task_event`) is dead — the process died without closing anything
+      (hard crash / SIGKILL). Reuses `Scheduler._row_is_live`'s liveness
+      signals and `Scheduler._row_age_s`'s unparseable-timestamp-is-young
+      rule; adds nothing new.
+    * No open attempt at all, and the most recent attempt row was closed
+      ``status='interrupted'`` — `Orchestrator._honor_server_stop`'s
+      graceful-shutdown signature (``nh stop`` / clean app quit). That
+      closure is itself definitive proof there is no live attempt, at any
+      age: it is counted unconditionally, without a staleness gate, since
+      the app may restart well inside `stale_after_s` and this must not
+      under-count a shutdown that just happened.
+
+    Read-only: never mutates a task, attempt, or event. Called once at
+    server start, before the scheduler itself runs any sweep, so this count
+    cannot be skewed by the scheduler's own recovery. Fail-open: any error
+    is logged and counts as zero — this must never block boot.
+    """
+    try:
+        count = 0
+        for status in MID_RUN_STATUSES:
+            for t in await store.list_tasks(status):
+                if await store.latest_open_attempt(t.id) is not None:
+                    age = Scheduler._row_age_s(t.updated_at)
+                    try:
+                        ev_ts = await store.last_event_ts(t.id)
+                    except Exception:  # noqa: BLE001 — read-only estimate
+                        ev_ts = None
+                    if ev_ts is not None:
+                        age = min(age, max(0.0, time.time() - ev_ts))
+                    if age >= stale_after_s:
+                        count += 1
+                    continue
+                latest = await store.latest_attempt(t.id)
+                if latest is not None and latest.get("status") == "interrupted":
+                    count += 1
+        return count
+    except Exception:
+        log.warning("count_dead_attempt_tasks: failed, reporting 0", exc_info=True)
+        return 0
+
+
 # --------------------------------------------------------------------------- #
 # PR-E: Periodic re-analysis scheduler (EVOLUTION_PLAN Phase 9)                #
 # --------------------------------------------------------------------------- #
