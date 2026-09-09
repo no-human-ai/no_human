@@ -836,7 +836,18 @@ FROZEN_FILE_LINES = {
     # branch — one serial re-run of only the failing files before a cold
     # `node --test` run is blamed on the change (tasks ba602e95 / f8af7f46,
     # 2026-09-08). Measured on this tree by the scanner's own metric.
-    "core/orchestrator.py": 23117,
+    # 23117 -> 23246 (+129, `len(Path(...).read_text().splitlines())`, the
+    # scanner's own metric): a re-created worktree's `.no_human/**` is
+    # gitignored, so a repro manifest a passing gate wrote there was
+    # untracked, per-worktree state that a worktree re-create (new pid ->
+    # new path) silently lost. Added `_restore_repro_manifest` next to
+    # `_repro_gate_step`, its call site in `_run_task_body` right after
+    # `_acquire_worktree`, the gate-time zero-LLM-spend restore backstop and
+    # one-turn/`effort="low"` regenerate nudge (`_REPRO_REGENERATE_NUDGE`)
+    # inside `_repro_gate_step`, the persist-on-pass call in its `_run_gate`
+    # closure, and the new `effort` override on `_repro_corrective_round`
+    # (2026-09-09).
+    "core/orchestrator.py": 23246,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.

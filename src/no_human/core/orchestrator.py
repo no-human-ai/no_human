@@ -106,7 +106,10 @@ from ..review.verifiers import (
 )
 from ..testing import ownership, runner, structural_budget, ui_evidence
 from ..testing.repro_gate import MANIFEST as REPRO_MANIFEST
-from ..testing.repro_gate import declared_test_files, run_repro_gate
+from ..testing.repro_gate import (
+    declared_test_files, has_persisted_manifest, persist_manifest,
+    restore_manifest, run_repro_gate,
+)
 from .prompt_blocks import (
     EXPORT_CLASSIFICATION_FILE,
     DistillationError,
@@ -1244,6 +1247,27 @@ def _attempt_recency(row: dict) -> tuple[str, int]:
 # SAME branch, when the gate WAIVED for lack of one — not a review round, so
 # it gets a small budget of its own rather than the attempt's full turn cap.
 _REPRO_CORRECTIVE_TURNS = 15
+
+# One bounded, LOW-effort turn to REGENERATE a manifest this task's gate
+# already proved once (`has_persisted_manifest`) but this attempt's worktree
+# lost — e.g. a dogfood restart re-created the worktree between rounds
+# (`.no_human/**` is gitignored, so the manifest a passing gate wrote is
+# untracked worktree state, never committed). Distinct from
+# `_REPRO_CORRECTIVE_TURNS`: there IS a fails-before test already in the
+# tree to name, so this is "point at what you already wrote", not "write a
+# reproduction from scratch" — one turn, `effort="low"`, same shape as
+# `_reformat_nudge`.
+_REPRO_REGENERATE_NUDGE = (
+    "The reproduction-test gate found no reproduction manifest, but this "
+    "task already reached a PASSING repro gate earlier — a worktree was "
+    "re-created since then and lost that untracked manifest "
+    f"({REPRO_MANIFEST} is gitignored and never committed). The "
+    "fails-before test that demonstrates this fix almost certainly already "
+    f"exists in this tree. Write {REPRO_MANIFEST} "
+    '({"tests": ["path::test_name"]}) naming the existing test(s) that '
+    "prove the bug — do not write a new test, and do not touch anything "
+    "else."
+)
 
 # One bounded round to COMMIT declared repro test file(s) that the manifest
 # names but the attempt's committed tree lacks — "commit the files you
@@ -2754,6 +2778,14 @@ class Orchestrator:
                 "worktree root (isolation.worktree_root), or set "
                 "isolation.enabled: false to work in the checkout on purpose."
             ), reason_category="infra")
+        # Restore this task's persisted repro manifest (if any) BEFORE the
+        # first attempt runs — a freshly acquired worktree's `.no_human/` is
+        # always empty, so a task whose gate passed in an earlier, since
+        # discarded worktree must not re-earn evidence it already proved.
+        # Placed right after acquisition, not inside `_drive_watched`/
+        # `_run_attempt`, so the restore cannot silently drift to after the
+        # first attempt has already read a missing manifest as `waived`.
+        self._restore_repro_manifest(task, repo)
         try:
             # `setup_cmds` runs INSIDE `_drive_watched`, not here — that keeps
             # the cancellation watcher alive across it, so `nh task cancel`
@@ -8909,6 +8941,33 @@ class Orchestrator:
             )
         return None
 
+    def _restore_repro_manifest(self, task: Task, repo: GitRepo) -> bool:
+        """Copy this task's persisted repro manifest into *repo* when the
+        worktree copy is absent. True when a file was actually written.
+
+        Called both right after a worktree is freshly acquired
+        (`_run_task_body`) and again at gate time as a zero-LLM-spend
+        backstop (`_repro_gate_step`) — the first covers a re-created
+        worktree before any attempt reads it, the second covers a manifest
+        deleted mid-run or a task whose worktree predates this call site.
+        `restore_manifest` itself never overwrites a live worktree copy and
+        never restores a persisted copy that fails to parse — this wrapper
+        adds only the best-effort/advisory/event obligations every
+        filesystem touch in this class carries.
+        """
+        try:
+            wrote = restore_manifest(repo.path, task.id)
+        except Exception as exc:  # noqa: BLE001 — best-effort, must never block the pipeline
+            self._advisory(f"repro manifest restore failed: {exc}")
+            return False
+        if wrote:
+            self.emit(
+                "repro_manifest_restored",
+                f"restored {REPRO_MANIFEST} for task {task.id} from the "
+                "persisted per-task copy",
+            )
+        return wrote
+
     async def _repro_gate_step(
         self, task: Task, repo: GitRepo, *, base: str | None, attempt_id: str,
         attempt_n: int, branch: str | None, tamper_before: str,
@@ -9002,6 +9061,23 @@ class Orchestrator:
             # happened LAST, matching how the `_fail` path already reports
             # "that second run's own detail (not the first run's)".
             self._last_repro = {"verdict": repro.verdict, "required": enforced}
+            if repro.verdict == "pass":
+                # Persist OUTSIDE the worktree the moment this task's gate
+                # first proves a manifest — `.no_human/**` is gitignored, so
+                # without this the only copy is untracked state a re-created
+                # worktree (new pid -> new path) starts without. Idempotent
+                # (same path, last-write-wins) and best-effort: a failed
+                # persist must never fail the gate that just passed.
+                try:
+                    persisted = persist_manifest(repo.path, task.id)
+                except Exception as exc:  # noqa: BLE001 — best-effort
+                    self._advisory(f"repro manifest persist failed: {exc}")
+                    persisted = False
+                if persisted:
+                    self.emit(
+                        "repro_manifest_persisted",
+                        f"persisted {REPRO_MANIFEST} for task {task.id}",
+                    )
             return repro
 
         async def _fail(bad_repro) -> TaskOutcome:
@@ -9035,6 +9111,51 @@ class Orchestrator:
         if repro.verdict == "fail":
             return await _fail(repro)
 
+        # Still "waived": zero-LLM-spend restore backstop first — covers a
+        # worktree that predates the restore-on-acquire call site in
+        # `_run_task_body`, or a manifest deleted mid-run.
+        if self._restore_repro_manifest(task, repo):
+            repro = await _run_gate()
+            if repro is None or repro.verdict not in ("fail", "waived"):
+                return None
+            if repro.verdict == "fail":
+                return await _fail(repro)
+
+        # Still waived after the restore backstop: if this task ever proved
+        # a passing gate (`has_persisted_manifest`), the fails-before test
+        # almost certainly still exists in this tree — only the manifest
+        # naming it was lost (corrupt/truncated persisted copy, or a restore
+        # that lost the race). Buy ONE bounded, low-effort turn to
+        # regenerate it — "point at what you already wrote", not a fresh
+        # 15-turn round — before falling through to that round unchanged.
+        regenerate_nudged = self.__dict__.setdefault(
+            "_repro_regenerate_nudged", set())
+        if (has_persisted_manifest(task.id)
+                and attempt_id not in regenerate_nudged):
+            regenerate_nudged.add(attempt_id)
+            nudge_detail = (f"repro gate {repro.verdict}: "
+                      + ("; ".join(repro.reasons[:3]) if repro.reasons
+                         else "no reproduction evidence"))
+            nudge_outcome = await self._repro_corrective_round(
+                task, repo, nudge_detail, attempt_id=attempt_id, branch=branch,
+                attempt_n=attempt_n, tamper_before=tamper_before,
+                instruction=_REPRO_REGENERATE_NUDGE,
+                why="repro gate waived — this task had a passing gate whose "
+                    "manifest this worktree lost; one bounded low-effort "
+                    f"turn to regenerate {REPRO_MANIFEST} before the full "
+                    "corrective round",
+                turns=1, effort="low",
+                event_kind="repro_manifest_regenerate_nudge",
+                cause="manifest_lost",
+            )
+            if nudge_outcome is not None:
+                return nudge_outcome
+            repro = await _run_gate()
+            if repro is None or repro.verdict not in ("fail", "waived"):
+                return None
+            if repro.verdict == "fail":
+                return await _fail(repro)
+
         # verdict == "waived": one bounded corrective round, once per attempt.
         corrected = self.__dict__.setdefault("_repro_corrected", set())
         if attempt_id in corrected:
@@ -9061,6 +9182,7 @@ class Orchestrator:
         turns: int = _REPRO_CORRECTIVE_TURNS,
         event_kind: str = "repro_corrective_round",
         cause: str | None = None,
+        effort: str = "high",
     ) -> "TaskOutcome | None":
         """ONE bounded coder round to write the MISSING repro manifest, on
         the SAME branch/worktree the attempt already committed to — not a
@@ -9077,6 +9199,13 @@ class Orchestrator:
         `_REPRO_CORRECTIVE_TURNS`) — so `_declared_files_preflight` can reuse
         this same method for a differently-worded, differently-budgeted round
         without touching the `waived` path at all.
+
+        `effort` is likewise an optional override, defaulting to `"high"` —
+        today's pinned behaviour — so the regenerate nudge (`effort="low"`,
+        `turns=1`) can reuse this same method's billing, abort routing,
+        quota/infra classification, scope guard and tamper check without
+        touching the waived/declared-files/structural-budget callers, which
+        never pass it.
 
         `event_kind`/`cause` are likewise optional overrides, defaulting to
         `"repro_corrective_round"`/`None` so the repro-waived and
@@ -9143,7 +9272,7 @@ class Orchestrator:
                     (instruction or repro_send_back_message(detail))
                     + _REPRO_ROUND_SCOPE_NOTE,
                     cwd=repo.path,
-                    max_turns=turns, effort="high",
+                    max_turns=turns, effort=effort,
                     on_event=self._agent_sink,
                 ),
                 timeout=timeout_s,
