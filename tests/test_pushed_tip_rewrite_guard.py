@@ -226,38 +226,107 @@ def test_an_unresolvable_reset_target_is_denied_unless_it_is_an_existing_path(
     assert d.allow is True, d.reason
 
 
-def test_reset_of_a_deleted_but_git_known_path_stays_allowed(harness_repo):
-    """MINOR-3 from the ce2630ba review: `_is_existing_path` only checked
-    disk existence, so `git reset <path>` un-staging a working-tree deletion
-    of a tracked file was wrongly denied with a 'go merge instead' message —
-    even though it is exactly the same git's-own-pathspec-fallback case as
-    the disk-existing-path control above, and still never moves the branch.
-    Covers both a path still in the index (staged for deletion via a plain
-    `rm`, `add` not yet run) and a path present in HEAD but already removed
-    from the index (`git rm`)."""
-    # Case 1: `rm f.txt` (deletion not staged) — f.txt is gone from disk but
-    # still present, unmodified, in the index.
+def test_git_itself_decides_what_a_bare_reset_pathspec_does(harness_repo):
+    """The `_is_existing_path` widening this test used to cover (ce2630ba
+    review, MINOR-3) claimed a bare `git reset <path>` for a path deleted
+    from the working tree but still tracked in the index or HEAD "still only
+    touches the index" and so could be safely allowed. Measured on git
+    2.50.1 (Apple Git-155): that claim is FALSE. `git reset <path>` (no
+    `--`) for a path missing from the *working tree* fails outright —
+    `fatal: ambiguous argument '<path>': unknown revision or path not in
+    the working tree.` (rc=128) — whether the deletion is staged (`git rm`)
+    or not (`rm`), regardless of index/HEAD tracking state. The widening is
+    REMOVED; `_is_existing_path` is back to plain `os.path.exists`. This
+    test EXECUTES the real git commands (not only the guard's verdict) to
+    prove what git actually does in each case.
+
+    `git reset -- <path>` (the `--` spelling) was already allowed
+    independently of any widening — `_classify_reset` breaks its operand
+    scan at `--`, so there is no operand left to classify — and it really
+    does succeed on git for the same missing-path cases.
+
+    A quoted glob (`git reset '*.txt'`, no `--`) is git's own pathspec
+    engine matching a literal glob string against the index/worktree, and it
+    DOES succeed on git even though nothing with that literal name exists on
+    disk. `_is_existing_path`'s disk-only check cannot see that: the guard
+    denies it. This is an accepted, documented false-deny (the guard fails
+    closed, not open, when it cannot tell) — pinned here so it cannot
+    silently regress into a false-ALLOW instead.
+    """
+    # Case 1: `rm f.txt` (deletion not staged) + bare `git reset f.txt` —
+    # f.txt is gone from disk but still present, unmodified, in the index;
+    # git still refuses it.
     work, tip = harness_repo()
     (work / "f.txt").unlink()
+    proc = subprocess.run(["git", "reset", "f.txt"], cwd=work,
+                           capture_output=True, text=True)
+    assert proc.returncode == 128, proc.stderr
+    assert "ambiguous argument" in proc.stderr, proc.stderr
     d = _ev("git reset f.txt", cwd=str(work))
-    assert d.allow is True, d.reason
+    assert d.allow is False, d.reason
+    assert tip in d.reason, d.reason
     assert _is_ancestor(work, tip, "HEAD")
 
-    # Case 2: `git rm f.txt` (deletion staged) — f.txt is gone from disk AND
-    # from the index, but still present in HEAD; `git reset f.txt` restores
-    # the index entry from HEAD, still never touching the branch.
+    # Case 2: `git rm f.txt` (deletion staged) + bare `git reset f.txt` —
+    # f.txt is gone from disk AND the index, still present in HEAD; git
+    # still refuses it the same way.
     work2, tip2 = harness_repo()
     _git(work2, "rm", "-q", "f.txt")
+    proc2 = subprocess.run(["git", "reset", "f.txt"], cwd=work2,
+                            capture_output=True, text=True)
+    assert proc2.returncode == 128, proc2.stderr
+    assert "ambiguous argument" in proc2.stderr, proc2.stderr
     d2 = _ev("git reset f.txt", cwd=str(work2))
-    assert d2.allow is True, d2.reason
+    assert d2.allow is False, d2.reason
+    assert tip2 in d2.reason, d2.reason
     assert _is_ancestor(work2, tip2, "HEAD")
 
-    # Control: a genuinely unknown path (never tracked, not on disk) is
-    # still denied — this fix must not turn into "allow any pathspec".
+    # Case 3: the `--` spelling succeeds on git for both deletion shapes,
+    # and the guard already allows it independently (no operand to
+    # classify).
     work3, tip3 = harness_repo()
-    d3 = _ev("git reset never-existed-anywhere.txt", cwd=str(work3))
-    assert d3.allow is False, d3.reason
-    assert tip3 in d3.reason
+    (work3 / "f.txt").unlink()
+    proc3 = subprocess.run(["git", "reset", "--", "f.txt"], cwd=work3,
+                            capture_output=True, text=True)
+    assert proc3.returncode == 0, proc3.stderr
+    d3 = _ev("git reset -- f.txt", cwd=str(work3))
+    assert d3.allow is True, d3.reason
+    assert _is_ancestor(work3, tip3, "HEAD")
+
+    work4, tip4 = harness_repo()
+    _git(work4, "rm", "-q", "f.txt")
+    proc4 = subprocess.run(["git", "reset", "--", "f.txt"], cwd=work4,
+                            capture_output=True, text=True)
+    assert proc4.returncode == 0, proc4.stderr
+    d4 = _ev("git reset -- f.txt", cwd=str(work4))
+    assert d4.allow is True, d4.reason
+    assert _is_ancestor(work4, tip4, "HEAD")
+
+    # Case 4: a quoted glob succeeds on git (its own pathspec engine expands
+    # it) but the guard's disk-only check cannot see that — an accepted,
+    # documented false-deny, pinned so it cannot silently regress into a
+    # false-allow.
+    work5, tip5 = harness_repo()
+    proc5 = subprocess.run(["git", "reset", "*.txt"], cwd=work5,
+                            capture_output=True, text=True)
+    assert proc5.returncode == 0, proc5.stderr
+    d5 = _ev("git reset '*.txt'", cwd=str(work5))
+    assert d5.allow is False, (
+        f"accepted false-deny expected (guard cannot see git's own "
+        f"pathspec glob expansion): {d5.reason}"
+    )
+    assert tip5 in d5.reason, d5.reason
+
+    # Control: a genuinely unknown path (never tracked, not on disk) fails
+    # on git AND is denied by the guard — this fix must not turn into
+    # "allow any pathspec".
+    work6, tip6 = harness_repo()
+    proc6 = subprocess.run(["git", "reset", "never-existed-anywhere.txt"],
+                            cwd=work6, capture_output=True, text=True)
+    assert proc6.returncode == 128, proc6.stderr
+    d6 = _ev("git reset never-existed-anywhere.txt", cwd=str(work6))
+    assert d6.allow is False, d6.reason
+    assert tip6 in d6.reason, d6.reason
 
 
 def test_allowed_forms_keep_the_pushed_tip_an_ancestor_of_head(harness_repo):

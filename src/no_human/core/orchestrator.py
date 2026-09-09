@@ -13513,7 +13513,7 @@ class Orchestrator:
             # the next call IS the retry.
             #
             # ONE NAMED EXCEPTION to "no retry loop of its own", scoped exactly as
-            # narrowly as `_finalize`'s own `forced` decision (~5510) is scoped: a
+            # narrowly as `_finalize`'s own `forced` decision (~7725) is scoped: a
             # `pr_conflict` round used to rebase the already-pushed task branch BY
             # CONSTRUCTION, making the plain push above non-fast-forward on EVERY
             # such round. `agent/pushed_tip_guard` now DENIES that rebase and
@@ -13527,7 +13527,7 @@ class Orchestrator:
             # review that round with no PR, the exact state 0a / PR-021 exists to
             # prevent (see the docstring). `_finalize`'s force decision is the
             # single source of truth for when a force-push is safe; this reuses its
-            # module-level predicate verbatim (~195) rather than inventing a second
+            # module-level predicate verbatim (~245) rather than inventing a second
             # heuristic — the only extra conjunct is the round marker, because this
             # call retries *before* a review verdict exists for `_finalize`'s own
             # predicate to read. `PushBehindRemote` is re-raised above and the

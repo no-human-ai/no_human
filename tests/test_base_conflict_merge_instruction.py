@@ -12,10 +12,13 @@ the pushed commits, and delivery refused the branch afterward ('remote tip
   - `build_rules_block`'s new `base_merge_conflict=` kwarg (the "Rules:"
     section the coder reads every turn),
   - `Orchestrator._refresh_stale_base`'s event text (`"merge skipped
-    (conflict)"` is pinned verbatim by other tests — kept as-is here), and
-  - `Orchestrator._build_implement_prompt`'s staleness preamble.
+    (conflict)"` is pinned verbatim by other tests — kept as-is here),
+  - `Orchestrator._build_implement_prompt`'s staleness preamble, and
+  - `WakeWatcher._check_pr_conflict`'s send-back message and `pr_conflict`
+    event text — the wake rung's own textual-conflict round, a separate
+    call site from the three above.
 
-These tests exercise all three call sites.
+These tests exercise all four call sites.
 """
 from __future__ import annotations
 
@@ -24,6 +27,7 @@ import pytest
 from no_human.core.orchestrator import Orchestrator
 from no_human.core.prompt_blocks import base_merge_conflict_instruction, build_rules_block
 from no_human.core.task import Task, TaskStatus
+from no_human.vcs import derived_conflict as dc
 
 # Reuse the real bare-remote fixtures and attempt-driving helper from the
 # sibling pushed-branch staleness test file rather than duplicating them.
@@ -35,6 +39,12 @@ from tests.test_base_staleness_pushed_branch import (  # noqa: F401
     origin,
     repo,
 )
+
+# Reuse the wake rung's own task/watcher builders from its dedicated test
+# file rather than duplicating them — that file's `_resolvable_conflicting_
+# paths` autouse fixture is file-local and does NOT travel with the import,
+# so it is replicated below via an explicit `monkeypatch.setattr`.
+from tests.test_wake_conflict import _approval_task, _watcher  # noqa: F401
 
 
 def _orch():
@@ -145,3 +155,48 @@ def test_the_implement_prompt_preamble_falls_back_when_base_pin_is_missing():
     prompt = _orch()._build_implement_prompt(t, "/tmp/repo")
     assert "Do NOT rebase" in prompt
     assert "the current base" in prompt
+
+
+# --------------------------------------------------------------------------- #
+# The wake pr_conflict round: the fourth call site, and the one an earlier
+# review round accidentally shipped with ZERO assertions pinning it — a
+# revert to the old hardcoded "Rebase onto origin/main..." wording would not
+# have turned anything red. Drives the real `_check_open_pr` ->
+# `_check_pr_conflict` path end to end, not a synthetic call to
+# `base_merge_conflict_instruction` in isolation.
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.asyncio
+async def test_the_pr_conflict_round_tells_the_coder_to_merge_not_rebase(
+    store, monkeypatch,
+):
+    # `_check_pr_conflict` enumerates conflicting paths for the real
+    # repo_path it's given; `_approval_task` points at a fake, non-existent
+    # "/tmp/x", so enumeration must be stubbed the same way
+    # `test_wake_conflict.py`'s (file-local, non-travelling) autouse fixture
+    # does.
+    async def fake_conflicting_paths(repo_path, base_tip, branch):
+        return {"src/unrelated.py"}
+    monkeypatch.setattr(dc, "conflicting_paths", fake_conflicting_paths)
+
+    t = await _approval_task(store)
+    events = []
+    w = _watcher(store, mergeable="CONFLICTING", merge_state="DIRTY", events=events)
+    out = await w._check_open_pr(t)
+    assert out == "resumed"
+
+    fresh = await store.get_task(t.id)
+    message = fresh.context["send_back_feedback"][-1]["message"]
+    assert base_merge_conflict_instruction("origin/main") in message, (
+        "the send-back message must carry the shared merge-not-rebase "
+        "wording verbatim — reverting to a hardcoded rebase string must "
+        "turn this assertion red"
+    )
+    assert "git merge origin/main" in message
+    assert "Rebase onto origin/main" not in message
+    assert "Rebase onto" not in message
+
+    ev_texts = [text for kind, text in events if kind == "pr_conflict"]
+    assert ev_texts, "a pr_conflict event must be emitted"
+    assert "merge round" in ev_texts[0]
+    assert "rebase round" not in ev_texts[0]
