@@ -162,13 +162,13 @@ FROZEN_FUNCTION_LINES = {
     # single-write invariant accurately instead of the old "may already have
     # written its own copy" hedge. Measured on this tree with the scanner
     # below.
-    # 2254 -> 2265 (+11): base-refresh merge of this branch onto trunk's
+    # 2254 -> 2274 (+20): base-refresh merge of this branch onto trunk's
     # 2254, layering the citation-drift preflight call site — try/except
     # CancelRequested/BudgetAbort/StuckAbort/ConvergenceAbort routing around
     # `self._citation_drift_preflight(...)`, mirroring the structural-budget
     # preflight call site immediately above it. Measured on this tree with
     # the scanner below.
-    "core/orchestrator.py:Orchestrator._run_attempt": 2265,
+    "core/orchestrator.py:Orchestrator._run_attempt": 2274,
     # 760 -> 778 (+18): dispatch-time intake-eval hoisted path — the `elif
     # ctx.get("eval_result")` branch that acts on a grill/wizard-stored
     # verdict (idempotency marker, cost/residual-gap comments) added inside
