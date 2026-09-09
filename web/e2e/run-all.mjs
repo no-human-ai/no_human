@@ -46,6 +46,7 @@ const SUITES = [
   ["rules archive", "rules-archive.mjs"],
   ["failure reason", "failure-reason.mjs"],
   ["grill a11y", "grill-a11y.mjs"],
+  ["dead click race", "dead-click-race.mjs"],
   ["live flows (needs :8420)", "live-flows.mjs"],
   ["electron shell (needs :8420 + desktop install)", "electron-smoke.mjs"],
 ];
