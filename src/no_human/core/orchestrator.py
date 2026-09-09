@@ -932,6 +932,16 @@ def _bounded_test_results(test_results: dict) -> dict:
                 out[f"{key}_dropped"] = dropped_sibling
     if dropped:
         out["failing_tests_dropped"] = dropped
+    # Every TESTING-side `test_results` write (layered, plain, invocation-
+    # error, pre-existing excuse, environment, flaky excuse, owned/billing —
+    # all ten call sites) goes through this helper; `_run_review`'s
+    # pre-review block deliberately does not (it stamps `classified: False`
+    # itself, before TESTING ever runs). `setdefault` — not unconditional
+    # overwrite — so a caller that already set `classified` explicitly
+    # (there is none today) is not silently reversed, and so re-wrapping an
+    # already-bounded dict (`_environment_test_failure` re-spreads one its
+    # caller already bounded) stays idempotent.
+    out.setdefault("classified", True)
     return out
 
 
@@ -1767,6 +1777,16 @@ class Orchestrator:
         # the moment `_drive_watched` reads it, so it is single-use and a
         # stale value can never leak into a later call.
         self._pending_setup_path: Path | None = None
+        # Set by `_run_review`'s pre-review block when it renders a red
+        # `test_result`: `(test_result, text, blocks, blocks_dropped,
+        # artifact_path)`, keyed on the RESULT OBJECT's identity. TESTING's
+        # plain branch reads this and, when its own `test_result` IS that
+        # same object (the cache reuse — `test_was_cached`/`was_cached`),
+        # reuses the render instead of calling `_red_test_detail` and writing
+        # the artifact a second time. Cleared at the top of every
+        # `_run_review` call so a stale render from an earlier round can
+        # never be mistaken for this one's.
+        self._pre_review_red_render: tuple | None = None
 
     # ----------------------------- events ---------------------------------- #
 
@@ -6875,8 +6895,25 @@ class Orchestrator:
             # (2026-09-08) showed the [-1200:] tail itself was USELESS on a
             # large suite: the failing blocks sit thousands of bytes before
             # it. See `_red_test_detail`.
+            #
+            # Single-write invariant: one red run gets exactly one
+            # `_red_test_detail` call, one `tests-attempt-N.log` write and one
+            # red `tests` event. `_run_review`'s pre-review block runs BEFORE
+            # this step and, on a red run, already did all three — keyed on
+            # the RESULT OBJECT's identity in `self._pre_review_red_render`.
+            # When `_run_tests_once`'s cache hands TESTING that SAME object
+            # back (`test_was_cached`/`was_cached`), reuse its rendered
+            # text/blocks/artifact path and suppress TESTING's own red event
+            # below instead of recomputing and re-emitting: the excuse event
+            # further down is then the second and last `tests` event of the
+            # round. A genuinely fresh run (a new `TestRunResult` object, no
+            # identity match) is still rendered and written here as before.
+            pre = self._pre_review_red_render
+            reused_pre_review = bool(pre) and pre[0] is test_result
             text, blocks, blocks_dropped, artifact_path = ("", [], 0, "")
-            if not test_result.ok:
+            if reused_pre_review:
+                _, text, blocks, blocks_dropped, artifact_path = pre
+            elif not test_result.ok:
                 text, blocks, blocks_dropped, artifact_path = self._red_test_detail(
                     task, [test_result], attempt_n=attempt_seq)
             failing_tests = getattr(test_result, "failing_tests", []) or []
@@ -6896,15 +6933,16 @@ class Orchestrator:
                        and not getattr(test_result, "invocation_error", False)
                        else "")
             _kept, _dropped = _bounded_failing_ids(failing_tests)
-            self.emit(
-                "tests",
-                not_run + test_result.summary
-                + (" (reused the reviewer's run)" if was_cached else "")
-                + (f"\n{text}" if text else ""),
-                ok=test_result.ok, cached=was_cached, failing_tests=_kept,
-                ran=test_result.ran, tests_log=artifact_path,
-                **({"failing_tests_dropped": _dropped} if _dropped else {}),
-            )
+            if not reused_pre_review:
+                self.emit(
+                    "tests",
+                    not_run + test_result.summary
+                    + (" (reused the reviewer's run)" if was_cached else "")
+                    + (f"\n{text}" if text else ""),
+                    ok=test_result.ok, cached=was_cached, failing_tests=_kept,
+                    ran=test_result.ran, tests_log=artifact_path,
+                    **({"failing_tests_dropped": _dropped} if _dropped else {}),
+                )
             # Deliberately emitted AFTER the red summary above: the
             # concurrent run's red result must land on the record first,
             # then the serial-rerun excusal — pinned by the event-order
@@ -7096,12 +7134,14 @@ class Orchestrator:
                         # A red run excused as pre-existing must still say
                         # WHAT was red — `text`/`blocks`/`artifact_path` were
                         # already computed above (this IS the same
-                        # `test_result`) by `_red_test_detail`; reused here
-                        # rather than recomputed. (When `_run_review`'s
-                        # pre-review block already rendered this same cached
-                        # result it wrote its own copy of the artifact; that
-                        # duplicate write is a filed follow-up, not handled
-                        # here.)
+                        # `test_result`) by `_red_test_detail`, or reused from
+                        # `_run_review`'s pre-review block when it rendered
+                        # this exact cached result first (`reused_pre_review`
+                        # above). Either way this is the single-write
+                        # invariant, not a recompute: one red run gets one
+                        # `_red_test_detail` call and one artifact write, and
+                        # `text`/`blocks`/`artifact_path` are simply reused
+                        # here, never rebuilt.
                         note = (
                             "tests failed, but every failing test already fails "
                             "on the base tree — pre-existing, not introduced by "
@@ -13554,6 +13594,11 @@ class Orchestrator:
         # below sets it True — every other exit (held-out fail, real reviewer
         # run) leaves it False, meaning "a stamp is required".
         self._review_gate_advisory = False
+        # Cleared at the top of every round so a stale render from an earlier
+        # attempt can never be mistaken (by identity) for this round's — see
+        # the pre-review red block below and its comment on `_pre_review_red_
+        # render`.
+        self._pre_review_red_render = None
         # Held-out first (B2 #8): deterministic, cheap, and independent of the
         # reviewer — including advisory mode, which skips the LLM reviewer but
         # must not skip a verifiable signal that already exists on disk. This
@@ -13678,18 +13723,48 @@ class Orchestrator:
             text, blocks, blocks_dropped, artifact_path = self._red_test_detail(
                 task, [test_result],
                 attempt_n=getattr(self, "_active_attempt_number", None))
+            # Recorded keyed on the RESULT OBJECT's identity — not on
+            # `test_was_cached` — so TESTING's plain branch below (this same
+            # attempt, later in the round) can tell whether its own
+            # `test_result` IS this exact object (the `_run_tests_once` cache
+            # reuse) and, only then, reuse this render instead of calling
+            # `_red_test_detail`/writing the artifact a second time. See
+            # `_pre_review_red_render`'s definition in `__init__`.
+            self._pre_review_red_render = (
+                test_result, text, blocks, blocks_dropped, artifact_path)
             failing_tests = getattr(test_result, "failing_tests", []) or []
             pre_review_failing_ids, pre_review_ids_dropped = _bound_failing_test_ids(
                 failing_tests)
+            # Same bound TESTING's own red `tests` event uses
+            # (`_bounded_failing_ids`, `_MAX_PERSISTED_FAILING_TESTS`) — this
+            # event is now the ONLY red `tests` event of the round whenever
+            # TESTING reuses this render, so it must carry the same shape
+            # TESTING's would have (kept ids + a `failing_tests_dropped`
+            # count when truncated), not the unbounded list.
+            _kept, _dropped = _bounded_failing_ids(failing_tests)
             self.emit(
                 "tests",
                 test_result.summary
                 + (" (reused a prior run)" if test_was_cached else "")
                 + " — pre-review run, before the reviewer's verdict"
                 + (f"\n{text}" if text else ""),
-                ok=False, cached=test_was_cached, failing_tests=failing_tests,
+                ok=False, cached=test_was_cached, failing_tests=_kept,
                 ran=test_result.ran, tests_log=artifact_path,
+                **({"failing_tests_dropped": _dropped} if _dropped else {}),
             )
+            # `classified: False` — this row was written before the reviewer's
+            # verdict and before TESTING (the sole classifier of a red run:
+            # flaky/pre-existing excuse vs. owned billing) ever ran. TESTING's
+            # own `update_attempt(..., test_results=...)` REPLACES this whole
+            # column (never merges — see the comment further down in
+            # `_run_attempt`), so when TESTING later classifies THIS SAME run
+            # it overwrites this row wholesale, including stamping
+            # `classified: True` via `_bounded_test_results`. If review FAILS
+            # for an unrelated reason first, `_run_attempt`'s FAIL branch
+            # returns before TESTING ever runs — so `classified: False`
+            # persists, and the board must render that "never classified"
+            # state distinctly from a billed failure (`web/src/
+            # slideOverSummary.js`'s `testResultVerdict`).
             await self.store.update_attempt(attempt_id, test_results={
                 "ran": test_result.ran, "ok": test_result.ok,
                 "passed": test_result.passed, "failed": test_result.failed,
@@ -13697,6 +13772,7 @@ class Orchestrator:
                 "failing_tests": failing_tests,
                 "failure_blocks": blocks,
                 "failure_blocks_dropped": blocks_dropped,
+                "classified": False,
             })
 
         def _pre_review_red_checklist_item() -> ChecklistItem | None:

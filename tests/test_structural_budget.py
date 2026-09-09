@@ -140,7 +140,18 @@ FROZEN_FUNCTION_LINES = {
     # pre-review block may already have written its own copy of the artifact
     # instead of claiming a single write. Measured on this tree with the
     # scanner below.
-    "core/orchestrator.py:Orchestrator._run_attempt": 2223,
+    # 2223 -> 2243 (+20) (task 30a97d8a): the single-write fix itself — the
+    # pre-review block now records its rendered red detail keyed on the
+    # `test_result` object's identity plus the `classified: False` marker on
+    # its `test_results` write, and TESTING's plain branch reuse check
+    # (`reused_pre_review = bool(pre) and pre[0] is test_result`) that skips
+    # its own `_red_test_detail` call and red `tests` emit when it is
+    # classifying that SAME cached object. The excused-path comment this
+    # entry's previous +3 landed is also corrected here to state the
+    # single-write invariant accurately instead of the old "may already have
+    # written its own copy" hedge. Measured on this tree with the scanner
+    # below.
+    "core/orchestrator.py:Orchestrator._run_attempt": 2243,
     # 760 -> 778 (+18): dispatch-time intake-eval hoisted path — the `elif
     # ctx.get("eval_result")` branch that acts on a grill/wizard-stored
     # verdict (idempotency marker, cost/residual-gap comments) added inside
@@ -270,7 +281,17 @@ FROZEN_FUNCTION_LINES = {
     # Measured on this tree with the scanner below.
     # 543 -> 544 (+1): the block comment names `_reviewer_items` and both
     # D6 halves. Measured on this tree with the scanner below.
-    "core/orchestrator.py:Orchestrator._run_review": 544,
+    # 544 -> 580 (+36) (task 30a97d8a): the pre-review block now caches its
+    # rendered red detail — `self._pre_review_red_render = (test_result,
+    # text, blocks, blocks_dropped, artifact_path)`, keyed on the result
+    # object's own identity — right after the existing `_red_test_detail`
+    # call, and its `test_results` write gains the explicit `classified:
+    # False` marker (plus the comment explaining `update_attempt`'s REPLACE
+    # semantics and why TESTING overwrites it to `True`), so a review FAIL
+    # that never reaches TESTING still leaves an explicit "never classified"
+    # row instead of an implicit, indistinguishable-from-failed one.
+    # Measured on this tree with the scanner below.
+    "core/orchestrator.py:Orchestrator._run_review": 580,
     # 377 -> 398 (+21): quota-saturation mid-run halt. `bench_run` now builds
     # a `QuotaHaltDetector`, threads `halt.observe(score)`/`halt.scored(...)`
     # through the per-spec checkpoint save inside `_run_spec`, and prints the
@@ -390,7 +411,14 @@ FROZEN_FUNCTION_CC = {
     # 243 -> 247 (+4): 99fa5ba5 (bounded failing_tests and joins at
     # every write site; the carried dropped count reaches the coder prompt)
     # landed on top of cf6f6c19. Measured on this tree by the scanner's own metric.
-    "core/orchestrator.py:Orchestrator._run_attempt": 247,
+    # 247 -> 250 (+3) (task 30a97d8a): the single-write fix's TESTING-side
+    # reuse check in the plain branch — `reused_pre_review = bool(pre) and
+    # pre[0] is test_result`, then `if reused_pre_review: ... else:` around
+    # the `_red_test_detail` call, plus a second `if not reused_pre_review:`
+    # guarding TESTING's own red `tests` emit so it only fires when this
+    # step is NOT reusing the pre-review block's render. Measured on this
+    # tree with the scanner below.
+    "core/orchestrator.py:Orchestrator._run_attempt": 250,
     # Landing of 4e0299ad: unchanged at 115 — the harness row is dropped by
     # the comprehension filter inside `_reviewer_items`, which the scanner
     # counts the same as the `if` it replaced (the first landing pass had a
@@ -427,7 +455,15 @@ FROZEN_FUNCTION_CC = {
     # item rides into `_record_review_feedback` when the round is ALREADY
     # failing for another reason, without ever failing a round on its own.
     # One new `If`, net. Measured on this tree with the scanner below.
-    "core/orchestrator.py:Orchestrator._run_review": 89,
+    # 89 -> 90 (+1) (task 30a97d8a): the pre-review block's red `tests` event
+    # now bounds `failing_tests` the same way TESTING's own red event does
+    # (`_kept, _dropped = _bounded_failing_ids(failing_tests)`), so when this
+    # event ends up being the ONLY red `tests` event of the round (TESTING
+    # reused its render) it carries the same shape TESTING's would have —
+    # `**({"failing_tests_dropped": _dropped} if _dropped else {})` is one
+    # new conditional expression. Measured on this tree with the scanner
+    # below.
+    "core/orchestrator.py:Orchestrator._run_review": 90,
     # Crossed 60 (to 67) with the UI-evidence gate landed by task 389210fa.
     # 67 -> 70 (+3): follow-up to ce4d4a73 (#151) -- one new `if overlap:`
     # block (+1) plus two `stale.get(...) or []` BoolOps (+1 each). Measured
@@ -998,7 +1034,14 @@ FROZEN_FILE_LINES = {
     # 23556 -> 23564 (+8): second landing pass (`_reviewer_items` shared by
     # both D6 halves; comments name it). Measured on this tree by the
     # scanner's own metric.
-    "core/orchestrator.py": 23564,
+    # 23564 -> 23640 (+76) (task 30a97d8a): the single-write/unclassified-
+    # marker fix — `_bounded_test_results`'s `classified: True` default,
+    # `__init__`'s new `_pre_review_red_render` field, the pre-review
+    # block's render-cache assignment plus its bounded `failing_tests`/
+    # `failing_tests_dropped` red-event shape and `classified: False` write,
+    # and TESTING's `reused_pre_review` reuse branch with its accompanying
+    # comments. Measured on this tree with the scanner below.
+    "core/orchestrator.py": 23640,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.

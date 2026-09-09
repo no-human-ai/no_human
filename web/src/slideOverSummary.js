@@ -561,11 +561,26 @@ export function reviewVerdict(checklist) {
 // Neither bucket is "clean" (there IS a nonzero failed/invocation-error
 // count) and neither is a genuine "failed" (the gate did not fail the
 // attempt on it) — they get their own "excused" tone naming the excuse.
+// A THIRD case sits beside those two: `classified === false` means TESTING
+// — the sole classifier of a red run (flaky/pre-existing excuse vs. owned
+// billing) — never ran at all. `_run_review`'s pre-review block writes this
+// row unconditional of the review verdict, before TESTING; when review
+// FAILS for an unrelated reason `_run_attempt`'s FAIL branch returns before
+// TESTING runs, so this row is what persists. It was never billed and never
+// excused — the gate simply never graded it — so it must render as neither
+// "clean", "excused", nor "failed".
 // Anything left over — `ok === false` with no excuse recorded — is a
 // genuinely red result and must never render as clean.
 export function testResultVerdict(testResults) {
   if (!testResults) return null;
   if (testResults.tamper_flag) return null;
+  if (testResults.classified === false) {
+    return {
+      tone: "unclassified",
+      label: "red — pre-review run, not yet classified (the review failed "
+        + "before the tests step ran)",
+    };
+  }
   const failed = Number(testResults.failed) || 0;
   const errors = Number(testResults.errors) || 0;
   const preExisting = Array.isArray(testResults.pre_existing_failures)
