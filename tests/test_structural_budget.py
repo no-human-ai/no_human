@@ -1068,6 +1068,7 @@ FROZEN_FILE_LINES = {
     # never routes QUOTA to `blocked`, only to `paused_quota`), a small net
     # decrease folded into this same total. Measured on this tree by the
     # scanner's own metric.
+<<<<<<< HEAD
     # round 3 and the landing hand-finish (+10 over the merged 23633): the
     # unreachable `blocked`/`USER_PAUSED` mapping is removed as well (that
     # category is harness-only and its only writer is the pause path,
@@ -1099,6 +1100,19 @@ FROZEN_FILE_LINES = {
     # follow-up (task 4a23ed43). Measured on this tree by the scanner's own
     # metric.
     "core/orchestrator.py": 23730,
+=======
+    # 23609 -> 23666 (+57) 2026-09-09: re-derived edit-loop fix, round 2
+    # (reviewer send-back property 4) — the new `_HARNESS_RUN_RE`/
+    # `_looks_like_harness_run` module function (plus its defending
+    # docstring), which lets `StuckDetector.note_test_run` recognize the
+    # bare `node <script>.mjs` / `npm run <script>` / `npx playwright ...`
+    # invocations f6e626fd's own incident actually used, and the
+    # `_note_test_activity` docstring explaining the wider OR predicate.
+    # `ConvergenceTracker`/`_looks_like_test_run`/`_TEST_RUNNER_RE` are
+    # untouched — this is additive, not a rewrite. Measured on this tree by
+    # the scanner's own metric (`len(Path(...).read_text().splitlines())`).
+    "core/orchestrator.py": 23666,
+>>>>>>> 39e9ca1f (Edit-loop abort requires no progress between edits, not an edit count)
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.

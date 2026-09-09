@@ -84,6 +84,107 @@ def test_only_the_implementer_session_stuck_aborts(store, tmp_path, role):
         orch._agent_sink(ev, role=role)  # must not raise
 
 
+<<<<<<< HEAD
+=======
+def test_converging_edit_test_loop_never_hard_aborts(store, tmp_path):
+    """AC1 (task f6e626fd): edit / test-run-with-CHANGING-outcome / edit on
+    ONE file for 20 iterations through the real orchestrator sink must raise
+    no StuckAbort — every test run reports a genuinely DIFFERENT STATUS
+    (failed vs ok, not merely a different byte count) than the one before
+    it, so every edit that follows is observed progress, not a loop, however
+    far past the raw `edit_abort` (15) count it runs.
+
+    Byte-size-only churn is deliberately NOT enough to count as progress
+    (see `test_bounds.py::test_byte_size_alone_is_not_progress` and the
+    send-back's property 5) — this test alternates the actual `is_error`
+    status each round so the outcome really does change."""
+    orch = _orch(store, tmp_path)
+    orch._active_task_id = "task-1"
+    orch._stuck = StuckDetector()
+    for i in range(20):
+        orch._agent_sink(
+            AgentEvent("tool_use", tool_name="Edit",
+                       tool_input={"file_path": "calc.py", "new_string": f"v{i}"}),
+            role=CODER_ROLE,
+        )
+        orch._agent_sink(
+            AgentEvent("tool_use", tool_name="Bash",
+                       tool_input={"command": f"pytest -k iter{i}"},
+                       meta={"tool_use_id": f"call-{i}"}),
+            role=CODER_ROLE,
+        )
+        orch._agent_sink(
+            AgentEvent("tool_result",
+                       meta={"tool_use_id": f"call-{i}",
+                             "is_error": (i % 2 == 0),  # status flips every call
+                             "result_chars": 100 + i}),
+            role=CODER_ROLE,
+        )
+    # 20 edits to calc.py — well past edit_abort (15) — and no StuckAbort above.
+    assert orch._stuck._edit_counts["calc.py"] == 20  # advisory raw count unaffected
+    assert orch._stuck.hard_stuck_reason is None
+
+
+def test_identical_test_output_still_hard_aborts_with_summaries(store, tmp_path):
+    """AC2: edit / test-run-with-IDENTICAL-output / edit on one file up to
+    the hard threshold still raises StuckAbort, and the message carries the
+    last two test summaries as evidence the outcome really did not change."""
+    orch = _orch(store, tmp_path)
+    orch._active_task_id = "task-1"
+    orch._stuck = StuckDetector()
+    edit_abort = orch._stuck.edit_abort
+    # +1: the very first test outcome ever recorded always counts as progress
+    # (nothing to compare it to yet), resetting the hard count once — matching
+    # `record_edit`'s documented behaviour (see tests/test_bounds.py).
+    with pytest.raises(StuckAbort) as excinfo:
+        for i in range(edit_abort + 1):
+            orch._agent_sink(
+                AgentEvent("tool_use", tool_name="Edit",
+                           tool_input={"file_path": "calc.py", "new_string": f"v{i}"}),
+                role=CODER_ROLE,
+            )
+            orch._agent_sink(
+                AgentEvent("tool_use", tool_name="Bash",
+                           tool_input={"command": f"pytest -k iter{i}"},
+                           meta={"tool_use_id": f"call-{i}"}),
+                role=CODER_ROLE,
+            )
+            orch._agent_sink(
+                AgentEvent("tool_result",
+                           meta={"tool_use_id": f"call-{i}", "is_error": True,
+                                 "result_chars": 40}),  # identical every call
+                role=CODER_ROLE,
+            )
+    assert "edit-loop" in str(excinfo.value)
+    assert "no observed progress" in str(excinfo.value)
+    assert "failed, 40 chars" in str(excinfo.value)
+
+
+def test_doom_loop_and_ping_pong_aborts_unchanged(store, tmp_path):
+    """Guard: rewiring test-run/convergence handling into `_note_test_activity`
+    must leave the (untouched) doom-loop and ping-pong hard tiers exercised
+    through the real sink exactly as before."""
+    orch = _orch(store, tmp_path)
+    orch._active_task_id = "task-1"
+    orch._stuck = StuckDetector()
+    ev = AgentEvent("tool_use", tool_name="Bash", tool_input={"command": "pytest -x"})
+    with pytest.raises(StuckAbort, match="doom-loop"):
+        for _ in range(orch._stuck.doom_loop_abort):
+            orch._agent_sink(ev, role=CODER_ROLE)
+
+    orch2 = _orch(store, tmp_path)
+    orch2._active_task_id = "task-1"
+    orch2._stuck = StuckDetector()
+    read_a = AgentEvent("tool_use", tool_name="Read", tool_input={"file_path": "/a.py"})
+    edit_b = AgentEvent("tool_use", tool_name="Edit",
+                        tool_input={"file_path": "/b.py", "new_string": "x"})
+    with pytest.raises(StuckAbort, match="ping-pong"):
+        for _ in range(orch2._stuck.ping_pong_abort_window // 2 + 1):
+            orch2._agent_sink(read_a, role=CODER_ROLE)
+            orch2._agent_sink(edit_b, role=CODER_ROLE)
+
+
+>>>>>>> 39e9ca1f (Edit-loop abort requires no progress between edits, not an edit count)
 def test_sink_aborts_when_spend_crosses_the_remaining_budget(store, tmp_path):
     # The ceiling is in COST-WEIGHTED tokens (core.pricing), so each event is
     # worth 300 fresh x1.0 + 300 cache-read x0.1 = 330, not its raw 600.

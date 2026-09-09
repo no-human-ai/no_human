@@ -170,6 +170,17 @@ class Bounds:
         return base
 
 
+#: Strips the trailing byte-count off a `_test_run_summary`-shaped string
+#: (`"{status}, {n} chars"`), leaving just the `exit {code}`/`ok`/`failed`
+#: portion. Used by `StuckDetector.record_test_outcome` so "the outcome
+#: changed" means a status transition, not output-size churn.
+_STATUS_ONLY_RE = re.compile(r",\s*\d+\s*chars\s*$")
+
+
+def _status_only(summary: str) -> str:
+    return _STATUS_ONLY_RE.sub("", summary)
+
+
 def error_signature(text: str) -> str:
     """Reduce an error/output blob to a stable signature for stuck detection.
 
@@ -215,12 +226,49 @@ class StuckDetector:
     doom_loop_abort: int = 9
     edit_abort: int = 15
     ping_pong_abort_window: int = 12
+    # ABSOLUTE per-file ceiling (send-back review round 2, MAJOR-1/property
+    # 2): unlike `edit_abort` above, NO progress signal resets this one — it
+    # reads the raw `_edit_counts` this class already keeps for the advisory
+    # tier. Removing the cross-file reset from `record_edit` means a file
+    # can now accumulate an unbounded `_hard_edit_counts` run as long as
+    # SOME test outcome keeps changing between edits; this backstop still
+    # ends the attempt if one file is edited this many times regardless of
+    # what else happened. 2× `edit_abort`: `edit_abort` (15) is calibrated to
+    # fire on a run with NO progress signal at all; a file edited twice that
+    # many times, even with real test-outcome churn between edits, has
+    # exhausted more attempts on one file than any single-file fix in the
+    # measured corpus needed (see `.no_human/scratch/diagnose.py` — no
+    # genuine non-abort corpus attempt drives one file's raw edit count
+    # anywhere near 30).
+    edit_ceiling: int = 30
     _seen: dict[str, int] = field(default_factory=dict)
     _last: str | None = None
     _tool_signatures: list[str] = field(default_factory=list)
     _consecutive_repeats: int = 0
     # R2.3 Layer 1: per-file edit counts.
     _edit_counts: dict[str, int] = field(default_factory=dict)
+    # HARD tier's own per-file counter: unlike `_edit_counts` above, this one
+    # resets to 1 whenever `record_edit` observes progress since the file's
+    # previous edit — a changed test-runner outcome (`record_test_outcome`
+    # set `_progress_since_last_edit`) — see `record_edit`. An edit LOOP is
+    # edits whose observed outcome does not change; edits that keep
+    # converging on a fix, however many, are not one, however many test runs
+    # it takes. Editing a DIFFERENT file in between is deliberately NOT
+    # treated as progress on its own (send-back review round 2, MAJOR-1): an
+    # agent bouncing between two files with no observed outcome change is
+    # still a loop, and a bare "different file" reset let exactly that
+    # escape both this tier and ping-pong (see `edit_ceiling` below for the
+    # backstop that still bounds it).
+    _hard_edit_counts: dict[str, int] = field(default_factory=dict)
+    _progress_since_last_edit: bool = False
+    # Up to the last 2 test-outcome summaries (most recent last), carried
+    # into the hard `edit-loop` reason so a human can see the outcome really
+    # did not change.
+    _test_summaries: list[str] = field(default_factory=list)
+    # tool_use_id -> True, for a Bash/Terminal call recognized as a
+    # test-runner invocation whose matching `tool_result` has not arrived
+    # yet. Bounded so a long attempt cannot grow it unbounded.
+    _pending_test_runs: dict[str, bool] = field(default_factory=dict)
 
     def record(self, error_text: str) -> bool:
         """Record a failure. Return True if we are now stuck (reset context)."""
@@ -253,10 +301,84 @@ class StuckDetector:
         return self._consecutive_repeats >= self.doom_loop_threshold
 
     def record_edit(self, file_path: str) -> bool:
-        """R2.3 Layer 1: track per-file edit count. Return True if looping."""
+        """R2.3 Layer 1: track per-file edit count. Return True if the
+        ADVISORY tier fires (raw count, unchanged by progress).
+
+        Also maintains the HARD tier's own progress-gated counter
+        (`_hard_edit_counts`, read by `hard_stuck_reason`): it resets to 1
+        whenever this edit followed observed progress since the file's
+        previous edit — a test-runner invocation whose outcome summary
+        changed (`record_test_outcome` set `_progress_since_last_edit`).
+        Editing a different file in between is NOT progress by itself (see
+        the field comment on `_hard_edit_counts`). Progress is consumed here
+        (reset to False) so it counts for exactly the one edit that follows
+        it.
+        """
         self._edit_counts[file_path] = self._edit_counts.get(file_path, 0) + 1
+        progressed = self._progress_since_last_edit
+        self._hard_edit_counts[file_path] = (
+            1 if progressed else self._hard_edit_counts.get(file_path, 0) + 1
+        )
+        self._progress_since_last_edit = False
         return self._edit_counts[file_path] >= self.edit_threshold
 
+    def note_test_run(self, tool_use_id: str | None) -> None:
+        """Record a Bash/Terminal call recognized as a test-runner
+        invocation, pending the matching `tool_result` (`record_test_outcome`).
+        A missing/empty id is ignored — unjoinable, so it can never register
+        as progress (the fallback is today's behaviour: no progress signal)."""
+        if not tool_use_id:
+            return
+        self._pending_test_runs[tool_use_id] = True
+        if len(self._pending_test_runs) > 32:
+            oldest = next(iter(self._pending_test_runs))
+            del self._pending_test_runs[oldest]
+
+    def record_test_outcome(self, tool_use_id: str | None, summary: str) -> bool:
+        """Resolve a pending test run and compare its outcome to the
+        previous one. Return True iff this is PROGRESS: `tool_use_id` was
+        registered by `note_test_run` (a `tool_result` whose id was never
+        seen as a test run — an unpaired backend, or one that emits no
+        result at all — is NOT progress; that is the existing fallback,
+        preserved on purpose) AND the outcome's STATUS (`_status_only`)
+        differs from the last recorded one's status (or none has been
+        recorded yet).
+
+        `summary` is expected to be `_test_run_summary`'s
+        `"{status}, {chars} chars"` string, not pass/fail counts — the event
+        stream never carries test output text (`claude_backend._exit_status`'s
+        docstring: only size, and an exit code on failure, by design, so a
+        printed credential is never captured), so "5 passed, 2 failed" is not
+        obtainable here. The comparison itself, though, looks at `status`
+        ONLY (send-back review round 2, MAJOR-2): `result_chars` alone
+        drifts on almost every run of a real harness (timestamps, stack
+        traces, log noise) with no change in outcome at all — pairing the
+        progress signal to the one component that cannot drift for free
+        (an `exit {code}`/`ok`/`failed` transition) is what makes this
+        "progress", not raw output-size churn. The full summary (with
+        chars) is still what gets stored/displayed in `_test_summaries`, so
+        a human reading the stuck-event text still sees the byte counts.
+        """
+        if not tool_use_id or tool_use_id not in self._pending_test_runs:
+            return False
+        del self._pending_test_runs[tool_use_id]
+        changed = (
+            not self._test_summaries
+            or _status_only(self._test_summaries[-1]) != _status_only(summary)
+        )
+        self._test_summaries.append(summary)
+        if len(self._test_summaries) > 2:
+            self._test_summaries = self._test_summaries[-2:]
+        if changed:
+            self._progress_since_last_edit = True
+        return changed
+
+    @property
+    def last_test_summaries(self) -> list[str]:
+        """Up to the last 2 recorded test-outcome summaries, most recent last."""
+        return list(self._test_summaries)
+
+>>>>>>> 39e9ca1f (Edit-loop abort requires no progress between edits, not an edit count)
     def detect_ping_pong(self, window: int = 4) -> bool:
         """R2.1: detect an A-B-A-B alternating pattern in the last ``window``
         tool calls (4 = advisory; ``ping_pong_abort_window`` = hard)."""
@@ -301,7 +423,24 @@ class StuckDetector:
                if c >= self.edit_abort]
         if hot:
             path, count = max(hot, key=lambda fc: fc[1])
+<<<<<<< HEAD
             return f"edit-loop: {path} edited {count}×"
+=======
+            reason = f"edit-loop: {path} edited {count}× with no observed progress"
+            if self._test_summaries:
+                reason += " — last test outcomes: " + " → ".join(self._test_summaries)
+            return reason
+        # ABSOLUTE ceiling (property 2): reads the raw, never-reset
+        # `_edit_counts` — no progress signal can lift this one.
+        ceiling_hot = [(f, c) for f, c in self._edit_counts.items()
+                       if c >= self.edit_ceiling]
+        if ceiling_hot:
+            path, count = max(ceiling_hot, key=lambda fc: fc[1])
+            reason = f"edit-loop: {path} edited {count}× (absolute per-file ceiling)"
+            if self._test_summaries:
+                reason += " — last test outcomes: " + " → ".join(self._test_summaries)
+            return reason
+>>>>>>> 39e9ca1f (Edit-loop abort requires no progress between edits, not an edit count)
         if self.detect_ping_pong(self.ping_pong_abort_window):
             return (
                 f"ping-pong: alternating between two actions for "
@@ -315,6 +454,13 @@ class StuckDetector:
         self._tool_signatures.clear()
         self._consecutive_repeats = 0
         self._edit_counts.clear()
+<<<<<<< HEAD
+=======
+        self._hard_edit_counts.clear()
+        self._progress_since_last_edit = False
+        self._test_summaries.clear()
+        self._pending_test_runs.clear()
+>>>>>>> 39e9ca1f (Edit-loop abort requires no progress between edits, not an edit count)
 
 
 @dataclass
