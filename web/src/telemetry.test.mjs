@@ -4,6 +4,7 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { initTelemetry, telemetryConsent, captureScreen, _resetForTests } from "./telemetry.js";
+import { DEAD_CLICK_IGNORE_SELECTORS } from "./deadClickFilter.js";
 
 const SRC = dirname(fileURLToPath(import.meta.url));
 const WEB = join(SRC, "..");
@@ -83,7 +84,7 @@ test("consent → posthog-js imported once, init gets the exact masking options"
     autocapture: true,
     capture_pageview: true,
     capture_pageleave: true,
-    capture_dead_clicks: true,
+    capture_dead_clicks: { css_selector_ignorelist: DEAD_CLICK_IGNORE_SELECTORS },
     capture_heatmaps: true,
     capture_performance: true,
     capture_exceptions: true,
@@ -91,6 +92,22 @@ test("consent → posthog-js imported once, init gets the exact masking options"
     person_profiles: "always",
     bootstrap: { distinctID: "inst-uuid" },
   });
+  // Dead-click capture stays ON (object form is truthy) — it is narrowed, not
+  // disabled — and a custom ignorelist REPLACES posthog's own default
+  // (`[".ph-no-capture", ".ph-no-deadclick"]`), so both must be re-included
+  // or every ph-no-capture block would start reporting dead clicks.
+  assert.ok(options.capture_dead_clicks, "dead-click capture must still be enabled");
+  assert.ok(
+    options.capture_dead_clicks.css_selector_ignorelist.includes(".ph-no-capture"),
+    "custom ignorelist must re-include posthog's own .ph-no-capture default",
+  );
+  assert.ok(
+    options.capture_dead_clicks.css_selector_ignorelist.includes(".ph-no-deadclick"),
+    "custom ignorelist must re-include posthog's own .ph-no-deadclick default",
+  );
+  // Autocapture is explicitly untouched by this change: still the bare
+  // boolean, no config object.
+  assert.equal(options.autocapture, true);
   // The two guarantees that survive the "everything on" posture:
   assert.equal(options.session_recording.maskAllInputs, true, "typed input is always masked");
   assert.equal(options.session_recording.maskTextSelector, undefined,

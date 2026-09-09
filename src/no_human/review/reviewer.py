@@ -844,6 +844,8 @@ def _build_review_prompt(
     draft_pr_absent: str = "",
     reviewed_sha: str = "",
     reviewed_branch: str = "",
+    failing_test_ids: list[str] | None = None,
+    failing_test_ids_dropped: int = 0,
 ) -> str:
     # Bound the auxiliary sections AT THIS BOUNDARY (see `_AUX_CAP`). The diff,
     # the acceptance criteria and the test output are deliberately not routed
@@ -900,6 +902,33 @@ def _build_review_prompt(
         f"\nHeld-out test results (tests the implementer never saw):\n{held_out_output}\n"
         if held_out_output else ""
     )
+    # Fixed, deterministic — NOT routed through `_OUTPUT_CAP`/`_cap_section`
+    # like `test_output` above. The harness's own pre-review run already
+    # found these ids before this reviewer session started; they are a fact
+    # to check off, not prose the LLM can weigh away by summarizing past it.
+    # `Orchestrator._run_review` no longer forces `decision.passed = False`
+    # off this fact alone (that used to starve the flaky tiebreaker and
+    # force-fail every red run on `env_setup` projects — see its docstring);
+    # a PASS verdict here is not the last word either way, since the
+    # post-review TESTING step independently bills or excuses the SAME red
+    # run. This section exists so the reviewer grades the diff with the same
+    # facts the coder will eventually see, not to be the thing that fails
+    # the round by itself.
+    failing_ids_section = ""
+    if failing_test_ids:
+        ids_line = ", ".join(failing_test_ids)
+        if failing_test_ids_dropped:
+            ids_line += f" (+{failing_test_ids_dropped} more, not shown)"
+        failing_ids_section = (
+            "\nFailing tests in this tree (from the harness's own run, not an "
+            f"opinion): {ids_line}\n"
+            "These are FACTS the test runner produced BEFORE this review, not a "
+            "claim to weigh against the diff. Grade this at critical severity "
+            "unless a checklist item you are already reporting covers the same "
+            "failure — a PASS here cannot excuse it: on any round the review "
+            "passes, the harness's own post-review testing step classifies and "
+            "bills or excuses this red run itself.\n"
+        )
     profile_section = (
         f"\nProject profile (use these conventions as a baseline):\n{profile_context}\n"
         if profile_context else ""
@@ -1118,6 +1147,7 @@ def _build_review_prompt(
         + wiring_section
         + _annotated_test_output(test_output)
         + f"{held_section}"
+        + f"{failing_ids_section}"
         + rules_pass
         + scope_pass
     )
@@ -2277,6 +2307,8 @@ class AdversarialReviewer:
         single_turn: bool = False,
         reviewed_sha: str = "",
         reviewed_branch: str = "",
+        failing_test_ids: list[str] | None = None,
+        failing_test_ids_dropped: int = 0,
     ) -> ReviewDecision:
         # Tamper-adjudication mode: see `_review_tamper_adjudication` for why
         # this exists, what it may not be given, and the bounded-retry
@@ -2404,6 +2436,8 @@ class AdversarialReviewer:
             draft_pr_absent=draft_pr_absent,
             reviewed_sha=reviewed_sha,
             reviewed_branch=reviewed_branch,
+            failing_test_ids=failing_test_ids,
+            failing_test_ids_dropped=failing_test_ids_dropped,
         )
 
         # When the diff is already provided (or routed single-turn), use a

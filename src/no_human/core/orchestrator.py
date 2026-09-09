@@ -985,6 +985,34 @@ _QUOTA_CORROBORATION_WINDOW = timedelta(minutes=10)
 #: the per-attempt cap is always the smaller ceiling, never a real number.
 _NO_LIFETIME_CEILING = 1 << 62
 
+#: Cap on how many failing-test ids `_run_review` hands the reviewer's FIXED
+#: prompt section and the next round's review-feedback row. Independent of
+#: `_red_test_detail`'s own block-bounding (that bounds rendered failure
+#: TEXT; this bounds a plain id list going into two different, smaller
+#: channels) — a several-hundred-failure suite must not blow either one, and
+#: the dropped count is always disclosed rather than silently truncating.
+_FAILING_TEST_ID_CAP = 200
+
+# Label of the synthetic checklist row `_run_review` attaches to an already
+# FAILED decision when its pre-review test run was red. Shared with the D6
+# stagnation detector's `_reviewer_items`, which drops it from both the
+# pass rate and the recurring-label set: the row is
+# harness-generated from the run's failing ids, not a reviewer finding, so
+# its recurrence across rounds (a pre-existing or flaky red test the coder
+# never touched) is not evidence that the coder is stuck.
+_PRE_REVIEW_RED_LABEL = "pre-review test run"
+
+
+def _bound_failing_test_ids(
+    ids: list[str], cap: int = _FAILING_TEST_ID_CAP,
+) -> tuple[list[str], int]:
+    """Return ``(kept, dropped_count)`` — the first *cap* ids, plus how many
+    were cut. See `_FAILING_TEST_ID_CAP`."""
+    ids = list(ids)
+    if len(ids) <= cap:
+        return ids, 0
+    return ids[:cap], len(ids) - cap
+
 
 def _parse_iso(value: str | None) -> datetime | None:
     """Parse an ISO timestamp column (`wake_check_at`, `blocker["raised_at"]`,
@@ -4633,7 +4661,16 @@ class Orchestrator:
             if attempt_n >= 2:
                 attempts = await self.store.list_attempts(task.id)
                 if len(attempts) >= 2:
-                    def _pass_rate(a: dict) -> float | None:
+                    def _reviewer_items(a: dict) -> list[dict] | None:
+                        # The persisted checklist minus the harness-generated
+                        # `_PRE_REVIEW_RED_LABEL` row `_run_review` attaches
+                        # to a FAILing decision: that row recurs on every
+                        # round a red test the coder never touched stays red,
+                        # so it is evidence in NEITHER half of D6 — not the
+                        # pass rate (it would move the denominator of a red
+                        # round and manufacture rate equality) and not the
+                        # recurring-label set (independent reviews of
+                        # 429b471f and of its landing tree).
                         rc = a.get("review_checklist")
                         if isinstance(rc, str):
                             try:
@@ -4642,22 +4679,24 @@ class Orchestrator:
                                 return None
                         if not isinstance(rc, dict):
                             return None
-                        items = rc.get("items", [])
+                        return [
+                            i for i in rc.get("items", [])
+                            if (i.get("label") or "").strip().lower()
+                            != _PRE_REVIEW_RED_LABEL
+                        ]
+
+                    def _pass_rate(a: dict) -> float | None:
+                        items = _reviewer_items(a)
                         if not items:
                             return None
                         return sum(1 for i in items if i.get("passed")) / len(items)
 
                     def _failing_labels(a: dict) -> set[str]:
-                        rc = a.get("review_checklist")
-                        if isinstance(rc, str):
-                            try:
-                                rc = json.loads(rc)
-                            except (ValueError, TypeError):
-                                return set()
-                        if not isinstance(rc, dict):
+                        items = _reviewer_items(a)
+                        if items is None:
                             return set()
                         labels = set()
-                        for i in rc.get("items", []):
+                        for i in items:
                             if i.get("passed"):
                                 continue
                             label = (i.get("label") or "").strip().lower()
@@ -7127,8 +7166,11 @@ class Orchestrator:
                         # WHAT was red — `text`/`blocks`/`artifact_path` were
                         # already computed above (this IS the same
                         # `test_result`) by `_red_test_detail`; reused here
-                        # rather than recomputed so the artifact is written
-                        # exactly once per attempt.
+                        # rather than recomputed. (When `_run_review`'s
+                        # pre-review block already rendered this same cached
+                        # result it wrote its own copy of the artifact; that
+                        # duplicate write is a filed follow-up, not handled
+                        # here.)
                         note = (
                             "tests failed, but every failing test already fails "
                             "on the base tree — pre-existing, not introduced by "
@@ -13660,7 +13702,95 @@ class Orchestrator:
         # Same change-scoped resolution as TESTING, so the cache reuse holds.
         # (held_result was computed above, before the deterministic gate.)
         test_cmd, test_cwd = await self._resolve_test_target(repo)
-        test_result, _ = await self._run_tests_once(repo, test_cmd, cwd=test_cwd)
+        test_result, test_was_cached = await self._run_tests_once(repo, test_cmd, cwd=test_cwd)
+
+        # Fails-before-tests: a red run discovered HERE, before the reviewer's
+        # verdict, must reach the coder even when the review below FAILS for
+        # an unrelated reason. `_run_attempt`'s FAIL branch returns
+        # immediately on a review FAIL, before the post-review TESTING step
+        # (previously the ONLY place a red run ever became a `tests` event /
+        # `test_results` row) ever runs — so a red pre-review run used to
+        # surface only if a later round happened to PASS. Emitting it here,
+        # unconditional of the verdict below, means it fires on BOTH outcomes.
+        # Reuses `_red_test_detail` — the one seam every red-run call site
+        # uses — so this event/artifact is shaped identically to TESTING's.
+        #
+        # This block never classifies the red run and never forces
+        # `decision.passed`. The only thing it adds to a decision is the
+        # `_PRE_REVIEW_RED_LABEL` row from `_pre_review_red_checklist_item`
+        # below, and only on a decision that already FAILED for another
+        # reason: there it is a blocking item like any other (so it is
+        # persisted by `_record_review_feedback` and rendered in the next
+        # attempt's prompt), while the D6 stagnation detector drops the row
+        # before both its pass-rate and its recurring-label checks
+        # (`_reviewer_items`) because a red test the coder never touched
+        # recurs on every round. An earlier revision tried to mirror
+        # TESTING's own ownership/prerequisite/base-diff classification here
+        # (`_pre_review_red_is_blocking`) and force the verdict False
+        # whenever it said "blocking" — but that classifier never called
+        # `_flaky_on_rerun`, the tiebreaker TESTING's real plain-red path
+        # uses, so a genuinely flaky, non-owned, base-green test billed the
+        # coder here instead of being excused, and an `env_setup` project
+        # (where `_newly_failing_vs_base` fail-closes to `None`, and
+        # `None != []` is True) force-failed EVERY red run with no re-run
+        # evidence at all. Running TESTING's full classification (base-tree
+        # worktree, bounded re-run and all) a second time here would only
+        # reintroduce that drift under a different name. The post-review
+        # TESTING step (unchanged) is the sole place a red run is classified
+        # and billed/excused — this block only makes sure the coder SEES the
+        # run and its ids even when review fails for a different reason first.
+        pre_review_red = False
+        pre_review_failing_ids: list[str] = []
+        pre_review_ids_dropped = 0
+        if test_result.ran and not test_result.ok:
+            pre_review_red = True
+            text, blocks, blocks_dropped, artifact_path = self._red_test_detail(
+                task, [test_result],
+                attempt_n=getattr(self, "_active_attempt_number", None))
+            failing_tests = getattr(test_result, "failing_tests", []) or []
+            pre_review_failing_ids, pre_review_ids_dropped = _bound_failing_test_ids(
+                failing_tests)
+            self.emit(
+                "tests",
+                test_result.summary
+                + (" (reused a prior run)" if test_was_cached else "")
+                + " — pre-review run, before the reviewer's verdict"
+                + (f"\n{text}" if text else ""),
+                ok=False, cached=test_was_cached, failing_tests=failing_tests,
+                ran=test_result.ran, tests_log=artifact_path,
+            )
+            await self.store.update_attempt(attempt_id, test_results={
+                "ran": test_result.ran, "ok": test_result.ok,
+                "passed": test_result.passed, "failed": test_result.failed,
+                "errors": test_result.errors, "tamper_flag": False,
+                "failing_tests": failing_tests,
+                "failure_blocks": blocks,
+                "failure_blocks_dropped": blocks_dropped,
+            })
+
+        def _pre_review_red_checklist_item() -> ChecklistItem | None:
+            # Shared by every `_run_review` exit that returns a `ReviewDecision`
+            # after the pre-review block above ran — not just the LLM-reviewer
+            # path below. Only ever ATTACHED to a round that already fails for
+            # another reason (see call sites — none of them attach this to a
+            # PASSing decision), so the failing test ids ride along in that
+            # round's `_record_review_feedback` row instead of silently
+            # dropping out; it never causes a round to fail on its own.
+            if not pre_review_red:
+                return None
+            if pre_review_failing_ids:
+                ids_text = ", ".join(pre_review_failing_ids)
+                if pre_review_ids_dropped:
+                    ids_text += f" (+{pre_review_ids_dropped} more)"
+            else:
+                ids_text = "(no individual test ids parsed — see the tests event/artifact)"
+            return ChecklistItem(
+                _PRE_REVIEW_RED_LABEL,
+                False,
+                "the harness's own pre-review test run was RED — "
+                f"failing: {ids_text}",
+                severity="critical",
+            )
 
         # Build profile + rules context for the staff-level reviewer.
         prof = getattr(self, "_active_profile", None)
@@ -13823,13 +13953,18 @@ class Orchestrator:
         genuinely_failed = [r for r in failed_verifiers if not r.unavailable]
         unavailable_verifiers = [r for r in failed_verifiers if r.unavailable]
         if genuinely_failed:
+            _pre_review_item = _pre_review_red_checklist_item()
             decision = ReviewDecision(
                 passed=False,
                 # Both kinds stay in the checklist: the unavailable rows render
                 # (via `to_checklist_item`'s "low" severity) as advisory, so
                 # they remain visible on the PR rather than disappearing, while
-                # `genuinely_failed` is what actually fails the round.
-                checklist=[verifier_to_checklist_item(r) for r in failed_verifiers],
+                # `genuinely_failed` is what actually fails the round. The
+                # pre-review-red item (if any) rides along too, so a verifier
+                # failure the SAME round a red run happened does not silently
+                # drop the failing test ids from this round's feedback.
+                checklist=[verifier_to_checklist_item(r) for r in failed_verifiers]
+                + ([_pre_review_item] if _pre_review_item is not None else []),
                 verifiers=verifier_dicts,
                 tokens_used=verifier_tok["total"],
                 cache_read_tokens=verifier_tok["cache_read"],
@@ -13887,6 +14022,8 @@ class Orchestrator:
                 draft_pr_absent=draft_pr_absent,
                 reviewed_sha=reviewed_sha,
                 reviewed_branch=reviewed_branch,
+                failing_test_ids=pre_review_failing_ids,
+                failing_test_ids_dropped=pre_review_ids_dropped,
             )
         except ReviewerUnavailable:
             # The gate could not run. Escalate (the caller's handler) rather than
@@ -13896,9 +14033,11 @@ class Orchestrator:
         except Exception as exc:  # noqa: BLE001
             # Reviewer crash → fail closed (never pass-through on error).
             self._emit_review("review_error", str(exc))
+            _pre_review_item = _pre_review_red_checklist_item()
             return ReviewDecision(
                 passed=False,
-                checklist=[ChecklistItem("reviewer run", False, f"reviewer crashed: {exc}")],
+                checklist=[ChecklistItem("reviewer run", False, f"reviewer crashed: {exc}")]
+                + ([_pre_review_item] if _pre_review_item is not None else []),
                 verifiers=verifier_dicts,
                 tokens_used=verifier_tok["total"],
                 cache_read_tokens=verifier_tok["cache_read"],
@@ -13921,6 +14060,28 @@ class Orchestrator:
         )
         if verifier_output_seen:
             decision.output_tokens = (decision.output_tokens or 0) + verifier_tok["output"]
+
+        # A red pre-review run does NOT force `decision.passed` here. It used
+        # to — but forcing the verdict at review time meant `_run_attempt`'s
+        # FAIL branch returned before the post-review TESTING step (the ONLY
+        # place a red run is actually classified via ownership, the
+        # build-prerequisite signature, the base-tree diff, AND the flaky
+        # tiebreaker `_flaky_on_rerun`) ever ran — so a genuinely flaky,
+        # non-owned, base-green test billed the coder here instead of being
+        # excused there, and an `env_setup` project force-failed every red
+        # run with no re-run evidence. A PASS verdict over a red run still
+        # cannot silently succeed: TESTING (unchanged, reached normally when
+        # `decision.passed` stays True here) is the sole deterministic gate
+        # that bills or excuses it, exactly as it already does for every
+        # OTHER red run in the pipeline. When the round is ALREADY failing
+        # for a different reason (checklist below only ever attaches to a
+        # failing `decision` — see the docstring above), the failing ids
+        # still ride along into `_record_review_feedback` so the coder sees
+        # them even though review, not TESTING, is what failed this round.
+        if not decision.passed:
+            pre_review_item = _pre_review_red_checklist_item()
+            if pre_review_item is not None:
+                decision.checklist = list(decision.checklist) + [pre_review_item]
 
         verdict = "PASS" if decision.passed else "FAIL"
         # The head the reviewer was told it was reviewing — resolved before the
