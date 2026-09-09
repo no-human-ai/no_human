@@ -928,6 +928,15 @@ def test_wrong_shaped_manifest_is_named_not_called_missing(tmp_path):
 @pytest.mark.parametrize("content", [
     b"\xff\xfe not utf8", b"{not json", b"[]", b'{"repro_tests": []}',
     b'{"tests": []}', b'{"tests": [" "]}', b'{"tests": ["tests/t.py::t"]}',
+    # ad32398b: per-test dicts under the correct key, and other odd shapes.
+    b'{"tests": [{"id": "tests/t.py::t"}]}',
+    b'{"tests": [{"id": "tests/t.py::t", "why": "explains it"}]}',
+    b'{"tests": [{"test": "tests/t.py::t"}]}',
+    b'{"tests": [{"id": 5}]}',
+    b'{"tests": [7]}',
+    b'{"tests": [null]}',
+    b'{"tests": [["tests/t.py::t"]]}',
+    b'{"tests": ["a.py::t", {"id": "b.py::t"}]}',
 ])
 def test_manifest_problem_and_read_manifest_agree(tmp_path, content):
     """Two readers of one file: `read_manifest` (the gate's input) and
@@ -940,3 +949,79 @@ def test_manifest_problem_and_read_manifest_agree(tmp_path, content):
     tests = read_manifest(tmp_path)
     problem = manifest_problem(tmp_path)
     assert (tests == []) == (problem is not None)
+    if problem is None:
+        raw = content.decode(errors="replace")
+        for test_id in tests:
+            assert test_id in raw, (test_id, raw)
+
+
+def test_object_entries_with_id_are_read_as_node_ids(repo):
+    """AC1: task ad32398b's real shape — dicts under the correct "tests" key,
+    each carrying an "id" and a "why". Before the fix this mangled into a repr
+    that `_test_files` split into a fake path, and the gate failed the real
+    bugfix claiming a deleted test. After the fix it must pass exactly like
+    the plain string-list manifest does."""
+    (repo / MANIFEST).write_text(json.dumps({
+        "tests": [{"id": "test_repro.py::test_add_fixed",
+                   "why": "proves add() no longer subtracts"}],
+    }))
+    r = run_repro_gate(repo, "HEAD")
+    assert r.verdict == "pass", r.reasons
+    assert not any("missing from the attempt tree" in reason for reason in r.reasons)
+    assert r.tests == ["test_repro.py::test_add_fixed"]
+
+
+def test_read_manifest_extracts_id_from_object_entries(tmp_path):
+    (tmp_path / ".no_human").mkdir()
+    (tmp_path / MANIFEST).write_text(json.dumps({
+        "tests": [{"id": "tests/t.py::t", "why": "because"}],
+    }))
+    assert read_manifest(tmp_path) == ["tests/t.py::t"]
+
+
+@pytest.mark.parametrize("entry", [
+    "tests/t.py::t",
+    {"id": "tests/t.py::t"},
+    {"id": "tests/t.py::t", "why": "x"},
+    {"test": "tests/t.py::t"},   # no "id" key
+    {"id": 5},                   # "id" not a string
+    7,
+    None,
+    ["tests/t.py::t"],           # nested list
+    True,
+])
+def test_every_entry_shape_yields_a_real_path_or_a_named_refusal(tmp_path, entry):
+    """AC2: no entry shape may be coerced with `str()` into a path that never
+    appeared in the manifest. Either the entry yields a real id straight out
+    of the input, or the whole manifest is refused by a message naming the
+    offending shape (never silently mangled into a bogus "missing" path —
+    this is the exact assertion that fails on `{'id': 'tests/...` today)."""
+    from no_human.testing.repro_gate import manifest_problem, SCHEMA_HINT
+    (tmp_path / ".no_human").mkdir()
+    raw = json.dumps({"tests": [entry]})
+    (tmp_path / MANIFEST).write_text(raw)
+    tests = read_manifest(tmp_path)
+    problem = manifest_problem(tmp_path)
+    for test_id in tests:
+        assert test_id in raw, (test_id, raw)
+    for f in repro_gate._test_files(tests):
+        assert f in raw, (f, raw)
+    if tests == []:
+        assert problem, "an unusable manifest must be named, not silently empty"
+        assert SCHEMA_HINT in problem
+    else:
+        assert problem is None
+
+
+def test_mixed_string_and_object_entries_are_refused_by_name(tmp_path):
+    """AC2b: per intake, a single manifest must not mix the two entry forms —
+    refuse it by name (which forms, at which indices) rather than silently
+    accepting one and dropping/mangling the other."""
+    from no_human.testing.repro_gate import manifest_problem
+    (tmp_path / ".no_human").mkdir()
+    (tmp_path / MANIFEST).write_text(json.dumps({
+        "tests": ["a.py::t", {"id": "b.py::t"}],
+    }))
+    assert read_manifest(tmp_path) == []
+    problem = manifest_problem(tmp_path)
+    assert problem and "string" in problem and "object" in problem

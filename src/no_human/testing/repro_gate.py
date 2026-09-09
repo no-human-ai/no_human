@@ -2,9 +2,10 @@
 
 The coder records the tests that demonstrate its change in
 ``.no_human/repro_tests.json`` (``{"tests": ["tests/test_x.py::test_y", …]}``
-— pytest node ids; the file is never committed, ``.no_human/**`` is excluded
-from every commit). The gate then proves both directions before a single
-reviewer token is spent:
+— pytest node ids, or ``{"tests": [{"id": "tests/test_x.py::test_y", "why":
+"..."}, …]}`` when the coder wants to record why each test is the repro; the
+file is never committed, ``.no_human/**`` is excluded from every commit). The
+gate then proves both directions before a single reviewer token is spent:
 
   fails-before: the listed tests, copied into a worktree at the merge base,
                 must FAIL there — otherwise they don't demonstrate the change
@@ -69,7 +70,107 @@ class ReproResult:
                 "reasons": self.reasons, "resume_shape": self.resume_shape}
 
 
-SCHEMA_HINT = '{"tests": ["tests/test_x.py::test_y", ...]}'
+SCHEMA_HINT = (
+    '{"tests": ["tests/test_x.py::test_y", ...]}  (or [{"id": '
+    '"tests/test_x.py::test_y", "why": "..."}, ...])'
+)
+
+
+# --------------------------------------------------------------------------
+# Validation — `_load` (file -> JSON) + `_parse` (JSON -> ids) are the ONE
+# shared path for both `manifest_problem` and `read_manifest`, so the two
+# cannot drift into disagreeing about what is usable (mirrors the doctrine in
+# ui_evidence.py). Neither ever calls `str()` on an entry to manufacture a
+# path: task ad32398b wrote ``{"tests": [{"id": "...", "why": "..."}]}`` —
+# dicts under the *correct* key — and the old code's ``str(t).strip()`` turned
+# each dict into its Python repr, which ``_test_files`` then split on ``::``
+# into a mangled path that read as a deleted test file. The 2026-08-20 fix
+# (below) only caught per-test dicts under the *wrong* key; dicts under the
+# right key fell straight through the emptiness check into the coercion. An
+# unrecognised entry shape must be refused by name instead.
+# --------------------------------------------------------------------------
+
+
+def _load(repo_path: Path) -> tuple[object | None, str | None]:
+    """Read + JSON-decode the manifest file. Returns (data, problem).
+
+    Both None means the file is absent. `problem` set means data is None —
+    the file exists but could not be read or parsed.
+    """
+    p = repo_path / MANIFEST
+    if not p.is_file():
+        return None, None
+    try:
+        # errors="replace": a non-UTF-8 byte must read as a JSON error, never
+        # raise — this runs inside the PostToolUse hook, which had no failure
+        # mode before it (the tamper guard once died on a binary test file
+        # AFTER the coder was paid; same class).
+        data = json.loads(p.read_text(errors="replace"))
+    except OSError as exc:
+        return None, f"{MANIFEST} is present but unreadable ({exc.__class__.__name__})"
+    except json.JSONDecodeError as exc:
+        return None, f"{MANIFEST} is present but is not valid JSON ({exc.msg} at line {exc.lineno})"
+    return data, None
+
+
+def _entry_id(entry: object, i: int) -> tuple[str | None, str | None]:
+    """One `tests` list entry -> (id, problem). The ONLY place an entry may
+    become a string — never via `str()` on an unexpected shape, which would
+    manufacture a path the manifest never actually contained."""
+    if isinstance(entry, str):
+        s = entry.strip()
+        return (s, None) if s else (None, None)  # blank entry: dropped, as before
+    if isinstance(entry, dict):
+        value = entry.get("id")
+        if isinstance(value, str) and value.strip():
+            return value.strip(), None
+        keys = ", ".join(sorted(map(str, entry.keys()))) or "none"
+        return None, (
+            f'{MANIFEST} is present but tests[{i}] is an object without a usable '
+            f'"id" (keys found: {keys}) — expected {SCHEMA_HINT}'
+        )
+    return None, (
+        f"{MANIFEST} is present but tests[{i}] is {type(entry).__name__}, not a "
+        f'string or an {{"id": ...}} object — expected {SCHEMA_HINT}'
+    )
+
+
+def _parse(data: object) -> tuple[list[str] | None, str | None]:
+    """JSON document -> (ids, None) or (None, problem sentence)."""
+    if not isinstance(data, dict):
+        return None, (f"{MANIFEST} is present but its top level is "
+                       f"{type(data).__name__}, not an object — expected {SCHEMA_HINT}")
+    tests = data.get("tests")
+    if not isinstance(tests, list):
+        keys = ", ".join(sorted(map(str, data.keys()))) or "none"
+        return None, (f"{MANIFEST} is present but has no \"tests\" list (keys found: "
+                       f"{keys}) — expected {SCHEMA_HINT}")
+    ids: list[str] = []
+    forms: list[tuple[int, str]] = []  # (index, "string" | "object"), accepted entries only
+    for i, entry in enumerate(tests):
+        entry_id, problem = _entry_id(entry, i)
+        if problem is not None:
+            return None, problem
+        if entry_id is None:
+            continue
+        ids.append(entry_id)
+        forms.append((i, "object" if isinstance(entry, dict) else "string"))
+    kinds = {form for _, form in forms}
+    if len(kinds) > 1:
+        by_kind: dict[str, list[int]] = {}
+        for i, form in forms:
+            by_kind.setdefault(form, []).append(i)
+        detail = "; ".join(
+            f"{form} entries at index {', '.join(str(i) for i in idxs)}"
+            for form, idxs in sorted(by_kind.items())
+        )
+        return None, (
+            f'{MANIFEST} is present but its "tests" list mixes forms ({detail}) '
+            f"— expected a single, consistent form; {SCHEMA_HINT}"
+        )
+    if not ids:
+        return None, f"{MANIFEST} is present but its \"tests\" list is empty — expected {SCHEMA_HINT}"
+    return ids, None
 
 
 def manifest_problem(repo_path: Path) -> str | None:
@@ -83,46 +184,31 @@ def manifest_problem(repo_path: Path) -> str | None:
     named a non-existent file instead of a schema error, and the coder redid
     99 turns from base. An absent file is still ``None`` here (that is the
     honest "waived"); everything else names the real defect and the schema.
+
+    Task ad32398b (this ticket) wrote per-test dicts under the *correct*
+    ``tests`` key — a shape 89db42ea's fix did not cover, since it only
+    checked the top-level key. That shape must ALSO be named here (see
+    :func:`_entry_id`), not silently coerced into a bogus path by whatever
+    reads the manifest next.
     """
-    p = repo_path / MANIFEST
-    if not p.is_file():
+    data, problem = _load(repo_path)
+    if problem is not None:
+        return problem
+    if data is None:
         return None
-    try:
-        # errors="replace": a non-UTF-8 byte must read as a JSON error, never
-        # raise — this runs inside the PostToolUse hook, which had no failure
-        # mode before it (the tamper guard once died on a binary test file
-        # AFTER the coder was paid; same class).
-        data = json.loads(p.read_text(errors="replace"))
-    except OSError as exc:
-        return f"{MANIFEST} is present but unreadable ({exc.__class__.__name__})"
-    except json.JSONDecodeError as exc:
-        return f"{MANIFEST} is present but is not valid JSON ({exc.msg} at line {exc.lineno})"
-    if not isinstance(data, dict):
-        return (f"{MANIFEST} is present but its top level is "
-                f"{type(data).__name__}, not an object — expected {SCHEMA_HINT}")
-    tests = data.get("tests")
-    if not isinstance(tests, list):
-        keys = ", ".join(sorted(map(str, data.keys()))) or "none"
-        return (f"{MANIFEST} is present but has no \"tests\" list (keys found: "
-                f"{keys}) — expected {SCHEMA_HINT}")
-    if not [str(t).strip() for t in tests if str(t).strip()]:
-        return f"{MANIFEST} is present but its \"tests\" list is empty — expected {SCHEMA_HINT}"
-    return None
+    _, problem = _parse(data)
+    return problem
 
 
 def read_manifest(repo_path: Path) -> list[str]:
     """The declared repro tests, or [] (no manifest / unreadable / empty)."""
-    p = repo_path / MANIFEST
-    if not p.is_file():
+    data, problem = _load(repo_path)
+    if problem is not None or data is None:
         return []
-    try:
-        data = json.loads(p.read_text(errors="replace"))
-    except (OSError, json.JSONDecodeError):
+    ids, problem = _parse(data)
+    if problem is not None:
         return []
-    tests = data.get("tests") if isinstance(data, dict) else None
-    if not isinstance(tests, list):
-        return []
-    return [str(t).strip() for t in tests if str(t).strip()]
+    return ids
 
 
 def task_manifest_path(task_id: str, *, home: Path | None = None) -> Path:
