@@ -94,6 +94,7 @@ from ..review.reviewer import (
     AdversarialReviewer,
     ReviewDecision,
     ReviewerUnavailable,
+    _carry_usage,
     findings_from_checklist,
 )
 from ..review.selfcheck import ChecklistItem
@@ -13951,26 +13952,13 @@ class Orchestrator:
                 failing_test_ids_dropped=pre_review_ids_dropped,
             )
         except ReviewerUnavailable as exc:
-            # The gate could not run. Escalate (the caller's handler) rather than
-            # returning a failing decision, whose checklist would be fed to the
-            # coder as a finding to fix and would spend one of its attempts.
-            # The verifiers still ran and spent tokens before the reviewer was
-            # even attempted — that spend must not be lost just because the
-            # reviewer is ALSO unavailable this round, so it is added onto
-            # (not overwritten over) whatever usage the exception already
-            # carries.
-            exc.tokens_used = (getattr(exc, "tokens_used", 0) or 0) + verifier_tok["total"]
-            exc.cache_read_tokens = (
-                (getattr(exc, "cache_read_tokens", 0) or 0) + verifier_tok["cache_read"]
-            )
-            exc.cache_creation_tokens = (
-                (getattr(exc, "cache_creation_tokens", 0) or 0)
-                + verifier_tok["cache_creation"]
-            )
-            if verifier_output_seen:
-                exc.output_tokens = (
-                    getattr(exc, "output_tokens", None) or 0
-                ) + verifier_tok["output"]
+            # Escalate, but fold the verifiers' already-spent tokens onto exc
+            # first — spent even though the reviewer is ALSO unavailable.
+            from types import SimpleNamespace
+            _carry_usage(exc, [SimpleNamespace(
+                tokens_used=verifier_tok["total"], cache_read_tokens=verifier_tok["cache_read"],
+                cache_creation_tokens=verifier_tok["cache_creation"],
+                output_tokens=verifier_tok["output"] if verifier_output_seen else None)])
             raise
         except Exception as exc:  # noqa: BLE001
             # Reviewer crash → fail closed (never pass-through on error).
