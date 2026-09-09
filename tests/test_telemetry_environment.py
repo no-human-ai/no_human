@@ -69,6 +69,8 @@ _MIN_PROPS = {
     "task_failed": {"category": "timeout"},
     "approve_clicked": {},
     "feature_used": {"name": "bench"},
+    "task_ended": {"outcome": "escalated", "attempts": 1, "duration_bucket": "<10m"},
+    "tasks_orphaned": {"count_bucket": "0"},
 }
 
 

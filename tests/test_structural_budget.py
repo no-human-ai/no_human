@@ -866,7 +866,12 @@ FROZEN_FILE_LINES = {
     # 23285 -> 23403 (+118): 99fa5ba5 (bounded failing_tests and joins at
     # every write site; the carried dropped count reaches the coder prompt)
     # landed on top of cf6f6c19. Measured on this tree by the scanner's own metric.
-    "core/orchestrator.py": 23403,
+    # 23403 -> 23442 (+39): every task end state now emits a terminal
+    # telemetry event, not only done/failed — `_TASK_END_KINDS`,
+    # `_task_end_outcome`, and the new `task_ended` branch appended after
+    # the existing `failed` branch in `_telemetry_hook`. Measured on this
+    # tree by the scanner's own metric.
+    "core/orchestrator.py": 23442,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.
@@ -1151,7 +1156,12 @@ FROZEN_FILE_LINES = {
     # cycle in the same process never inherits them (task 302012e3) — one
     # comment block and two hasattr/del pairs, nothing else in this file
     # changed. Measured on this tree with the scanner below.
-    "api/app.py": 6148,
+    # 6148 -> 6171 (+23): `_record_tasks_orphaned` — one `tasks_orphaned`
+    # telemetry event per server start, bucketing mid-run tasks whose
+    # attempt heartbeat is dead (an app/server closed mid-run). Called once
+    # from `lifespan`, after `app_started`. Measured on this tree with the
+    # scanner below.
+    "api/app.py": 6171,
     # +51: W5 active-time phase writer (phase instrumentation).
     # +84: `list_escalations`/`list_review_fails`/`list_tamper_trips` — the
     # three new failure-signal sources the recurring learning harvest mines.
@@ -1348,7 +1358,11 @@ FROZEN_FILE_LINES = {
     # `health_snapshot`'s `worker_deaths_total`), plus `exit_code`/
     # `termination_reason`/capped `stderr_excerpt` on the durable
     # `task_crashed` event. Measured on this tree with the scanner below.
-    "core/scheduler.py": 3037,
+    # 3037 -> 3083 (+46): `MID_RUN_STATUSES` + the read-only
+    # `count_dead_attempt_tasks` (mid-run tasks with an open attempt and a
+    # dead heartbeat, for the `tasks_orphaned` startup event). Mutates
+    # nothing. Measured on this tree with the scanner below.
+    "core/scheduler.py": 3083,
 }
 
 

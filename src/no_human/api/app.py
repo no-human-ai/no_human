@@ -117,12 +117,16 @@ async def _record_tasks_orphaned(store, config) -> None:
     mid-run and never came back to close them out; see docs/TELEMETRY.md).
     Always emitted, including bucket "0": a zero is a meaningful metric
     state (it says the previous shutdown was clean). Read-only and
-    fail-open: this must never block boot."""
-    from ..core.scheduler import count_dead_attempt_tasks
-    from .. import telemetry
-    dead = await count_dead_attempt_tasks(store)
-    telemetry.record("tasks_orphaned", config=config.data,
-                      count_bucket=telemetry.orphan_bucket(dead))
+    fail-open (own try/except so this can never block boot or suppress
+    the `app_started` record in `lifespan`)."""
+    try:
+        from ..core.scheduler import count_dead_attempt_tasks
+        from .. import telemetry
+        dead = await count_dead_attempt_tasks(store)
+        telemetry.record("tasks_orphaned", config=config.data,
+                          count_bucket=telemetry.orphan_bucket(dead))
+    except Exception:
+        pass
 
 
 @asynccontextmanager
@@ -197,17 +201,11 @@ async def lifespan(app: FastAPI):
         _telemetry.record("app_started", config=config.data)
     except Exception:
         pass
-    # `tasks_orphaned`: count mid-run tasks orphaned by the app/server having
-    # been closed mid-run (docs/TELEMETRY.md) — the terminal-event case that
-    # cannot fire at the moment it happens. Own try/except so neither this
-    # nor `app_started` above can suppress the other. Read-only, once per
+    # `tasks_orphaned`: see `_record_tasks_orphaned`'s docstring. Once per
     # server start, BEFORE the scheduler below runs any recovery sweep, so
     # the count reflects what was actually found dead rather than what the
     # sweep has already fixed up.
-    try:
-        await _record_tasks_orphaned(store, config)
-    except Exception:
-        pass
+    await _record_tasks_orphaned(store, config)
 
     # Always start the embedded worker — board up = worker up.
     # CLI may override max_workers/poll_interval via app.state._worker_opts.
