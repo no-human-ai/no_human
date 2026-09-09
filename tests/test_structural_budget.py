@@ -197,7 +197,13 @@ FROZEN_FUNCTION_LINES = {
     # `result.detail` (capped, whitespace-collapsed) in the event text and
     # `question`, and prefixes `step=` onto the stored `evidence` -- step
     # alone was not root-causeable. Measured on this tree.
-    "blockers/wake.py:WakeWatcher._check_pr_conflict": 458,
+    # 458 -> 464 (+6): pushed-tip-guard rewrite-detection review, round-2
+    # MINOR-1 -- the coder instruction sent on a `pr_conflict` round used to
+    # say "Rebase onto origin/main", which the guard now unconditionally
+    # denies. Replaced with `base_merge_conflict_instruction`'s merge
+    # wording (a local import to dodge the prompt_blocks/blockers load
+    # cycle) so the instruction and the guard agree. Measured on this tree.
+    "blockers/wake.py:WakeWatcher._check_pr_conflict": 464,
     # 418 -> 424 (+6): D1.1 fix round — attempt-scoped verification-artifact
     # write wired into `_finalize` (review findings #1/#7). Measured on the
     # D1.1 squash-merge result.
@@ -1079,7 +1085,15 @@ FROZEN_FILE_LINES = {
     # review, MINOR-4) correcting the stale "agent/guard.py deliberately
     # permits that rebase" claim in `_finalize`'s retry rationale. No
     # behavior change. Measured on this tree.
-    "core/orchestrator.py": 23701,
+    # 23701 -> 23708 (+7): comment-only fix (pushed-tip-guard rewrite-detection
+    # review, round-2 MINOR-1's named twin) -- `_open_draft_pr_for_review`'s
+    # exception handler claimed a `pr_conflict` round rebases the pushed
+    # branch "BY CONSTRUCTION"; now that `blockers/wake.py` sends a merge
+    # instruction instead of a rebase one, that is no longer the expected
+    # path, so the comment (and the adjoining `pr_open_retry` emit text) was
+    # reframed as defense-in-depth for a branch that goes non-fast-forward
+    # some other way. No behavior change. Measured on this tree.
+    "core/orchestrator.py": 23708,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.
@@ -1565,7 +1579,11 @@ FROZEN_FILE_LINES = {
     # 2752 -> 2757 (+5): same cause as the FROZEN_FUNCTION_LINES entry above
     # -- the whole-file delta equals the function's delta. Measured on this
     # tree.
-    "blockers/wake.py": 2757,
+    # 2757 -> 2763 (+6): pushed-tip-guard rewrite-detection review, round-2
+    # MINOR-1 -- same cause as the `_check_pr_conflict` FROZEN_FUNCTION_LINES
+    # entry above; the whole-file delta equals the function's delta. Measured
+    # on this tree.
+    "blockers/wake.py": 2763,
     # +91: `_SCAN_WRAPPER_NAMES` + `_peel_scan_wrappers` — peels
     # timeout/xargs/nice/stdbuf (and siblings) for the scan-severity check
     # only, so a wrapped `find … -delete` in a denied compound classifies

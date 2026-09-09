@@ -21,13 +21,26 @@ can only ever re-send the same pinned commit under lease, never resurrect a
 branch this module refused to let get rewritten. The draft-PR retry in
 ``_open_draft_pr_for_review`` (~:13457) is different: it fires during a
 ``pr_conflict`` mechanical round, *before* any review verdict exists, so it
-does not sit behind ``_assert_delivery_sha`` at all. It is still safe from
-this module's perspective for an orthogonal reason, not that ordering: this
-module only ever evaluates a git invocation proposed as a coder Bash
-command, and once it denies the coder's own rebase/reset on a pushed
-branch, that round has no coder-run rewrite for the retry to have to force
-past — an already-pushed, ancestor-preserving tree fast-forwards, needing no
-lease.)
+does not sit behind ``_assert_delivery_sha`` at all, and its reachability
+has no provenance condition — ``_is_non_fast_forward(err) and await
+self._mechanical_round(task)`` fires regardless of *how* the branch became
+non-fast-forwardable.
+
+This module does NOT make that force-with-lease retry unreachable, and does
+not try to. It is a lexical guard over one channel — a git invocation
+proposed as a coder Bash command — not an enforced capability: ``git
+checkout --detach HEAD`` followed by ``git branch -f <branch> <target>``
+(two ordinary commands, neither of which this module denies), a shell
+script that runs ``git rebase`` from inside ``sh script.sh``, or a
+``subprocess`` call from inside ``python3 -c`` all rewrite the branch
+without ever presenting this module with a recognizable git argv. Denying
+every *lexical spelling* of the git forms listed above closes the direct
+path; it cannot close indirection through another interpreter. The retry's
+``force_with_lease`` therefore stays exactly as load-bearing as
+``GitRepo.push``'s own docstring says (~:1384-1396) and as the
+``_finalize`` retry's comment says (~:7628-7637): most rewrites should now
+be caught before they run, but the lease is real defense-in-depth for the
+ones that are not.)
 
 Detection is local-only: it reads the current branch's remote-tracking ref
 (``refs/remotes/<remote>/<branch>``), never ``ls-remote`` or any other
@@ -74,10 +87,18 @@ progress, and git detaches HEAD for that whole duration (see
 ``--continue`` denial in the exact situation it exists to catch. A detached
 HEAD OUTSIDE a rebase is different and deliberately left fail-open, even
 though it means e.g. ``git branch -f <task-branch> <target>`` run while
-detached evades this module entirely: outside a rebase there is no local
-record of which branch (if any) HEAD's detachment relates to — inventing
-one by guessing from remote-tracking refs risks a false deny with no
-narrow, testable trigger, and ``tests/test_pushed_tip_rewrite_guard.py``'s
+detached evades this module entirely. This is not because no local signal
+exists — ``git reflog HEAD -1``, ``@{-1}``, and ``git branch --points-at
+HEAD`` can each recover a candidate branch in the common case. It is a
+deliberate choice not to build a heuristic on top of them: each can name
+the wrong branch (a commit reachable from several branches), no branch at
+all (HEAD sits on a commit no branch currently points at — mid-cherry-pick,
+mid-bisect, or after a detached ``reset --hard`` off the branch tip), or a
+stale one (``@{-1}`` names whichever branch checkout last visited, not
+necessarily the one HEAD detached from). Guessing wrong here denies a
+legitimate detached-HEAD workflow with no narrow, testable trigger to catch
+the mistake — worse than the known, documented gap this leaves instead, and
+``tests/test_pushed_tip_rewrite_guard.py``'s
 ``test_a_detached_head_and_a_bare_reset_hard_fall_through`` pins exactly
 this as intended. Two things justify the rest staying open: this rule is an
 *addition* stacked on top of ``guard._git_worktree_denial``, which already
@@ -392,16 +413,30 @@ def _classify(sub: str, rest: list[str], config_values: list[str]) -> tuple | No
 
 
 def _is_existing_path(cwd: str | None, expr: str) -> bool:
-    """True when `expr` names an existing file or directory relative to
-    `cwd`. This is the ONE exception `target_denies` grants an unresolvable
-    operand: `git reset <pathspec>` (no `--`, operand not a valid rev) is
-    git's own fallback reading — it resets the index for that path and never
-    moves the branch. Any other unresolvable operand (a shell variable, a
-    command substitution the guard sees only as the un-expanded literal
-    text, a typo) is NOT given this pass — it denies instead."""
+    """True when `expr` names a path `target_denies` should treat as git's
+    own pathspec fallback rather than an unresolvable rev: `git reset
+    <pathspec>` (no `--`, operand not a valid rev) is git's own fallback
+    reading — it resets the index for that path and never moves the branch.
+    Any other unresolvable operand (a shell variable, a command substitution
+    the guard sees only as the un-expanded literal text, a typo) is NOT
+    given this pass — it denies instead.
+
+    A path git already knows about — tracked in the index or present in
+    HEAD — qualifies even when it no longer exists on disk: `rm del.txt &&
+    git reset del.txt` (un-staging a working-tree deletion) still only
+    touches the index, exactly like the on-disk case, so it gets the same
+    pass. Checked disk-first since that is the common case and needs no
+    subprocess; the git-index/HEAD checks below only run when disk misses,
+    and this function is only ever reached from Phase B (a pushed tip was
+    already found), so the extra subprocess calls here do not add any cost
+    to the Phase-A, no-pushed-branch fast path."""
     if not cwd or not expr:
         return False
-    return os.path.exists(os.path.join(cwd, expr))
+    if os.path.exists(os.path.join(cwd, expr)):
+        return True
+    if _git_ok(cwd, "ls-files", "--error-unmatch", "--", expr):
+        return True
+    return _git(cwd, "cat-file", "-e", f"HEAD:{expr}") is not None
 
 
 def _message(seg: str, remote: str, branch: str, tip: str) -> str:
@@ -464,8 +499,11 @@ def denial_reason(
             # for the incident this fixed). The one legitimate unresolvable
             # case is git's own pathspec fallback for a bare
             # `git reset <path>` — that never moves the branch — so allow
-            # only when the operand names something that actually exists in
-            # the worktree.
+            # only when the operand names a path git actually knows about:
+            # present on disk, tracked in the index, or present in HEAD
+            # (covers `git reset <path>` un-staging a working-tree deletion,
+            # which leaves the path missing from disk but still known to
+            # git — see `_is_existing_path`).
             return not _is_existing_path(cwd, expr)
         return not _git_ok(cwd, "merge-base", "--is-ancestor", tip, resolved)
 

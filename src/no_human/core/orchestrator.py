@@ -13514,17 +13514,24 @@ class Orchestrator:
             #
             # ONE NAMED EXCEPTION to "no retry loop of its own", scoped exactly as
             # narrowly as `_finalize`'s own `forced` decision (~5510) is scoped: a
-            # `pr_conflict` round (`self._mechanical_round`) rebases the already-
-            # pushed task branch BY CONSTRUCTION, so the plain push above is rejected
-            # non-fast-forward on EVERY such round, not transiently — degrading to "no
-            # draft" here would review that round with no PR, the exact state 0a /
-            # PR-021 exists to prevent (see the docstring). `_finalize`'s force
-            # decision is the single source of truth for when a force-push is safe;
-            # this reuses its module-level predicate verbatim (~195) rather than
-            # inventing a second heuristic — the only extra conjunct is the round
-            # marker, because this call retries *before* a review verdict exists for
-            # `_finalize`'s own predicate to read. `PushBehindRemote` is re-raised
-            # above and the predicate itself returns False for it (belt and braces).
+            # `pr_conflict` round used to rebase the already-pushed task branch BY
+            # CONSTRUCTION, making the plain push above non-fast-forward on EVERY
+            # such round. `agent/pushed_tip_guard` now DENIES that rebase and
+            # `blockers/wake.py`'s pr_conflict instruction sends a MERGE instead, so
+            # a compliant round's push should fast-forward and never reach this
+            # branch at all — this stays as defense-in-depth for a branch that
+            # reaches a non-fast-forward state some other way (a coder that
+            # disobeys the instruction, a git invocation outside the guarded Bash
+            # path, or a branch that entered this round before the guard existed),
+            # not as the expected path. Degrading to "no draft" here would still
+            # review that round with no PR, the exact state 0a / PR-021 exists to
+            # prevent (see the docstring). `_finalize`'s force decision is the
+            # single source of truth for when a force-push is safe; this reuses its
+            # module-level predicate verbatim (~195) rather than inventing a second
+            # heuristic — the only extra conjunct is the round marker, because this
+            # call retries *before* a review verdict exists for `_finalize`'s own
+            # predicate to read. `PushBehindRemote` is re-raised above and the
+            # predicate itself returns False for it (belt and braces).
             # Unlike `_finalize`'s transient-forge retry, this rejection is
             # deterministic, not a race, so no `asyncio.sleep` before it. A forced
             # retry that fails again falls through to the ordinary skip below, exactly
@@ -13535,8 +13542,8 @@ class Orchestrator:
                 self.emit(
                     "pr_open_retry",
                     f"draft PR open failed ({err}); retrying with --force-with-lease: "
-                    f"the branch was rebased in this pr_conflict round, so a "
-                    f"fast-forward is impossible")
+                    f"the branch is non-fast-forward in this pr_conflict round, so a "
+                    f"fast-forward push is impossible")
                 try:
                     pr = await asyncio.to_thread(
                         open_pr, repo, branch, title, body,

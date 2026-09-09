@@ -2330,11 +2330,17 @@ class WakeWatcher:
             )
             return "escalated_pr_conflict"
 
+        # Local import to avoid a module-load cycle: `core.prompt_blocks`
+        # imports `..blockers` (for `Blocker`/`question_hash`), and
+        # `blockers/__init__.py` imports this module — a top-level import
+        # here would race that cycle depending on which side loads first.
+        from ..core.prompt_blocks import base_merge_conflict_instruction
+
         message = (
             "The PR has a textual conflict with main (mergeable=CONFLICTING"
             + (f", mergeStateStatus={merge_state}" if merge_state else "")
-            + ").\nRebase onto origin/main, resolve conflicts, push — the PR "
-              "updates itself."
+            + ").\n"
+            + base_merge_conflict_instruction("origin/main")
             + f"\nConflicting paths: {conflict_desc}."
         )
         await self.store.append_context_list(task.id, "send_back_feedback", {
@@ -2344,7 +2350,7 @@ class WakeWatcher:
         task.context = await self.store.merge_context(task.id, {})
         await self._emit(
             task, "pr_conflict",
-            f"{task.id[:8]} PR CONFLICTING — rebase round "
+            f"{task.id[:8]} PR CONFLICTING — merge round "
             f"{rounds}/{self.max_pr_conflict_rounds} — "
             f"conflicting paths: {conflict_desc}",
             extra={"error": recovered_error} if recovered_error else None,

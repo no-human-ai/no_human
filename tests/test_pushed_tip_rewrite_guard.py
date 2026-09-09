@@ -226,6 +226,40 @@ def test_an_unresolvable_reset_target_is_denied_unless_it_is_an_existing_path(
     assert d.allow is True, d.reason
 
 
+def test_reset_of_a_deleted_but_git_known_path_stays_allowed(harness_repo):
+    """MINOR-3 from the ce2630ba review: `_is_existing_path` only checked
+    disk existence, so `git reset <path>` un-staging a working-tree deletion
+    of a tracked file was wrongly denied with a 'go merge instead' message —
+    even though it is exactly the same git's-own-pathspec-fallback case as
+    the disk-existing-path control above, and still never moves the branch.
+    Covers both a path still in the index (staged for deletion via a plain
+    `rm`, `add` not yet run) and a path present in HEAD but already removed
+    from the index (`git rm`)."""
+    # Case 1: `rm f.txt` (deletion not staged) — f.txt is gone from disk but
+    # still present, unmodified, in the index.
+    work, tip = harness_repo()
+    (work / "f.txt").unlink()
+    d = _ev("git reset f.txt", cwd=str(work))
+    assert d.allow is True, d.reason
+    assert _is_ancestor(work, tip, "HEAD")
+
+    # Case 2: `git rm f.txt` (deletion staged) — f.txt is gone from disk AND
+    # from the index, but still present in HEAD; `git reset f.txt` restores
+    # the index entry from HEAD, still never touching the branch.
+    work2, tip2 = harness_repo()
+    _git(work2, "rm", "-q", "f.txt")
+    d2 = _ev("git reset f.txt", cwd=str(work2))
+    assert d2.allow is True, d2.reason
+    assert _is_ancestor(work2, tip2, "HEAD")
+
+    # Control: a genuinely unknown path (never tracked, not on disk) is
+    # still denied — this fix must not turn into "allow any pathspec".
+    work3, tip3 = harness_repo()
+    d3 = _ev("git reset never-existed-anywhere.txt", cwd=str(work3))
+    assert d3.allow is False, d3.reason
+    assert tip3 in d3.reason
+
+
 def test_allowed_forms_keep_the_pushed_tip_an_ancestor_of_head(harness_repo):
     # git reset --hard HEAD: a no-op relative to the tip.
     work, tip = harness_repo()
