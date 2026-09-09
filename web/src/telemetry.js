@@ -12,7 +12,11 @@
 //    `$el_text` autocapture stamps on every click/change/submit — here that
 //    would be task titles, repo names, file paths, PR text — is bounded by
 //    the `ph-no-capture` blocks below, not by the channel being off. See the
-//    published event list in docs/configuration.md.
+//    published event list in docs/configuration.md. Dead-click capture stays
+//    on, but native form controls (select/input/textarea/option/associated
+//    label) are excluded from the ignorelist in ./deadClickFilter.js — a
+//    2026-09-09 PostHog triage found opening a dropdown or focusing a field
+//    was flagged as a dead click 26+4 out of ~40 times, burying real ones.
 //  - MASKED REPLAY: recordings capture the app's OWN interface only. All
 //    inputs are masked, and PostHog's own `.ph-no-capture` (whole-block) is
 //    hand-applied to every element that renders operator content: task
@@ -27,6 +31,7 @@
 //    device id. `person_profiles: "always"` keys one person per install id;
 //    still no human identity, no `identify()` call.
 import { fetchVersion } from "./api.js";
+import { DEAD_CLICK_IGNORE_SELECTORS } from "./deadClickFilter.js";
 
 let posthog = null; // the initialized client, or null when not consented
 let started = false;
@@ -73,7 +78,7 @@ export async function initTelemetry(cfg, { importer } = {}) {
       autocapture: true,
       capture_pageview: true,
       capture_pageleave: true,
-      capture_dead_clicks: true,
+      capture_dead_clicks: { css_selector_ignorelist: DEAD_CLICK_IGNORE_SELECTORS },
       capture_heatmaps: true,
       capture_performance: true,
       capture_exceptions: true,
