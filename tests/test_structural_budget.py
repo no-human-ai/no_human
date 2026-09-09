@@ -853,7 +853,15 @@ FROZEN_FILE_LINES = {
     # announce "200 failing tests" in the header while the expanded "…and N
     # more" line correctly named the true remainder — fixed to use `total`
     # in both places. Measured on this tree by the scanner's own metric.
-    "core/orchestrator.py": 23099,
+    # 23099 -> 23146 (+47): round-5 review MAJOR-2 — every TEXT join into an
+    # event message / `failure_reason` string (layered aggregate, owned-
+    # invocation-error, pre-existing excuse, flaky-excuse, owned-billing)
+    # now goes through the new shared `_bounded_join_ids` helper instead of
+    # a bare `", ".join(...)`, so a pathological run's rendered text stays
+    # under 16KB alongside the already-bounded persisted/emitted id lists.
+    # Net of the helper's own def+docstring plus each call-site's one-token
+    # wrap. Measured on this tree by the scanner's own metric.
+    "core/orchestrator.py": 23146,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.

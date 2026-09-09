@@ -15,6 +15,7 @@ every id: this file proves both halves of that split with a single real
 
 import contextlib
 import json as _json
+import shlex
 from unittest.mock import patch
 
 from no_human.core import evidence_ledger
@@ -26,6 +27,7 @@ from no_human.testing import runner
 from no_human.vcs import GitRepo
 
 from .test_e2e_orchestrator import FakeBackend, _config, bare_repo  # noqa: F401
+from .test_missing_prereq_env_classification import _not_ok_cannot_find_module  # noqa: F401
 
 #: Comfortably over the 200-id bound, and matches the ticket's dropped-count
 #: math (1000 - 200 = 800) so the assertions below read as the incident math,
@@ -73,6 +75,7 @@ _ASSERTION_OUTPUT = (
 
 async def _run_attempt_with_many_failures(
     store, tmp_path, bare_repo, ids, *, newly_failing=None, owned=None, capture=None,
+    invocation_error=False, on_base=None, flaky=None, output=None,
 ):
     """Drives the real `_run_attempt` (the established pattern — see
     `tests/test_missing_prereq_env_classification.py::
@@ -86,6 +89,17 @@ async def _run_attempt_with_many_failures(
     the FULL (unbounded) list still reaches attribution. `newly_failing=None`
     (the default) means "nothing is excused" — every id counts as newly
     failing, matching the plain-red path most other tests here exercise.
+
+    `invocation_error`/`on_base`/`flaky`/`output` extend the harness (round-5
+    review MAJOR-1) so every DISTINCT single-run classification branch in
+    `_run_attempt`/`_failed_tests_outcome` — not just the plain-red "else" —
+    can be driven with the same shared driver: `on_base` stubs
+    `_invocation_error_reproduces_on_base`'s return value (only consulted
+    when `invocation_error=True` and `owned` is empty), `flaky` stubs
+    `_flaky_on_rerun`'s return value (only consulted in the non-owned,
+    non-pre-existing plain-red path), and `output` overrides the TAP text
+    (and the `failure_blocks` derived from it) so the environment classifier
+    (`runner.prerequisite_reason_for`) can be made to fire or not.
     """
     cfg = _config(tmp_path)
     events = []
@@ -100,11 +114,13 @@ async def _run_attempt_with_many_failures(
     await store.set_status(task, TaskStatus.PLANNING)
     repo = GitRepo(bare_repo)
 
+    out = _ASSERTION_OUTPUT if output is None else output
     tr = runner.TestRunResult(
         ran=True, ok=False, passed=0, failed=len(ids), errors=0,
-        command="pytest -q", output=_ASSERTION_OUTPUT,
+        command="pytest -q", output=out,
         failing_tests=list(ids),
-        failure_blocks=runner._tap_failure_blocks(_ASSERTION_OUTPUT),
+        failure_blocks=runner._tap_failure_blocks(out),
+        invocation_error=invocation_error,
     )
 
     async def fake_run_tests_once(repo, cmd, cwd=None):
@@ -122,12 +138,24 @@ async def _run_attempt_with_many_failures(
             capture["newly_failing_arg"] = list(failing)
         return list(failing) if newly_failing is None else list(newly_failing)
 
+    async def fake_on_base(repo, test_cmd, base, cwd=None, env_dependent=False):
+        return on_base
+
+    async def fake_flaky_on_rerun(repo, test_cmd, attributed, cwd=None):
+        if capture is not None:
+            capture["flaky_attributed_arg"] = list(attributed)
+        return None if flaky is None else list(flaky)
+
     with contextlib.ExitStack() as stack:
         stack.enter_context(patch.object(orch, "_run_tests_once", fake_run_tests_once))
         stack.enter_context(
             patch.object(orch, "_owned_failing_tests", fake_owned_failing_tests))
         stack.enter_context(
             patch.object(orch, "_newly_failing_vs_base", fake_newly_failing_vs_base))
+        stack.enter_context(
+            patch.object(orch, "_invocation_error_reproduces_on_base", fake_on_base))
+        stack.enter_context(
+            patch.object(orch, "_flaky_on_rerun", fake_flaky_on_rerun))
         outcome = await orch._run_attempt(task, repo, 1, "main")
 
     attempts = await store.list_attempts(task.id)
@@ -234,3 +262,336 @@ async def test_the_pre_existing_excuse_path_is_bounded_too(bare_repo, tmp_path, 
     assert len(persisted["failing_tests"]) == _BOUND
     assert len(persisted["pre_existing_failures"]) == _BOUND
     assert persisted["failing_tests_dropped"] == _DROPPED
+
+
+# --------------------------------------------------------------------------- #
+# Round-5 review MAJOR-1: one dedicated red test per DISTINCT code path       #
+# class the classifier pipeline can take, each driving the REAL              #
+# `_run_attempt` with >200 failing ids. Mutation matrix (site -> test):       #
+#                                                                             #
+#   layered aggregate/`_layered_tests_failed_outcome` join (:6733,:12576)     #
+#     -> test_layered_red_run_is_bounded_end_to_end                          #
+#   `_environment_test_failure`'s `_bounded_test_results` wrap (:12137)       #
+#     -> test_environment_classifier_persists_bounded_ids                    #
+#   owned-invocation-error branch + join (:6864-6882)                        #
+#     -> test_owned_invocation_error_bills_bounded_ids                       #
+#   invocation-error not-on-base branch (:6894-6914)                         #
+#     -> test_invocation_error_not_on_base_persists_bounded_ids              #
+#   invocation-error on-base (environmental) branch (:6915-6938)             #
+#     -> test_invocation_error_on_base_persists_bounded_ids                  #
+#   flaky-excuse branch + kwargs (:12666-12692)                              #
+#     -> test_flaky_excuse_bounds_kwargs_and_column                          #
+#   owned-billing branch + kwargs (:12699-12767)                             #
+#     -> test_owned_billing_bounds_kwargs_and_column                         #
+#   pre-existing excuse join (:6974-6991) -> already covered above by        #
+#     test_the_pre_existing_excuse_path_is_bounded_too                       #
+#   plain-red main join (:6800-6811) -> already covered above by             #
+#     test_a_red_run_with_more_than_the_bound_persists_exactly_n_ids...       #
+# --------------------------------------------------------------------------- #
+
+
+async def test_layered_red_run_is_bounded_end_to_end(bare_repo, tmp_path, store):
+    """The LAYERED call site (`_layered_tests_failed_outcome`, driven via
+    `_resolve_test_plan` + `plan_runner.run_test_plan` — a wholly different
+    code path from the single-run `_run_tests_once` driver every other test
+    in this file uses) must bound `failing_tests` the same way: a >200-id
+    layer result must persist exactly 200 ids + `failing_tests_dropped`, and
+    the billing `detail` text (built via `_bounded_join_ids`) must stay
+    bounded too."""
+    from no_human.testing.plan_runner import LayerResult, PlanResult
+    import no_human.testing.plan_runner as plan_runner_mod
+    from no_human.testing.test_layers import Gating, TestLayer, TestPlan
+
+    ids = _make_ids(_TOTAL)
+    plan = TestPlan(layers=[
+        TestLayer(name="desktop", command="node --test", gating=Gating.BLOCKING),
+    ])
+    tr = runner.TestRunResult(
+        ran=True, ok=False, passed=0, failed=len(ids),
+        errors=0, command="node --test", output=_ASSERTION_OUTPUT,
+        failing_tests=list(ids),
+        failure_blocks=runner._tap_failure_blocks(_ASSERTION_OUTPUT),
+    )
+    lr = LayerResult(layer_name="desktop", gating=Gating.BLOCKING, result=tr)
+
+    def fake_run_test_plan(test_plan, task_repo, **kwargs):
+        return PlanResult(layer_results=[lr])
+
+    async def fake_resolve_test_plan(task):
+        return plan
+
+    cfg = _config(tmp_path)
+    events = []
+    orch = Orchestrator(store, cfg.data, FakeBackend(_mutate), SlackNotifier(None),
+                        event_sink=events.append)
+    task = Task.new("layered bounded failing tests", repo_path=str(bare_repo))
+    await store.create_task(task)
+    await store.set_status(task, TaskStatus.CONTEXT)
+    await store.set_status(task, TaskStatus.PLANNING)
+    repo = GitRepo(bare_repo)
+
+    with patch.object(orch, "_resolve_test_plan", fake_resolve_test_plan), \
+         patch.object(plan_runner_mod, "run_test_plan", fake_run_test_plan):
+        outcome = await orch._run_attempt(task, repo, 1, "main")
+
+    assert outcome.status is TaskStatus.FAILED, outcome.detail
+    assert ids[0] in outcome.detail
+    assert ids[_BOUND] not in outcome.detail, "the detail text must be bounded too"
+    assert "… and 800 more" in outcome.detail
+
+    attempts = await store.list_attempts(task.id)
+    assert len(attempts) == 1
+    persisted = _persisted(attempts[-1])
+    assert persisted["failing_tests"] == ids[:_BOUND]
+    assert persisted["failing_tests_dropped"] == _DROPPED
+
+    tests_events = [e for e in events if e.get("kind") == "tests"]
+    assert tests_events
+    assert tests_events[-1]["failing_tests"] == ids[:_BOUND]
+    assert tests_events[-1]["failing_tests_dropped"] == _DROPPED
+
+
+async def test_environment_classifier_persists_bounded_ids(bare_repo, tmp_path, store):
+    """A red run whose failing content matches a build-prerequisite
+    signature (`runner.prerequisite_reason_for`) is escalated as an
+    environment error — a wholly different verdict/return path from every
+    other test here — but must still persist a BOUNDED `failing_tests` list
+    on a >200-id run: `_environment_test_failure` re-spreads the caller's
+    dict through `_bounded_test_results` (orchestrator.py:12137), and this
+    is the one test that actually drives that wrap with more than the bound."""
+    ids = _make_ids(_TOTAL)
+    outcome, attempts, _events = await _run_attempt_with_many_failures(
+        store, tmp_path, bare_repo, ids,
+        output=_not_ok_cannot_find_module(1),
+    )
+
+    assert outcome.detail.startswith("tests could not run:"), outcome.detail
+    assert outcome.off_ramp is True
+
+    assert len(attempts) == 1
+    row = attempts[0]
+    assert row["status"] == "failed"
+    assert row["infra_failure"] == 1
+    persisted = _persisted(row)
+    assert persisted["environment_error"] is True
+    assert persisted["failing_tests"] == ids[:_BOUND]
+    assert persisted["failing_tests_dropped"] == _DROPPED
+
+
+async def test_owned_invocation_error_bills_bounded_ids(bare_repo, tmp_path, store):
+    """An OWNED id that also matches an invocation-error pattern always
+    bills the attempt directly (orchestrator.py:6863-6885) — the simplest
+    branch to reach, no base-tree check consulted. With `owned` itself over
+    the bound, both the persisted column AND the `_bounded_join_ids(owned)`
+    text in `detail` must be bounded."""
+    ids = _make_ids(_TOTAL)
+    outcome, attempts, events = await _run_attempt_with_many_failures(
+        store, tmp_path, bare_repo, ids, owned=list(ids), invocation_error=True,
+    )
+
+    assert outcome.status is TaskStatus.FAILED, outcome.detail
+    assert "… and 800 more" in outcome.detail
+    assert ids[_BOUND] not in outcome.detail
+
+    assert len(attempts) == 1
+    persisted = _persisted(attempts[-1])
+    assert persisted["failing_tests"] == ids[:_BOUND]
+    assert persisted["failing_tests_dropped"] == _DROPPED
+    assert persisted["invocation_error"] is True
+
+    tests_events = [e for e in events if e.get("kind") == "tests"]
+    assert tests_events
+    assert tests_events[-1]["failing_tests"] == ids[:_BOUND]
+    assert tests_events[-1]["failing_tests_dropped"] == _DROPPED
+
+
+async def test_invocation_error_not_on_base_persists_bounded_ids(bare_repo, tmp_path, store):
+    """No owned ids, and the SAME invocation error does not reproduce on the
+    base tree — the change itself broke the test runner
+    (orchestrator.py:6890-6914). A distinct return path from the owned
+    branch above: it never consults ownership at all, only `on_base`."""
+    ids = _make_ids(_TOTAL)
+    outcome, attempts, _events = await _run_attempt_with_many_failures(
+        store, tmp_path, bare_repo, ids, owned=[], invocation_error=True, on_base=False,
+    )
+
+    assert outcome.status is TaskStatus.FAILED, outcome.detail
+    assert len(attempts) == 1
+    persisted = _persisted(attempts[-1])
+    assert persisted["failing_tests"] == ids[:_BOUND]
+    assert persisted["failing_tests_dropped"] == _DROPPED
+    assert persisted["reproduces_on_base"] is False
+
+
+async def test_invocation_error_on_base_persists_bounded_ids(bare_repo, tmp_path, store):
+    """No owned ids, and the invocation error DOES reproduce on the base
+    tree — "genuinely environmental", so this branch (orchestrator.py:
+    6915-6938) does NOT return early; it persists and falls through to
+    continue the attempt (same fall-through shape as the pre-existing-excuse
+    path above). The persisted row from THIS write must still be bounded
+    regardless of what the rest of the attempt goes on to do."""
+    ids = _make_ids(_TOTAL)
+    _outcome, attempts, events = await _run_attempt_with_many_failures(
+        store, tmp_path, bare_repo, ids, owned=[], invocation_error=True, on_base=True,
+    )
+
+    assert attempts, "the environmental write must have happened"
+    row = attempts[0]
+    persisted = _persisted(row)
+    assert persisted["failing_tests"] == ids[:_BOUND]
+    assert persisted["failing_tests_dropped"] == _DROPPED
+    assert persisted["reproduces_on_base"] is True
+    assert row["status"] != "failed", (
+        "genuinely-environmental invocation errors must not fail the attempt")
+
+    tests_events = [e for e in events if e.get("kind") == "tests"]
+    assert tests_events, "the environmental branch must still emit a tests event"
+
+
+async def test_flaky_excuse_bounds_kwargs_and_column(bare_repo, tmp_path, store):
+    """No owned ids; every attributed id goes green on an identical bounded
+    re-run (`_flaky_on_rerun` returns the full `attributed` list) — the
+    flaky-excuse branch of `_failed_tests_outcome` (orchestrator.py:
+    12659-12692), which returns `None` and falls through, same shape as the
+    pre-existing excuse. Both the `flaky_excused` event kwarg and the
+    persisted `test_results["flaky_excused"]` must be bounded, each with its
+    own `_dropped` count — distinct keys from `failing_tests_dropped`."""
+    ids = _make_ids(_TOTAL)
+    _outcome, attempts, events = await _run_attempt_with_many_failures(
+        store, tmp_path, bare_repo, ids, owned=[], newly_failing=list(ids), flaky=list(ids),
+    )
+
+    assert attempts
+    row = attempts[0]
+    assert row["status"] != "failed", "a fully-flaky-excused run must not fail the attempt"
+    persisted = _persisted(row)
+    assert persisted["failing_tests"] == ids[:_BOUND]
+    assert persisted["failing_tests_dropped"] == _DROPPED
+    assert persisted["flaky_excused"] == ids[:_BOUND]
+    assert persisted["flaky_excused_dropped"] == _DROPPED
+
+    tests_events = [e for e in events if e.get("kind") == "tests"]
+    assert tests_events
+    last = tests_events[-1]
+    assert last["flaky_excused"] == ids[:_BOUND]
+    assert last["flaky_excused_dropped"] == _DROPPED
+    assert last["failing_tests"] == ids[:_BOUND]
+    assert last["failing_tests_dropped"] == _DROPPED
+
+
+async def test_owned_billing_bounds_kwargs_and_column(bare_repo, tmp_path, store):
+    """Owned ids that are ALSO newly-failing vs base bill the attempt via
+    `_failed_tests_outcome`'s final `owned_attr` branch (orchestrator.py:
+    12706-12767) — a distinct return path from every other test here (it is
+    the one reached through `_attributed_ids`'s union-of-owned-and-newly-
+    failing branch, not the invocation-error owned shortcut). Both the
+    `owned_failures` event kwarg and the persisted column must be bounded
+    with their own `_dropped` count."""
+    ids = _make_ids(_TOTAL)
+    outcome, attempts, events = await _run_attempt_with_many_failures(
+        store, tmp_path, bare_repo, ids, owned=list(ids), newly_failing=list(ids),
+    )
+
+    assert outcome.status is TaskStatus.FAILED, outcome.detail
+    assert "… and 800 more" in outcome.detail
+    assert ids[_BOUND] not in outcome.detail
+
+    assert len(attempts) == 1
+    persisted = _persisted(attempts[-1])
+    assert persisted["failing_tests"] == ids[:_BOUND]
+    assert persisted["failing_tests_dropped"] == _DROPPED
+    assert persisted["owned_failures"] == ids[:_BOUND]
+    assert persisted["owned_failures_dropped"] == _DROPPED
+
+    tests_events = [e for e in events if e.get("kind") == "tests"]
+    assert tests_events
+    last = tests_events[-1]
+    assert last["owned_failures"] == ids[:_BOUND]
+    assert last["owned_failures_dropped"] == _DROPPED
+    assert last["failing_tests"] == ids[:_BOUND]
+    assert last["failing_tests_dropped"] == _DROPPED
+
+
+# --------------------------------------------------------------------------- #
+# Round-5 review MAJOR-2: TEXT joins (event message / `failure_reason`)      #
+# must stay byte-bounded on a PATHOLOGICAL run — not just the id LISTS.      #
+# Drives the REAL runner (a shell `test_cmd` that `cat`s a synthetic TAP)    #
+# through the REAL `_run_attempt`, on the plain owned-billing path, with     #
+# far more failing ids than the incident's 96,465 would ever need to prove  #
+# the point cheaply: 3,000 ids is already two orders of magnitude past the  #
+# 200 bound.                                                                 #
+# --------------------------------------------------------------------------- #
+
+
+def _pathological_owned_tap(n: int) -> str:
+    """`n` failing node tests, all named so ownership (file-level, node ids
+    have no AST) attributes every one of them to a single file this
+    attempt's own diff touches — `x.test.mjs`."""
+    lines = []
+    for i in range(1, n + 1):
+        lines.append(
+            f"not ok {i} - it fails variant {i}\n"
+            "  ---\n"
+            "  AssertionError: expected true to be false\n"
+            "  location: 'x.test.mjs:3:1'\n"
+            "  ---\n"
+        )
+    lines.append(f"1..{n}\n")
+    lines.append(f"# tests {n}\n")
+    lines.append("# pass 0\n")
+    lines.append(f"# fail {n}\n")
+    return "".join(lines)
+
+
+async def test_pathological_scale_event_text_and_failure_reason_stay_under_16kb(
+    bare_repo, tmp_path, store,
+):
+    n = 3000
+    tap_path = tmp_path / "pathological.tap"
+    tap_path.write_text(_pathological_owned_tap(n))
+    node_err_cmd = f"cat {shlex.quote(str(tap_path))}; exit 1"
+
+    from no_human.profile import ProjectProfile
+    prof = ProjectProfile(
+        repo_path=str(bare_repo), ecosystem="node",
+        test_cmd=node_err_cmd,
+        derived_from=["test"], proven={"test_cmd": True}, confirmed=True,
+    )
+    await store.upsert_profile(prof)
+
+    def _mutate_node_test(cwd):
+        (cwd / "x.test.mjs").write_text("// this attempt's own edit\n")
+
+    cfg = _config(tmp_path)
+    cfg.data["bounds"] = {"max_attempts": 1}
+    events = []
+    orch = Orchestrator(store, cfg.data, FakeBackend(_mutate_node_test), SlackNotifier(None),
+                        event_sink=events.append)
+    task = Task.new("pathological-scale node test", repo_path=str(bare_repo))
+    await store.create_task(task)
+
+    outcome = await orch.run_task(task)
+
+    # `max_attempts=1` means the single billed attempt above exhausts the
+    # bounds and `run_task` escalates a blocker whose evidence embeds that
+    # attempt's own (already-bounded) detail text — not a `FAILED` outcome
+    # itself, but the byte-bound claim is exactly as load-bearing here: the
+    # embedded "Last: attempt 1: ..." text must not blow past 16KB either.
+    assert outcome.status is TaskStatus.ESCALATED, outcome.detail
+    assert len(outcome.detail.encode("utf-8")) < 16_000, (
+        f"failure detail is {len(outcome.detail.encode('utf-8'))} bytes")
+
+    attempts = await store.list_attempts(task.id)
+    assert attempts
+    row = attempts[-1]
+    assert row["status"] == "failed"
+    reason = row["failure_reason"] or ""
+    assert len(reason.encode("utf-8")) < 16_000, (
+        f"persisted failure_reason is {len(reason.encode('utf-8'))} bytes")
+
+    tests_events = [e for e in events if e.get("kind") == "tests"]
+    assert tests_events
+    for ev in tests_events:
+        msg = ev.get("text") or ""
+        assert len(msg.encode("utf-8")) < 16_000, (
+            f"tests event text is {len(msg.encode('utf-8'))} bytes")

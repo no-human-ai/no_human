@@ -100,10 +100,13 @@ def _attempt_row(attempt_number, *, checklist=None, test_results=None,
     }
 
 
-def _tests_event(*, ok, failing_tests=None, flaky_excused=None):
+def _tests_event(*, ok, failing_tests=None, flaky_excused=None,
+                  failing_tests_dropped=None):
     ev = {"kind": "tests", "ok": ok, "failing_tests": failing_tests or []}
     if flaky_excused is not None:
         ev["flaky_excused"] = flaky_excused
+    if failing_tests_dropped is not None:
+        ev["failing_tests_dropped"] = failing_tests_dropped
     return ev
 
 
@@ -604,6 +607,91 @@ async def test_replays_2cc879d5_a_named_failing_test_id_crosses_the_reset():
     # (c) the exact same id round-trips byte-identical through the render.
     block = build_prior_attempt_evidence(t.context["prior_attempt_evidence"])
     assert named_id in block
+
+
+# --------------------------- failing_tests_bound MINOR-2: dropped count ---
+
+async def test_failing_tests_dropped_count_is_carried_from_the_tests_event():
+    """Round-5 review MINOR-2: the `tests` event this method reads is
+    already bounded to `_MAX_PERSISTED_FAILING_TESTS` ids and carries its
+    own `failing_tests_dropped` remainder (see `_bounded_failing_ids` /
+    `tests/test_failing_tests_bound.py`). Before this fix,
+    `_record_prior_attempt_evidence` silently dropped that remainder on the
+    floor — attempt N+1's prompt then presented 200 ids as if they were the
+    WHOLE failing set on a run that actually had thousands more, the exact
+    undercount MINOR-1 fixed on the web slideover card, here on the
+    evidence carried across the stuck-detection reset."""
+    kept = [f"tests/test_a.py::test_{i}" for i in range(3)]
+    emitted = []
+    store = _FakeStore(
+        attempts=[_attempt_row(1, checklist=None, test_results=None)],
+        events=[
+            {"kind": "attempt_start"},
+            _tests_event(ok=False, failing_tests=kept, failing_tests_dropped=800),
+        ],
+    )
+    orch = _orch_min(store)
+    orch._sink = emitted.append
+    t = Task.new("fix x", repo_path="/tmp/repo")
+    t.context = {}
+
+    await orch._record_prior_attempt_evidence(t, 1)
+
+    ev = t.context["prior_attempt_evidence"]
+    assert ev["failing_tests"] == kept
+    assert ev["failing_tests_dropped"] == 800
+
+    recorded = [e for e in emitted if e.get("kind") == "prior_evidence_recorded"]
+    assert recorded, emitted
+    assert recorded[-1]["failing_tests_dropped"] == 800
+    assert "800 more" in recorded[-1]["text"]
+
+
+async def test_no_dropped_key_when_the_tests_event_carries_no_remainder():
+    """A run that never hit the bound (no `failing_tests_dropped` on the
+    event) must not fabricate a `failing_tests_dropped: 0` key — mirrors
+    `_bounded_test_results`'s own "only when a drop actually happened"
+    contract, so every existing test asserting the exact dict shape on a
+    small run stays byte-identical."""
+    store = _FakeStore(
+        attempts=[_attempt_row(1, checklist=None, test_results=None)],
+        events=[
+            {"kind": "attempt_start"},
+            _tests_event(ok=False, failing_tests=["tests/test_a.py::test_x"]),
+        ],
+    )
+    orch = _orch_min(store)
+    t = Task.new("fix x", repo_path="/tmp/repo")
+    t.context = {}
+
+    await orch._record_prior_attempt_evidence(t, 1)
+
+    ev = t.context["prior_attempt_evidence"]
+    assert "failing_tests_dropped" not in ev
+
+
+async def test_failing_tests_dropped_count_survives_the_test_results_fallback():
+    """Same remainder, taken from the attempt row's persisted
+    `test_results['failing_tests_dropped']` fallback (no qualifying `tests`
+    event this attempt — e.g. events read yielded nothing) rather than from
+    a live event."""
+    kept = [f"tests/test_b.py::test_{i}" for i in range(5)]
+    store = _FakeStore(
+        attempts=[_attempt_row(
+            1, checklist=None,
+            test_results={"failing_tests": kept, "failing_tests_dropped": 450},
+        )],
+        events=[{"kind": "attempt_start"}],
+    )
+    orch = _orch_min(store)
+    t = Task.new("fix x", repo_path="/tmp/repo")
+    t.context = {}
+
+    await orch._record_prior_attempt_evidence(t, 1)
+
+    ev = t.context["prior_attempt_evidence"]
+    assert ev["failing_tests"] == kept
+    assert ev["failing_tests_dropped"] == 450
 
 
 async def test_flaky_excused_and_green_events_are_not_carried():

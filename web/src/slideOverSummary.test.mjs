@@ -942,6 +942,18 @@ test("an excused-failure pass (pre_existing_failures) renders excused wording wi
   assert.match(v.label, /tests\/test_flaky\.py::test_x/);
 });
 
+test("an excused-failure pass with a dropped remainder shows the TRUE total, not just the bounded 200", () => {
+  const v = testResultVerdict({
+    ran: true, ok: false, passed: 7637, failed: 1000, errors: 0, tamper_flag: false,
+    failing_tests: ["tests/test_flaky.py::test_x"],
+    pre_existing_failures: ["tests/test_flaky.py::test_x"],
+    pre_existing_failures_dropped: 800,
+  });
+  assert.equal(v.tone, "excused");
+  assert.match(v.label, /801 pre-existing failures/);
+  assert.match(v.label, /… and 800 more/);
+});
+
 test("a genuinely clean run still says clean", () => {
   const v = testResultVerdict({
     ran: true, ok: true, passed: 7638, failed: 0, errors: 0, tamper_flag: false,

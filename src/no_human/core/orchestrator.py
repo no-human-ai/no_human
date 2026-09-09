@@ -900,17 +900,18 @@ def _bounded_failing_ids(ids: "list[str] | None") -> "tuple[list[str], int]":
 def _bounded_test_results(test_results: dict) -> dict:
     """Copy of *test_results* whose id lists are bounded for PERSISTENCE (the
     `attempts.test_results` column, which the `tests` event and the evidence
-    ledger's `tests.md` both mirror verbatim).
+    ledger's `tests.md` both render from).
 
     `failing_tests` and, with the same bound, its sibling id lists in the
     same dict (`pre_existing_failures`, `owned_failures`, `flaky_excused`)
-    are truncated to the first `_MAX_PERSISTED_FAILING_TESTS`.
-    `failing_tests_dropped` is set to the true remainder only when
-    `failing_tests` actually got truncated — small runs stay byte-identical
-    to before this bound existed.
+    are each truncated to the first `_MAX_PERSISTED_FAILING_TESTS`, and each
+    gets its OWN `<key>_dropped` count when it actually got truncated (the
+    legacy `failing_tests_dropped` name is kept for `failing_tests` itself,
+    for backward compatibility with existing readers) — small runs stay
+    byte-identical to before this bound existed.
 
     Idempotent: re-wrapping an already-bounded dict truncates nothing
-    further and does not clobber an existing `failing_tests_dropped` —
+    further and does not clobber an existing `<key>_dropped` count —
     `_environment_test_failure` re-spreads a dict its caller already
     bounded, and that second wrap must be a no-op.
     """
@@ -922,10 +923,30 @@ def _bounded_test_results(test_results: dict) -> dict:
         out["failing_tests"] = kept
     for key in ("pre_existing_failures", "owned_failures", "flaky_excused"):
         if out.get(key):
-            out[key], _ = _bounded_failing_ids(out[key])
+            kept_sibling, dropped_sibling = _bounded_failing_ids(out[key])
+            out[key] = kept_sibling
+            if dropped_sibling:
+                out[f"{key}_dropped"] = dropped_sibling
     if dropped:
         out["failing_tests_dropped"] = dropped
     return out
+
+
+def _bounded_join_ids(ids: "list[str] | None", limit: int = _MAX_PERSISTED_FAILING_TESTS) -> str:
+    """Render an id list for a TEXT join (event message / `failure_reason`
+    string) bounded to *limit* ids, appending "… and K more" for the true
+    remainder instead of joining every id — the same 200-id bound applied to
+    persisted/emitted id LISTS, applied here to id PROSE, so a pathological
+    run's `failure_reason`/`tests` message text cannot itself grow to
+    MB-scale even though the underlying list it was built from is unbounded
+    in memory.
+    """
+    ids = list(ids or [])
+    if len(ids) <= limit:
+        return ", ".join(ids)
+    kept = ids[:limit]
+    dropped = len(ids) - limit
+    return ", ".join(kept) + f", … and {dropped} more"
 
 
 # INCIDENT (2026-08-20 16:54 UTC, personal2 profile): three reviewer sessions
@@ -6844,7 +6865,7 @@ class Orchestrator:
                             "tests failed: this change's own test(s) failed "
                             "and also matched an invocation-error pattern — "
                             "ownership always bills the attempt, the base "
-                            "tree is never consulted: " + ", ".join(owned)
+                            "tree is never consulted: " + _bounded_join_ids(owned)
                         )
                         stuck.record(test_result.output or detail)
                         _kept, _dropped = _bounded_failing_ids(failing_tests)
@@ -6953,7 +6974,7 @@ class Orchestrator:
                         note = (
                             "tests failed, but every failing test already fails "
                             "on the base tree — pre-existing, not introduced by "
-                            "this change: " + ", ".join(failing_tests)
+                            "this change: " + _bounded_join_ids(failing_tests)
                             + (f"\n{text}" if text else "")
                         )
                         _kept, _dropped = _bounded_failing_ids(failing_tests)
@@ -12552,7 +12573,7 @@ class Orchestrator:
         is_stuck = stuck.record(fail_output) if fail_output else False
         detail = f"tests failed: {plan_result.summary}"
         if failing_tests:
-            detail += " — " + ", ".join(failing_tests)
+            detail += " — " + _bounded_join_ids(failing_tests)
         if is_stuck:
             self.emit("stuck", "same failure signature repeated; resetting context")
         # The stuck note is the one-line triage summary — it must sit
@@ -12645,13 +12666,15 @@ class Orchestrator:
             note = (
                 "tests failed, then passed on an identical "
                 "bounded re-run — flaky on this tree, not "
-                "attributed to this change: " + ", ".join(flaky)
+                "attributed to this change: " + _bounded_join_ids(flaky)
             )
             _kept, _dropped = _bounded_failing_ids(failing_tests)
+            _flaky_kept, _flaky_dropped = _bounded_failing_ids(flaky)
             self.emit("tests", note, ok=True,
                       failing_tests=_kept,
-                      flaky_excused=flaky,
-                      **({"failing_tests_dropped": _dropped} if _dropped else {}))
+                      flaky_excused=_flaky_kept,
+                      **({"failing_tests_dropped": _dropped} if _dropped else {}),
+                      **({"flaky_excused_dropped": _flaky_dropped} if _flaky_dropped else {}))
             await self.store.update_attempt(
                 attempt_id,
                 test_results=_bounded_test_results({
@@ -12670,14 +12693,21 @@ class Orchestrator:
         is_stuck = stuck.record(test_result.output)
         detail = f"tests failed: {test_result.summary}"
         if attributed:
-            detail += " — " + ", ".join(attributed)
+            detail += " — " + _bounded_join_ids(attributed)
         if newly_failing:
             detail += " (newly failing vs the base tree)"
-        owned_attr = [t for t in attributed if t in set(owned)]
+        # `owned_set` is built ONCE here rather than inside the list
+        # comprehension's `if` clause — `set(owned)` there would be
+        # rebuilt from scratch on every element of `attributed`
+        # (O(n×m) at scale: a 30k-id attributed list against a
+        # multi-thousand-id owned list) since a comprehension's `if`
+        # expression is part of its per-iteration body, not hoisted.
+        owned_set = set(owned)
+        owned_attr = [t for t in attributed if t in owned_set]
         if owned_attr:
             detail += (
                 " — this change's own test(s): "
-                + ", ".join(owned_attr)
+                + _bounded_join_ids(owned_attr)
             )
         if is_stuck:
             self.emit("stuck", "same failure signature repeated; resetting context")
@@ -12707,15 +12737,17 @@ class Orchestrator:
             detail += "\n" + excerpt_block
         if owned_attr:
             _kept, _dropped = _bounded_failing_ids(failing_tests)
+            _owned_kept, _owned_dropped = _bounded_failing_ids(owned_attr)
             self.emit(
                 "tests",
                 "tests failed on test(s) this change added or "
                 "modified — not excusable as flaky or "
-                "pre-existing: " + ", ".join(owned_attr),
+                "pre-existing: " + _bounded_join_ids(owned_attr),
                 ok=False,
                 failing_tests=_kept,
-                owned_failures=owned_attr,
+                owned_failures=_owned_kept,
                 **({"failing_tests_dropped": _dropped} if _dropped else {}),
+                **({"owned_failures_dropped": _owned_dropped} if _owned_dropped else {}),
             )
             await self.store.update_attempt(
                 attempt_id,
@@ -18302,6 +18334,15 @@ class Orchestrator:
                 self._advisory(f"prior-attempt findings read failed: {exc}")
 
             failing: list[str] = []
+            # The true remainder BEHIND `failing` — every source `failing`
+            # is built from (the `tests` event, and the `test_results`
+            # fallback) is itself already bounded to `_MAX_PERSISTED_
+            # FAILING_TESTS` ids and carries its own `failing_tests_dropped`
+            # count; this method used to silently drop that count on the
+            # floor, so the next attempt's prompt presented 200 ids as if
+            # they were the WHOLE failing set on a run that actually had
+            # thousands more.
+            failing_dropped = 0
             try:
                 events = await self.store.list_events(task.id)
                 this_attempt: list[dict] = []
@@ -18323,6 +18364,8 @@ class Orchestrator:
                             continue
                         seen.add(tid)
                         failing.append(tid)
+                    failing_dropped = max(
+                        failing_dropped, int(ev.get("failing_tests_dropped") or 0))
             except Exception as exc:  # noqa: BLE001
                 self._advisory(f"prior-attempt test events read failed: {exc}")
             if not failing:
@@ -18334,6 +18377,7 @@ class Orchestrator:
                         tr = json.loads(tr) if tr else None
                     if isinstance(tr, dict):
                         failing = [str(t) for t in (tr.get("failing_tests") or [])]
+                        failing_dropped = int(tr.get("failing_tests_dropped") or 0)
                 except Exception as exc:  # noqa: BLE001
                     self._advisory(f"prior-attempt test_results fallback failed: {exc}")
 
@@ -18352,15 +18396,18 @@ class Orchestrator:
                     "source": source,
                     "findings": findings,
                     "failing_tests": failing,
+                    **({"failing_tests_dropped": failing_dropped} if failing_dropped else {}),
                 }
                 task.context = ctx
                 await self.store.update_task(task)
                 self.emit(
                     "prior_evidence_recorded",
                     f"attempt {attempt_n}: {len(findings)} blocking finding(s), "
-                    f"{len(failing)} failing test id(s) carried to the next attempt",
+                    f"{len(failing)} failing test id(s) carried to the next attempt"
+                    + (f" ({failing_dropped} more not carried)" if failing_dropped else ""),
                     findings=len(findings), failing_tests=len(failing),
                     attempt=attempt_n,
+                    **({"failing_tests_dropped": failing_dropped} if failing_dropped else {}),
                 )
             else:
                 # A clean attempt must never leave a PRIOR attempt's stale

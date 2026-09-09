@@ -572,11 +572,15 @@ export function testResultVerdict(testResults) {
     ? testResults.pre_existing_failures.filter(Boolean)
     : [];
   if (preExisting.length > 0) {
-    const n = preExisting.length;
+    const dropped = Number(testResults.pre_existing_failures_dropped) || 0;
+    const n = preExisting.length + dropped;
+    const shown = dropped > 0
+      ? `${preExisting.join(", ")}, … and ${dropped} more`
+      : preExisting.join(", ");
     return {
       tone: "excused",
       label: `passed — ${n} pre-existing failure${n === 1 ? "" : "s"} also fail `
-        + `on the base tree, excused: ${preExisting.join(", ")}`,
+        + `on the base tree, excused: ${shown}`,
     };
   }
   if (testResults.invocation_error && testResults.reproduces_on_base) {
