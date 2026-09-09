@@ -7712,12 +7712,16 @@ class Orchestrator:
             #
             # The cause is not a race. `git reflog` on a stranded branch reads
             # `rebase (finish): refs/heads/no-human/<id> onto <new main>` — the
-            # AGENT rebased its own already-pushed branch, which `agent/guard.py`
-            # deliberately permits as the legitimate "rebase base into my branch"
-            # workflow. A rebased branch cannot fast-forward; force is the only
-            # correct push. Scoped to THIS branch (never protected — `push`
-            # refuses those first) and to THIS rejection, so no other path can
-            # acquire it.
+            # AGENT rebased its own already-pushed branch. `agent/pushed_tip_guard`
+            # now DENIES that on a pushed branch and tells the coder to merge
+            # instead, so this specific reflog shape should no longer arise for a
+            # rebase this module's own guard had a chance to catch; the retry stays
+            # as a defense for any branch that reaches a diverged state another way
+            # (pre-dating this guard, a manual/human-gated intervention, or a git
+            # invocation outside the guarded Bash path). A rebased branch cannot
+            # fast-forward; force is the only correct push. Scoped to THIS branch
+            # (never protected — `push` refuses those first) and to THIS rejection,
+            # so no other path can acquire it.
             forced = _is_non_fast_forward(exc)
             self.emit("pr_open_retry",
                       f"PR open failed ({exc}); retrying in "

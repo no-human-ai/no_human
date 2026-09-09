@@ -14,10 +14,20 @@ shipping. This module is the policy that catches that *before* the coder
 runs the command, and tells them to merge instead.
 
 (``GitRepo.push``'s ``force_with_lease=True`` exists on two PR-open retry
-paths in ``orchestrator.py``, both reached only after ``_assert_delivery_sha``
-has already pinned the reviewed sha for THIS push — so that force can only
-ever re-send the same pinned commit under lease, never resurrect a branch
-this module refused to let get rewritten in the first place.)
+paths in ``orchestrator.py``, and the two are NOT equally guarded. The
+``_finalize`` retry (~:7654) is reached only after ``_assert_delivery_sha``
+(~:7394) has already pinned the reviewed sha for THIS push — so that force
+can only ever re-send the same pinned commit under lease, never resurrect a
+branch this module refused to let get rewritten. The draft-PR retry in
+``_open_draft_pr_for_review`` (~:13457) is different: it fires during a
+``pr_conflict`` mechanical round, *before* any review verdict exists, so it
+does not sit behind ``_assert_delivery_sha`` at all. It is still safe from
+this module's perspective for an orthogonal reason, not that ordering: this
+module only ever evaluates a git invocation proposed as a coder Bash
+command, and once it denies the coder's own rebase/reset on a pushed
+branch, that round has no coder-run rewrite for the retry to have to force
+past — an already-pushed, ancestor-preserving tree fast-forwards, needing no
+lease.)
 
 Detection is local-only: it reads the current branch's remote-tracking ref
 (``refs/remotes/<remote>/<branch>``), never ``ls-remote`` or any other
@@ -47,22 +57,37 @@ rewriting history:
 Failure policy is **fail OPEN**, deliberately inverted from most of this
 guard package's conservative-deny convention: a missing cwd, a non-git
 directory, a detached HEAD that isn't mid-rebase, no remotes, no tracking
-ref, a failed git invocation, a timeout, or an unresolvable target
-expression — every one of these returns ``None`` (no denial), never a
-raise. A detached HEAD *during* a rebase is the one case resolved rather
-than treated as failure: ``git rebase --continue`` only ever runs while a
-rebase is in progress, and git detaches HEAD for that whole duration (see
+ref, a failed git invocation, or a timeout — every one of these returns
+``None`` (no denial), never a raise. An unresolvable TARGET/HEAD_PARENT
+expression is the one exception NOT unconditionally fail-open any more
+(the c4f717d8 review's MAJOR finding): it denies unless the operand names
+an existing path in the worktree, git's own pathspec reading of a bare
+``git reset <path>`` — a shell variable or a command substitution the
+guard sees only as un-expanded literal text is not given that pass, since
+it could just as easily be a real rewrite target as a typo (see
+``_is_existing_path``).
+
+A detached HEAD *during* a rebase is resolved rather than treated as
+failure: ``git rebase --continue`` only ever runs while a rebase is in
+progress, and git detaches HEAD for that whole duration (see
 ``_rebase_head_name``), so failing open there would silently defeat the
-``--continue`` denial in the exact situation it exists to catch. Two things
-justify the rest staying open: this rule is an *addition* stacked on top of
-``guard._git_worktree_denial``, which already independently blocks every
-tree-clobbering git form regardless of what this module decides; and a
-false positive here would break the legitimate rebase-on-a-never-pushed-
-branch workflow that ``tests/test_guard.py``'s ``_SEQUENCER_PAIRS`` pins as
-allowed. Getting this wrong in the deny direction breaks real work; getting
-it wrong in the allow direction just means the pre-existing, less specific
-denial (or no denial, if the branch truly was never pushed) applies
-instead.
+``--continue`` denial in the exact situation it exists to catch. A detached
+HEAD OUTSIDE a rebase is different and deliberately left fail-open, even
+though it means e.g. ``git branch -f <task-branch> <target>`` run while
+detached evades this module entirely: outside a rebase there is no local
+record of which branch (if any) HEAD's detachment relates to — inventing
+one by guessing from remote-tracking refs risks a false deny with no
+narrow, testable trigger, and ``tests/test_pushed_tip_rewrite_guard.py``'s
+``test_a_detached_head_and_a_bare_reset_hard_fall_through`` pins exactly
+this as intended. Two things justify the rest staying open: this rule is an
+*addition* stacked on top of ``guard._git_worktree_denial``, which already
+independently blocks every tree-clobbering git form regardless of what this
+module decides; and a false positive here would break the legitimate
+rebase-on-a-never-pushed-branch workflow that ``tests/test_guard.py``'s
+``_SEQUENCER_PAIRS`` pins as allowed. Getting this wrong in the deny
+direction breaks real work; getting it wrong in the allow direction just
+means the pre-existing, less specific denial (or no denial, if the branch
+truly was never pushed) applies instead.
 """
 
 from __future__ import annotations
@@ -315,6 +340,13 @@ def _classify_branch(rest: list[str]) -> tuple | None:
 
 
 def _classify_update_ref(rest: list[str]) -> tuple | None:
+    if "--stdin" in rest:
+        # `--stdin` reads the actual ref updates from stdin, which this
+        # argv-only phase never sees — it could rewrite refs/heads/<branch>
+        # to anything with no operand on the command line to inspect.
+        # Denying outright (once a pushed tip exists) matches the other
+        # OUTRIGHT forms below rather than silently falling through None.
+        return ("outright",)
     delete = any(f in ("-d", "--delete") for f in rest)
     operands = [t for t in rest if not t.startswith("-")]
     if not operands:
@@ -357,6 +389,19 @@ def _classify(sub: str, rest: list[str], config_values: list[str]) -> tuple | No
     if sub == "filter-branch":
         return ("outright",)
     return None
+
+
+def _is_existing_path(cwd: str | None, expr: str) -> bool:
+    """True when `expr` names an existing file or directory relative to
+    `cwd`. This is the ONE exception `target_denies` grants an unresolvable
+    operand: `git reset <pathspec>` (no `--`, operand not a valid rev) is
+    git's own fallback reading — it resets the index for that path and never
+    moves the branch. Any other unresolvable operand (a shell variable, a
+    command substitution the guard sees only as the un-expanded literal
+    text, a typo) is NOT given this pass — it denies instead."""
+    if not cwd or not expr:
+        return False
+    return os.path.exists(os.path.join(cwd, expr))
 
 
 def _message(seg: str, remote: str, branch: str, tip: str) -> str:
@@ -412,7 +457,16 @@ def denial_reason(
     def target_denies(expr: str) -> bool:
         resolved = resolve(expr)
         if not resolved:
-            return False
+            # Unresolvable is NOT automatically safe: a shell variable or a
+            # command substitution (`$(git rev-parse HEAD~2)`) reaches here
+            # as a literal, un-expanded string too, and denying nothing for
+            # those let a real rewrite through (see the module's git history
+            # for the incident this fixed). The one legitimate unresolvable
+            # case is git's own pathspec fallback for a bare
+            # `git reset <path>` — that never moves the branch — so allow
+            # only when the operand names something that actually exists in
+            # the worktree.
+            return not _is_existing_path(cwd, expr)
         return not _git_ok(cwd, "merge-base", "--is-ancestor", tip, resolved)
 
     def head_parent_denies() -> bool:

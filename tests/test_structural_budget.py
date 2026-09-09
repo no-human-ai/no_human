@@ -205,7 +205,13 @@ FROZEN_FUNCTION_LINES = {
     # best-effort call that runs the UI-evidence browser walk after tests
     # pass and threads its rendered media section into `_pr_body`.
     # Re-anchored on merge.
-    "core/orchestrator.py:Orchestrator._finalize": 437,
+    # 437 -> 441 (+4): comment-only fix (pushed-tip-guard rewrite-detection
+    # review, MINOR-4) -- the stale claim that `agent/guard.py` "deliberately
+    # permits" an agent rebasing its own pushed branch is no longer true now
+    # that `pushed_tip_guard.py` denies it; the retry's rationale comment was
+    # corrected to explain why `force_with_lease` is still needed for
+    # branches that diverge some other way. No behavior change.
+    "core/orchestrator.py:Orchestrator._finalize": 441,
     # Pre-existing on main (measured red at d3d7d3a82a, this session's start):
     # an earlier fleet land grew stream() +6 without re-freezing it on its
     # merge result — the same "landed without measuring the ratchet" failure
@@ -1069,7 +1075,11 @@ FROZEN_FILE_LINES = {
     # `_build_implement_prompt`'s merge-conflict preamble branch and
     # `build_rules_block(base_merge_conflict=...)` threading. Measured on
     # this tree by the scanner's own metric.
-    "core/orchestrator.py": 23697,
+    # 23697 -> 23701 (+4): comment-only fix (pushed-tip-guard rewrite-detection
+    # review, MINOR-4) correcting the stale "agent/guard.py deliberately
+    # permits that rebase" claim in `_finalize`'s retry rationale. No
+    # behavior change. Measured on this tree.
+    "core/orchestrator.py": 23701,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.
