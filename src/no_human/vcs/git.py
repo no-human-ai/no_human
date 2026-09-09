@@ -765,6 +765,13 @@ class GitRepo:
             dropped = [r for r in missing if r not in tracked]
             if dropped:
                 rel_paths = [r for r in rel_paths if r not in set(dropped)]
+                # Log-only: `commit_paths` has no callback into the task's
+                # event stream (unlike the `on_repair` notices in
+                # orchestrator.py), and `nh start` runs uvicorn at
+                # log_level="warning", so this INFO line is not surfaced to
+                # the operator in normal operation — it is observable via a
+                # handler/caplog configured at INFO for "no_human.vcs", or a
+                # log file that captures below WARNING.
                 log.info(
                     "Dropped %d untracked paths: %s", len(dropped), ", ".join(dropped)
                 )
