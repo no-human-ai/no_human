@@ -127,6 +127,11 @@ FROZEN_FUNCTION_LINES = {
     # 2164 -> 2192 (+28): the background-run report nudge's call site in
     # `_run_attempt`'s committed-diff path (task 7a7713e3, landed on top of
     # 3bccb499's 2164). Measured on this tree with the scanner below.
+    # 2192 -> 2212 (+20): the `_node_serial_rerun` call site + `serial_passed`
+    # guard in the plain-red branch — a cold `node --test` run gets one
+    # serial re-run of only its failing files before being blamed on the
+    # change (tasks ba602e95 / f8af7f46, 2026-09-08). Measured on this tree
+    # with the scanner below.
     # 2192 -> 2200 (+8): the failing-tests persistence bound's wrapper
     # tokens inside `_run_attempt`'s own body — `_kept, _dropped =
     # _bounded_failing_ids(...)` at each `tests` emit site and
@@ -135,7 +140,7 @@ FROZEN_FUNCTION_LINES = {
     # `_layered_tests_failed_outcome`/`_failed_tests_outcome`, which have
     # their own frozen entries). Measured on this tree with the scanner
     # below.
-    "core/orchestrator.py:Orchestrator._run_attempt": 2200,
+    "core/orchestrator.py:Orchestrator._run_attempt": 2220,
     # 760 -> 778 (+18): dispatch-time intake-eval hoisted path — the `elif
     # ctx.get("eval_result")` branch that acts on a grill/wizard-stored
     # verdict (idempotency marker, cost/residual-gap comments) added inside
@@ -310,12 +315,15 @@ FROZEN_FUNCTION_CC = {
     # 235 -> 240 (+5): the report-nudge call site's try/except and its
     # once-guard in `_run_attempt` (task 7a7713e3, landed on top of 3bccb499's
     # 235). Measured on this tree with the scanner below.
+    # 240 -> 243 (+3): the `_node_serial_rerun` call site's `if serial_passed:`
+    # branch in the plain-red branch (tasks ba602e95 / f8af7f46, 2026-09-08).
+    # Measured on this tree with the scanner below.
     # 240 -> 244 (+4): the failing-tests persistence bound adds one `if
     # dropped:`-shaped branch per bounded `emit`/`update_attempt` call site
     # inside `_run_attempt` itself (the `**({"failing_tests_dropped": ...}
     # if _dropped else {})` kwarg spread). Measured on this tree with the
     # scanner below.
-    "core/orchestrator.py:Orchestrator._run_attempt": 244,
+    "core/orchestrator.py:Orchestrator._run_attempt": 247,
     "core/orchestrator.py:Orchestrator._drive": 115,
     "agent/guard.py:_approve_denial": 81,
     # 73 -> 74 (+1): same cause as the LINES entry above — e922e9b4's landing
@@ -836,6 +844,15 @@ FROZEN_FILE_LINES = {
     # before treating a falsy tip as never pushed (only that positive
     # confirmation may choose rebase). Landed on top of 7a7713e3's 22952.
     # Measured on this tree by the scanner's own metric.
+    # 23028 -> 23117 (+89): the new `_node_serial_rerun` sibling helper next
+    # to `_run_tests_once`, plus its call site in `_run_attempt`'s plain-red
+    # branch — one serial re-run of only the failing files before a cold
+    # `node --test` run is blamed on the change (tasks ba602e95 / f8af7f46,
+    # 2026-09-08). Measured on this tree by the scanner's own metric.
+    # 23117 -> 23153 (+36): the base-refresh divergence advisory and its
+    # `diverged` record in `_refresh_stale_base` (task e83b0b6d), landed on
+    # top of a9db9cba's 23117. Measured on this tree by the scanner's own
+    # metric.
     # 22952 -> 23020 (+68): the failing-tests persistence bound
     # (`_MAX_PERSISTED_FAILING_TESTS`, `_bounded_failing_ids`,
     # `_bounded_test_results`) — a real incident persisted a 96,465-id
@@ -861,7 +878,7 @@ FROZEN_FILE_LINES = {
     # under 16KB alongside the already-bounded persisted/emitted id lists.
     # Net of the helper's own def+docstring plus each call-site's one-token
     # wrap. Measured on this tree by the scanner's own metric.
-    "core/orchestrator.py": 23146,
+    "core/orchestrator.py": 23271,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.

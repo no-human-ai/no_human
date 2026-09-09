@@ -31,7 +31,7 @@ from no_human.core.orchestrator import (
 )
 from no_human.core.task import Task, TaskStatus
 from no_human.notify.slack import SlackNotifier
-from no_human.vcs.git import GitRepo
+from no_human.vcs.git import GitRepo, ProtectedBranch
 
 
 def _git(cwd, *args):
@@ -105,6 +105,29 @@ def _make_pushed_conflicting_branch(work, name):
     (work / "calc.py").write_text("def add(a, b):\n    return b + a\n")
     _git(work, "add", "-A")
     _git(work, "commit", "-q", "-m", "main rewrites the return line differently")
+    _git(work, "checkout", "-q", name)
+    return remote_tip
+
+
+def _make_pushed_diverged_branch(work, name, n):
+    """A branch pushed to `origin`, then rewritten LOCALLY (no further push)
+    so the local head is neither an ancestor nor a descendant of the remote
+    tip — the `7a7713e3` shape: attempt 3's local rebase left the branch
+    diverged from what it had already pushed."""
+    _git(work, "checkout", "-q", "-b", name)
+    (work / "pr_marker.py").write_text("# a PR's committed work\n")
+    _git(work, "add", "-A")
+    _git(work, "commit", "-q", "-m", "PR work")
+    _git(work, "push", "-q", "-u", "origin", name)
+    remote_tip = _git(work, "rev-parse", name)
+    # Rewrite the commit in place: same parent, different tree, so the new
+    # head shares no ancestry with `remote_tip` in either direction —
+    # exactly what a local rebase/amend after the push produces.
+    (work / "pr_marker.py").write_text("# a PR's committed work, rewritten locally\n")
+    _git(work, "add", "-A")
+    _git(work, "commit", "-q", "--amend", "-m", "PR work (rewritten locally)")
+    _git(work, "checkout", "-q", "main")
+    _advance_main(work, n)
     _git(work, "checkout", "-q", name)
     return remote_tip
 
@@ -312,12 +335,177 @@ async def test_a_never_pushed_branch_still_rebases(
 
 
 # --------------------------------------------------------------------------- #
+# THE FAILS-BEFORE TEST for the divergence-advisory review finding: a task
+# branch whose remote tip is ALREADY diverged from HEAD (neither an ancestor
+# nor a descendant — the `7a7713e3` shape, left by a local rebase after the
+# push) is merged with the base by `_refresh_stale_base`, the event says
+# "merged main into it", and delivery still refuses it later ('remote tip
+# ... is not an ancestor of the reviewed sha') with nothing in the attempt
+# naming the pre-existing divergence. An operator reading only the
+# `base_staleness` event sees a green-looking base refresh, then an
+# unexplained refusal at delivery. Before this fix, no advisory named the
+# divergence and no `diverged` field existed in the record.
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.asyncio
+async def test_an_already_diverged_remote_tip_is_named_in_an_advisory_and_recorded(
+    repo, tmp_path, store, monkeypatch,
+):
+    remote_tip = _make_pushed_diverged_branch(
+        repo, "no-human/t6", BASE_STALENESS_REBASE_THRESHOLD)
+
+    gr = GitRepo(repo)
+    pre_merge_head = gr.head_sha()
+    # Positive control: the fixture really produced a divergence (neither
+    # side is an ancestor of the other) before the attempt does anything.
+    assert gr.is_ancestor(remote_tip, pre_merge_head) is False
+    assert gr.is_ancestor(pre_merge_head, remote_tip) is False
+
+    ctx = {"pr_branch": "no-human/t6"}
+    t, events, orch = await _attempt(repo, tmp_path, store, monkeypatch, ctx)
+
+    advisories = [
+        e["text"] for e in events
+        if e.get("kind") == "advisory" and "diverged" in e.get("text", "")
+    ]
+    assert len(advisories) == 1, advisories
+    advisory = advisories[0]
+    assert remote_tip in advisory
+    assert pre_merge_head in advisory
+    assert "diverged" in advisory
+    assert "is not an ancestor of the reviewed sha" in advisory
+
+    assert t.context["base_staleness"]["diverged"] is True
+
+    evs = _staleness_events(events)
+    assert len(evs) == 1
+    ev = evs[0]
+    assert ev["diverged"] is True
+    assert ev["mode"] == "merge"
+    assert ev["merged"] is True
+    # The attempt reached `_build_implement_prompt` (`_Stop`, asserted by
+    # `_attempt`) — never failed by the divergence.
+
+
+@pytest.mark.asyncio
+async def test_a_diverged_branch_still_merges_the_base_and_is_not_force_pushed(
+    repo, tmp_path, store, monkeypatch,
+):
+    remote_tip = _make_pushed_diverged_branch(
+        repo, "no-human/t7", BASE_STALENESS_REBASE_THRESHOLD)
+
+    gr = GitRepo(repo)
+    pre_merge_head = gr.head_sha()
+    main_tip = _git(repo, "rev-parse", "main")
+
+    def _boom(self, base):
+        raise AssertionError(
+            "rebase_onto must never be called for a pushed (even diverged) "
+            "branch — divergence must not flip merge to rebase")
+    monkeypatch.setattr(GitRepo, "rebase_onto", _boom)
+
+    ctx = {"pr_branch": "no-human/t7"}
+    t, events, orch = await _attempt(repo, tmp_path, store, monkeypatch, ctx)
+
+    _git(repo, "checkout", "-q", "no-human/t7")
+    head = gr.head_sha()
+    assert gr.is_ancestor(pre_merge_head, head), (
+        "the pre-attempt local head must still be an ancestor of the new "
+        "head — a real merge, not a rewrite"
+    )
+    assert gr.is_ancestor(main_tip, head), (
+        "the base merge must actually have happened despite the divergence"
+    )
+
+    origin_dir = repo.parent / "origin.git"
+    origin_ref = subprocess.run(
+        ["git", "rev-parse", "refs/heads/no-human/t7"],
+        cwd=str(origin_dir), check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    assert origin_ref == remote_tip, (
+        "the divergence advisory must be pure observation — nothing may "
+        "push or force-update the remote tip"
+    )
+
+
+@pytest.mark.asyncio
+async def test_no_divergence_advisory_when_the_branch_has_no_remote_tip(
+    repo, tmp_path, store, monkeypatch,
+):
+    # Reuses the never-pushed shape (intake answer 3): no remote tip means
+    # divergence is undefined, so the check must stay silent.
+    _git(repo, "checkout", "-q", "-b", "no-human/t8")
+    (repo / "pr_marker.py").write_text("# never pushed\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "PR work, never pushed")
+    _git(repo, "checkout", "-q", "main")
+    _advance_main(repo, BASE_STALENESS_REBASE_THRESHOLD)
+    _git(repo, "checkout", "-q", "no-human/t8")
+
+    ctx = {"pr_branch": "no-human/t8"}
+    t, events, orch = await _attempt(repo, tmp_path, store, monkeypatch, ctx)
+
+    advisories = [
+        e["text"] for e in events
+        if e.get("kind") == "advisory" and "diverged" in e.get("text", "")
+    ]
+    assert advisories == []
+    assert "diverged" not in t.context["base_staleness"]
+
+
+# --------------------------------------------------------------------------- #
 # `GitRepo.remote_branch_confirmed_absent` unit coverage: it must return
 # `True` ONLY when the remote was actually reached and positively reported no
 # such branch (or there is no remote to have been pushed to at all), and
 # `False` for every kind of "cannot tell" — never guessing "absent" for an
 # error.
 # --------------------------------------------------------------------------- #
+
+@pytest.mark.asyncio
+async def test_a_failing_divergence_check_records_no_diverged_key_and_still_merges(
+    repo, tmp_path, store, monkeypatch,
+):
+    """The divergence check is observation only: when it RAISES (an ancestry
+    query failing for any reason), the attempt records no `diverged` key at
+    all — never a guessed `True` — emits the "divergence check failed"
+    advisory, and still merges the base in exactly as for a healthy check."""
+    remote_tip = _make_pushed_stale_branch(
+        repo, "no-human/t9", BASE_STALENESS_REBASE_THRESHOLD)
+    ctx = {"pr_branch": "no-human/t9"}
+
+    def _boom(self, *a, **k):
+        raise RuntimeError("ancestry query exploded")
+    monkeypatch.setattr(GitRepo, "is_ancestor", _boom)
+
+    t, events, orch = await _attempt(repo, tmp_path, store, monkeypatch, ctx)
+    monkeypatch.undo()
+
+    failed = [
+        e["text"] for e in events
+        if e.get("kind") == "advisory"
+        and "divergence check failed" in e.get("text", "")
+    ]
+    assert len(failed) == 1, failed
+    assert "ancestry query exploded" in failed[0]
+    assert not [
+        e for e in events
+        if e.get("kind") == "advisory" and "ALREADY diverged" in e.get("text", "")
+    ]
+    assert "diverged" not in t.context["base_staleness"]
+
+    evs = _staleness_events(events)
+    assert len(evs) == 1
+    ev = evs[0]
+    # The event always carries the flag (False here); only the persisted
+    # payload omits it when the branch is not known to be diverged.
+    assert ev["diverged"] is False
+    assert ev["mode"] == "merge"
+    assert ev["merged"] is True
+
+    gr = GitRepo(repo)
+    _git(repo, "checkout", "-q", "no-human/t9")
+    assert gr.is_ancestor(remote_tip, gr.head_sha())
+
 
 def test_remote_branch_confirmed_absent_distinguishes_absence_from_errors(repo):
     gr = GitRepo(repo)
@@ -412,3 +600,45 @@ def test_no_force_push_introduced_by_this_fix():
             refresh_fn_src = text[refresh_fn_start:refresh_fn_end if refresh_fn_end != -1 else None]
             assert "--force" not in refresh_fn_src
             assert "force-with-lease" not in refresh_fn_src
+            # No automatic merge of the remote tip into HEAD: the divergence
+            # advisory is observation-only, so the ONLY `merge_base_into_branch`
+            # call in this function must pass `base`, never `remote_tip`.
+            assert "merge_base_into_branch(remote_tip)" not in refresh_fn_src
+            assert refresh_fn_src.count("merge_base_into_branch(") == 1
+            assert "merge_base_into_branch(base)" in refresh_fn_src
+
+
+# --------------------------------------------------------------------------- #
+# AC2 (concern 2): `GitRepo.merge_base_into_branch` had no protected-branch
+# guard of its own — it is reachable only through the `create_branch`-guarded
+# `pr_branch` today (`_branch_protected` guards create_branch, commit_all and
+# commit_paths; `rebase_onto` has no guard of its own either — out of scope).
+# THE FAILS-BEFORE TEST: before this fix, calling it while on a protected
+# branch (e.g. `main`) would run `git merge` directly.
+# --------------------------------------------------------------------------- #
+
+def test_merge_base_into_branch_refuses_a_protected_branch_without_touching_refs(
+    repo,
+):
+    # `repo` is checked out on `main`, which matches the default
+    # `never_push_to`. Give it something to merge: an unrelated branch with
+    # a real commit ahead of `main`.
+    _git(repo, "checkout", "-q", "-b", "no-human/other")
+    (repo / "other.py").write_text("# unrelated work\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "unrelated work")
+    _git(repo, "checkout", "-q", "main")
+
+    head_before = _git(repo, "rev-parse", "HEAD")
+    refs_before = _git(repo, "rev-parse", "--all")
+    reflog_before = _git(repo, "reflog", "show", "HEAD")
+
+    gr = GitRepo(repo)
+    with pytest.raises(ProtectedBranch, match="protected branch"):
+        gr.merge_base_into_branch("no-human/other")
+
+    assert _git(repo, "rev-parse", "HEAD") == head_before
+    assert _git(repo, "status", "--porcelain") == ""
+    assert not (repo / ".git" / "MERGE_HEAD").exists()
+    assert _git(repo, "rev-parse", "--all") == refs_before
+    assert _git(repo, "reflog", "show", "HEAD") == reflog_before
