@@ -979,6 +979,42 @@ def test_compose_returns_none_when_there_are_no_hooks():
     assert Orchestrator._compose_post_tool_hooks(None, None, None) is None
 
 
+def test_the_claim_guard_is_ordered_second_behind_the_receipt_observer():
+    """The optional 4th hook (the landed-claim guard, added to close "an
+    already-landed claim is refused when made, not 40 turns later") must not
+    disturb any pre-existing 3-positional-arg call site, and must itself
+    land second — behind the receipt observer, ahead of lint/scope — so a
+    rare, latched, attempt-saving refusal cannot be swallowed by a lint nit
+    that fires on the same tool call."""
+    r, lint, scope, claim = object(), object(), object(), object()
+    assert Orchestrator._ordered_post_tool_hooks(r, lint, scope, claim) == [
+        r, claim, lint, scope,
+    ]
+    assert Orchestrator._ordered_post_tool_hooks(r, lint, scope, None) == [
+        r, lint, scope,
+    ]
+    assert Orchestrator._ordered_post_tool_hooks(r, lint, scope) == [r, lint, scope]
+
+
+async def test_a_firing_claim_guard_cannot_suppress_receipt_capture():
+    seen = []
+
+    async def persist(attempt_id, receipt):
+        seen.append(receipt)
+
+    receipts = VerificationReceiptHook(attempt_id="a1", persist=persist)
+    composite = Orchestrator._compose_post_tool_hooks(receipts, None, None, _Firing())
+    out = await composite.hook(
+        {"tool_name": "Bash", "tool_input": {"command": "pytest -q"},
+         "tool_response": _ok("1 passed")}, "t1", None)
+    assert out, "the claim guard's refusal must still reach the model"
+    assert len(seen) == 1, "the receipt was lost behind the firing claim guard"
+
+
+def test_compose_returns_none_when_there_are_no_hooks_including_claim_hook():
+    assert Orchestrator._compose_post_tool_hooks(None, None, None, None) is None
+
+
 # -- persistence: append-only, and unclobberable --------------------------- #
 
 
