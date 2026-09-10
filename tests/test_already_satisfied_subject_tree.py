@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 
 import pytest
 
+import no_human.core.orchestrator as orchestrator_module
 from no_human.agent.claude_backend import AgentResult
 from no_human.config import load_config
 from no_human.core.orchestrator import Orchestrator
@@ -14,6 +16,7 @@ from no_human.notify.slack import SlackNotifier
 from no_human.review.reviewer import ReviewDecision
 from no_human.review.selfcheck import ChecklistItem
 from no_human.vcs import GitRepo
+from no_human.vcs import git as git_module
 
 
 def _git(cwd, *args):
@@ -536,3 +539,188 @@ async def test_the_offered_branch_behind_its_own_remote_is_still_refused(
 
     assert outcome.status is TaskStatus.FAILED
     assert reviewer.calls == []
+
+
+async def test_a_sibling_pushed_branch_rescues_a_lagging_local_delivery_branch(
+    bare_repo, tmp_path, store
+):
+    """attempt 2+ pushes to a DIFFERENT, attempt-suffixed branch of this same
+    task while the local delivery branch offered to this attempt still names
+    an earlier/unpushed commit — the reviewed commit only lives on the
+    sibling branch. The sibling fallback exists precisely for this shape; it
+    must fire even though the local pointer for `branch` disagrees with
+    `head`."""
+    captured: dict[str, str] = {}
+
+    def setup(task_id):
+        stem = f"no-human/{task_id[:8]}"
+        captured["stem"] = stem
+        base = GitRepo(bare_repo).head_sha()
+        captured["base"] = base
+        _git(bare_repo, "checkout", "-b", stem)
+        (bare_repo / "work.txt").write_text("work\n")
+        _git(bare_repo, "add", "-A")
+        _git(bare_repo, "commit", "-m", "work")
+        _git(bare_repo, "push", "-u", "origin", stem)
+        claimed = GitRepo(bare_repo).head_sha()
+        captured["claimed"] = claimed
+        attempt_branch = f"{stem}-6"
+        # No checkout: HEAD stays on `stem` at the reviewed sha, while the
+        # local `attempt_branch` ref (this attempt's offered delivery
+        # branch) is created pointing at the earlier, unreviewed `base`.
+        _git(bare_repo, "branch", attempt_branch, base)
+        captured["attempt_branch"] = attempt_branch
+        return attempt_branch
+
+    outcome, _task, reviewer, events = await _gate_with_task(
+        store, tmp_path, bare_repo, setup)
+
+    stem = captured["stem"]
+    attempt_branch = captured["attempt_branch"]
+    claimed = captured["claimed"]
+
+    # Positive controls: the local pointer really does lag, and the sibling
+    # really is pushed with exactly the claimed sha.
+    assert GitRepo(bare_repo).branch_sha(attempt_branch) != claimed
+    ls = _git(bare_repo, "ls-remote", "origin", f"refs/heads/{stem}")
+    assert ls.stdout.split()[0] == claimed
+
+    assert outcome.status is TaskStatus.AWAITING_APPROVAL
+    assert reviewer.calls
+    assert "pushed branch" in outcome.detail
+    assert stem in outcome.detail
+    assert "not on origin/main" in outcome.detail
+    evidence = next(event for event in events if event["kind"] == "already_satisfied")
+    assert evidence["subject_on_main"] is False
+
+
+async def test_a_lagging_local_branch_with_no_pushed_branch_anywhere_is_still_refused(
+    bare_repo, tmp_path, store
+):
+    """Same lagging-local-pointer shape as the sibling-rescue test above, but
+    nothing was ever pushed for this task — the sibling fallback must NOT
+    turn into a blanket accept for every lagging local ref."""
+    captured: dict[str, str] = {}
+
+    def setup(task_id):
+        stem = f"no-human/{task_id[:8]}"
+        captured["stem"] = stem
+        base = GitRepo(bare_repo).head_sha()
+        _git(bare_repo, "checkout", "-b", stem)
+        (bare_repo / "work.txt").write_text("work\n")
+        _git(bare_repo, "add", "-A")
+        _git(bare_repo, "commit", "-m", "work")
+        attempt_branch = f"{stem}-6"
+        _git(bare_repo, "branch", attempt_branch, base)
+        return attempt_branch
+
+    outcome, _task, reviewer, _events = await _gate_with_task(
+        store, tmp_path, bare_repo, setup)
+
+    stem = captured["stem"]
+    # Positive control: the refusal is a real absence, not a broken query —
+    # this task's stem is unpushed, but origin/main (unrelated) is there.
+    task_ls = _git(bare_repo, "ls-remote", "origin", stem, f"{stem}-*")
+    assert not task_ls.stdout.strip()
+    main_ls = _git(bare_repo, "ls-remote", "origin", "refs/heads/main")
+    assert main_ls.stdout.strip()
+
+    assert outcome.status is TaskStatus.FAILED
+    assert reviewer.calls == []
+
+
+async def test_the_never_pushed_refusal_flips_to_accept_when_the_sibling_is_pushed(
+    bare_repo, tmp_path, store
+):
+    """Identical fixture to the never-pushed refusal above, plus one push of
+    the reviewed commit to the task's stem branch. Pairing the two proves
+    the change is an ordering fix, not a blanket permissiveness change."""
+    def setup(task_id):
+        stem = f"no-human/{task_id[:8]}"
+        base = GitRepo(bare_repo).head_sha()
+        _git(bare_repo, "checkout", "-b", stem)
+        (bare_repo / "work.txt").write_text("work\n")
+        _git(bare_repo, "add", "-A")
+        _git(bare_repo, "commit", "-m", "work")
+        attempt_branch = f"{stem}-6"
+        _git(bare_repo, "branch", attempt_branch, base)
+        _git(bare_repo, "push", "origin", f"HEAD:refs/heads/{stem}")
+        return attempt_branch
+
+    outcome, _task, reviewer, _events = await _gate_with_task(
+        store, tmp_path, bare_repo, setup)
+
+    assert outcome.status is TaskStatus.AWAITING_APPROVAL
+    assert reviewer.calls
+
+
+async def test_never_pushed_and_lagging_pointer_refusals_are_distinguishable(
+    bare_repo, tmp_path, store
+):
+    """The two refusal causes must read differently: a commit that was never
+    pushed anywhere says so, while a commit that IS on this task's own
+    remote ref (under `branch` itself, not a sibling) still names what the
+    local pointer resolves to. Substring checks only — never whole-string
+    equality, so wording can still evolve."""
+    def never_pushed_setup(task_id):
+        stem = f"no-human/{task_id[:8]}"
+        base = GitRepo(bare_repo).head_sha()
+        _git(bare_repo, "checkout", "-b", stem)
+        (bare_repo / "work.txt").write_text("work\n")
+        _git(bare_repo, "add", "-A")
+        _git(bare_repo, "commit", "-m", "work")
+        attempt_branch = f"{stem}-6"
+        _git(bare_repo, "branch", attempt_branch, base)
+        return attempt_branch
+
+    never_pushed, _t1, reviewer1, _e1 = await _gate_with_task(
+        store, tmp_path, bare_repo, never_pushed_setup)
+
+    def lagging_pointer_setup(task_id):
+        stem = f"no-human/{task_id[:8]}"
+        base = GitRepo(bare_repo).head_sha()
+        attempt_branch = f"{stem}-7"
+        _git(bare_repo, "checkout", "-b", attempt_branch)
+        (bare_repo / "work2.txt").write_text("work2\n")
+        _git(bare_repo, "add", "-A")
+        _git(bare_repo, "commit", "-m", "work2")
+        _git(bare_repo, "push", "-u", "origin", attempt_branch)
+        claimed = GitRepo(bare_repo).head_sha()
+        # Detach HEAD at the reviewed sha, then reset the local
+        # `attempt_branch` ref (same name the remote already has `claimed`
+        # under) back to `base`. `task_branches` now contains `branch`
+        # itself (the remote push), never a sibling.
+        _git(bare_repo, "checkout", "--detach", claimed)
+        _git(bare_repo, "branch", "-f", attempt_branch, base)
+        return attempt_branch
+
+    lagging_pointer, _t2, reviewer2, _e2 = await _gate_with_task(
+        store, tmp_path, bare_repo, lagging_pointer_setup)
+
+    assert never_pushed.status is TaskStatus.FAILED
+    assert reviewer1.calls == []
+    assert "was never pushed" in never_pushed.detail
+    assert "points at" not in never_pushed.detail
+
+    assert lagging_pointer.status is TaskStatus.FAILED
+    assert reviewer2.calls == []
+    assert "points at" in lagging_pointer.detail
+    assert "was never pushed" not in lagging_pointer.detail
+
+
+def test_the_sibling_branch_decision_exists_in_exactly_one_place():
+    """Two refusal branches now read the sibling lookup's result, but the
+    remote lookup itself — `remote_branches_containing` — and its
+    `(-\\d+)?` sibling-name regex must stay in exactly one place in the
+    module, or the two evidence paths (local pointer matches `head` vs.
+    lags it) will drift apart over time."""
+    src = Path(orchestrator_module.__file__).read_text()
+    assert src.count("remote_branches_containing") == 1
+    assert src.count(r"(-\d+)?") == 1
+
+    # Positive controls: the needle style really does find multiples when
+    # they exist, and the git.py hit is a real string match, not a typo'd
+    # zero that would make the module count vacuously "correct".
+    assert src.count("_already_satisfied_subject") >= 2
+    git_src = Path(git_module.__file__).read_text()
+    assert git_src.count("remote_branches_containing") >= 1
