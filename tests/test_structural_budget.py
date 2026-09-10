@@ -1211,7 +1211,23 @@ FROZEN_FILE_LINES = {
     # `_build_landed_claim_guard` method, its wiring into `_run_attempt`
     # (build/stash/gate/teardown), the `_agent_sink` prose feed, and the
     # `_ordered_post_tool_hooks`/`_compose_post_tool_hooks` 5th-parameter
-    # plumbing. Re-measured on the merge result by the scanner's own metric.
+    # plumbing (main's #114 phase-2 `type_hook` and our `claim_guard` each
+    # extended the same helpers; reconciled into one 5-parameter signature
+    # during the rebase). Re-measured on the merge result by the scanner's
+    # own metric.
+    # (send-back, Blocker 1 & 2): the guard's probe was wrapping
+    # `classify_already_satisfied_landing` — a SECOND, narrower authority
+    # (ancestry against `base` only) than delivery's real gate, so it
+    # refused claims delivery would ACCEPT (a pushed-and-up-to-date offered
+    # branch, or a pushed sibling branch of the same task).
+    # `_build_landed_claim_guard`'s probe now calls
+    # `_already_satisfied_subject` itself — the exact function
+    # `_gate_already_satisfied` calls at delivery — and filters its
+    # "cannot tell" cases out of "refuted" by checking `subject_reason`
+    # starts with `"{head} is not on {ship_ref}"`; the import of
+    # `classify_already_satisfied_landing`/`LANDING_REQUIRED` and the
+    # `base_hint`-branch comment above it were dropped accordingly.
+    # Re-measured on the merge result by the scanner's own metric.
     "core/orchestrator.py": 23960,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
