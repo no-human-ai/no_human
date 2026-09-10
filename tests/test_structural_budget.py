@@ -1173,7 +1173,17 @@ FROZEN_FILE_LINES = {
     # `_agent_sink` else-branch comment after that branch widened it to
     # carry every out-of-repo path. Measured on the MERGED tree by the
     # scanner's own metric.
-    "core/orchestrator.py": 23828,
+    # 23828 -> 23846 (+18) (2026-09-10, already-satisfied sibling-branch
+    # ordering fix): `_already_satisfied_subject` hoisted the remote
+    # preconditions and the existing sibling-branch lookup above the
+    # local-pointer refusal so a lagging local delivery branch falls
+    # through to the sibling fallback instead of returning early, and
+    # split one refusal message into "never pushed anywhere" vs. "local
+    # pointer lags a branch that WAS pushed". Measured on this tree by
+    # the scanner's own metric (ast/splitlines-based, not `wc -l` — this
+    # file has a few non-`\n` line separators that make the two differ
+    # by a constant 3 lines).
+    "core/orchestrator.py": 23846,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.
