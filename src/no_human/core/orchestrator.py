@@ -145,7 +145,7 @@ from ..vcs import (
 from ..vcs import ci_rollup, pr_watcher
 from ..vcs.push_hook import refresh_protected_patterns
 from ..vcs.receipts import verify_pr_receipt
-from ..vcs.task_pr import LANDING_REQUIRED, classify_already_satisfied_landing, resolve_task_pr
+from ..vcs.task_pr import resolve_task_pr
 from . import merge_policy
 from . import plan_gate
 from .base_staleness import (
@@ -5677,12 +5677,11 @@ class Orchestrator:
             self.emit("supervisor", "supervisor active")
 
         # Landed-claim guard: a deterministic PostToolUse hook that tests an
-        # in-attempt "the work already exists" claim against the base branch
-        # the MOMENT it is made, not 40 turns later at delivery — see
+        # in-attempt "the work already exists" claim against the SAME
+        # question delivery asks (`_already_satisfied_subject`) the MOMENT
+        # it is made, not 40 turns later at delivery — see
         # `landed_claim_guard.py`'s module docstring for the incident this
-        # closes. Same containment question delivery already asks
-        # (`classify_already_satisfied_landing`, ancestry-only, never keyed
-        # on the commit subject).
+        # closes. Never keyed on the commit subject.
         claim_guard = self._build_landed_claim_guard(task, repo, base=base, branch=branch)
         self._active_landed_claim_guard = claim_guard  # so _agent_sink can feed it agent prose
 
@@ -16955,33 +16954,43 @@ class Orchestrator:
     ) -> "LandedClaimGuard | None":
         """Construct a `LandedClaimGuard` for the current attempt.
 
-        Wraps `classify_already_satisfied_landing` — the exact function
-        delivery uses to decide whether an "already satisfied" claim is
-        refutable — as the guard's `probe`, so the in-attempt refusal and the
-        delivery-time refusal ask the SAME question (ancestry against the
-        base branch via `git merge-base --is-ancestor`) and can never
-        disagree. See `landed_claim_guard.py`'s module docstring for the
-        incident this closes.
+        Wraps `_already_satisfied_subject` — the EXACT function
+        `_gate_already_satisfied` calls at delivery time — as the guard's
+        `probe`, so the in-attempt refusal and the delivery-time refusal ask
+        the SAME question and can never disagree. An earlier revision
+        wrapped `classify_already_satisfied_landing` instead (ancestry
+        against `base` only): narrower than delivery, so it refused claims
+        delivery would ACCEPT — a pushed branch up to date with the offered
+        one, or a pushed SIBLING branch of this same task (see
+        `_already_satisfied_subject`'s docstring for both shapes). `task`
+        supplies the task id `_already_satisfied_subject` needs to
+        enumerate this task's own pushed sibling branches. See
+        `landed_claim_guard.py`'s module docstring for the incident this
+        closes.
         """
         if not repo:
             return None
-        base_hint = base or ""
 
-        def probe(sha: str) -> tuple[bool, str, str]:
-            verdict = classify_already_satisfied_landing(
-                repo, sha=sha, branch=branch or "", base=base_hint,
+        async def probe() -> tuple[bool, str, str]:
+            (shippable, head, _subject, subject_reason, _on_main,
+             ship_ref) = await self._already_satisfied_subject(
+                task, repo, base=base, branch=branch)
+            # A refusal must be a genuine "not on {ship_ref}" answer, not one
+            # of `_already_satisfied_subject`'s "cannot tell" cases (an
+            # unresolvable HEAD, an unresolvable ship ref, or an is_ancestor
+            # check that raised) — those also report `shippable=False` but
+            # must never look refuted here, matching the guard's own
+            # "unverifiable must never look refuted" rule.
+            refuted = (
+                not shippable and bool(head) and bool(ship_ref)
+                and subject_reason.startswith(f"{head} is not on {ship_ref}")
             )
-            return (verdict.verdict == LANDING_REQUIRED, verdict.sha, verdict.base_ref)
+            return (refuted, head, subject_reason)
 
         def head_sha() -> str:
             return repo.head_sha()
 
-        return LandedClaimGuard(
-            probe=probe,
-            head_sha=head_sha,
-            on_event=self.emit,
-            base_hint=base_hint,
-        )
+        return LandedClaimGuard(probe=probe, head_sha=head_sha, on_event=self.emit)
 
     def _materialize_skills(self, repo_path: Path) -> list[str]:
         """Write confirmed skill memories to ``.claude/skills/<name>/SKILL.md``
