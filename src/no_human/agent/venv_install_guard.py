@@ -131,33 +131,68 @@ pre-execution. It cannot see:
   - the worktree ROOT used for the containment check (item 5,
     :func:`_session_root`) is discovered by an upward filesystem walk for a
     ``.git`` marker, not by asking the VCS:
-      (i) an unmarked tree — or one whose only marker sits at ``$HOME`` or
-          the filesystem anchor, both explicitly refused as a root, or one
-          where ``$HOME`` cannot be determined at all (the walk then fails
-          CLOSED and skips straight to the ``cwd`` fallback rather than
-          climbing with that refusal silently disabled) — falls back to
-          ``cwd`` itself, so a subdirectory install there is still refused.
+      (i) a tree with no ``.git``-bearing ancestor anywhere within
+          ``_MAX_ROOT_WALK`` levels — or one whose only markers sit at
+          ``$HOME`` or the filesystem anchor (both explicitly refused as a
+          root), or one where ``$HOME`` cannot be determined, or a level
+          whose marker cannot even be PROBED (``os.path.exists`` itself
+          raises) — all fail CLOSED and skip straight to the ``cwd``
+          fallback rather than climbing with that check silently disabled.
           This is a conservative FALSE POSITIVE (over-denial), never a
-          hole: it can only narrow what counts as "in tree", not widen it;
+          hole. A ``cwd`` that instead sits UNDER an ANCESTOR that does
+          carry ``.git`` does NOT fall back to ``cwd``: it adopts that
+          ANCESTOR as the root — the mechanism that closes this ticket's
+          defect (a worktree's own subdirectory adopts the worktree
+          root) — but it also means the discovered root is whichever
+          ``.git``-bearing ancestor is NEAREST, not necessarily the
+          session's intended worktree. A ``cwd`` nested under some
+          unrelated ``.git``-marked tree above it (a misconfigured
+          session, a worktree accidentally created inside another repo)
+          adopts THAT tree as the root instead. The only backstop beyond
+          the discovered root is ``guard.py``'s unconditional
+          ``_primary_checkout()`` entry and its ``sys.prefix`` check,
+          which cover the no_human project's own checkout and interpreter
+          only — an unrelated ancestor repository is not independently
+          caught;
       (ii) every venv under the discovered root — including one that lives
           in a sibling subdirectory of ``cwd``, not just an ancestor — is
           now a valid install target. This is the intended isolation
           boundary (the whole worktree, not one subdirectory of it), not a
           widening of what "outside the worktree" means;
-      (iii) when a session's own ``cwd`` is inside the PRIMARY checkout
-          (isolation disabled for that session), the primary's ``.git``
-          makes the primary checkout itself the discovered root — exactly
-          what ``cwd == <primary>`` already allowed before this change,
-          since the root and ``cwd`` coincide there. The shared venv is
-          not newly exposed by this: this module denies it via candidate
-          resolution (items 1-4) exactly as before, and v1's
-          unconditional ``_primary_checkout()`` entry in ``guard.py``
-          still covers it independently.
+      (iii) when a session's own ``cwd`` is inside (at or below) the
+          PRIMARY checkout, the primary's own ``.git`` becomes the
+          discovered root, which puts the primary's ``.venv`` INSIDE the
+          boundary this module enforces. That IS a widening of what THIS
+          MODULE alone allows, relative to before: comparing candidates
+          against ``cwd`` directly used to deny an install into the
+          primary's venv whenever ``cwd`` was a strict subdirectory of the
+          primary checkout; now this module's own candidate-vs-root
+          comparison ALLOWS it. This is safe only because ``guard.py``'s
+          unconditional ``_primary_checkout()`` entry denies every install
+          into the primary/shared venv independently of this module and
+          of root discovery, ahead of this module's own check in
+          ``guard.evaluate`` — that unconditional entry is the
+          LOAD-BEARING fact that makes this widening safe, not a
+          secondary reassurance to it.
     The inherited-``VIRTUAL_ENV``/``UV_PROJECT_ENVIRONMENT`` bound above
     (a ``PATH`` that does NOT itself resolve to the shared venv) is
     unchanged by this: candidate generation (items 1-4) is untouched, only
     the boundary candidates are compared against (item 5) moved from
     ``cwd`` to the discovered root.
+  - reachability of the fix itself: in the shipped call path
+    (``claude_backend.py``, ``codex_backend.py``), ``cwd`` is captured ONCE
+    per session at hook-construction time and passed to
+    :func:`denial_reason` unchanged for every command in that session — it
+    never tracks a coder's own ``cd``. The orchestrator passes the
+    session's worktree ROOT as that ``cwd``, so ``_session_root(cwd) ==
+    cwd`` for every command the product evaluates through that path today,
+    and this change has no observable effect there yet. It matters at the
+    level this module's own public surface is called and tested —
+    :func:`denial_reason`/:func:`guard.evaluate` invoked directly with a
+    subdirectory ``cwd`` — which is the shape a caller that DOES track a
+    live ``cd`` (or a future call site) would produce; closing that gap in
+    the orchestrator's own ``cwd`` tracking is a separate change, not
+    attempted here.
 
 None of these can be closed by adding a smarter pattern — the information
 needed does not exist before the command runs. The real fix for this
@@ -574,7 +609,12 @@ def _session_root(cwd_real: str) -> str:
     itself cannot be determined, the `$HOME` half of that refusal cannot be
     evaluated either, so the walk fails CLOSED: it skips straight to the
     `cwd_real` fallback rather than climbing with the `$HOME` check silently
-    disabled — an unresolvable home must never widen the boundary.
+    disabled — an unresolvable home must never widen the boundary. The same
+    applies per level: if a level's marker cannot even be CHECKED (the
+    `os.path.exists` probe itself raises), that level is indeterminate, not
+    "no marker here" — the walk stops and returns `cwd_real` rather than
+    continuing to climb past it, since climbing past an indeterminate level
+    is exactly how a stray `.git` further up would widen the boundary.
     """
     try:
         home = os.path.realpath(str(Path.home()))
@@ -590,8 +630,12 @@ def _session_root(cwd_real: str) -> str:
             break
         try:
             marker_present = os.path.exists(current / _WORKTREE_MARKER)
-        except OSError:  # pragma: no cover - defensive
-            marker_present = False
+        except OSError:
+            # A level whose marker cannot be determined is indeterminate,
+            # not "no marker here" — continuing to climb past it would let
+            # an inaccessible directory widen the boundary past the real
+            # root. Fail closed: stop at `cwd_real` rather than guess.
+            return cwd_real
         if marker_present:
             return current_str
         current = current.parent

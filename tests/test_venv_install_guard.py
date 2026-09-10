@@ -784,3 +784,77 @@ def test_session_root_fails_closed_when_home_is_unresolvable(tmp_path, monkeypat
     assert outer_venv in r
     d = _ev("Bash", {"command": cmd}, cwd=str(inner), env=env)
     assert not d.allow
+
+
+def test_session_root_fails_closed_when_a_marker_probe_errors(tmp_path, monkeypatch):
+    """A level whose marker cannot even be CHECKED (`os.path.exists` itself
+    raises) is indeterminate, not "no marker here" — the walk must stop and
+    fall back to `cwd_real` rather than continuing to climb past it. Before
+    this fix the exception was swallowed into `marker_present = False` and
+    the walk kept climbing, so a `.git` further up — one the probe never
+    even reached — was wrongly accepted as the root."""
+    outer = tmp_path / "outer"
+    outer.mkdir()
+    (outer / ".git").mkdir()
+    outer_real, outer_venv = _mkvenv(outer)
+    mid = tmp_path / "outer" / "mid"
+    mid.mkdir()
+    inner = mid / "inner"
+    inner.mkdir()
+    inner_real = os.path.realpath(inner)
+    mid_marker = os.path.join(os.path.realpath(mid), venv_install_guard._WORKTREE_MARKER)
+
+    real_exists = os.path.exists
+
+    def flaky_exists(path):
+        if os.fspath(path) == mid_marker:
+            raise OSError("simulated: cannot stat this level")
+        return real_exists(path)
+
+    monkeypatch.setattr(venv_install_guard.os.path, "exists", flaky_exists)
+
+    assert venv_install_guard._session_root(inner_real) == inner_real, (
+        "an indeterminate level must stop the walk at cwd_real, not let it "
+        "climb past to the outer .git"
+    )
+
+    env = {"PATH": f"{outer_venv}/bin:/usr/bin:/bin"}
+    cmd = "pip install foo"
+    r = venv_install_guard.denial_reason(cmd, cwd=str(inner), env=env)
+    assert r is not None, (
+        f"the outer .git's venv must stay denied when an intermediate "
+        f"level's marker cannot be probed: {r}"
+    )
+    assert outer_venv in r
+    d = _ev("Bash", {"command": cmd}, cwd=str(inner), env=env)
+    assert not d.allow
+
+
+def test_session_root_walk_is_bounded_and_does_not_climb_past_it(tmp_path):
+    """`_MAX_ROOT_WALK` bounds the upward walk — a `.git` far enough above
+    `cwd` must not be found at all, so `_session_root` falls back to `cwd`
+    itself rather than climbing arbitrarily far. Pins the bound against a
+    mutation that widens it (e.g. raising it to a very large number), which
+    would otherwise leave the rest of the suite green."""
+    root = tmp_path / "farroot"
+    root.mkdir()
+    (root / ".git").mkdir()
+    root_real, root_venv = _mkvenv(root)
+
+    current = root
+    for i in range(40):
+        current = current / f"lvl{i}"
+        current.mkdir()
+    cwd_real = os.path.realpath(current)
+
+    assert venv_install_guard._session_root(cwd_real) == cwd_real, (
+        "a .git 40 levels above cwd sits beyond _MAX_ROOT_WALK and must "
+        "not be found — the walk must fall back to cwd, not climb past "
+        "its bound"
+    )
+
+    env = {"PATH": f"{root_venv}/bin:/usr/bin:/bin"}
+    cmd = "pip install foo"
+    r = venv_install_guard.denial_reason(cmd, cwd=str(current), env=env)
+    assert r is not None, f"a venv beyond the walk bound must stay denied: {r}"
+    assert root_venv in r
