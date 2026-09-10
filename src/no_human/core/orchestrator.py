@@ -31,7 +31,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from functools import partial
 from pathlib import Path, PurePosixPath
-from typing import Any, Callable, Iterable, Literal
+from typing import Any, Awaitable, Callable, Iterable, Literal
 from urllib.parse import quote as _url_quote
 
 from ..agent.advisory import advisory_backend
@@ -9265,11 +9265,17 @@ class Orchestrator:
 
         Returns None when there is nothing to fix, or when a second
         pre-flight fire on a re-entered attempt should fall straight through
-        to review. Returns the `TaskOutcome` that ends the attempt only when
-        the corrective round itself ends it (a commit refusal or a tamper
-        fire) — this gate never fails an attempt on its own verdict; a
-        budget still red after the round is left to TESTING's own run of
-        the full suite, which stays the backstop.
+        to review. Returns the `TaskOutcome` that ends the attempt when the
+        corrective round itself ends it (a commit refusal or a tamper fire),
+        OR — since 2026-09-10 — when the bound (one round per attempt,
+        `_structural_budget_corrected`) is spent and the guard's re-run is
+        STILL red: that used to fall through to review and die there, later,
+        on TESTING's own generic red-suite run (measured against the live
+        dogfood database: `structural_budget_grown` fired repeatedly across
+        the same 12 tasks and the attempt still died at review). Reporting
+        the budget as the cause HERE, before review, means the next attempt's
+        coder gets that cause as feedback instead of rediscovering it from a
+        cold, unattributed red suite.
         """
         paths = structural_budget.frozen_paths(repo.path)
         root = structural_budget.scanned_root(repo.path)
@@ -9301,6 +9307,7 @@ class Orchestrator:
             f"path(s)): {notify_paths}",
             paths=list(notify_paths),
         )
+        before_values = structural_budget.frozen_values(repo.path)
         outcome = await self._repro_corrective_round(
             task, repo, "", attempt_id=attempt_id, branch=branch,
             attempt_n=attempt_n, tamper_before=tamper_before,
@@ -9311,7 +9318,10 @@ class Orchestrator:
                 "fix it before review",
             turns=_STRUCTURAL_BUDGET_ROUND_TURNS,
             event_kind="structural_budget_corrective_round",
-            cause="structural_budget",
+            cause=structural_budget.STRUCTURAL_BUDGET_CAUSE,
+            pre_commit=lambda: self._reconcile_structural_budget_at_commit(
+                repo, cmd, test_cwd, before_values
+            ),
         )
         if outcome is not None:
             return outcome
@@ -9323,12 +9333,107 @@ class Orchestrator:
         structural_budget.invalidate_guard_cache(repo.path)
         result2, _ = await self._run_tests_once(repo, cmd, cwd=test_cwd)
         if result2.ran and not result2.ok:
-            self.emit(
-                "structural_budget_grown",
-                f"still red after the round: {notify_paths}",
-                paths=list(notify_paths), still_failing=True,
+            # The one bounded round this attempt gets for this cause
+            # (`_structural_budget_corrected`) is spent and the guard is
+            # still red — falling through here used to hand the attempt to
+            # review, where it would die later on a generic red suite with
+            # no cause attached. Fail it here instead, with the cause, so
+            # the next attempt's coder starts from a diagnosis instead of a
+            # cold red suite (mirrors `_repro_gate_step`'s `_fail` closure).
+            detail = (
+                f"{structural_budget.STRUCTURAL_BUDGET_CAUSE}: still red "
+                f"after the one bounded round: {notify_paths}"
             )
+            self.emit(
+                "structural_budget_grown", detail,
+                paths=list(notify_paths), still_failing=True,
+                bound_reached=True,
+                cause=structural_budget.STRUCTURAL_BUDGET_CAUSE,
+            )
+            await self.store.append_context_list(
+                task.id, "send_back_feedback", {
+                    "at": datetime.now(timezone.utc).isoformat(),
+                    "message": detail,
+                    "author": structural_budget.STRUCTURAL_BUDGET_CAUSE,
+                    "source": structural_budget.STRUCTURAL_BUDGET_CAUSE,
+                })
+            task.context = await self.store.merge_context(task.id, {})
+            await self.store.update_attempt(
+                attempt_id, status="failed", failure_reason=detail)
+            return TaskOutcome(task, status=TaskStatus.FAILED, detail=detail)
         return None
+
+    async def _reconcile_structural_budget_at_commit(
+        self, repo: GitRepo, cmd: str, test_cwd: Path | None,
+        before_values: dict[str, int],
+    ) -> list[str]:
+        """Last action before the corrective round's commit: re-measure the
+        guard against the actual dirty tree and make sure any entry the
+        round re-froze THIS round matches the tree as it will be committed,
+        not as it was when the round wrote the freeze.
+
+        The bug this closes (dogfood case `92e48491a7`, `app.py` frozen at
+        6196 but measured 6198; `scheduler.py` frozen at 3177 but measured
+        3180): a corrective round can measure growth, re-anchor the frozen
+        value to match, and then make a FURTHER edit later in the SAME turn
+        that changes the measured quantity again — so the value it commits
+        is already stale. The other three same-test dogfood failures
+        (`c246485ba3`, `70f5109fa2`, `2dcc6f80a1`) match the same failing
+        test but their own events don't carry enough numbers to confirm
+        they share this exact mechanism; this fix targets the mechanism
+        `92e48491a7` demonstrates and the general race it belongs to, not a
+        blanket claim that all four share one cause.
+
+        Re-running the guard here (rather than trusting the round's last
+        in-turn run) is deliberate: `_run_tests_once`'s cache is keyed on
+        `(repo.path, repo.head_sha(), cmd, cwd)` and is bypassed whenever
+        `repo.has_changes()` — true here, since the tree is still dirty and
+        uncommitted — so this is guaranteed to be a fresh measurement of
+        the tree as it stands right now, not a stale cached one.
+
+        Only rewrites a key when (a) the guard's own on-disk value right
+        now equals what its failure text calls the "frozen" value — i.e.
+        we're reading the state the failure text is actually describing,
+        not a stale one — AND (b) `before_values` (captured before the
+        round started) differs from the value on disk now, i.e. the ROUND
+        ITSELF changed this entry this round. An entry the round never
+        touched is left exactly alone: this is a correction, not a second,
+        wider allowance. Never widens a value below what the tree actually
+        measures — it sets the frozen value to `current`, the guard's own
+        just-measured number, whichever direction that moves it.
+
+        A raising step here (subprocess failure, unreadable guard, ...) is
+        swallowed and reported as "nothing to reconcile" (`[]`): a failed
+        reconcile must never lose the round's work, per
+        `_repro_corrective_round`'s `pre_commit` contract.
+        """
+        structural_budget.invalidate_guard_cache(repo.path)
+        result, _ = await self._run_tests_once(repo, cmd, cwd=test_cwd)
+        if result.ok or not result.ran:
+            return []
+        grown = structural_budget.parse_grown(
+            getattr(result, "output", "") or ""
+        )
+        if not grown:
+            return []
+        after = structural_budget.frozen_values(repo.path)
+        updates = {
+            key: current
+            for key, (frozen, current) in grown.items()
+            if after.get(key) == frozen and before_values.get(key) != after.get(key)
+        }
+        if not updates:
+            return []
+        changed = structural_budget.reanchor_frozen(repo.path, updates)
+        if not changed:
+            return []
+        self.emit(
+            "structural_budget_grown",
+            f"reconciled at commit ({len(changed)} path(s)): {changed}",
+            paths=list(changed), reconciled_at_commit=True,
+            cause=structural_budget.STRUCTURAL_BUDGET_CAUSE,
+        )
+        return [structural_budget.GUARD_RELPATH]
 
     def _restore_repro_manifest(self, task: Task, repo: GitRepo) -> bool:
         """Copy this task's persisted repro manifest into *repo* when the
@@ -9572,6 +9677,7 @@ class Orchestrator:
         event_kind: str = "repro_corrective_round",
         cause: str | None = None,
         effort: str = "high",
+        pre_commit: Callable[[], Awaitable[list[str]]] | None = None,
     ) -> "TaskOutcome | None":
         """ONE bounded coder round to write the MISSING repro manifest, on
         the SAME branch/worktree the attempt already committed to — not a
@@ -9606,6 +9712,20 @@ class Orchestrator:
         failure by its event *kind* string, so a distinct kind (not a nested
         field alone) is what actually reaches that recall path; `cause` rides
         along as data for a consumer that groups by cause instead.
+
+        `pre_commit`, when given, is awaited as the LAST action against the
+        working tree before the commit — after the out-of-scope revert,
+        immediately before `commit_msg` is built — and its returned paths
+        are merged into the paths passed to `commit_with_manifest_repair` so
+        anything it wrote is staged even if the agent's own edits never
+        touched it. `_structural_budget_preflight` is the only caller that
+        passes it (`_reconcile_structural_budget_at_commit`): a re-freeze the
+        round wrote earlier in the SAME turn can be invalidated by a later
+        edit in that same turn, so the value that actually gets committed
+        must be measured right before the commit, not mid-round. Every other
+        caller leaves it `None` and sees byte-identical behaviour. A raising
+        hook is caught and advisory-logged; the round's own commit proceeds
+        regardless — a failed reconcile must never lose the round's work.
 
         Returns None to let the caller re-run the gate, or the `TaskOutcome`
         that ends the attempt (a commit refusal, or a tamper fire on the
@@ -9756,8 +9876,18 @@ class Orchestrator:
                 manifest_path.unlink()
             return None
 
+        pre_commit_paths: list[str] = []
+        if pre_commit is not None:
+            try:
+                pre_commit_paths = list(await pre_commit() or [])
+            except Exception as exc:  # noqa: BLE001 — a failed reconcile must never lose the round's work
+                self._advisory(f"repro corrective round: pre-commit hook failed: {exc}")
+                pre_commit_paths = []
+
         commit_msg = self._commit_message(task)
         edited = getattr(self, "_agent_edited_files", None)
+        if pre_commit_paths and edited:
+            edited = list(dict.fromkeys([*edited, *pre_commit_paths]))
         try:
             commit = await asyncio.to_thread(
                 commit_with_manifest_repair, repo,

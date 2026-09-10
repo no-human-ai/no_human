@@ -1169,7 +1169,13 @@ FROZEN_FILE_LINES = {
     # `_agent_sink` else-branch comment after that branch widened it to
     # carry every out-of-repo path. Measured on the MERGED tree by the
     # scanner's own metric.
-    "core/orchestrator.py": 23828,
+    # 23828 -> 23958 (+130): bugfix for "budget preflight fires up to 5 times
+    # per task and still dies at review" — a `pre_commit` hook on
+    # `_repro_corrective_round`, the new `_reconcile_structural_budget_at_commit`
+    # method, and the bound-reached terminal-failure path added to
+    # `_structural_budget_preflight`. Measured on this tree by the scanner's
+    # own metric.
+    "core/orchestrator.py": 23958,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.
@@ -1989,6 +1995,33 @@ def test_offenders_reports_a_stale_entry():
     assert len(stale) == 2
     assert any("pkg/mod.py:foo" in msg for msg in stale)
     assert any("pkg/mod.py:bar" in msg for msg in stale)
+
+
+def test_a_frozen_value_under_the_measurement_is_still_grown():
+    # A re-anchor that lands BELOW the true measurement must not be
+    # tolerated just because it moved in the "corrective" direction — the
+    # ratchet only ever moves down, so a frozen value that is now LOWER
+    # than what the tree measures is exactly as much a violation as one
+    # that never moved: `offenders()` must flag it `grown`, not let it slide
+    # because the gap narrowed instead of widened.
+    measured = {"pkg/mod.py:foo": 10}
+    frozen = {"pkg/mod.py:foo": 9}
+    new, grown, stale = offenders(measured, frozen, 5, "FROZEN_FUNCTION_LINES")
+    assert new == []
+    assert stale == []
+    assert len(grown) == 1
+    assert "pkg/mod.py:foo" in grown[0]
+
+
+def test_a_frozen_value_equal_to_the_measurement_is_not_grown():
+    # Positive control for the test above: once the frozen value actually
+    # matches the tree, there is nothing left to flag.
+    measured = {"pkg/mod.py:foo": 10}
+    frozen = {"pkg/mod.py:foo": 10}
+    new, grown, stale = offenders(measured, frozen, 5, "FROZEN_FUNCTION_LINES")
+    assert new == []
+    assert grown == []
+    assert stale == []
 
 
 # ── known-positive probes, each with a negative twin ────────────────────── #

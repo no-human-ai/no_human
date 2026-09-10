@@ -99,7 +99,8 @@ _MOD_SHRUNK_LINES = len(_MOD_SHRUNK.splitlines())  # 1
 _MAX_FILE_LINES = 4
 
 
-def _guard_text(frozen: dict[str, int], *, max_file_lines: int = _MAX_FILE_LINES) -> str:
+def _guard_text(frozen: dict[str, int], *, max_file_lines: int = _MAX_FILE_LINES,
+                 src_dir: str = "pkg") -> str:
     """A self-contained structural-budget guard, deliberately much smaller
     than this repo's own `tests/test_structural_budget.py` (no `scan_tree`/
     CC machinery needed) — `structural_budget.frozen_paths`/`scanned_root`
@@ -108,8 +109,16 @@ def _guard_text(frozen: dict[str, int], *, max_file_lines: int = _MAX_FILE_LINES
     failure mode: a frozen entry GREW, a file over *max_file_lines* was
     never frozen (a NEW offender), or a frozen entry no longer matches
     reality — shrank below its frozen value, or its file vanished (STALE).
+
+    *src_dir* defaults to `"pkg"` (every existing caller's fixture layout,
+    unchanged) but may be a `/`-joined relative path such as `"tests/pkg"` —
+    used by the AC1 measure-then-edit fixtures below so the scanned product
+    file itself sits under a `tests/` path component and is therefore IN
+    SCOPE for `_repro_corrective_round`'s own scope guard, letting a second,
+    same-round edit to it survive to commit instead of being discarded.
     """
     frozen_repr = ",\n".join(f'    "{rel}": {lines}' for rel, lines in frozen.items())
+    src_expr = " / ".join(f'"{part}"' for part in src_dir.split("/"))
     return f'''"""Miniature structural-budget guard — fixture only."""
 
 from __future__ import annotations
@@ -117,7 +126,7 @@ from __future__ import annotations
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-SRC = REPO_ROOT / "pkg"
+SRC = REPO_ROOT / {src_expr}
 
 MAX_FILE_LINES = {max_file_lines}
 
@@ -189,6 +198,38 @@ def bare_repo(tmp_path):
     (work / "tests").mkdir()
     (work / "tests" / "test_structural_budget.py").write_text(
         _guard_text({"mod.py": _MOD_BASELINE_LINES})
+    )
+    (work / "README.md").write_text("fixture repo\n")
+    _git(work, "add", "-A")
+    _git(work, "commit", "-m", "init")
+    _git(work, "remote", "add", "origin", str(bare))
+    _git(work, "push", "-u", "origin", "main")
+    return work
+
+
+@pytest.fixture
+def bare_repo_relocated_product(tmp_path):
+    """Same shape as `bare_repo`, except the scanned product file lives at
+    `tests/pkg/mod.py` instead of `pkg/mod.py` — a path with a `tests` path
+    component, so `_repro_corrective_round`'s own scope guard
+    (`_repro_round_out_of_scope`, not modified by this file) treats a
+    second, same-round edit to it as IN SCOPE. Used only by the AC1
+    measure-then-edit fixtures below, where the corrective round's coder
+    needs to legitimately touch the scanned file itself a second time
+    without that edit — and the guard's own re-anchor alongside it — being
+    discarded by the blanket out-of-scope revert."""
+    bare = tmp_path / "remote2.git"
+    subprocess.run(["git", "init", "--bare", "-b", "main", str(bare)], check=True,
+                   capture_output=True)
+    work = tmp_path / "work2"
+    work.mkdir()
+    _git(work, "init", "-b", "main")
+    _git(work, "config", "user.email", "u@e.com")
+    _git(work, "config", "user.name", "u")
+    (work / "tests" / "pkg").mkdir(parents=True)
+    (work / "tests" / "pkg" / "mod.py").write_text(_MOD_BASELINE)
+    (work / "tests" / "test_structural_budget.py").write_text(
+        _guard_text({"mod.py": _MOD_BASELINE_LINES}, src_dir="tests/pkg")
     )
     (work / "README.md").write_text("fixture repo\n")
     _git(work, "add", "-A")
@@ -537,6 +578,332 @@ async def test_the_budget_corrective_round_emits_its_own_event_kind(
     budget_rounds = [e for e in events if e["kind"] == "structural_budget_corrective_round"]
     assert len(budget_rounds) == 1, events
     assert budget_rounds[0].get("cause") == "structural_budget", budget_rounds[0]
+
+
+# --------------------------------------------------------------------------- #
+# AC1 (measure-then-edit) — a corrective round that re-freezes a frozen      #
+# entry, then makes a FURTHER edit in the SAME round that changes the        #
+# measured quantity again, must still commit a value matching the tree AS    #
+# COMMITTED — not the value it happened to measure mid-round. Bugfix for     #
+# "budget preflight fires up to 5 times per task and still dies at review"   #
+# (dogfood case 92e48491a7: app.py frozen at 6196 but measured 6198;         #
+# scheduler.py frozen at 3177 but measured 3180).                            #
+# --------------------------------------------------------------------------- #
+
+
+# One more growth pass on top of `_MOD_GROWN` (6 lines) — the further edit a
+# round can make AFTER it has already re-anchored the guard to `_MOD_GROWN`'s
+# count, in the SAME turn, making that re-anchor stale before it is committed.
+_MOD_GROWN_AGAIN = _MOD_GROWN + "def baz():\n    return 3\n"
+_MOD_GROWN_AGAIN_LINES = len(_MOD_GROWN_AGAIN.splitlines())  # 8
+
+
+class _ReanchorsThenEditsAgainBackend:
+    """Turn 1: grows `tests/pkg/mod.py` to `_MOD_GROWN` (6 lines) and
+    commits. Turn 2 (the corrective round) reproduces the measure-then-edit
+    mistake IN ORDER: first re-anchors `FROZEN_FILE_LINES["mod.py"]` to
+    `_MOD_GROWN_LINES` — the value it measured a moment ago — and only
+    THEN, in the SAME turn, edits `tests/pkg/mod.py` again, growing it
+    further to `_MOD_GROWN_AGAIN` (8 lines). The value the round wrote to
+    the guard is now stale before the round's own commit even happens.
+
+    The scanned product file lives under `tests/pkg/` (not `pkg/`,
+    `bare_repo`'s layout) specifically so this second edit has a `tests`
+    path component and is IN SCOPE for `_repro_corrective_round`'s own
+    scope guard (`_repro_round_out_of_scope`, not modified by this file) —
+    otherwise the edit (and, via the guard's blanket revert-on-out-of-scope
+    behavior, the re-anchor alongside it) would be discarded before ever
+    reaching a commit, and this fixture would not exercise the
+    measure-then-edit bug at all."""
+
+    def __init__(self):
+        self.calls = 0
+        self.prompts = []
+
+    async def run(self, prompt, *, cwd, max_turns, effort=None, resume=None,
+                  on_event=None, supervisor_hook=None, **kwargs):
+        self.calls += 1
+        self.prompts.append(prompt)
+        cwd = Path(cwd)
+        if self.calls == 1:
+            if on_event is not None:
+                on_event(AgentEvent("tool_use", tool_name="Edit",
+                                    tool_input={"file_path": "tests/pkg/mod.py"}))
+            cwd.joinpath("tests", "pkg", "mod.py").write_text(_MOD_GROWN)
+            return AgentResult(final_text="added bar()", num_turns=2, is_error=False,
+                               tokens_used=100, session_id="s1", stop_reason="end_turn")
+        if on_event is not None:
+            on_event(AgentEvent("tool_use", tool_name="Edit",
+                                tool_input={"file_path": "tests/test_structural_budget.py"}))
+        cwd.joinpath("tests", "test_structural_budget.py").write_text(
+            _guard_text({"mod.py": _MOD_GROWN_LINES}, src_dir="tests/pkg")
+        )
+        if on_event is not None:
+            on_event(AgentEvent("tool_use", tool_name="Edit",
+                                tool_input={"file_path": "tests/pkg/mod.py"}))
+        cwd.joinpath("tests", "pkg", "mod.py").write_text(_MOD_GROWN_AGAIN)
+        return AgentResult(final_text="re-anchored mod.py, then grew it further",
+                           num_turns=2, is_error=False, tokens_used=10,
+                           session_id="s2", stop_reason="end_turn")
+
+
+async def test_a_round_that_edits_after_re_anchoring_still_commits_the_final_count(
+        bare_repo_relocated_product, tmp_path, store):
+    """RED before the fix: without a pre-commit reconcile, the corrective
+    round commits the STALE `_MOD_GROWN_LINES` (6) it measured mid-round,
+    even though `tests/pkg/mod.py` is really `_MOD_GROWN_AGAIN_LINES` (8)
+    lines by the time of the commit — the exact mechanism dogfood case
+    92e48491a7 demonstrates. The attempt would sail through review and only
+    fail later, in TESTING's full-suite run, on the guard's own growth test."""
+    backend = _ReanchorsThenEditsAgainBackend()
+    orch, task, repo, events = await _run_one_task_attempt(
+        store, bare_repo_relocated_product, tmp_path, backend)
+
+    outcome = await orch._run_attempt(task, repo, 1, "main")
+
+    assert outcome.status is TaskStatus.AWAITING_APPROVAL, outcome.detail
+    assert backend.calls == 2
+
+    committed_guard = subprocess.run(
+        ["git", "show", "HEAD:tests/test_structural_budget.py"], cwd=repo.path,
+        check=True, capture_output=True, text=True,
+    ).stdout
+    assert f'"mod.py": {_MOD_GROWN_AGAIN_LINES},' in committed_guard
+    assert f'"mod.py": {_MOD_GROWN_LINES},' not in committed_guard
+
+    committed_mod = subprocess.run(
+        ["git", "show", "HEAD:tests/pkg/mod.py"], cwd=repo.path,
+        check=True, capture_output=True, text=True,
+    ).stdout
+    assert len(committed_mod.splitlines()) == _MOD_GROWN_AGAIN_LINES
+
+    reconciled = [
+        e for e in events
+        if e["kind"] == "structural_budget_grown" and e.get("reconciled_at_commit")
+    ]
+    assert len(reconciled) == 1, events
+
+    attempts = await store.list_attempts(task.id)
+    assert len(attempts) == 1
+
+
+async def test_the_reconcile_corrects_upward_rather_than_tolerating_an_under_value(
+        bare_repo_relocated_product, tmp_path, store):
+    """The reconcile must set the frozen value to the tree's ACTUAL current
+    measurement, not merely move it in the corrective direction: landing
+    even one line UNDER the true count is still a ratchet-down violation —
+    `offenders()` treats `current > frozen` as grown regardless of how the
+    gap narrowed. Reuses the measure-then-edit fixture above (the tree
+    really is `_MOD_GROWN_AGAIN_LINES` == 8 lines by commit time) and then
+    pins the negative directly: an under-value of 7 is NOT tolerated by the
+    guard itself."""
+    backend = _ReanchorsThenEditsAgainBackend()
+    orch, task, repo, events = await _run_one_task_attempt(
+        store, bare_repo_relocated_product, tmp_path, backend)
+
+    outcome = await orch._run_attempt(task, repo, 1, "main")
+    assert outcome.status is TaskStatus.AWAITING_APPROVAL, outcome.detail
+
+    committed_guard = subprocess.run(
+        ["git", "show", "HEAD:tests/test_structural_budget.py"], cwd=repo.path,
+        check=True, capture_output=True, text=True,
+    ).stdout
+    assert _MOD_GROWN_AGAIN_LINES == 8
+    assert f'"mod.py": {_MOD_GROWN_AGAIN_LINES},' in committed_guard
+
+    under_value = _MOD_GROWN_AGAIN_LINES - 1
+    repo.path.joinpath("tests", "test_structural_budget.py").write_text(
+        _guard_text({"mod.py": under_value}, src_dir="tests/pkg")
+    )
+    # Without this, a same-second, same-length rewrite of the guard file
+    # (plausible here: the round's own commit already wrote it once) can
+    # serve a stale `__pycache__` compile of the PRE-under-value guard —
+    # exactly the race `test_a_same_second_same_length_guard_rewrite_...`
+    # pins below — and this assertion would then see the wrong version.
+    structural_budget.invalidate_guard_cache(repo.path)
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q",
+         "tests/test_structural_budget.py::test_no_frozen_entry_has_grown"],
+        cwd=repo.path, capture_output=True, text=True,
+    )
+    assert result.returncode != 0, result.stdout + result.stderr
+
+
+# --------------------------------------------------------------------------- #
+# Per-mode NEGATIVE controls: a diff that touches a scanned file but leaves  #
+# that mode's own check clean must fire nothing and spend nothing beyond     #
+# the one bounded guard run — the positive-firing twin for each mode is      #
+# already pinned above (frozen growth, new offender, stale entry).          #
+# --------------------------------------------------------------------------- #
+
+
+# Same line count as `_MOD_BASELINE` (2) — a content-only edit that keeps
+# `pkg/mod.py` exactly at its frozen size.
+_MOD_SAME_SIZE = "def foo():\n    return 2\n"
+assert len(_MOD_SAME_SIZE.splitlines()) == _MOD_BASELINE_LINES
+
+# Under the fixture guard's own MAX_FILE_LINES (4) — a brand-new file that
+# never crosses the new-offender limit.
+_SMALL_NEW_FILE = "x = 1\ny = 2\n"
+assert len(_SMALL_NEW_FILE.splitlines()) <= _MAX_FILE_LINES
+
+
+class _EditsFrozenFileWithoutGrowingItBackend:
+    """One turn: rewrites `pkg/mod.py`'s CONTENT but keeps its line count
+    exactly at its frozen value — `touched_frozen` fires (the file is
+    frozen and touched, so the guard's whole file still runs) but neither
+    the growth mode (`current > frozen`) nor the stale mode
+    (`current < frozen`) trips, since `current == frozen`."""
+
+    def __init__(self):
+        self.calls = 0
+
+    async def run(self, prompt, *, cwd, max_turns, effort=None, resume=None,
+                  on_event=None, supervisor_hook=None, **kwargs):
+        self.calls += 1
+        cwd = Path(cwd)
+        if on_event is not None:
+            on_event(AgentEvent("tool_use", tool_name="Edit",
+                                tool_input={"file_path": "pkg/mod.py"}))
+        cwd.joinpath("pkg", "mod.py").write_text(_MOD_SAME_SIZE)
+        return AgentResult(final_text="tweaked foo()'s body", num_turns=1, is_error=False,
+                           tokens_used=10, session_id="s", stop_reason="end_turn")
+
+
+async def test_no_fire_when_growth_is_not_tripped(bare_repo, tmp_path, store):
+    backend = _EditsFrozenFileWithoutGrowingItBackend()
+    orch, task, repo, events = await _run_one_task_attempt(store, bare_repo, tmp_path, backend)
+
+    outcome = await orch._run_attempt(task, repo, 1, "main")
+
+    assert outcome.status is TaskStatus.AWAITING_APPROVAL, outcome.detail
+    assert backend.calls == 1
+    assert not [e for e in events if e["kind"] == "structural_budget_grown"], events
+    assert not [e for e in events if e["kind"] == "structural_budget_corrective_round"], events
+
+
+class _AddsSmallNewFileUnderTheLimitBackend:
+    """One turn: adds a brand-new file under the guard's own
+    `MAX_FILE_LINES` — `touches_scanned_root` fires (any new `.py` file
+    under the scanned root) but the new-offender mode itself stays clean."""
+
+    def __init__(self):
+        self.calls = 0
+
+    async def run(self, prompt, *, cwd, max_turns, effort=None, resume=None,
+                  on_event=None, supervisor_hook=None, **kwargs):
+        self.calls += 1
+        cwd = Path(cwd)
+        if on_event is not None:
+            on_event(AgentEvent("tool_use", tool_name="Edit",
+                                tool_input={"file_path": "pkg/small.py"}))
+        cwd.joinpath("pkg", "small.py").write_text(_SMALL_NEW_FILE)
+        return AgentResult(final_text="added small.py", num_turns=1, is_error=False,
+                           tokens_used=10, session_id="s", stop_reason="end_turn")
+
+
+async def test_no_fire_when_new_offender_is_not_tripped(bare_repo, tmp_path, store):
+    backend = _AddsSmallNewFileUnderTheLimitBackend()
+    orch, task, repo, events = await _run_one_task_attempt(store, bare_repo, tmp_path, backend)
+
+    outcome = await orch._run_attempt(task, repo, 1, "main")
+
+    assert outcome.status is TaskStatus.AWAITING_APPROVAL, outcome.detail
+    assert backend.calls == 1
+    assert not [e for e in events if e["kind"] == "structural_budget_grown"], events
+    assert not [e for e in events if e["kind"] == "structural_budget_corrective_round"], events
+
+
+async def test_no_fire_when_stale_is_not_tripped(bare_repo, tmp_path, store):
+    """Same fixture as the growth negative control above: `pkg/mod.py`
+    rewritten at exactly its frozen size is simultaneously the growth AND
+    the stale negative control, since `current == frozen` trips neither
+    `current > frozen` (grown) nor `current < frozen` (stale)."""
+    backend = _EditsFrozenFileWithoutGrowingItBackend()
+    orch, task, repo, events = await _run_one_task_attempt(store, bare_repo, tmp_path, backend)
+
+    outcome = await orch._run_attempt(task, repo, 1, "main")
+
+    assert outcome.status is TaskStatus.AWAITING_APPROVAL, outcome.detail
+    assert backend.calls == 1
+    assert not [e for e in events if e["kind"] == "structural_budget_grown"], events
+    assert not [e for e in events if e["kind"] == "structural_budget_corrective_round"], events
+
+
+# --------------------------------------------------------------------------- #
+# Bound reached — the one corrective round `_structural_budget_corrected`   #
+# already allows per attempt is spent and the guard is STILL red: the       #
+# attempt must fail HERE, with the budget as the cause, rather than fall    #
+# through to review and die later on a generic, unattributed red suite.     #
+# --------------------------------------------------------------------------- #
+
+
+class _GrowsFrozenFileThenDoesNothingUsefulBackend:
+    """Turn 1: grows `pkg/mod.py` past its frozen budget and commits. Turn 2
+    (the ONE bounded corrective round this attempt gets): edits only
+    `README.md` — never touches the guard, never touches `mod.py` — so the
+    guard is still red after the round. This is the class of case the
+    dogfood DB shows dying later at review on a generic red suite; the fix
+    must report the budget as the cause and fail the attempt HERE instead,
+    bounded to exactly this one round."""
+
+    def __init__(self):
+        self.calls = 0
+        self.prompts = []
+
+    async def run(self, prompt, *, cwd, max_turns, effort=None, resume=None,
+                  on_event=None, supervisor_hook=None, **kwargs):
+        self.calls += 1
+        self.prompts.append(prompt)
+        cwd = Path(cwd)
+        if self.calls == 1:
+            if on_event is not None:
+                on_event(AgentEvent("tool_use", tool_name="Edit",
+                                    tool_input={"file_path": "pkg/mod.py"}))
+            cwd.joinpath("pkg", "mod.py").write_text(_MOD_GROWN)
+            return AgentResult(final_text="added bar()", num_turns=2, is_error=False,
+                               tokens_used=100, session_id="s1", stop_reason="end_turn")
+        if on_event is not None:
+            on_event(AgentEvent("tool_use", tool_name="Edit",
+                                tool_input={"file_path": "README.md"}))
+        cwd.joinpath("README.md").write_text("fixture repo — unrelated edit\n")
+        return AgentResult(final_text="edited README instead", num_turns=1, is_error=False,
+                           tokens_used=10, session_id="s2", stop_reason="end_turn")
+
+
+async def test_when_the_bounded_round_fails_the_attempt_reports_the_budget_as_the_cause(
+        bare_repo, tmp_path, store):
+    """RED before the fix: today a still-red guard after the round falls
+    through to review, where the attempt dies later on a generic red suite
+    with no cause attached — the dogfood pattern this bugfix exists to
+    close. The fix must fail the attempt HERE, bounded to the one round
+    `_structural_budget_corrected` already allows, with the budget named as
+    the cause via `STRUCTURAL_BUDGET_CAUSE`."""
+    backend = _GrowsFrozenFileThenDoesNothingUsefulBackend()
+    orch, task, repo, events = await _run_one_task_attempt(store, bare_repo, tmp_path, backend)
+
+    outcome = await orch._run_attempt(task, repo, 1, "main")
+
+    assert backend.calls == 2, "must stay bounded to exactly one corrective round"
+    assert outcome.status is TaskStatus.FAILED, outcome.detail
+    assert outcome.detail.startswith(structural_budget.STRUCTURAL_BUDGET_CAUSE), outcome.detail
+
+    attempts = await store.list_attempts(task.id)
+    assert len(attempts) == 1
+    assert attempts[0]["failure_reason"].startswith(
+        structural_budget.STRUCTURAL_BUDGET_CAUSE
+    ), attempts[0]
+
+    bound_events = [
+        e for e in events
+        if e["kind"] == "structural_budget_grown" and e.get("bound_reached")
+    ]
+    assert len(bound_events) == 1, events
+    assert bound_events[0].get("cause") == structural_budget.STRUCTURAL_BUDGET_CAUSE, (
+        bound_events[0]
+    )
+
+    assert not any(_is_review_boundary(e) for e in events), events
 
 
 # --------------------------------------------------------------------------- #

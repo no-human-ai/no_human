@@ -26,6 +26,7 @@ target repos — must pay nothing for it.
 from __future__ import annotations
 
 import ast
+import re
 import shlex
 from pathlib import Path
 
@@ -35,6 +36,10 @@ GUARD_RELPATH = "tests/test_structural_budget.py"
 GROWTH_TEST = "test_no_frozen_entry_has_grown"
 #: The pytest node id for that test, ready to append to any pytest command.
 GROWTH_NODE_ID = f"{GUARD_RELPATH}::{GROWTH_TEST}"
+#: The `cause` this preflight tags its corrective round, its events, and a
+#: bound-reached attempt failure with — one constant so callers/tests assert
+#: on it rather than on prose that could drift out from under them.
+STRUCTURAL_BUDGET_CAUSE = "structural_budget"
 
 # The dict names the guard freezes today's offenders under. Matched
 # generically — any module-level name starting with this prefix and bound
@@ -122,6 +127,55 @@ def frozen_paths(repo_path: Path) -> set[str]:
         return out
     except Exception:  # noqa: BLE001 — fail-open, matching repro_gate.py
         return set()
+
+
+def frozen_values(repo_path: Path) -> dict[str, int]:
+    """Every `FROZEN_*` entry *repo_path*'s guard freezes, as
+    `{raw_key: value}` — the raw dict key exactly as written (e.g.
+    `"core/orchestrator.py"` or `"pkg/mod.py:foo"`, NOT joined to the
+    scanned root the way `frozen_paths` joins it), paired with its frozen
+    integer.
+
+    This is the guard's OWN on-disk state, read the same fail-open way as
+    `frozen_paths`: only a plain `ast.Constant` int value is counted — a
+    computed or non-literal value is skipped, not guessed at — and any
+    read/parse failure (absent file, unreadable, not valid Python) yields
+    `{}`, never a raise. Used to tell whether a corrective round actually
+    changed a given entry THIS round (compare a `before` and `after`
+    snapshot) rather than to resolve `frozen_paths`' path-vs-key mapping,
+    which is why the key here is left raw.
+    """
+    guard = Path(repo_path) / GUARD_RELPATH
+    try:
+        text = guard.read_text()
+        tree = ast.parse(text, filename=str(guard))
+    except (OSError, SyntaxError, ValueError):
+        return {}
+    try:
+        out: dict[str, int] = {}
+        for stmt in ast.walk(tree):
+            if not isinstance(stmt, ast.Assign):
+                continue
+            if not any(
+                isinstance(t, ast.Name) and t.id.startswith(_FROZEN_PREFIX)
+                for t in stmt.targets
+            ):
+                continue
+            if not isinstance(stmt.value, ast.Dict):
+                continue
+            for key, value in zip(stmt.value.keys, stmt.value.values):
+                if not (isinstance(key, ast.Constant) and isinstance(key.value, str)):
+                    continue
+                if not (
+                    isinstance(value, ast.Constant)
+                    and isinstance(value.value, int)
+                    and not isinstance(value.value, bool)
+                ):
+                    continue
+                out[key.value] = value.value
+        return out
+    except Exception:  # noqa: BLE001 — fail-open, matching frozen_paths
+        return {}
 
 
 def touched_frozen(frozen: set[str], changed_files: list[str]) -> list[str]:
@@ -230,3 +284,118 @@ def invalidate_guard_cache(repo_path: Path) -> None:
             pyc.unlink(missing_ok=True)
     except OSError:
         pass
+
+
+#: Matches the guard's own `offenders()`-emitted growth line, e.g.
+#: `"core/orchestrator.py: frozen 23825, now 23828 (+3); this budget only
+#: ratchets down"` — read from the GUARD'S OWN failure text, never a second
+#: independent measurement, so this can never disagree with the verdict
+#: that failed the test.
+#:
+#: Deliberately NOT anchored to the start of a line: pytest's own failure
+#: rendering prepends the exception's class name to the FIRST line of a
+#: multi-line assertion message (e.g. `"E       AssertionError: mod.py:
+#: frozen 6, now 8 (+2); ..."`), so a strict `^\s*` line-start anchor would
+#: silently miss that first grown entry while still matching any later
+#: ones. `\S+` cannot itself cross the whitespace before "mod.py", so this
+#: still can't mistake "AssertionError:" (or any other prefix token) for
+#: the key.
+_GROWN_LINE_RE = re.compile(
+    r"(?P<key>\S+): frozen (?P<frozen>\d+), now (?P<current>\d+)\b",
+)
+
+
+def parse_grown(output: str) -> dict[str, tuple[int, int]]:
+    """Every `{key: frozen N, now M}` line in *output* — pytest's captured
+    text from a run of the guard's own growth test — as
+    `{key: (frozen, current)}`.
+
+    This reads the guard's OWN emitted diagnosis, matching `offenders()`'s
+    exact message shape verbatim; it is not a second, independent
+    measurement that could disagree with the one that just failed the
+    test. `{}` on no match (a growth failure with different wording, or no
+    failure at all) — never a raise.
+    """
+    out: dict[str, tuple[int, int]] = {}
+    for m in _GROWN_LINE_RE.finditer(output or ""):
+        out[m.group("key")] = (int(m.group("frozen")), int(m.group("current")))
+    return out
+
+
+def reanchor_frozen(repo_path: Path, updates: dict[str, int]) -> list[str]:
+    """Rewrite ONLY the numeric value token of each `updates` key inside
+    *repo_path*'s guard's `FROZEN_*` dict literals, in place, line-oriented
+    (locate the `ast.Constant` value node's `lineno`/`col_offset`/
+    `end_col_offset`, splice in the new digits, leave every other
+    character — comments, spacing, ordering, every OTHER key — untouched).
+
+    A key is skipped (never a partial or best-guess rewrite) when it is
+    absent from every `FROZEN_*` dict, appears in more than one (ambiguous:
+    which one is "the" frozen value for this key), or its current value
+    node is not a plain `ast.Constant` int (a computed value has no single
+    literal token to replace). Returns the keys actually rewritten — a
+    caller comparing this against the keys it asked for can tell exactly
+    which ones landed.
+
+    `[]` — never a raise — on an unreadable or unparseable guard, matching
+    every other function in this module.
+    """
+    guard = Path(repo_path) / GUARD_RELPATH
+    try:
+        text = guard.read_text()
+        tree = ast.parse(text, filename=str(guard))
+    except (OSError, SyntaxError, ValueError):
+        return []
+    try:
+        candidates: dict[str, list[ast.Constant]] = {}
+        for stmt in ast.walk(tree):
+            if not isinstance(stmt, ast.Assign):
+                continue
+            if not any(
+                isinstance(t, ast.Name) and t.id.startswith(_FROZEN_PREFIX)
+                for t in stmt.targets
+            ):
+                continue
+            if not isinstance(stmt.value, ast.Dict):
+                continue
+            for key, value in zip(stmt.value.keys, stmt.value.values):
+                if not (isinstance(key, ast.Constant) and isinstance(key.value, str)):
+                    continue
+                if key.value not in updates:
+                    continue
+                if not (
+                    isinstance(value, ast.Constant)
+                    and isinstance(value.value, int)
+                    and not isinstance(value.value, bool)
+                ):
+                    continue
+                candidates.setdefault(key.value, []).append(value)
+
+        targets = {
+            key: nodes[0]
+            for key, nodes in candidates.items()
+            if len(nodes) == 1
+        }
+        if not targets:
+            return []
+
+        lines = text.splitlines(keepends=True)
+        # Rewrite bottom-to-top so an earlier splice on the same line never
+        # shifts a later node's still-pending column offsets.
+        ordered = sorted(
+            targets.items(), key=lambda kv: (kv[1].lineno, kv[1].col_offset),
+            reverse=True,
+        )
+        changed: list[str] = []
+        for key, node in ordered:
+            row = node.lineno - 1
+            line = lines[row]
+            new_value = str(updates[key])
+            lines[row] = (
+                line[: node.col_offset] + new_value + line[node.end_col_offset :]
+            )
+            changed.append(key)
+        guard.write_text("".join(lines))
+        return sorted(changed)
+    except Exception:  # noqa: BLE001 — fail-open, matching every reader above
+        return []
