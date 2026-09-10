@@ -126,6 +126,39 @@ residual set is CAPABILITY-level: run coder sessions with the shared dev
 venv not writable by the session's UID (or a read-only bind-mount) and
 with ``VIRTUAL_ENV``/``UV_PROJECT_ENVIRONMENT`` pinned to the worktree's
 own venv for the whole session — not attempted in this ticket.
+
+  - **Bugfix (this ticket): an unreadable ``pyvenv.cfg`` used to ALLOW.**
+    ``chmod`` on a venv directory (e.g. ``chmod 600``/``chmod -x``) strips
+    its execute bit, so anything inside it cannot be stat'd, while the
+    directory itself still stats fine from its parent. ``os.path.isfile``
+    swallows the resulting ``PermissionError`` and reports ``False`` —
+    indistinguishable from "no ``pyvenv.cfg`` here" — so ``_venv_root_of``
+    concluded "owns no venv" and the shared venv stopped being a write
+    candidate. Fixed by probing tri-state (``_probe_is_file``/
+    ``_probe_is_dir``: ``True``/``False``/``None`` = "undetermined") and
+    failing closed (``is not False``) at every site that used to ask
+    ``os.path.isfile``/``os.path.isdir`` directly (``None`` means
+    undetermined). Scoped honestly: in the DEFAULT layout the primary
+    checkout's own ``.venv`` was never the hole
+    (``guard._protected_venvs``'s ``is_dir`` branch is unaffected by this
+    particular ``chmod``) — what this closes is the structural resolution
+    in this module (``_venv_root_of``, `_resolve_installer`, the
+    ``--python``/directory-token probes above) and the ``sys.prefix``
+    backstop in ``guard.py``, both of which failed open on exactly this
+    input before this fix.
+
+  - **Noted, not fixed (same class as the bugfix above):** the bare-token
+    branch of ``_resolve_installer`` still resolves through
+    ``shutil.which``, which internally calls ``os.path.exists`` and
+    swallows the very same ``PermissionError`` this fix removes at the
+    four sites above. A bare, PATH-resolved installer token (``pip
+    install evilpkg`` with no explicit path, under a ``PATH`` whose
+    directory has been made unreadable) still resolves to ``None``
+    (allow-and-log) — confirmed empirically: it does so on both the old
+    and the fixed code, because the swallow lives one layer inside the
+    standard library, beneath every probe site this ticket touches.
+    Closing it would mean replacing ``shutil.which`` itself with a
+    tri-state PATH walk — out of scope for this ticket.
 """
 
 from __future__ import annotations
@@ -134,6 +167,7 @@ import logging
 import os
 import shlex
 import shutil
+import stat
 from pathlib import Path, PurePosixPath
 from typing import Mapping
 
@@ -278,23 +312,59 @@ def _safe_realpath(path: str) -> str | None:
         return None
 
 
+def _probe_is_file(path: str) -> bool | None:
+    """True = is a regular file; False = definitively NOT there (or not a
+    file); None = COULD NOT BE DETERMINED (e.g. a `chmod` that blocks
+    stat'ing it or a parent directory).
+
+    Deliberately not `os.path.isfile`, which catches every `OSError` inside
+    the stdlib and reports `False` — making "unreadable" indistinguishable
+    from "absent". Callers that must fail closed on an undetermined probe
+    test `is not False`.
+    """
+    try:
+        return stat.S_ISREG(os.stat(path).st_mode)
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+    except (OSError, ValueError):
+        return None
+
+
+def _probe_is_dir(path: str) -> bool | None:
+    """Same tri-state contract as `_probe_is_file`, for directories."""
+    try:
+        return stat.S_ISDIR(os.stat(path).st_mode)
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+    except (OSError, ValueError):
+        return None
+
+
 def _venv_root_of(exe_path: str) -> str | None:
-    """The venv root owning `exe_path` (`<root>/pyvenv.cfg` exists), or None.
+    """The venv root owning `exe_path` (`<root>/pyvenv.cfg` exists), or None
+    ONLY when a venv is definitively absent there.
 
     A filesystem probe, not a text match — this is what lets `source
     .../activate && pip install foo` resolve correctly even though
     `activate` is never itself treated as an installer: `pip` resolves via
     PATH to the same venv's `bin/pip`, and this probe finds its root.
+
+    Tri-state via `_probe_is_file`: a root whose `pyvenv.cfg` cannot be
+    determined (`None` — e.g. the venv directory's execute bit was
+    stripped) is treated as A VENV ROOT, not as "no venv here" — a root
+    that cannot be determined must fail closed so the write candidate is
+    kept and the install refused. Only a determinate `False` (no
+    `pyvenv.cfg` at all) returns `None` here. (The old `except OSError:
+    pass` this replaced was unreachable dead code: `os.path.isfile`,
+    which it guarded, already swallows every `OSError` itself one line
+    above — that swallow, not a missing guard, was the bug.)
     """
     parent = os.path.dirname(exe_path)
     root = os.path.dirname(parent)
     if not root:
         return None
-    try:
-        if os.path.isfile(os.path.join(root, "pyvenv.cfg")):
-            return os.path.realpath(root)
-    except OSError:  # pragma: no cover - defensive
-        pass
+    if _probe_is_file(os.path.join(root, "pyvenv.cfg")) is not False:
+        return _safe_realpath(root) or root
     return None
 
 
@@ -312,8 +382,24 @@ def _resolve_installer(token: str, cwd: str | None, env: Mapping[str, str]) -> s
     try:
         if "/" in token:
             real = _safe_realpath(_join(cwd, token))
-            if real and os.path.isfile(real) and _is_installer_name(_basename(real)):
-                return real
+            if real and _is_installer_name(_basename(real)):
+                probe = _probe_is_file(real)
+                # `None` (undeterminable — e.g. a `chmod` on the venv
+                # directory two levels up makes even stat'ing this file
+                # raise `PermissionError`) is NOT the same as `False`
+                # (genuinely absent): a resolution that cannot be verified
+                # must still count as resolved, or the install-target probe
+                # downstream (`_venv_root_of` via `_effective_prefixes`)
+                # never sees this installer at all.
+                if probe is not False:
+                    if probe is None:
+                        _LOG.warning(
+                            "venv guard: %r resolved to %r but its file "
+                            "type could not be verified (permission "
+                            "denied?); treating it as a resolved installer "
+                            "rather than assuming it is absent", token, real,
+                        )
+                    return real
             if _is_installer_name(_basename(token)):
                 _LOG.warning(
                     "venv guard: %r names an installer but could not be "
@@ -453,7 +539,7 @@ def _effective_prefixes(
         # e.g. `--python /usr/bin/python3.11`) still falls through to
         # `real` unchanged, so a genuine out-of-tree target is still
         # blocked.
-        owning = _venv_root_of(joined) if os.path.isfile(real) else None
+        owning = _venv_root_of(joined) if _probe_is_file(real) is not False else None
         candidates.add(owning or real)
 
     # The venv owning each resolved installer — for pip/python only. `pip`/
@@ -483,7 +569,7 @@ def _effective_prefixes(
         if not _looks_like_path(tok):
             continue
         real = _safe_realpath(_join(cwd, tok))
-        if real and os.path.isdir(real):
+        if real and _probe_is_dir(real) is not False:
             candidates.add(real)
 
     return candidates
