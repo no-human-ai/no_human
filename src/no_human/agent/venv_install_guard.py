@@ -132,11 +132,13 @@ pre-execution. It cannot see:
     :func:`_session_root`) is discovered by an upward filesystem walk for a
     ``.git`` marker, not by asking the VCS:
       (i) an unmarked tree — or one whose only marker sits at ``$HOME`` or
-          the filesystem anchor, both explicitly refused as a root — falls
-          back to ``cwd`` itself, so a subdirectory install there is still
-          refused. This is a conservative FALSE POSITIVE (over-denial),
-          never a hole: it can only narrow what counts as "in tree", not
-          widen it;
+          the filesystem anchor, both explicitly refused as a root, or one
+          where ``$HOME`` cannot be determined at all (the walk then fails
+          CLOSED and skips straight to the ``cwd`` fallback rather than
+          climbing with that refusal silently disabled) — falls back to
+          ``cwd`` itself, so a subdirectory install there is still refused.
+          This is a conservative FALSE POSITIVE (over-denial), never a
+          hole: it can only narrow what counts as "in tree", not widen it;
       (ii) every venv under the discovered root — including one that lives
           in a sibling subdirectory of ``cwd``, not just an ancestor — is
           now a valid install target. This is the intended isolation
@@ -568,19 +570,23 @@ def _session_root(cwd_real: str) -> str:
     otherwise land on `$HOME` or the filesystem anchor (`/`, a drive root):
     both are refused as a root even if either happens to carry its own
     `.git`, since accepting them would make "the session's worktree" mean
-    "the user's entire home directory" or "the whole filesystem".
+    "the user's entire home directory" or "the whole filesystem". If `$HOME`
+    itself cannot be determined, the `$HOME` half of that refusal cannot be
+    evaluated either, so the walk fails CLOSED: it skips straight to the
+    `cwd_real` fallback rather than climbing with the `$HOME` check silently
+    disabled — an unresolvable home must never widen the boundary.
     """
     try:
         home = os.path.realpath(str(Path.home()))
     except (OSError, RuntimeError):
-        home = None
+        return cwd_real
 
     current = Path(cwd_real)
     for _ in range(_MAX_ROOT_WALK):
         if current == current.parent:
             break
         current_str = str(current)
-        if home is not None and current_str == home:
+        if current_str == home:
             break
         try:
             marker_present = os.path.exists(current / _WORKTREE_MARKER)

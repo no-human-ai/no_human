@@ -745,3 +745,42 @@ def test_session_root_never_expands_to_home_or_the_filesystem_root(tmp_path, mon
     assert venv_install_guard._session_root(os.path.realpath(nested_sub)) == os.path.realpath(inner), (
         "the NEAREST marker must win over a farther ancestor's"
     )
+
+
+def test_session_root_fails_closed_when_home_is_unresolvable(tmp_path, monkeypatch):
+    """If `Path.home()` itself raises, `_session_root` must not silently
+    disable the `$HOME` refusal and keep climbing — that would let a
+    `.git`-bearing ancestor at or above an unresolvable `$HOME` become the
+    accepted root. It must fail CLOSED: fall straight back to `cwd_real`,
+    exactly the pre-widening behaviour, so a `.git` sitting above `cwd`
+    is never accepted as the root while home is unknown."""
+
+    def _raise_home():
+        raise RuntimeError("could not determine home directory")
+
+    monkeypatch.setattr(venv_install_guard.Path, "home", staticmethod(_raise_home))
+
+    outer = tmp_path / "outer"
+    outer.mkdir()
+    (outer / ".git").mkdir()
+    _outer_real, outer_venv = _mkvenv(outer)
+    inner = outer / "inner"
+    inner.mkdir()
+
+    inner_real = os.path.realpath(inner)
+    assert venv_install_guard._session_root(inner_real) == inner_real, (
+        "with home unresolvable, the walk must not climb to the outer "
+        ".git at all — it must fall back to cwd_real, not just skip the "
+        "home-equality check while still ascending"
+    )
+
+    env = {"PATH": f"{outer_venv}/bin:/usr/bin:/bin"}
+    cmd = "pip install foo"
+    r = venv_install_guard.denial_reason(cmd, cwd=str(inner), env=env)
+    assert r is not None, (
+        f"an outer .git's venv must stay denied when home cannot be "
+        f"resolved, not be accepted as in-root: {r}"
+    )
+    assert outer_venv in r
+    d = _ev("Bash", {"command": cmd}, cwd=str(inner), env=env)
+    assert not d.allow
