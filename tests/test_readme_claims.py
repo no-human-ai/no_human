@@ -1990,6 +1990,24 @@ def _token_line_in_symbol(source_text: str, symbol: str, token: str) -> int | No
 #: would read it in prose — expected literal substring in the cited line(s)
 #: or, for a `file.py:Symbol` row, anywhere in that symbol's vicinity).
 CITATION_TABLE = (
+    # docs/WINDOWS.md — the console-popup mechanism. #110: this section used to
+    # point at an uncommitted plan document, so the one load-bearing citation
+    # under a step marked NOT YET RUN resolved to nothing. This row puts it on
+    # code that exists.
+    #
+    # WHAT THIS ROW DOES AND DOES NOT CHECK, because the difference matters and
+    # an earlier version of this comment overstated it. It checks the CODE
+    # side: that `hidden_console_kwargs` exists in proc.py and still sets the
+    # flag. It does NOT check the DOC side — `WINDOWS.md` is absent from
+    # `_CITATION_DOC_PATHS`, so `_check_citation` never opens the doc and
+    # `test_the_citation_table_covers_every_line_citation_in_the_three_docs`
+    # never iterates it. Deleting the citation from WINDOWS.md leaves this
+    # green, verified by doing exactly that. Registering the doc is a larger
+    # job than #110: nine of its ten remaining line citations name bare
+    # `.mjs`/`.cjs` basenames under `desktop/`, which `_resolve_source` looks
+    # for under `src/no_human` only and does not find. Tracked separately.
+    ("WINDOWS.md", "proc.py:hidden_console_kwargs", "proc.py",
+     "flags = CREATE_NO_WINDOW"),
     # docs/security.md
     ("security.md", "guard.py:WRITE_TOOLS", "guard.py", 'WRITE_TOOLS = {"Write"'),
     ("security.md", "agent/claude_backend.py:ClaudeBackend.__init__:540",

@@ -348,7 +348,7 @@ accurate in a stronger sense than intended.
 | --- | --- |
 | `test_kill_process_tree_uses_taskkill_on_windows` | Monkeypatched `os.killpg` as a TRIPWIRE, but `os.killpg` does not exist on Windows and `monkeypatch.setattr` refuses a missing attribute — so **the one test proving the Windows branch reaches `taskkill` was the one test that errored on Windows**, during setup, before its body ran. Fixed with `raising=False`; the tripwire stays armed |
 | `test_kill_process_tree_still_killpgs_on_posix` | Same, for `os.getpgid`/`os.killpg`, plus `signal.SIGKILL` |
-| `test_try_kill_still_signals_on_posix` | `signal.SIGKILL` missing on Windows → `AttributeError` at `cli/commands.py:4352` — the exact shape the neighbouring `test_stop_path_never_names_sigkill_at_module_scope` exists to fence |
+| `test_try_kill_still_signals_on_posix` | `signal.SIGKILL` missing on Windows → `AttributeError` at `cli/commands.py:7118` — the exact shape the neighbouring `test_stop_path_never_names_sigkill_at_module_scope` exists to fence |
 | `test_atomic_write_0600_posix_does_not_shell_out` ×2 (both suites) | Named `_posix` but never pinned `_IS_WINDOWS = False`, so on a Windows host it took the WINDOWS branch, called `_run_icacls`, and **tripped its own tripwire**. It asserted a POSIX property while letting the host decide the branch |
 | `test_wheel_installed_in_a_clean_venv_serves_the_board` | The `Scripts`/`bin` split was handled, but the interpreter on disk is `python.exe` and `uv pip install --python <path>` does a FILE-EXISTENCE check, so the extensionless path failed with *"No virtual environment or system Python installation found"*. Spawning would have masked it; an explicit path argument does not. **[fix unverified]** — this test builds a wheel and a clean venv and was too long to re-run here |
 
@@ -626,11 +626,21 @@ screens". The verification is:
    a brief flash from the SDK's `claude -v` probe.
 
 **NOT YET RUN.** This step gates the 0.1.6 Windows walk and has not been executed
-on a Windows machine. The fix rests on the libuv + Microsoft mechanism (see
-`docs/superpowers/plans/2026-08-26-windows-console-popups-root-cause.md`) and on
-the unit tests in `desktop/server.test.mjs` / `tests/test_proc.py`; the decisive
-console-count repro above is what actually establishes the pop-ups are gone, and
-until it runs the fix is "mechanism-verified", not "confirmed on Windows".
+on a Windows machine. The mechanism is stated in row 7 of the defect table in
+§2 — `DETACHED_PROCESS` makes Windows ignore `CREATE_NO_WINDOW`, so a detached
+`nh` had no console and its console-subsystem grandchildren each got a visible
+one; dropping `detached` on win32 lets `windowsHide` apply and the hidden
+console is inherited. Microsoft's ["Process Creation
+Flags"](https://learn.microsoft.com/en-us/windows/win32/procthread/process-creation-flags)
+is the upstream source for that interaction: `CREATE_NO_WINDOW` "is ignored if
+the application is not a console application, or if it is used with either
+CREATE_NEW_CONSOLE or DETACHED_PROCESS". That row covers `nh`'s own console,
+which is what reaches `claude.exe`; nh's other subprocesses (`git`, `codex`, the
+test runner) do not depend on it, because `proc.py:hidden_console_kwargs` passes
+`CREATE_NO_WINDOW` on each of those spawns directly. The unit tests are
+`desktop/server.test.mjs` / `tests/test_proc.py`; the decisive console-count
+repro above is what actually establishes the pop-ups are gone, and until it runs
+the fix is "mechanism-verified", not "confirmed on Windows".
 
 ### 5.5 Signing and SmartScreen — stated honestly
 
