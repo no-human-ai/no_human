@@ -177,7 +177,37 @@ pre-execution. It cannot see:
           of root discovery, ahead of this module's own check in
           ``guard.evaluate`` — that unconditional entry is the
           LOAD-BEARING fact that makes this widening safe, not a
-          secondary reassurance to it.
+          secondary reassurance to it;
+      (iv) the ``.git`` marker this walk trusts is itself an ordinary
+          file/directory the GUARDED CODER can rewrite through
+          ``guard.evaluate`` — ``guard.py`` has no ``.git``-marker
+          protection at all. ``mv .git .git.bak`` (renaming the worktree's
+          own marker away) followed by ``mkdir -p ../.git`` (planting one
+          at the shared parent) are both already-ALLOWED writes; without a
+          second, coder-independent bound that pair would move the
+          discovered root up to ``~/.no_human/worktrees`` — the directory
+          every OTHER concurrently-running task's worktree is created
+          directly under — handing this session every sibling task's
+          venv. ``~/.no_human/worktrees`` (``config.worktree_root``'s own
+          default, duplicated here as a literal join rather than imported,
+          for the same reason the ``.git``/``gitdir:`` marker check is
+          duplicated rather than imported from ``core/worktree.py``) is
+          therefore refused as a root exactly like ``$HOME``: reaching it
+          during the walk stops the climb and falls back to ``cwd_real``
+          instead of accepting it, or anything planted at that level, as
+          the boundary. This is pinned by
+          ``test_session_root_refuses_to_climb_into_the_shared_worktrees_directory``,
+          which performs both halves of the tamper (removal AND planting —
+          planting alone is inert since the walk starts nearest-first from
+          ``cwd`` and would simply keep climbing past an intact worktree
+          marker) and asserts a sibling task's venv stays denied
+          afterward. The residual gap this refusal does NOT cover: an
+          operator who relocated ``isolation.worktree_root``/
+          ``concurrency.worktree_root`` away from that default in
+          ``config.py`` — this module duplicates only the literal default
+          path, not the operator's override, to avoid importing
+          ``config.py`` (and its side-effecting ``load_config()``) into a
+          per-command security check.
     The inherited-``VIRTUAL_ENV``/``UV_PROJECT_ENVIRONMENT`` bound above
     (a ``PATH`` that does NOT itself resolve to the shared venv) is
     unchanged by this: candidate generation (items 1-4) is untouched, only
@@ -622,9 +652,34 @@ def _session_root(cwd_real: str) -> str:
     marker here" — the walk stops and returns `cwd_real` rather than
     continuing to climb past it, since climbing past an indeterminate level
     is exactly how a stray `.git` further up would widen the boundary.
+
+    `$HOME` is not the only refused level. The marker this walk trusts is
+    an ordinary file/directory the GUARDED CODER can itself rewrite —
+    `mv .git .git.bak` (renaming its own worktree's marker away) followed
+    by `mkdir -p ../.git` (planting one at the shared parent) are both
+    already-ALLOWED writes through `guard.evaluate` (`guard.py` has no
+    `.git`-marker protection at all; its only destructive-shell rule is the
+    generic `rm -rf` circuit breaker). Without a second, coder-independent
+    bound, that pair of writes would move the discovered root from the
+    session's own worktree up to `~/.no_human/worktrees` — the directory
+    every OTHER concurrently-running task's worktree is created directly
+    under — handing this session every sibling task's venv. That directory
+    (`config.worktree_root`'s own default, duplicated here as a literal
+    join rather than imported, exactly as this module already duplicates
+    the tiny `.git`/`gitdir:` marker check instead of importing
+    `core/worktree.py`) is therefore refused as a root exactly like `$HOME`:
+    reaching it during the walk stops the climb and falls back to
+    `cwd_real` rather than accepting it — or anything planted at that
+    level — as the boundary. An operator who relocated
+    `isolation.worktree_root`/`concurrency.worktree_root` away from that
+    default is a residual gap this refusal does not cover; see the
+    residual-risk register.
     """
     try:
         home = os.path.realpath(str(Path.home()))
+        worktrees_root = os.path.realpath(
+            os.path.join(home, ".no_human", "worktrees")
+        )
     except (OSError, RuntimeError):
         return cwd_real
 
@@ -633,7 +688,7 @@ def _session_root(cwd_real: str) -> str:
         if current == current.parent:
             break
         current_str = str(current)
-        if current_str == home:
+        if current_str == home or current_str == worktrees_root:
             break
         try:
             # `os.path.exists` is NOT usable for this probe: it catches

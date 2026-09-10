@@ -911,3 +911,69 @@ def test_session_root_walk_is_bounded_and_does_not_climb_past_it(tmp_path):
     r = venv_install_guard.denial_reason(cmd, cwd=str(current), env=env)
     assert r is not None, f"a venv beyond the walk bound must stay denied: {r}"
     assert root_venv in r
+
+
+def test_session_root_refuses_to_climb_into_the_shared_worktrees_directory(tmp_path, monkeypatch):
+    """Round-3 finding: the `.git` marker `_session_root` trusts is an
+    ordinary file/directory the GUARDED CODER can itself rewrite through
+    `guard.evaluate` — `guard.py` has no `.git`-marker protection of any
+    kind, so `mv .git .git.bak` (renaming the worktree's own marker away)
+    followed by `mkdir -p ../.git` (planting one at the shared parent) are
+    both already-ALLOWED writes. Without a second, coder-independent bound
+    that pair of writes moves the discovered root from the session's own
+    worktree up to `~/.no_human/worktrees` — the directory every OTHER
+    concurrently-running task's worktree is created directly under —
+    handing this session every sibling task's venv. This must stay closed:
+    the walk must refuse `~/.no_human/worktrees` as a root exactly like
+    `$HOME`, so tampering falls back to `cwd_real` and the sibling task's
+    venv stays denied."""
+    fake_home = tmp_path / "home"
+    worktrees_root = fake_home / ".no_human" / "worktrees"
+    worktrees_root.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+
+    task_a, _task_a_venv = _mkvenv(worktrees_root / "taskA.1.aa")
+    os.makedirs(os.path.join(task_a, ".git"), exist_ok=True)
+    task_b, task_b_venv = _mkvenv(worktrees_root / "taskB.2.bb")
+    os.makedirs(os.path.join(task_b, ".git"), exist_ok=True)
+
+    # Sanity/positive control: before any tampering, taskA's own root is
+    # itself, and a sibling task's venv is correctly outside it.
+    assert venv_install_guard._session_root(task_a) == task_a
+    env = {"PATH": f"{task_b_venv}/bin:/usr/bin:/bin"}
+    cmd = f"{task_b_venv}/bin/pip install evilpkg"
+    r = venv_install_guard.denial_reason(cmd, cwd=task_a, env=env)
+    assert r is not None and task_b_venv in r, (
+        "control: a sibling task's venv must be denied before any tamper"
+    )
+
+    # Tamper: both operations are ordinary, already-ALLOWED filesystem
+    # writes — no shell metacharacter, no `rm -rf`.
+    os.rename(os.path.join(task_a, ".git"), os.path.join(task_a, ".git.bak"))
+    os.makedirs(os.path.join(str(worktrees_root), ".git"), exist_ok=True)
+
+    assert venv_install_guard._session_root(task_a) == task_a, (
+        "removing the worktree's own marker and planting one at the "
+        "shared worktrees parent must not widen the discovered root to "
+        "that shared parent"
+    )
+
+    r = venv_install_guard.denial_reason(cmd, cwd=task_a, env=env)
+    assert r is not None, (
+        f"a sibling task's venv must stay denied even after the marker "
+        f"tamper (mv .git .git.bak; mkdir -p ../.git): {r}"
+    )
+    assert task_b_venv in r
+    d = _ev("Bash", {"command": cmd}, cwd=task_a, env=env)
+    assert not d.allow, "guard.evaluate must also deny the tampered path"
+
+    # Same tamper from a subdirectory of taskA — the shape the fix in this
+    # ticket exists to serve — must be denied identically.
+    sub = os.path.join(task_a, "src")
+    os.makedirs(sub, exist_ok=True)
+    r = venv_install_guard.denial_reason(cmd, cwd=sub, env=env)
+    assert r is not None, (
+        f"the tamper must stay closed from a subdirectory too: {r}"
+    )
+    assert task_b_venv in r
