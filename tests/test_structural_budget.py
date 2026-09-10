@@ -162,7 +162,13 @@ FROZEN_FUNCTION_LINES = {
     # single-write invariant accurately instead of the old "may already have
     # written its own copy" hedge. Measured on this tree with the scanner
     # below.
-    "core/orchestrator.py:Orchestrator._run_attempt": 2254,
+    # 2254 -> 2267 (+13) (task 21b79273): landed-claim guard wiring — the
+    # `_active_landed_claim_guard` note_text feed alongside the supervisor's
+    # in `_run_command_and_events`-adjacent event handling, plus the guard's
+    # construction/teardown and its inclusion in `_compose_post_tool_hooks`
+    # inside `_run_attempt` itself. Measured on this tree with the scanner
+    # below.
+    "core/orchestrator.py:Orchestrator._run_attempt": 2267,
     # 760 -> 778 (+18): dispatch-time intake-eval hoisted path — the `elif
     # ctx.get("eval_result")` branch that acts on a grill/wizard-stored
     # verdict (idempotency marker, cost/residual-gap comments) added inside
