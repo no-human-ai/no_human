@@ -74,6 +74,36 @@ def _ev(tool, inp, *, cwd, env):
                            never_push_to=PROTECTED, cwd=cwd, env=env)
 
 
+def _git_worktree_session(tmp_path):
+    """Real worktree shape: `primary/` is an actual checkout (`.git` a
+    DIRECTORY) and `wt/` is a linked git worktree of it (`.git` a FILE
+    carrying `gitdir: ...`, exactly what `git worktree add` produces on
+    disk). `sub` (`<wt>/src/no_human`) is nested two levels inside `wt` and
+    carries no marker of its own, so root discovery must ascend past both
+    `sub` and `<wt>/src` to find `wt`'s own `.git` file. Every tree, venv
+    (with a real `pyvenv.cfg`), and PATH/VIRTUAL_ENV pair is constructed
+    here — nothing is inherited from the process actually running the
+    test."""
+    primary, primary_venv = _mkvenv(tmp_path / "primary")
+    os.makedirs(os.path.join(primary, ".git"), exist_ok=True)
+    wt, wt_venv = _mkvenv(tmp_path / "wt")
+    gitdir = os.path.join(primary, ".git", "worktrees", "wt")
+    os.makedirs(gitdir, exist_ok=True)
+    with open(os.path.join(wt, ".git"), "w") as f:
+        f.write(f"gitdir: {gitdir}\n")
+    sub = os.path.join(wt, "src", "no_human")
+    os.makedirs(sub, exist_ok=True)
+    prod_env = {
+        "PATH": f"{primary_venv}/bin:/usr/bin:/bin",
+        "VIRTUAL_ENV": primary_venv,
+    }
+    wt_env = {
+        "PATH": f"{wt_venv}/bin:/usr/bin:/bin",
+        "VIRTUAL_ENV": wt_venv,
+    }
+    return primary, primary_venv, wt, wt_venv, sub, prod_env, wt_env
+
+
 # ---------------------------------------------------------------------------
 # Verdict 1 — wrapper / nested-shell laundering (attempt 1's checklist).
 # Under a lexical guard these ALL passed because the check asked "what is
@@ -547,3 +577,171 @@ def test_evaluate_env_defaults_to_os_environ_when_omitted(tmp_path, monkeypatch)
     d = guard.evaluate("Bash", {"command": "git status"}, forbidden_paths=FORBIDDEN,
                         never_push_to=PROTECTED, cwd=tmp)
     assert d.allow
+
+
+# ---------------------------------------------------------------------------
+# Coder-in-a-subdirectory (this ticket). `denial_reason` compared candidates
+# against `cwd` directly, so a coder session that `cd`'d into ANY
+# subdirectory of its own worktree had its own PATH-resolved `.venv`
+# (`<worktree>/.venv`, sitting outside the subdirectory `cwd`) read as
+# "outside this session's worktree" and denied — for both `uv pip install`
+# and bare `pip install`, since the earlier `e0541f35` regression (relaxing
+# the bare inner `pip` signal) is NOT what causes this: this defect is in
+# how the containment boundary itself is computed, not in which tokens are
+# treated as installers. Fixed by comparing against the session's worktree
+# ROOT (`_session_root`, nearest `.git`-marked ancestor of `cwd`) instead of
+# `cwd` itself.
+# ---------------------------------------------------------------------------
+
+def test_own_venv_install_is_allowed_from_any_subdirectory(tmp_path):
+    primary, primary_venv, wt, wt_venv, sub, prod_env, wt_env = _git_worktree_session(tmp_path)
+    wt_src = os.path.join(wt, "src")
+    cases = [
+        "uv pip install -e .",
+        "pip install -e .",
+        "uv pip install foo",
+        f"{wt_venv}/bin/pip install foo",
+        "uv sync",
+    ]
+    for cwd in (wt, wt_src, sub):
+        for cmd in cases:
+            r = venv_install_guard.denial_reason(cmd, cwd=cwd, env=wt_env)
+            assert r is None, f"cwd={cwd!r} cmd={cmd!r} must be allowed (own venv): {r}"
+            d = _ev("Bash", {"command": cmd}, cwd=cwd, env=wt_env)
+            assert d.allow, f"cwd={cwd!r} cmd={cmd!r} must be allowed via evaluate(): {d.reason}"
+
+
+def test_outside_targets_stay_denied_from_a_subdirectory(tmp_path):
+    """`env=wt_env` — the ambient venv is the session's OWN venv, innocent —
+    so any denial below must come from the target the COMMAND itself names,
+    never from the ambient PATH/VIRTUAL_ENV. Covers, each with its own
+    positive control: a command-level VIRTUAL_ENV/UV_PROJECT_ENVIRONMENT
+    assignment; every explicit target flag; a path-spelled installer; and
+    the wrapped forms this module already handles (shell -c, subshell/brace
+    groups, `timeout`, `xargs`, `python -m uv`)."""
+    primary, primary_venv, wt, wt_venv, sub, prod_env, wt_env = _git_worktree_session(tmp_path)
+    cases = [
+        (f"VIRTUAL_ENV={primary_venv} pip install foo", primary_venv),
+        (f"UV_PROJECT_ENVIRONMENT={primary_venv} uv pip install foo", primary_venv),
+        (f"pip install --target {primary_venv} foo", primary_venv),
+        (f"pip install --prefix {primary_venv} foo", primary_venv),
+        (f"pip install --root {primary} foo", primary),
+        (f"uv pip install --python {primary_venv}/bin/python foo", primary_venv),
+        (f"uv sync --project {primary}", primary),
+        (f"uv sync --directory {primary}", primary),
+        (f"{primary_venv}/bin/pip install foo", primary_venv),
+        (f"bash -lc '{primary_venv}/bin/pip install foo'", primary_venv),
+        (f'sh -c "{primary_venv}/bin/pip install foo && echo ok"', primary_venv),
+        (f"(cd {primary} && uv sync)", primary),
+        (f"{{ cd {primary} && uv sync; }}", primary),
+        (f"timeout 300 {primary_venv}/bin/pip install foo", primary_venv),
+        (f"xargs {primary_venv}/bin/pip install", primary_venv),
+        (f"{primary_venv}/bin/python -m uv pip install evilpkg", primary_venv),
+    ]
+    for cwd in (wt, sub):
+        for cmd, offending in cases:
+            r = venv_install_guard.denial_reason(cmd, cwd=cwd, env=wt_env)
+            assert r is not None, f"cwd={cwd!r} must be denied: {cmd}"
+            assert offending in r, f"reason must name {offending}: {r}"
+            d = _ev("Bash", {"command": cmd}, cwd=cwd, env=wt_env)
+            assert not d.allow, f"cwd={cwd!r} must be blocked via evaluate(): {cmd}"
+
+
+def test_shared_developer_venv_stays_denied_for_every_spelling_from_a_subdirectory(tmp_path):
+    """Anti-`e0541f35` pin: an independent review established that
+    narrowing the write-target candidates so a BARE inner installer name
+    (the `pip` in `uv pip install -e .`) stops being a signal is a security
+    regression, since real `uv` writes to the venv named by `VIRTUAL_ENV`/
+    `PATH` for exactly that spelling. This must be denied for every
+    mutating `uv pip` spelling and for the bare `pip` twin, identically
+    from the worktree root and from a subdirectory of it — the boundary
+    fix in this ticket (comparing against the worktree ROOT rather than
+    `cwd`) must never widen to cover the SHARED dev venv, which sits
+    outside the worktree entirely regardless of which root is used."""
+    primary, primary_venv, wt, wt_venv, sub, prod_env, wt_env = _git_worktree_session(tmp_path)
+    cases = [
+        "uv pip install foo",
+        "uv pip install -e .",
+        "uv pip uninstall foo",
+        "uv pip sync",
+        "pip install foo",
+        f"source {primary_venv}/bin/activate && uv pip install foo",
+        "bash -lc 'uv pip install foo'",
+    ]
+    for cwd in (wt, sub):
+        for cmd in cases:
+            r = venv_install_guard.denial_reason(cmd, cwd=cwd, env=prod_env)
+            assert r is not None, f"cwd={cwd!r} must stay denied (anti-e0541f35): {cmd}"
+            assert primary_venv in r, f"reason must name {primary_venv}: {r}"
+            d = _ev("Bash", {"command": cmd}, cwd=cwd, env=prod_env)
+            assert not d.allow, f"cwd={cwd!r} must be blocked via evaluate(): {cmd}"
+
+
+def test_root_discovery_falls_back_to_cwd_without_a_git_marker(tmp_path):
+    """Register bullet (i): a session tree with no `.git` marker anywhere
+    in its lineage gets no boundary widening at all — `_session_root` falls
+    back to `cwd` itself, so a subdirectory install there is denied exactly
+    as it was before this change (a conservative false positive, never a
+    hole)."""
+    primary, primary_venv, wt, wt_venv, prod_env, wt_env = _session(tmp_path)
+    sub = os.path.join(wt, "src")
+    os.makedirs(sub, exist_ok=True)
+    cmd = "pip install foo"
+    r = venv_install_guard.denial_reason(cmd, cwd=sub, env=wt_env)
+    assert r is not None, (
+        f"without a .git marker, root falls back to cwd, so the own-venv "
+        f"sibling {wt_venv} must still be denied from {sub}: {r}"
+    )
+    assert wt_venv in r
+    d = _ev("Bash", {"command": cmd}, cwd=sub, env=wt_env)
+    assert not d.allow
+
+
+def test_session_root_never_expands_to_home_or_the_filesystem_root(tmp_path, monkeypatch):
+    """Bound: even when `$HOME` itself carries a `.git` (and a `.venv` that
+    would otherwise look like a perfectly good install target), the walk
+    must refuse to treat `$HOME` as a worktree root — accepting it would
+    turn "the session's worktree" into "the user's entire home
+    directory". Refusing it means `_session_root` falls back to `cwd`, and
+    a `PATH` resolving to that `$HOME`-level venv is still denied."""
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    _fake_home_real, home_venv = _mkvenv(fake_home)
+    os.makedirs(fake_home / ".git", exist_ok=True)
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+
+    cwd = fake_home / "a" / "b"
+    cwd.mkdir(parents=True)
+    cwd_real = os.path.realpath(cwd)
+
+    assert venv_install_guard._session_root(cwd_real) == cwd_real, (
+        "a marker sitting at $HOME must not become the accepted root"
+    )
+
+    env = {"PATH": f"{home_venv}/bin:/usr/bin:/bin"}
+    cmd = "pip install foo"
+    r = venv_install_guard.denial_reason(cmd, cwd=str(cwd), env=env)
+    assert r is not None, f"must stay denied despite the $HOME-level venv: {r}"
+    assert home_venv in r
+    d = _ev("Bash", {"command": cmd}, cwd=str(cwd), env=env)
+    assert not d.allow
+
+    # Direct unit assertions on `_session_root` itself.
+    primary, primary_venv, wt, wt_venv, sub, prod_env, wt_env = _git_worktree_session(tmp_path)
+    assert venv_install_guard._session_root(sub) == wt, (
+        "a subdirectory two levels below the worktree root must resolve "
+        "to that root"
+    )
+
+    outer = tmp_path / "outer"
+    outer.mkdir()
+    (outer / ".git").mkdir()
+    inner = outer / "repo"
+    inner.mkdir()
+    (inner / ".git").mkdir()
+    nested_sub = inner / "sub"
+    nested_sub.mkdir()
+    assert venv_install_guard._session_root(os.path.realpath(nested_sub)) == os.path.realpath(inner), (
+        "the NEAREST marker must win over a farther ancestor's"
+    )

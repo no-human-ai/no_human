@@ -79,9 +79,18 @@ against a policy pattern. It instead:
      `uv sync` / `uv run pytest -q` in EVERY session, not just a
      laundering one. See the residual-risk register below.
   5. Denies unless EVERY resolved candidate is inside the session's
-     worktree (``cwd``) — an allow-list, not a deny-list, so a spelling
-     nobody has thought of yet still resolves to "outside the worktree"
-     and is denied by construction rather than by a missing pattern.
+     worktree ROOT — the nearest ``.git``-marked ancestor of ``cwd``,
+     inclusive; bounded; never ``$HOME`` or the filesystem anchor; ``cwd``
+     itself when no marker is found (:func:`_session_root`) — an
+     allow-list, not a deny-list, so a spelling nobody has thought of yet
+     still resolves to "outside the worktree" and is denied by
+     construction rather than by a missing pattern. A closed defect: a
+     venv resolved from ``PATH``/a command-level ``VIRTUAL_ENV`` assignment
+     lives at ``<root>/.venv``, which sits OUTSIDE a subdirectory ``cwd``
+     even when it is the session's own venv — comparing against ``cwd``
+     directly denied a coder its own install the moment it ``cd``'d one
+     level down; comparing against the discovered root fixes that without
+     trusting anything merely inherited.
   6. Fails closed (memory: *gates must fail closed*) whenever install
      intent is present but a resolution step cannot be completed:
      shell/variable expansion (``$``, backticks) in any token, no
@@ -119,6 +128,34 @@ pre-execution. It cannot see:
     (``VIRTUAL_ENV``/``UV_PROJECT_ENVIRONMENT`` pinned to the worktree's
     own venv for the whole session) — capability-level, not a pattern this
     module could add.
+  - the worktree ROOT used for the containment check (item 5,
+    :func:`_session_root`) is discovered by an upward filesystem walk for a
+    ``.git`` marker, not by asking the VCS:
+      (i) an unmarked tree — or one whose only marker sits at ``$HOME`` or
+          the filesystem anchor, both explicitly refused as a root — falls
+          back to ``cwd`` itself, so a subdirectory install there is still
+          refused. This is a conservative FALSE POSITIVE (over-denial),
+          never a hole: it can only narrow what counts as "in tree", not
+          widen it;
+      (ii) every venv under the discovered root — including one that lives
+          in a sibling subdirectory of ``cwd``, not just an ancestor — is
+          now a valid install target. This is the intended isolation
+          boundary (the whole worktree, not one subdirectory of it), not a
+          widening of what "outside the worktree" means;
+      (iii) when a session's own ``cwd`` is inside the PRIMARY checkout
+          (isolation disabled for that session), the primary's ``.git``
+          makes the primary checkout itself the discovered root — exactly
+          what ``cwd == <primary>`` already allowed before this change,
+          since the root and ``cwd`` coincide there. The shared venv is
+          not newly exposed by this: this module denies it via candidate
+          resolution (items 1-4) exactly as before, and v1's
+          unconditional ``_primary_checkout()`` entry in ``guard.py``
+          still covers it independently.
+    The inherited-``VIRTUAL_ENV``/``UV_PROJECT_ENVIRONMENT`` bound above
+    (a ``PATH`` that does NOT itself resolve to the shared venv) is
+    unchanged by this: candidate generation (items 1-4) is untouched, only
+    the boundary candidates are compared against (item 5) moved from
+    ``cwd`` to the discovered root.
 
 None of these can be closed by adding a smarter pattern — the information
 needed does not exist before the command runs. The real fix for this
@@ -496,12 +533,76 @@ def _is_within(path: str, root: str) -> bool:
         return False
 
 
+#: Marks a worktree ROOT — a directory in a primary checkout, a file
+#: carrying `gitdir:` in a linked worktree. Both count; this module never
+#: shells out to `git` to tell them apart, it only checks that something
+#: named `.git` exists at that level.
+_WORKTREE_MARKER = ".git"
+#: Bound on the upward walk from `cwd` while looking for `_WORKTREE_MARKER`.
+#: An unbounded walk is what would let a stray `.git` far above the tree
+#: (or a slow/deep filesystem) widen the boundary this guard enforces.
+_MAX_ROOT_WALK = 32
+
+
+def _session_root(cwd_real: str) -> str:
+    """The session worktree's ROOT: the nearest `.git`-bearing ancestor of
+    `cwd_real` (inclusive), bounded, and never `$HOME` or the filesystem
+    anchor.
+
+    A coder session's `cwd` is frequently a SUBDIRECTORY of its own
+    worktree, not the worktree root — the defect this closes. A venv
+    resolved from `PATH`/a command-level `VIRTUAL_ENV` assignment lives at
+    `<root>/.venv`, which sits outside `cwd` itself whenever `cwd` is a
+    subdirectory, so comparing candidates against `cwd` (as this module did
+    before) denies a coder its own venv the moment it `cd`s one level down.
+    Walking up to the nearest `.git` marker recovers the same root `cwd ==
+    root` sessions already got right, without trusting anything the
+    process merely inherited (`VIRTUAL_ENV`, `PATH`) as the boundary.
+
+    Nearest-first (the walk stops at the FIRST marker found) means a nested
+    repo/submodule below the real root can only NARROW the accepted
+    boundary, never widen it — the safe direction.
+
+    Falls back to `cwd_real` itself — today's exact behaviour — when no
+    marker is found within `_MAX_ROOT_WALK` levels, or when the walk would
+    otherwise land on `$HOME` or the filesystem anchor (`/`, a drive root):
+    both are refused as a root even if either happens to carry its own
+    `.git`, since accepting them would make "the session's worktree" mean
+    "the user's entire home directory" or "the whole filesystem".
+    """
+    try:
+        home = os.path.realpath(str(Path.home()))
+    except (OSError, RuntimeError):
+        home = None
+
+    current = Path(cwd_real)
+    for _ in range(_MAX_ROOT_WALK):
+        if current == current.parent:
+            break
+        current_str = str(current)
+        if home is not None and current_str == home:
+            break
+        try:
+            marker_present = os.path.exists(current / _WORKTREE_MARKER)
+        except OSError:  # pragma: no cover - defensive
+            marker_present = False
+        if marker_present:
+            return current_str
+        current = current.parent
+
+    return cwd_real
+
+
 def denial_reason(cmd: str, *, cwd: str | None, env: Mapping[str, str] | None = None) -> str | None:
     """Why this command's install must be denied, or None to allow it.
 
     Structural, not lexical: this resolves canonical executable/target
-    paths and compares them to `cwd` (the session's worktree). No text
-    pattern is matched against `cmd` to make the allow/deny decision.
+    paths and compares them to the session worktree ROOT derived from
+    `cwd` (see `_session_root`) — not to `cwd` itself, so a coder that has
+    `cd`'d into a subdirectory of its own worktree is still compared
+    against the worktree's boundary rather than against the subdirectory.
+    No text pattern is matched against `cmd` to make the allow/deny
+    decision.
     """
     if env is None:
         env = os.environ
@@ -551,6 +652,7 @@ def denial_reason(cmd: str, *, cwd: str | None, env: Mapping[str, str] | None = 
     cwd_real = _safe_realpath(cwd)
     if cwd_real is None:
         return f"blocked: session worktree {cwd!r} could not be resolved."
+    root_real = _session_root(cwd_real)
 
     candidates = _effective_prefixes(tokens, cwd, installers)
     if not candidates:
@@ -559,12 +661,12 @@ def denial_reason(cmd: str, *, cwd: str | None, env: Mapping[str, str] | None = 
             f"so it cannot be proven safe: {cmd}"
         )
 
-    outside = sorted(c for c in candidates if not _is_within(c, cwd_real))
+    outside = sorted(c for c in candidates if not _is_within(c, root_real))
     if outside:
-        alt = os.path.join(cwd_real, ".venv", "bin", "python")
+        alt = os.path.join(root_real, ".venv", "bin", "python")
         return (
             f"install blocked: resolves to {outside[0]}, outside this "
-            f"session's worktree ({cwd_real}) — not the worktree's own "
+            f"session's worktree ({root_real}) — not the worktree's own "
             f".venv. Installers must target the worktree's own .venv, e.g. "
             f"`{alt} -m pip install ...` or `uv sync` with no --python/"
             f"--target/--prefix/--project pointing elsewhere."
