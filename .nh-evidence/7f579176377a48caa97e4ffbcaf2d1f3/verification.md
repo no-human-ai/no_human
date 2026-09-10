@@ -1,47 +1,51 @@
 # How I verified this — full log
 
-_Harness-captured record for task `7f579176`, commit `d637f2224b1cff269af6c1c88719414049a041e1` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `7f579176`, commit `66a731f74ba21f374a8ea69634d2b04493e68f33` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ## How I verified this
 5 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
 
 ### test
-- `uv run pytest -q tests/test_venv_install_guard.py --tb=short 2>&1 | tail -60`
+- `uv run pytest -q tests/test_venv_install_guard.py -k test_session_root_refuses_to_climb_into_the_shared_worktrees_directory --tb=short 2>&1 | tail -40`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-................................                                         [100%]
-32 passed in 93.66s (0:01:33)
+   Building no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/7f579176377a48caa97e4ffbcaf2d1f3.82890.0cbf3285
+      Built no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/7f579176377a48caa97e4ffbcaf2d1f3.82890.0cbf3285
+Installed 68 packages in 243ms
+.                                                                        [100%]
+1 passed, 32 deselected in 3.43s
 ```
 
-- `uv run pytest -q tests/test_venv_install_guard.py -k "permission_denied or marker_probe_errors or walk_is_bounded" --tb=short 2>&1 | tail -60`
+- `uv run pytest -q tests/test_venv_install_guard.py -k test_session_root_refuses_to_climb_into_the_shared_worktrees_directory --tb=short 2>&1 | tail -40`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-FF.                                                                      [100%]
+F                                                                        [100%]
 =================================== FAILURES ===================================
-__________ test_session_root_fails_closed_when_a_marker_probe_errors ___________
-tests/test_venv_install_guard.py:817: in test_session_root_fails_closed_when_a_marker_probe_errors
-    assert venv_install_guard._session_root(inner_real) == inner_real, (
-E   AssertionError: an indeterminate level must stop the walk at cwd_rea
-[... 737 of 1,876 characters omitted from the middle ...]
-     
-E     Skipping 116 identical leading characters in diff, use -v to show
-E     - osed1/outer/mid/inner
-E     + osed1/outer
+____ test_session_root_refuses_to_climb_into_the_shared_worktrees_directory ____
+tests/test_venv_install_guard.py:956: in test_session_root_refuses_to_climb_into_the_shared_worktrees_directory
+    assert venv_install_guard._session_root(task_a) == task_a, (
+E   AssertionError: removing the worktree's own marker and planting
+[... 68 of 1,207 characters omitted from the middle ...]
+ot to that shared parent
+E   assert '/private/var...man/worktrees' == '/private/var...es/taskA.1.aa'
+E     
+E     Skipping 135 identical leading characters in diff, use -v to show
+E     - n/worktrees/taskA.1.aa
+E     + n/worktrees
 =========================== short test summary info ============================
-FAILED tests/test_venv_install_guard.py::test_session_root_fails_closed_when_a_marker_probe_errors
-FAILED tests/test_venv_install_guard.py::test_session_root_fails_closed_on_a_real_permission_denied_level
-2 failed, 1 passed, 29 deselected in 0.84s
+FAILED tests/test_venv_install_guard.py::test_session_root_refuses_to_climb_into_the_shared_worktrees_directory
+1 failed, 32 deselected in 0.67s
 ```  
-  _excerpt - 1,874 characters of output in total_
+  _excerpt - 1,205 characters of output in total_
 
-- `cp /tmp/venv_install_guard.py.fixed src/<redacted>/agent/venv_install_guard.py uv run pytest -q tests/test_venv_install_guard.py --tb=short 2>&1 | tail -20`
+- `uv run pytest -q tests/test_venv_install_guard.py --tb=short 2>&1 | tail -20`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-................................                                         [100%]
-32 passed in 0.95s
+.................................                                        [100%]
+33 passed in 1.67s
 ```
 
 - `uv run pytest -q tests/test_venv_install_guard.py tests/test_guard.py --tb=short 2>&1 | tail -20`
@@ -49,17 +53,33 @@ warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not mat
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
 ........................................................................ [ 24%]
-........................................................................ [ 49%]
+........................................................................ [ 48%]
 ........................................................................ [ 73%]
-........................................................................ [ 98%]
-.....                                                                    [100%]
-293 passed in 3.83s
+........................................................................ [ 97%]
+......                                                                   [100%]
+294 passed in 4.66s
 ```
 
-- `timeout 590 uv run pytest -q -n 4 2>&1 | tail -40`
+- `echo "=== git status ===" && git status --short && echo "=== git diff --stat ===" && git diff --stat && echo "=== final guard-file test run ===" && uv run pytest -q tests/test_venv_install_guard.py tests/test_guard.py --tb=short 2>&1 | tail -10`
 
 ```
-(eval):1: command not found: timeout
+=== git status ===
+ M RELEASE_MANIFEST.txt
+ M src/<redacted>/agent/venv_install_guard.py
+ M tests/test_venv_install_guard.py
+=== git diff --stat ===
+ RELEASE_MANIFEST.txt                     |  4 +-
+ src/<redacted>/agent/venv_install_guard.py | 59 +++++++++++++++++++++++++++-
+ tests/test_venv_install_guard.py         | 66 ++++++++++++++++++++++++++++++++
+ 3 files changed, 125 insertions(+), 4 deletions(-)
+=== final guard-file test run ===
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+........................................................................ [ 24%]
+........................................................................ [ 48%]
+........................................................................ [ 73%]
+........................................................................ [ 97%]
+......                                                                   [100%]
+294 passed in 3.75s
 ```
 
 
