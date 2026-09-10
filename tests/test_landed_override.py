@@ -23,7 +23,8 @@ from httpx import ASGITransport, AsyncClient
 
 from no_human.api.app import app
 from no_human.blockers.landed_override import (
-    LANDED_OVERRIDE_KIND, OverrideRefused, approve_landed_override,
+    LANDED_OVERRIDE_ELIGIBLE_STATUSES, LANDED_OVERRIDE_KIND, OverrideRefused,
+    approve_landed_override, ineligible_status_reason,
 )
 from no_human.core.db import Store
 from no_human.core.task import Task, TaskStatus
@@ -164,6 +165,28 @@ async def _seed_failed_pre_pr(
     return t
 
 
+async def _seed_escalated(
+    store, repo_path, *, branch="feature", commit_sha="",
+    base_branch="main", pr_evidence=None, cancel_reason=None,
+) -> Task:
+    """ESCALATED: the attempt stopped and asked a human instead of faking
+    done; dispatch ran (so `base_branch` is recorded) and no PR ever opened
+    unless `pr_evidence` is given."""
+    t = Task.new("landed-override-check", repo_path=str(repo_path))
+    t.context = {"base_branch": base_branch}
+    if pr_evidence:
+        t.context["pr_watch"] = pr_evidence
+    if cancel_reason:
+        t.context["cancel_reason"] = cancel_reason
+    await store.create_task(t)
+    attempt_id = await store.create_attempt(t.id, 1)
+    await store.update_attempt(
+        attempt_id, branch_name=branch, commit_sha=commit_sha,
+        status="escalated", failure_reason="")
+    await store.set_status(t, TaskStatus.ESCALATED, validate=False)
+    return t
+
+
 async def _seed_done_with_evidence(store, repo_path, kind) -> Task:
     """A DONE task that already carries *kind* (a member of
     ``DONE_EVIDENCE_KINDS``) on its event log — the ``done_no_evidence``
@@ -235,7 +258,8 @@ async def test_refuses_empty_justification(tmp_path, store):
 
 
 @pytest.mark.parametrize(
-    "status", [TaskStatus.IMPLEMENTING, TaskStatus.ESCALATED])
+    "status",
+    [TaskStatus.IMPLEMENTING, TaskStatus.BLOCKED, TaskStatus.AWAITING_INPUT])
 async def test_refuses_task_not_awaiting_approval(tmp_path, store, status):
     repo = _make_repo(tmp_path)
     sha = _git_out(repo, "rev-parse", "HEAD")
@@ -1551,3 +1575,208 @@ async def test_done_task_with_cancel_request_is_refused(tmp_path, store):
     assert fresh.status is TaskStatus.DONE
     events = await store.list_events(t.id)
     assert not [e for e in events if e["kind"] == LANDED_OVERRIDE_KIND]
+
+
+# --------------------------------------------------------------------------- #
+# "escalated_hand_landed" shape — nh226: an ESCALATED task (an attempt       #
+# stopped and asked a human instead of faking done) whose content a human   #
+# then landed by hand had no honest terminal state — the only reachable one #
+# was `nh task cancel`, which books shipped work as a FAILED row.           #
+# --------------------------------------------------------------------------- #
+
+async def test_escalated_task_with_landed_content_completes(tmp_path, store):
+    repo, feature_sha, landed_sha = _repo_with_squash_landed(tmp_path)
+    t = await _seed_escalated(
+        store, repo, branch="feature", commit_sha=feature_sha)
+
+    result = await approve_landed_override(
+        store, t, landed_sha, "hand-landed after escalation was resolved")
+
+    assert result["shape"] == "escalated_hand_landed"
+    assert result["prior_status"] == "escalated"
+    assert result["base_source"] in ("recorded", "default_branch")
+    assert result["residue"] is not None
+
+    fresh = await store.get_task(t.id)
+    assert fresh.status is TaskStatus.DONE
+    assert fresh.context["landed_override_sha"] == landed_sha
+
+    events = await store.list_events(t.id)
+    override_events = [e for e in events if e["kind"] == LANDED_OVERRIDE_KIND]
+    assert len(override_events) == 1
+    ev = override_events[0]
+    assert ev["shape"] == "escalated_hand_landed"
+    assert ev["prior_status"] == "escalated"
+    assert "prior status: escalated" in ev["text"]
+
+
+async def test_approve_landed_endpoint_accepts_an_escalated_task(
+    tmp_path, store, client,
+):
+    repo, feature_sha, landed_sha = _repo_with_squash_landed(tmp_path)
+    t = await _seed_escalated(
+        store, repo, branch="feature", commit_sha=feature_sha)
+
+    r = await client.post(
+        f"/api/tasks/{t.id}/approve-landed",
+        json={"sha": landed_sha,
+              "justification": "hand-landed after escalation was resolved"},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["ok"] is True
+    assert body["sha"] == landed_sha
+    assert body["matched_branch"]
+
+    fresh = await store.get_task(t.id)
+    assert fresh.status is TaskStatus.DONE
+    assert fresh.context["landed_override_sha"] == landed_sha
+
+    events = await store.list_events(t.id)
+    override_events = [e for e in events if e["kind"] == LANDED_OVERRIDE_KIND]
+    assert len(override_events) == 1
+    ev = override_events[0]
+    assert ev["shape"] == "escalated_hand_landed"
+    assert ev["prior_status"] == "escalated"
+    assert "prior status: escalated" in ev["text"]
+
+
+async def test_second_override_on_a_hand_landed_escalated_row_is_refused(
+    tmp_path, store,
+):
+    repo, feature_sha, landed_sha = _repo_with_squash_landed(tmp_path)
+    t = await _seed_escalated(
+        store, repo, branch="feature", commit_sha=feature_sha)
+
+    await approve_landed_override(store, t, landed_sha, "first repair")
+
+    fresh = await store.get_task(t.id)
+    with pytest.raises(OverrideRefused):
+        await approve_landed_override(store, fresh, landed_sha, "replay")
+
+    events = await store.list_events(t.id)
+    override_events = [e for e in events if e["kind"] == LANDED_OVERRIDE_KIND]
+    assert len(override_events) == 1
+
+
+async def test_escalated_task_with_pr_evidence_is_refused(tmp_path, store):
+    repo = _make_repo(tmp_path)
+    sha = _git_out(repo, "rev-parse", "HEAD")
+    t = await _seed_escalated(
+        store, repo, pr_evidence="https://example.com/pull/271")
+
+    with pytest.raises(OverrideRefused, match="restore-approval") as exc:
+        await approve_landed_override(store, t, sha, "asserting anyway")
+
+    assert "pull/271" in str(exc.value)
+    fresh = await store.get_task(t.id)
+    assert fresh.status is TaskStatus.ESCALATED
+    events = await store.list_events(t.id)
+    assert not [e for e in events if e["kind"] == LANDED_OVERRIDE_KIND]
+
+
+async def test_escalated_task_with_pr_evidence_in_the_event_log_is_refused(
+    tmp_path, store,
+):
+    repo = _make_repo(tmp_path)
+    sha = _git_out(repo, "rev-parse", "HEAD")
+    t = await _seed_escalated(store, repo)
+    await store.save_events(
+        t.id, [{"source": "test", "kind": "pr_open",
+                "text": "https://example.com/pull/272", "ts": time.time()}])
+    t = await store.get_task(t.id)
+
+    with pytest.raises(OverrideRefused, match="restore-approval") as exc:
+        await approve_landed_override(store, t, sha, "asserting anyway")
+
+    assert "pull/272" in str(exc.value)
+    fresh = await store.get_task(t.id)
+    assert fresh.status is TaskStatus.ESCALATED
+    events = await store.list_events(t.id)
+    assert not [e for e in events if e["kind"] == LANDED_OVERRIDE_KIND]
+
+
+async def test_escalated_task_with_cancel_request_is_refused(tmp_path, store):
+    repo = _make_repo(tmp_path)
+    sha = _git_out(repo, "rev-parse", "HEAD")
+    t = await _seed_escalated(store, repo)
+    await store.request_cancel(t.id, "no longer needed")
+
+    with pytest.raises(OverrideRefused, match="cancellation request"):
+        await approve_landed_override(store, t, sha, "asserting anyway")
+
+    fresh = await store.get_task(t.id)
+    assert fresh.status is TaskStatus.ESCALATED
+    events = await store.list_events(t.id)
+    assert not [e for e in events if e["kind"] == LANDED_OVERRIDE_KIND]
+
+    # positive control: the same task, with the cancellation request
+    # cleared, is accepted.
+    await store.clear_cancel_request(t.id)
+    fresh = await store.get_task(t.id)
+
+    result = await approve_landed_override(store, fresh, sha, "asserting anyway")
+
+    assert result["shape"] == "escalated_hand_landed"
+    done = await store.get_task(t.id)
+    assert done.status is TaskStatus.DONE
+    events = await store.list_events(t.id)
+    override_events = [e for e in events if e["kind"] == LANDED_OVERRIDE_KIND]
+    assert len(override_events) == 1
+
+
+async def test_escalated_shape_refuses_when_the_event_log_cannot_be_read(
+    tmp_path, store, monkeypatch,
+):
+    repo = _make_repo(tmp_path)
+    sha = _git_out(repo, "rev-parse", "HEAD")
+    t = await _seed_escalated(store, repo)
+
+    async def _boom(task_id):
+        raise RuntimeError("db unavailable")
+
+    monkeypatch.setattr(store, "list_events", _boom)
+
+    with pytest.raises(OverrideRefused) as exc:
+        await approve_landed_override(store, t, sha, "asserting anyway")
+
+    assert "could not read" in str(exc.value)
+    fresh = await store.get_task(t.id)
+    assert fresh.status is TaskStatus.ESCALATED
+
+    # positive control: with the event log readable again, the same call
+    # is accepted.
+    monkeypatch.undo()
+
+    result = await approve_landed_override(store, t, sha, "asserting anyway")
+
+    assert result["shape"] == "escalated_hand_landed"
+    done = await store.get_task(t.id)
+    assert done.status is TaskStatus.DONE
+
+
+async def test_eligible_status_set_and_refusal_sentence_have_one_home(
+    tmp_path, store, client,
+):
+    import importlib
+    import inspect
+
+    app_module = importlib.import_module("no_human.api.app")
+
+    repo = _make_repo(tmp_path)
+    sha = _git_out(repo, "rev-parse", "HEAD")
+    t = await _seed(store, repo, pr_branch="", status=TaskStatus.IMPLEMENTING)
+
+    r = await client.post(
+        f"/api/tasks/{t.id}/approve-landed",
+        json={"sha": sha, "justification": "asserting anyway"},
+    )
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"] == ineligible_status_reason(TaskStatus.IMPLEMENTING)
+
+    assert TaskStatus.ESCALATED in LANDED_OVERRIDE_ELIGIBLE_STATUSES
+
+    source = inspect.getsource(app_module)
+    assert "not awaiting_approval, a pre-PR" not in source
+    assert "TaskStatus.AWAITING_APPROVAL, TaskStatus.FAILED" not in source
+    assert "LANDED_OVERRIDE_ELIGIBLE_STATUSES" in source
