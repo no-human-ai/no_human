@@ -1256,7 +1256,14 @@ FROZEN_FILE_LINES = {
     # this is the only branch that can ever fire `task_ended(outcome=
     # cancelled)` for a task with no live in-process attempt at all. Measured
     # via `wc -l src/no_human/cli/commands.py`.
-    "cli/commands.py": 8651,
+    # 8651 -> 8657 (+6): square-bracket bug fix — every `console.print`/
+    # `Table.add_row` call that interpolates externally-sourced text (a
+    # task's title/description/acceptance criteria, a blocker's fields, a
+    # grill question, ...) now wraps that value in the new `esc()` boundary
+    # helper (`from .render import esc`) so Rich's markup parser can no
+    # longer eat a bracketed span or raise `MarkupError` on an unbalanced
+    # one. Measured via `wc -l src/no_human/cli/commands.py`.
+    "cli/commands.py": 8657,
     # api/app.py 5338 -> 5346 (+8): same budget-floor warning surfaced by
     # `send-back`/`reply` as `budget_warning` in the JSON response. Net cost
     # was trimmed from a naive +14 to +8 by computing `Bounds.from_config(...)`
