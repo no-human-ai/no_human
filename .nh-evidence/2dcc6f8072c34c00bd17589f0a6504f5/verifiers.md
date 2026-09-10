@@ -1,12 +1,12 @@
 # Verifiers
 
-_Harness-captured record for task `2dcc6f80`, commit `8d59015f936554ff66a81f951a2993cd9445839d` — not model-authored: no_human wrote this file from the deterministic verifier rules selected for this commit's files. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `2dcc6f80`, commit `ec151501f54abb618c0206444736652aa9118a0c` — not model-authored: no_human wrote this file from the deterministic verifier rules selected for this commit's files. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ```json
 [
   {
-    "comment": "All test functions added across the four files (early_refusal, guard, verification_receipts) contain at least one assert; the structural_budget change only edits frozen dict data/comments, not test bodies.",
-    "evidence": "Every added test function contains assert statements, e.g. test_compose_returns_none_when_there_are_no_hooks_including_claim_hook asserts `Orchestrator._compose_post_tool_hooks(None, None, None, None) is None`",
+    "comment": "All newly added test functions across the four files include at least one assert (or an assertion-bearing helper); the structural_budget change only edits frozen-value dicts and adds no test functions, and no test lacks an assertion.",
+    "evidence": "Every added/modified test_* function contains assert statements, e.g. test_note_text_never_raises ends with `assert _run(guard2.hook({}, None, None)) == {}` and test_a_firing_claim_guard_cannot_suppress_receipt_capture has `assert out` and `assert len(seen) == 1`.",
     "file": "",
     "files_checked": [
       "tests/test_landed_claim_early_refusal.py",
@@ -18,13 +18,13 @@ _Harness-captured record for task `2dcc6f80`, commit `8d59015f936554ff66a81f951a
     "no_verdict": false,
     "passed": true,
     "severity": "medium",
-    "tokens_used": 739,
+    "tokens_used": 1041,
     "unavailable": false,
     "verifier_id": "tests-assert-something"
   },
   {
-    "comment": "The changed code introduces a deterministic guard and hook wiring only \u2014 it performs no task-status writes, so it neither calls update_task(validate=False) nor bypasses set_status. The statement holds vacuously for this diff.",
-    "evidence": "The diff adds only the landed-claim guard: _build_landed_claim_guard, note_text feeding in _agent_sink, and PostToolUse hook composition/ordering (_ordered_post_tool_hooks, _compose_post_tool_hooks). None of the new or modified lines call update_task or write a task status at all; there is no `validate=False` anywhere in the change.",
+    "comment": "None of the new or modified code touches task status; there are no update_task or set_status calls in the change, so the statement holds vacuously for this diff.",
+    "evidence": "The diff adds only landed-claim guard wiring (_build_landed_claim_guard, _agent_sink feed, hook composition changes in _ordered_post_tool_hooks/_compose_post_tool_hooks); it contains no update_task(...) calls at all, let alone one with validate=False, and no task-status writes.",
     "file": "",
     "files_checked": [
       "src/no_human/core/orchestrator.py"
@@ -33,7 +33,7 @@ _Harness-captured record for task `2dcc6f80`, commit `8d59015f936554ff66a81f951a
     "no_verdict": false,
     "passed": true,
     "severity": "high",
-    "tokens_used": 558,
+    "tokens_used": 523,
     "unavailable": false,
     "verifier_id": "no-unvalidated-status-write"
   }

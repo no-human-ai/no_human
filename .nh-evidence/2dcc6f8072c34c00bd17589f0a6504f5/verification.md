@@ -1,131 +1,44 @@
 # How I verified this — full log
 
-_Harness-captured record for task `2dcc6f80`, commit `8d59015f936554ff66a81f951a2993cd9445839d` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `2dcc6f80`, commit `ec151501f54abb618c0206444736652aa9118a0c` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ## How I verified this
-8 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
+3 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
 
 ### test
-- `uv run pytest -q tests/test_structural_budget.py::test_no_frozen_entry_has_grown 2>&1 | tail -40`
+- `uv run pytest -q tests/test_landed_claim_guard.py 2>&1 | tail -60`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-F                                                                        [100%]
-=================================== FAILURES ===================================
-________________________ test_no_frozen_entry_has_grown ________________________
-
-scanned = ({'agent/claude_backend.py:ClaudeBackend.stream': 407, 'blockers/landed_override.py:approve_landed_override': 315, 'bl... ...}, {'agent/guard.py': 2892, 'api/app.py': 6183, 'blockers/wake.py': 2757, 'cli/commands.py': 8666, ...}, 227
-[... 769 of 1,908 characters omitted from the middle ...]
-ets down'] == []
-E             
-E             Left contains one more item: 'core/orchestrator.py:Orchestrator._run_attempt: frozen 2254, now 2267 (+13); this budget only ratchets down'
-E             Use -v to get more diff
-
-tests/test_structural_budget.py:1925: AssertionError
-=========================== short test summary info ============================
-FAILED tests/test_structural_budget.py::test_no_frozen_entry_has_grown - Asse...
-1 failed in 1.57s
-```  
-  _excerpt - 1,906 characters of output in total_
-
-- `uv run pytest -q tests/test_structural_budget.py 2>&1 | tail -20`
-
-```
-def test_no_frozen_entry_has_grown(scanned):
-        function_lines, function_cc, file_lines, _, _ = scanned
-        checks = [
-            (function_lines, FROZEN_FUNCTION_LINES, MAX_FUNCTION_LINES, "FROZEN_FUNCTION_LINES"),
-            (function_cc, FROZEN_FUNCTION_CC, MAX_FUNCTION_CC, "FROZEN_FUNCTION_CC"),
-            (file_lines, FROZEN_FILE_LINES, MAX_FILE_LINES, "FROZEN_FILE_LINES"),
-        ]
-        for measured, frozen, threshold, name in checks:
-            _, grown, _ = offenders(measured, frozen, threshold, name)
->           assert grown == [], "\n".join(grown)
-E           AssertionError: core/orchestrator.py: frozen 23828, now 23890 (+62); this budget only ratchets down
-E           assert ['core/orches...atchets down'] == []
-E             
-E             Left contains one more item: 'core/orchestrator.py: frozen 23828, now 23890 (+62); this budget only ratchets down'
-E             Use -v to get more diff
-
-tests/test_structural_budget.py:1937: AssertionError
-=========================== short test summary info ============================
-FAILED tests/test_structural_budget.py::test_no_frozen_entry_has_grown - Asse...
-1 failed, 17 passed in 2.57s
-```
-
-- `uv run pytest -q tests/test_structural_budget.py 2>&1 | tail -20`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+   Building no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/2dcc6f8072c34c00bd17589f0a6504f5.82890.36bfca6e
+      Built no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/2dcc6f8072c34c00bd17589f0a6504f5.82890.36bfca6e
+Installed 68 packages in 175ms
 ..................                                                       [100%]
-18 passed in 2.40s
+18 passed in 2.67s
 ```
 
-- `uv run pytest -q tests/test_codex_teardown_closes_transport.py 2>&1 | tail -60`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-....                                                                     [100%]
-4 passed in 12.15s
-```
-
-- `uv run pytest -q tests/test_codex_teardown_closes_transport.py::test_a_teardown_that_completes_in_the_bound_is_unchanged -v 2>&1 | tail -20`
+- `uv run pytest -q tests/test_landed_claim_guard.py tests/test_landed_claim_early_refusal.py tests/test_verification_receipts.py tests/test_structural_budget.py 2>&1 | tail -60`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-============================= test session starts ==============================
-platform darwin -- Python 3.12.13, pytest-9.1.1, pluggy-1.6.0
-<redacted> isolated HOME: /var/folders/1r/3r0rt1jd4j1456rsg_fh4d380000gn/T/nh-test-home-2mz_hshm
-rootdir: /Users/eyalgolan/.<redacted>/worktrees/2dcc6f8072c34c00bd17589f0a6504f5.82890.570473bc
-configfile: pyproject.toml
-plugins: anyio-4.14.0, no-human-0.2.2, cov-7.1.0, xdist-3.8.0, asyncio-1.4.0
-asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
-collected 1 item
-
-tests/test_codex_teardown_closes_transport.py .                          [100%]
-
-============================== 1 passed in 1.22s ===============================
-```
-
-- `uv run pytest -q tests/test_landed_claim_guard.py tests/test_landed_claim_early_refusal.py \   tests/test_verification_receipts.py tests/test_already_satisfied_subject_tree.py \   tests/test_already_satisfied.py tests/test_already_satisfied_landing.py \   tests/test_wip_checkpoint_routed_to_review.py tests/test_supervisor.py 2>&1 | tail -30`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-........................................................................ [ 13%]
-........................................................................ [ 27%]
-........................................................................ [ 41%]
-........................................................................ [ 54%]
-........................................................................ [ 68%]
+........................................................................ [ 16%]
+........................................................................ [ 33%]
+........................................................................ [ 49%]
+........................................................................ [ 66%]
 ........................................................................ [ 82%]
-........................................................................ [ 96%]
-....................                                                     [100%]
-524 passed in 73.62s (0:01:13)
-```
-
-- `uv run pytest -q tests/test_landed_claim_early_refusal.py::test_guard_is_wired_into_the_attempt_and_fires_on_a_refutable_claim -v 2>&1 | tail -15`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/no_human-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-============================= test session starts ==============================
-platform darwin -- Python 3.12.13, pytest-9.1.1, pluggy-1.6.0
-no_human isolated HOME: /var/folders/1r/3r0rt1jd4j1456rsg_fh4d380000gn/T/nh-test-home-ma0fwzcb
-rootdir: /Users/eyalgolan/.no_human/worktrees/2dcc6f8072c34c00bd17589f0a6504f5.82890.570473bc
-configfile: pyproject.toml
-plugins: anyio-4.14.0, no-human-0.2.2, cov-7.1.0, xdist-3.8.0, asyncio-1.4.0
-asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
-collected 1 item
-
-tests/test_landed_claim_early_refusal.py .                               [100%]
-
-============================== 1 passed in 29.02s ==============================
-```
-
-- `uv run pytest -q tests/test_landed_claim_early_refusal.py::test_guard_is_wired_into_the_attempt_and_fires_on_a_refutable_claim tests/test_structural_budget.py::test_no_frozen_entry_has_grown 2>&1 | tail -15`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/no_human-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+........................................................................ [ 99%]
 ..                                                                       [100%]
-2 passed in 3.33s
+434 passed in 5.26s
+```
+
+- `uv run pytest -q --collect-only 2>&1 | tail -5`
+
+```
+/Users/eyalgolan/.<redacted>/worktrees/2dcc6f8072c34c00bd17589f0a6504f5.82890.36bfca6e/src/<redacted>/testing/test_layers.py:89: PytestCollectionWarning: cannot collect test class 'TestPlan' because it has a __init__ constructor (from: tests/test_test_layers.py)
+    @dataclass
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+12249 tests collected in 10.82s
 ```
 
 
