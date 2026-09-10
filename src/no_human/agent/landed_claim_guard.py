@@ -2,21 +2,49 @@
 
 MEASURED 2026-09-10 over the whole attempts table: 42 attempts ended in
 'already-satisfied claim refused' — burning 1,969 turns (avg 46.9) and
-34,662,551 weighted tokens (avg 825,298 each) — because the claimed commit's
-containment against the base branch was only ever checked at delivery time.
-The refusal itself is CORRECT and stays exactly as it is: the claimed sha
-genuinely was not an ancestor of the base branch. Only the *timing* changes
-here — this module asks the same containment question the moment the agent
-asserts the claim, mid-attempt, so a doomed claim cannot spend a full turn
-budget before being told it is refutable.
+34,662,551 weighted tokens (avg 825,298 each) — because the claim's subject
+tree was only ever classified at delivery time. The refusal itself is
+CORRECT and stays exactly as it is. Only the *timing* changes here — this
+module asks delivery's own question the moment the agent asserts the claim,
+mid-attempt, so a doomed claim cannot spend a full turn budget before being
+told it is refutable.
 
-The check is keyed on ancestry (``git merge-base --is-ancestor``, via
-``classify_already_satisfied_landing``), never on the claimed commit's
-subject line: of the 42 attempts, only 9 claimed a [WIP-PARTIAL]/[WIP-BLOCKED]
-checkpoint — the other 33 claimed an ordinary commit left by a previous round
-whose review had FAILED. A fix keyed on the checkpoint subject would cover
-only the 9 (21%); ancestry covers all 42, because the subject is never what
-makes (or doesn't make) the claim false.
+The check is never keyed on the claimed commit's subject line: of the 42
+attempts, only 9 claimed a [WIP-PARTIAL]/[WIP-BLOCKED] checkpoint — the
+other 33 claimed an ordinary commit left by a previous round whose review
+had FAILED. A fix keyed on the checkpoint subject would cover only the 9
+(21%); the delivery-time question covers all 42, because the subject is
+never what makes (or doesn't make) the claim false.
+
+Two revisions since the first version landed:
+
+* (Send-back, sha extraction) a bare ``[0-9a-f]{7,40}`` token also matches
+  ordinary English words ("defaced") and unrelated hex-shaped tokens
+  (manifest hashes) anywhere in the text, and the sha search ran over the
+  WHOLE utterance instead of the claim's own snippet. Fixed by bounding the
+  sha search to the claim's snippet window and requiring a cue word
+  ("at"/"in"/"as"/"commit"/"sha") immediately before the token.
+* (Send-back, second review) two deeper defects:
+
+  1. The probe wrapped `classify_already_satisfied_landing` — ancestry
+     against `base` only — a SECOND, narrower authority than delivery's
+     real gate, `Orchestrator._already_satisfied_subject`, which also
+     accepts a pushed-and-up-to-date offered branch, or a pushed SIBLING
+     branch of the same task. The guard therefore refused claims delivery
+     would ACCEPT. Fixed by making the probe call
+     `_already_satisfied_subject` itself — the exact function
+     `_gate_already_satisfied` calls at delivery time — so the two can
+     never disagree in the accept direction.
+  2. The detector fired on ordinary, non-claim prose ("I already ran the
+     full suite; no changes needed in tests/test_foo.py") because the
+     phrase match alone was treated as actionable. Measured: 64% of
+     attempts fired at least once, none of those firings were a genuine
+     incident, and at least 8% were confirmed spurious. Fixed by requiring
+     the phrase match to also carry either an explicitly cued commit (the
+     existing sha-cue requirement) or the formal ``ALREADY-SATISFIED``
+     contract marker `Orchestrator._parse_already_satisfied` requires at
+     delivery — i.e. the SAME bar delivery itself uses to decide whether a
+     zero-diff completion is even a claim worth routing anywhere.
 """
 
 from __future__ import annotations
@@ -24,7 +52,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
 
 from ..core.prompt_blocks import supervisor_channel_tag
 
@@ -33,8 +61,9 @@ log = logging.getLogger("no_human.landed_claim_guard")
 # Deliberately loose and cheap (no LLM): the same "cheap, deterministic,
 # never wrong to double-check" shape as `supervisor.detect_inability`. A
 # false negative just means the guard stays silent (delivery still asks the
-# same question later); a false positive costs one extra, true statement of
-# fact injected into the transcript.
+# same question later). A false positive on this regex ALONE no longer costs
+# anything, because `_is_actionable_claim` below requires more before the
+# guard spends a probe on it.
 _CLAIM = re.compile(
     r"already (?:satisfied|implemented|landed|done|committed|exists|in (?:the )?(?:base|main))"
     r"|ALREADY-SATISFIED"
@@ -56,15 +85,24 @@ _SNIPPET_BEFORE = 40
 _SNIPPET_AFTER = 80
 _SNIPPET_MAX = 120
 
+#: The exact contract marker `Orchestrator._parse_already_satisfied` requires
+#: on a line of its own before it will treat a final report as a claim at
+#: all. Mirrored here (not imported — `core.orchestrator` imports THIS
+#: module, so importing back would be circular) so the guard's firing bar
+#: matches delivery's routing bar for the formal-report shape.
+_ALREADY_SATISFIED_MARKER = "ALREADY-SATISFIED"
+
 
 @dataclass(frozen=True)
 class ClaimAssertion:
     """A detected "the work already exists" assertion.
 
     ``sha`` is the commit named in the same utterance, or ``""`` when none
-    was named — the caller resolves that case to the branch's current HEAD,
-    which is exactly the sha delivery's own `_already_satisfied_subject`
-    judges when no other commit is named.
+    was named. Cosmetic only: the guard's probe always judges the branch's
+    CURRENT head (exactly as delivery's `_already_satisfied_subject` does —
+    it never consults a commit named in the claim's own prose either), so
+    ``sha`` is used only to decide whether the claim is actionable and to
+    quote it back in the injected message.
     """
 
     sha: str
@@ -91,17 +129,48 @@ def detect_claim_assertion(text: str) -> ClaimAssertion | None:
     return ClaimAssertion(sha=(sha_match.group(1) if sha_match else ""), snippet=snippet)
 
 
-# `probe(sha)` -> (refuted, resolved_sha, base_ref). Built by the orchestrator
-# over `classify_already_satisfied_landing` — see `Orchestrator.
-# _build_landed_claim_guard`. Never expected to raise; `note_text` tolerates
-# it anyway (see its docstring).
-Probe = Callable[[str], "tuple[bool, str, str]"]
+def _is_actionable_claim(text: str) -> ClaimAssertion | None:
+    """`detect_claim_assertion`, gated to the claims worth spending a probe
+    on.
+
+    Send-back (second review): the loose phrase match alone fires on
+    ordinary prose that never names a commit and never uses the formal
+    contract ("I already ran the full suite; no changes needed in
+    tests/test_foo.py"; "Let me check whether the prior session's work is
+    already there."; "Refactor complete. No code changes are needed to the
+    CLI; only the docs move."). None of those are a claim delivery would
+    ever act on. A claim only becomes ACTIONABLE once it commits to
+    something checkable: an explicitly cued commit, or the
+    ``ALREADY-SATISFIED`` contract marker — the exact bar
+    `Orchestrator._parse_already_satisfied` applies before delivery will
+    even route a zero-diff completion to the already-satisfied gate.
+    """
+    assertion = detect_claim_assertion(text)
+    if assertion is None:
+        return None
+    if assertion.sha:
+        return assertion
+    if any(ln.strip() == _ALREADY_SATISFIED_MARKER for ln in (text or "").splitlines()):
+        return assertion
+    return None
+
+
+# `probe()` -> (refuted, sha, detail). Awaited, no argument: the claim is
+# ALWAYS judged against the branch's CURRENT head — exactly as delivery's
+# `Orchestrator._already_satisfied_subject` does, which never consults a
+# commit named in the claim's own prose either. Built by the orchestrator
+# over that exact method — see `Orchestrator._build_landed_claim_guard`.
+# `detail`, when `refuted` is True, already names the commit and the branch
+# it is not on (delivery's own reason string), reused verbatim so the
+# in-attempt message and the eventual delivery-time refusal read the same.
+Probe = Callable[[], "Awaitable[tuple[bool, str, str]]"]
 
 
 class LandedClaimGuard:
     """PostToolUse hook: tests an in-attempt already-satisfied claim against
-    the base branch the moment it is made, and injects a non-terminal
-    correction naming the commit and the branch it is not on when refuted.
+    the exact question delivery asks the moment the claim is made, and
+    injects a non-terminal correction naming the commit and the branch it is
+    not on when refuted.
 
     Never ends the session (no ``continue_: False``): aborting here would
     trade a ~47-turn burn for a zero-turn burn *and* lose the work already
@@ -114,20 +183,22 @@ class LandedClaimGuard:
         probe: Probe,
         head_sha: Callable[[], str],
         on_event: Callable[..., None] | None = None,
-        base_hint: str = "",
     ):
         self._probe = probe
         self._head_sha = head_sha
         self._on_event = on_event
-        self._base_hint = base_hint
         self._seen: set[str] = set()
-        self._pending: str | None = None
+        self._pending_head: str | None = None
+        self._pending_snippet: str = ""
 
     def note_text(self, text: str) -> None:
-        """Feed one utterance of agent prose. Best-effort: a probe or sink
-        failure is logged and swallowed, never raised into the caller (the
-        same "advisory never breaks the hook" convention `supervisor.py`
-        uses for its own budget/send-back formatting)."""
+        """Feed one utterance of agent prose. Best-effort: this never awaits
+        or blocks — the actual (async, network-touching) probe call happens
+        in `hook()`, which the SDK dispatcher awaits — so it is safe to call
+        directly from a synchronous event sink on the shared event loop
+        thread. A failure here is logged and swallowed, never raised into
+        the caller (the same "advisory never breaks the hook" convention
+        `supervisor.py` uses for its own budget/send-back formatting)."""
         try:
             self._note_text(text)
         except Exception:  # noqa: BLE001 — advisory, never break the caller
@@ -135,63 +206,71 @@ class LandedClaimGuard:
                         exc_info=True)
 
     def _note_text(self, text: str) -> None:
-        assertion = detect_claim_assertion(text)
+        assertion = _is_actionable_claim(text)
         if assertion is None:
             return
-        sha = assertion.sha
-        if not sha:
-            try:
-                sha = (self._head_sha() or "").strip()
-            except Exception:  # noqa: BLE001 — unresolvable HEAD, nothing to judge
-                sha = ""
-        if not sha or sha in self._seen:
+        try:
+            head = (self._head_sha() or "").strip()
+        except Exception:  # noqa: BLE001 — unresolvable HEAD, nothing to judge
+            return
+        if not head or head in self._seen:
             return
         # Latch BEFORE probing: one probe (and, if refuted, one injection)
-        # per sha per attempt — a claim repeated verbatim across several
-        # turns must not re-run `git merge-base --is-ancestor` nor pile up
+        # per head per attempt — a claim repeated verbatim across several
+        # turns must not re-run the delivery-time check nor pile up
         # duplicate corrections.
-        self._seen.add(sha)
-        try:
-            refuted, resolved_sha, base_ref = self._probe(sha)
-        except Exception:  # noqa: BLE001 — unverifiable must never look refuted
-            return
-        if not refuted:
-            return
-        tag = supervisor_channel_tag()
-        message = (
-            f"{tag} LANDED-CLAIM REFUSED: you said the work already exists "
-            f"(\"{assertion.snippet}…\"), but {resolved_sha} is not an "
-            f"ancestor of {base_ref} — it is not on {base_ref}, so delivery "
-            "will refuse this claim exactly as it is being refused now "
-            "(verified with git merge-base --is-ancestor). This is "
-            "independent of the commit's subject line: a [WIP-PARTIAL]/"
-            "[WIP-BLOCKED] checkpoint and an ordinary commit from a previous "
-            "round are both refused for the same reason. Do NOT end the "
-            "attempt on this claim — keep working and deliver the change on "
-            "this branch."
-        )
-        self._pending = message
-        if self._on_event is not None:
-            try:
-                self._on_event(
-                    "landed_claim_refused",
-                    f"{resolved_sha} is not an ancestor of {base_ref}",
-                    sha=resolved_sha, base_ref=base_ref,
-                )
-            except Exception:  # noqa: BLE001 — the injection is already committed
-                log.warning(
-                    "landed_claim_guard: on_event sink raised; "
-                    "injection still delivered", exc_info=True)
+        self._seen.add(head)
+        self._pending_head = head
+        self._pending_snippet = assertion.snippet
 
     async def hook(
         self, input_data: dict, tool_use_id: str | None, context: Any
     ) -> dict:
         """The SDK PostToolUse hook callback. Empty dict → no action;
-        otherwise an `additionalContext` injection. Never `continue_: False`."""
-        if self._pending is None:
+        otherwise an `additionalContext` injection. Never `continue_: False`.
+
+        The probe — delivery's own `_already_satisfied_subject`, which does
+        real (network-touching) remote checks via `asyncio.to_thread` — is
+        awaited HERE, not in `note_text`: `note_text` runs synchronously on
+        the shared event-loop thread (fed directly from `_agent_sink`) and
+        cannot safely await or block on it, while `hook` is already
+        `async def` and already awaited by the real dispatcher.
+        """
+        if self._pending_head is None:
             return {}
-        message = self._pending
-        self._pending = None
+        head = self._pending_head
+        snippet = self._pending_snippet
+        self._pending_head = None
+        self._pending_snippet = ""
+        try:
+            refuted, resolved_sha, detail = await self._probe()
+        except Exception:  # noqa: BLE001 — unverifiable must never look refuted
+            return {}
+        if not refuted:
+            return {}
+        resolved_sha = resolved_sha or head
+        tag = supervisor_channel_tag()
+        message = (
+            f"{tag} LANDED-CLAIM REFUSED: you said the work already exists "
+            f"(\"{snippet}…\"), but delivery will refuse this claim right "
+            f"now — {detail} (verified the same way "
+            "`_already_satisfied_subject` verifies it at delivery time: git "
+            "merge-base --is-ancestor, plus the pushed-branch and sibling-"
+            "branch checks). This is independent of the commit's subject "
+            "line: a [WIP-PARTIAL]/[WIP-BLOCKED] checkpoint and an ordinary "
+            "commit from a previous round are refused for the same reason. "
+            "Do NOT end the attempt on this claim — keep working and "
+            "deliver the change on this branch."
+        )
+        if self._on_event is not None:
+            try:
+                self._on_event(
+                    "landed_claim_refused", detail, sha=resolved_sha,
+                )
+            except Exception:  # noqa: BLE001 — the injection is already committed
+                log.warning(
+                    "landed_claim_guard: on_event sink raised; "
+                    "injection still delivered", exc_info=True)
         return {
             "hookSpecificOutput": {
                 "hookEventName": "PostToolUse",

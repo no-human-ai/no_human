@@ -1197,7 +1197,20 @@ FROZEN_FILE_LINES = {
     # (build/stash/gate/teardown), the `_agent_sink` prose feed, and the
     # `_ordered_post_tool_hooks`/`_compose_post_tool_hooks` 4th-parameter
     # plumbing. Measured on this tree by the scanner's own metric.
-    "core/orchestrator.py": 23908,
+    # 23890 -> 23917 (+27) (send-back, Blocker 1 & 2): the guard's probe was
+    # wrapping `classify_already_satisfied_landing` — a SECOND, narrower
+    # authority (ancestry against `base` only) than delivery's real gate,
+    # so it refused claims delivery would ACCEPT (a pushed-and-up-to-date
+    # offered branch, or a pushed sibling branch of the same task).
+    # `_build_landed_claim_guard`'s probe now calls
+    # `_already_satisfied_subject` itself — the exact function
+    # `_gate_already_satisfied` calls at delivery — and filters its
+    # "cannot tell" cases out of "refuted" by checking `subject_reason`
+    # starts with `"{head} is not on {ship_ref}"`; the import of
+    # `classify_already_satisfied_landing`/`LANDING_REQUIRED` and the
+    # `base_hint`-branch comment above it were dropped accordingly.
+    # Measured on this tree by the scanner's own metric.
+    "core/orchestrator.py": 23917,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.
