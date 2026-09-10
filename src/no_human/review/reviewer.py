@@ -940,7 +940,11 @@ def _build_review_prompt(
     failing_test_ids: list[str] | None = None,
     failing_test_ids_dropped: int = 0,
     pre_existing_test_ids: list[str] | None = None,
+    pre_existing_test_ids_dropped: int = 0,
     new_test_ids: list[str] | None = None,
+    new_test_ids_dropped: int = 0,
+    owned_test_ids: list[str] | None = None,
+    owned_test_ids_dropped: int = 0,
     test_attribution: str = "unknown",
 ) -> str:
     # Bound the auxiliary sections AT THIS BOUNDARY (see `_AUX_CAP`). The diff,
@@ -1046,8 +1050,10 @@ def _build_review_prompt(
         attributed = test_attribution == "attributed"
         attribution_clause = (
             "the harness HAS already attributed them against the base "
-            "tree — the split is below, and it is a fact, not this "
-            "review's opinion"
+            "tree — the split is below (an id this diff itself added or "
+            "modified is attributed to the change regardless of what the "
+            "base tree shows, so the split is evidence, not a verdict "
+            "you must defer to)"
             if attributed else
             "the harness has NOT yet attributed them to this diff"
         )
@@ -1069,7 +1075,11 @@ def _build_review_prompt(
         )
         if attributed:
             pre_existing_line = ", ".join(pre_existing_test_ids or []) or "(none)"
+            if pre_existing_test_ids_dropped:
+                pre_existing_line += f" (+{pre_existing_test_ids_dropped} more, not shown)"
             new_line = ", ".join(new_test_ids or []) or "(none)"
+            if new_test_ids_dropped:
+                new_line += f" (+{new_test_ids_dropped} more, not shown)"
             failing_ids_section += (
                 "Already red on the base tree (pre-existing, not this "
                 f"change's fault): {pre_existing_line}\n"
@@ -1081,6 +1091,23 @@ def _build_review_prompt(
                 "Attribution status: UNKNOWN — the harness's base-tree "
                 "recheck did not run to a verdict for this run; treat this "
                 "as neither an excuse nor a blocking fact on its own.\n"
+            )
+        # Ownership is a SEPARATE, cheap (diff/AST-only, no test run) check —
+        # resolved regardless of whether the base-tree recheck above answered
+        # or came back UNKNOWN. An id this diff itself added or modified is
+        # attributed to the change no matter what the base tree shows, so it
+        # is rendered as its own bucket rather than folded into either branch
+        # above — the send-back's exact scenario (an id red on the base tree
+        # too, but owned by this diff) must never read as "pre-existing" here.
+        if owned_test_ids:
+            owned_line = ", ".join(owned_test_ids)
+            if owned_test_ids_dropped:
+                owned_line += f" (+{owned_test_ids_dropped} more, not shown)"
+            failing_ids_section += (
+                "Red on the base tree too, but this diff itself added or "
+                "modified the failing test (ownership, not the base-tree "
+                "check): attributed to this change regardless — never "
+                f"pre-existing, never an excuse: {owned_line}\n"
             )
     profile_section = (
         f"\nProject profile (use these conventions as a baseline):\n{profile_context}\n"
@@ -2461,7 +2488,11 @@ class AdversarialReviewer:
         failing_test_ids: list[str] | None = None,
         failing_test_ids_dropped: int = 0,
         pre_existing_test_ids: list[str] | None = None,
+        pre_existing_test_ids_dropped: int = 0,
         new_test_ids: list[str] | None = None,
+        new_test_ids_dropped: int = 0,
+        owned_test_ids: list[str] | None = None,
+        owned_test_ids_dropped: int = 0,
         test_attribution: str = "unknown",
     ) -> ReviewDecision:
         # Tamper-adjudication mode: see `_review_tamper_adjudication` for why
@@ -2586,7 +2617,11 @@ class AdversarialReviewer:
             failing_test_ids=failing_test_ids,
             failing_test_ids_dropped=failing_test_ids_dropped,
             pre_existing_test_ids=pre_existing_test_ids,
+            pre_existing_test_ids_dropped=pre_existing_test_ids_dropped,
             new_test_ids=new_test_ids,
+            new_test_ids_dropped=new_test_ids_dropped,
+            owned_test_ids=owned_test_ids,
+            owned_test_ids_dropped=owned_test_ids_dropped,
             test_attribution=test_attribution,
         )
 
