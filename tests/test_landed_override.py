@@ -1584,6 +1584,21 @@ async def test_done_task_with_cancel_request_is_refused(tmp_path, store):
 # was `nh task cancel`, which books shipped work as a FAILED row.           #
 # --------------------------------------------------------------------------- #
 
+async def test_escalated_cancelled_task_is_refused(tmp_path, store):
+    repo, feature_sha, landed_sha = _repo_with_squash_landed(tmp_path)
+    t = await _seed_escalated(
+        store, repo, branch="feature", commit_sha=feature_sha,
+        cancel_reason="operator")
+
+    with pytest.raises(OverrideRefused, match="cancelled"):
+        await approve_landed_override(store, t, landed_sha, "asserting anyway")
+
+    fresh = await store.get_task(t.id)
+    assert fresh.status is TaskStatus.ESCALATED
+    assert not [e for e in await store.list_events(t.id)
+                if e["kind"] == LANDED_OVERRIDE_KIND]
+
+
 async def test_escalated_task_with_landed_content_completes(tmp_path, store):
     repo, feature_sha, landed_sha = _repo_with_squash_landed(tmp_path)
     t = await _seed_escalated(
