@@ -48,6 +48,12 @@ async def client(store, tmp_path):
     app.state.store = store
     app.state.config = load_config(tmp_path / "config.yaml")
     app.state.scheduler = _leased_out_sched(store)
+    # The module-level `app` singleton is shared across the whole suite;
+    # another test (tests/test_api.py) can leave `watcher_error`/`worker_error`
+    # set on it without cleaning up, which would make the "healthy" negative
+    # control here order-dependent. Reset both explicitly.
+    app.state.watcher_error = None
+    app.state.worker_error = None
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://localhost") as c:
         yield c
