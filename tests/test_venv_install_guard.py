@@ -787,12 +787,13 @@ def test_session_root_fails_closed_when_home_is_unresolvable(tmp_path, monkeypat
 
 
 def test_session_root_fails_closed_when_a_marker_probe_errors(tmp_path, monkeypatch):
-    """A level whose marker cannot even be CHECKED (`os.path.exists` itself
-    raises) is indeterminate, not "no marker here" — the walk must stop and
-    fall back to `cwd_real` rather than continuing to climb past it. Before
-    this fix the exception was swallowed into `marker_present = False` and
-    the walk kept climbing, so a `.git` further up — one the probe never
-    even reached — was wrongly accepted as the root."""
+    """A level whose marker cannot even be CHECKED (`os.stat` raises
+    something other than `FileNotFoundError`) is indeterminate, not "no
+    marker here" — the walk must stop and fall back to `cwd_real` rather
+    than continuing to climb past it. Before this fix the exception was
+    swallowed into `marker_present = False` and the walk kept climbing, so
+    a `.git` further up — one the probe never even reached — was wrongly
+    accepted as the root."""
     outer = tmp_path / "outer"
     outer.mkdir()
     (outer / ".git").mkdir()
@@ -804,14 +805,14 @@ def test_session_root_fails_closed_when_a_marker_probe_errors(tmp_path, monkeypa
     inner_real = os.path.realpath(inner)
     mid_marker = os.path.join(os.path.realpath(mid), venv_install_guard._WORKTREE_MARKER)
 
-    real_exists = os.path.exists
+    real_stat = os.stat
 
-    def flaky_exists(path):
+    def flaky_stat(path, *args, **kwargs):
         if os.fspath(path) == mid_marker:
-            raise OSError("simulated: cannot stat this level")
-        return real_exists(path)
+            raise PermissionError(13, "simulated: cannot stat this level")
+        return real_stat(path, *args, **kwargs)
 
-    monkeypatch.setattr(venv_install_guard.os.path, "exists", flaky_exists)
+    monkeypatch.setattr(venv_install_guard.os, "stat", flaky_stat)
 
     assert venv_install_guard._session_root(inner_real) == inner_real, (
         "an indeterminate level must stop the walk at cwd_real, not let it "
@@ -828,6 +829,58 @@ def test_session_root_fails_closed_when_a_marker_probe_errors(tmp_path, monkeypa
     assert outer_venv in r
     d = _ev("Bash", {"command": cmd}, cwd=str(inner), env=env)
     assert not d.allow
+
+
+def test_session_root_fails_closed_on_a_real_permission_denied_level(tmp_path):
+    """Real-filesystem repro (not a monkeypatch): `os.path.exists` itself
+    catches `PermissionError` internally and reports `False` —
+    indistinguishable from a genuinely absent marker — so a probe built on
+    `os.path.exists` can NEVER observe the indeterminate case and always
+    keeps climbing past an inaccessible level. Strip the execute bit from
+    an intermediate directory (so its contents cannot be stat'd, exactly
+    what a coder's own worktree could look like under a restrictive
+    umask/ACL) and confirm the walk still stops there rather than reaching
+    the outer `.git`."""
+    outer = tmp_path / "outer"
+    outer.mkdir()
+    (outer / ".git").mkdir()
+    _outer_real, outer_venv = _mkvenv(outer)
+    mid = outer / "mid"
+    mid.mkdir()
+    inner = mid / "inner"
+    inner.mkdir()
+    inner_real = os.path.realpath(inner)
+
+    mid_marker = os.path.join(os.path.realpath(mid), venv_install_guard._WORKTREE_MARKER)
+    assert os.path.exists(mid_marker) is False, (
+        "sanity: mid has no .git of its own before the permission change"
+    )
+
+    old_mode = os.stat(mid).st_mode
+    os.chmod(mid, 0o600)  # strip execute: contents of `mid` cannot be stat'd
+    try:
+        assert os.path.exists(mid_marker) is False, (
+            "control: os.path.exists silently reports False for a "
+            "permission-denied stat, indistinguishable from 'absent'"
+        )
+        assert venv_install_guard._session_root(inner_real) == inner_real, (
+            "a real permission-denied level must stop the walk at "
+            "cwd_real, not silently read as 'no marker' and climb past "
+            "it to the outer .git"
+        )
+
+        env = {"PATH": f"{outer_venv}/bin:/usr/bin:/bin"}
+        cmd = "pip install foo"
+        r = venv_install_guard.denial_reason(cmd, cwd=str(inner), env=env)
+        assert r is not None, (
+            f"the outer .git's venv must stay denied when a real "
+            f"intermediate level cannot be probed: {r}"
+        )
+        assert outer_venv in r
+        d = _ev("Bash", {"command": cmd}, cwd=str(inner), env=env)
+        assert not d.allow
+    finally:
+        os.chmod(mid, old_mode)
 
 
 def test_session_root_walk_is_bounded_and_does_not_climb_past_it(tmp_path):

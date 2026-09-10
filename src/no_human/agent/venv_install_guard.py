@@ -135,9 +135,13 @@ pre-execution. It cannot see:
           ``_MAX_ROOT_WALK`` levels — or one whose only markers sit at
           ``$HOME`` or the filesystem anchor (both explicitly refused as a
           root), or one where ``$HOME`` cannot be determined, or a level
-          whose marker cannot even be PROBED (``os.path.exists`` itself
-          raises) — all fail CLOSED and skip straight to the ``cwd``
-          fallback rather than climbing with that check silently disabled.
+          whose marker cannot even be PROBED (``os.stat`` raises anything
+          other than ``FileNotFoundError`` — the probe deliberately calls
+          ``os.stat`` rather than ``os.path.exists``, since the latter
+          swallows a ``PermissionError`` into ``False``, indistinguishable
+          from a genuinely absent marker) — all fail CLOSED and skip
+          straight to the ``cwd`` fallback rather than climbing with that
+          check silently disabled.
           This is a conservative FALSE POSITIVE (over-denial), never a
           hole. A ``cwd`` that instead sits UNDER an ANCESTOR that does
           carry ``.git`` does NOT fall back to ``cwd``: it adopts that
@@ -611,8 +615,11 @@ def _session_root(cwd_real: str) -> str:
     `cwd_real` fallback rather than climbing with the `$HOME` check silently
     disabled — an unresolvable home must never widen the boundary. The same
     applies per level: if a level's marker cannot even be CHECKED (the
-    `os.path.exists` probe itself raises), that level is indeterminate, not
-    "no marker here" — the walk stops and returns `cwd_real` rather than
+    `os.stat` probe raises anything other than `FileNotFoundError` — e.g. a
+    directory whose execute bit is stripped raises `PermissionError`, which
+    `os.path.exists` would silently swallow into `False`, indistinguishable
+    from a genuinely absent marker), that level is indeterminate, not "no
+    marker here" — the walk stops and returns `cwd_real` rather than
     continuing to climb past it, since climbing past an indeterminate level
     is exactly how a stray `.git` further up would widen the boundary.
     """
@@ -629,13 +636,26 @@ def _session_root(cwd_real: str) -> str:
         if current_str == home:
             break
         try:
-            marker_present = os.path.exists(current / _WORKTREE_MARKER)
+            # `os.path.exists` is NOT usable for this probe: it catches
+            # every `OSError` internally (including `PermissionError`) and
+            # reports `False`, indistinguishable from a genuinely absent
+            # marker — a directory with its execute bit stripped (so its
+            # contents cannot be stat'd) would silently read as "no
+            # marker here" and let the walk climb straight past it. Calling
+            # `os.stat` directly lets this distinguish "absent"
+            # (`FileNotFoundError`) from "indeterminate" (any other
+            # `OSError`, e.g. permission denied).
+            os.stat(current / _WORKTREE_MARKER)
+        except FileNotFoundError:
+            marker_present = False
         except OSError:
             # A level whose marker cannot be determined is indeterminate,
             # not "no marker here" — continuing to climb past it would let
             # an inaccessible directory widen the boundary past the real
             # root. Fail closed: stop at `cwd_real` rather than guess.
             return cwd_real
+        else:
+            marker_present = True
         if marker_present:
             return current_str
         current = current.parent
