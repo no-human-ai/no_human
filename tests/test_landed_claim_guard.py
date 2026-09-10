@@ -174,6 +174,40 @@ def test_ordinary_prose_is_not_a_claim(text):
     assert detect_claim_assertion(text) is None
 
 
+def test_unrelated_hex_token_before_the_claim_is_not_the_named_sha():
+    """The sha is the commit named in the SAME utterance, not any hex-shaped
+    token anywhere earlier in the text (e.g. a manifest hash mentioned in an
+    unrelated sentence far outside the claim's snippet window)."""
+    text = (
+        "The review at 9999999abc noted a formatting nit unrelated to this "
+        "change and was addressed in a follow-up note some time ago. "
+        "Now, already satisfied: the work already exists at abc1234def"
+    )
+    assertion = detect_claim_assertion(text)
+    assert assertion is not None
+    assert assertion.sha == "abc1234def"
+    assert assertion.sha != "9999999abc"
+
+
+def test_english_word_shaped_like_hex_is_not_read_as_a_sha():
+    """"defaced" is 7 letters, all in [a-f] — it must not be mistaken for a
+    commit sha just because it fits `[0-9a-f]{7,40}`."""
+    text = "The file was defaced earlier; the work is already there."
+    assertion = detect_claim_assertion(text)
+    assert assertion is not None
+    assert assertion.sha == ""
+
+
+def test_manifest_hash_mentioned_alongside_the_claim_is_not_the_named_sha():
+    text = (
+        "The manifest hash is 8a9049bcdbc7db86. Separately, no code changes "
+        "are needed here."
+    )
+    assertion = detect_claim_assertion(text)
+    assert assertion is not None
+    assert assertion.sha == ""
+
+
 def test_latch_injects_once_per_sha():
     calls = []
 
