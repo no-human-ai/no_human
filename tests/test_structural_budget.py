@@ -352,7 +352,11 @@ FROZEN_FUNCTION_LINES = {
     # Grew to 314 (> 300) when the done_no_evidence repair shape landed
     # (task bf413cc6): two new refusal guards + the DONE branch. The growth
     # was reviewed on its merits; frozen here as its landing baseline.
-    "blockers/landed_override.py:approve_landed_override": 315,
+    # Grew 315 -> 322 (+7) when the escalated_hand_landed shape landed
+    # (commit ee792bfa): a new terminal state for an escalated task a human
+    # landed by hand, gated like failed_pre_pr/pending_never_ran. Reviewed
+    # on its merits; re-anchored here as its landing baseline.
+    "blockers/landed_override.py:approve_landed_override": 322,
     "core/metrics.py:compute_metrics": 346,  # +12: tokens_total (SCRUM re-home) sibling of cost_usd_total
     # NEW (324, > 300): mechanical resolution extended to cover
     # `tests/test_structural_budget.py` FROZEN_* numeric-only conflicts --
