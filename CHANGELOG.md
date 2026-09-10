@@ -8,6 +8,8 @@ All notable changes to no_human. The format follows
 
 ### Changed
 - Second brain is now called Memories.
+- The Claude Code plugin manifest carries the release version (it had stayed at
+  0.1.0 since August); a test keeps it in step with `pyproject.toml`.
 
 ## [0.2.2] — 2026-09-08
 

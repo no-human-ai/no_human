@@ -2,7 +2,7 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "no-human",
   "displayName": "no_human",
-  "version": "0.1.0",
+  "version": "0.2.2",
   "description": "File a task with no_human and check on it without leaving Claude Code: task_add and task_status over your local no_human server (127.0.0.1:8420). no_human plans, codes, tests and has the work reviewed by a second model, then opens the pull request and stops.",
   "author": {
     "name": "eyalgolan",
