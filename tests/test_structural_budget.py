@@ -166,7 +166,14 @@ FROZEN_FUNCTION_LINES = {
     # and its anchored comment, `type_hook` reaching
     # `_compose_post_tool_hooks`, and the widened `backend_degraded`
     # condition. Re-measured on the merge result.
-    "core/orchestrator.py:Orchestrator._run_attempt": 2261,
+    # 2261 -> 2274 (+13): landed-claim guard wiring (task: "An already-landed
+    # claim is refused when made, not 40 turns later") — builds
+    # `claim_guard = self._build_landed_claim_guard(...)`, stashes it on
+    # `self._active_landed_claim_guard`, folds it into the `backend_degraded`
+    # gate's condition and its `claim_guard = None` / `_active_landed_claim_guard
+    # = None` teardown, and threads it through `_compose_post_tool_hooks`.
+    # Re-measured on the merge result with the scanner below.
+    "core/orchestrator.py:Orchestrator._run_attempt": 2274,
     # 760 -> 778 (+18): dispatch-time intake-eval hoisted path — the `elif
     # ctx.get("eval_result")` branch that acts on a grill/wizard-stored
     # verdict (idempotency marker, cost/residual-gap comments) added inside
@@ -459,7 +466,12 @@ FROZEN_FUNCTION_CC = {
     # 250 -> 251 (+1): #114 phase 2 adds `or type_hook is not None` to the
     # `backend_degraded` condition, so that BoolOp carries one more value.
     # Re-measured on the merge result.
-    "core/orchestrator.py:Orchestrator._run_attempt": 251,
+    # 251 -> 252 (+1): landed-claim guard wiring (task: "An already-landed
+    # claim is refused when made, not 40 turns later") — the
+    # `backend_degraded` gate's condition grows a second extra `or
+    # claim_guard is not None` branch (one more `BoolOp` operand the scanner
+    # counts as a decision point). Re-measured on the merge result.
+    "core/orchestrator.py:Orchestrator._run_attempt": 252,
     # Landing of 4e0299ad: unchanged at 115 — the harness row is dropped by
     # the comprehension filter inside `_reviewer_items`, which the scanner
     # counts the same as the `if` it replaced (the first landing pass had a
@@ -1194,7 +1206,13 @@ FROZEN_FILE_LINES = {
     # site, the `type_hook` parameter threaded through both PostToolUse
     # compose helpers, and the order docstring recording why the type
     # hook runs ahead of the scope guard. Re-measured on the merge result.
-    "core/orchestrator.py": 23893,
+    # 23893 -> 23960 (+67): landed-claim guard (task: "An already-landed
+    # claim is refused when made, not 40 turns later") — new
+    # `_build_landed_claim_guard` method, its wiring into `_run_attempt`
+    # (build/stash/gate/teardown), the `_agent_sink` prose feed, and the
+    # `_ordered_post_tool_hooks`/`_compose_post_tool_hooks` 5th-parameter
+    # plumbing. Re-measured on the merge result by the scanner's own metric.
+    "core/orchestrator.py": 23960,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.
