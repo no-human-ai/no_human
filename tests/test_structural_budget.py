@@ -162,7 +162,14 @@ FROZEN_FUNCTION_LINES = {
     # single-write invariant accurately instead of the old "may already have
     # written its own copy" hedge. Measured on this tree with the scanner
     # below.
-    "core/orchestrator.py:Orchestrator._run_attempt": 2254,
+    # 2254 -> 2267 (+13): landed-claim guard wiring (task: "An already-landed
+    # claim is refused when made, not 40 turns later") — builds
+    # `claim_guard = self._build_landed_claim_guard(...)`, stashes it on
+    # `self._active_landed_claim_guard`, folds it into the `backend_degraded`
+    # gate's condition and its `claim_guard = None` / `_active_landed_claim_guard
+    # = None` teardown, and threads it through `_compose_post_tool_hooks`.
+    # Measured on this tree with the scanner below.
+    "core/orchestrator.py:Orchestrator._run_attempt": 2267,
     # 760 -> 778 (+18): dispatch-time intake-eval hoisted path — the `elif
     # ctx.get("eval_result")` branch that acts on a grill/wizard-stored
     # verdict (idempotency marker, cost/residual-gap comments) added inside
@@ -448,7 +455,12 @@ FROZEN_FUNCTION_CC = {
     # guarding TESTING's own red `tests` emit so it only fires when this
     # step is NOT reusing the pre-review block's render. Measured on this
     # tree with the scanner below.
-    "core/orchestrator.py:Orchestrator._run_attempt": 250,
+    # 250 -> 251 (+1): landed-claim guard wiring (task: "An already-landed
+    # claim is refused when made, not 40 turns later") — the
+    # `backend_degraded` gate's condition grows an `or claim_guard is not
+    # None` branch (one extra `BoolOp` operand the scanner counts as a
+    # decision point). Measured on this tree with the scanner below.
+    "core/orchestrator.py:Orchestrator._run_attempt": 251,
     # Landing of 4e0299ad: unchanged at 115 — the harness row is dropped by
     # the comprehension filter inside `_reviewer_items`, which the scanner
     # counts the same as the `if` it replaced (the first landing pass had a
@@ -1169,7 +1181,13 @@ FROZEN_FILE_LINES = {
     # `_agent_sink` else-branch comment after that branch widened it to
     # carry every out-of-repo path. Measured on the MERGED tree by the
     # scanner's own metric.
-    "core/orchestrator.py": 23828,
+    # 23828 -> 23890 (+62): landed-claim guard (task: "An already-landed
+    # claim is refused when made, not 40 turns later") — new
+    # `_build_landed_claim_guard` method, its wiring into `_run_attempt`
+    # (build/stash/gate/teardown), the `_agent_sink` prose feed, and the
+    # `_ordered_post_tool_hooks`/`_compose_post_tool_hooks` 4th-parameter
+    # plumbing. Measured on this tree by the scanner's own metric.
+    "core/orchestrator.py": 23890,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.
