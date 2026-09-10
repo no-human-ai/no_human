@@ -1760,7 +1760,7 @@ async def approve_landed(
     task_id: str, body: LandedOverrideRequest, request: Request,
 ) -> dict[str, Any]:
     """The HUMAN landed-override affirmation: a human asserts (with required
-    justification) that a task's content landed at ``sha``, for any of four
+    justification) that a task's content landed at ``sha``, for any of five
     narrow shapes ``blockers/landed_override.py`` resolves and gates:
 
     - an ``awaiting_approval`` task where automated containment honestly
@@ -1775,6 +1775,10 @@ async def approve_landed(
       ``nh task restore-approval`` instead), or
     - a ``pending`` task that a human hand-lands before any coder attempt
       ever dispatched — refused if it already has PR evidence, same as above, or
+    - an ``escalated`` task — an attempt stopped and asked a human instead of
+      faking done — whose content that human later hand-landed — refused if
+      the task was human-cancelled, has a pending cancellation request, or
+      already has PR evidence (same ``restore-approval`` pointer as above), or
     - a ``done`` task whose completion was real but whose event log carries
       none of ``vcs.task_pr.DONE_EVIDENCE_KINDS`` (so ``nh doctor`` reports it
       as an evidence gap forever) — refused if the task already carries one
@@ -1782,8 +1786,10 @@ async def approve_landed(
       evidence outstanding (same ``restore-approval`` pointer as above).
 
     See ``blockers/landed_override.py`` for the full contract; this endpoint
-    only cheap-guards obviously-ineligible statuses and otherwise delegates
-    every eligibility decision to that module. ``sha`` is checked against a
+    only cheap-guards obviously-ineligible statuses — deriving its pre-filter
+    from that module's own ``LANDED_OVERRIDE_ELIGIBLE_STATUSES`` rather than
+    restating the set — and otherwise delegates every eligibility decision to
+    that module. ``sha`` is checked against a
     list of candidate base branches (the project's default, the task's
     recorded base, and — narrowing to exactly itself when given — ``body.base``);
     the response's ``matched_branch`` names whichever one it matched.
@@ -1798,23 +1804,16 @@ async def approve_landed(
     It never merges, pushes, or touches git state — the override is a
     recorded human assertion, not a merge action (constraint #2: the agent
     never merges; there is nothing to merge here)."""
-    from ..blockers.landed_override import OverrideRefused, approve_landed_override
+    from ..blockers.landed_override import (
+        LANDED_OVERRIDE_ELIGIBLE_STATUSES, OverrideRefused,
+        approve_landed_override, ineligible_status_reason,
+    )
 
     store = _store(request)
     task = await _require_task(store, task_id)
-    if task.status not in (
-        TaskStatus.AWAITING_APPROVAL, TaskStatus.FAILED, TaskStatus.PENDING,
-        TaskStatus.DONE,
-    ):
+    if task.status not in LANDED_OVERRIDE_ELIGIBLE_STATUSES:
         await _refuse_approve(
-            store, task_id,
-            (
-                f"task is {task.status.value!r}, not awaiting_approval, "
-                "a pre-PR failed task, a never-dispatched pending task, or "
-                "a done task with no completion evidence on record"
-            ),
-            409,
-        )
+            store, task_id, ineligible_status_reason(task.status), 409)
     try:
         result = await approve_landed_override(
             store, task, body.sha, body.justification, base=body.base)

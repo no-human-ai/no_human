@@ -1,7 +1,7 @@
 """The human landed-override: an explicit human confirmation that completes
 a task whose content landed via a path automated containment cannot verify.
 
-Four eligible shapes, resolved by ``_resolve_shape``:
+Five eligible shapes, resolved by ``_resolve_shape``:
 
 - ``"awaiting_approval"`` — a supervising session's squash train that a later
   train car's classification-decision edits, or a union-resolved real source
@@ -51,6 +51,20 @@ Four eligible shapes, resolved by ``_resolve_shape``:
   review), not this one — and additionally on carrying no pending
   cancellation request (`Store.get_cancel_request`): a cancel racing a
   hand-land must not be silently dropped by the override.
+- ``"escalated_hand_landed"`` — a task that ESCALATED because an attempt
+  stopped and asked a human instead of faking done, whose content that human
+  then landed by hand. Escalating is the product working correctly, so there
+  must be an honest terminal state for what happens next: today the only
+  reachable one is `nh task cancel`, which writes FAILED with a
+  `cancel_reason` — booking shipped, hand-landed work as a failure in the
+  attempt-economics rows computed over that column. This shape is gated
+  exactly like `failed_pre_pr` and `pending_never_ran`: no
+  `context["cancel_reason"]`, no pending cancellation request
+  (`Store.get_cancel_request`), and no PR evidence (`task_has_pr_evidence`,
+  read fail-closed — an unreadable event log is refused, never treated as
+  "no evidence"). An escalated task that still has an open PR is refused here
+  and pointed at the existing `nh task restore-approval` -> `nh approve
+  --landed` pair, exactly like the other PR-evidence refusals above.
 - ``"done_no_evidence"`` — a task whose status is already DONE (the
   completion was real) but whose event log carries none of
   `vcs.task_pr.DONE_EVIDENCE_KINDS`, so `nh doctor` reports it as an evidence
@@ -184,6 +198,28 @@ from .taxonomy import process_actor
 
 LANDED_OVERRIDE_KIND = "approved_landed_override"
 
+#: The ONE definition of which statuses the landed override can even consider.
+#: `_resolve_shape` below owns the real eligibility decision (each status
+#: carries its own guards); the API's cheap pre-filter imports this rather than
+#: restating it, so the two layers cannot drift into two hand-maintained copies
+#: (the defect this change fixes: adding a shape at one layer only moved the
+#: refusal one layer deeper). Membership here is NECESSARY, never sufficient.
+LANDED_OVERRIDE_ELIGIBLE_STATUSES: frozenset[TaskStatus] = frozenset({
+    TaskStatus.AWAITING_APPROVAL, TaskStatus.FAILED, TaskStatus.PENDING,
+    TaskStatus.DONE, TaskStatus.ESCALATED,
+})
+
+
+def ineligible_status_reason(status: TaskStatus) -> str:
+    """The ONE wording used to refuse an ineligible status, at either layer."""
+    return (
+        f"task is {status.value!r}, not awaiting_approval, a pre-PR failed "
+        "task, a never-dispatched pending task, an escalated task whose "
+        "content a human landed by hand, or a done task with no completion "
+        "evidence on record"
+    )
+
+
 IsAncestor = Callable[[str, str, str], Awaitable[bool]]
 ResidueProbe = Callable[[str, str, str], Awaitable[list[str] | None]]
 
@@ -215,7 +251,13 @@ async def _resolve_shape(store: Any, task: Task) -> str:
     has no ``context["cancel_reason"]`` concept to begin with, since a human
     cancelling a PENDING task moves it straight to FAILED) and has no PENDING
     cancellation request either (``Store.get_cancel_request`` — the DB
-    column a live cancel races through before the status flip lands). A
+    column a live cancel races through before the status flip lands). An
+    ``ESCALATED`` task (an attempt stopped and asked a human) is the
+    ``"escalated_hand_landed"`` shape ONLY when it was never explicitly
+    cancelled (``context["cancel_reason"]``), has no pending cancellation
+    request (``Store.get_cancel_request``), and never opened a PR
+    (``task_has_pr_evidence``, read fail-closed — an unreadable event log is
+    refused, never treated as "no evidence"). A
     ``DONE`` task is the ``"done_no_evidence"`` shape ONLY when it has no
     PENDING cancellation request (``Store.get_cancel_request`` — the same
     guard ``pending_never_ran`` uses; a cancel racing a hand-land must not be
@@ -234,8 +276,8 @@ async def _resolve_shape(store: Any, task: Task) -> str:
     this shape itself writes, ``approved_landed_override``, is one of the
     kinds it checks for). Reading the event log fails CLOSED: an unreadable
     log is refused, never silently treated as "no evidence". Any other
-    status, or a FAILED/PENDING/DONE task that fails its evidence or cancel
-    gate, is refused.
+    status, or a FAILED/PENDING/ESCALATED/DONE task that fails its evidence
+    or cancel gate, is refused.
     """
     if task.status is TaskStatus.AWAITING_APPROVAL:
         return "awaiting_approval"
@@ -269,6 +311,36 @@ async def _resolve_shape(store: Any, task: Task) -> str:
             )
         return "pending_never_ran"
 
+    if task.status is TaskStatus.ESCALATED:
+        # An attempt stopped and asked a human instead of faking done — the
+        # product working correctly. When that human then lands the content by
+        # hand there must be a way to say so; today the only reachable terminal
+        # state is `nh task cancel`, which writes FAILED with a cancel_reason and
+        # so books shipped work as a failure in the attempt-economics rows.
+        if (task.context or {}).get("cancel_reason"):
+            raise OverrideRefused("task was cancelled by a human — refusing")
+        cancel_requested = await store.get_cancel_request(task.id)
+        if cancel_requested:
+            raise OverrideRefused(
+                "task has a pending cancellation request "
+                f"({cancel_requested!r}) — refusing")
+        # LOAD-BEARING: `task_has_pr_evidence` reads the event log as its last
+        # rung and does NOT catch. Unwrapped, an unreadable log escapes as a raw
+        # exception (API 500, CLI traceback) instead of a refusal — and must
+        # never read as "no PR evidence". Do not remove this wrapper.
+        try:
+            pr_url = await task_has_pr_evidence(store, task)
+        except Exception as exc:  # noqa: BLE001 — fail-closed, never a pass
+            raise OverrideRefused(
+                f"could not read this task's event log ({type(exc).__name__}) "
+                "— refusing (the PR-evidence gate must fail closed)") from exc
+        if pr_url:
+            raise OverrideRefused(
+                f"task is escalated but has a PR ({pr_url}) — this is not the "
+                "hand-landed shape; use `nh task restore-approval` then "
+                "`nh approve --landed`")
+        return "escalated_hand_landed"
+
     if task.status is TaskStatus.DONE:
         cancel_requested = await store.get_cancel_request(task.id)
         if cancel_requested:
@@ -299,11 +371,7 @@ async def _resolve_shape(store: Any, task: Task) -> str:
             )
         return "done_no_evidence"
 
-    raise OverrideRefused(
-        f"task is {task.status.value!r}, not awaiting_approval, a pre-PR "
-        "failed task, a never-dispatched pending task, or a done task with "
-        "no completion evidence on record"
-    )
+    raise OverrideRefused(ineligible_status_reason(task.status))
 
 
 async def _base_hint(task: Task) -> str:
@@ -497,8 +565,10 @@ async def approve_landed_override(
     1. ``task.status`` must resolve to an eligible shape (``_resolve_shape``):
        ``AWAITING_APPROVAL``, a ``FAILED`` task that was neither
        human-cancelled nor ever opened a PR (the pre-PR shape), a
-       ``PENDING`` task that never opened a PR (the never-ran shape), or a
-       ``DONE`` task that carries none of ``vcs.task_pr.DONE_EVIDENCE_KINDS``
+       ``PENDING`` task that never opened a PR (the never-ran shape), an
+       ``ESCALATED`` task that was neither human-cancelled (nor has a pending
+       cancellation request) nor ever opened a PR (the hand-landed shape), or
+       a ``DONE`` task that carries none of ``vcs.task_pr.DONE_EVIDENCE_KINDS``
        on its event log (the no-evidence shape — a DONE task that already
        has one of those kinds is refused).
     2. ``justification`` must not be blank.
@@ -698,7 +768,7 @@ async def approve_landed_override(
     base = matched_branch
 
     branch = ctx.get("pr_branch") or ctx.get("pr_draft_branch") or ""
-    if not branch and shape == "failed_pre_pr":
+    if not branch and shape in ("failed_pre_pr", "escalated_hand_landed"):
         try:
             row = await store.latest_attempt_branch(task.id)
             branch = row.get("branch") or row.get("commit_sha") or ""
@@ -744,6 +814,11 @@ async def approve_landed_override(
         text += " prior status: failed (no PR was ever opened)."
     elif shape == "pending_never_ran":
         text += " prior status: pending (no attempt ever ran)."
+    elif shape == "escalated_hand_landed":
+        text += (
+            " prior status: escalated (an attempt stopped and asked a "
+            "human, who landed the content by hand)."
+        )
     elif shape == "done_no_evidence":
         text += (
             " prior status: done (the completion was real; only its "

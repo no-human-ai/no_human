@@ -5150,9 +5150,9 @@ async def _approve_go_single(config, task_id, land_one):
               help="Human landed-override: assert this task's content landed "
                    "at this commit (an ancestor of its base branch), when "
                    "automated containment refuses on a supervisor-adapted "
-                   "squash train — or a task that failed before ever opening "
-                   "a PR (e.g. budget exhaustion) whose content a human "
-                   "later landed. Requires --because.")
+                   "squash train — a task that failed before ever opening "
+                   "a PR (e.g. budget exhaustion), or an escalated task, "
+                   "whose content a human later landed. Requires --because.")
 @click.option("--because", "justification", default=None,
               help="Required with --landed: why a human is asserting this "
                    "landed rather than letting containment decide.")
