@@ -956,8 +956,9 @@ def _bounded_test_results(test_results: dict) -> dict:
     ledger's `tests.md` both render from).
 
     `failing_tests` and, with the same bound, its sibling id lists in the
-    same dict (`pre_existing_failures`, `owned_failures`, `flaky_excused`)
-    are each truncated to the first `_MAX_PERSISTED_FAILING_TESTS`, and each
+    same dict (`pre_existing_failures`, `owned_failures`, `flaky_excused`,
+    `pre_existing_ids`, `new_ids`) are each truncated to the first
+    `_MAX_PERSISTED_FAILING_TESTS`, and each
     gets its OWN `<key>_dropped` count when it actually got truncated (the
     legacy `failing_tests_dropped` name is kept for `failing_tests` itself,
     for backward compatibility with existing readers) — small runs stay
@@ -974,7 +975,10 @@ def _bounded_test_results(test_results: dict) -> dict:
     if failing_tests:
         kept, dropped = _bounded_failing_ids(failing_tests)
         out["failing_tests"] = kept
-    for key in ("pre_existing_failures", "owned_failures", "flaky_excused"):
+    for key in (
+        "pre_existing_failures", "owned_failures", "flaky_excused",
+        "pre_existing_ids", "new_ids",
+    ):
         if out.get(key):
             kept_sibling, dropped_sibling = _bounded_failing_ids(out[key])
             out[key] = kept_sibling
@@ -12807,6 +12811,47 @@ class Orchestrator:
                 repo._run("worktree", "remove", "--force", str(wt_dir))
             shutil.rmtree(wt_dir, ignore_errors=True)
 
+    async def _pre_review_base_attribution(
+        self, repo: GitRepo, test_cmd: str | None, base: str | None,
+        failing_tests: list[str], cwd: "Path | None" = None,
+        env_dependent: bool = False,
+    ) -> "tuple[list[str], list[str], str]":
+        """Attribute a PRE-review red run's failing ids against the base
+        tree, for the reviewer's EVIDENCE only — never to classify or bill
+        the round. TESTING (the post-review plain-red branch, above) remains
+        the sole place a red run is classified and excused/billed; this only
+        lets the reviewer tell which ids the change introduced apart from
+        ids that were already red on base, without re-running anything
+        itself, before TESTING has had a chance to run at all.
+
+        Asks the SAME question `_newly_failing_vs_base` asks post-review,
+        with the SAME kwargs (`cwd`, `env_dependent`) — the two paths call
+        the one helper, so they can never disagree about the same run.
+
+        Returns ``(pre_existing_ids, new_ids, attribution)``:
+
+          * ``attribution == "attributed"`` — the base-tree recheck ran to a
+            real verdict. *new_ids* are the ids `_newly_failing_vs_base`
+            reported as newly failing (not red on base); *pre_existing_ids*
+            are the remaining failing ids (red on base too).
+          * ``attribution == "unknown"`` — `_newly_failing_vs_base` itself
+            returned ``None`` (inconclusive: non-pytest command, worktree
+            failure, `env_dependent`, or the bounded base run didn't run/
+            errored). Both lists are empty; an attribution that cannot be
+            completed is reported as unknown rather than as either answer,
+            and this never excuses or blocks the round on its own.
+        """
+        newly_failing = await self._newly_failing_vs_base(
+            repo, test_cmd, base, failing_tests, cwd=cwd,
+            env_dependent=env_dependent,
+        )
+        if newly_failing is None:
+            return [], [], "unknown"
+        new_ids = list(newly_failing)
+        new_set = set(new_ids)
+        pre_existing_ids = [t for t in failing_tests if t not in new_set]
+        return pre_existing_ids, new_ids, "attributed"
+
     async def _flaky_on_rerun(
         self, repo: GitRepo, test_cmd: str | None, attributed: list[str],
         cwd: "Path | None" = None,
@@ -13901,12 +13946,25 @@ class Orchestrator:
         # evidence at all. Running TESTING's full classification (base-tree
         # worktree, bounded re-run and all) a second time here would only
         # reintroduce that drift under a different name. The post-review
-        # TESTING step (unchanged) is the sole place a red run is classified
-        # and billed/excused — this block only makes sure the coder SEES the
-        # run and its ids even when review fails for a different reason first.
+        # TESTING step (unchanged) is the sole place a red run is CLASSIFIED
+        # (billed/excused) — that verdict, and whether the attempt fails, is
+        # unchanged by what follows. What this block DOES do, so the
+        # reviewer is not shown a red suite that looks twice as broken as it
+        # really is: it asks `_newly_failing_vs_base` — the SAME helper, the
+        # SAME question, the SAME kwargs TESTING's plain-red branch uses —
+        # which of these exact failing ids were already red on the base
+        # tree, purely as EVIDENCE for the reviewer's prompt/checklist. When
+        # that recheck cannot run to a real verdict (fail-closed `None`:
+        # non-pytest command, worktree failure, `env_dependent`, or the
+        # bounded base run itself didn't run/errored), the split is reported
+        # as `attribution: "unknown"` with both id lists empty — never
+        # guessed as either answer, and never treated as an excuse.
         pre_review_red = False
         pre_review_failing_ids: list[str] = []
         pre_review_ids_dropped = 0
+        pre_review_pre_existing_ids: list[str] = []
+        pre_review_new_ids: list[str] = []
+        pre_review_attribution = "unknown"
         if test_result.ran and not test_result.ok:
             pre_review_red = True
             text, blocks, blocks_dropped, artifact_path = self._red_test_detail(
@@ -13924,6 +13982,23 @@ class Orchestrator:
             failing_tests = getattr(test_result, "failing_tests", []) or []
             pre_review_failing_ids, pre_review_ids_dropped = _bound_failing_test_ids(
                 failing_tests)
+            # Evidence-only base-tree attribution (this task): the SAME
+            # question, SAME helper, SAME kwargs TESTING's plain-red branch
+            # asks post-review (`_newly_failing_vs_base`, further up in this
+            # file) — never a reimplementation — so the two paths cannot
+            # disagree about the same run. Guarded on `repo` because a
+            # review flow with no local checkout (standalone code review,
+            # same guard the held-out check above uses) has no base tree to
+            # check out at all.
+            if repo is not None:
+                (
+                    pre_review_pre_existing_ids,
+                    pre_review_new_ids,
+                    pre_review_attribution,
+                ) = await self._pre_review_base_attribution(
+                    repo, test_cmd, base, failing_tests, cwd=test_cwd,
+                    env_dependent=bool((task.config or {}).get("env_setup")),
+                )
             # Same bound TESTING's own red `tests` event uses
             # (`_bounded_failing_ids`, `_MAX_PERSISTED_FAILING_TESTS`) — this
             # event is now the ONLY red `tests` event of the round whenever
@@ -13962,6 +14037,9 @@ class Orchestrator:
                 "failure_blocks": blocks,
                 "failure_blocks_dropped": blocks_dropped,
                 "classified": False,
+                "pre_existing_ids": pre_review_pre_existing_ids,
+                "new_ids": pre_review_new_ids,
+                "attribution": pre_review_attribution,
             }))
 
         def _pre_review_red_checklist_item() -> ChecklistItem | None:
@@ -13980,11 +14058,23 @@ class Orchestrator:
                     ids_text += f" (+{pre_review_ids_dropped} more)"
             else:
                 ids_text = "(no individual test ids parsed — see the tests event/artifact)"
+            if pre_review_attribution == "attributed":
+                attribution_text = (
+                    " — of these, already red on the base tree (pre-existing): "
+                    + (", ".join(pre_review_pre_existing_ids) or "(none)")
+                    + "; newly introduced by this change: "
+                    + (", ".join(pre_review_new_ids) or "(none)")
+                )
+            else:
+                attribution_text = (
+                    " — base-tree attribution: UNKNOWN (the base-tree recheck "
+                    "did not run to a verdict; not excused, not blamed)"
+                )
             return ChecklistItem(
                 _PRE_REVIEW_RED_LABEL,
                 False,
                 "the harness's own pre-review test run was RED — "
-                f"failing: {ids_text}",
+                f"failing: {ids_text}{attribution_text}",
                 severity="critical",
             )
 
@@ -14214,6 +14304,9 @@ class Orchestrator:
                 reviewed_branch=reviewed_branch,
                 failing_test_ids=pre_review_failing_ids,
                 failing_test_ids_dropped=pre_review_ids_dropped,
+                pre_existing_test_ids=pre_review_pre_existing_ids,
+                new_test_ids=pre_review_new_ids,
+                test_attribution=pre_review_attribution,
             )
         except ReviewerUnavailable as exc:
             # Escalate, but fold the verifiers' already-spent tokens onto exc

@@ -939,6 +939,9 @@ def _build_review_prompt(
     reviewed_branch: str = "",
     failing_test_ids: list[str] | None = None,
     failing_test_ids_dropped: int = 0,
+    pre_existing_test_ids: list[str] | None = None,
+    new_test_ids: list[str] | None = None,
+    test_attribution: str = "unknown",
 ) -> str:
     # Bound the auxiliary sections AT THIS BOUNDARY (see `_AUX_CAP`). The diff,
     # the acceptance criteria and the test output are deliberately not routed
@@ -1008,30 +1011,51 @@ def _build_review_prompt(
     # facts the coder will eventually see, not to be the thing that fails
     # the round by itself.
     #
-    # UNATTRIBUTED on purpose: `_newly_failing_vs_base`, `_owned_failing_
-    # tests` and `_flaky_on_rerun` run only in the post-review TESTING step
-    # — classifying here was tried and sent back (429b471f/03267ead) because
-    # it starved the flaky tiebreaker. Without this wording the reviewer
-    # graded a test that was red in the harness's own runs as a critical
-    # defect: 86b5bf3d rounds 3 and 4 both failed that way, for tests neither
-    # coder touched — and both graded it critical while saying the diff had
-    # not caused it (round 3: "Per the review rules I must grade this red
-    # run critical"), which is the whole problem. Those
-    # particular tests inherited the runner's environment instead of building
-    # the one they meant to exercise, and were fixed by pinning `env=`
-    # (8b85472d). The point here is not that case but the class: at THIS step
-    # the harness has not yet decided whether a failing id belongs to the
-    # diff, so the prompt must not order a critical verdict as if it had.
+    # UNATTRIBUTED-BY-DEFAULT on purpose: `_owned_failing_tests` and
+    # `_flaky_on_rerun` still run only in the post-review TESTING step, which
+    # remains the sole place a red run is BILLED or EXCUSED — classifying
+    # (deciding whether the round fails) here was tried and sent back
+    # (429b471f/03267ead) because it starved the flaky tiebreaker, and that
+    # is unchanged. Without some attribution wording the reviewer graded a
+    # test that was red in the harness's own runs as a critical defect:
+    # 86b5bf3d rounds 3 and 4 both failed that way, for tests neither coder
+    # touched — and both graded it critical while saying the diff had not
+    # caused it (round 3: "Per the review rules I must grade this red run
+    # critical"), which is the whole problem. Those particular tests
+    # inherited the runner's environment instead of building the one they
+    # meant to exercise, and were fixed by pinning `env=` (8b85472d).
+    #
+    # This task adds one thing without reopening that: `_run_review` now
+    # ALSO asks `_newly_failing_vs_base` — the SAME helper, SAME question,
+    # SAME kwargs TESTING's plain-red branch uses — which of these exact
+    # ids were already red on the base tree, purely as EVIDENCE (never to
+    # decide `decision.passed`). When that recheck answers
+    # (`test_attribution == "attributed"`), the split is rendered below so a
+    # reader can tell introduced-by-this-change ids apart from pre-existing
+    # ones without re-running anything. When it cannot answer (fail-closed
+    # `None` from the helper), attribution reads UNKNOWN — never guessed as
+    # either answer — and the wording below is unchanged from before this
+    # task: the harness has NOT yet attributed the ids, and the class of
+    # problem this comment opened with (a critical verdict ordered on an
+    # undetermined fact) is still avoided.
     failing_ids_section = ""
     if failing_test_ids:
         ids_line = ", ".join(failing_test_ids)
         if failing_test_ids_dropped:
             ids_line += f" (+{failing_test_ids_dropped} more, not shown)"
+        attributed = test_attribution == "attributed"
+        attribution_clause = (
+            "the harness HAS already attributed them against the base "
+            "tree — the split is below, and it is a fact, not this "
+            "review's opinion"
+            if attributed else
+            "the harness has NOT yet attributed them to this diff"
+        )
         failing_ids_section = (
             "\nFailing tests in this tree (from the harness's own run, not an "
             f"opinion): {ids_line}\n"
-            "These are FACTS the test runner produced BEFORE this review, but "
-            "the harness has NOT yet attributed them to this diff. A failing "
+            f"These are FACTS the test runner produced BEFORE this review, but "
+            f"{attribution_clause}. A failing "
             "id that also fails on the base tree is not this change's defect, "
             "and the post-review testing step — not this review — is what "
             "decides that (it classifies against the base tree and re-runs "
@@ -1043,6 +1067,21 @@ def _build_review_prompt(
             "harness's own post-review testing step classifies and bills "
             "or excuses this red run itself.\n"
         )
+        if attributed:
+            pre_existing_line = ", ".join(pre_existing_test_ids or []) or "(none)"
+            new_line = ", ".join(new_test_ids or []) or "(none)"
+            failing_ids_section += (
+                "Already red on the base tree (pre-existing, not this "
+                f"change's fault): {pre_existing_line}\n"
+                "NOT red on the base tree (newly introduced by this "
+                f"change): {new_line}\n"
+            )
+        else:
+            failing_ids_section += (
+                "Attribution status: UNKNOWN — the harness's base-tree "
+                "recheck did not run to a verdict for this run; treat this "
+                "as neither an excuse nor a blocking fact on its own.\n"
+            )
     profile_section = (
         f"\nProject profile (use these conventions as a baseline):\n{profile_context}\n"
         if profile_context else ""
@@ -2421,6 +2460,9 @@ class AdversarialReviewer:
         reviewed_branch: str = "",
         failing_test_ids: list[str] | None = None,
         failing_test_ids_dropped: int = 0,
+        pre_existing_test_ids: list[str] | None = None,
+        new_test_ids: list[str] | None = None,
+        test_attribution: str = "unknown",
     ) -> ReviewDecision:
         # Tamper-adjudication mode: see `_review_tamper_adjudication` for why
         # this exists, what it may not be given, and the bounded-retry
@@ -2543,6 +2585,9 @@ class AdversarialReviewer:
             reviewed_branch=reviewed_branch,
             failing_test_ids=failing_test_ids,
             failing_test_ids_dropped=failing_test_ids_dropped,
+            pre_existing_test_ids=pre_existing_test_ids,
+            new_test_ids=new_test_ids,
+            test_attribution=test_attribution,
         )
 
         # When the diff is already provided (or routed single-turn), use a

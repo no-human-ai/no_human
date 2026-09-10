@@ -302,7 +302,19 @@ FROZEN_FUNCTION_LINES = {
     # that never reaches TESTING still leaves an explicit "never classified"
     # row instead of an implicit, indistinguishable-from-failed one.
     # Measured on this tree with the scanner below.
-    "core/orchestrator.py:Orchestrator._run_review": 580,
+    # 580 -> 627 (+47) (task: "a pre-review red suite reaches the reviewer
+    # already attributed"): the pre-review red block now also asks
+    # `_pre_review_base_attribution` (a thin wrapper over the SAME
+    # `_newly_failing_vs_base` TESTING's own post-review classification
+    # calls, never a reimplementation) which failing ids are pre-existing
+    # on base vs newly introduced by this change, purely as evidence for
+    # the reviewer — new state vars, the guarded call, the extended
+    # `test_results` write (`pre_existing_ids`/`new_ids`/`attribution`),
+    # the extended checklist-detail text, and the three new `_run_reviewer`
+    # kwargs. TESTING remains the sole classifier/biller; only what the
+    # reviewer is told changes. Measured on this tree with the scanner
+    # below.
+    "core/orchestrator.py:Orchestrator._run_review": 627,
     # 377 -> 398 (+21): quota-saturation mid-run halt. `bench_run` now builds
     # a `QuotaHaltDetector`, threads `halt.observe(score)`/`halt.scored(...)`
     # through the per-spec checkpoint save inside `_run_spec`, and prints the
@@ -404,7 +416,15 @@ FROZEN_FUNCTION_LINES = {
     # measures 341, and a frozen value ABOVE the measurement passes silently,
     # which is why it went unnoticed. Measured on this tree with the scanner
     # below.
-    "review/reviewer.py:_build_review_prompt": 347,
+    # 347 -> 386 (+39) (task: "a pre-review red suite reaches the reviewer
+    # already attributed"): three new keyword-only params
+    # (`pre_existing_test_ids`, `new_test_ids`, `test_attribution`), and
+    # `failing_ids_section` now branches on `test_attribution` to render an
+    # explicit pre-existing/newly-introduced split when the harness's
+    # base-tree recheck ran to a real verdict ("attributed"), or an explicit
+    # UNKNOWN line when it did not — never silently either answer. Measured
+    # on this tree with the scanner below.
+    "review/reviewer.py:_build_review_prompt": 386,
 }
 
 # 5 functions with estimated cyclomatic complexity > 60.
@@ -493,7 +513,16 @@ FROZEN_FUNCTION_CC = {
     # `**({"failing_tests_dropped": _dropped} if _dropped else {})` is one
     # new conditional expression. Measured on this tree with the scanner
     # below.
-    "core/orchestrator.py:Orchestrator._run_review": 90,
+    # 90 -> 95 (+5) (task: "a pre-review red suite reaches the reviewer
+    # already attributed"): the `if repo is not None:` guard around the new
+    # evidence-only base-tree attribution call, the nested checklist
+    # helper's `if pre_review_attribution == "attributed": ... else:`
+    # branch, and the `bool((task.config or {}).get("env_setup"))` BoolOp
+    # passed as that call's `env_dependent` kwarg contribute the bulk of it;
+    # the rest is the scanner's nested-function accounting for the same new
+    # branch inside the nested checklist helper. Measured directly with the
+    # scanner below.
+    "core/orchestrator.py:Orchestrator._run_review": 95,
     # Crossed 60 (to 67) with the UI-evidence gate landed by task 389210fa.
     # 67 -> 70 (+3): follow-up to ce4d4a73 (#151) -- one new `if overlap:`
     # block (+1) plus two `stale.get(...) or []` BoolOps (+1 each). Measured
@@ -1169,7 +1198,13 @@ FROZEN_FILE_LINES = {
     # `_agent_sink` else-branch comment after that branch widened it to
     # carry every out-of-repo path. Measured on the MERGED tree by the
     # scanner's own metric.
-    "core/orchestrator.py": 23828,
+    # 23828 -> 23921 (+93) (task: "a pre-review red suite reaches the
+    # reviewer already attributed"): the new `_pre_review_base_attribution`
+    # helper (thin wrapper over `_newly_failing_vs_base`), the extended
+    # `_bounded_test_results` sibling-key handling, and `_run_review`'s own
+    # growth (see its FROZEN_FUNCTION_LINES entry above for the itemized
+    # cause). Measured on this tree by the scanner's own metric.
+    "core/orchestrator.py": 23921,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.
@@ -1681,7 +1716,14 @@ FROZEN_FILE_LINES = {
     # `_build_review_prompt` entry above — nothing executable changed, and
     # the whole rewritten block lies inside that function, so the file and
     # the function move by the same amount.
-    "review/reviewer.py": 3084,
+    # 3084 -> 3129 (+45) (task: "a pre-review red suite reaches the
+    # reviewer already attributed"): the same growth as the
+    # `_build_review_prompt` FROZEN_FUNCTION_LINES entry above (the three
+    # new keyword-only params and the attribution-aware `failing_ids_section`
+    # branch) — the whole change lies inside that one function, so the file
+    # moves by the same amount. Measured on this tree with the scanner
+    # below.
+    "review/reviewer.py": 3129,
     # 2706 -> 2711 (+5): pre-existing red on main at 03b262d23 (e922e9b4's
     # landing, change-scoped tests missed the ratchet) — repaired, measured,
     # on this merge; same cause as the two function-level wake.py bumps above.
