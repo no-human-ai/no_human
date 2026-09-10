@@ -28,7 +28,8 @@ it. Every change lands through a pull request that the maintainer reviews. Who
 presses the merge button is in "Merging your own PR" below. That includes
 changes written by no_human itself: the agent opens a PR and stops.
 
-Practical consequence: open an issue first for anything larger than a bug fix.
+Practical consequence: open an issue first for anything larger than a bug fix
+(and read "AI-assisted contributions" at the end of this file before your first PR).
 A rejected design costs you less as a paragraph than as a branch.
 
 ## Setup
@@ -489,3 +490,23 @@ Do not open a public issue. See [`SECURITY.md`](SECURITY.md).
 
 [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) applies to every space this project
 uses.
+
+## AI-assisted contributions
+
+This project is itself a coding agent, so there is no ban on AI-written
+code. There is a ban on unaccountable code:
+
+- Say in the PR description what was AI-generated and what you wrote or
+  verified yourself. Disclosure costs you nothing in review; discovery does.
+- You must be able to explain and defend every line you submit. "The model
+  wrote it" is not an answer to a review question. If you can't answer,
+  the PR closes.
+- Open an issue before a PR for anything larger than a bug fix.
+  Unsolicited large PRs are closed without detailed review.
+- Run the suites your change touches before pushing (see "Running the
+  tests") and paste the command and the tail of its output under Evidence
+  in the PR. A PR with no test evidence is closed with a pointer to this
+  section.
+
+PRs that ignore this section get one link here, the `spam` label, and a
+close. Nothing personal; it keeps review time for contributors who engage.

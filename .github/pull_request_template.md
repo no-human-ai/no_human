@@ -21,6 +21,9 @@ Example:
 - [ ] Test count and assertion count did not go down, or the PR body explains why.
 - [ ] Lockfiles committed if a dependency changed.
 - [ ] Nothing in the diff reads or writes a credential inside the repo.
+- [ ] AI-assisted portions are disclosed above, and I can defend every line
+      (see "AI-assisted contributions" in `CONTRIBUTING.md`).
+- [ ] Suite run locally; command + output tail pasted under Evidence.
 - [ ] This does not conflict with the project's standing constraints: the
       agent never merges (it opens a PR and stops; merge is a human action),
       review stays evidence-based (independent fresh-context reviewer, never

@@ -84,3 +84,13 @@ def test_the_repo_ships_no_auto_registering_marketplace_setting():
         assert "extraKnownMarketplaces" not in settings.read_text(), (
             "a repo-level extraKnownMarketplaces would register this marketplace for "
             "anyone who trusts the folder, including no_human's own coder worktrees")
+
+
+def test_the_plugin_manifest_carries_the_release_version():
+    # The plugin ships in this repo and is released with it; a manifest pinned
+    # at an old version reads as abandoned on every marketplace that lists it.
+    import tomllib
+
+    release = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["version"]
+    manifest = json.loads((ROOT / "plugins/no-human/.claude-plugin/plugin.json").read_text())
+    assert manifest["version"] == release
