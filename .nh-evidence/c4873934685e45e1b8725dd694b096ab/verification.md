@@ -1,59 +1,158 @@
 # How I verified this — full log
 
-_Harness-captured record for task `c4873934`, commit `24c112012f3ec916763e0722f32289eb3a2ee1bb` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `c4873934`, commit `077e54b89a658e6f07ac3e6c5dbfca51872962fe` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ## How I verified this
-4 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
+8 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
 
 ### test
 - `uv run pytest -q tests/test_onboarding_funnel_telemetry.py 2>&1 | tail -60`
 
 ```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-...............                                                          [100%]
-15 passed in 17.78s
-```
+=================================== FAILURES ===================================
+______ test_auth_verify_probes_the_running_profile_and_restores_env_after ______
 
-- `uv run pytest -q tests/test_telemetry.py tests/test_onboarding_funnel_telemetry.py tests/test_onboarding_api.py tests/test_feature_used_telemetry.py tests/test_task_ended_telemetry.py tests/test_doctor.py 2>&1 | tail -60`
+client_with_credential = <httpx.AsyncClient object at 0x10abe51c0>
+recorded = [('auth_check_failed', {'reason': 'absent'})]
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x10abe7b60>
 
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-........................................................................ [ 36%]
-........................................................................ [ 72%]
-........................................................                 [100%]
-200 passed in 19.40s
-```
+    @pytest.mark.asyncio
+    async def test_auth_verify_probes_the_running_profile_and_restores_env_after(
+        client_with_credential, recorded, monkeypatch,
+    ):
+        """Blocker 2: the endpoint runs inside the SAME long-lived process as
+        the embedded worker (`board up = worker up`), which is what every
+    
+[... 1,929 of 3,068 characters omitted from the middle ...]
+esult': 'absent'} == {'result': 'valid'}
+E         
+E         Differing items:
+E         {'result': 'absent'} != {'result': 'valid'}
+E         Use -v to get more diff
 
-- `uv run pytest -q tests/test_structural_budget.py 2>&1 | tail -30`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-..................                                                       [100%]
-18 passed in 1.60s
-```
-
-- `uv run pytest -q -n 4 2>&1 | tail -80`
-
-```
-........................................................................ [ 64%]
-........................................................................ [ 64%]
-........................................................................ [ 65%]
-........................................................................ [ 66%]
-........................................................................ [ 66%]
-........................................................................ [ 67%]
-........................................................................ [ 67%]
-.................................s...................................... [ 68%]
-...........................................
-[... 5,003 of 6,142 characters omitted from the middle ...]
-:89
-src/<redacted>/testing/test_layers.py:89
-  /Users/eyalgolan/.<redacted>/worktrees/c4873934685e45e1b8725dd694b096ab.82890.ec27b09c/src/<redacted>/testing/test_layers.py:89: PytestCollectionWarning: cannot collect test class 'TestPlan' because it has a __init__ constructor (from: tests/test_test_layers.py)
-    @dataclass
-
--- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-12191 passed, 222 skipped, 8 warnings in 443.76s (0:07:23)
+tests/test_onboarding_funnel_telemetry.py:466: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_onboarding_funnel_telemetry.py::test_auth_verify_probes_the_running_profile_and_restores_env_after
+1 failed, 19 passed in 3.04s
 ```  
-  _excerpt - 6,118 characters of output in total_
+  _excerpt - 3,062 characters of output in total_
+
+- `uv run pytest -q tests/test_onboarding_funnel_telemetry.py 2>&1 | tail -40`
+
+```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+....................                                                     [100%]
+20 passed in 0.94s
+```
+
+- `uv run pytest -q tests/test_telemetry.py tests/test_telemetry_environment.py tests/test_structural_budget.py tests/test_doctor.py tests/test_backend_check.py 2>&1 | tail -60`
+
+```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+..............................F...............................F......... [ 48%]
+........................................................................ [ 96%]
+......                                                                   [100%]
+=================================== FAILURES ===================================
+_____________ test_only_the_consent_endpoint_writes_telemetry_keys _____________
+
+    def test_only_the_consent_endpoint_writes_telemetry_keys():
+        """The onbo
+[... 2,221 of 3,360 characters omitted from the middle ...]
+e more item: 'api/app.py: frozen 6281, now 6337 (+56); this budget only ratchets down'
+E             Use -v to get more diff
+
+tests/test_structural_budget.py:1942: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_telemetry.py::test_only_the_consent_endpoint_writes_telemetry_keys
+FAILED tests/test_structural_budget.py::test_no_frozen_entry_has_grown - Asse...
+2 failed, 148 passed in 15.95s
+```  
+  _excerpt - 3,358 characters of output in total_
+
+- `uv run pytest -q tests/test_telemetry.py::test_only_the_consent_endpoint_writes_telemetry_keys 2>&1 | tail -20`
+
+```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+.                                                                        [100%]
+1 passed in 0.45s
+```
+
+- `uv run pytest -q tests/test_telemetry.py tests/test_telemetry_environment.py tests/test_structural_budget.py tests/test_doctor.py tests/test_backend_check.py tests/test_onboarding_funnel_telemetry.py 2>&1 | tail -30`
+
+```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+..............................................................F......... [ 42%]
+........................................................................ [ 84%]
+..........................                                               [100%]
+=================================== FAILURES ===================================
+________________________ test_no_frozen_entry_has_grown ________________________
+
+scanned = ({'agent/claude_backend.py:ClaudeBackend.stream': 407, 'blockers/landed_o
+[... 868 of 2,007 characters omitted from the middle ...]
+ert ['api/app.py:...atchets down'] == []
+E             
+E             Left contains one more item: 'api/app.py: frozen 6337, now 6338 (+1); this budget only ratchets down'
+E             Use -v to get more diff
+
+tests/test_structural_budget.py:1949: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_structural_budget.py::test_no_frozen_entry_has_grown - Asse...
+1 failed, 169 passed in 15.87s
+```  
+  _excerpt - 2,005 characters of output in total_
+
+- `uv run pytest -q tests/test_telemetry.py tests/test_telemetry_environment.py tests/test_structural_budget.py tests/test_doctor.py tests/test_backend_check.py tests/test_onboarding_funnel_telemetry.py 2>&1 | tail -20`
+
+```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+........................................................................ [ 42%]
+........................................................................ [ 84%]
+..........................                                               [100%]
+170 passed in 16.72s
+```
+
+- `uv run pytest -q tests/test_telemetry.py -k "documented or phantom or disclosure" 2>&1 | tail -20`
+
+```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+.....                                                                    [100%]
+5 passed, 40 deselected in 0.45s
+```
+
+- `npm test 2>&1 | tail -30`
+
+```
+...
+# Subtest: onSnapshot delivers the fresh snapshot verbatim — the stale array is not merged into
+ok 1650 - onSnapshot delivers the fresh snapshot verbatim — the stale array is not merged into
+  ---
+  duration_ms: 0.120292
+  ...
+# Subtest: a failing snapshot fetch retries on a shorter backoff and never publishes 'live'
+ok 1651 - a failing snapshot fetch retries on a shorter backoff and never publishes 'live'
+  ---
+  duration_ms: 0.419833
+  ...
+# Subtest: a close during an in-flight snapshot cancels it and restarts backoff at 1s
+ok 1652 - a close during an in-flight snapshot cancels it and restarts backoff at 1s
+  ---
+  duration_ms: 0.380875
+  ...
+# Subtest: stop() is idempotent and leaves no pending timer or open socket
+ok 1653 - stop() is idempotent and leaves no pending timer or open socket
+  ---
+  duration_ms: 0.239083
+  ...
+1..1653
+# tests 1653
+# suites 0
+# pass 1653
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 931.313708
+```
 
 
 **Not verified:** everything below is a limit of this section, listed whether or not it bit this attempt.

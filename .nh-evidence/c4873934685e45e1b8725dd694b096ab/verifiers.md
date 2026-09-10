@@ -1,12 +1,12 @@
 # Verifiers
 
-_Harness-captured record for task `c4873934`, commit `24c112012f3ec916763e0722f32289eb3a2ee1bb` — not model-authored: no_human wrote this file from the deterministic verifier rules selected for this commit's files. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `c4873934`, commit `077e54b89a658e6f07ac3e6c5dbfca51872962fe` — not model-authored: no_human wrote this file from the deterministic verifier rules selected for this commit's files. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ```json
 [
   {
-    "comment": "All test functions added or modified across the four files (funnel telemetry, test_telemetry, test_telemetry_environment) contain at least one assert statement or pytest.raises block; none are assertion-free.",
-    "evidence": "Every added test contains assert or pytest.raises, e.g. test_step_viewed_emits_the_step asserts recorded.count(...)==1, and test_onboarding_step_viewed_rejects_free_text_step uses `with pytest.raises(ValueError, match=\"not allowed\")`.",
+    "comment": "All new test functions in the funnel-telemetry module and all new/modified test functions in test_telemetry.py contain at least one assert or pytest.raises block; the changes in test_structural_budget.py and test_telemetry_environment.py are data-dict edits, not test functions.",
+    "evidence": "Every added/modified test function carries an assertion, e.g. test_step_viewed_emits_the_step asserts `recorded.count(...) == 1`, test_onboarding_step_viewed_rejects_free_text_step uses `pytest.raises(ValueError)`, and test_onboarding_steps_match_the_wizard_steps asserts `keys == telemetry.ONBOARDING_STEPS`.",
     "file": "tests/test_onboarding_funnel_telemetry.py",
     "files_checked": [
       "tests/test_onboarding_funnel_telemetry.py",
@@ -14,27 +14,29 @@ _Harness-captured record for task `c4873934`, commit `24c112012f3ec916763e0722f3
       "tests/test_telemetry.py",
       "tests/test_telemetry_environment.py"
     ],
-    "line": 108,
+    "line": 106,
     "no_verdict": false,
     "passed": true,
     "severity": "medium",
-    "tokens_used": 858,
+    "tokens_used": 736,
     "unavailable": false,
     "verifier_id": "tests-assert-something"
   },
   {
-    "comment": "The change is pure JS logic (funnel telemetry) with no color-related code, so no hard-coded hex/rgb/hsl literal is introduced and theme rendering is unaffected.",
-    "evidence": "The diff only adds telemetry imports/refs/effects (recordOnboardingStep, verifyAuthLive) in Onboarding.jsx and two _post endpoint functions in api.js; no className, inline style, or CSS color literal is added or modified.",
-    "file": "web/src/Onboarding.jsx",
+    "comment": "No new or modified colors are introduced by this change, so the theme-token constraint is vacuously satisfied \u2014 nothing added affects light/dark rendering.",
+    "evidence": "The diff only adds telemetry wiring (recordOnboardingStep/verifyAuthLive), two useEffect hooks, an api.js export, and test files \u2014 no JSX className color changes, no inline style colors, and no hex/rgb/hsl literals anywhere in the change.",
+    "file": "",
     "files_checked": [
       "web/src/Onboarding.jsx",
-      "web/src/api.js"
+      "web/src/api.js",
+      "web/src/api.test.mjs",
+      "web/src/onboardingFunnelWiring.test.mjs"
     ],
-    "line": 8,
+    "line": 0,
     "no_verdict": false,
     "passed": true,
     "severity": "medium",
-    "tokens_used": 382,
+    "tokens_used": 310,
     "unavailable": false,
     "verifier_id": "board-uses-theme-tokens"
   }

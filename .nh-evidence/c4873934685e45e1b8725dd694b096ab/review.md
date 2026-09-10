@@ -1,21 +1,21 @@
 # Independent review
 
-_Harness-captured record for task `c4873934`, commit `24c112012f3ec916763e0722f32289eb3a2ee1bb` — not model-authored: no_human wrote this file from the fresh-context reviewer's checklist on this commit. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `c4873934`, commit `077e54b89a658e6f07ac3e6c5dbfca51872962fe` — not model-authored: no_human wrote this file from the fresh-context reviewer's checklist on this commit. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 <!-- no_human:review-checklist -->
-## Independent review — PASSED (2 rounds) on `24c1120`
+## Independent review — PASSED (3 rounds) on `077e54b`
 _A different model, fresh context, commit, push and merge refused at the tool call, told to refute "done". This is the checklist the gate decided on; no_human never merges — a human does._
 
 | Severity | Finding | Where | Note |
 |---|---|---|---|
-| ✅ | step-match test regex is over-broad | `tests/test_telemetry.py:738` | The step-match pin scrapes every `key: "..."` in Onboarding.jsx rather than scoping to the BASE_STEPS array, so it's coupled to the whole file's shape. It works |
-| ✅ | tests angle did not run (reached no verdict) | — | advisory — the extra angle pass was skipped; the main review still gates |
+| ✅ | auth/verify restores only one env var, not the full os.environ it claims | `src/no_human/api/app.py:3244` | The finally here only puts back SUBSCRIPTION_TOKEN_VAR and _ACTIVE_AUTH_PROFILE, but verify_credential_live goes through scrub_metered_auth() which strips ANTHR |
 
-<details><summary>2 advisory findings (low/nit — never blocking)</summary>
+<details><summary>3 advisory findings (low/nit — never blocking)</summary>
 
 | Severity | Finding | Where | Note |
 |---|---|---|---|
-| ❌ low | maintainability: duplicated repo-invalid reason derivation | `src/no_human/api/app.py:929` | This same `"missing" if not repo.is_dir() else "not_a_git_repo"` derivation is duplicated verbatim in onboarding_onboard_repo down around line 5489, sitting on |
-| ❌ low | maintainability: auth/verify result vocabulary has no local anchor | `src/no_human/api/app.py:3202` | The result you return here is coupled 1:1 to whatever verify_credential_live's tuple says, but the closed enum that governs the telemetry event lives over in te |
+| ❌ low | tests: restore path never exercised | `tests/test_onboarding_funnel_telemetry.py:372` | The result mapping here is well tested, but the auth/verify tests all stub verify_credential_live with a no-op that never touches os.environ or _ACTIVE_AUTH_PRO |
+| ❌ low | maintainability: repo-invalid reason mapping forked across two handlers | `src/no_human/api/app.py:930` | The repo-invalid reason mapping is duplicated here and in onboarding_onboard_repo — same predicate, same `missing`/`not_a_git_repo` ternary. If the REPO_INVALID |
+| ❌ low | maintainability: auth/verify writes config's private _ACTIVE_AUTH_PROFILE global directly | `src/no_human/api/app.py:3245` | You read the profile via the public getter but restore it by poking `_config_module._ACTIVE_AUTH_PROFILE` directly. That ties this handler to config's private s |
 
 </details>
