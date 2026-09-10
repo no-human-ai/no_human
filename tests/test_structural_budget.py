@@ -1321,7 +1321,12 @@ FROZEN_FILE_LINES = {
     # `nh approve --ready`'s one-line summary no longer silently drops the
     # only signal telling the operator a verifier never answered. Measured
     # via `wc -l src/no_human/cli/commands.py`.
-    "cli/commands.py": 8666,
+    # 8666 -> 8676 (+10): "a transient database lock stops dispatch
+    # permanently and silently" — `status()` gained an `elif pause and
+    # pause.get("reason") == "lease_lost"` branch that prints `STOPPED —
+    # pool lease lost, dispatch is not running` instead of reading as free
+    # worker slots. Measured via `wc -l src/no_human/cli/commands.py`.
+    "cli/commands.py": 8676,
     # api/app.py 5338 -> 5346 (+8): same budget-floor warning surfaced by
     # `send-back`/`reply` as `budget_warning` in the JSON response. Net cost
     # was trimmed from a naive +14 to +8 by computing `Bounds.from_config(...)`
@@ -1483,7 +1488,13 @@ FROZEN_FILE_LINES = {
     # path too, gated to avoid double-firing against `_run_attempt`'s own
     # in-process `cancelled_hard` emit when `stopped` is True. Measured on
     # this tree with the scanner below.
-    "api/app.py": 6183,
+    # 6183 -> 6196 (+13): "a transient database lock stops dispatch
+    # permanently and silently" — `worker_status`'s `healthy` computation
+    # now ANDs in `not out.get("lease_lost")`, and `queue_health_endpoint`
+    # reads `sched.lease_lost` and threads it into `queue_health(...)` so
+    # `/api/queue/health` reports a stopped/unleased scheduler instead of
+    # free worker slots. Measured on this tree with the scanner below.
+    "api/app.py": 6196,
     # +51: W5 active-time phase writer (phase instrumentation).
     # +84: `list_escalations`/`list_review_fails`/`list_tamper_trips` — the
     # three new failure-signal sources the recurring learning harvest mines.
@@ -1747,7 +1758,16 @@ FROZEN_FILE_LINES = {
     # `_honor_server_stop` close leaves exactly this shape, and the old
     # open-attempt-only staleness check under-counted it. Still read-only:
     # counts, never mutates. Measured on this tree with the scanner below.
-    "core/scheduler.py": 3098,
+    # 3098 -> 3177 (+79): "a transient database lock stops dispatch
+    # permanently and silently" — `_is_transient_db_error` classifies a
+    # `sqlite3.OperationalError` as retryable strictly by its own message
+    # (`"database is locked"`/`"database is busy"`, measured against a real
+    # `BEGIN IMMEDIATE` writer holding the row), never by call site;
+    # `_claim_pool_lease`'s CAS write now retries a transient failure up to
+    # `_LEASE_WRITE_ATTEMPTS` times with backoff before giving up, and a
+    # genuine (non-transient) failure still fails closed immediately.
+    # Measured on this tree with the scanner below.
+    "core/scheduler.py": 3177,
 }
 
 
