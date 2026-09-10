@@ -43,6 +43,7 @@ from ..agent.claude_backend import (
     ClaudeBackend,
     dewrap as _dewrap,
 )
+from ..agent.landed_claim_guard import LandedClaimGuard
 from ..agent.scope_guard import SCRATCH_DIR, is_agent_owned, is_outside_repo
 from ..agent.supervisor import SEND_BACK_UNREADABLE, SupervisorHook
 from ..agent.verification_receipts import KINDS
@@ -144,7 +145,7 @@ from ..vcs import (
 from ..vcs import ci_rollup, pr_watcher
 from ..vcs.push_hook import refresh_protected_patterns
 from ..vcs.receipts import verify_pr_receipt
-from ..vcs.task_pr import resolve_task_pr
+from ..vcs.task_pr import LANDING_REQUIRED, classify_already_satisfied_landing, resolve_task_pr
 from . import merge_policy
 from . import plan_gate
 from .base_staleness import (
@@ -2680,6 +2681,13 @@ class Orchestrator:
         sv = getattr(self, "_active_supervisor", None)
         if sv is not None and event.text and event.kind in ("text", "assistant", "result"):
             sv.note_text(event.text)
+        # Feed the same prose to the landed-claim guard so an "already
+        # satisfied" claim is tested against the base branch the moment it
+        # is asserted, not 40 turns later at delivery — see
+        # `landed_claim_guard.py`'s module docstring.
+        cg = getattr(self, "_active_landed_claim_guard", None)
+        if cg is not None and event.text and event.kind in ("text", "assistant", "result"):
+            cg.note_text(event.text)
         # Track files the agent intentionally modified so we only commit those
         # (not test side-effects like state files updated during test runs).
         # Phase 7e: feed tool calls to the doom-loop detector.  If the
@@ -5668,6 +5676,16 @@ class Orchestrator:
         if supervisor is not None:
             self.emit("supervisor", "supervisor active")
 
+        # Landed-claim guard: a deterministic PostToolUse hook that tests an
+        # in-attempt "the work already exists" claim against the base branch
+        # the MOMENT it is made, not 40 turns later at delivery — see
+        # `landed_claim_guard.py`'s module docstring for the incident this
+        # closes. Same containment question delivery already asks
+        # (`classify_already_satisfied_landing`, ancestry-only, never keyed
+        # on the commit subject).
+        claim_guard = self._build_landed_claim_guard(task, repo, base=base, branch=branch)
+        self._active_landed_claim_guard = claim_guard  # so _agent_sink can feed it agent prose
+
         # Pre-flight plan check (EVOLUTION_PLAN §1.2 #1): one cheap evaluation of
         # the agent's plan BEFORE it edits. When a gap is found, the correction
         # rides into the implement prompt so the agent closes it from turn one.
@@ -5720,7 +5738,7 @@ class Orchestrator:
         extra: dict = {}
         if not _can_hooks and (lint_hook is not None or scope_hook is not None
                                or type_hook is not None
-                               or supervisor is not None):
+                               or supervisor is not None or claim_guard is not None):
             # Said out loud, once, on the event stream — the operator chose
             # this backend and is entitled to know which guards it costs them.
             # Deliberately AFTER the "supervisor active" emit above, which it
@@ -5733,13 +5751,15 @@ class Orchestrator:
                 f"backend {getattr(caps, 'name', '?')!r} has no PostToolUse "
                 "hook — superseding 'supervisor active': the supervisor's "
                 "per-tool-call course correction, the lint feedback hook, the "
-                "per-edit type check and the scope guard do not run this "
-                "attempt (the pre-flight plan check, which is not a hook, "
-                "still did)",
+                "per-edit type check, the scope guard and the landed-claim "
+                "guard do not run this attempt (the pre-flight plan check, "
+                "which is not a hook, still did)",
                 backend=getattr(caps, "name", None),
             )
             supervisor = None
             self._active_supervisor = None
+            claim_guard = None
+            self._active_landed_claim_guard = None
         # Verification receipts: a deterministic PostToolUse observer that
         # records the command lines the session submitted to check itself, and
         # what came back, so the PR can show a human evidence the model did not
@@ -5757,7 +5777,7 @@ class Orchestrator:
 
         if _can_hooks:
             composed = self._compose_post_tool_hooks(
-                receipt_hook, lint_hook, scope_hook, type_hook)
+                receipt_hook, lint_hook, scope_hook, type_hook, claim_guard)
             if composed is not None:
                 extra["lint_hook"] = composed
 
@@ -16930,6 +16950,39 @@ class Orchestrator:
             send_back_feedback=send_back_feedback,
         )
 
+    def _build_landed_claim_guard(
+        self, task: Task, repo: GitRepo, *, base: str | None, branch: str | None,
+    ) -> "LandedClaimGuard | None":
+        """Construct a `LandedClaimGuard` for the current attempt.
+
+        Wraps `classify_already_satisfied_landing` — the exact function
+        delivery uses to decide whether an "already satisfied" claim is
+        refutable — as the guard's `probe`, so the in-attempt refusal and the
+        delivery-time refusal ask the SAME question (ancestry against the
+        base branch via `git merge-base --is-ancestor`) and can never
+        disagree. See `landed_claim_guard.py`'s module docstring for the
+        incident this closes.
+        """
+        if not repo:
+            return None
+        base_hint = base or ""
+
+        def probe(sha: str) -> tuple[bool, str, str]:
+            verdict = classify_already_satisfied_landing(
+                repo, sha=sha, branch=branch or "", base=base_hint,
+            )
+            return (verdict.verdict == LANDING_REQUIRED, verdict.sha, verdict.base_ref)
+
+        def head_sha() -> str:
+            return repo.head_sha()
+
+        return LandedClaimGuard(
+            probe=probe,
+            head_sha=head_sha,
+            on_event=self.emit,
+            base_hint=base_hint,
+        )
+
     def _materialize_skills(self, repo_path: Path) -> list[str]:
         """Write confirmed skill memories to ``.claude/skills/<name>/SKILL.md``
         in the working tree so the SDK can load them via ``skills=``.
@@ -21923,7 +21976,7 @@ SIX of them read a checkpoint and TWO do not — but do
 
     @staticmethod
     def _ordered_post_tool_hooks(
-        receipt_hook, lint_hook, scope_hook, type_hook=None
+        receipt_hook, lint_hook, scope_hook, type_hook=None, claim_hook=None
     ) -> list:
         """The PostToolUse hooks, in the order they must run.
 
@@ -21936,8 +21989,16 @@ SIX of them read a checkpoint and TWO do not — but do
         report. Moving it last leaves every other test in the suite passing,
         which is why the property has its own.
 
-        The type hook (issue #114 phase 2) goes THIRD, ahead of the scope guard,
-        and that is the same kind of property rather than a preference. Its
+        `claim_hook` (the landed-claim guard) runs SECOND, right behind the
+        receipt observer and ahead of lint/type/scope: a refused "already
+        satisfied" claim is the highest-value correction an attempt can
+        receive (it is what stops a doomed ~47-turn burn), so it must not be
+        swallowed behind a lint, type or scope message that fired on the same
+        tool call. `claim_hook` defaults to `None` so every pre-existing
+        3- and 4-positional-arg call site is unaffected.
+
+        The type hook (issue #114 phase 2) goes ahead of the scope guard, and
+        that is the same kind of property rather than a preference. Its
         feedback is once-only by construction — a report advances the file's
         baseline, so the diagnostic is never re-sent — while `check_scope`
         returns its warning on EVERY edit to an out-of-plan file. Behind the
@@ -21950,18 +22011,18 @@ SIX of them read a checkpoint and TWO do not — but do
         parse produces type output not worth the turn.
         """
         return [
-            h for h in (receipt_hook, lint_hook, type_hook, scope_hook)
+            h for h in (receipt_hook, claim_hook, lint_hook, type_hook, scope_hook)
             if h is not None
         ]
 
     @classmethod
     def _compose_post_tool_hooks(
-        cls, receipt_hook, lint_hook, scope_hook, type_hook=None
+        cls, receipt_hook, lint_hook, scope_hook, type_hook=None, claim_hook=None
     ):
         """One PostToolUse callable for the backend, or None when there are no
         hooks to install. ClaudeBackend accepts a single `lint_hook`."""
         hooks = cls._ordered_post_tool_hooks(
-            receipt_hook, lint_hook, scope_hook, type_hook)
+            receipt_hook, lint_hook, scope_hook, type_hook, claim_hook)
         if not hooks:
             return None
         if len(hooks) == 1:
