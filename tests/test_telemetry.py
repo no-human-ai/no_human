@@ -94,7 +94,7 @@ def test_allowlist_is_the_documented_closed_set():
         "task_ended": frozenset({"outcome", "attempts", "duration_bucket", "environment"}),
         "tasks_orphaned": frozenset({"count_bucket", "environment"}),
         "onboarding_step_viewed": frozenset({"step", "environment"}),
-        "repo_selected": frozenset({"environment"}),
+        "repo_selected": frozenset({"count_bucket", "environment"}),
         "repo_invalid": frozenset({"reason", "environment"}),
         "task_create_failed": frozenset({"reason", "environment"}),
         "auth_check_succeeded": frozenset({"environment"}),

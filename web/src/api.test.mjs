@@ -221,6 +221,55 @@ test("splitTask POSTs the confirmed drafts and returns the children", async () =
   assert.deepEqual(children.map((c) => c.id), ["c1", "c2"]);
 });
 
+// Onboarding-funnel telemetry calls, exercised for real against a stubbed
+// fetch — previously ZERO coverage. Both are fire-and-forget from the
+// wizard's point of view (Onboarding.jsx catches and swallows any
+// rejection), but the binding itself — the URL, method, and body it sends —
+// is exactly what determines whether a step is ever recorded at all, so it
+// is worth pinning like every other mutating call above.
+import { recordOnboardingStep, verifyAuthLive } from "./api.js";
+
+test("recordOnboardingStep POSTs the step key to /api/onboarding/step-viewed", async () => {
+  let sentBody;
+  globalThis.fetch = async (url, opts) => {
+    sentBody = JSON.parse(opts.body);
+    assert.equal(String(url), "/api/onboarding/step-viewed");
+    assert.equal(opts.method, "POST");
+    return { ok: true, status: 200, json: async () => ({ ok: true }) };
+  };
+  await recordOnboardingStep("repos");
+  assert.deepEqual(sentBody, { step: "repos" });
+});
+
+test("recordOnboardingStep surfaces the server's detail on failure, like every other mutator", async () => {
+  stubFetch({ status: 422, body: { detail: "'repos' is not a valid step" } });
+  const err = await recordOnboardingStep("bogus").then(() => null, (e) => e);
+  assert.ok(err instanceof Error);
+  assert.equal(err.message, "'repos' is not a valid step");
+});
+
+test("verifyAuthLive POSTs an empty body to /api/auth/verify and returns the closed result", async () => {
+  let sentBody, sentUrl, sentMethod;
+  globalThis.fetch = async (url, opts) => {
+    sentUrl = String(url);
+    sentMethod = opts?.method;
+    sentBody = JSON.parse(opts.body);
+    return { ok: true, status: 200, json: async () => ({ result: "valid" }) };
+  };
+  const out = await verifyAuthLive();
+  assert.equal(sentUrl, "/api/auth/verify");
+  assert.equal(sentMethod, "POST");
+  assert.deepEqual(sentBody, {});
+  assert.deepEqual(out, { result: "valid" });
+});
+
+test("verifyAuthLive rejects on a non-2xx rather than reporting a fabricated result", async () => {
+  stubFetch({ status: 403, body: { detail: "local origin required" } });
+  const err = await verifyAuthLive().then(() => null, (e) => e);
+  assert.ok(err instanceof Error);
+  assert.equal(err.message, "local origin required");
+});
+
 test("splitTask surfaces the server's 409 reason, not a bare status", async () => {
   stubFetch({ status: 409, body: { detail: "task is no longer pending — it started running or was already split" } });
   await assert.rejects(splitTask("t9", [{ title: "A" }, { title: "B" }]),

@@ -1500,7 +1500,14 @@ FROZEN_FILE_LINES = {
     # and `POST /api/auth/verify` endpoints (the latter probing whether a
     # configured credential actually works, not merely whether one is
     # present). Measured on this tree with the scanner below.
-    "api/app.py": 6281,
+    # 6281 -> 6338 (+57): reviewer-review fixes for `POST /api/auth/verify`
+    # (task c4873934) — gate the live probe on whether telemetry is on
+    # (skip the network hop, not just the emission, when it's off) and
+    # snapshot/restore `os.environ`/the active-auth-profile global around
+    # the call using the RUNNING process's exported profile, plus the
+    # `repo_selected` cardinality-leak fix (bucket the profile count).
+    # Measured on this tree with the scanner below.
+    "api/app.py": 6338,
     # +51: W5 active-time phase writer (phase instrumentation).
     # +84: `list_escalations`/`list_review_fails`/`list_tamper_trips` — the
     # three new failure-signal sources the recurring learning harvest mines.

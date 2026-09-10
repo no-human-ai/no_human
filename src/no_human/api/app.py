@@ -3165,6 +3165,28 @@ async def api_auth_verify(request: Request) -> dict[str, Any]:
     The response carries only a closed-vocabulary ``result`` — never the
     live probe's free-text failure reason (constraint §8: no token/key
     value, and no error string, is ever returned here).
+
+    The live call is the ONLY consumer of its own result (it feeds nothing
+    but the `auth_check_succeeded`/`auth_check_failed` telemetry below), so
+    it is gated on the same enabled-and-has-a-destination check ``record``
+    itself already ships on (``telemetry.py``'s ``enabled`` helper) — and
+    skipped (`{"result": "skipped"}`) before it happens when that gate is
+    closed: with telemetry off (or no destination configured) there is
+    nothing for the spend to produce.
+
+    `verify_credential_live` exports a credential into `os.environ` and
+    reassigns the process-wide active-auth-profile global as a side effect
+    (see its docstring in `agent/backend_check.py`) — safe for `nh doctor`'s
+    short-lived process, but this endpoint runs inside the SAME long-lived
+    process as the embedded worker (`board up = worker up`, above), so an
+    unrestored export here would silently change which profile every LATER
+    task attempt bills. Both are therefore snapshotted before the call and
+    restored after it in a `finally`, whatever the outcome — and the
+    profile passed to the probe is the one the running process actually
+    exported (falling back to config.yaml's `llm.auth_profile` only when
+    the process exported nothing), so the probe checks the credential that
+    is actually billing this server, not whatever config.yaml currently
+    says.
     """
     require_local_origin(request, writing=True)
     status = await asyncio.to_thread(_auth_status_payload, request)
@@ -3181,17 +3203,46 @@ async def api_auth_verify(request: Request) -> dict[str, Any]:
 
     cfg = getattr(request.app.state, "config", None)
     data = getattr(cfg, "data", None) or {}
+
+    from .. import telemetry as _telemetry
+    if not _telemetry.enabled(data):
+        # Nothing downstream consumes the probe's result except the
+        # telemetry it feeds — spending the user's own credential quota to
+        # produce vendor analytics after they opted out of analytics is
+        # exactly what this gate exists to prevent. Checked BEFORE the
+        # network hop, not inside `_record_funnel`'s eventual `record()`
+        # call, which is too late — the spend has already happened by then.
+        return {"result": "skipped"}
+
+    from ..config import SUBSCRIPTION_TOKEN_VAR, active_auth_profile
+    from .. import config as _config_module
+
     llm = data.get("llm") or {}
-    profile = llm.get("auth_profile")
+    running_profile = active_auth_profile()
+    profile = running_profile if running_profile is not None else llm.get("auth_profile")
     auth_mode = str(llm.get("auth_mode") or "subscription")
     model = cfg.utility_model if cfg is not None else "claude-haiku-4-5"
 
     from ..agent.backend_check import verify_credential_live
+    token_snapshot = os.environ.get(SUBSCRIPTION_TOKEN_VAR)
     try:
-        problem = await verify_credential_live(
-            model=model, profile=profile, auth_mode=auth_mode)
-    except Exception:  # noqa: BLE001 — an unexpected raise is inconclusive, not a 500
-        problem = ("inconclusive", "unexpected error probing the credential")
+        try:
+            problem = await verify_credential_live(
+                model=model, profile=profile, auth_mode=auth_mode)
+        except Exception:  # noqa: BLE001 — an unexpected raise is inconclusive, not a 500
+            problem = ("inconclusive", "unexpected error probing the credential")
+    finally:
+        # Restore the process's billing identity exactly, regardless of
+        # outcome — this request must not be the reason a LATER task
+        # attempt bills a different profile than the one this server
+        # actually started with (config.py's `restart_required` compares
+        # `running != configured` precisely to catch that drift; leaving
+        # this probe's export in place would make the two look equal).
+        if token_snapshot is None:
+            os.environ.pop(SUBSCRIPTION_TOKEN_VAR, None)
+        else:
+            os.environ[SUBSCRIPTION_TOKEN_VAR] = token_snapshot
+        _config_module._ACTIVE_AUTH_PROFILE = running_profile
 
     if problem is None:
         _record_funnel(request, "auth_check_succeeded")
@@ -5559,7 +5610,13 @@ async def onboarding_onboard_repo(
     from ..onboard import ui_evidence_suggestion
 
     sug = ui_evidence_suggestion(profile, str(repo))
-    _record_funnel(request, "repo_selected")
+    # `count_bucket`, never the exact count: one `repo_selected` per repo
+    # onboarded, unbucketed, would let an install's exact repo count be
+    # derived from event cardinality alone (telemetry.py:_ALLOWED_EVENTS).
+    from .. import telemetry as _telemetry
+    all_profiles = await store.list_profiles()
+    _record_funnel(request, "repo_selected",
+                   count_bucket=_telemetry.orphan_bucket(len(all_profiles)))
     return {
         "ok": True,
         "repo_path": str(repo),

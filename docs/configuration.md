@@ -716,7 +716,7 @@ lives in `docs/TELEMETRY.md`; this table is the summary:
 | `task_ended` | server | `outcome`, `attempts`, `duration_bucket`, `environment` |
 | `tasks_orphaned` | server | `count_bucket`, `environment` |
 | `onboarding_step_viewed` | server | `step`, `environment` |
-| `repo_selected` | server | `environment` |
+| `repo_selected` | server | `count_bucket`, `environment` |
 | `repo_invalid` | server | `reason`, `environment` |
 | `task_create_failed` | server | `reason`, `environment` |
 | `auth_check_succeeded` | server | `environment` |
@@ -731,8 +731,11 @@ only 6 ever reached `task_created`) — and tell a REFUSED attempt
 the window (neither fires). `auth_check_succeeded`/`auth_check_failed` come
 from `POST /api/auth/verify`, which spends one live call to the AI provider
 to report whether the configured credential actually *works*, not merely
-whether one is present. See `docs/TELEMETRY.md` for the full closed
-vocabularies and the `reason`/`step` enum values.
+whether one is present — gated on telemetry being on, since that live call
+has no other consumer, so an opted-out install never spends the quota. See
+`docs/TELEMETRY.md` for the full closed vocabularies, the `reason`/`step`
+enum values, and how that endpoint restores the process's auth state after
+the call.
 
 `task_failed`'s `reason_category` is a CLOSED enum — one of
 `budget_exhausted`, `review_failed`, `max_attempts`, `infra`,

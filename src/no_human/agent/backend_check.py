@@ -224,13 +224,22 @@ async def verify_credential_live(*, model: str, profile: str | None = None,
     split exists because an independent review demonstrated the first cut
     reporting "Network is unreachable" as CREDENTIAL DOES NOT WORK: a cron
     doctor run on a flaky network must not read as a dead credential.
-    Opt-in only (`nh doctor --verify-auth`): every other probe in this module
-    is presence-only precisely so no diagnostic spends quota unasked.
+    Opt-in only: `nh doctor --verify-auth` calls this from a short-lived CLI
+    process where an unrestored export doesn't matter; `POST /api/auth/verify`
+    is the one other caller, and because THAT process is the long-lived
+    embedded worker, it gates the call on `telemetry.enabled` (so it never
+    spends unasked either — see that endpoint's docstring) and snapshots/
+    restores `os.environ` and the active-profile global around the call.
+    Every other probe in this module stays presence-only precisely so no
+    diagnostic spends quota unasked.
 
     It exports the credential (via :func:`config.assert_subscription_mode`,
     which is also what scrubs every other metered path) because there is no way
     to make an authenticated call without doing so — which is the second reason
-    this is never implicit: it mutates the process environment.
+    this is never implicit: it mutates the process environment. A long-lived
+    caller MUST snapshot and restore `os.environ[config.SUBSCRIPTION_TOKEN_VAR]`
+    and `config._ACTIVE_AUTH_PROFILE` around the call, or the export outlives
+    this one probe and silently changes which profile every later action bills.
 
     The verdict is "did an authenticated request succeed", not "was the answer
     correct". A model that replies with something other than ``ok`` still

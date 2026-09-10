@@ -31,7 +31,7 @@ and one (`screen_viewed`) by the browser.
 | `task_ended` | server | `outcome`, `attempts`, `duration_bucket`, `environment` |
 | `tasks_orphaned` | server | `count_bucket`, `environment` |
 | `onboarding_step_viewed` | server | `step`, `environment` |
-| `repo_selected` | server | `environment` |
+| `repo_selected` | server | `count_bucket`, `environment` |
 | `repo_invalid` | server | `reason`, `environment` |
 | `task_create_failed` | server | `reason`, `environment` |
 | `auth_check_succeeded` | server | `environment` |
@@ -59,8 +59,11 @@ path, prompt, or failure detail can ever leave the machine through them.
   is produced by the same `duration_bucket()` helper but is intentionally
   NOT value-validated — `task_completed` is a pre-existing event kept
   byte-identical by this change.)
-- `tasks_orphaned.count_bucket` — `ORPHAN_COUNT_BUCKETS`: one of `0`, `1`,
-  `2-5`, `6+`.
+- `tasks_orphaned.count_bucket` / `repo_selected.count_bucket` —
+  `ORPHAN_COUNT_BUCKETS`: one of `0`, `1`, `2-5`, `6+`. `repo_selected`
+  reuses the same helper (`telemetry.orphan_bucket()`) for the same
+  reason: one event per repo onboarded, unbucketed, would let an
+  install's exact repo count be derived from event cardinality alone.
 - `onboarding_step_viewed.step` — `ONBOARDING_STEPS`: one of `welcome`,
   `repos`, `projects`, `integrations`, `summary` — the wizard's own
   `BASE_STEPS` keys (`web/src/Onboarding.jsx`), pinned 1:1 by
@@ -197,13 +200,19 @@ same discipline as every event above:
   (`POST /api/onboarding/repos/onboard`) and, for `repo_invalid`, from
   `POST /api/tasks` too — a directory that does not exist reads differently
   (`missing`) from one that exists but is not a git repo
-  (`not_a_git_repo`).
-- `task_create_failed` fires on every refusal path in `POST /api/tasks`
-  (missing credentials, an invalid repo, a missing project or `follows_id`
-  target, a validation error, or a backend the install cannot actually
-  run) — this is what makes a REFUSED first-task attempt distinguishable
-  from a user who simply closed the window: the former always leaves a
-  `task_create_failed` behind, the latter leaves nothing.
+  (`not_a_git_repo`). `repo_selected` carries `count_bucket` — how many
+  repos this install has onboarded so far, bucketed (never the exact
+  count; see the enum list above).
+- `task_create_failed` fires on every refusal path *inside* the
+  `POST /api/tasks` handler (missing credentials, an invalid repo, a
+  missing project or `follows_id` target, a validation error the handler
+  itself detects, or a backend the install cannot actually run) — this is
+  what makes a REFUSED first-task attempt distinguishable from a user who
+  simply closed the window: the former always leaves a `task_create_failed`
+  behind, the latter leaves nothing. One caveat: a request FastAPI itself
+  rejects before the handler runs — a body that fails pydantic validation
+  at the framework level — never reaches this code, so it emits nothing;
+  "every refusal path" means every refusal the handler's own logic makes.
 - `auth_check_succeeded` / `auth_check_failed` come from
   `POST /api/auth/verify`, described next — whether the configured
   credential actually *works*, not merely whether one is on file.
@@ -221,13 +230,37 @@ call to the AI provider (`agent.backend_check.verify_credential_live`,
 already used by `nh doctor --verify-auth`) and returns a closed `result`:
 `absent` (no credential at all — short-circuited, no call made),
 `cli_missing` (credential present, but the CLI it would run through is not
-— also short-circuited), `valid`, `rejected` (the call came back and said
-no — a real credential problem), or `inconclusive` (the call never got an
-answer — a flaky network, not proof the credential is bad). The live
-probe's own free-text failure reason is never part of the response body or
-the `auth_check_failed` event — only the closed `reason`. It is gated
-`writing=True` (spends the credential's quota) and the wizard calls it once,
-at the summary step.
+— also short-circuited), `skipped` (credential and CLI both present, but
+telemetry is off — see below), `valid`, `rejected` (the call came back and
+said no — a real credential problem), or `inconclusive` (the call never
+got an answer — a flaky network, not proof the credential is bad). The
+live probe's own free-text failure reason is never part of the response
+body or the `auth_check_failed` event — only the closed `reason`. It is
+gated `writing=True` (spends the credential's quota) and the wizard calls
+it once, at the summary step.
+
+The live call's ONLY consumer is the `auth_check_succeeded`/
+`auth_check_failed` telemetry it feeds — nothing else in the response
+depends on it — so the call itself, not merely the event, is gated on
+whether telemetry is on (the same enabled-and-has-a-destination check
+`telemetry.record()` ships on). With telemetry off the endpoint returns
+`{"result": "skipped"}` before the network hop: spending an operator's own
+credential quota to produce analytics after they opted out of analytics
+would defeat the point of the opt-out.
+
+This endpoint's process is the same long-lived process as the embedded
+worker (`nh board up` starts the worker in-process), unlike `nh doctor`'s
+short-lived CLI process. `verify_credential_live` exports a credential
+into `os.environ` and reassigns the process-wide active-auth-profile
+global as a side effect of proving the call authenticated — there is no
+way to make an authenticated call without doing so. Left in place, that
+export would silently change which profile every LATER task attempt
+bills. So the endpoint snapshots both `os.environ` and the active-profile
+global before the call and restores them in a `finally` regardless of
+outcome, and probes the profile the RUNNING process actually exported
+(falling back to `config.yaml`'s `llm.auth_profile` only when the process
+exported nothing) — the credential actually billing this server, not
+whatever `config.yaml` currently names.
 
 ## The `_LAMBDA_EVENTS` wire filter
 

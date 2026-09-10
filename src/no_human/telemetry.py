@@ -61,7 +61,12 @@ _ALLOWED_EVENTS: dict[str, frozenset[str]] = {
     # just closed the window. None of them carry user or repo content. New,
     # not yet server-side — see `_LAMBDA_EVENTS` below.
     "onboarding_step_viewed": frozenset({"step", "environment"}),
-    "repo_selected":          frozenset({"environment"}),
+    # `count_bucket`: a BUCKETED onboarded-repo count, never the exact
+    # number — one `repo_selected` per successfully onboarded repo with no
+    # prop at all would let an install's exact repo count be derived from
+    # event cardinality alone, the same shape `ORPHAN_COUNT_BUCKETS` exists
+    # to prevent for `tasks_orphaned`. See `orphan_bucket()`.
+    "repo_selected":          frozenset({"count_bucket", "environment"}),
     "repo_invalid":           frozenset({"reason", "environment"}),
     "task_create_failed":     frozenset({"reason", "environment"}),
     "auth_check_succeeded":   frozenset({"environment"}),
@@ -139,6 +144,10 @@ _ALLOWED_PROP_VALUES: dict[tuple[str, str], frozenset[str]] = {
     ("task_ended", "outcome"): TASK_END_OUTCOMES,
     ("task_ended", "duration_bucket"): DURATION_BUCKETS,
     ("tasks_orphaned", "count_bucket"): ORPHAN_COUNT_BUCKETS,
+    # Same bucket enum, same reason: `repo_selected.count_bucket` is a
+    # bucketed onboarded-repo COUNT, not the exact number — see
+    # `_ALLOWED_EVENTS["repo_selected"]` above.
+    ("repo_selected", "count_bucket"): ORPHAN_COUNT_BUCKETS,
     ("onboarding_step_viewed", "step"): ONBOARDING_STEPS,
     ("repo_invalid", "reason"): REPO_INVALID_REASONS,
     ("task_create_failed", "reason"): TASK_CREATE_FAILURE_REASONS,
@@ -234,8 +243,11 @@ def duration_bucket(minutes: float) -> str:
 
 
 def orphan_bucket(n: int) -> str:
-    """Bucket an orphan-task count for `tasks_orphaned.count_bucket` so no
-    precise fleet-size-correlated count ever leaves the machine."""
+    """Bucket a count for a `count_bucket` prop so no precise
+    fleet-size-correlated count ever leaves the machine. Named for its
+    first caller (`tasks_orphaned.count_bucket`); reused as-is for
+    `repo_selected.count_bucket` — the bucketing rule is generic to "a
+    count of things on this install", not orphan-specific."""
     if n <= 0:
         return "0"
     if n == 1:
