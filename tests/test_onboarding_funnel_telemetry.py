@@ -168,6 +168,59 @@ async def test_create_task_with_a_non_repo_path_emits_repo_invalid_and_task_crea
     assert recorded.count(("task_create_failed", {"reason": "repo_invalid"})) == 1
 
 
+@pytest.mark.asyncio
+async def test_create_task_with_missing_project_emits_task_create_failed(
+    client_with_credential, recorded,
+):
+    r = await client_with_credential.post(
+        "/api/tasks", json={"title": "Plain task", "project_id": "no-such-project"})
+    assert r.status_code == 404, r.text
+    assert recorded.count(("task_create_failed", {"reason": "project_missing"})) == 1
+
+
+@pytest.mark.asyncio
+async def test_create_task_with_missing_follows_id_emits_task_create_failed_other(
+    client_with_credential, recorded,
+):
+    r = await client_with_credential.post(
+        "/api/tasks", json={"title": "Plain task", "follows_id": "no-such-task"})
+    assert r.status_code == 404, r.text
+    assert recorded.count(("task_create_failed", {"reason": "other"})) == 1
+
+
+@pytest.mark.asyncio
+async def test_create_task_with_invalid_priority_emits_task_create_failed_validation(
+    client_with_credential, recorded,
+):
+    r = await client_with_credential.post(
+        "/api/tasks", json={"title": "Plain task", "priority": "not-a-priority"})
+    assert r.status_code == 422, r.text
+    assert recorded.count(("task_create_failed", {"reason": "validation"})) == 1
+
+
+@pytest.mark.asyncio
+async def test_create_task_with_unknown_backend_emits_task_create_failed_validation(
+    client_with_credential, recorded,
+):
+    r = await client_with_credential.post(
+        "/api/tasks", json={"title": "Plain task", "backend": "not-a-backend"})
+    assert r.status_code == 422, r.text
+    assert recorded.count(("task_create_failed", {"reason": "validation"})) == 1
+
+
+@pytest.mark.asyncio
+async def test_create_task_with_unavailable_backend_emits_task_create_failed_backend_unavailable(
+    client_with_credential, recorded,
+):
+    # `client_with_credential`'s config carries no `llm.local_model`, so the
+    # KNOWN "local" backend is a real, non-typo unavailability — the same
+    # `assert_task_backend_usable` preflight the orchestrator itself runs.
+    r = await client_with_credential.post(
+        "/api/tasks", json={"title": "Plain task", "backend": "local"})
+    assert r.status_code == 422, r.text
+    assert recorded.count(("task_create_failed", {"reason": "backend_unavailable"})) == 1
+
+
 # --------------------------------------------------------------------------- #
 # 4. /api/auth/verify — whether a credential actually WORKS                  #
 # --------------------------------------------------------------------------- #
