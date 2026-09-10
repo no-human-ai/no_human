@@ -11813,10 +11813,13 @@ class Orchestrator:
             return False, head, "", (
                 f"{prefix}; delivery branch {branch!r} is unresolvable ({exc})"), \
                 False, ship_ref
-        if branch_sha != head:
-            return False, head, "", (
-                f"{prefix}; delivery branch {branch!r} points at {branch_sha}, "
-                "not the reviewed sha"), False, ship_ref
+        # The local pointer is still a refusal signal, but the decision is
+        # made *after* the remote evidence below: attempt 2+ pushes to a
+        # DIFFERENT, attempt-suffixed branch of this same task (~4407)
+        # while `branch` still names an earlier/unpushed one, so a lagging
+        # local pointer is exactly the case the sibling fallback below
+        # exists for — returning here would make that fallback unreachable.
+        local_is_reviewed = branch_sha == head
         try:
             remote_url = repo.remote_url()
         except Exception as exc:  # noqa: BLE001 — a remote check must be proof
@@ -11826,43 +11829,58 @@ class Orchestrator:
             return False, head, "", (
                 f"{prefix}; no origin remote exists, so nothing could have been pushed"), \
                 False, ship_ref
-        try:
-            relation = await asyncio.to_thread(repo.remote_branch_relation, branch)
-        except Exception as exc:  # noqa: BLE001 — external check must fail closed
-            return False, head, "", (
-                f"{prefix}; cannot verify pushed branch {branch!r} ({exc})"), \
-                False, ship_ref
-        if relation == "up_to_date":
-            label = f"{head[:12]} (pushed branch {branch}, not on {ship_ref})"
-            return True, head, label, "", False, ship_ref
-        # `branch` itself isn't up to date — but constraint #2 forbids the
-        # agent merging to `ship_ref`, so attempt 2+ pushes to a DIFFERENT,
-        # attempt-suffixed branch of this same task (~4407) while `branch`
-        # here still names an earlier/unpushed one. Before refusing, check
-        # whether one of THIS task's other pushed branches already contains
-        # `head` — sibling branches only, never any remote ref, so a
-        # foreign task's branch can't satisfy this claim.
+        relation = None
+        if local_is_reviewed:
+            try:
+                relation = await asyncio.to_thread(repo.remote_branch_relation, branch)
+            except Exception as exc:  # noqa: BLE001 — external check must fail closed
+                return False, head, "", (
+                    f"{prefix}; cannot verify pushed branch {branch!r} ({exc})"), \
+                    False, ship_ref
+            if relation == "up_to_date":
+                label = f"{head[:12]} (pushed branch {branch}, not on {ship_ref})"
+                return True, head, label, "", False, ship_ref
+        # `branch` itself isn't up to date (or its local pointer lags) — but
+        # constraint #2 forbids the agent merging to `ship_ref`, so attempt
+        # 2+ pushes to a DIFFERENT, attempt-suffixed branch of this same
+        # task (~4407) while `branch` here still names an earlier/unpushed
+        # one. Before refusing, check whether one of THIS task's other
+        # pushed branches already contains `head` — sibling branches only,
+        # never any remote ref, so a foreign task's branch can't satisfy
+        # this claim. `remote_branch_relation` compares the remote tip to
+        # the LOCAL ref, so on a lagging local ref its verdict says nothing
+        # about `head`; that is why it is skipped above rather than called.
         prefix_cfg = (self.config.get("git") or {}).get("branch_prefix") or "no-human/"
         stem = f"{prefix_cfg}{task.id[:8]}"
         try:
-            sibling_names = await asyncio.to_thread(
+            task_branches = await asyncio.to_thread(
                 repo.remote_branches_containing, head, [stem, f"{stem}-*"])
         except Exception:  # noqa: BLE001 — sibling check is best-effort proof only
-            sibling_names = []
-        sibling_names = [
-            name for name in sibling_names
-            if name != branch and re.fullmatch(rf"{re.escape(stem)}(-\d+)?", name)
+            task_branches = []
+        task_branches = [
+            name for name in task_branches
+            if re.fullmatch(rf"{re.escape(stem)}(-\d+)?", name)
         ]
-        if sibling_names:
-            label = f"{head[:12]} (pushed branch {sibling_names[0]}, not on {ship_ref})"
+        siblings = [name for name in task_branches if name != branch]
+        if siblings:
+            label = f"{head[:12]} (pushed branch {siblings[0]}, not on {ship_ref})"
             return True, head, label, "", False, ship_ref
-        relation_reason = {
-            "behind": "the remote branch contains commits the reviewer did not judge",
-            "diverged": "the remote branch diverged from the reviewed commit",
-            "unknown": "the pushed branch could not be verified",
-        }.get(relation, f"the pushed branch relation is unrecognized ({relation!r})")
+        if relation is not None:
+            relation_reason = {
+                "behind": "the remote branch contains commits the reviewer did not judge",
+                "diverged": "the remote branch diverged from the reviewed commit",
+                "unknown": "the pushed branch could not be verified",
+            }.get(relation, f"the pushed branch relation is unrecognized ({relation!r})")
+            return False, head, "", (
+                f"{prefix}; {relation_reason}"), False, ship_ref
+        if task_branches:
+            return False, head, "", (
+                f"{prefix}; delivery branch {branch!r} points at {branch_sha}, "
+                "not the reviewed sha"), False, ship_ref
         return False, head, "", (
-            f"{prefix}; {relation_reason}"), False, ship_ref
+            f"{prefix}; the reviewed commit {head} is on no pushed branch of "
+            f"this task ({stem}, {stem}-N) — it was never pushed, or origin "
+            "was unreadable"), False, ship_ref
 
     def _already_satisfied_eligible(
         self, task: Task, repo, base: str | None,
