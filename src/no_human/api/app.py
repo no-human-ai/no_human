@@ -837,6 +837,19 @@ def _record_feature_used(request: Request, name: str) -> None:
                       config=cfg.data if cfg is not None else {}, name=name)
 
 
+def _record_funnel(request: Request, kind: str, **props: Any) -> None:
+    """One onboarding-funnel emission (`kind` MUST be one of the 6 funnel
+    event names added to `telemetry._ALLOWED_EVENTS`). Fail-open like every
+    other call site here: a telemetry error must never change the HTTP
+    outcome of the request that triggered it."""
+    from .. import telemetry as _telemetry
+    cfg = getattr(request.app.state, "config", None)
+    try:
+        _telemetry.record(kind, config=cfg.data if cfg is not None else {}, **props)
+    except Exception:
+        log.debug("funnel telemetry emission failed", exc_info=True)
+
+
 @app.get("/api/tasks", response_model=list[TaskSummaryOut])
 async def list_tasks(
     request: Request,
@@ -889,7 +902,11 @@ async def list_tasks(
 async def create_task(body: CreateTaskRequest, request: Request) -> TaskSummaryOut:
     """Create a new task from the web board. The task is staged as PENDING and
     will be picked up by the next ``nh serve`` tick or ``nh watch``."""
-    _require_credentials(request)
+    try:
+        _require_credentials(request)
+    except HTTPException:
+        _record_funnel(request, "task_create_failed", reason="no_credentials")
+        raise
     store = _store(request)
     repo_path: str | None = None
     linked: list[str] = []
@@ -897,6 +914,7 @@ async def create_task(body: CreateTaskRequest, request: Request) -> TaskSummaryO
     if body.project_id:
         proj = await store.get_project(body.project_id)
         if not proj:
+            _record_funnel(request, "task_create_failed", reason="project_missing")
             raise HTTPException(404, f"project {body.project_id!r} not found")
         # If the caller also specified a repo_path that belongs to this project,
         # use it as the target instead of the primary.  This lets the UI's
@@ -909,6 +927,9 @@ async def create_task(body: CreateTaskRequest, request: Request) -> TaskSummaryO
     elif body.repo_path:
         repo = Path(body.repo_path).expanduser().resolve()
         if not repo.is_dir() or not (repo / ".git").exists():
+            _record_funnel(request, "repo_invalid",
+                           reason="missing" if not repo.is_dir() else "not_a_git_repo")
+            _record_funnel(request, "task_create_failed", reason="repo_invalid")
             raise HTTPException(
                 status_code=422,
                 detail=f"repo_path {body.repo_path!r} is not a git repository",
@@ -937,6 +958,7 @@ async def create_task(body: CreateTaskRequest, request: Request) -> TaskSummaryO
     if body.follows_id:
         followed = await store.get_task(body.follows_id)
         if not followed:
+            _record_funnel(request, "task_create_failed", reason="other")
             raise HTTPException(404, f"task {body.follows_id!r} not found")
     task = Task.new(
         title=body.title,
@@ -950,6 +972,7 @@ async def create_task(body: CreateTaskRequest, request: Request) -> TaskSummaryO
     try:
         task.priority = normalise_priority(body.priority)
     except ValueError as exc:
+        _record_funnel(request, "task_create_failed", reason="validation")
         raise HTTPException(422, str(exc)) from None
     task.acceptance_criteria = body.acceptance_criteria
     task.linked_repos = linked
@@ -979,6 +1002,7 @@ async def create_task(body: CreateTaskRequest, request: Request) -> TaskSummaryO
         from ..agent.backend import SUPPORTED_BACKENDS
         chosen = body.backend.strip().lower()
         if chosen not in SUPPORTED_BACKENDS:
+            _record_funnel(request, "task_create_failed", reason="validation")
             raise HTTPException(
                 422, f"unknown backend {body.backend!r}; one of "
                      f"{', '.join(SUPPORTED_BACKENDS)}")
@@ -999,6 +1023,7 @@ async def create_task(body: CreateTaskRequest, request: Request) -> TaskSummaryO
             from ..core.backend_settings import describe_backend
             info = await asyncio.to_thread(describe_backend, chosen, cfg_data)
             if not info["available"]:
+                _record_funnel(request, "task_create_failed", reason="backend_unavailable")
                 raise HTTPException(422, info["reason"])
         task.config["backend"] = chosen
     # GAP 1: opt in to the human plan-approval gate. Never for an imported
@@ -3127,6 +3152,55 @@ async def api_auth_status(request: Request) -> dict[str, Any]:
     return await asyncio.to_thread(_auth_status_payload, request)
 
 
+@app.post("/api/auth/verify")
+async def api_auth_verify(request: Request) -> dict[str, Any]:
+    """Whether the configured credential actually WORKS — one live call to
+    the AI provider, not merely a presence check. ``/api/auth/status`` only
+    reports whether a token/key is *on file*; a plausible-looking but
+    revoked or mistyped string reads identically to a working one there.
+    This is the one step on the onboarding funnel that tells the two apart,
+    so it is gated as a write (``writing=True``: it spends the credential's
+    quota) and the wizard calls it once, at the summary step.
+
+    The response carries only a closed-vocabulary ``result`` — never the
+    live probe's free-text failure reason (constraint §8: no token/key
+    value, and no error string, is ever returned here).
+    """
+    require_local_origin(request, writing=True)
+    status = await asyncio.to_thread(_auth_status_payload, request)
+    credential_present = (
+        status["api_key_present"] if status["auth_mode"] == "api_key"
+        else status["token_present"]
+    )
+    if not credential_present:
+        _record_funnel(request, "auth_check_failed", reason="absent")
+        return {"result": "absent"}
+    if not status["backend_cli_present"]:
+        _record_funnel(request, "auth_check_failed", reason="cli_missing")
+        return {"result": "cli_missing"}
+
+    cfg = getattr(request.app.state, "config", None)
+    data = getattr(cfg, "data", None) or {}
+    llm = data.get("llm") or {}
+    profile = llm.get("auth_profile")
+    auth_mode = str(llm.get("auth_mode") or "subscription")
+    model = cfg.utility_model if cfg is not None else "claude-haiku-4-5"
+
+    from ..agent.backend_check import verify_credential_live
+    try:
+        problem = await verify_credential_live(
+            model=model, profile=profile, auth_mode=auth_mode)
+    except Exception:  # noqa: BLE001 — an unexpected raise is inconclusive, not a 500
+        problem = ("inconclusive", "unexpected error probing the credential")
+
+    if problem is None:
+        _record_funnel(request, "auth_check_succeeded")
+        return {"result": "valid"}
+    reason, _why = problem
+    _record_funnel(request, "auth_check_failed", reason=reason)
+    return {"result": reason}
+
+
 @app.put("/api/auth/token")
 async def api_set_auth_token(request: Request) -> dict[str, Any]:
     """Store an OAuth token for a profile. Returns the same shape as status.
@@ -5231,6 +5305,9 @@ async def linear_issue_detail_endpoint(key: str, request: Request) -> TrackerIss
 class RepoOnboardRequest(BaseModel):
     repo_path: str
 
+class OnboardingStepViewedRequest(BaseModel):
+    step: str
+
 class RepoProveRequest(BaseModel):
     """Prove a repo's commands by RUNNING them. The optional command fields are
     the human's correction after a failed attempt; each REPLACES that kind's
@@ -5380,6 +5457,24 @@ async def onboarding_status(request: Request) -> dict[str, Any]:
     return {"completed": bool(ob.get("completed")), **ob}
 
 
+@app.post("/api/onboarding/step-viewed")
+async def onboarding_step_viewed(
+    body: OnboardingStepViewedRequest, request: Request
+) -> dict[str, Any]:
+    """One `onboarding_step_viewed` emission per wizard step the user reaches
+    — the whole point being to tell WHICH step a stalled install got to.
+    `step` is checked against the wizard's own closed vocabulary
+    (`telemetry.ONBOARDING_STEPS`, mirroring `web/src/Onboarding.jsx`'s
+    `BASE_STEPS`) so no free-text step name can ever reach telemetry; an
+    unrecognized step is refused (422) and nothing is emitted."""
+    require_local_origin(request, writing=True)
+    from .. import telemetry as _telemetry
+    if body.step not in _telemetry.ONBOARDING_STEPS:
+        raise HTTPException(422, f"unknown onboarding step {body.step!r}")
+    _record_funnel(request, "onboarding_step_viewed", step=body.step)
+    return {"ok": True}
+
+
 @app.post("/api/onboarding/repos/onboard")
 async def onboarding_onboard_repo(
     body: RepoOnboardRequest, request: Request
@@ -5391,6 +5486,8 @@ async def onboarding_onboard_repo(
     config = request.app.state.config
     repo = Path(body.repo_path).expanduser().resolve()
     if not repo.is_dir() or not (repo / ".git").exists():
+        _record_funnel(request, "repo_invalid",
+                       reason="missing" if not repo.is_dir() else "not_a_git_repo")
         raise HTTPException(422, f"{body.repo_path!r} is not a git repository")
 
     from ..onboard import DeclarationDeriver, derive_required_credentials, OnboardEngine
@@ -5462,6 +5559,7 @@ async def onboarding_onboard_repo(
     from ..onboard import ui_evidence_suggestion
 
     sug = ui_evidence_suggestion(profile, str(repo))
+    _record_funnel(request, "repo_selected")
     return {
         "ok": True,
         "repo_path": str(repo),

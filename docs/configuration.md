@@ -701,9 +701,9 @@ ever disagree in either direction, and `web/src/telemetry.test.mjs`'s
 disclosure sweep fails if any `posthog.capture(...)` call site in `web/src`
 sends an event name not listed here.
 
-There are exactly nine possible event kinds, eight sent by the server and one
-by the browser. Full contract (every closed value set, spelled out) lives in
-`docs/TELEMETRY.md`; this table is the summary:
+There are exactly fifteen possible event kinds, fourteen sent by the server
+and one by the browser. Full contract (every closed value set, spelled out)
+lives in `docs/TELEMETRY.md`; this table is the summary:
 
 | Event | Channel | Props |
 |---|---|---|
@@ -715,7 +715,24 @@ by the browser. Full contract (every closed value set, spelled out) lives in
 | `feature_used` | server | `name`, `environment` |
 | `task_ended` | server | `outcome`, `attempts`, `duration_bucket`, `environment` |
 | `tasks_orphaned` | server | `count_bucket`, `environment` |
+| `onboarding_step_viewed` | server | `step`, `environment` |
+| `repo_selected` | server | `environment` |
+| `repo_invalid` | server | `reason`, `environment` |
+| `task_create_failed` | server | `reason`, `environment` |
+| `auth_check_succeeded` | server | `environment` |
+| `auth_check_failed` | server | `reason`, `environment` |
 | `screen_viewed` | browser | `screen` (the lane name — `board`/`backlog`/`done`/`failed`/`stats`/`settings`/…, never content) |
+
+The six onboarding-funnel events (`onboarding_step_viewed` through
+`auth_check_failed`) instrument the path from launch to a first created
+task — previously a total blind spot (291 installs reached `app_started`,
+only 6 ever reached `task_created`) — and tell a REFUSED attempt
+(`repo_invalid`/`task_create_failed`) apart from a user who simply closed
+the window (neither fires). `auth_check_succeeded`/`auth_check_failed` come
+from `POST /api/auth/verify`, which spends one live call to the AI provider
+to report whether the configured credential actually *works*, not merely
+whether one is present. See `docs/TELEMETRY.md` for the full closed
+vocabularies and the `reason`/`step` enum values.
 
 `task_failed`'s `reason_category` is a CLOSED enum — one of
 `budget_exhausted`, `review_failed`, `max_attempts`, `infra`,
@@ -761,7 +778,7 @@ PostHog's `identify()`.
 enabled in the PostHog client init (`web/src/telemetry.js`, operator decision
 2026-09-03), so PostHog's own `$autocapture`/`$pageview`/`$pageleave`/
 `$dead_click`/`$$heatmap`/`$web_vitals`/`$exception` events are collected
-alongside the app's own events. The nine event kinds in the table above are
+alongside the app's own events. The fifteen event kinds in the table above are
 scoped to what the app itself sends via `posthog.capture(...)`; the disclosure
 sweep (`web/src/telemetry.test.mjs`) only ever checks those. Autocapture's
 `$el_text` (the text of the clicked/changed element) is bounded by the

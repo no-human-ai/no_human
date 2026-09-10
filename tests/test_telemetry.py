@@ -93,6 +93,12 @@ def test_allowlist_is_the_documented_closed_set():
         "feature_used": frozenset({"name", "environment"}),
         "task_ended": frozenset({"outcome", "attempts", "duration_bucket", "environment"}),
         "tasks_orphaned": frozenset({"count_bucket", "environment"}),
+        "onboarding_step_viewed": frozenset({"step", "environment"}),
+        "repo_selected": frozenset({"environment"}),
+        "repo_invalid": frozenset({"reason", "environment"}),
+        "task_create_failed": frozenset({"reason", "environment"}),
+        "auth_check_succeeded": frozenset({"environment"}),
+        "auth_check_failed": frozenset({"reason", "environment"}),
     }
 
 
@@ -253,6 +259,63 @@ def test_new_events_are_dropped_on_the_lambda_wire_until_the_server_ships(
     path = temp_home / ".no_human" / "telemetry-queue.jsonl"
     remaining = [ln for ln in path.read_text().splitlines() if ln.strip()]
     assert remaining == []  # all-dropped batch is deleted, never re-POSTed
+
+
+def test_onboarding_events_are_dropped_on_the_lambda_wire(
+    temp_home, no_network, no_thread,
+):
+    """The 6 onboarding-funnel events are valid client-side (PostHog gets
+    them) but, like `task_ended`/`tasks_orphaned` above, must not reach the
+    deployed Lambda yet — it 400s a whole batch on one unknown event name."""
+    telemetry.record("onboarding_step_viewed", config={"telemetry": _ENABLED},
+                     step="welcome")
+    telemetry.record("repo_selected", config={"telemetry": _ENABLED})
+    telemetry.record("repo_invalid", config={"telemetry": _ENABLED}, reason="missing")
+    telemetry.record("task_create_failed", config={"telemetry": _ENABLED},
+                     reason="no_credentials")
+    telemetry.record("auth_check_succeeded", config={"telemetry": _ENABLED})
+    telemetry.record("auth_check_failed", config={"telemetry": _ENABLED},
+                     reason="absent")
+    n = telemetry.flush(_ENABLED)
+    assert n == 0
+    assert no_network == []
+    path = temp_home / ".no_human" / "telemetry-queue.jsonl"
+    remaining = [ln for ln in path.read_text().splitlines() if ln.strip()]
+    assert remaining == []  # all-dropped batch is deleted, never re-POSTed
+
+
+def test_onboarding_step_viewed_rejects_free_text_step():
+    for bad in ("done", "WELCOME", "step 3"):
+        with pytest.raises(ValueError, match="not allowed"):
+            telemetry.record("onboarding_step_viewed", config={"telemetry": _ENABLED},
+                             step=bad)
+        # Validated even when disabled — same discipline as every other
+        # value-validated prop.
+        with pytest.raises(ValueError, match="not allowed"):
+            telemetry.record(
+                "onboarding_step_viewed", config={"telemetry": {"enabled": False}},
+                step=bad)
+
+
+def test_funnel_reasons_are_closed_enums():
+    for bad in ("path traversal detected", "Missing", "TIMEOUT"):
+        with pytest.raises(ValueError, match="not allowed"):
+            telemetry.record("repo_invalid", config={"telemetry": _ENABLED}, reason=bad)
+        with pytest.raises(ValueError, match="not allowed"):
+            telemetry.record("task_create_failed", config={"telemetry": _ENABLED}, reason=bad)
+        with pytest.raises(ValueError, match="not allowed"):
+            telemetry.record("auth_check_failed", config={"telemetry": _ENABLED}, reason=bad)
+
+
+def test_onboarding_steps_match_the_wizard_steps():
+    """`telemetry.ONBOARDING_STEPS` must mirror the wizard's own step keys
+    1:1 — parsed straight out of `web/src/Onboarding.jsx`'s `BASE_STEPS`
+    array, so a step rename there is caught here instead of silently
+    desyncing the funnel."""
+    jsx = Path(__file__).resolve().parent.parent / "web" / "src" / "Onboarding.jsx"
+    text = jsx.read_text()
+    keys = set(re.findall(r'\{\s*key:\s*"([a-z_]+)"', text))
+    assert keys == telemetry.ONBOARDING_STEPS
 
 
 # ------------------------- consent gate ----------------------------------- #
@@ -621,9 +684,11 @@ def test_client_allowlist_matches_the_deployed_lambda_contract():
     assert {k: v for k, v in telemetry._ALLOWED_EVENTS.items()
             if k in telemetry._LAMBDA_EVENTS} == deployed_lambda_events
     # Not-yet-shipped events are the EXACT difference — nothing else is held
-    # back, and the two new events are not silently forgotten either.
+    # back, and the new events are not silently forgotten either.
     assert set(telemetry._ALLOWED_EVENTS) - telemetry._LAMBDA_EVENTS == {
         "task_ended", "tasks_orphaned",
+        "onboarding_step_viewed", "repo_selected", "repo_invalid",
+        "task_create_failed", "auth_check_succeeded", "auth_check_failed",
     }
     # The server also regex-validates `version` (semver-ish, MAJOR.MINOR.
     # PATCH + optional short suffix) and 400s the whole batch otherwise —

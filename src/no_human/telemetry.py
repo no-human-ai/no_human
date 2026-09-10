@@ -53,15 +53,29 @@ _ALLOWED_EVENTS: dict[str, frozenset[str]] = {
     "feature_used": frozenset({"name", "environment"}),
     "task_ended": frozenset({"outcome", "attempts", "duration_bucket", "environment"}),
     "tasks_orphaned": frozenset({"count_bucket", "environment"}),
+    # Onboarding-funnel instrumentation (2026-09): the path from launch to a
+    # first created task was a total blind spot — 291 installs hit
+    # `app_started`, only 6 ever reached `task_created`. These 6 events fill
+    # in enough closed-vocabulary/bucketed-count telemetry to tell WHICH step
+    # a user stopped at, and to tell a refused attempt apart from someone who
+    # just closed the window. None of them carry user or repo content. New,
+    # not yet server-side — see `_LAMBDA_EVENTS` below.
+    "onboarding_step_viewed": frozenset({"step", "environment"}),
+    "repo_selected":          frozenset({"environment"}),
+    "repo_invalid":           frozenset({"reason", "environment"}),
+    "task_create_failed":     frozenset({"reason", "environment"}),
+    "auth_check_succeeded":   frozenset({"environment"}),
+    "auth_check_failed":      frozenset({"reason", "environment"}),
 }
 
 # Event names the DEPLOYED first-party Lambda accepts (as of 2026-08-16).
-# `task_ended`/`tasks_orphaned` are new and have NOT shipped server-side yet;
-# the Lambda 400s a batch WHOLESALE on one unknown event name and a rejected
-# batch stays queued forever, so `flush()` drops them on the `kind ==
-# "lambda"` wire path only, until the server-side allowlist ships. PostHog
-# (the default destination, and where this triage data actually comes from)
-# accepts everything in `_ALLOWED_EVENTS` and is unaffected.
+# `task_ended`/`tasks_orphaned`, and now the 6 onboarding-funnel events
+# above, are new and have NOT shipped server-side yet; the Lambda 400s a
+# batch WHOLESALE on one unknown event name and a rejected batch stays
+# queued forever, so `flush()` drops them on the `kind == "lambda"` wire
+# path only, until the server-side allowlist ships. PostHog (the default
+# destination, and where this triage data actually comes from) accepts
+# everything in `_ALLOWED_EVENTS` and is unaffected.
 _LAMBDA_EVENTS = frozenset({
     "app_started", "task_created", "task_completed", "task_failed",
     "approve_clicked", "feature_used",
@@ -95,6 +109,27 @@ ORPHAN_COUNT_BUCKETS = frozenset({"0", "1", "2-5", "6+"})
 # `task_completed` must stay byte-identical, including its validation.
 DURATION_BUCKETS = frozenset({"<10m", "10-30m", "30-60m", ">60m", "unknown"})
 
+# Closed enum of `onboarding_step_viewed`'s `step` prop — mirrors the wizard's
+# own step keys 1:1 (see `web/src/Onboarding.jsx`'s `BASE_STEPS`); never free
+# text, so a step rename there must be mirrored here deliberately.
+ONBOARDING_STEPS = frozenset({"welcome", "repos", "projects", "integrations", "summary"})
+
+# Closed enum of `repo_invalid`'s `reason` prop — never the path itself.
+REPO_INVALID_REASONS = frozenset({"missing", "not_a_git_repo"})
+
+# Closed enum of `task_create_failed`'s `reason` prop — a machine-readable
+# failure PATTERN (never a detail string), so a refused attempt is
+# distinguishable in the data from a user who simply stopped.
+TASK_CREATE_FAILURE_REASONS = frozenset({
+    "no_credentials", "repo_invalid", "project_missing", "backend_unavailable",
+    "validation", "other",
+})
+
+# Closed enum of `auth_check_failed`'s `reason` prop — whether a configured
+# credential actually WORKS (a live probe), not merely whether one is
+# present; "absent"/"cli_missing" short-circuit before any live call.
+AUTH_CHECK_FAILURE_REASONS = frozenset({"absent", "cli_missing", "rejected", "inconclusive"})
+
 # Mirror of the first-party Lambda's per-event-prop VALUE validation, for
 # props whose value space is itself a closed enum (currently just
 # `task_failed.reason_category`). kind/prop NAME validation lives in
@@ -104,6 +139,10 @@ _ALLOWED_PROP_VALUES: dict[tuple[str, str], frozenset[str]] = {
     ("task_ended", "outcome"): TASK_END_OUTCOMES,
     ("task_ended", "duration_bucket"): DURATION_BUCKETS,
     ("tasks_orphaned", "count_bucket"): ORPHAN_COUNT_BUCKETS,
+    ("onboarding_step_viewed", "step"): ONBOARDING_STEPS,
+    ("repo_invalid", "reason"): REPO_INVALID_REASONS,
+    ("task_create_failed", "reason"): TASK_CREATE_FAILURE_REASONS,
+    ("auth_check_failed", "reason"): AUTH_CHECK_FAILURE_REASONS,
 }
 
 # Recognized CI platform markers (intake-resolved: covers ~95% of CI

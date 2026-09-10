@@ -941,6 +941,12 @@ export const extractHistory    = ()        => _post("/api/onboarding/history/ext
 export const analyzeHistory    = (days = 30, repo_paths = []) => _post("/api/onboarding/history/analyze", { days, repo_paths });
 export const confirmRules      = (ids)     => _post("/api/onboarding/rules/confirm", { ids });
 export const completeOnboarding = (payload) => _post("/api/onboarding/complete", payload);
+// Onboarding-funnel telemetry: which step a user reached, and whether the
+// configured credential actually works (not merely whether one is present).
+// Both are fire-and-forget from the wizard's point of view — a failure here
+// must never block the wizard, see Onboarding.jsx's `.catch(() => {})`.
+export const recordOnboardingStep = (step) => _post("/api/onboarding/step-viewed", { step });
+export const verifyAuthLive       = ()     => _post("/api/auth/verify", {});
 // Minimal path (spec §3 B1): the deferred steps carried on the board's Finish-setup card.
 export const fetchDeferred     = ()        => _get("/api/onboarding/deferred");
 export const markDeferredDone  = (step)    => _post(`/api/onboarding/deferred/${encodeURIComponent(step)}/done`, {});

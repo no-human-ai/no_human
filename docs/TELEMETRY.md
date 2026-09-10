@@ -17,8 +17,8 @@ security-review framing of this same channel).
 
 ## The complete event list
 
-There are exactly nine possible event kinds, eight sent by the server and
-one (`screen_viewed`) by the browser.
+There are exactly fifteen possible event kinds, fourteen sent by the server
+and one (`screen_viewed`) by the browser.
 
 | Event | Channel | Props |
 |---|---|---|
@@ -30,6 +30,12 @@ one (`screen_viewed`) by the browser.
 | `feature_used` | server | `name`, `environment` |
 | `task_ended` | server | `outcome`, `attempts`, `duration_bucket`, `environment` |
 | `tasks_orphaned` | server | `count_bucket`, `environment` |
+| `onboarding_step_viewed` | server | `step`, `environment` |
+| `repo_selected` | server | `environment` |
+| `repo_invalid` | server | `reason`, `environment` |
+| `task_create_failed` | server | `reason`, `environment` |
+| `auth_check_succeeded` | server | `environment` |
+| `auth_check_failed` | server | `reason`, `environment` |
 | `screen_viewed` | browser | `screen` (the lane name — `board`/`backlog`/`done`/`failed`/`stats`/`settings`/…, never content) |
 
 Every prop name is validated against `_ALLOWED_EVENTS`; an unknown kind or
@@ -55,6 +61,17 @@ path, prompt, or failure detail can ever leave the machine through them.
   byte-identical by this change.)
 - `tasks_orphaned.count_bucket` — `ORPHAN_COUNT_BUCKETS`: one of `0`, `1`,
   `2-5`, `6+`.
+- `onboarding_step_viewed.step` — `ONBOARDING_STEPS`: one of `welcome`,
+  `repos`, `projects`, `integrations`, `summary` — the wizard's own
+  `BASE_STEPS` keys (`web/src/Onboarding.jsx`), pinned 1:1 by
+  `tests/test_telemetry.py::test_onboarding_steps_match_the_wizard_steps`.
+- `repo_invalid.reason` — `REPO_INVALID_REASONS`: one of `missing`,
+  `not_a_git_repo`.
+- `task_create_failed.reason` — `TASK_CREATE_FAILURE_REASONS`: one of
+  `no_credentials`, `repo_invalid`, `project_missing`,
+  `backend_unavailable`, `validation`, `other`.
+- `auth_check_failed.reason` — `AUTH_CHECK_FAILURE_REASONS`: one of
+  `absent`, `cli_missing`, `rejected`, `inconclusive`.
 
 ## `task_completed`: the ordinary successful-delivery path
 
@@ -165,6 +182,53 @@ the scheduler's existing crash-recovery path (`_recover_orphans`) is
 responsible for. It is purely an observability count layered on top of
 unrelated, unchanged recovery behavior.
 
+## The onboarding funnel: launch to first task, without a blind spot
+
+PostHog data showed 291 installs reaching `app_started` and only 6 ever
+reaching `task_created` (2.1%), with a single one reaching `task_completed`
+— a 98% dropout with no telemetry in between to say *where* people stopped.
+These six events close that gap, closed-vocabulary and bucketed-count only,
+same discipline as every event above:
+
+- `onboarding_step_viewed` fires once per wizard step actually reached
+  (`web/src/Onboarding.jsx`, deduped client-side per session), so a stalled
+  install is attributable to the step it never got past.
+- `repo_selected` / `repo_invalid` fire from repo onboarding
+  (`POST /api/onboarding/repos/onboard`) and, for `repo_invalid`, from
+  `POST /api/tasks` too — a directory that does not exist reads differently
+  (`missing`) from one that exists but is not a git repo
+  (`not_a_git_repo`).
+- `task_create_failed` fires on every refusal path in `POST /api/tasks`
+  (missing credentials, an invalid repo, a missing project or `follows_id`
+  target, a validation error, or a backend the install cannot actually
+  run) — this is what makes a REFUSED first-task attempt distinguishable
+  from a user who simply closed the window: the former always leaves a
+  `task_create_failed` behind, the latter leaves nothing.
+- `auth_check_succeeded` / `auth_check_failed` come from
+  `POST /api/auth/verify`, described next — whether the configured
+  credential actually *works*, not merely whether one is on file.
+
+None of the six carries a task id, title, repo path, or any other content —
+`onboarding_step_viewed.step` and the two `reason` props are closed enums
+(above), and the rest carry no props beyond `environment`.
+
+## `POST /api/auth/verify`: presence vs. validity
+
+`GET /api/auth/status` (pre-existing, unchanged) reports only whether a
+token/key is *on file* — a plausible-looking but revoked or mistyped string
+reads identically to a working one. `POST /api/auth/verify` spends one live
+call to the AI provider (`agent.backend_check.verify_credential_live`,
+already used by `nh doctor --verify-auth`) and returns a closed `result`:
+`absent` (no credential at all — short-circuited, no call made),
+`cli_missing` (credential present, but the CLI it would run through is not
+— also short-circuited), `valid`, `rejected` (the call came back and said
+no — a real credential problem), or `inconclusive` (the call never got an
+answer — a flaky network, not proof the credential is bad). The live
+probe's own free-text failure reason is never part of the response body or
+the `auth_check_failed` event — only the closed `reason`. It is gated
+`writing=True` (spends the credential's quota) and the wizard calls it once,
+at the summary step.
+
 ## The `_LAMBDA_EVENTS` wire filter
 
 The default destination is PostHog, which accepts everything in
@@ -172,15 +236,16 @@ The default destination is PostHog, which accepts everything in
 (`telemetry.endpoint`) validates a batch WHOLESALE against ITS OWN closed
 allowlist and 400s the entire batch on one unrecognized event name — and a
 rejected batch stays queued forever, wedging every later flush behind it.
-`task_ended` and `tasks_orphaned` are new: they have not shipped to the
-Lambda's server-side allowlist yet. Until they do, `telemetry.flush()`
-drops any event whose name is not in `_LAMBDA_EVENTS` on the `kind ==
-"lambda"` wire path only — never affecting PostHog, and never wedging the
-queue (an all-dropped batch is deleted, never re-POSTed empty).
+`task_ended`, `tasks_orphaned`, and the six onboarding-funnel events above
+are new: they have not shipped to the Lambda's server-side allowlist yet.
+Until they do, `telemetry.flush()` drops any event whose name is not in
+`_LAMBDA_EVENTS` on the `kind == "lambda"` wire path only — never affecting
+PostHog, and never wedging the queue (an all-dropped batch is deleted, never
+re-POSTed empty).
 `tests/test_telemetry.py::test_client_allowlist_matches_the_deployed_lambda_contract`
 pins `_LAMBDA_EVENTS` as the Lambda's deployed six names and asserts it is a
 strict subset of `_ALLOWED_EVENTS` — this file (and that test) must be
-updated together the day the Lambda actually ships the new two.
+updated together the day the Lambda actually ships the new eight.
 
 ## Never sent
 
@@ -189,7 +254,9 @@ token ever appears in a server event. Every prop above is either a
 structural count (`attempts`), a bucketed value (`duration_bucket`,
 `count_bucket`), or a value from a closed enum (`status`, `category`,
 `reason_category`, `outcome`, `source`, `name` on `feature_used` — itself a
-closed set of feature identifiers, not a title). `environment`
+closed set of feature identifiers, not a title, `step` on
+`onboarding_step_viewed`, or `reason` on `repo_invalid`/
+`task_create_failed`/`auth_check_failed`). `environment`
 (`real`/`bench`/`test`/`ci`/`dev`) is stamped on every event by
 `telemetry.environment()` so real installs stay countable amid bench/pytest/
 CI dogfood volume; it never suppresses an event, only tags it.

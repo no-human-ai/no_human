@@ -1483,7 +1483,14 @@ FROZEN_FILE_LINES = {
     # path too, gated to avoid double-firing against `_run_attempt`'s own
     # in-process `cancelled_hard` emit when `stopped` is True. Measured on
     # this tree with the scanner below.
-    "api/app.py": 6183,
+    # 6183 -> 6281 (+98): onboarding-funnel telemetry (task c4873934) —
+    # `_record_funnel` helper, 7 `task_create_failed`/`repo_invalid`
+    # instrumentation points in `create_task`, 2 in
+    # `onboarding_onboard_repo`, and the new `POST /api/onboarding/step-viewed`
+    # and `POST /api/auth/verify` endpoints (the latter probing whether a
+    # configured credential actually works, not merely whether one is
+    # present). Measured on this tree with the scanner below.
+    "api/app.py": 6281,
     # +51: W5 active-time phase writer (phase instrumentation).
     # +84: `list_escalations`/`list_review_fails`/`list_tamper_trips` — the
     # three new failure-signal sources the recurring learning harvest mines.

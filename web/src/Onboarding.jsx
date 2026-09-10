@@ -5,7 +5,7 @@ import {
   generateDocs, fetchIntegrationSetup, saveIntegrationSetup,
   testIntegration,
   proveRepoSSE, confirmRepoProfile, fetchReadiness, setRepoUiEvidence,
-  probeServer,
+  probeServer, recordOnboardingStep, verifyAuthLive,
 } from "./api.js";
 import { kickoffWikiGeneration } from "./onboardingDocsKickoff.js";
 import { isNetworkError, offlineBanner, createServerProbe } from "./offlineRetry.js";
@@ -165,6 +165,13 @@ export default function Onboarding({ onComplete }) {
   // Re-entry guard for advance() (M1) — a click while a profile-then-advance
   // is mid-flight is ignored, without disabling Continue during the scan.
   const advancing = useRef(false);
+  // Onboarding-funnel telemetry dedup: each step reports itself AT MOST ONCE
+  // per wizard session (StrictMode double-invokes effects on mount; a
+  // back-then-forward re-entry must not inflate the funnel), and the
+  // live-credential probe fires AT MOST ONCE per session regardless of how
+  // many times the summary step is revisited.
+  const viewedSteps = useRef(new Set());
+  const authVerified = useRef(false);
 
   // Editable draft of the integrations step: {name: {field: value}}. Seeded
   // from the server's spec (draftFrom) and diffed against it on save, so only
@@ -313,6 +320,16 @@ export default function Onboarding({ onComplete }) {
   // making the user reach for "Search". "Search" stays as the explicit trigger.
   const debouncedScan = useMemo(() => debounce((r) => scanFolder(r), 400), []);
   useEffect(() => () => debouncedScan.cancel(), [debouncedScan]);
+
+  // Onboarding-funnel instrumentation: one `onboarding_step_viewed` per step
+  // reached, so a stalled install is identifiable by WHICH step it stopped
+  // at. Fire-and-forget — a network hiccup here must never disturb the
+  // wizard itself, so this never routes through `guard`/`noteFetchFailure`.
+  useEffect(() => {
+    if (viewedSteps.current.has(step.key)) return;
+    viewedSteps.current.add(step.key);
+    recordOnboardingStep(step.key).catch(() => {});
+  }, [step.key]);
 
   // Entering the repos step discovers the user's repositories across every
   // conventional clone root, so the first thing they see is their own list -
@@ -550,6 +567,17 @@ export default function Onboarding({ onComplete }) {
     return () => { cancelled = true; };
     // deps intentionally partial (matches this file's existing convention)
   }, [step.key, reloadNonce]);
+
+  // Whether the configured credential actually WORKS, not merely whether one
+  // is present — one live call to the provider, made once per session at the
+  // summary step. Fire-and-forget like the step-viewed telemetry above: the
+  // result only matters for the funnel data, never for gating Launch.
+  useEffect(() => {
+    if (step.key !== "summary") return;
+    if (authVerified.current) return;
+    authVerified.current = true;
+    verifyAuthLive().catch(() => {});
+  }, [step.key]);
 
   // Tick/untick a repo for the project being composed in the add form.
   function toggleNewProjRepo(repoPath) {

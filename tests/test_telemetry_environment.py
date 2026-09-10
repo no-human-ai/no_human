@@ -71,6 +71,12 @@ _MIN_PROPS = {
     "feature_used": {"name": "bench"},
     "task_ended": {"outcome": "escalated", "attempts": 1, "duration_bucket": "<10m"},
     "tasks_orphaned": {"count_bucket": "0"},
+    "onboarding_step_viewed": {"step": "welcome"},
+    "repo_selected": {},
+    "repo_invalid": {"reason": "missing"},
+    "task_create_failed": {"reason": "no_credentials"},
+    "auth_check_succeeded": {},
+    "auth_check_failed": {"reason": "absent"},
 }
 
 
