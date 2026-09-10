@@ -1,20 +1,12 @@
 # Independent review
 
-_Harness-captured record for task `2dcc6f80`, commit `ec151501f54abb618c0206444736652aa9118a0c` — not model-authored: no_human wrote this file from the fresh-context reviewer's checklist on this commit. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `2dcc6f80`, commit `6e55c1f39daef26bdaff524efe99e82260ccadcd` — not model-authored: no_human wrote this file from the fresh-context reviewer's checklist on this commit. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 <!-- no_human:review-checklist -->
-## Independent review — PASSED (2 rounds) on `ec15150`
+## Independent review — PASSED (3 rounds) on `6e55c1f`
 _A different model, fresh context, commit, push and merge refused at the tool call, told to refute "done". This is the checklist the gate decided on; no_human never merges — a human does._
 
 | Severity | Finding | Where | Note |
 |---|---|---|---|
-| ✅ | two unrelated reviewer_worktree failures | — | Flagging for the record only: the two red tests are in test_reviewer_worktree.py and blow up on a bad git config include.path (/tmp/evil), which has nothing to |
-
-<details><summary>2 advisory findings (low/nit — never blocking)</summary>
-
-| Severity | Finding | Where | Note |
-|---|---|---|---|
-| ❌ low | unused base_hint param/attr | `src/no_human/agent/landed_claim_guard.py:133` | base_hint gets stored on self._base_hint and threaded in from _build_landed_claim_guard, but nothing ever reads it — the base_ref in the refusal message comes s |
-| ❌ low | head-fallback fires on in-progress attempt HEAD | `src/no_human/agent/landed_claim_guard.py:160` | When the claim names no sha you fall back to attempt HEAD, which is basically never an ancestor of base for any in-progress branch, so a legit 'already implemen |
-
-</details>
+| ✅ | early-refusal depends on a subsequent tool call | `src/no_human/agent/landed_claim_guard.py:213` | Worth being explicit that the correction only lands on the next PostToolUse after the claim — if an agent asserts 'already done' in its very last utterance and |
+| ✅ | refuted-detection couples to a reason-string prefix | `src/no_human/core/orchestrator.py:16961` | This string-prefix match against _already_satisfied_subject's reason is a quiet coupling — reword that prefix at line 11812 and the guard just stops firing, no |
