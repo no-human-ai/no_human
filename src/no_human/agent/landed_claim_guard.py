@@ -42,7 +42,15 @@ _CLAIM = re.compile(
     r"|work (?:is|was) already (?:there|present)",
     re.I,
 )
-_SHA = re.compile(r"\b[0-9a-f]{7,40}\b")
+# A bare `[0-9a-f]{7,40}` also matches ordinary English words ("defaced",
+# "cabbage") and unrelated hex-shaped tokens (manifest hashes, digests)
+# anywhere in the text. A sha is only ever named to say WHERE the work
+# landed, so require one of the words that introduces such a reference
+# ("at"/"in"/"as"/"commit"/"sha") immediately before the token — prose
+# cannot satisfy both that cue AND the hex shape by accident.
+_SHA_CUE = re.compile(
+    r"\b(?:at|in|as|commit(?:ted)?|sha)\b[:=]?\s+([0-9a-f]{7,40})\b", re.I
+)
 
 _SNIPPET_BEFORE = 40
 _SNIPPET_AFTER = 80
@@ -72,11 +80,15 @@ def detect_claim_assertion(text: str) -> ClaimAssertion | None:
         return None
     start = max(0, m.start() - _SNIPPET_BEFORE)
     end = min(len(text), m.end() + _SNIPPET_AFTER)
-    snippet = text[start:end].strip().replace("\n", " ")
+    window = text[start:end]
+    snippet = window.strip().replace("\n", " ")
     if len(snippet) > _SNIPPET_MAX:
         snippet = snippet[:_SNIPPET_MAX]
-    sha_match = _SHA.search(text)
-    return ClaimAssertion(sha=(sha_match.group(0) if sha_match else ""), snippet=snippet)
+    # Search the same bounded window the snippet uses, not the whole text:
+    # an unrelated cued hex token elsewhere in a long utterance must not be
+    # mistaken for the commit this particular claim names.
+    sha_match = _SHA_CUE.search(window)
+    return ClaimAssertion(sha=(sha_match.group(1) if sha_match else ""), snippet=snippet)
 
 
 # `probe(sha)` -> (refuted, resolved_sha, base_ref). Built by the orchestrator
