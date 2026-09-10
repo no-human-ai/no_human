@@ -1321,7 +1321,14 @@ FROZEN_FILE_LINES = {
     # `nh approve --ready`'s one-line summary no longer silently drops the
     # only signal telling the operator a verifier never answered. Measured
     # via `wc -l src/no_human/cli/commands.py`.
-    "cli/commands.py": 8666,
+    # 8666 -> 8672 (+6): square-bracket bug fix — every `console.print`/
+    # `Table.add_row` call that interpolates externally-sourced text (a
+    # task's title/description/acceptance criteria, a blocker's fields, a
+    # grill question, ...) now wraps that value in the new `esc()` boundary
+    # helper (`from .render import esc`) so Rich's markup parser can no
+    # longer eat a bracketed span or raise `MarkupError` on an unbalanced
+    # one. Measured via `wc -l src/no_human/cli/commands.py`.
+    "cli/commands.py": 8672,
     # api/app.py 5338 -> 5346 (+8): same budget-floor warning surfaced by
     # `send-back`/`reply` as `budget_warning` in the JSON response. Net cost
     # was trimmed from a naive +14 to +8 by computing `Bounds.from_config(...)`
