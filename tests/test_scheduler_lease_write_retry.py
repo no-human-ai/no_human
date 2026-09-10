@@ -150,6 +150,41 @@ async def test_a_persistent_write_lock_still_fails_closed_after_the_budget(
         holder.join(timeout=2)
 
 
+async def test_a_non_transient_write_error_fails_closed_with_no_retry(
+    store, monkeypatch,
+):
+    """Mutant-wiring pin. `_is_transient_db_error`'s classification is only
+    load-bearing if it actually GATES `_claim_pool_lease`'s retry loop —
+    mutating `if not _is_transient_db_error(exc): raise ...` to `if False:`
+    (always retry, never fail closed) would leave the rest of this file
+    green, since every other test here drives a REAL transient lock and
+    never exercises a non-transient write failure through `_claim_pool_lease`
+    itself. Monkeypatch the CAS write to raise a same-type,
+    differently-caused `sqlite3.OperationalError` ("no such table") —
+    exactly the negative boundary `_is_transient_db_error` already rejects
+    on its own (see `test_is_transient_db_error_rejects_a_different_operational_error`)
+    — and assert both that `_claim_pool_lease` fails closed AND that the
+    write was attempted exactly ONCE: a surviving mutant that always retries
+    would call this 3 times (`_LEASE_WRITE_ATTEMPTS`) before giving up, so
+    the call count is what actually kills it."""
+    calls = 0
+
+    async def _boom(**kwargs):
+        nonlocal calls
+        calls += 1
+        raise sqlite3.OperationalError("no such table: scheduler_heartbeat")
+
+    monkeypatch.setattr(store, "cas_scheduler_heartbeat", _boom)
+
+    sched = _sched(store)
+    with pytest.raises(PoolLeaseLost):
+        await sched._claim_pool_lease()
+
+    assert calls == 1, (
+        "a non-transient error must fail closed on the first attempt, "
+        f"never retried — the CAS write was called {calls} time(s)")
+
+
 # --------------------------------------------------------------------------- #
 # AC3 — genuine mutual exclusion between two real schedulers                  #
 # --------------------------------------------------------------------------- #
