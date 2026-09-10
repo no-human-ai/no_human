@@ -3919,11 +3919,13 @@ async def worker_status(request: Request) -> dict[str, Any]:
     #     its first tick leaves them all at their initial values.
     #   * `lease_lost` — the scheduler could not prove it holds the pool
     #     lease and has voluntarily stopped dispatching. `tick_stalled`
-    #     does NOT catch this: `tick()` updates `_last_tick_at` before
-    #     attempting the lease refresh, so a lease-lost loop keeps ticking
-    #     (trivially, returning early) and never reads as stalled. Without
-    #     this clause `healthy` stayed true while dispatch was fully and
-    #     silently stopped — the exact defect this line closes.
+    #     WOULD eventually catch this too — once the lease is lost, `tick()`
+    #     short-circuits BEFORE the `_last_tick_at` update on every later
+    #     call, so it freezes and the stall threshold trips in due course —
+    #     but that leaves a window, between the loss and the threshold (and
+    #     before any `worker_error`), where dispatch is already fully
+    #     stopped and neither of those has fired yet. This clause reports
+    #     the stop the instant it happens instead of waiting that out.
     #
     # `tick_stalled` now also covers a loop that has NEVER ticked and has had
     # longer than its own threshold to do so, which is the same fault one step

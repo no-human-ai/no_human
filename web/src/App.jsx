@@ -1406,12 +1406,45 @@ export default function App() {
               </span>
             </div>
           )}
-          {!queueHealth?.stuck && queueHealth?.paused && queueHealth?.paused_reason !== "infra" && (
+          {/* A lost pool lease has no reset clock — a restart, or the lease
+              clearing on its own, is what ends it. Must have its own branch
+              rather than falling into the quota arm below: telling the
+              operator to wait for a "reset" that will never come is worse
+              than the silent stop this exists to close. */}
+          {!queueHealth?.stuck && queueHealth?.paused && queueHealth?.paused_reason === "lease_lost" && (
+            <div className="nh-status-indicator" role="status"
+                 title="The scheduler could not prove it holds the pool lease and stopped dispatching — a restart (or a sibling claiming the lease) is what resumes it, not a wait">
+              <div className="nh-ws-dot" />
+              <span className="nh-status-label">Paused — lost the pool lease, restart required</span>
+            </div>
+          )}
+          {/* `paused_reason == null` is legacy data predating this field —
+              it always meant quota, so it stays quota for backward
+              compatibility. Everything else this board was never taught
+              falls to the honest "unknown" arm below, never silently to
+              quota (that used to be this arm's `!== "infra"` catch-all,
+              which is exactly how a lost lease was reported as a quota
+              cooldown that would never actually reset). */}
+          {!queueHealth?.stuck && queueHealth?.paused
+            && (queueHealth?.paused_reason === "quota" || queueHealth?.paused_reason == null) && (
             <div className="nh-status-indicator" role="status"
                  title={queueHealth.paused_profile ? `${queueHealth.paused_profile} profile hit its quota` : "Pool-wide quota cooldown"}>
               <div className="nh-ws-dot" />
               <span className="nh-status-label">
                 Paused — quota resets {formatPausedUntil(queueHealth.paused_until)}
+              </span>
+            </div>
+          )}
+          {!queueHealth?.stuck && queueHealth?.paused
+            && queueHealth?.paused_reason != null
+            && queueHealth?.paused_reason !== "infra"
+            && queueHealth?.paused_reason !== "lease_lost"
+            && queueHealth?.paused_reason !== "quota" && (
+            <div className="nh-status-indicator" role="status"
+                 title={`Paused for an unrecognised reason: ${queueHealth.paused_reason}`}>
+              <div className="nh-ws-dot" />
+              <span className="nh-status-label">
+                Paused — reason unknown ({queueHealth.paused_reason})
               </span>
             </div>
           )}

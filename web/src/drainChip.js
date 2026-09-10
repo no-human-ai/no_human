@@ -55,9 +55,24 @@ export function drainChip({
   if (error) return { text: "server unreachable", tone: "error" };
   if (paused) {
     const at = formatPausedUntil(paused_until);
-    return paused_reason === "infra"
-      ? { text: `Paused — SDK/auth failures, resumes ${at}`, tone: "warn" }
-      : { text: `Paused — quota resets ${at}`, tone: "warn" };
+    // Closed set (core/health.py: `paused_reason: str | None = None   #
+    // "quota" | "infra" | "lease_lost" | None`). A missing reason (null/
+    // undefined) predates the other two and always meant quota, so it
+    // stays quota for backward compatibility. Any OTHER value — including
+    // one added here later and never wired below — must render honestly
+    // as "reason unknown", never fall through to the quota text: a lost
+    // lease has no reset time, and telling an operator to wait for one is
+    // worse than the silence this fix exists to close.
+    if (paused_reason === "infra") {
+      return { text: `Paused — SDK/auth failures, resumes ${at}`, tone: "warn" };
+    }
+    if (paused_reason === "lease_lost") {
+      return { text: "Paused — lost the pool lease, restart required", tone: "warn" };
+    }
+    if (paused_reason === "quota" || paused_reason == null) {
+      return { text: `Paused — quota resets ${at}`, tone: "warn" };
+    }
+    return { text: `Paused — reason unknown (${paused_reason})`, tone: "warn" };
   }
 
   const parts = [`${workers_busy}/${max_workers} workers busy`, `${queue_depth} queued`];

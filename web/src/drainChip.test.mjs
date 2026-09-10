@@ -1,5 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { drainChip, formatDrainEta, formatPausedUntil } from "./drainChip.js";
 
 test("idle: 0 busy, 0 queued, no drain time", () => {
@@ -77,6 +79,66 @@ test("infra-breaker pause reports SDK/auth failures, not quota (independent revi
   assert.ok(chip.text.startsWith("Paused — SDK/auth failures, resumes "));
   assert.ok(!chip.text.includes("quota"), "must not also claim it was quota");
   assert.equal(chip.tone, "warn");
+});
+
+test("lease-lost pause names the lease/stop, never quota (a lost lease has no reset time)", () => {
+  // The board's own value: a scheduler that could not prove it holds the
+  // pool lease has no reset clock — a restart, or the lease clearing on
+  // its own, is what ends it. Rendering it as a quota cooldown ("resets
+  // 14:32") tells the operator to wait out a wall that will never open.
+  const chip = drainChip({
+    workers_busy: 0,
+    max_workers: 4,
+    queue_depth: 7,
+    paused: true,
+    paused_reason: "lease_lost",
+    paused_until: null,
+  });
+  assert.match(chip.text, /lease/i);
+  assert.doesNotMatch(chip.text, /quota/i);
+  assert.equal(chip.tone, "warn");
+});
+
+test("an unrecognised paused_reason renders honestly, never falls through to quota", () => {
+  // Guards the class the reviewer named: a producer (core/health.py) can
+  // gain a paused_reason value this consumer was never taught. The
+  // default must say "unknown", not silently claim the one specific
+  // cause the `else` used to name.
+  const chip = drainChip({
+    workers_busy: 0,
+    max_workers: 4,
+    queue_depth: 7,
+    paused: true,
+    paused_reason: "something_new",
+    paused_until: "2026-08-20T17:20:00+00:00",
+  });
+  assert.match(chip.text, /unknown/i);
+  assert.doesNotMatch(chip.text, /quota/i);
+});
+
+test("closed-set guard: every paused_reason core/health.py can emit renders as non-quota unless it IS quota (derived from the Python source, not a hand-copied literal)", () => {
+  const healthPy = readFileSync(
+    fileURLToPath(new URL("../../src/no_human/core/health.py", import.meta.url)),
+    "utf8");
+  const declLine = healthPy.split("\n").find((l) => l.includes("paused_reason: str | None"));
+  assert.ok(declLine, "expected to find the paused_reason field declaration in core/health.py");
+  // e.g. `paused_reason: str | None = None   # "quota" | "infra" | "lease_lost" | None`
+  const reasons = [...declLine.matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+  assert.ok(reasons.length >= 3, `expected at least 3 known reasons, parsed: ${reasons}`);
+  for (const reason of reasons) {
+    const chip = drainChip({
+      workers_busy: 0, max_workers: 4, queue_depth: 7,
+      paused: true, paused_reason: reason, paused_until: null,
+    });
+    if (reason === "quota") {
+      assert.match(chip.text, /quota/i, `reason ${reason} must read as quota`);
+    } else {
+      assert.doesNotMatch(
+        chip.text, /quota/i,
+        `reason "${reason}" (from core/health.py) rendered as quota — ` +
+        "a board branch is missing for it");
+    }
+  }
 });
 
 test("formatPausedUntil formats an ISO timestamp as local HH:MM, and never fabricates a time", () => {

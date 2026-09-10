@@ -692,10 +692,13 @@ class Scheduler:
 
     @property
     def lease_lost(self) -> str | None:
-        """Non-None once a claim or per-tick refresh has failed and this
+        """Non-None once a PER-TICK lease refresh has failed and this
         process no longer holds the pool lease — the `reason` string from
-        the `PoolLeaseLost` that set it (`_lease_lost`). Dispatch is fully
-        stopped whenever this is non-None (`tick()` short-circuits to a
+        the `PoolLeaseLost` that set it (`_lease_lost`). A failed STARTUP
+        claim never reaches this: it propagates out of `_claim_pool_lease`
+        and the process refuses to boot rather than run unleased, so there
+        is no `Scheduler` instance for this property to be read on. Dispatch
+        is fully stopped whenever this is non-None (`tick()` short-circuits to a
         no-op). Read by `/api/queue/health` so a caller like `nh status`
         reports a stopped/unleased scheduler rather than free worker slots
         that will never actually be used — the surface `health_snapshot()`
