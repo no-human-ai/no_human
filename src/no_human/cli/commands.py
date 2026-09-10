@@ -4255,6 +4255,16 @@ def status(as_json):
                 until = _local_hhmm(pause.get("until"))
                 console.print(
                     f"[magenta]paused[/] — quota cooldown{who}, resumes {until}")
+            elif pause and pause.get("reason") == "lease_lost":
+                # No `until`: a transient-lock retry exhaustion or a genuine
+                # takeover, not a wall with a reset time — the process must
+                # be restarted (or a healthy sibling must claim the lease)
+                # before this clears. The bug this line closes: `working
+                # X/N` read as healthy free slots while dispatch had
+                # silently stopped for hours (only a log line said so).
+                console.print(
+                    "[red]STOPPED[/] — pool lease lost, dispatch is not "
+                    "running (restart the scheduler)")
             # Printed only when there IS a residual (whole-ledger total, same
             # gate as before), so the line appears exactly when it has
             # something to say. Within it, "no task owns it" is scoped to the

@@ -26,6 +26,7 @@ import asyncio
 import logging
 import os
 import platform
+import sqlite3
 import time
 from collections import deque
 from datetime import datetime, timedelta, timezone
@@ -443,6 +444,32 @@ class PoolLeaseLost(RuntimeError):
             f"refusing to claim the pool lease and not booting")
 
 
+#: Substrings of `sqlite3.OperationalError` messages that name ordinary,
+#: expected write contention on the pool-lease row — MEASURED (not guessed):
+#: a second raw connection holding `BEGIN IMMEDIATE` against this same
+#: database produces exactly `OperationalError('database is locked')` once
+#: `aiosqlite`'s busy_timeout is exhausted; SQLite's own docs use "database
+#: is busy" for the equivalent condition raised by some builds/drivers. Both
+#: clear on their own the instant the other writer commits or rolls back —
+#: retrying is safe. Nothing else belongs in this set: a corrupt database, a
+#: missing table, a bad column, or any other `OperationalError` is a bug,
+#: not contention, and must fail immediately rather than retry.
+_TRANSIENT_DB_MESSAGES = ("database is locked", "database is busy")
+
+
+def _is_transient_db_error(exc: BaseException) -> bool:
+    """True only for a write failure that is retryable BY DEFINITION of the
+    error itself — never by where it was raised. `_claim_pool_lease`'s CAS
+    write uses this (not a bare `except Exception`) precisely so a future
+    caller cannot reintroduce "one transient lock ends dispatch forever" by
+    adding another write elsewhere: the classification travels with the
+    exception, not with the call site."""
+    if not isinstance(exc, sqlite3.OperationalError):
+        return False
+    msg = str(exc).lower()
+    return any(needle in msg for needle in _TRANSIENT_DB_MESSAGES)
+
+
 def _lease_sibling_is_dead(
     *, pid: int, host: str, token: str | None, my_host: str,
 ) -> bool:
@@ -662,6 +689,19 @@ class Scheduler:
         None. Read by `/api/queue/health` to label the pause "infra" instead
         of misattributing it to a stale quota park."""
         return self._quota_cooldown_until if self._infra_cooldown_active else None
+
+    @property
+    def lease_lost(self) -> str | None:
+        """Non-None once a claim or per-tick refresh has failed and this
+        process no longer holds the pool lease — the `reason` string from
+        the `PoolLeaseLost` that set it (`_lease_lost`). Dispatch is fully
+        stopped whenever this is non-None (`tick()` short-circuits to a
+        no-op). Read by `/api/queue/health` so a caller like `nh status`
+        reports a stopped/unleased scheduler rather than free worker slots
+        that will never actually be used — the surface `health_snapshot()`
+        already exposed internally (`idle_reason == "lease_lost"`) but that
+        the pool's own health endpoints did not check."""
+        return self._lease_lost
 
     def get_live_status(self, task_id: str) -> str | None:
         """Return the latest live status summary for a task, or None."""
@@ -994,6 +1034,17 @@ class Scheduler:
     _LEASE_READ_ATTEMPTS = 3
     _LEASE_READ_BACKOFF_S = 0.05
 
+    # `_claim_pool_lease`'s CAS write step: how many times to retry a write
+    # that raised a `_is_transient_db_error` error (SQLite write contention
+    # on this same row — "database is locked"/"database is busy") before
+    # giving up as `PoolLeaseLost`. A transient lock is ordinary and clears
+    # on its own the instant the other writer commits; treating it as
+    # permanent (the bug this constant fixes) silently ends dispatch
+    # forever after one collision. Any OTHER exception from the write is
+    # never retried here — see `_is_transient_db_error`.
+    _LEASE_WRITE_ATTEMPTS = 3
+    _LEASE_WRITE_BACKOFF_S = 0.05
+
     async def _is_terminal_row(self, task) -> bool:
         """Re-read the live row; terminal = DONE, or FAILED with a cancel
         reason (there is no separate 'cancelled' status). Mirrors
@@ -1306,8 +1357,15 @@ class Scheduler:
             write blindly (the winner may be a live sibling that now
             legitimately owns the lease): it re-reads once and either raises
             `SiblingSchedulerRunning` (a live interloper won the race) or
-            `PoolLeaseLost` (anything else changed). A CAS write that raises
-            is likewise `PoolLeaseLost`, not a swallowed warning — a claim
+            `PoolLeaseLost` (anything else changed). A CAS write that RAISES
+            is different: if the error is `_is_transient_db_error` (ordinary
+            SQLite write contention on this row — "database is locked"/
+            "database is busy"), the write is retried up to
+            `_LEASE_WRITE_ATTEMPTS` times with backoff before giving up —
+            such a lock is expected and clears on its own once the other
+            writer commits, and treating it as permanent used to end
+            dispatch forever after one collision. Any OTHER exception is
+            `PoolLeaseLost` immediately, not a swallowed warning — a claim
             this process cannot PROVE landed is not a claim.
         """
         my_pid = os.getpid()
@@ -1336,13 +1394,34 @@ class Scheduler:
 
         started_at = (row["started_at"] if mine
                       else datetime.now(timezone.utc).isoformat())
-        try:
-            landed = await self.store.cas_scheduler_heartbeat(
-                pid=my_pid, host=my_host, started_at=started_at, ts=now,
-                start_token=my_token, expect=row)
-        except Exception as exc:  # noqa: BLE001 — cannot prove the claim landed
+        landed = False
+        last_write_exc: Exception | None = None
+        for attempt in range(1, self._LEASE_WRITE_ATTEMPTS + 1):
+            try:
+                landed = await self.store.cas_scheduler_heartbeat(
+                    pid=my_pid, host=my_host, started_at=started_at, ts=now,
+                    start_token=my_token, expect=row)
+                break
+            except Exception as exc:  # noqa: BLE001 — classified below
+                if not _is_transient_db_error(exc):
+                    # Not ordinary write contention — cannot prove the claim
+                    # landed, and retrying it would not be safe: fail closed
+                    # immediately, exactly as before this fix.
+                    raise PoolLeaseLost(
+                        reason="the CAS write raised", error=exc) from exc
+                last_write_exc = exc
+                log.warning(
+                    "pool lease: claim write attempt %d/%d hit a transient "
+                    "DB error and will retry: %s",
+                    attempt, self._LEASE_WRITE_ATTEMPTS, exc)
+                if attempt < self._LEASE_WRITE_ATTEMPTS:
+                    await asyncio.sleep(
+                        self._LEASE_WRITE_BACKOFF_S * 2 ** (attempt - 1))
+        else:
             raise PoolLeaseLost(
-                reason="the CAS write raised", error=exc) from exc
+                reason=(f"the CAS write kept hitting a transient DB error "
+                        f"after {self._LEASE_WRITE_ATTEMPTS} attempt(s)"),
+                error=last_write_exc)
         if landed:
             return
 

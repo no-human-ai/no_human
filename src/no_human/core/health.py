@@ -47,7 +47,7 @@ class QueueHealth:
     # the reset. Reporting `stuck: false, workers_busy: 0` with no other field
     # naming why is the defect this exists to close (2026-08-20 evidence).
     paused: bool = False
-    paused_reason: str | None = None   # "quota" | "infra" | None
+    paused_reason: str | None = None   # "quota" | "infra" | "lease_lost" | None
     paused_until: str | None = None    # ISO, the wall's reset time
     paused_profile: str | None = None  # which auth profile hit the wall
 
@@ -123,7 +123,7 @@ async def queue_health(
     store: Any, *, stuck_after_minutes: int = 30, window_minutes: int = 30,
     now: datetime | None = None, inflight_ids: Any = None, max_workers: int = 0,
     attempt_sample: int = 20, quota_cooldown_until: datetime | None = None,
-    infra_cooldown_until: datetime | None = None,
+    infra_cooldown_until: datetime | None = None, lease_lost: str | None = None,
 ) -> QueueHealth:
     # `store.query`/`query_one`, never `store.db`. This runs on the board's
     # live store while the pool writes through the same connection, and an
@@ -169,6 +169,23 @@ async def queue_health(
         h.est_drain_seconds = None           # no history OR no free capacity → unknowable
     else:
         h.est_drain_seconds = median_secs * h.queue_depth / available
+
+    if lease_lost:
+        # The pool has voluntarily stopped dispatching because it cannot
+        # prove it still holds the pool lease (`Scheduler.lease_lost`) — a
+        # transient DB lock collision that was (before this fix) wrongly
+        # treated as permanent. Distinct from `stuck` (nothing here is
+        # wedged; the pool refuses to touch the queue at all) and from a
+        # quota/infra `paused` wall (no reset time to wait out — a restart,
+        # or the lease clearing, is what ends this). Checked before the
+        # open_tasks==0 early return below: a caller must see "stopped"
+        # even with nothing currently queued, never free worker slots that
+        # will in fact never be used (the defect this closes: `nh status`
+        # reporting a healthy-looking pool while dispatch had silently
+        # stopped for hours).
+        h.paused = True
+        h.paused_reason = "lease_lost"
+        return h
 
     if h.open_tasks == 0:
         return h  # nothing owed → never stuck, ETA 0 is meaningless

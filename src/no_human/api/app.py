@@ -3917,6 +3917,13 @@ async def worker_status(request: Request) -> dict[str, Any]:
     #   * `worker_error` — the loop is DEAD. Nothing else here can say so:
     #     every other field is written by a tick, and a loop that died before
     #     its first tick leaves them all at their initial values.
+    #   * `lease_lost` — the scheduler could not prove it holds the pool
+    #     lease and has voluntarily stopped dispatching. `tick_stalled`
+    #     does NOT catch this: `tick()` updates `_last_tick_at` before
+    #     attempting the lease refresh, so a lease-lost loop keeps ticking
+    #     (trivially, returning early) and never reads as stalled. Without
+    #     this clause `healthy` stayed true while dispatch was fully and
+    #     silently stopped — the exact defect this line closes.
     #
     # `tick_stalled` now also covers a loop that has NEVER ticked and has had
     # longer than its own threshold to do so, which is the same fault one step
@@ -3927,6 +3934,7 @@ async def worker_status(request: Request) -> dict[str, Any]:
     out["healthy"] = (
         not out.get("db_view_stale", False)
         and not out.get("tick_stalled", False)
+        and not out.get("lease_lost")
         and not out.get("consecutive_probe_failures", 0)
         and not out.get("consecutive_status_write_failures", 0)
         and watcher_error is None
@@ -3949,9 +3957,14 @@ async def queue_health_endpoint(request: Request) -> dict[str, Any]:
     # would otherwise AttributeError on every /api/queue/health call.
     quota_cooldown_until = getattr(sched, "quota_cooldown_until", None) if sched is not None else None
     infra_cooldown_until = getattr(sched, "infra_cooldown_until", None) if sched is not None else None
+    # Same getattr hedge as above: a stopped/unleased scheduler must read as
+    # exactly that here (`paused_reason: "lease_lost"`), not as free worker
+    # slots — this is what `nh status` actually reads (`_probe_pool`).
+    lease_lost = getattr(sched, "lease_lost", None) if sched is not None else None
     h = await queue_health(store, inflight_ids=inflight, max_workers=max_workers,
                             quota_cooldown_until=quota_cooldown_until,
-                            infra_cooldown_until=infra_cooldown_until)
+                            infra_cooldown_until=infra_cooldown_until,
+                            lease_lost=lease_lost)
     return h.as_dict()
 
 

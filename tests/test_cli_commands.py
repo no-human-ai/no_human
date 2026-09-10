@@ -1886,6 +1886,32 @@ def test_status_prints_infra_pause_line(tmp_path, monkeypatch):
     assert "quota" not in out, out
 
 
+def test_status_prints_lease_lost_stopped_line(tmp_path, monkeypatch):
+    """A transient database lock that exhausts its retry budget (or a
+    genuine takeover) leaves the pool with no lease and dispatch fully
+    stopped — `/api/queue/health` reports this the same way it reports a
+    quota/infra wall (`paused: true, paused_reason: "lease_lost"`), and
+    `nh status` must say so instead of printing `working 0/N` next to a
+    backlog that will never actually be worked (the exact defect this
+    whole fix closes: only a log line said dispatch had stopped). Unlike
+    the quota/infra lines there is no `resumes HH:MM` — nothing here is a
+    wall with a reset time, so no `paused_until` is stubbed."""
+    db = tmp_path / "test.db"
+    for _ in range(7):
+        _seed_task(db, TaskStatus.PENDING)
+    runner = _status_runner_with_config_width(db, monkeypatch, 2)
+    _stub_health(monkeypatch, {
+        "max_workers": 4, "workers_busy": 0, "queue_depth": 7,
+        "paused": True, "paused_reason": "lease_lost",
+    })
+
+    out = " ".join(runner.invoke(cli, ["status"]).output.split())
+
+    assert "STOPPED" in out, out
+    assert "pool lease lost" in out, out
+    assert "resumes" not in out, out
+
+
 def test_status_prints_no_pause_line_when_not_paused(tmp_path, monkeypatch):
     """Negative control: an ordinary (non-cooldown) payload must not grow a
     pause line — unchanged from today, per the acceptance criterion."""
