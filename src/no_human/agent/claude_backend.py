@@ -656,6 +656,14 @@ class ClaudeBackend:
                             self.never_push_to,
                             readonly=self.readonly,
                             cwd=str(cwd),
+                            # Same value as `cwd` here because this backend's
+                            # `cwd` IS the worktree root the orchestrator
+                            # created for this session (fixed once above,
+                            # never updated per tool call) — see
+                            # venv_install_guard.py's module docstring, item 5,
+                            # for why that makes this line a no-op against
+                            # today's traffic while still fixing the guard's
+                            # contract for any caller whose `cwd` isn't.
                             session_root=str(cwd),
                         )
                     ],

@@ -94,6 +94,38 @@ against a policy pattern. It instead:
      the default ``~/.no_human/worktrees``, or any ancestor of either — see
      the residual-risk register below for exactly what that fallback can
      and cannot prove.
+
+     **Why the two shipped callers pass ``session_root=str(cwd)`` — the
+     identical value already bound to ``cwd`` — and this is not the fix
+     doing nothing.** Traced end to end: the orchestrator opens exactly one
+     worktree per session (``worktree_root(config) / f"{task.id}.{token}"``)
+     and hands its root, once, as the ``cwd`` both backends give to their
+     coder subprocess/CLI (Claude SDK subprocess ``cwd``; Codex's
+     ``--cd``) — the guard hook/event closure captures that single value
+     when the session starts and never re-reads it, so it is unaffected by
+     any ``cd`` the coder's own persistent shell performs mid-session. For
+     TODAY's two production call sites, ``cwd`` therefore already equals
+     the worktree root on every call, and passing ``session_root=str(cwd)``
+     changes no denial decision they will ever hit — that half of the
+     wiring is deliberately a same-value rename, not new behaviour, and is
+     pinned as such by ``test_shipped_coder_path_supplies_the_session_root``
+     and ``test_shipped_coder_path_session_root_reaches_guard_evaluate``.
+     What the parameter actually fixes is the FUNCTION's contract,
+     independent of who calls it today: before this change,
+     ``denial_reason``/``guard.evaluate`` had no way to accept a boundary
+     other than ``cwd`` itself, so any caller that legitimately needs
+     ``cwd`` to be a subdirectory of the session (a direct test, a
+     sub-tool, a future backend that reports the coder's real subshell
+     location) would have its own venv wrongly denied — verdict 4's
+     defect, reproduced pre-fix and closed post-fix by the direct
+     ``denial_reason(cmd, cwd=<subdir>, session_root=<root>)`` calls in
+     the own-venv-from-subdirectory tests below. Threading the parameter
+     through both backends now, even though it is a no-op against today's
+     traffic, is what lets that contract exist at all without a second,
+     divergent call convention — and it is the ONLY thing standing between
+     today's coincidental safety (``cwd`` happens to always be the root)
+     and a correct guarantee that holds even if a future caller's ``cwd``
+     stops being the root.
   6. Fails closed (memory: *gates must fail closed*) whenever install
      intent is present but a resolution step cannot be completed:
      shell/variable expansion (``$``, backticks) in any token, no

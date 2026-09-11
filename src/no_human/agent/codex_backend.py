@@ -1695,6 +1695,14 @@ class CodexBackend:
                 for event in self._translate(msg):
                     if event.kind == "tool_use":
                         turns += 1
+                        # Same value as `cwd` here because this backend's
+                        # `cwd` IS the worktree root the orchestrator created
+                        # for this session (fixed once above, never updated
+                        # per tool call) — see venv_install_guard.py's module
+                        # docstring, item 5, for why that makes this line a
+                        # no-op against today's traffic while still fixing
+                        # the guard's contract for any caller whose `cwd`
+                        # isn't.
                         verdict = self._guard_events(
                             event.tool_name or "", event.tool_input or {},
                             cwd=str(cwd), session_root=str(cwd))
