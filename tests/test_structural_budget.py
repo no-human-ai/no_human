@@ -1228,7 +1228,16 @@ FROZEN_FILE_LINES = {
     # `classify_already_satisfied_landing`/`LANDING_REQUIRED` and the
     # `base_hint`-branch comment above it were dropped accordingly.
     # Re-measured on the merge result by the scanner's own metric.
-    "core/orchestrator.py": 23960,
+    # (send-back, third review): `_already_satisfied_subject` is not the
+    # first thing delivery asks — `_run_attempt` hoists `_route_unjudged_
+    # head`/`_already_satisfied_eligible` before the claim is even parsed,
+    # routing an unreviewed `[WIP-*]` or machine-requeue head straight to a
+    # full review instead of the claim gate. The guard's probe now asks
+    # `_already_satisfied_eligible` first and stays silent whenever that
+    # would route to review, so it can no longer tell the coder delivery is
+    # refusing a claim delivery would actually review.
+    # Re-measured on the merge result by the scanner's own metric.
+    "core/orchestrator.py": 23982,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.
