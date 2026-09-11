@@ -2174,6 +2174,17 @@ class Store:
         return task
 
     @serialized_write
+    async def update_task_title(self, task_id: str, title: str) -> None:
+        """Retitle ONE task. A targeted single-column UPDATE — it must not
+        read-modify-write the row (would race the orchestrator) and it
+        structurally cannot touch description/acceptance_criteria."""
+        await self.db.execute(
+            "UPDATE tasks SET title = ?, updated_at = ? WHERE id = ?",
+            (title, _now(), task_id),
+        )
+        await self.db.commit()
+
+    @serialized_write
     async def request_cancel(self, task_id: str, reason: str) -> None:
         """Ask a running task to stop at its next cooperative checkpoint.
 

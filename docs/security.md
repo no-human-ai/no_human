@@ -166,7 +166,7 @@ named here.
   while a task waits on CI or review.
   These read; they send only the identifiers of a PR you just created.
 - **`nh merge-stack run` calls `gh pr merge`** against your git host
-  (`cli/commands.py:merge_stack_run:2940`). This is *your* command, not the agent's — an agent
+  (`cli/commands.py:merge_stack_run:3061`). This is *your* command, not the agent's — an agent
   session's Bash is denied it for the spellings the rule models
   (`_LEXICAL_MERGE_STACK` in `agent/guard.py`, plus the argv check beside it),
   in both session modes; see §2 for the bound.

@@ -44,7 +44,7 @@ from ..core.runtime import build_orchestrator
 from ..core import slot_wait
 from ..core.slot_wait import is_waiting_for_slot
 from ..core.task import (PRIORITY_ORDER, Task, TaskStatus,
-                          normalise_priority)
+                          commit_subject, normalise_priority)
 from ..intake import (
     classify_kind,
     ingest_from_url,
@@ -1739,6 +1739,127 @@ def task_show(task_id):
                     )
                     console.print(rendered, markup=False)
                     break
+
+    asyncio.run(_go())
+
+
+# A task's title is read LIVE by the coder/reviewer prompts and by the
+# commit-subject builder (`Orchestrator._commit_message` / `commit_subject`),
+# so retitling while an attempt is running would desynchronise the prompt an
+# attempt was given from the subject it later commits under. This allowlist
+# is deliberately narrower than `_ACTIVE_STATES` below (defined for the
+# lifecycle commands) — it names every state retitle permits, so the gate
+# is inspectable rather than "everything _ACTIVE_STATES doesn't cover".
+_RETITLE_SAFE_STATES = frozenset({
+    TaskStatus.PENDING, TaskStatus.AWAITING_APPROVAL, TaskStatus.BLOCKED,
+    TaskStatus.AWAITING_INPUT, TaskStatus.PAUSED_QUOTA, TaskStatus.ESCALATED,
+    TaskStatus.DONE, TaskStatus.FAILED,
+})
+
+
+def _refuse_graded_edit(ctx, param, value):
+    """`--description`/`--criteria` are declared options whose only job is to
+    refuse with a REASON — click's generic "no such option" would not say
+    why. Description and acceptance criteria are graded artifacts: an
+    attempt is graded against the criteria it was given, so changing them
+    mid-flight would re-scope the task underneath a running attempt.
+    Retitle must stay title-only, never grow into a general task editor."""
+    if value is not None:
+        click.echo(
+            "description and acceptance criteria are graded artifacts — an "
+            "attempt is graded against the criteria it was given, so "
+            "changing them mid-flight would re-scope the task underneath a "
+            "running attempt; retitle changes the title only",
+            err=True,
+        )
+        ctx.exit(1)
+    return value
+
+
+@task.command("retitle")
+@click.argument("task_id")
+@click.argument("new_title")
+@click.option("--update-pr", is_flag=True, default=False,
+              help="Also update the title of the task's open PR/MR.")
+@click.option("--description", default=None, expose_value=False,
+              is_eager=True, callback=_refuse_graded_edit, hidden=True)
+@click.option("--criteria", default=None, expose_value=False,
+              is_eager=True, callback=_refuse_graded_edit, hidden=True)
+def task_retitle(task_id, new_title, update_pr):
+    """Correct a filed task's title — the one field a human may need to fix
+    after filing, since it becomes the PR title and the commit subject.
+    Description and acceptance criteria are graded artifacts and stay fixed;
+    see the `--description`/`--criteria` refusal for why."""
+    config, _ = _bootstrap(require_auth=False)
+    new_title = new_title.strip()
+
+    async def _go():
+        async with Store(config.db_path) as store:
+            t = await store.find_task(task_id)
+            if not t:
+                print_no_task_matching(task_id)
+                sys.exit(1)
+
+            if not new_title:
+                console.print("[red]title cannot be empty[/]")
+                sys.exit(1)
+
+            if t.status not in _RETITLE_SAFE_STATES:
+                console.print(
+                    f"[red]cannot retitle[/] {t.id[:8]} — status is "
+                    f"{t.status.value}. The title is read live by the coder "
+                    f"and reviewer prompts and by the commit subject "
+                    f"builder, so retitling under a running attempt would "
+                    f"desynchronise the attempt's prompt from the commit "
+                    f"subject it later commits under. Wait for it to reach "
+                    f"a safe state (e.g. pause it first)."
+                )
+                sys.exit(1)
+
+            old_title = t.title
+            from ..vcs.task_pr import resolve_task_pr
+            pr = await resolve_task_pr(store, t)
+
+            pr_title_updated = False
+            if pr.url:
+                if not update_pr:
+                    console.print(
+                        f"[red]refusing[/] — task has an open PR at "
+                        f"{pr.url}; retitling would leave the task title "
+                        f"and the PR title disagreeing. Pass --update-pr "
+                        f"to retitle both."
+                    )
+                    sys.exit(1)
+
+                from ..vcs.comment_poster import set_pr_title
+                git_cfg = config.get("git") or {}
+                subject = commit_subject(
+                    new_title, t.external_id, git_cfg.get("commit_prefix", ""))
+                res = await asyncio.to_thread(set_pr_title, pr.url, subject)
+                if not res.get("ok"):
+                    console.print(
+                        f"[red]failed to retitle PR[/] {pr.url}: "
+                        f"{res.get('error')} — task title left unchanged "
+                        f"so the two still agree."
+                    )
+                    sys.exit(1)
+                pr_title_updated = True
+
+            from ..blockers import human_event
+            await store.update_task_title(t.id, new_title)
+            await store.save_events(t.id, [{
+                **human_event(
+                    "retitle", prior_status=t.status,
+                    reason=f"{old_title!r} -> {new_title!r}",
+                    text="title corrected by human"),
+                "prior_title": old_title,
+                "new_title": new_title,
+                "ts": time.time(),
+            }])
+
+            console.print(f"[green]retitled[/] {t.id[:8]}")
+            if pr_title_updated:
+                console.print(f"PR title updated: {pr.url}")
 
     asyncio.run(_go())
 
