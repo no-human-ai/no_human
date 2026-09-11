@@ -5,19 +5,19 @@ _Harness-captured record for task `37b0fb67`, commit `c9054e4201f8819deaeb284d28
 ```json
 [
   {
-    "comment": "All added/modified test functions in test_guard.py and test_venv_install_guard.py contain assert statements; test_structural_budget.py only changed a data dict with no test functions. No assertion-free test exists.",
-    "evidence": "Every added test (e.g. test_probe_distinguishes_absence_from_unreadability) contains assert statements: `assert venv_install_guard._probe_is_file(str(cfg)) is True`",
+    "comment": "All nine added test functions (two in test_guard.py, seven in test_venv_install_guard.py) contain at least one assert statement; the only non-asserting additions are helpers (_unreadable, _oserror_swallowing_call_sites) which are not test functions, and test_structural_budget.py only changed a frozen data value.",
+    "evidence": "Every added test function contains asserts, e.g. test_an_unreadable_venv_pyvenv_cfg_still_denies_the_install: `assert before is not None`, `assert primary_venv in before`, `assert inside is not None`, `assert not d.allow`, `assert after is not None`",
     "file": "tests/test_venv_install_guard.py",
     "files_checked": [
       "tests/test_guard.py",
       "tests/test_structural_budget.py",
       "tests/test_venv_install_guard.py"
     ],
-    "line": 0,
+    "line": 585,
     "no_verdict": false,
     "passed": true,
     "severity": "medium",
-    "tokens_used": 686,
+    "tokens_used": 783,
     "unavailable": false,
     "verifier_id": "tests-assert-something"
   }
