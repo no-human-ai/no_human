@@ -3,8 +3,8 @@
 Issue #249. `failure_reason` for a failed review was composed as
 `"review failed: " + "; ".join(...)` over `blocking_items or failed_items`.
 When both are empty the join yields `""` and the attempt is recorded with the
-literal string `"review failed: "` and nothing after it. Five attempts across
-the whole history landed that way, spending 159 turns and five attempt slots
+literal string `"review failed: "` and nothing after it. Three attempts across
+the whole history landed that way, spending 159 turns and three attempt slots
 on verdicts that explained nothing; with `max_attempts = 3` one such round is
 a third of a task's allowance.
 
@@ -59,8 +59,9 @@ def test_only_the_first_three_findings_ride_out():
 
 @pytest.mark.parametrize("n_items", [0, 2, 9])
 def test_a_failing_review_never_records_a_bare_prefix(n_items):
-    """The defect itself, across both shapes and both checklist sizes seen in
-    the five historical attempts (0 items, and 2/9/12 items all passing)."""
+    """The defect itself, across both shapes. The sizes are coverage rather
+    than a census: the three historical attempts are two with no checklist and
+    one whose every item passed."""
     detail = review_failure_detail(_decision(n_items), [])
     assert detail.strip() != "review failed:", "recorded a reason with nothing in it"
     assert len(detail) > len("review failed: ") + 40

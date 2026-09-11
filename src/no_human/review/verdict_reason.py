@@ -7,8 +7,8 @@ Issue #249. The orchestrator composed a failed review's `failure_reason` as::
 
 `failed` is `blocking_items or failed_items`, and when BOTH are empty the join
 produces `""` and the attempt is recorded with the literal string
-`"review failed: "` and nothing after it. Five attempts across the whole
-history landed that way, spending 159 turns and five attempt slots on verdicts
+`"review failed: "` and nothing after it. Three attempts across the whole
+history landed that way, spending 159 turns and three attempt slots on verdicts
 that explained nothing. With `max_attempts = 3`, one such round is a third of
 a task's allowance.
 
