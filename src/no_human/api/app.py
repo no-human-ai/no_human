@@ -735,12 +735,16 @@ async def _board_tasks(
     tasks = await store.list_tasks(limit=limit, offset=offset)
     # B2 #16: ONE grouped query instead of an N+1 per board tick per socket.
     by_task = await store.attempts_by_task()
-    # `fetch=False` on purpose: this runs per board tick per websocket, so it
-    # resolves the LOCAL ref only (the attempt's own worktree/clone is where
-    # the branch tip lives). A tip that exists only on the remote reads as
-    # unknown -> merge_ready None -> the chip is withheld, the fail-closed
-    # direction.
-    heads = await head_shas_for(store, tasks, git_cfg=_git_cfg_or_empty(), fetch=False)
+    # `fetch=True`, matching `status`/`--ready` exactly: `head_shas_for`
+    # already restricts the git calls to tasks that carry a stamped
+    # `merge_policy` verdict (see its docstring) — an ordinary board tick's
+    # git cost stays at zero for the common case. Skipping the fetch here
+    # would let this surface read a LOCAL ref that lags the remote tip
+    # whenever the push that produced the current head happened from a
+    # different worktree/clone than `task.repo_path`, so the chip could
+    # disagree with `nh status`/`nh approve --ready` on the very tasks this
+    # fix targets. One fetch policy, everywhere, is what keeps them agreeing.
+    heads = await head_shas_for(store, tasks, git_cfg=_git_cfg_or_empty(), fetch=True)
     # SCRUM-15: `scheduler.inflight` returns a fresh set() copy per call — snapshot
     # once so every card in this response is judged against the same instant.
     inflight = scheduler.inflight if scheduler is not None else set()
@@ -1503,8 +1507,9 @@ async def get_attempt_details(
 async def list_subtasks(task_id: str, request: Request) -> list[TaskSummaryOut]:
     store = _store(request)
     subs = await store.list_subtasks(task_id)
-    # Same fail-closed, local-only resolution as `_board_tasks` — see there.
-    heads = await head_shas_for(store, subs, git_cfg=_git_cfg_or_empty(), fetch=False)
+    # Same fetch policy as `_board_tasks` — see there for why it must match
+    # `status`/`--ready` exactly.
+    heads = await head_shas_for(store, subs, git_cfg=_git_cfg_or_empty(), fetch=True)
     out = []
     for t in subs:
         attempts = await store.list_attempts(t.id)
