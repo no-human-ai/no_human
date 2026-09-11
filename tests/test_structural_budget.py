@@ -1497,7 +1497,12 @@ FROZEN_FILE_LINES = {
     # path too, gated to avoid double-firing against `_run_attempt`'s own
     # in-process `cancelled_hard` emit when `stopped` is True. Measured on
     # this tree with the scanner below.
-    "api/app.py": 6183,
+    # 6183 -> 6202 (+19): board head-SHA resolution — new `_git_cfg_or_empty`
+    # helper plus `head_shas_for(..., fetch=False)` calls in `_board_tasks`
+    # and `list_subtasks`, threading `head_sha` into each `TaskSummaryOut`
+    # so the board's merge-ready chip has a local-only, fail-closed head to
+    # judge against. Measured on this tree with the scanner below.
+    "api/app.py": 6202,
     # +51: W5 active-time phase writer (phase instrumentation).
     # +84: `list_escalations`/`list_review_fails`/`list_tamper_trips` — the
     # three new failure-signal sources the recurring learning harvest mines.
