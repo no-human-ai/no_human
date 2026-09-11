@@ -1,12 +1,12 @@
 # Verifiers
 
-_Harness-captured record for task `2dcc6f80`, commit `909b23cba458793dbf45b2c309f14a64d7a9d9c0` — not model-authored: no_human wrote this file from the deterministic verifier rules selected for this commit's files. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `2dcc6f80`, commit `701dd1fa860d49d1d07d77bd19d5c82cfbb8fa59` — not model-authored: no_human wrote this file from the deterministic verifier rules selected for this commit's files. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ```json
 [
   {
-    "comment": "All test functions across the four files (both new guard test files plus the additions to test_verification_receipts.py) contain at least one assert statement or pytest.raises block. The test_structural_budget.py change only edits frozen data dictionaries, adding/modifying no test functions.",
-    "evidence": "Every added test function contains assertions, e.g. test_compose_returns_none_when_there_are_no_hooks_including_claim_hook uses `assert Orchestrator._compose_post_tool_hooks(None, None, None, None) is None` and test_guard_is_wired_into_the_real_run_attempt_and_fires_on_a_refutable_claim uses `with pytest.raises(QuotaExhausted):` plus several asserts.",
+    "comment": "All new test functions across the three test files carry assertions (assert statements or pytest.raises); non-test helpers like _git/_config/_orch/_real_probe are not test functions and are correctly out of scope.",
+    "evidence": "Every added/modified test function contains at least one assert or pytest.raises, e.g. test_guard_is_wired_into_the_real_run_attempt_and_fires_on_a_refutable_claim uses `with pytest.raises(QuotaExhausted):` plus multiple asserts, and test_compose_returns_none_when_there_are_no_hooks_including_claim_hook has `assert Orchestrator._compose_post_tool_hooks(None, None, None, None) is None`.",
     "file": "",
     "files_checked": [
       "tests/test_landed_claim_early_refusal.py",
@@ -18,13 +18,13 @@ _Harness-captured record for task `2dcc6f80`, commit `909b23cba458793dbf45b2c309
     "no_verdict": false,
     "passed": true,
     "severity": "medium",
-    "tokens_used": 1131,
+    "tokens_used": 1118,
     "unavailable": false,
     "verifier_id": "tests-assert-something"
   },
   {
-    "comment": "None of the changed hunks touch task-status writing; they concern PostToolUse hook composition and the landed-claim guard, so no code bypasses set_status via update_task(validate=False).",
-    "evidence": "The diff only adds/modifies the landed-claim-guard wiring (imports LandedClaimGuard, _agent_sink feed, _build_landed_claim_guard, and _ordered_post_tool_hooks/_compose_post_tool_hooks signatures). No added or modified line calls update_task(...) at all, let alone with validate=False, and none writes a task status.",
+    "comment": "None of the changed code touches task-status writes; there is no update_task(validate=False) call anywhere in the diff, so the statement holds vacuously for the modified code.",
+    "evidence": "The diff only wires up a LandedClaimGuard (imports, _agent_sink feed, _build_landed_claim_guard, and the _ordered_post_tool_hooks/_compose_post_tool_hooks signature changes). No added or modified line calls update_task at all, let alone with validate=False, and none writes a task status.",
     "file": "",
     "files_checked": [
       "src/no_human/core/orchestrator.py"
@@ -33,7 +33,7 @@ _Harness-captured record for task `2dcc6f80`, commit `909b23cba458793dbf45b2c309
     "no_verdict": false,
     "passed": true,
     "severity": "high",
-    "tokens_used": 565,
+    "tokens_used": 528,
     "unavailable": false,
     "verifier_id": "no-unvalidated-status-write"
   }
