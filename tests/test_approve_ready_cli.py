@@ -789,8 +789,14 @@ def test_a_task_whose_recorded_tests_failed_is_unchanged_when_trunk_moves(
     after = _invoke(approve, db, ["--ready"]).output
     # Unchanged: still never offered, exactly as before the move.
     assert failing_id[:8] not in after
-    # Positive control: the green sibling IS dropped by the same move.
-    assert green_id[:8] not in after
+    # Positive control: the green sibling IS dropped from the ready listing
+    # by the same move — reported on an "excluded" line, never on a
+    # "ready"/"rules N/N" line (same pattern as the other trunk-move tests).
+    assert f"excluded {green_id[:8]}" in after
+    assert not any(
+        green_id[:8] in ln and "rules" in ln
+        for ln in after.splitlines()
+    )
 
 
 def test_the_staleness_check_costs_no_test_run_and_one_local_ref_read_per_repo(

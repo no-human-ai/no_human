@@ -643,7 +643,7 @@ def test_as_dict_round_trips_through_json_dumps():
     assert json.loads(json.dumps(d)) == d
     assert set(d.keys()) == {
         "ready", "summary", "source", "problems", "rules",
-        "policy_changed_in_diff",
+        "policy_changed_in_diff", "base_sha", "tests_green",
     }
     for rule_dict in d["rules"]:
         assert set(rule_dict.keys()) == {"name", "passed", "detail"}
