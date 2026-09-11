@@ -551,7 +551,7 @@ def test_no_doc_or_docstring_claims_forgery_is_impossible():
         assert bad not in lowered
 
     security_md = Path(__file__).resolve().parents[1] / "docs" / "security.md"
-    text = security_md.read_text()
+    text = security_md.read_text(encoding="utf-8")
     # Scope to §3 ("Deterministic VCS under a distinct identity") only — an
     # unrelated later section legitimately discusses a different feature's
     # limits in similar language and would otherwise be a false positive.

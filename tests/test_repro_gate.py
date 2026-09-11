@@ -246,7 +246,7 @@ def test_non_python_test_cmd_only_runs_the_touched_test_files(js_repo, monkeypat
     profile = _node_profile(js_repo, f"{sys.executable} run_tests.py")
     r = run_repro_gate(js_repo, "HEAD", profile)
     assert r.verdict == "fail"
-    assert json.loads(recorder.read_text()) == ["lib.test.js"]
+    assert json.loads(recorder.read_text(encoding="utf-8")) == ["lib.test.js"]
 
 
 def test_non_python_bugfix_fails_before_check_still_holds(js_repo):
@@ -380,7 +380,7 @@ def test_pytest_style_node_id_stripped_before_reaching_foreign_runner(js_repo, m
     profile = _node_profile(js_repo, f"{sys.executable} run_tests.py")
     r = run_repro_gate(js_repo, "HEAD", profile)
     assert r.verdict == "fail"
-    assert json.loads(recorder.read_text()) == ["lib.test.js"]
+    assert json.loads(recorder.read_text(encoding="utf-8")) == ["lib.test.js"]
 
 
 def test_unsubstituted_placeholder_in_test_cmd_is_advisory_error():

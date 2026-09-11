@@ -382,7 +382,7 @@ def test_publishing_a_pre_trials_file_is_refused_and_changes_nothing(bench_env):
     assert res.exit_code == 1, res.output
     assert "refusing to publish" in res.output
     assert "no confidence interval" in res.output, res.output
-    assert report.read_text() == "ORIGINAL REPORT\n", "report was overwritten"
+    assert report.read_text(encoding="utf-8") == "ORIGINAL REPORT\n", "report was overwritten"
     assert not (results / "latest.json").exists(), "baseline was overwritten"
 
 
@@ -398,10 +398,10 @@ def test_forcing_a_pre_trials_file_records_the_override_on_the_record(bench_env)
     res = CliRunner().invoke(cli, ["bench", "publish", str(old), "--force"])
 
     assert res.exit_code == 0, res.output
-    saved = json.loads((results / "latest.json").read_text())
+    saved = json.loads((results / "latest.json").read_text(encoding="utf-8"))
     assert any("no confidence interval" in r
                for r in saved["override_reasons"]), saved["override_reasons"]
-    text = report.read_text()
+    text = report.read_text(encoding="utf-8")
     assert "WARNING" in text and "no confidence interval" in text
     # A forced publish must not become the clean baseline.
     assert not (results / "published_baseline.json").exists()
@@ -419,7 +419,7 @@ def test_a_current_results_file_still_publishes_through_the_cli(bench_env):
     assert res.exit_code == 0, res.output
     assert "95% CI" in res.output, res.output      # the console never bare
     assert (results / "latest.json").exists()
-    assert "95% CI" in report.read_text()
+    assert "95% CI" in report.read_text(encoding="utf-8")
 
 
 # --------------------------------------------------------------------------- #
@@ -487,7 +487,7 @@ def _results_card(results_dir):
     files = [p for p in results_dir.glob("*.json")
              if not p.name.startswith("progress")]
     assert len(files) == 1, [p.name for p in results_dir.glob("*.json")]
-    return json.loads(files[0].read_text())
+    return json.loads(files[0].read_text(encoding="utf-8"))
 
 
 def test_trials_records_every_trial_separately(tmp_path, monkeypatch):
@@ -574,7 +574,7 @@ def test_resume_completes_the_missing_trials_without_double_counting(
     assert first.exit_code == 1 and "Aborted" in first.output, first.output
     ckpts = list(results.glob("progress-*.json"))
     assert len(ckpts) == 1, [p.name for p in results.glob("*.json")]
-    banked = json.loads(ckpts[0].read_text())
+    banked = json.loads(ckpts[0].read_text(encoding="utf-8"))
     assert len(banked["scores"]) == 4, banked["scores"]
 
     # Resume with a runner that completes. Its per-spec call counter restarts,
@@ -768,7 +768,7 @@ def test_the_resumed_12_spec_run_the_reviewer_drove_through_the_real_publish(
     # 3. and it contains its own point estimate
     assert lo <= card.spec_mean_success_rate <= hi, (lo, hi)
     # The report is the other surface that must agree with the console.
-    text = report.read_text()
+    text = report.read_text(encoding="utf-8")
     assert "n=221 trials over 12 specs" in text
     # ...and the raw pair in front of the headline names its unit, so "220/221"
     # (99.5% of TRIALS) cannot be read as the corpus figure beside it (91.7%).

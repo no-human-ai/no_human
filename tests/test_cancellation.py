@@ -209,7 +209,7 @@ async def test_pause_stops_the_session_and_checkpoints_the_work(
     ).stdout
     assert "def mul" in committed
     # ...and the operator's own working tree was never written to.
-    assert "def mul" not in (bare_repo / "calc.py").read_text()
+    assert "def mul" not in (bare_repo / "calc.py").read_text(encoding="utf-8")
     assert await store.get_cancel_request(task.id) is None
     assert [e for e in events if e["kind"] == "cancelled"]
 

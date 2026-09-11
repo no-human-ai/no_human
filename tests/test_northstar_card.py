@@ -1034,7 +1034,7 @@ def test_corpus_available_survives_save_and_load(tmp_path):
                          scores=[_score(task_id=f"c{i}") for i in range(11)])
     p = tmp_path / "run.json"
     card.save(p)
-    assert '"corpus_available": 55' in p.read_text()
+    assert '"corpus_available": 55' in p.read_text(encoding="utf-8")
     reloaded = NorthStarCard.load(p)
     assert reloaded.corpus_available == 55
     # And the rule still fires on the RELOADED card, not just the built one.

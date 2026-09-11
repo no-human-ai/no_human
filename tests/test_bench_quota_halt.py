@@ -172,12 +172,12 @@ def test_three_consecutive_zero_token_specs_halt_the_run(tmp_path, monkeypatch):
     results_dir = tmp_path / "results"
     results, progress = _results_and_progress(results_dir)
     assert len(progress) == 1, [p.name for p in results_dir.glob("*.json")]
-    ckpt = json.loads(progress[0].read_text())
+    ckpt = json.loads(progress[0].read_text(encoding="utf-8"))
     assert {s["task_id"] for s in ckpt["scores"]} == {
         f"ns-qh{i}" for i in range(4)}
 
     assert len(results) == 1, [p.name for p in results_dir.glob("*.json")]
-    card = json.loads(results[0].read_text())
+    card = json.loads(results[0].read_text(encoding="utf-8"))
     assert card["halted_reason"] == "quota_saturation"
     assert {s["task_id"] for s in card["scores"]} == {
         f"ns-qh{i}" for i in range(4)}
@@ -220,7 +220,7 @@ def test_in_flight_specs_finish_recording_under_parallel(tmp_path, monkeypatch):
     results_dir = tmp_path / "results"
     results, progress = _results_and_progress(results_dir)
     assert len(progress) == 1
-    ckpt_ids = {s["task_id"] for s in json.loads(progress[0].read_text())["scores"]}
+    ckpt_ids = {s["task_id"] for s in json.loads(progress[0].read_text(encoding="utf-8"))["scores"]}
     assert "ns-qh7" not in ckpt_ids, "post-halt dead in-flight row must be dropped"
     assert "ns-qh6" in ckpt_ids, "post-halt live in-flight row must be kept"
     assert ckpt_ids == {"ns-qh0", "ns-qh1", "ns-qh2", "ns-qh6"}
@@ -248,7 +248,7 @@ def test_a_single_isolated_zero_token_spec_does_not_halt(tmp_path, monkeypatch):
     results, progress = _results_and_progress(results_dir)
     assert not progress, "clean completion must still unlink the checkpoint"
     assert len(results) == 1
-    card = json.loads(results[0].read_text())
+    card = json.loads(results[0].read_text(encoding="utf-8"))
     assert card["halted_reason"] == ""
     ids = {s["task_id"] for s in card["scores"]}
     assert ids == {f"ns-qh{i}" for i in range(6)}
@@ -281,7 +281,7 @@ def test_three_consecutive_non_quota_crashes_do_not_halt(tmp_path, monkeypatch):
     results, progress = _results_and_progress(results_dir)
     assert not progress, "an unhalted run must still unlink the checkpoint"
     assert len(results) == 1
-    card = json.loads(results[0].read_text())
+    card = json.loads(results[0].read_text(encoding="utf-8"))
     assert card["halted_reason"] == ""
     ids = {s["task_id"] for s in card["scores"]}
     assert ids == {f"ns-qh{i}" for i in range(10)}, (
@@ -309,7 +309,7 @@ def test_a_corpus_of_skips_never_halts(tmp_path, monkeypatch):
     results_dir = tmp_path / "results"
     results, progress = _results_and_progress(results_dir)
     assert not progress
-    card = json.loads(results[0].read_text())
+    card = json.loads(results[0].read_text(encoding="utf-8"))
     assert card["halted_reason"] == ""
     assert all(s["outcome_status"] == "skipped" for s in card["scores"])
 
@@ -357,7 +357,7 @@ def test_resume_after_a_quota_halt_reruns_and_merges(tmp_path, monkeypatch):
     assert len(results_after) == 2, [p.name for p in results_after]
 
     newest = max(results_after, key=lambda p: p.stat().st_mtime)
-    card = json.loads(newest.read_text())
+    card = json.loads(newest.read_text(encoding="utf-8"))
     assert card["label"] == "wall"
     assert card["halted_reason"] == ""
     ids = [s["task_id"] for s in card["scores"]]
@@ -513,7 +513,7 @@ def test_halted_reason_survives_save_and_load(tmp_path):
     assert loaded.halted_reason == "quota_saturation"
 
     # A legacy file predating the field loads as "".
-    raw = json.loads(p.read_text())
+    raw = json.loads(p.read_text(encoding="utf-8"))
     del raw["halted_reason"]
     p.write_text(json.dumps(raw))
     legacy = NorthStarCard.load(p)

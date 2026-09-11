@@ -322,7 +322,7 @@ def test_every_quota_cooldown_writer_also_writes_the_infra_label():
             yield from _iter_stmt_lists(handler)
 
     src_path = Path(scheduler_mod.__file__)
-    tree = ast.parse(src_path.read_text())
+    tree = ast.parse(src_path.read_text(encoding="utf-8"))
 
     offenders: list[tuple[int, str]] = []
     clock_sites_found = 0

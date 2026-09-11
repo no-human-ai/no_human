@@ -26,7 +26,7 @@ def test_yaml_round_trip(tmp_path):
     assert path == tmp_path / PROFILE_RELPATH
     assert path.exists()
     # repo_path is implied by location, not written into the file.
-    assert "repo_path" not in path.read_text()
+    assert "repo_path" not in path.read_text(encoding="utf-8")
 
     loaded = ProjectProfile.load(tmp_path)
     assert loaded is not None

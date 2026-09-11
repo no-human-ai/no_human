@@ -912,7 +912,7 @@ async def test_concurrency_worktree_mode_opens_pr_and_cleans_up(bare_repo, tmp_p
     # anything, so match every directory the task could have left behind.
     assert not list((tmp_path / "wt").glob(f"{t.id}*"))
     # The agent worked in the worktree, never the primary checkout.
-    assert "mul" not in (bare_repo / "calc.py").read_text()
+    assert "mul" not in (bare_repo / "calc.py").read_text(encoding="utf-8")
 
 
 @pytest.mark.slow  # EH1: >45s of real subprocess work — runs in `run_tests.sh full`/`slow`

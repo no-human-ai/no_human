@@ -48,7 +48,7 @@ def _successful_rebuild(root: Path, source: str) -> bool:
 def test_reverting_a_source_without_rebuilding_is_detected(tmp_path):
     web = _board_tree(tmp_path)
     app = web / "src" / "App.jsx"
-    original = app.read_text()
+    original = app.read_text(encoding="utf-8")
 
     assert hatch_build.board_state(tmp_path)[0] == "current"
     app.write_text(original + "// rebuilt source\n")
@@ -235,8 +235,8 @@ def test_worktree_provisioning_copies_a_missing_sibling_stamp(tmp_path):
 
     _ensure_forced_build_artifacts(worktree, source)
 
-    assert (worktree / "web" / ".board-stamp.json").read_text() == (
-        source / "web" / ".board-stamp.json").read_text()
+    assert (worktree / "web" / ".board-stamp.json").read_text(encoding="utf-8") == (
+        source / "web" / ".board-stamp.json").read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize("result", [False, True])
@@ -278,7 +278,7 @@ def test_a_real_fresh_clone_detects_a_staled_bundle(tmp_path):
         if path.is_file():
             os.utime(path, (1, 1))
     app = clone / "web" / "src" / "App.jsx"
-    app.write_text(app.read_text() + "\n// stale after clone\n")
+    app.write_text(app.read_text(encoding="utf-8") + "\n// stale after clone\n")
     os.utime(app, (1, 1))
     checked = subprocess.run([sys.executable, "hatch_build.py", "--check", "."],
                              cwd=clone, capture_output=True, text=True, timeout=30)

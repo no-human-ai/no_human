@@ -1143,7 +1143,7 @@ def test_board_lanes_cover_every_task_status():
 
     # LANES moved out of Board.jsx into boardLanes.js (the 2026-07-11 lane split
     # into Review-PR / Needs-Answer). Read wherever the statuses arrays live.
-    board = (Path(__file__).resolve().parents[1] / "web" / "src" / "boardLanes.js").read_text()
+    board = (Path(__file__).resolve().parents[1] / "web" / "src" / "boardLanes.js").read_text(encoding="utf-8")
     # Collect every status string listed in a `statuses: [...]` array.
     listed: set[str] = set()
     for arr in re.findall(r"statuses:\s*\[([^\]]*)\]", board):

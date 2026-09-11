@@ -145,7 +145,7 @@ def test_no_sleep_as_synchronisation_wait():
         ),
     }
 
-    source = pathlib.Path(__file__).read_text()
+    source = pathlib.Path(__file__).read_text(encoding="utf-8")
     tree = ast.parse(source, filename=__file__)
 
     violations: list[str] = []
@@ -472,7 +472,7 @@ async def test_two_repos_run_concurrently_in_worktrees(store, tmp_path):
     # Worktrees cleaned up in both repos; primary checkouts untouched.
     assert all("/wt/" not in w for w in GitRepo(repo_a).list_worktrees())
     assert all("/wt/" not in w for w in GitRepo(repo_b).list_worktrees())
-    assert "mul" not in (repo_a / "calc.py").read_text()
+    assert "mul" not in (repo_a / "calc.py").read_text(encoding="utf-8")
 
 
 async def test_wake_watcher_ticked_and_implementing_is_claimable(store):

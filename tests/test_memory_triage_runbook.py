@@ -172,7 +172,7 @@ def _direct_counts(db_path: Path, days: int) -> dict:
 
 
 def _read_event(cwd: Path) -> dict:
-    return json.loads((cwd / "repair_event.json").read_text())
+    return json.loads((cwd / "repair_event.json").read_text(encoding="utf-8"))
 
 
 # --------------------------------------------------------------------------- #
@@ -409,7 +409,7 @@ def test_repair_event_json_schema(work_db):
 
     event_path = Path.cwd() / "repair_event.json"
     assert event_path.exists()
-    doc = json.loads(event_path.read_text())
+    doc = json.loads(event_path.read_text(encoding="utf-8"))
 
     assert set(doc) >= {"before_counts", "after_counts", "timestamps", "policy"}
     assert doc["policy"] == "LANDED-lifecycle-C-45day"
@@ -440,7 +440,7 @@ def test_docstring_documents_modes_and_policy():
 
 
 def test_every_public_helper_is_reached_from_main():
-    tree = ast.parse(SCRIPT.read_text())
+    tree = ast.parse(SCRIPT.read_text(encoding="utf-8"))
     functions = {
         node.name: node for node in tree.body
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))

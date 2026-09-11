@@ -65,7 +65,7 @@ async def test_scaffold_creates_repo_with_one_commit_and_readme(client):
     assert target.is_dir()
     assert (target / ".git").is_dir()
     # Minimal README with the repo's name as the title.
-    assert (target / "README.md").read_text() == "# shiny\n"
+    assert (target / "README.md").read_text(encoding="utf-8") == "# shiny\n"
     # Exactly one commit, and the README is tracked (not just on disk).
     assert _git(target, "rev-list", "--count", "HEAD") == "1"
     assert "README.md" in _git(target, "ls-files")
@@ -279,7 +279,7 @@ async def test_scaffold_mkdir_race_does_not_delete_the_other_writers_dir(
     assert r.status_code == 500
     # The other writer's dir and content SURVIVE - we never created them.
     assert target.is_dir()
-    assert (target / "their-file.txt").read_text() == "not ours"
+    assert (target / "their-file.txt").read_text(encoding="utf-8") == "not ours"
 
 
 # ------------------------------ env hygiene --------------------------------- #

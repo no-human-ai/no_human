@@ -373,7 +373,7 @@ def test_real_codex_backend_file_has_no_tautologies():
     """The exact line that cost task 3aed70f9: read the REAL file (not a copied
     string) and confirm it scores zero tautologies under the fixed rule."""
     path = Path(__file__).resolve().parent / "test_codex_backend.py"
-    text = path.read_text()
+    text = path.read_text(encoding="utf-8")
     assert "assert home == home.resolve()" in text, (
         "the line this regression guards against moved or was renamed; "
         "update this test to the new location before trusting the count below"
