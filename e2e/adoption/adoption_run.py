@@ -303,7 +303,7 @@ class Ctx:
             return [{"line": "(missing)", "problem": "docs/quickstart.md not found"}]
         bad: list[dict[str, str]] = []
         in_fence = False
-        for raw in doc.read_text().splitlines():
+        for raw in doc.read_text(encoding="utf-8").splitlines():
             if raw.startswith("```"):
                 in_fence = not in_fence
                 continue
@@ -334,7 +334,7 @@ class Ctx:
             f = product / rel
             if not f.is_file():
                 continue
-            for line in f.read_text().splitlines():
+            for line in f.read_text(encoding="utf-8").splitlines():
                 m = re.search(r"nh task add\s+([^\s`]+)", line)
                 if not m:
                     continue
@@ -378,7 +378,7 @@ class Ctx:
         for rel in docs:
             f = product / rel
             try:
-                text = f.read_text().lower()
+                text = f.read_text(encoding="utf-8").lower()
             except OSError as exc:
                 hits[rel] = -1
                 notes[rel] = f"unreadable: {exc}"
@@ -395,7 +395,7 @@ class Ctx:
         doc = product / "docs" / "configuration.md"
         if not doc.is_file():
             return []
-        text = doc.read_text()
+        text = doc.read_text(encoding="utf-8")
         # Find the `.env` keys section by its HEADING, then take everything up
         # to the next heading of the same level.
         #
@@ -452,11 +452,11 @@ class Ctx:
         """
         ci_dir = product / "src" / "no_human" / "ci"
         docs = "\n".join(
-            (product / "docs" / d).read_text()
+            (product / "docs" / d).read_text(encoding="utf-8")
             for d in ("adapters.md", "configuration.md")
             if (product / "docs" / d).is_file())
 
-        init = (ci_dir / "__init__.py").read_text()
+        init = (ci_dir / "__init__.py").read_text(encoding="utf-8")
         backends = re.findall(r'backend == "([a-z_]+)"', init)
         # The keys each branch reads: `ci_conf.get("name"...)`.
         keys = sorted(set(re.findall(r'ci_conf\.get\(\s*"([a-z_]+)"', init)))
@@ -464,7 +464,7 @@ class Ctx:
             m for f in ci_dir.glob("*.py")
             for m in re.findall(
                 r'(?:environ\.get\(|environ\[|getenv\(|load_env_var\()\s*"([A-Z][A-Z0-9_]{3,})"',
-                f.read_text())})
+                f.read_text(encoding="utf-8"))})
 
         return {
             "backends_supported": backends,
@@ -1493,7 +1493,7 @@ def main(argv: list[str] | None = None) -> int:
     bp = Path(args.baseline)
     if bp.exists():
         try:
-            baseline = json.loads(bp.read_text())
+            baseline = json.loads(bp.read_text(encoding="utf-8"))
         except Exception:
             baseline = None
 

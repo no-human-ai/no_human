@@ -237,7 +237,7 @@ def cut(work: Path, out: Path, which: str = "both",
         ("\x00".join(l.tts_text for l in nr.LINES)
          + "\x00" + engine).encode()).hexdigest()
     audio = audio_dir / "narration.m4a"
-    if audio.is_file() and stamp.is_file() and stamp.read_text().strip() == key:
+    if audio.is_file() and stamp.is_file() and stamp.read_text(encoding="utf-8").strip() == key:
         print(f"[compose] audio cache HIT ({key[:12]})")
     else:
         if audio.is_file():

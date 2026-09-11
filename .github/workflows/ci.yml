@@ -197,6 +197,66 @@ jobs:
       - name: Tree matches RELEASE_MANIFEST.txt
         run: python scripts/check_release_manifest.py --strict
 
+  locale:
+    name: ASCII locale (collection)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      # WHY THIS LANE EXISTS, and why it is one job rather than a platform.
+      #
+      # `read_text()` with no `encoding=` uses the interpreter's preferred
+      # encoding. On Windows that is the ANSI code page, and issue #267 was
+      # that the suite could not be COLLECTED there at all: a module-scope
+      # read of core/orchestrator.py raised UnicodeDecodeError during
+      # collection, before any test ran. CI was green throughout, because the
+      # linux jobs default to UTF-8 and the windows job runs three test files,
+      # none of which reads a repository source.
+      #
+      # LC_ALL=C gives an ASCII preferred encoding, which fails on a strict
+      # SUPERSET of the bytes cp1252 fails on. So this catches the class
+      # earlier than a Windows runner does, at one job instead of a platform,
+      # and on the machine of whoever wrote the line.
+      #
+      # PYTHONUTF8=0 is required: without it UTF-8 mode can be enabled by the
+      # environment and silently defeat the whole lane by making the run pass
+      # for the wrong reason.
+      #
+      # COLLECTION ONLY, deliberately. Collection is exactly what broke, and
+      # it is the part with no locale-sensitive assertions in it: running test
+      # BODIES under LC_ALL=C fails a number of ordinary tests that assert on
+      # locale-dependent formatting, which would make this lane red for
+      # reasons that are not defects. `--collect-only` imports every test
+      # module, which is where module-scope reads happen, and stops there.
+      - name: Every test module imports under an ASCII preferred encoding
+        env:
+          LC_ALL: C
+          LANG: C
+          PYTHONUTF8: "0"
+        run: |
+          python -c "import locale, sys; print('preferred encoding:', locale.getpreferredencoding(False)); sys.exit(0 if locale.getpreferredencoding(False).lower() in ('ascii', 'us-ascii', 'ansi_x3.4-1968') else 1)"
+          uv run --no-sync pytest -q --collect-only
+
+      # The guard from #267 is pure AST and locale-independent, but running it
+      # here means one job answers both "does the tree still declare its
+      # encodings" and "does the tree survive a strict locale".
+      - name: The encoding guard still holds
+        env:
+          LC_ALL: C
+          LANG: C
+          PYTHONUTF8: "0"
+        run: uv run --no-sync pytest -q tests/test_text_reads_declare_encoding.py
+
   python:
     name: Python
     runs-on: ubuntu-latest
