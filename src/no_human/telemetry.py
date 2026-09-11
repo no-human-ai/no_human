@@ -62,10 +62,14 @@ _ALLOWED_EVENTS: dict[str, frozenset[str]] = {
     # not yet server-side — see `_LAMBDA_EVENTS` below.
     "onboarding_step_viewed": frozenset({"step", "environment"}),
     # `count_bucket`: a BUCKETED onboarded-repo count, never the exact
-    # number — one `repo_selected` per successfully onboarded repo with no
-    # prop at all would let an install's exact repo count be derived from
-    # event cardinality alone, the same shape `ORPHAN_COUNT_BUCKETS` exists
-    # to prevent for `tasks_orphaned`. See `orphan_bucket()`.
+    # number. The server additionally emits this AT MOST ONCE per running
+    # process (see `app.py`'s `onboarding_onboard_repo`) — bucketing alone
+    # only bounds the PROP; an install that onboarded N repos would still
+    # put N events (all sharing that install's `distinct_id`) on the wire,
+    # letting the exact count be derived from event CARDINALITY instead,
+    # the same shape `ORPHAN_COUNT_BUCKETS` exists to prevent for
+    # `tasks_orphaned` (which has no cardinality channel because it fires
+    # once per sweep). See `orphan_bucket()`.
     "repo_selected":          frozenset({"count_bucket", "environment"}),
     "repo_invalid":           frozenset({"reason", "environment"}),
     "task_create_failed":     frozenset({"reason", "environment"}),
@@ -323,9 +327,17 @@ def _destination(section: dict[str, Any]) -> tuple[str, str] | None:
     return None
 
 
-def enabled(config: dict[str, Any] | None = None) -> bool:
-    section = _conf(config)
+def _section_enabled(section: dict[str, Any]) -> bool:
+    """Shared consent+destination check on an already-resolved `telemetry`
+    section — the one predicate `enabled()`, `record()` and `flush()` must
+    all agree on, so a live provider probe (or anything else gated on
+    `enabled()`) can never fire while the destination-resolving logic used
+    to gate the actual send has drifted out of step with it."""
     return bool(section.get("enabled")) and _destination(section) is not None
+
+
+def enabled(config: dict[str, Any] | None = None) -> bool:
+    return _section_enabled(_conf(config))
 
 
 def _is_source_checkout() -> bool:
@@ -422,7 +434,7 @@ def record(kind: str, config: dict[str, Any] | None = None, **props: Any) -> Non
                 f"telemetry: value {value!r} not allowed for {kind!r}.{name!r}")
     try:
         section = _conf(config)
-        if not (bool(section.get("enabled")) and _destination(section)):
+        if not _section_enabled(section):
             return
         props = {**props}
         props.setdefault("environment", environment())
@@ -598,10 +610,9 @@ def flush(section: dict[str, Any] | None = None,
     """
     if section is None:
         section = _conf(config)
-    dest = _destination(section)
-    if not (bool(section.get("enabled")) and dest):
+    if not _section_enabled(section):
         return 0
-    kind, endpoint = dest
+    kind, endpoint = _destination(section)
     try:
         path = _queue_path()
         with _LOCK:

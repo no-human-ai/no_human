@@ -229,7 +229,12 @@ async def verify_credential_live(*, model: str, profile: str | None = None,
     is the one other caller, and because THAT process is the long-lived
     embedded worker, it gates the call on `telemetry.enabled` (so it never
     spends unasked either — see that endpoint's docstring) and snapshots/
-    restores `os.environ` and the active-profile global around the call.
+    restores `os.environ[config.SUBSCRIPTION_TOKEN_VAR]` and the
+    active-profile global around the call — those two, specifically, not
+    the whole environment: `assert_subscription_mode`'s own
+    `scrub_metered_auth()` call PERMANENTLY removes any other metered-auth
+    variable it finds (`ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_USE_BEDROCK`,
+    etc.) as a fail-safe, and that removal is not undone by the restore.
     Every other probe in this module stays presence-only precisely so no
     diagnostic spends quota unasked.
 

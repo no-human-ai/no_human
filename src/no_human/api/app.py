@@ -840,12 +840,19 @@ def _record_feature_used(request: Request, name: str) -> None:
 def _record_funnel(request: Request, kind: str, **props: Any) -> None:
     """One onboarding-funnel emission (`kind` MUST be one of the 6 funnel
     event names added to `telemetry._ALLOWED_EVENTS`). Fail-open like every
-    other call site here: a telemetry error must never change the HTTP
-    outcome of the request that triggered it."""
+    other call site here for OPERATIONAL failures — a telemetry error must
+    never change the HTTP outcome of the request that triggered it. But
+    `telemetry.record` raises `ValueError` on purpose for exactly one thing:
+    an out-of-enum kind/prop/value, which is a privacy bug at THIS call site
+    (a typo'd or swapped `reason` literal), not an operational hiccup — that
+    one must propagate, or it would silently emit nothing, forever, behind
+    a debug log line no one reads."""
     from .. import telemetry as _telemetry
     cfg = getattr(request.app.state, "config", None)
     try:
         _telemetry.record(kind, config=cfg.data if cfg is not None else {}, **props)
+    except ValueError:
+        raise
     except Exception:
         log.debug("funnel telemetry emission failed", exc_info=True)
 
@@ -5609,13 +5616,23 @@ async def onboarding_onboard_repo(
     from ..onboard import ui_evidence_suggestion
 
     sug = ui_evidence_suggestion(profile, str(repo))
-    # `count_bucket`, never the exact count: one `repo_selected` per repo
-    # onboarded, unbucketed, would let an install's exact repo count be
-    # derived from event cardinality alone (telemetry.py:_ALLOWED_EVENTS).
-    from .. import telemetry as _telemetry
-    all_profiles = await store.list_profiles()
-    _record_funnel(request, "repo_selected",
-                   count_bucket=_telemetry.orphan_bucket(len(all_profiles)))
+    # Bucketing bounds the PROP but does nothing about CARDINALITY: this
+    # endpoint fires once per onboarded repo, so N onboards would still put
+    # N `repo_selected` events on the wire, all sharing this install's
+    # `distinct_id` — the exact repo count would then be derivable from
+    # event COUNT alone, the exact leak `count_bucket` exists to prevent
+    # (same shape as `ORPHAN_COUNT_BUCKETS`, but that event fires once per
+    # sweep and has no cardinality channel to begin with). Emitting at most
+    # ONCE per running process — the process IS the install's session, per
+    # `board up = worker up` — bounds cardinality to the same <=1 the bucket
+    # already gives: the event marks "this install onboarded >=1 repo",
+    # with the bucket describing the count AT THAT FIRST onboard.
+    if not getattr(request.app.state, "_repo_selected_emitted", False):
+        request.app.state._repo_selected_emitted = True
+        from .. import telemetry as _telemetry
+        all_profiles = await store.list_profiles()
+        _record_funnel(request, "repo_selected",
+                       count_bucket=_telemetry.orphan_bucket(len(all_profiles)))
     return {
         "ok": True,
         "repo_path": str(repo),

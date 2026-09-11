@@ -61,9 +61,15 @@ path, prompt, or failure detail can ever leave the machine through them.
   byte-identical by this change.)
 - `tasks_orphaned.count_bucket` / `repo_selected.count_bucket` —
   `ORPHAN_COUNT_BUCKETS`: one of `0`, `1`, `2-5`, `6+`. `repo_selected`
-  reuses the same helper (`telemetry.orphan_bucket()`) for the same
-  reason: one event per repo onboarded, unbucketed, would let an
-  install's exact repo count be derived from event cardinality alone.
+  reuses the same helper (`telemetry.orphan_bucket()`), but bucketing the
+  VALUE only bounds the *prop*: an install that onboarded N repos would
+  still put N `repo_selected` events on the wire (all sharing that
+  install's `distinct_id`), letting the exact count be derived from event
+  CARDINALITY instead of the value. So the server also caps this event at
+  MOST ONCE per running process (`app.py`'s `onboarding_onboard_repo`,
+  latched on `app.state._repo_selected_emitted`) — the bucket then
+  describes the repo count at that first onboard, and no later onboard in
+  the same process adds another event to count.
 - `onboarding_step_viewed.step` — `ONBOARDING_STEPS`: one of `welcome`,
   `repos`, `projects`, `integrations`, `summary` — the wizard's own
   `BASE_STEPS` keys (`web/src/Onboarding.jsx`), pinned 1:1 by
@@ -255,12 +261,22 @@ into `os.environ` and reassigns the process-wide active-auth-profile
 global as a side effect of proving the call authenticated — there is no
 way to make an authenticated call without doing so. Left in place, that
 export would silently change which profile every LATER task attempt
-bills. So the endpoint snapshots both `os.environ` and the active-profile
-global before the call and restores them in a `finally` regardless of
-outcome, and probes the profile the RUNNING process actually exported
-(falling back to `config.yaml`'s `llm.auth_profile` only when the process
-exported nothing) — the credential actually billing this server, not
-whatever `config.yaml` currently names.
+bills. So the endpoint snapshots `os.environ[SUBSCRIPTION_TOKEN_VAR]` and
+the active-profile global before the call and restores *both* in a
+`finally` regardless of outcome, and probes the profile the RUNNING
+process actually exported (falling back to `config.yaml`'s
+`llm.auth_profile` only when the process exported nothing) — the
+credential actually billing this server, not whatever `config.yaml`
+currently names. This restore covers exactly those two things, not
+everything the probe touches: `assert_subscription_mode` also runs
+`scrub_metered_auth()`, which *permanently* removes any of
+`ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_USE_BEDROCK`, and the other metered
+redirects it finds sitting in the process environment. That is
+intentional and fail-safe — those variables should not have been
+present in a subscription-billed process to begin with — but it means
+the endpoint's restore is "back to the one token/profile it is allowed
+to move", not "the environment is bit-for-bit as it was before the
+call".
 
 ## The `_LAMBDA_EVENTS` wire filter
 

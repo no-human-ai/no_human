@@ -53,6 +53,12 @@ async def client(store, tmp_path, monkeypatch):
         data={"llm": {"auth_mode": "subscription"}}, path=tmp_path / "config.yaml",
     )
     app.state.setup_mode = True
+    # `repo_selected` fires at most once per running process (the
+    # cardinality-leak fix) — this module-level `app` object is shared
+    # across the whole test session, so each test's fixture must reset the
+    # once-per-process latch back to "fresh install" or an earlier test's
+    # onboard would silently suppress this one's `repo_selected`.
+    app.state._repo_selected_emitted = False
     try:
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://localhost",
@@ -60,6 +66,7 @@ async def client(store, tmp_path, monkeypatch):
             yield c
     finally:
         del app.state.setup_mode
+        del app.state._repo_selected_emitted
 
 
 async def _make_client_with_credential(store, tmp_path, monkeypatch, isolated_env_file,
@@ -88,6 +95,7 @@ async def _make_client_with_credential(store, tmp_path, monkeypatch, isolated_en
         path=tmp_path / "config.yaml",
     )
     app.state.setup_mode = False
+    app.state._repo_selected_emitted = False
     try:
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://localhost",
@@ -95,6 +103,7 @@ async def _make_client_with_credential(store, tmp_path, monkeypatch, isolated_en
             yield c
     finally:
         del app.state.setup_mode
+        del app.state._repo_selected_emitted
 
 
 @pytest_asyncio.fixture
@@ -158,24 +167,40 @@ async def test_onboard_repo_emits_repo_selected_on_success(client, recorded, tmp
 
 
 @pytest.mark.asyncio
-async def test_onboard_repo_buckets_the_count_not_the_exact_number(
+async def test_onboard_repo_emits_repo_selected_at_most_once_per_process(
     client, recorded, tmp_path,
 ):
-    """A second onboarded repo still reads "2-5", not "2" — the prop is a
-    bucket, not a counter, so it never lets an install's exact fleet size
-    be derived from repeated `repo_selected` events."""
-    first = tmp_path / "svc-a"
-    (first / ".git").mkdir(parents=True)
-    r = await client.post("/api/onboarding/repos/onboard", json={"repo_path": str(first)})
-    assert r.status_code == 200, r.text
+    """`count_bucket` alone bounds only the PROP, not event CARDINALITY: an
+    install that onboarded N repos would still put N `repo_selected` events
+    on the wire, all sharing this install's `distinct_id` — the exact fleet
+    size would then be derivable from event COUNT instead of the bucketed
+    value (the same shape ORPHAN_COUNT_BUCKETS exists to prevent for
+    `tasks_orphaned`, which has no cardinality channel because it fires
+    once per sweep). So the server also caps `repo_selected` at MOST ONCE
+    per running process: four onboards in this process must put exactly
+    ONE `repo_selected` event on the wire, not four."""
+    for i in range(4):
+        repo = tmp_path / f"svc-{i}"
+        (repo / ".git").mkdir(parents=True)
+        r = await client.post(
+            "/api/onboarding/repos/onboard", json={"repo_path": str(repo)})
+        assert r.status_code == 200, r.text
 
-    second = tmp_path / "svc-b"
-    (second / ".git").mkdir(parents=True)
-    r = await client.post("/api/onboarding/repos/onboard", json={"repo_path": str(second)})
-    assert r.status_code == 200, r.text
+    assert len([e for e in recorded if e[0] == "repo_selected"]) == 1
 
-    buckets = [p["count_bucket"] for k, p in recorded if k == "repo_selected"]
-    assert buckets == ["1", "2-5"]
+    # Positive control: prove the "1" above is the once-per-process latch
+    # actually doing something, not a coincidence of this event never
+    # firing twice for some unrelated reason. Resetting the latch (as a
+    # fresh process would start with it unset) and onboarding once more
+    # must produce a SECOND event — so the assertion above is pinning the
+    # latch, not a vacuously-true "repo_selected fires at most once ever".
+    app.state._repo_selected_emitted = False
+    another = tmp_path / "svc-another"
+    (another / ".git").mkdir(parents=True)
+    r = await client.post(
+        "/api/onboarding/repos/onboard", json={"repo_path": str(another)})
+    assert r.status_code == 200, r.text
+    assert len([e for e in recorded if e[0] == "repo_selected"]) == 2
 
 
 @pytest.mark.asyncio
@@ -459,9 +484,18 @@ async def test_auth_verify_probes_the_running_profile_and_restores_env_after(
         seen_profiles.append(profile)
         # Mirrors verify_credential_live's REAL side effect (assert_
         # subscription_mode -> load_env_token): exports a token and
-        # reassigns the active-profile global.
+        # reassigns the active-profile global. The profile global is set to
+        # a value DELIBERATELY DIFFERENT from `profile` itself (mirroring
+        # how the real `_assert_api_key_mode` stamps the literal "api_key"
+        # regardless of the profile probed) — if it were set to `profile`
+        # verbatim, it would already equal `running_profile` ("personal")
+        # in this exact scenario, and deleting the endpoint's restore line
+        # would leave this test green (mutation testing caught exactly this:
+        # a mutant deleting `_ACTIVE_AUTH_PROFILE = running_profile` in the
+        # `finally` survived unless the fake probe's mutation target is
+        # distinguishable from the value being restored).
         _os.environ["CLAUDE_CODE_OAUTH_TOKEN"] = f"probed-token-for-{profile}"
-        config_module._ACTIVE_AUTH_PROFILE = profile
+        config_module._ACTIVE_AUTH_PROFILE = f"verifying-{profile}"
         return None
 
     monkeypatch.setattr(
@@ -478,6 +512,103 @@ async def test_auth_verify_probes_the_running_profile_and_restores_env_after(
     # started — restored, not left pointed at whatever the probe checked.
     assert _os.environ["CLAUDE_CODE_OAUTH_TOKEN"] == "running-process-token"
     assert config_module.active_auth_profile() == "personal"
+
+
+@pytest.mark.asyncio
+async def test_auth_verify_restores_the_active_profile_after_an_api_key_mode_probe(
+    client_with_credential, recorded, monkeypatch,
+):
+    """Blocker 2, api_key-mode variant: `config._assert_api_key_mode` stamps
+    `_ACTIVE_AUTH_PROFILE` to the literal `"api_key"` UNCONDITIONALLY,
+    regardless of which profile was passed in — a different mutation shape
+    than subscription mode's (the test above sets it to a value DERIVED
+    from `profile`; this one sets a fixed literal no matter what `profile`
+    is) — and the restore must handle this shape too: whatever profile the
+    process was running before this probe, it must be running that SAME
+    profile after, not left pointed at "api_key"."""
+    import os as _os
+
+    from no_human import config as config_module
+
+    monkeypatch.setattr(
+        "no_human.agent.backend_check.find_claude_cli", lambda: "/usr/bin/claude")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+    app.state.config.data["llm"]["auth_mode"] = "api_key"
+    monkeypatch.setattr(config_module, "_ACTIVE_AUTH_PROFILE", "personal")
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "running-process-token")
+
+    async def _api_key_probe(*, model, profile, auth_mode, **kw):
+        assert auth_mode == "api_key"
+        # Mirrors config._assert_api_key_mode's REAL side effect: stamped to
+        # the literal "api_key" no matter what `profile` was passed in.
+        config_module._ACTIVE_AUTH_PROFILE = "api_key"
+        _os.environ["CLAUDE_CODE_OAUTH_TOKEN"] = "should-not-survive"
+        return None
+
+    monkeypatch.setattr(
+        "no_human.agent.backend_check.verify_credential_live", _api_key_probe)
+
+    r = await client_with_credential.post("/api/auth/verify", json={})
+    assert r.status_code == 200, r.text
+    assert r.json() == {"result": "valid"}
+
+    assert config_module.active_auth_profile() == "personal"
+    assert _os.environ["CLAUDE_CODE_OAUTH_TOKEN"] == "running-process-token"
+
+
+@pytest.mark.asyncio
+async def test_auth_verify_falls_back_to_the_configured_profile_when_none_is_running(
+    client_with_credential, recorded, monkeypatch, isolated_env_file,
+):
+    """Blocker 2, fresh-install variant: a server that has never exported
+    ANY profile (`config.active_auth_profile()` is None — e.g. the very
+    first `/api/auth/verify` call at the summary step, before any task has
+    run) has nothing "running" to probe, so the endpoint falls back to
+    config.yaml's `llm.auth_profile`. Pins that this fallback path also
+    restores correctly: the global must be back to None afterward — a real
+    absence, not the string `"None"` — and so must the token var, since
+    none was exported before the probe either. Restoring to some non-None
+    value here would falsely make a later `restart_required` check think a
+    profile is already active."""
+    import os as _os
+
+    from no_human import config as config_module
+
+    monkeypatch.setattr(
+        "no_human.agent.backend_check.find_claude_cli", lambda: "/usr/bin/claude")
+
+    app.state.config.data["llm"]["auth_profile"] = "personal"
+    isolated_env_file.write_text(
+        "CLAUDE_CODE_OAUTH_TOKEN=has-a-token\n"
+        "CLAUDE_CODE_OAUTH_TOKEN_PERSONAL=personal-token-on-disk\n"
+    )
+    isolated_env_file.chmod(0o600)
+    monkeypatch.setattr(config_module, "_ACTIVE_AUTH_PROFILE", None)
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+
+    seen_profiles = []
+
+    async def _fallback_probe(*, model, profile, auth_mode, **kw):
+        seen_profiles.append(profile)
+        # Mirrors the real side effect: exporting "personal"'s token and
+        # stamping the active-profile global to it.
+        _os.environ["CLAUDE_CODE_OAUTH_TOKEN"] = "probed-personal-token"
+        config_module._ACTIVE_AUTH_PROFILE = "personal"
+        return None
+
+    monkeypatch.setattr(
+        "no_human.agent.backend_check.verify_credential_live", _fallback_probe)
+
+    r = await client_with_credential.post("/api/auth/verify", json={})
+    assert r.status_code == 200, r.text
+    assert r.json() == {"result": "valid"}
+
+    # Fell back to config.yaml's profile, since none was running.
+    assert seen_profiles == ["personal"]
+    # Restored to the TRUE prior state: no profile running, and no token
+    # exported — an actual absence, not the string "None".
+    assert config_module.active_auth_profile() is None
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in _os.environ
 
 
 # --------------------------------------------------------------------------- #
