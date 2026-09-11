@@ -134,7 +134,7 @@ def test_an_empty_board_directory_is_not_a_board(tmp_path):
 def test_pyproject_routes_the_board_through_the_hook_and_not_the_static_table():
     """The wiring. A static entry is what made the clean clone uninstallable, so
     its ABSENCE is as load-bearing as the hook's presence."""
-    cfg = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
+    cfg = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     targets = cfg["tool"]["hatch"]["build"]["targets"]
 
     for name, expected_target in (("wheel", "no_human/web_dist"),

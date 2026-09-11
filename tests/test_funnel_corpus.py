@@ -62,7 +62,7 @@ def test_every_ticket_is_inline_complete():
 def test_every_target_file_is_under_a_thousand_lines():
     for path in CORPUS_DIR.rglob("*"):
         if path.is_file() and path.suffix in (".py", ".md", ".json"):
-            n = len(path.read_text().splitlines())
+            n = len(path.read_text(encoding="utf-8").splitlines())
             assert n < 1000, f"{path}: {n} lines"
 
 
@@ -151,7 +151,7 @@ def test_no_fixture_quotes_this_project_or_a_real_employer_subject():
     employer content or from no_human's own source — a corpus that quotes the
     subject under test is a leak channel and an instrument that cheats."""
     for path in CORPUS_DIR.rglob("*.py"):
-        text = path.read_text()
+        text = path.read_text(encoding="utf-8")
         assert "no_human" not in text, path
         assert "from no_human" not in text, path
 
@@ -164,6 +164,6 @@ def test_no_fixture_TEXT_quotes_this_project_or_a_real_employer_subject():
     for path in CORPUS_DIR.rglob("*"):
         if not path.is_file() or path.suffix not in (".py", ".json", ".md"):
             continue
-        text = path.read_text()
+        text = path.read_text(encoding="utf-8")
         assert "no_human" not in text, path
         assert "eyal" not in text.lower(), path

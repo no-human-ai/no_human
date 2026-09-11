@@ -1171,7 +1171,7 @@ def test_commit_repairs_the_changed_pinned_refusal_and_retries_once(
     # The ledger change is reported to the caller (never silent).
     assert repairs == [["src/pkg/mod.py", "tests/test_mod.py"]]
     # The gate's documented FIX ran with exactly the refused paths…
-    assert (work / "approve_called.txt").read_text() == \
+    assert (work / "approve_called.txt").read_text(encoding="utf-8") == \
         "src/pkg/mod.py tests/test_mod.py"
     # …and the re-derived manifest is IN the commit (not left dirty).
     committed = subprocess.run(
@@ -1536,7 +1536,7 @@ def test_an_unclassified_file_refusal_is_reported_and_never_repaired(
                    never_push_to=[])
     repo.create_branch("no-human/rt4", base="main")
     (work / "bogus.py").write_text("z = 1\n")
-    manifest_before = (work / "RELEASE_MANIFEST.txt").read_text()
+    manifest_before = (work / "RELEASE_MANIFEST.txt").read_text(encoding="utf-8")
     repairs = []
 
     with caplog.at_level("WARNING"):
@@ -1563,7 +1563,7 @@ def test_approve_is_never_invoked_with_acknowledge(repo_with_bare_remote):
 
     commit_with_manifest_repair(repo, ["a.py"], "feat: a")
 
-    calls = (work / "guard_calls.txt").read_text()
+    calls = (work / "guard_calls.txt").read_text(encoding="utf-8")
     assert "--acknowledge" not in calls
 
 
@@ -1719,7 +1719,7 @@ def test_export_classification_keeps_the_export_guard_route(
                    never_push_to=[])
     repo.create_branch("no-human/pub3", base="main")
     (work / "src" / "pkg" / "mod.py").write_text("y = 2\n")
-    manifest_before = (work / "RELEASE_MANIFEST.txt").read_text()
+    manifest_before = (work / "RELEASE_MANIFEST.txt").read_text(encoding="utf-8")
     head_before = subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=work,
         capture_output=True, text=True, check=True).stdout.strip()
@@ -1731,7 +1731,7 @@ def test_export_classification_keeps_the_export_guard_route(
             on_repair=lambda p, note: repairs.append(p))
 
     assert repairs == []
-    assert (work / "RELEASE_MANIFEST.txt").read_text() == manifest_before
+    assert (work / "RELEASE_MANIFEST.txt").read_text(encoding="utf-8") == manifest_before
     head_after = subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=work,
         capture_output=True, text=True, check=True).stdout.strip()

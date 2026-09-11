@@ -279,7 +279,7 @@ def test_add_creates_file_when_absent(tmp_path, monkeypatch):
     ])
 
     assert result.exit_code == 0, result.output
-    text = (repo / ".no_human" / "verifiers.yaml").read_text()
+    text = (repo / ".no_human" / "verifiers.yaml").read_text(encoding="utf-8")
     assert "id: no-bare-except" in text
 
 
@@ -296,7 +296,7 @@ def test_add_appends_to_existing_file_verbatim(tmp_path, monkeypatch):
     ])
 
     assert result.exit_code == 0, result.output
-    text = (repo / ".no_human" / "verifiers.yaml").read_text()
+    text = (repo / ".no_human" / "verifiers.yaml").read_text(encoding="utf-8")
     assert "# hand-written comment" in text
     assert "id: rule-one" in text
     assert "id: rule-two" in text
@@ -315,7 +315,7 @@ def test_add_refuses_a_duplicate_id(tmp_path, monkeypatch):
 
     assert result.exit_code != 0
     assert "already defined" in result.output.lower()
-    text = (repo / ".no_human" / "verifiers.yaml").read_text()
+    text = (repo / ".no_human" / "verifiers.yaml").read_text(encoding="utf-8")
     assert text.count("id: rule-one") == 1
 
 
@@ -367,13 +367,13 @@ def test_add_writes_to_global_with_global_flag(tmp_path, monkeypatch):
     assert result.exit_code == 0, result.output
     assert not (repo / ".no_human" / "verifiers.yaml").exists()
     global_file = tmp_path / "home" / "verifiers.yaml"
-    assert "id: global-rule" in global_file.read_text()
+    assert "id: global-rule" in global_file.read_text(encoding="utf-8")
 
 
 def test_add_restores_the_file_if_verification_fails(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     _write_verifiers(repo, _ONE_RULE)
-    original = (repo / ".no_human" / "verifiers.yaml").read_text()
+    original = (repo / ".no_human" / "verifiers.yaml").read_text(encoding="utf-8")
     runner = _runner(tmp_path, monkeypatch)
 
     def _broken_reload(*args, **kwargs):
@@ -388,7 +388,7 @@ def test_add_restores_the_file_if_verification_fails(tmp_path, monkeypatch):
     ])
 
     assert result.exit_code != 0
-    assert (repo / ".no_human" / "verifiers.yaml").read_text() == original
+    assert (repo / ".no_human" / "verifiers.yaml").read_text(encoding="utf-8") == original
 
 
 def test_add_succeeds_despite_an_unrelated_pre_existing_bad_entry(tmp_path, monkeypatch):
@@ -413,7 +413,7 @@ def test_add_succeeds_despite_an_unrelated_pre_existing_bad_entry(tmp_path, monk
     ])
 
     assert result.exit_code == 0, result.output
-    text = (repo / ".no_human" / "verifiers.yaml").read_text()
+    text = (repo / ".no_human" / "verifiers.yaml").read_text(encoding="utf-8")
     assert "id: Bad Id" in text
     assert "id: rule-two" in text
     report = vcmd.load_verifiers(repo, home=tmp_path / "home")
@@ -590,13 +590,13 @@ def test_propose_apply_appends_and_is_idempotent(tmp_path, monkeypatch):
 
     first = runner.invoke(cli, ["verifiers", "propose", task_id, "--repo", str(repo), "--apply"])
     assert first.exit_code == 0, first.output
-    text_after_first = (repo / ".no_human" / "verifiers.yaml").read_text()
+    text_after_first = (repo / ".no_human" / "verifiers.yaml").read_text(encoding="utf-8")
     assert text_after_first.count("- id:") == 1
 
     second = runner.invoke(cli, ["verifiers", "propose", task_id, "--repo", str(repo), "--apply"])
     assert second.exit_code == 0, second.output
     assert "already defined" in second.output.lower()
-    text_after_second = (repo / ".no_human" / "verifiers.yaml").read_text()
+    text_after_second = (repo / ".no_human" / "verifiers.yaml").read_text(encoding="utf-8")
     assert text_after_second.count("- id:") == 1
 
 

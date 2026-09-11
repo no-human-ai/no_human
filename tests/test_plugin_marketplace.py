@@ -38,7 +38,7 @@ RESERVED = {
 
 
 def _market() -> dict:
-    return json.loads(MARKETPLACE.read_text())
+    return json.loads(MARKETPLACE.read_text(encoding="utf-8"))
 
 
 def test_the_marketplace_has_the_three_required_fields():
@@ -61,7 +61,7 @@ def test_every_listed_plugin_resolves_to_a_real_plugin_in_this_repo():
         assert plugin_dir.is_dir(), f"{entry['name']}: {source} is not a directory"
         manifest = plugin_dir / ".claude-plugin/plugin.json"
         assert manifest.is_file(), f"{entry['name']}: no plugin.json at {source}"
-        assert json.loads(manifest.read_text())["name"] == entry["name"], (
+        assert json.loads(manifest.read_text(encoding="utf-8"))["name"] == entry["name"], (
             f"{entry['name']}: the catalog name and the plugin manifest name differ, "
             "so `/plugin install` would resolve nothing")
 
@@ -70,7 +70,7 @@ def test_the_catalog_entry_does_not_contradict_the_plugin_manifest():
     """Fields duplicated between the two files must say the same thing."""
     for entry in _market()["plugins"]:
         manifest = json.loads(
-            (ROOT / entry["source"][2:] / ".claude-plugin/plugin.json").read_text())
+            (ROOT / entry["source"][2:] / ".claude-plugin/plugin.json").read_text(encoding="utf-8"))
         for field in ("displayName", "description", "homepage", "repository", "license"):
             if field in entry and field in manifest:
                 assert entry[field] == manifest[field], (
@@ -81,7 +81,7 @@ def test_the_repo_ships_no_auto_registering_marketplace_setting():
     """The manifest must stay inert for anyone who merely opens this repo."""
     settings = ROOT / ".claude/settings.json"
     if settings.is_file():
-        assert "extraKnownMarketplaces" not in settings.read_text(), (
+        assert "extraKnownMarketplaces" not in settings.read_text(encoding="utf-8"), (
             "a repo-level extraKnownMarketplaces would register this marketplace for "
             "anyone who trusts the folder, including no_human's own coder worktrees")
 
@@ -91,6 +91,6 @@ def test_the_plugin_manifest_carries_the_release_version():
     # at an old version reads as abandoned on every marketplace that lists it.
     import tomllib
 
-    release = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["version"]
-    manifest = json.loads((ROOT / "plugins/no-human/.claude-plugin/plugin.json").read_text())
+    release = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
+    manifest = json.loads((ROOT / "plugins/no-human/.claude-plugin/plugin.json").read_text(encoding="utf-8"))
     assert manifest["version"] == release

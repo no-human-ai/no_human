@@ -132,7 +132,7 @@ def test_no_sync_playwright_reference_survives():
     playwright_imports = []
     saw_async_api_import = False
     for name, path in modules.items():
-        src = path.read_text()
+        src = path.read_text(encoding="utf-8")
         tree = ast.parse(src)
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom) and (node.module or ""):

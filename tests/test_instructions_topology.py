@@ -48,7 +48,7 @@ def written(tmp_path):
         o._active_profile = None
         o._materialize_compact_instructions(tmp_path, task)
         path = tmp_path / ".claude" / "instructions.md"
-        return path.read_text() if path.exists() else ""
+        return path.read_text(encoding="utf-8") if path.exists() else ""
 
     return _render
 

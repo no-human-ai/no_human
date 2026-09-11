@@ -149,7 +149,7 @@ def test_one_crash_does_not_kill_the_parallel_run(tmp_path, monkeypatch):
     files = [p for p in results_dir.glob("*.json")
              if not p.name.startswith("progress")]
     assert len(files) == 1, [p.name for p in results_dir.glob("*.json")]
-    card = json.loads(files[0].read_text())
+    card = json.loads(files[0].read_text(encoding="utf-8"))
     by_id = {s["task_id"]: s for s in card["scores"]}
     assert len(by_id) == 4
     # Saved cards are deterministic regardless of completion order — the
@@ -180,7 +180,7 @@ def test_checkpoint_written_per_completion_under_parallelism(tmp_path, monkeypat
             ckpts = list((tmp_path / "results").glob("progress-*.json"))
             if ckpts:
                 seen_counts.append(
-                    len(json.loads(ckpts[0].read_text())["scores"]))
+                    len(json.loads(ckpts[0].read_text(encoding="utf-8"))["scores"]))
             return score
 
     _ConcurrencyProbe.reset()

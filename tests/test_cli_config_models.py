@@ -147,10 +147,10 @@ def test_models_set_coder_backend_refusal_for_priced_non_claude_id(runner, cfg_p
 
 
 def test_models_set_refusal_does_not_write_to_disk(runner, cfg_path):
-    before = cfg_path.read_text()
+    before = cfg_path.read_text(encoding="utf-8")
     result = runner.invoke(cli, ["config", "models", "set", "coder", "gpt-5.4"])
     assert result.exit_code != 0
-    assert cfg_path.read_text() == before
+    assert cfg_path.read_text(encoding="utf-8") == before
 
 
 # --------------------------------------------------------------------------- #
@@ -169,13 +169,13 @@ def test_models_set_writes_to_disk(runner, cfg_path):
 
 def test_models_set_no_op_reports_no_change_and_writes_nothing(runner, cfg_path):
     defaults = mc.defaults()
-    before = cfg_path.read_text()
+    before = cfg_path.read_text(encoding="utf-8")
     result = runner.invoke(
         cli, ["config", "models", "set", "utility", defaults["utility_model"]],
         catch_exceptions=False)
     assert result.exit_code == 0
     assert "no change" in result.output
-    assert cfg_path.read_text() == before
+    assert cfg_path.read_text(encoding="utf-8") == before
 
 
 def test_models_set_persists_a_source_human_event(runner, cfg_path):
@@ -201,12 +201,12 @@ def test_models_set_persists_a_source_human_event(runner, cfg_path):
 
 
 def test_models_set_preserves_config_yaml_structure(runner, cfg_path):
-    before_lines = cfg_path.read_text().splitlines()
+    before_lines = cfg_path.read_text(encoding="utf-8").splitlines()
     result = runner.invoke(
         cli, ["config", "models", "set", "utility", "claude-opus-5"],
         catch_exceptions=False)
     assert result.exit_code == 0
-    after_lines = cfg_path.read_text().splitlines()
+    after_lines = cfg_path.read_text(encoding="utf-8").splitlines()
     assert len(after_lines) == len(before_lines)
     changed = [(b, a) for b, a in zip(before_lines, after_lines) if b != a]
     assert len(changed) == 1
@@ -236,7 +236,7 @@ def test_models_set_preserves_hand_written_comments_and_unrelated_sections(
         catch_exceptions=False)
     assert result.exit_code == 0
 
-    after_lines = path.read_text().splitlines()
+    after_lines = path.read_text(encoding="utf-8").splitlines()
     assert len(after_lines) == len(before_lines)
     changed = [(b, a) for b, a in zip(before_lines, after_lines) if b != a]
     assert len(changed) == 1
@@ -278,7 +278,7 @@ def test_models_set_splices_into_a_header_with_an_inline_comment(
         catch_exceptions=False)
     assert result.exit_code == 0
 
-    after = path.read_text()
+    after = path.read_text(encoding="utf-8")
     after_lines = after.splitlines()
     assert after.count("llm:") == 1
     assert "llm:  # which subscription pays" in after_lines
@@ -324,7 +324,7 @@ def test_cli_and_api_produce_byte_identical_config_yaml_for_the_same_change(
     api_cfg = tmp_path / "api_config.yaml"
     cli_cfg.write_text(seed)
     api_cfg.write_text(seed)
-    assert cli_cfg.read_text() == api_cfg.read_text()
+    assert cli_cfg.read_text(encoding="utf-8") == api_cfg.read_text(encoding="utf-8")
 
     monkeypatch.setattr(nh_config, "CONFIG_PATH", cli_cfg)
     monkeypatch.setattr(nh_config, "ENV_PATH", tmp_path / ".env")
@@ -340,4 +340,4 @@ def test_cli_and_api_produce_byte_identical_config_yaml_for_the_same_change(
         config_path=api_cfg,
     )
 
-    assert cli_cfg.read_text() == api_cfg.read_text()
+    assert cli_cfg.read_text(encoding="utf-8") == api_cfg.read_text(encoding="utf-8")

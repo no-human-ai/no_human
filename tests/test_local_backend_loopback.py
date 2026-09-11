@@ -237,7 +237,7 @@ async def test_tool_use_round_trips(loopback_server, tmp_path, isolated_env_file
 
     assert result.is_error is False, result.final_text
     assert result.denials == []
-    assert target.read_text() == "round-tripped"
+    assert target.read_text(encoding="utf-8") == "round-tripped"
 
 
 # --------------------------------------------------------------------------- #

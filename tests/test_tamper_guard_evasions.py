@@ -50,7 +50,7 @@ _SAMPLES = Path(__file__).resolve().parents[1] / "testdata" / "tamper_samples"
 
 def _load(filename: str) -> dict[str, str]:
     """Parse one ``# ===== name =====`` delimited sample file."""
-    text = (_SAMPLES / filename).read_text()
+    text = (_SAMPLES / filename).read_text(encoding="utf-8")
     out: dict[str, str] = {}
     name: str | None = None
     buf: list[str] = []

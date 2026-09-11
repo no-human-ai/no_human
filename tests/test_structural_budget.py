@@ -1851,7 +1851,7 @@ def scan_tree(root: Path) -> tuple[dict[str, int], dict[str, int], dict[str, int
     files = sorted(root.rglob("*.py"))
     for path in files:
         rel = path.relative_to(root).as_posix()
-        entries, lines = scan_source(path.read_text(), rel)
+        entries, lines = scan_source(path.read_text(encoding="utf-8"), rel)
         total_functions += len(entries)
         if lines > MAX_FILE_LINES:
             file_lines[rel] = lines
@@ -2143,7 +2143,7 @@ def test_the_whole_walk_finishes_under_five_seconds():
 
 
 def test_verification_doc_names_this_guard_and_its_thresholds():
-    doc = (REPO_ROOT / "docs" / "verification.md").read_text()
+    doc = (REPO_ROOT / "docs" / "verification.md").read_text(encoding="utf-8")
     assert "test_structural_budget.py" in doc
     assert "300" in doc
     assert "60" in doc

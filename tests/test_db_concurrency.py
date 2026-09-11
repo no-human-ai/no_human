@@ -551,7 +551,7 @@ def test_the_connection_has_exactly_one_public_accessor():
     That is the one gap the tree guard cannot close by construction, so it is
     closed here: the set of members that may touch `self._db` is pinned.
     """
-    assert _connection_holders(DB_PY.read_text()) == [
+    assert _connection_holders(DB_PY.read_text(encoding="utf-8")) == [
         "__init__", "_rollback_quietly", "close", "connect", "db", "reconnect"], (
         "a Store member other than the pinned set touches self._db. "
         "If it hands the connection out, the tree-wide guard is no longer a "
@@ -563,7 +563,7 @@ def test_the_connection_has_exactly_one_public_accessor():
     # allowlist weakens it, so the property the list was standing in for is
     # asserted directly instead: `db` is still the ONLY member that returns the
     # connection. That covers every future member, named or not.
-    holders_returning_db = _members_returning_the_connection(DB_PY.read_text())
+    holders_returning_db = _members_returning_the_connection(DB_PY.read_text(encoding="utf-8"))
     assert holders_returning_db == ["db"], (
         f"these Store members return the raw connection: {holders_returning_db}. "
         "Only the `db` property may, or `.db` stops being the chokepoint the "
@@ -594,7 +594,7 @@ def test_no_store_read_keeps_a_raw_cursor():
     the cursor and take the connection's critical section; a hand-rolled
     `cur = await self.db.execute("SELECT …")` + a fetch reintroduces the open
     read transaction, so it is banned here rather than left to review."""
-    offenders = _unsafe_reads_in_store(DB_PY.read_text())
+    offenders = _unsafe_reads_in_store(DB_PY.read_text(encoding="utf-8"))
     assert offenders == [], (
         "these Store methods step a cursor instead of using "
         f"_fetchone/_fetchall: {offenders}")
@@ -667,7 +667,7 @@ def test_nothing_outside_db_py_touches_the_raw_connection():
         if path == DB_PY:
             continue          # the one module that OWNS the connection
         offenders += [f"{path.relative_to(PKG_ROOT)}:{n}"
-                      for n in _raw_connection_escapes(path.read_text())]
+                      for n in _raw_connection_escapes(path.read_text(encoding="utf-8"))]
     assert offenders == [], (
         "these reach past Store into the raw connection; use "
         f"Store.query/query_one: {offenders}")
@@ -699,7 +699,7 @@ def test_the_cited_peer_store_symbols_exist():
     alone. Line numbers move under every edit above them; a symbol moves only
     when someone renames it, and then this fails and says so.
     """
-    src = (PKG_ROOT / "cli" / "commands.py").read_text()
+    src = (PKG_ROOT / "cli" / "commands.py").read_text(encoding="utf-8")
     start = next((n for n in ast.walk(ast.parse(src))
                   if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
                   and n.name == "start"), None)
