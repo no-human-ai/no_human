@@ -37,11 +37,21 @@ holes, needs no heuristic, and is the same rule a reader can apply by eye.
 
 SCOPE, AND WHAT IS DELIBERATELY LEFT OUT
 -----------------------------------------
-`write_text` is not covered. There are ~1700 unencoded `write_text` calls under
-`tests/`, essentially all of them ASCII literals a test writes and reads back,
-where the platform default round-trips fine. Sweeping them would be noise. The
-one that mattered, `test_egress_allowlist.py` writing source it had just read,
-is fixed, because once the read is correct the write is what raises next.
+Both spellings of a read are covered: `path.read_text()` and the BUILTIN
+`open(path).read()`. The first version of this guard matched only `read_text`,
+so `open()` walked straight past it while
+`test_store_fixture_convergence_guard.py` was reading this repository's own
+sources that way and failing under an ASCII preferred encoding. Only the
+builtin is matched, by `ast.Name`: `tarfile.open` and `urllib`'s `opener.open`
+are attribute calls that take no encoding and would be false reports.
+
+WRITES are not covered, and unlike `open()` that is a decision rather than an
+oversight. There are ~1700 unencoded `write_text` calls under `tests/` and
+eight write-mode `open()` calls, essentially all of them ASCII literals a test
+writes and reads back, where the platform default round-trips fine. Sweeping
+them would be noise. The one write that mattered, `test_egress_allowlist.py`
+writing source it had just read, is fixed, because once the read is correct the
+write is what raises next.
 
 `src/` is covered only at `src/no_human/testing/`, and that exception is the
 whole point of the boundary. The first version of this change drew the line by
@@ -104,20 +114,52 @@ PRODUCT_SIDE_READERS = {
 }
 
 
+def _read_mode(call: ast.Call) -> str:
+    """The mode string a builtin `open()` call was given, `"r"` by default."""
+    mode = None
+    if len(call.args) > 1 and isinstance(call.args[1], ast.Constant):
+        mode = call.args[1].value
+    for kw in call.keywords:
+        if kw.arg == "mode" and isinstance(kw.value, ast.Constant):
+            mode = kw.value.value
+    return str(mode) if mode is not None else "r"
+
+
+def _is_unencoded_text_read(node: ast.AST) -> bool:
+    """Whether `node` reads text without saying how to decode it.
+
+    Two spellings, because the rule is about the act and not the function
+    name. `open(f).read()` walked straight past the first version of this
+    guard, and `test_store_fixture_convergence_guard.py` was reading this
+    repository's own sources through it.
+    """
+    if not isinstance(node, ast.Call):
+        return False
+    if any(kw.arg == "encoding" for kw in node.keywords):
+        return False
+
+    if isinstance(node.func, ast.Attribute) and node.func.attr == "read_text":
+        return True
+
+    # The BUILTIN open only. `tarfile.open` and `opener.open` are Attribute
+    # calls and take no encoding, so matching by name alone reports them.
+    if isinstance(node.func, ast.Name) and node.func.id == "open":
+        mode = _read_mode(node)
+        # Binary carries no encoding, and write mode is excluded for the same
+        # reason `write_text` is; see the module docstring.
+        return "b" not in mode and not any(c in mode for c in "wax+")
+
+    return False
+
+
 def _unencoded_read_text(path: pathlib.Path) -> list[int]:
-    """Line numbers of `read_text()` calls with no `encoding=` argument."""
+    """Line numbers of text reads that do not declare an encoding."""
     try:
         tree = ast.parse(path.read_bytes())
     except SyntaxError:
         return []
-    return [
-        node.lineno
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "read_text"
-        and not any(kw.arg == "encoding" for kw in node.keywords)
-    ]
+    return [node.lineno for node in ast.walk(tree)
+            if _is_unencoded_text_read(node)]
 
 
 @pytest.mark.parametrize("area", GUARDED_AREAS)
@@ -160,6 +202,31 @@ def test_the_guard_can_actually_see_an_offender():
         and not any(kw.arg == "encoding" for kw in n.keywords)
     ]
     assert still == [], "the scanner flags a read that already declares utf-8"
+
+
+@pytest.mark.parametrize(
+    ("source", "flagged", "why"),
+    [
+        (b"open('f').read()", True, "the spelling that escaped the first version"),
+        (b"open('f', 'r').read()", True, "explicit read mode"),
+        (b"open('f', encoding='utf-8').read()", False, "already declares it"),
+        (b"open('f', 'rb').read()", False, "binary carries no encoding"),
+        (b"open('f', 'w').write('x')", False, "writes are excluded, like write_text"),
+        (b"open('f', 'a').write('x')", False, "append is a write"),
+        (b"tarfile.open('f')", False, "not the builtin open"),
+        (b"opener.open('http://x')", False, "urllib opener, not the builtin"),
+    ],
+)
+def test_the_open_branch_matches_reads_and_nothing_else(source, flagged, why):
+    """The `open()` half, pinned case by case.
+
+    Review found this gap by hand after the first version shipped. Matching
+    `open` by NAME alone would report `tarfile.open` and `urllib`'s
+    `opener.open`, neither of which takes an encoding, so the last two cases
+    are the ones that keep the rule usable rather than merely strict.
+    """
+    hits = [n for n in ast.walk(ast.parse(source)) if _is_unencoded_text_read(n)]
+    assert bool(hits) is flagged, why
 
 
 def test_the_files_the_gates_read_are_utf_8_and_not_cp1252_decodable():
