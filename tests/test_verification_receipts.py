@@ -3556,8 +3556,8 @@ async def test_the_DRAFT_pr_body_the_reviewer_reads_carries_the_receipts(
     assert Orchestrator._display_path(str(artifact_path)) in body, (
         "the pointer does not name the real artifact file (in its "
         "~-relative display form)")
-    assert "uv run pytest -q" in artifact_path.read_text()
-    assert "200 passed in 9.1s" in artifact_path.read_text()
+    assert "uv run pytest -q" in artifact_path.read_text(encoding="utf-8")
+    assert "200 passed in 9.1s" in artifact_path.read_text(encoding="utf-8")
 
 
 def test_pr_body_reports_an_unobservable_backend_as_such(store, tmp_path):

@@ -150,7 +150,7 @@ def test_task_failed_accepts_every_reason_category(temp_home, no_thread):
         telemetry.record("task_failed", config={"telemetry": _ENABLED},
                          category="failed", reason_category=value)
     path = temp_home / ".no_human" / "telemetry-queue.jsonl"
-    lines = [json.loads(ln) for ln in path.read_text().splitlines() if ln.strip()]
+    lines = [json.loads(ln) for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
     sent_reasons = {ev["props"]["reason_category"] for ev in lines}
     assert sent_reasons == set(telemetry.FAILURE_REASON_CATEGORIES)
 
@@ -199,7 +199,7 @@ def test_task_failed_still_carries_environment(temp_home, no_thread, monkeypatch
     telemetry.record("task_failed", config={"telemetry": _ENABLED},
                      category="failed", reason_category="infra")
     path = temp_home / ".no_human" / "telemetry-queue.jsonl"
-    [line] = [ln for ln in path.read_text().splitlines() if ln.strip()]
+    [line] = [ln for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
     props = json.loads(line)["props"]
     assert props["environment"] == "ci"
     assert props["reason_category"] == "infra"
@@ -212,7 +212,7 @@ def test_task_ended_accepts_every_outcome(temp_home, no_thread):
         telemetry.record("task_ended", config={"telemetry": _ENABLED},
                          outcome=value, attempts=1, duration_bucket="<10m")
     path = temp_home / ".no_human" / "telemetry-queue.jsonl"
-    lines = [json.loads(ln) for ln in path.read_text().splitlines() if ln.strip()]
+    lines = [json.loads(ln) for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
     sent_outcomes = {ev["props"]["outcome"] for ev in lines}
     assert sent_outcomes == set(telemetry.TASK_END_OUTCOMES)
 
@@ -251,7 +251,7 @@ def test_new_events_are_dropped_on_the_lambda_wire_until_the_server_ships(
     assert n == 0
     assert no_network == []
     path = temp_home / ".no_human" / "telemetry-queue.jsonl"
-    remaining = [ln for ln in path.read_text().splitlines() if ln.strip()]
+    remaining = [ln for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
     assert remaining == []  # all-dropped batch is deleted, never re-POSTed
 
 
@@ -305,7 +305,7 @@ def test_queue_is_bounded_drop_oldest(temp_home, no_thread):
     for i in range(telemetry.MAX_QUEUE_LINES + 25):
         telemetry.record("feature_used", config={"telemetry": _ENABLED},
                          name=f"f{i}")
-    lines = (temp_home / ".no_human" / "telemetry-queue.jsonl").read_text().splitlines()
+    lines = (temp_home / ".no_human" / "telemetry-queue.jsonl").read_text(encoding="utf-8").splitlines()
     assert len(lines) == telemetry.MAX_QUEUE_LINES
     # the OLDEST events were dropped, the newest survived
     assert json.loads(lines[-1])["props"]["name"] == f"f{telemetry.MAX_QUEUE_LINES + 24}"
@@ -430,7 +430,7 @@ async def test_consent_enable_mints_stable_id_persists_and_widens_csp(
     assert r.status_code == 200
     assert r.json()["reload_required"] is True
 
-    on_disk = yaml.safe_load(cfg_path.read_text())["telemetry"]
+    on_disk = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))["telemetry"]
     assert on_disk["enabled"] is True
     minted = on_disk["instance_id"]
     assert len(minted) == 36  # uuid4, minted server-side on first enable
@@ -444,7 +444,7 @@ async def test_consent_enable_mints_stable_id_persists_and_widens_csp(
     r = await client.put("/api/telemetry/consent", json={"enabled": False},
                          headers=origin)
     assert r.status_code == 200
-    on_disk = yaml.safe_load(cfg_path.read_text())["telemetry"]
+    on_disk = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))["telemetry"]
     assert on_disk["enabled"] is False
     assert on_disk["instance_id"] == minted
     r = await client.get("/api/config")
@@ -452,7 +452,7 @@ async def test_consent_enable_mints_stable_id_persists_and_widens_csp(
 
     r = await client.put("/api/telemetry/consent", json={"enabled": True},
                          headers=origin)
-    assert yaml.safe_load(cfg_path.read_text())["telemetry"]["instance_id"] == minted
+    assert yaml.safe_load(cfg_path.read_text(encoding="utf-8"))["telemetry"]["instance_id"] == minted
 
 
 def test_only_the_consent_endpoint_writes_telemetry_keys():
@@ -462,7 +462,7 @@ def test_only_the_consent_endpoint_writes_telemetry_keys():
     telemetry.enabled/instance_id."""
     import ast
 
-    src = Path(app_module.__file__).read_text()
+    src = Path(app_module.__file__).read_text(encoding="utf-8")
     tree = ast.parse(src)
     writers = set()
     for node in ast.walk(tree):
@@ -498,7 +498,7 @@ async def test_onboarding_yes_lands_enabled_true_in_config_yaml(
                           json={"telemetry_asked": True})
     assert r.status_code == 200
 
-    on_disk = yaml.safe_load(cfg_path.read_text())
+    on_disk = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
     assert on_disk["telemetry"]["enabled"] is True
     assert len(on_disk["telemetry"]["instance_id"]) == 36
     assert on_disk["onboarding"]["telemetry_asked"] is True
@@ -514,7 +514,7 @@ def test_onboarding_consent_copy_matches_the_config_contract():
 
     js_path = (Path(__file__).resolve().parent.parent
                / "web" / "src" / "onboardingConsent.js")
-    js = js_path.read_text()
+    js = js_path.read_text(encoding="utf-8")
 
     def _extract(name):
         m = re.search(name + r' =\s*((?:"[^"]*"\s*\+?\s*\n?)+);', js)
@@ -570,7 +570,7 @@ def test_missing_instance_id_mints_persists_and_still_sends(
     [(req, _)] = no_network
     sent_id = json.loads(req.data.decode())["instance_id"]
     assert uuid.UUID(sent_id).version == 4  # a valid id shipped
-    on_disk = yaml.safe_load(cfg_path.read_text())["telemetry"]
+    on_disk = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))["telemetry"]
     assert on_disk["instance_id"] == sent_id  # and it persisted, stable
 
 
@@ -589,7 +589,7 @@ def test_poisoned_queue_line_is_dropped_not_wedging(temp_home, no_network,
     [(req, _)] = no_network
     events = json.loads(req.data.decode())["events"]
     assert events == [{"name": "app_started", "ts": 1786889836, "props": {}}]
-    assert not path.read_text().strip()  # poisoned lines gone, queue drained
+    assert not path.read_text(encoding="utf-8").strip()  # poisoned lines gone, queue drained
 
 
 def test_client_allowlist_matches_the_deployed_lambda_contract():
@@ -690,7 +690,7 @@ def test_all_poisoned_batch_is_deleted_without_posting(temp_home, no_network,
         '{"name":"task_opened","ts":1786889836,"props":{}}\n')
     assert telemetry.flush(_ENABLED) == 0
     assert no_network == []                      # nothing POSTed
-    assert not path.read_text().strip()          # poisoned head deleted
+    assert not path.read_text(encoding="utf-8").strip()          # poisoned head deleted
     # and the queue is not wedged: a good event now flushes fine
     telemetry.record("app_started", config={"telemetry": _ENABLED})
     assert telemetry.flush(_ENABLED) == 1

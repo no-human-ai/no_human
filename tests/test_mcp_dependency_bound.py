@@ -43,7 +43,7 @@ FIRST_UNPORTED_MAJOR = Version("3.0.0")
 
 
 def _declared_mcp_requirement() -> Requirement:
-    deps = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["dependencies"]
+    deps = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["dependencies"]
     mcp = [d for d in deps if Requirement(d).name == "mcp"]
     assert len(mcp) == 1, f"expected exactly one mcp requirement, got {mcp}"
     return Requirement(mcp[0])
@@ -84,7 +84,7 @@ def test_the_declared_mcp_requirement_excludes_the_next_major_and_its_prerelease
 def test_the_declared_mcp_requirement_still_admits_the_locked_version():
     """The bound must admit what we actually lock in uv.lock."""
     req = _declared_mcp_requirement()
-    lock = (ROOT / "uv.lock").read_text()
+    lock = (ROOT / "uv.lock").read_text(encoding="utf-8")
     marker = '\nname = "mcp"\nversion = "'
     locked = Version(lock.split(marker, 1)[1].split('"', 1)[0])
     assert req.specifier.contains(locked), (
@@ -98,7 +98,7 @@ def test_the_module_the_bridge_imports_exists_in_the_installed_sdk():
     the constant above — must move with it."""
     import importlib.util
 
-    bridge = (ROOT / "src/no_human/intake/mcp_bridge.py").read_text()
+    bridge = (ROOT / "src/no_human/intake/mcp_bridge.py").read_text(encoding="utf-8")
     assert "from mcp.server.mcpserver import" in bridge, (
         "the bridge no longer imports mcp.server.mcpserver — update "
         "FIRST_SDK_WITH_MCPSERVER and this file to the new import")

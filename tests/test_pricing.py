@@ -72,7 +72,7 @@ def test_every_openai_row_carries_a_url_and_a_date_in_its_citation():
     just match anywhere in the file.
     """
     assert OPENAI_IDS
-    source = __import__("pathlib").Path(pricing.__file__).read_text()
+    source = __import__("pathlib").Path(pricing.__file__).read_text(encoding="utf-8")
     url_and_date = re.compile(r"https://\S+.*read 2026-\d{2}-\d{2}")
 
     for model in OPENAI_IDS:
@@ -344,7 +344,7 @@ def test_the_subscription_default_comment_documents_priced_vs_entitled():
 
     from no_human.agent import backend as agent_backend
 
-    source = pathlib.Path(agent_backend.__file__).read_text()
+    source = pathlib.Path(agent_backend.__file__).read_text(encoding="utf-8")
     start = source.index("DEFAULT_CODEX_MODEL_SUBSCRIPTION")
     comment_block = source[:start].rsplit("\n\n", 1)[-1]
     lowered = comment_block.lower()

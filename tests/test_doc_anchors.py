@@ -81,7 +81,7 @@ def _anchors_by_filename() -> dict[str, set[str]]:
         if _SKIP_PARTS & set(md.parts):
             continue
         found = set()
-        for line in md.read_text(errors="replace").splitlines():
+        for line in md.read_text(errors="replace", encoding="utf-8").splitlines():
             m = _HEADING.match(line)
             if m:
                 found.add(github_slug(m.group(1)))
@@ -110,7 +110,7 @@ def test_every_markdown_anchor_reference_resolves():
         if not path.is_file() or path.suffix.lower() in _BINARY_SUFFIXES:
             continue
         try:
-            text = path.read_text(errors="replace")
+            text = path.read_text(errors="replace", encoding="utf-8")
         except OSError:
             continue
         for lineno, line in enumerate(text.splitlines(), 1):

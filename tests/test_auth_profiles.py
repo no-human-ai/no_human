@@ -185,7 +185,7 @@ def test_set_auth_profile_preserves_comments_and_round_trips(tmp_path):
     )
     assert set_auth_profile("Personal", cfg_path) == "personal"
 
-    text = cfg_path.read_text()
+    text = cfg_path.read_text(encoding="utf-8")
     assert "# Model IDs are intentionally NOT pinned here" in text
     assert "branch_prefix: no-human/" in text
     assert load_config(cfg_path).data["llm"]["auth_profile"] == "personal"
@@ -197,7 +197,7 @@ def test_set_auth_profile_replaces_an_existing_pin(tmp_path):
     cfg_path.write_text("llm:\n  auth_profile: personal\n  auth_mode: subscription\n")
     set_auth_profile("enterprise", cfg_path)
     assert load_config(cfg_path).data["llm"]["auth_profile"] == "enterprise"
-    assert cfg_path.read_text().count("auth_profile:") == 1
+    assert cfg_path.read_text(encoding="utf-8").count("auth_profile:") == 1
 
 
 def test_set_auth_profile_adds_the_llm_block_when_absent(tmp_path):
@@ -238,7 +238,7 @@ def test_set_auth_profile_splices_into_a_header_with_an_inline_comment(tmp_path)
 
     assert set_auth_profile("enterprise", cfg_path) == "enterprise"
 
-    text = cfg_path.read_text()
+    text = cfg_path.read_text(encoding="utf-8")
     assert text.count("llm:") == 1
     assert "llm:  # which subscription pays" in text
     assert text.count("auth_profile:") == 1
@@ -268,8 +268,8 @@ def test_set_auth_profile_does_not_hijack_an_llm_header_with_a_value(tmp_path):
     with pytest.raises(AuthError, match="duplicate top-level key"):
         set_auth_profile("personal", cfg_path)
 
-    assert cfg_path.read_text() == seed
-    assert "llm: {}" in cfg_path.read_text().splitlines()
+    assert cfg_path.read_text(encoding="utf-8") == seed
+    assert "llm: {}" in cfg_path.read_text(encoding="utf-8").splitlines()
 
     # Unit-level pin, independent of the duplicate-key guard: the splicer's
     # own append-when-not-a-block behaviour is unchanged by this fix.
@@ -307,7 +307,7 @@ def test_a_splicer_bug_that_duplicates_the_llm_block_is_refused_and_the_file_res
     with pytest.raises(AuthError, match=r"duplicate top-level key.*'llm'"):
         set_auth_profile("enterprise", cfg_path)
 
-    assert cfg_path.read_text() == seed
+    assert cfg_path.read_text(encoding="utf-8") == seed
     assert load_config(cfg_path).data["llm"]["auth_profile"] == "personal"
 
 
@@ -326,7 +326,7 @@ def test_set_model_ids_refuses_a_write_that_duplicates_a_top_level_key(
     with pytest.raises(AuthError, match=r"duplicate top-level key.*'llm'"):
         config.set_model_ids({"primary_model": "claude-sonnet-5"}, cfg_path)
 
-    assert cfg_path.read_text() == seed
+    assert cfg_path.read_text(encoding="utf-8") == seed
     assert load_config(cfg_path).data["llm"]["auth_profile"] == "personal"
 
 
@@ -371,10 +371,10 @@ def test_set_auth_profile_rejects_names_that_could_inject_yaml(tmp_path, bad):
     """The write is a text edit, so the value must not be able to add structure."""
     cfg_path = tmp_path / "config.yaml"
     cfg_path.write_text("llm:\n  auth_mode: subscription\n")
-    before = cfg_path.read_text()
+    before = cfg_path.read_text(encoding="utf-8")
     with pytest.raises(AuthError, match="invalid auth profile name"):
         set_auth_profile(bad, cfg_path)
-    assert cfg_path.read_text() == before
+    assert cfg_path.read_text(encoding="utf-8") == before
 
 
 # ------------------- attribution: every burn names its payer ---------------- #
@@ -466,7 +466,7 @@ def test_set_token_writes_the_active_profiles_variable(tmp_path, monkeypatch):
                                   "sk-ant-oat01-FRESHTOKEN\n")
 
     assert result.exit_code == 0, result.output
-    assert env_path.read_text() == (
+    assert env_path.read_text(encoding="utf-8") == (
         f"{SUBSCRIPTION_TOKEN_VAR}=sk-ant-oat01-FRESHTOKEN\n")
     assert (env_path.stat().st_mode & 0o777) == 0o600
     assert SUBSCRIPTION_TOKEN_VAR in result.output
@@ -484,7 +484,7 @@ def test_set_token_replaces_a_token_that_is_already_there(tmp_path, monkeypatch)
     result, env_path = _set_token(tmp_path, monkeypatch, "corrected-token\n")
 
     assert result.exit_code == 0, result.output
-    assert env_path.read_text() == (
+    assert env_path.read_text(encoding="utf-8") == (
         f"# mine\n{SUBSCRIPTION_TOKEN_VAR}=corrected-token\nOTHER=keep\n")
 
 
@@ -493,7 +493,7 @@ def test_set_token_writes_a_named_profiles_own_variable(tmp_path, monkeypatch):
                                   "--profile", "personal")
 
     assert result.exit_code == 0, result.output
-    assert env_path.read_text() == f"{PERSONAL_VAR}=personal-tok\n"
+    assert env_path.read_text(encoding="utf-8") == f"{PERSONAL_VAR}=personal-tok\n"
     assert PERSONAL_VAR in result.output
 
 
@@ -539,4 +539,4 @@ def test_set_token_defaults_to_the_profile_the_config_pins(tmp_path, monkeypatch
     result, env_path = _set_token(tmp_path, monkeypatch, "personal-tok\n")
 
     assert result.exit_code == 0, result.output
-    assert env_path.read_text() == f"{PERSONAL_VAR}=personal-tok\n"
+    assert env_path.read_text(encoding="utf-8") == f"{PERSONAL_VAR}=personal-tok\n"

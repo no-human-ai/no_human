@@ -273,7 +273,7 @@ def test_a_new_block_that_ships_a_credential_key_is_refused_not_offered(monkeypa
 
     # ...while the non-credential keys of the same block still work.
     reg.apply_setup("pagerduty", {"enabled": True, "service": "svc"})
-    on_disk = nh_config.CONFIG_PATH.read_text()
+    on_disk = nh_config.CONFIG_PATH.read_text(encoding="utf-8")
     assert "svc" in on_disk
     assert "SUPERSECRET" not in on_disk
 
@@ -329,7 +329,7 @@ def test_apply_setup_refuses_an_unknown_field():
 def test_wizard_result_is_an_enabled_working_linear_config_with_no_secret():
     reg.apply_setup("linear", {"enabled": True, "team_key": "ENG", "label": "bug"})
 
-    text = nh_config.CONFIG_PATH.read_text()
+    text = nh_config.CONFIG_PATH.read_text(encoding="utf-8")
     cfg = nh_config.load_config(nh_config.CONFIG_PATH).data
     lin = cfg["integrations"]["linear"]
 
@@ -351,7 +351,7 @@ def test_wizard_result_turns_jira_on_too():
     cfg = nh_config.load_config(nh_config.CONFIG_PATH).data
     assert cfg["integrations"]["jira"]["enabled"] is True
     assert cfg["integrations"]["jira"]["project_key"] == "PROJ"
-    assert "JIRA_API_TOKEN" not in nh_config.CONFIG_PATH.read_text()
+    assert "JIRA_API_TOKEN" not in nh_config.CONFIG_PATH.read_text(encoding="utf-8")
 
 
 def test_apply_setup_does_not_write_the_env_file_at_all():
@@ -365,7 +365,7 @@ def test_apply_setup_preserves_unrelated_config_keys():
     nh_config.CONFIG_PATH.write_text("llm:\n  auth_mode: subscription\n")
     reg.apply_setup("linear", {"enabled": True, "team_key": "ENG"})
     import yaml
-    on_disk = yaml.safe_load(nh_config.CONFIG_PATH.read_text())
+    on_disk = yaml.safe_load(nh_config.CONFIG_PATH.read_text(encoding="utf-8"))
     assert on_disk["llm"]["auth_mode"] == "subscription"
     assert on_disk["integrations"]["linear"]["team_key"] == "ENG"
 
@@ -509,7 +509,7 @@ async def test_put_setup_enables_linear_and_writes_no_secret(client):
 
     cfg = nh_config.load_config(nh_config.CONFIG_PATH).data
     assert cfg["integrations"]["linear"]["enabled"] is True
-    assert "LINEAR_API_KEY" not in nh_config.CONFIG_PATH.read_text()
+    assert "LINEAR_API_KEY" not in nh_config.CONFIG_PATH.read_text(encoding="utf-8")
     # And app.state was refreshed, so the next GET agrees.
     r2 = await client.get("/api/integrations/setup")
     linear = {s["name"]: s for s in r2.json()["integrations"]}["linear"]
@@ -531,7 +531,7 @@ async def test_put_setup_rejects_a_credential_with_422(client):
     # test actually guards is that a refused credential-shaped field never
     # reaches the integrations.linear section — so assert on the parsed
     # structure, not the raw text of an unrelated part of the file.
-    text = nh_config.CONFIG_PATH.read_text()
+    text = nh_config.CONFIG_PATH.read_text(encoding="utf-8")
     assert "LEAKME" not in text
     assert "lin_api" not in text
     cfg = nh_config.load_config(nh_config.CONFIG_PATH).data

@@ -63,16 +63,16 @@ async def test_harvest_writes_yaml_and_never_overwrites(store, tmp_path):
 
     written = await harvest(store, out_dir=out)
     assert len(written) == 1
-    data = yaml.safe_load(written[0].read_text())
+    data = yaml.safe_load(written[0].read_text(encoding="utf-8"))
     assert data["id"] == f"hv-{t.id[:8]}"
     assert data["runnable"] is False
 
     # the operator curates the file in place; a re-harvest must not clobber it
-    written[0].write_text(written[0].read_text().replace(
+    written[0].write_text(written[0].read_text(encoding="utf-8").replace(
         "runnable: false", "runnable: true"))
     again = await harvest(store, out_dir=out)
     assert again == []
-    assert "runnable: true" in written[0].read_text()
+    assert "runnable: true" in written[0].read_text(encoding="utf-8")
 
 
 def test_the_default_output_dir_is_outside_the_scored_corpus():

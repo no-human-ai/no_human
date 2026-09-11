@@ -117,7 +117,7 @@ def outbound_calls(source: str, filename: str) -> set[str]:
 
 
 def egress_section() -> str:
-    text = SECURITY_MD.read_text()
+    text = SECURITY_MD.read_text(encoding="utf-8")
     start = text.index(EGRESS_SECTION)
     nxt = text.find("\n## ", start + 1)
     return text[start:] if nxt == -1 else text[start:nxt]
@@ -131,7 +131,7 @@ def disclosed_modules() -> set[str]:
 def detected_modules() -> dict[str, set[str]]:
     out: dict[str, set[str]] = {}
     for path in sorted(PKG.rglob("*.py")):
-        calls = outbound_calls(path.read_text(), str(path))
+        calls = outbound_calls(path.read_text(encoding="utf-8"), str(path))
         if calls:
             out[path.relative_to(PKG).as_posix()] = calls
     return out
@@ -231,7 +231,7 @@ def test_approve_merge_module_is_disclosed() -> None:
     module_path = PKG / "vcs" / "approve_merge.py"
     assert module_path.exists(), (
         "vcs/approve_merge.py must exist for `nh approve` to land PRs")
-    calls = outbound_calls(module_path.read_text(), str(module_path))
+    calls = outbound_calls(module_path.read_text(encoding="utf-8"), str(module_path))
     assert calls, "expected vcs/approve_merge.py to make outbound calls (gh/glab)"
     assert "vcs/approve_merge.py" in disclosed_modules(), (
         "vcs/approve_merge.py makes outbound calls but is not named in "

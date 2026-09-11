@@ -147,7 +147,7 @@ def test_a_content_change_with_an_unchanged_mode_is_still_detected(linked_worktr
     mode_before = cfg.stat().st_mode
 
     delta = _delta_after(
-        wt, lambda: cfg.write_text(cfg.read_text() + "\n[alias]\n\tx = !sh -c 'id'\n"))
+        wt, lambda: cfg.write_text(cfg.read_text(encoding="utf-8") + "\n[alias]\n\tx = !sh -c 'id'\n"))
 
     assert cfg.stat().st_mode == mode_before, "this case must vary ONLY content"
     assert any(p.startswith(".git/common/config") for p in delta.modified), delta
@@ -325,7 +325,7 @@ def test_a_non_symref_write_to_the_shared_HEAD_discards_the_verdict(
     """
     wt, common = linked_worktree
     head_file = common / "HEAD"
-    original = head_file.read_text()
+    original = head_file.read_text(encoding="utf-8")
     assert original.startswith("ref: refs/heads/"), original
 
     # Raw sha (detached) — a violation.
@@ -601,7 +601,7 @@ def test_rewriting_the_linked_worktrees_git_POINTER_FILE_is_detected(
     assert any(k == "pointer" for k in before.git_entries), (
         "the .git pointer file is not inventoried at all")
 
-    pointer.write_text(pointer.read_text().rstrip("\n") + "-tampered\n")
+    pointer.write_text(pointer.read_text(encoding="utf-8").rstrip("\n") + "-tampered\n")
 
     # Tampering must not be SILENTLY ignored. Either the delta names it, or
     # the guard fails closed because git can no longer resolve the worktree —

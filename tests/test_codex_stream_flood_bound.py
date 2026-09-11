@@ -297,7 +297,7 @@ async def test_a_child_that_never_stops_emitting_is_killed_not_awaited_forever(
 
 def test_the_docs_state_that_a_text_only_stream_is_bounded():
     docs = (Path(__file__).resolve().parent.parent / "docs" / "BACKENDS.md"
-           ).read_text()
+           ).read_text(encoding="utf-8")
     section5 = docs.split("**5.")[1].split("**6.")[0]
     lowered = section5.lower()
     # `"event"` / `"ceiling"` alone are too weak to discriminate: the

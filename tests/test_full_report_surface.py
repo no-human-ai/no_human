@@ -350,7 +350,7 @@ def test_truncation_marker_stays_inside_its_own_cap():
 
 
 def test_no_such_surface_comment_is_gone():
-    src = _ORCHESTRATOR_SRC.read_text()
+    src = _ORCHESTRATOR_SRC.read_text(encoding="utf-8")
     assert "no human-reachable surface" not in src
     assert "I could not find any surface" not in src
 

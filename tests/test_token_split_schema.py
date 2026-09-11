@@ -72,7 +72,7 @@ def _build_old_schema_db(path: Path) -> None:
     conn = sqlite3.connect(path)
     try:
         for sql_file in sorted(MIGRATIONS_DIR.glob("*.sql")):
-            conn.executescript(sql_file.read_text())
+            conn.executescript(sql_file.read_text(encoding="utf-8"))
         conn.commit()
     finally:
         conn.close()

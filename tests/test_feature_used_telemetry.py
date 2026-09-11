@@ -232,7 +232,7 @@ def test_call_sites_use_constants_not_literals():
     name=X)`'s `name=` keyword, must be an `ast.Name` (a FEATURE_* constant
     reference) — never a string literal or an f-string, so no
     operator/request-derived value can ever be substituted in later."""
-    tree = ast.parse(APP_PY_PATH.read_text())
+    tree = ast.parse(APP_PY_PATH.read_text(encoding="utf-8"))
 
     def _func_name(call: ast.Call) -> str | None:
         func = call.func
@@ -293,7 +293,7 @@ async def test_default_config_queues_events_via_posthog(
     assert r.status_code == 201, r.text
     queue = tmp_path / ".no_human" / "telemetry-queue.jsonl"
     assert queue.exists()
-    events = [json.loads(ln) for ln in queue.read_text().splitlines() if ln.strip()]
+    events = [json.loads(ln) for ln in queue.read_text(encoding="utf-8").splitlines() if ln.strip()]
     assert events
 
 
