@@ -58,7 +58,7 @@ from ..core.bounds import Bounds
 from ..core.orchestrator import Orchestrator, is_agent_session, is_narration
 from ..core.pricing import weighted_tokens
 from ..core.task import Task, TaskStatus, normalise_priority
-from ..vcs.task_pr import task_has_pr_evidence
+from ..vcs.task_pr import head_shas_for, task_has_pr_evidence
 from .models import (
     AttemptDetailsOut, AttemptOut, BoardPayload, BudgetOut, CancelRequest, CreateProjectRequest,
     CreateTaskRequest, GrillQuestionOut, GrillResultOut, GrillStepRequest, IntegrationSetupRequest,
@@ -716,6 +716,16 @@ def _max_pr_conflict_rounds() -> int:
         return 3
 
 
+def _git_cfg_or_empty() -> dict:
+    """The `git:` config block, defensively — same degrade-to-`{}` shape as
+    `_max_pr_conflict_rounds`, so a missing/malformed config never 500s
+    every board endpoint. Fed into `head_shas_for` so the board's head
+    resolution uses the same identity/never-push settings `--ready` does."""
+    cfg = getattr(app.state, "config", None)
+    git_cfg = cfg.data.get("git") if cfg is not None else None
+    return git_cfg if isinstance(git_cfg, dict) else {}
+
+
 async def _board_tasks(
     store: Store, scheduler=None, *, limit: int | None = None, offset: int | None = None,
 ) -> list[TaskSummaryOut]:
@@ -725,6 +735,12 @@ async def _board_tasks(
     tasks = await store.list_tasks(limit=limit, offset=offset)
     # B2 #16: ONE grouped query instead of an N+1 per board tick per socket.
     by_task = await store.attempts_by_task()
+    # `fetch=False` on purpose: this runs per board tick per websocket, so it
+    # resolves the LOCAL ref only (the attempt's own worktree/clone is where
+    # the branch tip lives). A tip that exists only on the remote reads as
+    # unknown -> merge_ready None -> the chip is withheld, the fail-closed
+    # direction.
+    heads = await head_shas_for(store, tasks, git_cfg=_git_cfg_or_empty(), fetch=False)
     # SCRUM-15: `scheduler.inflight` returns a fresh set() copy per call — snapshot
     # once so every card in this response is judged against the same instant.
     inflight = scheduler.inflight if scheduler is not None else set()
@@ -734,6 +750,7 @@ async def _board_tasks(
         summary = TaskSummaryOut.from_task(
             task, _latest_pr_url(attempts), attempts=attempts,
             max_pr_conflict_rounds=_max_pr_conflict_rounds(),
+            head_sha=heads.get(task.id, ""),
         )
         if scheduler is not None:
             summary.claimed = task.id in inflight
@@ -1486,12 +1503,15 @@ async def get_attempt_details(
 async def list_subtasks(task_id: str, request: Request) -> list[TaskSummaryOut]:
     store = _store(request)
     subs = await store.list_subtasks(task_id)
+    # Same fail-closed, local-only resolution as `_board_tasks` — see there.
+    heads = await head_shas_for(store, subs, git_cfg=_git_cfg_or_empty(), fetch=False)
     out = []
     for t in subs:
         attempts = await store.list_attempts(t.id)
         out.append(TaskSummaryOut.from_task(
             t, _latest_pr_url(attempts), attempts=attempts,
-            max_pr_conflict_rounds=_max_pr_conflict_rounds()))
+            max_pr_conflict_rounds=_max_pr_conflict_rounds(),
+            head_sha=heads.get(t.id, "")))
     return out
 
 

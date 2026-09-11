@@ -38,6 +38,7 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 
@@ -415,3 +416,63 @@ async def task_pr_urls(store: Any, task: Any) -> list[str]:
         seen.add(url)
         out.append(url)
     return out
+
+
+async def resolve_head_sha(store: Any, task: Any, *, git_cfg: dict | None = None,
+                            fetch: bool = True) -> str:
+    """The task's PR branch's CURRENT head sha, or ``""`` when it cannot be
+    established — no `repo_path`, no resolvable branch (`resolve_task_pr`
+    came up empty), the path is not a git repo, or `git` itself failed.
+
+    ``""`` is never a head: every caller (`api.models.merge_ready_for` via
+    `merge_policy_verdict_for`) must read it as "not fresh", the same way an
+    absent commit does. This is the ONE place that resolves it — extracted
+    from what `cli.commands._approve_find_ready` did inline, so `--ready`
+    and every human-facing surface derive the same fact the same way.
+    """
+    from .git import GitError, GitRepo
+
+    resolved = await resolve_task_pr(store, task)
+    branch = resolved.branch
+    if not branch or not getattr(task, "repo_path", None):
+        return ""
+    cfg = git_cfg or {}
+
+    def _resolve() -> str:
+        try:
+            repo = GitRepo(
+                Path(task.repo_path),
+                identity_name=cfg.get("agent_identity_name", "no_human"),
+                identity_email=cfg.get("agent_identity_email", "no-human@acme.com"),
+                never_push_to=cfg.get("never_push_to") or ["main", "master", "release/*"],
+            )
+            if fetch:
+                repo.fetch()
+            ref = repo.resolve_commitish(branch)
+            return repo._run("rev-parse", ref) if ref else ""
+        except (GitError, OSError):
+            return ""
+
+    return await asyncio.to_thread(_resolve)
+
+
+async def head_shas_for(store: Any, tasks: list, *, git_cfg: dict | None = None,
+                         fetch: bool = True) -> dict[str, str]:
+    """`{task.id: resolve_head_sha(...)}` for every task that could possibly
+    have a fresh merge-policy verdict — skips any task with no `repo_path`
+    or no `context["merge_policy"]` dict, which keeps an ordinary board
+    tick's git cost at zero for the common case (most tasks never reach
+    AWAITING_APPROVAL with a verdict at all). Resolved concurrently
+    (`resolve_head_sha` itself offloads the git subprocess calls to a
+    thread), so a slow `fetch` on one task's repo does not serialize behind
+    another's.
+    """
+    candidates = [
+        t for t in tasks
+        if getattr(t, "repo_path", None)
+        and isinstance((t.context or {}).get("merge_policy"), dict)
+    ]
+    heads = await asyncio.gather(*(
+        resolve_head_sha(store, t, git_cfg=git_cfg, fetch=fetch) for t in candidates
+    ))
+    return {t.id: sha for t, sha in zip(candidates, heads)}

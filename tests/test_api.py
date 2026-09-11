@@ -252,16 +252,51 @@ async def test_list_tasks_fleet_scale_800_rows_pagination_shrinks_the_payload(cl
     assert paged_ids == ids
 
 
+def _repo_with_branch(tmp_path, name="repo"):
+    """A `main` with one commit, plus a `feature` branch one commit ahead —
+    purely local, mirrors `tests/test_approve_ready_cli.py`'s
+    `_repo_with_feature_branch`. `merge_ready` is now resolved from the
+    branch's live git head (`vcs.task_pr.head_shas_for`, called from
+    `api.app._board_tasks`), not a DB column, so these tests need a real
+    repo — a bare `repo_path` string is no longer enough to exercise it.
+    Returns (repo_path, head_sha) where head_sha is `feature`'s tip."""
+    repo = tmp_path / name
+    repo.mkdir()
+    _git(repo, "init", "-b", "main")
+    _git(repo, "config", "user.email", "t@example.com")
+    _git(repo, "config", "user.name", "t")
+    (repo / "a.txt").write_text("orig\n")
+    _git(repo, "add", "a.txt")
+    _git(repo, "commit", "-m", "initial")
+    _git(repo, "checkout", "-b", "feature")
+    (repo / "b.txt").write_text("change\n")
+    _git(repo, "add", "b.txt")
+    _git(repo, "commit", "-m", "feature commit")
+    _git(repo, "checkout", "main")
+    head_sha = _git(repo, "rev-parse", "feature")
+    return repo, head_sha
+
+
+async def _pr_task(store: Store, *, title: str, repo_path) -> Task:
+    """A task with the `pr_watch`/`pr_branch` context `resolve_task_pr`
+    needs to find `feature` as this task's PR branch — same shape as
+    `tests/test_approve_ready_cli.py`'s `_ready_task`, minus the
+    `merge_policy` verdict (callers stamp their own)."""
+    t = Task.new(title, repo_path=str(repo_path))
+    t.context = {"pr_watch": "https://example.invalid/pr/1", "pr_branch": "feature"}
+    await store.create_task(t)
+    return t
+
+
 @pytest.mark.asyncio
-async def test_merge_ready_field_reads_the_verdict_for_the_current_head(client, store):
-    """`TaskSummaryOut.merge_ready` reads `task.context.merge_policy[<latest
-    attempt's commit_sha>].ready` — not any older sha's verdict, and not
-    `None` misread as `False`."""
-    t = await _seed_task(store, title="Ready one")
-    aid = await store.create_attempt(t.id, 1)
-    await store.update_attempt(aid, commit_sha="c" * 40)
-    t.context = await store.merge_context(t.id, {
-        "merge_policy": {"c" * 40: {"ready": True, "summary": "ready — 1 of 1 rules satisfied"}}})
+async def test_merge_ready_field_reads_the_verdict_for_the_current_head(client, store, tmp_path):
+    """`TaskSummaryOut.merge_ready` reads `task.context.merge_policy[<the
+    branch's CURRENT git-resolved head>].ready` — not any older sha's
+    verdict, and not `None` misread as `False`."""
+    repo, head_sha = _repo_with_branch(tmp_path, "repo-ready")
+    t = await _pr_task(store, title="Ready one", repo_path=repo)
+    await store.merge_context(t.id, {
+        "merge_policy": {head_sha: {"ready": True, "summary": "ready — 1 of 1 rules satisfied"}}})
     r = await client.get("/api/tasks")
     assert r.status_code == 200
     (item,) = r.json()
@@ -269,13 +304,12 @@ async def test_merge_ready_field_reads_the_verdict_for_the_current_head(client, 
 
 
 @pytest.mark.asyncio
-async def test_merge_ready_field_is_none_for_a_different_sha(client, store):
-    """A verdict stamped for an OLDER commit must not read as ready for the
-    sha sitting in the attempt row now."""
-    t = await _seed_task(store, title="Stale verdict")
-    aid = await store.create_attempt(t.id, 1)
-    await store.update_attempt(aid, commit_sha="d" * 40)
-    t.context = await store.merge_context(t.id, {
+async def test_merge_ready_field_is_none_for_a_different_sha(client, store, tmp_path):
+    """A verdict stamped for a DIFFERENT commit than the branch's current
+    head must not read as ready."""
+    repo, _head_sha = _repo_with_branch(tmp_path, "repo-stale")
+    t = await _pr_task(store, title="Stale verdict", repo_path=repo)
+    await store.merge_context(t.id, {
         "merge_policy": {"e" * 40: {"ready": True, "summary": "ready — 1 of 1 rules satisfied"}}})
     r = await client.get("/api/tasks")
     assert r.status_code == 200
@@ -284,10 +318,9 @@ async def test_merge_ready_field_is_none_for_a_different_sha(client, store):
 
 
 @pytest.mark.asyncio
-async def test_merge_ready_field_is_none_when_never_evaluated(client, store):
-    t = await _seed_task(store, title="No verdict yet")
-    aid = await store.create_attempt(t.id, 1)
-    await store.update_attempt(aid, commit_sha="f" * 40)
+async def test_merge_ready_field_is_none_when_never_evaluated(client, store, tmp_path):
+    repo, _head_sha = _repo_with_branch(tmp_path, "repo-none")
+    await _pr_task(store, title="No verdict yet", repo_path=repo)
     r = await client.get("/api/tasks")
     assert r.status_code == 200
     (item,) = r.json()
@@ -295,25 +328,52 @@ async def test_merge_ready_field_is_none_when_never_evaluated(client, store):
 
 
 @pytest.mark.asyncio
-async def test_merge_ready_query_filter_returns_only_ready_tasks(client, store):
+async def test_merge_ready_field_is_none_when_the_head_moved_past_the_verdict(client, store, tmp_path):
+    """A verdict that WAS fresh (stamped for the branch's head) must stop
+    reading as ready the moment the branch moves past it — a PR sent back
+    for fixes, no new verdict stamped yet — on both the field and the
+    `?merge_ready=1` filter."""
+    repo, head_sha = _repo_with_branch(tmp_path, "repo-move")
+    t = await _pr_task(store, title="Movable", repo_path=repo)
+    await store.merge_context(t.id, {
+        "merge_policy": {head_sha: {"ready": True, "summary": "ready — 1 of 1 rules satisfied"}}})
+
+    r = await client.get("/api/tasks")
+    (item,) = r.json()
+    assert item["merge_ready"] is True
+    r_filtered = await client.get("/api/tasks", params={"merge_ready": 1})
+    assert {x["title"] for x in r_filtered.json()} == {"Movable"}
+
+    _git(repo, "checkout", "feature")
+    (repo / "c.txt").write_text("more change\n")
+    _git(repo, "add", "c.txt")
+    _git(repo, "commit", "-m", "fixup commit")
+    _git(repo, "checkout", "main")
+
+    r2 = await client.get("/api/tasks")
+    (item2,) = r2.json()
+    assert item2["merge_ready"] is None
+    r2_filtered = await client.get("/api/tasks", params={"merge_ready": 1})
+    assert r2_filtered.json() == []
+
+
+@pytest.mark.asyncio
+async def test_merge_ready_query_filter_returns_only_ready_tasks(client, store, tmp_path):
     """`?merge_ready=1` is a truthy-only filter: not-ready and
     never-evaluated tasks are both excluded, and the unfiltered list still
     carries all three."""
-    ready = await _seed_task(store, title="Ready")
-    aid_ready = await store.create_attempt(ready.id, 1)
-    await store.update_attempt(aid_ready, commit_sha="1" * 40)
-    ready.context = await store.merge_context(ready.id, {
-        "merge_policy": {"1" * 40: {"ready": True, "summary": "ready — 1 of 1 rules satisfied"}}})
+    repo_ready, head_ready = _repo_with_branch(tmp_path, "repo-ready")
+    ready = await _pr_task(store, title="Ready", repo_path=repo_ready)
+    await store.merge_context(ready.id, {
+        "merge_policy": {head_ready: {"ready": True, "summary": "ready — 1 of 1 rules satisfied"}}})
 
-    not_ready = await _seed_task(store, title="Not ready")
-    aid_not_ready = await store.create_attempt(not_ready.id, 1)
-    await store.update_attempt(aid_not_ready, commit_sha="2" * 40)
-    not_ready.context = await store.merge_context(not_ready.id, {
-        "merge_policy": {"2" * 40: {"ready": False, "summary": "not ready — 1 of 1 rules failed: tests_ran_and_passed"}}})
+    repo_not_ready, head_not_ready = _repo_with_branch(tmp_path, "repo-not-ready")
+    not_ready = await _pr_task(store, title="Not ready", repo_path=repo_not_ready)
+    await store.merge_context(not_ready.id, {
+        "merge_policy": {head_not_ready: {"ready": False, "summary": "not ready — 1 of 1 rules failed: tests_ran_and_passed"}}})
 
-    never_evaluated = await _seed_task(store, title="Never evaluated")
-    aid_never = await store.create_attempt(never_evaluated.id, 1)
-    await store.update_attempt(aid_never, commit_sha="3" * 40)
+    repo_never, _head_never = _repo_with_branch(tmp_path, "repo-never")
+    await _pr_task(store, title="Never evaluated", repo_path=repo_never)
 
     r = await client.get("/api/tasks", params={"merge_ready": 1})
     assert r.status_code == 200

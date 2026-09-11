@@ -4136,6 +4136,7 @@ def status(as_json):
         # and the API can never disagree about which failed tasks were
         # operator cancels.
         from ..api.models import _operator_cancelled, merge_ready_for
+        from ..vcs.task_pr import head_shas_for
         async with Store(config.db_path) as store:
             tasks = await store.list_tasks()
             waiting_ids = await store.tasks_waiting_for_slot()
@@ -4198,13 +4199,17 @@ def status(as_json):
             resid = await store.unattributed_usage_totals()
             # Board's MERGE-READY chip, counted here too: only tasks actually
             # sitting in Review PR (awaiting_approval) with a ready verdict
-            # for their CURRENT head — the same `merge_ready_for` the board
-            # card (api/models.py) reads, so the two can never disagree.
-            by_task = await store.attempts_by_task()
+            # for their CURRENT head. Heads are git-resolved the same way
+            # `--ready` resolves them (`vcs.task_pr.head_shas_for`) and fed
+            # into the SAME `merge_ready_for` the board card (api/models.py)
+            # reads, so the count, the card, and the landing verb can never
+            # disagree about which tasks are ready again.
+            awaiting = [t for t in tasks if t.status == TaskStatus.AWAITING_APPROVAL]
+            heads = await head_shas_for(store, awaiting, git_cfg=config.get("git") or {},
+                                        fetch=True)
             merge_ready_n = sum(
-                1 for t in tasks
-                if t.status == TaskStatus.AWAITING_APPROVAL
-                and merge_ready_for(t, by_task.get(t.id) or []) is True
+                1 for t in awaiting
+                if merge_ready_for(t, heads.get(t.id, "")) is True
             )
             if as_json:
                 # Nested under its own key so the existing bucket keys keep
@@ -4865,40 +4870,27 @@ async def _approve_find_ready(store, config):
     stamped for an older commit, or one whose policy file changed in the
     diff, is excluded. Returns [(task, pr_url, rules_passed, rules_total,
     verifiers_advisory_note)] in the order `store.list_tasks()` returned
-    them (discovery order)."""
-    from ..vcs.git import GitError, GitRepo
-    from ..vcs.task_pr import resolve_task_pr
+    them (discovery order).
+
+    Delegates to `vcs.task_pr.resolve_head_sha` (the one head resolver) and
+    `api.models.merge_ready_for`/`merge_policy_verdict_for` (the one
+    freshness rule) — this used to inline both; now `nh status` and the
+    board card apply the exact same rule over the exact same kind of head.
+    """
+    from ..api.models import merge_policy_verdict_for, merge_ready_for
+    from ..vcs.task_pr import resolve_head_sha, resolve_task_pr
 
     tasks = await store.list_tasks()
     candidates = [t for t in tasks if t.status == TaskStatus.AWAITING_APPROVAL]
+    git_cfg = config.get("git") or {}
 
     ready = []
     for t in candidates:
         resolved = await resolve_task_pr(store, t)
-        branch = resolved.branch
-        if not branch or not t.repo_path:
+        head_sha = await resolve_head_sha(store, t, git_cfg=git_cfg, fetch=True)
+        if merge_ready_for(t, head_sha) is not True:
             continue
-        git_cfg = config.get("git") or {}
-        try:
-            repo = GitRepo(
-                Path(t.repo_path),
-                identity_name=git_cfg.get("agent_identity_name", "no_human"),
-                identity_email=git_cfg.get("agent_identity_email", "no-human@acme.com"),
-                never_push_to=git_cfg.get("never_push_to")
-                or ["main", "master", "release/*"],
-            )
-            repo.fetch()
-            ref = repo.resolve_commitish(branch)
-            head_sha = repo._run("rev-parse", ref) if ref else ""
-        except (GitError, OSError):
-            head_sha = ""
-        if not head_sha:
-            continue
-        mp = ((t.context or {}).get("merge_policy") or {}).get(head_sha)
-        if not isinstance(mp, dict):
-            continue
-        if mp.get("ready") is not True or mp.get("policy_changed_in_diff"):
-            continue
+        mp = merge_policy_verdict_for(t, head_sha) or {}
         rules = mp.get("rules") or []
         total = len(rules)
         passed = sum(1 for r in rules if isinstance(r, dict) and r.get("passed"))

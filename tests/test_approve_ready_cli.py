@@ -383,13 +383,24 @@ def test_yes_without_ready_is_rejected(tmp_path, monkeypatch):
 # merge_ready_for), distinct from --ready's live git resolution above         #
 # --------------------------------------------------------------------------- #
 
-def _status_task(db, *, title, status_, commit_sha, mp_sha, ready):
+def _status_task(db, tmp_path, *, title, repo_name, status_, mp_sha=None, ready=True):
+    """Same shape as `_ready_task` (real repo/branch, `pr_watch`/`pr_branch`,
+    a `merge_policy` verdict) but with a caller-chosen terminal `status_` —
+    `nh status`'s count only ever counts AWAITING_APPROVAL tasks, so a DONE
+    one with an otherwise-ready verdict must stay excluded regardless of
+    head freshness. `mp_sha` defaults to the branch's real head (fresh);
+    pass a different 40-hex sha to stamp a verdict that reads as stale."""
+    repo, head_sha = _repo_with_feature_branch(tmp_path, repo_name)
+    verdict_sha = mp_sha if mp_sha is not None else head_sha
+
     async def _go():
         async with Store(db) as store:
-            t = Task.new(title, repo_path="/tmp/x")
+            t = Task.new(title, repo_path=str(repo))
             t.context = {
+                "pr_watch": "https://example.invalid/pr/1",
+                "pr_branch": "feature",
                 "merge_policy": {
-                    mp_sha: {
+                    verdict_sha: {
                         "ready": ready,
                         "policy_changed_in_diff": False,
                         "rules": [dict(r) for r in _RULES],
@@ -397,8 +408,6 @@ def _status_task(db, *, title, status_, commit_sha, mp_sha, ready):
                 },
             }
             await store.create_task(t)
-            aid = await store.create_attempt(t.id, 1)
-            await store.update_attempt(aid, commit_sha=commit_sha)
             event = ({"source": "test", "kind": "human_merged", "text": ""}
                       if status_ is TaskStatus.DONE else None)
             await store.set_status(t, status_, validate=False, event=event)
@@ -409,24 +418,216 @@ def _status_task(db, *, title, status_, commit_sha, mp_sha, ready):
 def test_status_prints_merge_ready_count(tmp_path):
     db = tmp_path / "nh.db"
 
-    sha_ready_awaiting = "a" * 40
-    _status_task(db, title="Ready Awaiting", status_=TaskStatus.AWAITING_APPROVAL,
-                 commit_sha=sha_ready_awaiting, mp_sha=sha_ready_awaiting, ready=True)
+    _status_task(db, tmp_path, title="Ready Awaiting", repo_name="repo-a",
+                 status_=TaskStatus.AWAITING_APPROVAL, ready=True)
 
-    sha_ready_done = "b" * 40
-    _status_task(db, title="Ready But Done", status_=TaskStatus.DONE,
-                 commit_sha=sha_ready_done, mp_sha=sha_ready_done, ready=True)
+    _status_task(db, tmp_path, title="Ready But Done", repo_name="repo-b",
+                 status_=TaskStatus.DONE, ready=True)
 
-    sha_live = "c" * 40
-    sha_stale_verdict = "d" * 40
-    _status_task(db, title="Stale Verdict Awaiting", status_=TaskStatus.AWAITING_APPROVAL,
-                 commit_sha=sha_live, mp_sha=sha_stale_verdict, ready=True)
+    _status_task(db, tmp_path, title="Stale Verdict Awaiting", repo_name="repo-c",
+                 status_=TaskStatus.AWAITING_APPROVAL, mp_sha="d" * 40, ready=True)
 
     result = _invoke(status, db, [])
 
     assert result.exit_code == 0, result.output
     assert "merge-ready: 1" in result.output
 
+# --------------------------------------------------------------------------- #
+# head-freshness: a verdict stamped for a since-moved head is not ready on   #
+# ANY surface until re-stamped for the new head (both directions, one test)  #
+# --------------------------------------------------------------------------- #
+
+def _advance_feature_branch(repo):
+    """Adds a new commit to `feature` (checked out, then back to `main`,
+    mirroring `_repo_with_feature_branch`) — simulating a fixup push made
+    AFTER a verdict was already stamped for the old tip (e.g. a PR sent back
+    for fixes). Returns the new head sha."""
+    _git(repo, "checkout", "feature")
+    (repo / "c.txt").write_text("more change\n")
+    _git(repo, "add", "c.txt")
+    _git(repo, "commit", "-m", "fixup commit")
+    _git(repo, "checkout", "main")
+    return _git_out(repo, "rev-parse", "feature")
+
+
+def _stamp_verdict(db, task_id, sha, *, ready=True, policy_changed_in_diff=False,
+                    rules=None):
+    """Adds ANOTHER merge_policy verdict, keyed by `sha`, on top of whatever
+    is already there — `store.merge_context`'s RFC-7396 merge keeps the old
+    entry too, exactly like a re-run orchestrator stamp would."""
+    async def _go():
+        async with Store(db) as store:
+            await store.merge_context(task_id, {
+                "merge_policy": {
+                    sha: {
+                        "ready": ready,
+                        "policy_changed_in_diff": policy_changed_in_diff,
+                        "rules": [dict(r) for r in (rules or _RULES)],
+                    },
+                },
+            })
+    asyncio.run(_go())
+
+
+def test_stale_verdict_is_merge_ready_on_no_surface_until_restamped(tmp_path, monkeypatch):
+    """AC1 + AC2 in ONE test, both directions: a verdict stamped for the
+    CURRENT head is ready everywhere (`--ready` lists it, `status` counts
+    it). Once the branch moves past that sha (a fixup push after the
+    verdict), BOTH stop offering it. Once a NEW verdict is stamped for the
+    NEW head, BOTH offer it again."""
+    db = tmp_path / "nh.db"
+    monkeypatch.setattr(approve_merge_mod, "land_task", _never_called_land_task)
+
+    task_id, repo, head_sha = _ready_task(db, tmp_path, title="Movable",
+                                          repo_name="repo")
+
+    fresh_ready = _invoke(approve, db, ["--ready"])
+    assert fresh_ready.exit_code == 0, fresh_ready.output
+    assert task_id[:8] in fresh_ready.output
+    fresh_status = _invoke(status, db, [])
+    assert "merge-ready: 1" in fresh_status.output
+
+    new_head = _advance_feature_branch(repo)
+    assert new_head != head_sha
+
+    stale_ready = _invoke(approve, db, ["--ready"])
+    assert stale_ready.exit_code == 0, stale_ready.output
+    assert task_id[:8] not in stale_ready.output
+    assert "no awaiting_approval task is merge-ready" in stale_ready.output
+    stale_status = _invoke(status, db, [])
+    assert "merge-ready: 0" in stale_status.output
+
+    _stamp_verdict(db, task_id, new_head, ready=True)
+
+    restamped_ready = _invoke(approve, db, ["--ready"])
+    assert restamped_ready.exit_code == 0, restamped_ready.output
+    assert task_id[:8] in restamped_ready.output
+    restamped_status = _invoke(status, db, [])
+    assert "merge-ready: 1" in restamped_status.output
+
+
+# --------------------------------------------------------------------------- #
+# AC3: no verdict at all, and a failing verdict, behave exactly as today —   #
+# each with its own positive control in the same test                       #
+# --------------------------------------------------------------------------- #
+
+def _no_verdict_task(db, tmp_path, *, title, repo_name):
+    """Same shape as `_ready_task` (real repo/branch, `pr_watch`/`pr_branch`)
+    but with NO `merge_policy` key in context at all — a task that has
+    simply never had a verdict stamped."""
+    repo, head_sha = _repo_with_feature_branch(tmp_path, repo_name)
+
+    async def _go():
+        async with Store(db) as store:
+            t = Task.new(title, repo_path=str(repo))
+            t.context = {
+                "pr_watch": "https://example.invalid/pr/1",
+                "pr_branch": "feature",
+                "review_history": [{"sha": head_sha, "passed": True}],
+            }
+            await store.create_task(t)
+            await store.set_status(t, TaskStatus.AWAITING_APPROVAL, validate=False)
+            return t.id
+    return asyncio.run(_go()), repo, head_sha
+
+
+def test_no_verdict_at_all_is_merge_ready_nowhere(tmp_path, monkeypatch):
+    """A task that has never had a merge-policy verdict stamped stays
+    unready on both surfaces — unaffected by this change — pinned with a
+    positive control (a sibling task WITH a fresh verdict) in the same
+    test, so this can't pass vacuously."""
+    db = tmp_path / "nh.db"
+    monkeypatch.setattr(approve_merge_mod, "land_task", _never_called_land_task)
+
+    no_verdict_id, _, _ = _no_verdict_task(db, tmp_path, title="No Verdict",
+                                           repo_name="repo-a")
+    ready_id, _, _ = _ready_task(db, tmp_path, title="Ready", repo_name="repo-b")
+
+    ready_result = _invoke(approve, db, ["--ready"])
+    assert ready_result.exit_code == 0, ready_result.output
+    assert no_verdict_id[:8] not in ready_result.output
+    assert ready_id[:8] in ready_result.output
+
+    status_result = _invoke(status, db, [])
+    assert "merge-ready: 1" in status_result.output
+
+
+def test_failing_verdict_is_merge_ready_nowhere(tmp_path, monkeypatch):
+    """A task with a FRESH verdict that says `ready: False` stays unready
+    on both surfaces — unaffected by this change — pinned with a positive
+    control (a sibling task whose fresh verdict IS ready) in the same
+    test."""
+    db = tmp_path / "nh.db"
+    monkeypatch.setattr(approve_merge_mod, "land_task", _never_called_land_task)
+
+    failing_id, _, _ = _ready_task(db, tmp_path, title="Failing", repo_name="repo-a",
+                                   mp_ready=False)
+    ready_id, _, _ = _ready_task(db, tmp_path, title="Ready", repo_name="repo-b")
+
+    ready_result = _invoke(approve, db, ["--ready"])
+    assert ready_result.exit_code == 0, ready_result.output
+    assert failing_id[:8] not in ready_result.output
+    assert ready_id[:8] in ready_result.output
+
+    status_result = _invoke(status, db, [])
+    assert "merge-ready: 1" in status_result.output
+
+
+# --------------------------------------------------------------------------- #
+# AC4: the head-freshness rule lives in ONE place — the landing verb and     #
+# the human-facing surfaces can only ever agree over the same mixed set      #
+# --------------------------------------------------------------------------- #
+
+def test_landing_verb_and_human_surfaces_agree_over_the_same_tasks(tmp_path, monkeypatch):
+    """`--ready` (the landing verb) and `nh status`'s `merge-ready: N` count
+    (a human-facing surface) must never disagree about which of a MIXED set
+    of tasks — fresh-ready, stale, failing, policy-changed-in-diff, and
+    no-verdict-at-all — is ready. Both derive their answer from the exact
+    same function (`api.models.merge_ready_for`) over the exact same kind of
+    git-resolved head (`vcs.task_pr.resolve_head_sha`); this test also calls
+    that function directly over every task in the set and asserts its
+    verdict can only ever match what `--ready` listed — the single place the
+    rule lives is demonstrated, not just asserted."""
+    db = tmp_path / "nh.db"
+    monkeypatch.setattr(approve_merge_mod, "land_task", _never_called_land_task)
+
+    fresh_id, _, _ = _ready_task(db, tmp_path, title="Fresh", repo_name="repo-fresh")
+    stale_id, _, _ = _ready_task(db, tmp_path, title="Stale", repo_name="repo-stale",
+                                 mp_sha="e" * 40)
+    failing_id, _, _ = _ready_task(db, tmp_path, title="Failing", repo_name="repo-failing",
+                                   mp_ready=False)
+    policy_id, _, _ = _ready_task(db, tmp_path, title="PolicyChanged",
+                                  repo_name="repo-policy", mp_policy_changed=True)
+    no_verdict_id, _, _ = _no_verdict_task(db, tmp_path, title="NoVerdict",
+                                           repo_name="repo-none")
+    all_ids = (fresh_id, stale_id, failing_id, policy_id, no_verdict_id)
+
+    ready_result = _invoke(approve, db, ["--ready"])
+    assert ready_result.exit_code == 0, ready_result.output
+    listed = {tid for tid in all_ids if tid[:8] in ready_result.output}
+    assert listed == {fresh_id}
+
+    status_result = _invoke(status, db, [])
+    assert "merge-ready: 1" in status_result.output
+
+    from no_human.api.models import merge_ready_for
+    from no_human.vcs.task_pr import resolve_head_sha
+
+    async def _go():
+        async with Store(db) as store:
+            results = {}
+            for tid in all_ids:
+                t = await store.get_task(tid)
+                head_sha = await resolve_head_sha(store, t, git_cfg={}, fetch=True)
+                results[tid] = merge_ready_for(t, head_sha) is True
+            return results
+    results = asyncio.run(_go())
+
+    assert results == {
+        fresh_id: True, stale_id: False, failing_id: False,
+        policy_id: False, no_verdict_id: False,
+    }
+    assert {tid for tid, ok in results.items() if ok} == listed
 
 # --------------------------------------------------------------------------- #
 # the advisory note on the one-line --ready summary                           #

@@ -182,31 +182,48 @@ def _operator_cancelled(task: Task) -> bool:
     return bool((task.context or {}).get("cancel_reason"))
 
 
-def merge_ready_for(task: Task, attempts: list[dict] | None) -> bool | None:
-    """The merge-ready policy verdict (core/merge_policy.py) for `task`'s
-    CURRENT head — `task.context.merge_policy[<latest attempt's commit_sha>]
-    .ready`, keyed the same way `_finalize` persists it and `verifier_results`
-    already is. None when there is no commit yet, or no verdict was ever
-    computed/persisted for that exact sha (a verdict stamped for an OLDER
-    commit must not read as ready for this one — the sha key is what makes a
-    stale verdict read as absent, because nothing re-evaluates it).
+def merge_policy_verdict_for(task: Task, head_sha: str | None) -> dict | None:
+    """The merge-policy verdict (core/merge_policy.py) that is valid for
+    `head_sha` — `task.context.merge_policy[head_sha]` — or None.
 
-    Extracted verbatim from `TaskSummaryOut.from_task` so `nh status`'s
-    `merge-ready: N` count (cli/commands.py) and the board card (this class)
-    can never disagree about which tasks are ready. ADVISORY ONLY: nothing
-    reads this to merge anything — `nh approve`, the only merge path, decides
-    from its own independent-reviewer PASS check, not this field.
+    THE ONE place the head-freshness rule lives: `head_sha` must be supplied
+    by the caller from a git-resolved current head (`vcs.task_pr.
+    resolve_head_sha`/`head_shas_for`), never from a DB column alone. A
+    falsy `head_sha` (unresolvable branch, no repo, no commit yet) is never
+    fresh, a verdict stamped for a DIFFERENT sha reads as absent (a stale
+    verdict must not read as ready for a head that has since moved), and a
+    non-dict entry is treated the same as no verdict at all.
     """
-    merge_ready = None
-    if attempts:
-        for a in reversed(attempts):
-            sha = a.get("commit_sha")
-            if sha:
-                mp = ((task.context or {}).get("merge_policy") or {}).get(sha)
-                if isinstance(mp, dict) and "ready" in mp:
-                    merge_ready = bool(mp.get("ready"))
-                break
-    return merge_ready
+    if not head_sha:
+        return None
+    mp = ((task.context or {}).get("merge_policy") or {}).get(head_sha)
+    return mp if isinstance(mp, dict) else None
+
+
+def merge_ready_for(task: Task, head_sha: str | None) -> bool | None:
+    """The merge-ready policy verdict for `task`'s CURRENT head, tri-state:
+    None = no fresh verdict (no head, or none stamped for this exact sha, or
+    a malformed entry with no `"ready"` key); False = a fresh verdict that
+    is not ready, OR one whose own diff changed the policy file
+    (`policy_changed_in_diff` — the same exclusion `--ready` applies); True =
+    fresh and ready.
+
+    THE single source of truth: `nh status`'s `merge-ready: N` count and
+    `nh approve --ready` (cli/commands.py), the board card and
+    `?merge_ready=1` (this class, via `TaskSummaryOut.from_task`) all call
+    this SAME function over the SAME git-resolved head, so none of them can
+    disagree about which tasks are ready again. ADVISORY ONLY: nothing reads
+    this to merge anything — `nh approve`, the only merge path, decides from
+    its own independent-reviewer PASS check, not this field.
+    """
+    mp = merge_policy_verdict_for(task, head_sha)
+    if mp is None:
+        return None
+    if mp.get("policy_changed_in_diff"):
+        return False
+    if "ready" not in mp:
+        return None
+    return bool(mp.get("ready"))
 
 
 class PhaseOut(BaseModel):
@@ -609,13 +626,11 @@ class TaskSummaryOut(BaseModel):
     # back to its own copy of the routing when the field is absent.
     lane: str | None = None
     # The merge-ready policy verdict (core/merge_policy.py) for the task's
-    # CURRENT head — `task.context.merge_policy[<latest attempt's commit_sha>]
-    # .ready`, keyed the same way `_finalize` persists it and `verifier_results`
-    # already is. None when there is no commit yet, or no verdict was ever
-    # computed/persisted for that exact sha (a verdict stamped for an OLDER
-    # commit must not read as ready for this one — the sha key is what makes
-    # a stale verdict read as absent, because nothing re-evaluates it:
-    # `nh approve`, the only merge path, never reads this field).
+    # CURRENT head — see `merge_ready_for` above, THE single place the
+    # head-freshness rule lives. `head_sha` comes from a git-resolved head
+    # (`vcs.task_pr.resolve_head_sha`/`head_shas_for`), never a DB column
+    # alone, so a verdict stamped for a commit that is no longer the head
+    # reads as absent here exactly as it does for `nh status`/`--ready`.
     # ADVISORY ONLY: nothing reads this field to merge anything.
     merge_ready: bool | None = None
     # USD, summed across every attempt by core.cost.attempts_cost — same
@@ -638,6 +653,7 @@ class TaskSummaryOut(BaseModel):
         pr_url: str | None = None,
         attempts: list[dict] | None = None,
         max_pr_conflict_rounds: int = 0,
+        head_sha: str | None = None,
     ) -> "TaskSummaryOut":
         repo_name = task.repo_path.rstrip("/").rsplit("/", 1)[-1] if task.repo_path else None
         desc_short = (task.description or "")[:120] or None
@@ -696,7 +712,7 @@ class TaskSummaryOut(BaseModel):
             total_review_cache_read = _rsum("review_cache_read_tokens")
             total_review_cache_creation = _rsum("review_cache_creation_tokens")
         total_aux_tokens, total_aux_cache_read, total_aux_cache_creation = _aux_totals(attempts)
-        merge_ready = merge_ready_for(task, attempts)
+        merge_ready = merge_ready_for(task, head_sha)
         cost_usd, cost_model = attempts_cost(attempts)
         return cls(
             id=task.id,
