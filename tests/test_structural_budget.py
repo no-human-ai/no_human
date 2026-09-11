@@ -1629,7 +1629,11 @@ FROZEN_FILE_LINES = {
     # attempt at all — the gracefully-interrupted-by-`_honor_server_stop`
     # case. Placed next to `latest_open_attempt`/`latest_review_attempt`, its
     # existing siblings. Measured on this tree with the scanner below.
-    "core/db.py": 5112,
+    # 5112 -> 5123 (+11): `Store.update_task_title(task_id, title)` — a
+    # single-column `UPDATE tasks SET title=?, updated_at=? WHERE id=?`
+    # for the new `nh task retitle` command, avoiding a read-modify-write
+    # race. Measured on this tree with the scanner below.
+    "core/db.py": 5123,
     # +71: set_local_backend_fields — the config-write helper for the Settings
     # pane's local coder-backend fields (llm.local_model / llm.local_base_url).
     # +75: Codex account config helpers.
