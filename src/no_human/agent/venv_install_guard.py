@@ -134,31 +134,26 @@ own venv for the whole session — not attempted in this ticket.
     swallows the resulting ``PermissionError`` and reports ``False`` —
     indistinguishable from "no ``pyvenv.cfg`` here" — so ``_venv_root_of``
     concluded "owns no venv" and the shared venv stopped being a write
-    candidate. Fixed by probing tri-state (``_probe_is_file``/
-    ``_probe_is_dir``: ``True``/``False``/``None`` = "undetermined") and
-    failing closed (``is not False``) at every site that used to ask
-    ``os.path.isfile``/``os.path.isdir`` directly (``None`` means
-    undetermined). Scoped honestly: in the DEFAULT layout the primary
-    checkout's own ``.venv`` was never the hole
-    (``guard._protected_venvs``'s ``is_dir`` branch is unaffected by this
-    particular ``chmod``) — what this closes is the structural resolution
-    in this module (``_venv_root_of``, `_resolve_installer`, the
+    candidate. The bare-token branch of ``_resolve_installer`` had the
+    same swallow one layer deeper: it resolved PATH entries via
+    ``shutil.which``, which calls ``os.path.exists`` internally and
+    reports the same ``PermissionError`` as "not found" — and because
+    this branch runs BEFORE the venv-root probe below it, a bare ``pip
+    install evilpkg`` (the spelling a coder actually types, no explicit
+    path) never reached ``_venv_root_of`` at all: it fell through to the
+    unresolvable-installer allow-and-log branch instead. Fixed by probing
+    tri-state (``_probe_is_file``/``_probe_is_dir``: ``True``/``False``/
+    ``None`` = "undetermined") and failing closed (``is not False``) at
+    every site that used to ask ``os.path.isfile``/``os.path.isdir``/
+    ``shutil.which`` directly (``None`` means undetermined). Scoped
+    honestly: in the DEFAULT layout the primary checkout's own ``.venv``
+    was never the hole (``guard._protected_venvs``'s ``is_dir`` branch is
+    unaffected by this particular ``chmod``) — what this closes is the
+    structural resolution in this module (``_venv_root_of``,
+    ``_resolve_installer``'s explicit-path AND bare-token branches, the
     ``--python``/directory-token probes above) and the ``sys.prefix``
-    backstop in ``guard.py``, both of which failed open on exactly this
+    backstop in ``guard.py``, all of which failed open on exactly this
     input before this fix.
-
-  - **Noted, not fixed (same class as the bugfix above):** the bare-token
-    branch of ``_resolve_installer`` still resolves through
-    ``shutil.which``, which internally calls ``os.path.exists`` and
-    swallows the very same ``PermissionError`` this fix removes at the
-    four sites above. A bare, PATH-resolved installer token (``pip
-    install evilpkg`` with no explicit path, under a ``PATH`` whose
-    directory has been made unreadable) still resolves to ``None``
-    (allow-and-log) — confirmed empirically: it does so on both the old
-    and the fixed code, because the swallow lives one layer inside the
-    standard library, beneath every probe site this ticket touches.
-    Closing it would mean replacing ``shutil.which`` itself with a
-    tri-state PATH walk — out of scope for this ticket.
 """
 
 from __future__ import annotations
@@ -166,7 +161,6 @@ from __future__ import annotations
 import logging
 import os
 import shlex
-import shutil
 import stat
 from pathlib import Path, PurePosixPath
 from typing import Mapping
@@ -408,16 +402,44 @@ def _resolve_installer(token: str, cwd: str | None, env: Mapping[str, str]) -> s
             return None
         if not _is_installer_name(token):
             return None
-        found = shutil.which(token, path=env.get("PATH"))
-        if not found:
-            _LOG.warning(
-                "venv guard: %r names an installer but could not be "
-                "resolved via PATH; allowing", token,
-            )
-            return None
-        real = _safe_realpath(found)
-        if real and _is_installer_name(_basename(real)):
-            return real
+        # Deliberately NOT `shutil.which`: it resolves via `os.path.exists`
+        # internally, which swallows `PermissionError` exactly like
+        # `os.path.isfile` did above — a `chmod` on a `PATH` directory (or
+        # the venv it leads into) would make `which` report "not found",
+        # indistinguishable from "genuinely not on PATH", and this bare-
+        # token spelling (`pip install evilpkg`, no explicit path) is the
+        # one a coder actually types. Walked by hand with `_probe_is_file`
+        # so an undetermined probe still counts as resolved.
+        for directory in (env.get("PATH") or "").split(os.pathsep):
+            if not directory:
+                continue
+            candidate = os.path.join(directory, token)
+            probe = _probe_is_file(candidate)
+            if probe is False:
+                continue
+            if probe is None:
+                real = _safe_realpath(candidate) or candidate
+                if _is_installer_name(_basename(real)):
+                    _LOG.warning(
+                        "venv guard: %r resolved via PATH to %r but its "
+                        "file type could not be verified (permission "
+                        "denied?); treating it as a resolved installer "
+                        "rather than assuming it is absent", token, candidate,
+                    )
+                    return real
+                continue
+            # probe is True: a real, stat'able candidate — `shutil.which`
+            # also filters on executability before accepting a match, so
+            # this mirrors that (not the swallowing part, just the filter).
+            if not os.access(candidate, os.X_OK):
+                continue
+            real = _safe_realpath(candidate)
+            if real and _is_installer_name(_basename(real)):
+                return real
+        _LOG.warning(
+            "venv guard: %r names an installer but could not be "
+            "resolved via PATH; allowing", token,
+        )
         return None
     except (OSError, ValueError):  # pragma: no cover - defensive
         return None

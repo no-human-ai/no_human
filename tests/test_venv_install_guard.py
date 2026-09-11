@@ -590,16 +590,26 @@ def test_an_unreadable_venv_pyvenv_cfg_still_denies_the_install(tmp_path):
     makes `pyvenv.cfg` unstat'able. `os.path.isfile`/`Path.is_file()`
     swallow the resulting `PermissionError` and report `False` —
     indistinguishable from "no venv here" — so `_venv_root_of` used to
-    conclude "owns no venv" and the install stopped being denied. Two
-    spellings that resolve their installer WITHOUT routing through
-    `shutil.which`'s own OSError-swallowing `os.path.exists` (that branch
-    is a separate, noted-not-fixed gap — see the residual-risk register in
-    `venv_install_guard.py`) are asserted DENY before, during, and after
-    the chmod — the "during" assertion is the regression this test pins."""
+    conclude "owns no venv" and the install stopped being denied.
+
+    Four spellings, all denied before/during/after the chmod: two that
+    resolve their installer via the explicit-path branch of
+    `_resolve_installer` (`_venv_root_of` reached directly), and two —
+    the bare token `pip install evilpkg` and its `bash -lc` wrapping, the
+    spelling a coder actually types — that resolve via the bare-token PATH
+    walk instead. The bare-token pair used to survive the earlier fix in
+    this ticket: `_resolve_installer`'s bare-token branch resolved through
+    `shutil.which`, which calls `os.path.exists` internally and swallows
+    the very same `PermissionError`, so it reported "not on PATH" and fell
+    through to allow-and-log BEFORE `_venv_root_of` ever ran — that branch
+    now walks `PATH` by hand with `_probe_is_file` instead. The "during"
+    assertion on every case is the regression this test pins."""
     primary, primary_venv, wt, wt_venv, prod_env, wt_env = _session(tmp_path)
     cases = [
         (f"{primary_venv}/bin/pip install evilpkg", prod_env),
         (f"uv pip install --python {primary_venv}/bin/python evilpkg", wt_env),
+        ("pip install evilpkg", prod_env),
+        ("bash -lc 'pip install evilpkg'", prod_env),
     ]
     for cmd, env in cases:
         before = venv_install_guard.denial_reason(cmd, cwd=wt, env=env)
@@ -665,7 +675,15 @@ def test_a_readable_directory_without_a_pyvenv_cfg_is_not_a_venv(tmp_path):
     assert venv_install_guard._venv_root_of(str(pip2)) == os.path.realpath(str(venv_root))
 
 
-_SWALLOWING_ATTRS = {"isfile", "isdir", "exists", "islink", "is_file", "is_dir"}
+_SWALLOWING_ATTRS = {
+    "isfile", "isdir", "exists", "islink", "is_file", "is_dir",
+    # `shutil.which` resolves via `os.path.exists` internally and swallows
+    # `OSError` exactly like the five names above — the review round that
+    # caught this ticket's first draft flagged it by name (it decided
+    # through this exact swallow, on the bare-token spelling a coder
+    # actually types) as the one this closed set was missing.
+    "which",
+}
 
 
 def _oserror_swallowing_call_sites(source):
@@ -686,11 +704,12 @@ def _oserror_swallowing_call_sites(source):
 def test_no_changed_probe_decides_through_an_oserror_swallowing_helper():
     """None of the probe sites this patch touches may reach a decision
     through a stdlib helper that swallows `OSError` (`os.path.isfile`/
-    `isdir`/`exists`/`islink`, `Path.is_file`/`is_dir`) — that swallow is
-    the root cause this patch removes. A positive control against guard.py's
-    untouched `_looks_like_pathspec` (which still calls `os.path.exists`,
-    unchanged and out of scope for this ticket) proves an empty result above
-    is a real absence, not a search that can never match anything."""
+    `isdir`/`exists`/`islink`, `Path.is_file`/`is_dir`, `shutil.which`) —
+    that swallow is the root cause this patch removes. A positive control
+    against guard.py's untouched `_looks_like_pathspec` (which still calls
+    `os.path.exists`, unchanged and out of scope for this ticket) proves an
+    empty result above is a real absence, not a search that can never
+    match anything."""
     module_src = inspect.getsource(venv_install_guard)
     assert _oserror_swallowing_call_sites(module_src) == [], (
         "venv_install_guard.py must not decide through an OSError-swallowing probe call"
