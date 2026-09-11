@@ -9,11 +9,14 @@ never flagged it either. See `src/no_human/vcs/git.py`'s `commit_paths` and
 `uncommitted_source_files` docstrings for the fix and its discriminator.
 """
 
+import ast
+import os
 import subprocess
+from pathlib import Path
 
 import pytest
 
-from no_human.vcs import GitRepo
+from no_human.vcs import GitError, GitRepo
 
 
 def _git(cwd, *args):
@@ -183,3 +186,165 @@ def test_root_commit_with_no_head_caret_still_flags_a_leftover(repo_with_bare_re
     repo = GitRepo(work)
     leftover = repo.uncommitted_source_files()
     assert "eval/x/REPORT.md" in leftover
+
+
+def test_a_created_then_deleted_path_no_longer_kills_the_commit(repo_with_bare_remote):
+    """Pre-fix: `git add -- app.py ghost.py` exits 128 (ghost.py is neither
+    on disk nor in the index — the coder created it and then deleted it
+    again within this attempt) and `commit_paths` raised GitError, killing
+    the WHOLE commit including the real app.py edit. Post-fix, app.py must
+    still land and ghost.py must simply be dropped, not raise."""
+    repo = GitRepo(repo_with_bare_remote)
+    repo.create_branch("no-human/phantom-path", base="main")
+    app = repo.path / "app.py"
+    app.write_text("x = 2\n")
+    ghost = repo.path / "ghost.py"  # never created on disk in this branch
+    repo.commit_paths([str(app), str(ghost)], "edit app.py; ghost.py never existed")
+    files = _committed_files(repo.path)
+    assert "app.py" in files
+    assert "ghost.py" not in files
+
+    # Positive control: when ghost.py DOES exist on disk, both land — proving
+    # the fix drops only genuinely-absent paths, not the whole batch.
+    repo.create_branch("no-human/phantom-path-control", base="main")
+    app.write_text("x = 3\n")
+    ghost.write_text("y = 1\n")
+    repo.commit_paths([str(app), str(ghost)], "edit app.py; ghost.py exists this time")
+    files = _committed_files(repo.path)
+    assert "app.py" in files
+    assert "ghost.py" in files
+
+
+def test_a_tracked_deletion_is_still_staged_as_a_deletion(repo_with_bare_remote):
+    """A TRACKED path that was deleted must still be staged as a deletion —
+    it must not share ghost.py's fate just because both are absent from
+    disk. The `ls-files -z --` lookup is what tells the two apart."""
+    repo = GitRepo(repo_with_bare_remote)
+    repo.create_branch("no-human/tracked-deletion", base="main")
+    doomed = repo.path / "doomed.py"
+    doomed.write_text("z = 1\n")
+    repo.commit_paths([str(doomed)], "add doomed.py")
+
+    os.remove(doomed)
+    ghost = repo.path / "ghost.py"  # never existed at all
+    repo.commit_paths([str(doomed), str(ghost)], "remove doomed.py")
+
+    deleted = subprocess.run(
+        ["git", "show", "--diff-filter=D", "--name-only", "--format=", "HEAD"],
+        cwd=repo.path, capture_output=True, text=True,
+    ).stdout
+    assert "doomed.py" in deleted
+    tree = subprocess.run(
+        ["git", "ls-tree", "HEAD", "--", "doomed.py"],
+        cwd=repo.path, capture_output=True, text=True,
+    ).stdout
+    assert tree.strip() == ""
+    files = _committed_files(repo.path)
+    assert "ghost.py" not in files
+
+
+def test_an_add_that_fails_for_another_reason_still_raises(repo_with_bare_remote):
+    """An add failure for a reason OTHER than a coder-created-then-deleted
+    path (here: the path is explicitly gitignored, so it is present on disk
+    the whole time and never lands in `missing`) must still raise — the fix
+    must not swallow every `git add` failure."""
+    repo = GitRepo(repo_with_bare_remote)
+    repo.create_branch("no-human/ignored-add-fails", base="main")
+    (repo.path / ".gitignore").write_text("secret.txt\n")
+    secret = repo.path / "secret.txt"
+    secret.write_text("shh\n")
+    with pytest.raises(GitError):
+        repo.commit_paths([str(secret)], "try to add an ignored file")
+
+    # Positive control: without the ignore entry, the same call commits fine.
+    repo.create_branch("no-human/ignored-add-control", base="main")
+    (repo.path / ".gitignore").unlink()
+    secret.write_text("shh\n")
+    repo.commit_paths([str(secret)], "add secret.txt without the ignore rule")
+    files = _committed_files(repo.path)
+    assert "secret.txt" in files
+
+
+def test_the_missing_path_lookup_fails_closed(repo_with_bare_remote, monkeypatch):
+    """The `ls-files -z --` missing-path lookup must fail closed: if IT
+    errors, `commit_paths` must raise rather than silently treating the
+    lookup's empty ("") result as "nothing is tracked" and dropping the
+    co-batched TRACKED deletion as if it were a phantom."""
+    repo = GitRepo(repo_with_bare_remote)
+    repo.create_branch("no-human/lookup-fails-closed", base="main")
+    doomed = repo.path / "doomed.py"
+    doomed.write_text("z = 1\n")
+    repo.commit_paths([str(doomed)], "add doomed.py")
+    head_before = repo.head_sha()
+
+    os.remove(doomed)
+    ghost = repo.path / "ghost.py"
+
+    original_run = GitRepo._run
+
+    def poisoned_run(self, *args, check=True):
+        if args[:3] == ("ls-files", "-z", "--"):
+            raise GitError("simulated ls-files failure")
+        return original_run(self, *args, check=check)
+
+    monkeypatch.setattr(GitRepo, "_run", poisoned_run)
+
+    with pytest.raises(GitError):
+        repo.commit_paths([str(doomed), str(ghost)], "remove doomed.py")
+
+    assert repo.head_sha() == head_before
+
+
+def test_every_filesystem_compared_path_output_is_nul_or_quotepath_disabled():
+    """Enumeration guard: every git call in this module whose output is
+    compared against the filesystem or fed back as a pathspec must carry
+    `-z` (NUL-separated) or `-c core.quotePath=false` — otherwise a
+    C-quoted non-ASCII path silently fails that comparison and is dropped.
+    Mirrors the enumeration in `commit_paths`' docstring."""
+    src_path = Path(__file__).resolve().parents[1] / "src" / "no_human" / "vcs" / "git.py"
+    tree = ast.parse(src_path.read_text())
+
+    def const_str(node):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        return None
+
+    def run_calls_in(func_node):
+        calls = []
+        for node in ast.walk(func_node):
+            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "_run"):
+                calls.append([const_str(a) for a in node.args])
+        return calls
+
+    funcs = {
+        node.name: node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)
+    }
+
+    def is_safe(words):
+        return "-z" in words or (
+            len(words) >= 2 and words[0] == "-c" and words[1] == "core.quotePath=false"
+        )
+
+    cp_calls = run_calls_in(funcs["commit_paths"])
+    # `diff --cached --name-only` here is only ever checked for emptiness
+    # (`if not staged: ...`) to decide whether to fall back to `stage_all`
+    # — its output is never compared against the filesystem or fed back as
+    # a pathspec, so C-quoting cannot cause a silent drop and it is
+    # deliberately excluded from this guard.
+    diff_producer = [w for w in cp_calls if w and w[0] == "diff" and "--cached" not in w]
+    others_producer = [w for w in cp_calls if w and w[0] == "ls-files" and "--others" in w]
+    assert diff_producer and all(is_safe(w) for w in diff_producer)
+    assert others_producer and all(is_safe(w) for w in others_producer)
+
+    usf_calls = run_calls_in(funcs["uncommitted_source_files"])
+    status_calls = [w for w in usf_calls if "status" in w]
+    assert status_calls and all(is_safe(w) for w in status_calls)
+
+    dir_calls = run_calls_in(funcs["_dirs_newly_added_by_head"])
+    show_calls = [w for w in dir_calls if "show" in w]
+    assert show_calls and all(is_safe(w) for w in show_calls)
+
+    cf_calls = run_calls_in(funcs["changed_files"])
+    diff_calls = [w for w in cf_calls if w and w[0] == "diff"]
+    assert diff_calls and all(is_safe(w) for w in diff_calls)

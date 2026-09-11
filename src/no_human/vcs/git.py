@@ -283,6 +283,14 @@ class GitRepo:
             )
         return [line for line in proc.stdout.split("\n") if line]
 
+    @staticmethod
+    def _null_paths(out: str) -> list[str]:
+        """Paths from a `-z` git call: NUL-separated, never C-quoted, so they
+        can be compared against the filesystem and fed back as pathspecs.
+        Empty pieces dropped; never `.strip()`ed — a filename may begin/end
+        with a space."""
+        return [p for p in out.split("\0") if p]
+
     def current_branch(self) -> str:
         return self._run("rev-parse", "--abbrev-ref", "HEAD")
 
@@ -452,7 +460,15 @@ class GitRepo:
         which directories HEAD just brought into existence — an input
         `commit_paths` never consults when deciding what to stage, so it can
         catch the class the other two predicates cannot."""
-        out = self._run("status", "--porcelain", check=False).strip()
+        # `-c core.quotePath=false`, not `-z`: this parses `XY <path>` prefixes
+        # and the `" -> "` rename form, which `-z` would replace with
+        # `XY <new>\0<orig>\0` (no `" -> "`) — a parser rewrite out of scope
+        # here. Disabling quoting keeps a non-ASCII path (e.g. `café.py`)
+        # literal instead of C-quoted (`"caf\303\251.py"`), so it compares
+        # correctly against `coder_touched`/`newly_added_dirs` below.
+        out = self._run(
+            "-c", "core.quotePath=false", "status", "--porcelain", check=False
+        ).strip()
         newly_added_dirs = self._dirs_newly_added_by_head()
         leftovers: list[str] = []
         for line in out.splitlines():
@@ -504,7 +520,11 @@ class GitRepo:
         files counts as newly added — there is no prior tree it could have
         existed in. Unborn repo (no HEAD at all): returns the empty set, the
         same conservative degrade as `_dir_absent_from_tree`."""
+        # `-c core.quotePath=false`: keeps a non-ASCII path (e.g. `données/`)
+        # literal instead of C-quoted, so it round-trips correctly through
+        # `_dir_absent_from_tree`'s `ls-tree` pathspec below.
         names = self._run(
+            "-c", "core.quotePath=false",
             "show", "--pretty=format:", "--name-only", "HEAD", check=False
         )
         dirs = {str(Path(n).parent) for n in names.splitlines() if n.strip()}
@@ -666,6 +686,13 @@ class GitRepo:
         are staged alongside the explicitly listed paths. This covers files
         the agent created or modified via Bash/Run tools (which the
         orchestrator cannot track file-by-file).
+
+        Every git path this method reads back and compares against the
+        filesystem or feeds back into `git add` as a pathspec goes through
+        `-z`/`_null_paths` (`diff --name-only -z`, `ls-files -z --others`,
+        the fails-closed `ls-files -z --` missing-path lookup) rather than
+        the default C-quoted form, so a non-ASCII path (`café.py`) is never
+        mistaken for missing and dropped.
         """
         branch = self.current_branch()
         if _branch_protected(branch, self.never_push_to):
@@ -685,19 +712,21 @@ class GitRepo:
             rel_paths.append(rel)
         # Also include modified tracked files — these are always intentional
         # (the agent must have touched them, even if via Bash).
-        modified = self._run(
-            "diff", "--name-only", check=False
-        ).strip().splitlines()
-        rel_paths.extend(m.strip() for m in modified if m.strip())
+        # `-z`: without it, `core.quotePath` C-quotes a non-ASCII path (e.g.
+        # `café.py` -> `"caf\303\251.py"`), whose literal form never matches
+        # anything on disk. The `os.path.lexists` filter below would then
+        # call it missing, the ls-files lookup couldn't match the mangled
+        # string either, and the file would be silently dropped from the
+        # commit — trading a loud crash for silent work loss. `-z` keeps the
+        # path literal so it round-trips through both.
+        modified = self._run("diff", "--name-only", check=False).strip().splitlines()
+        rel_paths.extend(modified)
         # Include untracked source files (e.g. new .py created via Bash).
         untracked = self._run(
             "ls-files", "--others", "--exclude-standard", check=False
         ).strip().splitlines()
         rejected_non_code: list[str] = []
         for u in untracked:
-            u = u.strip()
-            if not u:
-                continue
             ext = Path(u).suffix.lower()
             if ext in self._CODE_EXTS:
                 rel_paths.append(u)
@@ -736,8 +765,7 @@ class GitRepo:
         # stages exactly what we intend.
         rel_paths = [r for r in dict.fromkeys(rel_paths)
                      if not self._is_ephemeral_path(r)]
-        if rel_paths:
-            self._run("add", "--", *rel_paths)
+        self._run("add", "--", *rel_paths)
         # If no files were actually staged (e.g. agent only used Bash to
         # create files), fall back to stage_all so the commit isn't empty.
         staged = self._run("diff", "--cached", "--name-only", check=False).strip()
@@ -1340,7 +1368,7 @@ class GitRepo:
 
     def changed_files(self, ref: str = "HEAD~1") -> list[str]:
         out = self._run("diff", "--name-only", ref, "HEAD", check=False)
-        return [f for f in out.splitlines() if f]
+        return [line for line in out.splitlines() if line]
 
     def fetch(self, remote: str = "origin", *, prune: bool = True,
               timeout: int = 30) -> None:
