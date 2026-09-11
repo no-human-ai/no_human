@@ -1,163 +1,104 @@
 # How I verified this — full log
 
-_Harness-captured record for task `c4873934`, commit `077e54b89a658e6f07ac3e6c5dbfca51872962fe` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `c4873934`, commit `f87902ab673de3230ac7c335d9491992956faec0` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ## How I verified this
-8 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
+6 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
 
 ### test
-- `uv run pytest -q tests/test_onboarding_funnel_telemetry.py 2>&1 | tail -60`
-
-```
-=================================== FAILURES ===================================
-______ test_auth_verify_probes_the_running_profile_and_restores_env_after ______
-
-client_with_credential = <httpx.AsyncClient object at 0x10abe51c0>
-recorded = [('auth_check_failed', {'reason': 'absent'})]
-monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x10abe7b60>
-
-    @pytest.mark.asyncio
-    async def test_auth_verify_probes_the_running_profile_and_restores_env_after(
-        client_with_credential, recorded, monkeypatch,
-    ):
-        """Blocker 2: the endpoint runs inside the SAME long-lived process as
-        the embedded worker (`board up = worker up`), which is what every
-    
-[... 1,929 of 3,068 characters omitted from the middle ...]
-esult': 'absent'} == {'result': 'valid'}
-E         
-E         Differing items:
-E         {'result': 'absent'} != {'result': 'valid'}
-E         Use -v to get more diff
-
-tests/test_onboarding_funnel_telemetry.py:466: AssertionError
-=========================== short test summary info ============================
-FAILED tests/test_onboarding_funnel_telemetry.py::test_auth_verify_probes_the_running_profile_and_restores_env_after
-1 failed, 19 passed in 3.04s
-```  
-  _excerpt - 3,062 characters of output in total_
-
-- `uv run pytest -q tests/test_onboarding_funnel_telemetry.py 2>&1 | tail -40`
+- `uv run pytest tests/test_onboarding_funnel_telemetry.py -q 2>&1 | tail -60`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+   Building no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/c4873934685e45e1b8725dd694b096ab.82890.48215c86
+      Built no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/c4873934685e45e1b8725dd694b096ab.82890.48215c86
+Installed 68 packages in 248ms
 ....................                                                     [100%]
-20 passed in 0.94s
+20 passed in 7.47s
 ```
 
-- `uv run pytest -q tests/test_telemetry.py tests/test_telemetry_environment.py tests/test_structural_budget.py tests/test_doctor.py tests/test_backend_check.py 2>&1 | tail -60`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-..............................F...............................F......... [ 48%]
-........................................................................ [ 96%]
-......                                                                   [100%]
-=================================== FAILURES ===================================
-_____________ test_only_the_consent_endpoint_writes_telemetry_keys _____________
-
-    def test_only_the_consent_endpoint_writes_telemetry_keys():
-        """The onbo
-[... 2,221 of 3,360 characters omitted from the middle ...]
-e more item: 'api/app.py: frozen 6281, now 6337 (+56); this budget only ratchets down'
-E             Use -v to get more diff
-
-tests/test_structural_budget.py:1942: AssertionError
-=========================== short test summary info ============================
-FAILED tests/test_telemetry.py::test_only_the_consent_endpoint_writes_telemetry_keys
-FAILED tests/test_structural_budget.py::test_no_frozen_entry_has_grown - Asse...
-2 failed, 148 passed in 15.95s
-```  
-  _excerpt - 3,358 characters of output in total_
-
-- `uv run pytest -q tests/test_telemetry.py::test_only_the_consent_endpoint_writes_telemetry_keys 2>&1 | tail -20`
+- `uv run pytest tests/test_onboarding_funnel_telemetry.py::test_auth_verify_probes_the_running_profile_and_restores_env_after -q 2>&1 | tail -20`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
 .                                                                        [100%]
-1 passed in 0.45s
+1 passed in 1.86s
 ```
 
-- `uv run pytest -q tests/test_telemetry.py tests/test_telemetry_environment.py tests/test_structural_budget.py tests/test_doctor.py tests/test_backend_check.py tests/test_onboarding_funnel_telemetry.py 2>&1 | tail -30`
+- `uv run pytest tests/test_onboarding_funnel_telemetry.py::test_auth_verify_probes_the_running_profile_and_restores_env_after -q 2>&1 | tail -20`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-..............................................................F......... [ 42%]
-........................................................................ [ 84%]
-..........................                                               [100%]
-=================================== FAILURES ===================================
-________________________ test_no_frozen_entry_has_grown ________________________
+.                                                                        [100%]
+1 passed in 2.17s
+```
 
-scanned = ({'agent/claude_backend.py:ClaudeBackend.stream': 407, 'blockers/landed_o
-[... 868 of 2,007 characters omitted from the middle ...]
-ert ['api/app.py:...atchets down'] == []
-E             
-E             Left contains one more item: 'api/app.py: frozen 6337, now 6338 (+1); this budget only ratchets down'
-E             Use -v to get more diff
+- `python3 - <<'EOF' path = "src/<redacted>/api/app.py" s = open(path).read() old = "        _config_module._ACTIVE_AUTH_PROFILE = running_profile\n" assert s.count(old) == 1 s = s.replace(old, "") open(path, [... 84 of 427 characters omitted from the middle ...] h_verify_probes_the_running_profile_and_restores_env_after -q 2>&1 | tail -30 cp /tmp/app.py.bak src/<redacted>/api/app.py echo "RESTORED"`
 
-tests/test_structural_budget.py:1949: AssertionError
+```
+# a mutant deleting `_ACTIVE_AUTH_PROFILE = running_profile` in the
+            # `finally` survived unless the fake probe's mutation target is
+            # distinguishable from the value being restored).
+            _os.environ["CLAUDE_CODE_OAUTH_TOKEN"] = f"probed-token-for-{profile}"
+            config_module._ACTIVE_AUTH_PROFILE = f"verifying-{profile}"
+            return None
+    
+        monkeypatch.setattr(
+            "<redacted>.agent.backend_check.verify_credential_live", _mutating_probe)
+    
+        r = await client_with_credential.post("/api/auth/verify", json={})
+        assert r.status_code == 200, r.text
+        assert r.json() == {"result": "val
+[... 423 of 1,562 characters omitted from the middle ...]
+ule.active_auth_profile() == "personal"
+E       AssertionError: assert 'verifying-personal' == 'personal'
+E         
+E         - personal
+E         + verifying-personal
+
+tests/test_onboarding_funnel_telemetry.py:514: AssertionError
 =========================== short test summary info ============================
-FAILED tests/test_structural_budget.py::test_no_frozen_entry_has_grown - Asse...
-1 failed, 169 passed in 15.87s
+FAILED tests/test_onboarding_funnel_telemetry.py::test_auth_verify_probes_the_running_profile_and_restores_env_after
+1 failed in 1.61s
+RESTORED
 ```  
-  _excerpt - 2,005 characters of output in total_
+  _excerpt - 1,560 characters of output in total_
 
-- `uv run pytest -q tests/test_telemetry.py tests/test_telemetry_environment.py tests/test_structural_budget.py tests/test_doctor.py tests/test_backend_check.py tests/test_onboarding_funnel_telemetry.py 2>&1 | tail -20`
+- `grep -n "_ACTIVE_AUTH_PROFILE = running_profile" src/<redacted>/api/app.py python3 - <<'EOF' path = "src/<redacted>/api/app.py" s = open(path).read() old = """        if token_snapshot is None:             [... 335 of 678 characters omitted from the middle ...] 1 | tail -15 cp /tmp/app.py.bak src/<redacted>/api/app.py echo RESTORED diff /tmp/app.py.bak src/<redacted>/api/app.py && echo "IDENTICAL"`
+
+```
+3251:        _config_module._ACTIVE_AUTH_PROFILE = running_profile
+        # The probe was asked about the RUNNING process's profile, not the one
+        # named in config.yaml.
+        assert seen_profiles == ["personal"]
+        # And the server's own billing identity is back exactly where it
+        # started — restored, not left pointed at whatever the probe checked.
+>       assert _os.environ["CLAUDE_CODE_OAUTH_TOKEN"] == "running-process-token"
+E       AssertionError: assert 'probed-token-for-personal' == 'running-process-token'
+E         
+E         - running-process-token
+E         + probed-token-for-personal
+
+tests/test_onboarding_funnel_telemetry.py:513: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_onboarding_funnel_telemetry.py::test_auth_verify_probes_the_running_profile_and_restores_env_after
+1 failed in 1.41s
+RESTORED
+IDENTICAL
+```
+
+- `uv run pytest tests/test_onboarding_funnel_telemetry.py -q 2>&1 | tail -60`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-........................................................................ [ 42%]
-........................................................................ [ 84%]
-..........................                                               [100%]
-170 passed in 16.72s
-```
-
-- `uv run pytest -q tests/test_telemetry.py -k "documented or phantom or disclosure" 2>&1 | tail -20`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-.....                                                                    [100%]
-5 passed, 40 deselected in 0.45s
-```
-
-- `npm test 2>&1 | tail -30`
-
-```
-...
-# Subtest: onSnapshot delivers the fresh snapshot verbatim — the stale array is not merged into
-ok 1650 - onSnapshot delivers the fresh snapshot verbatim — the stale array is not merged into
-  ---
-  duration_ms: 0.120292
-  ...
-# Subtest: a failing snapshot fetch retries on a shorter backoff and never publishes 'live'
-ok 1651 - a failing snapshot fetch retries on a shorter backoff and never publishes 'live'
-  ---
-  duration_ms: 0.419833
-  ...
-# Subtest: a close during an in-flight snapshot cancels it and restarts backoff at 1s
-ok 1652 - a close during an in-flight snapshot cancels it and restarts backoff at 1s
-  ---
-  duration_ms: 0.380875
-  ...
-# Subtest: stop() is idempotent and leaves no pending timer or open socket
-ok 1653 - stop() is idempotent and leaves no pending timer or open socket
-  ---
-  duration_ms: 0.239083
-  ...
-1..1653
-# tests 1653
-# suites 0
-# pass 1653
-# fail 0
-# cancelled 0
-# skipped 0
-# todo 0
-# duration_ms 931.313708
+......................                                                   [100%]
+22 passed in 4.01s
 ```
 
 
 **Not verified:** everything below is a limit of this section, listed whether or not it bit this attempt.
 
-- no command recognised as e2e, http, typecheck, lint, build was recorded
+- no command recognised as e2e, http, typecheck, lint, build was recorded - and a recorded command is shown with its middle omitted, so a check inside the omitted part cannot be ruled out
 - an entry shows that a command LINE was submitted to the shell and what came back - never that the check recognised inside it RAN, and never that it was the RIGHT command: `pytest -k test_nothing` prints a clean run, and a recorded command line may name a check the shell never reached yet is still counted - TEN SHAPES WERE DRIVEN against bash 3.2.57 with the check replaced by a marker-printing stub and the marker was absent in every one: a failed `&&`, a taken `||`, an `exit`, an `exec`, an `exit` inside a `source`d script, a syntax error that aborts the REST of the line, a multi-line `if false`, a `case` that matches nothing, `set -e` aborting an earlier command, and `set -u` on an unset variable; that list is MEASURED, NOT EXHAUSTIVE, because this module is not bash, so a kind this section does NOT list as missing is a kind some recorded line named, which is not the same as a kind that ran
 - the text is the coder's: the session chose the command string and, through `echo`/`printf`, can choose the output too. Both are shown as inert text, and no entry ASSERTS a pass, a fail, or an exit status - `pytest -q | tail -3` exits with `tail`'s status, `Error: Exit code 1` is a line IN THE OUTPUT, and where the harness reported a timeout or an interruption instead of output that report is appended to the captured text in square brackets. Read the output
 - recognition reads the command line ONLY - it never looks inside what a command runs, so `bash -c 'uv run pytest -q'` leaves no receipt at all while `make test` leaves one that names `make` and not the recipe it ran; and the other way, a check merely NAMED in a heredoc body, or in a quoted string that happens to spell a shell separator, can be recorded as though it ran
