@@ -1285,6 +1285,10 @@ export default function App() {
   // .nh-main instead, since the sidebar foot sits outside the mobile nav's
   // viewport there (see useIsPhone.js).
   const showAiNudge = !popupDismissed && onboarded === true && !settingsOpen;
+  // First-run calm: the popup and the Settings "!" badge both point at the same
+  // place — show one at a time so a fresh board isn't two attention-grabbers
+  // deep while the header already says "nothing needs you".
+  const showAiConfigBadge = !aiConfigDone && !showAiNudge;
   const aiConfigNudge = showAiNudge ? (
     <div
       className={`nh-aiconfig-nudge${isPhone ? " nh-aiconfig-nudge-mobile" : ""}`}
@@ -1501,7 +1505,7 @@ export default function App() {
               active={settingsOpen}
               haspopup="dialog"
               expanded={settingsOpen}
-              badge={aiConfigDone ? null : "!"}
+              badge={showAiConfigBadge ? "!" : null}
               badgeVariant="warn"
               // D2.1: the badge is its OWN click target — it opens Settings
               // straight on the Second-brain pane, distinct from a click on
@@ -1509,8 +1513,8 @@ export default function App() {
               // shown, and no longer clears the flag itself — see
               // handleSecondBrainOpened).
               badgeAriaLabel="Complete AI configuration — open the Memories pane"
-              onBadgeClick={aiConfigDone ? undefined : () => openSettings("learnings")}
-              title={aiConfigDone ? undefined : "Complete AI configuration"}
+              onBadgeClick={showAiConfigBadge ? () => openSettings("learnings") : undefined}
+              title={showAiConfigBadge ? "Complete AI configuration" : undefined}
               onClick={() => openSettings()}
               className="nh-settings-row"
             />

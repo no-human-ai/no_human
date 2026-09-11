@@ -54,13 +54,10 @@ test("I1: openSettings marks the POPUP dismissed on every open, independent of w
 });
 
 test("I1: the popup's visibility is gated on popupDismissed, NOT on the badge's aiConfigDone", () => {
-  // The className is now a template literal (mobile vs. desktop variant),
-  // not a plain string — tolerate that instead of matching it verbatim.
-  const idx = appJsx.search(/nh-aiconfig-nudge[^`]*`\}\s*role="dialog"/);
-  assert.ok(idx > -1, "the popup element must be found");
-  const before = appJsx.slice(Math.max(0, idx - 400), idx);
-  assert.match(before, /!popupDismissed && onboarded === true && !settingsOpen/,
+  assert.match(appJsx, /const showAiNudge = !popupDismissed && onboarded === true && !settingsOpen;/,
     "the popup's render condition must use popupDismissed, not aiConfigDone (aiConfigDone would make it nag forever)");
+  assert.doesNotMatch(appJsx, /const showAiNudge = [^;]*aiConfigDone/,
+    "showAiNudge must not fold in the badge flag — that would make the popup nag forever");
 });
 
 test("I1: the popup's own × dismisses the popup, not the badge", () => {
@@ -71,9 +68,11 @@ test("I1: the popup's own × dismisses the popup, not the badge", () => {
     "dismissing the popup must not also satisfy the badge's stricter condition");
 });
 
-test("I1: the badge's own visibility stays gated on aiConfigDone, unaffected by the popup fix", () => {
-  assert.match(appJsx, /badge=\{aiConfigDone \? null : "!"\}/,
-    "regression guard: the badge must still be the badge's OWN, stricter flag");
+test("I1: the badge hides while the popup is up — one attention-grabber at a time", () => {
+  assert.match(appJsx, /const showAiConfigBadge = !aiConfigDone && !showAiNudge;/,
+    "the badge and popup must not compete on first run");
+  assert.match(appJsx, /badge=\{showAiConfigBadge \? "!" : null\}/,
+    "the Settings badge must read from showAiConfigBadge, not aiConfigDone alone");
 });
 
 // ── App.jsx: the "!" badge is its own click target ──────────────────────── //
