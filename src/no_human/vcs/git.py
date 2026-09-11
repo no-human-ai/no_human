@@ -283,12 +283,53 @@ class GitRepo:
             )
         return [line for line in proc.stdout.split("\n") if line]
 
+    def _run_null(self, *args: str, check: bool = True) -> str:
+        """Like `_run`, but for `-z` output specifically.
+
+        `_run`'s `proc.stdout.strip()` is a whole-output strip: NUL is not
+        Python whitespace, so it survives, but the leading space of the
+        FIRST path in the list does not (`" lead.py\\0zzz.py\\0"` ->
+        `"lead.py\\0zzz.py\\0"`) — silently dropping that filename's leading
+        character everywhere it's later compared byte-for-byte against the
+        filesystem or re-quoted as a pathspec. Same inline retry/identity
+        duplication as `_run`/`_run_porcelain_lines` (see the note on
+        `_run`) — this file accepts that duplication so the egress-allowlist
+        scanner can classify every `["git", ...]` construction statically.
+        Never call `.strip()` on the result; feed it straight to
+        `_null_paths`."""
+        cmd = [
+            "git",
+            "-c", f"user.name={self.identity_name}",
+            "-c", f"user.email={self.identity_email}",
+            *args,
+        ]
+        proc = subprocess.run(
+            cmd, cwd=self.path, capture_output=True, text=True,
+            **hidden_console_kwargs(),
+        )
+        if check:
+            for backoff in _GIT_RETRY_BACKOFFS_S:
+                if proc.returncode == 0 or not is_transient_git_failure(proc.stderr):
+                    break
+                time.sleep(backoff)
+                proc = subprocess.run(
+                    cmd, cwd=self.path, capture_output=True, text=True,
+                    **hidden_console_kwargs(),
+                )
+        if check and proc.returncode != 0:
+            raise GitError(
+                f"git {' '.join(args)} failed ({proc.returncode}): {proc.stderr.strip()}"
+            )
+        return proc.stdout
+
     @staticmethod
     def _null_paths(out: str) -> list[str]:
         """Paths from a `-z` git call: NUL-separated, never C-quoted, so they
         can be compared against the filesystem and fed back as pathspecs.
         Empty pieces dropped; never `.strip()`ed — a filename may begin/end
-        with a space."""
+        with a space. Callers MUST pass output from `_run_null`, not `_run`
+        — `_run`'s whole-output `.strip()` eats the leading space of the
+        first path."""
         return [p for p in out.split("\0") if p]
 
     def current_branch(self) -> str:
@@ -719,10 +760,10 @@ class GitRepo:
         # string either, and the file would be silently dropped from the
         # commit — trading a loud crash for silent work loss. `-z` keeps the
         # path literal so it round-trips through both.
-        modified = self._null_paths(self._run("diff", "--name-only", "-z", check=False))
+        modified = self._null_paths(self._run_null("diff", "--name-only", "-z", check=False))
         rel_paths.extend(modified)
         # Include untracked source files (e.g. new .py created via Bash).
-        untracked = self._null_paths(self._run(
+        untracked = self._null_paths(self._run_null(
             "ls-files", "-z", "--others", "--exclude-standard", check=False
         ))
         rejected_non_code: list[str] = []
@@ -781,7 +822,7 @@ class GitRepo:
             # the batch is misclassified as a phantom and silently dropped —
             # lost work traded for a loud crash. Fail closed.
             tracked = set(self._null_paths(
-                self._run("ls-files", "-z", "--", *missing)
+                self._run_null("ls-files", "-z", "--", *missing)
             ))
             phantom = {r for r in missing if r not in tracked}
             rel_paths = [r for r in rel_paths if r not in phantom]
@@ -1390,7 +1431,7 @@ class GitRepo:
     def changed_files(self, ref: str = "HEAD~1") -> list[str]:
         # `-z`: callers join this against the filesystem (`repo.path / f`),
         # so a C-quoted non-ASCII path here would never match on disk.
-        out = self._run("diff", "--name-only", "-z", ref, "HEAD", check=False)
+        out = self._run_null("diff", "--name-only", "-z", ref, "HEAD", check=False)
         return self._null_paths(out)
 
     def fetch(self, remote: str = "origin", *, prune: bool = True,

@@ -49,6 +49,17 @@ def _committed_files(repo_path):
     ).stdout
 
 
+def _committed_names(repo_path):
+    """Every path HEAD's commit touched, NUL-split so a leading/trailing
+    space in a filename (which `-z` preserves but is not C-quoted) is not
+    lost the way a whitespace-`.strip()`ed read would lose it."""
+    out = subprocess.run(
+        ["git", "show", "--name-only", "--format=", "-z", "HEAD"],
+        cwd=repo_path, capture_output=True, text=True,
+    ).stdout
+    return {n for n in out.split("\0") if n}
+
+
 def test_bash_created_md_beside_an_edit_created_py_is_committed(repo_with_bare_remote):
     """Verbatim repro from the escalated task (aaf752ad, 18.3M tokens over 2
     attempts): an edit-tool-created harness.py explicitly passed to
@@ -215,10 +226,49 @@ def test_a_created_then_deleted_path_no_longer_kills_the_commit(repo_with_bare_r
     assert "ghost.py" in files
 
 
+def test_a_leading_space_tracked_edit_is_not_dropped_by_a_whole_output_strip(repo_with_bare_remote):
+    """`_run`'s `proc.stdout.strip()` is a whole-output strip: it eats the
+    leading space off the FIRST path in a `-z` git call's output (a
+    filename may legitimately begin with a space), even though `-z`
+    itself is present and NUL survives the strip fine. `" lead.py"` sorts
+    before `"app.py"` (space < 'a'), so it lands first in `git diff
+    --name-only -z`'s output — exactly where the bug bites. The `-z`
+    producers in `commit_paths` must route through `_run_null` (which
+    never strips), not `_run`, or this tracked edit is silently dropped:
+    `"lead.py"` (space stripped) does not exist on disk, the phantom
+    filter misclassifies it as missing, the `ls-files` lookup can't match
+    the mangled name either, and it is dropped as a phantom."""
+    repo = GitRepo(repo_with_bare_remote)
+    repo.create_branch("no-human/leading-space", base="main")
+    lead = repo.path / " lead.py"
+    lead.write_text("a = 1\n")
+    _git(repo.path, "add", "-A")
+    _git(repo.path, "commit", "-m", "add lead.py")
+
+    lead.write_text("a = 2\n")
+    app = repo.path / "app.py"
+    app.write_text("x = 2\n")
+    repo.commit_paths([], "edit both tracked files")
+
+    names = _committed_names(repo.path)
+    assert " lead.py" in names
+    assert "app.py" in names
+
+
 def test_a_tracked_deletion_is_still_staged_as_a_deletion(repo_with_bare_remote):
     """A TRACKED path that was deleted must still be staged as a deletion —
     it must not share ghost.py's fate just because both are absent from
-    disk. The `ls-files -z --` lookup is what tells the two apart."""
+    disk. The `ls-files -z --` lookup is what tells the two apart.
+
+    Co-batched with a real edit (`app.py`, already tracked from the
+    fixture's init commit) so `rel_paths` can never end up empty and
+    `commit_paths`' own `if not staged: stage_all()` fallback can never
+    fire. Without that co-batch, a broken phantom/tracked split would drop
+    doomed.py's deletion from `rel_paths`, `git add` would stage nothing,
+    and `stage_all()` would silently sweep the deletion (and any other
+    dirty side-effect) back in — passing the test for the wrong reason. The
+    untouched `data/state.json` side-effect is the discriminator: it must
+    stay out of the commit, proving the fallback never ran."""
     repo = GitRepo(repo_with_bare_remote)
     repo.create_branch("no-human/tracked-deletion", base="main")
     doomed = repo.path / "doomed.py"
@@ -227,7 +277,12 @@ def test_a_tracked_deletion_is_still_staged_as_a_deletion(repo_with_bare_remote)
 
     os.remove(doomed)
     ghost = repo.path / "ghost.py"  # never existed at all
-    repo.commit_paths([str(doomed), str(ghost)], "remove doomed.py")
+    app = repo.path / "app.py"
+    app.write_text("x = 2\n")  # a real, always-stageable co-batched edit
+    data = repo.path / "data"
+    data.mkdir()
+    (data / "state.json").write_text('{"updated": true}')  # unrelated side-effect
+    repo.commit_paths([str(doomed), str(ghost), str(app)], "remove doomed.py")
 
     deleted = subprocess.run(
         ["git", "show", "--diff-filter=D", "--name-only", "--format=", "HEAD"],
@@ -240,7 +295,9 @@ def test_a_tracked_deletion_is_still_staged_as_a_deletion(repo_with_bare_remote)
     ).stdout
     assert tree.strip() == ""
     files = _committed_files(repo.path)
+    assert "app.py" in files
     assert "ghost.py" not in files
+    assert "state.json" not in files
 
 
 def test_an_add_that_fails_for_another_reason_still_raises(repo_with_bare_remote):
@@ -265,11 +322,21 @@ def test_an_add_that_fails_for_another_reason_still_raises(repo_with_bare_remote
     assert "secret.txt" in files
 
 
-def test_the_missing_path_lookup_fails_closed(repo_with_bare_remote, monkeypatch):
+def test_the_missing_path_lookup_fails_closed(repo_with_bare_remote):
     """The `ls-files -z --` missing-path lookup must fail closed: if IT
     errors, `commit_paths` must raise rather than silently treating the
     lookup's empty ("") result as "nothing is tracked" and dropping the
-    co-batched TRACKED deletion as if it were a phantom."""
+    co-batched TRACKED deletion as if it were a phantom.
+
+    Forces a REAL `ls-files` failure (an invalid pathspec magic in one of
+    the missing paths, confirmed to exit 128) rather than monkeypatching
+    `_run`/`_run_null` to raise unconditionally — a monkeypatch that raises
+    regardless of the `check` kwarg can't tell `check=True` (must raise)
+    apart from a `check=False` mutation (must swallow and return ""), so it
+    cannot actually catch a regression to `check=False`. This can: with
+    `check=True` the real git failure propagates as GitError; a mutation to
+    `check=False` would instead return "" and reach `git commit`, which
+    this test's `pytest.raises` would catch as a failure to raise."""
     repo = GitRepo(repo_with_bare_remote)
     repo.create_branch("no-human/lookup-fails-closed", base="main")
     doomed = repo.path / "doomed.py"
@@ -278,19 +345,13 @@ def test_the_missing_path_lookup_fails_closed(repo_with_bare_remote, monkeypatch
     head_before = repo.head_sha()
 
     os.remove(doomed)
-    ghost = repo.path / "ghost.py"
-
-    original_run = GitRepo._run
-
-    def poisoned_run(self, *args, check=True):
-        if args[:3] == ("ls-files", "-z", "--"):
-            raise GitError("simulated ls-files failure")
-        return original_run(self, *args, check=check)
-
-    monkeypatch.setattr(GitRepo, "_run", poisoned_run)
+    # `:(nosuchmagic)` is not a real git pathspec magic word — `ls-files`
+    # rejects it with exit 128 before it can report on anything else in the
+    # same invocation, including the co-batched `doomed.py`.
+    poison = repo.path / ":(nosuchmagic)ghost.py"
 
     with pytest.raises(GitError):
-        repo.commit_paths([str(doomed), str(ghost)], "remove doomed.py")
+        repo.commit_paths([str(doomed), str(poison)], "remove doomed.py")
 
     assert repo.head_sha() == head_before
 
@@ -300,9 +361,14 @@ def test_every_filesystem_compared_path_output_is_nul_or_quotepath_disabled():
     compared against the filesystem or fed back as a pathspec must carry
     `-z` (NUL-separated) or `-c core.quotePath=false` — otherwise a
     C-quoted non-ASCII path silently fails that comparison and is dropped.
-    Mirrors the enumeration in `commit_paths`' docstring."""
+    Mirrors the enumeration in `commit_paths`' docstring.
+
+    A `-z` call must also run through `_run_null`, not `_run`: `_run`'s
+    whole-output `.strip()` eats the leading space off the FIRST
+    NUL-separated path, silently truncating that one filename even though
+    `-z` itself is present."""
     src_path = Path(__file__).resolve().parents[1] / "src" / "no_human" / "vcs" / "git.py"
-    tree = ast.parse(src_path.read_text())
+    tree = ast.parse(src_path.read_text(encoding="utf-8"))
 
     def const_str(node):
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
@@ -313,16 +379,19 @@ def test_every_filesystem_compared_path_output_is_nul_or_quotepath_disabled():
         calls = []
         for node in ast.walk(func_node):
             if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-                    and node.func.attr == "_run"):
-                calls.append([const_str(a) for a in node.args])
+                    and node.func.attr in ("_run", "_run_null")):
+                calls.append((node.func.attr, [const_str(a) for a in node.args]))
         return calls
 
     funcs = {
         node.name: node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)
     }
 
-    def is_safe(words):
-        return "-z" in words or (
+    def is_safe(call):
+        attr, words = call
+        if "-z" in words:
+            return attr == "_run_null"
+        return (
             len(words) >= 2 and words[0] == "-c" and words[1] == "core.quotePath=false"
         )
 
@@ -332,19 +401,21 @@ def test_every_filesystem_compared_path_output_is_nul_or_quotepath_disabled():
     # — its output is never compared against the filesystem or fed back as
     # a pathspec, so C-quoting cannot cause a silent drop and it is
     # deliberately excluded from this guard.
-    diff_producer = [w for w in cp_calls if w and w[0] == "diff" and "--cached" not in w]
-    others_producer = [w for w in cp_calls if w and w[0] == "ls-files" and "--others" in w]
-    assert diff_producer and all(is_safe(w) for w in diff_producer)
-    assert others_producer and all(is_safe(w) for w in others_producer)
+    diff_producer = [c for c in cp_calls if c[1] and c[1][0] == "diff" and "--cached" not in c[1]]
+    others_producer = [c for c in cp_calls if c[1] and c[1][0] == "ls-files" and "--others" in c[1]]
+    lookup_calls = [c for c in cp_calls if c[1] and c[1][0] == "ls-files" and "--others" not in c[1]]
+    assert diff_producer and all(is_safe(c) for c in diff_producer)
+    assert others_producer and all(is_safe(c) for c in others_producer)
+    assert lookup_calls and all(is_safe(c) for c in lookup_calls)
 
     usf_calls = run_calls_in(funcs["uncommitted_source_files"])
-    status_calls = [w for w in usf_calls if "status" in w]
-    assert status_calls and all(is_safe(w) for w in status_calls)
+    status_calls = [c for c in usf_calls if "status" in c[1]]
+    assert status_calls and all(is_safe(c) for c in status_calls)
 
     dir_calls = run_calls_in(funcs["_dirs_newly_added_by_head"])
-    show_calls = [w for w in dir_calls if "show" in w]
-    assert show_calls and all(is_safe(w) for w in show_calls)
+    show_calls = [c for c in dir_calls if "show" in c[1]]
+    assert show_calls and all(is_safe(c) for c in show_calls)
 
     cf_calls = run_calls_in(funcs["changed_files"])
-    diff_calls = [w for w in cf_calls if w and w[0] == "diff"]
-    assert diff_calls and all(is_safe(w) for w in diff_calls)
+    diff_calls = [c for c in cf_calls if c[1] and c[1][0] == "diff"]
+    assert diff_calls and all(is_safe(c) for c in diff_calls)

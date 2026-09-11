@@ -58,11 +58,22 @@ DONNEES = unicodedata.normalize("NFC", "données")
 
 def test_a_c_quoted_modified_tracked_file_is_committed(quoted_paths_repo):
     """A MODIFIED TRACKED file whose name git C-quotes must be committed by
-    the `diff --name-only` producer alone (`paths=[]`, so it is the only
-    source feeding `commit_paths`). Pre-fix, `core.quotePath` renders it as
-    the literal `"caf\\303\\251.py"`, whose `Path.exists()` is False, so the
-    phantom filter (once added) would misclassify it as missing and the
-    commit would silently succeed WITHOUT the change ever landing."""
+    the `diff --name-only` producer alone — café.py is never passed in
+    `paths` and never explicitly touched any other way, so the producer is
+    its only route into `commit_paths`. Pre-fix, `core.quotePath` renders
+    it as the literal `"caf\\303\\251.py"`, whose `Path.exists()` is False,
+    so the phantom filter misclassifies it as missing and drops it.
+
+    `app.py` is co-batched via the explicit `paths` argument — a route
+    that does not depend on the (possibly broken) diff producer at all —
+    so `rel_paths` can never end up empty and `commit_paths`' own `if not
+    staged: stage_all()` fallback can never fire. Without that co-batch, a
+    broken diff producer would empty `rel_paths` entirely, `git add` would
+    stage nothing, and `stage_all()` would silently sweep café.py's real
+    on-disk edit (and any other dirty side-effect) back in — passing this
+    test for the wrong reason. The untouched `data/state.json` side-effect
+    is the discriminator: it must stay out of the commit, proving the
+    fallback never ran."""
     repo = GitRepo(quoted_paths_repo)
     cafe = repo.path / CAFE
     cafe.write_text("x = 1\n")
@@ -70,9 +81,17 @@ def test_a_c_quoted_modified_tracked_file_is_committed(quoted_paths_repo):
     _git(repo.path, "commit", "-m", "add cafe")
 
     cafe.write_text("x = 2\n")
-    repo.commit_paths([], "modify cafe")
+    app = repo.path / "app.py"
+    app.write_text("x = 2\n")  # explicit co-batch, independent of the diff producer
+    data = repo.path / "data"
+    data.mkdir()
+    (data / "state.json").write_text('{"updated": true}')  # unrelated side-effect
+    repo.commit_paths([str(app)], "modify cafe")
 
-    assert CAFE in _committed_names(repo.path)
+    names = _committed_names(repo.path)
+    assert CAFE in names
+    assert "app.py" in names
+    assert "state.json" not in names
     # Content, not just the name, must have landed — this is what makes a
     # silent drop (name absent from the diff but file still on disk)
     # distinguishable from a genuine no-op commit.
