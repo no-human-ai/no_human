@@ -166,14 +166,14 @@ FROZEN_FUNCTION_LINES = {
     # and its anchored comment, `type_hook` reaching
     # `_compose_post_tool_hooks`, and the widened `backend_degraded`
     # condition. Re-measured on the merge result.
-    # 2261 -> 2274 (+13): landed-claim guard wiring (task: "An already-landed
+    # 2261 -> 2272 (+11): landed-claim guard wiring (task: "An already-landed
     # claim is refused when made, not 40 turns later") — builds
     # `claim_guard = self._build_landed_claim_guard(...)`, stashes it on
     # `self._active_landed_claim_guard`, folds it into the `backend_degraded`
     # gate's condition and its `claim_guard = None` / `_active_landed_claim_guard
     # = None` teardown, and threads it through `_compose_post_tool_hooks`.
     # Re-measured on the merge result with the scanner below.
-    "core/orchestrator.py:Orchestrator._run_attempt": 2274,
+    "core/orchestrator.py:Orchestrator._run_attempt": 2272,
     # 760 -> 778 (+18): dispatch-time intake-eval hoisted path — the `elif
     # ctx.get("eval_result")` branch that acts on a grill/wizard-stored
     # verdict (idempotency marker, cost/residual-gap comments) added inside
