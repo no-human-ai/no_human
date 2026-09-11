@@ -1892,6 +1892,22 @@ class Orchestrator:
         # `_run_review` call so a stale render from an earlier round can
         # never be mistaken for this one's.
         self._pre_review_red_render: tuple | None = None
+        # Round-2 send-back, Blocker 1: `_owned_failing_tests`/
+        # `_newly_failing_vs_base` are each asked twice per round — once by
+        # the pre-review evidence path, once by TESTING's post-review
+        # classifier. Without a cache shared between them, two independent
+        # real runs of a load-dependent/flaky check can DISAGREE, so the
+        # reviewer could be shown one verdict while TESTING bills the
+        # other for the SAME ids on the SAME round. These caches make each
+        # question get asked once per round and the SAME answer reused by
+        # both call sites (`_owned_failing_tests_once`/
+        # `_newly_failing_vs_base_once`), keyed on the actual call
+        # arguments. Cleared at the top of every `_run_review` call —
+        # exactly like `_pre_review_red_render` above — so caching never
+        # leaks across retry rounds, where a genuinely different (or newly
+        # flaky) re-check must still run fresh.
+        self._owned_attribution_cache: dict[tuple, list[str]] = {}
+        self._base_attribution_cache: dict[tuple, "list[str] | None"] = {}
 
     # ----------------------------- events ---------------------------------- #
 
@@ -7176,7 +7192,7 @@ class Orchestrator:
                 # never be excused as environment just because its text
                 # happens to contain a prerequisite signature (round-2 review
                 # MAJOR-4).
-                owned = await self._owned_failing_tests(
+                owned = await self._owned_failing_tests_once(
                     repo, base, failing_tests, cwd=test_cwd)
                 # The prerequisite signature (round 2) OWNS the missing-
                 # build-prerequisite class outright — checked UNCONDITIONALLY,
@@ -7305,7 +7321,7 @@ class Orchestrator:
                     # full suite) and fail the attempt only on ids that are NEWLY
                     # failing (pass on base, fail here). Ids red on BOTH are
                     # pre-existing — surfaced honestly, not blamed on the change.
-                    newly_failing = await self._newly_failing_vs_base(
+                    newly_failing = await self._newly_failing_vs_base_once(
                         repo, test_cmd, base, failing_tests, cwd=test_cwd,
                         env_dependent=bool((task.config or {}).get("env_setup")),
                     )
@@ -12829,6 +12845,46 @@ class Orchestrator:
                 repo._run("worktree", "remove", "--force", str(wt_dir))
             shutil.rmtree(wt_dir, ignore_errors=True)
 
+    async def _owned_failing_tests_once(
+        self, repo: GitRepo, base: str | None, failing_tests: list[str],
+        *, cwd: str | None = None,
+    ) -> list[str]:
+        """Memoizing wrapper around `_owned_failing_tests`, shared by the
+        pre-review evidence path (`_pre_review_base_attribution`) and
+        TESTING's post-review classifier, so the two call sites ask this
+        question ONCE per round and reuse the SAME answer (round-2 send-
+        back, Blocker 1 — see `self._owned_attribution_cache`'s definition
+        in `__init__` for why). Keyed on the actual call arguments: same
+        real-world question, same real-world answer. The cache is reset to
+        `{}` at the top of every `_run_review` round, so this never
+        suppresses a genuinely fresh check on a later round.
+        """
+        key = (id(repo), base, tuple(failing_tests), cwd)
+        if key not in self._owned_attribution_cache:
+            self._owned_attribution_cache[key] = await self._owned_failing_tests(
+                repo, base, failing_tests, cwd=cwd)
+        return self._owned_attribution_cache[key]
+
+    async def _newly_failing_vs_base_once(
+        self, repo: GitRepo, test_cmd: str | None, base: str | None,
+        failing_tests: list[str], cwd: "Path | None" = None,
+        env_dependent: bool = False,
+    ) -> list[str] | None:
+        """Memoizing wrapper around `_newly_failing_vs_base` — see
+        `_owned_failing_tests_once`'s docstring immediately above for why
+        this exists and how it is scoped to one round. Shared by the pre-
+        review evidence path and TESTING's post-review plain-red
+        classifier so a flaky/load-dependent base-tree recheck cannot
+        answer differently to the two paths for the same ids on the same
+        round.
+        """
+        key = (id(repo), test_cmd, base, tuple(failing_tests), cwd, env_dependent)
+        if key not in self._base_attribution_cache:
+            self._base_attribution_cache[key] = await self._newly_failing_vs_base(
+                repo, test_cmd, base, failing_tests, cwd=cwd,
+                env_dependent=env_dependent)
+        return self._base_attribution_cache[key]
+
     async def _pre_review_base_attribution(
         self, repo: GitRepo, test_cmd: str | None, base: str | None,
         failing_tests: list[str], cwd: "Path | None" = None,
@@ -12846,10 +12902,13 @@ class Orchestrator:
         TESTING has had a chance to run at all.
 
         Asks the SAME two questions TESTING's plain-red branch asks post-
-        review, with the SAME helpers and SAME kwargs
-        (`_newly_failing_vs_base`, `_owned_failing_tests`) — never a
-        reimplementation of either — so the two paths can never disagree
-        about the same run.
+        review, through the SAME memoizing wrappers and SAME kwargs
+        (`_newly_failing_vs_base_once`, `_owned_failing_tests_once`) — never
+        a reimplementation of either, and never a second independent real
+        run of either: both call sites share one cached answer per round
+        (round-2 send-back, Blocker 1), so the two paths cannot disagree
+        about the same run even when the underlying check is flaky/load-
+        dependent.
 
         (Round-2 send-back, CRITICAL: an earlier version of this helper
         asked only `_newly_failing_vs_base`. TESTING's own excuse check is
@@ -12866,8 +12925,18 @@ class Orchestrator:
         site below.)
 
         Returns ``(pre_existing_ids, new_ids, owned_ids, attribution)``.
-        The three id lists PARTITION *failing_tests* — every failing id
-        appears in exactly one of them:
+        ``pre_existing_ids``/``new_ids`` PARTITION *failing_tests* between
+        them (every failing id is in exactly one of those two) — but
+        ``owned_ids`` is an ORTHOGONAL ANNOTATION, not a third partition
+        member: an owned id still appears in whichever of
+        ``pre_existing_ids``/``new_ids`` its real base-tree result puts it
+        in, so callers can render both the true base-tree fact AND the
+        ownership override, instead of the base-tree fact being discarded
+        for owned ids (round-2 send-back, Blocker 2: a renderer that only
+        ever sees a disjoint "owned" bucket cannot tell a truly-red-on-base
+        owned id from a green-on-base owned id, and both the reviewer's
+        prompt and the checklist evidence text mistakenly claimed the
+        latter was "red on the base tree too").
 
           * ``owned_ids`` — this attempt's own diff added or modified the
             test function(s) these ids name. Attributed to the change no
@@ -12878,11 +12947,14 @@ class Orchestrator:
             always asked, even when the base-tree recheck itself cannot
             answer) and itself fail-closed: a failure resolving ownership
             degrades to `[]` (nothing wrongly excused), never raises.
-          * ``new_ids`` — not owned, and (when ``attribution ==
-            "attributed"``) `_newly_failing_vs_base` reported these as red
-            on the change but NOT on base.
-          * ``pre_existing_ids`` — not owned, and (when ``attribution ==
-            "attributed"``) already red on the base tree too.
+          * ``new_ids`` — (when ``attribution == "attributed"``)
+            `_newly_failing_vs_base` reported these as red on the change
+            but NOT on base. May overlap ``owned_ids``.
+          * ``pre_existing_ids`` — (when ``attribution == "attributed"``)
+            already red on the base tree too. May overlap ``owned_ids``;
+            callers must still attribute those ids to the change (never
+            excuse them) because ownership overrides the base-tree fact for
+            billing purposes even though the fact itself is preserved here.
 
         ``attribution`` describes the BASE-TREE question alone:
 
@@ -12897,14 +12969,15 @@ class Orchestrator:
             ownership is a separate question, resolved regardless.
         """
         try:
-            owned = await self._owned_failing_tests(repo, base, failing_tests, cwd=cwd)
+            owned = await self._owned_failing_tests_once(
+                repo, base, failing_tests, cwd=cwd)
         except Exception:  # noqa: BLE001 — evidence only, never block/raise
             log.warning("pre-review ownership check failed", exc_info=True)
             owned = []
         owned_set = set(owned)
         owned_ids = [t for t in failing_tests if t in owned_set]
         try:
-            newly_failing = await self._newly_failing_vs_base(
+            newly_failing = await self._newly_failing_vs_base_once(
                 repo, test_cmd, base, failing_tests, cwd=cwd,
                 env_dependent=env_dependent,
             )
@@ -12914,9 +12987,12 @@ class Orchestrator:
         if newly_failing is None:
             return [], [], owned_ids, "unknown"
         new_set = set(newly_failing)
-        non_owned = [t for t in failing_tests if t not in owned_set]
-        new_ids = [t for t in non_owned if t in new_set]
-        pre_existing_ids = [t for t in non_owned if t not in new_set]
+        # Split ALL failing ids by the real base-tree fact — owned_ids is an
+        # annotation, not an exclusion, so an owned id keeps landing in
+        # whichever bucket its actual base-tree result puts it in (it may
+        # appear in both owned_ids and one of these two lists).
+        new_ids = [t for t in failing_tests if t in new_set]
+        pre_existing_ids = [t for t in failing_tests if t not in new_set]
         return pre_existing_ids, new_ids, owned_ids, "attributed"
 
     async def _flaky_on_rerun(
@@ -13900,6 +13976,11 @@ class Orchestrator:
         # the pre-review red block below and its comment on `_pre_review_red_
         # render`.
         self._pre_review_red_render = None
+        # Same reset, same reason, for the per-round attribution caches
+        # (`_owned_failing_tests_once`/`_newly_failing_vs_base_once`) — see
+        # their definitions in `__init__`.
+        self._owned_attribution_cache = {}
+        self._base_attribution_cache = {}
         # Held-out first (B2 #8): deterministic, cheap, and independent of the
         # reviewer — including advisory mode, which skips the LLM reviewer but
         # must not skip a verifiable signal that already exists on disk. This
@@ -14147,30 +14228,53 @@ class Orchestrator:
                     ids_text += f" (+{pre_review_ids_dropped} more)"
             else:
                 ids_text = "(no individual test ids parsed — see the tests event/artifact)"
-            def _bucket_text(ids: list[str], dropped: int) -> str:
-                text = ", ".join(ids) or "(none)"
+            def _bucket_text(
+                ids: list[str], dropped: int, owned: "set[str] | None" = None,
+            ) -> str:
+                # `owned` marks ids inline (round-2 send-back, Blocker 2):
+                # ownership is an ANNOTATION on top of the real base-tree
+                # bucket an id lands in, never a reason to hide or
+                # misreport that bucket — an owned id keeps whichever of
+                # pre-existing/newly-introduced its real base-tree result
+                # says, marked with `*`, rather than being pulled into a
+                # separate claim that is unconditionally "red on base too"
+                # even when the id is actually green on base (newly
+                # introduced) or the base check never ran (unknown).
+                shown = [f"{t} *" if owned and t in owned else t for t in ids]
+                text = ", ".join(shown) or "(none)"
                 if dropped:
                     text += f" (+{dropped} more)"
                 return text
 
+            owned_set = set(pre_review_owned_ids)
             if pre_review_attribution == "attributed":
                 attribution_text = (
                     " — of these, already red on the base tree (pre-existing): "
-                    + _bucket_text(pre_review_pre_existing_ids, pre_review_pre_existing_ids_dropped)
+                    + _bucket_text(
+                        pre_review_pre_existing_ids,
+                        pre_review_pre_existing_ids_dropped, owned_set)
                     + "; newly introduced by this change: "
-                    + _bucket_text(pre_review_new_ids, pre_review_new_ids_dropped)
+                    + _bucket_text(
+                        pre_review_new_ids, pre_review_new_ids_dropped, owned_set)
                 )
+                if pre_review_owned_ids:
+                    attribution_text += (
+                        " (ids marked * were added or modified by this "
+                        "diff itself — attributed to the change regardless "
+                        "of the base-tree result above)"
+                    )
             else:
                 attribution_text = (
                     " — base-tree attribution: UNKNOWN (the base-tree recheck "
                     "did not run to a verdict; not excused, not blamed)"
                 )
-            if pre_review_owned_ids:
-                attribution_text += (
-                    "; red on base too, but this diff added or modified the "
-                    "test itself (attributed to the change regardless): "
-                    + _bucket_text(pre_review_owned_ids, pre_review_owned_ids_dropped)
-                )
+                if pre_review_owned_ids:
+                    attribution_text += (
+                        "; this diff added or modified: "
+                        + _bucket_text(pre_review_owned_ids, pre_review_owned_ids_dropped)
+                        + " — attributed to the change regardless of the "
+                        "(unknown) base-tree result"
+                    )
             return ChecklistItem(
                 _PRE_REVIEW_RED_LABEL,
                 False,

@@ -1651,6 +1651,57 @@ async def test_gate_review_hands_the_backend_a_prompt_naming_the_reviewed_sha(
         "reviewed_branch to _build_review_prompt")
 
 
+async def test_gate_review_hands_the_backend_a_prompt_with_the_base_tree_attribution(
+    simple_repo,
+):
+    """Round-2 send-back, Major: the `review()` -> `_build_review_prompt`
+    seam was untested at the `review()` LEVEL for the base-tree attribution
+    kwargs added by this task (`failing_test_ids`, `pre_existing_test_ids`,
+    `new_test_ids`, `owned_test_ids`, `test_attribution`) — every existing
+    test either called `_build_review_prompt` directly (so it cannot see
+    whether `review()` itself still forwards these kwargs to it) or never
+    passed them at all. The two tests above are the exact precedent this
+    one follows for the sha/branch kwargs; this is their twin for the
+    attribution kwargs `review()` forwards at `reviewer.py:2632-2640`.
+
+    Removing any one of those forwarded kwargs from that call turns this
+    red: the captured prompt the BACKEND actually receives would then be
+    missing the split or the ownership marker asserted below."""
+    output = _block(True, [
+        {"label": "mul(a,b) implemented", "passed": True, "evidence": "calc.py:3"},
+    ])
+    backend = PromptRecordingBackend(output)
+    reviewer = AdversarialReviewer(backend=backend)
+    t = Task.new("add mul()")
+    t.acceptance_criteria = ["mul(a,b) returns product"]
+
+    await reviewer.review(
+        t, repo_path=simple_repo, mode="gate",
+        diff_override="--- a/calc.py\n+++ b/calc.py\n+x\n",
+        failing_test_ids=[
+            "tests/test_calc.py::test_mul", "tests/test_calc.py::test_div",
+        ],
+        pre_existing_test_ids=["tests/test_calc.py::test_mul"],
+        new_test_ids=["tests/test_calc.py::test_div"],
+        owned_test_ids=["tests/test_calc.py::test_div"],
+        test_attribution="attributed",
+    )
+
+    assert backend.prompts, "review() never called the backend"
+    prompt = backend.prompts[0]
+    assert "Already red on the base tree" in prompt, (
+        "the gate prompt review() hands the backend does not carry the "
+        "pre-existing/base-tree attribution split — reviewer.py:2634-2635 "
+        "must still pass pre_existing_test_ids/test_attribution through to "
+        "_build_review_prompt")
+    assert "tests/test_calc.py::test_mul" in prompt
+    assert "NOT red on the base tree" in prompt
+    assert "tests/test_calc.py::test_div *" in prompt, (
+        "the newly-introduced, owned id must be named on the 'newly "
+        "introduced' line and marked '*' — reviewer.py:2636-2638 must still "
+        "pass new_test_ids/owned_test_ids through to _build_review_prompt")
+
+
 def test_pr_body_truthfulness_no_longer_claims_a_mutation_it_cannot_detect():
     """nh67 AC3. `test_pr_body_truthfulness.py`'s already_satisfied and gate
     wiring tests used to claim (falsely) that mutating `review()`'s call

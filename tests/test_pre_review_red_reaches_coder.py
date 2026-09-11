@@ -540,13 +540,21 @@ async def test_build_review_prompt_carries_fixed_failing_ids_section(bare_repo, 
     assert "tests/test_calc.py::test_mul" in prompt_attributed
     assert "NOT red on the base tree" in prompt_attributed
     assert "tests/test_calc.py::test_div" in prompt_attributed
-    # The ownership bucket renders too, and unconditionally warns the id is
-    # attributed to the change regardless of the base-tree split above —
-    # the exact scenario the round-2 send-back's Blocker 1 named: an id red
-    # on base too, but owned by this diff, must never read as an excuse.
-    assert "this diff itself added or modified the failing test" in prompt_attributed
+    # `test_div` is owned AND green-on-base (it is in `new_test_ids`, not
+    # `pre_existing_test_ids`) — the exact scenario the round-2 send-back's
+    # Blocker 2 named: ownership must be rendered as an INLINE annotation on
+    # the id's real (newly-introduced) base-tree bucket, never as a separate
+    # unconditional "red on the base tree too" claim that would misreport a
+    # green-on-base owned id as pre-existing/base-red.
+    assert "added or modified by this diff itself" in prompt_attributed
     assert "attributed to this change regardless" in prompt_attributed
+    assert "Red on the base tree too" not in prompt_attributed
     assert "Attribution status: UNKNOWN" not in prompt_attributed
+    # `test_div` must be named on the "newly introduced" line, marked as
+    # owned — never claimed to be red on base.
+    new_line_start = prompt_attributed.index("NOT red on the base tree")
+    new_line_end = prompt_attributed.index("\n", new_line_start)
+    assert "test_div" in prompt_attributed[new_line_start:new_line_end]
 
     prompt_unknown = _build_review_prompt(
         task,
@@ -566,6 +574,57 @@ async def test_build_review_prompt_carries_fixed_failing_ids_section(bare_repo, 
     # fact would be wrong.
     assert "not this review's opinion" not in prompt_attributed
     assert "not this review's opinion" not in prompt_unknown
+
+    # Round-2 send-back, Blocker 2 — required three-way pinning test: render
+    # the same owned id (`test_mul`) across all three attribution shapes an
+    # owned id can land in — genuinely red on base, genuinely green on base
+    # (newly introduced), and unknown — and prove the texts are NOT collapsed
+    # into one unconditional "owned means red on base" claim.
+    prompt_owned_red_on_base = _build_review_prompt(
+        task,
+        diff="--- a/calc.py\n+++ b/calc.py\n@@ ...\n",
+        test_output="all green",
+        held_out_output="",
+        failing_test_ids=["tests/test_calc.py::test_mul"],
+        pre_existing_test_ids=["tests/test_calc.py::test_mul"],
+        new_test_ids=[],
+        owned_test_ids=["tests/test_calc.py::test_mul"],
+        test_attribution="attributed",
+    )
+    prompt_owned_unknown = _build_review_prompt(
+        task,
+        diff="--- a/calc.py\n+++ b/calc.py\n@@ ...\n",
+        test_output="all green",
+        held_out_output="",
+        failing_test_ids=["tests/test_calc.py::test_mul"],
+        owned_test_ids=["tests/test_calc.py::test_mul"],
+        test_attribution="unknown",
+    )
+
+    # The three renders visibly differ from one another and from the
+    # owned+green-on-base render above (`prompt_attributed`) — ownership
+    # never collapses the three real attribution states into one text.
+    assert prompt_owned_red_on_base != prompt_attributed
+    assert prompt_owned_red_on_base != prompt_owned_unknown
+    assert prompt_attributed != prompt_owned_unknown
+
+    # owned + genuinely red on base: this is the ONE case where an
+    # unconditional "already red on the base tree" claim is actually true.
+    assert "Already red on the base tree" in prompt_owned_red_on_base
+    assert "test_mul" in prompt_owned_red_on_base
+
+    # owned + green-on-base (`prompt_attributed`'s test_div, asserted above)
+    # and owned + unknown (`prompt_owned_unknown`) must NEVER carry that
+    # same unconditional base-tree-red claim.
+    assert "Already red on the base tree" not in prompt_owned_unknown
+    assert "Red on the base tree too" not in prompt_owned_unknown
+    assert "NOT red on the base tree" not in prompt_owned_unknown
+
+    # owned + unknown: the id is still named and flagged owned, but neither
+    # a red nor a green base-tree fact is claimed for it.
+    assert "test_mul" in prompt_owned_unknown
+    assert "Attribution status: UNKNOWN" in prompt_owned_unknown
+    assert "attributed to this change regardless" in prompt_owned_unknown
 
 
 def test_bound_failing_test_ids_caps_and_reports_dropped_count():
@@ -632,6 +691,15 @@ async def test_pre_review_attribution_ids_are_bounded_at_the_call_site(
     mocks the three attribution helpers directly to actually exercise the
     cap on `pre_existing_ids`/`new_ids`/`owned_ids`, not just on the plain
     failing-ids list.
+
+    `owned_ids` here are ALSO reported by the mocked `_newly_failing_vs_base`
+    as newly-failing (fail on change, pass on base) — a realistic case (the
+    coder's own diff added a new failing test). Per the round-2 send-back's
+    Blocker 2 fix, ownership is an ANNOTATION on top of the real base-tree
+    bucket, not a disjoint third partition: those ids correctly land in
+    `new_test_ids` too (in addition to `owned_test_ids`), so the cap on
+    `new_test_ids` is exercised against the UNION of `new_ids` and
+    `owned_ids`, not `new_ids` alone.
     """
     pre_existing_ids = [f"tests/test_many.py::test_old_{i}"
                          for i in range(_FAILING_TEST_ID_CAP + 1)]
@@ -661,8 +729,12 @@ async def test_pre_review_attribution_ids_are_bounded_at_the_call_site(
     call = reviewer.calls[0]
     assert call["pre_existing_test_ids"] == pre_existing_ids[:_FAILING_TEST_ID_CAP]
     assert call["pre_existing_test_ids_dropped"] == 1
-    assert call["new_test_ids"] == new_ids[:_FAILING_TEST_ID_CAP]
-    assert call["new_test_ids_dropped"] == 1
+    # new_ids ∪ owned_ids (annotation, not exclusion — Blocker 2): every
+    # owned id here is also reported newly-failing, so it lands in
+    # new_test_ids too, and the cap applies to the combined list.
+    unioned_new = new_ids + owned_ids
+    assert call["new_test_ids"] == unioned_new[:_FAILING_TEST_ID_CAP]
+    assert call["new_test_ids_dropped"] == len(unioned_new) - _FAILING_TEST_ID_CAP
     assert call["owned_test_ids"] == owned_ids[:_FAILING_TEST_ID_CAP]
     assert call["owned_test_ids_dropped"] == 1
 
@@ -835,25 +907,30 @@ async def test_pre_review_red_run_shows_the_reviewer_the_base_tree_split(
     assert "newly introduced by this change" in evidence, evidence
 
 
-async def test_owned_red_id_is_never_shown_as_pre_existing_and_still_fails(
+async def test_owned_red_id_is_annotated_not_hidden_and_still_fails(
     bare_repo, tmp_path, store,
 ):
-    """Round-2 send-back, Blocker 1 (CRITICAL, re-regression): TESTING's own
-    excuse check is `newly_failing == [] and not owned` — an id
-    `_owned_failing_tests` names is billed there NO MATTER what the base
-    tree shows. An earlier version of `_pre_review_base_attribution` asked
-    only `_newly_failing_vs_base`, so the exact case here —
-    `_newly_failing_vs_base` returns `[]` (the id reads "already red on the
-    base tree too") while `_owned_failing_tests` names the SAME id (this
-    attempt's own diff added or modified it) — would show the reviewer
-    "already red on the base tree (pre-existing, not this change's fault)"
-    for an id TESTING is about to bill regardless: the two paths visibly
-    disagreeing about the one run they must describe identically.
+    """Round-2 send-back, Blocker 2 (CRITICAL, re-regression) — renamed and
+    rewritten from `..._is_never_shown_as_pre_existing_and_still_fails`,
+    whose assertion that an owned id must NEVER appear in
+    `pre_existing_test_ids` was ITSELF the bug this round's send-back
+    flagged: an earlier fix (round 1) made ownership a disjoint third
+    bucket that EXCLUDED owned ids from the base-tree split, discarding
+    their real base-tree fact — which the round-2 send-back rejected,
+    because the resulting renderer then had no choice but to either hide
+    the fact or (an even earlier version) unconditionally claim "red on
+    the base tree too" regardless of the real result.
 
-    This asserts BOTH halves together: the id must never appear in
-    `pre_existing_test_ids` (it must surface only in `owned_test_ids`), AND
-    the round's outcome must be FAILED — an owned id is never an excuse,
-    pre-review evidence or not.
+    Ownership is an ANNOTATION, not a disjoint bucket: an id this attempt's
+    own diff added or modified still lands in whichever of
+    `pre_existing_test_ids`/`new_test_ids` its real base-tree result puts
+    it in. Here `_newly_failing_vs_base` returns `[]`, so `owned_id` is
+    genuinely red on base too — it belongs in `pre_existing_test_ids`, AND
+    is separately flagged in `owned_test_ids` so a reader knows ownership
+    overrides the excuse for BILLING purposes even though the base-tree
+    fact itself is real. TESTING's own billing is UNCHANGED by this
+    ticket: the round still FAILS — an owned id is never excused, no
+    matter what the base tree shows or how the evidence renders.
     """
     owned_id = "tests/test_calc.py::test_mul"
     tr = runner.TestRunResult(
@@ -881,13 +958,16 @@ async def test_owned_red_id_is_never_shown_as_pre_existing_and_still_fails(
     assert outcome.status is TaskStatus.FAILED, outcome.detail
 
     call = reviewer.calls[0]
-    assert owned_id not in (call["pre_existing_test_ids"] or []), call
-    assert owned_id in (call["owned_test_ids"] or []), call
+    # The real base-tree fact survives the ownership override: owned_id IS
+    # reported pre-existing (red on base too)...
+    assert owned_id in (call["pre_existing_test_ids"] or []), call
     assert call["new_test_ids"] == [], call
+    # ...AND is separately, additionally flagged owned.
+    assert owned_id in (call["owned_test_ids"] or []), call
 
     persisted = attempts[-1]["test_results"]
     persisted = json.loads(persisted) if isinstance(persisted, str) else (persisted or {})
-    assert owned_id not in (persisted.get("pre_existing_ids") or []), persisted
+    assert owned_id in (persisted.get("pre_existing_ids") or []), persisted
     assert owned_id in (persisted.get("owned_ids") or []), persisted
 
 
@@ -1077,13 +1157,28 @@ async def test_the_test_runner_is_called_once_per_round_on_the_excused_path(
     TESTING. Same idiom as `tests/test_e2e_orchestrator.py::
     test_the_suite_runs_once_per_attempt_not_twice`'s `_count_test_runs`,
     replicated locally for the excused-red path that test doesn't cover.
-    No EXTRA test run (no subprocess, no worktree) is introduced at review
-    time (the 03267ead regression this whole fix avoids repeating) — this
-    task's evidence-only base-tree attribution reuses `_newly_failing_vs_base`
-    itself, and (round-2 send-back, Blocker 1) the ownership veto reuses
-    `_owned_failing_tests` itself too, both mocked here, so the only
-    observable new awaits are on those two mocks — never on `_flaky_on_rerun`
-    (re-runs tests) and never on a second real subprocess run."""
+    No EXTRA run of the FULL suite is introduced at review time (the
+    03267ead regression this whole fix avoids repeating): `runner.run_tests`
+    itself — the call that would spawn the whole suite again — still fires
+    exactly once. This is a narrower claim than "nothing new runs at review
+    time": in real (unmocked) production, `_newly_failing_vs_base` DOES spawn
+    one bounded subprocess re-run of just the failing ids against a
+    temporary base-tree worktree, and `_owned_failing_tests` does one
+    diff/AST check — both genuinely new, intentional work this task adds at
+    review time, never a full-suite re-run. Both are mocked here purely for
+    test speed/determinism, so the only observable new awaits in THIS test
+    are on those two mocks — never on `_flaky_on_rerun` (re-runs tests,
+    TESTING-only) and never a second call to `runner.run_tests`.
+
+    Round-2 send-back, Blocker 1 (fixed): the pre-review evidence path and
+    TESTING's post-review classifier used to each make their OWN independent
+    real call to `_owned_failing_tests`/`_newly_failing_vs_base` — two
+    separate runs of a check that can be flaky/load-dependent, able to
+    disagree about the very same ids on the very same round. They now go
+    through per-round memoizing wrappers (`_owned_failing_tests_once`/
+    `_newly_failing_vs_base_once`) that ask each question ONCE and share the
+    answer between both call sites, so each mock here is awaited exactly
+    once even though both the pre-review block and TESTING consult it."""
     tr = _red_result()
     reviewer = _PassesEverything()
     flaky_id = "tests/test_calc.py::test_mul"
@@ -1117,14 +1212,67 @@ async def test_the_test_runner_is_called_once_per_round_on_the_excused_path(
 
     assert len(calls) == 1, calls
     assert outcome.status is TaskStatus.AWAITING_APPROVAL, outcome.detail
-    # Round-2 send-back (Blocker 1): the ownership check now has an EXTRA
-    # await too — once for the pre-review block's veto, once for TESTING's
-    # own classification — same shape as the base-check helper. Only the
-    # flaky tiebreaker (re-runs tests, TESTING-only) is still called exactly
-    # once.
-    assert owned_mock.await_count == 2, owned_mock.await_count
-    assert newly_mock.await_count == 2, newly_mock.await_count
+    # Round-2 send-back (Blocker 1), fixed: both the pre-review block's
+    # ownership veto/base-tree evidence AND TESTING's own classification ask
+    # `_owned_failing_tests`/`_newly_failing_vs_base` — but through the
+    # per-round memoizing wrappers, so each question is asked exactly ONCE
+    # and the SAME answer is shared by both call sites, instead of two
+    # independent real (possibly-disagreeing) runs of a flaky/load-dependent
+    # check. Only the flaky tiebreaker (re-runs tests, TESTING-only, never
+    # asked pre-review) is still called exactly once for an unrelated
+    # reason.
+    assert owned_mock.await_count == 1, owned_mock.await_count
+    assert newly_mock.await_count == 1, newly_mock.await_count
     assert flaky_mock.await_count == 1, flaky_mock.await_count
+
+
+async def test_base_attribution_is_asked_once_so_the_two_paths_cannot_disagree(
+    bare_repo, tmp_path, store,
+):
+    """Round-2 send-back, Blocker 1 (CRITICAL) pinning test: before the
+    per-round memoizing wrappers existed, the pre-review evidence block and
+    TESTING's post-review classifier each made their OWN independent call
+    to `_newly_failing_vs_base` — a real re-run of the failing ids against
+    the base tree, which can be flaky or load-dependent. Two independent
+    runs of the exact same question, in the exact same round, CAN disagree.
+
+    `side_effect=[[], [id]]` reproduces exactly that disagreement shape: a
+    FIRST call would answer "not newly failing" (pre-existing, excuse this
+    id) and a SECOND call would answer "newly failing" (bill it) — the
+    single non-owned failing id flipping from excused to billed between two
+    calls a reader would expect to be the same fact. On unfixed code (two
+    real call sites, no shared cache) this test fails on
+    `newly_mock.await_count == 1` (it is actually 2) — the pre-review block
+    consumes the first list entry and TESTING consumes the second, so
+    TESTING bills an id the reviewer was just told is pre-existing. On
+    fixed code, `_newly_failing_vs_base_once` asks the question exactly
+    once per round and TESTING reuses that SAME cached answer (`[]`, not
+    newly failing), so the id is excused — never billed, never named in a
+    `failure_reason` as a newly-introduced/billed id.
+    """
+    failing_id = "tests/test_calc.py::test_mul"
+    tr = _red_result(failing_id)
+    reviewer = _PassesEverything()
+
+    with (
+        patch.object(Orchestrator, "_owned_failing_tests",
+                     AsyncMock(return_value=[])),
+        patch.object(Orchestrator, "_newly_failing_vs_base",
+                     AsyncMock(side_effect=[[], [failing_id]])) as newly_mock,
+    ):
+        outcome, attempts, events, task, orch = await _run_attempt_with_result_and_reviewer(
+            store, tmp_path, bare_repo, tr, reviewer)
+
+    # The question was asked exactly once for the round and shared — not
+    # re-asked (and potentially re-answered) by TESTING.
+    assert newly_mock.await_count == 1, newly_mock.await_count
+
+    # The single shared answer (`[]`, not newly failing) excuses the id —
+    # the round succeeds, and the id that was reported "pre-existing" to
+    # the reviewer is never separately billed as newly-introduced.
+    assert outcome.status is TaskStatus.AWAITING_APPROVAL, outcome.detail
+    failure_reason = attempts[-1].get("failure_reason") or ""
+    assert failing_id not in failure_reason, failure_reason
 
 
 async def test_pre_review_row_is_unclassified_until_testing_overwrites_it(

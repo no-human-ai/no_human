@@ -328,7 +328,13 @@ FROZEN_FUNCTION_LINES = {
     # threaded into the checklist text and the `_run_reviewer` kwargs.
     # TESTING remains the sole classifier/biller; only what the reviewer
     # is told changes. Measured on this tree with the scanner below.
-    "core/orchestrator.py:Orchestrator._run_review": 665,
+    # 665 -> 693 (+28): round-2 send-back, Blocker 1 (per-round memoizing
+    # `_owned_failing_tests_once`/`_newly_failing_vs_base_once` cache-reset
+    # lines) and Blocker 2 (the checklist-evidence closure now renders
+    # ownership as an inline annotation on the id's real base-tree bucket
+    # instead of a disjoint third bucket, which takes a few more lines to
+    # do honestly).
+    "core/orchestrator.py:Orchestrator._run_review": 693,
     # 377 -> 398 (+21): quota-saturation mid-run halt. `bench_run` now builds
     # a `QuotaHaltDetector`, threads `halt.observe(score)`/`halt.scored(...)`
     # through the per-spec checkpoint save inside `_run_spec`, and prints the
@@ -452,7 +458,13 @@ FROZEN_FUNCTION_LINES = {
     # not this review's opinion" wording, since the owned bucket is a case
     # where the base-tree split alone would have been wrong. Measured on
     # this tree with the scanner below.
-    "review/reviewer.py:_build_review_prompt": 413,
+    # 413 -> 428 (+15): round-2 send-back, Blocker 2 (re-regression):
+    # ownership is now an inline `*`-marked annotation on whichever of the
+    # pre-existing/new lines the id's real base-tree result puts it in
+    # (via the `_mark()` helper), not a disjoint third bucket — replacing
+    # the old unconditional "Red on the base tree too" claim that the
+    # send-back rejected.
+    "review/reviewer.py:_build_review_prompt": 428,
     # NEW (305, > 300): send-back fix-up on the pre-review attribution
     # task. `review()` gained the four passthrough keyword-only params
     # (`pre_existing_test_ids_dropped`, `new_test_ids_dropped`,
@@ -565,7 +577,10 @@ FROZEN_FUNCTION_CC = {
     # pre-existing / new). Major 3's bounding-at-the-call-site change reused
     # the existing `_bound_failing_test_ids` call shape and added no new
     # branch. Measured on this tree with the scanner below.
-    "core/orchestrator.py:Orchestrator._run_review": 96,
+    # 96 -> 99 (+3): round-2 send-back, Blockers 1 and 2 (same edits noted
+    # in FROZEN_FUNCTION_LINES above) add a couple more branches to the
+    # checklist-evidence closure.
+    "core/orchestrator.py:Orchestrator._run_review": 99,
     # Crossed 60 (to 67) with the UI-evidence gate landed by task 389210fa.
     # 67 -> 70 (+3): follow-up to ce4d4a73 (#151) -- one new `if overlap:`
     # block (+1) plus two `stale.get(...) or []` BoolOps (+1 each). Measured
@@ -1265,7 +1280,13 @@ FROZEN_FILE_LINES = {
     # the extended `_pre_review_red_checklist_item` bucket-text rendering.
     # See the `_run_review` FROZEN_FUNCTION_LINES entry above for the
     # itemized cause. Measured on this tree by the scanner's own metric.
-    "core/orchestrator.py": 24026,
+    # 24026 -> 24130 (+104): round-2 send-back, Blockers 1 and 2 — the two
+    # new `_owned_failing_tests_once`/`_newly_failing_vs_base_once` per-round
+    # memoizing wrapper methods, the two new cache-dict inits (`__init__`)
+    # and resets (`_run_review`), and `_run_review`'s own growth (see its
+    # FROZEN_FUNCTION_LINES entry above). Measured on this tree by the
+    # scanner's own metric.
+    "core/orchestrator.py": 24130,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.
@@ -1792,7 +1813,12 @@ FROZEN_FILE_LINES = {
     # `_build_review_prompt` and `AdversarialReviewer.review`
     # FROZEN_FUNCTION_LINES entries above for the itemized cause. Measured
     # on this tree with the scanner below.
-    "review/reviewer.py": 3164,
+    # 3164 -> 3179 (+15): round-2 send-back, Blocker 2 (re-regression) — the
+    # same growth as the `_build_review_prompt` FROZEN_FUNCTION_LINES entry
+    # above; the whole change lies inside that one function, so the file
+    # moves by the same amount. Measured on this tree with the scanner
+    # below.
+    "review/reviewer.py": 3179,
     # 2706 -> 2711 (+5): pre-existing red on main at 03b262d23 (e922e9b4's
     # landing, change-scoped tests missed the ratchet) — repaired, measured,
     # on this merge; same cause as the two function-level wake.py bumps above.

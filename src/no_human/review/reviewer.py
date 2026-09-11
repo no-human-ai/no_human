@@ -1073,11 +1073,27 @@ def _build_review_prompt(
             "harness's own post-review testing step classifies and bills "
             "or excuses this red run itself.\n"
         )
+        # Ownership is a SEPARATE, cheap (diff/AST-only, no test run) check —
+        # resolved regardless of whether the base-tree recheck above answered
+        # or came back UNKNOWN. An id this diff itself added or modified is
+        # attributed to the change no matter what the base tree shows — but
+        # (round-2 send-back, Blocker 2) it is marked INLINE within whichever
+        # of the two buckets below its real base-tree result actually puts
+        # it in, never pulled into a separate bucket that claims "red on the
+        # base tree too" unconditionally: an owned id that is actually GREEN
+        # on base (newly introduced by this diff) must be named on the
+        # "newly introduced" line, not misreported as pre-existing just
+        # because it is owned.
+        owned_set = set(owned_test_ids or [])
+
+        def _mark(ids: "list[str]") -> "list[str]":
+            return [f"{t} *" if t in owned_set else t for t in ids]
+
         if attributed:
-            pre_existing_line = ", ".join(pre_existing_test_ids or []) or "(none)"
+            pre_existing_line = ", ".join(_mark(pre_existing_test_ids or [])) or "(none)"
             if pre_existing_test_ids_dropped:
                 pre_existing_line += f" (+{pre_existing_test_ids_dropped} more, not shown)"
-            new_line = ", ".join(new_test_ids or []) or "(none)"
+            new_line = ", ".join(_mark(new_test_ids or [])) or "(none)"
             if new_test_ids_dropped:
                 new_line += f" (+{new_test_ids_dropped} more, not shown)"
             failing_ids_section += (
@@ -1086,29 +1102,28 @@ def _build_review_prompt(
                 "NOT red on the base tree (newly introduced by this "
                 f"change): {new_line}\n"
             )
+            if owned_test_ids:
+                failing_ids_section += (
+                    "(ids marked * above were added or modified by this "
+                    "diff itself — attributed to this change regardless of "
+                    "the base-tree result shown for them, never an "
+                    "excuse)\n"
+                )
         else:
             failing_ids_section += (
                 "Attribution status: UNKNOWN — the harness's base-tree "
                 "recheck did not run to a verdict for this run; treat this "
                 "as neither an excuse nor a blocking fact on its own.\n"
             )
-        # Ownership is a SEPARATE, cheap (diff/AST-only, no test run) check —
-        # resolved regardless of whether the base-tree recheck above answered
-        # or came back UNKNOWN. An id this diff itself added or modified is
-        # attributed to the change no matter what the base tree shows, so it
-        # is rendered as its own bucket rather than folded into either branch
-        # above — the send-back's exact scenario (an id red on the base tree
-        # too, but owned by this diff) must never read as "pre-existing" here.
-        if owned_test_ids:
-            owned_line = ", ".join(owned_test_ids)
-            if owned_test_ids_dropped:
-                owned_line += f" (+{owned_test_ids_dropped} more, not shown)"
-            failing_ids_section += (
-                "Red on the base tree too, but this diff itself added or "
-                "modified the failing test (ownership, not the base-tree "
-                "check): attributed to this change regardless — never "
-                f"pre-existing, never an excuse: {owned_line}\n"
-            )
+            if owned_test_ids:
+                owned_line = ", ".join(owned_test_ids)
+                if owned_test_ids_dropped:
+                    owned_line += f" (+{owned_test_ids_dropped} more, not shown)"
+                failing_ids_section += (
+                    "This diff itself added or modified: "
+                    f"{owned_line} — attributed to this change regardless "
+                    "of the (unknown) base-tree result, never an excuse.\n"
+                )
     profile_section = (
         f"\nProject profile (use these conventions as a baseline):\n{profile_context}\n"
         if profile_context else ""
