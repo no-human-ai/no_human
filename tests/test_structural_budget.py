@@ -1335,7 +1335,16 @@ FROZEN_FILE_LINES = {
     # `nh approve --ready`'s one-line summary no longer silently drops the
     # only signal telling the operator a verifier never answered. Measured
     # via `wc -l src/no_human/cli/commands.py`.
-    "cli/commands.py": 8666,
+    # 8666 -> 8787 (+121): the `nh task retitle` command — validates the
+    # new title, refuses while the task is in an active/running attempt
+    # state (the title is re-read live by coder/reviewer prompts and by
+    # `_commit_message` at commit time), refuses a hidden `--description`/
+    # `--criteria` edit as re-scoping a graded artifact, resolves the
+    # task's PR and either refuses naming its URL or updates it via the
+    # existing `set_pr_title` on `--update-pr`, and records a
+    # `human_retitle` event carrying `prior_title`. Measured via
+    # `wc -l src/no_human/cli/commands.py`.
+    "cli/commands.py": 8787,
     # api/app.py 5338 -> 5346 (+8): same budget-floor warning surfaced by
     # `send-back`/`reply` as `budget_warning` in the JSON response. Net cost
     # was trimmed from a naive +14 to +8 by computing `Bounds.from_config(...)`
@@ -1585,7 +1594,11 @@ FROZEN_FILE_LINES = {
     # attempt at all — the gracefully-interrupted-by-`_honor_server_stop`
     # case. Placed next to `latest_open_attempt`/`latest_review_attempt`, its
     # existing siblings. Measured on this tree with the scanner below.
-    "core/db.py": 5112,
+    # 5112 -> 5123 (+11): `Store.update_task_title(task_id, title)` — a
+    # single-column `UPDATE tasks SET title=?, updated_at=? WHERE id=?`
+    # for the new `nh task retitle` command, avoiding a read-modify-write
+    # race. Measured on this tree with the scanner below.
+    "core/db.py": 5123,
     # +71: set_local_backend_fields — the config-write helper for the Settings
     # pane's local coder-backend fields (llm.local_model / llm.local_base_url).
     # +75: Codex account config helpers.
