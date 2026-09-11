@@ -294,6 +294,13 @@ hooks:
   per_edit_lint: true             # B1: after each Edit/Write, lint the changed file and
                                   # feed hard errors straight back to the agent. A no-op
                                   # unless the repo has a confirmed lint command.
+  per_edit_type: false            # #114 phase 2: after each Edit/Write to .py/.pyi, run
+                                  # the checker the repo already configures over that one
+                                  # file and feed back what it did not report before the
+                                  # edit. Off by default (a type check costs far more
+                                  # than a ruff call); a no-op unless the repo configures
+                                  # pyright or mypy. Bounded per run (20s) and per
+                                  # attempt (240s), then silent for that attempt.
 
 blockers:                         # Part 22
   max_park_duration: "48h"        # parked past this => escalate (never abandon)

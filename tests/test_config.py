@@ -269,6 +269,15 @@ def test_per_edit_lint_is_on_by_default():
     assert DEFAULT_CONFIG["hooks"]["per_edit_lint"] is True
 
 
+def test_per_edit_type_is_off_by_default():
+    """#114 phase 2 ships opt-in, unlike per_edit_lint. A single-file type check
+    is an order of magnitude dearer than a ruff call, and the non-negotiable on
+    the issue is advisory-first: promotion needs dogfood numbers, not a default.
+    """
+    from no_human.config import DEFAULT_CONFIG
+    assert DEFAULT_CONFIG["hooks"]["per_edit_type"] is False
+
+
 def test_stuck_active_watchdog_default():
     """The stuck-active watchdog threshold ships in DEFAULT_CONFIG (40 min,
     above the 30-min test timeout) — discoverable and tunable."""

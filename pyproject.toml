@@ -70,6 +70,7 @@ dev = [
     "pytest-asyncio>=0.24",
     "pytest-xdist>=3.5",
     "pytest-cov>=5.0",
+    "mypy>=1.11",
 ]
 # Optional: browser-driven board E2E (see e2e/). Not in the default test run.
 e2e = [
