@@ -8,6 +8,7 @@ from typing import Any
 from pydantic import BaseModel, model_validator
 
 from ..blockers.taxonomy import Blocker
+from ..core import merge_policy
 from ..core.cost import attempt_cost, attempts_cost
 from ..core.db import USAGE_ROLES, usage_columns_for
 from ..core.metrics import cache_read_share
@@ -182,7 +183,8 @@ def _operator_cancelled(task: Task) -> bool:
     return bool((task.context or {}).get("cancel_reason"))
 
 
-def merge_ready_for(task: Task, attempts: list[dict] | None) -> bool | None:
+def merge_ready_for(task: Task, attempts: list[dict] | None, *,
+                     trunk_sha: str = "") -> bool | None:
     """The merge-ready policy verdict (core/merge_policy.py) for `task`'s
     CURRENT head — `task.context.merge_policy[<latest attempt's commit_sha>]
     .ready`, keyed the same way `_finalize` persists it and `verifier_results`
@@ -190,6 +192,16 @@ def merge_ready_for(task: Task, attempts: list[dict] | None) -> bool | None:
     computed/persisted for that exact sha (a verdict stamped for an OLDER
     commit must not read as ready for this one — the sha key is what makes a
     stale verdict read as absent, because nothing re-evaluates it).
+
+    ``trunk_sha`` — this task's repo's local trunk tip, resolved by the
+    caller (never fetched here; see `merge_policy.stale_base_reason` and
+    `app.py`'s `_local_trunk_sha`) — additionally downgrades a recorded
+    `ready: true` to `False` (never back to `None` — `None` means "never
+    evaluated", not "refused") when the verdict's own `base_sha` no longer
+    matches: trunk moved since that verdict's suite ran, so the green it
+    recorded describes a tree that will not land. A caller with no trunk sha
+    to offer (``trunk_sha=""``, the default) gets today's behaviour
+    unchanged — this is a strictly additive refusal.
 
     Extracted verbatim from `TaskSummaryOut.from_task` so `nh status`'s
     `merge-ready: N` count (cli/commands.py) and the board card (this class)
@@ -205,6 +217,8 @@ def merge_ready_for(task: Task, attempts: list[dict] | None) -> bool | None:
                 mp = ((task.context or {}).get("merge_policy") or {}).get(sha)
                 if isinstance(mp, dict) and "ready" in mp:
                     merge_ready = bool(mp.get("ready"))
+                    if merge_ready and merge_policy.stale_base_reason(mp, trunk_sha):
+                        merge_ready = False
                 break
     return merge_ready
 
@@ -638,6 +652,8 @@ class TaskSummaryOut(BaseModel):
         pr_url: str | None = None,
         attempts: list[dict] | None = None,
         max_pr_conflict_rounds: int = 0,
+        *,
+        trunk_sha: str = "",
     ) -> "TaskSummaryOut":
         repo_name = task.repo_path.rstrip("/").rsplit("/", 1)[-1] if task.repo_path else None
         desc_short = (task.description or "")[:120] or None
@@ -696,7 +712,7 @@ class TaskSummaryOut(BaseModel):
             total_review_cache_read = _rsum("review_cache_read_tokens")
             total_review_cache_creation = _rsum("review_cache_creation_tokens")
         total_aux_tokens, total_aux_cache_read, total_aux_cache_creation = _aux_totals(attempts)
-        merge_ready = merge_ready_for(task, attempts)
+        merge_ready = merge_ready_for(task, attempts, trunk_sha=trunk_sha)
         cost_usd, cost_model = attempts_cost(attempts)
         return cls(
             id=task.id,

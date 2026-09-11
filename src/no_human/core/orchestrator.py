@@ -7770,6 +7770,19 @@ class Orchestrator:
                     "could not be evaluated")
             repro_state = getattr(self, "_last_repro", None) or {}
             policy_extra_problems = tuple(evidence_problems)
+            # Unlike `changed_paths`/`changed_lines` above, an unmeasurable
+            # merge base is NOT appended to `evidence_problems`: it falls
+            # OPEN (`base_sha=""`) rather than forcing `ready=False`. Every
+            # odd/legacy repo where trunk cannot be resolved locally (no
+            # `origin`, detached, a fresh clone with no remote refs yet)
+            # must keep evaluating exactly as it does today; `base_sha=""`
+            # already makes `stale_base_reason()` a no-op for this verdict
+            # (see its own docstring), so there is nothing further to record
+            # as a diagnostic failure here.
+            try:
+                policy_base_sha = repo.merge_base_with_trunk(base)
+            except Exception:  # noqa: BLE001 — fails open, see comment above
+                policy_base_sha = ""
             policy_facts = merge_policy.facts_from_evidence(
                 policy_evidence, changed_paths=changed_paths,
                 changed_lines=changed_lines,
@@ -7777,6 +7790,7 @@ class Orchestrator:
                 repro_required=bool(repro_state.get("required")),
                 tamper_adjudications=(task.context or {}).get(
                     "tamper_adjudications"),
+                base_sha=policy_base_sha,
             )
             verdict = merge_policy.evaluate_repo(
                 repo.path, extra_problems=policy_extra_problems,

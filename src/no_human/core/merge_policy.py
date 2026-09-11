@@ -141,6 +141,11 @@ class GateFacts:
     # `facts_from_evidence` from `changed_paths`, never set by hand in
     # production; tests may still set it directly to exercise `_evaluate`.
     policy_changed_in_diff: bool = False
+    # Merge base of the measured tree against trunk at measurement time
+    # (`GitRepo.merge_base_with_trunk`). `""` when unestablishable (no trunk
+    # ref resolvable, not a repo, git failure) — never raises, always falls
+    # open. Defaulted so every existing constructor call keeps compiling.
+    base_sha: str = ""
 
 
 @dataclass(frozen=True)
@@ -164,6 +169,16 @@ class PolicyVerdict:
     # so "3 of 3 rules" reads correctly even though the overall verdict is
     # not ready.
     policy_changed_in_diff: bool = False
+    # Merge base the measurement was made against (`GateFacts.base_sha`,
+    # carried through unchanged) and whether that measurement's test facts
+    # were green, independent of whether the active policy even runs the
+    # `tests_ran_and_passed` rule. Both additive, read-only facts consumed by
+    # `stale_base_reason()` at read time — neither affects `ready`/`summary`
+    # here; a repo-local policy that omits `tests_ran_and_passed` cannot
+    # silently disable the staleness check because this is derived straight
+    # from facts, not from the active rule list.
+    base_sha: str = ""
+    tests_green: bool = False
 
     @property
     def summary(self) -> str:
@@ -190,6 +205,8 @@ class PolicyVerdict:
             "source": self.source,
             "problems": list(self.problems),
             "policy_changed_in_diff": self.policy_changed_in_diff,
+            "base_sha": self.base_sha,
+            "tests_green": self.tests_green,
             "rules": [
                 {"name": v.name, "passed": v.passed, "detail": v.detail}
                 for v in self.rules
@@ -467,12 +484,18 @@ def _evaluate(rules: list[Rule], facts: GateFacts, problems: tuple[str, ...], so
             "cannot author its own merge gate"
         )
     ready = bool(rules) and not all_problems and all(v.passed for v in verdicts)
+    # Derived from facts directly, not from whether `tests_ran_and_passed` is
+    # in `rules` — a repo-local policy that drops that rule must not silently
+    # disable the staleness check `stale_base_reason()` performs at read time.
+    tests_green = bool(facts.tests_ran and not facts.tests_failed and facts.tests_passed >= 1)
     return PolicyVerdict(
         ready=ready,
         rules=tuple(verdicts),
         source=source,
         problems=tuple(all_problems),
         policy_changed_in_diff=facts.policy_changed_in_diff,
+        base_sha=facts.base_sha,
+        tests_green=tests_green,
     )
 
 
@@ -515,6 +538,7 @@ def facts_from_evidence(
     repro_required: bool = False,
     tamper_adjudications: list[dict] | tuple[dict, ...] | None = None,
     ci_failed_checks: list[str] | tuple[str, ...] | None = None,
+    base_sha: str = "",
 ) -> GateFacts:
     """Adapt a `core.pr_evidence.PrEvidence` (plus the facts it deliberately
     does not carry — changed paths/lines, and the repro gate's verdict,
@@ -619,4 +643,54 @@ def facts_from_evidence(
         changed_paths=tuple(changed_paths),
         changed_lines=changed_lines,
         policy_changed_in_diff=policy_changed_in_diff,
+        base_sha=base_sha,
+    )
+
+
+# --- staleness ------------------------------------------------------------ #
+
+
+def stale_base_reason(mp: dict | None, trunk_sha: str) -> str | None:
+    """Pure, no I/O: compares a persisted verdict dict (`PolicyVerdict.
+    as_dict()`, as stored at `task.context["merge_policy"][<head_sha>]`)
+    against the caller's already-resolved local trunk tip sha, and returns a
+    human-legible reason to refuse the verdict as merge-ready, or `None` if
+    it should be trusted as-is.
+
+    Fails OPEN on everything it cannot establish — this can only ever turn a
+    ready verdict into a refused one, never the reverse, and only when both
+    shas are known and differ:
+
+    - `mp` not a dict, or `tests_green` falsy/absent (never ran, or failed):
+      `None` — untouched (AC4). This function never changes the behaviour of
+      a task with no recorded green or a failing one.
+    - `tests_green` true but `base_sha` absent/empty (a legacy verdict
+      stamped before this field existed): `None` — fail open. The bug is
+      fixed forward: the next push re-stamps a verdict with a real
+      `base_sha`.
+    - `tests_green` true, `base_sha` present, but `trunk_sha` is unknown
+      (`""` — the caller could not resolve trunk locally): `None` — cannot
+      prove staleness without a trunk tip to compare against.
+    - `tests_green` true, `base_sha` present, `trunk_sha` known, and they
+      match: `None` — the green was measured against trunk's current tip.
+    - `tests_green` true, `base_sha` present, `trunk_sha` known, and they
+      differ: a reason string naming both shas — trunk moved since the
+      suite ran, so the green describes a tree that will not land.
+    """
+    if not isinstance(mp, dict):
+        return None
+    if not mp.get("tests_green"):
+        return None
+    base_sha = mp.get("base_sha") or ""
+    if not base_sha:
+        return None
+    if not trunk_sha:
+        return None
+    if base_sha == trunk_sha:
+        return None
+    return (
+        f"the recorded green was measured on a tree whose merge base is "
+        f"{base_sha[:12]}, but trunk is now at {trunk_sha[:12]} — trunk "
+        "moved since that suite ran, so the green describes a tree that "
+        "will not land; re-cut the branch onto trunk and re-run"
     )
