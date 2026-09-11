@@ -9340,9 +9340,10 @@ class Orchestrator:
             # no cause attached. Fail it here instead, with the cause, so
             # the next attempt's coder starts from a diagnosis instead of a
             # cold red suite (mirrors `_repro_gate_step`'s `_fail` closure).
+            fail_tail2 = (getattr(result2, "output", "") or "")[-1200:]
             detail = (
                 f"{structural_budget.STRUCTURAL_BUDGET_CAUSE}: still red "
-                f"after the one bounded round: {notify_paths}"
+                f"after the one bounded round: {notify_paths}\n{fail_tail2}"
             )
             self.emit(
                 "structural_budget_grown", detail,

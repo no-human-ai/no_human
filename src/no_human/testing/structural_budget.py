@@ -136,6 +136,20 @@ def frozen_values(repo_path: Path) -> dict[str, int]:
     scanned root the way `frozen_paths` joins it), paired with its frozen
     integer.
 
+    A raw key that appears in more than one `FROZEN_*` dict (this repo's
+    own guard freezes a handful of function keys in both
+    `FROZEN_FUNCTION_LINES` and `FROZEN_FUNCTION_CC`) collapses to whichever
+    dict `ast.walk` visits last — this function alone cannot tell which
+    dict's number a caller means for such a key. That ambiguity is exactly
+    why `reanchor_frozen` refuses to rewrite a key present in more than one
+    dict rather than guessing; this reader is fine with the collapse
+    because its only two callers (`_structural_budget_preflight`'s
+    `before_values` snapshot and `_reconcile_structural_budget_at_commit`'s
+    `after` snapshot) only ever compare the two snapshots for equality —
+    and even if an ambiguous key's collapsed value happens to pass that
+    comparison, `reanchor_frozen` still refuses to rewrite it once it gets
+    there, for the same present-in-more-than-one-dict reason.
+
     This is the guard's OWN on-disk state, read the same fail-open way as
     `frozen_paths`: only a plain `ast.Constant` int value is counted — a
     computed or non-literal value is skipped, not guessed at — and any

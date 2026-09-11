@@ -730,6 +730,125 @@ async def test_the_reconcile_corrects_upward_rather_than_tolerating_an_under_val
 
 
 # --------------------------------------------------------------------------- #
+# `_reconcile_structural_budget_at_commit` — direct-call unit tests isolating #
+# its two guard conditions, each proven non-vacuous with a differential      #
+# positive control: S1, `before_values.get(key) != after.get(key)` (only     #
+# reconcile an entry the ROUND ITSELF changed this round — an entry the      #
+# round never touched is left exactly alone); S2, `after.get(key) == frozen` #
+# (only reconcile when the guard's on-disk value right now still matches     #
+# what its own failure text just called "frozen" a moment ago — i.e. that is #
+# really the state the failure text is describing, not an already-stale     #
+# one). Neither condition has a dedicated test elsewhere in this file; the   #
+# AC1 measure-then-edit tests above exercise the method as a whole but never #
+# force either boolean to the opposite side of its branch.                   #
+# --------------------------------------------------------------------------- #
+
+
+async def _reconcile_fixture(store, bare_repo, tmp_path):
+    """An orchestrator + repo pair with `pkg/mod.py` grown past its frozen
+    size, dirty and uncommitted — everything `_reconcile_structural_budget_
+    at_commit` needs to re-run the guard for real against the live tree —
+    without driving a whole `_run_attempt` or ever calling a backend."""
+    orch, task, repo, events = await _run_one_task_attempt(
+        store, bare_repo, tmp_path, backend=object())
+    repo.path.joinpath("pkg", "mod.py").write_text(_MOD_GROWN)
+    base_cmd, test_cwd = await orch._resolve_test_target(repo)
+    cmd = structural_budget.bounded_guard_command(
+        base_cmd or runner_mod.detect_command(repo.path)
+    )
+    assert cmd is not None
+    return orch, repo, cmd, test_cwd
+
+
+async def test_reconcile_skips_an_entry_the_round_itself_never_changed(
+        bare_repo, tmp_path, store):
+    """S1: a `before_values` figure equal to the disk value seen right now
+    means THIS round never rewrote the guard's own `mod.py` entry — it is
+    still exactly what it was before the round started (`_MOD_BASELINE_
+    LINES`, 2, nothing else in this fixture touches the guard file).
+    Reconciling it anyway would be a second, wider allowance the round never
+    earned, not a correction of its own work."""
+    orch, repo, cmd, test_cwd = await _reconcile_fixture(store, bare_repo, tmp_path)
+
+    changed = await orch._reconcile_structural_budget_at_commit(
+        repo, cmd, test_cwd, before_values={"mod.py": _MOD_BASELINE_LINES},
+    )
+
+    assert changed == []
+    guard_text = (repo.path / "tests" / "test_structural_budget.py").read_text()
+    assert f'"mod.py": {_MOD_BASELINE_LINES},' in guard_text
+    assert f'"mod.py": {_MOD_GROWN_LINES},' not in guard_text
+
+
+async def test_reconcile_fires_when_the_round_itself_changed_the_entry(
+        bare_repo, tmp_path, store):
+    """Positive control for the test above, proving S1 is not simply always
+    off: same dirty tree and guard, but a `before_values` figure that
+    DISAGREES with the value on disk right now — simulating that the round
+    itself rewrote the guard's `mod.py` entry earlier this round, before
+    making the further edit that grew `pkg/mod.py` to 6 lines. S1 must let
+    this one through, and the reconcile must land the tree's true current
+    count (6), not the disagreeing `before_values` figure (1) or the disk's
+    pre-round figure (2)."""
+    orch, repo, cmd, test_cwd = await _reconcile_fixture(store, bare_repo, tmp_path)
+
+    changed = await orch._reconcile_structural_budget_at_commit(
+        repo, cmd, test_cwd, before_values={"mod.py": 1},
+    )
+
+    assert changed == [structural_budget.GUARD_RELPATH]
+    guard_text = (repo.path / "tests" / "test_structural_budget.py").read_text()
+    assert f'"mod.py": {_MOD_GROWN_LINES},' in guard_text
+
+
+async def test_reconcile_skips_when_the_on_disk_value_disagrees_with_the_failure_texts_frozen(
+        monkeypatch, bare_repo, tmp_path, store):
+    """S2: even with S1 satisfied (the round DID change this entry this
+    round, per `before_values`), the reconcile must only act when the
+    guard's on-disk value right now still matches what its OWN failure text
+    just called "frozen" — otherwise the failure text is already describing
+    a superseded snapshot. Forces that mismatch directly
+    (`structural_budget.frozen_values` mocked to disagree with the real
+    guard's own just-measured "frozen" figure, `_MOD_BASELINE_LINES`)
+    because the real mismatch this guards against is a same-instant rewrite
+    this method has no hook to interpose on."""
+    orch, repo, cmd, test_cwd = await _reconcile_fixture(store, bare_repo, tmp_path)
+    monkeypatch.setattr(
+        structural_budget, "frozen_values", lambda repo_path: {"mod.py": 99}
+    )
+
+    changed = await orch._reconcile_structural_budget_at_commit(
+        repo, cmd, test_cwd, before_values={"mod.py": 1},
+    )
+
+    assert changed == []
+    guard_text = (repo.path / "tests" / "test_structural_budget.py").read_text()
+    assert f'"mod.py": {_MOD_BASELINE_LINES},' in guard_text
+
+
+async def test_reconcile_fires_when_the_on_disk_value_matches_the_failure_texts_frozen(
+        monkeypatch, bare_repo, tmp_path, store):
+    """Positive control for the test above, proving S2 is not simply always
+    off: the same mocked `frozen_values`, but now returning exactly what the
+    real guard's own failure text calls "frozen" (`_MOD_BASELINE_LINES`) —
+    the genuinely matching case S2 exists to let through. `before_values`
+    still disagrees (satisfying S1), so this isolates S2 alone."""
+    orch, repo, cmd, test_cwd = await _reconcile_fixture(store, bare_repo, tmp_path)
+    monkeypatch.setattr(
+        structural_budget, "frozen_values",
+        lambda repo_path: {"mod.py": _MOD_BASELINE_LINES},
+    )
+
+    changed = await orch._reconcile_structural_budget_at_commit(
+        repo, cmd, test_cwd, before_values={"mod.py": 1},
+    )
+
+    assert changed == [structural_budget.GUARD_RELPATH]
+    guard_text = (repo.path / "tests" / "test_structural_budget.py").read_text()
+    assert f'"mod.py": {_MOD_GROWN_LINES},' in guard_text
+
+
+# --------------------------------------------------------------------------- #
 # Per-mode NEGATIVE controls: a diff that touches a scanned file but leaves  #
 # that mode's own check clean must fire nothing and spend nothing beyond     #
 # the one bounded guard run — the positive-firing twin for each mode is      #
@@ -904,6 +1023,30 @@ async def test_when_the_bounded_round_fails_the_attempt_reports_the_budget_as_th
     )
 
     assert not any(_is_review_boundary(e) for e in events), events
+
+
+async def test_the_bound_reached_failure_carries_the_guards_own_output_tail(
+        bare_repo, tmp_path, store):
+    """RED before the fix: `detail` used to stop at the path list
+    (`{notify_paths}`) with no hint of WHY the guard is still red after the
+    one bounded round, leaving the next attempt's coder to re-derive the
+    same diagnosis the first bounded round already paid for. `detail` must
+    also carry a tail of the still-red guard's own second-run output — the
+    SAME `now {N}`/`ratchets down` text `offenders()` already emits — so the
+    next attempt starts from a diagnosis, not a cold cause label alone."""
+    backend = _GrowsFrozenFileThenDoesNothingUsefulBackend()
+    orch, task, repo, events = await _run_one_task_attempt(store, bare_repo, tmp_path, backend)
+
+    outcome = await orch._run_attempt(task, repo, 1, "main")
+
+    assert outcome.status is TaskStatus.FAILED, outcome.detail
+    assert outcome.detail.startswith(structural_budget.STRUCTURAL_BUDGET_CAUSE), outcome.detail
+    assert f"now {_MOD_GROWN_LINES}" in outcome.detail, outcome.detail
+    assert "ratchets down" in outcome.detail, outcome.detail
+
+    attempts = await store.list_attempts(task.id)
+    assert len(attempts) == 1
+    assert f"now {_MOD_GROWN_LINES}" in attempts[0]["failure_reason"], attempts[0]
 
 
 # --------------------------------------------------------------------------- #
@@ -1173,6 +1316,34 @@ def test_bounded_guard_command_appends_the_whole_guard_file():
     assert cmd.startswith("pytest -q ")
     assert structural_budget.GUARD_RELPATH in cmd
     assert structural_budget.GROWTH_NODE_ID not in cmd
+
+
+def test_reanchor_frozen_refuses_a_key_present_in_two_frozen_dicts(tmp_path):
+    """`_write_guard` above already freezes
+    `"core/orchestrator.py:Orchestrator._run_attempt"` in BOTH
+    `FROZEN_FUNCTION_LINES` (2186) and `FROZEN_FUNCTION_CC` (255) — the
+    ambiguous shape this repo's own real guard has for a handful of keys.
+    `reanchor_frozen` must refuse to rewrite it (which of the two numbers
+    would "9999" even replace?) rather than guessing at one.
+
+    Bundled in the SAME call with an unambiguous key
+    (`"core/orchestrator.py"`, present in only `FROZEN_FILE_LINES`) as a
+    differential positive control: that one must still be rewritten,
+    proving the ambiguous key's refusal is a deliberate skip and not
+    `reanchor_frozen` failing to write anything at all."""
+    _write_guard(tmp_path)
+
+    changed = structural_budget.reanchor_frozen(tmp_path, {
+        "core/orchestrator.py:Orchestrator._run_attempt": 9999,
+        "core/orchestrator.py": 21999,
+    })
+
+    assert changed == ["core/orchestrator.py"]
+    text = (tmp_path / "tests" / "test_structural_budget.py").read_text()
+    assert '"core/orchestrator.py:Orchestrator._run_attempt": 2186' in text
+    assert '"core/orchestrator.py:Orchestrator._run_attempt": 255' in text
+    assert '"core/orchestrator.py": 21999' in text
+    assert "9999" not in text
 
 
 def test_send_back_message_names_the_guard_and_the_touched_paths_and_forbids_widening():

@@ -1183,13 +1183,14 @@ FROZEN_FILE_LINES = {
     # the scanner's own metric (ast/splitlines-based, not `wc -l` — this
     # file has a few non-`\n` line separators that make the two differ
     # by a constant 3 lines).
-    # 23828 -> 23958 (+130): bugfix for "budget preflight fires up to 5 times
+    # 23846 -> 23977 (+131): bugfix for "budget preflight fires up to 5 times
     # per task and still dies at review" — a `pre_commit` hook on
     # `_repro_corrective_round`, the new `_reconcile_structural_budget_at_commit`
-    # method, and the bound-reached terminal-failure path added to
-    # `_structural_budget_preflight`. Measured on this tree by the scanner's
-    # own metric.
-    "core/orchestrator.py": 23976,
+    # method, the bound-reached terminal-failure path added to
+    # `_structural_budget_preflight`, and its `detail` enriched with a tail
+    # of the still-red guard's own second-run output. Measured on this tree
+    # by the scanner's own metric.
+    "core/orchestrator.py": 23977,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.
