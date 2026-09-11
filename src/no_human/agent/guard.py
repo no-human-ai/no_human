@@ -2706,6 +2706,7 @@ def evaluate(
     readonly: bool = False,
     cwd: str | None = None,
     env: Mapping[str, str] | None = None,
+    session_root: str | None = None,
 ) -> GuardDecision:
     """Return allow/deny for a single proposed tool call.
 
@@ -2718,6 +2719,13 @@ def evaluate(
     ``VIRTUAL_ENV``, ...); it defaults to ``os.environ`` so both backends
     keep working unchanged, and exists as a parameter so tests can inject one
     without leaking into the process's real environment.
+
+    ``session_root`` is the session worktree's ROOT (which may be an
+    ancestor of ``cwd`` once the coder has `cd`'d into a subdirectory) —
+    forwarded to :func:`venv_install_guard.denial_reason` as the install
+    guard's containment boundary, never discovered from ``cwd``. Optional
+    so the many existing callers/tests that omit it keep working unchanged
+    (that caller falls back to this module's own `.git`-marker discovery).
     """
     # 0. Interactive prompts — denied in every role, readonly or not.
     if tool_name in INTERACTIVE_TOOLS:
@@ -2884,7 +2892,8 @@ def evaluate(
         # Bash checks so a command that is ALSO a merge/push/destructive-git
         # violation keeps reporting that more specific reason. See
         # `venv_install_guard`'s module docstring for the full spec.
-        venv_reason = venv_install_guard.denial_reason(cmd, cwd=cwd, env=env)
+        venv_reason = venv_install_guard.denial_reason(
+            cmd, cwd=cwd, env=env, session_root=session_root)
         if venv_reason:
             # Hygiene-class, same reasoning as `_venv_install_denial` above.
             return GuardDecision(False, venv_reason, severity=GUARD_HYGIENE)

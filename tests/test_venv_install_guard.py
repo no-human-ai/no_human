@@ -19,6 +19,20 @@ import tempfile
 
 from no_human.agent import guard, venv_install_guard
 
+# Additive-only (AC6): the four imports above are untouched; everything the
+# new session_root-boundary section below needs is pulled in through these
+# extra lines instead, so `git diff` on this file never shows a `-` line.
+import asyncio
+import inspect
+import re
+import types
+
+import pytest
+import yaml
+
+import no_human.config as nh_config
+from no_human.agent import claude_backend, codex_backend, fs_roots
+
 FORBIDDEN = []
 PROTECTED = ["main", "master", "release/*"]
 
@@ -547,3 +561,321 @@ def test_evaluate_env_defaults_to_os_environ_when_omitted(tmp_path, monkeypatch)
     d = guard.evaluate("Bash", {"command": "git status"}, forbidden_paths=FORBIDDEN,
                         never_push_to=PROTECTED, cwd=tmp)
     assert d.allow
+
+
+# ---------------------------------------------------------------------------
+# session_root — the containment boundary is now supplied by the caller, not
+# discovered from `cwd`. Refile of task 7f579176: a coder that has `cd`'d
+# into any subdirectory of its own worktree was DENIED installing into its
+# own venv, because the boundary candidates were compared against was `cwd`
+# itself, not the worktree ROOT. Four prior rounds each recorded an input
+# that could not be determined as if it HAD been determined (silently
+# disabling a check, swallowing OSErrors, trusting an on-disk marker the
+# guarded process can itself overwrite, or hard-coding one literal path
+# compared by exact equality). This section pins: the caller-supplied root
+# decides (AC1, AC2a, AC2b); the hardened discovery fallback used only when
+# no root is supplied still refuses a sibling task's venv even when the
+# on-disk markers are tampered with (AC3, AC4); and none of this widens what
+# already stayed denied (AC5).
+# ---------------------------------------------------------------------------
+
+def _task_session(tmp_path, worktrees_root):
+    """Two sibling task worktrees under `worktrees_root`, the on-disk shape
+    the orchestrator actually produces (`<task_id>.<pid>.<token>/`), each a
+    real venv layout (`_mkvenv`) with its own `.git` marker file. Task A also
+    gets a `src/pkg` subdirectory — the "coder cd'd into a subdirectory of
+    its own worktree" case this task exists to fix. Envs are explicitly
+    constructed (never inherited), same shape as `_session`'s `wt_env`."""
+    pid = os.getpid()
+    task_a, venv_a = _mkvenv(os.path.join(str(worktrees_root), f"aaaa1111.{pid}.tok"))
+    task_b, venv_b = _mkvenv(os.path.join(str(worktrees_root), f"bbbb2222.{pid}.tok"))
+    os.makedirs(os.path.join(task_a, "src", "pkg"), exist_ok=True)
+    with open(os.path.join(task_a, ".git"), "w") as f:
+        f.write("gitdir: ../.git/worktrees/aaaa1111\n")
+    with open(os.path.join(task_b, ".git"), "w") as f:
+        f.write("gitdir: ../.git/worktrees/bbbb2222\n")
+    env_a = {"PATH": f"{venv_a}/bin:/usr/bin:/bin", "VIRTUAL_ENV": venv_a}
+    env_b = {"PATH": f"{venv_b}/bin:/usr/bin:/bin", "VIRTUAL_ENV": venv_b}
+    return task_a, venv_a, task_b, venv_b, env_a, env_b
+
+
+@pytest.mark.parametrize("cmd", ["pip install -e .", "uv pip install -e ."])
+@pytest.mark.parametrize("subdir", ["", "src", "src/pkg"])
+def test_own_venv_install_allowed_from_root_and_any_subdirectory(tmp_path, cmd, subdir):
+    """AC1 — the defect this task fixes. Before the fix, both `denial_reason`
+    and `guard.evaluate` compared install-target candidates against `cwd`:
+    from `<wt>/src/pkg`, the resolved venv (`<wt>/.venv`) is not "within"
+    `cwd`, so a coder that had `cd`'d one or two levels into its own
+    worktree was DENIED installing into its own venv. Supplying
+    `session_root=wt` makes the boundary the worktree ROOT regardless of
+    where `cwd` points inside it."""
+    primary, primary_venv, wt, wt_venv, prod_env, wt_env = _session(tmp_path)
+    os.makedirs(os.path.join(wt, "src", "pkg"), exist_ok=True)
+    cwd = os.path.join(wt, subdir) if subdir else wt
+
+    r = venv_install_guard.denial_reason(cmd, cwd=cwd, env=wt_env, session_root=wt)
+    assert r is None, f"must stay allowed from {cwd}: {r}"
+
+    d = guard.evaluate("Bash", {"command": cmd}, forbidden_paths=FORBIDDEN,
+                        never_push_to=PROTECTED, cwd=cwd, env=wt_env,
+                        session_root=wt)
+    assert d.allow, f"guard.evaluate must allow from {cwd}: {d.reason}"
+
+
+def test_supplied_session_root_beats_the_markers_on_disk(tmp_path):
+    """AC2a — the SUPPLIED `session_root` decides, not whatever `.git`
+    markers happen to exist on disk. `wt` here has no marker of its own at
+    all; a decoy `.git` lives only in an unrelated sibling tree. Supplying
+    `session_root=wt` allows the own-venv install from a subdirectory of
+    `wt`; supplying `session_root=<the decoy tree>` denies the IDENTICAL
+    command from the IDENTICAL cwd — proving the caller's value, not disk
+    state, is what decides."""
+    wt, wt_venv = _mkvenv(tmp_path / "wt_no_marker")
+    decoy, decoy_venv = _mkvenv(tmp_path / "decoy")
+    with open(os.path.join(decoy, ".git"), "w") as f:
+        f.write("gitdir: ../.git/worktrees/decoy\n")
+    os.makedirs(os.path.join(wt, "src", "pkg"), exist_ok=True)
+    cwd = os.path.join(wt, "src", "pkg")
+    env = {"PATH": f"{wt_venv}/bin:/usr/bin:/bin", "VIRTUAL_ENV": wt_venv}
+    cmd = "pip install -e ."
+
+    r_own = venv_install_guard.denial_reason(cmd, cwd=cwd, env=env, session_root=wt)
+    assert r_own is None, f"supplied own root must allow: {r_own}"
+
+    r_decoy = venv_install_guard.denial_reason(cmd, cwd=cwd, env=env, session_root=decoy)
+    assert r_decoy is not None, "supplied unrelated root must deny the identical command"
+    assert decoy in r_decoy, f"reason must name the supplied root: {r_decoy}"
+
+
+def test_shipped_coder_path_supplies_the_session_root():
+    """AC2b(i) — search. Both shipped coder backends must actually pass
+    `session_root=str(cwd)` beside the existing `cwd=str(cwd)` where they
+    build their guard call; that wiring is what closes the subdirectory-cd
+    defect in production — discovery is only a fallback for callers that
+    supply nothing. Positive control: the identical regex over a module that
+    wires no guard call at all (`fs_roots.py`) must NOT fire, and a sentinel
+    spelling nobody wrote must not appear anywhere searched (proving the
+    regex isn't vacuously matching everything)."""
+    pattern = re.compile(r"session_root\s*=\s*str\(cwd\)")
+    claude_src = inspect.getsource(claude_backend)
+    codex_src = inspect.getsource(codex_backend)
+    fs_roots_src = inspect.getsource(fs_roots)
+
+    assert pattern.search(claude_src), "claude_backend.py must supply session_root=str(cwd)"
+    assert pattern.search(codex_src), "codex_backend.py must supply session_root=str(cwd)"
+    assert not pattern.search(fs_roots_src), (
+        "positive control: fs_roots.py wires no guard call and must not match"
+    )
+    for src in (claude_src, codex_src, fs_roots_src):
+        assert "session_root_from_disk=" not in src, (
+            "sentinel spelling nobody wrote must not appear"
+        )
+
+
+def test_shipped_coder_path_session_root_reaches_guard_evaluate(tmp_path, monkeypatch):
+    """AC2b(ii) — behaviour. Monkeypatch `guard.evaluate` (the same module
+    object both backends imported via `from . import guard`) to capture its
+    kwargs, then actually drive each shipped call path — the Claude SDK's
+    PreToolUse hook and the Codex backend's post-hoc `_guard_events` — and
+    assert the `session_root` each one supplies really does reach
+    `evaluate`, not just that the source text mentions it."""
+    captured: list[str | None] = []
+
+    def _fake_evaluate(*args, **kwargs):
+        captured.append(kwargs.get("session_root"))
+        return guard.GuardDecision(True, "", None)
+
+    monkeypatch.setattr(guard, "evaluate", _fake_evaluate)
+
+    session_dir = str(tmp_path / "session")
+    os.makedirs(session_dir, exist_ok=True)
+
+    hook = claude_backend._make_guard_hook(
+        FORBIDDEN, PROTECTED, readonly=False,
+        cwd=session_dir, session_root=session_dir,
+    )
+    asyncio.run(hook(
+        {"tool_name": "Bash", "tool_input": {"command": "pip install -e ."}},
+        None, None,
+    ))
+    assert captured[-1] == session_dir, "claude_backend's hook must forward session_root"
+
+    fake_codex_self = types.SimpleNamespace(
+        forbidden_paths=FORBIDDEN, never_push_to=PROTECTED, readonly=False,
+    )
+    codex_backend.CodexBackend._guard_events(
+        fake_codex_self, "Bash", {"command": "pip install -e ."},
+        cwd=session_dir, session_root=session_dir,
+    )
+    assert captured[-1] == session_dir, "codex_backend's _guard_events must forward session_root"
+
+
+@pytest.mark.parametrize("relocated", [False, True])
+def test_sibling_task_venv_denied_with_git_markers_tampered(tmp_path, monkeypatch, relocated):
+    """AC3 + AC4 — even with the on-disk `.git` markers tampered with (task
+    A's own marker removed, a decoy `.git` planted at the worktrees ROOT so
+    a naive upward walk would climb straight past both tasks and stop
+    there), a sibling task's venv must stay denied: both when the caller
+    supplies `session_root` explicitly (the shipped path) and when it
+    supplies none at all (the hardened discovery fallback, which must
+    refuse to accept the worktrees root — or any ancestor of it — as a
+    boundary). Parametrised over the DEFAULT root and an operator-relocated
+    `isolation.worktree_root`, read from a real config file via a
+    monkeypatched `no_human.config.CONFIG_PATH` — neither root is
+    hard-coded in this test, matching round 4's specific defect (one literal
+    path compared by exact equality)."""
+    if relocated:
+        worktrees_root = tmp_path / "elsewhere" / "wts"
+        os.makedirs(worktrees_root, exist_ok=True)
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(yaml.safe_dump(
+            {"isolation": {"worktree_root": str(worktrees_root)}}))
+    else:
+        worktrees_root = nh_config.NO_HUMAN_HOME / "worktrees"
+        os.makedirs(worktrees_root, exist_ok=True)
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(yaml.safe_dump({}))
+
+    monkeypatch.setattr(nh_config, "CONFIG_PATH", config_path)
+
+    task_a, venv_a, task_b, venv_b, env_a, env_b = _task_session(tmp_path, worktrees_root)
+
+    # Tamper: remove task A's own marker, plant a decoy at the worktrees
+    # root a naive walk would otherwise climb straight to and stop at.
+    os.remove(os.path.join(task_a, ".git"))
+    with open(os.path.join(str(worktrees_root), ".git"), "w") as f:
+        f.write("gitdir: decoy\n")
+
+    sibling_cases = [
+        f"{venv_b}/bin/pip install foo",
+        f"VIRTUAL_ENV={venv_b} pip install foo",
+        f"uv pip install --python {venv_b}/bin/python foo",
+        f'bash -lc "cd {task_b} && uv sync"',
+    ]
+    cwd = os.path.join(task_a, "src", "pkg")
+
+    for cmd in sibling_cases:
+        r_explicit = venv_install_guard.denial_reason(
+            cmd, cwd=cwd, env=env_a, session_root=task_a)
+        assert r_explicit is not None, (
+            f"must deny sibling target with explicit session_root: {cmd}"
+        )
+
+        r_discovered = venv_install_guard.denial_reason(cmd, cwd=cwd, env=env_a)
+        assert r_discovered is not None, (
+            f"must deny sibling target via the discovery fallback too: {cmd}"
+        )
+
+    # Task A's own install stays allowed when the root is supplied — the
+    # tamper does not collaterally break the legitimate case.
+    own_cmd = "pip install -e ."
+    r_own = venv_install_guard.denial_reason(
+        own_cmd, cwd=cwd, env=env_a, session_root=task_a)
+    assert r_own is None, f"own install must stay allowed with the root supplied: {r_own}"
+
+    # Third sub-case: task A's marker replaced with a DANGLING symlink. A
+    # naive `os.path.exists` probe (round 2's defect) follows the symlink,
+    # finds nothing at the far end, and folds that OSError into "no marker
+    # here" — climbing straight past task A. `os.lstat` must see the
+    # symlink itself and stop there, so the discovery fallback still claims
+    # task A as the boundary and the own-venv install from a subdirectory
+    # stays allowed with NO `session_root` supplied at all.
+    os.symlink("/nonexistent", os.path.join(task_a, ".git"))
+    r_symlink = venv_install_guard.denial_reason(own_cmd, cwd=cwd, env=env_a)
+    assert r_symlink is None, (
+        f"a dangling symlink marker must still be treated as present: {r_symlink}"
+    )
+
+
+def test_out_of_tree_targets_stay_denied_from_root_and_subdirectory(tmp_path):
+    """AC5 — non-regression. None of the boundary-source change may widen
+    what already stayed denied: every existing out-of-tree spelling must
+    stay denied whether the coder is at the worktree root or several
+    directories deep, with `session_root` supplied throughout (the shipped
+    shape). Each shape carries its own positive control — the identical
+    spelling pointed at the worktree's own venv/tree, asserted ALLOWED from
+    the same two cwds."""
+    primary, primary_venv, wt, wt_venv, prod_env, wt_env = _session(tmp_path)
+    os.makedirs(os.path.join(wt, "src", "pkg"), exist_ok=True)
+    cwds = [wt, os.path.join(wt, "src", "pkg")]
+
+    def venv_cases(venv):
+        return [
+            f"VIRTUAL_ENV={venv} pip install foo",
+            f"uv pip install --target {venv}/lib/site-packages foo",
+            f"uv pip install --prefix {venv} foo",
+            f"uv sync --root {venv}",
+            f"uv pip install --python {venv}/bin/python foo",
+            f"uv pip uninstall --python {venv}/bin/python foo",
+            f"uv sync --python {venv}/bin/python",
+            f"{venv}/bin/pip install foo",
+            f"bash -lc '{venv}/bin/pip install foo'",
+            f'sh -c "{venv}/bin/pip install foo"',
+            f"xargs {venv}/bin/pip install",
+            f"timeout 300 {venv}/bin/pip install foo",
+            f"env -i {venv}/bin/pip install foo",
+            f"uv run pip install --python {venv}/bin/python foo",
+        ]
+
+    def tree_cases(tree):
+        return [
+            f"UV_PROJECT_ENVIRONMENT={tree} uv sync",
+            f"uv sync --project {tree}",
+            f"uv sync --directory {tree}",
+        ]
+
+    for cwd in cwds:
+        for cmd in venv_cases(primary_venv) + tree_cases(primary):
+            r = venv_install_guard.denial_reason(
+                cmd, cwd=cwd, env=wt_env, session_root=wt)
+            assert r is not None, f"must be denied from {cwd}: {cmd}"
+            assert primary_venv in r or primary in r, (
+                f"reason must name the primary tree: {cmd} -> {r}"
+            )
+            d = guard.evaluate("Bash", {"command": cmd}, forbidden_paths=FORBIDDEN,
+                                never_push_to=PROTECTED, cwd=cwd, env=wt_env,
+                                session_root=wt)
+            assert not d.allow, f"must be blocked via evaluate() from {cwd}: {cmd}"
+
+        for cmd in venv_cases(wt_venv) + tree_cases(wt):
+            r = venv_install_guard.denial_reason(
+                cmd, cwd=cwd, env=wt_env, session_root=wt)
+            assert r is None, f"positive control must stay allowed from {cwd}: {cmd} — {r}"
+            d = guard.evaluate("Bash", {"command": cmd}, forbidden_paths=FORBIDDEN,
+                                never_push_to=PROTECTED, cwd=cwd, env=wt_env,
+                                session_root=wt)
+            assert d.allow, (
+                f"positive control must stay allowed via evaluate() from {cwd}: "
+                f"{cmd} — {d.reason}"
+            )
+
+        # `source <venv>/bin/activate && pip install foo` — the ONE shape
+        # above that this guard (by design; see the module docstring) never
+        # decides from the literal path in the command text, only from
+        # which venv the bare `pip` token resolves to via the caller's own
+        # `env`/PATH. `prod_env` is a session pointed at `primary` (what a
+        # coder's Bash inherits in production); `wt_env` is one correctly
+        # pointed at its own worktree — same two envs the module's existing
+        # `test_verdict2_separator_inside_quoted_payload_is_denied` /
+        # `test_control_worktree_venv_installs_are_allowed` already use.
+        source_cmd = 'bash -lc "source {}/bin/activate && pip install foo"'
+        r_deny = venv_install_guard.denial_reason(
+            source_cmd.format(primary_venv), cwd=cwd, env=prod_env, session_root=wt)
+        assert r_deny is not None, f"must be denied from {cwd}: {source_cmd}"
+        assert primary_venv in r_deny, f"reason must name {primary_venv}: {r_deny}"
+        d_deny = guard.evaluate(
+            "Bash", {"command": source_cmd.format(primary_venv)},
+            forbidden_paths=FORBIDDEN, never_push_to=PROTECTED,
+            cwd=cwd, env=prod_env, session_root=wt)
+        assert not d_deny.allow, f"must be blocked via evaluate() from {cwd}"
+
+        r_allow = venv_install_guard.denial_reason(
+            source_cmd.format(wt_venv), cwd=cwd, env=wt_env, session_root=wt)
+        assert r_allow is None, (
+            f"positive control must stay allowed from {cwd}: {r_allow}"
+        )
+        d_allow = guard.evaluate(
+            "Bash", {"command": source_cmd.format(wt_venv)},
+            forbidden_paths=FORBIDDEN, never_push_to=PROTECTED,
+            cwd=cwd, env=wt_env, session_root=wt)
+        assert d_allow.allow, "positive control must stay allowed via evaluate()"

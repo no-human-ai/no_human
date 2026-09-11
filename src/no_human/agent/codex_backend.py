@@ -1389,7 +1389,8 @@ class CodexBackend:
     # ------------------------------------------------------------- events --
 
     def _guard_events(self, tool_name: str, tool_input: dict,
-                      cwd: str | None = None) -> tuple[str, str] | None:
+                      cwd: str | None = None,
+                      session_root: str | None = None) -> tuple[str, str] | None:
         """The guard's verdict on an ALREADY-EXECUTED tool call, or None.
 
         Same pure policy as the Claude path (``agent.guard.evaluate``) — the
@@ -1401,6 +1402,10 @@ class CodexBackend:
         violation (e.g. installing outside the worktree's own ``.venv``) has
         nothing left to prevent by killing the attempt. ``cwd`` is the
         session's worktree, for the guard's file-existence questions.
+        ``session_root`` is that same worktree's ROOT, threaded into
+        ``guard.evaluate`` so the install guard's containment boundary is
+        the worktree the orchestrator created, not wherever the coder has
+        since `cd`'d into.
         """
         decision = guard.evaluate(
             tool_name, tool_input,
@@ -1408,6 +1413,7 @@ class CodexBackend:
             never_push_to=self.never_push_to,
             readonly=self.readonly,
             cwd=cwd,
+            session_root=session_root,
         )
         return None if decision.allow else (decision.reason, decision.severity)
 
@@ -1691,7 +1697,7 @@ class CodexBackend:
                         turns += 1
                         verdict = self._guard_events(
                             event.tool_name or "", event.tool_input or {},
-                            cwd=str(cwd))
+                            cwd=str(cwd), session_root=str(cwd))
                         if verdict:
                             reason, severity = verdict
                             denials.append(reason)

@@ -458,12 +458,18 @@ def _rollup_subagents(
 def _make_guard_hook(
     forbidden_paths: list[str], never_push_to: list[str], *, readonly: bool = False,
     cwd: str | None = None,
+    session_root: str | None = None,
 ) -> Callable[..., Awaitable[dict]]:
     """Build a PreToolUse hook callback that applies the pure guard policy.
 
     ``cwd`` is the session's worktree (the SDK subprocess cwd) — the guard
     resolves file-existence questions against it, never against the
     orchestrator process's own cwd.
+
+    ``session_root`` is that same worktree's ROOT, threaded into
+    ``guard.evaluate`` so the install guard's containment boundary is the
+    worktree the orchestrator created, not wherever the coder has since
+    `cd`'d into.
     """
 
     async def hook(input_data: dict, tool_use_id: str | None, context: HookContext):
@@ -474,6 +480,7 @@ def _make_guard_hook(
             never_push_to=never_push_to,
             readonly=readonly,
             cwd=cwd,
+            session_root=session_root,
         )
         if decision.allow:
             return {}
@@ -649,6 +656,7 @@ class ClaudeBackend:
                             self.never_push_to,
                             readonly=self.readonly,
                             cwd=str(cwd),
+                            session_root=str(cwd),
                         )
                     ],
                 )

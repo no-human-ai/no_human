@@ -78,10 +78,22 @@ against a policy pattern. It instead:
      venv unconditionally — so trusting the inherited value here denied
      `uv sync` / `uv run pytest -q` in EVERY session, not just a
      laundering one. See the residual-risk register below.
-  5. Denies unless EVERY resolved candidate is inside the session's
-     worktree (``cwd``) — an allow-list, not a deny-list, so a spelling
-     nobody has thought of yet still resolves to "outside the worktree"
-     and is denied by construction rather than by a missing pattern.
+  5. Denies unless EVERY resolved candidate is inside the session
+     worktree ROOT, SUPPLIED BY THE CALLER (``session_root`` — the
+     orchestrator already knows it: it creates the worktree at
+     ``worktree_root(config) / f"{task.id}.{token}"`` and both coder
+     backends thread that same value into the guard beside ``cwd``), not
+     against the possibly-deeper ``cwd`` a coder has since ``cd``'d into.
+     An allow-list, not a deny-list, so a spelling nobody has thought of
+     yet still resolves to "outside the worktree" and is denied by
+     construction rather than by a missing pattern. When no caller
+     supplies ``session_root`` (an unknown/legacy caller), the boundary
+     is DISCOVERED instead: walk up from ``cwd`` for a ``.git`` marker,
+     probed with ``os.lstat`` so a dangling symlink still counts as
+     present, refusing to climb to or past ``config.worktree_root(config)``,
+     the default ``~/.no_human/worktrees``, or any ancestor of either — see
+     the residual-risk register below for exactly what that fallback can
+     and cannot prove.
   6. Fails closed (memory: *gates must fail closed*) whenever install
      intent is present but a resolution step cannot be completed:
      shell/variable expansion (``$``, backticks) in any token, no
@@ -119,6 +131,21 @@ pre-execution. It cannot see:
     (``VIRTUAL_ENV``/``UV_PROJECT_ENVIRONMENT`` pinned to the worktree's
     own venv for the whole session) — capability-level, not a pattern this
     module could add.
+  - the DISCOVERY fallback (no ``session_root`` supplied) trusts a ``.git``
+    marker that the guarded process itself is free to create, move, delete
+    or symlink. It is not fooled by that alone: it probes with ``os.lstat``
+    (a dangling symlink still counts as "present", closing the "relocate
+    the marker" trick), and it refuses to ever claim
+    ``config.worktree_root(config)``, the default ``~/.no_human/worktrees``,
+    or any ancestor of either as a boundary — so deleting every marker back
+    to the worktrees root still falls back to ``cwd``, never wider. What it
+    genuinely cannot prove: a marker planted ABOVE the caller's actual
+    worktree but BELOW the worktrees root (e.g. a decoy ``.git`` one level
+    up inside a directory the guarded process itself created) is
+    indistinguishable from a real one — this is exactly why the shipped
+    coder path does not rely on discovery: it always supplies
+    ``session_root`` explicitly, and discovery only ever runs for a caller
+    this module cannot identify.
 
 None of these can be closed by adding a smarter pattern — the information
 needed does not exist before the command runs. The real fix for this
@@ -136,6 +163,8 @@ import shlex
 import shutil
 from pathlib import Path, PurePosixPath
 from typing import Mapping
+
+import yaml
 
 _LOG = logging.getLogger(__name__)
 
@@ -496,12 +525,129 @@ def _is_within(path: str, root: str) -> bool:
         return False
 
 
-def denial_reason(cmd: str, *, cwd: str | None, env: Mapping[str, str] | None = None) -> str | None:
+def _refused_roots() -> frozenset[str] | None:
+    """Roots the DISCOVERY fallback must never accept as a boundary:
+    ``config.worktree_root(config)``, the default ``~/.no_human/worktrees``,
+    and every ancestor of either — never a single hard-coded literal (that
+    was round 4's defect: a relocated ``isolation.worktree_root`` reopened
+    the exact attack trunk already denies).
+
+    Returns ``None`` when this cannot be determined (unreadable/malformed
+    config) — the caller must then claim NO discovered root at all, never
+    silently fall through to a narrower-looking guess.
+    """
+    from .. import config as _config  # lazy: read the module attrs at call
+    # time so an isolated-HOME test plugin or a monkeypatched CONFIG_PATH
+    # both take effect; `worktree_root` itself is pure over a dict, so this
+    # never calls the side-effecting `load_config()`.
+    try:
+        text = _config.CONFIG_PATH.read_text()
+    except FileNotFoundError:
+        data: dict = {}  # absent config == defaults; fully determinable
+    except OSError:
+        return None
+    else:
+        try:
+            data = yaml.safe_load(text) or {}
+        except yaml.YAMLError:
+            return None
+
+    roots = {_config.worktree_root(data), _config.NO_HUMAN_HOME / "worktrees"}
+    out: set[str] = set()
+    for r in roots:
+        p = Path(os.path.abspath(os.path.expanduser(str(r))))
+        for q in (p, *p.parents):
+            out.add(str(q))
+            rp = _safe_realpath(str(q))
+            if rp:
+                out.add(rp)
+    return frozenset(out)
+
+
+def _discovered_root(start: str) -> str | None:
+    """Walk up from `start` looking for a `.git` marker, or None if no
+    boundary can be claimed.
+
+    Hardened against the four ways this walk was previously got wrong:
+    probed with ``os.lstat`` (a DANGLING symlink still counts as "present",
+    so relocating the marker with `ln -sf /nonexistent .git` cannot widen
+    the boundary), and the walk refuses to accept or climb past
+    `config.worktree_root(config)`, the default worktrees root, or any
+    ancestor of either — not a single hard-coded literal.
+    """
+    refused = _refused_roots()
+    if refused is None:
+        return None
+    current = Path(start)
+    while True:
+        if str(current) in refused:
+            return None
+        marker = current / ".git"
+        try:
+            os.lstat(marker)
+        except FileNotFoundError:
+            pass  # genuinely absent here -> keep climbing
+        except OSError:
+            return None  # cannot determine (EACCES/ELOOP/...) -> claim nothing
+        else:
+            return str(current)
+        parent = current.parent
+        if parent == current:
+            return None
+        current = parent
+
+
+def _boundary_root(
+    cwd_real: str, session_root: str | None
+) -> tuple[str | None, str | None]:
+    """The containment boundary candidates are compared against, or an
+    error string to deny with.
+
+    A caller-supplied `session_root` is authoritative — it is the whole
+    fix: the boundary is the session's worktree ROOT, not wherever the
+    coder has since `cd`'d into. An unresolvable supplied root fails
+    closed with a message rather than silently falling back to `cwd`
+    (that substitution is the exact "undeterminable input recorded as
+    determined" class this task exists to close). With no `session_root`
+    supplied, the hardened discovery fallback runs; falling back further
+    to `cwd_real` when discovery itself claims nothing preserves the
+    pre-existing behaviour for such a caller exactly, so no existing
+    refusal can weaken.
+    """
+    if session_root is not None:
+        real = _safe_realpath(session_root)
+        if real is None:
+            return None, (
+                f"blocked: session worktree root {session_root!r} could "
+                "not be resolved."
+            )
+        return real, None
+    discovered = _discovered_root(cwd_real)
+    return (discovered or cwd_real), None
+
+
+def denial_reason(
+    cmd: str,
+    *,
+    cwd: str | None,
+    env: Mapping[str, str] | None = None,
+    session_root: str | None = None,
+) -> str | None:
     """Why this command's install must be denied, or None to allow it.
 
     Structural, not lexical: this resolves canonical executable/target
-    paths and compares them to `cwd` (the session's worktree). No text
-    pattern is matched against `cmd` to make the allow/deny decision.
+    paths and compares them to the session worktree ROOT. No text pattern
+    is matched against `cmd` to make the allow/deny decision.
+
+    `cwd` keeps its existing job: the base a relative token resolves
+    against. `session_root` — supplied by the caller, never discovered
+    from `cwd` — is the CONTAINMENT boundary: a coder that has `cd`'d into
+    any subdirectory of its own worktree still targets its own venv, which
+    is only visible when the boundary is the worktree ROOT, not `cwd`.
+    When no `session_root` is supplied (an unknown/legacy caller), a
+    hardened discovery fallback derives one from `.git` markers on disk;
+    see the module docstring's residual-risk register for exactly what
+    that fallback can and cannot prove.
     """
     if env is None:
         env = os.environ
@@ -552,6 +698,11 @@ def denial_reason(cmd: str, *, cwd: str | None, env: Mapping[str, str] | None = 
     if cwd_real is None:
         return f"blocked: session worktree {cwd!r} could not be resolved."
 
+    root, boundary_err = _boundary_root(cwd_real, session_root)
+    if boundary_err is not None:
+        return boundary_err
+    assert root is not None  # `_boundary_root` only omits `root` with an error
+
     candidates = _effective_prefixes(tokens, cwd, installers)
     if not candidates:
         return (
@@ -559,12 +710,12 @@ def denial_reason(cmd: str, *, cwd: str | None, env: Mapping[str, str] | None = 
             f"so it cannot be proven safe: {cmd}"
         )
 
-    outside = sorted(c for c in candidates if not _is_within(c, cwd_real))
+    outside = sorted(c for c in candidates if not _is_within(c, root))
     if outside:
-        alt = os.path.join(cwd_real, ".venv", "bin", "python")
+        alt = os.path.join(root, ".venv", "bin", "python")
         return (
             f"install blocked: resolves to {outside[0]}, outside this "
-            f"session's worktree ({cwd_real}) — not the worktree's own "
+            f"session's worktree ({root}) — not the worktree's own "
             f".venv. Installers must target the worktree's own .venv, e.g. "
             f"`{alt} -m pip install ...` or `uv sync` with no --python/"
             f"--target/--prefix/--project pointing elsewhere."
