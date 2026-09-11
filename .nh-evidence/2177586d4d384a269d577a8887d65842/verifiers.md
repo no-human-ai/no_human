@@ -1,28 +1,29 @@
 # Verifiers
 
-_Harness-captured record for task `2177586d`, commit `80fffff74b7f211c4e7d398ed41e62495e75ad45` — not model-authored: no_human wrote this file from the deterministic verifier rules selected for this commit's files. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `2177586d`, commit `b561adf05b16927ab4cb74b3f5acb6784c90b339` — not model-authored: no_human wrote this file from the deterministic verifier rules selected for this commit's files. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ```json
 [
   {
-    "comment": "All test functions added or modified in this diff contain at least one assertion, assertion helper call, or mock assert_* call; none is assertion-free.",
-    "evidence": "Every added/modified test function contains asserts, e.g. new test_pre_review_red_run_shows_the_reviewer_the_base_tree_split has 'newly_mock.assert_awaited_once()', 'assert outcome.status is TaskStatus.FAILED', 'assert call[\"test_attribution\"] == \"attributed\"'; test_owned_red_id_is_never_shown_as_pre_existing_and_still_fails asserts owned_id membership; test_pre_review_attribution_ids_are_bounded_at_the_call_site asserts cap/dropped counts; modified test_flaky_non_owned_red_run_not_blamed_when_review_fails_unrelated uses assert_awaited_once/assert_not_awaited.",
-    "file": "tests/test_pre_review_red_reaches_coder.py",
+    "comment": "All added and modified test functions across the three files include at least one assertion (assert statements or mock assertion helpers such as assert_awaited_once/assert_not_awaited). Non-test helpers like the stub reviewer classes are not test functions and are not in scope.",
+    "evidence": "Every added/modified test function contains assertions, e.g. test_pre_review_red_run_shows_the_reviewer_the_base_tree_split has newly_mock.assert_awaited_once() and assert outcome.status is TaskStatus.FAILED; test_base_attribution_is_asked_once_so_the_two_paths_cannot_disagree has assert newly_mock.await_count == 1; test_gate_review_hands_the_backend_a_prompt_with_the_base_tree_attribution has assert backend.prompts and assert \"Already red on the base tree\" in prompt.",
+    "file": "",
     "files_checked": [
       "tests/test_pre_review_red_reaches_coder.py",
+      "tests/test_reviewer.py",
       "tests/test_structural_budget.py"
     ],
-    "line": 762,
+    "line": 0,
     "no_verdict": false,
     "passed": true,
     "severity": "medium",
-    "tokens_used": 867,
+    "tokens_used": 1206,
     "unavailable": false,
     "verifier_id": "tests-assert-something"
   },
   {
-    "comment": "None of the added or modified code writes a task status; the change is purely reviewer-facing attribution evidence, so there is no update_task(validate=False) path to bypass the transition table.",
-    "evidence": "The entire diff concerns evidence-only test-attribution (new `_pre_review_base_attribution` helper, `_bounded_test_results` id-list truncation, and pre-review red checklist/reviewer-kwargs plumbing). It contains no `update_task` call, no `validate=False`, and no `set_status` call \u2014 no task-status write of any kind.",
+    "comment": "No new/modified code writes a task status \u2014 the change is confined to pre-review test-attribution evidence and per-round memoization caches, with no update_task(validate=False) call anywhere in the diff.",
+    "evidence": "The diff adds test-attribution caches and helpers (_owned_failing_tests_once, _newly_failing_vs_base_once, _pre_review_base_attribution, pre-review evidence bounding); none of the new or modified lines call update_task at all, and there is no occurrence of validate=False.",
     "file": "",
     "files_checked": [
       "src/no_human/core/orchestrator.py"
@@ -31,7 +32,7 @@ _Harness-captured record for task `2177586d`, commit `80fffff74b7f211c4e7d398ed4
     "no_verdict": false,
     "passed": true,
     "severity": "high",
-    "tokens_used": 1092,
+    "tokens_used": 513,
     "unavailable": false,
     "verifier_id": "no-unvalidated-status-write"
   }
