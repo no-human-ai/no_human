@@ -1511,7 +1511,16 @@ FROZEN_FILE_LINES = {
     # the call using the RUNNING process's exported profile, plus the
     # `repo_selected` cardinality-leak fix (bucket the profile count).
     # Measured on this tree with the scanner below.
-    "api/app.py": 6338,
+    # 6338 -> 6354 (+16): second round of reviewer-review fixes for
+    # `POST /api/onboarding/onboard` and `_record_funnel` (task c4873934) —
+    # `_record_funnel` now re-raises `ValueError` (an out-of-enum kind/prop
+    # literal is a privacy bug at the call site, not an operational hiccup,
+    # so it must not be swallowed by the fail-open `except Exception`), and
+    # `repo_selected` is now gated on a per-process `_repo_selected_emitted`
+    # flag so N onboards in one process emit the event at most once,
+    # bounding cardinality rather than just bucketing the count prop.
+    # Measured on this tree with the scanner below.
+    "api/app.py": 6354,
     # +51: W5 active-time phase writer (phase instrumentation).
     # +84: `list_escalations`/`list_review_fails`/`list_tamper_trips` — the
     # three new failure-signal sources the recurring learning harvest mines.
