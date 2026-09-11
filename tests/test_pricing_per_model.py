@@ -174,7 +174,7 @@ def test_the_pricer_never_reads_config():
     absence of the import instead."""
     import no_human.core.pricing as pricing
 
-    source = __import__("pathlib").Path(pricing.__file__).read_text()
+    source = __import__("pathlib").Path(pricing.__file__).read_text(encoding="utf-8")
     assert "import config" not in source
     assert "from .config" not in source
     assert "from no_human.core.config" not in source

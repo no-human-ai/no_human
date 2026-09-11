@@ -279,7 +279,7 @@ def test_materialize_skills_writes_skill_md(tmp_path):
     assert "pr-review" in names
     skill_file = tmp_path / ".claude" / "skills" / "pr-review" / "SKILL.md"
     assert skill_file.exists()
-    content = skill_file.read_text()
+    content = skill_file.read_text(encoding="utf-8")
     assert "Always check the diff." in content
     assert "name: pr-review" in content
     # Rules are not materialized as skills.
@@ -308,7 +308,7 @@ def test_materialize_skills_skips_existing(tmp_path):
     names = Orchestrator._materialize_skills(orch, tmp_path)
     assert "existing" in names
     # Content must NOT be overwritten.
-    assert "Original content." in skill_dir.read_text()
+    assert "Original content." in skill_dir.read_text(encoding="utf-8")
 
 
 def test_materialize_skills_sanitizes_names(tmp_path):
@@ -340,9 +340,9 @@ def test_materialize_practice_skills_writes_tdd_debug_done(tmp_path):
     for name in ("no_human_tdd", "no_human_debug", "no_human_done", "no_human_focus"):
         sk = skills_dir / name / "SKILL.md"
         assert sk.exists(), f"{name} not materialized"
-        assert sk.read_text().startswith(f"---\nname: {name}\ndescription: ")
+        assert sk.read_text(encoding="utf-8").startswith(f"---\nname: {name}\ndescription: ")
     # systematic-debugging is the net-new lever: root-cause, don't patch-guess
-    debug = (skills_dir / "no_human_debug" / "SKILL.md").read_text().lower()
+    debug = (skills_dir / "no_human_debug" / "SKILL.md").read_text(encoding="utf-8").lower()
     assert "root cause" in debug and "patch-guess" in debug
 
 

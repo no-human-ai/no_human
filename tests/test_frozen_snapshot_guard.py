@@ -281,7 +281,7 @@ def test_db_module_has_a_rollback_at_all():
     """`grep -n rollback src/no_human/core/db.py` returned NOTHING before this
     fix. `journal_mode` is the known positive proving the search works."""
     from no_human.core import db as db_mod
-    src = __import__("pathlib").Path(db_mod.__file__).read_text()
+    src = __import__("pathlib").Path(db_mod.__file__).read_text(encoding="utf-8")
     assert "journal_mode" in src, "control: the file was read at all"
     assert "rollback" in src
 
@@ -1206,7 +1206,7 @@ def test_the_worker_task_actually_gets_a_done_callback():
     # `from no_human.api import app` resolves to the FastAPI OBJECT, not the
     # module — the first draft of this test tripped on exactly that.
     app_mod = importlib.import_module("no_human.api.app")
-    src = __import__("pathlib").Path(app_mod.__file__).read_text()
+    src = __import__("pathlib").Path(app_mod.__file__).read_text(encoding="utf-8")
     assert "worker_task = asyncio.create_task(" in src, (
         "control: this is the task site the review measured as unchecked")
     assert "worker_task.add_done_callback(" in src, (

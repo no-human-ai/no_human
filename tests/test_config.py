@@ -75,7 +75,7 @@ def test_load_config_generates_default(tmp_path):
     assert cfg.review_model == "claude-opus-4-8"
     assert cfg["approval"]["auto_merge_on_approval"] is False
     # the metered key must never appear anywhere in the generated config
-    assert "ANTHROPIC_API_KEY" not in cfg_path.read_text()
+    assert "ANTHROPIC_API_KEY" not in cfg_path.read_text(encoding="utf-8")
 
 
 def test_load_config_tolerates_deprecated_tracker_block(tmp_path):
@@ -173,7 +173,7 @@ def test_atomic_write_text_uses_os_replace(tmp_path, monkeypatch):
         return real_replace(src, dst)
     monkeypatch.setattr(os, "replace", spy_replace)
     _atomic_write_text(target, "key: value\n")
-    assert target.read_text() == "key: value\n"
+    assert target.read_text(encoding="utf-8") == "key: value\n"
     assert len(replaced) == 1
     assert replaced[0][1] == str(target)
     assert replaced[0][0].endswith(".yaml.tmp")
@@ -184,7 +184,7 @@ def test_atomic_write_text_no_partial_read(tmp_path):
     target = tmp_path / "config.yaml"
     target.write_text("original")
     _atomic_write_text(target, "replaced content")
-    assert target.read_text() == "replaced content"
+    assert target.read_text(encoding="utf-8") == "replaced content"
     assert not target.with_suffix(".yaml.tmp").exists()
 
 
@@ -579,7 +579,7 @@ def _keys_read_without_a_default(src_root, declared_sections):
     """
     found = set()
     for path in sorted(src_root.rglob("*.py")):
-        for m in _INLINE_READ.finditer(path.read_text()):
+        for m in _INLINE_READ.finditer(path.read_text(encoding="utf-8")):
             dotted = f"{m.group(1)}.{m.group(2)}"
             if dotted not in declared_sections:
                 found.add(dotted)
@@ -691,7 +691,7 @@ def test_every_new_config_key_is_documented(tmp_path):
     from no_human.config import load_config
 
     cfg = load_config(tmp_path / "config.yaml")
-    docs = (Path(__file__).resolve().parents[1] / "docs" / "configuration.md").read_text()
+    docs = (Path(__file__).resolve().parents[1] / "docs" / "configuration.md").read_text(encoding="utf-8")
     doc_paths = _documented_paths(docs)
     declared = set(_leaf_config_keys(cfg.data))
     sections = {p.rsplit(".", 1)[0] for p in declared} | declared
@@ -934,7 +934,7 @@ def test_set_local_backend_fields_writes_both_values_and_preserves_comments(tmp_
     assert reloaded.data["llm"]["local_model"] == "my-model"
     assert reloaded.data["llm"]["local_base_url"] == "http://localhost:8000/v1"
     # The inline comment on the header and the sibling scalar are untouched.
-    text = cfg_path.read_text()
+    text = cfg_path.read_text(encoding="utf-8")
     assert "# which subscription pays" in text
     assert "auth_profile: default" in text
 
@@ -947,7 +947,7 @@ def test_set_local_backend_fields_refuses_a_public_url_leaving_the_file_untouche
         config.set_local_backend_fields(
             {"local_base_url": "http://8.8.8.8:8000"}, cfg_path,
         )
-    assert cfg_path.read_text() == original
+    assert cfg_path.read_text(encoding="utf-8") == original
 
 
 def test_set_local_backend_fields_refuses_an_unknown_key(tmp_path):

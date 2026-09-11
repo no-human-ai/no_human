@@ -408,7 +408,7 @@ def test_every_coder_sink_session_has_a_stated_stop_disposition():
     import ast
     from pathlib import Path
     import no_human.core.orchestrator as mod
-    tree = ast.parse(Path(mod.__file__).read_text())
+    tree = ast.parse(Path(mod.__file__).read_text(encoding="utf-8"))
     sites: dict[str, int] = {}
     for fn in ast.walk(tree):
         if not isinstance(fn, ast.AsyncFunctionDef):

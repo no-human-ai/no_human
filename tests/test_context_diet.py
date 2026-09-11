@@ -301,7 +301,7 @@ def test_materialize_never_overwrites_a_project_skill(tmp_path, monkeypatch):
     names = orch._materialize_skills(repo)
 
     assert "helper" in names
-    assert (project_copy / "SKILL.md").read_text() == "project version"
+    assert (project_copy / "SKILL.md").read_text(encoding="utf-8") == "project version"
     assert orch._copied_skill_dirs == []
 
 
@@ -334,7 +334,7 @@ def test_leftover_copy_is_refreshed_not_adopted(tmp_path, monkeypatch):
 
     orch._materialize_skills(repo)
 
-    assert "body" in (leftover / "SKILL.md").read_text()  # refreshed content
+    assert "body" in (leftover / "SKILL.md").read_text(encoding="utf-8")  # refreshed content
     assert leftover in orch._copied_skill_dirs             # tracked again
 
 
