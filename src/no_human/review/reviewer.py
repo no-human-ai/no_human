@@ -36,7 +36,11 @@ from ..agent.claude_backend import (
 from ..review import tamper_adjudication
 from ..review.selfcheck import ChecklistItem
 from ..review.lint_evidence import collect_lint_evidence, format_lint_evidence
-from ..review.type_evidence import collect_type_evidence, format_type_evidence
+from ..review.type_evidence import (
+    NOT_COLLECTED_PREFIX,
+    collect_type_evidence,
+    format_type_evidence,
+)
 from ..review.wiring_evidence import (
     collect_wiring_evidence,
     format_wiring_evidence,
@@ -759,7 +763,17 @@ def _reading_scope(
     # and this enumeration must never claim a type check the reviewer does not
     # have below (issue #114: a crashed checker attaches no evidence rather than
     # a false clean verdict).
-    if type_evidence and not type_evidence.startswith(_EVIDENCE_FAILED_PREFIX):
+    # `NOT_COLLECTED_PREFIX` joins the FAILED prefix here for the same reason
+    # it exists: that block is a statement that the collector did not run, and
+    # it is non-empty, so testing emptiness alone would make this sentence
+    # announce type diagnostics the reviewer does not have — then tell it not
+    # to re-derive them. That is the false-assurance failure mode this whole
+    # collector is written against.
+    if (
+        type_evidence
+        and not type_evidence.startswith(_EVIDENCE_FAILED_PREFIX)
+        and not type_evidence.startswith(NOT_COLLECTED_PREFIX)
+    ):
         have.append("the net-new type diagnostics")
     listed = have[0] if len(have) == 1 else f"{', '.join(have[:-1])} and {have[-1]}"
     omitted_note = (

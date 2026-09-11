@@ -839,14 +839,30 @@ ALLOWLIST: dict[str, dict[str, Allowed]] = {
     # so, and an operator has to be able to read it here and decide.
     "review/type_evidence.py": {
         "exec:<dynamic>": Allowed(
-            "nothing, for `mypy` and `tsc` — both read files and write stdout. "
-            "For `pyright` resolved to the PyPI launcher: the nodejs.org "
-            "distribution host and registry.npmjs.org, on that launcher's "
-            "first run only, to fetch the runtime and the npm package it wraps",
+            "nothing, for `tsc` and for a plain `mypy` — both read files and "
+            "write stdout. For `pyright` resolved to the PyPI launcher: the "
+            "nodejs.org distribution host and registry.npmjs.org, on that "
+            "launcher's first run only, to fetch the runtime and the npm "
+            "package it wraps. For `mypy` against a repo whose config carries "
+            "a `plugins =` line: WHATEVER THAT PLUGIN SENDS — mypy imports the "
+            "modules that line names, and the line is read from the config of "
+            "the repo under review, so this is the reviewed repo's own code "
+            "executing. It runs with `_checker_env()`, i.e. this process's "
+            "environment minus every secret-shaped variable "
+            "(`agent/child_env.drop_foreign_secrets`, empty keep-list), so it "
+            "holds no OAuth token, API key or cloud credential of ours; it "
+            "does keep PATH, HOME and the proxy vars, and nothing bounds what "
+            "code it may run",
             _ON + "a gate review of a repo that ITSELF configures pyright, mypy "
                   "or tsc (pyrightconfig.json, [tool.pyright], [tool.mypy], "
                   "mypy.ini, setup.cfg [mypy], or tsconfig.json); a repo that "
-                  "configures none spawns nothing at all"),
+                  "configures none spawns nothing at all. Since #114 phase 2 "
+                  "the same channel also fires DURING CODING, once per edit to "
+                  "a .py/.pyi file, when `hooks.per_edit_type` is on (default "
+                  "OFF) and the repo configures pyright or mypy: "
+                  "`agent/type_hook.py` reuses `_run_checker` rather than "
+                  "spawning its own, so the channel stays in this module while "
+                  "the trigger no longer belongs to review alone"),
     },
     # This module used to hold a THIRD channel: `_probe_github_ambient` shelled
     # out to `gh auth status` — measured 1700-2036 ms, a network round-trip —

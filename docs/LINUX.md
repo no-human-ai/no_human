@@ -242,19 +242,20 @@ the extracted AppImage, and proved `apt-get remove` keeps `~/.no_human`.
 
 ## 5. Install, verify, and the Claude CLI on Linux
 
-**`.deb`** (Ubuntu, Debian, Mint, Pop!_OS, …):
+**`.deb`** (Ubuntu, Debian, Mint, Pop!_OS, …). Use the filename from the
+release page; `<version>` below stands for the release you downloaded:
 
 ```bash
 sha256sum -c SHA256SUMS-linux.txt          # against the file you downloaded
-sudo apt install ./no_human-0.1.0-linux-amd64.deb
+sudo apt install ./no_human-<version>-linux-amd64.deb
 ```
 Then launch **no_human** from the application menu. **[unverified]**
 
 **AppImage** (any distro):
 
 ```bash
-chmod +x no_human-0.1.0-linux-x86_64.AppImage
-./no_human-0.1.0-linux-x86_64.AppImage
+chmod +x no_human-<version>-linux-x86_64.AppImage
+./no_human-<version>-linux-x86_64.AppImage
 ```
 Two frictions are expected and honest, not bugs to hide **[unverified until
 Lane B row 11 quotes them]**:
