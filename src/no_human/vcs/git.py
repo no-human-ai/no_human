@@ -719,12 +719,12 @@ class GitRepo:
         # string either, and the file would be silently dropped from the
         # commit — trading a loud crash for silent work loss. `-z` keeps the
         # path literal so it round-trips through both.
-        modified = self._run("diff", "--name-only", check=False).strip().splitlines()
+        modified = self._null_paths(self._run("diff", "--name-only", "-z", check=False))
         rel_paths.extend(modified)
         # Include untracked source files (e.g. new .py created via Bash).
-        untracked = self._run(
-            "ls-files", "--others", "--exclude-standard", check=False
-        ).strip().splitlines()
+        untracked = self._null_paths(self._run(
+            "ls-files", "-z", "--others", "--exclude-standard", check=False
+        ))
         rejected_non_code: list[str] = []
         for u in untracked:
             ext = Path(u).suffix.lower()
@@ -765,7 +765,28 @@ class GitRepo:
         # stages exactly what we intend.
         rel_paths = [r for r in dict.fromkeys(rel_paths)
                      if not self._is_ephemeral_path(r)]
-        self._run("add", "--", *rel_paths)
+        # `git add` exits 128 for the WHOLE pathspec list when any one entry
+        # is neither on disk nor in the index (e.g. a path the coder created
+        # and then deleted within the attempt) — killing the commit of
+        # everything else in the batch. Ask the index which absent paths it
+        # still knows about: those are real DELETIONS and must stay (add
+        # stages them as such); the rest never existed and are dropped from
+        # the list only. `os.path.lexists`, not `Path.exists()`: `exists()`
+        # follows symlinks, so a broken symlink the coder created would be
+        # called absent, miss the index, and be dropped.
+        missing = [r for r in rel_paths if not os.path.lexists(repo_root / r)]
+        if missing:
+            # check=True on purpose: with check=False an `ls-files` error
+            # returns "", `tracked` empties, and every tracked deletion in
+            # the batch is misclassified as a phantom and silently dropped —
+            # lost work traded for a loud crash. Fail closed.
+            tracked = set(self._null_paths(
+                self._run("ls-files", "-z", "--", *missing)
+            ))
+            phantom = {r for r in missing if r not in tracked}
+            rel_paths = [r for r in rel_paths if r not in phantom]
+        if rel_paths:
+            self._run("add", "--", *rel_paths)
         # If no files were actually staged (e.g. agent only used Bash to
         # create files), fall back to stage_all so the commit isn't empty.
         staged = self._run("diff", "--cached", "--name-only", check=False).strip()
@@ -1367,8 +1388,10 @@ class GitRepo:
         return self._run("diff", ref, "HEAD", check=False)
 
     def changed_files(self, ref: str = "HEAD~1") -> list[str]:
-        out = self._run("diff", "--name-only", ref, "HEAD", check=False)
-        return [line for line in out.splitlines() if line]
+        # `-z`: callers join this against the filesystem (`repo.path / f`),
+        # so a C-quoted non-ASCII path here would never match on disk.
+        out = self._run("diff", "--name-only", "-z", ref, "HEAD", check=False)
+        return self._null_paths(out)
 
     def fetch(self, remote: str = "origin", *, prune: bool = True,
               timeout: int = 30) -> None:
