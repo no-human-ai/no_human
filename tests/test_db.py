@@ -904,3 +904,80 @@ async def test_set_status_idempotent_rewrite_records_no_phase(store, task):
     await store.set_status(task, TaskStatus.CONTEXT)  # idempotent
     rows = await store.phases_for(task.id)
     assert [r["phase"] for r in rows] == ["intake"]  # one row, not two
+
+
+# --------------------------------------------------------------------------- #
+# `attempts.completed_at` (#245). It was written by 3 of the 43 `update_attempt`
+# calls in core/orchestrator.py that set a `failure_reason`, so failure duration
+# was unanswerable: 377 of 382 failed rows and 44 of 44 interrupted rows were
+# NULL. The fix is not 40 new keyword arguments at 40 call sites, because a call
+# site is a place to forget something and this one had already been forgotten 40
+# times; it is derived at the single chokepoint every write passes through,
+# beside the C2 backstop that already stamps a missing `failure_reason` there.
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["failed", "succeeded", "interrupted"])
+async def test_a_terminal_update_stamps_completed_at(store, status):
+    """The gap itself: a caller that names a terminal status and nothing else
+    still produces a row a duration can be computed from."""
+    t = Task.new("terminal attempt")
+    await store.create_task(t)
+    attempt_id = await store.create_attempt(t.id, 1)
+
+    await store.update_attempt(attempt_id, status=status,
+                               failure_reason="boom" if status == "failed" else None)
+
+    row = (await store.list_attempts(t.id))[-1]
+    assert row["completed_at"], "a %s attempt must carry completed_at" % status
+
+
+@pytest.mark.asyncio
+async def test_a_non_terminal_update_is_left_alone(store):
+    """`update_attempt` is also the PROGRESS writer: 25 of its call sites set
+    no status at all. Stamping those would be worse than the gap being closed,
+    because a running attempt would read as finished."""
+    t = Task.new("running attempt")
+    await store.create_task(t)
+    attempt_id = await store.create_attempt(t.id, 1)
+
+    await store.update_attempt(attempt_id, pr_url="https://example/1")
+
+    row = (await store.list_attempts(t.id))[-1]
+    assert not row["completed_at"]
+
+
+@pytest.mark.asyncio
+async def test_a_caller_supplied_completed_at_is_never_clobbered(store):
+    """Three call sites already pass their own, and one of them is the
+    delivery-receipt path whose timestamp is the one that matters."""
+    t = Task.new("explicit stamp")
+    await store.create_task(t)
+    attempt_id = await store.create_attempt(t.id, 1)
+    mine = "2020-01-01T00:00:00+00:00"
+
+    await store.update_attempt(attempt_id, status="failed",
+                               failure_reason="boom", completed_at=mine)
+
+    row = (await store.list_attempts(t.id))[-1]
+    assert row["completed_at"] == mine
+
+
+@pytest.mark.asyncio
+async def test_the_interrupted_sweeps_stamp_completed_at_too(store):
+    """The interrupted rows were NULL for a DIFFERENT reason from the failed
+    ones: three sweeps set that status in raw SQL and never reach
+    `update_attempt` at all, so the chokepoint above cannot see them. That is
+    why all 44 were NULL while the failed rows were merely mostly NULL."""
+    t = Task.new("superseded attempt")
+    await store.create_task(t)
+    first = await store.create_attempt(t.id, 1)
+    # Creating the next attempt sweeps the previous still-open row.
+    await store.create_attempt(t.id, 2)
+
+    rows = {r["id"]: r for r in await store.list_attempts(t.id)}
+    assert rows[first]["status"] == "interrupted"
+    assert rows[first]["completed_at"], (
+        "the raw-SQL interrupted sweep must stamp completed_at; it bypasses "
+        "update_attempt, so the chokepoint cannot do it for this path"
+    )
