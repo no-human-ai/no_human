@@ -591,7 +591,7 @@ def persona_priya(ctx) -> PersonaRun:
 
         # The docs never say the site is `integrations.jira.site` in config.yaml
         # — `integrations` does not appear in docs/configuration.md at all.
-        conf_text = (ctx.product / "docs" / "configuration.md").read_text()
+        conf_text = (ctx.product / "docs" / "configuration.md").read_text(encoding="utf-8")
         if "integrations" not in conf_text or "jira" not in conf_text.lower():
             run.findings.append(Finding(
                 run.name, "jira-config-block", "high",

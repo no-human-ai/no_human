@@ -101,10 +101,17 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 #: test runs. Drawing the line by directory hid that, and the first version of
 #: this change shipped with the suite still uncollectable as a result.
 #:
+#: `e2e/` is in for the same reason and was added the same way: the ASCII
+#: locale lane caught `e2e/lane_model.py:53` reading this repository's own
+#: `web/src/boardLanes.js` at module scope, which `tests/` imports, so it was
+#: still a collection blocker after the first sweep. TWICE now the boundary has
+#: been drawn one directory too narrow, which is the argument for enumerating
+#: harness roots here rather than reasoning about them each time.
+#:
 #: The rest of `src/` stays out. That is the product reading a USER's files and
 #: it needs its own change, including a decision about what should happen when
 #: a user's file genuinely is not UTF-8.
-GUARDED_AREAS = ("tests", "scripts", "src/no_human/testing")
+GUARDED_AREAS = ("tests", "scripts", "src/no_human/testing", "e2e")
 
 #: Reads inside a guarded area that are product-side after all: every one takes
 #: a path under the TARGET repository rather than this one, so "decode it as
