@@ -87,20 +87,20 @@ class _TierBackend:
         work = Path(cwd)
         if self.tier == "t1_docs_oneliner":
             readme = work / "README.md"
-            readme.write_text(readme.read_text().replace(
+            readme.write_text(readme.read_text(encoding="utf-8").replace(
                 "at most 100 items", "at most 200 items"))
         elif self.tier == "t2_small_fix":
             (work / "tinytodo" / "store.py").write_text(T2_FIXED)
         elif self.tier == "t3_small_feature":
             store = work / "tinytodo" / "store.py"
-            store.write_text(store.read_text().rstrip("\n") + T3_SEARCH)
+            store.write_text(store.read_text(encoding="utf-8").rstrip("\n") + T3_SEARCH)
         elif self.tier == "t4_cross_file":
             # The hung Agent-SDK session this whole harness exists to survive.
             # Cancellable, so the hard wall-clock can actually kill it.
             await asyncio.sleep(3600)
         else:
             store = work / "tinytodo" / "store.py"
-            store.write_text(store.read_text() + "\n# tidied up.\n")
+            store.write_text(store.read_text(encoding="utf-8") + "\n# tidied up.\n")
         return AgentResult(final_text="done", num_turns=2, is_error=False,
                            tokens_used=1200, session_id="s",
                            stop_reason="end_turn")
@@ -145,7 +145,7 @@ def test_it_refuses_to_start_when_the_corpus_can_outspend_the_night(tmp_path):
 
     assert rc == 1
     assert started == [], "it must refuse before running anything"
-    summary = (tmp_path / "out" / "SUMMARY.md").read_text()
+    summary = (tmp_path / "out" / "SUMMARY.md").read_text(encoding="utf-8")
     assert "REFUSED" in summary
     assert "8,900,000" in summary, summary   # the corpus ceiling, named
     assert "1,000" in summary                # and the budget it exceeds
@@ -160,7 +160,7 @@ def test_a_crash_is_a_nonzero_exit_not_a_green_night(tmp_path):
                          corpus=_four_tier_corpus()[:1])
 
     assert rc == 1
-    report = json.loads(next((tmp_path / "out").glob("nightly-*.json")).read_text())
+    report = json.loads(next((tmp_path / "out").glob("nightly-*.json")).read_text(encoding="utf-8"))
     assert report["tasks"][0]["stage"] == "crashed"
     assert "blew up" in report["tasks"][0]["detail"]
 
@@ -176,7 +176,7 @@ def test_the_run_never_touches_the_operators_home_or_port(tmp_path):
                     backend_factory=lambda t: _TierBackend(t.name),
                     reviewer=_PassReviewer(), corpus=_four_tier_corpus()[:1])
 
-    report = json.loads(next((tmp_path / "out").glob("nightly-*.json")).read_text())
+    report = json.loads(next((tmp_path / "out").glob("nightly-*.json")).read_text(encoding="utf-8"))
     inst = report["instance"]
     for key in ("db_path", "worktree_root", "workdir"):
         p = Path(inst[key]).resolve()
@@ -196,7 +196,7 @@ def test_three_tiers_pass_one_stalls_and_the_night_exits_one(tmp_path):
                          reviewer=_PassReviewer(), corpus=_four_tier_corpus())
 
     assert rc == 1
-    report = json.loads(next(out.glob("nightly-*.json")).read_text())
+    report = json.loads(next(out.glob("nightly-*.json")).read_text(encoding="utf-8"))
     by_name = {t["task"]: t for t in report["tasks"]}
     assert [n for n, t in by_name.items() if t["passed"]] == [
         "t1_docs_oneliner", "t2_small_fix", "t3_small_feature"]
@@ -206,7 +206,7 @@ def test_three_tiers_pass_one_stalls_and_the_night_exits_one(tmp_path):
     assert "max_wall_seconds" in " ".join(stalled["failures"])
     assert report["passed"] == 3 and report["failed"] == 1
 
-    summary = (out / "SUMMARY.md").read_text()
+    summary = (out / "SUMMARY.md").read_text(encoding="utf-8")
     assert "t4_cross_file" in summary and "wall_clock_kill" in summary
     assert "3 passed" in summary and "1 failed" in summary
 
@@ -221,7 +221,7 @@ def test_the_holdout_decides_quality_not_the_reviewer(tmp_path):
                     backend_factory=lambda t: _TierBackend("nothing-doing"),
                     reviewer=_PassReviewer(), corpus=corpus)
 
-    rec = json.loads(next(out.glob("nightly-*.json")).read_text())["tasks"][0]
+    rec = json.loads(next(out.glob("nightly-*.json")).read_text(encoding="utf-8"))["tasks"][0]
     assert rec["review_passed"] is True, "the reviewer did pass it"
     assert rec["quality"] == "holdout_red"
     assert rec["passed"] is False
@@ -318,7 +318,7 @@ def test_the_shipped_baseline_is_seeded_and_keeps_its_refresh_doctrine():
     rows (the tier-by-tier shape is pinned by
     test_the_seeded_baseline_covers_every_corpus_tier_from_a_passing_run)."""
     from no_human.eval import funnel_eval
-    data = json.loads(Path(funnel_eval.BASELINE_PATH).read_text())
+    data = json.loads(Path(funnel_eval.BASELINE_PATH).read_text(encoding="utf-8"))
     assert data["unseeded"] is False
     assert data["tasks"] != []
     assert "_how_to_refresh" in data
@@ -337,7 +337,7 @@ def test_a_red_night_still_reports_the_ratchet_line_in_the_summary(
     run_funnel_eval(tmp_path / "home", tmp_path / "out",
                     backend_factory=lambda t: _TierBackend(t.name),
                     reviewer=_PassReviewer(), corpus=_four_tier_corpus()[:1])
-    summary = (tmp_path / "out" / "SUMMARY.md").read_text()
+    summary = (tmp_path / "out" / "SUMMARY.md").read_text(encoding="utf-8")
     assert "unseeded" in summary.lower() and "report only" in summary.lower()
 
 
@@ -361,7 +361,7 @@ def test_an_empty_corpus_is_a_refusal_not_a_green_night(tmp_path):
                          reviewer=_PassReviewer(), corpus=[])
 
     assert rc == 1
-    summary = (tmp_path / "out" / "SUMMARY.md").read_text()
+    summary = (tmp_path / "out" / "SUMMARY.md").read_text(encoding="utf-8")
     assert "REFUSED" in summary and "empty" in summary.lower(), summary
 
 
@@ -380,7 +380,7 @@ def test_a_corpus_missing_a_tier_is_a_refusal_that_names_the_missing_tier(
                          reviewer=_PassReviewer())
 
     assert rc == 1
-    summary = (tmp_path / "out" / "SUMMARY.md").read_text()
+    summary = (tmp_path / "out" / "SUMMARY.md").read_text(encoding="utf-8")
     assert "REFUSED" in summary
     for missing in ("t2_small_fix", "t3_small_feature", "t4_cross_file",
                     "t5_test_first"):
@@ -470,7 +470,7 @@ class _RecordingBackend:
         # the same class, and those run against directories with no README.
         readme = Path(cwd) / "README.md"
         if readme.exists():
-            readme.write_text(readme.read_text().replace(
+            readme.write_text(readme.read_text(encoding="utf-8").replace(
                 "at most 100 items", "at most 200 items"))
         return AgentResult(final_text="done", num_turns=2, is_error=False,
                            tokens_used=1200, session_id="s",
@@ -518,7 +518,7 @@ def test_the_shipped_path_constructs_a_coder_backend_that_actually_works(
     # the hooks are the Orchestrator's to wire, exactly as in `nh bench`.
     assert set(kw) == {"model", "forbidden_paths", "never_push_to"}, kw
     # And it is a WORKING backend, not just a well-formed constructor call.
-    assert rc == 0, (tmp_path / "out" / "SUMMARY.md").read_text()
+    assert rc == 0, (tmp_path / "out" / "SUMMARY.md").read_text(encoding="utf-8")
 
 
 @pytest.mark.slow
@@ -534,7 +534,7 @@ def test_a_tier_cannot_pass_with_the_review_gate_absent(tmp_path):
                          reviewer=None, corpus=corpus)
 
     assert rc == 1
-    rec = json.loads(next(out.glob("nightly-*.json")).read_text())["tasks"][0]
+    rec = json.loads(next(out.glob("nightly-*.json")).read_text(encoding="utf-8"))["tasks"][0]
     assert rec["review_passed"] is False, rec
     assert rec["passed"] is False
     assert any(f.startswith("review_passed:") for f in rec["failures"]), rec
@@ -639,7 +639,7 @@ def test_the_seeded_baseline_covers_every_corpus_tier_from_a_passing_run():
 
     from no_human.eval.funnel_corpus import CORPUS_DIR, EXPECTED_TIERS
 
-    baseline = _json.loads((CORPUS_DIR / "baseline.json").read_text())
+    baseline = _json.loads((CORPUS_DIR / "baseline.json").read_text(encoding="utf-8"))
     assert baseline.get("unseeded") is False, "the ratchet is not armed"
     assert baseline.get("recorded"), "a seed must say when it was measured"
     assert baseline.get("product_commit"), "a seed must say what it measured"

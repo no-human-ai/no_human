@@ -187,7 +187,7 @@ def test_atomic_write_0600_windows_accepts_tcb_and_owner(
     monkeypatch.setattr(cfg, "_run_icacls", fake)
     target = tmp_path / ".env"
     cfg.atomic_write_0600(target, "CLAUDE_CODE_OAUTH_TOKEN=sk-tok\n")
-    assert target.read_text() == "CLAUDE_CODE_OAUTH_TOKEN=sk-tok\n"
+    assert target.read_text(encoding="utf-8") == "CLAUDE_CODE_OAUTH_TOKEN=sk-tok\n"
 
 
 def test_non_owner_grantees_accepts_tcb_flags_others():

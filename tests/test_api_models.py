@@ -269,10 +269,10 @@ async def test_put_coder_backend_refusal_is_422_for_a_priced_non_claude_id(clien
 
 @pytest.mark.asyncio
 async def test_put_refusal_does_not_write_to_disk(client, tmp_path):
-    before = (tmp_path / "config.yaml").read_text()
+    before = (tmp_path / "config.yaml").read_text(encoding="utf-8")
     r = await client.put("/api/config/models", json={"primary_model": "gpt-5.4"})
     assert r.status_code == 422
-    after = (tmp_path / "config.yaml").read_text()
+    after = (tmp_path / "config.yaml").read_text(encoding="utf-8")
     assert before == after
 
 
@@ -412,10 +412,10 @@ async def test_put_preserves_config_yaml_structure(client, tmp_path):
     (every other top-level section) must be byte-identical apart from the
     one changed scalar."""
     path = tmp_path / "config.yaml"
-    before_lines = path.read_text().splitlines()
+    before_lines = path.read_text(encoding="utf-8").splitlines()
     r = await client.put("/api/config/models", json={"utility_model": "claude-opus-5"})
     assert r.status_code == 200
-    after_lines = path.read_text().splitlines()
+    after_lines = path.read_text(encoding="utf-8").splitlines()
     changed = [
         (b, a) for b, a in zip(before_lines, after_lines) if b != a
     ]
@@ -451,7 +451,7 @@ async def test_put_preserves_hand_written_comments_and_unrelated_sections(
     assert r.status_code == 200
 
     before_lines = _COMMENTED_CONFIG.splitlines()
-    after_lines = path.read_text().splitlines()
+    after_lines = path.read_text(encoding="utf-8").splitlines()
     assert len(after_lines) == len(before_lines)
     changed = [(b, a) for b, a in zip(before_lines, after_lines) if b != a]
     assert len(changed) == 1
@@ -501,11 +501,11 @@ async def test_api_key_guard_runs_on_written_file(client, tmp_path, monkeypatch)
     monkeypatch.setattr(config_module, "_reject_api_key_in_config", _guard)
 
     path = tmp_path / "config.yaml"
-    before = path.read_text()
+    before = path.read_text(encoding="utf-8")
     r = await client.put("/api/config/models", json={"utility_model": "claude-opus-5"})
     assert r.status_code == 422
     assert calls["n"] >= 3
-    after = path.read_text()
+    after = path.read_text(encoding="utf-8")
     assert after == before
 
 
@@ -640,13 +640,13 @@ async def test_put_role_backends_alongside_a_plain_model_key_in_one_request(
 
 @pytest.mark.asyncio
 async def test_put_role_backends_refusal_does_not_write_to_disk(client, tmp_path):
-    before = (tmp_path / "config.yaml").read_text()
+    before = (tmp_path / "config.yaml").read_text(encoding="utf-8")
     r = await client.put(
         "/api/config/models",
         json={"role_backends": {"reviewer": {"backend": "gemini", "model": "x"}}},
     )
     assert r.status_code == 422
-    after = (tmp_path / "config.yaml").read_text()
+    after = (tmp_path / "config.yaml").read_text(encoding="utf-8")
     assert before == after
 
 
@@ -656,14 +656,14 @@ async def test_put_claude_backend_with_a_non_catalog_model_is_422(client, tmp_pa
     whether the model string is even Claude-shaped — `gpt-5-codex` is not,
     so the old `_is_claude_id(model)`-gated check would have waved this
     through; the refusal must name the model, and nothing may land on disk."""
-    before = (tmp_path / "config.yaml").read_text()
+    before = (tmp_path / "config.yaml").read_text(encoding="utf-8")
     r = await client.put(
         "/api/config/models",
         json={"role_backends": {"reviewer": {"backend": "claude", "model": "gpt-5-codex"}}},
     )
     assert r.status_code == 422
     assert "gpt-5-codex" in r.text
-    after = (tmp_path / "config.yaml").read_text()
+    after = (tmp_path / "config.yaml").read_text(encoding="utf-8")
     assert after == before
 
 
@@ -673,7 +673,7 @@ async def test_a_refused_put_writes_nothing_at_all(client, tmp_path):
     role_backends entry must leave every config scalar byte-identical — the
     whole body is validated before either write, so the scalar half never
     lands ahead of the role_backends refusal."""
-    before = (tmp_path / "config.yaml").read_text()
+    before = (tmp_path / "config.yaml").read_text(encoding="utf-8")
     r = await client.put(
         "/api/config/models",
         json={
@@ -682,7 +682,7 @@ async def test_a_refused_put_writes_nothing_at_all(client, tmp_path):
         },
     )
     assert r.status_code == 422
-    after = (tmp_path / "config.yaml").read_text()
+    after = (tmp_path / "config.yaml").read_text(encoding="utf-8")
     assert after == before
     on_disk = nh_config.load_config(tmp_path / "config.yaml")
     assert on_disk.data["llm"]["utility_model"] == "claude-haiku-4-5"  # unchanged default
@@ -694,7 +694,7 @@ async def test_a_refused_put_with_an_unknown_role_writes_no_scalar(client, tmp_p
     different `RoleBackendError` raised earlier in
     `validate_role_backend_entries`) rather than the unsupported-backend one
     above — both must refuse before touching disk."""
-    before = (tmp_path / "config.yaml").read_text()
+    before = (tmp_path / "config.yaml").read_text(encoding="utf-8")
     r = await client.put(
         "/api/config/models",
         json={
@@ -703,7 +703,7 @@ async def test_a_refused_put_with_an_unknown_role_writes_no_scalar(client, tmp_p
         },
     )
     assert r.status_code == 422
-    after = (tmp_path / "config.yaml").read_text()
+    after = (tmp_path / "config.yaml").read_text(encoding="utf-8")
     assert after == before
 
 
@@ -762,7 +762,7 @@ async def test_a_failed_role_backend_write_rolls_back_the_scalar_write(
         raise RuntimeError("simulated: set_role_backend's own write failed")
 
     monkeypatch.setattr(nh_config, "set_role_backend", _boom)
-    before = (tmp_path / "config.yaml").read_text()
+    before = (tmp_path / "config.yaml").read_text(encoding="utf-8")
     with pytest.raises(RuntimeError):
         await client.put(
             "/api/config/models",
@@ -771,7 +771,7 @@ async def test_a_failed_role_backend_write_rolls_back_the_scalar_write(
                 "role_backends": {"reviewer": {"backend": "claude", "model": "claude-sonnet-5"}},
             },
         )
-    after = (tmp_path / "config.yaml").read_text()
+    after = (tmp_path / "config.yaml").read_text(encoding="utf-8")
     assert after == before
 
 

@@ -162,7 +162,7 @@ def test_gitlab_trigger_argv_is_api_post_never_ci_run():
     def fake(cmd):
         captured["cmd"] = cmd
         body_path = cmd[cmd.index("--input") + 1]
-        with open(body_path) as f:
+        with open(body_path, encoding="utf-8") as f:
             captured["body"] = json.load(f)
         return json.dumps({"id": 99, "web_url": "https://x/-/pipelines/99"})
 
@@ -912,7 +912,7 @@ async def test_concurrency_worktree_mode_opens_pr_and_cleans_up(bare_repo, tmp_p
     # anything, so match every directory the task could have left behind.
     assert not list((tmp_path / "wt").glob(f"{t.id}*"))
     # The agent worked in the worktree, never the primary checkout.
-    assert "mul" not in (bare_repo / "calc.py").read_text()
+    assert "mul" not in (bare_repo / "calc.py").read_text(encoding="utf-8")
 
 
 @pytest.mark.slow  # EH1: >45s of real subprocess work — runs in `run_tests.sh full`/`slow`

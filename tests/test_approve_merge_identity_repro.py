@@ -124,7 +124,7 @@ def test_task_branch_commits_keep_the_agent_identity(land_env):
     # count must move to 4 in the SAME commit or the stub export guard
     # refuses on count drift (same arithmetic the real guard enforces).
     cls_path = land_env.clone / "EXPORT_CLASSIFICATION.txt"
-    cls_path.write_text(cls_path.read_text().replace("ship 3 src/*.py", "ship 4 src/*.py"))
+    cls_path.write_text(cls_path.read_text(encoding="utf-8").replace("ship 3 src/*.py", "ship 4 src/*.py"))
     commit_result = repo.commit_all("no-human: agent follow-up commit")
     repo.push(branch)
 

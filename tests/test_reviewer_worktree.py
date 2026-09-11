@@ -276,10 +276,10 @@ def test_config_reserialization_excused_but_key_change_and_source_edit_caught(
     # Benign: change config's BYTES (leading comment + retabbed) while leaving
     # every effective key identical — exactly the shared-dir bookkeeping churn
     # that used to discard verdicts.
-    original = cfg.read_text()
+    original = cfg.read_text(encoding="utf-8")
     cfg.write_text("# a concurrent tool rewrote me\n"
                    + original.replace("\t", "    ") + "\n")
-    assert cfg.read_text() != original, "the reformat did not change the bytes"
+    assert cfg.read_text(encoding="utf-8") != original, "the reformat did not change the bytes"
 
     delta = rw.compare(wt, before, timeout=_TIMEOUT)
     assert delta.is_empty(), (
@@ -755,7 +755,7 @@ def test_revert_does_not_execute_planted_post_checkout_hook(worktree_env):
     rw.revert(wt, before, delta, timeout=_TIMEOUT)
 
     assert not canary.exists(), "revert() executed a planted post-checkout hook"
-    assert tracked.read_text() == "v1\n", "revert() did not restore the reviewed baseline"
+    assert tracked.read_text(encoding="utf-8") == "v1\n", "revert() did not restore the reviewed baseline"
 
 
 def test_revert_does_not_execute_planted_symlinked_post_checkout_hook(worktree_env):
@@ -783,7 +783,7 @@ def test_revert_does_not_execute_planted_symlinked_post_checkout_hook(worktree_e
     rw.revert(wt, before, delta, timeout=_TIMEOUT)
 
     assert not canary.exists(), "revert() executed a planted symlinked post-checkout hook"
-    assert tracked.read_text() == "v1\n", "revert() did not restore the reviewed baseline"
+    assert tracked.read_text(encoding="utf-8") == "v1\n", "revert() did not restore the reviewed baseline"
 
 
 # --------------------------------------------------------------------------- #
@@ -819,7 +819,7 @@ def test_revert_restores_worktree_to_snapshot(worktree_env):
     rw.revert(wt, before, delta, timeout=_TIMEOUT)
 
     assert not (wt / "src" / "new_file.py").exists()
-    assert (wt / "src" / "main.py").read_text() == "v1\n"
+    assert (wt / "src" / "main.py").read_text(encoding="utf-8") == "v1\n"
     assert rw.compare(wt, before, timeout=_TIMEOUT).is_empty()
 
 
@@ -979,7 +979,7 @@ def test_every_subprocess_run_call_site_is_captured_in_the_audit():
     module grows: an undocumented new call site, or a stale entry for a
     removed one, goes red here before anyone has to notice by reading diffs.
     """
-    source = Path(rw.__file__).read_text()
+    source = Path(rw.__file__).read_text(encoding="utf-8")
     tree = ast.parse(source)
     call_sites = set()
     for node in ast.walk(tree):

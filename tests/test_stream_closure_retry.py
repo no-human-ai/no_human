@@ -658,7 +658,7 @@ async def test_a_reviewer_that_merely_reached_no_verdict_stays_novel_unknown():
 def test_the_marker_the_orchestrator_matches_is_the_one_the_backend_writes():
     """Producer and consumer share ONE constant. A literal repeated in two
     files is the shape that silently stops matching."""
-    src = Path(claude_backend.__file__).read_text()
+    src = Path(claude_backend.__file__).read_text(encoding="utf-8")
     assert f'f"{{TRANSPORT_DIAGNOSIS_MARKER}}' in src, (
         "the diagnosis must interpolate the constant, not re-spell it")
     from no_human.core import orchestrator
@@ -1164,7 +1164,7 @@ def test_route_auto_retry_is_still_a_label_nothing_reads():
     src = Path(claude_backend.__file__).parents[1]
     reads = []
     for path in sorted(src.rglob("*.py")):
-        tree = ast.parse(path.read_text(), filename=str(path))
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in ast.walk(tree):
             if isinstance(node, ast.Attribute) and node.attr == "auto_retry":
                 reads.append(f"{path.name}:{node.lineno}")

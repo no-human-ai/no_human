@@ -409,7 +409,7 @@ def test_the_writer_does_not_put_a_branch_name_in_the_artefact(tmp_path):
         ["bash", str(script)], capture_output=True, text=True,
         env={**os.environ, **GIT_ENV, "ROOT": str(root), "BUNDLE": str(bundle)})
     assert proc.returncode == 0, proc.stderr
-    stamp = (bundle / "BUILD_STAMP").read_text()
+    stamp = (bundle / "BUILD_STAMP").read_text(encoding="utf-8")
     assert "a-customer-and-their-ticket-number" not in stamp, (
         "the build stamped a branch name into an artefact handed to third parties")
     assert sorted(_fields(stamp)) == ["board_sha256", "commit", "dirty"]
@@ -577,7 +577,7 @@ def test_a_stamp_line_that_is_not_key_value_fails(tmp_path, capsys, _default_rep
     repo, sha = _default_repo
     bundle = make_bundle(tmp_path, sha)
     stamp = next(bundle.rglob("BUILD_STAMP"))
-    stamp.write_text(stamp.read_text() + "this is not a field\n")
+    stamp.write_text(stamp.read_text(encoding="utf-8") + "this is not a field\n")
     rc, out, err = run([str(bundle), "--repo", str(repo)], capsys)
     assert rc == 1
     assert "not key=value" in err
@@ -622,7 +622,7 @@ def test_two_stamps_are_ambiguous(tmp_path, capsys, _default_repo):
     repo, sha = _default_repo
     bundle = make_bundle(tmp_path, sha)
     original = next(bundle.rglob("BUILD_STAMP"))
-    (bundle / "BUILD_STAMP").write_text(original.read_text())
+    (bundle / "BUILD_STAMP").write_text(original.read_text(encoding="utf-8"))
     rc, out, err = run([str(bundle), "--repo", str(repo)], capsys)
     assert rc == 1
     assert "BUILD_STAMP files in the artefact" in err
@@ -738,7 +738,7 @@ def test_the_stamp_digest_covers_ONLY_the_board_not_the_rest_of_the_bundle(
 
 def _stamp_block() -> str:
     """The BUILD STAMP block, lifted out of build-installer.sh verbatim."""
-    lines = INSTALLER.read_text().splitlines()
+    lines = INSTALLER.read_text(encoding="utf-8").splitlines()
     # Anchored on the section RULE, not on the words: `"BUILD STAMP" in ln and
     # ln.startswith("#")` also matched an ordinary comment that merely mentioned
     # the block by name, silently pulling `npm run build` and pyinstaller into
@@ -754,7 +754,7 @@ def _stamp_block() -> str:
 def _ps1_board_digest_python() -> str:
     """The python source build-installer.ps1 hands to python.exe via `-c`, lifted
     out verbatim from between its `@'` … `'@` here-string delimiters."""
-    lines = INSTALLER_PS1.read_text().splitlines()
+    lines = INSTALLER_PS1.read_text(encoding="utf-8").splitlines()
     start = next(i for i, ln in enumerate(lines) if ln.rstrip().endswith("-c @'"))
     end = next(i for i, ln in enumerate(lines) if i > start and ln.startswith("'@"))
     src = "\n".join(lines[start + 1:end])
@@ -810,7 +810,7 @@ def _run_stamp_block(tmp_path: Path, *, path: str | None = None,
     proc = subprocess.run(["bash", str(script)], capture_output=True, text=True,
                           env=env, cwd=str(tmp_path))
     stamp = bundle / "BUILD_STAMP"
-    return proc, (stamp.read_text() if stamp.exists() else None)
+    return proc, (stamp.read_text(encoding="utf-8") if stamp.exists() else None)
 
 
 def _fields(stamp: str) -> dict[str, str]:
@@ -1014,7 +1014,7 @@ def test_the_build_aborts_outside_a_git_checkout(tmp_path):
 
 def _dmg_verify_block() -> str:
     """The 'what is INSIDE the DMG' block, lifted out of make-dmg.sh verbatim."""
-    lines = MAKEDMG.read_text().splitlines()
+    lines = MAKEDMG.read_text(encoding="utf-8").splitlines()
     start = next(i for i, ln in enumerate(lines)
                  if ln.startswith('echo "==> verifying the CONTENTS'))
     block = "\n".join(lines[start:])
@@ -2889,7 +2889,7 @@ def test_the_declared_residual_an_ssh_redirect_still_walks_through(tmp_path, via
 
 def _shell_unset_lists(path: Path) -> list[set[str]]:
     """Every `unset GIT_…` statement in a shell script, as sets of names."""
-    text = path.read_text()
+    text = path.read_text(encoding="utf-8")
     out = []
     for m in re.finditer(r"^unset ((?:[^\n\\]|\\\n)*)$", text, re.M):
         out.append(set(m.group(1).replace("\\\n", " ").split()))

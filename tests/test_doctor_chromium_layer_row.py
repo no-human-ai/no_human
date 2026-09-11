@@ -328,7 +328,7 @@ def test_pr_body_disclosure_untouched():
 # ---------------------------------------------------------------------------
 
 def test_no_driver_spawn_in_doctor_chromium_path():
-    src = Path(doctor_mod.__file__).read_text()
+    src = Path(doctor_mod.__file__).read_text(encoding="utf-8")
     tree = ast.parse(src)
 
     target_funcs = {"_playwright_registry_dir", "_resolve_playwright_chromium_status"}

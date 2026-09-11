@@ -120,7 +120,7 @@ def test_the_shipped_scenario_is_the_only_one_and_parses_from_disk():
     """Loaded from the tracked path, not from a fixture — a scenario that only
     works when a test builds it is not a corpus."""
     assert DEFAULT_SCENARIO.exists(), DEFAULT_SCENARIO
-    data = yaml.safe_load(DEFAULT_SCENARIO.read_text())
+    data = yaml.safe_load(DEFAULT_SCENARIO.read_text(encoding="utf-8"))
     assert isinstance(data, dict) and data.get("tickets")
 
 
@@ -322,7 +322,7 @@ def test_the_expected_escalation_conflicts_with_a_test_that_really_passes(
         _checkout(sprint.repo, sprint.pins[ticket.id])
         target = sprint.repo / conflict["path"]
         assert target.exists(), f"{ticket.id}: {conflict['path']} is not at its pin"
-        assert f"def {conflict['test']}(" in target.read_text(), (
+        assert f"def {conflict['test']}(" in target.read_text(encoding="utf-8"), (
             f"{ticket.id}: {conflict['test']} is not in {conflict['path']}")
         rc, out = _pytest_rc(
             sprint.repo, f"{conflict['path']}::{conflict['test']}")
@@ -490,7 +490,7 @@ class _CosmeticBackend:
                   on_event=None, supervisor_hook=None, **kwargs):
         from no_human.agent.claude_backend import AgentResult
         target = Path(cwd) / "parcelo" / "rates.py"
-        target.write_text(target.read_text()
+        target.write_text(target.read_text(encoding="utf-8")
                           + "\n\n# TODO(PAR): revisit the rate card.\n")
         return AgentResult(final_text="done", num_turns=2, is_error=False,
                            tokens_used=100, session_id="s",
