@@ -1051,3 +1051,98 @@ def test_auto_merge_on_approval_stays_false_and_unread():
     assert offenders == [], (
         f"auto_merge_on_approval must stay unread by src/**/*.py; found a "
         f"real read in {offenders}")
+
+
+# ---------------------------------------------------------------------------
+# Staleness: `_finalize` records the merge base it measured the green
+# against (`GateFacts.base_sha` / `PolicyVerdict.base_sha`), so a reader can
+# later tell whether that green still describes a tree that will land (bug:
+# merge-ready certifies a branch that is green alone and red merged, PR #272
+# shape — trunk added a guard after the branch's merge base, the branch was
+# still certified ready). This section pins that `_finalize` wires the new
+# `merge_base_with_trunk` read through untouched, and that a failure to
+# measure it (`GitRepo.merge_base_with_trunk` raising, or returning "")
+# falls OPEN — the verdict is persisted exactly as it is today, nothing
+# about `ready`/`summary`/`rules` moves, and the new field is simply "".
+# ---------------------------------------------------------------------------
+
+async def test_finalize_records_the_merge_base_it_measured_against(
+    store, tmp_path, monkeypatch,
+):
+    """THE PLANT: a normal green run on an un-diverged attempt branch must
+    persist `base_sha` equal to the real `git merge-base main HEAD`, and
+    `tests_green: True` — additive facts that leave every existing field
+    (`ready`, `summary`, `rules`) exactly as `test_a_green_rollup_is_ready_
+    six_of_six` already pins them."""
+    work, reviewed_sha, ctx = _six_of_six_setup(tmp_path)
+    expected_base = _git(work, "merge-base", "main", "HEAD")
+    assert expected_base, "fixture sanity: main and HEAD must share history"
+
+    async def fake_fetch(pr_url):
+        return "success", ()
+
+    monkeypatch.setattr(orch_mod.ci_rollup, "fetch_ci_rollup", fake_fetch)
+
+    def fake_open_pr(repo, branch, title, body, **kw):
+        return _FakePR("https://github.com/o/r/pull/272", repo.head_sha())
+
+    orch, task, attempt_id, out = await _finalize_task(
+        store, tmp_path, work, ctx, fake_open_pr, monkeypatch,
+        test_results={"ran": True, "passed": 1, "failed": 0})
+
+    assert out.status == TaskStatus.AWAITING_APPROVAL, out.detail
+    mp = (task.context or {}).get("merge_policy") or {}
+    verdict = mp.get(reviewed_sha) or {}
+    assert verdict.get("base_sha") == expected_base, verdict
+    assert verdict.get("tests_green") is True, verdict
+    # Nothing else about the verdict moved.
+    assert verdict.get("ready") is True, verdict
+    assert verdict.get("summary", "").startswith("ready — 6 of 6"), verdict
+    assert len(verdict.get("rules") or []) == 6, verdict
+
+
+async def test_an_unmeasurable_merge_base_falls_open_and_leaves_the_verdict_unchanged(
+    store, tmp_path, monkeypatch,
+):
+    """THE CONTROL: whether `merge_base_with_trunk` raises outright, or just
+    returns "" (no trunk ref resolvable, corrupt store, whatever) — `_finalize`
+    must still persist the verdict exactly as it does today. `base_sha` is
+    "", nothing is added to `problems`, and `stale_base_reason` on the
+    resulting dict is a no-op against ANY trunk sha (an empty `base_sha`
+    can never be judged stale)."""
+    for merge_base_behavior in ("raise", "empty"):
+        sub = tmp_path / merge_base_behavior
+        sub.mkdir()
+        work, reviewed_sha, ctx = _six_of_six_setup(sub)
+
+        if merge_base_behavior == "raise":
+            def fake_merge_base(self, base=None, *, head="HEAD", timeout=10):
+                raise RuntimeError("simulated unmeasurable merge base")
+        else:
+            def fake_merge_base(self, base=None, *, head="HEAD", timeout=10):
+                return ""
+
+        monkeypatch.setattr(GitRepo, "merge_base_with_trunk", fake_merge_base)
+
+        async def fake_fetch(pr_url):
+            return "success", ()
+
+        monkeypatch.setattr(orch_mod.ci_rollup, "fetch_ci_rollup", fake_fetch)
+
+        def fake_open_pr(repo, branch, title, body, **kw):
+            return _FakePR("https://github.com/o/r/pull/272", repo.head_sha())
+
+        orch, task, attempt_id, out = await _finalize_task(
+            store, tmp_path, work, ctx, fake_open_pr, monkeypatch,
+            test_results={"ran": True, "passed": 1, "failed": 0})
+
+        assert out.status == TaskStatus.AWAITING_APPROVAL, (merge_base_behavior, out.detail)
+        mp = (task.context or {}).get("merge_policy") or {}
+        verdict = mp.get(reviewed_sha) or {}
+        assert verdict.get("base_sha") == "", (merge_base_behavior, verdict)
+        assert verdict.get("ready") is True, (merge_base_behavior, verdict)
+        assert verdict.get("summary", "").startswith("ready — 6 of 6"), (
+            merge_base_behavior, verdict)
+        assert verdict.get("problems") in (None, [], ()), (merge_base_behavior, verdict)
+        assert merge_policy.stale_base_reason(verdict, "anything-at-all") is None, (
+            merge_base_behavior, verdict)

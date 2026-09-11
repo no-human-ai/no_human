@@ -716,6 +716,43 @@ def _max_pr_conflict_rounds() -> int:
         return 3
 
 
+def _local_trunk_sha(repo_path: str | None, base_branch: str | None,
+                      cache: dict[str, str]) -> str:
+    """Local-only trunk tip sha for the merge-ready staleness check
+    (``merge_policy.stale_base_reason``), memoized in ``cache`` for the
+    lifetime of one request/board-tick — repeated calls for the same
+    ``repo_path`` within that call are then free (one ``rev-parse`` per
+    distinct repo, not per task). ``GitRepo.trunk_tip_sha`` is local-only
+    (never calls ``fetch()``), so this adds no network I/O.
+
+    Never raises: any resolution failure (no repo, no trunk ref, git
+    binary missing, corrupt object store) falls open to ``""``, which
+    makes ``stale_base_reason`` a no-op — it must never downgrade a
+    verdict for a reason unrelated to actual staleness.
+
+    ``cache`` is created fresh by the caller per handler invocation (not
+    module-global), so nothing leaks or goes stale across requests.
+    """
+    if not repo_path:
+        return ""
+    if repo_path not in cache:
+        cfg = getattr(app.state, "config", None)
+        git_cfg = (cfg.data.get("git") if cfg is not None else None) or {}
+        try:
+            from ..vcs.git import GitRepo
+            repo = GitRepo(
+                Path(repo_path),
+                identity_name=git_cfg.get("agent_identity_name", "no_human"),
+                identity_email=git_cfg.get("agent_identity_email", "no-human@acme.com"),
+                never_push_to=git_cfg.get("never_push_to")
+                or ["main", "master", "release/*"],
+            )
+            cache[repo_path] = repo.trunk_tip_sha(base_branch)
+        except Exception:  # noqa: BLE001 — falls open to ""
+            cache[repo_path] = ""
+    return cache[repo_path]
+
+
 async def _board_tasks(
     store: Store, scheduler=None, *, limit: int | None = None, offset: int | None = None,
 ) -> list[TaskSummaryOut]:
@@ -728,12 +765,16 @@ async def _board_tasks(
     # SCRUM-15: `scheduler.inflight` returns a fresh set() copy per call — snapshot
     # once so every card in this response is judged against the same instant.
     inflight = scheduler.inflight if scheduler is not None else set()
+    trunk_cache: dict[str, str] = {}
     out = []
     for task in tasks:
         attempts = by_task.get(task.id, [])
+        trunk_sha = _local_trunk_sha(
+            task.repo_path, (task.context or {}).get("base_branch"), trunk_cache)
         summary = TaskSummaryOut.from_task(
             task, _latest_pr_url(attempts), attempts=attempts,
             max_pr_conflict_rounds=_max_pr_conflict_rounds(),
+            trunk_sha=trunk_sha,
         )
         if scheduler is not None:
             summary.claimed = task.id in inflight
@@ -1044,7 +1085,9 @@ async def create_task(body: CreateTaskRequest, request: Request) -> TaskSummaryO
     except Exception:  # noqa: BLE001 — advisory; a hint never fails a create
         log.warning("feasibility hint at create failed for %s", task.id[:8])
     summary = TaskSummaryOut.from_task(
-        task, max_pr_conflict_rounds=_max_pr_conflict_rounds())
+        task, max_pr_conflict_rounds=_max_pr_conflict_rounds(),
+        trunk_sha=_local_trunk_sha(
+            task.repo_path, (task.context or {}).get("base_branch"), {}))
     tasks = await _board_tasks(store, scheduler=_sched(request))
     await _mgr.broadcast({
         "type": "task_created",
@@ -1157,7 +1200,11 @@ async def split_task(
     await store.merge_context(
         task.id, {"cancel_reason": f"{reason}: {child_ids}"})
 
-    out = [TaskSummaryOut.from_task(c, max_pr_conflict_rounds=_max_pr_conflict_rounds())
+    _split_trunk_cache: dict[str, str] = {}
+    out = [TaskSummaryOut.from_task(
+               c, max_pr_conflict_rounds=_max_pr_conflict_rounds(),
+               trunk_sha=_local_trunk_sha(
+                   c.repo_path, (c.context or {}).get("base_branch"), _split_trunk_cache))
            for c in children]
     tasks = await _board_tasks(store, scheduler=_sched(request))
     await _mgr.broadcast({
@@ -1487,11 +1534,15 @@ async def list_subtasks(task_id: str, request: Request) -> list[TaskSummaryOut]:
     store = _store(request)
     subs = await store.list_subtasks(task_id)
     out = []
+    _subtasks_trunk_cache: dict[str, str] = {}
     for t in subs:
         attempts = await store.list_attempts(t.id)
+        trunk_sha = _local_trunk_sha(
+            t.repo_path, (t.context or {}).get("base_branch"), _subtasks_trunk_cache)
         out.append(TaskSummaryOut.from_task(
             t, _latest_pr_url(attempts), attempts=attempts,
-            max_pr_conflict_rounds=_max_pr_conflict_rounds()))
+            max_pr_conflict_rounds=_max_pr_conflict_rounds(),
+            trunk_sha=trunk_sha))
     return out
 
 
@@ -1876,7 +1927,7 @@ async def _merge_task_pr(
         # stay correct either way.
         return "", None
 
-    def _resolve_head() -> tuple[str, GitRepo | None]:
+    def _resolve_head() -> tuple[str, GitRepo | None, str]:
         try:
             repo = GitRepo(
                 Path(task.repo_path),
@@ -1886,16 +1937,32 @@ async def _merge_task_pr(
             )
             repo.fetch()
             ref = repo.resolve_commitish(branch)
-            return (repo._run("rev-parse", ref) if ref else ""), repo
+            head_sha = repo._run("rev-parse", ref) if ref else ""
+            # `trunk_tip_sha` is local-only (no fetch of its own) — the
+            # network call above already happened, this adds no new I/O.
+            trunk_sha = repo.trunk_tip_sha((task.context or {}).get("base_branch"))
+            return head_sha, repo, trunk_sha
         except (GitError, OSError):
-            return "", None
+            return "", None, ""
 
-    head_sha, repo = await asyncio.to_thread(_resolve_head)
+    head_sha, repo, trunk_sha = await asyncio.to_thread(_resolve_head)
     if not head_sha or repo is None:
         return "", None
     passed, evidence = _review_pass_evidence(task.context or {}, head_sha, repo)
     if not passed:
         return "", {"step": "preconditions", "stderr": evidence}
+
+    # A green measured against a tree older than trunk's current tip
+    # describes a tree that will not land — trunk may have added a guard
+    # the branch never ran against (the PR #272 shape). Reuses the same
+    # "preconditions" step/shape the review-PASS refusal above uses, so
+    # the caller's existing HTTPException(500, ...) rendering needs no
+    # new case.
+    from ..core import merge_policy
+    mp = ((task.context or {}).get("merge_policy") or {}).get(head_sha)
+    stale_reason = merge_policy.stale_base_reason(mp, trunk_sha)
+    if stale_reason:
+        return "", {"step": "preconditions", "stderr": stale_reason}
 
     tested = (await store.latest_attempt_branch(task.id)).get("commit_sha") or ""
     result = await asyncio.to_thread(

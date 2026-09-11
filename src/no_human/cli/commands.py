@@ -4201,10 +4201,40 @@ def status(as_json):
             # for their CURRENT head — the same `merge_ready_for` the board
             # card (api/models.py) reads, so the two can never disagree.
             by_task = await store.attempts_by_task()
+            # Local-only, memoized per repo_path (one `rev-parse` per
+            # DISTINCT repo, not per task) — `trunk_tip_sha` never fetches,
+            # so this adds no network I/O to a command that already made
+            # none. A resolution failure (no repo, no trunk ref, git
+            # missing) falls open to "", which makes `stale_base_reason`
+            # a no-op — never turns this count into an undercount for a
+            # reason unrelated to actual staleness.
+            from ..vcs.git import GitRepo
+            git_cfg = config.get("git") or {}
+            _trunk_sha_cache: dict[str, str] = {}
+
+            def _status_trunk_sha(t: Task) -> str:
+                if not t.repo_path:
+                    return ""
+                if t.repo_path not in _trunk_sha_cache:
+                    try:
+                        repo = GitRepo(
+                            Path(t.repo_path),
+                            identity_name=git_cfg.get("agent_identity_name", "no_human"),
+                            identity_email=git_cfg.get("agent_identity_email", "no-human@acme.com"),
+                            never_push_to=git_cfg.get("never_push_to")
+                            or ["main", "master", "release/*"],
+                        )
+                        _trunk_sha_cache[t.repo_path] = repo.trunk_tip_sha(
+                            (t.context or {}).get("base_branch"))
+                    except Exception:  # noqa: BLE001 — falls open to ""
+                        _trunk_sha_cache[t.repo_path] = ""
+                return _trunk_sha_cache[t.repo_path]
+
             merge_ready_n = sum(
                 1 for t in tasks
                 if t.status == TaskStatus.AWAITING_APPROVAL
-                and merge_ready_for(t, by_task.get(t.id) or []) is True
+                and merge_ready_for(t, by_task.get(t.id) or [],
+                                     trunk_sha=_status_trunk_sha(t)) is True
             )
             if as_json:
                 # Nested under its own key so the existing bucket keys keep
@@ -4863,9 +4893,16 @@ async def _approve_find_ready(store, config):
     """Discover every AWAITING_APPROVAL task whose merge-policy verdict is
     ready for its CURRENT head sha — re-resolving the head so a verdict
     stamped for an older commit, or one whose policy file changed in the
-    diff, is excluded. Returns [(task, pr_url, rules_passed, rules_total,
-    verifiers_advisory_note)] in the order `store.list_tasks()` returned
-    them (discovery order)."""
+    diff, is excluded. Returns `(ready, excluded)`: `ready` is
+    [(task, pr_url, rules_passed, rules_total, verifiers_advisory_note)] in
+    the order `store.list_tasks()` returned them (discovery order);
+    `excluded` is [(task, reason)] for a task whose green was measured
+    against a tree older than trunk's current tip — see
+    `merge_policy.stale_base_reason`. Reported, not silently dropped: an
+    operator watching a task vanish from this listing with no explanation is
+    exactly the failure mode `_approve_go_ready`'s dim line under this
+    exists to prevent."""
+    from ..core import merge_policy
     from ..vcs.git import GitError, GitRepo
     from ..vcs.task_pr import resolve_task_pr
 
@@ -4873,6 +4910,7 @@ async def _approve_find_ready(store, config):
     candidates = [t for t in tasks if t.status == TaskStatus.AWAITING_APPROVAL]
 
     ready = []
+    excluded = []
     for t in candidates:
         resolved = await resolve_task_pr(store, t)
         branch = resolved.branch
@@ -4887,6 +4925,9 @@ async def _approve_find_ready(store, config):
                 never_push_to=git_cfg.get("never_push_to")
                 or ["main", "master", "release/*"],
             )
+            # `fetch()` already runs here, before ANY of this function's git
+            # reads — `trunk_tip_sha()` below is a purely local `rev-parse`
+            # on top of it, not a second network call.
             repo.fetch()
             ref = repo.resolve_commitish(branch)
             head_sha = repo._run("rev-parse", ref) if ref else ""
@@ -4899,11 +4940,19 @@ async def _approve_find_ready(store, config):
             continue
         if mp.get("ready") is not True or mp.get("policy_changed_in_diff"):
             continue
+        try:
+            trunk_sha = repo.trunk_tip_sha((t.context or {}).get("base_branch"))
+        except Exception:  # noqa: BLE001 — fails open, never excludes on its own
+            trunk_sha = ""
+        reason = merge_policy.stale_base_reason(mp, trunk_sha)
+        if reason:
+            excluded.append((t, reason))
+            continue
         rules = mp.get("rules") or []
         total = len(rules)
         passed = sum(1 for r in rules if isinstance(r, dict) and r.get("passed"))
         ready.append((t, resolved.url, passed, total, _verifiers_advisory_note(rules)))
-    return ready
+    return ready, excluded
 
 
 async def _approve_go_ready(config, assume_yes, land_one):
@@ -4915,7 +4964,10 @@ async def _approve_go_ready(config, assume_yes, land_one):
     `land_task` call site in this command stays attributed to `approve`
     for `test_land_task_is_referenced_only_by_cli_and_api`."""
     async with Store(config.db_path) as store:
-        ready = await _approve_find_ready(store, config)
+        ready, excluded = await _approve_find_ready(store, config)
+
+        for t, reason in excluded:
+            console.print(f"[dim]excluded[/] {t.id[:8]} · {t.title} — {reason}")
 
         if not ready:
             console.print("[dim]no awaiting_approval task is merge-ready for its current head.[/]")
@@ -5318,6 +5370,22 @@ def approve(task_id, list_ready, assume_yes, landed_sha, justification, base_bra
         if not passed:
             return {"tag": "precondition", "pr_url": pr_url, "branch": branch,
                     "evidence": evidence, "result": None}
+
+        # A green measured against a tree older than trunk's current tip
+        # describes a tree that will not land — trunk may have added a
+        # guard the branch never ran against (the PR #272 shape). Reuses
+        # the `precondition` tag: both the single-task and batch renderers
+        # already know how to print it, so no new vocabulary is needed.
+        from ..core import merge_policy
+        mp = ((t.context or {}).get("merge_policy") or {}).get(head_sha)
+        try:
+            trunk_sha = repo.trunk_tip_sha((t.context or {}).get("base_branch"))
+        except Exception:  # noqa: BLE001 — fails open, never blocks landing
+            trunk_sha = ""
+        stale_reason = merge_policy.stale_base_reason(mp, trunk_sha)
+        if stale_reason:
+            return {"tag": "precondition", "pr_url": pr_url, "branch": branch,
+                    "evidence": stale_reason, "result": None}
 
         tested = (await store.latest_attempt_branch(t.id)).get("commit_sha") or ""
         result = land_task(

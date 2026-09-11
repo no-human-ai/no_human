@@ -336,6 +336,90 @@ class GitRepo:
                 return cand
         return None
 
+    def trunk_ref(self, base: str | None = None, *, timeout: int = 10) -> str:
+        """Best-effort local resolution of "trunk" — the ref this branch's
+        merge target has most likely already moved past.
+
+        Deliberately `origin/<ref>` FIRST, the OPPOSITE order of
+        `resolve_commitish` above (which tries the local name first): a
+        local `main` can lag `origin/main`, and reading a stale local
+        trunk here would reproduce the exact staleness bug this method
+        exists to help catch (`core.merge_policy.stale_base_reason`).
+        `local_only=True` on `default_branch()` is mandatory — its network
+        fallback (`git remote show origin`) must never run from this path;
+        this is a local-only read, no fetch.
+
+        Tries, in order: `origin/<base>`, `<base>` (when `base` is given),
+        `origin/<default_branch(local_only=True)>`, `origin/main`, `main`.
+        Every non-happy state a candidate lookup can hit — ref absent,
+        path missing/not a repo, corrupt object store, subprocess timeout,
+        `OSError` (no git binary) — is skipped, never raised; if nothing
+        resolves, returns `""`.
+        """
+        candidates: list[str] = []
+        if base:
+            candidates.append(f"origin/{base}")
+            candidates.append(base)
+        default = self.default_branch(local_only=True)
+        if default:
+            candidates.append(f"origin/{default}")
+        candidates.append("origin/main")
+        candidates.append("main")
+        seen: set[str] = set()
+        for cand in candidates:
+            if not cand or cand in seen:
+                continue
+            seen.add(cand)
+            try:
+                proc = subprocess.run(
+                    ["git", "rev-parse", "--verify", "--quiet", f"{cand}^{{commit}}"],
+                    cwd=self.path, capture_output=True, text=True, timeout=timeout,
+                    **hidden_console_kwargs(),
+                )
+            except (subprocess.TimeoutExpired, OSError):
+                continue
+            if proc.returncode == 0 and proc.stdout.strip():
+                return cand
+        return ""
+
+    def trunk_tip_sha(self, base: str | None = None, *, timeout: int = 10) -> str:
+        """The sha `trunk_ref(base)` currently resolves to, local-only, or
+        `""` when trunk is unresolvable. Never raises — same failure
+        collapse as `trunk_ref`."""
+        ref = self.trunk_ref(base, timeout=timeout)
+        if not ref:
+            return ""
+        try:
+            proc = subprocess.run(
+                ["git", "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"],
+                cwd=self.path, capture_output=True, text=True, timeout=timeout,
+                **hidden_console_kwargs(),
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            return ""
+        return proc.stdout.strip() if proc.returncode == 0 else ""
+
+    def merge_base_with_trunk(self, base: str | None = None, *,
+                               head: str = "HEAD", timeout: int = 10) -> str:
+        """`git merge-base <trunk_ref(base)> <head>`, local-only, or `""`
+        when trunk is unresolvable or the histories are unrelated
+        (`merge-base` exit 1). Never raises. Both `trunk_tip_sha()` and
+        this method resolve trunk through the exact same `trunk_ref()`
+        ladder, which is what prevents a false "stale" from the two ends
+        of a staleness comparison disagreeing about which ref is trunk."""
+        ref = self.trunk_ref(base, timeout=timeout)
+        if not ref:
+            return ""
+        try:
+            proc = subprocess.run(
+                ["git", "merge-base", ref, head],
+                cwd=self.path, capture_output=True, text=True, timeout=timeout,
+                **hidden_console_kwargs(),
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            return ""
+        return proc.stdout.strip() if proc.returncode == 0 else ""
+
     def branch_sha(self, branch: str) -> str:
         """The tip of the NAMED branch (not HEAD, which can have drifted)."""
         sha = self._run("rev-parse", "--verify", "--quiet",
