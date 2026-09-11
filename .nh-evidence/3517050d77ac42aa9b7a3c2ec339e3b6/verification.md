@@ -1,233 +1,184 @@
 # How I verified this — full log
 
-_Harness-captured record for task `3517050d`, commit `58a1894f754a1ad4775a6bca87040e36a22d600e` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `3517050d`, commit `f8a20e0a9b22f4d5ca735f9202e4701c2fcb6234` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ## How I verified this
-24 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
-
-**Not everything recorded is shown:** the 12 most recent of those listed are shown with their captured output, and the other 12 commands are shown as a command line only.
+12 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
 
 ### test
-- `uv run pytest tests/test_structural_budget.py -q -k "not the_whole_walk_finishes" 2>&1 | tail -60`
-  _output not shown - see the note above._
-- `uv run pytest tests/test_structural_budget.py -q 2>&1 | tail -20`
-  _output not shown - see the note above._
-- `uv run pytest tests/test_structural_budget_preflight.py -q 2>&1 | tail -100`
-  _output not shown - see the note above._
-- `uv run pytest tests/test_structural_budget_preflight.py::test_a_round_that_edits_after_re_anchoring_still_commits_the_final_count -q -s 2>&1 | tail -100`
-  _output not shown - see the note above._
-- `uv run pytest tests/test_structural_budget_preflight.py::test_a_round_that_edits_after_re_anchoring_still_commits_the_final_count -q -s 2>&1 | tail -150`
-  _output not shown - see the note above._
-- `uv run pytest tests/test_structural_budget_preflight.py::test_a_round_that_edits_after_re_anchoring_still_commits_the_final_count -q -s 2>&1 | grep -E "^EV|^DEBUG"`
-  _output not shown - see the note above._
-- `uv run pytest tests/test_structural_budget_preflight.py::test_a_round_that_edits_after_re_anchoring_still_commits_the_final_count tests/test_structural_budget_preflight.py::test_the_reconcile_corrects_upward_rather_than_tolerating_an_under_value -q 2>&1 | tail -60`
-  _output not shown - see the note above._
-- `uv run pytest tests/test_structural_budget_preflight.py::test_a_round_that_edits_after_re_anchoring_still_commits_the_final_count -q -s 2>&1 | tail -80`
-  _output not shown - see the note above._
-- `uv run pytest tests/test_structural_budget_preflight.py::test_a_round_that_edits_after_re_anchoring_still_commits_the_final_count -q -s 2>&1 | grep -E "^EV |mod.py\":|DEBUG calls"`
-  _output not shown - see the note above._
-- `uv run pytest tests/test_structural_budget_preflight.py::test_a_round_that_edits_after_re_anchoring_still_commits_the_final_count -q -s 2>&1 | grep -A3 "RECONCILE DEBUG"`
-  _output not shown - see the note above._
-- `uv run pytest tests/test_structural_budget_preflight.py::test_a_round_that_edits_after_re_anchoring_still_commits_the_final_count -q -s 2>&1 | sed -n '/RECONCILE DEBUG output/,/RECONCILE DEBUG grown/p'`
-  _output not shown - see the note above._
-- `uv run pytest tests/test_structural_budget_preflight.py::test_a_round_that_edits_after_re_anchoring_still_commits_the_final_count -q -s 2>&1 | tail -60`
-  _output not shown - see the note above._
-- `uv run pytest -q -n 4 tests/test_structural_budget_preflight.py tests/test_structural_budget.py 2>&1 | tail -80`
+- `uv run pytest -q tests/test_structural_budget_preflight.py tests/test_structural_budget.py 2>&1 | tail -60`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-bringing up nodes...
-bringing up nodes...
-
+   Building no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/3517050d77ac42aa9b7a3c2ec339e3b6.82890.bf7991c5
+      Built no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/3517050d77ac42aa9b7a3c2ec339e3b6.82890.bf7991c5
+Installed 68 packages in 93ms
 ...............................................                          [100%]
-47 passed in 9.11s
+47 passed in 23.13s
 ```
 
-- `uv run pytest -q -n 4 tests/test_repro_waived_corrective_round.py tests/test_declared_repro_files_committed_preflight.py 2>&1 | tail -40`
+- `uv run pytest tests/test_structural_budget_preflight.py tests/test_structural_budget.py -q 2>&1 | tail -100`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-bringing up nodes...
-bringing up nodes...
+.....................................F..............                     [100%]
+=================================== FAILURES ===================================
+________________________ test_no_frozen_entry_has_grown ________________________
 
+scanned = ({'agent/claude_backend.py:ClaudeBackend.stream': 407, 'blockers/landed_override.py:approve_landed_override': 322, 'bl... ...}, {'agent/guard.py': 2892, 'api/app.py': 6182, 'blockers/wake.py': 2757, 'cli/commands.py': 8666, ...}, 226
+[... 741 of 1,880 characters omitted from the middle ...]
+tchets down'] == []
+E             
+E             Left contains one more item: 'core/orchestrator.py: frozen 23976, now 23977 (+1); this budget only ratchets down'
+E             Use -v to get more diff
+
+tests/test_structural_budget.py:1945: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_structural_budget.py::test_no_frozen_entry_has_grown - Asse...
+1 failed, 51 passed in 77.76s (0:01:17)
+```  
+  _excerpt - 1,878 characters of output in total_
+
+- `uv run pytest tests/test_structural_budget_preflight.py tests/test_structural_budget.py -q 2>&1 | tail -40`
+
+```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+....................................................                     [100%]
+52 passed in 85.68s (0:01:25)
+```
+
+- `cd /Users/eyalgolan/.<redacted>/worktrees/3517050d77ac42aa9b7a3c2ec339e3b6.82890.bf7991c5 uv run pytest tests/test_repro_waived_corrective_round.py tests/test_declared_repro_files_committed_preflight.py -q 2>&1 | tail -30`
+
+```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
 ...........................                                              [100%]
-27 passed in 7.22s
+27 passed in 98.40s (0:01:38)
 ```
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/3517050d77ac42aa9b7a3c2ec339e3b6.82890.91c131cd wc -l src/<redacted>/core/orchestrator.py uv run pytest -q tests/test_structural_budget.py::test_no_frozen_entry_has_grown tests/test_structural_budget.py::test_no_frozen_entry_is_stale 2>&1 | tail -20`
-
-```
-23955 src/<redacted>/core/orchestrator.py
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-ERROR: not found: /Users/eyalgolan/.<redacted>/worktrees/3517050d77ac42aa9b7a3c2ec339e3b6.82890.91c131cd/tests/test_structural_budget.py::test_no_frozen_entry_is_stale
-(no match in any of [<Module test_structural_budget.py>])
-
-
-no tests ran in 0.03s
-```
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/3517050d77ac42aa9b7a3c2ec339e3b6.82890.91c131cd uv run pytest -q tests/test_structural_budget.py 2>&1 | tail -40`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/3517050d77ac42aa9b7a3c2ec339e3b6.82890.bf7991c5 uv run pytest tests/test_structural_budget_preflight.py::test_when_the_bounded_round_fails_the_attempt_reports_the_budget_as_the_cause -q 2>&1 | tail -30`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-....................                                                     [100%]
-20 passed in 1.58s
+.                                                                        [100%]
+1 passed in 2.14s
 ```
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/3517050d77ac42aa9b7a3c2ec339e3b6.82890.91c131cd uv run pytest -q -n 4 tests/test_structural_budget_preflight.py tests/test_structural_budget.py tests/test_repro_waived_corrective_round.py tests/test_declared_repro_files_committed_preflight.py -v 2>&1 | tail -100`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/3517050d77ac42aa9b7a3c2ec339e3b6.82890.bf7991c5 cp src/<redacted>/core/orchestrator.py /tmp/orchestrator_fixed_82890.py git show HEAD:src/<redacted>/core/orchestra [... 132 of 475 characters omitted from the middle ...] ils_the_attempt_reports_the_budget_as_the_cause -q 2>&1 | tail -40 cp /tmp/orchestrator_fixed_82890.py src/<redacted>/core/orchestrator.py`
 
 ```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-============================= test session starts ==============================
-platform darwin -- Python 3.12.13, pytest-9.1.1, pluggy-1.6.0
-<redacted> isolated HOME: /var/folders/1r/3r0rt1jd4j1456rsg_fh4d380000gn/T/nh-test-home-d460pt07
-rootdir: /Users/eyalgolan/.<redacted>/worktrees/3517050d77ac42aa9b7a3c2ec339e3b6.82890.91c131cd
-configfile: pyproject.toml
-plugins: anyio-4.14.0, no-human-0.2.2, cov-7.1.0, xdist-3.8.0, asyncio-1.4.0
-asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
-created: 4/4 workers
-4 workers [74 items]
+bare_repo = PosixPath('/private/var/folders/1r/3r0rt1jd4j1456rsg_fh4d380000gn/T/pytest-of-eyalgolan/pytest-52518/test_when_the_bounded_round_fa0/work')
+tmp_path = PosixPath('/private/var/folders/1r/3r0rt1jd4j1456rsg_fh4d380000gn/T/pytest-of-eyalgolan/pytest-52518/test_when_the_bounded_round_fa0')
+store = <<redacted>.core.db.Store object at 0x10ae78470>
 
-........................................................................ [ 97%]
-..                                                                       [100%]
-============================= 74 passed in 12.84s ==============================
-```
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/3517050d77ac42aa9b7a3c2ec339e3b6.82890.91c131cd uv run pytest -q tests/test_structural_budget_preflight.py::test_a_round_that_edits_after_re_anchoring_still_commits_the_final_count tests/test_structural_budget_preflight.py::test_the_reconcile_corrects_upward_rather_than_tolerating_an_under_value 2>&1 | tail -60`
-
-```
-tmp_path = PosixPath('/private/var/folders/1r/3r0rt1jd4j1456rsg_fh4d380000gn/T/pytest-of-eyalgolan/pytest-51298/test_a_round_that_edits_after_0')
-store = <<redacted>.core.db.Store object at 0x10e817080>
-
-    async def test_a_round_that_edits_after_re_anchoring_still_commits_the_final_count(
-            bare_repo_relocated_product, tmp_path, store):
-        """RED before the fix: without a pre-commit reconcile, the corrective
-        round commits the STALE `_MOD_GROWN_LINES` (6) it measured mid-round,
-        even though `tests/pkg/mod.py` is really `_MOD_GROWN_AGAIN_LINES` (8)
-        lines by the time of the commit — the exact mechanism dogfood case
-        92e48491a7 demo
-[... 3,782 of 4,921 characters omitted from the middle ...]
-ipped (no guard installed at this worktree) — base branch is only enforced by the PreToolUse lexical guard here
+    async def test_when_the_bounded_round_fails_the_attempt_reports_the_budget_as_the_cause(
+            bare_repo, tmp_path, store):
+        """RED before the fix: today a still-red guard after the round falls
+        through to review, where the attempt dies later on a generic red suite
+        with no cause attached — the 
+[... 2,177 of 3,316 characters omitted from the middle ...]
+— base branch is only enforced by the PreToolUse lexical guard here
+WARNING  <redacted>.orchestrator:orchestrator.py:2258 advisory: the reformat nudge wrote to the worktree despite being told not to; reverted 1 path(s): README.md
 =========================== short test summary info ============================
-FAILED tests/test_structural_budget_preflight.py::test_a_round_that_edits_after_re_anchoring_still_commits_the_final_count
-FAILED tests/test_structural_budget_preflight.py::test_the_reconcile_corrects_upward_rather_than_tolerating_an_under_value
-2 failed in 3.08s
+FAILED tests/test_structural_budget_preflight.py::test_when_the_bounded_round_fails_the_attempt_reports_the_budget_as_the_cause
+1 failed in 2.46s
 ```  
-  _excerpt - 4,913 characters of output in total_
+  _excerpt - 3,310 characters of output in total_
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/3517050d77ac42aa9b7a3c2ec339e3b6.82890.91c131cd uv run pytest -q -n 4 tests/test_structural_budget_preflight.py tests/test_structural_budget.py tests/test_repro_waived_corrective_round.py tests/test_declared_repro_files_committed_preflight.py 2>&1 | tail -20`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/3517050d77ac42aa9b7a3c2ec339e3b6.82890.bf7991c5 diff -q src/<redacted>/core/orchestrator.py /tmp/orchestrator_fixed_82890.py && echo "restored OK" uv run pytest tests/test_structural_budget_preflight.py tests/test_structural_budget.py -q 2>&1 | tail -15`
 
 ```
-result = subprocess.run(
-            [sys.executable, "-m", "pytest", "-q",
-             "tests/test_structural_budget.py::test_no_frozen_entry_has_grown"],
-            cwd=repo.path, capture_output=True, text=True,
-        )
->       assert result.returncode != 0, result.stdout + result.stderr
-E       AssertionError: .                                                                        [100%]
-E         1 passed in 0.00s
-E         
-E       assert 0 != 0
-E        +  where 0 = CompletedProcess(args=['/Users/eyalgolan/.<redacted>/worktrees/3517050d77ac42aa9b7a3c2ec339e3b6.82890.91c131cd/.venv/bin...dout='.                                                               
-[... 581 of 1,720 characters omitted from the middle ...]
- fail honestly here.
-WARNING  <redacted>.orchestrator:orchestrator.py:2258 advisory: verification comment not posted (unverifiable): could not read existing comments on local-pr://remote2.git/no-human/68737da7; not posting
-=========================== short test summary info ============================
-FAILED tests/test_structural_budget_preflight.py::test_the_reconcile_corrects_upward_rather_than_tolerating_an_under_value
-1 failed, 73 passed in 12.79s
-```  
-  _excerpt - 1,712 characters of output in total_
+restored OK
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+....................................................                     [100%]
+52 passed in 34.79s
+```
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/3517050d77ac42aa9b7a3c2ec339e3b6.82890.91c131cd uv run pytest -q tests/test_structural_budget_preflight.py::test_the_reconcile_corrects_upward_rather_than_tolerating_an_under_value -s 2>&1 | tail -60`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/3517050d77ac42aa9b7a3c2ec339e3b6.82890.bf7991c5 uv run pytest tests/test_structural_budget_preflight.py tests/test_structural_budget.py -q 2>&1 | tail -15`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-.
-1 passed in 2.40s
+....................................................                     [100%]
+52 passed in 41.70s
 ```
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/3517050d77ac42aa9b7a3c2ec339e3b6.82890.91c131cd uv run pytest -q tests/test_structural_budget_preflight.py tests/test_structural_budget.py tests/test_repro_waived_corrective_round.py tests/test_declared_repro_files_committed_preflight.py 2>&1 | tail -20`
+- `python -m pytest tests/test_structural_budget_preflight.py tests/test_structural_budget.py -q 2>&1 | tail -30`
 
 ```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-........................................................................ [ 97%]
-..                                                                       [100%]
-74 passed in 41.26s
+.....................................................                    [100%]
+53 passed in 32.93s
 ```
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/3517050d77ac42aa9b7a3c2ec339e3b6.82890.91c131cd for i in 1 2 3; do   echo "=== run $i ==="   uv run pytest -q -n 4 tests/test_structural_budget_preflight.py tests/test_structural_budget.py tests/test_repro_waived_corrective_round.py tests/test_declared_repro_files_committed_preflight.py 2>&1 | tail -8 done`
+- `\ cp src/<redacted>/core/orchestrator.py /tmp/orchestrator_fixed_82890_v2.py && \ git show HEAD:src/<redacted>/core/orchestrator.py > src/<redacted>/core/orchestrator.py && \ echo "--- RED run (unfixed) -- [... 377 of 720 characters omitted from the middle ...]  -m pytest tests/test_structural_budget_preflight.py::test_the_bound_reached_failure_carries_the_guards_own_output_tail -q 2>&1 | tail -20`
 
 ```
-=== run 1 ===
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-bringing up nodes...
-bringing up nodes...
-
-........................................................................ [ 97%]
-..                                                                       [100%]
-74 passed in 18.72s
-=== run 2 ===
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-bringing up nodes...
-bringing up nodes
-[... 162 of 1,301 characters omitted from the middle ...]
-%]
-74 passed in 19.08s
-=== run 3 ===
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-bringing up nodes...
-bringing up nodes...
-
-........................................................................ [ 97%]
-..                                                                       [100%]
-74 passed in 23.96s
-```  
-  _excerpt - 1,295 characters of output in total_
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/3517050d77ac42aa9b7a3c2ec339e3b6.82890.91c131cd cp src/<redacted>/testing/structural_budget.py /tmp/structural_budget.py.fixed2 python3 - <<'EOF' p = "src/<redac [... 742 of 1,081 characters omitted from the middle ...] firming green again ===" uv run pytest -q -n 4 tests/test_structural_budget_preflight.py tests/test_structural_budget.py 2>&1 | tail -10`
-
-```
-pins the negative directly: an under-value of 7 is NOT tolerated by the
-        guard itself."""
-        backend = _ReanchorsThenEditsAgainBackend()
-        orch, task, repo, events = await _run_one_task_attempt(
-            store, bare_repo_relocated_product, tmp_path, backend)
+--- RED run (unfixed) ---
+        next attempt starts from a diagnosis, not a cold cause label alone."""
+        backend = _GrowsFrozenFileThenDoesNothingUsefulBackend()
+        orch, task, repo, events = await _run_one_task_attempt(store, bare_repo, tmp_path, backend)
     
         outcome = await orch._run_attempt(task, repo, 1, "main")
->       assert outcome.status is TaskStatus.AWAITING_APPROVAL, outcome.detail
-E       AssertionError: structural_budget: still red after the one bounded round: ['tests/pkg/mod.py']
-E       assert <TaskStatus.FAILED: 'failed'> is <TaskStatus.AWAITING_APPROVAL: 'awaiting_approval'>
-E        +  where <TaskStatus.FAILED: 'faile
-[... 976 of 2,115 characters omitted from the middle ...]
-ile_corrects_upward_rather_than_tolerating_an_under_value
-2 failed in 4.46s
-=== restored, confirming green again ===
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-bringing up nodes...
-bringing up nodes...
-
-...............................................                          [100%]
-47 passed in 20.90s
+    
+        assert outcome.status is TaskStatus.FAILED, outcome.detail
+        assert outcome.detail.startswith(structural_budget.STRUCTURAL_BUDGET_CAUSE), outcome.detail
+>       assert f"now {_MOD_GROWN_LINES}" in outcome.detail, outcome.detail
+E       AssertionError: structural_budget: still red after the one bounded round: ['pkg/mod.py']
+[... 852 of 1,991 characters omitted from the middle ...]
+advisory: the reformat nudge wrote to the worktree despite being told not to; reverted 1 path(s): README.md
+=========================== short test summary info ============================
+FAILED tests/test_structural_budget_preflight.py::test_the_bound_reached_failure_carries_the_guards_own_output_tail
+1 failed in 8.50s
+--- GREEN run (fixed, restored) ---
+.                                                                        [100%]
+1 passed in 2.01s
 ```  
-  _excerpt - 2,111 characters of output in total_
+  _excerpt - 1,987 characters of output in total_
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/3517050d77ac42aa9b7a3c2ec339e3b6.82890.91c131cd uv run pytest -q -n 4 tests/test_structural_budget_preflight.py tests/test_structural_budget.py tests/test_repro_waived_corrective_round.py tests/test_declared_repro_files_committed_preflight.py 2>&1 | tail -10`
+- `echo "=== scope: exactly 4 files ===" && \ git diff --stat HEAD && \ echo "=== def test_ / assert counts (current) ===" && \ grep -c "def test_" tests/test_structural_budget_preflight.py tests/test_structu [... 590 of 933 characters omitted from the middle ...] ull scoped test run ===" && \ python -m pytest tests/test_structural_budget_preflight.py tests/test_structural_budget.py -q 2>&1 | tail -5`
 
 ```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-bringing up nodes...
-bringing up nodes...
+=== scope: exactly 4 files ===
+ src/<redacted>/core/orchestrator.py         |   3 +-
+ src/<redacted>/testing/structural_budget.py |  14 +++
+ tests/test_structural_budget.py           |  11 +-
+ tests/test_structural_budget_preflight.py | 171 ++++++++++++++++++++++++++++++
+ 4 files changed, 193 insertions(+), 6 deletions(-)
+=== def test_ / assert counts (current) ===
+tests/test_structural_budget_preflight.py:37
+tests/test_structural_budget.py:20
+tests/test_structural_budget.py:63
+tests/test_structural_budget_preflight.py:143
+=== HEAD baseline ===
+31
+20
+122
+63
+=== orchestrator.py diff (only sanctioned change) ===
+diff --git a/src/<redacted>/core/orchestrator.py b/src/<redacted>
+[... 489 of 1,628 characters omitted from the middle ...]
+        detail = (
+                 f"{structural_budget.STRUCTURAL_BUDGET_CAUSE}: still red "
+-                f"after the one bounded round: {notify_paths}"
++                f"after the one bounded round: {notify_paths}\n{fail_tail2}"
+             )
+             self.emit(
+                 "structural_budget_grown", detail,
+=== full scoped test run ===
+.....................................................                    [100%]
+53 passed in 29.37s
+```  
+  _excerpt - 1,616 characters of output in total_
 
-........................................................................ [ 97%]
-..                                                                       [100%]
-74 passed in 45.31s
+- `python -m pytest tests/test_repro_waived_corrective_round.py tests/test_declared_repro_files_committed_preflight.py -q 2>&1 | tail -5`
+
+```
+...........................                                              [100%]
+27 passed in 25.09s
 ```
 
 
 **Not verified:** everything below is a limit of this section, listed whether or not it bit this attempt.
 
 - no command recognised as e2e, http, typecheck, lint, build was recorded - and a recorded command is shown with its middle omitted, so a check inside the omitted part cannot be ruled out
-- 12 commands listed above are shown without their captured output: only the 12 most recent carry it
 - an entry shows that a command LINE was submitted to the shell and what came back - never that the check recognised inside it RAN, and never that it was the RIGHT command: `pytest -k test_nothing` prints a clean run, and a recorded command line may name a check the shell never reached yet is still counted - TEN SHAPES WERE DRIVEN against bash 3.2.57 with the check replaced by a marker-printing stub and the marker was absent in every one: a failed `&&`, a taken `||`, an `exit`, an `exec`, an `exit` inside a `source`d script, a syntax error that aborts the REST of the line, a multi-line `if false`, a `case` that matches nothing, `set -e` aborting an earlier command, and `set -u` on an unset variable; that list is MEASURED, NOT EXHAUSTIVE, because this module is not bash, so a kind this section does NOT list as missing is a kind some recorded line named, which is not the same as a kind that ran
 - the text is the coder's: the session chose the command string and, through `echo`/`printf`, can choose the output too. Both are shown as inert text, and no entry ASSERTS a pass, a fail, or an exit status - `pytest -q | tail -3` exits with `tail`'s status, `Error: Exit code 1` is a line IN THE OUTPUT, and where the harness reported a timeout or an interruption instead of output that report is appended to the captured text in square brackets. Read the output
 - recognition reads the command line ONLY - it never looks inside what a command runs, so `bash -c 'uv run pytest -q'` leaves no receipt at all while `make test` leaves one that names `make` and not the recipe it ran; and the other way, a check merely NAMED in a heredoc body, or in a quoted string that happens to spell a shell separator, can be recorded as though it ran
