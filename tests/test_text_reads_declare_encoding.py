@@ -43,11 +43,22 @@ where the platform default round-trips fine. Sweeping them would be noise. The
 one that mattered, `test_egress_allowlist.py` writing source it had just read,
 is fixed, because once the read is correct the write is what raises next.
 
-`src/` is not covered either, and that is a real remaining exposure rather than
-an oversight: 57 unencoded `read_text` and 35 unencoded `write_text` calls,
-which is the PRODUCT reading a user's files rather than the harness reading its
-own. It deserves its own change and its own thought about what should happen
-when a user's file genuinely is not UTF-8.
+`src/` is covered only at `src/no_human/testing/`, and that exception is the
+whole point of the boundary. The first version of this change drew the line by
+DIRECTORY, guarding `tests/` and `scripts/`, and shipped with the suite still
+uncollectable: `pytest_isolated_home.py` reads this repository's own
+`pyproject.toml` at import during pytest bootstrap, and it lives under `src/`.
+The line that matters is WHOSE files are being read, not which folder the
+reader sits in. Three reads there are the harness reading its own repository
+and are fixed; five take a path under the TARGET repository and are exempted by
+name in `PRODUCT_SIDE_READERS`, all of them already passing `errors="ignore"`
+or `errors="replace"`.
+
+The rest of `src/` stays out, and that is a real remaining exposure rather than
+an oversight: 54 unencoded `read_text` and 35 unencoded `write_text` calls.
+That is the PRODUCT reading a user's files, and it deserves its own change and
+its own thought about what should happen when a user's file genuinely is not
+UTF-8.
 """
 from __future__ import annotations
 
@@ -58,9 +69,39 @@ import pytest
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 
-#: The harness: code that reads THIS repository's own files. `src/` is out of
-#: scope on purpose; see the module docstring.
-GUARDED_AREAS = ("tests", "scripts")
+#: The harness: code that reads THIS repository's own files.
+#:
+#: `src/no_human/testing/` is in scope even though it lives on the product side
+#: of the directory line, because the boundary that matters is WHOSE files are
+#: being read, not which folder the reader sits in. `pytest_isolated_home.py`
+#: reads this repository's own `pyproject.toml`, checking it for
+#: `name = "no-human"`, and it does so at import during pytest bootstrap, so an
+#: undecodable byte there blocks collection of the whole suite before a single
+#: test runs. Drawing the line by directory hid that, and the first version of
+#: this change shipped with the suite still uncollectable as a result.
+#:
+#: The rest of `src/` stays out. That is the product reading a USER's files and
+#: it needs its own change, including a decision about what should happen when
+#: a user's file genuinely is not UTF-8.
+GUARDED_AREAS = ("tests", "scripts", "src/no_human/testing")
+
+#: Reads inside a guarded area that are product-side after all: every one takes
+#: a path under the TARGET repository rather than this one, so "decode it as
+#: UTF-8" is not ours to assert. All of them already pass `errors="ignore"` or
+#: `errors="replace"` and cannot raise, which is the correct handling for a
+#: file we did not write.
+#:
+#: Keyed by file rather than by line so the list does not rot every time
+#: something above it moves. If one of these modules ever reads THIS
+#: repository's own files, that read belongs outside the exemption.
+PRODUCT_SIDE_READERS = {
+    # reads (repo_path / ...) for the repository under test
+    "src/no_human/testing/runner.py",
+    # reads the target repo's MANIFEST; errors="replace" is deliberate and
+    # documented there, so a non-UTF-8 byte reads as a JSON error, never raises
+    "src/no_human/testing/repro_gate.py",
+    "src/no_human/testing/ui_evidence.py",
+}
 
 
 def _unencoded_read_text(path: pathlib.Path) -> list[int]:
@@ -83,8 +124,11 @@ def _unencoded_read_text(path: pathlib.Path) -> list[int]:
 def test_no_read_text_in_the_harness_omits_its_encoding(area):
     offenders = []
     for path in sorted((REPO_ROOT / area).rglob("*.py")):
+        rel = path.relative_to(REPO_ROOT).as_posix()
+        if rel in PRODUCT_SIDE_READERS:
+            continue
         for lineno in _unencoded_read_text(path):
-            offenders.append(f"{path.relative_to(REPO_ROOT).as_posix()}:{lineno}")
+            offenders.append(f"{rel}:{lineno}")
 
     assert offenders == [], (
         "these read a file without saying how to decode it, so they use the "
