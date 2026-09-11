@@ -1183,7 +1183,12 @@ FROZEN_FILE_LINES = {
     # the scanner's own metric (ast/splitlines-based, not `wc -l` — this
     # file has a few non-`\n` line separators that make the two differ
     # by a constant 3 lines).
-    "core/orchestrator.py": 23846,
+    # 2026-09-11 (task-retitle feature): the retitle branch trims dead
+    # code from `Orchestrator._commit_message` in favor of the shared
+    # `commit_subject()` helper. Measured value on THIS tree, directly
+    # (not by delta arithmetic): `len(Path("src/no_human/core/
+    # orchestrator.py").read_text().splitlines())` == 23840.
+    "core/orchestrator.py": 23840,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.
