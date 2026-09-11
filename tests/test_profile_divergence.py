@@ -156,7 +156,7 @@ async def test_nothing_is_auto_synced(store, tmp_path):
     diverged.save()
 
     yml_path = diverged.yaml_path()
-    yml_before = yml_path.read_text()
+    yml_before = yml_path.read_text(encoding="utf-8")
     db_before = (await store.get_profile(str(repo_path))).to_dict()
 
     events = []
@@ -164,7 +164,7 @@ async def test_nothing_is_auto_synced(store, tmp_path):
     await orch._usable_profile(repo_path)
     await diagnose(store)
 
-    assert yml_path.read_text() == yml_before
+    assert yml_path.read_text(encoding="utf-8") == yml_before
     assert (await store.get_profile(str(repo_path))).to_dict() == db_before
 
 

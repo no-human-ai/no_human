@@ -785,7 +785,7 @@ def test_no_shipped_file_asserts_an_unsourced_openai_prohibition():
     # Second positive control: this file is in the scanned set and carries a
     # known-present token, so an empty/misdirected scan cannot pass silently.
     assert any(
-        p.name == "codex_backend.py" and "preferred_auth_method" in p.read_text()
+        p.name == "codex_backend.py" and "preferred_auth_method" in p.read_text(encoding="utf-8")
         for p in scanned
     )
 
@@ -829,7 +829,7 @@ def test_the_api_key_comment_names_the_real_enforcement_and_not_the_ignored_flag
     scanned = _shipped_src_and_docs(root)
     assert scanned, "the scan must not be scanning nothing"
     assert any(
-        p.name == "codex_backend.py" and "preferred_auth_method" in p.read_text()
+        p.name == "codex_backend.py" and "preferred_auth_method" in p.read_text(encoding="utf-8")
         for p in scanned
     ), "positive control failed — preferred_auth_method not found anywhere scanned"
 
@@ -2017,7 +2017,7 @@ def test_no_source_file_touches_the_chatgpt_credential_file():
 
 def test_the_docs_state_the_verified_cli_version_and_the_entitlement_rule():
     docs = (Path(__file__).resolve().parent.parent / "docs" / "BACKENDS.md"
-           ).read_text()
+           ).read_text(encoding="utf-8")
     assert "codex exec --help" in docs, (
         "the docs must say flags are probed from the CLI's own --help output")
     assert "codex-cli 0.149.0" in docs, (
@@ -2055,7 +2055,7 @@ def test_materialise_writes_a_600_credential_inside_no_human_root(tmp_path):
     cx.materialise_api_key_auth("sk-live-key", home, base=nh_root)
 
     written = home / _CRED
-    assert json.loads(written.read_text()) == {
+    assert json.loads(written.read_text(encoding="utf-8")) == {
         "auth_mode": "apikey", "OPENAI_API_KEY": "sk-live-key",
     }
     assert oct(written.stat().st_mode)[-3:] == "600"
@@ -2150,7 +2150,7 @@ def test_materialise_cannot_truncate_through_a_symlinked_temp_path(tmp_path):
 
     assert victim.read_bytes() == b"PRECIOUS", (
         "a symlink at the temp path captured the write")
-    assert json.loads((home / _CRED).read_text())["OPENAI_API_KEY"] == "sk-x"
+    assert json.loads((home / _CRED).read_text(encoding="utf-8"))["OPENAI_API_KEY"] == "sk-x"
 
 
 # --------------------------------------------------------------------------- #
@@ -2253,7 +2253,7 @@ def test_a_hard_link_at_the_temp_path_cannot_capture_the_write(tmp_path):
         "a hard link at the temp path captured the write: the victim outside "
         "the root was overwritten")
     assert b"sk-ATTACKER-KEY" not in victim.read_bytes()
-    assert json.loads((home / _CRED).read_text())["OPENAI_API_KEY"] == "sk-ATTACKER-KEY"
+    assert json.loads((home / _CRED).read_text(encoding="utf-8"))["OPENAI_API_KEY"] == "sk-ATTACKER-KEY"
 
 
 def test_codex_api_key_home_refuses_before_it_chmods_anything(tmp_path):
@@ -2528,7 +2528,7 @@ def test_a_relocated_store_root_is_accepted_not_refused(tmp_path):
     home = cx.codex_api_key_home(base=nh_root)
     cx.materialise_api_key_auth("sk-relocated", home, base=nh_root)
 
-    assert json.loads((home / _CRED).read_text())["OPENAI_API_KEY"] == "sk-relocated"
+    assert json.loads((home / _CRED).read_text(encoding="utf-8"))["OPENAI_API_KEY"] == "sk-relocated"
     assert (real / "codex-home" / _CRED).exists(), (
         "the credential did not land inside the relocated store")
     # Discriminates `return resolved` from `return home`, which the section-15
@@ -2577,7 +2577,7 @@ def test_a_stale_temp_file_from_a_crashed_run_does_not_wedge_the_write(tmp_path)
 
     cx.materialise_api_key_auth("sk-after-crash", home, base=nh_root)
 
-    assert json.loads((home / _CRED).read_text())["OPENAI_API_KEY"] == "sk-after-crash"
+    assert json.loads((home / _CRED).read_text(encoding="utf-8"))["OPENAI_API_KEY"] == "sk-after-crash"
     assert not (home / f".{_CRED}.tmp").exists(), "the temp file was left behind"
 
 
@@ -2598,7 +2598,7 @@ def test_rewriting_the_same_key_is_byte_identical_and_a_rotation_replaces_it(
     assert cred.read_bytes() == first, "re-writing the same key was not idempotent"
 
     cx.materialise_api_key_auth("sk-two", home, base=nh_root)
-    assert json.loads(cred.read_text())["OPENAI_API_KEY"] == "sk-two"
+    assert json.loads(cred.read_text(encoding="utf-8"))["OPENAI_API_KEY"] == "sk-two"
     assert oct(cred.stat().st_mode)[-3:] == "600", "the rotation lost the mode"
 
 

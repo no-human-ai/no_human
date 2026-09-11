@@ -543,7 +543,7 @@ def test_judge_calibration_records_the_2026_08_23_audit_below_the_bar():
     three disagreement rows, the unscoreable row, and all three confounds, and
     pin that the Bottom line still declares the human calibration not done."""
     text = (Path(__file__).resolve().parents[1] / "eval"
-            / "JUDGE_CALIBRATION.md").read_text()
+            / "JUDGE_CALIBRATION.md").read_text(encoding="utf-8")
 
     # Numbers verbatim.
     for needle in ("2026-08-23", "opus5-2026-07-26-post12merges", "0.8421",
@@ -859,7 +859,7 @@ async def test_score_diffs_against_pr_branch_not_head(tmp_path):
     # the runner checked out the PR branch, so the judge's own ls/git checks in
     # repo_path now SEE the deliverable (not just the agent_diff).
     assert (work / "review.md").exists()
-    assert (work / "review.md").read_text() == "the review deliverable"
+    assert (work / "review.md").read_text(encoding="utf-8") == "the review deliverable"
 
 
 @pytest.mark.asyncio
@@ -1024,10 +1024,10 @@ def test_sandbox_copy_is_instant_isolated_and_survives_a_dirty_source(tmp_path):
             f"{p.name} shares an inode with the source — the write-through "
             "corruption vector is back")
     # Clean at the pin despite the dirty source.
-    assert (work / "a.txt").read_text() == "x" * 4096
+    assert (work / "a.txt").read_text(encoding="utf-8") == "x" * 4096
     assert not (work / "untracked.tmp").exists()
     # And the source's dirt was untouched.
-    assert (src / "a.txt").read_text() == "DIRTY"
+    assert (src / "a.txt").read_text(encoding="utf-8") == "DIRTY"
 
 
 def test_sandbox_dirty_seed_restores_a_real_dirty_tree(tmp_path):
@@ -1057,7 +1057,7 @@ def test_sandbox_dirty_seed_restores_a_real_dirty_tree(tmp_path):
     assert codes.get("??") == "debug.log", (
         f"expected debug.log UNTRACKED, got: {porcelain!r}")
     # Append, not overwrite: the tracked file keeps its real content.
-    assert (work / "app.py").read_text().startswith("def f():"), (
+    assert (work / "app.py").read_text(encoding="utf-8").startswith("def f():"), (
         "the seed OVERWROTE the tracked file instead of appending")
     # Seeded after the push: the remote carries the CLEAN tree only.
     bare = workdir / "remote.git"

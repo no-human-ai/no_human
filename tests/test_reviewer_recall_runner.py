@@ -307,7 +307,7 @@ _OBJECT_ID_RUN = re.compile(r"\b[0-9a-fA-F]{4,}\b")
 def _read_manifest(case) -> dict[str, tuple[str, str | None]]:
     """`{path: (column-1 blob id, column-3 marker or None)}` for one case."""
     manifest: dict[str, tuple[str, str | None]] = {}
-    for line in (case.dir / "base.manifest").read_text().splitlines():
+    for line in (case.dir / "base.manifest").read_text(encoding="utf-8").splitlines():
         fields = line.split("  ")
         assert len(fields) in (2, 3), f"{case.case_id}: bad manifest line: {line!r}"
         manifest[fields[1]] = (fields[0], fields[2] if len(fields) == 3 else None)
@@ -473,7 +473,7 @@ def test_manifest_declares_the_scrub_without_indexing_the_original():
     """
     offenders = []
     for case in rr.load_cases():
-        for line in (case.dir / "base.manifest").read_text().splitlines():
+        for line in (case.dir / "base.manifest").read_text(encoding="utf-8").splitlines():
             fields = line.split("  ")
             for column, value in enumerate(fields[1:], start=2):
                 if _OBJECT_ID_RUN.search(value):
@@ -555,7 +555,7 @@ def test_every_base_ref_is_a_full_commit_id():
     """
     bad = []
     for case in rr.load_cases():
-        ref = (case.dir / "base.ref").read_text().strip()
+        ref = (case.dir / "base.ref").read_text(encoding="utf-8").strip()
         if not re.fullmatch(r"[0-9a-f]{40}", ref):
             bad.append(f"{case.case_id}: {ref!r} ({len(ref)} chars)")
     assert bad == [], (
@@ -794,7 +794,7 @@ def test_no_test_calls_run_all_without_runs_dir():
     call-site pattern it searches for (which would make it match itself).
     """
     needle = "rr" + "." + "run_all" + "("
-    source = Path(__file__).read_text()
+    source = Path(__file__).read_text(encoding="utf-8")
     call_starts = [m.start() for m in re.finditer(re.escape(needle), source)]
     assert call_starts, "expected at least one call site of the function under test"
     for start in call_starts:
@@ -824,7 +824,7 @@ def test_no_test_calls_run_all_without_runs_dir():
 
 def test_runner_defines_no_default_model():
     assert not hasattr(rr, "DEFAULT_MODEL")
-    assert "claude-opus-5" not in RUNNER_PATH.read_text()
+    assert "claude-opus-5" not in RUNNER_PATH.read_text(encoding="utf-8")
 
 
 def test_run_and_report_requires_an_explicit_model():
@@ -968,7 +968,7 @@ def test_transcript_records_demotions_so_a_score_can_be_audited(tmp_path):
     report = rr.RecallReport(results=[suspect], model="claude-opus-5",
                              run_date="2026-07-30")
     rr.write_transcripts(report, tmp_path)
-    data = json.loads((tmp_path / "2026-07-30" / "synthetic-control.json").read_text())
+    data = json.loads((tmp_path / "2026-07-30" / "synthetic-control.json").read_text(encoding="utf-8"))
     assert data["score"] == 1.0
     assert data["clean_pass_relied_on_demotion"] is True
     assert data["demoted_citations"] == ["x: off-diff.py not found"]
@@ -1061,7 +1061,7 @@ async def test_run_all_writes_transcripts(tmp_path):
     for case in all_cases:
         case_file = out_dir / f"{case.case_id}.json"
         assert case_file.exists(), f"missing transcript for {case.case_id}"
-    sample = json.loads((out_dir / f"{all_cases[0].case_id}.json").read_text())
+    sample = json.loads((out_dir / f"{all_cases[0].case_id}.json").read_text(encoding="utf-8"))
     assert {"case_name", "status", "score"} <= sample.keys()
     assert sample["case_name"] == all_cases[0].case_id
     assert sample["status"] == "OK"
@@ -1078,7 +1078,7 @@ def test_error_transcript_omits_caught(tmp_path):
     report = rr.RecallReport(results=[error_result], model="claude-opus-5",
                              run_date="2026-07-25")
     rr.write_transcripts(report, tmp_path)
-    data = json.loads((tmp_path / "2026-07-25" / "broken-checkout.json").read_text())
+    data = json.loads((tmp_path / "2026-07-25" / "broken-checkout.json").read_text(encoding="utf-8"))
     assert data["status"] == "ERROR"
     assert "caught" not in data
     assert data["score"] is None
@@ -1170,7 +1170,7 @@ def test_transcript_carries_the_goal_block(tmp_path):
                              run_date="2026-08-07")
     rr.write_transcripts(report, tmp_path)
     data = json.loads(
-        (tmp_path / "2026-08-07" / "synthetic-wiring.json").read_text())
+        (tmp_path / "2026-08-07" / "synthetic-wiring.json").read_text(encoding="utf-8"))
     assert data["goal"]["entry_point"] == "api.py:15"
 
 
@@ -1220,7 +1220,7 @@ def test_parcelo_wiring_bases_are_the_scenario_definition_verbatim():
     import yaml
 
     scenario = yaml.safe_load(
-        (REPO_ROOT / "eval/startup_scenario/parcelo.yaml").read_text())
+        (REPO_ROOT / "eval/startup_scenario/parcelo.yaml").read_text(encoding="utf-8"))
     external = [c for c in rr.load_cases()
                 if c.truth.get("external_base_ref")]
     assert len(external) == 2

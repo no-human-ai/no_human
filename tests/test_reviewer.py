@@ -1713,7 +1713,7 @@ def test_pr_body_truthfulness_no_longer_claims_a_mutation_it_cannot_detect():
     source rather than asserting against anything computed in this test, so
     it goes red if the cross-reference is missing (as it was before this
     fix) and green once the docstrings name these two tests."""
-    text = (Path(__file__).parent / "test_pr_body_truthfulness.py").read_text()
+    text = (Path(__file__).parent / "test_pr_body_truthfulness.py").read_text(encoding="utf-8")
 
     assert (
         "test_already_satisfied_review_hands_the_backend_a_prompt_naming_the_reviewed_sha"

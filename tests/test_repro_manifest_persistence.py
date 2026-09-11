@@ -177,7 +177,7 @@ async def test_a_passing_gate_persists_the_manifest_under_the_task_artifacts_dir
 
     persisted = task_manifest_path(task.id)
     assert persisted.is_file(), persisted
-    assert persisted.read_text() == (repo.path / REPRO_MANIFEST).read_text()
+    assert persisted.read_text(encoding="utf-8") == (repo.path / REPRO_MANIFEST).read_text(encoding="utf-8")
 
     persist_events = [e for e in events if e["kind"] == "repro_manifest_persisted"]
     assert len(persist_events) == 1, persist_events
@@ -262,7 +262,7 @@ def test_restore_never_overwrites_a_live_manifest_and_never_enshrines_junk(tmp_p
     wrote = restore_manifest(repo_path, "task-1", home=home)
 
     assert wrote is False
-    assert (repo_path / REPRO_MANIFEST).read_text() == live_manifest
+    assert (repo_path / REPRO_MANIFEST).read_text(encoding="utf-8") == live_manifest
 
     # A corrupt worktree manifest is never enshrined as the task's record.
     (repo_path / REPRO_MANIFEST).write_text("not json{{{")

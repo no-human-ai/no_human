@@ -1289,7 +1289,7 @@ def _operator_strings() -> list[tuple[str, int, str, str]]:
                     into.add(id(sub))
 
     for path in sorted(root.rglob("*.py")):
-        tree = ast.parse(path.read_text(), filename=str(path))
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         rel = str(path.relative_to(root.parent.parent))
 
         plain_docs: set[int] = set()

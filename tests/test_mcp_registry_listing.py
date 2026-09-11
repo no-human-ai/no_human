@@ -18,11 +18,11 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def _server() -> dict:
-    return json.loads((ROOT / "server.json").read_text())
+    return json.loads((ROOT / "server.json").read_text(encoding="utf-8"))
 
 
 def _project_version() -> str:
-    return tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["version"]
+    return tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
 
 
 def test_server_json_names_the_github_namespace_of_the_public_repo():
@@ -61,7 +61,7 @@ def test_the_pypi_package_entry_runs_the_bridge_the_way_clients_invoke_it():
     # (uvx runs the script named after the package) and `mcp-serve` must be a
     # real subcommand of that entry point.
     assert [a["value"] for a in pkg["packageArguments"]] == ["mcp-serve"]
-    scripts = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["scripts"]
+    scripts = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["scripts"]
     assert scripts["no-human"] == scripts["nh"] == "no_human.cli.commands:main"
     from no_human.cli.commands import cli
     assert "mcp-serve" in cli.commands
@@ -71,13 +71,13 @@ def test_readme_carries_the_registry_ownership_marker_with_a_boundary():
     # The registry's rule: `mcp-name: <name>` followed by whitespace, a newline,
     # an HTML tag or `-->` — never glued to trailing punctuation.
     name = _server()["name"]
-    readme = (ROOT / "README.md").read_text()
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
     assert re.search(rf"mcp-name: {re.escape(name)}(\s|-->|<)", readme), (
         "README.md must carry the `mcp-name:` marker the MCP Registry checks on PyPI")
 
 
 def test_the_publish_workflow_is_manual_and_tokenless():
-    wf = (ROOT / ".github/workflows/publish-mcp-registry.yml").read_text()
+    wf = (ROOT / ".github/workflows/publish-mcp-registry.yml").read_text(encoding="utf-8")
     assert "workflow_dispatch:" in wf
     assert "on:\n  push" not in wf and "release:" not in wf
     assert "login github-oidc" in wf

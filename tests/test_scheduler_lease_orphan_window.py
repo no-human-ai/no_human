@@ -70,7 +70,7 @@ def test_the_design_doc_for_the_accepted_window_exists():
     doc = (__import__("pathlib").Path(__file__).resolve().parent.parent
            / "docs" / "design" / "lease-takeover-vs-orphan-grace.md")
     assert doc.is_file()
-    text = doc.read_text()
+    text = doc.read_text(encoding="utf-8")
     assert len(text) > 500  # non-trivial: a real decision record, not a stub
 
 

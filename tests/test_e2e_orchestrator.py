@@ -3157,7 +3157,7 @@ async def test_a_stale_plan_in_the_checkout_is_invisible_to_an_isolated_run(
 
     assert seen.get("isolated"), "the run used the operator's checkout"
     assert seen.get("plan_visible") is False, "stale plan visible to agent"
-    assert stale.read_text().startswith("# a previous run's plan")
+    assert stale.read_text(encoding="utf-8").startswith("# a previous run's plan")
 
 
 # --------------------------------------------------------------------------- #
@@ -5109,7 +5109,7 @@ class SneakyNudgeBackend(WrongShapeBackend):
             from no_human.vcs import GitRepo as _GitRepo
             self.tree_seen.append({
                 "stray": (Path(cwd) / self.STRAY).exists(),
-                "calc": (Path(cwd) / "calc.py").read_text()
+                "calc": (Path(cwd) / "calc.py").read_text(encoding="utf-8")
                         if (Path(cwd) / "calc.py").exists() else None,
                 # The COMMITTABLE view — `has_changes()`/`stage_all`'s own
                 # exclusions. The raw porcelain is not it: the orchestrator
@@ -5207,7 +5207,7 @@ async def test_the_revert_restores_a_tracked_file_instead_of_deleting_it(
     t.acceptance_criteria = ["mul(a,b) returns product"]
     t.context = {"eval_result": {"verdict": "accept"}}
     await store.create_task(t)
-    original = (Path(bare_repo) / "calc.py").read_text()
+    original = (Path(bare_repo) / "calc.py").read_text(encoding="utf-8")
 
     await orch.run_task(t)
 
@@ -6008,7 +6008,7 @@ async def test_subagents_materialized_before_agent_run(bare_repo, tmp_path, stor
             agents_dir_existed["exists"] = agents_dir.exists()
             agents_dir_existed["researcher"] = (agents_dir / "no_human_researcher.md").exists()
             agents_dir_existed["md"] = (
-                (agents_dir / "no_human_researcher.md").read_text()
+                (agents_dir / "no_human_researcher.md").read_text(encoding="utf-8")
                 if agents_dir_existed["researcher"] else "")
             # Produce file changes so the task completes.
             (cwd / "calc.py").write_text(
@@ -6164,7 +6164,7 @@ async def test_verify_skill_materialized_with_test_cmd(bare_repo, tmp_path, stor
             skill_path = cwd / ".claude" / "skills" / "no_human_verify" / "SKILL.md"
             skill_found["exists"] = skill_path.exists()
             if skill_path.exists():
-                skill_found["content"] = skill_path.read_text()
+                skill_found["content"] = skill_path.read_text(encoding="utf-8")
             (cwd / "calc.py").write_text(
                 "def add(a, b):\n    return a + b\n\ndef mul(a, b):\n    return a * b\n")
             (cwd / "test_calc.py").write_text(
@@ -6210,7 +6210,7 @@ async def test_compact_instructions_materialized(bare_repo, tmp_path, store):
             inst_path = cwd / ".claude" / "instructions.md"
             instructions_found["exists"] = inst_path.exists()
             if inst_path.exists():
-                instructions_found["content"] = inst_path.read_text()
+                instructions_found["content"] = inst_path.read_text(encoding="utf-8")
             (cwd / "calc.py").write_text(
                 "def add(a, b):\n    return a + b\n\ndef mul(a, b):\n    return a * b\n")
             (cwd / "test_calc.py").write_text(

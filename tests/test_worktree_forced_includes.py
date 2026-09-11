@@ -62,7 +62,7 @@ def test_pyproject_still_force_includes_something():
     alone while the path this file is about had quietly stopped being
     provisioned.
     """
-    cfg = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
+    cfg = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     targets = cfg["tool"]["hatch"]["build"]["targets"]
     forced = set()
     for target in targets.values():
@@ -141,7 +141,7 @@ def test_it_never_clobbers_a_real_directory(worktree):
     (dist / "index.html").write_text("<html>mine</html>")
     _ensure_forced_build_artifacts(worktree, REPO_ROOT)
     assert not dist.is_symlink()
-    assert (dist / "index.html").read_text() == "<html>mine</html>"
+    assert (dist / "index.html").read_text(encoding="utf-8") == "<html>mine</html>"
 
 
 def test_it_is_a_no_op_without_a_source_repo(worktree):
@@ -211,7 +211,7 @@ def test_a_tracked_forced_path_is_never_restored(worktree):
     itself in the meantime.
     """
     import tomllib as _t
-    cfg = _t.loads((worktree / "pyproject.toml").read_text())
+    cfg = _t.loads((worktree / "pyproject.toml").read_text(encoding="utf-8"))
     targets = cfg["tool"]["hatch"]["build"]["targets"]
     forced = set()
     for target in targets.values():

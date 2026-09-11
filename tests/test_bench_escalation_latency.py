@@ -303,7 +303,7 @@ def test_bench_score_as_dict_carries_latency_fields():
 # --------------------------------------------------------------------------- #
 
 def test_docs_eval_records_the_pass_k_verdict_and_token_check():
-    text = (REPO_ROOT / "docs" / "eval.md").read_text()
+    text = (REPO_ROOT / "docs" / "eval.md").read_text(encoding="utf-8")
     assert "total_nh_tokens" in text
     assert "success_rate must never lead" in text
     assert "instrument, not a target" in text

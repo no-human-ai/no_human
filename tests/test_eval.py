@@ -255,7 +255,7 @@ def test_red_team_adjudication_never_leaks_into_coder_visible_yaml_fields():
     red_team = 0
     for p in yaml_paths:
         import yaml as _yaml
-        d = _yaml.safe_load(p.read_text()) or {}
+        d = _yaml.safe_load(p.read_text(encoding="utf-8")) or {}
         for fieldname in ("title", "description", "acceptance_criteria"):
             assert "RED-TEAM" not in str(d.get(fieldname, "")), (
                 f"{p.name}: '{fieldname}' contains RED-TEAM adjudication text — "

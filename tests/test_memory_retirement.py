@@ -490,7 +490,7 @@ def test_triage_dry_run_then_apply_via_cli(tmp_path, monkeypatch):
 
     receipts = list((home / "receipts").glob("learning-triage-*.json"))
     assert len(receipts) == 1
-    payload = json.loads(receipts[0].read_text())
+    payload = json.loads(receipts[0].read_text(encoding="utf-8"))
     assert set(payload["archived_ids"]) == set(template_ids)
     assert payload["before_pending"] == 68
     assert payload["after_pending"] == 8

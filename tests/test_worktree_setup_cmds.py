@@ -145,7 +145,7 @@ async def test_profile_setup_cmds_run_in_order_before_the_test_command(
     # (and its real setup call) stays in the loop.
     async def _capture(task, repo):
         seen["path"] = Path(repo.path)
-        seen["order"] = (Path(repo.path) / "order.txt").read_text()
+        seen["order"] = (Path(repo.path) / "order.txt").read_text(encoding="utf-8")
         return _finished(task)
 
     orch._drive = _capture
@@ -302,7 +302,7 @@ async def test_a_cancel_during_setup_is_honoured_and_kills_the_setup_process(
     while not pid_file.exists() and time.monotonic() < deadline:
         await asyncio.sleep(0.05)
     assert pid_file.exists(), "the backgrounded sleep never recorded its pid"
-    pid = int(pid_file.read_text().strip())
+    pid = int(pid_file.read_text(encoding="utf-8").strip())
 
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
@@ -412,11 +412,11 @@ def test_a_second_call_on_the_same_worktree_path_is_a_no_op(
 
     first = run_setup_commands(wt, cmds)
     assert first == cmds
-    assert counter.read_text() == "x"
+    assert counter.read_text(encoding="utf-8") == "x"
 
     second = run_setup_commands(wt, cmds)
     assert second == [], "a second call on the same path re-ran setup"
-    assert counter.read_text() == "x", (
+    assert counter.read_text(encoding="utf-8") == "x", (
         "the setup command actually executed a second time")
 
 
@@ -447,7 +447,7 @@ def test_a_setup_timeout_leaves_no_orphaned_grandchild(live_checkout, tmp_path):
     while not pid_file.exists() and time.monotonic() < deadline:
         time.sleep(0.05)
     assert pid_file.exists(), "the backgrounded grandchild never started"
-    pid = int(pid_file.read_text().strip())
+    pid = int(pid_file.read_text(encoding="utf-8").strip())
 
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
@@ -850,7 +850,7 @@ def test_marker_wording_does_not_promise_a_per_attempt_saving():
     docs_path = (
         Path(__file__).resolve().parents[1] / "docs" / "configuration.md"
     )
-    text = docs_path.read_text()
+    text = docs_path.read_text(encoding="utf-8")
     start = text.index("## `setup_cmds`")
     end = text.index("\n## ", start + 1)
     section = text[start:end]

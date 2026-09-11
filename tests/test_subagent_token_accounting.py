@@ -73,7 +73,7 @@ FIXTURE = Path(__file__).resolve().parent.parent / "testdata" / "subagent_usage_
 def _load_recorded_stream() -> list:
     """Rebuild SDK message objects from the recorded live run."""
     msgs = []
-    for rec in json.loads(FIXTURE.read_text()):
+    for rec in json.loads(FIXTURE.read_text(encoding="utf-8")):
         kind = rec["type"]
         if kind == "assistant":
             msgs.append(AssistantMessage(
@@ -121,7 +121,7 @@ def _replay(messages):
 # deduped subagent assistant messages (for the subagent). Nothing here is
 # recomputed from the accounting logic being tested.
 # ----------------------------------------------------------------------------
-_RECORDS = json.loads(FIXTURE.read_text())
+_RECORDS = json.loads(FIXTURE.read_text(encoding="utf-8"))
 _RESULTS = [r["usage"] for r in _RECORDS if r["type"] == "result"]
 PARENT_IN = sum(u["input_tokens"] for u in _RESULTS)                    # 35
 PARENT_OUT = sum(u["output_tokens"] for u in _RESULTS)                  # 1281
@@ -323,7 +323,7 @@ MULTI_FIXTURE = (Path(__file__).resolve().parent.parent / "testdata"
 
 def _load_multi_stream() -> list:
     msgs = []
-    for rec in json.loads(MULTI_FIXTURE.read_text()):
+    for rec in json.loads(MULTI_FIXTURE.read_text(encoding="utf-8")):
         kind = rec["type"]
         if kind == "assistant":
             msgs.append(AssistantMessage(
@@ -348,7 +348,7 @@ def _load_multi_stream() -> list:
     return msgs
 
 
-_MULTI = json.loads(MULTI_FIXTURE.read_text())
+_MULTI = json.loads(MULTI_FIXTURE.read_text(encoding="utf-8"))
 _MULTI_SUB = {r["message_id"]: r["usage"] for r in _MULTI
               if r["type"] == "assistant" and r["parent_tool_use_id"]}
 _MULTI_SCALAR = next(r["usage"]["total_tokens"] for r in _MULTI

@@ -105,7 +105,7 @@ def test_append_env_creates_file(tmp_path):
     ):
         _append_env("MY_KEY", "my_value")
     assert env.exists()
-    assert "MY_KEY=my_value" in env.read_text()
+    assert "MY_KEY=my_value" in env.read_text(encoding="utf-8")
     assert (env.stat().st_mode & 0o777) == 0o600
 
 
@@ -119,7 +119,7 @@ def test_append_env_replaces_existing(tmp_path):
         patch("no_human.cli.init_cmd.NO_HUMAN_HOME", nh_home),
     ):
         _append_env("MY_KEY", "new_value")
-    content = env.read_text()
+    content = env.read_text(encoding="utf-8")
     assert "MY_KEY=new_value" in content
     assert "old_value" not in content
     assert "OTHER=keep" in content
@@ -135,7 +135,7 @@ def test_append_env_no_duplicate(tmp_path):
         patch("no_human.cli.init_cmd.NO_HUMAN_HOME", nh_home),
     ):
         _append_env("KEY2", "b")
-    content = env.read_text()
+    content = env.read_text(encoding="utf-8")
     assert "KEY1=a" in content
     assert "KEY2=b" in content
     assert content.count("KEY1") == 1
@@ -260,7 +260,7 @@ def test_nh_init_uses_the_HARDENED_writer_not_a_third_implementation(tmp_path):
                             f"tok{sep}ANTHROPIC_API_KEY=sk-planted")
 
     # The refused writes changed nothing.
-    assert env.read_text() == "CLAUDE_CODE_OAUTH_TOKEN=good-token\n"
+    assert env.read_text(encoding="utf-8") == "CLAUDE_CODE_OAUTH_TOKEN=good-token\n"
 
 
 def _init_env(tmp_path, monkeypatch, *, with_token: bool = False):
@@ -332,7 +332,7 @@ def test_nh_init_accepts_a_valid_oauth_token(tmp_path, monkeypatch):
         )
 
     assert result.exit_code == 0
-    assert env_path.read_text() == (
+    assert env_path.read_text(encoding="utf-8") == (
         "CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-VALIDLOOKINGTOKEN\n"
     )
     assert (env_path.stat().st_mode & 0o777) == 0o600
@@ -355,7 +355,7 @@ def test_save_subscription_token_refuses_what_cannot_be_a_credential(tmp_path):
             assert _save_subscription_token(bad) is False
         assert not env.exists()
         assert _save_subscription_token("plausible-oauth-token") is True
-    assert "CLAUDE_CODE_OAUTH_TOKEN=plausible-oauth-token" in env.read_text()
+    assert "CLAUDE_CODE_OAUTH_TOKEN=plausible-oauth-token" in env.read_text(encoding="utf-8")
 
 
 # --------------------------------------------------------------------------- #
@@ -451,7 +451,7 @@ def test_a_stored_token_that_cannot_work_is_not_reported_ready(tmp_path, monkeyp
     assert "not set" in result.output, "the summary card still claimed readiness"
     assert "✓ ready" not in result.output, result.output
     # Untouched: init reports, it does not repair someone else's credential.
-    assert env_path.read_text() == (
+    assert env_path.read_text(encoding="utf-8") == (
         "CLAUDE_CODE_OAUTH_TOKEN=sk-ant-api03-STOREDBYAPRIORINSTALL\n")
 
 
@@ -485,7 +485,7 @@ def test_a_usable_stored_token_is_still_reported_ready(tmp_path, monkeypatch):
     assert result.exit_code == 0, result.output
     assert "ready" in result.output, result.output
     assert "invalid" not in result.output, result.output
-    assert env_path.read_text() == "CLAUDE_CODE_OAUTH_TOKEN=test_token\n"
+    assert env_path.read_text(encoding="utf-8") == "CLAUDE_CODE_OAUTH_TOKEN=test_token\n"
 
 
 def test_the_token_prompt_does_not_echo_the_credential(tmp_path, monkeypatch):
@@ -521,7 +521,7 @@ def test_no_module_defines_the_same_top_level_name_twice():
     src = pathlib.Path(__file__).resolve().parents[1] / "src" / "no_human"
     offenders = []
     for py in src.rglob("*.py"):
-        tree = ast.parse(py.read_text())
+        tree = ast.parse(py.read_text(encoding="utf-8"))
         names = Counter(
             n.name for n in tree.body
             if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
@@ -566,7 +566,7 @@ def test_scripted_subscription_install_writes_what_the_wizard_writes(
             stdin="sk-ant-oat01-SCRIPTEDTOKEN\n")
 
     assert result.exit_code == 0, result.output
-    assert env_path.read_text() == (
+    assert env_path.read_text(encoding="utf-8") == (
         "CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-SCRIPTEDTOKEN\n")
     assert (env_path.stat().st_mode & 0o777) == 0o600
     assert "ready" in result.output
@@ -586,10 +586,10 @@ def test_scripted_api_key_install_writes_the_key_and_pins_the_mode(
             "--no-repo", stdin="sk-ant-api03-MYOWNMETEREDKEY\n")
 
     assert result.exit_code == 0, result.output
-    assert env_path.read_text() == (
+    assert env_path.read_text(encoding="utf-8") == (
         "ANTHROPIC_API_KEY=sk-ant-api03-MYOWNMETEREDKEY\n")
     assert (env_path.stat().st_mode & 0o777) == 0o600
-    config_text = init_mod.CONFIG_PATH.read_text()
+    config_text = init_mod.CONFIG_PATH.read_text(encoding="utf-8")
     assert "auth_mode: api_key" in config_text
     assert "MYOWNMETEREDKEY" not in config_text, "the key must never reach config"
 
@@ -642,7 +642,7 @@ def test_re_running_the_same_scripted_install_is_a_no_op(tmp_path, monkeypatch):
 
     assert result.exit_code == 0, result.output
     assert "found in ~/.no_human/.env" in result.output, result.output
-    assert env_path.read_text() == "CLAUDE_CODE_OAUTH_TOKEN=test_token\n"
+    assert env_path.read_text(encoding="utf-8") == "CLAUDE_CODE_OAUTH_TOKEN=test_token\n"
 
 
 def test_a_different_token_is_refused_rather_than_overwritten(
@@ -660,7 +660,7 @@ def test_a_different_token_is_refused_rather_than_overwritten(
     assert result.exit_code != 0, result.output
     assert "never overwrites" in result.output, result.output
     assert "nh auth set-token" in result.output, result.output
-    assert env_path.read_text() == "CLAUDE_CODE_OAUTH_TOKEN=test_token\n"
+    assert env_path.read_text(encoding="utf-8") == "CLAUDE_CODE_OAUTH_TOKEN=test_token\n"
 
 
 def test_a_token_found_only_in_the_environment_is_persisted(tmp_path, monkeypatch):
@@ -673,7 +673,7 @@ def test_a_token_found_only_in_the_environment_is_persisted(tmp_path, monkeypatc
         result, env_path = _scripted(tmp_path, monkeypatch, "--no-repo")
 
     assert result.exit_code == 0, result.output
-    assert env_path.read_text() == (
+    assert env_path.read_text(encoding="utf-8") == (
         "CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-FROMTHESHELL\n")
     assert (env_path.stat().st_mode & 0o777) == 0o600
 
@@ -740,5 +740,5 @@ def test_the_interactive_wizard_is_unchanged_by_the_scripted_flags(
 
     assert result.exit_code == 0, result.output
     assert "How will this install pay for Claude?" in result.output
-    assert env_path.read_text() == (
+    assert env_path.read_text(encoding="utf-8") == (
         "CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-TYPEDBYAHUMAN\n")

@@ -34,7 +34,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 def test_sdist_is_an_explicit_allowlist():
     """The declaration. Deleting `only-include` reverts to tree-sweeping."""
-    cfg = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
+    cfg = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     sdist = cfg["tool"]["hatch"]["build"]["targets"]["sdist"]
 
     assert sdist["only-include"] == ["src/no_human"]
