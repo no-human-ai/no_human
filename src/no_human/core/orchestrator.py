@@ -164,7 +164,7 @@ from .pricing import (
 )
 from .pricing import weighted_tokens as _weighted_tokens
 from .pr_evidence import PrEvidence, visible_chars
-from .task import IllegalTransition, Task, TaskSpec, TaskStatus
+from .task import IllegalTransition, Task, TaskSpec, TaskStatus, commit_subject
 from .worktree import (
     _LIVE_WORKTREES,
     WorktreeSetupError,
@@ -16629,13 +16629,7 @@ class Orchestrator:
 
     def _commit_message(self, task: Task) -> str:
         prefix = self.config["git"].get("commit_prefix", "")
-        ext = ""
-        if task.external_id:
-            if task.title.lstrip().startswith(f"{task.external_id}:"):
-                ext = ""  # title already carries the key — don't double it
-            else:
-                ext = f"{task.external_id}: "
-        return f"{prefix}{ext}{task.title}"
+        return commit_subject(task.title, task.external_id, prefix)
 
     # WS-A: a per-kind directive steers the same implement→review→test loop at
     # the task type the classifier tagged. The pipeline shape (gate, tamper guard,

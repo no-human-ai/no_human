@@ -6,6 +6,16 @@ All notable changes to no_human. The format follows
 
 ## [Unreleased]
 
+### Added
+- `nh task retitle` corrects a filed task's title after the fact — the board
+  and `nh task show` read it back immediately. Refused while an attempt is
+  running (the title feeds live prompts and the commit subject) and, when the
+  task has an open PR, either updates the PR title too (`--update-pr`) or
+  refuses by naming the PR so the two can never silently disagree. The
+  description and acceptance criteria stay fixed — `--description`/
+  `--criteria` are declared only to refuse and explain why. Every correction
+  is recorded as a `human_retitle` event carrying the prior title.
+
 ### Changed
 - Second brain is now called Memories.
 - The Claude Code plugin manifest carries the release version (it had stayed at

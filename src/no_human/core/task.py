@@ -33,6 +33,20 @@ def normalise_priority(value: Any) -> str:
     return token
 
 
+def commit_subject(title: str, external_id: str | None, prefix: str = "") -> str:
+    """The commit subject / PR title a task's *title* produces.
+
+    The ONE home for "what subject does this title produce" — both
+    ``Orchestrator._commit_message`` (the pipeline's own commit) and
+    ``nh task retitle`` (correcting a PR title in step with a corrected
+    title) build the subject through this function, so the two cannot drift.
+    """
+    ext = ""
+    if external_id and not (title or "").lstrip().startswith(f"{external_id}:"):
+        ext = f"{external_id}: "
+    return f"{prefix}{ext}{title}"
+
+
 def priority_rank(value: Any) -> int:
     """Sort key for dispatch ordering; never raises — fails soft to medium's rank.
 
