@@ -981,3 +981,49 @@ async def test_the_interrupted_sweeps_stamp_completed_at_too(store):
         "the raw-SQL interrupted sweep must stamp completed_at; it bypasses "
         "update_attempt, so the chokepoint cannot do it for this path"
     )
+
+
+async def test_the_sweeps_never_clobber_a_timestamp_that_is_already_there(store):
+    """The sweeps STAMP, which the test above pins. This pins that they only
+    ever stamp a NULL.
+
+    The COALESCE is the load-bearing half for the three call sites that pass
+    their own `completed_at`, one of which is the delivery-receipt path whose
+    timestamp is the one that matters. Simplifying
+    `COALESCE(completed_at, datetime('now'))` to `datetime('now')` still
+    passes the stamping test, so without this the never-clobber property is
+    carried by nothing but the reading of it, and a future simplification
+    would silently overwrite exactly the timestamps this change exists to
+    make trustworthy.
+
+    `failure_reason` is asserted for the same reason: its
+    `COALESCE(NULLIF(TRIM(...), ''), ...)` is the same one-token mutation away
+    from replacing a real reason with the generic one.
+    """
+    t = Task.new("superseded attempt that already knows when it ended")
+    await store.create_task(t)
+    first = await store.create_attempt(t.id, 1)
+
+    # A row can be 'in_progress' and already carry a completed_at: a caller
+    # stamps it and the worker dies before the status flips. The sweep matches
+    # on status alone, so it reaches this row.
+    theirs = "2020-01-02T03:04:05"
+    await store.db.execute(
+        "UPDATE attempts SET completed_at = ?, failure_reason = ? WHERE id = ?",
+        (theirs, "the caller's own reason", first),
+    )
+    await store.db.commit()
+
+    # Creating the next attempt sweeps the previous still-open row.
+    await store.create_attempt(t.id, 2)
+
+    row = {r["id"]: r for r in await store.list_attempts(t.id)}[first]
+    assert row["status"] == "interrupted", "the sweep did not reach this row"
+    assert row["completed_at"] == theirs, (
+        "the sweep overwrote a completed_at that was already set; COALESCE "
+        "must leave a caller-supplied timestamp alone, and the delivery "
+        "receipt path depends on that"
+    )
+    assert row["failure_reason"] == "the caller's own reason", (
+        "the sweep replaced a real failure_reason with its generic text"
+    )
