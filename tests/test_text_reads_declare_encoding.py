@@ -45,6 +45,17 @@ sources that way and failing under an ASCII preferred encoding. Only the
 builtin is matched, by `ast.Name`: `tarfile.open` and `urllib`'s `opener.open`
 are attribute calls that take no encoding and would be false reports.
 
+`Path.open()` is out of scope, and that is measured rather than assumed. Only
+the BUILTIN `open` is matched, so `p.open()` shares the same default and slips
+past; matching `.open` by attribute name instead would report `tarfile.open`
+and `urllib`'s `opener.open`, neither of which takes an encoding. Review
+scanned the guarded areas for text-mode `.open()` calls and found **zero**,
+positive-controlling the scanner first so the zero meant something: it flags
+`p.open()` and ignores `p.open("rb")` and `p.open(encoding=...)`. So the gap is
+real in principle and empty in practice, and a false-positive-free rule is
+worth more here than a noisier one. If `p.open()` ever appears, add it as an
+`ast.Attribute` case with a receiver check rather than by name.
+
 WRITES are not covered, and unlike `open()` that is a decision rather than an
 oversight. There are ~1700 unencoded `write_text` calls under `tests/` and
 eight write-mode `open()` calls, essentially all of them ASCII literals a test
@@ -246,3 +257,39 @@ def test_the_files_the_gates_read_are_utf_8_and_not_cp1252_decodable():
         raw.decode("utf-8")  # valid UTF-8; nothing is wrong with the file
         with pytest.raises(UnicodeDecodeError):
             raw.decode("cp1252")
+
+
+def test_the_ascii_locale_lane_still_guards_collection():
+    """The CI lane that catches this class before a Windows runner does.
+
+    Issue #267 was invisible to CI: the linux jobs default to UTF-8 and pass
+    for free, and the Windows job runs three test files, none of which reads a
+    repository source. `LC_ALL=C` gives an ASCII preferred encoding, which
+    fails on a strict SUPERSET of the bytes cp1252 fails on, so one job catches
+    the class earlier than a whole platform does.
+
+    Pinned here because the lane is the only thing standing between this bug
+    and a green CI, and a workflow edit that quietly drops it would otherwise
+    be silent. The three env vars are each load-bearing: without `PYTHONUTF8=0`
+    the run can pass for the wrong reason, with UTF-8 mode enabled by the
+    environment rather than by the tree being correct.
+    """
+    import yaml
+
+    ci = yaml.safe_load(
+        (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8"))
+    assert "locale" in ci["jobs"], (
+        "the ASCII-locale lane is gone; issue #267 could land again with CI "
+        "green, which is exactly how it landed the first time"
+    )
+    steps = ci["jobs"]["locale"]["steps"]
+    envs = [s.get("env") or {} for s in steps]
+    assert any(e.get("LC_ALL") == "C" for e in envs), "the lane no longer forces LC_ALL=C"
+    assert any(str(e.get("PYTHONUTF8")) == "0" for e in envs), (
+        "PYTHONUTF8 is not pinned to 0, so UTF-8 mode can silently defeat the lane"
+    )
+    runs = " ".join(s.get("run", "") for s in steps)
+    assert "--collect-only" in runs, (
+        "the lane no longer collects; collection is the part that broke and "
+        "the part with no locale-sensitive assertions in it"
+    )
