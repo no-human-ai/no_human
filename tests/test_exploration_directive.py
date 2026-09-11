@@ -26,7 +26,7 @@ async def test_exploration_directive_reaches_the_coder(store, tmp_path):
     await store.create_task(t)
 
     orch._materialize_compact_instructions(tmp_path, t)
-    prompt = (tmp_path / ".claude" / "instructions.md").read_text()
+    prompt = (tmp_path / ".claude" / "instructions.md").read_text(encoding="utf-8")
 
     # It must state the COST (why), name the tool (what), and draw the line
     # between searching (delegate) and targeted reading (direct).

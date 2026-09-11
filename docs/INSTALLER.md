@@ -474,7 +474,8 @@ rather than reading as verification. To check a DMG against a *source*, pass
 `--expect-commit <sha>` resolved from the release remote.
 
 ```bash
-hdiutil attach -nobrowse -readonly packaging/dist/no_human-0.1.0.dmg
+# exactly one DMG is expected in packaging/dist/ after `npm run dist`
+hdiutil attach -nobrowse -readonly packaging/dist/no_human-*.dmg
 python scripts/verify_artefact.py /Volumes/no_human --repo . \
   --require 'a string that must be in this release'
 hdiutil detach /Volumes/no_human
@@ -715,7 +716,7 @@ default is 8420, and a dev server already bound there would answer the `curl`
 and make the check pass without proving anything.
 
 ```bash
-hdiutil attach packaging/dist/no_human-0.1.0-UNSIGNED.dmg -nobrowse -readonly
+hdiutil attach packaging/dist/no_human-*-UNSIGNED.dmg -nobrowse -readonly
 find /Volumes/no_human -name '*.py'            # must print nothing
 
 H=$(mktemp -d); mkdir -p "$H/.no_human"

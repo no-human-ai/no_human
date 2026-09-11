@@ -167,7 +167,7 @@ async def test_the_teardown_bound_is_shorter_than_every_callers_budget():
     sibling = pathlib.Path(__file__).with_name("test_codex_oversized_jsonl_line.py")
     budgets = [float(m) for m in re.findall(
         r"asyncio\.wait_for\(\s*(?:.|\n)*?,\s*([0-9]+(?:\.[0-9]+)?)\s*\)",
-        sibling.read_text())]
+        sibling.read_text(encoding="utf-8"))]
     assert budgets, "no caller budget parsed — this assertion would be vacuous"
     tightest = min(budgets)
     ceiling = cx._TEARDOWN_WAIT + cx._STDERR_DRAIN_WAIT

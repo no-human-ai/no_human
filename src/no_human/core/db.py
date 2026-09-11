@@ -19,6 +19,7 @@ from typing import (
 import aiosqlite
 
 from . import slot_wait
+from .attempt_completion import stamp_completion
 from .task import (
     IllegalTransition,
     Task,
@@ -2253,7 +2254,7 @@ class Store:
         # make `attempts.status` untrustworthy as a completion signal — the
         # baseline had three of them. Close them for what they are.
         await self.db.execute(
-            "UPDATE attempts SET status = 'interrupted', "
+            "UPDATE attempts SET status = 'interrupted', completed_at = COALESCE(completed_at, datetime('now')), "
             "failure_reason = COALESCE(NULLIF(TRIM(failure_reason), ''), "
             "'interrupted: superseded by a newer attempt — the prior worker "
             "process died without closing its row') "
@@ -2293,11 +2294,10 @@ class Store:
                 fields["failure_reason"] = (
                     "(no failure reason recorded — observability gap; "
                     "report which stage failed silently)")
+        stamp_completion(fields)  # C2's sibling; see attempt_completion (#245)
         # JSON-encode dict/list values transparently.
-        clean = {
-            k: (json.dumps(v) if isinstance(v, (dict, list)) else v)
-            for k, v in fields.items()
-        }
+        clean = {k: (json.dumps(v) if isinstance(v, (dict, list)) else v)
+                 for k, v in fields.items()}
         assignments = ", ".join(f"{k} = :{k}" for k in clean)
         clean["id"] = attempt_id
         await self.db.execute(
@@ -2635,7 +2635,7 @@ class Store:
                    "from base — the worker process had already died without "
                    "closing this row")
         await self.db.execute(
-            "UPDATE attempts SET status = 'interrupted', "
+            "UPDATE attempts SET status = 'interrupted', completed_at = COALESCE(completed_at, datetime('now')), "
             "failure_reason = COALESCE(NULLIF(TRIM(failure_reason), ''), ?) "
             "WHERE task_id = ? AND status = 'in_progress'",
             (reason or default, task_id),
@@ -2676,7 +2676,7 @@ class Store:
         caller can say so out loud rather than reconciling in silence.
         """
         cur = await self.db.execute(
-            "UPDATE attempts SET status = 'interrupted', "
+            "UPDATE attempts SET status = 'interrupted', completed_at = COALESCE(completed_at, datetime('now')), "
             "failure_reason = COALESCE(NULLIF(TRIM(failure_reason), ''), "
             "'interrupted: its task had already finished while this row was "
             "left open — the worker died without closing it') "

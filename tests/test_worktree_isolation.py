@@ -207,7 +207,7 @@ async def test_a_default_run_works_in_a_worktree_not_the_live_checkout(
 
     async def _capture(task, repo):
         seen["path"] = repo.path
-        seen["wip"] = (live_checkout / "calc.py").read_text()
+        seen["wip"] = (live_checkout / "calc.py").read_text(encoding="utf-8")
         from no_human.core.orchestrator import TaskOutcome
         from no_human.core.task import TaskStatus
         return TaskOutcome(task, status=TaskStatus.DONE, detail="stub")

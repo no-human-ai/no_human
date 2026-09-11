@@ -31,7 +31,7 @@ def _local_store_fixtures():
     for f in sorted(glob.glob("tests/**/*.py", recursive=True)):
         if f.endswith("conftest.py") or f == _SELF:
             continue
-        for i, line in enumerate(open(f).read().splitlines(), start=1):
+        for i, line in enumerate(open(f, encoding="utf-8").read().splitlines(), start=1):
             if line.startswith("async def store("):
                 hits.append(f"{f}:{i}")
     return hits
@@ -44,7 +44,7 @@ def _bare_closes():
     for f in sorted(glob.glob("tests/**/*.py", recursive=True)):
         if f == _SELF:
             continue
-        lines = open(f).read().splitlines()
+        lines = open(f, encoding="utf-8").read().splitlines()
         for i, line in enumerate(lines):
             if "await store.close()" in line and not any(
                 x.strip().startswith("finally:") for x in lines[max(0, i - 4):i]

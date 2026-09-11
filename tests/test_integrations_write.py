@@ -48,7 +48,7 @@ def test_env_upsert_appends_new_key_and_creates_file_0600(tmp_path):
     env_path = nh_config.ENV_PATH
     assert env_path.exists()
     assert _mode(env_path) == 0o600
-    assert "JIRA_API_TOKEN=tok-123" in env_path.read_text()
+    assert "JIRA_API_TOKEN=tok-123" in env_path.read_text(encoding="utf-8")
 
 
 def test_env_value_newline_injection_rejected_and_file_unchanged(tmp_path):
@@ -71,7 +71,7 @@ def test_env_value_carriage_return_injection_rejected_on_existing_file(tmp_path)
     env_path = tmp_path / ".env"
     env_path.write_text("JIRA_API_TOKEN=old-value\n")
     env_path.chmod(0o600)
-    before = env_path.read_text()
+    before = env_path.read_text(encoding="utf-8")
 
     with pytest.raises(ValueError):
         save_integration_config(
@@ -79,8 +79,8 @@ def test_env_value_carriage_return_injection_rejected_on_existing_file(tmp_path)
         )
 
     # File is byte-for-byte unchanged — no extra line, no injected key.
-    assert env_path.read_text() == before
-    assert "CLAUDE_CODE_OAUTH_TOKEN" not in env_path.read_text()
+    assert env_path.read_text(encoding="utf-8") == before
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in env_path.read_text(encoding="utf-8")
 
 
 def test_env_upsert_never_world_readable_at_creation(tmp_path):
@@ -113,7 +113,7 @@ def test_env_upsert_replaces_existing_key_preserves_unrelated_lines(tmp_path):
 
     save_integration_config("jira", {"api_token": "new-value"})
 
-    content = env_path.read_text()
+    content = env_path.read_text(encoding="utf-8")
     assert "# a comment" in content
     assert "CLAUDE_CODE_OAUTH_TOKEN=unrelated-token" in content
     assert "CIRCLECI_TOKEN=other-secret" in content
@@ -164,7 +164,7 @@ def test_config_yaml_nonsecret_round_trip_preserves_unrelated_keys(tmp_path):
     assert status.configured is True
 
     import yaml
-    on_disk = yaml.safe_load(config_path.read_text())
+    on_disk = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     assert on_disk["server"]["host"] == "127.0.0.1"
     assert on_disk["integrations"]["jira"]["unrelated_note"] == "keep-me"
     assert on_disk["integrations"]["jira"]["site"] == "https://acme.atlassian.net"

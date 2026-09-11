@@ -316,7 +316,7 @@ class _FakeChecker:
             return _REAL_RUN(argv, **kwargs)  # let git through untouched
         cwd = Path(kwargs["cwd"])
         self.calls.append(cwd)
-        is_after = self.marker in (cwd / "app.py").read_text()
+        is_after = self.marker in (cwd / "app.py").read_text(encoding="utf-8")
         out = self.after_out if is_after else self.base_out
         rc = self.after_rc if is_after else self.base_rc
         if rc is None:

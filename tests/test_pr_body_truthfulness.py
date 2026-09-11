@@ -1298,7 +1298,7 @@ async def test_the_already_satisfied_body_names_a_real_verification_artifact(
         "the pointer does not name the real (display-form) artifact path")
     assert artifact_path.exists(), (
         "the already-satisfied gate never wrote the verification artifact")
-    assert "uv run pytest -q" in artifact_path.read_text()
+    assert "uv run pytest -q" in artifact_path.read_text(encoding="utf-8")
 
 
 async def test_a_reviewed_passing_pr_shows_its_review_evidence(store, tmp_path):

@@ -714,7 +714,7 @@ def test_the_sibling_branch_decision_exists_in_exactly_one_place():
     `(-\\d+)?` sibling-name regex must stay in exactly one place in the
     module, or the two evidence paths (local pointer matches `head` vs.
     lags it) will drift apart over time."""
-    src = Path(orchestrator_module.__file__).read_text()
+    src = Path(orchestrator_module.__file__).read_text(encoding="utf-8")
     assert src.count("remote_branches_containing") == 1
     assert src.count(r"(-\d+)?") == 1
 
@@ -722,5 +722,5 @@ def test_the_sibling_branch_decision_exists_in_exactly_one_place():
     # they exist, and the git.py hit is a real string match, not a typo'd
     # zero that would make the module count vacuously "correct".
     assert src.count("_already_satisfied_subject") >= 2
-    git_src = Path(git_module.__file__).read_text()
+    git_src = Path(git_module.__file__).read_text(encoding="utf-8")
     assert git_src.count("remote_branches_containing") >= 1

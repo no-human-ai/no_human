@@ -45,9 +45,9 @@ lane_model = _load_module("_e2e_lane_model_under_test", E2E_DIR / "lane_model.py
 serve_demo = _load_module("_e2e_serve_demo_under_test", E2E_DIR / "serve_demo.py")
 
 BOARD_E2E_PATH = E2E_DIR / "board_e2e.py"
-BOARD_E2E_SRC = BOARD_E2E_PATH.read_text()
+BOARD_E2E_SRC = BOARD_E2E_PATH.read_text(encoding="utf-8")
 README_PATH = E2E_DIR / "README.md"
-README_TEXT = README_PATH.read_text()
+README_TEXT = README_PATH.read_text(encoding="utf-8")
 
 # The static (source-text) count of `check(...)` call sites in board_e2e.py
 # right after this rewrite — a tamper-guard floor. Loop bodies generate many

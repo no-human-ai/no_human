@@ -165,7 +165,7 @@ def test_cli_helper_prints_and_returns_none(monkeypatch, capsys):
 # --- Wiring: guards against the check being dead ---------------------------
 
 def test_start_and_serve_call_the_check():
-    src = Path(commands.__file__).read_text()
+    src = Path(commands.__file__).read_text(encoding="utf-8")
     start_body = src.split('@cli.command("start")', 1)[1]
     serve_body = src.split('@cli.command("serve")', 1)[1].split('@cli.command("start")', 1)[0]
     assert "_warn_if_editable_install_dangles()" in start_body

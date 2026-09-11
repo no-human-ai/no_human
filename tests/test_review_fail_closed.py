@@ -87,7 +87,7 @@ def test_no_production_orchestrator_is_built_without_a_reviewer():
     defaults `reviewer=None`. This is the guard that would have."""
     missing = []
     for path in pathlib.Path("src").rglob("*.py"):
-        for node in ast.walk(ast.parse(path.read_text())):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
             if (
                 isinstance(node, ast.Call)
                 and getattr(node.func, "id", "") == "Orchestrator"
@@ -750,7 +750,7 @@ def test_every_reviewer_unavailable_handler_records_the_burn():
     """
     src = pathlib.Path("src/no_human/core/orchestrator.py")
     handlers, silent = 0, []
-    for node in ast.walk(ast.parse(src.read_text())):
+    for node in ast.walk(ast.parse(src.read_text(encoding="utf-8"))):
         if not (isinstance(node, ast.ExceptHandler)
                 and getattr(node.type, "id", "") == "ReviewerUnavailable"):
             continue

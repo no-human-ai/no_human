@@ -54,7 +54,7 @@ def test_plugin_is_registered(pytestconfig):
 def test_pyproject_declares_the_pytest11_entry_point():
     """A test over the DECLARATION, so deleting the registration while
     leaving the module file behind fails a test, not just a silent no-op."""
-    cfg = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
+    cfg = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     entry_points = cfg["project"]["entry-points"]["pytest11"]
     assert entry_points.get("no_human_isolated_home") == (
         "no_human.testing.pytest_isolated_home"

@@ -481,7 +481,7 @@ async def test_reset_clears_only_the_completed_flag(client, tmp_path):
 
     # …and it survives a restart, because it landed on disk too — the only route
     # that existed before this endpoint was hand-editing exactly this file.
-    on_disk = yaml.safe_load((tmp_path / "config.yaml").read_text())["onboarding"]
+    on_disk = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))["onboarding"]
     assert on_disk["completed"] is False
     assert on_disk["team"] == "PLATFORM"
     assert on_disk["repos"] == ["/x/svc"]
@@ -502,7 +502,7 @@ async def test_complete_records_that_telemetry_was_asked(client, tmp_path):
     s = await client.get("/api/onboarding/status")
     assert s.json()["telemetry_asked"] is True
 
-    on_disk = yaml.safe_load((tmp_path / "config.yaml").read_text())["onboarding"]
+    on_disk = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))["onboarding"]
     assert on_disk["telemetry_asked"] is True
 
 

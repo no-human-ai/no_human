@@ -41,7 +41,7 @@ FIXTURE_PATH = REPO_ROOT / "testdata" / "lane_conformance.json"
 WEB_DIR = REPO_ROOT / "web"
 NODE_TEST_PATH = WEB_DIR / "src" / "laneConformance.test.mjs"
 
-_FIXTURES = json.loads(FIXTURE_PATH.read_text())["cases"]
+_FIXTURES = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))["cases"]
 
 # A floor, not an equality: adding cases is fine, quietly deleting them is not.
 # The reviewer removed 7 pure edge cases - including all three PRESERVED DEFECT
@@ -124,7 +124,7 @@ def test_the_node_test_reads_this_exact_fixture_file():
     exists, never that the node test ran. The execution half is
     ``test_the_js_implementation_agrees_on_every_shared_case`` below."""
     assert NODE_TEST_PATH.exists()
-    assert "testdata/lane_conformance.json" in NODE_TEST_PATH.read_text()
+    assert "testdata/lane_conformance.json" in NODE_TEST_PATH.read_text(encoding="utf-8")
 
 
 def test_every_fixture_expects_a_real_lane_key():

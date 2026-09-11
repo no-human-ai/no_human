@@ -215,7 +215,7 @@ def test_real_orchestrator_has_no_active_memories_mutation():
     see each spelling (and ignore prose) before this one is trusted to
     police the real file.
     """
-    source = _ORCHESTRATOR_PATH.read_text()
+    source = _ORCHESTRATOR_PATH.read_text(encoding="utf-8")
     findings = _find_active_memories_mutations(source)
     assert findings == [], (
         "in-place mutation of the `_active_memories` property found — this "

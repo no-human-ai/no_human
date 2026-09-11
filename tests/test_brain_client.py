@@ -62,7 +62,7 @@ def test_a_trust_failure_quarantines_inside_the_configured_home(
 
     written = sorted((_private_home / "brain" / "quarantine").glob("*.json"))
     assert len(written) == 1, written
-    assert "does not match the row" in written[0].read_text()
+    assert "does not match the row" in written[0].read_text(encoding="utf-8")
 
 
 # --------------------------------------------------------------------------- #
