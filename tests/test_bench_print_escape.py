@@ -26,13 +26,13 @@ def _bench_loop_region(text: str) -> str:
 
 
 def test_spec_title_print_is_escaped():
-    region = _bench_loop_region(SRC.read_text())
+    region = _bench_loop_region(SRC.read_text(encoding="utf-8"))
     line = next(l for l in region.splitlines() if "· {" in l or "· " in l and "spec.id" in l)
     assert "escape(" in line, f"unescaped title print: {line.strip()}"
 
 
 def test_crash_handler_print_is_escaped():
-    region = _bench_loop_region(SRC.read_text())
+    region = _bench_loop_region(SRC.read_text(encoding="utf-8"))
     line = next(l for l in region.splitlines() if "crashed" in l and "console.print" in l)
     assert "escape(" in line, f"unescaped exception print: {line.strip()}"
 
@@ -42,7 +42,7 @@ def test_spec_id_prints_are_escaped():
     corpora), so a markup-shaped id (`[/x]`) in any console line is the same
     v11 crash class as the title — and in the completion line it would kill
     the run AFTER run_one succeeded but BEFORE the checkpoint append."""
-    region = _bench_loop_region(SRC.read_text())
+    region = _bench_loop_region(SRC.read_text(encoding="utf-8"))
     printing = [l for l in region.splitlines()
                 if "spec.id" in l and ("console.print" in l or "f\"" in l)]
     offenders = [l for l in printing
@@ -128,7 +128,7 @@ def test_no_bench_print_interpolates_an_unescaped_value():
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     from _bench_ast_guard import find_unescaped_prints
 
-    text = SRC.read_text()
+    text = SRC.read_text(encoding="utf-8")
     lo = text[:text.index('@cli.group("bench")')].count("\n") + 1
     hi = text[:text.index('@cli.command("shadow")')].count("\n") + 1
 
@@ -167,7 +167,7 @@ def test_gate_reason_print_is_escaped():
     A first-match assertion cannot see the case a guard exists for, because the
     case it exists for is the NEXT line someone writes. Assert over all of them.
     """
-    text = SRC.read_text()
+    text = SRC.read_text(encoding="utf-8")
     lines = [(n, l) for n, l in enumerate(text.splitlines(), 1) if "⛔" in l]
     # Discovery that finds nothing passes vacuously; the glyph has been in this
     # file since the gate landed, so zero means it was renamed and this guard is

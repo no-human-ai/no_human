@@ -66,7 +66,7 @@ def test_pyproject_force_includes_migrations_in_wheel_and_sdist():
     CLI that hangs on first use. An `include`/`artifacts` glob would match
     nothing and build a quiet, schemaless wheel — which is this bug.
     """
-    cfg = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
+    cfg = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     targets = cfg["tool"]["hatch"]["build"]["targets"]
 
     assert targets["wheel"]["force-include"]["migrations"] == "no_human/migrations"

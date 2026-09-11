@@ -1174,7 +1174,7 @@ def test_a_same_second_same_length_guard_rewrite_serves_the_stale_compile(tmp_pa
 
     guard.write_text(v1)
     _run_guard_once(guard, tmp_path)
-    assert out.read_text() == _STALE_MARKER_V1
+    assert out.read_text(encoding="utf-8") == _STALE_MARKER_V1
 
     stat = guard.stat()
     guard.write_text(v2)
@@ -1183,7 +1183,7 @@ def test_a_same_second_same_length_guard_rewrite_serves_the_stale_compile(tmp_pa
     _run_guard_once(guard, tmp_path)
     # No `invalidate_guard_cache` call — the race: the stale compile of V1
     # is served, so the side file is never updated to V2.
-    assert out.read_text() == _STALE_MARKER_V1, (
+    assert out.read_text(encoding="utf-8") == _STALE_MARKER_V1, (
         "if this fails, the race stopped reproducing on this platform/"
         "interpreter — the fix below would then be proving nothing"
     )
@@ -1204,7 +1204,7 @@ def test_invalidate_guard_cache_makes_the_second_write_the_one_that_executes(tmp
 
     guard.write_text(v1)
     _run_guard_once(guard, tmp_path)
-    assert out.read_text() == _STALE_MARKER_V1
+    assert out.read_text(encoding="utf-8") == _STALE_MARKER_V1
 
     stat = guard.stat()
     guard.write_text(v2)
@@ -1212,7 +1212,7 @@ def test_invalidate_guard_cache_makes_the_second_write_the_one_that_executes(tmp
 
     structural_budget.invalidate_guard_cache(tmp_path)
     _run_guard_once(guard, tmp_path)
-    assert out.read_text() == _STALE_MARKER_V2
+    assert out.read_text(encoding="utf-8") == _STALE_MARKER_V2
 
 
 # --------------------------------------------------------------------------- #

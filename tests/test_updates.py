@@ -121,7 +121,7 @@ def test_the_cache_write_is_atomic_and_leaves_no_temp_files(tmp_path):
     updates.write_cache({"latest": "0.3.0", "last_check": 2}, tmp_path)
     leftovers = [p.name for p in tmp_path.iterdir() if p.name != updates.CACHE_NAME]
     assert leftovers == [], f"temp files left behind: {leftovers}"
-    assert json.loads((tmp_path / updates.CACHE_NAME).read_text())["latest"] == "0.3.0"
+    assert json.loads((tmp_path / updates.CACHE_NAME).read_text(encoding="utf-8"))["latest"] == "0.3.0"
 
 
 # --------------------------------------------------------------------------- #

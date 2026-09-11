@@ -356,7 +356,7 @@ def test_set_role_backend_is_the_only_writer_of_role_backends():
     for path in repo_src.rglob("*.py"):
         if path.name in ("config.py", "role_backend_settings.py"):
             continue
-        text = path.read_text()
+        text = path.read_text(encoding="utf-8")
         if re.search(r"\.set_role_backend\(|(?<!def )\bset_role_backend\(", text):
             hits.append(str(path))
     assert hits == []

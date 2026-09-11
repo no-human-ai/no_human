@@ -707,7 +707,7 @@ def test_teardown_race_not_counted_as_failed_and_retried_exactly_once(tmp_path):
 
     result = run_tests(tmp_path, str(script))
 
-    assert counter.read_text().strip() == "2", "expected exactly one retry (2 total invocations)"
+    assert counter.read_text(encoding="utf-8").strip() == "2", "expected exactly one retry (2 total invocations)"
     assert result.ok is True
     assert result.failed == 0
     assert result.failing_tests == []
@@ -722,7 +722,7 @@ def test_teardown_race_retry_still_racing_reports_failure_after_one_retry_only(t
 
     result = run_tests(tmp_path, str(script))
 
-    assert counter.read_text().strip() == "2", "expected exactly one retry (2 total invocations)"
+    assert counter.read_text(encoding="utf-8").strip() == "2", "expected exactly one retry (2 total invocations)"
     assert result.ok is False
 
 
@@ -748,7 +748,7 @@ def test_real_failure_with_teardown_noise_still_names_the_failing_test(tmp_path)
 
     result = run_tests(tmp_path, str(script))
 
-    assert counter.read_text().strip() == "1", "a real named failure must not trigger the teardown retry"
+    assert counter.read_text(encoding="utf-8").strip() == "1", "a real named failure must not trigger the teardown retry"
     assert result.ok is False
     assert result.failed == 1
     assert result.failing_tests == ["tests/test_x.py::test_y"]
@@ -1051,7 +1051,7 @@ def test_teardown_race_retry_timeout_is_not_an_invocation_error(tmp_path):
 
     result = run_tests(tmp_path, str(script), timeout=3)
 
-    assert counter.read_text().strip() == "2", "expected exactly one retry"
+    assert counter.read_text(encoding="utf-8").strip() == "2", "expected exactly one retry"
     assert result.ok is False
     assert "timed out" in result.output
     assert result.invocation_error is False
@@ -1082,7 +1082,7 @@ def test_teardown_race_retry_invocation_error_is_reclassified(tmp_path):
 
     result = run_tests(tmp_path, str(script), timeout=30)
 
-    assert counter.read_text().strip() == "2", "expected exactly one retry"
+    assert counter.read_text(encoding="utf-8").strip() == "2", "expected exactly one retry"
     assert result.ok is False
     assert result.invocation_error is True
 
@@ -1181,7 +1181,7 @@ def test_teardown_race_retry_that_hits_an_invocation_error_keeps_the_names(tmp_p
 
     result = run_tests(tmp_path, str(script))
 
-    assert counter.read_text().strip() == "2", "expected exactly one retry"
+    assert counter.read_text(encoding="utf-8").strip() == "2", "expected exactly one retry"
     assert result.invocation_error is True, "not the invocation-error retry path"
     assert result.passed + result.failed + result.errors > 0, (
         "not the partial-run shape — this retry produced no counts")

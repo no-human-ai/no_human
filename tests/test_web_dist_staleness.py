@@ -359,7 +359,7 @@ def test_a_css_only_change_under_web_src_is_detected_as_stale(tmp_path):
 
 def test_nh_start_checks_freshness_before_importing_the_api_app():
     commands_path = REPO_ROOT / "src" / "no_human" / "cli" / "commands.py"
-    text = commands_path.read_text()
+    text = commands_path.read_text(encoding="utf-8")
 
     start_idx = text.index("\ndef start(host, port, workers, no_open):")
     tail = text[start_idx:]

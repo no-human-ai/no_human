@@ -293,7 +293,7 @@ async def test_hermetic_backend_closes_the_log_file_on_spawn_failure(tmp_path):
 
 def _seeded_llm_auth_mode(home: str) -> dict:
     doc = yaml.safe_load(
-        (Path(home) / ".no_human" / "config.yaml").read_text())
+        (Path(home) / ".no_human" / "config.yaml").read_text(encoding="utf-8"))
     return doc.get("llm") or {}
 
 

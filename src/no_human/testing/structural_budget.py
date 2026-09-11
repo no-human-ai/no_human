@@ -102,7 +102,7 @@ def frozen_paths(repo_path: Path) -> set[str]:
     """
     guard = Path(repo_path) / GUARD_RELPATH
     try:
-        text = guard.read_text()
+        text = guard.read_text(encoding="utf-8")
         tree = ast.parse(text, filename=str(guard))
     except (OSError, SyntaxError, ValueError):
         return set()
@@ -233,7 +233,7 @@ def scanned_root(repo_path: Path) -> str | None:
     """
     guard = Path(repo_path) / GUARD_RELPATH
     try:
-        text = guard.read_text()
+        text = guard.read_text(encoding="utf-8")
         tree = ast.parse(text, filename=str(guard))
     except (OSError, SyntaxError, ValueError):
         return None
