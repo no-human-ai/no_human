@@ -400,7 +400,8 @@ the base merge path, and it does not read this verdict at all — running it
 IS the human decision. What it *does* check before landing is the
 independent reviewer's own PASS on the branch head (`_review_pass_evidence`,
 in both the CLI and the API path, which refuse the merge otherwise); the
-merge-ready verdict is not among those preconditions. The verdict is keyed
+merge-ready verdict is not among those preconditions, except for the one
+staleness refusal described below. The verdict is keyed
 by head sha precisely because nothing re-evaluates it: a verdict stamped for
 an older commit is shown as absent (`merge_ready: null`) for the commit
 sitting in the PR now, rather than carried forward as if it still applied.
@@ -419,6 +420,17 @@ board shows the same verdict as a `MERGE-READY` chip on a task's card. This
 does not change who merges: `--yes` still runs the identical git-identity
 squash-land as a single `nh approve <task_id>`, and a human still has to
 type it.
+
+The verdict also records the merge base it was measured against
+(`base_sha`) and whether that measurement included a green suite
+(`tests_green`). A green measured on a tree whose merge base is no longer
+trunk's tip describes a tree that will not land — trunk may have added a
+guard the branch violates — so no surface offers such a verdict as
+merge-ready, and `nh approve` refuses to land it with a reason naming the
+staleness. This is the one merge-policy fact `nh approve` consults, and it
+can only ever *refuse*: a task with no recorded test result, or a failing
+one, is unaffected. The comparison is two recorded shas against one local
+`git rev-parse` — no suite runs.
 
 ## When it cannot finish
 
