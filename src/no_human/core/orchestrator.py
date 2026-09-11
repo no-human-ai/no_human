@@ -88,6 +88,7 @@ from ..learning.ranking import rank_and_select
 from ..learning.triggers import filter_triggered, trigger_reason
 from ..notify.slack import SlackNotifier
 from ..review import selfcheck, tamper_adjudication
+from ..review.verdict_reason import review_failure_detail
 from ..review.reviewer import (
     REVIEW_SESSION_ERROR_MARKER as _SESSION_ERROR_BLOCKER_MARKER,
     ADVISORY_SEVERITIES,
@@ -6970,9 +6971,8 @@ class Orchestrator:
             # Lead with what actually blocks. A nit in the feedback reads to the
             # coder exactly like a defect, and it spent attempts chasing them.
             failed = decision.blocking_items or decision.failed_items
-            detail = "review failed: " + "; ".join(
-                f"{i.label}: {i.evidence}" for i in failed[:3]
-            )
+            # An empty `failed` left the bare "review failed: " (#249).
+            detail = review_failure_detail(decision, failed)
             await self.store.update_attempt(
                 attempt_id,
                 review_checklist=decision.as_dict(),
