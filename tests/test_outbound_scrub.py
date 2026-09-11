@@ -486,7 +486,7 @@ def _static_prefix(node: ast.AST) -> str | None:
 def _find_forge_free_text_sinks(path: Path) -> set[str]:
     """Names of functions in *path* that build a `gh`/`glab` argv list
     carrying a free-text title/body/description field."""
-    tree = ast.parse(path.read_text(), filename=str(path))
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     sinks: set[str] = set()
     func_stack: list[ast.AST] = []
 
@@ -514,10 +514,10 @@ def _find_forge_free_text_sinks(path: Path) -> set[str]:
 
 
 def _function_source(path: Path, name: str) -> str:
-    tree = ast.parse(path.read_text(), filename=str(path))
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
-            return ast.get_source_segment(path.read_text(), node) or ""
+            return ast.get_source_segment(path.read_text(encoding="utf-8"), node) or ""
     raise AssertionError(f"no function {name!r} found in {path}")
 
 

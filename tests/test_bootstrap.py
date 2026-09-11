@@ -129,7 +129,7 @@ def test_dry_run_with_existing_config_does_not_touch_it(fake_env):
 
     result = _run(fake_env, ["--dry-run"])
     assert result.returncode == 0, result.stderr
-    assert config_path.read_text() == sentinel
+    assert config_path.read_text(encoding="utf-8") == sentinel
     assert "leaving untouched" in result.stdout
     assert "DRY-RUN: would run: cp" not in result.stdout
 
@@ -142,7 +142,7 @@ def test_existing_config_untouched(fake_env):
 
     result = _run(fake_env)
     assert result.returncode == 0, result.stderr
-    assert config_path.read_text() == sentinel
+    assert config_path.read_text(encoding="utf-8") == sentinel
     assert "leaving untouched" in result.stdout
 
 
@@ -151,7 +151,7 @@ def test_template_created_when_absent(fake_env):
     assert result.returncode == 0, result.stderr
     config_path = fake_env["nh_home"] / "config.yaml"
     assert config_path.exists()
-    assert config_path.read_text() == TEMPLATE.read_text()
+    assert config_path.read_text(encoding="utf-8") == TEMPLATE.read_text(encoding="utf-8")
 
 
 def test_fake_path_resolves_tools_only_from_the_stub_bin(fake_env):
@@ -254,7 +254,7 @@ def test_template_model_ids_match_the_shipped_defaults():
 
     from no_human.config import DEFAULT_CONFIG
 
-    template = yaml.safe_load(TEMPLATE.read_text()) or {}
+    template = yaml.safe_load(TEMPLATE.read_text(encoding="utf-8")) or {}
     pinned = {k: v for k, v in (template.get("llm") or {}).items()
               if k.endswith("_model")}
     # Guard the guard: if the template stops pinning models entirely this test

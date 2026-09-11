@@ -142,7 +142,7 @@ def test_setup_token_byo_path_writes_key_and_returns_api_key_mode(tmp_path, monk
 
     ready, mode = init_mod.setup_token()
     assert (ready, mode) == (True, "api_key")
-    assert "ANTHROPIC_API_KEY=sk-ant-byo-friend" in env_path.read_text()
+    assert "ANTHROPIC_API_KEY=sk-ant-byo-friend" in env_path.read_text(encoding="utf-8")
 
 
 def test_ensure_config_persists_api_key_mode(tmp_path, monkeypatch):
@@ -158,7 +158,7 @@ def test_ensure_config_persists_api_key_mode(tmp_path, monkeypatch):
     monkeypatch.setattr(init_mod, "CONFIG_PATH", config_path)
 
     init_mod.ensure_config(auth_mode="api_key")
-    data = yaml.safe_load(config_path.read_text())
+    data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     assert data["llm"]["auth_mode"] == "api_key"
 
 
@@ -176,7 +176,7 @@ def test_ensure_config_persists_subscription_mode_over_api_key(tmp_path, monkeyp
     monkeypatch.setattr(init_mod, "CONFIG_PATH", config_path)
 
     init_mod.ensure_config(auth_mode="subscription")
-    data = yaml.safe_load(config_path.read_text())
+    data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     assert data["llm"]["auth_mode"] == "subscription"
 
 
@@ -199,7 +199,7 @@ def test_ensure_config_preserves_other_keys_on_mode_switch(tmp_path, monkeypatch
     monkeypatch.setattr(init_mod, "CONFIG_PATH", config_path)
 
     init_mod.ensure_config(auth_mode="subscription")
-    data = yaml.safe_load(config_path.read_text())
+    data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     assert data["llm"]["auth_mode"] == "subscription"
     assert data["llm"]["implementer_model"] == "claude-sonnet-5"
     assert data["git"]["agent_identity_name"] == "no_human"

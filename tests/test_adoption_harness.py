@@ -75,7 +75,7 @@ def test_nh_is_never_on_the_persona_path():
     assert "nh" in adoption_run.FORBIDDEN_ON_PATH
     assert "nh" not in adoption_run.PERSONA_TOOLS
     # The shim builder must refuse rather than warn.
-    src = (ADOPTION / "adoption_run.py").read_text()
+    src = (ADOPTION / "adoption_run.py").read_text(encoding="utf-8")
     assert "leaked into the persona PATH" in src
 
 
@@ -139,7 +139,7 @@ def test_every_persona_step_cites_a_document():
     file or says UNDOCUMENTED/SOURCE ONLY in capitals, so the ones that reach
     past the public docs are visible rather than accidental.
     """
-    src = (ADOPTION / "personas.py").read_text()
+    src = (ADOPTION / "personas.py").read_text(encoding="utf-8")
     refs = re.findall(r'"((?:docs/|README\.md|UNDOCUMENTED|SOURCE ONLY|nh )[^"]*)"', src)
     assert len(refs) >= 12, f"expected the persona steps to cite docs, saw {refs}"
     for r in refs:
@@ -166,7 +166,7 @@ def test_bare_ticket_key_detector_ignores_quoted_titles_but_catches_bare_keys(tm
     """
     import adoption_run
 
-    quickstart = (REPO_ROOT / "docs" / "quickstart.md").read_text()
+    quickstart = (REPO_ROOT / "docs" / "quickstart.md").read_text(encoding="utf-8")
     doc_lines = [ln for ln in quickstart.splitlines()
                  if re.search(r"nh task add\s+([^\s`]+)", ln)]
 
@@ -308,13 +308,13 @@ def test_fakes_are_labelled_as_fakes():
 
     assert "live" in (fakes.__doc__ or "").lower()
     # Every integration probe records the flag where the result is recorded...
-    probes = (ADOPTION / "personas.py").read_text()
+    probes = (ADOPTION / "personas.py").read_text(encoding="utf-8")
     assert probes.count('"live": False') == 3, (
         "each of the three integration probes (jira, slack, github) must record "
         "live=False next to its result, so a fake pass can never be quoted as a "
         "live one")
     # ...and the report prints the boundary rather than leaving it to the reader.
-    assert "Integration boundary" in (ADOPTION / "adoption_run.py").read_text()
+    assert "Integration boundary" in (ADOPTION / "adoption_run.py").read_text(encoding="utf-8")
 
 
 class _StubDoctorCtx:
@@ -388,10 +388,10 @@ def test_doctor_finding_reads_the_docs_it_makes_a_claim_about(tmp_path):
     import personas
 
     readme_line = next(
-        ln for ln in (REPO_ROOT / "README.md").read_text().splitlines()
+        ln for ln in (REPO_ROOT / "README.md").read_text(encoding="utf-8").splitlines()
         if "nh doctor" in ln.lower())
     quickstart_line = next(
-        ln for ln in (REPO_ROOT / "docs" / "quickstart.md").read_text().splitlines()
+        ln for ln in (REPO_ROOT / "docs" / "quickstart.md").read_text(encoding="utf-8").splitlines()
         if "nh doctor" in ln.lower())
     assert readme_line and quickstart_line, (
         "README.md / docs/quickstart.md no longer mention `nh doctor` — "
@@ -543,7 +543,7 @@ def test_absence_claims_are_produced_by_code_that_read_the_file():
     import ast
 
     src_path = ADOPTION / "personas.py"
-    tree = ast.parse(src_path.read_text(), filename=str(src_path))
+    tree = ast.parse(src_path.read_text(encoding="utf-8"), filename=str(src_path))
 
     def literal_text(node) -> str:
         if isinstance(node, ast.Constant) and isinstance(node.value, str):

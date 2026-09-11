@@ -340,7 +340,7 @@ def test_quick_gate_passes_with_the_whole_tier_denominator_not_corpus(
     import json as _json
     results = sorted((tmp_path / "results").glob("run-*.json"))
     assert results, "the run must save a results card"
-    saved = _json.loads(results[-1].read_text())
+    saved = _json.loads(results[-1].read_text(encoding="utf-8"))
     assert saved["aggregate"]["corpus_available"] == 20, saved["aggregate"]
     assert len(saved["scores"]) == 15
 

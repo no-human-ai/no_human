@@ -113,7 +113,7 @@ def test_no_checkpoint_commits_bypass_the_single_seam():
 
     for mod in _SCANNED_MODULES:
         src_path = Path(mod.__file__)
-        tree = ast.parse(src_path.read_text())
+        tree = ast.parse(src_path.read_text(encoding="utf-8"))
 
         class _Visitor(ast.NodeVisitor):
             def __init__(self):
@@ -175,7 +175,7 @@ def test_every_wip_checkpoint_message_routes_through_the_seam():
 
     for mod in _SCANNED_MODULES:
         src_path = Path(mod.__file__)
-        tree = ast.parse(src_path.read_text())
+        tree = ast.parse(src_path.read_text(encoding="utf-8"))
 
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):

@@ -181,7 +181,7 @@ async def test_put_token_writes_it_and_reports_presence(client, tmp_path):
     r = await client.put("/api/auth/token",
                          json={"profile": "personal", "token": TOKEN})
     assert r.status_code == 200, r.text
-    env = (tmp_path / ".env").read_text()
+    env = (tmp_path / ".env").read_text(encoding="utf-8")
     assert f"CLAUDE_CODE_OAUTH_TOKEN_PERSONAL={TOKEN}" in env
     assert "personal" in [p["name"] for p in r.json()["profiles"]]
     # The response must not echo what was just stored.
@@ -254,7 +254,7 @@ def test_set_profile_token_preserves_other_env_lines(tmp_path):
     env = tmp_path / ".env"
     env.write_text("# a comment\nOTHER=keepme\n")
     set_profile_token("personal", TOKEN, env_path=env)
-    body = env.read_text()
+    body = env.read_text(encoding="utf-8")
     assert "# a comment" in body and "OTHER=keepme" in body
     assert f"CLAUDE_CODE_OAUTH_TOKEN_PERSONAL={TOKEN}" in body
 
@@ -263,7 +263,7 @@ def test_set_profile_token_replaces_rather_than_appends(tmp_path):
     env = tmp_path / ".env"
     set_profile_token("personal", "old-token", env_path=env)
     set_profile_token("personal", TOKEN, env_path=env)
-    body = env.read_text()
+    body = env.read_text(encoding="utf-8")
     assert body.count("CLAUDE_CODE_OAUTH_TOKEN_PERSONAL=") == 1
     assert "old-token" not in body
 
@@ -473,7 +473,7 @@ def test_repeated_writes_do_not_accumulate_blank_lines(tmp_path):
     env = tmp_path / ".env"
     for i in range(3):
         set_profile_token(f"p{i}", f"tok{i}", env_path=env)
-    assert "\n\n" not in env.read_text()
+    assert "\n\n" not in env.read_text(encoding="utf-8")
 
 
 # ---------------- the OTHER writer of the same credential store -------------- #
@@ -494,7 +494,7 @@ async def test_the_integrations_route_writes_env_and_must_guard_its_origin(
         headers={"Origin": "https://evil.example"})
 
     assert r.status_code == 403, r.text
-    assert not env.exists() or "ATTACKER-PLANTED" not in env.read_text()
+    assert not env.exists() or "ATTACKER-PLANTED" not in env.read_text(encoding="utf-8")
 
 
 @pytest.mark.asyncio
@@ -513,7 +513,7 @@ async def test_a_refused_integration_value_leaves_NOTHING_half_written(
                          "api_token": "tok\u2028ANTHROPIC_API_KEY=sk-planted"}})
 
     assert r.status_code == 422, r.text          # not a 500
-    body = env.read_text() if env.exists() else ""
+    body = env.read_text(encoding="utf-8") if env.exists() else ""
     assert "alice" not in body, body             # the EARLIER key did not land
     assert "ANTHROPIC_API_KEY" not in body
     # The refusal names the field but never the value (constraint §8).
@@ -902,7 +902,7 @@ async def test_put_codex_mode_writes_config_not_env(client, tmp_path, monkeypatc
         "no_human.agent.codex_backend.find_codex_cli", lambda *a, **k: None)
     r = await client.put("/api/auth/codex-mode", json={"mode": "subscription"})
     assert r.status_code == 200, r.text
-    assert "codex_auth_mode: subscription" in (tmp_path / "config.yaml").read_text()
+    assert "codex_auth_mode: subscription" in (tmp_path / "config.yaml").read_text(encoding="utf-8")
     assert not (tmp_path / ".env").exists()       # a MODE write never touches .env
     assert r.json()["codex"]["auth_mode"] == "subscription"
 
@@ -921,7 +921,7 @@ async def test_codex_mode_cross_origin_is_refused(client, tmp_path):
     assert r.status_code == 403
     # nothing written under a rejected origin
     cfg = tmp_path / "config.yaml"
-    assert not cfg.exists() or "codex_auth_mode: subscription" not in cfg.read_text()
+    assert not cfg.exists() or "codex_auth_mode: subscription" not in cfg.read_text(encoding="utf-8")
 
 
 @pytest.mark.asyncio
@@ -931,10 +931,10 @@ async def test_put_codex_key_writes_env_not_config_and_never_echoes(
     NAME, never the value (constraint §8)."""
     r = await client.put("/api/auth/codex-key", json={"key": "sk-openai-REAL-99"})
     assert r.status_code == 200, r.text
-    assert "OPENAI_API_KEY=sk-openai-REAL-99" in (tmp_path / ".env").read_text()
+    assert "OPENAI_API_KEY=sk-openai-REAL-99" in (tmp_path / ".env").read_text(encoding="utf-8")
     cfg = tmp_path / "config.yaml"
     if cfg.exists():
-        assert "sk-openai-REAL-99" not in cfg.read_text()
+        assert "sk-openai-REAL-99" not in cfg.read_text(encoding="utf-8")
     assert r.json()["codex_key_var"] == "OPENAI_API_KEY"
     assert "sk-openai-REAL-99" not in r.text
     assert r.json()["codex"]["api_key_present"] is True
@@ -990,7 +990,7 @@ def test_set_codex_api_key_returns_the_var_name_only(tmp_path):
     from no_human.config import set_codex_api_key
     env = tmp_path / ".env"
     assert set_codex_api_key("sk-openai-unit", env_path=env) == "OPENAI_API_KEY"
-    assert "OPENAI_API_KEY=sk-openai-unit" in env.read_text()
+    assert "OPENAI_API_KEY=sk-openai-unit" in env.read_text(encoding="utf-8")
 
 
 def test_set_codex_auth_mode_rejects_a_bad_value(tmp_path):

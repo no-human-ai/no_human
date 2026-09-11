@@ -439,7 +439,7 @@ async def test_a_custom_merge_driver_cannot_manufacture_a_landing(tmp_path):
     so this is a regression the merge-tree switch would introduce.
     """
     repo = _merge_driver_repo(tmp_path, land=False)
-    assert "feature content" not in (repo / "f.py").read_text(), \
+    assert "feature content" not in (repo / "f.py").read_text(encoding="utf-8"), \
         "fixture: base must NOT carry the feature content"
     assert await default_branch_shipped(str(repo), "feature", "main") is False
     assert _driver_ran(tmp_path), "vacuous: the driver was never consulted"
@@ -474,7 +474,7 @@ async def test_a_genuine_landing_under_a_position_driver_is_shipped_via_history_
     correct.
     """
     repo = _merge_driver_repo(tmp_path, land=True, extend=True)
-    assert "feature content" in (repo / "f.py").read_text(), \
+    assert "feature content" in (repo / "f.py").read_text(encoding="utf-8"), \
         "fixture: base really DID receive the branch's content"
     assert await default_branch_shipped(str(repo), "feature", "main") is True
     assert _driver_ran(tmp_path), \
@@ -703,7 +703,7 @@ async def test_a_content_resolving_merge_driver_is_a_known_residual(tmp_path):
     repo = _merge_driver_repo(tmp_path, land=False)
     _git(repo, "config", "merge.keepours.driver", f"{driver} %A %B")
 
-    assert "feature content" not in (repo / "f.py").read_text(), \
+    assert "feature content" not in (repo / "f.py").read_text(encoding="utf-8"), \
         "fixture: base must NOT carry the feature content"
     assert await default_branch_shipped(str(repo), "feature", "main") is True, \
         "if this is now False the hole is closed -- update the docstring too"
@@ -1107,7 +1107,7 @@ async def test_a_branch_diverging_only_in_the_generated_manifest_is_shipped(tmp_
     """THE LIVE DEFECT. Every real change the branch carries is on base; the
     only residue is the manifest the landing re-derived."""
     repo = _ledger_repo(tmp_path)
-    assert (repo / "a.txt").read_text() == "changed\n", "fixture: code landed"
+    assert (repo / "a.txt").read_text(encoding="utf-8") == "changed\n", "fixture: code landed"
     assert await default_branch_shipped(str(repo), "feature", "main") is True
 
 
@@ -1120,7 +1120,7 @@ async def test_a_classification_only_divergence_is_not_shipped(tmp_path):
     and the landing never took it: NOT shipped, so the task gets a rebase round
     or a human rather than a silent DONE."""
     repo = _ledger_repo(tmp_path, diverge_classification=True)
-    assert (repo / "EXPORT_CLASSIFICATION.txt").read_text() == "ship     1  a.txt\n", \
+    assert (repo / "EXPORT_CLASSIFICATION.txt").read_text(encoding="utf-8") == "ship     1  a.txt\n", \
         "fixture: base still carries the OLD decision"
     assert await default_branch_shipped(str(repo), "feature", "main") is False
 
@@ -1140,7 +1140,7 @@ async def test_a_classification_count_only_divergence_is_shipped(tmp_path):
         classification_branch=_CLASSIFICATION_BASE_TEXT,
         classification_main="# header\nship     3  a.txt\ndrop     1  secrets/\n",
     )
-    assert (repo / "a.txt").read_text() == "changed\n", "fixture: code landed"
+    assert (repo / "a.txt").read_text(encoding="utf-8") == "changed\n", "fixture: code landed"
     assert await default_branch_shipped(str(repo), "feature", "main") is True
     landed = await pr_watcher.branch_landed_commit(str(repo), "feature", "main")
     assert landed is not None

@@ -324,7 +324,7 @@ _SAFE_NON_COMMENT_WRITES = {"vcs/github.py:open_pr": 2}
 def _forge_calls(path: pathlib.Path):
     """``(lineno, enclosing_func, source)`` for every forge send point in *path*
     that touches a comment endpoint or carries a comment body."""
-    tree = ast.parse(path.read_text())
+    tree = ast.parse(path.read_text(encoding="utf-8"))
     # INNERMOST function wins. `ast.walk` is breadth-first, so an outer function
     # claims its whole subtree before a nested one is reached; `setdefault` left
     # the OUTER owning a call inside a nested def, which laundered the nested
@@ -430,7 +430,7 @@ def test_every_posting_call_in_the_stampers_carries_marker_evidence():
     show a stamp — in the call itself, or in the function that built the body."""
     unstamped, no_body = [], set()
     for path in sorted(_MARKER_STAMPERS):
-        text = path.read_text()
+        text = path.read_text(encoding="utf-8")
         funcs = {f.name: ast.unparse(f) for f in ast.walk(ast.parse(text))
                  if isinstance(f, (ast.FunctionDef, ast.AsyncFunctionDef))}
         for lineno, fn, src in _forge_calls(path):
@@ -457,7 +457,7 @@ def test_every_body_comment_poster_builds_for_a_forge_is_stamped():
     """The AST recompute that kills the basename hole: whatever a future send
     point inside this module is spelled like, the body it binds must be
     `_stamped(...)`. Covers the JSON-payload path the argv scan cannot see."""
-    tree = ast.parse(pathlib.Path(comment_poster.__file__).read_text())
+    tree = ast.parse(pathlib.Path(comment_poster.__file__).read_text(encoding="utf-8"))
     unstamped, forwarded = [], []
     for fn in ast.walk(tree):
         if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):

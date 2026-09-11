@@ -518,7 +518,7 @@ class _CorrectiveCommitsRealChangeBackend:
         (cwd / REPRO_MANIFEST).write_text('{"tests": ["test_calc.py::test_mul"]}')
         test_calc = cwd / "test_calc.py"
         test_calc.write_text(
-            test_calc.read_text()
+            test_calc.read_text(encoding="utf-8")
             + "\ndef test_mul_by_zero():\n    assert mul(5, 0) == 0\n"
         )
         if on_event is not None:
@@ -970,7 +970,7 @@ class _CorrectiveEditsSourceBackend:
         cwd.joinpath(".no_human").mkdir(exist_ok=True)
         (cwd / REPRO_MANIFEST).write_text('{"tests": ["test_calc.py::test_mul"]}')
         calc = cwd / "calc.py"
-        calc.write_text(calc.read_text() + "\n# out of scope edit\n")
+        calc.write_text(calc.read_text(encoding="utf-8") + "\n# out of scope edit\n")
         if on_event is not None:
             on_event(AgentEvent("tool_use", tool_name="Edit",
                                 tool_input={"file_path": "calc.py"}))
@@ -1014,4 +1014,4 @@ async def test_a_corrective_round_that_edits_source_is_discarded_and_fails_waive
     # The revert ran: neither the manifest nor the out-of-scope edit survived
     # uncommitted.
     assert not (repo.path / REPRO_MANIFEST).exists()
-    assert "# out of scope edit" not in (repo.path / "calc.py").read_text()
+    assert "# out of scope edit" not in (repo.path / "calc.py").read_text(encoding="utf-8")

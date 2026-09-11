@@ -314,7 +314,7 @@ def test_merge_path_close_behavior_unchanged(land_env, monkeypatch):
         "the merge path must not invoke the completion closeout hook — its "
         "own _close_pr step is the control surface and stays as-is")
 
-    argvs = [json.loads(l) for l in land_env.gh_log.read_text().splitlines()
+    argvs = [json.loads(l) for l in land_env.gh_log.read_text(encoding="utf-8").splitlines()
             if l.strip()]
     close_calls = [a for a in argvs if a[:2] == ["pr", "close"]]
     assert len(close_calls) == 1, f"merge path must close exactly once: {argvs}"

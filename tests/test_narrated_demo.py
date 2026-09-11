@@ -165,7 +165,7 @@ def _parse_doc_script() -> tuple[tuple[tuple[float, str], ...], tuple[str, ...]]
     """
     found: list[tuple[float, list[str]]] = []
     orphans: list[str] = []
-    for raw in NARRATION_MD.read_text().splitlines():
+    for raw in NARRATION_MD.read_text(encoding="utf-8").splitlines():
         head = _DOC_LINE_RE.match(raw)
         if head:
             found.append((float(head.group(1)), [head.group(2).strip()]))
@@ -191,7 +191,7 @@ def _doc_script_lines() -> tuple[tuple[float, str], ...]:
 
 def test_the_doc_carries_every_line_at_its_time():
     """MAP -> DOC: every line the map schedules is written in the document."""
-    doc = NARRATION_MD.read_text()
+    doc = NARRATION_MD.read_text(encoding="utf-8")
     # The doc wraps prose at ~76 cols inside `>` blockquotes; strip the
     # markers and collapse whitespace before comparing.
     flat = " ".join(doc.replace(">", " ").split())
@@ -299,7 +299,7 @@ def test_the_doc_states_the_ramp_the_fixture_actually_runs():
     """
     start, end = _ramp_window()
     row = f"| {start:.2f}–{end:.2f} |"
-    assert row in NARRATION_MD.read_text(), (
+    assert row in NARRATION_MD.read_text(encoding="utf-8"), (
         f"the synchronised-moments table must say {row} — the ramp computed "
         f"from STAGES. A hand-written window here is a claim about timing "
         f"that no longer has to be true.")
@@ -405,7 +405,7 @@ def test_the_document_names_no_real_company_either():
     it — voice direction, the timing table, "why the copy is shaped like this"
     — is free text in a file the export publishes, and nothing was reading it.
     """
-    text = NARRATION_MD.read_text().lower()
+    text = NARRATION_MD.read_text(encoding="utf-8").lower()
     for word in _REAL_COMPANIES:
         assert word not in text, word
 
@@ -438,7 +438,7 @@ def test_the_documents_prose_uses_no_unreviewed_proper_noun():
     to talk ABOUT the demo — beat names, column headers, the two surfaces.
     """
     prose_words = _DOC_PROSE_NOUNS | _ALLOWED_PROPER_NOUNS
-    seen = set(_PROPER_NOUN_RE.findall(NARRATION_MD.read_text()))
+    seen = set(_PROPER_NOUN_RE.findall(NARRATION_MD.read_text(encoding="utf-8")))
     unreviewed = sorted(seen - prose_words)
     assert not unreviewed, (
         f"{len(unreviewed)} proper noun(s) in the published document that "
@@ -449,7 +449,7 @@ def test_the_documents_prose_uses_no_unreviewed_proper_noun():
 
 
 def test_the_doc_carries_every_beat_and_the_duration():
-    doc = " ".join(NARRATION_MD.read_text().split())
+    doc = " ".join(NARRATION_MD.read_text(encoding="utf-8").split())
     assert f"{nr.DURATION:.3f}" in doc
     assert str(nr.N_FRAMES) in doc
     for beat in nr.BEATS:
@@ -571,7 +571,7 @@ def _source_string_literals(path: Path) -> list[str]:
     is still invisible to this scan; f-strings are visible only as their
     literal fragments.
     """
-    tree = ast.parse(path.read_text())
+    tree = ast.parse(path.read_text(encoding="utf-8"))
     docstrings = {
         id(node.body[0].value)
         for node in ast.walk(tree)

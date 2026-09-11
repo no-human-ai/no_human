@@ -472,7 +472,7 @@ def test_cli_redacts_the_translated_path_from_a_crash(tmp_path, monkeypatch):
     recorded = list((tmp_path / "results").glob("*.json"))
     assert recorded, "the run recorded nothing to inspect"
     for f in recorded:
-        body = f.read_text()
+        body = f.read_text(encoding="utf-8")
         assert "/local/real" not in body, f.name
         assert "svc-a" not in body, f.name
         # The note keeps the SPEC's path, so the record stays diagnosable.
