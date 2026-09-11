@@ -32,6 +32,22 @@ Practical consequence: open an issue first for anything larger than a bug fix
 (and read "AI-assisted contributions" at the end of this file before your first PR).
 A rejected design costs you less as a paragraph than as a branch.
 
+One mechanical thing that catches nearly every first contribution: this repo
+pins a SHA-256 of every tracked file in `RELEASE_MANIFEST.txt`, so **any change
+to a tracked file — including the `contributors/<handle>.md` you add to sign the
+CLA — has to re-pin it in the same commit**:
+
+```bash
+git add -A
+python scripts/check_release_manifest.py --write
+git commit -am "Re-pin RELEASE_MANIFEST.txt"
+```
+
+`python scripts/check_release_manifest.py --strict` should then print `OK`. Skip
+it and CI's `File inventory` job fails on a PR that is otherwise fine. See
+"Re-pinning `RELEASE_MANIFEST.txt`" below for the detail and an optional hook
+that catches it at commit time.
+
 ## Setup
 
 Prerequisites: Python 3.12 (see [`.python-version`](.python-version) and the
@@ -77,7 +93,7 @@ reaches the model API unless you set `NH_TESTS_LIVE_SDK=1`. You only need a
 credential to run the product end to end. See
 [`docs/quickstart.md`](docs/quickstart.md) for that.
 
-### Optional: the pre-commit manifest gate
+### Re-pinning `RELEASE_MANIFEST.txt` — required for every content change
 
 [`RELEASE_MANIFEST.txt`](RELEASE_MANIFEST.txt) pins every shipped file's content
 with a SHA-256. When you change a pinned file you must re-pin it in the *same*
@@ -87,7 +103,7 @@ script refuses and prints the approval command to use instead.) Forgetting the
 re-pin is a split commit that CI's inventory job only catches at push, after
 `main` has gone red.
 
-An opt-in git hook catches it at commit time instead. It is committed but does
+**Optional:** an opt-in git hook catches it at commit time instead. It is committed but does
 nothing until you enable it for your clone:
 
 ```bash
