@@ -1578,6 +1578,7 @@ class CodexBackend:
         max_thinking_tokens: int | None = None,
         agents: dict[str, Any] | None = None,
         on_compact: Callable[[str], None] | None = None,
+        session_root: str | None = None,
     ) -> AsyncIterator[AgentEvent]:
         """Run one ``codex exec`` session, yielding normalized events.
 
@@ -1585,6 +1586,10 @@ class CodexBackend:
         the orchestrator's bounded loop reads that event and nothing else, so a
         backend that raised instead would crash the daemon rather than fail an
         attempt (constraint §5).
+
+        ``session_root`` is the caller's worktree root (``None`` when the
+        caller has no worktree of its own, e.g. isolation disabled) — it is
+        forwarded to the guard hook unchanged, never computed from ``cwd``.
         """
         # Unsupported knobs are REFUSED, never silently dropped. Each of these
         # is a control the orchestrator believes is running; a no-op would make
@@ -1695,17 +1700,16 @@ class CodexBackend:
                 for event in self._translate(msg):
                     if event.kind == "tool_use":
                         turns += 1
-                        # Same value as `cwd` here because this backend's
-                        # `cwd` IS the worktree root the orchestrator created
-                        # for this session (fixed once above, never updated
-                        # per tool call) — see venv_install_guard.py's module
-                        # docstring, item 5, for why that makes this line a
-                        # no-op against today's traffic while still fixing
-                        # the guard's contract for any caller whose `cwd`
-                        # isn't.
+                        # `session_root` is this call's own parameter,
+                        # supplied by our caller — never derived from `cwd`
+                        # here. `cwd` is this session's fixed subprocess
+                        # directory; the coder can `cd` away from it inside
+                        # its own persistent shell without either value
+                        # moving, and conflating the two is exactly the bug
+                        # this parameter exists to not repeat.
                         verdict = self._guard_events(
                             event.tool_name or "", event.tool_input or {},
-                            cwd=str(cwd), session_root=str(cwd))
+                            cwd=str(cwd), session_root=session_root)
                         if verdict:
                             reason, severity = verdict
                             denials.append(reason)
@@ -1821,6 +1825,7 @@ class CodexBackend:
         max_thinking_tokens: int | None = None,
         agents: dict[str, Any] | None = None,
         on_compact: Callable[[str], None] | None = None,
+        session_root: str | None = None,
     ) -> AgentResult:
         """Run to completion, forwarding each event, return the result.
 
@@ -1837,7 +1842,7 @@ class CodexBackend:
             prompt, cwd=cwd, max_turns=max_turns, effort=effort, resume=resume,
             supervisor_hook=supervisor_hook, lint_hook=lint_hook, skills=skills,
             thinking=thinking, max_thinking_tokens=max_thinking_tokens,
-            agents=agents, on_compact=on_compact,
+            agents=agents, on_compact=on_compact, session_root=session_root,
         ):
             if on_event is not None:
                 on_event(event)

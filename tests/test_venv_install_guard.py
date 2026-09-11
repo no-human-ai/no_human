@@ -25,6 +25,7 @@ from no_human.agent import guard, venv_install_guard
 import asyncio
 import inspect
 import re
+import subprocess
 import types
 
 import pytest
@@ -32,6 +33,9 @@ import yaml
 
 import no_human.config as nh_config
 from no_human.agent import claude_backend, codex_backend, fs_roots
+from no_human.core.orchestrator import Orchestrator
+from no_human.core.task import Task
+from no_human.notify.slack import SlackNotifier
 
 FORBIDDEN = []
 PROTECTED = ["main", "master", "release/*"]
@@ -887,38 +891,63 @@ def test_supplied_session_root_beats_the_markers_on_disk(tmp_path):
     assert decoy in r_decoy, f"reason must name the supplied root: {r_decoy}"
 
 
+@pytest.mark.real_backend
 def test_shipped_coder_path_supplies_the_session_root():
-    """AC2b(i) — search. Both shipped coder backends must actually pass
-    `session_root=str(cwd)` beside the existing `cwd=str(cwd)` where they
-    build their guard call; that wiring is what closes the subdirectory-cd
-    defect in production — discovery is only a fallback for callers that
-    supply nothing. Positive control: the identical regex over a module that
-    wires no guard call at all (`fs_roots.py`) must NOT fire, and a sentinel
-    spelling nobody wrote must not appear anywhere searched (proving the
-    regex isn't vacuously matching everything)."""
-    pattern = re.compile(r"session_root\s*=\s*str\(cwd\)")
-    claude_src = inspect.getsource(claude_backend)
-    codex_src = inspect.getsource(codex_backend)
-    fs_roots_src = inspect.getsource(fs_roots)
+    """AC2b(i) — signature, corrected. `no_human.agent.claude_backend.ClaudeBackend`
+    is replaced module-wide by a hermetic stub for every test by default (see
+    `tests/conftest.py::_hermetic_sdk`) — the `real_backend` marker opts this
+    test out so `inspect.signature` below reads the REAL class's `run`, not
+    the stub's generic `(self, prompt, **kwargs)`. No live API call is made;
+    only the signature is inspected.
 
-    assert pattern.search(claude_src), "claude_backend.py must supply session_root=str(cwd)"
-    assert pattern.search(codex_src), "codex_backend.py must supply session_root=str(cwd)"
-    assert not pattern.search(fs_roots_src), (
-        "positive control: fs_roots.py wires no guard call and must not match"
+    An earlier round of this test asserted
+    a source-text regex `session_root\\s*=\\s*str\\(cwd\\)` FIRED inside both
+    backends — i.e. it required each backend to compute its own
+    `session_root` from its own `cwd`, the identical expression already
+    bound to `cwd` under a second name. That wiring changes no denial
+    decision a real caller would ever hit (the subdirectory-cd defect this
+    task fixes is exactly a session_root that tracks cwd), so that
+    assertion required the bug it was meant to catch. The correct wiring
+    instead makes `session_root` the ORCHESTRATOR's own field — sourced
+    from the worktree path it created, never re-derived inside a backend —
+    threaded in through `run()`. This test pins that shape structurally:
+    both shipped backends' public `run()` entry point declares its own
+    `session_root` parameter, independent of `cwd`, so nothing inside the
+    backend needs to (and per
+    `test_shipped_coder_path_session_root_reaches_guard_evaluate` below,
+    does not) derive one from `cwd`. Positive control: a module that wires
+    no guard call at all (`fs_roots.py`) declares no such parameter
+    anywhere in its public functions, proving the check isn't vacuous."""
+    claude_params = inspect.signature(claude_backend.ClaudeBackend.run).parameters
+    codex_params = inspect.signature(codex_backend.CodexBackend.run).parameters
+
+    assert "session_root" in claude_params, (
+        "ClaudeBackend.run must declare its own session_root parameter"
     )
-    for src in (claude_src, codex_src, fs_roots_src):
-        assert "session_root_from_disk=" not in src, (
-            "sentinel spelling nobody wrote must not appear"
+    assert "session_root" in codex_params, (
+        "CodexBackend.run must declare its own session_root parameter"
+    )
+    for name, fn in inspect.getmembers(fs_roots, inspect.isfunction):
+        assert "session_root" not in inspect.signature(fn).parameters, (
+            f"positive control: fs_roots.{name} wires no guard call and "
+            "must not declare session_root"
         )
 
 
 def test_shipped_coder_path_session_root_reaches_guard_evaluate(tmp_path, monkeypatch):
-    """AC2b(ii) — behaviour. Monkeypatch `guard.evaluate` (the same module
-    object both backends imported via `from . import guard`) to capture its
-    kwargs, then actually drive each shipped call path — the Claude SDK's
-    PreToolUse hook and the Codex backend's post-hoc `_guard_events` — and
-    assert the `session_root` each one supplies really does reach
-    `evaluate`, not just that the source text mentions it."""
+    """AC2b(ii) — behaviour, cwd and session_root DIFFER by construction. An
+    earlier round of this test built the hook/`_guard_events` call with
+    `cwd=session_dir, session_root=session_dir` — identical values, a
+    pairing no real caller produces (a coder's `cwd` only ever equals its
+    session root at the very start of a session; the defect this task fixes
+    is specifically what happens once it `cd`s deeper). A test built on
+    equal values cannot distinguish "forwards the supplied session_root"
+    from "forwards cwd and they happen to match", so it could not have
+    caught a regression back to deriving session_root from cwd. Here `cwd`
+    is a real SUBDIRECTORY of `session_root` — the exact shape a coder that
+    has `cd`'d into its own worktree produces — so asserting the captured
+    value equals `session_root` (not `cwd`) actually exercises forwarding,
+    not coincidence."""
     captured: list[str | None] = []
 
     def _fake_evaluate(*args, **kwargs):
@@ -927,27 +956,33 @@ def test_shipped_coder_path_session_root_reaches_guard_evaluate(tmp_path, monkey
 
     monkeypatch.setattr(guard, "evaluate", _fake_evaluate)
 
-    session_dir = str(tmp_path / "session")
-    os.makedirs(session_dir, exist_ok=True)
+    session_root = str(tmp_path / "session")
+    cwd = os.path.join(session_root, "src", "pkg")
+    os.makedirs(cwd, exist_ok=True)
+    assert cwd != session_root, "constructed so cwd and session_root differ"
 
     hook = claude_backend._make_guard_hook(
         FORBIDDEN, PROTECTED, readonly=False,
-        cwd=session_dir, session_root=session_dir,
+        cwd=cwd, session_root=session_root,
     )
     asyncio.run(hook(
         {"tool_name": "Bash", "tool_input": {"command": "pip install -e ."}},
         None, None,
     ))
-    assert captured[-1] == session_dir, "claude_backend's hook must forward session_root"
+    assert captured[-1] == session_root, (
+        "claude_backend's hook must forward session_root, not cwd"
+    )
 
     fake_codex_self = types.SimpleNamespace(
         forbidden_paths=FORBIDDEN, never_push_to=PROTECTED, readonly=False,
     )
     codex_backend.CodexBackend._guard_events(
         fake_codex_self, "Bash", {"command": "pip install -e ."},
-        cwd=session_dir, session_root=session_dir,
+        cwd=cwd, session_root=session_root,
     )
-    assert captured[-1] == session_dir, "codex_backend's _guard_events must forward session_root"
+    assert captured[-1] == session_root, (
+        "codex_backend's _guard_events must forward session_root, not cwd"
+    )
 
 
 @pytest.mark.parametrize("relocated", [False, True])
@@ -1119,3 +1154,163 @@ def test_out_of_tree_targets_stay_denied_from_root_and_subdirectory(tmp_path):
             forbidden_paths=FORBIDDEN, never_push_to=PROTECTED,
             cwd=cwd, env=wt_env, session_root=wt)
         assert d_allow.allow, "positive control must stay allowed via evaluate()"
+
+
+class _RootCapturingBackend:
+    """Stands in for a real coder backend in a real `Orchestrator.run_task`
+    pipeline: applies one honest (non-tampering) file change, and records
+    the `session_root` (and `cwd`) kwarg each `run()` call actually
+    receives — the value under test. `claude_backend`/`codex_backend` are
+    exercised directly (as source) in
+    `test_shipped_coder_path_supplies_the_session_root` /
+    `test_shipped_coder_path_session_root_reaches_guard_evaluate` above;
+    this class is `Orchestrator`'s side of the same contract — the thing
+    that actually calls `backend.run(..., session_root=...)`."""
+
+    def __init__(self):
+        self.session_roots: list[str | None] = []
+        self.cwds: list[str] = []
+
+    async def run(self, prompt, *, cwd, max_turns, effort=None, resume=None,
+                  on_event=None, supervisor_hook=None, **kwargs):
+        self.cwds.append(str(cwd))
+        self.session_roots.append(kwargs.get("session_root"))
+        if on_event:
+            on_event(claude_backend.AgentEvent(
+                "tool_use", tool_name="Edit", tool_input={"file_path": "calc.py"}))
+        with open(os.path.join(str(cwd), "calc.py"), "w") as f:
+            f.write("def add(a, b):\n    return a + b\n\ndef mul(a, b):\n    return a * b\n")
+        with open(os.path.join(str(cwd), "test_calc.py"), "w") as f:
+            f.write(
+                "from calc import add, mul\n\n"
+                "def test_add():\n    assert add(1, 2) == 3\n\n"
+                "def test_mul():\n    assert mul(2, 3) == 6\n"
+            )
+        return claude_backend.AgentResult(
+            final_text="done", num_turns=1, is_error=False,
+            tokens_used=10, session_id="s", stop_reason="end_turn")
+
+
+async def test_orchestrator_threads_its_own_worktree_root_as_session_root(tmp_path, store):
+    """AMENDED AC2b — the session root the guard uses is the worktree path
+    the orchestrator created, and it is threaded from there, not re-derived
+    from `cwd` inside a backend. This drives a REAL `Orchestrator.run_task`
+    against a real git repo (worktree isolation ON, the default — the same
+    pipeline `test_full_pipeline_opens_local_pr` in
+    tests/test_e2e_orchestrator.py exercises) with a fake backend that
+    records the `session_root` kwarg its `run()` is actually called with,
+    then:
+
+    1. asserts that value equals `worktree_root(config) /
+       f"{task.id}.{token}"` computed INDEPENDENTLY here — from the config's
+       own `worktree_root()` plus the task id plus the per-run token
+       extracted out of the captured path itself (the token is randomly
+       generated per run inside the orchestrator and cannot be predicted in
+       advance; reconstructing the join from its two known components and
+       checking equality is not an echo of what was captured, it is a
+       structural check that the captured value has exactly the shape only
+       the orchestrator's own `_worktree_path` produces);
+    2. then, with THAT captured root as `session_root` and a constructed
+       SUBDIRECTORY of it as `cwd` (so `cwd` and `session_root` differ by
+       construction, the shape a coder that `cd`'d into its own worktree
+       produces), drives the real guard directly: its own venv install is
+       allowed, a sibling task's venv install (elsewhere under the same
+       worktrees root) is denied.
+
+    Goes RED if the wiring regresses to threading `cwd` in place of
+    `session_root`: the captured value would then be a path this test never
+    independently reconstructs from `worktree_root(config)`/`task.id`/token
+    (assertion 1 fails), and — for the same reason the pre-fix bug existed —
+    a coder's own install from a subdirectory of that mistaken boundary
+    would wrongly deny (assertion 2 fails too)."""
+    remote = os.path.join(str(tmp_path), "remote.git")
+    subprocess.run(["git", "init", "--bare", "-b", "main", remote],
+                    check=True, capture_output=True)
+    work = os.path.join(str(tmp_path), "work")
+    os.makedirs(work)
+    for args in (
+        ["git", "init", "-b", "main"],
+        ["git", "config", "user.email", "u@e.com"],
+        ["git", "config", "user.name", "u"],
+    ):
+        subprocess.run(args, cwd=work, check=True, capture_output=True)
+    with open(os.path.join(work, "calc.py"), "w") as f:
+        f.write("def add(a, b):\n    return a + b\n")
+    with open(os.path.join(work, "test_calc.py"), "w") as f:
+        f.write("from calc import add\n\ndef test_add():\n    assert add(1, 2) == 3\n")
+    for args in (
+        ["git", "add", "-A"],
+        ["git", "commit", "-m", "init"],
+        ["git", "remote", "add", "origin", remote],
+        ["git", "push", "-u", "origin", "main"],
+    ):
+        subprocess.run(args, cwd=work, check=True, capture_output=True)
+
+    cfg = nh_config.load_config(tmp_path / "config.yaml")
+    cfg.data.setdefault("planning", {})["enabled"] = False
+    cfg.data.setdefault("reviewer", {})["allow_advisory"] = True
+    cfg.data.setdefault("blockers", {})["challenge"] = False
+    # This test's whole premise is worktree isolation being ON — fail loudly
+    # here rather than passing vacuously against a None session_root if the
+    # default ever flips.
+    assert nh_config.worktree_isolation_enabled(cfg.data), (
+        "this test requires worktree isolation on (the default)"
+    )
+
+    backend = _RootCapturingBackend()
+    orch = Orchestrator(store, cfg.data, backend, SlackNotifier(None))
+    task = Task.new("add mul()", repo_path=work)
+    task.acceptance_criteria = ["mul(a,b) returns a*b"]
+    await store.create_task(task)
+
+    await orch.run_task(task)
+
+    assert backend.session_roots, "the fake backend's run() was never called"
+    session_root = backend.session_roots[0]
+    assert session_root is not None, "session_root must be supplied when isolation is on"
+    assert all(r == session_root for r in backend.session_roots), (
+        "every backend.run() call in one attempt must see the SAME session_root"
+    )
+    # At this outer boundary cwd == session_root (both are the worktree
+    # root handed to the coder's top-level turn) -- the divergence this
+    # task's fix is actually about happens one layer deeper, inside a
+    # backend's own tool-call cwd, pinned above by
+    # test_shipped_coder_path_session_root_reaches_guard_evaluate and by
+    # test_own_venv_install_allowed_from_root_and_any_subdirectory.
+    assert backend.cwds[0] == session_root
+
+    # (1) Independent reconstruction from worktree_root(config) + task.id +
+    # the per-run token extracted from the captured path.
+    parent = os.path.dirname(session_root)
+    base = os.path.basename(session_root)
+    task_id_part, _, token_part = base.partition(".")
+    assert task_id_part == task.id, f"worktree dir name must start with the task id: {base}"
+    assert token_part, f"worktree dir name must carry a run token: {base}"
+    expected = os.path.join(str(nh_config.worktree_root(cfg.data)), f"{task.id}.{token_part}")
+    assert os.path.realpath(expected) == os.path.realpath(session_root), (
+        "session_root must be exactly worktree_root(config)/f'{task.id}.{token}', "
+        "independently recomputed"
+    )
+    assert os.path.realpath(parent) == os.path.realpath(str(nh_config.worktree_root(cfg.data)))
+
+    # (2) With that captured root as session_root and a constructed
+    # SUBDIRECTORY as cwd (differ by construction): own install allowed,
+    # a sibling task's venv denied.
+    _, own_venv = _mkvenv(session_root)
+    subdir = os.path.join(session_root, "src", "pkg")
+    os.makedirs(subdir, exist_ok=True)
+    assert subdir != session_root
+    own_env = {"PATH": f"{own_venv}/bin:/usr/bin:/bin", "VIRTUAL_ENV": own_venv}
+
+    r_own = venv_install_guard.denial_reason(
+        "pip install -e .", cwd=subdir, env=own_env, session_root=session_root)
+    assert r_own is None, f"own-venv install from a subdirectory must be allowed: {r_own}"
+
+    sibling_root = os.path.join(
+        str(nh_config.worktree_root(cfg.data)), f"other-task.{token_part}")
+    _, sibling_venv = _mkvenv(sibling_root)
+    r_sibling = venv_install_guard.denial_reason(
+        f"{sibling_venv}/bin/pip install foo", cwd=subdir, env=own_env,
+        session_root=session_root)
+    assert r_sibling is not None, "a sibling task's venv install must be denied"
+    assert sibling_venv in r_sibling or sibling_root in r_sibling

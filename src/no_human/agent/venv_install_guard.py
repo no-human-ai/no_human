@@ -79,53 +79,49 @@ against a policy pattern. It instead:
      `uv sync` / `uv run pytest -q` in EVERY session, not just a
      laundering one. See the residual-risk register below.
   5. Denies unless EVERY resolved candidate is inside the session
-     worktree ROOT, SUPPLIED BY THE CALLER (``session_root`` — the
-     orchestrator already knows it: it creates the worktree at
-     ``worktree_root(config) / f"{task.id}.{token}"`` and both coder
-     backends thread that same value into the guard beside ``cwd``), not
-     against the possibly-deeper ``cwd`` a coder has since ``cd``'d into.
-     An allow-list, not a deny-list, so a spelling nobody has thought of
-     yet still resolves to "outside the worktree" and is denied by
-     construction rather than by a missing pattern. When no caller
-     supplies ``session_root`` (an unknown/legacy caller), the boundary
-     is DISCOVERED instead: walk up from ``cwd`` for a ``.git`` marker,
-     probed with ``os.lstat`` so a dangling symlink still counts as
-     present, refusing to climb to or past ``config.worktree_root(config)``,
-     the default ``~/.no_human/worktrees``, or any ancestor of either — see
-     the residual-risk register below for exactly what that fallback can
-     and cannot prove.
+     worktree ROOT, SUPPLIED BY THE CALLER (``session_root``). The
+     orchestrator is the one party that actually knows this value — it
+     creates the worktree at ``worktree_root(config) / f"{task.id}.{token}"``
+     (``_run_task_body``) and hands that root, as its OWN field, to
+     ``backend.run(..., session_root=...)`` (``None`` when worktree
+     isolation is off, since there is then no per-task root to defend).
+     Both coder backends only FORWARD that parameter unchanged — through
+     ``run``/``stream``/``_options``/``_guard_events`` down to the guard
+     hook — never deriving it from their own ``cwd`` parameter, which is
+     this session's fixed subprocess directory. That distinction is the
+     whole fix (see below): ``cwd`` and ``session_root`` are two genuinely
+     independent values, and comparing candidates against the ROOT rather
+     than the possibly-deeper ``cwd`` a coder has since ``cd``'d into is
+     what closes the subdirectory defect this module exists to fix. An
+     allow-list, not a deny-list, so a spelling nobody has thought of yet
+     still resolves to "outside the worktree" and is denied by construction
+     rather than by a missing pattern. When no caller supplies
+     ``session_root`` (an unknown/legacy caller, or worktree isolation
+     disabled), the boundary is DISCOVERED instead: walk up from ``cwd``
+     for a ``.git`` marker, probed with ``os.lstat`` so a dangling symlink
+     still counts as present, refusing to climb to or past
+     ``config.worktree_root(config)``, the default ``~/.no_human/worktrees``,
+     or any ancestor of either — see the residual-risk register below for
+     exactly what that fallback can and cannot prove.
 
-     **Why the two shipped callers pass ``session_root=str(cwd)`` — the
-     identical value already bound to ``cwd`` — and this is not the fix
-     doing nothing.** Traced end to end: the orchestrator opens exactly one
-     worktree per session (``worktree_root(config) / f"{task.id}.{token}"``)
-     and hands its root, once, as the ``cwd`` both backends give to their
-     coder subprocess/CLI (Claude SDK subprocess ``cwd``; Codex's
-     ``--cd``) — the guard hook/event closure captures that single value
-     when the session starts and never re-reads it, so it is unaffected by
-     any ``cd`` the coder's own persistent shell performs mid-session. For
-     TODAY's two production call sites, ``cwd`` therefore already equals
-     the worktree root on every call, and passing ``session_root=str(cwd)``
-     changes no denial decision they will ever hit — that half of the
-     wiring is deliberately a same-value rename, not new behaviour, and is
-     pinned as such by ``test_shipped_coder_path_supplies_the_session_root``
-     and ``test_shipped_coder_path_session_root_reaches_guard_evaluate``.
-     What the parameter actually fixes is the FUNCTION's contract,
-     independent of who calls it today: before this change,
-     ``denial_reason``/``guard.evaluate`` had no way to accept a boundary
-     other than ``cwd`` itself, so any caller that legitimately needs
-     ``cwd`` to be a subdirectory of the session (a direct test, a
-     sub-tool, a future backend that reports the coder's real subshell
-     location) would have its own venv wrongly denied — verdict 4's
-     defect, reproduced pre-fix and closed post-fix by the direct
-     ``denial_reason(cmd, cwd=<subdir>, session_root=<root>)`` calls in
-     the own-venv-from-subdirectory tests below. Threading the parameter
-     through both backends now, even though it is a no-op against today's
-     traffic, is what lets that contract exist at all without a second,
-     divergent call convention — and it is the ONLY thing standing between
-     today's coincidental safety (``cwd`` happens to always be the root)
-     and a correct guarantee that holds even if a future caller's ``cwd``
-     stops being the root.
+     **Why passing ``session_root=str(cwd)`` from inside a backend would
+     NOT have been the fix.** An earlier round of this same task made both
+     backends compute ``session_root=str(cwd)`` themselves, right beside
+     the ``cwd=str(cwd)`` they already had — the identical expression
+     already bound to ``cwd``. That changes no denial decision a real
+     caller will ever hit: ``cwd`` is this session's fixed subprocess
+     directory, and re-deriving "the root" from the very value the defect
+     is about (a coder can ``cd`` away from its subprocess ``cwd`` inside
+     its own persistent shell without either value moving) repeats the
+     bug under a second name rather than closing it. The actual fix is
+     that ``session_root`` is threaded from the ORCHESTRATOR's own
+     ``wt_path`` — the one place that independently knows the worktree
+     root regardless of where the coder's shell currently is — through
+     ``backend.run``/``stream``/``_options`` to the guard hook, with the
+     backends acting as pure pass-through. ``cwd`` and ``session_root``
+     therefore differ by construction whenever a coder has ``cd``'d into a
+     subdirectory of its own worktree, which is exactly the case the
+     own-venv-from-subdirectory tests below exercise.
   6. Fails closed (memory: *gates must fail closed*) whenever install
      intent is present but a resolution step cannot be completed:
      shell/variable expansion (``$``, backticks) in any token, no
@@ -799,7 +795,20 @@ def _refused_roots() -> frozenset[str] | None:
         except yaml.YAMLError:
             return None
 
-    roots = {_config.worktree_root(data), _config.NO_HUMAN_HOME / "worktrees"}
+    # `worktree_root(data)` indexes into `data` with `.get(...)` and expects
+    # the `isolation.worktree_root` value (if present) to be string-like; a
+    # config file that parses as valid YAML but is not the expected shape —
+    # a bare scalar/list at the top level, or a non-string/non-path value
+    # nested under `isolation.worktree_root` — raises `AttributeError` or
+    # `TypeError` from inside `worktree_root`/`Path(...)`, not `OSError` or
+    # `yaml.YAMLError`. Both are "cannot determine the configured root",
+    # the same class this function already fails closed on, so they must be
+    # caught here too rather than propagating out of a helper whose whole
+    # contract is "return None, never raise, when undeterminable".
+    try:
+        roots = {_config.worktree_root(data), _config.NO_HUMAN_HOME / "worktrees"}
+    except (AttributeError, TypeError):
+        return None
     out: set[str] = set()
     for r in roots:
         p = Path(os.path.abspath(os.path.expanduser(str(r))))

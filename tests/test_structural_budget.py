@@ -162,7 +162,14 @@ FROZEN_FUNCTION_LINES = {
     # single-write invariant accurately instead of the old "may already have
     # written its own copy" hedge. Measured on this tree with the scanner
     # below.
-    "core/orchestrator.py:Orchestrator._run_attempt": 2254,
+    # 2254 -> 2255 (+1) (task 7f579176): the install guard's containment
+    # boundary must be the worktree root the orchestrator itself created,
+    # not something discovered from disk or re-derived from `cwd` inside a
+    # backend (see venv_install_guard.py's module docstring, item 5, and
+    # `_session_root_for` below). One new `session_root=self._session_root_for(repo),`
+    # keyword threaded into the main coder-turn `backend.run` call. Measured
+    # on this tree with the scanner below.
+    "core/orchestrator.py:Orchestrator._run_attempt": 2255,
     # 760 -> 778 (+18): dispatch-time intake-eval hoisted path — the `elif
     # ctx.get("eval_result")` branch that acts on a grill/wizard-stored
     # verdict (idempotency marker, cost/residual-gap comments) added inside
@@ -222,7 +229,16 @@ FROZEN_FUNCTION_LINES = {
     # merge result — the same "landed without measuring the ratchet" failure
     # the FROZEN_FILE_LINES note below records. Re-anchored to the current
     # baseline so the full suite is green again; growth from here fails.
-    "agent/claude_backend.py:ClaudeBackend.stream": 407,
+    # 407 -> 414 (+7) (task 7f579176): `stream` now accepts and forwards its
+    # own `session_root` keyword (one new parameter line, a 5-line docstring
+    # addition explaining it is the caller's worktree root and never derived
+    # from `cwd`, and the `_options(...)` call site splitting its trailing
+    # `output_format=output_format)` onto two lines to add
+    # `session_root=session_root)`) — the same parameter threaded through
+    # `_options`/`run`/`_run_once` so the guard hook's containment boundary
+    # is the orchestrator's own worktree root, not a value re-derived inside
+    # the backend. Measured on this tree with the scanner below.
+    "agent/claude_backend.py:ClaudeBackend.stream": 414,
     # 386 -> 394 (+8): verifier-wall-park bugfix (tasks 279c03c5/c5b24230/
     # 7da7c7ce) — `_raise_if_verifier_wall` (renamed from
     # `_raise_if_verifier_quota_wall`) now also classifies a returned
@@ -1183,7 +1199,17 @@ FROZEN_FILE_LINES = {
     # the scanner's own metric (ast/splitlines-based, not `wc -l` — this
     # file has a few non-`\n` line separators that make the two differ
     # by a constant 3 lines).
-    "core/orchestrator.py": 23846,
+    # 23846 -> 23875 (+29) (task 7f579176): the install guard's containment
+    # boundary must be the worktree root the orchestrator itself created,
+    # threaded as a genuinely independent `session_root` kwarg into every
+    # coder-facing `backend.run` call site in this file (main coder turn,
+    # repro send-back round, reformat/report nudges, preflight, code-review
+    # diff fetch, planning) rather than discovered from disk or re-derived
+    # from `cwd` inside a backend — plus the new `_session_root_for` helper
+    # (and its docstring) that is the single place this value is computed:
+    # `str(repo.path)` under worktree isolation, `None` otherwise. Measured
+    # on this tree by the scanner's own metric.
+    "core/orchestrator.py": 23875,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.

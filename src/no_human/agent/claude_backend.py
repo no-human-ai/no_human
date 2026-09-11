@@ -645,6 +645,7 @@ class ClaudeBackend:
         agents: dict[str, AgentDefinition] | None = None,
         on_compact: Callable[[str], None] | None = None,
         output_format: dict[str, Any] | None = None,
+        session_root: str | None = None,
     ) -> ClaudeAgentOptions:
         hooks: dict = {
             "PreToolUse": [
@@ -656,15 +657,18 @@ class ClaudeBackend:
                             self.never_push_to,
                             readonly=self.readonly,
                             cwd=str(cwd),
-                            # Same value as `cwd` here because this backend's
-                            # `cwd` IS the worktree root the orchestrator
-                            # created for this session (fixed once above,
-                            # never updated per tool call) — see
-                            # venv_install_guard.py's module docstring, item 5,
-                            # for why that makes this line a no-op against
-                            # today's traffic while still fixing the guard's
-                            # contract for any caller whose `cwd` isn't.
-                            session_root=str(cwd),
+                            # `session_root` is supplied by THIS method's
+                            # caller (ultimately the orchestrator, which is
+                            # the one party that actually knows the worktree
+                            # root it created — see `run`/`stream` below and
+                            # venv_install_guard.py's module docstring, item
+                            # 5). It is never derived from `cwd` here: `cwd`
+                            # is this session's fixed subprocess directory,
+                            # which the coder is free to `cd` away from
+                            # without either value moving, and conflating the
+                            # two is exactly the bug this parameter exists to
+                            # not repeat.
+                            session_root=session_root,
                         )
                     ],
                 )
@@ -821,14 +825,21 @@ class ClaudeBackend:
         agents: dict[str, AgentDefinition] | None = None,
         on_compact: Callable[[str], None] | None = None,
         output_format: dict[str, Any] | None = None,
+        session_root: str | None = None,
     ) -> AsyncIterator[AgentEvent]:
-        """Run the agent, yielding normalized events; the final event is ``result``."""
+        """Run the agent, yielding normalized events; the final event is ``result``.
+
+        ``session_root`` is the caller's worktree root (``None`` when the
+        caller has no worktree of its own, e.g. isolation disabled) — it is
+        forwarded to the guard hook unchanged, never computed from ``cwd``.
+        """
         options = self._options(cwd, max_turns, effort=effort, resume=resume,
                                 supervisor_hook=supervisor_hook, lint_hook=lint_hook,
                                 skills=skills, thinking=thinking,
                                 max_thinking_tokens=max_thinking_tokens,
                                 agents=agents, on_compact=on_compact,
-                                output_format=output_format)
+                                output_format=output_format,
+                                session_root=session_root)
         # The SDK signals terminal conditions (notably hitting max_turns) by
         # *raising* a bare Exception from inside query(). It usually emits a
         # ResultMessage first ("agent done: N turns") and THEN raises, so we
@@ -1230,6 +1241,7 @@ class ClaudeBackend:
         agents: dict[str, AgentDefinition] | None = None,
         on_compact: Callable[[str], None] | None = None,
         output_format: dict[str, Any] | None = None,
+        session_root: str | None = None,
     ) -> AgentResult:
         """Run to completion, retrying ONCE if the transport died, not the task.
 
@@ -1282,6 +1294,7 @@ class ClaudeBackend:
             lint_hook=lint_hook, skills=skills, thinking=thinking,
             max_thinking_tokens=max_thinking_tokens, agents=agents,
             on_compact=on_compact, output_format=output_format,
+            session_root=session_root,
         )
         if not is_transport_failure(first):
             return first
@@ -1323,6 +1336,7 @@ class ClaudeBackend:
                 skills=skills, thinking=thinking,
                 max_thinking_tokens=max_thinking_tokens, agents=agents,
                 on_compact=on_compact, output_format=output_format,
+                session_root=session_root,
             )
             _fold_spend(first, into=again)
             if not is_transport_failure(again):
@@ -1370,6 +1384,7 @@ class ClaudeBackend:
         agents: dict[str, AgentDefinition] | None = None,
         on_compact: Callable[[str], None] | None = None,
         output_format: dict[str, Any] | None = None,
+        session_root: str | None = None,
     ) -> AgentResult:
         """One session: consume the stream, keep the LAST result event."""
         final = AgentResult(
@@ -1381,6 +1396,7 @@ class ClaudeBackend:
             supervisor_hook=supervisor_hook, lint_hook=lint_hook, skills=skills,
             thinking=thinking, max_thinking_tokens=max_thinking_tokens,
             agents=agents, on_compact=on_compact, output_format=output_format,
+            session_root=session_root,
         ):
             if on_event is not None:
                 on_event(event)

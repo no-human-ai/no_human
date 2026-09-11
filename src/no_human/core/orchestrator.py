@@ -5885,6 +5885,7 @@ class Orchestrator:
                         on_event=self._agent_sink,
                         supervisor_hook=supervisor,
                         on_compact=self._on_coder_compact,
+                        session_root=self._session_root_for(repo),
                         **extra,
                     ),
                     attempt_timeout_s,
@@ -9663,6 +9664,7 @@ class Orchestrator:
                     cwd=repo.path,
                     max_turns=turns, effort=effort,
                     on_event=self._agent_sink,
+                    session_root=self._session_root_for(repo),
                 ),
                 timeout=timeout_s,
             )
@@ -10088,6 +10090,7 @@ class Orchestrator:
                 self.backend.run(
                     _REFORMAT_NUDGE, cwd=repo.path, max_turns=1, effort="low",
                     resume=session, on_event=self._agent_sink,
+                    session_root=self._session_root_for(repo),
                 ),
                 timeout=min(
                     float((self.config.get("bounds") or {}).get(
@@ -10261,6 +10264,7 @@ class Orchestrator:
                 self.backend.run(
                     prompt, cwd=repo.path, max_turns=1, effort="low",
                     resume=session, on_event=self._agent_sink,
+                    session_root=self._session_root_for(repo),
                 ),
                 timeout=min(
                     float(bounds.get("attempt_timeout_s") or 3600),
@@ -14415,6 +14419,7 @@ class Orchestrator:
                     f"Do NOT make any changes. Read-only.",
                     cwd=repo.path, max_turns=10, effort="low",
                     on_event=self._agent_sink,
+                    session_root=self._session_root_for(repo),
                 )
                 d = result.final_text or ""
             if d.strip():
@@ -15598,6 +15603,29 @@ class Orchestrator:
         checkout."""
         from ..config import worktree_isolation_enabled
         return worktree_isolation_enabled(self.config)
+
+    def _session_root_for(self, repo: GitRepo) -> str | None:
+        """The value to thread as ``backend.run(..., session_root=...)``: the
+        root of THIS task's own worktree, for the install guard's
+        containment boundary — never discovered from disk, never re-derived
+        from ``cwd`` inside the backend.
+
+        When isolation is on, ``repo`` reaching every coder-facing
+        ``backend.run`` call in this file (the main coder turn, the repro
+        send-back round, the reformat/report nudges, preflight, and the
+        code-review diff fetch) is the worktree ``_acquire_worktree``
+        created at exactly this path (`main_repo.add_worktree(wt_path, ...)`
+        returns a ``GitRepo`` rooted at ``wt_path`` — see ``_acquire_worktree``
+        and ``_worktree_path``), so ``repo.path`` here IS that root, not a
+        value that merely happens to equal it today.
+
+        ``None`` when isolation is off: ``repo`` is then the operator's own
+        primary checkout, not a worktree of this task's own, and the guard's
+        pre-existing discovery fallback (from ``cwd``) is what already
+        governed non-isolated sessions before this parameter existed — a
+        task-isolated boundary would be the wrong (and undiscoverable, since
+        no per-task directory exists) value to hand it instead."""
+        return str(repo.path) if self._worktree_isolation_enabled() else None
 
     def _worktree_path(self, task: Task, token: str) -> Path:
         """Per-RUN worktree location outside the repo tree: `<task_id>.<token>`,
@@ -18234,6 +18262,7 @@ class Orchestrator:
             plan_result = await self.backend.run(
                 plan_prompt, cwd=repo.path, max_turns=6, effort="low",
                 on_event=self._agent_sink,
+                session_root=self._session_root_for(repo),
             )
             plan = (plan_result.final_text or "").strip()
             if not plan:
