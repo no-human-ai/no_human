@@ -61,7 +61,7 @@ def test_pyproject_force_includes_the_board_in_wheel_and_sdist():
     the same source and the same destination; what makes it version-aware is
     asserted in `tests/test_clean_clone_installable.py`.
     """
-    cfg = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
+    cfg = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     targets = cfg["tool"]["hatch"]["build"]["targets"]
 
     # Asserted as an EXACT mapping, not per-entry. Relaxing it to per-entry

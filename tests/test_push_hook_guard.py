@@ -152,7 +152,7 @@ def test_pattern_list_comes_from_config_not_a_second_hardcoded_copy(tmp_path):
     wt = tmp_path / "wt"
     GitRepo(up, never_push_to=["sacred/*"]).add_worktree(
         wt, base="main", detach=True)
-    text = (hook_dir_for(wt) / PATTERNS_FILENAME).read_text()
+    text = (hook_dir_for(wt) / PATTERNS_FILENAME).read_text(encoding="utf-8")
     assert "sacred/*" in text
     assert "\nmain\n" not in text, "hook has its own hardcoded branch list"
 
@@ -236,7 +236,7 @@ def test_protect_base_branch_hook_covers_base(repo_with_remote, tmp_path):
 
     orch._protect_base_branch(task, "develop", repo=env["repo"])
 
-    text = (hook_dir_for(env["wt"]) / PATTERNS_FILENAME).read_text()
+    text = (hook_dir_for(env["wt"]) / PATTERNS_FILENAME).read_text(encoding="utf-8")
     assert "develop" in text.splitlines(), text
     assert "develop" in orch.backend.never_push_to
 
@@ -264,11 +264,11 @@ def test_protect_base_branch_without_repo_is_a_noop(repo_with_remote, tmp_path):
     orch = _orch(tmp_path)
     task = Task.new("do a thing", repo_path=str(env["up"]))
     patterns = hook_dir_for(env["wt"]) / PATTERNS_FILENAME
-    before = patterns.read_text()
+    before = patterns.read_text(encoding="utf-8")
 
     orch._protect_base_branch(task, "develop")
 
-    after = patterns.read_text()
+    after = patterns.read_text(encoding="utf-8")
     assert before == after, "the hook's pattern file must not change with no repo given"
     assert "develop" in orch.backend.never_push_to
 

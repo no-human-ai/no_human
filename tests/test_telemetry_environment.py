@@ -57,7 +57,7 @@ def no_network(monkeypatch):
 
 def _queue_lines(temp_home) -> list[dict]:
     path = temp_home / ".no_human" / "telemetry-queue.jsonl"
-    return [json.loads(ln) for ln in path.read_text().splitlines() if ln.strip()]
+    return [json.loads(ln) for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
 
 
 # --------------------- every event accepts `environment` ------------------ #
@@ -137,7 +137,7 @@ def test_bench_context_tags_bench_and_constant_id(temp_home, no_thread, monkeypa
     assert first == second == telemetry._ENV_SENTINEL_IDS["bench"]
 
     import yaml
-    on_disk = yaml.safe_load(cfg_path.read_text())["telemetry"]
+    on_disk = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))["telemetry"]
     assert "instance_id" not in on_disk  # sentinel never persisted
 
 
@@ -178,7 +178,7 @@ def test_real_context_persists_one_uuid4_and_reuses_it(temp_home, no_thread, mon
     assert uuid.UUID(shipped_id).version == 4
 
     import yaml
-    on_disk = yaml.safe_load(cfg_path.read_text())["telemetry"]
+    on_disk = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))["telemetry"]
     assert on_disk["instance_id"] == shipped_id
 
     # A second call on a freshly-read section (persisted id present) must

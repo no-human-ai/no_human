@@ -360,7 +360,7 @@ class LandEnv:
         _git(self.clone, "checkout", "-q", "-B", name, "origin/main")
         (self.clone / "src" / "feature.py").write_text("def feature():\n    return 3\n")
         cls_path = self.clone / "EXPORT_CLASSIFICATION.txt"
-        text = cls_path.read_text().replace("ship 2 src/*.py", "ship 3 src/*.py")
+        text = cls_path.read_text(encoding="utf-8").replace("ship 2 src/*.py", "ship 3 src/*.py")
         # Every added `tests/*.py` extra bumps its counted drop rule, the way a
         # real attempt's commit must (the stub guard, like the real one,
         # refuses `approve` on a drifted count).
@@ -607,7 +607,7 @@ def test_squash_produces_single_commit(land_env):
 
 def test_manifest_reset_classification_preserved(land_env):
     branch, head_sha = land_env.cut_branch("no-human/t-manifest")
-    branch_classification = (land_env.clone / "EXPORT_CLASSIFICATION.txt").read_text()
+    branch_classification = (land_env.clone / "EXPORT_CLASSIFICATION.txt").read_text(encoding="utf-8")
     result = land_task(
         repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
         task_id="deadbeef", task_title="Add feature", review_evidence="review PASS",
@@ -913,7 +913,7 @@ def test_change_scoped_tests_run_against_worktree(land_env, tmp_path, monkeypatc
     )
     assert result.ok, result.stderr
     assert marker.exists(), "the change-scoped test never ran"
-    recorded_cwd, _, recorded_pythonpath = marker.read_text().partition("\n")
+    recorded_cwd, _, recorded_pythonpath = marker.read_text(encoding="utf-8").partition("\n")
     assert recorded_cwd != str(land_env.clone), \
         "must run in the temp WORKTREE, not the task's own repo checkout"
     assert recorded_pythonpath.endswith(f"{os.sep}src")
@@ -1188,7 +1188,7 @@ def test_closes_pr_without_comment(land_env):
         config=land_env.config,
     )
     assert result.ok, result.stderr
-    argvs = [json.loads(l) for l in land_env.gh_log.read_text().splitlines() if l.strip()]
+    argvs = [json.loads(l) for l in land_env.gh_log.read_text(encoding="utf-8").splitlines() if l.strip()]
     close_calls = [a for a in argvs if a[:2] == ["pr", "close"]]
     assert close_calls, f"no `pr close` call recorded: {argvs}"
     for a in argvs:
@@ -1205,7 +1205,7 @@ def test_already_closed_pr_is_not_a_failure(land_env):
         config=land_env.config,
     )
     assert result.ok, result.stderr
-    argvs = [json.loads(l) for l in land_env.gh_log.read_text().splitlines() if l.strip()]
+    argvs = [json.loads(l) for l in land_env.gh_log.read_text(encoding="utf-8").splitlines() if l.strip()]
     assert not any(a[:2] == ["pr", "close"] for a in argvs)
 
 
@@ -2009,7 +2009,7 @@ def _advance_origin_with_counted_file(land_env, name: str, *, bump: bool) -> str
     (race / "src" / f"{name}.py").write_text(f"def {name}():\n    return 9\n")
     if bump:
         cls = race / "EXPORT_CLASSIFICATION.txt"
-        cls.write_text(cls.read_text().replace("ship 2 src/*.py", "ship 3 src/*.py"))
+        cls.write_text(cls.read_text(encoding="utf-8").replace("ship 2 src/*.py", "ship 3 src/*.py"))
     _git(race, "add", "-A")
     if bump:
         # a real landed commit carries its own pin (the gate requires it)

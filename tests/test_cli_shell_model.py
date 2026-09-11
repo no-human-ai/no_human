@@ -682,7 +682,7 @@ def test_the_documented_slash_set_is_exactly_what_is_registered():
 def test_every_slash_route_is_a_route_the_server_already_serves():
     """No invented server behaviour: each command's path template must appear
     verbatim in a decorator in api/app.py."""
-    source = (REPO_ROOT / "src" / "no_human" / "api" / "app.py").read_text()
+    source = (REPO_ROOT / "src" / "no_human" / "api" / "app.py").read_text(encoding="utf-8")
     for name, spec in SLASH_COMMANDS.items():
         if spec.path is None:
             continue

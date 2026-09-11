@@ -113,7 +113,7 @@ from no_human.core.task import Task
 _ORCH_SRC = (
     Path(__file__).resolve().parents[1]
     / "src" / "no_human" / "core" / "orchestrator.py"
-).read_text()
+).read_text(encoding="utf-8")
 
 
 def _bare_orchestrator(store):

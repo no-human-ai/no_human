@@ -233,7 +233,7 @@ def _bare_construction_files() -> set[str]:
     root = Path(no_human.__file__).resolve().parent
     hits: set[str] = set()
     for path in sorted(root.rglob("*.py")):
-        tree = ast.parse(path.read_text(), filename=str(path))
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in ast.walk(tree):
             if isinstance(node, ast.Call):
                 func = node.func

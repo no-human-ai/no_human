@@ -102,7 +102,7 @@ def _reentry_sites() -> set[tuple[str, str]]:
     """Every `set_status` call whose target is claimable, or is a variable."""
     found: set[tuple[str, str]] = set()
     for path in sorted(SRC.rglob("*.py")):
-        tree = ast.parse(path.read_text())
+        tree = ast.parse(path.read_text(encoding="utf-8"))
         stack: list[str] = []
 
         class V(ast.NodeVisitor):
@@ -188,7 +188,7 @@ def _drop_sites_and_closers() -> tuple[set[tuple[str, str]], set[tuple[str, str]
     drops: set[tuple[str, str]] = set()
     closes: set[tuple[str, str]] = set()
     for path in sorted(SRC.rglob("*.py")):
-        tree = ast.parse(path.read_text())
+        tree = ast.parse(path.read_text(encoding="utf-8"))
         rel = str(path.relative_to(SRC))
         stack: list[str] = []
 
@@ -348,7 +348,7 @@ def _stop_placement() -> tuple[set[tuple[str, str]], set[tuple[str, str]]]:
     registered = set(STOP_REGISTRY)
     for path in sorted(SRC.rglob("*.py")):
         rel = str(path.relative_to(SRC))
-        tree = ast.parse(path.read_text())
+        tree = ast.parse(path.read_text(encoding="utf-8"))
         stack: list[str] = []
 
         def owner() -> tuple[str, str]:
