@@ -300,6 +300,18 @@ def test_latch_injects_once_per_sha():
     second = _run(guard.hook({}, None, None))
     assert second == {}
 
+    # Send-back (third review, surviving mutant): the two assertions above
+    # pass even with `self._seen.add(head)` deleted, because `_pending_head`
+    # is cleared by `hook()` regardless of the latch. Pin the latch itself
+    # by driving the REAL note->hook->note->hook interleave a real attempt
+    # produces: the same head named again in a LATER turn, after the first
+    # injection already fired, must not spend a second probe or a second
+    # injection.
+    guard.note_text("this is already implemented in abc1234def, still")
+    third = _run(guard.hook({}, None, None))
+    assert third == {}, "a later turn repeating the same head must stay latched"
+    assert calls == ["probed"], "the latch must survive a later note/hook cycle too"
+
 
 def test_note_text_never_raises():
     """`note_text` itself never raises. A raising probe is `hook()`'s concern
@@ -316,9 +328,20 @@ def test_note_text_never_raises():
     def raising_head_sha() -> str:
         raise RuntimeError("HEAD unresolvable")
 
+    probe_calls: list[str] = []
+
     async def probe() -> tuple[bool, str, str]:
+        probe_calls.append("probed")
         return (True, "deadbeef", "deadbeef is not an ancestor of main")
 
     guard2 = LandedClaimGuard(probe=probe, head_sha=raising_head_sha)
     guard2.note_text("the work is already there, nothing to do")  # no named sha, head_sha raises
+    # Send-back (third review, vacuous second half): `hook()` returning `{}`
+    # here is also what a *successful* latch that simply wasn't refuted would
+    # look like, so it alone doesn't prove `note_text` failed to latch. Pin
+    # the actual claim: a raising `head_sha` must leave nothing pending, so
+    # `hook()` never even calls the probe.
+    assert guard2._pending_head is None, (
+        "a raising head_sha must never leave a pending injection latched")
     assert _run(guard2.hook({}, None, None)) == {}
+    assert probe_calls == [], "hook() must not probe when head_sha raised in note_text"

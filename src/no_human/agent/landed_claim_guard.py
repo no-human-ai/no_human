@@ -37,10 +37,11 @@ Two revisions since the first version landed:
      never disagree in the accept direction.
   2. The detector fired on ordinary, non-claim prose ("I already ran the
      full suite; no changes needed in tests/test_foo.py") because the
-     phrase match alone was treated as actionable. Measured: 64% of
-     attempts fired at least once, none of those firings were a genuine
-     incident, and at least 8% were confirmed spurious. Fixed by requiring
-     the phrase match to also carry either an explicitly cued commit (the
+     phrase match alone was treated as actionable. Measured: of 200 sampled
+     firings, 22 (11%) were a genuine already-satisfied incident and the
+     rest were spurious phrase matches on prose that never named a commit
+     or used the formal marker. Fixed by requiring the phrase match to also
+     carry either an explicitly cued commit (the
      existing sha-cue requirement) or the formal ``ALREADY-SATISFIED``
      contract marker `Orchestrator._parse_already_satisfied` requires at
      delivery — i.e. the SAME bar delivery itself uses to decide whether a
