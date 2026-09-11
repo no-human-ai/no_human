@@ -104,7 +104,7 @@ or escalates with a structured report (see [blockers.md](blockers.md)).
 to be an exhaustive list of its network traffic.** It cannot be one. The coder
 session is a Claude Agent SDK session that by default runs
 `permission_mode="bypassPermissions"`
-(`agent/claude_backend.py:ClaudeBackend.__init__:540`, `:ClaudeBackend.__init__:565`):
+(`agent/claude_backend.py:ClaudeBackend.__init__:547`, `:ClaudeBackend.__init__:572`):
 the CLI approves every tool call, no tool denylist is set, and no per-call
 permission callback runs.
 

@@ -1992,11 +1992,11 @@ def _token_line_in_symbol(source_text: str, symbol: str, token: str) -> int | No
 CITATION_TABLE = (
     # docs/security.md
     ("security.md", "guard.py:WRITE_TOOLS", "guard.py", 'WRITE_TOOLS = {"Write"'),
-    ("security.md", "agent/claude_backend.py:ClaudeBackend.__init__:540",
+    ("security.md", "agent/claude_backend.py:ClaudeBackend.__init__:547",
      "agent/claude_backend.py", 'permission_mode: str = "bypassPermissions"'),
     ("security.md", "agent/claude_backend.py:PRE_APPROVED_TOOLS",
      "agent/claude_backend.py", 'PRE_APPROVED_TOOLS = ("Bash",)'),
-    ("security.md", ":ClaudeBackend.__init__:565", "agent/claude_backend.py",
+    ("security.md", ":ClaudeBackend.__init__:572", "agent/claude_backend.py",
      "PreToolUse guard"),
     ("security.md", "vcs/pr_watcher.py:default_pr_state", "vcs/pr_watcher.py",
      '"gh", "pr", "view"'),
