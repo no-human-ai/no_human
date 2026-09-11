@@ -1714,7 +1714,11 @@ FROZEN_FILE_LINES = {
     # timeout/xargs/nice/stdbuf (and siblings) for the scan-severity check
     # only, so a wrapped `find … -delete` in a denied compound classifies
     # DESTRUCTIVE instead of HYGIENE. Local sibling list, `_WRAPPERS` untouched.
-    "agent/guard.py": 2892,
+    # 2892 -> 2901 (+9): `evaluate()` gained a `session_root` param (plus
+    # docstring) forwarded to `venv_install_guard.denial_reason` as the
+    # install guard's containment boundary, instead of discovering it from
+    # `cwd`. Measured on this tree.
+    "agent/guard.py": 2901,
     # +44: idle-path recover_quota_cooldown gate in tick() and the
     # never-shorten-a-live-wall guard in _run — the quota-wall storm cost fix.
     # +129: `HarvestJob` — the cadence job (`due()`/`maybe_run()`) that runs
