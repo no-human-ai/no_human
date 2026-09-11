@@ -16942,11 +16942,33 @@ class Orchestrator:
         enumerate this task's own pushed sibling branches. See
         `landed_claim_guard.py`'s module docstring for the incident this
         closes.
+
+        Send-back (third review): `_already_satisfied_subject` is not the
+        FIRST thing delivery asks. `_run_attempt` hoists `_route_unjudged_
+        head`/`_already_satisfied_eligible` (~12034/~11901) BEFORE the claim
+        is even parsed — a `[WIP-BLOCKED]`/`[WIP-PARTIAL]` head, or an
+        ordinary head resumed from `blockers.MACHINE_REQUEUE_PROVENANCE`,
+        with no completed review verdict recorded against it, is routed
+        straight to a full independent review and `_gate_already_satisfied`
+        (hence `_already_satisfied_subject`) is never reached at all. A
+        probe that skipped straight to `_already_satisfied_subject` would
+        tell the coder "delivery will refuse this claim right now" in a
+        shape where delivery instead reviews the diff for real — the same
+        disagreement-in-the-refuse-direction the earlier revision had in
+        the accept direction. So the probe asks `_already_satisfied_
+        eligible` first, exactly as `_route_unjudged_head` does, and stays
+        silent (never refutes) whenever that would route to review.
         """
         if not repo:
             return None
 
         async def probe() -> tuple[bool, str, str]:
+            eligible, _why = self._already_satisfied_eligible(task, repo, base)
+            if not eligible:
+                # Delivery routes this head to a full review instead of the
+                # claim gate — it is not refusing the claim, so the guard
+                # must not say it is.
+                return False, "", ""
             (shippable, head, _subject, subject_reason, _on_main,
              ship_ref) = await self._already_satisfied_subject(
                 task, repo, base=base, branch=branch)

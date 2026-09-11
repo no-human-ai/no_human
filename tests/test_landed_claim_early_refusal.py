@@ -1,8 +1,8 @@
 """Integration: the landed-claim guard, wired into a real `Orchestrator` over
 a real temp git repo, refuses a refutable "already satisfied" claim the
-moment it is asserted — using the exact same ancestry question
-(`classify_already_satisfied_landing`, `git merge-base --is-ancestor`)
-delivery asks, just earlier."""
+moment it is asserted — using delivery's own decision (`_route_unjudged_
+head`/`_already_satisfied_eligible`, then `_already_satisfied_subject`),
+just earlier, so the two can never disagree."""
 
 from __future__ import annotations
 
@@ -110,6 +110,99 @@ async def test_build_landed_claim_guard_fires_on_a_refutable_claim_via_the_real_
     assert "is not on" in message
     # Non-terminal: the attempt must be told to keep going.
     assert "continue_" not in result
+    # Converse of `test_a_wip_partial_checkpoint_is_not_blocked_because_
+    # delivery_would_review_it_not_refuse_it` below: THIS head is eligible
+    # (ordinary subject, no unreviewed-checkpoint shape), so delivery's own
+    # `_route_unjudged_head` does NOT hoist it to review — it falls through
+    # to the claim gate `_already_satisfied_subject` really refuses. Pinning
+    # both in one test is what the third send-back asked for: eligibility
+    # and the guard's verdict must be read off the SAME fixture.
+    assert orch._route_unjudged_head(
+        task, GitRepo(bare_repo), "main") is None
+
+
+async def test_a_wip_partial_checkpoint_is_not_blocked_because_delivery_would_review_it_not_refuse_it(
+    bare_repo, tmp_path, store,
+):
+    """Send-back (third review), Blocker: `_run_attempt` hoists `_route_
+    unjudged_head`/`_already_satisfied_eligible` (~12034/~11901) BEFORE the
+    claim is even parsed. A `[WIP-PARTIAL]` (or `[WIP-BLOCKED]`) head one
+    commit ahead of `main`, with no completed review verdict recorded
+    against it, is routed straight to a full independent review —
+    `_gate_already_satisfied` (and therefore `_already_satisfied_subject`)
+    is never reached. A probe that asked `_already_satisfied_subject`
+    alone would tell the coder "delivery will refuse this claim right now"
+    in a shape where delivery instead reviews the diff for real (incidents
+    0847f2c2 / d256ae60, and the neighbouring `[WIP-PARTIAL]` incident —
+    see `_already_satisfied_eligible`'s docstring). The guard must stay
+    silent here."""
+    attempt_branch = "no-human/task-attempt-wip-partial"
+    _git(bare_repo, "checkout", "-b", attempt_branch)
+    (bare_repo / "fix.py").write_text("def fix():\n    return True\n")
+    _git(bare_repo, "add", "-A")
+    _git(bare_repo, "commit", "-m", "[WIP-PARTIAL] parked mid-turn by a wake resume")
+    claimed_sha = GitRepo(bare_repo).head_sha()
+
+    orch = _orch(store, tmp_path)
+    task = Task.new("existing", repo_path=str(bare_repo), kind="feature")
+    await store.create_task(task)
+
+    assert orch._route_unjudged_head(
+        task, GitRepo(bare_repo), "main") is not None, (
+        "an unreviewed [WIP-PARTIAL] head off main must route to review")
+
+    guard = orch._build_landed_claim_guard(
+        task, GitRepo(bare_repo), base="main", branch=attempt_branch,
+    )
+    assert guard is not None
+    guard.note_text(
+        f"This is already implemented — the work already exists at "
+        f"{claimed_sha}, no changes needed."
+    )
+    assert await guard.hook({}, None, None) == {}, (
+        "delivery would route this head to a full review, not refuse the "
+        "claim — the guard must not say it is refusing it")
+
+
+async def test_an_ordinary_head_resumed_from_machine_requeue_provenance_is_not_blocked(
+    bare_repo, tmp_path, store,
+):
+    """Same shape, the other trigger `_already_satisfied_eligible` treats
+    identically: an ORDINARY subject (no `[WIP-*]` prefix) whose
+    `task.context["resume_from"]["by"]` is in
+    `blockers.MACHINE_REQUEUE_PROVENANCE` (task 8c8b36b5: a server restart
+    killed the review mid-run, `_recover_orphans` resumed the task, and the
+    branch already carried the whole diff no review had judged). Delivery
+    routes this to a full review exactly as it does the checkpoint-subject
+    shape; the guard must be silent for the same reason."""
+    attempt_branch = "no-human/task-attempt-machine-resume"
+    _git(bare_repo, "checkout", "-b", attempt_branch)
+    (bare_repo / "fix.py").write_text("def fix():\n    return True\n")
+    _git(bare_repo, "add", "-A")
+    _git(bare_repo, "commit", "-m", "attempt at the fix")
+    claimed_sha = GitRepo(bare_repo).head_sha()
+
+    orch = _orch(store, tmp_path)
+    task = Task.new("existing", repo_path=str(bare_repo), kind="feature")
+    task.context["resume_from"] = {"by": "server_stop"}
+    await store.create_task(task)
+
+    assert orch._route_unjudged_head(
+        task, GitRepo(bare_repo), "main") is not None, (
+        "a machine-requeue-provenance head with no review verdict must "
+        "route to review")
+
+    guard = orch._build_landed_claim_guard(
+        task, GitRepo(bare_repo), base="main", branch=attempt_branch,
+    )
+    assert guard is not None
+    guard.note_text(
+        f"This is already implemented — the work already exists at "
+        f"{claimed_sha}, no changes needed."
+    )
+    assert await guard.hook({}, None, None) == {}, (
+        "delivery would route this head to a full review, not refuse the "
+        "claim — the guard must not say it is refusing it")
 
 
 async def test_a_commit_that_is_on_the_base_branch_is_not_blocked(
