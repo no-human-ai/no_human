@@ -106,6 +106,18 @@ const browser = await chromium.launch();
   check("no <iframe> is present anywhere on the step", (await page.locator("iframe").count()) === 0);
   check("before clicking, nothing has touched a discord.* host", discordHits.length === 0, JSON.stringify(discordHits));
 
+  // The invite anchor and the echoed URL beside it share one .ob-row; the
+  // echoed URL used to carry .ob-note's block margin-top into that flex row,
+  // sitting visibly below the button's centre.
+  const urlSpan = page.locator(".ob-row .ob-note", { hasText: DISCORD_INVITE_URL });
+  const anchorBox = await link.boundingBox();
+  const urlBox = await urlSpan.boundingBox();
+  const anchorMidY = anchorBox ? anchorBox.y + anchorBox.height / 2 : null;
+  const urlMidY = urlBox ? urlBox.y + urlBox.height / 2 : null;
+  check("the echoed invite URL is vertically centred with the button beside it",
+    anchorMidY !== null && urlMidY !== null && Math.abs(anchorMidY - urlMidY) <= 1,
+    `anchorMidY=${anchorMidY} urlMidY=${urlMidY}`);
+
   const [popup] = await Promise.all([
     ctx.waitForEvent("page"),
     link.click(),

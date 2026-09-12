@@ -5868,6 +5868,10 @@ a.so-chip-value:hover { color: var(--accent-300); }
 /* Second slogan sentence — secondary weight/size, same words (BINDING copy). */
 .ob-h1-sub { display: block; margin-top: 8px; font-size: 22px; font-weight: 600; letter-spacing: -0.02em; color: var(--text-body); }
 .ob-h2 { font-family: var(--font-ui); font-weight: 800; font-size: 27px; line-height: 1.15; letter-spacing: -0.02em; color: var(--text-hi); margin-bottom: 8px; }
+/* The Community step's "(optional)" tag matches the integrations step's
+   "(optional)" tag in size/face (12px mono) but keeps --text-muted, not
+   --accent-500 — .ob-faint fails AA on the card's light --surface-2. */
+.ob-h2 .ob-sub { font-family: var(--font-mono); font-size: 12px; }
 .ob-lede { font-family: var(--font-ui); font-size: 16px; line-height: 1.6; color: var(--text-body); max-width: 56ch; }
 .ob-lede em { color: var(--accent-500); font-style: normal; font-weight: 600; }
 .ob-sub { font-size: 13.5px; line-height: 1.6; color: var(--text-muted); margin-bottom: 22px; max-width: 54ch; }
@@ -5930,6 +5934,10 @@ a.so-chip-value:hover { color: var(--accent-300); }
 .ob-minimal-skip { display: flex; flex-direction: column; gap: 4px; }
 .ob-minimal-hint { margin-top: 0; }
 .ob-row .ob-input { flex: 1; }
+/* An .ob-note used beside a button in an .ob-row (the Community step's echoed
+   invite URL) must not carry its block margin-top — that pushed its centre
+   below the button's centre in the shared flex row. */
+.ob-row .ob-note { margin-top: 0; }
 .ob-listedit { display: flex; flex-direction: column; gap: 4px; }
 .ob-add { align-self: flex-start; margin-top: 4px; }
 

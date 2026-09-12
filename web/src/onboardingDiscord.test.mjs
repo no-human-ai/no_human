@@ -66,6 +66,27 @@ test("the step renders a plain outbound anchor to the invite — no embed of any
   }
 });
 
+test("the step is rendered inside the wizard's own <Stagger> entrance wrapper, like every other step", () => {
+  const staggerStart = STEP.indexOf("<Stagger>");
+  assert.ok(staggerStart > -1 && staggerStart < 60, "the step's first real element must be <Stagger>");
+  assert.match(STEP, /<\/Stagger>\s*\)\}\s*$/, "the step must close its own <Stagger> immediately before the block ends");
+});
+
+test('the step tells the user skipping is safe, in its own rendered copy', () => {
+  assert.match(STEP, /Skipping changes nothing/, "the step must say outright that ignoring it has no consequence");
+});
+
+test(".ob-note's own rule paints text --text-muted, never --accent-500 (the echoed URL sits in plain .ob-note, not .ob-note code)", () => {
+  // Distinct from the vocabulary test (which forbids the class "ob-faint" on
+  // the step's elements) — this pins the *rule itself* so repainting
+  // `.ob-note { color: var(--accent-500) }` directly (never adding the class
+  // "ob-faint") would also be caught.
+  const rule = css.match(/\.ob-note\s*\{([^}]*)\}/);
+  assert.ok(rule, ".ob-note base rule must exist");
+  assert.match(rule[1], /color:\s*var\(--text-muted\)/, ".ob-note must paint with --text-muted");
+  assert.doesNotMatch(rule[1], /--accent-500/, ".ob-note's own rule must never reference --accent-500");
+});
+
 // ── warm-editorial copy: no implementation breadcrumb ───────────────────
 test("the step's rendered copy names no internal function or source file", () => {
   // A first-run user reads this text; it must never surface an internal
