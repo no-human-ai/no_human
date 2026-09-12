@@ -1346,7 +1346,14 @@ FROZEN_FILE_LINES = {
     # `nh approve --ready`'s one-line summary no longer silently drops the
     # only signal telling the operator a verifier never answered. Measured
     # via `wc -l src/no_human/cli/commands.py`.
-    "cli/commands.py": 8666,
+    # 8666 -> 8679 (+13): `nh status`'s pause-reason branch gains an explicit
+    # `pause.get("reason") == "lease_lost"` arm (restart-only message, no
+    # ETA) ahead of the existing "infra"/quota checks, plus an honest
+    # `elif pause:` fallthrough for any future unrecognised reason — closing
+    # the old silent-fallthrough gap where an unmatched reason printed
+    # nothing and could be misread as "not paused". Measured via `wc -l
+    # src/no_human/cli/commands.py`.
+    "cli/commands.py": 8679,
     # api/app.py 5338 -> 5346 (+8): same budget-floor warning surfaced by
     # `send-back`/`reply` as `budget_warning` in the JSON response. Net cost
     # was trimmed from a naive +14 to +8 by computing `Bounds.from_config(...)`
@@ -1508,7 +1515,13 @@ FROZEN_FILE_LINES = {
     # path too, gated to avoid double-firing against `_run_attempt`'s own
     # in-process `cancelled_hard` emit when `stopped` is True. Measured on
     # this tree with the scanner below.
-    "api/app.py": 6183,
+    # 6183 -> 6190 (+7): `worker_status`'s `healthy` conjunction gains
+    # `and not out.get("lease_lost")` (a lost lease is permanent and
+    # `tick_stalled` does not cover it), and `queue_health_endpoint` reads
+    # `sched.lease_lost` and threads it into `queue_health(...)` alongside
+    # the existing cooldown kwargs. Measured on this tree with the scanner
+    # below.
+    "api/app.py": 6190,
     # +51: W5 active-time phase writer (phase instrumentation).
     # +84: `list_escalations`/`list_review_fails`/`list_tamper_trips` — the
     # three new failure-signal sources the recurring learning harvest mines.
@@ -1781,7 +1794,16 @@ FROZEN_FILE_LINES = {
     # `_honor_server_stop` close leaves exactly this shape, and the old
     # open-attempt-only staleness check under-counted it. Still read-only:
     # counts, never mutates. Measured on this tree with the scanner below.
-    "core/scheduler.py": 3098,
+    # 3098 -> 3176 (+78): pool-lease CAS-write retry — `_is_transient_db_lock`
+    # (module-level; narrows to `sqlite3.OperationalError` naming a lock, so
+    # every other exception still fails closed), `_LEASE_WRITE_ATTEMPTS`/
+    # `_LEASE_WRITE_BACKOFF_S`, and `_cas_heartbeat_with_retry` — a bounded,
+    # exponential-backoff retry of `_claim_pool_lease`'s CAS write that
+    # forwards the SAME `expect` row on every attempt, so a competitor's
+    # legitimately-claimed row still cannot be overwritten. Plus the
+    # read-only `lease_lost` property mirroring `_lease_lost` for
+    # `health.py`/`api/app.py`. Measured on this tree with the scanner below.
+    "core/scheduler.py": 3176,
 }
 
 
