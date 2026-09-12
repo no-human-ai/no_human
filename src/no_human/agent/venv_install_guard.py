@@ -253,10 +253,27 @@ _ACTIVE_FLAG = "--active"
 _UNRESOLVABLE_CHARS = ("$", "`")
 
 
+#: Windows resolves a bare command name against PATHEXT, so `gh`, `gh.exe`,
+#: `gh.cmd` and `gh.ps1` are all "gh" to the person typing it -- and `.cmd`
+#: /`.ps1` are what scoop and npm-style shims actually install. Matching only
+#: `.exe` would close the spelling a reviewer thinks of first and leave the
+#: one users have.
+_PATHEXT_SUFFIXES = (".exe", ".bat", ".cmd", ".com", ".ps1")
+
+#: The same set as a regex fragment, for the raw-text matchers in `guard.py`
+#: that name a binary directly and so cannot go through `_basename`. ONE
+#: definition, because the first version of this fix spelled `(?:\.[Ee][Xx][Ee])?`
+#: inline at four sites, missed four more, and shipped a body claiming the
+#: class was closed.
+_PATHEXT_RE = r"(?:\.(?:[Ee][Xx][Ee]|[Bb][Aa][Tt]|[Cc][Mm][Dd]|[Cc][Oo][Mm]|[Pp][Ss]1))?"
+
+
 def _basename(path: str) -> str:
     name = os.path.basename(path)
-    if name.lower().endswith(".exe"):
-        name = name[:-4]
+    lowered = name.lower()
+    for suffix in _PATHEXT_SUFFIXES:
+        if lowered.endswith(suffix):
+            return name[: -len(suffix)]
     return name
 
 
