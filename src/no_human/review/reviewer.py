@@ -953,6 +953,7 @@ def _build_review_prompt(
     reviewed_branch: str = "",
     failing_test_ids: list[str] | None = None,
     failing_test_ids_dropped: int = 0,
+    failing_test_attribution: str = "",
 ) -> str:
     # Bound the auxiliary sections AT THIS BOUNDARY (see `_AUX_CAP`). The diff,
     # the acceptance criteria and the test output are deliberately not routed
@@ -1041,15 +1042,24 @@ def _build_review_prompt(
         ids_line = ", ".join(failing_test_ids)
         if failing_test_ids_dropped:
             ids_line += f" (+{failing_test_ids_dropped} more, not shown)"
+        if failing_test_attribution:
+            attribution_sentence = (
+                "the harness has already checked each one against the base "
+                f"tree:\n{failing_test_attribution}"
+            )
+        else:
+            attribution_sentence = (
+                "the harness has NOT yet attributed them to this diff. A failing "
+                "id that also fails on the base tree is not this change's defect, "
+                "and the post-review testing step — not this review — is what "
+                "decides that (it classifies against the base tree and re-runs "
+                "for flakiness)."
+            )
         failing_ids_section = (
             "\nFailing tests in this tree (from the harness's own run, not an "
             f"opinion): {ids_line}\n"
-            "These are FACTS the test runner produced BEFORE this review, but "
-            "the harness has NOT yet attributed them to this diff. A failing "
-            "id that also fails on the base tree is not this change's defect, "
-            "and the post-review testing step — not this review — is what "
-            "decides that (it classifies against the base tree and re-runs "
-            "for flakiness). Grade a failing id at critical severity only "
+            f"These are FACTS the test runner produced BEFORE this review, but "
+            f"{attribution_sentence} Grade a failing id at critical severity only "
             "when the diff plausibly explains it; otherwise report it as an "
             "observation, not a blocking finding, unless a checklist item "
             "you are already reporting covers the same failure — a PASS "
@@ -2435,6 +2445,7 @@ class AdversarialReviewer:
         reviewed_branch: str = "",
         failing_test_ids: list[str] | None = None,
         failing_test_ids_dropped: int = 0,
+        failing_test_attribution: str = "",
     ) -> ReviewDecision:
         # Tamper-adjudication mode: see `_review_tamper_adjudication` for why
         # this exists, what it may not be given, and the bounded-retry
@@ -2557,6 +2568,7 @@ class AdversarialReviewer:
             reviewed_branch=reviewed_branch,
             failing_test_ids=failing_test_ids,
             failing_test_ids_dropped=failing_test_ids_dropped,
+            failing_test_attribution=failing_test_attribution,
         )
 
         # When the diff is already provided (or routed single-turn), use a

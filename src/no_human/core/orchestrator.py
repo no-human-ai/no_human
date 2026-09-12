@@ -957,8 +957,10 @@ def _bounded_test_results(test_results: dict) -> dict:
     ledger's `tests.md` both render from).
 
     `failing_tests` and, with the same bound, its sibling id lists in the
-    same dict (`pre_existing_failures`, `owned_failures`, `flaky_excused`)
-    are each truncated to the first `_MAX_PERSISTED_FAILING_TESTS`, and each
+    same dict (`pre_existing_failures`, `owned_failures`, `flaky_excused`,
+    `pre_review_new_failures`, `pre_review_pre_existing_failures`,
+    `pre_review_unknown_failures`) are each truncated to the first
+    `_MAX_PERSISTED_FAILING_TESTS`, and each
     gets its OWN `<key>_dropped` count when it actually got truncated (the
     legacy `failing_tests_dropped` name is kept for `failing_tests` itself,
     for backward compatibility with existing readers) — small runs stay
@@ -975,7 +977,11 @@ def _bounded_test_results(test_results: dict) -> dict:
     if failing_tests:
         kept, dropped = _bounded_failing_ids(failing_tests)
         out["failing_tests"] = kept
-    for key in ("pre_existing_failures", "owned_failures", "flaky_excused"):
+    for key in (
+        "pre_existing_failures", "owned_failures", "flaky_excused",
+        "pre_review_new_failures", "pre_review_pre_existing_failures",
+        "pre_review_unknown_failures",
+    ):
         if out.get(key):
             kept_sibling, dropped_sibling = _bounded_failing_ids(out[key])
             out[key] = kept_sibling
@@ -1707,6 +1713,96 @@ def _attributed_ids(
     return [t for t in failing if t in keep]
 
 
+@dataclass(frozen=True)
+class _FailureAttribution:
+    """The round-scoped verdict for one red `TestRunResult` — computed once
+    (see `Orchestrator._round_failure_attribution`) and shared by the
+    reviewer-facing render (`_render_failing_attribution`) and by billing
+    (`_attributed_ids`), so the two can never disagree about the same run.
+    """
+
+    result: Any  # the TestRunResult this describes — identity cache key
+    failing: list[str]  # every red id, in run order
+    newly: list[str] | None  # raw base verdict; None = INCONCLUSIVE
+    owned: list[str]  # ids this diff added/modified — an annotation, not a bucket
+
+
+def _attribution_buckets(
+    att: "_FailureAttribution",
+) -> tuple[list[str], list[str], list[str]]:
+    """Split `att.failing` into `(new_ids, pre_existing_ids, unknown_ids)`.
+
+    `att.newly is None` (the base check was inconclusive) puts every id in
+    `unknown_ids`; otherwise ids the base check reported as newly-failing go
+    to `new_ids` and the rest — confirmed red on base — to
+    `pre_existing_ids`. Shared by the reviewer-facing render
+    (`_render_failing_attribution`) and the persisted breakdown
+    (`Orchestrator._run_review`'s pre-review `update_attempt` write) so the
+    two can never disagree about the same run.
+    """
+    if att.newly is None:
+        return [], [], list(att.failing)
+    newly_set = set(att.newly)
+    new_ids = [t for t in att.failing if t in newly_set]
+    pre_existing_ids = [t for t in att.failing if t not in newly_set]
+    return new_ids, pre_existing_ids, []
+
+
+def _render_failing_attribution(att: "_FailureAttribution") -> str:
+    """Render `att` for the reviewer: which failing ids are NEW versus this
+    diff, which were already red on the base tree, and which the harness
+    could not get a trustworthy base-tree verdict for. Ownership is an
+    inline annotation on whichever bucket an id already falls in — it is
+    never a fourth bucket, and an owned id must never be described as
+    pre-existing or as not this change's fault. All-empty → "" (byte-identical
+    to today when there is nothing to attribute).
+    """
+    owned_set = set(att.owned)
+
+    def _mark(test_id: str) -> str:
+        return f"`{test_id}`" + (" [MODIFIED BY THIS DIFF]" if test_id in owned_set else "")
+
+    new_ids, pre_existing_ids, unknown_ids = _attribution_buckets(att)
+
+    sections: list[str] = []
+
+    if new_ids:
+        kept, dropped = _bound_failing_test_ids(new_ids)
+        lines = ", ".join(_mark(t) for t in kept)
+        if dropped:
+            lines += f" (+{dropped} more, not shown)"
+        sections.append(
+            "NEW — failing here, green on the base tree:\n" f"{lines}\n"
+        )
+
+    if pre_existing_ids:
+        kept, dropped = _bound_failing_test_ids(pre_existing_ids)
+        lines = ", ".join(_mark(t) for t in kept)
+        if dropped:
+            lines += f" (+{dropped} more, not shown)"
+        section = "ALSO RED ON THE BASE TREE:\n" f"{lines}\n"
+        if any(t not in owned_set for t in pre_existing_ids):
+            section += (
+                "Ids above not marked [MODIFIED BY THIS DIFF] were already "
+                "red before this change. An id marked [MODIFIED BY THIS "
+                "DIFF] is this change's regardless of the base tree — the "
+                "harness will bill it.\n"
+            )
+        sections.append(section)
+
+    if unknown_ids:
+        kept, dropped = _bound_failing_test_ids(unknown_ids)
+        lines = ", ".join(_mark(t) for t in kept)
+        if dropped:
+            lines += f" (+{dropped} more, not shown)"
+        sections.append(
+            "ATTRIBUTION UNKNOWN — the harness could not get a trustworthy "
+            f"base-tree verdict for these:\n{lines}\n"
+        )
+
+    return "\n".join(sections)
+
+
 # emit() kinds that end a task without going through the "done"/"awaiting_approval"
 # or "failed" off-ramps — see `Orchestrator._telemetry_hook`'s `task_ended` branch.
 #
@@ -1889,6 +1985,13 @@ class Orchestrator:
         # `_run_review` call so a stale render from an earlier round can
         # never be mistaken for this one's.
         self._pre_review_red_render: tuple | None = None
+        # Round-scoped cache for `_round_failure_attribution`, keyed on the
+        # RESULT OBJECT's identity (`self._round_attribution.result is
+        # test_result`) exactly like `_pre_review_red_render` above. Computed
+        # once per red `TestRunResult` and reused by both the reviewer-facing
+        # render and TESTING's billing so the base-tree check runs once per
+        # round. Cleared at the top of every `_run_review` call.
+        self._round_attribution: "_FailureAttribution | None" = None
 
     # ----------------------------- events ---------------------------------- #
 
@@ -7179,8 +7282,12 @@ class Orchestrator:
                 # never be excused as environment just because its text
                 # happens to contain a prerequisite signature (round-2 review
                 # MAJOR-4).
-                owned = await self._owned_failing_tests(
-                    repo, base, failing_tests, cwd=test_cwd)
+                attribution = await self._round_failure_attribution(
+                    repo, test_cmd, base, test_result, failing_tests,
+                    cwd=test_cwd,
+                    env_dependent=bool((task.config or {}).get("env_setup")),
+                )
+                owned = attribution.owned
                 # The prerequisite signature (round 2) OWNS the missing-
                 # build-prerequisite class outright — checked UNCONDITIONALLY,
                 # ahead of `invocation_error` below, so it wins even when the
@@ -7308,10 +7415,7 @@ class Orchestrator:
                     # full suite) and fail the attempt only on ids that are NEWLY
                     # failing (pass on base, fail here). Ids red on BOTH are
                     # pre-existing — surfaced honestly, not blamed on the change.
-                    newly_failing = await self._newly_failing_vs_base(
-                        repo, test_cmd, base, failing_tests, cwd=test_cwd,
-                        env_dependent=bool((task.config or {}).get("env_setup")),
-                    )
+                    newly_failing = attribution.newly
                     # `owned` was already computed above (before the
                     # environment-error check) and is reused here — does THIS
                     # attempt's own diff name the failing test function itself
@@ -12811,15 +12915,44 @@ class Orchestrator:
                     mapped_cwd = wt_dir / rel
                 except ValueError:
                     mapped_cwd = Path(cwd)  # cross-repo cwd: outside this repo
-            bounded_cmd = cmd + " " + " ".join(shlex.quote(t) for t in failing_tests)
+            # `-rA` asks pytest to name every outcome in its short summary —
+            # reporting-only, selection/ordering/exit-status unchanged. It is
+            # the only way to learn WHICH ids the base run actually reported
+            # on, which the by-name accounting check below needs. Mirrors
+            # `_flaky_on_rerun`'s identical use of the flag.
+            bounded_cmd = (
+                cmd + " -rA " + " ".join(shlex.quote(t) for t in failing_tests)
+            )
             result = await asyncio.to_thread(
                 runner.run_tests, wt_dir, bounded_cmd, cwd=mapped_cwd
             )
             # Could not get a trustworthy per-id verdict on base (collection/
             # import error, or a test id absent on base because the change added
             # it) → inconclusive → fail-closed. A newly-added failing test is the
-            # change's fault anyway, so failing here is the right outcome.
+            # change's fault anyway, so failing here is the right outcome. This
+            # also subsumes a timeout: `runner.run_tests` reports `ran=True` on
+            # timeout, but a timed-out run reports no names, which the identity
+            # check below catches.
             if not result.ran or result.invocation_error:
+                return None
+            # The runner retries a bad invocation with a REWRITTEN command
+            # (dropping our node ids, widening to the whole suite). Its answer
+            # is honest, but not the answer to the bounded question we asked —
+            # mirrors `_flaky_on_rerun`'s identical guard.
+            if getattr(result, "command", bounded_cmd) != bounded_cmd:
+                log.warning(
+                    "base-tree recheck: runner substituted a command (%s); "
+                    "verdict discarded", result.command,
+                )
+                return None
+            # ACCOUNTING IS BY IDENTITY, NEVER BY COUNT (mirrors
+            # `_flaky_on_rerun`): every requested id must appear BY NAME in
+            # this run's reported passes or failures, or the base run answers
+            # nothing about it — all-or-nothing, not a partial split.
+            reported = set(result.passed_tests or []) | set(
+                getattr(result, "failing_tests", []) or []
+            )
+            if not set(failing_tests) <= reported:
                 return None
             base_failing = set(getattr(result, "failing_tests", []) or [])
             # Newly failing = red on the change, but NOT red on base.
@@ -12831,6 +12964,41 @@ class Orchestrator:
             with contextlib.suppress(Exception):
                 repo._run("worktree", "remove", "--force", str(wt_dir))
             shutil.rmtree(wt_dir, ignore_errors=True)
+
+    async def _round_failure_attribution(
+        self, repo: "GitRepo | None", test_cmd: str | None, base: str | None,
+        test_result: "runner.TestRunResult", failing_tests: list[str],
+        *, cwd: "Path | None" = None, env_dependent: bool = False,
+    ) -> _FailureAttribution:
+        """The round-scoped NEW-vs-pre-existing split for *test_result*,
+        computed ONCE per red result (identity-keyed on `self._round_
+        attribution`) and shared by the reviewer-facing render
+        (`_render_failing_attribution`) and TESTING's own billing — so the
+        base-tree check the split depends on runs exactly once per round,
+        and the two can never disagree about the same run.
+
+        `repo is None` or no `failing_tests` → `newly=None, owned=[]` (all
+        unknown) — never raises.
+        """
+        cached = self._round_attribution
+        if cached is not None and cached.result is test_result:
+            return cached
+        if repo is None or not failing_tests:
+            attribution = _FailureAttribution(
+                result=test_result, failing=list(failing_tests), newly=None, owned=[],
+            )
+            self._round_attribution = attribution
+            return attribution
+        owned = await self._owned_failing_tests(repo, base, failing_tests, cwd=cwd)
+        newly = await self._newly_failing_vs_base(
+            repo, test_cmd, base, failing_tests, cwd=cwd,
+            env_dependent=env_dependent,
+        )
+        attribution = _FailureAttribution(
+            result=test_result, failing=list(failing_tests), newly=newly, owned=owned,
+        )
+        self._round_attribution = attribution
+        return attribution
 
     async def _flaky_on_rerun(
         self, repo: GitRepo, test_cmd: str | None, attributed: list[str],
@@ -13813,6 +13981,9 @@ class Orchestrator:
         # the pre-review red block below and its comment on `_pre_review_red_
         # render`.
         self._pre_review_red_render = None
+        # Cleared alongside `_pre_review_red_render` for the same reason —
+        # see `_round_failure_attribution` and its cache doctrine.
+        self._round_attribution = None
         # Held-out first (B2 #8): deterministic, cheap, and independent of the
         # reviewer — including advisory mode, which skips the LLM reviewer but
         # must not skip a verifiable signal that already exists on disk. This
@@ -13932,6 +14103,7 @@ class Orchestrator:
         pre_review_red = False
         pre_review_failing_ids: list[str] = []
         pre_review_ids_dropped = 0
+        attribution_text = ""
         if test_result.ran and not test_result.ok:
             pre_review_red = True
             text, blocks, blocks_dropped, artifact_path = self._red_test_detail(
@@ -13949,6 +14121,10 @@ class Orchestrator:
             failing_tests = getattr(test_result, "failing_tests", []) or []
             pre_review_failing_ids, pre_review_ids_dropped = _bound_failing_test_ids(
                 failing_tests)
+            attribution = await self._round_failure_attribution(
+                repo, test_cmd, base, test_result, failing_tests, cwd=test_cwd,
+                env_dependent=bool((task.config or {}).get("env_setup")))
+            attribution_text = _render_failing_attribution(attribution)
             # Same bound TESTING's own red `tests` event uses
             # (`_bounded_failing_ids`, `_MAX_PERSISTED_FAILING_TESTS`) — this
             # event is now the ONLY red `tests` event of the round whenever
@@ -13979,6 +14155,7 @@ class Orchestrator:
             # persists, and the board must render that "never classified"
             # state distinctly from a billed failure (`web/src/
             # slideOverSummary.js`'s `testResultVerdict`).
+            new_ids, pre_existing_ids, unknown_ids = _attribution_buckets(attribution)
             await self.store.update_attempt(attempt_id, test_results=_bounded_test_results({
                 "ran": test_result.ran, "ok": test_result.ok,
                 "passed": test_result.passed, "failed": test_result.failed,
@@ -13987,6 +14164,9 @@ class Orchestrator:
                 "failure_blocks": blocks,
                 "failure_blocks_dropped": blocks_dropped,
                 "classified": False,
+                "pre_review_new_failures": new_ids,
+                "pre_review_pre_existing_failures": pre_existing_ids,
+                "pre_review_unknown_failures": unknown_ids,
             }))
 
         def _pre_review_red_checklist_item() -> ChecklistItem | None:
@@ -14239,6 +14419,7 @@ class Orchestrator:
                 reviewed_branch=reviewed_branch,
                 failing_test_ids=pre_review_failing_ids,
                 failing_test_ids_dropped=pre_review_ids_dropped,
+                failing_test_attribution=attribution_text,
             )
         except ReviewerUnavailable as exc:
             # Escalate, but fold the verifiers' already-spent tokens onto exc
