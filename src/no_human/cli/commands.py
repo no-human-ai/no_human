@@ -6898,6 +6898,9 @@ def start(host, port, workers, no_open):
         "max_workers": max_workers,
         "poll_interval": poll_interval,
     }
+    # `--port`/`--host` are never written back to config.yaml (see `port =
+    # port or config...` above), so config cannot say where we are listening.
+    _app.state.board_url = url
     _app.state.setup_mode = bool(setup_reason)
     _app.state.setup_reason = setup_reason
 

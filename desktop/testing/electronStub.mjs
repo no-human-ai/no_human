@@ -4,11 +4,12 @@ import os from "node:os";
 import path from "node:path";
 export const calls = { quit: 0, exit: 0, handlers: new Map(), ipc: new Map(),
                        opened: [], openedPaths: [], nav: new Map(), badge: [],
-                       sent: [], images: [] };
+                       sent: [], images: [], protocolClients: [] };
 export function reset() {
   calls.quit = 0; calls.exit = 0; calls.handlers.clear(); calls.ipc.clear();
   calls.opened.length = 0; calls.openedPaths.length = 0; calls.nav.clear();
   calls.badge.length = 0; calls.sent.length = 0; calls.images.length = 0;
+  calls.protocolClients.length = 0;
 }
 let readyResolve;
 export const readyGate = new Promise((r) => { readyResolve = r; });
@@ -27,6 +28,14 @@ export const app = {
   // directory to persist "Later" into.
   getVersion: () => "0.1.0",
   getPath: (name) => path.join(os.tmpdir(), `nh-stub-${name}`),
+  // RECORDS the scheme AND the Windows exec/args form. A no-op double would
+  // make the `nohuman://` registration untestable in exactly the way the
+  // openExternal comment below warns about — deleting the call would ship an
+  // app no deep link can reach, with the suite green.
+  setAsDefaultProtocolClient: (scheme, execPath, args) => {
+    calls.protocolClients.push({ scheme, execPath, args });
+    return true;
+  },
 };
 export const ipcMain = { handle: (ch, fn) => { calls.ipc.set(ch, fn); } };
 // RECORDS what is handed to the OS: a no-op double made the scheme guard

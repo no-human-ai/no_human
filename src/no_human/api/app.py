@@ -39,7 +39,7 @@ from fastapi import (
     WebSocketDisconnect,
 )
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
 from starlette.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -5488,7 +5488,13 @@ async def onboarding_register_email(
     _persist_onboarding(config, {"email": addr, "email_at": _now()})
     status = "skipped_unchanged"
     if changed:
-        status = await asyncio.to_thread(send_welcome, addr)
+        # The address this server actually bound, set by `nh start`. Falls back
+        # to the config only when it is absent (a test client, or an embedder
+        # that builds the app directly) — config cannot see a `--port`
+        # override, so it is the fallback, never the first choice.
+        board_url = getattr(request.app.state, "board_url", None)
+        status = await asyncio.to_thread(
+            send_welcome, addr, board_url=board_url)
     _persist_onboarding(config, {"welcome_status": status})
     return {"ok": True, "welcome": status}
 
@@ -6224,6 +6230,48 @@ async def ws_board(ws: WebSocket) -> None:
         _mgr.remove(ws)
         with contextlib.suppress(Exception):
             await ws.close()
+
+
+# --------------------------------------------------------------------------- #
+# /open — the handoff that raises the desktop app                              #
+# --------------------------------------------------------------------------- #
+#
+# The welcome email's one button points here. It cannot point straight at
+# `nohuman://open`: MEASURED 2026-09-12 by sending a real message to Gmail and
+# reading the delivered DOM back — Gmail STRIPS the href of any non-standard
+# scheme (the anchor survives with no href at all), while an `http://127.0.0.1`
+# href passes through untouched. So the link a mail client will actually keep
+# is one to this server, and this page does the handoff to the scheme that the
+# desktop app registers (`desktop/main.mjs`, APP_SCHEME "nohuman").
+#
+# No JavaScript on purpose: the app's CSP is `script-src 'self'`, so an inline
+# script would be blocked. A meta refresh needs none, and the visible link is
+# the fallback for a browser that declines to hand off without a click — and
+# for anyone running a source checkout where no installer ever registered the
+# scheme. Declared BEFORE the SPA block below, whose `/{path:path}` catch-all
+# matches everything and would swallow it. A test pins that order.
+
+_OPEN_HANDOFF = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="refresh" content="0;url=nohuman://open">
+<title>Opening no_human</title></head>
+<body style="margin:0;min-height:100vh;display:flex;align-items:center;
+ justify-content:center;background:#0F1117;color:#C9CDD6;
+ font-family:-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif">
+<div style="text-align:center;padding:24px;max-width:380px">
+<h1 style="color:#E8ECF2;font-size:1.2rem;margin:0 0 .6rem">Opening no_human…</h1>
+<p style="margin:0 0 1.4rem;font-size:.95rem;line-height:1.6">
+If the app does not come to the front,
+<a href="nohuman://open" style="color:#4C9AFF">open it</a> —
+or <a href="/" style="color:#4C9AFF">use the board in this browser</a>.</p>
+</div></body></html>"""
+
+
+@app.get("/open", include_in_schema=False)
+async def open_app() -> HTMLResponse:
+    """Hand off to the desktop app, falling back to the board in-browser."""
+    return HTMLResponse(_OPEN_HANDOFF)
 
 
 # --------------------------------------------------------------------------- #

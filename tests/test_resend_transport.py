@@ -15,6 +15,7 @@ pins the header, and only a live send proves the rest.
 from __future__ import annotations
 
 import io
+import json
 import urllib.error
 
 import pytest
@@ -151,3 +152,67 @@ def test_an_unreadable_env_file_is_no_key_not_a_crash(monkeypatch, tmp_path):
         assert send._resend_api_key() is None
     finally:
         bad.chmod(0o600)
+
+
+# ── The wire payload: identity, replies, and the unsubscribe header ─────────
+#
+# These observe the JSON that actually goes out, captured from the request
+# object, rather than re-reading the module's constants back to itself.
+
+
+def _capture(msg):
+    """Send `msg` through a transport whose opener records the request."""
+    seen = {}
+
+    def opener(req, timeout=None):
+        seen["payload"] = json.loads(req.data)
+        seen["ua"] = req.get_header("User-agent")
+
+        class _Resp:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        return _Resp()
+
+    send.ResendTransport("test-key", opener=opener).send(msg)
+    return seen
+
+
+def test_the_sender_is_a_person_and_replies_reach_a_live_mailbox():
+    """Operator direction 2026-09-12: From is "Eyal from no_human".
+
+    The Reply-To is the part that had to be fixed to make the body honest.
+    MEASURED: `dig MX send.getnohuman.com` returns nothing, so a reply to the
+    From address bounces -- while the body says "just hit reply, I read every
+    one". Replies are therefore addressed to the root domain, which carries
+    Cloudflare Email Routing (route1/2/3.mx.cloudflare.net).
+    """
+    p = _capture(send.render_welcome("a@b.co"))["payload"]
+    assert p["from"] == "Eyal from no_human <eyal@send.getnohuman.com>"
+    assert p["reply_to"] == "eyal@getnohuman.com"
+    # The sending subdomain accepts no inbound mail; replies must not go there.
+    assert not p["reply_to"].endswith("send.getnohuman.com")
+
+
+def test_the_send_carries_both_parts_and_the_unsubscribe_header():
+    p = _capture(send.render_welcome("a@b.co"))["payload"]
+    assert p["text"].startswith("Hi"), "the text part is not a stub"
+    assert p["html"].lstrip().startswith("<!doctype html>")
+    assert p["headers"]["List-Unsubscribe"] == f"<{send.UNSUBSCRIBE_MAILTO}>"
+    # RFC 8058 one-click is deliberately NOT claimed: it promises a receiver
+    # that a POST to the URL unsubscribes with no further interaction, and a
+    # mailto cannot honour that. Claiming it earns a failed one-click attempt
+    # on every send.
+    assert "List-Unsubscribe-Post" not in p["headers"]
+
+
+def test_a_text_only_message_sends_no_empty_html_part():
+    """Resend answers 422 for an empty html field, so "" must mean absent."""
+    p = _capture(send.Message(to="a@b.co", subject="s", body="t"))["payload"]
+    assert "html" not in p
+    assert p["text"] == "t"

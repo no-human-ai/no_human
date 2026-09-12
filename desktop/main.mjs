@@ -1074,6 +1074,91 @@ async function createWindow() {
   await loadBoardOrError(win);
 }
 
+// --------------------------- nohuman:// links ---------------------------- //
+//
+// WHAT A `nohuman://` LINK DOES, AND DELIBERATELY NOTHING MORE.
+// It raises and focuses the app window — exactly what clicking the tray icon
+// does, and the whole feature. The case it exists for is a button in an email
+// we send ("open it in the app"), which needs the installed app to come to the
+// front and needs nothing else. `nohuman://open` is the spelling that button
+// uses; every other host/path is accepted and has the SAME effect, because
+// nothing after the scheme is read at all. There is NO routing to in-app
+// destinations, by decision, not by omission — see the paragraph below.
+//
+// THE URL IS UNTRUSTED INPUT. Any web page can navigate to `nohuman://…`, so
+// whoever writes the link chooses every byte after the scheme. It is therefore
+// never executed, never navigated to, never handed to the renderer and never
+// interpolated into a page; the only thing read off it is the SCHEME, and
+// anything that is not exactly ours is dropped. The most an attacker who gets a
+// user to click one achieves is our own window appearing — a nuisance, not a
+// capability. Teaching it to route would hand that same attacker the choice of
+// destination, which is why routing is out of scope here rather than deferred.
+const APP_SCHEME = "nohuman";
+
+export function isAppDeepLink(url) {
+  if (typeof url !== "string") return false;
+  let parsed;
+  try { parsed = new URL(url); } catch { return false; }
+  // Scheme ONLY, compared whole (`nohuman:`), so neither a prefix match
+  // ("nohumanx://") nor a foreign scheme ("javascript:", "file:") passes.
+  return parsed.protocol === `${APP_SCHEME}:`;
+}
+
+// macOS delivers the URL through `open-url` on the app object, and on a COLD
+// launch that event FIRES BEFORE THE APP IS READY: the OS started us *because*
+// of the link, so it arrives ahead of app.whenReady() and there is no window to
+// raise yet. Dropping it there is the classic form of this bug — the app opens
+// and the click appears to have done nothing. Buffer it instead and act once
+// the ready phase has run.
+let readyForDeepLinks = false;
+let pendingDeepLink = null;
+
+function openFromDeepLink(url) {
+  if (!isAppDeepLink(url)) return;    // not ours — ignored entirely
+  // Same teardown guard as `second-instance` below, for the same reason: during
+  // the delayed quit `win` is gone and showWindow() would build a fresh window
+  // against a server being torn down underneath it.
+  if (quitting) return;
+  if (!readyForDeepLinks) { pendingDeepLink = url; return; }
+  if (win && !win.isDestroyed() && win.isMinimized()) win.restore();
+  showWindow();
+}
+
+function flushPendingDeepLink() {
+  readyForDeepLinks = true;
+  const url = pendingDeepLink;
+  pendingDeepLink = null;
+  if (url) openFromDeepLink(url);
+}
+
+// Tell the OS this app owns the scheme.
+//
+// On macOS a PACKAGED app is already registered by the Info.plist
+// CFBundleURLTypes electron-builder writes from the `protocols` entry in
+// electron-builder.config.cjs; this call additionally makes us the DEFAULT
+// handler and is what makes an UNPACKAGED dev run reachable at all. On Windows
+// it is the ONLY registration there is: app-builder-lib reads `protocols` in
+// electronMac.js, LinuxTargetHelper.js and AppxTarget.js only, so the NSIS
+// installer we ship writes no scheme keys and without this line a `nohuman://`
+// link on Windows resolves to nothing.
+function registerProtocolClient() {
+  try {
+    // Unpackaged (`npm run desktop`): the executable is Electron itself, so the
+    // registry command Windows records has to carry the script path too, or the
+    // OS launches a bare Electron with no app. `path`/`args` are ignored on the
+    // other platforms, so this stays one branch rather than a platform check.
+    if (!app.isPackaged && process.argv.length >= 2) {
+      app.setAsDefaultProtocolClient(APP_SCHEME, process.execPath,
+        [path.resolve(process.argv[1])]);
+    } else {
+      app.setAsDefaultProtocolClient(APP_SCHEME);
+    }
+  } catch (err) {
+    // A refused registration must never abort startup — same rule as the tray.
+    console.error("protocol registration failed:", (err && err.message) || err);
+  }
+}
+
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
   app.quit();
@@ -1097,10 +1182,32 @@ if (!gotLock) {
     // Windows walkthrough measured focus() alone leaving it invisible (the
     // process count moved, the screen did not). focus() without show() only
     // ever worked for a window that was still visible.
+    //
+    // WINDOWS AND LINUX DELIVER `nohuman://` LINKS HERE, and this handler
+    // already does the whole job. There is no `open-url` on those platforms:
+    // the OS launches a SECOND instance with the URL appended to its argv, the
+    // single-instance lock sends it straight into this callback, and raising the
+    // window is the entire behaviour a deep link has. The argv is deliberately
+    // NOT read — there is nothing this app does with the URL that it does not
+    // already do without it, and parsing attacker-authored argv to reach the
+    // same showWindow() would be new attack surface for no new effect.
     if (win && !win.isDestroyed() && win.isMinimized()) win.restore();
     showWindow();
   });
+  // macOS delivers the URL here instead, and this MUST be registered at module
+  // scope rather than inside whenReady: a cold launch from a link fires
+  // open-url before the app is ready, and a handler added later never sees it.
+  // preventDefault marks it handled so Electron does not fall back to its own
+  // (no-op) behaviour.
+  app.on("open-url", (event, url) => {
+    event.preventDefault();
+    openFromDeepLink(url);
+  });
   app.whenReady().then(async () => {
+    // Claim the scheme with the OS. First, because it swallows its own errors
+    // (so it cannot delay or abort what follows) and a link may already be
+    // waiting in the buffer.
+    registerProtocolClient();
     // Tray failure must never abort startup (review: a bad image on some
     // platforms throws here, and this runs BEFORE the window exists).
     try { buildTray(); } catch (err) { console.error("tray failed:", err); }
@@ -1116,6 +1223,13 @@ if (!gotLock) {
     // window with no error page and no Retry.
     console.error("startup failed:", (err && err.message) || err);
     if (win && !win.isDestroyed()) showError(win, "startup-failed").catch(() => {});
+  }).finally(() => {
+    // Act on a link that arrived before there was a window to raise. In
+    // `finally`, not in the success arm: a FAILED startup still leaves the
+    // error page in a window, and surfacing that is better than a click that
+    // does nothing — and leaving the flag false there would strand every LATER
+    // link in the buffer too.
+    flushPendingDeepLink();
   });
   app.on("activate", () => showWindow());
   // E3: on darwin the app lives in the tray after window close; only an

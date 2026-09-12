@@ -326,6 +326,28 @@ module.exports = {
     nhSigning: plan.mode,
     nhCanAutoUpdate: plan.canAutoUpdate,
   },
+  // The `nohuman://` URL scheme, so a button in an email can open the installed
+  // app. TOP-LEVEL on purpose, not repeated per platform: app-builder-lib reads
+  // `packager.config.protocols` and CONCATENATES the platform-specific list
+  // onto it (electronMac.js:143, LinuxTargetHelper.js:288), so one entry here
+  // reaches both — and a duplicate in `mac`/`linux` would emit the scheme
+  // TWICE, not override it.
+  //
+  // What it buys, per platform, is not the same thing, and the difference is
+  // why main.mjs ALSO calls app.setAsDefaultProtocolClient:
+  //   * macOS  — writes Info.plist CFBundleURLTypes. This is the registration;
+  //              Launch Services reads it from the bundle at install time.
+  //   * Linux  — writes `MimeType=x-scheme-handler/nohuman;` into the .desktop
+  //              file, which is how xdg-open resolves the scheme.
+  //   * Windows — NOTHING. Only the Appx target consumes `protocols`
+  //              (AppxTarget.js:304); the NSIS installer we ship writes no
+  //              scheme keys at all, so Windows is registered at RUNTIME by
+  //              setAsDefaultProtocolClient and by nothing else.
+  // `role` is left at its "Editor" default — a macOS-only field, and the app
+  // neither edits nor views the URL's contents; it only comes to the front.
+  protocols: [
+    { name: "no_human", schemes: ["nohuman"] },
+  ],
   mac,
   win,
   linux,

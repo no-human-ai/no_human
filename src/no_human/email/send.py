@@ -18,9 +18,10 @@ Mail leaves from ``send.getnohuman.com``, never the root: getnohuman.com runs
 Cloudflare Email Routing (MX route1/2/3.mx.cloudflare.net), and a sender on the
 root would break inbound mail to support@getnohuman.com.
 
-``render_welcome`` picks one of the four frozen templates in ``base.py`` by
-platform and returns their output UNCHANGED — this module never edits the
-subject or body text.
+``render_welcome`` renders the in-app welcome from ``in_app.py`` and returns
+its output UNCHANGED — this module never edits the subject or body text. (It
+used to select one of ``base.py``'s four platform templates; those serve the
+WEBSITE flows and were wrong for a reader inside the running app.)
 
 ``send_welcome`` renders, then hands the message to a ``Transport``. It never
 raises (a transport problem must not break onboarding) and never logs or
@@ -46,7 +47,27 @@ from . import base, in_app
 log = logging.getLogger("no_human.email")
 
 DOWNLOAD_URL = "https://getnohuman.com/download"
-UNSUBSCRIBE_URL = "https://getnohuman.com/unsubscribe"
+#: MEASURED 2026-09-12, and the reason this is a mailto rather than a link.
+#: The hosted unsubscribe page authenticates the request as
+#: `?e=<address>&t=HMAC-SHA256(UNSUB_SECRET, address)` — see the cloud repo's
+#: waitlist_lambda `unsubscribe_token`/`token_ok`. `UNSUB_SECRET` lives in that
+#: Lambda's environment, and it MUST NOT ship in a desktop binary: anyone
+#: holding it could forge an unsubscribe for any address. So this process
+#: cannot produce a valid link, and the bare
+#: `https://getnohuman.com/unsubscribe` that used to be sent here is not merely
+#: unsigned — it is dead. `curl -L https://getnohuman.com/unsubscribe` returns
+#: HTTP 400 "This link isn't valid", so every welcome email sent from the app
+#: so far carried an unsubscribe that could not work.
+#:
+#: A mailto is a first-class RFC 8058 unsubscribe, needs no secret, and reaches
+#: a human. The address is `eyal@getnohuman.com` because it is one of the six
+#: ACTIVE Cloudflare Email Routing rules on the root domain (verified in the
+#: dashboard 2026-09-12: support@, eyal.golan@, eyal@, hello@, conduct@,
+#: security@, all forwarding to the operator). The catch-all is DISABLED, so an
+#: invented address such as unsubscribe@ would be silently dropped — never put
+#: an address here without confirming its routing rule exists.
+UNSUBSCRIBE_MAILTO = "mailto:eyal@getnohuman.com?subject=unsubscribe"
+UNSUBSCRIBE_URL = UNSUBSCRIBE_MAILTO
 
 # Closed vocabulary of transport failure categories. Every one of these is a
 # THING THAT COULD BE TRUE ABOUT A TRANSPORT, never a fragment of the address
@@ -70,11 +91,18 @@ RETRYABLE_CATEGORIES = frozenset({"throttled", "quota_exceeded", "transport_erro
 
 @dataclass(frozen=True)
 class Message:
-    """A fully rendered email, ready for a transport. No PII beyond `to`."""
+    """A fully rendered email, ready for a transport. No PII beyond `to`.
+
+    `body` is the plain-text part and is always present. `html` is optional and
+    defaults to "" so a text-only template still constructs a valid Message;
+    a transport must send the HTML part only when it is non-empty (an empty
+    html field is not "no html" to every provider — Resend answers 422).
+    """
 
     to: str
     subject: str
     body: str
+    html: str = ""
 
 
 class TransportError(Exception):
@@ -128,7 +156,16 @@ RESEND_ENDPOINT = "https://api.resend.com/emails"
 #: The SENDING subdomain, never the root: getnohuman.com already runs Cloudflare
 #: Email Routing (MX route1/2/3.mx.cloudflare.net), and putting the sender on the
 #: root would break inbound mail to support@getnohuman.com.
-RESEND_SENDER = "no_human <hello@send.getnohuman.com>"
+#: Display name set by the operator 2026-09-12: the welcome mail is from a
+#: person, not a brand. The local part is on the Resend-verified sending
+#: subdomain; DMARC/SPF alignment is per-DOMAIN, so the local part is free.
+RESEND_SENDER = "Eyal from no_human <eyal@send.getnohuman.com>"
+#: Replies must NOT go to the sending subdomain. MEASURED: `dig MX
+#: send.getnohuman.com` returns NOTHING, while the root returns Cloudflare's
+#: route1/2/3.mx.cloudflare.net — so a reply to the From address bounces, and
+#: the body's "just hit reply, I read every one" was an invitation into a
+#: black hole. This address has an active routing rule (see UNSUBSCRIBE_MAILTO).
+RESEND_REPLY_TO = "eyal@getnohuman.com"
 #: Read from ~/.no_human/.env (chmod 600, gitignored) exactly like every other
 #: credential here. NEVER config.yaml — `_reject_api_key_in_config` is the rule
 #: this follows — and never logged, never in an exception message.
@@ -175,22 +212,36 @@ class ResendTransport:
     """
 
     def __init__(self, api_key: str, *, sender: str = RESEND_SENDER,
+                 reply_to: str = RESEND_REPLY_TO,
                  endpoint: str = RESEND_ENDPOINT, timeout: float = 10.0,
                  opener=None) -> None:
         self._key = api_key
         self._sender = sender
+        self._reply_to = reply_to
         self._endpoint = endpoint
         self._timeout = timeout
         # Injectable for tests so no test ever reaches the network.
         self._opener = opener or urllib.request.urlopen
 
     def send(self, msg: Message) -> None:
-        payload = json.dumps({
+        body: dict[str, object] = {
             "from": self._sender,
             "to": [msg.to],
             "subject": msg.subject,
             "text": msg.body,
-        }).encode("utf-8")
+            "reply_to": self._reply_to,
+            # RFC 8058. Only the header, deliberately NOT
+            # `List-Unsubscribe-Post: List-Unsubscribe=One-Click`: one-click
+            # promises a receiver it may POST the URL and have the address
+            # removed with no further interaction, and a mailto cannot honour
+            # that. Claiming it would earn a failed one-click attempt on every
+            # send, which is a deliverability penalty, not a feature.
+            "headers": {"List-Unsubscribe": f"<{UNSUBSCRIBE_MAILTO}>"},
+        }
+        # Only when non-empty: Resend rejects an empty html part (422).
+        if msg.html:
+            body["html"] = msg.html
+        payload = json.dumps(body).encode("utf-8")
         req = urllib.request.Request(
             self._endpoint, data=payload, method="POST",
             headers={
@@ -258,6 +309,7 @@ def render_welcome(
     platform: str | None = None,
     download_url: str = DOWNLOAD_URL,
     unsubscribe_url: str = UNSUBSCRIBE_URL,
+    board_url: str | None = None,
 ) -> Message:
     """Render the in-app welcome, verbatim from `in_app.py`.
 
@@ -272,8 +324,9 @@ def render_welcome(
     This function only ever passes a template's own return value through — it
     never edits a subject or body character.
     """
-    subject, body = in_app.in_app_welcome(unsubscribe_url, address)
-    return Message(to=address, subject=subject, body=body)
+    subject, body, html = in_app.in_app_welcome(
+        unsubscribe_url, address, board_url)
+    return Message(to=address, subject=subject, body=body, html=html)
 
 
 def send_welcome(
@@ -281,6 +334,7 @@ def send_welcome(
     *,
     transport: Transport | None = None,
     platform: str | None = None,
+    board_url: str | None = None,
 ) -> str:
     """Render the welcome email and hand it to `transport`.
 
@@ -289,7 +343,7 @@ def send_welcome(
     A caller (the API route) can persist this status but must not infer that
     "not_sent:..." means the registration itself failed: it did not.
     """
-    msg = render_welcome(address, platform=platform)
+    msg = render_welcome(address, platform=platform, board_url=board_url)
     active_transport = transport if transport is not None else _default_transport()
     try:
         active_transport.send(msg)

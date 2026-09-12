@@ -1346,7 +1346,12 @@ FROZEN_FILE_LINES = {
     # `nh approve --ready`'s one-line summary no longer silently drops the
     # only signal telling the operator a verifier never answered. Measured
     # via `wc -l src/no_human/cli/commands.py`.
-    "cli/commands.py": 8666,
+    # 8666 -> 8669 (+3): `nh start` records the address it actually bound on
+    # `_app.state.board_url`, beside the existing `_worker_opts` override, so
+    # the welcome email can link to THIS server -- `--port`/`--host` are never
+    # written back to config.yaml, so config cannot answer that question.
+    # Measured on this tree with the scanner below.
+    "cli/commands.py": 8669,
     # api/app.py 5338 -> 5346 (+8): same budget-floor warning surfaced by
     # `send-back`/`reply` as `budget_warning` in the JSON response. Net cost
     # was trimmed from a naive +14 to +8 by computing `Bounds.from_config(...)`
@@ -1527,7 +1532,15 @@ FROZEN_FILE_LINES = {
     # recording what each was measured to let through. Re-measured on THIS tree
     # after the change, not carried forward -- the previous value was written
     # before these lines existed and turned the gate red.
-    "api/app.py": 6308,
+    # 6308 -> 6356 (+48): `onboarding_register_email` passes the live
+    # `app.state.board_url` down to `send_welcome`, so the welcome email's one
+    # action points at the port this server is really on rather than the one
+    # config.yaml guesses; plus the `/open` route, which hands a click off to
+    # the `nohuman://` scheme the desktop app registers (a mail client will
+    # not keep a custom-scheme href — measured against Gmail). Registered
+    # before the SPA catch-all, which would otherwise swallow it.
+    # Measured on this tree with the scanner below.
+    "api/app.py": 6356,
     # +51: W5 active-time phase writer (phase instrumentation).
     # +84: `list_escalations`/`list_review_fails`/`list_tamper_trips` — the
     # three new failure-signal sources the recurring learning harvest mines.

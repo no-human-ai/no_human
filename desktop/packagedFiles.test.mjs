@@ -170,6 +170,40 @@ test("the linux .deb declares libgbm1 and libasound2 (Electron DT_NEEDED, not pu
     "deb.depends must name libasound2t64 (real 24.04 ALSA package), not bare virtual libasound2");
 });
 
+test("the nohuman:// URL scheme is declared, or no email button can open the app", () => {
+  // `protocols` is what makes the scheme exist in the SHIPPED artefacts:
+  // app-builder-lib writes Info.plist CFBundleURLTypes from it on macOS
+  // (electronMac.js:143) and `MimeType=x-scheme-handler/<scheme>;` into the
+  // .desktop file on Linux (LinuxTargetHelper.js:288). Without this entry
+  // main.mjs's open-url handler is unreachable on a packaged Mac — Launch
+  // Services never routes the URL to us — and the whole feature is dead in
+  // exactly the artefact a user installs, with every unit test still green.
+  //
+  // TOP-LEVEL, not per-platform: both readers CONCATENATE the platform list
+  // onto `packager.config.protocols`, so a copy under `mac`/`linux` would emit
+  // the scheme twice rather than override it. Windows is deliberately absent —
+  // only AppxTarget consumes `protocols`, and the NSIS installer we ship writes
+  // no scheme keys, which is why main.mjs also calls setAsDefaultProtocolClient.
+  const protocols = builderConfig.protocols;
+  assert.ok(Array.isArray(protocols) && protocols.length > 0,
+    "electron-builder.config.cjs declares no `protocols` — the packaged Mac app "
+    + "gets no CFBundleURLTypes and the .deb no x-scheme-handler MimeType");
+  const schemes = protocols.flatMap((p) => p.schemes ?? []);
+  assert.ok(schemes.includes("nohuman"),
+    `the nohuman scheme must be declared; found ${JSON.stringify(schemes)}`);
+  for (const p of protocols) {
+    // `name` and `schemes` are both REQUIRED by the builder's own scheme.json;
+    // an entry missing either fails schema validation at build time, i.e. the
+    // whole `npm run dist` — long after this file could have said so.
+    assert.equal(typeof p.name, "string",
+      "every protocol entry needs a `name` (required by scheme.json)");
+    assert.ok(p.name.length > 0, "a protocol `name` must not be empty");
+    assert.ok(Array.isArray(p.schemes) && p.schemes.length > 0,
+      "every protocol entry needs a non-empty `schemes` array — app-builder-lib "
+      + "throws InvalidConfigurationError on an empty one");
+  }
+});
+
 test("package.json holds no `build` key — electron-builder must never find a shadow config", () => {
   // THE TRAP, and why the key is called `nhPackagedFiles`.
   //
