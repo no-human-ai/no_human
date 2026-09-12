@@ -3576,15 +3576,16 @@ def test_an_uppercase_pathext_name_is_matched_like_its_lowercase_twin():
     That version lowercased only to TEST for the suffix and returned the name
     otherwise unchanged, so `PIP.EXE` became `PIP`, which is in no name table,
     and the same binary a case-insensitive filesystem resolves for `pip.exe`
-    was missed. The argument for folding the SUFFIX -- Windows filenames are
-    case-insensitive -- is the same argument for folding the STEM, and
-    `_basename` now applies it to both. What is deliberately NOT folded is a
-    BARE name: on POSIX `PIP` is a different file from `pip`, and the fold is
-    justified only by the presence of a suffix that exists only on Windows.
+    was missed. `_basename` now folds the whole name, stem included, on the
+    argument `guard.py` already records beside `_APPROVE_BINARIES`: the
+    filesystem here is case-insensitive, so `PIP` and `pip` are one file; on a
+    case-sensitive one the uppercase spelling resolves to nothing, so folding
+    can only match a command that could not have run.
     """
     assert guard._pkg_install_match(["PIP.EXE", "install", "foo"]) == ["foo"]
     # the lowercase form, which is what anyone actually types, IS matched
     assert guard._pkg_install_match(["pip.exe", "install", "foo"]) == ["foo"]
-    # ... and a bare uppercase name is NOT, because nothing on POSIX says
-    # `PIP` and `pip` are one file.
-    assert guard._pkg_install_match(["PIP", "install", "foo"]) is None
+    # ... and so is the bare uppercase spelling, which resolves to the same
+    # file here (`/bin/ECHO` runs `/bin/echo` on this machine).
+    assert guard._pkg_install_match(["PIP", "install", "foo"]) == ["foo"]
+    assert guard._pkg_install_match(["Pip", "install", "foo"]) == ["foo"]

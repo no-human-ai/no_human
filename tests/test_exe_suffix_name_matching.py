@@ -32,9 +32,25 @@ from no_human.agent import guard, venv_install_guard
 
 PROTECTED = ["main", "master", "release/*"]
 
-#: Every suffix Windows resolves a bare command name against, plus the case
-#: variants, because the filesystem is case-insensitive there.
+#: The suffixes THIS GUARD strips (`venv_install_guard._PATHEXT_SUFFIXES`),
+#: in a few casings, because the filesystem the guard runs on is
+#: case-insensitive. Deliberately NOT "every suffix Windows resolves": the
+#: documented Windows default `PATHEXT` also carries `.vbs`, `.js`, `.wsf` and
+#: `.msc`, which this guard does not strip -- `test_the_uncovered_windows_
+#: script_host_spellings_are_not_claimed` below measures that and pins the
+#: boundary as ALLOW rather than letting a comment claim otherwise. `.ps1`
+#: runs the other way: it is NOT in the default `PATHEXT` (PowerShell resolves
+#: it by its own rules) and IS stripped here, because a coder can type it.
+#: There is no Windows host in this repo's CI or on the machine these rows
+#: were measured on, so nothing here is a measurement of what Windows does --
+#: only of what this guard does with each spelling.
 SUFFIXES = ["", ".exe", ".EXE", ".Exe", ".bat", ".cmd", ".com", ".ps1", ".CMD"]
+
+#: Documented members of the Windows default `PATHEXT` that `_PATHEXT_SUFFIXES`
+#: does NOT carry. Measured, not assumed: the rows below assert the guard
+#: ALLOWS them, so the day someone widens the set the boundary test fails and
+#: has to be re-measured instead of a comment quietly going stale.
+UNCOVERED_PATHEXT_SPELLINGS = [".vbs", ".js", ".wsf", ".msc"]
 
 #: (binary, rest-of-command) for each guarded family. The bare spelling of
 #: every one is a verdict this repo already commits to -- that is what makes
@@ -262,20 +278,27 @@ def test_a_trailing_separator_does_not_hide_a_guarded_binary(cmd):
     assert not _allows(cmd), cmd
 
 
-# --- the STEM folds wherever the SUFFIX already does ------------------------
+# --- the whole NAME folds, stem and suffix alike ---------------------------
 #
-# `_PATHEXT_RE` was written `[Ee][Xx][Ee]` on the argument that the Windows
-# filesystem is case-insensitive. That argument is about the FILENAME, not
-# about its last four characters, and it was applied to the suffix only: the
-# matrix above builds every row as f"{binary}{suffix}" with `binary` always
-# lowercase, so it structurally could not see that `gh.EXE pr merge` was
-# refused while `GH.EXE pr merge` was allowed.
+# `_PATHEXT_RE` was written `[Ee][Xx][Ee]` on the argument that the filesystem
+# is case-insensitive. That argument is about the FILENAME, not about its last
+# four characters, and it was applied to the suffix only: the matrix above
+# builds every row as f"{binary}{suffix}" with `binary` always lowercase, so
+# it structurally could not see that `gh.EXE pr merge` was refused while
+# `GH.EXE pr merge` was allowed.
 #
-# NOT closed, deliberately: the BARE uppercase spelling. `RM -rf /` is
-# allowed on `main` and is still allowed here. On POSIX `RM` really is a
-# different file from `rm`, so folding a bare name would be a text match
-# dressed up as a structural one; the fold here is justified only by a
-# suffix that exists nowhere but Windows.
+# The BARE uppercase spelling was left open in the first version of this fix,
+# on "on POSIX `RM` is a different file from `rm`". That argument is false on
+# the filesystem this repo is developed and dogfooded on -- `/bin/ECHO` runs
+# `/bin/echo` here -- and it contradicts the note `guard.py` already carries
+# beside `_APPROVE_BINARIES` (search `Case-folded: APFS`), which took the
+# opposite reading for the same reason and shipped: on a case-SENSITIVE
+# filesystem the uppercase name does not resolve at all, so folding can only
+# refuse a command that could not have run. It measured as `NH approve 7`
+# denied while `GH pr merge 7`, `GIT push --force origin main`, `RM -rf /`
+# and `FIND / -delete` were all allowed -- one fold applied, the other not,
+# in the same guard. Both fold now, and the rows below are the parametrised
+# proof rather than a sentence claiming it.
 
 
 def _case_variants(binary: str) -> list[str]:
@@ -285,37 +308,157 @@ def _case_variants(binary: str) -> list[str]:
 @pytest.mark.parametrize(
     "binary, rest, cased, suffix",
     [(b, r, c, s)
-     for (b, r), s in itertools.product(DANGEROUS, [x for x in SUFFIXES if x])
+     for (b, r), s in itertools.product(DANGEROUS, SUFFIXES)
      for c in _case_variants(b)],
 )
-def test_the_binary_case_does_not_change_a_suffixed_verdict(
+def test_the_binary_case_does_not_change_the_verdict(
     binary, rest, cased, suffix
 ):
-    """`GH.EXE`, `Gh.exe` and `gh.EXE` are one file on Windows."""
+    """`GH.EXE`, `Gh.exe`, `gh.EXE` and bare `GH` all name one file here.
+
+    `suffix` includes the empty string, which is the row the first version of
+    this fix could not see: it built every case variant with a suffix glued
+    on, so `RM -rf /` and `GH pr merge 7` were never asked.
+    """
     assert not _allows(f"{cased}{suffix} {rest}"), f"{cased}{suffix} {rest}"
 
 
 @pytest.mark.parametrize("cmd, binary", PARITY_CORPUS)
-@pytest.mark.parametrize("suffix", [s for s in SUFFIXES if s])
-def test_the_binary_case_does_not_change_a_suffixed_verdict_either_way(
+@pytest.mark.parametrize("suffix", SUFFIXES)
+def test_the_binary_case_does_not_change_the_verdict_either_way(
     cmd, binary, suffix
 ):
     """The parity form, so the rows that main ALLOWS are covered too."""
     lower = cmd.replace(binary, binary + suffix, 1)
     upper = cmd.replace(binary, binary.upper() + suffix, 1)
-    assert lower != cmd and upper != cmd
+    assert upper != cmd
     assert _allows(lower) == _allows(upper), f"{lower!r} vs {upper!r}"
 
 
-def test_a_bare_uppercase_name_is_not_folded():
-    """The boundary, asserted so the fold cannot quietly widen.
+def test_the_whole_name_folds_stem_included():
+    """`RM` and `rm` are one file on the filesystem this runs on.
 
-    Nothing on POSIX says `RM` and `rm` are one file, and this change does
-    not claim they are. What justifies folding `RM.EXE` is the `.EXE`.
+    `/bin/ECHO` runs `/bin/echo` here, and `guard.py` already took this
+    reading for `_APPROVE_BINARIES` (search `Case-folded: APFS`). Where the
+    filesystem IS case-sensitive the uppercase spelling resolves to nothing,
+    so folding can only refuse a command that could not have run.
     """
-    assert venv_install_guard._basename("RM") == "RM"
+    assert venv_install_guard._basename("RM") == "rm"
     assert venv_install_guard._basename("RM.EXE") == "rm"
     assert venv_install_guard._basename("Gh.Cmd") == "gh"
+    assert venv_install_guard._basename("/usr/local/bin/GH") == "gh"
+    assert venv_install_guard._basename("PIP") == "pip"
+
+
+@pytest.mark.parametrize("suffix", UNCOVERED_PATHEXT_SPELLINGS)
+def test_a_pathext_spelling_this_guard_does_not_strip_is_allowed(suffix):
+    """The boundary of `_PATHEXT_SUFFIXES`, measured rather than claimed.
+
+    `.vbs`, `.js`, `.wsf` and `.msc` are documented members of the Windows
+    default `PATHEXT` and are NOT in `_PATHEXT_SUFFIXES`, so the guard does
+    not see through them. Asserting the ALLOW is deliberate: it is the
+    honest statement of what is covered, and it means widening the set
+    cannot land silently -- this row goes red and has to be re-measured.
+
+    Nothing here is a measurement of Windows. There is no Windows host in
+    this repo's CI or on the machine this was measured on; what is measured
+    is only what this guard does with the spelling.
+    """
+    assert _allows(f"gh{suffix} pr merge 7"), f"gh{suffix} pr merge 7"
+
+
+# --- the one site where stripping the name LOOSENS the guard ---------------
+#
+# `guard._effective_name` reads the command behind a runner prefix and feeds
+# the `UNDECIDABLE INPUT FAILS CLOSED` block, which exempts read-only tools
+# and test runners. Routing it through `_basename` therefore WIDENS that
+# exemption to every suffixed and uppercase spelling of every member of those
+# two sets. The rows below are samples of that class, not its extent; the
+# class is disclosed in `venv_install_guard`'s module docstring.
+#
+# The widening is intended -- the exemption's own stated reason is that a
+# read-only tool cannot call the gated route whatever an unresolvable token
+# holds, and that reason does not depend on spelling or case. It is pinned
+# HERE, behaviourally, because `_effective_name` was the one `_basename` call
+# site with no coverage at all: reverting that single line to
+# `os.path.basename(tok)` left the whole suite green while moving verdicts
+# (18 of them measured against `origin/main` at `0e3eefd7` on the sample
+# below alone). Both halves are asserted -- parity with the lowercase bare
+# twin, and the absolute ALLOW -- because parity alone stays green if a
+# regression denies both.
+READ_ONLY_EXEMPTION_ROWS = [
+    'GREP.EXE -rn "nh approve" $REPO/docs/',
+    'grep.exe -rn "nh approve" $REPO/docs/',
+    'GREP -rn "nh approve" $REPO/docs/',
+    'RG.EXE -n "nh approve" $REPO/docs/',
+    'rg.exe -n "nh approve" $REPO/docs/',
+    'RG -n "nh approve" $REPO/docs/',
+    "cat.exe $REPO/docs/approve.md",
+    "CAT.EXE $REPO/docs/approve.md",
+    "CAT $REPO/docs/approve.md",
+    "PYTEST.EXE -k approve --rootdir=$PWD",
+    "pytest.exe -k approve --rootdir=$PWD",
+    "PYTEST -k approve --rootdir=$PWD",
+    "LESS.EXE $REPO/docs/approve.md",
+    "less.exe $REPO/docs/approve.md",
+    "LESS $REPO/docs/approve.md",
+    "HEAD.EXE $REPO/docs/approve.md",
+    "head.exe $REPO/docs/approve.md",
+    "HEAD $REPO/docs/approve.md",
+]
+
+
+@pytest.mark.parametrize("cmd", READ_ONLY_EXEMPTION_ROWS)
+def test_a_read_only_tool_reaches_its_lowercase_bare_verdict(cmd):
+    """The spelling must not change whether the read-only exemption applies.
+
+    Kills the `_effective_name` -> `os.path.basename` mutation: with it, the
+    stripped/folded name is no longer in `_READ_ONLY_TOOLS`/`_TEST_RUNNERS`,
+    the undecidable-input branch fires, and each row above denies while its
+    lowercase bare twin still allows.
+    """
+    head, _, rest = cmd.partition(" ")
+    bare = venv_install_guard._basename(head)
+    twin = f"{bare} {rest}"
+    assert twin != cmd
+    assert _allows(cmd) == _allows(twin), f"{cmd!r} vs {twin!r}"
+
+
+@pytest.mark.parametrize("argv, expected", [
+    (["/usr/bin/SH.EXE", "-lc"], "sh"),
+    (["TIMEOUT.EXE", "30"], "timeout"),
+    (["Xargs.Cmd", "-0"], "xargs"),
+    (["/opt/UV", "run"], "uv"),
+])
+def test_the_runner_only_fallback_also_reads_the_stripped_folded_name(
+    argv, expected
+):
+    """`_effective_name`'s OTHER `_basename` call -- the fallback.
+
+    Asserted at the function's contract rather than through `evaluate`
+    deliberately, and the reason is the finding: reverting this line to
+    `os.path.basename` changes nothing any shell can run. The fallback is
+    reached only when every token was consumed as a runner, a flag, or a
+    flag's operand, so it can only ever return argv[0], which in that case
+    is a runner name or a token starting with `-`. Measured on this tree:
+    the runner sets and `_READ_ONLY_TOOLS | _TEST_RUNNERS` are disjoint, so
+    no runner-headed argv changes the exemption either way; of 1413 shapes
+    probed, the 405 where the two readings DO disagree all have a flag as
+    argv[0] (`--rootdir=/x/GREP`), which is not a command a shell executes.
+    Pinning the contract is what is left to pin.
+    """
+    assert guard._effective_name(argv) == expected
+
+
+@pytest.mark.parametrize("cmd", READ_ONLY_EXEMPTION_ROWS)
+def test_the_read_only_exemption_rows_are_allowed(cmd):
+    """The absolute half, so the parity above cannot pass by denying both.
+
+    Without this, a regression that denied the lowercase twin as well would
+    keep the parity row green while closing the exemption the block relies on
+    to not deny `grep -rn "nh approve" $REPO/docs/`.
+    """
+    assert _allows(cmd), cmd
 
 
 # --- the raw-text layer: spellings argv analysis never reaches --------------

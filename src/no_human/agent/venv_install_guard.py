@@ -150,6 +150,37 @@ residual set is CAPABILITY-level: run coder sessions with the shared dev
 venv not writable by the session's UID (or a read-only bind-mount) and
 with ``VIRTUAL_ENV``/``UV_PROJECT_ENVIRONMENT`` pinned to the worktree's
 own venv for the whole session — not attempted in this ticket.
+
+NAME MATCHING, AND ONE DELIBERATE DENY -> ALLOW (issue #305).
+:func:`_basename` and :func:`_pathext_alt` are this module's answer to
+"what command does this token name", and ``guard.py`` routes every one of
+its own name comparisons through them. Both strip a
+:data:`_PATHEXT_SUFFIXES` tail and both case-fold, stem included; the
+argument for folding, the measured rows the previous half-measure left
+open, and exactly which Windows spellings are and are NOT covered are
+recorded on those three objects.
+
+The consequence worth stating at module level, because it runs the OTHER
+way from everything else in this file: ``guard._effective_name`` uses
+:func:`_basename`, and it feeds the block in ``guard.py`` whose own comment
+reads ``UNDECIDABLE INPUT FAILS CLOSED``. That block exempts read-only
+tools and test runners, so stripping a suffix and folding a stem WIDENS that
+exemption to every member of those sets in every spelling :func:`_basename`
+normalises. Measured examples against ``origin/main`` at ``0e3eefd7``:
+``GREP.EXE -rn "nh approve" $REPO/docs/`` and ``PYTEST.EXE -k approve
+--rootdir=$PWD`` are refused on trunk and ALLOWED here, as are their
+``grep.exe``/``pytest.exe`` and bare-uppercase ``GREP``/``PYTEST``
+spellings. Those are examples of the class, not its extent — the exempt
+sets and :data:`_PATHEXT_SUFFIXES` both move, and the enumeration that is
+kept honest is the executed one in
+``tests/test_exe_suffix_name_matching.py``, not a list in a comment.
+
+That widening is intended, not an oversight: the exemption exists because a
+read-only tool cannot call the gated route whatever an unresolvable token
+holds, and that reason is indifferent to the name's spelling and case. The
+alternative — narrowing ``_effective_name`` back to an unstripped, unfolded
+name — would refuse a routine command for how it is spelled, which is the
+false-positive class that block was last amended to stop.
 """
 
 from __future__ import annotations
@@ -253,38 +284,55 @@ _ACTIVE_FLAG = "--active"
 _UNRESOLVABLE_CHARS = ("$", "`")
 
 
-#: Windows resolves a bare command name against PATHEXT, so `gh`, `gh.exe`,
-#: `gh.cmd` and `gh.ps1` are all "gh" to the person typing it -- and `.cmd`
-#: /`.ps1` are what scoop and npm-style shims actually install. Matching only
-#: `.exe` would close the spelling a reviewer thinks of first and leave the
-#: one users have.
+#: Suffixes stripped before a command name is compared against a guarded set.
+#: `.exe`, `.bat`, `.cmd` and `.com` are documented members of the Windows
+#: default `PATHEXT`, where a bare command name resolves against each in turn,
+#: so `gh` and `gh.cmd` are one command to the person typing it -- and `.cmd`
+#: is what scoop and npm-style shims actually install. `.ps1` is NOT in the
+#: default `PATHEXT`: `powershell`/`pwsh` resolve it by their own rules, so it
+#: is here because a coder can and does type it, not because `PATHEXT` lists
+#: it. This is the set THIS GUARD strips; it is not a claim to be every
+#: spelling any Windows host resolves. The full `PATHEXT` default also carries
+#: the Windows Script Host and console-file extensions (`.vbs`, `.js`, `.wsf`,
+#: `.msc` and their variants); those are NOT stripped here and the guard
+#: therefore does not catch them -- measured, on this branch, as ALLOW for
+#: `gh.vbs pr merge 7`. Widening the set is a behaviour change on its own
+#: evidence, not a comment edit. There is no Windows host in this repo's CI or
+#: on the machine these rows were measured on, so every statement here about
+#: what Windows RESOLVES is read from Microsoft's documented default and is
+#: NOT something this repo has executed; what IS measured is what this guard
+#: does with each spelling, which is what the tests pin.
 _PATHEXT_SUFFIXES = (".exe", ".bat", ".cmd", ".com", ".ps1")
 
-#: The same set as a regex fragment. Case-folded because the Windows
-#: filesystem is: `gh.EXE` and `gh.exe` are one file there.
+#: The same set as a regex fragment, case-folded: on a case-insensitive
+#: filesystem `gh.EXE` and `gh.exe` are one file.
 _PATHEXT_GROUP = r"\.(?:[Ee][Xx][Ee]|[Bb][Aa][Tt]|[Cc][Mm][Dd]|[Cc][Oo][Mm]|[Pp][Ss]1)"
 
 
 def _pathext_alt(*stems: str) -> str:
-    """Regex fragment matching `stems` in every spelling Windows resolves.
+    """Regex fragment matching `stems` bare or with a `_PATHEXT_SUFFIXES` tail.
 
     For the raw-text matchers in `guard.py` that name a binary directly and
     so cannot go through `_basename`. ONE definition, because the first
     version of this fix spelled `(?:\\.[Ee][Xx][Ee])?` inline at four sites,
     missed four more, and shipped a body claiming the class was closed.
 
-    The two halves get DIFFERENT case treatment, and the asymmetry is the
-    point:
+    See `_PATHEXT_SUFFIXES` for exactly which tails are covered and which
+    documented Windows spellings are not; this fragment covers those and no
+    others.
 
-    * the BARE stem stays case-sensitive, because on POSIX `RM` is a
-      genuinely different file from `rm` and folding it would be a text
-      match dressed up as a structural one (`RM -rf /` is allowed on main
-      and stays allowed here -- a separate question, not this one);
-    * a SUFFIXED stem folds, because the suffix is meaningful only on
-      Windows and the filesystem is case-insensitive there. Folding the
-      suffix while leaving the stem alone is the half-measure this replaces:
-      it denied `gh.EXE pr merge` and allowed `GH.EXE pr merge`, on the same
-      argument, in the same expression.
+    Stem AND suffix are both case-folded, on the reasoning `guard.py` already
+    records beside `_APPROVE_BINARIES` (search `Case-folded: APFS`): the
+    filesystem this repo is developed and dogfooded on is case-insensitive by
+    default -- `/bin/ECHO` runs `/bin/echo` here, measured -- so `RM` and `rm`
+    are one file, and on a filesystem where they are NOT, the uppercase name
+    does not resolve at all and folding can only refuse something that could
+    not have run. An earlier revision of this function folded the SUFFIX only
+    and argued the bare stem was a genuinely different file on POSIX; that
+    argument is false on this machine and contradicts the note in `guard.py`,
+    and it measured as `NH approve 7` denied while `GH pr merge 7`,
+    `GIT push --force origin main`, `RM -rf /` and `FIND / -delete` were all
+    allowed.
 
     Mirrors `_basename`, which applies the identical rule structurally.
 
@@ -302,7 +350,7 @@ def _pathext_alt(*stems: str) -> str:
     * `guard._FORGE_MENTION` is the same kind of pre-filter for `gh`/`glab`.
     """
     return r"(?:{})".format("|".join(
-        r"{stem}|(?i:{stem}){suffix}".format(stem=s, suffix=_PATHEXT_GROUP)
+        r"(?i:{stem})(?:{suffix})?".format(stem=s, suffix=_PATHEXT_GROUP)
         for s in stems))
 
 
@@ -324,20 +372,60 @@ def _basename(path: str) -> str:
       alternate reading normalises `\` to `/` before resolution and so
       before this function ever sees one.
 
-    A PATHEXT suffix folds its STEM as well as itself: that suffix is only
-    meaningful on Windows, where the filesystem is case-insensitive, so
-    `GH.EXE` and `gh.exe` are one file and must reach one verdict. A BARE
-    stem is left exactly as written -- on POSIX `RM` is a genuinely
-    different file from `rm`, and folding it would be a text match dressed
-    up as a structural one. `RM -rf /` is therefore still allowed here, as
-    it is on main; closing that is a separate question about POSIX case,
-    not about PATHEXT.
+    CASE-FOLDED, stem and suffix alike, on the reasoning `guard.py` already
+    records beside `_APPROVE_BINARIES` (search `Case-folded: APFS`): the
+    filesystem this repo is developed and dogfooded on is case-insensitive by
+    default, so `GH.EXE`, `gh.exe`, `RM` and `rm` each name one file and must
+    reach one verdict. On a case-SENSITIVE filesystem the uppercase spelling
+    does not resolve to anything, so folding can only refuse a command that
+    could not have run -- the same trade `guard.py` took, and the reason this
+    is a wider match rather than a looser one.
+
+    An earlier revision folded a SUFFIXED stem only and justified leaving a
+    BARE stem alone with "on POSIX `RM` is a genuinely different file from
+    `rm`". That is false on the machine this is developed on (`/bin/ECHO`
+    runs `/bin/echo` here, measured) and contradicts the `guard.py` note
+    above; it measured as `NH approve 7` denied -- that path folds in
+    `guard.py`, not here -- while `GH pr merge 7`, `GIT push --force origin
+    main`, `RM -rf /` and `FIND / -delete` were all allowed.
+
+    WIDENING DISCLOSED. Folding here reaches two exemptions as well as the
+    guarded sets, so some rows move DENY -> ALLOW rather than the other way,
+    and that is intended:
+
+    * `guard._effective_name` feeds the `UNDECIDABLE INPUT FAILS CLOSED`
+      block, which exempts `_READ_ONLY_TOOLS` and `_TEST_RUNNERS`. Stripping
+      and folding the name there widens that exemption, by construction, to
+      EVERY member of those two sets in EVERY spelling this function
+      normalises -- each suffix in `_PATHEXT_SUFFIXES` and each casing,
+      against any segment carrying an unresolvable token and a gate mention.
+      That is the class; do not read a list here as its extent, because the
+      sets and the suffix tuple both move. Example rows, measured against
+      `origin/main` at `0e3eefd7`: `GREP.EXE -rn "nh approve" $REPO/docs/`
+      and `PYTEST.EXE -k approve --rootdir=$PWD` deny on trunk and allow
+      here; so do their `grep.exe`/`pytest.exe` and bare-uppercase
+      `GREP`/`PYTEST` spellings. Chosen over narrowing because the block's
+      own comment gives the exemption's reason -- a read-only tool "cannot
+      call the route whatever the variable holds" -- and that reason does not
+      depend on how the name is spelled or cased; refusing only the odd
+      spellings would deny for naming the act, which is the false-positive
+      class that block was last amended to stop. Pinned behaviourally by
+      `tests/test_exe_suffix_name_matching.py`, whose read-only-exemption
+      rows require each spelling to reach its lowercase twin's verdict AND
+      to be allowed, so a revert of either fold here fails there rather than
+      staying green.
+    * `_is_installer_name` / `_is_pkg_manager_name` read a name through here
+      too, so the bare non-lowercase spelling of any installer now resolves
+      (measured: `_is_pkg_manager_name("PIP")` and `("Uv")` were False on the
+      parent commit and are True here; the suffixed `PIP.EXE` already
+      resolved). That routes those commands INTO this module's install
+      analysis instead of past it -- a narrowing, not a widening, off the
+      same one mechanism.
     """
-    name = PurePosixPath(path).name
-    lowered = name.lower()
+    name = PurePosixPath(path).name.lower()
     for suffix in _PATHEXT_SUFFIXES:
-        if lowered.endswith(suffix):
-            return lowered[: -len(suffix)]
+        if name.endswith(suffix):
+            return name[: -len(suffix)]
     return name
 
 
