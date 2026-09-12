@@ -942,6 +942,17 @@ ALLOWLIST: dict[str, dict[str, Allowed]] = {
         "http:httpx": Allowed("https://api.monday.com/v2",
                               _CFG + "integrations.monday.enabled"),
     },
+    # The welcome email's transport. Gated on the KEY, not on a config flag:
+    # `_default_transport()` returns `UnavailableTransport` and touches the
+    # network not at all unless RESEND_API_KEY is in ~/.no_human/.env, so an
+    # ordinary install never reaches this host. stdlib urllib on purpose —
+    # adding an SDK for one POST is exactly what the lean-stack rule forbids.
+    "email/send.py": {
+        "http:urllib.request": Allowed(
+            "https://api.resend.com/emails — one POST carrying the welcome "
+            "email's subject, body and the recipient the user typed",
+            "env:RESEND_API_KEY"),
+    },
     "notify/slack.py": {
         "http:httpx": Allowed("the Slack webhook URL you set — a task-status line",
                               _CFG + "notifications.slack_webhook_url"),
