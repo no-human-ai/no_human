@@ -5473,8 +5473,9 @@ async def onboarding_register_email(
     for sending (idempotent) but still returns 200.
 
     The response never echoes the address back (`{"ok": True, "welcome": ...}`
-    only) — `welcome` is one of send_welcome's closed status strings, never a
-    claim that delivery to an arbitrary recipient succeeded.
+    only) — `welcome` is either one of send_welcome's closed status strings or
+    this route's own `"skipped_unchanged"` when the address is unchanged, never
+    a claim that delivery to an arbitrary recipient succeeded.
     """
     from ..email.send import send_welcome
 

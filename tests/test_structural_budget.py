@@ -1509,7 +1509,8 @@ FROZEN_FILE_LINES = {
     # in-process `cancelled_hard` emit when `stopped` is True. Measured on
     # this tree with the scanner below.
     # 6183 -> 6273 (+90): onboarding now registers the user's email
-    # (`POST /api/onboarding/email`) and sends the welcome email once,
+    # (`POST /api/onboarding/email`) and renders the welcome through a
+    # transport seam whose shipped default sends nothing,
     # persisting `email`/`email_at`/`welcome_status` via
     # `_persist_onboarding`; `onboarding_complete`'s response redacts those
     # fields (`_ONBOARDING_STATUS_REDACTED_FIELDS`) so the address is never
@@ -1521,7 +1522,12 @@ FROZEN_FILE_LINES = {
     # forgetting the copy-paste; the net growth is the new function's
     # docstring explaining why it must be the only place this redaction
     # happens. Measured on this tree with the scanner below.
-    "api/app.py": 6285,
+    # 6285 -> 6308: the email validator's RFC 5321 bounds (whole path 254,
+    # local part 64) and the C0/DEL/bidi-override rejection, with the comments
+    # recording what each was measured to let through. Re-measured on THIS tree
+    # after the change, not carried forward -- the previous value was written
+    # before these lines existed and turned the gate red.
+    "api/app.py": 6308,
     # +51: W5 active-time phase writer (phase instrumentation).
     # +84: `list_escalations`/`list_review_fails`/`list_tamper_trips` — the
     # three new failure-signal sources the recurring learning harvest mines.

@@ -73,10 +73,13 @@ test("submitEmail calls registerOnboardingEmail with the trimmed address", async
   assert.deepEqual(calls, ["a@b.co"]);
 });
 
-test("source contains no catch/try — one failure path only, owned by guard()", () => {
-  assert.ok(!/\bcatch\b/.test(source), "onboardingEmail.js must not add a second failure path");
-  assert.ok(!/\btry\b/.test(source));
-});
+// A `!/\bcatch\b/.test(source)` guard used to sit here. It is the same
+// source-text class this change deletes twice on the Python side, and it was
+// both evadable -- `.then(undefined, () => {})` reintroduces the second failure
+// path without using the word -- and false-positive-prone: one comment
+// containing "catch" turned it red with zero behaviour change. The rethrow
+// tests below cover the real property, and they caught that evasion when the
+// text guard did not.
 
 test("a network rejection surfaces the exact pinned offline banner text, byte-identical to the wizard's existing banner", () => {
   // Same contract onboardingOffline.test.mjs pins for every other step: once
@@ -98,3 +101,37 @@ test("isNetworkError-shaped rejections from submitEmail are classifiable exactly
     assert.equal(isNetworkError(e), true);
   }
 });
+
+
+// ── The shared table. `tests/test_onboarding_email.py` reads the same JSON, so
+// the two validators cannot drift apart, and each bound is pinned in BOTH
+// directions. Measured before this existed: EMAIL_MAX_LEN could be tightened
+// from 254 to 25 -- refusing `dana.lee+onboarding@example.com` on a REQUIRED
+// step -- and all 1669 web tests stayed green. Seven single-change mutations of
+// the three bounds survived. ───────────────────────────────────────────────
+const sharedCases = JSON.parse(
+  readFileSync(new URL("../../testdata/email_validation_cases.json", import.meta.url), "utf8"),
+).cases;
+
+test("the shared table is not vacuous in the accept direction", () => {
+  const ok = sharedCases.filter((c) => c.valid);
+  assert.ok(ok.length >= 5, `expected >=5 accept rows, got ${ok.length}`);
+  const longest = ok.reduce((a, b) => (a.address.length >= b.address.length ? a : b));
+  assert.equal(
+    longest.address.length,
+    254,
+    "the table must assert a 254-character address is ACCEPTED — the only row an over-tightened whole-path cap cannot satisfy",
+  );
+});
+
+for (const c of sharedCases) {
+  test(`shared table: ${c.why}`, () => {
+    assert.equal(
+      isWellFormedEmail(c.address),
+      c.valid,
+      c.valid
+        ? `a VALID address was refused — over-strict validation locks a user out of a required step (${c.why})`
+        : `an INVALID address was accepted (${c.why})`,
+    );
+  });
+}

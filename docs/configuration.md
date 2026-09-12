@@ -786,10 +786,11 @@ list, which is why the list is enforced by tests rather than left to review.
 Replay also records network request/response **headers and bodies**
 (`session_recording: { recordHeaders: true, recordBody: true }`) — these are
 **not** masked, with one exception: `session_recording.maskCapturedNetworkRequestFn`
-(`web/src/replayScrub.js`) excludes `POST /api/onboarding/email` and
-`GET /api/onboarding/status` from replay capture entirely, because the
-former's request body carries the onboarding email address the user just
-typed and the latter's response can echo it back. `.ph-no-capture` (used
+(`web/src/replayScrub.js`) excludes `POST /api/onboarding/email`,
+`GET /api/onboarding/status` and `POST /api/onboarding/reset` from replay
+capture entirely, because the first's request body carries the onboarding
+email address the user just typed and the other two's responses are built
+from the same onboarding block. `.ph-no-capture` (used
 elsewhere in this document) only ever masks DOM pixels, not network bodies,
 which is why this is a separate mechanism.
 

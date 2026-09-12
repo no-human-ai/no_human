@@ -30,6 +30,8 @@ import contextlib
 import json
 import types
 
+from pathlib import Path
+
 import pytest
 import pytest_asyncio
 from httpx import AsyncClient, ASGITransport
@@ -463,37 +465,57 @@ async def test_reregistering_the_same_address_is_idempotent_no_second_send(clien
 # test.mjs / onboardingOffline.test.mjs on the JS side). ────────────────────
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("bad", ["", "not-an-email", "no-domain@", "@no-local.com",
-                                  "trailing-dot@example.", "has space@example.com",
-                                  # Measured accepted before the bound existed: a
-                                  # 200,012-character address reached config.yaml,
-                                  # which is re-read and rewritten on every later
-                                  # onboarding write and parsed at every start.
-                                  "a" * 200000 + "@example.com",
-                                  "a" * 255 + "@example.com",
-                                  "a" * 65 + "@example.com",
-                                  # Total over 254 while the local part stays
-                                  # UNDER 64 -- the only shape the whole-path
-                                  # bound catches on its own. Without it the
-                                  # local-part bound caught every oversized case
-                                  # above and the whole-path guard was untested.
-                                  "a" * 60 + "@" + "b" * 190 + ".com",
-                                  # `isspace` rejected \n and \r, so header
-                                  # injection was already refused -- but these
-                                  # control characters were accepted and
-                                  # persisted verbatim.
-                                  "a\x00b@example.com",
-                                  "a\x07b@example.com",
-                                  "a\x1bb@example.com",
-                                  "a\x7fb@example.com",
-                                  "a\u202eb@example.com"])
-async def test_malformed_addresses_are_rejected_by_the_server_regardless_of_client_gate(
-    client, bad
-):
-    r = await client.post("/api/onboarding/email", json={"email": bad})
-    assert r.status_code == 422
+def _shared_email_cases():
+    """The ONE table both validators are checked against.
 
-    # And nothing was persisted.
-    status = await client.get("/api/onboarding/status")
-    assert status.status_code == 200
+    Deliberately not inline: `web/src/onboardingEmail.test.mjs` reads the same
+    JSON. Two implementations of one rule drift, and a table living in one
+    stack only ever gets extended in one stack.
+    """
+    path = Path(__file__).resolve().parent.parent / "testdata" / "email_validation_cases.json"
+    return json.loads(path.read_text(encoding="utf-8"))["cases"]
+
+
+_EMAIL_CASES = _shared_email_cases()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", _EMAIL_CASES, ids=[c["why"][:38] for c in _EMAIL_CASES])
+async def test_the_server_agrees_with_the_shared_table_in_both_directions(client, case):
+    """Acceptance AND rejection, because a bound pinned only against being too
+    LOOSE lets an over-strict one ship.
+
+    Measured on this branch: tightening the client's `EMAIL_MAX_LEN` to 25 left
+    all 1669 web tests green while refusing
+    `dana.lee+onboarding@example.com` -- an ordinary address, on a step the
+    operator made REQUIRED, which would lock a real user out of their own
+    board. The accept rows exist for that failure, not for completeness.
+    """
+    r = await client.post("/api/onboarding/email", json={"email": case["address"]})
+    if case["valid"]:
+        assert r.status_code == 200, (
+            f"{case['why']}: a VALID address was refused -- over-strict "
+            f"validation locks a user out of a required step. {r.text[:200]}"
+        )
+    else:
+        assert r.status_code == 422, f"{case['why']}: expected refusal, got {r.status_code}"
+        # A refusal must also leave nothing behind: the address must not reach
+        # config.yaml, which is what made the 200,012-character row a denial of
+        # service rather than a cosmetic complaint.
+        status = await client.get("/api/onboarding/status")
+        assert status.status_code == 200
+        if case["address"]:          # "" is a substring of everything
+            assert case["address"] not in status.text
+
+
+def test_the_shared_table_covers_both_directions():
+    """A table of only-rejects would make the test above vacuous in the one
+    direction that actually bit."""
+    ok = [c for c in _EMAIL_CASES if c["valid"]]
+    bad = [c for c in _EMAIL_CASES if not c["valid"]]
+    assert len(ok) >= 5 and len(bad) >= 5, (len(ok), len(bad))
+    longest_ok = max(ok, key=lambda c: len(c["address"]))
+    assert len(longest_ok["address"]) == 254, (
+        "the table must assert a 254-character address is ACCEPTED -- that is "
+        "the only row an over-tightened whole-path cap cannot satisfy"
+    )
