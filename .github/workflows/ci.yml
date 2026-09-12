@@ -562,6 +562,11 @@ jobs:
     steps:
       - name: Does this PR touch desktop/?
         id: areas
+        # `--paginate` is up to 100 sequential requests for a capped diff, and
+        # `tests/test_ci_network_step_bounds.py` -- which exists to bound every
+        # network step -- is scoped to `jobs.linux` and cannot see this one. So
+        # the bound is written here by hand.
+        timeout-minutes: 3
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -571,7 +576,9 @@ jobs:
 
           # Not a pull request: there is no PR to ask the files API about, and
           # every consumer below runs anyway on its `!= 'pull_request'` clause.
-          if [ -z "${PR_NUMBER}" ]; then
+          # `:-` because an `env:` key someone deletes must not hard-fail the
+          # job under `set -u` -- every other read here is defensive too.
+          if [ -z "${PR_NUMBER:-}" ]; then
             echo "desktop=false" >> "$GITHUB_OUTPUT"
             echo "event=${GITHUB_EVENT_NAME:-unknown}; not a pull request, nothing to filter"
             exit 0
@@ -592,21 +599,32 @@ jobs:
           # a failed `changed` leaves `outputs.desktop` empty -- which on a
           # pull request skips `Desktop shell`, the exact outcome this job
           # exists to prevent.
+          #
+          # `previous_filename` as well as `filename`: for a RENAME the API
+          # reports only the new path in `filename`, so a file moved OUT of
+          # desktop/ would read as "no desktop change" while being exactly the
+          # kind of change the desktop job should see.
           if ! files=$(gh api --paginate \
             "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files" \
-            --jq '.[].filename'); then
+            --jq '.[] | .filename, (.previous_filename // empty)'); then
             echo "desktop=true" >> "$GITHUB_OUTPUT"
             echo "files API failed; running the job rather than skipping it"
             exit 0
           fi
 
-          if printf '%s\n' "$files" | grep -q '^desktop/'; then
+          # A HERESTRING, never `printf ... | grep -q`. `grep -q` exits at the
+          # first match, `printf` then dies on SIGPIPE, and `pipefail` turns
+          # that into a non-zero pipeline -- so the `if` took the else branch
+          # and answered "no desktop files" for a large PR that HAD them.
+          # Measured: wrong from ~2000 filenames, nondeterministic below that,
+          # silent either way. Found in review of the first version of this job.
+          if grep -q '^desktop/' <<<"$files"; then
             echo "desktop=true" >> "$GITHUB_OUTPUT"
           else
             echo "desktop=false" >> "$GITHUB_OUTPUT"
           fi
           echo "desktop files in this PR:"
-          printf '%s\n' "$files" | grep '^desktop/' || echo "  (none)"
+          grep '^desktop/' <<<"$files" || echo "  (none)"
 
   desktop:
     name: Desktop shell
@@ -616,11 +634,15 @@ jobs:
     # by touching `desktop/` (see the `changed` job) or by carrying the
     # `desktop` label.
     needs: changed
-    # `!cancelled()` rather than a bare condition: if `changed` itself fails,
-    # `needs.changed.outputs.desktop` is empty, and without this the push-to-
-    # main run would skip the job over an unrelated API hiccup.
+    # `always()`, not a bare condition and not `!cancelled()`: a `needs` job
+    # that fails OR is cancelled skips its dependents, and
+    # `tests/test_ci_network_step_bounds.py` records this repo MEASURING
+    # GitHub report a timed-out job as `cancelled`, not `failure`. Either
+    # terminal state would otherwise take Desktop shell off the push to main
+    # -- deleting today's only coverage, invisibly, since a skipped
+    # non-required job is not red.
     if: >-
-      !cancelled()
+      always()
       && (github.event_name != 'pull_request'
       || needs.changed.outputs.desktop == 'true'
       || contains(github.event.pull_request.labels.*.name, 'desktop'))

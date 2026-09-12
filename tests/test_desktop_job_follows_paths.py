@@ -57,8 +57,16 @@ def test_the_changed_job_is_never_conditional():
     assert "if" not in _workflow()["jobs"]["changed"]
 
 
-def test_a_failing_changed_job_cannot_silence_the_push_run():
-    assert _workflow()["jobs"]["desktop"]["if"].startswith("!cancelled()")
+def test_a_failing_or_cancelled_changed_job_cannot_silence_the_push_run():
+    """`always()`, not `!cancelled()`.
+
+    A `needs` job skips its dependents when it fails AND when it is
+    cancelled. `tests/test_ci_network_step_bounds.py` records this repo
+    measuring GitHub report a timed-out job as `cancelled`, not `failure` --
+    so `!cancelled()` leaves open exactly the terminal state we have seen,
+    and a skipped non-required job is not red.
+    """
+    assert _workflow()["jobs"]["desktop"]["if"].startswith("always()")
 
 
 def test_the_changed_job_may_read_pull_requests():
@@ -77,8 +85,10 @@ def _run_changed_step(
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     stub = bin_dir / "gh"
+    argv_log = tmp_path / "gh_argv"
     stub.write_text(
         "#!/bin/sh\n"
+        f'printf "%s\\n" "$@" > {argv_log}\n'
         + "".join(f'echo "{name}"\n' for name in files)
         + (f"exit {gh_exit}\n" if gh_exit else ""),
         encoding="utf-8",
@@ -106,6 +116,10 @@ def _run_changed_step(
         timeout=30,
     )
     assert result.returncode == 0, f"script failed: {result.stderr}"
+    if argv_log.exists():
+        (tmp_path / "gh_argv_seen").write_text(
+            argv_log.read_text(encoding="utf-8"), encoding="utf-8"
+        )
     return dict(
         line.split("=", 1)
         for line in output.read_text(encoding="utf-8").splitlines()
@@ -155,9 +169,67 @@ def test_a_failing_files_api_runs_the_job_rather_than_skipping_it(tmp_path):
     Without this, `set -e` fails the `changed` job, `outputs.desktop` comes
     back empty, and on a pull request `Desktop shell` skips -- reintroducing
     the PR #279 outcome through a different door. The push-to-main run is
-    already covered by `!cancelled()`; this is the pull-request half.
+    already covered by `always()`; this is the pull-request half.
     """
     outputs = _run_changed_step(
         tmp_path, files=["desktop/main.mjs"], gh_exit=1
     )
     assert outputs["desktop"] == "true"
+
+# --- what the first version of this file did NOT pin -------------------------
+# An adversarial review mutated the workflow eleven ways and nine stayed
+# green, including two that make the whole mechanism inert. Each test below
+# exists because a specific one of those mutations passed.
+
+
+def test_the_output_is_wired_to_the_step_that_produces_it():
+    """Deleting the `outputs:` block left every test green.
+
+    With it gone, `needs.changed.outputs.desktop` is permanently empty and
+    the gate silently reverts to label-only -- the exact PR #279 outcome this
+    job exists to prevent.
+    """
+    changed = _workflow()["jobs"]["changed"]
+    assert changed["outputs"]["desktop"] == "${{ steps.areas.outputs.desktop }}"
+
+
+def test_the_producing_step_still_carries_that_id():
+    """Typoing `id: areas` left every test green, for the same reason."""
+    ids = [s.get("id") for s in _workflow()["jobs"]["changed"]["steps"]]
+    assert "areas" in ids, f"no step with id 'areas'; ids are {ids}"
+
+
+def test_the_script_asks_the_files_endpoint_for_both_path_fields(tmp_path):
+    """Pins the endpoint and the jq, which a stubbed `gh` cannot exercise.
+
+    `previous_filename` is not decoration: for a RENAME the API reports only
+    the new path in `filename`, so a file moved OUT of `desktop/` would read
+    as "no desktop change" while being exactly what the desktop job needs to
+    see.
+    """
+    _run_changed_step(tmp_path, files=["src/no_human/config.py"])
+    argv = (tmp_path / "gh_argv_seen").read_text(encoding="utf-8")
+    assert "/pulls/279/files" in argv, argv
+    assert "--paginate" in argv, argv
+    assert ".filename" in argv, argv
+    assert "previous_filename" in argv, argv
+
+
+def test_a_large_diff_that_touches_desktop_is_not_silently_missed(tmp_path):
+    """The SIGPIPE bug, which is the reason this job was wrong to begin with.
+
+    `printf ... | grep -q` makes `grep` exit at the first match, `printf` die
+    on SIGPIPE, and `pipefail` turn that into a non-zero pipeline -- so the
+    `if` took the else branch and reported "no desktop files" for a PR that
+    had them. Measured wrong from ~2000 filenames and NONDETERMINISTIC below
+    that, silent either way.
+
+    `desktop/` sorts before `docs/`, `src/`, `tests/` and `web/`, and the API
+    returns paths in order, so the match is early in a big diff -- precisely
+    the case that triggers it.
+    """
+    files = ["desktop/main.mjs"] + [
+        f"src/no_human/module_with_a_realistic_length_name_{i}.py"
+        for i in range(2500)
+    ]
+    assert _run_changed_step(tmp_path, files=files)["desktop"] == "true"
