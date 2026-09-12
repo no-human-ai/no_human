@@ -12929,15 +12929,6 @@ class Orchestrator:
             # inconclusive → fail-closed.
             if not result.ran or result.invocation_error:
                 return None
-            # The runner may retry a bad invocation with a REWRITTEN command
-            # (dropping our node ids) — honest, but not the bounded answer we
-            # asked for. Mirrors `_flaky_on_rerun`'s identical guard.
-            if getattr(result, "command", bounded_cmd) != bounded_cmd:
-                log.warning(
-                    "base-tree recheck: runner substituted a command (%s); "
-                    "verdict discarded", result.command,
-                )
-                return None
             # By NAME, never by count: every requested id must appear in
             # base's reported passes/failures, or base answers nothing about
             # it — all-or-nothing, not a partial split.

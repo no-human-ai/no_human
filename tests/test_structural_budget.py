@@ -1739,7 +1739,15 @@ FROZEN_FILE_LINES = {
     # renders the two cases. `_build_review_prompt` had zero headroom on
     # this file's budget already, so the new parameter/plumbing could not
     # be added at zero net file growth.
-    "review/reviewer.py": 3120,
+    # 3120 -> 3134 (+14): post-merge review send-back on the same REFILE
+    # bugfix ("a red suite reaches the reviewer unattributed") fixed F2 —
+    # `_failing_test_attribution_sentence`'s lead-in falsely claimed "the
+    # harness has already checked each one against the base tree" even when
+    # the base check was fully inconclusive (an ATTRIBUTION-UNKNOWN-only
+    # render). Added a branch (plus docstring) giving that case its own
+    # honest lead-in instead of reusing the "determined" one. Measured on
+    # this merge.
+    "review/reviewer.py": 3134,
     # 2706 -> 2711 (+5): pre-existing red on main at 03b262d23 (e922e9b4's
     # landing, change-scoped tests missed the ratchet) — repaired, measured,
     # on this merge; same cause as the two function-level wake.py bumps above.

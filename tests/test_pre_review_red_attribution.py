@@ -268,6 +268,10 @@ async def test_owned_id_is_never_excused_when_base_check_could_not_run(
     assert owned_line, prompt
     assert "[MODIFIED BY THIS DIFF]" in owned_line[0], owned_line
 
+    # The base check did NOT run to a verdict here — the lead-in must not
+    # claim it did (that false "determined" claim is the bug F2 fixed).
+    assert "already checked each one against the base tree" not in prompt, prompt
+
     _assert_no_exculpatory_wording_for(prompt, owned_id)
 
 

@@ -936,8 +936,22 @@ def _failing_test_attribution_sentence(failing_test_attribution: str) -> str:
     for this round (`_render_failing_attribution` in `core/orchestrator.py`)
     — split out so `_build_review_prompt` doesn't grow. Empty input falls
     back to the original "not yet attributed" caveat.
+
+    `_render_failing_attribution` renders exactly one of two mutually
+    exclusive shapes for a non-empty input: a NEW/ALSO-RED split (a real
+    base-tree verdict) or an ATTRIBUTION-UNKNOWN-only block (the base check
+    was inconclusive for every id — see `_attribution_buckets`). Claiming
+    "already checked ... against the base tree" for the latter is false —
+    the harness tried and could not get a trustworthy verdict — so that
+    shape gets its own honest lead-in instead of the "determined" one.
     """
     if failing_test_attribution:
+        if failing_test_attribution.startswith("ATTRIBUTION UNKNOWN"):
+            return (
+                "the harness attempted to check each one against the base "
+                "tree but could not get a trustworthy verdict for any of "
+                f"them:\n{failing_test_attribution}"
+            )
         return (
             "the harness has already checked each one against the base "
             f"tree:\n{failing_test_attribution}"
