@@ -3065,25 +3065,30 @@ def test_a_symbol_row_beyond_the_window_fails(tmp_path, monkeypatch):
 
 
 def test_windows_md_row_and_section_cross_references_resolve():
-    """A "row N ... in §M" pointer must land on a real row in a real section.
+    """A "row N ... in SS M" pointer must land on a real row in a real section.
 
     #110 was a citation that resolved to nothing. Its replacement named the
-    right row number and the wrong section -- the row lives in §3
-    ("Divergences from macOS"), while §2 has no table at all -- so the fix
-    reproduced the defect it was closing. The CITATION_TABLE row added
-    alongside it cannot see this: it checks the code side, and `WINDOWS.md` is
-    not in `_CITATION_DOC_PATHS`, so nothing opens the doc.
+    right row number and the wrong section -- the row lives in SS3
+    ("Divergences from macOS"), while SS2 has no table at all -- so the fix
+    reproduced the defect it was closing. The CITATION_TABLE rows cannot see
+    this: they check code, and `WINDOWS.md` is not in `_CITATION_DOC_PATHS`,
+    so nothing opens the doc.
 
-    This walks the doc's own structure instead: for every "row N ... table in
-    §M", the section headed `## M.` must actually contain a table row whose
-    first cell is N.
+    The matcher is deliberately BOUNDED. An earlier version paired any
+    "row N" with the next section sign anywhere in the file under
+    `re.DOTALL`, so an unrelated sentence ~800 lines from a reference
+    produced a fabricated accusation ("cites row 3 of a table in SS6").
+    Only a section sign within `_REF_WINDOW` characters, with no other
+    section sign in between, is treated as part of the same reference.
+
+    A subsection pointer (`SS4.2`) is checked against its PARENT section's
+    span, which contains it -- the parent span is where the table lives.
     """
     doc = (Path(__file__).resolve().parent.parent / "docs" / "WINDOWS.md").read_text(
         encoding="utf-8"
     )
     lines = doc.splitlines()
 
-    # `## <n>. <title>` -> the half-open line range that section owns.
     heads = [
         (int(m.group(1)), i)
         for i, ln in enumerate(lines)
@@ -3094,16 +3099,82 @@ def test_windows_md_row_and_section_cross_references_resolve():
         for k, (num, start) in enumerate(heads)
     }
 
-    refs = re.findall(r"row (\d+)\b[^§]*?§(\d+)", doc, flags=re.DOTALL)
-    assert refs, "no 'row N ... §M' cross-reference found — the instrument would pass vacuously"
+    _REF_WINDOW = 120
+    pattern = re.compile(
+        r"\brows?\s+[`*]*(\d+(?:\s*(?:,|and)\s*\d+)*)[`*]*"   # row 7 / rows 7 and 8
+        r"[^\u00a7]{0,%d}?"                                     # bounded, no other section sign
+        r"\u00a7\s*(\d+)(?:\.\d+)*" % _REF_WINDOW,             # SS3 or SS4.2 -> parent 4
+        re.IGNORECASE | re.DOTALL,
+    )
+    refs = [
+        (row, section)
+        for rows, section in pattern.findall(doc)
+        for row in re.split(r"\s*(?:,|and)\s*", rows)
+        if row
+    ]
+    assert refs, (
+        "no 'row N ... section M' cross-reference found in WINDOWS.md -- the "
+        "instrument would pass vacuously"
+    )
 
     for row, section in refs:
-        assert int(section) in spans, f"§{section} is not a section in WINDOWS.md"
+        assert int(section) in spans, f"section {section} is not a section in WINDOWS.md"
         start, end = spans[int(section)]
         body = lines[start:end]
         hits = [ln for ln in body if re.match(rf"^\|\s*{row}\s*\|", ln)]
         assert hits, (
-            f"WINDOWS.md cites row {row} of a table in §{section}, but §{section} "
-            f"(lines {start + 1}-{end}) has no table row starting `| {row} |`. "
-            f"Table rows in that section: {sum(1 for ln in body if ln.startswith('|'))}"
+            f"WINDOWS.md cites row {row} of a table in section {section}, but "
+            f"that section (lines {start + 1}-{end}) has no table row starting "
+            f"`| {row} |`. Table rows in that section: "
+            f"{sum(1 for ln in body if ln.startswith('|'))}"
         )
+
+
+def test_windows_md_code_line_citations_resolve():
+    """The OTHER half of #110: a bare line number into a live source file.
+
+    The reporter found `docs/WINDOWS.md` citing `cli/commands.py:4352` when
+    the line it described had moved 2,766 lines. A CITATION_TABLE row cannot
+    catch that: `_CITATION_DOC_PATHS` does not include `WINDOWS.md`, so
+    `_check_citation` never opens the doc -- I added such a row first and
+    measured it inert (rotting the citation back to 4352 left the file at
+    `137 passed`).
+
+    This reads the doc instead. For every `path/to/file.py:N` citation naming
+    a file under `src/no_human`, the cited line must still contain the token
+    the surrounding table cell describes. Only `.py` citations are checked:
+    nine of the doc's other citations name bare `.mjs`/`.cjs` basenames under
+    `desktop/`, which `_resolve_source` looks for under `src/no_human` only
+    and does not find -- registering the whole doc is a larger job than #110.
+    """
+    doc_path = Path(__file__).resolve().parent.parent / "docs" / "WINDOWS.md"
+    doc = doc_path.read_text(encoding="utf-8")
+    src_root = Path(__file__).resolve().parent.parent / "src" / "no_human"
+
+    #: cited path -> a token that must appear on the cited line
+    EXPECTED = {"cli/commands.py": "signal.SIGKILL"}
+
+    cites = re.findall(r"`([a-z_/]+\.py):(\d+)`", doc)
+    checked = 0
+    for rel, lineno in cites:
+        if rel not in EXPECTED:
+            continue
+        target = src_root / rel
+        assert target.is_file(), f"WINDOWS.md cites {rel}, which does not exist"
+        lines = target.read_text(encoding="utf-8").splitlines()
+        n = int(lineno)
+        assert 1 <= n <= len(lines), (
+            f"WINDOWS.md cites {rel}:{n}, but that file has {len(lines)} lines"
+        )
+        token = EXPECTED[rel]
+        assert token in lines[n - 1], (
+            f"WINDOWS.md cites {rel}:{n} for `{token}`, but that line reads "
+            f"{lines[n - 1].strip()!r}. The citation has rotted -- this is the "
+            f"defect #110 reported."
+        )
+        checked += 1
+
+    assert checked, (
+        "no checkable .py line citation found in WINDOWS.md -- the instrument "
+        "would pass vacuously"
+    )

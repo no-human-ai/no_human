@@ -635,9 +635,12 @@ Flags"](https://learn.microsoft.com/en-us/windows/win32/procthread/process-creat
 is the upstream source for that interaction: `CREATE_NO_WINDOW` "is ignored if
 the application is not a console application, or if it is used with either
 CREATE_NEW_CONSOLE or DETACHED_PROCESS". That row covers `nh`'s own console,
-which is what reaches `claude.exe`; nh's other subprocesses (`git`, `codex`, the
-test runner) do not depend on it, because `proc.py:hidden_console_kwargs` passes
-`CREATE_NO_WINDOW` on each of those spawns directly. The unit tests are
+which is what reaches `claude.exe`. It does NOT cover nh's other subprocesses:
+an AST sweep of `src/no_human` finds 96 spawn sites whose argv[0] is literally
+`git`, and only 9 of them — all in `vcs/git.py` — pass a hidden-console flag.
+`agent/codex_backend.py`'s four sites do. Everything else inherits whatever
+console `nh` itself has, which is precisely why row 7 lists `git.exe` among the
+grandchildren that showed a window. The unit tests are
 `desktop/server.test.mjs` / `tests/test_proc.py`; the decisive console-count
 repro above is what actually establishes the pop-ups are gone, and until it runs
 the fix is "mechanism-verified", not "confirmed on Windows".
