@@ -63,7 +63,7 @@ async def test_cleanup_that_cannot_remove_everything_records_what_is_left(tmp_pa
 
         marker = base / CLEANUP_MARKER
         assert marker.exists(), "an incomplete cleanup must leave a marker"
-        marker_text = marker.read_text()
+        marker_text = marker.read_text(encoding="utf-8")
         assert any(item in marker_text for item in result)
     finally:
         os.chmod(sub, 0o700)

@@ -62,11 +62,11 @@ def _remove_sandbox(
         + "\n".join(shown) + "\n"
     )
     try:
-        (base_tmp / CLEANUP_MARKER).write_text(marker_text)
+        (base_tmp / CLEANUP_MARKER).write_text(marker_text, encoding="utf-8")
     except OSError:
         try:
             sibling = base_tmp.parent / (base_tmp.name + ".cleanup-incomplete")
-            sibling.write_text(marker_text)
+            sibling.write_text(marker_text, encoding="utf-8")
         except OSError:
             pass  # Best-effort record; cleanup must never fail because of it.
 
