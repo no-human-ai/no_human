@@ -745,11 +745,43 @@ jobs:
     # must not pay for it, because a job that bills on every commit is a job
     # that gets switched off. It runs on every push to main, so every merged
     # state carries the signal, and on demand for any PR that opts in by
-    # carrying the `windows` label. Add the label to get a run; remove it to
-    # stop paying.
+    # touching `desktop/` (see the `changed` job) or by carrying the `windows`
+    # label. Add the label to get a run; remove it to stop paying.
+    #
+    # The paths clause is the same one `Desktop shell` carries, and it belongs
+    # here for the same reason: `desktop/` is the Electron app this job
+    # packages (electron-builder reads `nhPackagedFiles.files` from
+    # desktop/package.json and packs it with `asar: true` —
+    # desktop/electron-builder.config.cjs), and three of the steps below
+    # — `npm ci`, derive-icons and `Desktop shell tests` — are already
+    # desktop/ steps. PR #279 was one `desktop/package-lock.json` bump and got
+    # packaging signal from NONE of the three jobs; the `changed` job fixed
+    # that for `Desktop shell` only. A change that ships in the packaged app
+    # should pay for packaging signal.
+    #
+    # What this does NOT widen: the non-desktop half of this job (the
+    # PyInstaller freeze, the Windows portability suite) is still label-only on
+    # a pull request. A Python-only or docs-only PR leaves `changed` saying
+    # `false` and skips exactly as before.
+    #
+    # `!= 'false'` and `always()`, spelled exactly as `desktop` spells them
+    # and for its reasons: a dead `changed` job leaves the output EMPTY, and
+    # empty must run the job rather than skip it, which `== 'true'` would get
+    # backwards; and a `changed` job that does not SUCCEED would otherwise
+    # skip this one through `needs:` alone, before any `if:` is read —
+    # including on a push to main, the one run that covers this job today.
+    # The `always()` half is the trade `desktop` documents: GitHub reports a
+    # timed-out job as `cancelled`, not `failure`
+    # (tests/test_ci_network_step_bounds.py records that), and `changed`
+    # carries a 5-minute job bound and a 3-minute step bound, so
+    # `!cancelled()` could lose the packaging signal silently. One spelling
+    # across all three jobs.
+    needs: changed
     if: >-
-      github.event_name != 'pull_request'
-      || contains(github.event.pull_request.labels.*.name, 'windows')
+      always()
+      && (github.event_name != 'pull_request'
+      || needs.changed.outputs.desktop != 'false'
+      || contains(github.event.pull_request.labels.*.name, 'windows'))
     runs-on: windows-latest
     timeout-minutes: 45
     defaults:
@@ -985,10 +1017,29 @@ jobs:
     # Same gate as windows, plus: a workflow_dispatch runs this job ONLY when
     # linux_release is set — a dispatch fired for the nightly guards must not
     # bill 15-25 minutes here nor produce packages (see the on: block).
+    #
+    # The paths clause is the same one `Desktop shell` and `windows` carry, and
+    # is scoped to the pull_request arm alone so the dispatch arm keeps meaning
+    # exactly what it meant: linux_release, and nothing else, decides there.
+    # `desktop/` is where this job builds the packages from — `npm run
+    # dist:linux` runs there and is electron-builder — so a change under
+    # `desktop/` ships in the .deb and the AppImage and should pay for the
+    # packaging signal. A Python-only or docs-only PR still skips.
+    #
+    # `!= 'false'` and `always()` for the reasons the windows job spells out.
+    # The guard matters more here than anywhere: without it a `changed` job
+    # that does not succeed would skip this one through `needs:` alone, and
+    # that includes a workflow_dispatch with linux_release set — i.e. a
+    # release build silently not happening because a 3-minute files-API step
+    # died or timed out.
+    needs: changed
     if: >-
-      github.event_name == 'push'
-      || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'linux'))
-      || (github.event_name == 'workflow_dispatch' && inputs.linux_release)
+      always()
+      && (github.event_name == 'push'
+      || (github.event_name == 'pull_request'
+      && (needs.changed.outputs.desktop != 'false'
+      || contains(github.event.pull_request.labels.*.name, 'linux')))
+      || (github.event_name == 'workflow_dispatch' && inputs.linux_release))
     runs-on: ubuntu-22.04
     timeout-minutes: 45
     steps:
