@@ -415,3 +415,46 @@ def test_note_text_never_raises():
         "a raising head_sha must short-circuit before the probe is ever built")
     assert _run(guard2.hook({}, None, None)) == {}
     assert probe_calls == [], "hook() must not probe when head_sha raised in note_text"
+
+
+def test_an_empty_head_sha_never_reaches_the_probe():
+    """Mutant pin (STEP 3b): `_note_text`'s `if not head or head in self._seen:
+    return` (~259) has two independently-testable halves; the `head in
+    self._seen` half is already pinned by `test_latch_injects_once_per_sha`.
+    This pins the OTHER half — `not head` — with a probe that refutes
+    unconditionally and records every call, so a mutant that dropped `not
+    head or` (leaving only the latch check) would let an empty-string HEAD
+    (unresolvable, but not by raising — `head_sha` returning `""` is a
+    distinct case from `test_note_text_never_raises`'s raising `head_sha`)
+    through to a probe call and a bogus refusal."""
+    probe_calls: list[str] = []
+
+    async def probe() -> tuple[bool, str, str]:
+        probe_calls.append("probed")
+        return (True, "deadbeef", "deadbeef is not an ancestor of main")
+
+    guard = LandedClaimGuard(probe=probe, head_sha=lambda: "")
+    guard.note_text("this is already implemented in abc1234def")
+    assert guard._pending_head is None, (
+        "an empty head_sha must never leave a pending injection latched")
+    assert probe_calls == [], (
+        "an empty head_sha must short-circuit before the probe is ever built")
+    assert _run(guard.hook({}, None, None)) == {}
+    assert probe_calls == [], "hook() must not probe when head_sha was empty"
+
+
+def test_the_refusal_message_does_not_predict_delivery_will_refuse():
+    """(Fifth review) the injected message was reworded from a prediction
+    ("delivery will refuse this claim right now") to a present-tense
+    statement ("delivery does not accept it as it stands"), because `detail`
+    can legitimately name a transient remote condition (an unreadable
+    origin, an unverifiable pushed branch) and the guard must never assert a
+    definite outcome about those."""
+    sha = "1234567890abcdef1234567890abcdef12345678"
+    probe = _real_probe(_FakeRepo(ancestor=False), lambda: sha)
+    guard = LandedClaimGuard(probe=probe, head_sha=lambda: sha)
+    guard.note_text(f"already satisfied: the work already exists at {sha}")
+    result = _run(guard.hook({}, None, None))
+    message = result["hookSpecificOutput"]["additionalContext"]
+    assert "does not accept it as it stands" in message
+    assert "will refuse this claim right now" not in message

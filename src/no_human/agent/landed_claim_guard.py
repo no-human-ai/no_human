@@ -68,6 +68,22 @@ Four revisions since the first version landed:
   emission itself — both are now covered, closing two surviving mutants
   (deleting the `on_event(...)` call, or its try/except, passed every
   existing test).
+* (Fifth review) same class a third time, one predicate further out:
+  `_already_satisfied_subject` is only ever reached at delivery when
+  `resumed_commit` is `None` (`_run_attempt`, ~6501) — an ordinary
+  in-session commit ahead of `base` leaves `resumed_commit` set, so
+  delivery commits, reviews and opens a PR instead of parsing the claim at
+  all. The probe was refusing that shape too. Fixed by evaluating that same
+  outer predicate — `commits_ahead(base)` — in the probe, and staying
+  silent whenever it is nonzero (unless this attempt itself resumed from
+  its own `[WIP-PARTIAL]`, which cannot occur here: that resume implies a
+  `[WIP-PARTIAL]` HEAD, already ineligible one step earlier). The injected
+  message was also reworded from a prediction ("delivery will refuse this
+  claim right now") to a present-tense statement ("delivery does not
+  accept it as it stands"), because `detail` can legitimately name a
+  transient remote condition (an unreadable origin, an unverifiable
+  pushed branch) and the guard must never assert a definite outcome about
+  those.
 """
 
 from __future__ import annotations
@@ -279,8 +295,8 @@ class LandedClaimGuard:
         tag = supervisor_channel_tag()
         message = (
             f"{tag} LANDED-CLAIM REFUSED: you said the work already exists "
-            f"(\"{snippet}…\"), but delivery will refuse this claim right "
-            f"now — {detail} (verified the same way "
+            f"(\"{snippet}…\"), but delivery does not accept it as it "
+            f"stands — {detail} (checked the same way "
             "`_already_satisfied_subject` verifies it at delivery time: git "
             "merge-base --is-ancestor, plus the pushed-branch and sibling-"
             "branch checks). This is independent of the commit's subject "

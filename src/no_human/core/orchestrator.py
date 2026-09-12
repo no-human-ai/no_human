@@ -5682,7 +5682,9 @@ class Orchestrator:
         # it is made, not 40 turns later at delivery — see
         # `landed_claim_guard.py`'s module docstring for the incident this
         # closes. Never keyed on the commit subject.
-        claim_guard = self._build_landed_claim_guard(task, repo, base=base, branch=branch)
+        claim_guard = self._build_landed_claim_guard(
+            task, repo, base=base, branch=branch,
+            branched_from_own_partial=branched_from_own_partial)
         self._active_landed_claim_guard = claim_guard  # so _agent_sink can feed it agent prose
 
         # Pre-flight plan check (EVOLUTION_PLAN §1.2 #1): one cheap evaluation of
@@ -16951,6 +16953,7 @@ class Orchestrator:
 
     def _build_landed_claim_guard(
         self, task: Task, repo: GitRepo, *, base: str | None, branch: str | None,
+        branched_from_own_partial: bool = False,
     ) -> "LandedClaimGuard | None":
         """Construct a `LandedClaimGuard` for the current attempt.
 
@@ -16983,6 +16986,19 @@ class Orchestrator:
         the accept direction. So the probe asks `_already_satisfied_
         eligible` first, exactly as `_route_unjudged_head` does, and stays
         silent (never refutes) whenever that would route to review.
+
+        Fourth review, same class a third time: `_already_satisfied_subject`
+        is not reached merely because the head is eligible. Delivery parses
+        the claim at all only when `resumed_commit` is None (~6501) — that
+        is, when there is no base, or the branch is not ahead of it, or the
+        attempt resumed from its OWN `[WIP-PARTIAL]` checkpoint. An attempt
+        that made an ordinary in-session commit off `base` leaves
+        `resumed_commit` non-None, so delivery commits, reviews and opens a
+        PR; a probe that refused there would again say "delivery will refuse
+        this claim right now" about a shape delivery ships. So the probe
+        evaluates that same outer predicate, at probe time (`commits_ahead`
+        moves as the coder commits), and stays silent whenever delivery
+        would not reach the claim gate.
         """
         if not repo:
             return None
@@ -16994,6 +17010,21 @@ class Orchestrator:
                 # claim gate — it is not refusing the claim, so the guard
                 # must not say it is.
                 return False, "", ""
+            # Delivery parses the claim at all only when `resumed_commit` is
+            # None (~6501): no base, or nothing ahead of it, or a resume from
+            # this attempt's own [WIP-PARTIAL]. With ordinary in-session
+            # commits ahead of `base`, delivery commits and reviews the diff
+            # instead of refusing — so the guard must stay silent. Evaluated
+            # here rather than at build time because the coder commits while
+            # the attempt runs. A `commits_ahead` that raises is a cannot-tell
+            # and also yields silence: the guard never refutes on ignorance.
+            if base and not branched_from_own_partial:
+                try:
+                    ahead = repo.commits_ahead(base)
+                except Exception:  # noqa: BLE001 — cannot tell is not refuted
+                    raise
+                if ahead > 0:
+                    return False, "", ""
             (shippable, head, _subject, subject_reason, _on_main,
              ship_ref) = await self._already_satisfied_subject(
                 task, repo, base=base, branch=branch)

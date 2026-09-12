@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import asyncio
 import subprocess
-from pathlib import Path
 
 import pytest
 
@@ -43,6 +42,18 @@ def bare_repo(tmp_path):
     return work
 
 
+@pytest.fixture
+def diverged_repo(bare_repo):
+    """The shape the 43 live delivery-time refusals actually are: HEAD sits at
+    the LOCAL base tip (commits_ahead('main') == 0, so delivery's
+    `resumed_commit` is None and the claim really is parsed) while the ship ref
+    `origin/main` does NOT contain it."""
+    (bare_repo / "calc.py").write_text("def add(a, b):\n    return a + b  # local\n")
+    _git(bare_repo, "add", "-A")
+    _git(bare_repo, "commit", "-m", "local base moved on; never pushed")
+    return bare_repo
+
+
 def _config(tmp_path):
     cfg = load_config(tmp_path / "config.yaml")
     cfg.data.setdefault("planning", {})["enabled"] = False
@@ -62,7 +73,7 @@ def _orch(store, tmp_path):
 
 
 async def test_build_landed_claim_guard_fires_on_a_refutable_claim_via_the_real_probe(
-    bare_repo, tmp_path, store,
+    diverged_repo, tmp_path, store,
 ):
     # This test drives `_build_landed_claim_guard`/`guard.hook(...)` directly
     # — it does NOT run `_run_attempt`, so it proves the guard/probe logic is
@@ -72,22 +83,28 @@ async def test_build_landed_claim_guard_fires_on_a_refutable_claim_via_the_real_
     # below for that (send-back, Blocker 3: this test's old name overclaimed
     # "wired into the attempt" without ever calling `_run_attempt`).
     #
-    # An ORDINARY commit (no [WIP-*] subject) left by a previous, review-
-    # failed round — 33 of the 42 measured incidents look like this, not a
-    # checkpoint.
+    # (Fifth review) Modelling the LIVE shape now: HEAD sits at the local
+    # base tip (`commits_ahead("main") == 0`), so delivery really does reach
+    # the claim gate — vs. the shape the guard used to model here (an
+    # ordinary commit AHEAD of base), which is a shape delivery never even
+    # parses a claim for; that regression now lives in
+    # `test_a_branch_ahead_of_its_base_is_not_refused_because_delivery_never_
+    # reaches_the_claim_gate` below.
+    old_tip = _git(diverged_repo, "rev-parse", "origin/main").stdout.strip()
     attempt_branch = "no-human/task-attempt-1"
-    _git(bare_repo, "checkout", "-b", attempt_branch)
-    (bare_repo / "fix.py").write_text("def fix():\n    return True\n")
-    _git(bare_repo, "add", "-A")
-    _git(bare_repo, "commit", "-m", "attempt at the fix, review FAILED")
-    claimed_sha = GitRepo(bare_repo).head_sha()
+    # local-only, left at the OLD pushed tip — the same trick
+    # `test_a_pushed_sibling_branch_of_the_same_task_is_not_blocked` uses —
+    # so `local_is_reviewed` is False, `remote_branch_relation` is skipped,
+    # and the refusal reason is deterministic and network-free.
+    _git(diverged_repo, "branch", attempt_branch, old_tip)
+    claimed_sha = GitRepo(diverged_repo).head_sha()
 
     orch = _orch(store, tmp_path)
-    task = Task.new("existing", repo_path=str(bare_repo), kind="feature")
+    task = Task.new("existing", repo_path=str(diverged_repo), kind="feature")
     await store.create_task(task)
 
     guard = orch._build_landed_claim_guard(
-        task, GitRepo(bare_repo), base="main", branch=attempt_branch,
+        task, GitRepo(diverged_repo), base="main", branch=attempt_branch,
     )
     assert guard is not None
 
@@ -97,7 +114,7 @@ async def test_build_landed_claim_guard_fires_on_a_refutable_claim_via_the_real_
     )
     result = await guard.hook({}, None, None)
 
-    assert result, "a commit not reachable from main must be refused"
+    assert result, "a commit not reachable from origin/main must be refused"
     message = result["hookSpecificOutput"]["additionalContext"]
     assert claimed_sha in message
     assert "main" in message
@@ -110,6 +127,9 @@ async def test_build_landed_claim_guard_fires_on_a_refutable_claim_via_the_real_
     assert "is not on" in message
     # Non-terminal: the attempt must be told to keep going.
     assert "continue_" not in result
+    # Criterion 6: the message states a present fact, not a prediction about
+    # a condition (an unreachable remote) that could still change.
+    assert "will refuse this claim right now" not in message
     # Converse of `test_a_wip_partial_checkpoint_is_not_blocked_because_
     # delivery_would_review_it_not_refuse_it` below: THIS head is eligible
     # (ordinary subject, no unreviewed-checkpoint shape), so delivery's own
@@ -118,7 +138,11 @@ async def test_build_landed_claim_guard_fires_on_a_refutable_claim_via_the_real_
     # both in one test is what the third send-back asked for: eligibility
     # and the guard's verdict must be read off the SAME fixture.
     assert orch._route_unjudged_head(
-        task, GitRepo(bare_repo), "main") is None
+        task, GitRepo(diverged_repo), "main") is None
+    # And the shape itself: HEAD is on the local base, not ahead of it —
+    # this is what makes delivery's `resumed_commit` at ~6501 be None, i.e.
+    # the reachable-claim-gate state, unlike the over-refusal fixture below.
+    assert GitRepo(diverged_repo).commits_ahead("main") == 0
 
 
 async def test_a_wip_partial_checkpoint_is_not_blocked_because_delivery_would_review_it_not_refuse_it(
@@ -150,6 +174,11 @@ async def test_a_wip_partial_checkpoint_is_not_blocked_because_delivery_would_re
     assert orch._route_unjudged_head(
         task, GitRepo(bare_repo), "main") is not None, (
         "an unreviewed [WIP-PARTIAL] head off main must route to review")
+    # Pin WHY the guard is silent here: ineligibility (this predicate),
+    # not the new outer `commits_ahead` predicate this task adds — those
+    # are two different silence reasons and must not be conflated.
+    assert orch._already_satisfied_eligible(
+        task, GitRepo(bare_repo), "main")[0] is False
 
     guard = orch._build_landed_claim_guard(
         task, GitRepo(bare_repo), base="main", branch=attempt_branch,
@@ -191,6 +220,10 @@ async def test_an_ordinary_head_resumed_from_machine_requeue_provenance_is_not_b
         task, GitRepo(bare_repo), "main") is not None, (
         "a machine-requeue-provenance head with no review verdict must "
         "route to review")
+    # Same distinction as the [WIP-PARTIAL] test above: silence here is
+    # ineligibility, not the new outer `commits_ahead` predicate.
+    assert orch._already_satisfied_eligible(
+        task, GitRepo(bare_repo), "main")[0] is False
 
     guard = orch._build_landed_claim_guard(
         task, GitRepo(bare_repo), base="main", branch=attempt_branch,
@@ -228,6 +261,154 @@ async def test_a_commit_that_is_on_the_base_branch_is_not_blocked(
     result = await guard.hook({}, None, None)
 
     assert result == {}, "a commit already reachable from main must not be blocked"
+
+
+async def test_a_branch_ahead_of_its_base_is_not_refused_because_delivery_never_reaches_the_claim_gate(
+    bare_repo, tmp_path, store,
+):
+    """The actual defect this task fixes: delivery only ever parses an
+    already-satisfied claim when `resumed_commit` is `None` (`_run_attempt`,
+    ~6501) — i.e. no base, or nothing ahead of it, or a resume from this
+    attempt's own `[WIP-PARTIAL]`. An ORDINARY commit ahead of `base` (no
+    `[WIP-*]` subject, so eligible; not a checkpoint resume) is exactly the
+    shape delivery commits, reviews, and opens a PR for — it never reaches
+    `_already_satisfied_subject` at all. The old probe refused here anyway
+    (30 actionable claims / 8 tasks measured with no matching delivery-time
+    refusal); the fix is silence, evaluated at probe time since the coder
+    commits while the attempt runs."""
+    attempt_branch = "no-human/task-attempt-ahead"
+    _git(bare_repo, "checkout", "-b", attempt_branch)
+    (bare_repo / "fix.py").write_text("def fix():\n    return True\n")
+    _git(bare_repo, "add", "-A")
+    _git(bare_repo, "commit", "-m", "attempt at the fix, review FAILED")
+    claimed_sha = GitRepo(bare_repo).head_sha()
+
+    orch = _orch(store, tmp_path)
+    task = Task.new("existing", repo_path=str(bare_repo), kind="feature")
+    await store.create_task(task)
+
+    # One instance, read before AND after the hook call, so eligibility and
+    # `commits_ahead` are pinned off the exact same tree the guard probed.
+    probe_repo = GitRepo(bare_repo)
+    guard = orch._build_landed_claim_guard(
+        task, probe_repo, base="main", branch=attempt_branch,
+    )
+    assert guard is not None
+    guard.note_text(
+        f"This is already implemented — the work already exists at "
+        f"{claimed_sha}, no changes needed."
+    )
+    assert await guard.hook({}, None, None) == {}, (
+        "a branch ahead of its base is a shape delivery ships, not one it "
+        "refuses — the guard must stay silent")
+    assert probe_repo.commits_ahead("main") > 0
+    # And silence here is NOT because the head is ineligible — it is
+    # eligible (ordinary subject, no unreviewed-checkpoint shape); it is the
+    # new outer `commits_ahead` predicate doing the work, not
+    # `_already_satisfied_eligible`.
+    assert orch._already_satisfied_eligible(
+        task, probe_repo, "main")[0] is True
+
+
+class _AheadRaisesRepo:
+    """A repo double whose `head_sha`/`_run` (subject) read normally but whose
+    `commits_ahead` always raises — isolates the new outer predicate's OWN
+    `except Exception` (~17024) from `_already_satisfied_eligible`'s
+    unrelated, pre-existing `commits_ahead` try/except (~11985), which
+    already treats a raise as "assume a diff exists" and is not what this
+    test pins."""
+
+    def head_sha(self):
+        return "cafef00d" * 5
+
+    def commits_ahead(self, base):
+        raise RuntimeError("ahead unreadable")
+
+    def _run(self, *args, **kwargs):
+        return "an ordinary commit, not a checkpoint"
+
+
+async def test_the_new_outer_predicate_stays_silent_on_its_own_commits_ahead_exception(
+    tmp_path, store,
+):
+    """Mutant pin (STEP 3, mutation ladder #7): the new outer block's
+    `except Exception: return False, "", ""` (~17024) must return a
+    cannot-tell tuple, not propagate. Calling `guard.hook(...)` cannot
+    distinguish a mutant that changes this to `raise` from the real code,
+    because `hook()` (`landed_claim_guard.py` ~290) has its OWN outer
+    `except Exception: return {}` around the whole probe call — either way
+    the hook returns `{}`. So this test calls the probe callable directly
+    (`guard._probe`, the exact object `LandedClaimGuard.__init__` stores at
+    `self._probe`), bypassing that outer net, to pin THIS `except` clause on
+    its own."""
+    repo = _AheadRaisesRepo()
+    orch = _orch(store, tmp_path)
+    task = Task.new("existing", repo_path=str(tmp_path), kind="feature")
+    await store.create_task(task)
+
+    guard = orch._build_landed_claim_guard(
+        task, repo, base="main", branch="no-human/task-attempt-x",
+    )
+    assert guard is not None
+    # Eligibility must be True here — an ordinary subject, no machine-requeue
+    # provenance, so `_already_satisfied_eligible`'s OWN (unrelated)
+    # `commits_ahead` exception handling resolves to eligible — so the probe
+    # actually reaches the new outer block's `commits_ahead` call.
+    assert orch._already_satisfied_eligible(task, repo, "main")[0] is True
+
+    result = await guard._probe()
+    assert result == (False, "", ""), (
+        "an unreadable `commits_ahead` inside the new outer predicate must "
+        "be a cannot-tell (silent) result, not a raised exception")
+
+
+async def test_an_unresolvable_ship_ref_is_not_a_refusal(tmp_path, store):
+    """Mutant pin (STEP 3a): the `refuted = (...)` filter in
+    `_build_landed_claim_guard`'s probe (~17007) must require BOTH a
+    negative `shippable` AND a `reason` that actually names an unreachable
+    branch — not merely `shippable is False`. When the ship ref itself
+    cannot be resolved (no base, no remote, no local `main`),
+    `_already_satisfied_subject` returns `shippable=False` with a reason
+    that names no branch at all; a mutant that dropped the reason-shape
+    check from `refuted` would refuse here too. It must not: refusing a
+    claim by naming a branch that was never determined would be worse than
+    silence."""
+    work = tmp_path / "solo"
+    work.mkdir()
+    _git(work, "init", "-b", "work")
+    _git(work, "config", "user.email", "u@example.test")
+    _git(work, "config", "user.name", "u")
+    (work / "calc.py").write_text("def add(a, b):\n    return a + b\n")
+    _git(work, "add", "-A")
+    _git(work, "commit", "-m", "initial")
+    # No remote, no `main` — `default_branch` and every ship-ref candidate
+    # are unresolvable.
+    head = GitRepo(work).head_sha()
+
+    orch = _orch(store, tmp_path)
+    task = Task.new("existing", repo_path=str(work), kind="feature")
+    await store.create_task(task)
+
+    shippable, probed_head, _subject, subject_reason, _on_main, ship_ref = (
+        await orch._already_satisfied_subject(
+            task, GitRepo(work), base=None, branch="work",
+        )
+    )
+    assert shippable is False
+    assert probed_head == head
+    assert ship_ref == ""
+    assert "cannot resolve the branch this task would ship to" in subject_reason
+
+    guard = orch._build_landed_claim_guard(
+        task, GitRepo(work), base=None, branch="work",
+    )
+    assert guard is not None
+    guard.note_text(
+        f"This is already implemented — the work already exists at "
+        f"{head}, no changes needed."
+    )
+    assert await guard.hook({}, None, None) == {}, (
+        "an unresolvable ship ref must not be reported as a refusal")
 
 
 @pytest.mark.parametrize(
@@ -357,16 +538,12 @@ class _ClaimFeedingBackend:
     async def run(self, prompt, *, cwd, max_turns, effort=None, resume=None,
                   on_event=None, supervisor_hook=None, **kwargs):
         self.calls += 1
-        # Simulate the coder making a real, divergent-from-base commit — the
-        # same shape as 33 of the 42 measured incidents (an ordinary commit
-        # left by a previous round, no [WIP-*] subject) — so the probe finds
-        # a head that is genuinely not on `main` rather than one that is
-        # still literally on it (the attempt branch is freshly cut from
-        # `main` and has no commits of its own yet at this point).
-        (Path(cwd) / "fix.py").write_text("def fix():\n    return True\n")
-        subprocess.run(["git", "add", "-A"], cwd=cwd, check=True, capture_output=True)
-        subprocess.run(["git", "commit", "-m", "attempt at the fix"], cwd=cwd,
-                       check=True, capture_output=True)
+        # (Fifth review) Deliberately make NO commit here. `_run_attempt`
+        # itself already cut `cwd`'s branch from `base` via `create_branch`
+        # — against a `diverged_repo` `base`, that lands the attempt branch
+        # exactly on the (unpushed) diverged tip, zero commits ahead. The
+        # head is refutable because the SHIP ref (`origin/main`) lacks it —
+        # not because it diverges from `base`, which it does not.
         self.claimed_sha = subprocess.run(
             ["git", "rev-parse", "HEAD"], cwd=cwd, check=True,
             capture_output=True, text=True,
@@ -388,7 +565,7 @@ class _ClaimFeedingBackend:
 
 
 async def test_guard_is_wired_into_the_real_run_attempt_and_fires_on_a_refutable_claim(
-    bare_repo, tmp_path, store,
+    diverged_repo, tmp_path, store,
 ):
     """Send-back, Blocker 3: the previous test with this name never called
     `_run_attempt` at all — it called `_build_landed_claim_guard` and
@@ -398,16 +575,23 @@ async def test_guard_is_wired_into_the_real_run_attempt_and_fires_on_a_refutable
     This test drives the REAL `_run_attempt`, through a backend that feeds a
     claim through the REAL captured `on_event` (`_agent_sink`) and captures
     the REAL composed hook object `_run_attempt` builds and passes to the
-    backend."""
+    backend.
+
+    (Fifth review) Re-based onto `diverged_repo`, same reason as the
+    real-probe test above: `_run_attempt` itself cuts the attempt branch
+    from `base` via `create_branch`, and the backend below makes no commit
+    of its own, so the attempt branch lands exactly on the diverged
+    (unpushed) tip — `commits_ahead("main") == 0` — reaching the real claim
+    gate instead of a shape delivery would never parse a claim for."""
     cfg = _config(tmp_path)
     backend = _ClaimFeedingBackend(_incident_result())
     orch = Orchestrator(store, cfg.data, backend, SlackNotifier(None),
                         event_sink=[].append)
-    task = Task.new("existing", repo_path=str(bare_repo), kind="feature")
+    task = Task.new("existing", repo_path=str(diverged_repo), kind="feature")
     await store.create_task(task)
     await store.set_status(task, TaskStatus.CONTEXT)
     await store.set_status(task, TaskStatus.PLANNING)
-    repo = GitRepo(bare_repo)
+    repo = GitRepo(diverged_repo)
 
     with pytest.raises(QuotaExhausted):
         await orch._run_attempt(task, repo, 1, "main")
@@ -424,6 +608,11 @@ async def test_guard_is_wired_into_the_real_run_attempt_and_fires_on_a_refutable
     assert "main" in message
     assert "is not on" in message
     assert "continue_" not in backend.hook_result
+    # The shape itself: the real `_run_attempt` cut the branch at the
+    # diverged tip and the backend made no commit, so it never got ahead of
+    # `main` — this really is the claim-gate-reachable state, not the
+    # never-reaches-the-gate state the old fixture (mis)modelled here.
+    assert GitRepo(diverged_repo).commits_ahead("main") == 0
 
 
 def test_composed_post_tool_hooks_place_the_claim_guard_after_receipts():

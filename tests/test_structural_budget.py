@@ -173,7 +173,12 @@ FROZEN_FUNCTION_LINES = {
     # gate's condition and its `claim_guard = None` / `_active_landed_claim_guard
     # = None` teardown, and threads it through `_compose_post_tool_hooks`.
     # Re-measured on the merge result with the scanner below.
-    "core/orchestrator.py:Orchestrator._run_attempt": 2272,
+    # 2272 -> 2273 (+1) (task: "The landed-claim probe refuses claims
+    # delivery would ship"): the `_build_landed_claim_guard(...)` call site
+    # (~5685) grows the `branched_from_own_partial=branched_from_own_partial`
+    # keyword argument onto its own line. Re-measured on this tree with the
+    # scanner below.
+    "core/orchestrator.py:Orchestrator._run_attempt": 2273,
     # 760 -> 778 (+18): dispatch-time intake-eval hoisted path — the `elif
     # ctx.get("eval_result")` branch that acts on a grill/wizard-stored
     # verdict (idempotency marker, cost/residual-gap comments) added inside
@@ -1239,7 +1244,13 @@ FROZEN_FILE_LINES = {
     # review nits (backtick-fenced sha cue, on_event coverage) and comment-
     # only corrections, none of which touch this file.
     # Re-measured on the merge result by the scanner's own metric: 23985.
-    "core/orchestrator.py": 23985,
+    # 23985 -> 24016 (+31) (task: "The landed-claim probe refuses claims
+    # delivery would ship"): threads `branched_from_own_partial` through
+    # `_build_landed_claim_guard`'s signature and call site, adds the outer
+    # `commits_ahead(base)` silence check (and its guarding comment) inside
+    # `probe()`, and two new docstring paragraphs explaining both. Re-
+    # measured on this tree by the scanner's own metric: 24016.
+    "core/orchestrator.py": 24016,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.
