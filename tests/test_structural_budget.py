@@ -1235,9 +1235,11 @@ FROZEN_FILE_LINES = {
     # full review instead of the claim gate. The guard's probe now asks
     # `_already_satisfied_eligible` first and stays silent whenever that
     # would route to review, so it can no longer tell the coder delivery is
-    # refusing a claim delivery would actually review.
-    # Re-measured on the merge result by the scanner's own metric.
-    "core/orchestrator.py": 23982,
+    # refusing a claim delivery would actually review. Plus the fourth-
+    # review nits (backtick-fenced sha cue, on_event coverage) and comment-
+    # only corrections, none of which touch this file.
+    # Re-measured on the merge result by the scanner's own metric: 23985.
+    "core/orchestrator.py": 23985,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.
