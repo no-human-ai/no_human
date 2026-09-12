@@ -166,7 +166,14 @@ FROZEN_FUNCTION_LINES = {
     # and its anchored comment, `type_hook` reaching
     # `_compose_post_tool_hooks`, and the widened `backend_degraded`
     # condition. Re-measured on the merge result.
-    "core/orchestrator.py:Orchestrator._run_attempt": 2261,
+    # 2261 -> 2279 (+18): citation-drift preflight call site — the
+    # `_citation_drift_preflight` invocation immediately after the
+    # structural-budget preflight block, wrapped in the same
+    # `try/except CancelRequested` / `except (BudgetAbort, StuckAbort,
+    # ConvergenceAbort)` pattern the two sibling preflight call sites
+    # already use. The preflight body itself lives in its own method, not
+    # here. Re-measured on the merge result with the scanner below.
+    "core/orchestrator.py:Orchestrator._run_attempt": 2279,
     # 760 -> 778 (+18): dispatch-time intake-eval hoisted path — the `elif
     # ctx.get("eval_result")` branch that acts on a grill/wizard-stored
     # verdict (idempotency marker, cost/residual-gap comments) added inside
@@ -459,7 +466,12 @@ FROZEN_FUNCTION_CC = {
     # 250 -> 251 (+1): #114 phase 2 adds `or type_hook is not None` to the
     # `backend_degraded` condition, so that BoolOp carries one more value.
     # Re-measured on the merge result.
-    "core/orchestrator.py:Orchestrator._run_attempt": 251,
+    # 251 -> 254 (+3): citation-drift preflight call site — the
+    # `try/except CancelRequested` / `except (BudgetAbort, StuckAbort,
+    # ConvergenceAbort)` wrapper around the `_citation_drift_preflight`
+    # call adds one `try` handler branch each. Re-measured on the merge
+    # result with the scanner below.
+    "core/orchestrator.py:Orchestrator._run_attempt": 254,
     # Landing of 4e0299ad: unchanged at 115 — the harness row is dropped by
     # the comprehension filter inside `_reviewer_items`, which the scanner
     # counts the same as the `if` it replaced (the first landing pass had a
@@ -1209,7 +1221,19 @@ FROZEN_FILE_LINES = {
     # frozen ceiling, so that function's own entry did not have to grow).
     # Measured after extracting/trimming as far as possible without cutting
     # the fail-closed guards' rationale comments.
+    # 24079 -> 24298 (+219): citation-drift preflight, added on top of the
+    # above — the `citation_drift_send_back_message` helper, the
+    # `_CITATION_DRIFT_ROUND_TURNS` constant, the `_citation_drift_preflight`
+    # method (reads the target repo's own `scripts/reanchor_citations.py`
+    # via `no_human.testing.citation_drift`, auto-reanchors or buys one
+    # `_repro_corrective_round` before review, latched once per attempt),
+    # its call site in `_run_attempt`, and the additive `allow_paths`
+    # parameter threaded through `_repro_corrective_round` ->
+    # `_repro_round_out_of_scope(changed, extra_ok=allow_paths)`.
+    # Re-measured on the MERGED tree with the scanner below (placeholder,
+    # corrected to the scanner's own number below).
     "core/orchestrator.py": 24079,
+
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.
