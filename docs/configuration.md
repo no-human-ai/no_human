@@ -785,7 +785,13 @@ unmasked silently. This is a masked-surface guarantee, not a claim that replay
 list, which is why the list is enforced by tests rather than left to review.
 Replay also records network request/response **headers and bodies**
 (`session_recording: { recordHeaders: true, recordBody: true }`) — these are
-**not** masked.
+**not** masked, with one exception: `session_recording.maskCapturedNetworkRequestFn`
+(`web/src/replayScrub.js`) excludes `POST /api/onboarding/email` and
+`GET /api/onboarding/status` from replay capture entirely, because the
+former's request body carries the onboarding email address the user just
+typed and the latter's response can echo it back. `.ph-no-capture` (used
+elsewhere in this document) only ever masks DOM pixels, not network bodies,
+which is why this is a separate mechanism.
 
 **Never sent via the server channel:** the closed event allowlist in the table
 above carries only the columns listed there — no task titles, repo names, file

@@ -5273,6 +5273,19 @@ class OnboardingCompleteRequest(BaseModel):
     repo_path: str | None = None
 
 
+class OnboardingEmailRequest(BaseModel):
+    email: str = ""
+
+
+# Fields of the onboarding block that must never be echoed back to the
+# client outside the one POST that registers them: the browser already has
+# the address it just typed, and PostHog session replay records this app's
+# own network bodies (telemetry.py's contract is a separate, orthogonal
+# guarantee — this is the HTTP layer's own defence-in-depth, see
+# replayScrub.js on the frontend for the replay-capture exclusion itself).
+_ONBOARDING_STATUS_REDACTED_FIELDS = frozenset({"email", "email_at", "welcome_status"})
+
+
 # The steps the minimal path skips, in the order the Finish-setup card lists them.
 DEFERRED_STEPS = ["docs", "integrations", "history", "rules"]
 
@@ -5376,7 +5389,67 @@ async def discover_repositories(
 @app.get("/api/onboarding/status")
 async def onboarding_status(request: Request) -> dict[str, Any]:
     ob = _read_onboarding(request.app.state.config)
-    return {"completed": bool(ob.get("completed")), **ob}
+    # `email`/`email_at`/`welcome_status` are persisted (see
+    # `onboarding_register_email` below) but never echoed here: this response
+    # is polled repeatedly by the wizard and its plain `fetch` body is what
+    # PostHog session replay would otherwise capture unmasked.
+    redacted = {
+        k: v for k, v in ob.items() if k not in _ONBOARDING_STATUS_REDACTED_FIELDS
+    }
+    return {"completed": bool(ob.get("completed")), **redacted}
+
+
+def _well_formed_email(addr: str) -> bool:
+    """Basic well-formedness: one "@", non-empty local and domain parts, and a
+    domain that itself looks like a domain (contains a dot, does not start or
+    end with one). Mirrors `isWellFormedEmail` in
+    web/src/onboardingEmail.js — the server re-checks because the client gate
+    is bypassable and the wizard must not trust it."""
+    s = (addr or "").strip()
+    if not s or any(c.isspace() for c in s):
+        return False
+    parts = s.split("@")
+    if len(parts) != 2:
+        return False
+    local, domain = parts
+    return bool(
+        local
+        and domain
+        and "." in domain
+        and not domain.startswith(".")
+        and not domain.endswith(".")
+    )
+
+
+@app.post("/api/onboarding/email")
+async def onboarding_register_email(
+    body: OnboardingEmailRequest, request: Request
+) -> dict[str, Any]:
+    """Register the onboarding email and (best-effort) send the welcome email.
+
+    Persist-before-send: the address is written to `onboarding` FIRST, so a
+    transport failure (today, always — see `no_human.email.send`) never loses
+    a registered address. Re-posting the same, unchanged address is a no-op
+    for sending (idempotent) but still returns 200.
+
+    The response never echoes the address back (`{"ok": True, "welcome": ...}`
+    only) — `welcome` is one of send_welcome's closed status strings, never a
+    claim that delivery to an arbitrary recipient succeeded.
+    """
+    from ..email.send import send_welcome
+
+    addr = (body.email or "").strip()
+    if not _well_formed_email(addr):
+        raise HTTPException(422, "a valid email address is required")
+    config = request.app.state.config
+    prior = _read_onboarding(config)
+    changed = prior.get("email") != addr
+    _persist_onboarding(config, {"email": addr, "email_at": _now()})
+    status = "skipped_unchanged"
+    if changed:
+        status = await asyncio.to_thread(send_welcome, addr)
+    _persist_onboarding(config, {"welcome_status": status})
+    return {"ok": True, "welcome": status}
 
 
 @app.post("/api/onboarding/repos/onboard")

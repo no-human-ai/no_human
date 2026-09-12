@@ -19,7 +19,9 @@ test("the Docs step is gone from BASE_STEPS", () => {
   const base = src.match(/const BASE_STEPS = \[([\s\S]*?)\n\];/);
   assert.ok(base, "the base-step list must still exist as its own array");
   const keys = [...base[1].matchAll(/key: "(\w+)"/g)].map((m) => m[1]);
-  assert.deepEqual(keys, ["welcome", "repos", "projects", "integrations", "summary"]);
+  // "email" was added 2026-09-12 (required onboarding step, unrelated to
+  // docs/wiki) — this test only guards that "docs" never comes back.
+  assert.deepEqual(keys, ["welcome", "email", "repos", "projects", "integrations", "summary"]);
 });
 
 test("no orphan docs step body, state or polling survives", () => {

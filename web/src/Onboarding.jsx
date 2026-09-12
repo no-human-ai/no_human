@@ -5,7 +5,7 @@ import {
   generateDocs, fetchIntegrationSetup, saveIntegrationSetup,
   testIntegration,
   proveRepoSSE, confirmRepoProfile, fetchReadiness, setRepoUiEvidence,
-  probeServer,
+  probeServer, registerOnboardingEmail,
 } from "./api.js";
 import { kickoffWikiGeneration } from "./onboardingDocsKickoff.js";
 import { isNetworkError, offlineBanner, createServerProbe } from "./offlineRetry.js";
@@ -34,6 +34,7 @@ import {
   dropRepoEverywhere, unboundProjects, unboundProjectsMessage, projectPayload,
   projectsBlockContinue, launchReadiness,
 } from "./onboardingProjects.js";
+import { emailBlocksContinue, submitEmail } from "./onboardingEmail.js";
 
 // Input with live directory autocomplete (via /api/fs/suggest). As you type a
 // path, matching sub-directories are offered through a native <datalist>.
@@ -88,6 +89,12 @@ function PathInput({ value, onChange, placeholder, autoFocus, onNetworkError }) 
 
 const BASE_STEPS = [
   { key: "welcome",  title: "Welcome" },
+  // Required (operator decision, 2026-09-12): every install registers an
+  // email address before continuing — no "skip"/"remind me later". It is the
+  // address the existing welcome email (src/no_human/email/base.py, frozen
+  // copy of no_human-cloud's template) goes to. Not skippable, so it is its
+  // own step rather than a field bolted onto "welcome" or "summary".
+  { key: "email",    title: "Email" },
   // The "You"/team step left the free-tier wizard on the operator's 2026-08-09
   // decision: the value it collected was write-only in the local product
   // (persisted at complete, read by nothing). It belongs to the future
@@ -118,6 +125,12 @@ export default function Onboarding({ onComplete }) {
   const [i, setI] = useState(0);
   const STEPS = BASE_STEPS;
   const [root, setRoot] = useState("");
+  // Onboarding email step (required, not skippable). emailTouched defers the
+  // reject message until the user has actually interacted with the field, so
+  // a first-run visitor doesn't see "Please enter a valid email address"
+  // before typing anything.
+  const [email, setEmail] = useState("");
+  const [emailTouched, setEmailTouched] = useState(false);
   // The folder a manual "Search another folder" run actually scanned, so the
   // empty/searching state can name it ("" = the initial home+roots auto-scan).
   const [searchedPath, setSearchedPath] = useState("");
@@ -222,7 +235,11 @@ export default function Onboarding({ onComplete }) {
   // would refuse it at the end. Caught on the step that shows it, not six clicks
   // later. projectsBlockContinue fires ONLY on that case, never on "no projects".
   const projectsBlockMsg = step.key === "projects" ? projectsBlockContinue(projectDefs) : null;
-  const continueBlocked = projectsBlockMsg !== null;
+  // Email is REQUIRED (operator decision) — the well-formedness gate blocks
+  // Continue exactly the way projectsBlockMsg does, so there is one gating
+  // mechanism, not two.
+  const emailBlockMsg = step.key === "email" ? emailBlocksContinue(email) : null;
+  const continueBlocked = projectsBlockMsg !== null || emailBlockMsg !== null;
 
   // Advancing a step swaps the whole card underneath the user, and nothing moved focus
   // with it. Measured on the pre-change build, not assumed: the Continue button lives in
@@ -425,6 +442,14 @@ export default function Onboarding({ onComplete }) {
     if (advancing.current) return;
     advancing.current = true;
     try {
+      if (step.key === "email") {
+        // Same contract as the repos branch above: the sub-operation runs
+        // through the wizard's ONE failure-handling seam (guard() classifies
+        // the rejection as offline/err and never rethrows), then next() runs
+        // unconditionally — a failed registration behaves exactly like any
+        // other onboarding endpoint failure, not a new lockout.
+        await guard(() => submitEmail(email, { registerOnboardingEmail }));
+      }
       if (step.key === "repos" && [...selectedRepos].some((p) => !onboarded[p])) {
         await onboardSelected();
       }
@@ -814,6 +839,32 @@ export default function Onboarding({ onComplete }) {
                 <span className="ob-flow-pr">open PR</span>
                 <span className="ob-flow-you">you approve</span>
               </div>
+            </Stagger>
+          )}
+
+          {step.key === "email" && (
+            <Stagger>
+              <h2 className="ob-h2">Where should we send your download link?</h2>
+              <p className="ob-note">
+                Every install registers one address. We'll send the welcome email
+                with your download link there — nothing else, no marketing list.
+              </p>
+              <div className="ob-row">
+                <input
+                  type="email"
+                  className="ob-input ph-no-capture"
+                  autoFocus
+                  value={email}
+                  placeholder="you@example.com"
+                  onChange={(e) => setEmail(e.target.value)}
+                  onBlur={() => setEmailTouched(true)}
+                  aria-invalid={emailTouched && emailBlockMsg !== null}
+                />
+              </div>
+              {emailTouched && emailBlockMsg && (
+                <p className="ob-note" role="status">{emailBlockMsg}</p>
+              )}
+              <p className="ob-faint">Required to continue — this step can't be skipped.</p>
             </Stagger>
           )}
 

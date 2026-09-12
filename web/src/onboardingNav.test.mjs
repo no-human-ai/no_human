@@ -23,7 +23,7 @@ import { backDisabled, backDisabledReason, forwardDisabled, canJumpTo, stepButto
 // at the top of onboardingIntegrations.test.mjs), so the wiring half is a source
 // assertion.
 
-const LAST = 4; // STEPS.length - 1 in Onboarding.jsx (Docs step left the wizard 2026-09-04; AI-history/rules steps left 2026-08-30; team step left 2026-08-09); asserted against the real list below.
+const LAST = 5; // STEPS.length - 1 in Onboarding.jsx (email step added 2026-09-12, required, not skippable; Docs step left the wizard 2026-09-04; AI-history/rules steps left 2026-08-30; team step left 2026-08-09); asserted against the real list below.
 
 // ── the predicates ─────────────────────────────────────────────────────────
 
