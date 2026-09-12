@@ -66,13 +66,21 @@ def test_the_changed_job_may_read_pull_requests():
     assert _workflow()["jobs"]["changed"]["permissions"]["pull-requests"] == "read"
 
 
-def _run_changed_step(tmp_path: Path, *, files: list[str], **env_overrides) -> dict[str, str]:
-    """Execute the `changed` job's script with `gh` stubbed to `files`."""
+def _run_changed_step(
+    tmp_path: Path, *, files: list[str], gh_exit: int = 0, **env_overrides
+) -> dict[str, str]:
+    """Execute the `changed` job's script with `gh` stubbed to `files`.
+
+    `gh_exit` makes the stub fail instead, which is how the API-error path is
+    driven rather than read.
+    """
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     stub = bin_dir / "gh"
     stub.write_text(
-        "#!/bin/sh\n" + "".join(f'echo "{name}"\n' for name in files),
+        "#!/bin/sh\n"
+        + "".join(f'echo "{name}"\n' for name in files)
+        + (f"exit {gh_exit}\n" if gh_exit else ""),
         encoding="utf-8",
     )
     stub.chmod(0o755)
@@ -136,5 +144,20 @@ def test_a_diff_past_the_api_cap_runs_the_job_rather_than_skipping_it(tmp_path):
     """
     outputs = _run_changed_step(
         tmp_path, files=["src/no_human/config.py"], CHANGED_FILES="3001"
+    )
+    assert outputs["desktop"] == "true"
+
+
+def test_a_failing_files_api_runs_the_job_rather_than_skipping_it(tmp_path):
+    """An API error tells us nothing about the diff, so it must not read as
+    "no desktop files".
+
+    Without this, `set -e` fails the `changed` job, `outputs.desktop` comes
+    back empty, and on a pull request `Desktop shell` skips -- reintroducing
+    the PR #279 outcome through a different door. The push-to-main run is
+    already covered by `!cancelled()`; this is the pull-request half.
+    """
+    outputs = _run_changed_step(
+        tmp_path, files=["desktop/main.mjs"], gh_exit=1
     )
     assert outputs["desktop"] == "true"

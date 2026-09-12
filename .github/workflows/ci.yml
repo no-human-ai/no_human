@@ -586,9 +586,19 @@ jobs:
             exit 0
           fi
 
-          files=$(gh api --paginate \
+          # Same rule as the cap above, for the same reason: if the API call
+          # fails we know nothing about the diff, and "nothing" must not read
+          # as "no desktop files". `set -e` would otherwise fail this job, and
+          # a failed `changed` leaves `outputs.desktop` empty -- which on a
+          # pull request skips `Desktop shell`, the exact outcome this job
+          # exists to prevent.
+          if ! files=$(gh api --paginate \
             "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files" \
-            --jq '.[].filename')
+            --jq '.[].filename'); then
+            echo "desktop=true" >> "$GITHUB_OUTPUT"
+            echo "files API failed; running the job rather than skipping it"
+            exit 0
+          fi
 
           if printf '%s\n' "$files" | grep -q '^desktop/'; then
             echo "desktop=true" >> "$GITHUB_OUTPUT"
