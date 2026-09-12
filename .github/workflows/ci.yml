@@ -539,15 +539,81 @@ jobs:
       - name: Build the product image
         run: docker build -t no-human:ci .
 
+  # GitHub has no per-job `paths:` filter, so a job that only some PRs should
+  # pay for can either be labelled by hand or ask what the PR touched. PR #279
+  # is why this job exists: its entire content was `desktop/package-lock.json`
+  # (a js-yaml security bump that ships inside app.asar), it carried no label,
+  # so `Desktop shell` skipped and the only desktop signal arrived after the
+  # merge, on the push to main. The label stays as the manual override; this
+  # job makes the common case automatic.
+  changed:
+    name: Which areas a PR touches
+    # No `if:` on purpose. A job that is skipped is not a job that succeeded,
+    # and `needs:` treats the two alike -- gating this on `pull_request` would
+    # therefore skip every packaging job on the push to main, which is the one
+    # signal that exists today.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      desktop: ${{ steps.areas.outputs.desktop }}
+    steps:
+      - name: Does this PR touch desktop/?
+        id: areas
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          CHANGED_FILES: ${{ github.event.pull_request.changed_files }}
+        run: |
+          set -euo pipefail
+
+          # Not a pull request: there is no PR to ask the files API about, and
+          # every consumer below runs anyway on its `!= 'pull_request'` clause.
+          if [ -z "${PR_NUMBER}" ]; then
+            echo "desktop=false" >> "$GITHUB_OUTPUT"
+            echo "event=${GITHUB_EVENT_NAME:-unknown}; not a pull request, nothing to filter"
+            exit 0
+          fi
+
+          # The files endpoint stops at 3000 entries. Past that, "no desktop
+          # files" would be an artefact of the cap rather than a fact about the
+          # diff -- so fail towards RUNNING the job, never towards skipping it.
+          if [ "${CHANGED_FILES:-0}" -gt 3000 ]; then
+            echo "desktop=true" >> "$GITHUB_OUTPUT"
+            echo "${CHANGED_FILES} files changed, past the API's 3000 cap; assuming desktop"
+            exit 0
+          fi
+
+          files=$(gh api --paginate \
+            "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files" \
+            --jq '.[].filename')
+
+          if printf '%s\n' "$files" | grep -q '^desktop/'; then
+            echo "desktop=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "desktop=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "desktop files in this PR:"
+          printf '%s\n' "$files" | grep '^desktop/' || echo "  (none)"
+
   desktop:
     name: Desktop shell
     # Same billing philosophy as the windows job below: ~20 Linux minutes a
     # run that a docs-only or Python-only PR should not pay for. Every push
     # to main runs it, so every merged state carries the signal; a PR opts in
-    # by carrying the `desktop` label.
+    # by touching `desktop/` (see the `changed` job) or by carrying the
+    # `desktop` label.
+    needs: changed
+    # `!cancelled()` rather than a bare condition: if `changed` itself fails,
+    # `needs.changed.outputs.desktop` is empty, and without this the push-to-
+    # main run would skip the job over an unrelated API hiccup.
     if: >-
-      github.event_name != 'pull_request'
-      || contains(github.event.pull_request.labels.*.name, 'desktop')
+      !cancelled()
+      && (github.event_name != 'pull_request'
+      || needs.changed.outputs.desktop == 'true'
+      || contains(github.event.pull_request.labels.*.name, 'desktop'))
     runs-on: ubuntu-latest
     timeout-minutes: 20
     defaults:
