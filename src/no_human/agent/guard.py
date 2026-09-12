@@ -143,7 +143,7 @@ _RM_TESTS = re.compile(
 _NO_HUMAN_YML_WRITE = re.compile(
     r"(?:sed\s+-i|>\s*|>>\s*|tee\s+)[^|;&]*\.no_human\.ya?ml", re.IGNORECASE)
 
-_RM_RF = re.compile(r"\brm" + venv_install_guard._PATHEXT_RE + r"\s+(-[a-z]*r[a-z]*f|-[a-z]*f[a-z]*r|-rf|-fr)\b")
+_RM_RF = re.compile(r"\b" + venv_install_guard._pathext_alt("rm") + r"\s+(-[a-z]*r[a-z]*f|-[a-z]*f[a-z]*r|-rf|-fr)\b")
 # `find` primaries that WRITE or RUN — none of them matched by `_RM_RF`.
 _SCAN_MUTATION_PRIMARIES = frozenset({
     "-delete", "-exec", "-execdir", "-ok", "-okdir",
@@ -152,7 +152,7 @@ _SCAN_MUTATION_PRIMARIES = frozenset({
 #: only of these; a quoted pattern token is not.
 _SHELL_PUNCT = frozenset("();<>|&")
 _GIT_DESTRUCTIVE = re.compile(
-    r"\bgit" + venv_install_guard._PATHEXT_RE + r"\s+(push\s+.*--force|push\s+.*-f\b|reset\s+--hard\s+\S|"
+    r"\b" + venv_install_guard._pathext_alt("git") + r"\s+(push\s+.*--force|push\s+.*-f\b|reset\s+--hard\s+\S|"
     r"clean\s+-[a-z]*f|filter-branch|update-ref\s+-d)"
 )
 
@@ -1061,16 +1061,16 @@ def _venv_install_denial(cmd: str, cwd: "str | None") -> "str | None":
 # Merging the PR — the one action that is always a human's (§3.2). `git merge`
 # is NOT this: a PR is merged through the forge, and that is what must be denied.
 _FORGE_MERGE = re.compile(
-    r"\b(?:gh" + venv_install_guard._PATHEXT_RE + r"\s+pr\s+merge"           # gh pr merge 7004 --squash
-    r"|glab" + venv_install_guard._PATHEXT_RE + r"\s+mr\s+(?:merge|accept)"  # glab mr merge 12 / glab mr accept 12
+    r"\b(?:" + venv_install_guard._pathext_alt("gh") + r"\s+pr\s+merge"           # gh pr merge 7004 --squash
+    r"|" + venv_install_guard._pathext_alt("glab") + r"\s+mr\s+(?:merge|accept)"  # glab mr merge 12 / glab mr accept 12
     # `accept` is a documented alias of `merge`, not a distinct verb: run
     # `glab mr accept --help` (glab 1.113.0) and its USAGE line reads
     # "glab mr merge [<id | branch>] [--flags]", with EXAMPLES pairing
     # `glab mr merge 235` and `glab mr accept 235`. `gh pr accept --help`
     # and `gh alias list` (gh 2.97.0) show no such alias on the gh side —
     # confirmed by execution, not assumed. Found 2026-08-23, additive.
-    r"|gh" + venv_install_guard._PATHEXT_RE + r"\s+api\b[^|;&]*?/(?:pulls|merge_requests)/\d+/merge"  # the REST call
-    r"|glab" + venv_install_guard._PATHEXT_RE + r"\s+api\b[^|;&]*?/merge_requests/\d+/merge"
+    r"|" + venv_install_guard._pathext_alt("gh") + r"\s+api\b[^|;&]*?/(?:pulls|merge_requests)/\d+/merge"  # the REST call
+    r"|" + venv_install_guard._pathext_alt("glab") + r"\s+api\b[^|;&]*?/merge_requests/\d+/merge"
     # GraphQL merges a PR in one mutation and never touches the REST path
     # above. Found 2026-08-22 by the sweep that found the `nh approve` hole:
     # `gh api graphql -f query="mutation{mergePullRequest(input:{...}){...}}"
@@ -1544,7 +1544,7 @@ _ASSIGN_DECLARATORS = frozenset({"export", "local", "readonly", "declare", "type
 #: A `gh`/`glab` mention inside a shell-runner argument — precompiled once so
 #: the depth-bounded recursion in `_forge_invocations` stays linear even on
 #: the 50k-char / 1000-wrapper adversarial case.
-_FORGE_MENTION = re.compile(r"\b(?:gh|glab)" + venv_install_guard._PATHEXT_RE + r"\s+\S")
+_FORGE_MENTION = re.compile(r"\b" + venv_install_guard._pathext_alt("gh", "glab") + r"\s+\S")
 
 _MASK_KEY = re.compile(r"\x00m\d+\x00")
 
@@ -2050,12 +2050,12 @@ def _forge_subcommand(argv: list[str]) -> tuple[str, str]:
 
 
 _GIT_WRITE = re.compile(
-    r"\bgit" + venv_install_guard._PATHEXT_RE + r"\s+(?:commit|push|merge|rebase|cherry-pick|revert|am|apply|tag"
+    r"\b" + venv_install_guard._pathext_alt("git") + r"\s+(?:commit|push|merge|rebase|cherry-pick|revert|am|apply|tag"
     r"|reset|restore|stash|branch|checkout|switch)\b"
 )
 _FORGE_WRITE = re.compile(
-    r"\b(?:gh" + venv_install_guard._PATHEXT_RE + r"\s+pr\s+(?:create|merge|close|edit|ready|review)"
-    r"|glab" + venv_install_guard._PATHEXT_RE + r"\s+mr\s+(?:create|merge|accept|close|update))\b"
+    r"\b(?:" + venv_install_guard._pathext_alt("gh") + r"\s+pr\s+(?:create|merge|close|edit|ready|review)"
+    r"|" + venv_install_guard._pathext_alt("glab") + r"\s+mr\s+(?:create|merge|accept|close|update))\b"
 )
 
 
@@ -2177,7 +2177,7 @@ _HOOK_DISARM = re.compile(
 
 
 def _looks_like_git_push(text: str) -> bool:
-    return bool(re.search(r"\bgit\b.*\bpush\b", text, re.DOTALL))
+    return bool(re.search(r"\b" + venv_install_guard._pathext_alt("git") + r"\b.*\bpush\b", text, re.DOTALL))
 
 
 def _strip_wrappers(tokens: list[str], is_extra_target=None) -> list[str]:
@@ -2534,7 +2534,7 @@ def _git_invocations(cmd: str, _depth: int = 0) -> list[tuple[str, list[str]]]:
         elif name in _SHELL_RUNNERS and _depth < 2:
             for j, tok in enumerate(argv[1:], start=1):
                 # `sh -c "git stash"` — the command is one quoted token.
-                if re.search(r"\bgit" + venv_install_guard._PATHEXT_RE + r"\s+\S", tok):
+                if re.search(r"\b" + venv_install_guard._pathext_alt("git") + r"\s+\S", tok):
                     found.extend(_git_invocations(tok, _depth + 1))
                 # `xargs git restore` / `timeout 30 git restore .` — the
                 # command is the rest of THIS argv, already tokenised.
@@ -2866,7 +2866,7 @@ def evaluate(
         # Kept as-is: catches `git push` spelled in ways argv analysis does not
         # reach (inside a heredoc, an alias, a quoted fragment of a larger
         # script). The argv analysis below is additive, never a replacement.
-        if re.search(r"\bgit" + venv_install_guard._PATHEXT_RE + r"\s+push\b", cmd) and _push_targets_protected(
+        if re.search(r"\b" + venv_install_guard._pathext_alt("git") + r"\s+push\b", cmd) and _push_targets_protected(
             cmd, never_push_to
         ):
             return GuardDecision(

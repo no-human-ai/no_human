@@ -3570,19 +3570,21 @@ def test_read_only_and_unrelated_windows_commands_are_still_not_matched(argv):
     assert guard._pkg_install_match(argv) is None
 
 
-def test_an_uppercase_name_is_still_missed_and_that_is_pinned_not_fixed():
-    """NOT a passing behaviour. Pinned so the residue stays visible.
+def test_an_uppercase_pathext_name_is_matched_like_its_lowercase_twin():
+    """The residue issue #117 pinned rather than fixed, now closed.
 
-    `_basename` lowercases only to TEST for the suffix; it returns the name
-    otherwise unchanged, so `PIP.EXE` becomes `PIP`, which is not in
-    `_PKG_MANAGER_NAMES`. Windows filenames are case-insensitive, so `PIP.EXE`
-    runs the same binary as `pip.exe` and is missed.
-
-    Not fixed here on purpose: case-folding the NAME tables is a wider change
-    than the `.exe` strip issue #107 asked for, it would have to move in both
-    layers together to keep them agreeing, and widening what counts as an
-    installer is exactly the direction that needs a maintainer's call rather
-    than mine."""
-    assert guard._pkg_install_match(["PIP.EXE", "install", "foo"]) is None
+    That version lowercased only to TEST for the suffix and returned the name
+    otherwise unchanged, so `PIP.EXE` became `PIP`, which is in no name table,
+    and the same binary a case-insensitive filesystem resolves for `pip.exe`
+    was missed. The argument for folding the SUFFIX -- Windows filenames are
+    case-insensitive -- is the same argument for folding the STEM, and
+    `_basename` now applies it to both. What is deliberately NOT folded is a
+    BARE name: on POSIX `PIP` is a different file from `pip`, and the fold is
+    justified only by the presence of a suffix that exists only on Windows.
+    """
+    assert guard._pkg_install_match(["PIP.EXE", "install", "foo"]) == ["foo"]
     # the lowercase form, which is what anyone actually types, IS matched
     assert guard._pkg_install_match(["pip.exe", "install", "foo"]) == ["foo"]
+    # ... and a bare uppercase name is NOT, because nothing on POSIX says
+    # `PIP` and `pip` are one file.
+    assert guard._pkg_install_match(["PIP", "install", "foo"]) is None
