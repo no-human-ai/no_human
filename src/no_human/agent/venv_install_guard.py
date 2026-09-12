@@ -189,13 +189,49 @@ import stat
 from pathlib import Path, PurePosixPath
 from typing import Mapping
 
+from . import win_readings
+
+#: Flipped by tests; see `win_readings` for why both spellings are read.
+_IS_WINDOWS = win_readings._IS_WINDOWS
+
 _LOG = logging.getLogger(__name__)
 
 #: Shell interpreters whose ``-c``/``-lc`` argument is a script to execute —
 #: recursion is scoped to these so `echo "pip install foo"` (argument text
 #: that is never executed) is never mistaken for an invocation.
-_SHELL_RUNNERS = frozenset({"sh", "bash", "zsh", "dash", "ksh"})
-_SCRIPT_FLAGS = frozenset({"-c", "-lc", "-cl", "--command"})
+# `cmd`/`powershell`/`pwsh` sit beside the POSIX five because laundering a
+# payload through a nested shell is verdict 1 of the three review rounds this
+# module exists to survive, and on Windows those are the shells that do it.
+# Names are matched through `_basename`, so `bash.exe` and a fully-spelled
+# `C:/Program Files/Git/bin/bash.exe` reach the same entry (issue #105 round 2:
+# `PurePosixPath(tok).name` matched the bare five ONLY, so `bash.exe -c "..."`
+# and `cmd /c "..."` walked past both readings with the payload intact -- and
+# silently, because a payload with spaces resolves to no installer name).
+_SHELL_RUNNERS = frozenset({"sh", "bash", "zsh", "dash", "ksh",
+                            "cmd", "powershell", "pwsh"})
+#: POSIX shell script flags, compared EXACTLY. Case matters here and the two
+#: sets must stay apart: `"-C".lower()` is `"-c"`, and `-C` is `--directory`
+#: in this module's own `_TARGET_FLAGS`. Folding the whole set turned
+#: `<runner> pip -C <dir> install requests` into a stream where the payload
+#: was emitted BEFORE the flag, so `_mutating_subcommand` read `<dir>` as
+#: pip's subcommand instead of `install` and the command was allowed --
+#: measured refused on main, on POSIX, with no Windows anywhere in it.
+_POSIX_SCRIPT_FLAGS = frozenset({"-c", "-lc", "-cl", "--command"})
+
+#: cmd/PowerShell switches, compared case-INSENSITIVELY, because those shells
+#: are: `/C` and `-Command` are the same flag as `/c` and `-command`. None of
+#: these collides with a flag this module gives another meaning, which is what
+#: makes folding safe HERE and unsafe above.
+_WINDOWS_SCRIPT_FLAGS = frozenset({"/c", "/k", "-command"})
+
+_SCRIPT_FLAGS = _POSIX_SCRIPT_FLAGS | _WINDOWS_SCRIPT_FLAGS
+
+
+def _is_script_flag(tok: str) -> bool:
+    """Whether `tok` hands the NEXT token to a shell as a script to run."""
+    return tok in _POSIX_SCRIPT_FLAGS or tok.lower() in _WINDOWS_SCRIPT_FLAGS
+
+
 _SEGMENT_BREAKS = frozenset({";", "&", "&&", "||", "|", "(", ")", "{", "}"})
 _MAX_RECURSE_DEPTH = 3
 
@@ -282,13 +318,37 @@ _UNRESOLVABLE_CHARS = ("$", "`")
 
 
 def _basename(path: str) -> str:
-    name = os.path.basename(path)
+    r"""The command name `path` spells, with a `.exe` suffix removed.
+
+    `PurePosixPath(...).name`, NOT `os.path.basename`, for two reasons:
+
+    * Trailing separators. `os.path.basename("/bin/sh/")` is `""`, which is in
+      no name set, so `_flatten` stopped recognising the token as a shell
+      runner and never expanded the payload behind its `-c`. Measured as a
+      DENY->ALLOW on `/bin/sh/ -c "pip -C <dir> install requests"`, which a
+      shell runs exactly as `/bin/sh -c ...`.
+    * Host independence. `os.path.basename` splits on `\` on Windows and not
+      on POSIX, so the same string would reach different verdicts on
+      different machines while CI runs POSIX only. `PurePosixPath` reads `/`
+      on every host, and that is the right reading here precisely because
+      `win_readings.readings` has already offered the `/`-normalised spelling
+      of any backslashed command by the time this is called.
+    """
+    name = PurePosixPath(path).name
     if name.lower().endswith(".exe"):
         name = name[:-4]
     return name
 
 
 def _is_installer_name(name: str) -> bool:
+    # Case-folded on Windows ONLY, where the filesystem is: `PIP.EXE` and
+    # `pip.exe` are the same file there and must reach the same verdict, while
+    # on POSIX `PIP` is a genuinely different file and folding would be a text
+    # match masquerading as a structural one. Round 3 of #105 found
+    # `…\Scripts\PIP.EXE install requests` allowed while the lowercase
+    # spelling was refused.
+    if _IS_WINDOWS:
+        name = name.lower()
     if name in _EXACT_INSTALLERS:
         return True
     return any(
@@ -318,6 +378,53 @@ def _lex(text: str) -> list[str]:
         return text.split()
 
 
+#: Cap on how many leading tokens of a nested payload are rejoined. A guard
+#: must not become a parser with unbounded work.
+_MAX_PREFIX_JOIN = 8
+
+
+def _spaced_path_candidates(payload: str) -> list[str]:
+    """The installer path a nested payload's own quoting would have kept whole.
+
+    Round 3 of #105. `cmd /c "C:\\Program Files\\proj\\.venv\\Scripts\\pip.exe
+    install requests"`: the OUTER lex consumes the payload's quoting, so
+    re-lexing it splits the path at the space in `Program Files` and the
+    installer token is destroyed -- in BOTH readings, because the split is at
+    the SPACE, not the separator. The alternate reading cannot help, and the
+    miss is silent: `Filesproj.venvScriptspip.exe` names no installer, so not
+    even the WARNING fires.
+
+    `cmd` itself resolves the longest leading prefix that names an executable.
+    This rebuilds those prefixes and keeps only one that actually names an
+    installer, emitting it followed by its own arguments so the adjacent
+    mutating-subcommand check still sees `install` next to it.
+
+    WHAT THIS DOES NOT COVER -- issue #312, measured, not supposed:
+
+    * it runs only on a NESTED payload, so a top-level
+      `C:\\Program Files\\p\\.venv\\Scripts\\pip install x` is untouched;
+    * it anchors at token 0, so `cd X && <spaced path>\\pip install x` and the
+      `echo ... &&` / `timeout 5` / `env -i` / `VAR=1` forms move the installer
+      off the front and are untouched;
+    * `_MAX_PREFIX_JOIN` is a bound, and therefore also a limit: a path with 8
+      or more spaces is not reconstructed. Removing the bound is O(n^2)
+      (measured: 4x per doubling), so raising it is not the fix either.
+
+    Reconstructing lost quoting by guessing token boundaries fights an
+    information loss; #312 carries the class and sketches two approaches that
+    do not. This is kept because the shapes it DOES close are real, not
+    because it closes the class.
+    """
+    toks = _lex(payload)
+    out: list[str] = []
+    for k in range(2, min(len(toks), _MAX_PREFIX_JOIN) + 1):
+        joined = " ".join(toks[:k])
+        if _is_installer_name(_basename(joined)):
+            out.append(joined)
+            out.extend(toks[k:])
+    return out
+
+
 def _flatten(text: str, _depth: int = 0) -> list[str]:
     """The full token stream for `text`, with shell-runner script arguments
     recursively expanded in place. Positionless by construction: the
@@ -339,11 +446,12 @@ def _flatten(text: str, _depth: int = 0) -> list[str]:
             out.append(tok)
             i += 1
             continue
-        name = PurePosixPath(tok).name
-        if name in _SHELL_RUNNERS:
+        name = _basename(tok)
+        if name.lower() in _SHELL_RUNNERS:
             seen_runner = True
-        if seen_runner and tok in _SCRIPT_FLAGS and i + 1 < n:
+        if seen_runner and _is_script_flag(tok) and i + 1 < n:
             out.extend(_flatten(tokens[i + 1], _depth + 1))
+            out.extend(_spaced_path_candidates(tokens[i + 1]))
             seen_runner = False
             out.append(tok)
             i += 2
@@ -464,7 +572,14 @@ def _resolve_installer(token: str, cwd: str | None, env: Mapping[str, str]) -> s
                     "resolved via PATH; allowing", token,
                 )
             return None
-        if not _is_installer_name(token):
+        # `_basename`, not the raw token: it strips `.exe`, so `pip.exe` and
+        # `uv.exe` -- what a real Windows venv's Scripts/ actually contains --
+        # reach the same verdict as their POSIX spellings. This was the SECOND
+        # site left on the raw name; round 2 of #105 fixed only the one in
+        # `_flatten` and its commit message claimed there was one. Without it
+        # this returns before `shutil.which` AND before the WARNING, so a bare
+        # `pip.exe install foo` was allowed in silence.
+        if not _is_installer_name(_basename(token)):
             return None
         # Deliberately NOT `shutil.which`: it resolves via `os.path.exists`
         # internally, which swallows `PermissionError` exactly like
@@ -834,7 +949,24 @@ def denial_reason(cmd: str, *, cwd: str | None, env: Mapping[str, str] | None = 
     Structural, not lexical: this resolves canonical executable/target
     paths and compares them to `cwd` (the session's worktree). No text
     pattern is matched against `cmd` to make the allow/deny decision.
+
+    On Windows a native path reaches POSIX `shlex` as an escape sequence and
+    is destroyed before resolution is attempted (issue #105), so every
+    spelling `win_readings.readings` offers is resolved and the FIRST denial
+    wins. On POSIX, and for any command with no backslash in it, that is
+    exactly one reading and this costs a list construction.
     """
+    for reading in win_readings.readings(cmd, is_windows=_IS_WINDOWS):
+        reason = _denial_reason_for_reading(reading, cwd=cwd, env=env)
+        if reason is not None:
+            return reason
+    return None
+
+
+def _denial_reason_for_reading(
+    cmd: str, *, cwd: str | None, env: Mapping[str, str] | None = None
+) -> str | None:
+    """`denial_reason` for ONE spelling of the command. See its docstring."""
     if env is None:
         env = os.environ
     if not cmd or not cmd.strip():
