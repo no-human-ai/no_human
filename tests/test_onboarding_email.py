@@ -452,6 +452,43 @@ async def test_reregistering_the_same_address_is_idempotent_no_second_send(clien
     assert len(calls) == 2, "a genuinely different address must still send"
 
 
+@pytest.mark.asyncio
+async def test_a_no_send_repost_does_not_clobber_the_recorded_outcome_or_timestamp(
+    client, monkeypatch
+):
+    """The wizard posts here TWICE on the ordinary path — once from the Email
+    step's Continue and again from `ensureEmailRegistered` at Finish. The
+    second POST sends nothing, so it must also write nothing: it used to
+    overwrite the persisted `welcome_status` (the real outcome of the one send
+    attempted, here "sent") with the route's own "skipped_unchanged", and move
+    `email_at` off the moment the address was actually registered.
+
+    Observed through the persisted config block, not the response body — the
+    response already said "skipped_unchanged" before and after the fix, so a
+    body-only assertion cannot see this defect at all.
+    """
+    monkeypatch.setattr("no_human.email.send.send_welcome", lambda addr, **kw: "sent")
+
+    r1 = await client.post("/api/onboarding/email", json={"email": "person@example.com"})
+    assert r1.status_code == 200
+    after_first = dict(app.state.config.data["onboarding"])
+    assert after_first["welcome_status"] == "sent"
+    assert after_first["email_at"]
+
+    r2 = await client.post("/api/onboarding/email", json={"email": "person@example.com"})
+    assert r2.status_code == 200
+    assert r2.json() == {"ok": True, "welcome": "skipped_unchanged"}
+    after_second = dict(app.state.config.data["onboarding"])
+    assert after_second["welcome_status"] == "sent", (
+        "a no-send re-post must not replace the recorded send outcome"
+    )
+    assert after_second["email_at"] == after_first["email_at"], (
+        "`email_at` means when the address was REGISTERED, not when it was re-posted"
+    )
+    # The whole block is untouched, not just those two fields.
+    assert after_second == after_first
+
+
 # `test_the_transport_seam_is_confined_to_send_py` used to sit here, asserting
 # the word "Transport" never appears in app.py's source. Same class: any
 # unrelated use of the word turns it red, and it establishes nothing about

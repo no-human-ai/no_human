@@ -5472,6 +5472,13 @@ async def onboarding_register_email(
     a registered address. Re-posting the same, unchanged address is a no-op
     for sending (idempotent) but still returns 200.
 
+    Idempotent means writing nothing either, not just sending nothing: the
+    wizard posts twice on the ordinary path (the Email step's Continue, then
+    `ensureEmailRegistered` at Finish), and persisting unconditionally
+    replaced the recorded `welcome_status` ("sent") with "skipped_unchanged"
+    and moved `email_at` off the moment of registration. The stored fields
+    describe the REGISTRATION, and a re-post is not one.
+
     The response never echoes the address back (`{"ok": True, "welcome": ...}`
     only) — `welcome` is either one of send_welcome's closed status strings or
     this route's own `"skipped_unchanged"` when the address is unchanged, never
@@ -5484,11 +5491,10 @@ async def onboarding_register_email(
         raise HTTPException(422, "a valid email address is required")
     config = request.app.state.config
     prior = _read_onboarding(config)
-    changed = prior.get("email") != addr
+    if prior.get("email") == addr:
+        return {"ok": True, "welcome": "skipped_unchanged"}
     _persist_onboarding(config, {"email": addr, "email_at": _now()})
-    status = "skipped_unchanged"
-    if changed:
-        status = await asyncio.to_thread(send_welcome, addr)
+    status = await asyncio.to_thread(send_welcome, addr)
     _persist_onboarding(config, {"welcome_status": status})
     return {"ok": True, "welcome": status}
 

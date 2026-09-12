@@ -1527,7 +1527,13 @@ FROZEN_FILE_LINES = {
     # recording what each was measured to let through. Re-measured on THIS tree
     # after the change, not carried forward -- the previous value was written
     # before these lines existed and turned the gate red.
-    "api/app.py": 6308,
+    # 6308 -> 6314 (+6): `onboarding_register_email` returns early when the
+    # posted address is unchanged, so the wizard's second POST (Continue, then
+    # `ensureEmailRegistered` at Finish) no longer overwrites the recorded
+    # `welcome_status` or `email_at`. The route body itself got one line
+    # shorter; the growth is the docstring recording what the unconditional
+    # persist did. Re-measured on THIS tree after the change.
+    "api/app.py": 6314,
     # +51: W5 active-time phase writer (phase instrumentation).
     # +84: `list_escalations`/`list_review_fails`/`list_tamper_trips` — the
     # three new failure-signal sources the recurring learning harvest mines.

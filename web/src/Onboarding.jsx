@@ -467,9 +467,12 @@ export default function Onboarding({ onComplete }) {
   // already refuses `unbound` projects before anything is created: it throws
   // (blocking launch, the terminal step's existing failure behaviour) rather
   // than silently letting onboarding complete with no address on file.
-  // `submitEmail` is idempotent server-side (send.py's `changed` guard), so
-  // calling it again here after an earlier Continue on the Email step is a
-  // no-op, not a second welcome email.
+  // `submitEmail` is idempotent server-side — the guard is the unchanged-
+  // address early return in `onboarding_register_email`
+  // (src/no_human/api/app.py), not anything in `no_human/email/send.py`,
+  // which has no notion of a prior address. So calling it again here after an
+  // earlier Continue on the Email step neither sends a second welcome email
+  // nor rewrites the recorded `welcome_status`/`email_at`.
   async function ensureEmailRegistered() {
     if (emailBlocksContinue(email) !== null) throw new Error(EMAIL_REJECT_MESSAGE);
     await submitEmail(email, { registerOnboardingEmail });

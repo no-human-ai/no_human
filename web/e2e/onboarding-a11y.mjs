@@ -57,7 +57,20 @@ await page.route("**/api/**", (route) => {
 await page.goto("http://127.0.0.1:4640/", { waitUntil: "networkidle" });
 await page.waitForTimeout(400);
 
-const cont = () => page.getByRole("button", { name: /^Continue$/ }).click();
+// The Email step (required, not skippable) sits between Welcome and
+// Repositories, and its Continue is `disabled` until the field holds a
+// well-formed address — a bare click would sit on Playwright's enabled
+// actionability check for 30s. Go THROUGH the step the way a user does:
+// whenever the address field is on screen, type into it, then Continue.
+const EMAIL = "walker@example.com";
+const cont = async () => {
+  const field = page.getByPlaceholder("you@example.com");
+  if (await field.isVisible().catch(() => false)) {
+    await field.fill(EMAIL);
+    await page.waitForTimeout(100);
+  }
+  await page.getByRole("button", { name: /^Continue$/ }).click();
+};
 
 // Repos step: the recently-worked-on cards each carry an icon-ish "Add" button
 // whose only text is "Add". Without an accessible name naming the repo, a
