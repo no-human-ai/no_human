@@ -477,7 +477,7 @@ async def test_latch_survives_restart(client, temp_home, tmp_path):
     # _persist_onboarding actually wrote to disk, rather than reusing the
     # in-memory object.
     import yaml
-    on_disk = yaml.safe_load(nh_config.CONFIG_PATH.read_text())
+    on_disk = yaml.safe_load(nh_config.CONFIG_PATH.read_text(encoding="utf-8"))
     assert on_disk["onboarding"][_FUNNEL_ONCE_KEY] == ["repo_selected"]
     app.state.config = Config(
         data={**on_disk, "telemetry": dict(_ENABLED_LAMBDA)},
