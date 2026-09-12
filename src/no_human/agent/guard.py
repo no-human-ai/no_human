@@ -46,7 +46,7 @@ import posixpath
 from urllib.parse import unquote
 import sys
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Mapping
 
 from . import fs_roots, venv_install_guard
@@ -152,7 +152,7 @@ _SCAN_MUTATION_PRIMARIES = frozenset({
 #: only of these; a quoted pattern token is not.
 _SHELL_PUNCT = frozenset("();<>|&")
 _GIT_DESTRUCTIVE = re.compile(
-    r"\bgit\s+(push\s+.*--force|push\s+.*-f\b|reset\s+--hard\s+\S|"
+    r"\bgit(?:\.[Ee][Xx][Ee])?\s+(push\s+.*--force|push\s+.*-f\b|reset\s+--hard\s+\S|"
     r"clean\s+-[a-z]*f|filter-branch|update-ref\s+-d)"
 )
 
@@ -284,7 +284,7 @@ def _peel_scan_wrappers(words: list[str]) -> list[str]:
     for _ in range(_SCAN_WRAPPER_PEEL_CAP):
         if not argv:
             return argv
-        name = PurePosixPath(argv[0]).name
+        name = venv_install_guard._basename(argv[0])
         if name in _SCAN_EXECUTABLES:
             return argv
         if name not in _SCAN_WRAPPER_NAMES:
@@ -307,7 +307,7 @@ def _peel_scan_wrappers(words: list[str]) -> list[str]:
             steps += 1
         if j >= len(argv):
             return argv
-        candidate_name = PurePosixPath(argv[j]).name
+        candidate_name = venv_install_guard._basename(argv[j])
         if candidate_name in _SCAN_EXECUTABLES:
             return argv[j:]
         if candidate_name in _SCAN_WRAPPER_NAMES:
@@ -443,7 +443,7 @@ def root_scan_denial(cmd: str, cwd: "str | None") -> "str | None":
         argv = _strip_wrappers(tokens, _is_scan_exe_name)
         if not argv:
             continue
-        name = PurePosixPath(argv[0]).name
+        name = venv_install_guard._basename(argv[0])
         if name not in _SCAN_EXECUTABLES:
             continue
         args = argv[1:]
@@ -529,7 +529,7 @@ def _segment_scans_and_mutates(words: list[str]) -> bool:
     via `_peel_scan_wrappers` so a wrapped mutation is not mislabelled a pure
     read — see that function's docstring."""
     argv = _peel_scan_wrappers(words)
-    return (bool(argv) and PurePosixPath(argv[0]).name in _SCAN_EXECUTABLES
+    return (bool(argv) and venv_install_guard._basename(argv[0]) in _SCAN_EXECUTABLES
             and any(a in _SCAN_MUTATION_PRIMARIES for a in argv[1:]))
 
 # --------------------------------------------------------------------------- #
@@ -1014,7 +1014,7 @@ def _scan_for_install_denial(text: str, cwd: "str | None", running_cwd: "str | N
 
         if depth >= 2:
             continue
-        name = PurePosixPath(argv[0]).name
+        name = venv_install_guard._basename(argv[0])
         rest = argv[1:]
         if name == "uv" and rest and rest[0] == "run" and len(rest) >= 2:
             reason = _check_install_argv(rest[1:], {}, activated, running_cwd,
@@ -1414,7 +1414,7 @@ def _effective_name(argv: list[str]) -> str:
     recurrence of "denied for naming the act"."""
     skip_operand = False
     for tok in argv:
-        name = PurePosixPath(tok).name
+        name = venv_install_guard._basename(tok)
         if skip_operand:
             skip_operand = False
             continue
@@ -1429,7 +1429,7 @@ def _effective_name(argv: list[str]) -> str:
             skip_operand = name in _FLAGS_WITH_VALUE
             continue
         return name
-    return PurePosixPath(argv[0]).name if argv else ""
+    return venv_install_guard._basename(argv[0]) if argv else ""
 
 
 def _decode_ansi_c_body(body: str) -> str:
@@ -1637,7 +1637,7 @@ def _peel_runners(argv: list[str]) -> list[str]:
     for _ in range(4):
         if not argv:
             return argv
-        name = PurePosixPath(argv[0]).name
+        name = venv_install_guard._basename(argv[0])
         if name == "env":
             argv = argv[1:]
             while argv:
@@ -1722,7 +1722,7 @@ def _approve_denial(cmd: str, _depth: int = 0) -> str | None:
         # outer form only — `_dequote` existed for `appro''ve` and was applied
         # to the verb but not to the binary. Review 2026-08-22 executed both.
         argv = [_dequote(_unmask(argv[0], table))] + argv[1:]
-        name = PurePosixPath(argv[0]).name
+        name = venv_install_guard._basename(argv[0])
         # `nh\ approve` — an escaped space makes shlex produce ONE token. In a
         # real shell that names a binary "nh approve", which does not exist, so
         # this is not a live evasion; it is matched anyway because doing so is
@@ -1807,8 +1807,8 @@ def _approve_denial(cmd: str, _depth: int = 0) -> str | None:
                     reason = _approve_denial(stripped, _depth + 1)
                     if reason:
                         return reason
-                elif (PurePosixPath(inner).name.lower() in _APPROVE_BINARIES
-                      or _PY_INTERPRETER.match(PurePosixPath(inner).name)
+                elif (venv_install_guard._basename(inner).lower() in _APPROVE_BINARIES
+                      or _PY_INTERPRETER.match(venv_install_guard._basename(inner))
                       or after_exec_flag) and runs_trailing:
                     rest = [_unmask(t, table) for t in argv[j:]
                             if t not in {"\\;", ";", "+"}]
@@ -2050,7 +2050,7 @@ def _forge_subcommand(argv: list[str]) -> tuple[str, str]:
 
 
 _GIT_WRITE = re.compile(
-    r"\bgit\s+(?:commit|push|merge|rebase|cherry-pick|revert|am|apply|tag"
+    r"\bgit(?:\.[Ee][Xx][Ee])?\s+(?:commit|push|merge|rebase|cherry-pick|revert|am|apply|tag"
     r"|reset|restore|stash|branch|checkout|switch)\b"
 )
 _FORGE_WRITE = re.compile(
@@ -2208,7 +2208,7 @@ def _strip_wrappers(tokens: list[str], is_extra_target=None) -> list[str]:
     argv = tokens[i:]
     if saw_wrapper and argv and argv[0].startswith("-"):
         for j, tok in enumerate(argv):
-            name = PurePosixPath(tok).name
+            name = venv_install_guard._basename(tok)
             if (name == "git" or name in _SHELL_RUNNERS
                     or (is_extra_target is not None and is_extra_target(name))):
                 return argv[j:]
@@ -2232,7 +2232,7 @@ def _git_push_invocations(cmd: str, _depth: int = 0) -> list[tuple[str, list[str
         except ValueError:
             tokens = seg.split()
         argv = _strip_wrappers(tokens)
-        if argv and PurePosixPath(argv[0]).name == "git" and "push" in argv:
+        if argv and venv_install_guard._basename(argv[0]) == "git" and "push" in argv:
             found.append((seg, argv))
             continue
         if _depth < 2:
@@ -2491,7 +2491,7 @@ def _forge_invocations(cmd: str, _depth: int = 0) -> list[list[str]]:
             tokens, is_extra_target=lambda n: n in {"gh", "glab"})
         if not argv:
             continue
-        name = PurePosixPath(argv[0]).name
+        name = venv_install_guard._basename(argv[0])
         if name in {"gh", "glab"}:
             found.append(argv)
         elif name in _FORGE_RUNNER_NAMES and _depth < 2:
@@ -2500,7 +2500,7 @@ def _forge_invocations(cmd: str, _depth: int = 0) -> list[list[str]]:
                 if _FORGE_MENTION.search(tok):
                     found.extend(_forge_invocations(tok, _depth + 1))
                 # `timeout 30 gh …` / `xargs gh …` — the rest of THIS argv.
-                elif PurePosixPath(tok).name in {"gh", "glab"}:
+                elif venv_install_guard._basename(tok) in {"gh", "glab"}:
                     found.append(argv[j:])
                     break
     return found
@@ -2528,17 +2528,17 @@ def _git_invocations(cmd: str, _depth: int = 0) -> list[tuple[str, list[str]]]:
         argv = _strip_wrappers(tokens)
         if not argv:
             continue
-        name = PurePosixPath(argv[0]).name
+        name = venv_install_guard._basename(argv[0])
         if name == "git":
             found.append((seg, argv))
         elif name in _SHELL_RUNNERS and _depth < 2:
             for j, tok in enumerate(argv[1:], start=1):
                 # `sh -c "git stash"` — the command is one quoted token.
-                if re.search(r"\bgit\s+\S", tok):
+                if re.search(r"\bgit(?:\.[Ee][Xx][Ee])?\s+\S", tok):
                     found.extend(_git_invocations(tok, _depth + 1))
                 # `xargs git restore` / `timeout 30 git restore .` — the
                 # command is the rest of THIS argv, already tokenised.
-                elif PurePosixPath(tok).name == "git":
+                elif venv_install_guard._basename(tok) == "git":
                     found.append((seg, argv[j:]))
                     break
     return found
@@ -2866,7 +2866,7 @@ def evaluate(
         # Kept as-is: catches `git push` spelled in ways argv analysis does not
         # reach (inside a heredoc, an alias, a quoted fragment of a larger
         # script). The argv analysis below is additive, never a replacement.
-        if re.search(r"\bgit\s+push\b", cmd) and _push_targets_protected(
+        if re.search(r"\bgit(?:\.[Ee][Xx][Ee])?\s+push\b", cmd) and _push_targets_protected(
             cmd, never_push_to
         ):
             return GuardDecision(

@@ -3327,7 +3327,12 @@ def test_peel_scan_wrappers_pins_both_directions():
     unchanged = guard._peel_scan_wrappers(
         ["timeout", "5", "python", "x.py", "find", "-delete"])
     assert unchanged == ["timeout", "5", "python", "x.py", "find", "-delete"]
-    assert guard.PurePosixPath(unchanged[0]).name not in guard._SCAN_EXECUTABLES
+    # Through the SAME name helper production uses, not a second
+    # spelling of it: `_peel_scan_wrappers` matches argv[0] with
+    # `venv_install_guard._basename`, so asserting over a different
+    # extractor would be testing something the code does not do (#305).
+    assert (venv_install_guard._basename(unchanged[0])
+            not in guard._SCAN_EXECUTABLES)
 
     # Two scan-wrapper names nested.
     nested = guard._peel_scan_wrappers(
