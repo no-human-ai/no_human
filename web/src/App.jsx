@@ -1405,16 +1405,21 @@ export default function App() {
               has ever heard of — it must never fall through to "quota"
               merely for not being "infra" (that fallthrough is the exact bug
               a lost pool lease exposed, task 92e48491). See
-              drainChip.test.mjs for the behavioral tests on this rendering
-              (renderToStaticMarkup, one assertion per paused_reason) — this
-              component is the actual code under test there, not a source
-              guard on this file. */}
+              drainChip.test.mjs for the behavioural tests on that component.
+              What those tests do NOT cover is this call site: they render
+              PausedIndicator directly, so nothing observes what App passes
+              INTO it. An independent review proved the gap by reintroducing
+              the fallthrough here as
+              `paused_reason={...=== "infra" ? "infra" : "quota"}` and the web
+              suite stayed green at 1653 passing.
+              The fix is to leave no per-field expression here to get wrong:
+              the whole health object is spread, PausedIndicator destructures
+              the three fields it needs with its own defaults, and a
+              mistranslation of a field this file does not name is not
+              expressible. That is a smaller untestable surface, not a tested
+              one — stated plainly rather than claimed as coverage. */}
           {!queueHealth?.stuck && queueHealth?.paused && (
-            <PausedIndicator
-              paused_reason={queueHealth?.paused_reason}
-              paused_until={queueHealth?.paused_until}
-              paused_profile={queueHealth?.paused_profile}
-            />
+            <PausedIndicator {...queueHealth} />
           )}
           {!queueHealth?.stuck && !queueHealth?.paused && queueHealth?.eta_minutes != null && queueHealth.open_tasks > 0 && (
             <div className="nh-status-indicator" title={`${queueHealth.completed_in_window} finished in the last ${queueHealth.window_minutes} min`}>

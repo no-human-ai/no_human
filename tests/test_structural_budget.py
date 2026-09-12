@@ -1515,7 +1515,7 @@ FROZEN_FILE_LINES = {
     # path too, gated to avoid double-firing against `_run_attempt`'s own
     # in-process `cancelled_hard` emit when `stopped` is True. Measured on
     # this tree with the scanner below.
-    # 6183 -> 6190 (+7): `worker_status`'s `healthy` conjunction gains
+    # 6183 -> 6193 (+10): `worker_status`'s `healthy` conjunction gains
     # `and not out.get("lease_lost")` (a lost lease is permanent and
     # `tick_stalled` does not cover it), and `queue_health_endpoint` reads
     # `sched.lease_lost` and threads it into `queue_health(...)` alongside
@@ -1794,7 +1794,7 @@ FROZEN_FILE_LINES = {
     # `_honor_server_stop` close leaves exactly this shape, and the old
     # open-attempt-only staleness check under-counted it. Still read-only:
     # counts, never mutates. Measured on this tree with the scanner below.
-    # 3098 -> 3176 (+78): pool-lease CAS-write retry — `_is_transient_db_lock`
+    # 3098 -> 3196 (+98): pool-lease CAS-write retry — `_is_transient_db_lock`
     # (module-level; narrows to `sqlite3.OperationalError` naming a lock, so
     # every other exception still fails closed), `_LEASE_WRITE_ATTEMPTS`/
     # `_LEASE_WRITE_BACKOFF_S`, and `_cas_heartbeat_with_retry` — a bounded,
