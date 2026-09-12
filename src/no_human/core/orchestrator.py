@@ -78,7 +78,7 @@ from ..blockers import (
     user_pause_blocker,
 )
 from ..ci.base import CIResult, HumanGatedCI
-from ..config import NO_HUMAN_HOME, active_auth_profile, ui_evidence_should_run
+from ..config import NO_HUMAN_HOME, active_auth_profile, ui_evidence_should_run, permission_mode
 from ..history.skills import discover_skills
 from ..intake.classify import kind_criteria_mismatch
 from ..intake.split_proposal import generate_split_proposal
@@ -2451,7 +2451,7 @@ class Orchestrator:
                 ),
                 tools=["Read", "Grep", "Glob", "Bash"],
                 disallowedTools=["Write", "Edit", "MultiEdit", "NotebookEdit"],
-                permissionMode=(config_data.get("llm") or {}).get("permission_mode", "bypassPermissions") if config_data else "bypassPermissions",
+                permissionMode=permission_mode(config_data),
                 maxTurns=10,
                 model="sonnet",
                 effort="low",
