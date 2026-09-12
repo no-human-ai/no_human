@@ -26,12 +26,51 @@ _SOURCE_EXTENSIONS = (
     "c", "cpp", "h", "sh", "sql", "html", "css",
 )
 
-_EXCLUDED_TERMS = frozenset({
-    "true", "false", "null", "none", "json", "http", "https", "github", "gitlab",
-    "pytest", "python", "node", "npm", "api", "ci", "pr", "url", "sdk", "cli",
-    "wip", "db", "ui", "id", "os", "rest", "sql", "git", "utf8", "ascii",
-    "blocker", "error", "failed", "warning", "info", "debug",
-})
+
+def _build_excluded_terms() -> frozenset[str]:
+    """Build the set of vocabulary and terms that should not be classified
+    as internal code mechanisms (general prose, protocol terms, and no_human taxonomy)."""
+    terms: set[str] = {
+        # General non-mechanism terms and common protocol/environment words
+        "true", "false", "null", "none", "json", "http", "https", "github", "gitlab",
+        "pytest", "python", "node", "npm", "api", "ci", "pr", "url", "sdk", "cli",
+        "wip", "db", "ui", "id", "os", "rest", "sql", "git", "utf8", "ascii",
+        "blocker", "error", "failed", "warning", "info", "debug",
+        "timeout", "timed_out", "retry_after", "status_code", "status_codes",
+        "error_code", "error_codes", "error_message", "permission_denied",
+        "access_denied", "unauthorized", "forbidden", "bad_request", "not_found",
+        "rate_limit", "rate_limited", "rate_limits", "max_attempts", "max_park",
+    }
+
+    # Derive from BlockerCategory enum and values
+    for cat in BlockerCategory:
+        terms.add(cat.name.lower())
+        terms.add(cat.value.lower())
+
+    # BlockerCategory aliases
+    for alias in ("spec_gap", "ambiguity_spec_gap", "invalid", "impossible_invalid", "infra", "rate_limit"):
+        terms.add(alias)
+
+    # Derive from Blocker and BlockerOption fields
+    for field_name in Blocker.__dataclass_fields__:
+        terms.add(field_name.lower())
+    for field_name in BlockerOption.__dataclass_fields__:
+        terms.add(field_name.lower())
+
+    # Derive from TaskStatus
+    try:
+        from ..core.task import TaskStatus
+
+        for status in TaskStatus:
+            terms.add(status.name.lower())
+            terms.add(str(status.value).lower())
+    except ImportError:
+        pass
+
+    return frozenset(terms)
+
+
+_EXCLUDED_TERMS = _build_excluded_terms()
 
 
 def extract_code_mechanisms(text: str) -> list[str]:
@@ -52,7 +91,7 @@ def extract_code_mechanisms(text: str) -> list[str]:
     ext_pattern = "|".join(_SOURCE_EXTENSIONS)
     file_pattern = rf"\b[\w./\\-]+\.(?:{ext_pattern})\b(?::\d+(?:-\d+)?)?"
     for match in re.findall(file_pattern, text, re.IGNORECASE):
-        if match not in mechanisms:
+        if match not in mechanisms and match.lower() not in _EXCLUDED_TERMS:
             mechanisms.append(match)
 
     # 3. Dotted symbols (e.g. ClaudeBackend._options, module.function, Class.attr)
@@ -79,7 +118,7 @@ def extract_code_mechanisms(text: str) -> list[str]:
         if match not in mechanisms and match.lower() not in _EXCLUDED_TERMS:
             mechanisms.append(match)
 
-    # 7. Identifiers with underscores (e.g. permission_mode, _options, root_cause_hypothesis)
+    # 7. Identifiers with underscores (e.g. permission_mode, _options)
     snake_pattern = r"\b_?[a-zA-Z0-9]+(?:_[a-zA-Z0-9]+)+\b"
     for match in re.findall(snake_pattern, text):
         if match not in mechanisms and match.lower() not in _EXCLUDED_TERMS:
@@ -88,13 +127,35 @@ def extract_code_mechanisms(text: str) -> list[str]:
     return mechanisms
 
 
+def _is_single_mechanism_supported(mech: str, corpus_lower: str) -> bool:
+    """Check if an individual code mechanism is grounded in the corpus."""
+    mech_clean = mech.strip("`()")
+    mech_lower = mech_clean.lower()
+
+    if mech_lower in corpus_lower:
+        return True
+
+    if "." in mech_clean:
+        parts = [p.lower() for p in mech_clean.split(".") if p]
+        if parts and all(p in corpus_lower for p in parts):
+            return True
+
+    if "/" in mech_clean or "\\" in mech_clean or ":" in mech_clean:
+        base_file = mech_clean.split(":")[-2] if ":" in mech_clean else mech_clean
+        base_name = base_file.replace("\\", "/").split("/")[-1].lower()
+        if base_name and base_name in corpus_lower:
+            return True
+
+    return False
+
+
 def is_code_mechanism_supported(
     mechanisms: list[str],
     evidence: str,
     tried: list[str] | None = None,
     goal: str = "",
 ) -> bool:
-    """Check if the code mechanisms extracted from the hypothesis are supported
+    """Check if all code mechanisms extracted from the hypothesis are supported
     by evidence, tried attempts, or goal context."""
     if not mechanisms:
         return True
@@ -111,25 +172,10 @@ def is_code_mechanism_supported(
 
     corpus_lower = corpus.lower()
 
-    for mech in mechanisms:
-        mech_clean = mech.strip("`()")
-        mech_lower = mech_clean.lower()
-
-        if mech_lower in corpus_lower:
-            return True
-
-        if "." in mech_clean:
-            parts = [p.lower() for p in mech_clean.split(".") if p]
-            if all(p in corpus_lower for p in parts):
-                return True
-
-        if "/" in mech_clean or "\\" in mech_clean or ":" in mech_clean:
-            base_file = mech_clean.split(":")[-2] if ":" in mech_clean else mech_clean
-            base_name = base_file.replace("\\", "/").split("/")[-1].lower()
-            if base_name in corpus_lower:
-                return True
-
-    return False
+    # Security invariant: Every asserted code mechanism must be supported.
+    # Adding an incidental grounded identifier must NOT whitelist an otherwise
+    # unsupported code-mechanism hypothesis.
+    return all(_is_single_mechanism_supported(mech, corpus_lower) for mech in mechanisms)
 
 
 def parse_blocker(text: str) -> Blocker | None:

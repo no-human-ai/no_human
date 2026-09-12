@@ -313,6 +313,29 @@ def test_unsupported_code_mechanism_hypothesis_confidence_demoted_to_low():
     assert triage(b).target_status == TaskStatus.ESCALATED
 
 
+def test_incidental_token_does_not_whitelist_unsupported_mechanism():
+    """A high-confidence hypothesis containing one unsupported concrete mechanism
+    and one incidental supported token must still be demoted to 0.5."""
+    text = """
+    BLOCKER_JSON_START
+    {
+      "category": "MISSING_ACCESS",
+      "confidence": 0.95,
+      "root_cause_hypothesis": "ClaudeBackend._options is missing permission_mode during resume; auth_mode handling",
+      "evidence": "auth_mode=subscription\\nError: 403 Forbidden - Missing access token for repository write.",
+      "tried": [],
+      "question": "Grant repo write access?",
+      "goal": "push commit to remote"
+    }
+    BLOCKER_JSON_END
+    """
+    b = parse_blocker(text)
+    assert b is not None
+    # Even though auth_mode is in evidence, ClaudeBackend._options and permission_mode are unsupported.
+    assert b.confidence == 0.5
+    assert triage(b).target_status == TaskStatus.ESCALATED
+
+
 def test_supported_code_mechanism_hypothesis_retains_high_confidence():
     """When a code-mechanism hypothesis is supported by evidence (traceback / command
     output / inspected file), its high confidence is preserved."""
@@ -332,6 +355,32 @@ def test_supported_code_mechanism_hypothesis_retains_high_confidence():
     b = parse_blocker(text)
     assert b is not None
     assert b.confidence == 0.95
+
+
+def test_taxonomy_vocabulary_does_not_trigger_false_mechanism_detection():
+    """Taxonomy terms like MISSING_ACCESS or rate_limit in the hypothesis do not
+    count as code mechanisms, so legitimate non-code blocker confidence is preserved."""
+    for hypothesis in [
+        "Encountered MISSING_ACCESS from upstream server",
+        "hit rate_limit while fetching repository commits",
+        "hit rate_limited endpoint, waiting for retry_after",
+        "transient_infra failure during test run",
+        "scope_explosion detected during intake",
+    ]:
+        text = f"""
+        BLOCKER_JSON_START
+        {{
+          "category": "TRANSIENT_INFRA",
+          "confidence": 0.9,
+          "root_cause_hypothesis": "{hypothesis}",
+          "evidence": "HTTP 429 Too Many Requests",
+          "question": "Wait for rate limit to reset?"
+        }}
+        BLOCKER_JSON_END
+        """
+        b = parse_blocker(text)
+        assert b is not None
+        assert b.confidence == 0.9, f"Failed for hypothesis: {hypothesis}"
 
 
 def test_non_code_mechanism_hypothesis_retains_confidence():
@@ -410,11 +459,24 @@ def test_extract_code_mechanisms_and_support_helpers():
     assert extract_code_mechanisms("") == []
     assert extract_code_mechanisms("plain English words here") == []
 
-    # Supported checking
+    # Taxonomy words are excluded
+    assert extract_code_mechanisms("MISSING_ACCESS rate_limit retry_after root_cause_hypothesis") == []
+
+    # Supported checking: ALL mechanisms must be supported
     assert is_code_mechanism_supported([], "") is True
     assert is_code_mechanism_supported(["ClaudeBackend._options"], "") is False
     assert is_code_mechanism_supported(["ClaudeBackend._options"], "Error in ClaudeBackend._options call") is True
     assert is_code_mechanism_supported(["backend.py:540"], "File src/no_human/backend.py, line 540") is True
+
+    # Partial support returns False (all must be supported)
+    assert is_code_mechanism_supported(
+        ["ClaudeBackend._options", "auth_mode"],
+        "auth_mode=subscription",
+    ) is False
+    assert is_code_mechanism_supported(
+        ["ClaudeBackend._options", "auth_mode"],
+        "auth_mode=subscription\nClaudeBackend._options failed",
+    ) is True
 
 
 def test_fallback_blocker_is_novel_unknown():
