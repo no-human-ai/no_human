@@ -5750,9 +5750,9 @@ class Orchestrator:
                 f"backend {getattr(caps, 'name', '?')!r} has no PostToolUse "
                 "hook — superseding 'supervisor active': the supervisor's "
                 "per-tool-call course correction, the lint feedback hook, the "
-                "per-edit type check, the scope guard and the landed-claim "
-                "guard do not run this attempt (the pre-flight plan check, "
-                "which is not a hook, still did)",
+                "per-edit type check and the scope guard do not run this "
+                "attempt — nor does the landed-claim guard — (the pre-flight "
+                "plan check, which is not a hook, still did)",
                 backend=getattr(caps, "name", None),
             )
             supervisor = None
