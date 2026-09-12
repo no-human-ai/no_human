@@ -839,6 +839,115 @@ def codex_readiness(
     return row, contradictions
 
 
+def sandbox_residue(path: Path, *, max_entries: int = 50_000) -> dict[str, Any]:
+    """Measure what is actually left in a sandbox-looking directory, so a
+    caller can report reality instead of assuming a cost or a cause.
+
+    Returns ``{"files", "bytes", "truncated", "unreadable", "cleanup_incomplete"}``.
+    A ``_remove_sandbox`` cleanup-failure marker (see eval/harness.py) is
+    excluded from ``files``/``bytes`` — it is our own bookkeeping, not residue
+    a user would reclaim — and instead flips ``cleanup_incomplete``.
+    """
+    from .eval.harness import CLEANUP_MARKER
+
+    files = 0
+    total_bytes = 0
+    truncated = False
+    unreadable = False
+
+    def _onerror(_exc: OSError) -> None:
+        nonlocal unreadable
+        unreadable = True
+
+    for dirpath, _dirnames, filenames in os.walk(
+        path, onerror=_onerror, followlinks=False
+    ):
+        for name in filenames:
+            if name == CLEANUP_MARKER:
+                continue
+            if files >= max_entries:
+                truncated = True
+                break
+            full = os.path.join(dirpath, name)
+            try:
+                total_bytes += os.lstat(full).st_size
+                files += 1
+            except OSError:
+                pass
+        if truncated:
+            break
+
+    marker = path / CLEANUP_MARKER
+    sibling = path.parent / (path.name + ".cleanup-incomplete")
+    cleanup_incomplete = marker.exists() or sibling.exists()
+
+    return {
+        "files": files,
+        "bytes": total_bytes,
+        "truncated": truncated,
+        "unreadable": unreadable,
+        "cleanup_incomplete": cleanup_incomplete,
+    }
+
+
+def _human_bytes(n: int) -> str:
+    """1024-based, one decimal place, B/KB/MB/GB."""
+    value = float(n)
+    for unit in ("B", "KB", "MB"):
+        if value < 1024:
+            return f"{int(value)} {unit}" if unit == "B" else f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{value:.1f} GB"
+
+
+def _apply_sandbox_outlived_advisories(d: "Diagnosis") -> None:
+    """0.4: eval/shadow sandboxes under tempfile.mkdtemp(nh-eval-*/nh-shadow-*)
+    are meant to be gone once the run that created them finishes — cleanup
+    in eval/harness.py runs in a `finally:` on both the success and the
+    crash path. A directory that outlives its run is consistent with either
+    an abandoned run OR a cleanup that removed what it could and left an
+    empty skeleton (see _remove_sandbox's marker) — the two are
+    indistinguishable from here, so this measures the residue instead of
+    naming a cause. Empty residue is not a disk leak and is not reported.
+    Advisory only, never a contradiction, so it never fails the doctor gate.
+    >2h old avoids flagging a sandbox from an eval that is still running."""
+    from .eval.harness import CLEANUP_MARKER
+
+    tmp_root = Path(tempfile.gettempdir())
+    stale_cut = time.time() - 2 * 3600
+    for pat in ("nh-eval-*", "nh-shadow-*"):
+        for entry in sorted(tmp_root.glob(pat)):
+            try:
+                if not (entry.is_dir() and entry.stat().st_mtime < stale_cut):
+                    continue
+                residue = sandbox_residue(entry)
+                if residue["files"] == 0 and not residue["unreadable"]:
+                    continue  # nothing measured to reclaim — no advisory
+
+                if residue["unreadable"]:
+                    size_text = "size could not be fully measured (permission denied)"
+                else:
+                    size_text = f"{residue['files']} file(s), {_human_bytes(residue['bytes'])}"
+
+                incomplete_clause = ""
+                if residue["cleanup_incomplete"]:
+                    marker = entry / CLEANUP_MARKER
+                    if not marker.exists():
+                        marker = entry.parent / (entry.name + ".cleanup-incomplete")
+                    incomplete_clause = (
+                        f" — its cleanup could not finish; see `{marker}` "
+                        "for what it left behind"
+                    )
+
+                d.advisories.append(
+                    f"SANDBOX DIRECTORY OUTLIVED ITS RUN: {entry} (>2h old, "
+                    f"{size_text}){incomplete_clause}; `rm -rf {entry}` to "
+                    "reclaim disk."
+                )
+            except OSError:
+                pass
+
+
 async def diagnose(store: Store, config: dict[str, Any] | None = None) -> Diagnosis:
     d = Diagnosis()
     d.contradictions.extend(ci_config_problems(config))
@@ -1035,23 +1144,10 @@ async def diagnose(store: Store, config: dict[str, Any] | None = None) -> Diagno
                     "`git worktree prune`."
                 )
 
-    # 0.4: leaked eval sandboxes. The eval harness clones into
-    # tempfile.mkdtemp(nh-eval-*/nh-shadow-*); a crash before cleanup used to
-    # leave them behind (the cleanup is now in eval/harness.py). Advisory — a
-    # disk leak, not a state contradiction, so it never fails the doctor gate.
-    # >2h old avoids flagging a sandbox from an eval that is still running.
-    tmp_root = Path(tempfile.gettempdir())
-    stale_cut = time.time() - 2 * 3600
-    for pat in ("nh-eval-*", "nh-shadow-*"):
-        for entry in sorted(tmp_root.glob(pat)):
-            try:
-                if entry.is_dir() and entry.stat().st_mtime < stale_cut:
-                    d.advisories.append(
-                        f"LEAKED EVAL SANDBOX: {entry} (>2h old) — a crashed eval "
-                        f"left it behind; `rm -rf {entry}` to reclaim disk."
-                    )
-            except OSError:
-                pass
+    # 0.4: eval/shadow sandbox directories that outlived their run — see
+    # `_apply_sandbox_outlived_advisories` for the reasoning (advisory only,
+    # measured residue not an assumed cause, never fails the doctor gate).
+    _apply_sandbox_outlived_advisories(d)
 
     # The documented `.no_human/project.yml` is a DECOY once a confirmed DB
     # row exists: `Orchestrator._usable_profile` prefers the row, so an edit
