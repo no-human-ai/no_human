@@ -151,3 +151,67 @@ def test_a_c_quoted_new_directory_is_recognised_as_newly_added(quoted_paths_repo
     _git(repo.path, "commit", "-m", "add données/rapport.py")
 
     assert DONNEES in repo._dirs_newly_added_by_head()
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        pytest.param('we"ird.txt', id="quote"),
+        pytest.param("back\\slash.txt", id="backslash"),
+        pytest.param("tab\tbed.txt", id="tab"),
+        pytest.param("plain.txt", id="plain-ascii-positive-control"),
+    ],
+)
+def test_a_quote_backslash_or_tab_named_leftover_is_flagged_by_the_completeness_guard(
+    quoted_paths_repo, name,
+):
+    """`-c core.quotePath=false` only suppresses quoting for non-ASCII bytes
+    (>= 0x80); git C-quotes `"`, `\\`, TAB and LF UNCONDITIONALLY regardless
+    of that setting. Pre-fix, `status --porcelain` (even with
+    `core.quotePath=false`) still hands these names back mangled
+    (`"we\\"ird.txt"`, `"back\\\\slash.txt"`, `"tab\\tbed.txt"`), so `rel in
+    coder_touched` never matches the caller's raw literal and the leftover
+    is silently never flagged. Only `-z` fully disables ALL quoting. The
+    plain-ASCII case is the positive control proving the guard still works
+    at all for an ordinary name."""
+    repo = GitRepo(quoted_paths_repo)
+    leftover_path = repo.path / name
+    leftover_path.write_text("notes\n")
+
+    assert repo.uncommitted_source_files() == []
+    flagged = repo.uncommitted_source_files(coder_touched={name})
+    assert name in flagged
+
+
+@pytest.mark.parametrize(
+    "dirname",
+    [
+        pytest.param('we"ird', id="quote"),
+        pytest.param("back\\slash", id="backslash"),
+        pytest.param("plaindir", id="plain-ascii-positive-control"),
+    ],
+)
+def test_a_quote_or_backslash_named_new_directory_is_recognised_as_newly_added(
+    quoted_paths_repo, dirname,
+):
+    """Complements the previous test by exercising `_dirs_newly_added_by_head`
+    itself, not `uncommitted_source_files`'s `coder_touched` branch: a
+    non-code leftover (`notes.txt`, so only the `newly_added_dirs` predicate
+    can flag it — never `_CODE_EXTS` or `coder_touched`, both left empty
+    here) dropped into a directory HEAD just introduced, whose name git
+    C-quotes for `"`/`\\` unconditionally regardless of `core.quotePath`.
+    Pre-fix, `show --name-only` (even with `core.quotePath=false`) hands the
+    directory back mangled, so `Path(rel).parent` (the raw leftover's
+    parent) never matches an entry in the mangled `newly_added_dirs` set and
+    the leftover is silently never flagged. Only `-z` disables the
+    unconditional quoting too."""
+    repo = GitRepo(quoted_paths_repo)
+    d = repo.path / dirname
+    d.mkdir()
+    (d / "mod.py").write_text("x = 1\n")
+    _git(repo.path, "add", "-A")
+    _git(repo.path, "commit", "-m", f"add {dirname}/mod.py")
+
+    (d / "notes.txt").write_text("notes\n")
+    flagged = repo.uncommitted_source_files()
+    assert f"{dirname}/notes.txt" in flagged

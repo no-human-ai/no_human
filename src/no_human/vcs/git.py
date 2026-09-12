@@ -501,23 +501,26 @@ class GitRepo:
         which directories HEAD just brought into existence — an input
         `commit_paths` never consults when deciding what to stage, so it can
         catch the class the other two predicates cannot."""
-        # `-c core.quotePath=false`, not `-z`: this parses `XY <path>` prefixes
-        # and the `" -> "` rename form, which `-z` would replace with
-        # `XY <new>\0<orig>\0` (no `" -> "`) — a parser rewrite out of scope
-        # here. Disabling quoting keeps a non-ASCII path (e.g. `café.py`)
-        # literal instead of C-quoted (`"caf\303\251.py"`), so it compares
-        # correctly against `coder_touched`/`newly_added_dirs` below.
-        out = self._run(
-            "-c", "core.quotePath=false", "status", "--porcelain", check=False
-        ).strip()
+        # `-z`, not `-c core.quotePath=false`: `core.quotePath` only disables
+        # quoting for non-ASCII bytes (>= 0x80) — git C-quotes `"`, `\`, TAB
+        # and LF UNCONDITIONALLY regardless of that setting, so a leftover
+        # like `report".json` would still arrive mangled and never match a
+        # raw `coder_touched` entry. `-z` disables ALL of it and replaces the
+        # porcelain-v1 `"old -> new"` rename line with two separate
+        # NUL-terminated tokens (`XY <new>\0<orig>\0`, no `" -> "`), parsed
+        # below instead of split on `" -> "`.
+        tokens = self._null_paths(
+            self._run_null("status", "--porcelain", "-z", check=False)
+        )
         newly_added_dirs = self._dirs_newly_added_by_head()
         leftovers: list[str] = []
-        for line in out.splitlines():
-            rel = line[3:].strip() if len(line) > 3 else ""
-            if rel.startswith('"') and rel.endswith('"'):
-                rel = rel[1:-1]
-            if " -> " in rel:            # rename: "old -> new"
-                rel = rel.split(" -> ", 1)[1]
+        i = 0
+        while i < len(tokens):
+            tok = tokens[i]
+            i += 1
+            xy, rel = tok[:2], tok[3:] if len(tok) > 3 else ""
+            if xy[:1] in ("R", "C"):
+                i += 1  # bare original-path token for a rename/copy; skip it
             if not rel or self._is_ephemeral_path(rel):
                 continue
             if Path(rel).suffix.lower() in self._CODE_EXTS:
@@ -561,14 +564,16 @@ class GitRepo:
         files counts as newly added — there is no prior tree it could have
         existed in. Unborn repo (no HEAD at all): returns the empty set, the
         same conservative degrade as `_dir_absent_from_tree`."""
-        # `-c core.quotePath=false`: keeps a non-ASCII path (e.g. `données/`)
-        # literal instead of C-quoted, so it round-trips correctly through
-        # `_dir_absent_from_tree`'s `ls-tree` pathspec below.
-        names = self._run(
-            "-c", "core.quotePath=false",
-            "show", "--pretty=format:", "--name-only", "HEAD", check=False
-        )
-        dirs = {str(Path(n).parent) for n in names.splitlines() if n.strip()}
+        # `-z`, not `-c core.quotePath=false`: `core.quotePath` leaves `"`,
+        # `\`, TAB and LF C-quoted regardless of the setting (see
+        # `uncommitted_source_files`), which would mangle a directory name
+        # containing one of those before it ever reaches
+        # `_dir_absent_from_tree`'s `ls-tree` pathspec below. `-z` disables
+        # all of it, so the round-trip stays byte-for-byte.
+        names = self._null_paths(self._run_null(
+            "show", "--pretty=format:", "--name-only", "-z", "HEAD", check=False
+        ))
+        dirs = {str(Path(n).parent) for n in names}
         dirs.discard(".")
         if not dirs:
             return dirs
@@ -824,7 +829,18 @@ class GitRepo:
             tracked = set(self._null_paths(
                 self._run_null("ls-files", "-z", "--", *missing)
             ))
-            phantom = {r for r in missing if r not in tracked}
+            # `ls-files -- somedir` (a deleted tracked DIRECTORY) returns the
+            # FILES under it (`somedir/a.py`, ...), never the literal
+            # `"somedir"` — a bare `r not in tracked` membership test would
+            # then call a deleted tracked directory phantom and silently
+            # drop every deletion under it, where plain `git add` stages
+            # them. Keep `r` when some tracked entry equals it OR sits
+            # inside it (`t == r or t.startswith(r + "/")`).
+            phantom = {
+                r for r in missing
+                if r not in tracked
+                and not any(t.startswith(r + "/") for t in tracked)
+            }
             rel_paths = [r for r in rel_paths if r not in phantom]
         if rel_paths:
             self._run("add", "--", *rel_paths)

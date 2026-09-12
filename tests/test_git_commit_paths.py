@@ -419,3 +419,86 @@ def test_every_filesystem_compared_path_output_is_nul_or_quotepath_disabled():
     cf_calls = run_calls_in(funcs["changed_files"])
     diff_calls = [c for c in cf_calls if c[1] and c[1][0] == "diff"]
     assert diff_calls and all(is_safe(c) for c in diff_calls)
+
+
+def test_a_broken_symlink_is_not_mistaken_for_a_phantom_path(repo_with_bare_remote):
+    """`Path.exists()` follows symlinks, so a broken symlink (its target
+    removed or never created) reports False exactly like a path that was
+    never created on disk at all — the phantom filter must use
+    `os.path.lexists`, which is True for a broken symlink, or a legitimate
+    on-disk symlink the coder created would be misclassified as `ghost.py`'s
+    phantom twin and silently dropped from the commit instead of staged."""
+    repo = GitRepo(repo_with_bare_remote)
+    repo.create_branch("no-human/broken-symlink", base="main")
+    link = repo.path / "link.py"
+    link.symlink_to("does-not-exist.py")  # broken on purpose: target absent
+    app = repo.path / "app.py"
+    app.write_text("x = 2\n")
+    repo.commit_paths([str(link), str(app)], "add a broken symlink")
+
+    files = _committed_files(repo.path)
+    assert "link.py" in files
+    assert "app.py" in files
+
+
+def test_a_deleted_tracked_directory_is_staged_as_a_deletion(repo_with_bare_remote):
+    """`ls-files -- somedir` (a deleted tracked DIRECTORY passed as a whole)
+    returns the FILES under it (`somedir/a.py`, `somedir/b.py`, ...), never
+    the literal string `"somedir"` itself. A bare `r not in tracked`
+    membership test then calls the directory phantom and silently drops
+    every deletion under it — where plain `git add -- somedir` stages them
+    all as `D`. The fix must recognise `r` as tracked when some entry sits
+    inside it (`t.startswith(r + "/")`), not just when `r` equals an entry
+    outright."""
+    repo = GitRepo(repo_with_bare_remote)
+    repo.create_branch("no-human/tracked-dir-deletion", base="main")
+    sub = repo.path / "sub"
+    sub.mkdir()
+    (sub / "a.py").write_text("x = 1\n")
+    (sub / "b.py").write_text("y = 1\n")
+    repo.commit_paths([str(sub / "a.py"), str(sub / "b.py")], "add sub/")
+
+    import shutil
+    shutil.rmtree(sub)
+    app = repo.path / "app.py"
+    app.write_text("x = 2\n")  # a real, always-stageable co-batched edit
+    data = repo.path / "data"
+    data.mkdir()
+    (data / "state.json").write_text('{"updated": true}')  # unrelated side-effect
+    repo.commit_paths([str(sub), str(app)], "remove sub/")
+
+    deleted = subprocess.run(
+        ["git", "show", "--diff-filter=D", "--name-only", "--format=", "HEAD"],
+        cwd=repo.path, capture_output=True, text=True,
+    ).stdout
+    assert "sub/a.py" in deleted
+    assert "sub/b.py" in deleted
+    files = _committed_files(repo.path)
+    assert "app.py" in files
+    assert "state.json" not in files
+
+
+def test_changed_files_returns_raw_leading_space_and_non_ascii_paths(repo_with_bare_remote):
+    """Behavioural coverage for `changed_files`, complementing the
+    source-only AST guard above: a `.strip()` added to its `-z` output would
+    silently eat the leading space of the first path in sorted order — a
+    regression the AST guard cannot see, since it inspects argv text, not
+    behaviour (mirrors `test_a_leading_space_tracked_edit_is_not_dropped_by_
+    a_whole_output_strip` for `commit_paths`' own `-z` producers).
+    `" lead.py"` sorts before `café.py` (space < 'c'), so it lands first
+    exactly where that bug bites, and a non-ASCII name alongside it proves
+    `changed_files` never falls back to C-quoting either."""
+    repo = GitRepo(repo_with_bare_remote)
+    repo.create_branch("no-human/changed-files-quoted", base="main")
+    base_sha = repo.head_sha()
+    lead = repo.path / " lead.py"
+    lead.write_text("a = 1\n")
+    cafe = repo.path / "café.py"
+    cafe.write_text("b = 1\n")
+    repo.commit_paths([str(lead), str(cafe)], "add lead.py and cafe.py")
+
+    changed = repo.changed_files(base_sha)
+    assert " lead.py" in changed
+    assert "café.py" in changed
+    assert (repo.path / " lead.py").exists()
+    assert (repo.path / "café.py").exists()
