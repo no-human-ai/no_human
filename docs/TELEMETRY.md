@@ -17,8 +17,8 @@ security-review framing of this same channel).
 
 ## The complete event list
 
-There are exactly nine possible event kinds, eight sent by the server and
-one (`screen_viewed`) by the browser.
+There are exactly thirteen possible event kinds, twelve sent by the server
+and one (`screen_viewed`) by the browser.
 
 | Event | Channel | Props |
 |---|---|---|
@@ -30,6 +30,10 @@ one (`screen_viewed`) by the browser.
 | `feature_used` | server | `name`, `environment` |
 | `task_ended` | server | `outcome`, `attempts`, `duration_bucket`, `environment` |
 | `tasks_orphaned` | server | `count_bucket`, `environment` |
+| `onboarding_step_viewed` | server | `step`, `environment` |
+| `onboarding_repo_selected` | server | `environment` |
+| `onboarding_completed` | server | `path`, `environment` |
+| `task_create_refused` | server | `reason`, `environment` |
 | `screen_viewed` | browser | `screen` (the lane name — `board`/`backlog`/`done`/`failed`/`stats`/`settings`/…, never content) |
 
 Every prop name is validated against `_ALLOWED_EVENTS`; an unknown kind or
@@ -55,6 +59,16 @@ path, prompt, or failure detail can ever leave the machine through them.
   byte-identical by this change.)
 - `tasks_orphaned.count_bucket` — `ORPHAN_COUNT_BUCKETS`: one of `0`, `1`,
   `2-5`, `6+`.
+- `onboarding_step_viewed.step` — `ONBOARDING_STEPS`: one of `welcome`,
+  `repos`, `projects`, `integrations`, `summary` — the wizard's own step
+  keys (`Onboarding.jsx`'s `BASE_STEPS`, mirrored server-side by
+  `api/app.py`'s `_WIZARD_STEPS`), never a free-text step name.
+- `onboarding_completed.path` — `ONBOARDING_PATHS`: one of `minimal`,
+  `full` — which of the two wizard exits was taken, never any detail about
+  what was configured.
+- `task_create_refused.reason` — `TASK_REFUSAL_REASONS`: currently just
+  `setup_mode` — a machine-readable refusal pattern, never the human-facing
+  `SETUP_MODE_DETAIL` string (which contains a filesystem path).
 
 ## `task_completed`: the ordinary successful-delivery path
 
@@ -165,6 +179,66 @@ the scheduler's existing crash-recovery path (`_recover_orphans`) is
 responsible for. It is purely an observability count layered on top of
 unrelated, unchanged recovery behavior.
 
+## The onboarding funnel: `onboarding_step_viewed`, `onboarding_repo_selected`, `onboarding_completed`, `task_create_refused`
+
+Before these four events, 276 of 291 external installs (as measured
+2026-09) emitted exactly one event ever — `app_started` — and nothing else:
+every install that never created a task was completely invisible between
+"the app opened" and "a task was created", so it was impossible to tell
+"abandoned the wizard at step 2" from "finished the wizard but never
+created a task" from "was refused because no credential was configured".
+These four events close that gap, entirely from signals the server already
+computes locally — no new network calls, no credential probing:
+
+- `onboarding_step_viewed` (`step`) fires once per DISTINCT step key, ever,
+  per install — `POST /api/onboarding/step` is called by the wizard as it
+  shows each step, latched so the same step viewed on a later visit (e.g.
+  after `onboarding/reset`) does not refire.
+- `onboarding_repo_selected` fires once per install the FIRST time a repo is
+  onboarded (`POST /api/onboarding/repos/onboard`), never once per repo —
+  an install onboarding seven repos still emits exactly one event; the
+  count of onboarded repos is never itself telemetry (a cardinality leak).
+- `onboarding_completed` (`path`) fires once per install, the moment the
+  wizard is actually finished (`POST /api/onboarding/complete`) —
+  `path=minimal` or `path=full` records which of the two finish flows was
+  used, nothing about what was configured.
+- `task_create_refused` (`reason=setup_mode`) fires once per install the
+  first time `POST /api/tasks` is refused because no Claude credential is
+  configured — derived from the same local `.env`/config read
+  `_require_credentials` already performs for the 503 response; the
+  human-facing `SETUP_MODE_DETAIL` string (which names a filesystem path)
+  is never read into a telemetry prop.
+
+All four are latched via `api/app.py`'s `_record_onboarding_once`, a
+per-install "at most once" marker persisted in `config.onboarding.funnel_once`
+(never under `config.telemetry.*`) — chosen so per-entity/per-attempt signals
+(repo count, repeated refusals, repeated step views) can never leak
+cardinality, while still answering "did this install ever reach this point in
+the funnel". None of the four are in `_LAMBDA_EVENTS` yet (see below); until
+the Lambda's server-side allowlist ships them, they reach PostHog only.
+
+### The desktop first-launch blind spot (documented, not fixed)
+
+A **desktop** (Electron) first launch with no Claude credential on file never
+boots a `no_human` server at all: `desktop/main.mjs`'s boot sequence checks
+`hasCredential()` and, if it is false, calls `showSetup(w)` and `return`s
+*before* ever reaching `ensureServer(...)` — verified by reading the actual
+control flow, not assumed. Every one of the four events above (and
+`app_started` itself) is emitted server-side, so a desktop user who is asked
+for a credential and quits without ever supplying one is invisible to
+telemetry for that entire session — not "silently miscounted", genuinely
+unobservable, because no server process exists to emit anything.
+
+This is a real, accepted gap, not a bug this change fixes: making desktop
+boot a server credential-free is a product decision (it would mean spinning
+up SQLite, workers and a port bind before the user has done anything), out of
+scope here. Every OTHER path — `nh serve`, `nh start`, and desktop once past
+the credential screen — boots a real server, which sets `app.state.setup_mode`
+and emits `app_started` regardless of whether a credential is present
+(`api/app.py`'s `lifespan`), so the funnel above is fully instrumented for
+every server-booting path; only the desktop pre-credential screen itself is
+dark.
+
 ## The `_LAMBDA_EVENTS` wire filter
 
 The default destination is PostHog, which accepts everything in
@@ -172,15 +246,16 @@ The default destination is PostHog, which accepts everything in
 (`telemetry.endpoint`) validates a batch WHOLESALE against ITS OWN closed
 allowlist and 400s the entire batch on one unrecognized event name — and a
 rejected batch stays queued forever, wedging every later flush behind it.
-`task_ended` and `tasks_orphaned` are new: they have not shipped to the
-Lambda's server-side allowlist yet. Until they do, `telemetry.flush()`
+`task_ended`, `tasks_orphaned`, and the four onboarding-funnel events above
+are new: they have not shipped to the Lambda's server-side allowlist yet.
+Until they do, `telemetry.flush()`
 drops any event whose name is not in `_LAMBDA_EVENTS` on the `kind ==
 "lambda"` wire path only — never affecting PostHog, and never wedging the
 queue (an all-dropped batch is deleted, never re-POSTed empty).
 `tests/test_telemetry.py::test_client_allowlist_matches_the_deployed_lambda_contract`
 pins `_LAMBDA_EVENTS` as the Lambda's deployed six names and asserts it is a
 strict subset of `_ALLOWED_EVENTS` — this file (and that test) must be
-updated together the day the Lambda actually ships the new two.
+updated together the day the Lambda actually ships the new ones.
 
 ## Never sent
 

@@ -881,6 +881,13 @@ export const detectRepos       = (root)    => discoverRepos({ root });
 
 export const onboardRepo       = (repo_path) => _post("/api/onboarding/repos/onboard", { repo_path });
 
+// Fire-and-forget: the wizard reporting which step it is showing. Never
+// awaited by callers and swallows its own errors — a telemetry hiccup must
+// never block or surface in onboarding. See onboardingFunnel.js's
+// makeStepReporter for the StrictMode-safe once-per-step dedup on top of this.
+export const recordOnboardingStep = (step) =>
+  _post("/api/onboarding/step", { step }).catch(() => {});
+
 // PROVE a repo's commands by really running them, streaming the real output.
 // POST-based SSE (same shape as grillStepSSE above — EventSource is GET-only).
 // `onFrame` receives every frame; the caller decides what to render. Returns a

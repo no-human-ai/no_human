@@ -63,8 +63,8 @@ from .models import (
     AttemptDetailsOut, AttemptOut, BoardPayload, BudgetOut, CancelRequest, CreateProjectRequest,
     CreateTaskRequest, GrillQuestionOut, GrillResultOut, GrillStepRequest, IntegrationSetupRequest,
     ImportedInfo, LandedOverrideRequest, PhaseOut, ProjectOut, ReplyRequest,
-    SaveIntegrationConfigRequest, SendBackRequest, ShippedRequest, SplitRequest, TaskOut,
-    TaskSummaryOut, TelemetryConsentRequest, TrackerIssueOut, UpdateProjectRequest,
+    SaveIntegrationConfigRequest, SendBackRequest, ShippedRequest, SplitRequest, StepViewedRequest,
+    TaskOut, TaskSummaryOut, TelemetryConsentRequest, TrackerIssueOut, UpdateProjectRequest,
 )
 
 import logging
@@ -889,7 +889,14 @@ async def list_tasks(
 async def create_task(body: CreateTaskRequest, request: Request) -> TaskSummaryOut:
     """Create a new task from the web board. The task is staged as PENDING and
     will be picked up by the next ``nh serve`` tick or ``nh watch``."""
-    _require_credentials(request)
+    try:
+        _require_credentials(request)
+    except HTTPException:
+        # Refused signal only — the human-facing SETUP_MODE_DETAIL (which
+        # carries a filesystem path) is never read, passed, or touched here.
+        _record_onboarding_once(request, "first_task_refused",
+                                "task_create_refused", reason="setup_mode")
+        raise
     store = _store(request)
     repo_path: str | None = None
     linked: list[str] = []
@@ -5303,6 +5310,58 @@ def _persist_onboarding(config, patch: dict[str, Any]) -> dict[str, Any]:
     return ob
 
 
+# The wizard's own step keys, in order — mirrors `Onboarding.jsx`'s
+# `BASE_STEPS` (:90) and `telemetry.ONBOARDING_STEPS`. Kept as a plain tuple
+# (not imported from the frontend, which the server cannot do) and pinned
+# equal to both by tests/test_onboarding_funnel_telemetry.py.
+_WIZARD_STEPS = ("welcome", "repos", "projects", "integrations", "summary")
+
+# Key under `config.onboarding` (never `config.telemetry`) holding the list of
+# per-install funnel markers already fired. Deliberately named `funnel_once`,
+# not `telemetry_once`: tests/test_telemetry.py::
+# test_only_the_consent_endpoint_writes_telemetry_keys walks app.py's AST for
+# string literals containing "telemetry.enabled"/"telemetry.instance_id" and
+# restricts those two key paths to save_telemetry_consent — this marker lives
+# under a different config section entirely, so it never risks tripping that
+# guard, but the name is still chosen to stay clearly out of that namespace.
+_FUNNEL_ONCE_KEY = "funnel_once"
+
+
+def _record_onboarding_once(request: Request, marker: str, kind: str, **props: Any) -> bool:
+    """Fire an onboarding-funnel telemetry event at most ONCE per install.
+
+    `marker` is a hardcoded literal chosen by the call site (never a
+    client-supplied value), latched in `config.onboarding.funnel_once` — a
+    list of markers already fired, persisted via `_persist_onboarding` so it
+    survives `onboarding/reset` and a server restart. The marker is persisted
+    BEFORE `telemetry.record()` is called: a crash or a slow/failed telemetry
+    call can only ever cause an under-count (the event never fires), never a
+    duplicate. Returns whether this call actually recorded (False if already
+    latched or if `config` is unavailable) — callers do not depend on the
+    return value; it exists for tests only.
+
+    Not atomic across concurrent requests (same as every other
+    `_persist_onboarding` caller) — the wizard is single-user sequential, so a
+    race here is a documented, accepted limit, not a bug being solved.
+    Fails open: any exception (telemetry validation, disk I/O) is swallowed
+    so onboarding itself is never blocked by a telemetry problem.
+    """
+    try:
+        config = getattr(request.app.state, "config", None)
+        if config is None:
+            return False
+        fired = set(_read_onboarding(config).get(_FUNNEL_ONCE_KEY) or [])
+        if marker in fired:
+            return False
+        fired.add(marker)
+        _persist_onboarding(config, {_FUNNEL_ONCE_KEY: sorted(fired)})
+        from .. import telemetry as _telemetry
+        _telemetry.record(kind, config=config.data, **props)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
 @app.get("/api/fs/suggest")
 async def fs_suggest(path: str = "") -> dict[str, Any]:
     """Directory autocomplete for path inputs. Given a partial path, return up to
@@ -5377,6 +5436,28 @@ async def discover_repositories(
 async def onboarding_status(request: Request) -> dict[str, Any]:
     ob = _read_onboarding(request.app.state.config)
     return {"completed": bool(ob.get("completed")), **ob}
+
+
+@app.post("/api/onboarding/step")
+async def onboarding_step_viewed(body: StepViewedRequest, request: Request) -> dict[str, Any]:
+    """The wizard reporting which step it is showing, so the funnel between
+    "app started" and "task created" stops being a total blind spot. This
+    writes to config.yaml (the once-per-install latch), so it is gated like
+    the other filesystem-writing onboarding routes.
+
+    `step` is checked against the server's own closed `_WIZARD_STEPS` — never
+    trusted, and never echoed back on a mismatch (a fixed literal 422 only),
+    so a stale or tampered client can never smuggle free text into telemetry
+    through this route. Always returns `{"ok": True}` on a KNOWN step whether
+    or not this was the first time it was seen, so the response itself can
+    never be used to probe the per-install latch.
+    """
+    require_local_origin(request, writing=True)
+    if body.step not in _WIZARD_STEPS:
+        raise HTTPException(422, "unknown onboarding step")
+    _record_onboarding_once(request, f"step:{body.step}",
+                            "onboarding_step_viewed", step=body.step)
+    return {"ok": True}
 
 
 @app.post("/api/onboarding/repos/onboard")
@@ -5457,6 +5538,9 @@ async def onboarding_onboard_repo(
         **carry_kwargs,
     )
     await store.upsert_profile(profile)
+    # Once per install, not once per repo: N onboarded repos would otherwise
+    # leak a cardinality signal about how many repos this install manages.
+    _record_onboarding_once(request, "repo_selected", "onboarding_repo_selected")
 
     from ..onboard import ui_evidence_suggestion
 
@@ -5893,6 +5977,8 @@ async def onboarding_complete(
     if body.telemetry_asked or prior.get("telemetry_asked"):
         patch["telemetry_asked"] = True
     ob = _persist_onboarding(config, patch)
+    _record_onboarding_once(request, "completed", "onboarding_completed",
+                            path=("minimal" if body.minimal else "full"))
     return {"ok": True, "onboarding": ob}
 
 

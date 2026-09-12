@@ -917,6 +917,15 @@ class TelemetryConsentRequest(BaseModel):
     enabled: bool
 
 
+class StepViewedRequest(BaseModel):
+    """Body of `POST /api/onboarding/step` — the wizard reporting which step
+    it is showing. `step` is checked against the server's own closed
+    `_WIZARD_STEPS` list (api/app.py); an unlisted value 422s rather than
+    ever reaching telemetry, so this field is typed as a plain `str`, not
+    an enum — the closure is enforced at the call site, not here."""
+    step: str
+
+
 class IntegrationSetupRequest(BaseModel):
     """The onboarding "Connect your tools" step's payload for ONE integration:
     its non-secret settings only (bools, text, string lists).

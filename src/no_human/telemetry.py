@@ -53,6 +53,10 @@ _ALLOWED_EVENTS: dict[str, frozenset[str]] = {
     "feature_used": frozenset({"name", "environment"}),
     "task_ended": frozenset({"outcome", "attempts", "duration_bucket", "environment"}),
     "tasks_orphaned": frozenset({"count_bucket", "environment"}),
+    "onboarding_step_viewed": frozenset({"step", "environment"}),
+    "onboarding_repo_selected": frozenset({"environment"}),
+    "onboarding_completed": frozenset({"path", "environment"}),
+    "task_create_refused": frozenset({"reason", "environment"}),
 }
 
 # Event names the DEPLOYED first-party Lambda accepts (as of 2026-08-16).
@@ -62,6 +66,10 @@ _ALLOWED_EVENTS: dict[str, frozenset[str]] = {
 # "lambda"` wire path only, until the server-side allowlist ships. PostHog
 # (the default destination, and where this triage data actually comes from)
 # accepts everything in `_ALLOWED_EVENTS` and is unaffected.
+# The four `onboarding_*`/`task_create_refused` events are deliberately NOT
+# added here for the same reason: they have not shipped server-side either,
+# so adding them would wedge the Lambda wire on the very first batch that
+# contains one.
 _LAMBDA_EVENTS = frozenset({
     "app_started", "task_created", "task_completed", "task_failed",
     "approve_clicked", "feature_used",
@@ -95,6 +103,20 @@ ORPHAN_COUNT_BUCKETS = frozenset({"0", "1", "2-5", "6+"})
 # `task_completed` must stay byte-identical, including its validation.
 DURATION_BUCKETS = frozenset({"<10m", "10-30m", "30-60m", ">60m", "unknown"})
 
+# Closed enum of `onboarding_step_viewed`'s `step` prop — the wizard's own
+# step keys (mirrors `Onboarding.jsx`'s `BASE_STEPS`/`_WIZARD_STEPS` in
+# `api/app.py`), never a free-text step name.
+ONBOARDING_STEPS = frozenset({"welcome", "repos", "projects", "integrations", "summary"})
+
+# Closed enum of `onboarding_completed`'s `path` prop — which of the two
+# wizard exits was taken, never any detail about what was configured.
+ONBOARDING_PATHS = frozenset({"minimal", "full"})
+
+# Closed enum of `task_create_refused`'s `reason` prop — a machine-readable
+# refusal PATTERN, never the human-facing detail string (which may contain a
+# filesystem path; see `SETUP_MODE_DETAIL` in `api/app.py`).
+TASK_REFUSAL_REASONS = frozenset({"setup_mode"})
+
 # Mirror of the first-party Lambda's per-event-prop VALUE validation, for
 # props whose value space is itself a closed enum (currently just
 # `task_failed.reason_category`). kind/prop NAME validation lives in
@@ -104,6 +126,9 @@ _ALLOWED_PROP_VALUES: dict[tuple[str, str], frozenset[str]] = {
     ("task_ended", "outcome"): TASK_END_OUTCOMES,
     ("task_ended", "duration_bucket"): DURATION_BUCKETS,
     ("tasks_orphaned", "count_bucket"): ORPHAN_COUNT_BUCKETS,
+    ("onboarding_step_viewed", "step"): ONBOARDING_STEPS,
+    ("onboarding_completed", "path"): ONBOARDING_PATHS,
+    ("task_create_refused", "reason"): TASK_REFUSAL_REASONS,
 }
 
 # Recognized CI platform markers (intake-resolved: covers ~95% of CI

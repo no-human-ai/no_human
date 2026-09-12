@@ -71,6 +71,10 @@ _MIN_PROPS = {
     "feature_used": {"name": "bench"},
     "task_ended": {"outcome": "escalated", "attempts": 1, "duration_bucket": "<10m"},
     "tasks_orphaned": {"count_bucket": "0"},
+    "onboarding_step_viewed": {"step": "welcome"},
+    "onboarding_repo_selected": {},
+    "onboarding_completed": {"path": "minimal"},
+    "task_create_refused": {"reason": "setup_mode"},
 }
 
 

@@ -708,9 +708,9 @@ ever disagree in either direction, and `web/src/telemetry.test.mjs`'s
 disclosure sweep fails if any `posthog.capture(...)` call site in `web/src`
 sends an event name not listed here.
 
-There are exactly nine possible event kinds, eight sent by the server and one
-by the browser. Full contract (every closed value set, spelled out) lives in
-`docs/TELEMETRY.md`; this table is the summary:
+There are exactly thirteen possible event kinds, twelve sent by the server and
+one by the browser. Full contract (every closed value set, spelled out) lives
+in `docs/TELEMETRY.md`; this table is the summary:
 
 | Event | Channel | Props |
 |---|---|---|
@@ -722,7 +722,19 @@ by the browser. Full contract (every closed value set, spelled out) lives in
 | `feature_used` | server | `name`, `environment` |
 | `task_ended` | server | `outcome`, `attempts`, `duration_bucket`, `environment` |
 | `tasks_orphaned` | server | `count_bucket`, `environment` |
+| `onboarding_step_viewed` | server | `step`, `environment` |
+| `onboarding_repo_selected` | server | `environment` |
+| `onboarding_completed` | server | `path`, `environment` |
+| `task_create_refused` | server | `reason`, `environment` |
 | `screen_viewed` | browser | `screen` (the lane name — `board`/`backlog`/`done`/`failed`/`stats`/`settings`/…, never content) |
+
+The onboarding funnel — `onboarding_step_viewed`, `onboarding_repo_selected`,
+`onboarding_completed`, `task_create_refused` — closes the previous blind spot
+between "app started" and "task created"; see `docs/TELEMETRY.md`'s "The
+onboarding funnel" section for the full contract, the once-per-install latch
+that keeps them from leaking cardinality (`step` values, repo counts,
+repeated refusals), and the documented desktop first-launch gap they do not
+cover.
 
 `task_failed`'s `reason_category` is a CLOSED enum — one of
 `budget_exhausted`, `review_failed`, `max_attempts`, `infra`,

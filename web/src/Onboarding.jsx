@@ -5,8 +5,9 @@ import {
   generateDocs, fetchIntegrationSetup, saveIntegrationSetup,
   testIntegration,
   proveRepoSSE, confirmRepoProfile, fetchReadiness, setRepoUiEvidence,
-  probeServer,
+  probeServer, recordOnboardingStep,
 } from "./api.js";
+import { makeStepReporter } from "./onboardingFunnel.js";
 import { kickoffWikiGeneration } from "./onboardingDocsKickoff.js";
 import { isNetworkError, offlineBanner, createServerProbe } from "./offlineRetry.js";
 import { repoBadges, discoveryMessage, searchEmptyMessage, ambiguousNames, rowName } from "./discoveredRepos.js";
@@ -262,6 +263,21 @@ export default function Onboarding({ onComplete }) {
     // A step that autoFocuses its own input has already placed focus better than we can;
     // stealing it back to the container would undo that.
     if (card && !card.contains(document.activeElement)) card.focus();
+  }, [i]);
+
+  // Reports which step is showing so the funnel between "app started" and
+  // "task created" is no longer a blind spot. Created once in a ref (not
+  // per-render) so its internal dedup Set survives across renders; makeStepReporter
+  // itself is StrictMode-safe (a Set, not a boolean), so the double-invoked
+  // effect below never double-reports. `i` starts at 0, so this fires on
+  // mount — the signal that separates "abandoned at welcome" from "never
+  // started".
+  const stepReporter = useRef(null);
+  if (stepReporter.current === null) {
+    stepReporter.current = makeStepReporter(recordOnboardingStep);
+  }
+  useEffect(() => {
+    stepReporter.current(STEPS[i].key);
   }, [i]);
 
   // While offline, probe /api/version every 3s (fixed cadence, no escalation
