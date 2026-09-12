@@ -16,7 +16,7 @@ had FAILED. A fix keyed on the checkpoint subject would cover only the 9
 (21%); the delivery-time question covers all 42, because the subject is
 never what makes (or doesn't make) the claim false.
 
-Two revisions since the first version landed:
+Four revisions since the first version landed:
 
 * (Send-back, sha extraction) a bare ``[0-9a-f]{7,40}`` token also matches
   ordinary English words ("defaced") and unrelated hex-shaped tokens
@@ -46,6 +46,28 @@ Two revisions since the first version landed:
      contract marker `Orchestrator._parse_already_satisfied` requires at
      delivery — i.e. the SAME bar delivery itself uses to decide whether a
      zero-diff completion is even a claim worth routing anywhere.
+* (Send-back, third review) `_already_satisfied_subject` is delivery's
+  containment check, but it is only ever REACHED once delivery has already
+  decided the head belongs on the claim gate at all —
+  `Orchestrator._route_unjudged_head` asks `_already_satisfied_eligible`
+  FIRST and routes an ineligible head (no prior passing review round on
+  this exact sha, and either a [WIP-BLOCKED]/[WIP-PARTIAL] head or a
+  machine-requeue provenance) to a full review instead. The probe was
+  calling `_already_satisfied_subject` directly, so it could refuse a claim
+  delivery would never even test — it would send that same head to review,
+  not refuse it. Fixed by asking `_already_satisfied_eligible` first, here
+  in the probe, exactly as `_route_unjudged_head` does, and returning
+  silent (no refusal) when ineligible — see
+  `Orchestrator._build_landed_claim_guard`, which builds this probe.
+* (Fourth review, nits) two coverage/robustness gaps found by mutation
+  review, no refusal-semantics change: the sha-cue regex above did not
+  match a sha fenced in backticks, the routine way a coder narrates a claim
+  in markdown — fixed. And a raising `on_event` sink was already guarded
+  (`hook()` already caught and logged, never let it swallow the injection
+  already computed) but no test pinned either that guard or the event
+  emission itself — both are now covered, closing two surviving mutants
+  (deleting the `on_event(...)` call, or its try/except, passed every
+  existing test).
 """
 
 from __future__ import annotations
@@ -78,8 +100,12 @@ _CLAIM = re.compile(
 # landed, so require one of the words that introduces such a reference
 # ("at"/"in"/"as"/"commit"/"sha") immediately before the token — prose
 # cannot satisfy both that cue AND the hex shape by accident.
+#
+# (Recall nit) a coder narrating a claim in markdown routinely fences the
+# sha in backticks ("already implemented at `abc1234def`") — the optional
+# backtick pair around the token must not stop the cue from matching.
 _SHA_CUE = re.compile(
-    r"\b(?:at|in|as|commit(?:ted)?|sha)\b[:=]?\s+([0-9a-f]{7,40})\b", re.I
+    r"\b(?:at|in|as|commit(?:ted)?|sha)\b[:=]?\s+`?([0-9a-f]{7,40})(?:`|\b)", re.I
 )
 
 _SNIPPET_BEFORE = 40
