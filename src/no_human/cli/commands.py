@@ -1690,8 +1690,15 @@ def task_show(task_id):
                     console.print(f"  - {c}", markup=False, emoji=False)
             console.print(f"repo: {t.repo_path}", markup=False, emoji=False)
             if t.blocker:
-                # escape(), not markup=False: the [red] label must still render.
-                console.print(f"[red]blocker:[/] {escape(str(t.blocker))}", emoji=False)
+                # Two prints, not one escape()d f-string: `escape()` only
+                # escapes a backslash run immediately preceding a COMPLETE
+                # valid tag, so a lone "\[" (no closer) loses one backslash
+                # on render — not byte-exact. Printing the static "[red]"
+                # label and the payload as separate calls keeps the label
+                # styled while the payload goes through markup=False, which
+                # cannot rewrite backslashes at all.
+                console.print("[red]blocker:[/]", end=" ")
+                console.print(str(t.blocker), markup=False, emoji=False)
             lat = (t.blocker or {}).get("escalation_latency") if t.blocker else None
             if lat and t.status is TaskStatus.ESCALATED:
                 console.print(
@@ -1712,10 +1719,15 @@ def task_show(task_id):
                     console.print(line, markup=False)
             attempts = await store.list_attempts(t.id)
             for a in attempts:
+                # markup=False, emoji=False: `test_results` embeds pytest
+                # parametrize ids (e.g. "[context]") which rich would parse as
+                # style tags and delete, and a worktree-path id starting with
+                # "/" (e.g. "[/tmp/wt]") would read as a closing tag and crash.
                 console.print(
                     f"  attempt {a['attempt_number']}: {a['status']} "
                     f"branch={a['branch_name']} pr={a['pr_url']} "
-                    f"turns={a['turns_used']} tests={a['test_results']}"
+                    f"turns={a['turns_used']} tests={a['test_results']}",
+                    markup=False, emoji=False,
                 )
                 # Which code produced this verdict. Printed from the RECORDED
                 # column — a pure DB read of what the server stamped at the
@@ -1727,7 +1739,8 @@ def task_show(task_id):
                 # than inviting a guess.
                 if a.get("loaded_code_version"):
                     console.print(
-                        f"    code: {a['loaded_code_version']}"
+                        f"    code: {a['loaded_code_version']}",
+                        markup=False, emoji=False,
                     )
             # The surface `_SUMMARY_TRUNCATED_MARKER` (PR body, capped at
             # `_SUMMARY_MAX_CHARS`) now points a reader at. Walk attempts
