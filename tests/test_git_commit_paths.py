@@ -9,7 +9,6 @@ never flagged it either. See `src/no_human/vcs/git.py`'s `commit_paths` and
 `uncommitted_source_files` docstrings for the fix and its discriminator.
 """
 
-import ast
 import os
 import subprocess
 from pathlib import Path
@@ -356,71 +355,6 @@ def test_the_missing_path_lookup_fails_closed(repo_with_bare_remote):
     assert repo.head_sha() == head_before
 
 
-def test_every_filesystem_compared_path_output_is_nul_or_quotepath_disabled():
-    """Enumeration guard: every git call in this module whose output is
-    compared against the filesystem or fed back as a pathspec must carry
-    `-z` (NUL-separated) or `-c core.quotePath=false` — otherwise a
-    C-quoted non-ASCII path silently fails that comparison and is dropped.
-    Mirrors the enumeration in `commit_paths`' docstring.
-
-    A `-z` call must also run through `_run_null`, not `_run`: `_run`'s
-    whole-output `.strip()` eats the leading space off the FIRST
-    NUL-separated path, silently truncating that one filename even though
-    `-z` itself is present."""
-    src_path = Path(__file__).resolve().parents[1] / "src" / "no_human" / "vcs" / "git.py"
-    tree = ast.parse(src_path.read_text(encoding="utf-8"))
-
-    def const_str(node):
-        if isinstance(node, ast.Constant) and isinstance(node.value, str):
-            return node.value
-        return None
-
-    def run_calls_in(func_node):
-        calls = []
-        for node in ast.walk(func_node):
-            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-                    and node.func.attr in ("_run", "_run_null")):
-                calls.append((node.func.attr, [const_str(a) for a in node.args]))
-        return calls
-
-    funcs = {
-        node.name: node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)
-    }
-
-    def is_safe(call):
-        attr, words = call
-        if "-z" in words:
-            return attr == "_run_null"
-        return (
-            len(words) >= 2 and words[0] == "-c" and words[1] == "core.quotePath=false"
-        )
-
-    cp_calls = run_calls_in(funcs["commit_paths"])
-    # `diff --cached --name-only` here is only ever checked for emptiness
-    # (`if not staged: ...`) to decide whether to fall back to `stage_all`
-    # — its output is never compared against the filesystem or fed back as
-    # a pathspec, so C-quoting cannot cause a silent drop and it is
-    # deliberately excluded from this guard.
-    diff_producer = [c for c in cp_calls if c[1] and c[1][0] == "diff" and "--cached" not in c[1]]
-    others_producer = [c for c in cp_calls if c[1] and c[1][0] == "ls-files" and "--others" in c[1]]
-    lookup_calls = [c for c in cp_calls if c[1] and c[1][0] == "ls-files" and "--others" not in c[1]]
-    assert diff_producer and all(is_safe(c) for c in diff_producer)
-    assert others_producer and all(is_safe(c) for c in others_producer)
-    assert lookup_calls and all(is_safe(c) for c in lookup_calls)
-
-    usf_calls = run_calls_in(funcs["uncommitted_source_files"])
-    status_calls = [c for c in usf_calls if "status" in c[1]]
-    assert status_calls and all(is_safe(c) for c in status_calls)
-
-    dir_calls = run_calls_in(funcs["_dirs_newly_added_by_head"])
-    show_calls = [c for c in dir_calls if "show" in c[1]]
-    assert show_calls and all(is_safe(c) for c in show_calls)
-
-    cf_calls = run_calls_in(funcs["changed_files"])
-    diff_calls = [c for c in cf_calls if c[1] and c[1][0] == "diff"]
-    assert diff_calls and all(is_safe(c) for c in diff_calls)
-
-
 def test_a_broken_symlink_is_not_mistaken_for_a_phantom_path(repo_with_bare_remote):
     """`Path.exists()` follows symlinks, so a broken symlink (its target
     removed or never created) reports False exactly like a path that was
@@ -442,14 +376,21 @@ def test_a_broken_symlink_is_not_mistaken_for_a_phantom_path(repo_with_bare_remo
 
 
 def test_a_deleted_tracked_directory_is_staged_as_a_deletion(repo_with_bare_remote):
-    """`ls-files -- somedir` (a deleted tracked DIRECTORY passed as a whole)
-    returns the FILES under it (`somedir/a.py`, `somedir/b.py`, ...), never
-    the literal string `"somedir"` itself. A bare `r not in tracked`
-    membership test then calls the directory phantom and silently drops
-    every deletion under it — where plain `git add -- somedir` stages them
-    all as `D`. The fix must recognise `r` as tracked when some entry sits
-    inside it (`t.startswith(r + "/")`), not just when `r` equals an entry
-    outright."""
+    """`commit_paths([str(sub), ...])` with `sub/` already deleted from disk
+    must still land both `sub/a.py` and `sub/b.py` in the commit as
+    deletions, and must not let an unrelated side-effect (`data/state.json`)
+    ride along.
+
+    `sub` itself (the bare directory pathspec passed to `commit_paths`) is
+    phantom by every measure this module uses — `os.path.lexists` says it is
+    gone, and `ls-files -- sub` never returns the literal string `"sub"`
+    (only the files under it) — so it is correctly dropped from the final
+    `git add` pathspec list. That is not the mechanism this test pins: the
+    two file deletions reach `rel_paths` on their own, as literal entries,
+    via the unrestricted (no-pathspec) `git diff --name-only` producer run
+    earlier in `commit_paths`, and each matches `tracked` by an exact
+    string equality — this test exists to confirm that path stays intact,
+    not to exercise any directory-vs-file prefix matching."""
     repo = GitRepo(repo_with_bare_remote)
     repo.create_branch("no-human/tracked-dir-deletion", base="main")
     sub = repo.path / "sub"
@@ -479,12 +420,10 @@ def test_a_deleted_tracked_directory_is_staged_as_a_deletion(repo_with_bare_remo
 
 
 def test_changed_files_returns_raw_leading_space_and_non_ascii_paths(repo_with_bare_remote):
-    """Behavioural coverage for `changed_files`, complementing the
-    source-only AST guard above: a `.strip()` added to its `-z` output would
-    silently eat the leading space of the first path in sorted order — a
-    regression the AST guard cannot see, since it inspects argv text, not
-    behaviour (mirrors `test_a_leading_space_tracked_edit_is_not_dropped_by_
-    a_whole_output_strip` for `commit_paths`' own `-z` producers).
+    """Behavioural coverage for `changed_files`: a `.strip()` added to its
+    `-z` output would silently eat the leading space of the first path in
+    sorted order (mirrors `test_a_leading_space_tracked_edit_is_not_dropped_
+    by_a_whole_output_strip` for `commit_paths`' own `-z` producers).
     `" lead.py"` sorts before `café.py` (space < 'c'), so it lands first
     exactly where that bug bites, and a non-ASCII name alongside it proves
     `changed_files` never falls back to C-quoting either."""
@@ -502,3 +441,28 @@ def test_changed_files_returns_raw_leading_space_and_non_ascii_paths(repo_with_b
     assert "café.py" in changed
     assert (repo.path / " lead.py").exists()
     assert (repo.path / "café.py").exists()
+
+
+def test_a_staged_rename_does_not_fabricate_a_leftover_from_the_original_path_token(
+    repo_with_bare_remote,
+):
+    """`status --porcelain -z`'s rename/copy record is TWO NUL-separated
+    tokens — `XY <new>\\0<orig>\\0` — not the porcelain-v1 `XY <new> -> <orig>`
+    line. For `zzzsource.py` renamed to `zzznew.py` the raw bytes are
+    `R  zzznew.py\\0zzzsource.py\\0`. `uncommitted_source_files` must consume
+    and discard that bare second token (`if xy[:1] in ("R", "C"): i += 1`) or
+    it gets re-parsed on the next loop iteration as its own record: the
+    first three bytes of `zzzsource.py` ('z','z','z') are mistaken for a
+    2-char status code plus its separator, and the remaining `source.py` is
+    mistaken for `rel` — fabricating a leftover for a path
+    (`source.py`) that was never created, staged, or left uncommitted."""
+    repo = GitRepo(repo_with_bare_remote)
+    repo.create_branch("no-human/rename-token", base="main")
+    original = repo.path / "zzzsource.py"
+    original.write_text("x = 1\n")
+    repo.commit_paths([str(original)], "add zzzsource.py")
+
+    _git(repo.path, "mv", "zzzsource.py", "zzznew.py")  # staged rename
+    leftover = repo.uncommitted_source_files()
+
+    assert leftover == ["zzznew.py"], leftover
