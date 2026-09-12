@@ -85,6 +85,7 @@ credential at runtime, no_human escalates a `MISSING_ACCESS` blocker naming the
 | `JENKINS_USER`, `JENKINS_API_TOKEN` | Repos whose CI is Jenkins (`build.example.com`) or human-gated on a `Jenkinsfile`. Basic auth — the default `ci.auth: token` mode. |
 | `SSO_USERNAME`, `SSO_PASSWORD` | Jenkins controllers that reject API-token basic auth, i.e. `ci.auth: cookie`. Used once to capture a session cookie. |
 | `CIRCLECI_TOKEN` | `ci.backend: circleci`. A CircleCI personal API token; sent as the `Circle-Token` header. |
+| `RESEND_API_KEY` | Optional. A Resend API key; sent as `Authorization: Bearer …` to `api.resend.com` for the onboarding welcome email. Without it no welcome email is sent and registration still succeeds. |
 | `GITLAB_TOKEN` | Repos whose CI backend is GitLab, or whose VCS host is a GitLab. |
 | `GH_ENTERPRISE_TOKEN` | Opening PRs against a GitHub-Enterprise host (e.g. `code.example.com`). Public `github.com` uses `gh auth login` instead. |
 | `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN` | Only for the opt-in Slack Socket-Mode worker (`integrations.slack.intake`). **The worker connects but does not yet create tasks from mentions — the intake handler is not wired in `nh serve`.** Unrelated to notify-out. |

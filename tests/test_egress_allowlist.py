@@ -439,7 +439,7 @@ _CFG = "config: "
 
 
 # The list itself. Read it as the answer to "what can leave this machine, and
-# what has to be true first?". 48 lines for 35 modules; every line was written
+# what has to be true first?". 49 lines for 36 modules; every line was written
 # by reading the call site named in it.
 ALLOWLIST: dict[str, dict[str, Allowed]] = {
 
@@ -1116,6 +1116,21 @@ ALLOWLIST: dict[str, dict[str, Allowed]] = {
             "the sandbox tree",
             "user-invoked: the northstar bench pre-flight "
             "(`eval/northstar.py:600`), `nh bench` only"),
+    },
+    # The welcome email's transport. Gated on the KEY, not on a config flag:
+    # `_default_transport()` returns `UnavailableTransport` and touches the
+    # network not at all unless RESEND_API_KEY is in ~/.no_human/.env, so an
+    # ordinary install never reaches this host. stdlib urllib on purpose —
+    # adding an SDK for one POST is exactly what the lean-stack rule forbids.
+    "email/send.py": {
+        "http:urllib.request": Allowed(
+            "Resend (api.resend.com) — one POST /emails per newly registered "
+            "onboarding address, carrying that address, the subject and the "
+            "body of the frozen welcome template",
+            "env: RESEND_API_KEY — with no key in ~/.no_human/.env, "
+            "`_default_transport` returns UnavailableTransport and nothing "
+            "leaves the machine",
+        ),
     },
 }
 

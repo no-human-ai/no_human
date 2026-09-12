@@ -434,6 +434,14 @@ config key that turns it on and the default that keeps it off.
   `team_brain.control_plane_url` to **`""`**; when set, the client exchanges
   task patterns with that URL over `https` (loopback excepted)
   (`brain/client.py:89-133`).
+- **The welcome email, through Resend.** With `RESEND_API_KEY` set in
+  `~/.no_human/.env`, registering an onboarding address POSTs that address,
+  the subject and the body of the frozen welcome template to
+  `https://api.resend.com/emails` (`email/send.py`). With **no key set** —
+  the default, since `DEFAULT_CONFIG` holds no Resend key and cannot —
+  `_default_transport` returns `UnavailableTransport`, the registration
+  still succeeds, and nothing is sent anywhere. SES was evaluated and is not
+  used: its production-access request was denied.
 
 ### Not egress: loopback
 
