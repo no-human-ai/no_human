@@ -1194,7 +1194,22 @@ FROZEN_FILE_LINES = {
     # site, the `type_hook` parameter threaded through both PostToolUse
     # compose helpers, and the order docstring recording why the type
     # hook runs ahead of the scope guard. Re-measured on the merge result.
-    "core/orchestrator.py": 23893,
+    # 23893 -> 24088 (+195): REFILE bugfix — pre-review red runs now share
+    # the SAME NEW-vs-pre-existing-vs-unknown split TESTING already computes
+    # post-review, instead of handing the reviewer an undifferentiated
+    # failing-id list under `classified: False`. New genuinely-required
+    # machinery, not duplicated/movable code: `_FailureAttribution` /
+    # `_attribution_buckets` / `_render_failing_attribution` (the ownership-
+    # as-annotation render), `_round_failure_attribution` (computes the
+    # split ONCE per round, identity-cached, shared by the reviewer render
+    # and the round's billing), the by-name/command-identity/timeout guards
+    # added to `_newly_failing_vs_base` so a substituted or partial base run
+    # is never mistaken for a trustworthy verdict, and `_handle_pre_review_
+    # red` (extracted out of `_run_review`, which was already at its own
+    # frozen ceiling, so that function's own entry did not have to grow).
+    # Measured after extracting/trimming as far as possible without cutting
+    # the fail-closed guards' rationale comments.
+    "core/orchestrator.py": 24088,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.
@@ -1715,7 +1730,24 @@ FROZEN_FILE_LINES = {
     # diagnostics for a collector that never ran). The multi-line import
     # of `NOT_COLLECTED_PREFIX`, the added condition and the comment
     # recording why. Measured on the merge result with the scanner below.
-    "review/reviewer.py": 3098,
+    # 3098 -> 3120 (+22): REFILE bugfix, same round as the orchestrator.py
+    # bump above — `_build_review_prompt` and `AdversarialReviewer.review`
+    # gained a `failing_test_attribution` parameter so the reviewer can be
+    # told the NEW-vs-pre-existing split `_run_review` now computes, and
+    # `_failing_test_attribution_sentence` (extracted so `_build_review_
+    # prompt` itself did not have to grow past its own frozen ceiling)
+    # renders the two cases. `_build_review_prompt` had zero headroom on
+    # this file's budget already, so the new parameter/plumbing could not
+    # be added at zero net file growth.
+    # 3120 -> 3134 (+14): post-merge review send-back on the same REFILE
+    # bugfix ("a red suite reaches the reviewer unattributed") fixed F2 —
+    # `_failing_test_attribution_sentence`'s lead-in falsely claimed "the
+    # harness has already checked each one against the base tree" even when
+    # the base check was fully inconclusive (an ATTRIBUTION-UNKNOWN-only
+    # render). Added a branch (plus docstring) giving that case its own
+    # honest lead-in instead of reusing the "determined" one. Measured on
+    # this merge.
+    "review/reviewer.py": 3134,
     # 2706 -> 2711 (+5): pre-existing red on main at 03b262d23 (e922e9b4's
     # landing, change-scoped tests missed the ratchet) — repaired, measured,
     # on this merge; same cause as the two function-level wake.py bumps above.

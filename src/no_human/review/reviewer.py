@@ -930,6 +930,41 @@ def _reviewed_target_section(reviewed_sha: str, reviewed_branch: str) -> str:
     )
 
 
+def _failing_test_attribution_sentence(failing_test_attribution: str) -> str:
+    """The one clause in `_build_review_prompt`'s failing-ids paragraph that
+    varies with whether the harness already has a NEW-vs-pre-existing split
+    for this round (`_render_failing_attribution` in `core/orchestrator.py`)
+    — split out so `_build_review_prompt` doesn't grow. Empty input falls
+    back to the original "not yet attributed" caveat.
+
+    `_render_failing_attribution` renders exactly one of two mutually
+    exclusive shapes for a non-empty input: a NEW/ALSO-RED split (a real
+    base-tree verdict) or an ATTRIBUTION-UNKNOWN-only block (the base check
+    was inconclusive for every id — see `_attribution_buckets`). Claiming
+    "already checked ... against the base tree" for the latter is false —
+    the harness tried and could not get a trustworthy verdict — so that
+    shape gets its own honest lead-in instead of the "determined" one.
+    """
+    if failing_test_attribution:
+        if failing_test_attribution.startswith("ATTRIBUTION UNKNOWN"):
+            return (
+                "the harness attempted to check each one against the base "
+                "tree but could not get a trustworthy verdict for any of "
+                f"them:\n{failing_test_attribution}"
+            )
+        return (
+            "the harness has already checked each one against the base "
+            f"tree:\n{failing_test_attribution}"
+        )
+    return (
+        "the harness has NOT yet attributed them to this diff. A failing "
+        "id that also fails on the base tree is not this change's defect, "
+        "and the post-review testing step — not this review — is what "
+        "decides that (it classifies against the base tree and re-runs "
+        "for flakiness)."
+    )
+
+
 def _build_review_prompt(
     task: Task,
     diff: str,
@@ -953,6 +988,7 @@ def _build_review_prompt(
     reviewed_branch: str = "",
     failing_test_ids: list[str] | None = None,
     failing_test_ids_dropped: int = 0,
+    failing_test_attribution: str = "",
 ) -> str:
     # Bound the auxiliary sections AT THIS BOUNDARY (see `_AUX_CAP`). The diff,
     # the acceptance criteria and the test output are deliberately not routed
@@ -1041,15 +1077,13 @@ def _build_review_prompt(
         ids_line = ", ".join(failing_test_ids)
         if failing_test_ids_dropped:
             ids_line += f" (+{failing_test_ids_dropped} more, not shown)"
+        attribution_sentence = _failing_test_attribution_sentence(
+            failing_test_attribution)
         failing_ids_section = (
             "\nFailing tests in this tree (from the harness's own run, not an "
             f"opinion): {ids_line}\n"
-            "These are FACTS the test runner produced BEFORE this review, but "
-            "the harness has NOT yet attributed them to this diff. A failing "
-            "id that also fails on the base tree is not this change's defect, "
-            "and the post-review testing step — not this review — is what "
-            "decides that (it classifies against the base tree and re-runs "
-            "for flakiness). Grade a failing id at critical severity only "
+            f"These are FACTS the test runner produced BEFORE this review, but "
+            f"{attribution_sentence} Grade a failing id at critical severity only "
             "when the diff plausibly explains it; otherwise report it as an "
             "observation, not a blocking finding, unless a checklist item "
             "you are already reporting covers the same failure — a PASS "
@@ -2435,6 +2469,7 @@ class AdversarialReviewer:
         reviewed_branch: str = "",
         failing_test_ids: list[str] | None = None,
         failing_test_ids_dropped: int = 0,
+        failing_test_attribution: str = "",
     ) -> ReviewDecision:
         # Tamper-adjudication mode: see `_review_tamper_adjudication` for why
         # this exists, what it may not be given, and the bounded-retry
@@ -2557,6 +2592,7 @@ class AdversarialReviewer:
             reviewed_branch=reviewed_branch,
             failing_test_ids=failing_test_ids,
             failing_test_ids_dropped=failing_test_ids_dropped,
+            failing_test_attribution=failing_test_attribution,
         )
 
         # When the diff is already provided (or routed single-turn), use a

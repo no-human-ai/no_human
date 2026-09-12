@@ -337,6 +337,14 @@ async def test_flaky_non_owned_red_run_not_blamed_when_review_fails_unrelated(
     what causes or amplifies the failure: TESTING's tiebreaker is never even
     consulted (nothing to excuse — nothing was billed off it either), and
     the round fails for the reviewer's real finding alone.
+
+    `_newly_failing_vs_base` IS awaited now — exactly once — because the
+    NEW-vs-pre-existing split (this task) is computed pre-review, before the
+    reviewer runs at all, via `Orchestrator._round_failure_attribution`, and
+    handed to the reviewer as part of its prompt. That single pre-review call
+    is also the one TESTING would have reused had it been reached; here it
+    is not (the round fails at review), so the base-tree check still ran
+    exactly once for the round, never twice.
     """
     tr = _red_result()
     reviewer = _FailsOnUnrelatedFinding()
@@ -353,9 +361,11 @@ async def test_flaky_non_owned_red_run_not_blamed_when_review_fails_unrelated(
         outcome, attempts, events, task, orch = await _run_attempt_with_result_and_reviewer(
             store, tmp_path, bare_repo, tr, reviewer)
 
-    # TESTING never ran — the review FAIL branch returned first — so neither
-    # base-tree attribution helper was ever reached.
-    newly_failing_mock.assert_not_awaited()
+    # The pre-review attribution block computes the split once, before the
+    # reviewer ever runs — so the base-tree check IS awaited, exactly once.
+    # TESTING itself never runs (the review FAIL branch returned first), so
+    # the flaky tiebreaker — TESTING-only — is never consulted.
+    newly_failing_mock.assert_awaited_once()
     flaky_mock.assert_not_awaited()
 
     assert outcome.status is TaskStatus.FAILED, outcome.detail
@@ -530,10 +540,16 @@ async def test_pre_review_ids_are_bounded_at_the_call_site(
 
 class _PassesButSnapshotsAttribution(_PassesEverything):
     """Wraps `_PassesEverything` to snapshot the await_count of the three
-    TESTING-only attribution helpers at the moment `review()` runs — proves
-    the review path itself calls none of them (AC2). The mocks ARE awaited
-    later, by TESTING, on this same PASS-over-red round: the built-in
-    positive control that the patch targets are live, not inert."""
+    attribution helpers at the moment `review()` runs. Doctrine (this task):
+    `_owned_failing_tests` / `_newly_failing_vs_base` now run PRE-review,
+    exactly once, via `Orchestrator._round_failure_attribution`, so the
+    reviewer can be handed the NEW-vs-pre-existing split as prose — the
+    snapshot proves review() sees them ALREADY awaited (once), not that the
+    review path itself never touches attribution. `_flaky_on_rerun` stays
+    TESTING-only — its tiebreaker starved twice before (429b471f/03267ead)
+    when a partial classifier ran the other two AND forced the verdict at
+    review time; this pins that the fix still never calls the tiebreaker,
+    and never forces `decision.passed`, before TESTING runs."""
 
     def __init__(self, owned_mock, newly_mock, flaky_mock):
         super().__init__()
@@ -558,20 +574,26 @@ class _PassesButSnapshotsAttribution(_PassesEverything):
 async def test_the_review_path_does_not_attribute_the_red_run(
     bare_repo, tmp_path, store,
 ):
-    """AC2 pin: the review path calls none of the three TESTING-only
-    attribution helpers (`_owned_failing_tests`, `_newly_failing_vs_base`,
-    `_flaky_on_rerun`) — no classification, no base-tree checkout, no extra
-    test run at review time. The round-1 send-back on 429b471f/03267ead
-    rejected doing this classification at review time because it starved
-    the flaky tiebreaker (see module docstring); this pins that the fix
-    stays that way even though the prompt wording (this task) now talks
-    about base-tree attribution in prose.
+    """AC2 pin, doctrine updated for this task: the split the reviewer is
+    handed (NEW vs pre-existing vs unknown) is computed exactly ONCE per
+    round, PRE-review, and shared verbatim with TESTING's own billing —
+    never recomputed, never disagreeing. So by the time `review()` runs,
+    `_owned_failing_tests` and `_newly_failing_vs_base` have ALREADY been
+    awaited once each (the pre-review attribution block); `_flaky_on_rerun`
+    — TESTING's tiebreaker, never reached before review — has not.
+
+    What must NOT come back (round-1 send-back on 429b471f/03267ead): the
+    review path forcing `decision.passed` off this classification, or
+    calling the flaky tiebreaker before TESTING. This test pins both:
+    the verdict is not forced (the round still reaches AWAITING_APPROVAL
+    off the stub's own PASS), and `flaky_mock` is 0 at review time.
 
     Uses a non-owned, base-green id so TESTING's own plain-red path goes on
-    to call all three helpers for real after the (PASSing) review returns —
-    the mocks being awaited by the end of the round is the positive control
-    proving the patch targets are live, not dead code the review path never
-    reaches either way.
+    to call `_flaky_on_rerun` for real after the (PASSing) review returns —
+    the mock being awaited by the end of the round is the positive control
+    that the patch target is live. Because the split is shared, NOT
+    recomputed, `owned_mock` / `newly_mock` end the round at award_count 1,
+    not 2 — the ablation for "computed once" this task requires.
     """
     tr = _red_result()
     flaky_id = "tests/test_calc.py::test_mul"
@@ -589,16 +611,26 @@ async def test_the_review_path_does_not_attribute_the_red_run(
         outcome, attempts, events, task, orch = await _run_attempt_with_result_and_reviewer(
             store, tmp_path, bare_repo, tr, reviewer)
 
-    # At the moment review() ran, none of the three had been awaited yet.
-    assert reviewer.snapshots == {"owned": 0, "newly": 0, "flaky": 0}, reviewer.snapshots
+    # At the moment review() ran: the pre-review attribution block had
+    # already awaited owned/newly once each; the TESTING-only tiebreaker
+    # had not run yet.
+    assert reviewer.snapshots == {"owned": 1, "newly": 1, "flaky": 0}, reviewer.snapshots
 
-    # Positive control: TESTING went on to call them for real on this same
-    # round (reached because the review PASSed) — the patches were live.
-    owned_mock.assert_awaited()
-    newly_mock.assert_awaited()
+    # The verdict was not forced off the split — the round reached
+    # AWAITING_APPROVAL off the stub reviewer's own PASS.
+    assert outcome.status is TaskStatus.AWAITING_APPROVAL, outcome.detail
+
+    # Positive control: TESTING went on to call the tiebreaker for real on
+    # this same round (reached because the review PASSed) — the patch
+    # target is live, not dead code the review path never reaches either
+    # way.
     flaky_mock.assert_awaited()
 
-    assert outcome.status is TaskStatus.AWAITING_APPROVAL, outcome.detail
+    # Computed ONCE and shared: TESTING reuses the SAME pre-review result
+    # instead of re-invoking the base-tree check, so by end of round the
+    # award_count is still 1, not 2.
+    assert owned_mock.await_count == 1, owned_mock.await_count
+    assert newly_mock.await_count == 1, newly_mock.await_count
 
 
 async def test_persistent_red_pre_review_run_does_not_trip_d6_stagnation(

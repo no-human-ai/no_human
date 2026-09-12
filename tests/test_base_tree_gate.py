@@ -10,7 +10,10 @@ errors the same way → genuinely environmental, proceed as before. Base runs �
 the change broke the runner; the attempt FAILS.
 """
 
+import os
+import shutil
 import subprocess
+from pathlib import Path
 
 from no_human.core.orchestrator import Orchestrator
 from no_human.core.task import Task, TaskStatus
@@ -270,6 +273,115 @@ async def test_mixed_failures_fail_only_on_the_newly_failing_test(
     assert "newly failing" in reason.lower(), reason
     assert "test_preexisting" not in reason, (
         "the pre-existing failure must NOT be blamed on the change: " + reason
+    )
+
+
+async def test_pre_existing_red_test_excused_under_the_hardened_base_check(
+    bare_repo, tmp_path, store
+):
+    """The base check was hardened (task: "a red suite reaches the reviewer
+    unattributed") to append `-rA` and require every requested id to be
+    accounted for BY NAME in the base run's reported passes/failures, else
+    fail closed to `None` (unknown) instead of silently reading "green on
+    base". This end-to-end test proves the hardening did not turn genuinely
+    pre-existing red tests into a false "unknown"/"newly failing" verdict:
+    TWO ids are red in the attempt's run, both already red on base, so the
+    bounded base rerun is asked about both in the SAME `-rA` invocation —
+    the by-name accounting must resolve both from that one output, and the
+    attempt must still be excused for both."""
+    (bare_repo / "pytest.ini").write_text("[pytest]\n")
+    (bare_repo / "test_preexisting.py").write_text(
+        "def test_preexisting_red_one():\n    assert False, 'red before the change'\n\n"
+        "def test_preexisting_red_two():\n    assert False, 'also red before the change'\n"
+    )
+    _git(bare_repo, "add", "-A")
+    _git(bare_repo, "commit", "-m", "two pre-existing red tests on base")
+
+    def mutate(cwd):
+        # a benign change that touches neither failing test nor any test file
+        (cwd / "calc.py").write_text(
+            "def add(a, b):\n    return a + b\n\n\ndef mul(a, b):\n    return a * b\n"
+        )
+
+    orch = _orch(store, tmp_path, FakeBackend(mutate))
+    t = Task.new("add mul()", repo_path=str(bare_repo))
+    await store.create_task(t)
+
+    outcome = await orch.run_task(t)
+
+    assert outcome.status is TaskStatus.AWAITING_APPROVAL, outcome.detail
+    assert outcome.pr_url is not None
+    attempts = await store.list_attempts(t.id)
+    assert attempts[-1]["status"] != "failed", (
+        "a pre-existing failure must still be excused under the hardened "
+        "base-tree by-name accounting: " + str(attempts[-1])
+    )
+
+
+async def test_pre_existing_red_test_excused_when_runner_rewrites_the_command(
+    bare_repo, tmp_path, store, monkeypatch
+):
+    """Review send-back F1 (disqualifying): the bounded base-tree rerun in
+    `_newly_failing_vs_base` used to discard ANY verdict whose reported
+    `result.command` differed from the bounded command it asked for — a
+    "command-identity guard". But the test runner legitimately REWRITES an
+    invocation that fails to launch, and one of those rewrite classes (bare
+    `pytest ...` -> `f"{sys.executable} -m pytest ..."`, see
+    `runner._fix_invocation`) preserves the requested node ids VERBATIM. That
+    guard threw away an honest, correctly-bounded verdict in exactly this
+    case — reinstating the "red suite blames the change" bug (#238) this task
+    exists to fix. The guard has been deleted; the by-name accounting check
+    (every requested id present in the base run's reported passes/failures)
+    is what decides trustworthiness now, not command-string equality.
+
+    This reproduces the rewrite end-to-end by stripping the bare `pytest`
+    binary's directory from PATH, so the fixture repo's detected command
+    (`pytest -q`, no uv.lock here) fails to launch on the FIRST attempt and
+    the runner retries with `sys.executable -m pytest` for both the
+    attempt's own test run and the bounded base-tree recheck.
+    """
+    (bare_repo / "pytest.ini").write_text("[pytest]\n")
+    (bare_repo / "test_preexisting.py").write_text(
+        "def test_preexisting():\n    assert False, 'red before the change'\n"
+    )
+    _git(bare_repo, "add", "-A")
+    _git(bare_repo, "commit", "-m", "pre-existing red test on base")
+
+    pytest_bin = shutil.which("pytest")
+    assert pytest_bin, "pytest must be resolvable via PATH to strip it out"
+    # More than one PATH entry may carry a `pytest` binary (e.g. this
+    # worktree's own .venv AND an inherited parent-repo .venv) — strip every
+    # directory that resolves one, not just the first `which` hit.
+    stripped = [
+        p
+        for p in os.environ.get("PATH", "").split(os.pathsep)
+        if p and not (Path(p) / "pytest").exists()
+    ]
+    monkeypatch.setenv("PATH", os.pathsep.join(stripped))
+    assert shutil.which("pytest") is None, (
+        "PATH stripping did not remove the bare `pytest` binary; the "
+        "runner's class-3 rewrite fallback would not be exercised"
+    )
+
+    def mutate(cwd):
+        # a benign change that touches neither the failing test nor any test file
+        (cwd / "calc.py").write_text(
+            "def add(a, b):\n    return a + b\n\n\ndef mul(a, b):\n    return a * b\n"
+        )
+
+    orch = _orch(store, tmp_path, FakeBackend(mutate))
+    t = Task.new("add mul()", repo_path=str(bare_repo))
+    await store.create_task(t)
+
+    outcome = await orch.run_task(t)
+
+    assert outcome.status is TaskStatus.AWAITING_APPROVAL, outcome.detail
+    assert outcome.pr_url is not None
+    attempts = await store.list_attempts(t.id)
+    assert attempts[-1]["status"] != "failed", (
+        "a pre-existing failure must still be excused when the runner had "
+        "to rewrite the bounded base-check command (node ids preserved): "
+        + str(attempts[-1])
     )
 
 
