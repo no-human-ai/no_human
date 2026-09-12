@@ -1385,12 +1385,15 @@ class GitRepo:
         push was rejected non-fast-forward because the agent REBASED its own
         already-pushed branch. That is not a corner case — `git reflog` on a
         stranded branch reads ``rebase (finish): refs/heads/no-human/<id> onto
-        <new main>``, and `agent/guard.py` deliberately permits that rebase as
-        "the legitimate rebase/merge base into my branch workflow". A rebased
-        branch cannot be fast-forwarded; force is the ONLY correct push, and
-        without it the attempt's reviewed, green work is thrown away. Measured
-        2026-08-11: 81 rejections in one week, and 0 of the 7 tasks that ever
-        hit one reached `done`.
+        <new main>``. `agent/pushed_tip_guard.py` now refuses that rebase (and
+        every other pushed-tip rewrite it recognizes) before the coder can run
+        it, so new attempts should not reach this path via their own rebase —
+        but it stays load-bearing for branches rewritten before that rule
+        existed, or by any other means that lands a non-fast-forwardable
+        branch here. A rebased branch cannot be fast-forwarded; force is the
+        ONLY correct push, and without it the attempt's reviewed, green work
+        is thrown away. Measured 2026-08-11: 81 rejections in one week, and 0
+        of the 7 tasks that ever hit one reached `done`.
 
         Two safety properties, both load-bearing:
 

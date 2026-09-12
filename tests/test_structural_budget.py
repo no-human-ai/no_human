@@ -212,7 +212,13 @@ FROZEN_FUNCTION_LINES = {
     # `result.detail` (capped, whitespace-collapsed) in the event text and
     # `question`, and prefixes `step=` onto the stored `evidence` -- step
     # alone was not root-causeable. Measured on this tree.
-    "blockers/wake.py:WakeWatcher._check_pr_conflict": 458,
+    # 458 -> 464 (+6): pushed-tip-guard rewrite-detection review, round-2
+    # MINOR-1 -- the coder instruction sent on a `pr_conflict` round used to
+    # say "Rebase onto origin/main", which the guard now unconditionally
+    # denies. Replaced with `base_merge_conflict_instruction`'s merge
+    # wording (a local import to dodge the prompt_blocks/blockers load
+    # cycle) so the instruction and the guard agree. Measured on this tree.
+    "blockers/wake.py:WakeWatcher._check_pr_conflict": 464,
     # 418 -> 424 (+6): D1.1 fix round — attempt-scoped verification-artifact
     # write wired into `_finalize` (review findings #1/#7). Measured on the
     # D1.1 squash-merge result.
@@ -220,7 +226,13 @@ FROZEN_FUNCTION_LINES = {
     # best-effort call that runs the UI-evidence browser walk after tests
     # pass and threads its rendered media section into `_pr_body`.
     # Re-anchored on merge.
-    "core/orchestrator.py:Orchestrator._finalize": 437,
+    # 437 -> 441 (+4): comment-only fix (pushed-tip-guard rewrite-detection
+    # review, MINOR-4) -- the stale claim that `agent/guard.py` "deliberately
+    # permits" an agent rebasing its own pushed branch is no longer true now
+    # that `pushed_tip_guard.py` denies it; the retry's rationale comment was
+    # corrected to explain why `force_with_lease` is still needed for
+    # branches that diverge some other way. No behavior change.
+    "core/orchestrator.py:Orchestrator._finalize": 441,
     # Pre-existing on main (measured red at d3d7d3a82a, this session's start):
     # an earlier fleet land grew stream() +6 without re-freezing it on its
     # merge result — the same "landed without measuring the ratchet" failure
@@ -342,7 +354,14 @@ FROZEN_FUNCTION_LINES = {
     # it forever). `base_staleness` now merges instead of rebasing a pushed
     # branch, and this preamble gained an `elif stale.get("merged")` branch
     # narrating that case to the coder. Measured with the scanner below.
-    "core/orchestrator.py:Orchestrator._build_implement_prompt": 394,
+    # 394 -> 423 (+29, 2026-09-09): a coder must never rebase an
+    # already-pushed task branch when the base merge conflicts -- this
+    # function gained an `elif stale.get("merge_conflict")` preamble branch
+    # (narrating the skipped merge and pointing at
+    # `base_merge_conflict_instruction`) plus the local `base_staleness`
+    # read that threads `base_merge_conflict=` into `build_rules_block`.
+    # Measured with the scanner below.
+    "core/orchestrator.py:Orchestrator._build_implement_prompt": 423,
     # 332 -> 333 (+1): pin-rederivation follow-up adds one
     # `pin_rederivation_note(card),` line to the markdown body list so the
     # published report carries the same recorded-branch/HEAD-fallback
@@ -513,7 +532,13 @@ FROZEN_FUNCTION_CC = {
     # FROZEN_FUNCTION_LINES entry above for the incident) -- one new `elif
     # stale.get("merged"):` branch narrates the merged case to the coder.
     # Measured with the scanner below.
-    "core/orchestrator.py:Orchestrator._build_implement_prompt": 71,
+    # 71 -> 79 (+8, 2026-09-09): the "never rebase a pushed branch" fix's
+    # new `elif stale.get("merge_conflict")` branch plus the `if overlap`
+    # inside it, and the `if _stale_for_rules.get("merge_conflict") else`
+    # conditional feeding `base_merge_conflict=` into `build_rules_block`
+    # (see the FROZEN_FUNCTION_LINES entry above). Measured with the scanner
+    # below.
+    "core/orchestrator.py:Orchestrator._build_implement_prompt": 79,
 }
 
 # 9 files > 2,500 lines.
@@ -1075,10 +1100,12 @@ FROZEN_FILE_LINES = {
     # 23556 -> 23564 (+8): second landing pass (`_reviewer_items` shared by
     # both D6 halves; comments name it). Measured on this tree by the
     # scanner's own metric.
-    # 23564 -> 23643 (+79) over the three rounds below, re-based on trunk's
-    # 23564 after this branch's base-refresh merge of e44af234. The
-    # per-round numbers below were measured before that merge, against
-    # 23403; they record what each round added, not absolute positions.
+    # 23564 -> 23648 (+84) over the three rounds below, before this branch's
+    # base-refresh rebase onto trunk's own +49 (unrelated: "never rebase a
+    # pushed task branch" -- `base_merge_conflict_instruction` import,
+    # `_refresh_stale_base`'s `base_pin` kwarg/docstring/conflict-suffix
+    # branch, `_build_implement_prompt`'s merge-conflict preamble branch and
+    # `build_rules_block(base_merge_conflict=...)` threading).
     # round 1 (+39): every task end state now emits a terminal
     # telemetry event, not only done/failed — `_TASK_END_KINDS`,
     # `_task_end_outcome`, and the new `task_ended` branch appended after
@@ -1194,7 +1221,30 @@ FROZEN_FILE_LINES = {
     # site, the `type_hook` parameter threaded through both PostToolUse
     # compose helpers, and the order docstring recording why the type
     # hook runs ahead of the scope guard. Re-measured on the merge result.
-    "core/orchestrator.py": 23893,
+    # 23648 -> 23697 (+49, 2026-09-09): rebase of the pushed-tip-branch guard
+    # work (this file's own change) onto the telemetry landing above --
+    # `base_merge_conflict_instruction` import, `_refresh_stale_base`'s
+    # `base_pin` kwarg/docstring/conflict-suffix branch, and
+    # `_build_implement_prompt`'s merge-conflict preamble branch and
+    # `build_rules_block(base_merge_conflict=...)` threading. Measured on
+    # this tree by the scanner's own metric.
+    # 23697 -> 23701 (+4): comment-only fix (pushed-tip-guard rewrite-detection
+    # review, MINOR-4) correcting the stale "agent/guard.py deliberately
+    # permits that rebase" claim in `_finalize`'s retry rationale. No
+    # behavior change. Measured on this tree.
+    # 23701 -> 23708 (+7): comment-only fix (pushed-tip-guard rewrite-detection
+    # review, round-2 MINOR-1's named twin) -- `_open_draft_pr_for_review`'s
+    # exception handler claimed a `pr_conflict` round rebases the pushed
+    # branch "BY CONSTRUCTION"; now that `blockers/wake.py` sends a merge
+    # instruction instead of a rebase one, that is no longer the expected
+    # path, so the comment (and the adjoining `pr_open_retry` emit text) was
+    # reframed as defense-in-depth for a branch that goes non-fast-forward
+    # some other way. No behavior change. Measured on this tree.
+    # 23893 -> 23953 (+60): landing re-cut of the pushed-tip-branch guard onto
+    # current trunk. The three entries above were measured against the branch's
+    # own older base (23648 -> 23708); this value is the scanner's measurement
+    # of the MERGED tree, which is the only number that describes what lands.
+    "core/orchestrator.py": 23953,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.
@@ -1729,12 +1779,26 @@ FROZEN_FILE_LINES = {
     # 2752 -> 2757 (+5): same cause as the FROZEN_FUNCTION_LINES entry above
     # -- the whole-file delta equals the function's delta. Measured on this
     # tree.
-    "blockers/wake.py": 2757,
+    # 2757 -> 2763 (+6): pushed-tip-guard rewrite-detection review, round-2
+    # MINOR-1 -- same cause as the `_check_pr_conflict` FROZEN_FUNCTION_LINES
+    # entry above; the whole-file delta equals the function's delta. Measured
+    # on this tree.
+    "blockers/wake.py": 2763,
     # +91: `_SCAN_WRAPPER_NAMES` + `_peel_scan_wrappers` — peels
     # timeout/xargs/nice/stdbuf (and siblings) for the scan-severity check
     # only, so a wrapped `find … -delete` in a denied compound classifies
     # DESTRUCTIVE instead of HYGIENE. Local sibling list, `_WRAPPERS` untouched.
-    "agent/guard.py": 2892,
+    # 2892 -> 2907 (+15, 2026-09-09): "never rebase a pushed task branch" fix
+    # -- the new `pushed_tip_guard` import and the docstring bullet plus the
+    # `pushed_reason = pushed_tip_guard.denial_reason(...)` check inserted
+    # ahead of `_GIT_DESTRUCTIVE` in `evaluate`. Measured on this tree by the
+    # scanner's own metric.
+    # 2907 -> 2911 (+4, 2026-09-09): expanded the same docstring bullet to
+    # enumerate the guard's real coverage after the pushed-tip-guard rewrite
+    # (every rebase spelling incl. `pull --rebase`, every reset mode, `commit
+    # --amend`, `checkout -B`/`switch -C`/`branch -f`/`update-ref`,
+    # `filter-branch`) -- prose only, no behavior change.
+    "agent/guard.py": 2911,
     # +44: idle-path recover_quota_cooldown gate in tick() and the
     # never-shorten-a-live-wall guard in _run — the quota-wall storm cost fix.
     # +129: `HarvestJob` — the cadence job (`due()`/`maybe_run()`) that runs
