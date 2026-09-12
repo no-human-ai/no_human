@@ -1,7 +1,12 @@
 #!/bin/sh
-# no_human pre-commit gate -- blocks a commit that changes a manifest-pinned
-# file without re-pinning it in the same commit. Committed to the repo and
-# OPT-IN: it does nothing until you install it (see scripts/hooks/install.sh).
+# no_human pre-commit gate -- two checks, each owning one thing:
+#   * a commit that changes a manifest-pinned file without re-pinning it
+#     (scripts/precommit_manifest_gate.py), and
+#   * a commit that adds YOUR identity to a branch someone else authored
+#     (scripts/precommit_foreign_branch_gate.py), which silently costs a
+#     no_human task its next attempt.
+# Committed to the repo and OPT-IN: nothing runs until you install it
+# (see scripts/hooks/install.sh).
 #
 # Delegates to scripts/precommit_manifest_gate.py, which is standard-library +
 # git only, so no project venv is required. Prefers the repo's .venv python for
@@ -12,7 +17,8 @@
 
 root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
 gate="$root/scripts/precommit_manifest_gate.py"
-[ -f "$gate" ] || exit 0
+foreign_gate="$root/scripts/precommit_foreign_branch_gate.py"
+[ -f "$gate" ] || [ -f "$foreign_gate" ] || exit 0
 
 if [ -x "$root/.venv/bin/python" ]; then
     py="$root/.venv/bin/python"
@@ -25,4 +31,10 @@ else
     exit 0
 fi
 
-exec "$py" "$gate"
+# Two gates, each owning one thing. The manifest gate blocks a split commit;
+# the foreign-branch gate blocks silently taking over someone else's branch.
+# Run both so a commit that trips either is refused, and report whichever
+# spoke -- `exec`ing the first would hide the second entirely.
+[ -f "$gate" ] && { "$py" "$gate" || exit $?; }
+[ -f "$foreign_gate" ] && { "$py" "$foreign_gate" || exit $?; }
+exit 0
