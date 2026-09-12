@@ -447,7 +447,7 @@ def test_a_dead_spec_the_transcript_loop_never_visits_is_stamped(tmp_path):
                                 pin=_DEAD_PIN, started="")  # no source.started
 
     build_bench_tasks([t], out_dir=out)
-    loaded = yaml.safe_load(dead.read_text())
+    loaded = yaml.safe_load(dead.read_text(encoding="utf-8"))
 
     assert loaded["runnable"] is False
     assert loaded["skip_reason"] == PIN_START_UNPARSABLE

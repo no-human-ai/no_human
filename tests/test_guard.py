@@ -754,7 +754,7 @@ def test_live_verbs_covers_every_alias_of_a_denied_command():
     it describes. This reads the CLI source and fails when a new alias appears,
     so the list cannot silently fall behind again."""
     src = (Path(__file__).resolve().parents[1]
-           / "src" / "no_human" / "cli" / "commands.py").read_text()
+           / "src" / "no_human" / "cli" / "commands.py").read_text(encoding="utf-8")
     denied_targets = "|".join(sorted(guard._LIVE_VERBS))
     aliases = set()
     for m in re.finditer(r'@cli\.command\("([\w-]+)"\)', src):
@@ -1707,8 +1707,8 @@ def test_the_out_of_scope_gaps_are_disclosed():
     """`ssh` and `find -exec` are declared out of scope rather than silently
     unhandled — docs/security.md and CHANGELOG.md must name both, alongside
     the pre-existing `case...esac` disclosure."""
-    security_md = (_REPO_ROOT / "docs" / "security.md").read_text()
-    changelog_md = (_REPO_ROOT / "CHANGELOG.md").read_text()
+    security_md = (_REPO_ROOT / "docs" / "security.md").read_text(encoding="utf-8")
+    changelog_md = (_REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
     for text, name in ((security_md, "docs/security.md"), (changelog_md, "CHANGELOG.md")):
         assert "ssh" in text, f"{name} must disclose the ssh gap"
         assert "find" in text and "-exec" in text, f"{name} must disclose the find -exec gap"
@@ -3139,7 +3139,7 @@ def _guarddecision_calls():
     primary guarantee and this scan is the complement, not the reverse."""
     out = []
     for path in sorted(_SRC_ROOT.rglob("*.py")):
-        tree = ast.parse(path.read_text(), filename=str(path))
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
@@ -3462,7 +3462,7 @@ def test_the_codex_routing_expression_this_file_restates_still_exists():
     that gives severity its meaning. If that line is reworded, these tests
     would keep passing while asserting nothing about the real backend — so
     pin it by source."""
-    backend = (_SRC_ROOT / "agent" / "codex_backend.py").read_text()
+    backend = (_SRC_ROOT / "agent" / "codex_backend.py").read_text(encoding="utf-8")
     assert "terminating = severity != guard.GUARD_HYGIENE" in backend
 
 

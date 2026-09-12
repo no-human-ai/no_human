@@ -85,7 +85,7 @@ def _repo_root_or_none() -> Path | None:
         if not (pyproject.is_file() and conftest.is_file()):
             continue
         try:
-            text = pyproject.read_text()
+            text = pyproject.read_text(encoding="utf-8")
         except OSError:
             continue
         if 'name = "no-human"' in text:
@@ -117,7 +117,7 @@ def _seed(home: Path) -> None:
             "\temail = test-suite@no-human.invalid\n"
             "[init]\n"
             "\tdefaultBranch = main\n"
-        )
+        , encoding="utf-8")
 
 
 def _activate() -> Path | None:

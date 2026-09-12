@@ -67,8 +67,8 @@ def test_write_wiki_files(tmp_path):
     written = _write_wiki_files(tmp_path, data)
     assert ".no_human/wiki/architecture.md" in written
     assert ".no_human/wiki/modules.md" in written
-    assert (tmp_path / WIKI_DIR / "architecture.md").read_text() == "# Architecture\n"
-    assert (tmp_path / WIKI_DIR / "modules.md").read_text() == "# Modules\n"
+    assert (tmp_path / WIKI_DIR / "architecture.md").read_text(encoding="utf-8") == "# Architecture\n"
+    assert (tmp_path / WIKI_DIR / "modules.md").read_text(encoding="utf-8") == "# Modules\n"
     # conventions.md not written (empty content)
     assert not (tmp_path / WIKI_DIR / "conventions.md").exists()
 
@@ -177,7 +177,7 @@ def test_wiki_generator_success(fake_repo):
     assert (fake_repo / WIKI_DIR / "modules.md").exists()
     assert (fake_repo / WIKI_DIR / "conventions.md").exists()
     # CLAUDE.md created with the wiki block.
-    claude_md = (fake_repo / "CLAUDE.md").read_text()
+    claude_md = (fake_repo / "CLAUDE.md").read_text(encoding="utf-8")
     assert _WIKI_BLOCK_START in claude_md
     assert claude_md.count(_WIKI_BLOCK_START) == 1
     # Backend was called with correct bounds.
@@ -209,10 +209,10 @@ def test_wiki_generator_regeneration_replaces_block(fake_repo):
     # Second run.
     backend.output = '```json\n{"architecture": "# Arch v2"}\n```'
     asyncio.run(gen.generate(fake_repo))
-    claude_md = (fake_repo / "CLAUDE.md").read_text()
+    claude_md = (fake_repo / "CLAUDE.md").read_text(encoding="utf-8")
     assert claude_md.count(_WIKI_BLOCK_START) == 1
     # Latest content.
-    assert (fake_repo / WIKI_DIR / "architecture.md").read_text().startswith("# Arch v2")
+    assert (fake_repo / WIKI_DIR / "architecture.md").read_text(encoding="utf-8").startswith("# Arch v2")
 
 
 import subprocess as _sp

@@ -839,14 +839,30 @@ ALLOWLIST: dict[str, dict[str, Allowed]] = {
     # so, and an operator has to be able to read it here and decide.
     "review/type_evidence.py": {
         "exec:<dynamic>": Allowed(
-            "nothing, for `mypy` and `tsc` — both read files and write stdout. "
-            "For `pyright` resolved to the PyPI launcher: the nodejs.org "
-            "distribution host and registry.npmjs.org, on that launcher's "
-            "first run only, to fetch the runtime and the npm package it wraps",
+            "nothing, for `tsc` and for a plain `mypy` — both read files and "
+            "write stdout. For `pyright` resolved to the PyPI launcher: the "
+            "nodejs.org distribution host and registry.npmjs.org, on that "
+            "launcher's first run only, to fetch the runtime and the npm "
+            "package it wraps. For `mypy` against a repo whose config carries "
+            "a `plugins =` line: WHATEVER THAT PLUGIN SENDS — mypy imports the "
+            "modules that line names, and the line is read from the config of "
+            "the repo under review, so this is the reviewed repo's own code "
+            "executing. It runs with `_checker_env()`, i.e. this process's "
+            "environment minus every secret-shaped variable "
+            "(`agent/child_env.drop_foreign_secrets`, empty keep-list), so it "
+            "holds no OAuth token, API key or cloud credential of ours; it "
+            "does keep PATH, HOME and the proxy vars, and nothing bounds what "
+            "code it may run",
             _ON + "a gate review of a repo that ITSELF configures pyright, mypy "
                   "or tsc (pyrightconfig.json, [tool.pyright], [tool.mypy], "
                   "mypy.ini, setup.cfg [mypy], or tsconfig.json); a repo that "
-                  "configures none spawns nothing at all"),
+                  "configures none spawns nothing at all. Since #114 phase 2 "
+                  "the same channel also fires DURING CODING, once per edit to "
+                  "a .py/.pyi file, when `hooks.per_edit_type` is on (default "
+                  "OFF) and the repo configures pyright or mypy: "
+                  "`agent/type_hook.py` reuses `_run_checker` rather than "
+                  "spawning its own, so the channel stays in this module while "
+                  "the trigger no longer belongs to review alone"),
     },
     # This module used to hold a THIRD channel: `_probe_github_ambient` shelled
     # out to `gh auth status` — measured 1700-2036 ms, a network round-trip —
@@ -1860,7 +1876,7 @@ def scan_tree(root: Path) -> dict[str, dict[str, list[int]]]:
     """``module path -> channel -> line numbers`` for every ``.py`` under root."""
     out: dict[str, dict[str, list[int]]] = {}
     for path in sorted(root.rglob("*.py")):
-        found = channels_of(path.read_text(), str(path))
+        found = channels_of(path.read_text(encoding="utf-8"), str(path))
         if found:
             out[path.relative_to(root).as_posix()] = found
     return out
@@ -1995,7 +2011,7 @@ def test_approve_merge_source_channels_are_all_declared() -> None:
     module_path = PKG / "vcs" / "approve_merge.py"
     assert module_path.exists(), (
         "vcs/approve_merge.py must exist for `nh approve` to land PRs")
-    found = channels_of(module_path.read_text(), str(module_path))
+    found = channels_of(module_path.read_text(encoding="utf-8"), str(module_path))
     external = {channel for channel in found if reach_of(channel)[0] == EXTERNAL}
     declared = set(ALLOWLIST.get("vcs/approve_merge.py", {}))
     missing = external - declared
@@ -2150,7 +2166,7 @@ def test_env_gates_are_read_by_the_module() -> None:
         for channel, entry in sorted(channels.items()):
             for var in entry.env_vars():
                 checked += 1
-                assert var in (PKG / module).read_text(), (
+                assert var in (PKG / module).read_text(encoding="utf-8"), (
                     f"{module} {channel} claims to be gated on {var}, but the "
                     "module never reads it")
     assert checked >= 2, f"only {checked} env vars parsed out of the gates"
@@ -2166,7 +2182,7 @@ def test_loopback_entries_really_bind_loopback() -> None:
         for channel, entry in sorted(channels.items()):
             if entry.gate.startswith("loopback:"):
                 checked += 1
-                assert "127.0.0.1" in (PKG / module).read_text(), (module, channel)
+                assert "127.0.0.1" in (PKG / module).read_text(encoding="utf-8"), (module, channel)
     # 13 = the 10 that predate the UI evidence runner, + its readiness probe
     # (one connection to a validated 127.0.0.1/localhost base_url, redirects
     # refused), + `cli/pool_probe.py`, which is `nh status`'s queue-health GET
@@ -2214,7 +2230,7 @@ def _tree(tmp_path: Path, files: dict[str, str]) -> Path:
     for rel, source in files.items():
         target = root / rel
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(source)
+        target.write_text(source, encoding="utf-8")
     return root
 
 
@@ -2394,7 +2410,7 @@ def test_the_two_word_refutation_specifically() -> None:
     # above it, and its failure mode reads as "bump the constant" — which is how a
     # gate teaches its reader to rubber-stamp. It fired exactly that way once, when
     # an unrelated hoist in _run_attempt moved this call from 2395 to 2448.
-    src = (PKG / "core/orchestrator.py").read_text()
+    src = (PKG / "core/orchestrator.py").read_text(encoding="utf-8")
     lines = src.splitlines()
     charged = channels_of(src).get("exec:git fetch", [])
     assert charged, "`git fetch origin` in core/orchestrator.py is not being detected"
@@ -2414,7 +2430,7 @@ def test_every_imported_root_is_classified() -> None:
     unhelpful name. Name it here instead, at the table."""
     seen: dict[str, list[str]] = {}
     for path in sorted(PKG.rglob("*.py")):
-        for node in ast.walk(ast.parse(path.read_text(), str(path))):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"), str(path))):
             names = []
             if isinstance(node, ast.Import):
                 names = [a.name for a in node.names]

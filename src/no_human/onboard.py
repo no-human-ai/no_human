@@ -202,7 +202,7 @@ class OnboardResult:
 
 def _read_text(path: Path) -> str:
     try:
-        return path.read_text(errors="ignore")
+        return path.read_text(errors="ignore", encoding="utf-8")
     except OSError:
         return ""
 

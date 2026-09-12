@@ -214,7 +214,7 @@ def test_publishing_a_bad_run_exits_nonzero_and_changes_nothing(bench_env):
 
     assert res.exit_code == 1, res.output
     assert "refusing to publish" in res.output
-    assert report.read_text() == "ORIGINAL REPORT\n", "report was overwritten"
+    assert report.read_text(encoding="utf-8") == "ORIGINAL REPORT\n", "report was overwritten"
     assert not (results / "latest.json").exists(), "baseline was overwritten"
 
 
@@ -228,8 +228,8 @@ def test_publishing_a_good_run_writes_the_baseline_and_report(bench_env):
     assert res.exit_code == 0, res.output
     assert "published" in res.output
     assert (results / "latest.json").exists()
-    assert "North-star benchmark" in report.read_text()
-    assert json.loads((results / "latest.json").read_text())["label"] == "healthy"
+    assert "North-star benchmark" in report.read_text(encoding="utf-8")
+    assert json.loads((results / "latest.json").read_text(encoding="utf-8"))["label"] == "healthy"
 
 
 def test_force_publishes_but_records_the_refusals_it_overrode(bench_env):
@@ -242,11 +242,11 @@ def test_force_publishes_but_records_the_refusals_it_overrode(bench_env):
     res = CliRunner().invoke(cli, ["bench", "publish", str(bad), "--force"])
 
     assert res.exit_code == 0, res.output
-    saved = json.loads((results / "latest.json").read_text())
+    saved = json.loads((results / "latest.json").read_text(encoding="utf-8"))
     assert saved["override_reasons"], "a forced publish must record what it overrode"
     assert any("zero tokens" in r for r in saved["override_reasons"])
     # ...and it must be impossible to mistake the report for a clean one.
-    text = report.read_text()
+    text = report.read_text(encoding="utf-8")
     assert "WARNING" in text and "--force" in text
 
 
@@ -271,7 +271,7 @@ def test_a_clean_publish_also_writes_the_published_baseline(bench_env):
     assert res.exit_code == 0, res.output
     assert (results / "published_baseline.json").exists()
     assert json.loads(
-        (results / "published_baseline.json").read_text())["label"] == "healthy"
+        (results / "published_baseline.json").read_text(encoding="utf-8"))["label"] == "healthy"
 
 
 def test_a_forced_publish_does_not_overwrite_the_published_baseline(bench_env):
@@ -281,7 +281,7 @@ def test_a_forced_publish_does_not_overwrite_the_published_baseline(bench_env):
     good = results / "v13.json"
     _healthy(30).save(good)
     assert CliRunner().invoke(cli, ["bench", "publish", str(good)]).exit_code == 0
-    clean_baseline = (results / "published_baseline.json").read_text()
+    clean_baseline = (results / "published_baseline.json").read_text(encoding="utf-8")
 
     bad = results / "v14.json"
     _card([_score("ns-0")] + [
@@ -290,8 +290,8 @@ def test_a_forced_publish_does_not_overwrite_the_published_baseline(bench_env):
     res = CliRunner().invoke(cli, ["bench", "publish", str(bad), "--force"])
 
     assert res.exit_code == 0, res.output
-    assert json.loads((results / "latest.json").read_text())["label"] == "v14"
-    assert (results / "published_baseline.json").read_text() == clean_baseline, \
+    assert json.loads((results / "latest.json").read_text(encoding="utf-8"))["label"] == "v14"
+    assert (results / "published_baseline.json").read_text(encoding="utf-8") == clean_baseline, \
         "the forced probe publish overwrote the last clean baseline"
 
 
@@ -361,7 +361,7 @@ def test_publish_reads_the_current_baseline_before_deciding(bench_env):
     broader one."""
     results, report = bench_env
     _healthy(56).save(results / "latest.json")
-    baseline_before = (results / "latest.json").read_text()
+    baseline_before = (results / "latest.json").read_text(encoding="utf-8")
     narrower = results / "narrow.json"
     _healthy(12).save(narrower)
 
@@ -369,7 +369,7 @@ def test_publish_reads_the_current_baseline_before_deciding(bench_env):
 
     assert res.exit_code == 1, res.output
     assert "narrow" in res.output
-    assert (results / "latest.json").read_text() == baseline_before, \
+    assert (results / "latest.json").read_text(encoding="utf-8") == baseline_before, \
         "the narrower run replaced the baseline it was supposed to be refused against"
 
 
@@ -418,12 +418,12 @@ def test_a_forced_publish_survives_re_rendering(bench_env):
 
     assert CliRunner().invoke(
         cli, ["bench", "publish", str(bad), "--force"]).exit_code == 0
-    assert "WARNING" in report.read_text(), "precondition: the banner was written"
+    assert "WARNING" in report.read_text(encoding="utf-8"), "precondition: the banner was written"
 
     res = CliRunner().invoke(cli, ["bench", "report"])
 
     assert res.exit_code == 0, res.output
-    assert "WARNING" in report.read_text(), \
+    assert "WARNING" in report.read_text(encoding="utf-8"), \
         "re-rendering laundered a forced publish into a clean report"
 
 
@@ -462,7 +462,7 @@ def test_report_refuses_a_card_no_human_ever_blessed(bench_env):
     # if this guard were replaced by an unrelated failure.
     assert "refusing to re-render" in res.output, res.output
     assert "minimum 10" in res.output, res.output
-    assert report.read_text() == "ORIGINAL REPORT\n", \
+    assert report.read_text(encoding="utf-8") == "ORIGINAL REPORT\n", \
         "`bench report` overwrote the tracked benchmark with an unblessed card"
 
 
@@ -487,7 +487,7 @@ def test_report_refusal_survives_a_hostile_label(bench_env):
     assert res.exception is None or isinstance(res.exception, SystemExit), \
         f"refusal raised instead of refusing: {res.exception!r}"
     assert "refusing to re-render" in res.output, res.output
-    assert report.read_text() == "ORIGINAL REPORT\n"
+    assert report.read_text(encoding="utf-8") == "ORIGINAL REPORT\n"
 
 
 def test_report_still_renders_a_clean_card(bench_env):
@@ -500,7 +500,7 @@ def test_report_still_renders_a_clean_card(bench_env):
     res = CliRunner().invoke(cli, ["bench", "report"])
 
     assert res.exit_code == 0, res.output
-    assert "North-star benchmark" in report.read_text()
+    assert "North-star benchmark" in report.read_text(encoding="utf-8")
 
 
 # --------------------- the banned-term publish guard ----------------------- #
@@ -537,7 +537,7 @@ def test_publish_redacts_a_banned_term_in_a_note(bench_env):
     res = CliRunner().invoke(cli, ["bench", "publish", str(src)])
 
     assert res.exit_code == 0, res.output
-    published = report.read_text()
+    published = report.read_text(encoding="utf-8")
     assert "windsurf" not in published.lower(), published  # the banned term is gone  # term-ok: the fixture needs a real banned term
     assert "metrics-core-pipeline" in published, published    # its neighbour stays
     assert (results / "latest.json").exists()              # baseline promoted
@@ -571,7 +571,7 @@ def test_bench_report_redacts_a_banned_term_too(bench_env):
     res = CliRunner().invoke(cli, ["bench", "report"])
 
     assert res.exit_code == 0, res.output
-    published = report.read_text()
+    published = report.read_text(encoding="utf-8")
     assert "windsurf" not in published.lower(), published  # term-ok: the fixture needs a real banned term
     assert "metrics-core-pipeline" in published, published
 
@@ -587,7 +587,7 @@ def test_publish_redacts_a_home_path(bench_env):
     res = CliRunner().invoke(cli, ["bench", "publish", str(results / "v13.json")])
 
     assert res.exit_code == 0, res.output
-    published = report.read_text()
+    published = report.read_text(encoding="utf-8")
     assert str(Path.home()) not in published and "/Users/" not in published
     assert (results / "latest.json").exists()
 
@@ -608,5 +608,5 @@ def test_the_guard_still_refuses_if_redaction_regresses(bench_env, monkeypatch):
 
     assert res.exit_code == 1, res.output
     assert "refusing to publish" in res.output
-    assert report.read_text() == "ORIGINAL REPORT\n"
+    assert report.read_text(encoding="utf-8") == "ORIGINAL REPORT\n"
     assert not (results / "latest.json").exists()

@@ -178,7 +178,7 @@ def test_L1_every_third_party_import_was_already_a_dependency():
                 for d in _declared_dependencies()}
     stdlib = set(sys.stdlib_module_names)
     for path in _brain_sources():
-        tree = ast.parse(path.read_text())
+        tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             names: list[str] = []
             if isinstance(node, ast.Import):
@@ -267,7 +267,7 @@ def _assert_starts_nothing(paths) -> None:
     ``test_the_structural_gates_see_a_violation_in_a_real_subpackage``.
     """
     for path in paths:
-        tree = ast.parse(path.read_text())
+        tree = ast.parse(path.read_text(encoding="utf-8"))
         offending = _module_names(tree) & _FORBIDDEN_MODULES
         assert not offending, f"{path.name} imports {sorted(offending)}"
         calls = _call_names(tree) & _FORBIDDEN_CALLS
@@ -387,7 +387,7 @@ def _scan_targets() -> list[Path]:
 def test_L3_no_cloud_deployment_identifier_anywhere_in_the_local_product():
     offenders = []
     for path in _scan_targets():
-        for lineno, line in enumerate(path.read_text().splitlines(), 1):
+        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
             if _AWS_IDENTIFIERS.search(line):
                 offenders.append(f"{path.relative_to(SRC)}:{lineno}: {line.strip()}")
     assert not offenders, ("cloud deployment identifiers in the local product:\n"
@@ -444,15 +444,15 @@ def test_L3_the_pinned_key_is_bytes_not_a_key_reference():
         assert isinstance(der, bytes)
         n, e = verify.rsa_public_numbers(der)
         assert n.bit_length() == 2048 and e == 65537
-    text = (BRAIN / "keys.py").read_text()
+    text = (BRAIN / "keys.py").read_text(encoding="utf-8")
     assert "get_public_key" not in text.replace("get-public-key", "")
 
 
 def test_L3_no_route_fetches_a_signing_key():
     """There is deliberately no fallback that would let a served key be used."""
-    joined = "\n".join(p.read_text() for p in _brain_sources())
+    joined = "\n".join(p.read_text(encoding="utf-8") for p in _brain_sources())
     assert "signing-key" not in joined
-    assert "PINNED_SIGNING_KEYS" in (BRAIN / "sync.py").read_text()
+    assert "PINNED_SIGNING_KEYS" in (BRAIN / "sync.py").read_text(encoding="utf-8")
 
 
 # --------------------------------------------------------------------------- #
@@ -840,7 +840,7 @@ def test_A1_the_brain_credential_is_never_placed_in_the_environment(tmp_path, mo
 def test_A1_no_module_in_the_package_writes_to_the_environment():
     """Structural, not just observational: nothing here assigns os.environ."""
     for path in _brain_sources():
-        tree = ast.parse(path.read_text())
+        tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if isinstance(node, ast.Subscript) and isinstance(node.ctx, ast.Store):
                 source = ast.unparse(node.value)
@@ -880,7 +880,7 @@ def test_A2_the_claude_auth_path_is_untouched():
                config.load_env_token, config._read_env_file,
                config._reject_api_key_in_config):
         assert "brain" not in inspect.getsource(fn).lower()
-    assert "no_human.brain" not in Path(config.__file__).read_text()
+    assert "no_human.brain" not in Path(config.__file__).read_text(encoding="utf-8")
 
 
 def test_A2_config_module_does_not_import_the_brain():
@@ -908,7 +908,7 @@ def test_A3_the_first_increment_sends_no_bodies_to_the_control_plane():
     nothing but a sign-in token leaves the machine. The only POSTs in the client
     are the OAuth token exchange and refresh, and both go to the identity
     provider with a fixed field set."""
-    text = (BRAIN / "client.py").read_text()
+    text = (BRAIN / "client.py").read_text(encoding="utf-8")
     posts = re.findall(r'_request\(\s*"POST"', text)
     assert len(posts) == 2, "a new write path appeared; it is out of scope"
     code = _code_text(BRAIN / "client.py")
@@ -921,7 +921,7 @@ def test_A4_every_brain_command_bootstraps_without_the_claude_auth_assertion():
     code = _code_text(BRAIN / "cli.py")
     assert "require_auth" in code and "False" in code
     assert "assert_subscription_mode" not in code
-    assert "require_auth=True" not in (BRAIN / "cli.py").read_text()
+    assert "require_auth=True" not in (BRAIN / "cli.py").read_text(encoding="utf-8")
     assert code.count("_bootstrap") == 2, (  # the import and the one call
         "every subcommand must go through the single _cfg() helper")
 
@@ -971,7 +971,7 @@ def test_A5_tls_verification_is_never_disabled():
     """Recorded because the tree contains a counter-example: vcs/pr_watcher.py
     constructs an httpx client with verify=False. That must not be copied."""
     for path in _brain_sources():
-        offences = _tls_verify_offenders(ast.parse(path.read_text()))
+        offences = _tls_verify_offenders(ast.parse(path.read_text(encoding="utf-8")))
         assert offences == [], f"{path.name}: {offences}"
 
 
@@ -1002,7 +1002,7 @@ def test_A5_the_structural_probe_does_not_fire_on_the_verifier_module():
     """The negative half. `brain/verify.py` is full of the word `verify` in
     function and module names, and a probe that matched those would be deleted
     within a week for crying wolf."""
-    assert _tls_verify_offenders(ast.parse((BRAIN / "verify.py").read_text())) == []
+    assert _tls_verify_offenders(ast.parse((BRAIN / "verify.py").read_text(encoding="utf-8"))) == []
 
 
 # --------------------------------------------------------------------------- #
@@ -1312,7 +1312,7 @@ def test_an_absent_id_token_is_never_valid():
 
 def test_A6_the_attempt_records_both_who_paid_and_what_it_knew():
     """Two columns, because they answer different questions."""
-    text = (SRC / "core" / "db.py").read_text()
+    text = (SRC / "core" / "db.py").read_text(encoding="utf-8")
     assert '"auth_profile": "TEXT"' in text
     assert '"brain_watermark": "INTEGER"' in text
 

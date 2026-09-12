@@ -56,7 +56,7 @@ async def test_included_in_compact_instructions(store, tmp_path):
     from no_human.core.task import Task
     t = Task.new("do a thing", repo_path=str(repo))
     orch._materialize_compact_instructions(repo, t)
-    content = (repo / ".claude" / "instructions.md").read_text()
+    content = (repo / ".claude" / "instructions.md").read_text(encoding="utf-8")
     assert "PROJECT_MARKER_CONVENTION" in content
     # Repo conventions come before the generic standing rules.
     assert content.index("PROJECT_MARKER_CONVENTION") < content.index("Standing rules")

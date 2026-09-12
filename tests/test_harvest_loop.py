@@ -454,7 +454,7 @@ async def test_scheduled_harvest_applies_nothing_with_the_kill_switch_off(store,
 
     yaml_files = list(out_dir.glob("*.yaml"))
     assert len(yaml_files) == 1
-    assert "runnable: false" in yaml_files[0].read_text()
+    assert "runnable: false" in yaml_files[0].read_text(encoding="utf-8")
 
     assert await store.list_memories(confirmed=True) == []
     proposed = await store.list_memories(confirmed=False)

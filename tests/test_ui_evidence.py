@@ -746,12 +746,12 @@ async def test_run_writes_result_json_artifact(tmp_path, monkeypatch):
     out_dir = tmp_path / "evidence"
     page = FakePage()
     result = await ui_evidence.run(tmp_path, out_dir, launch=make_launch(page))
-    on_disk = json.loads((out_dir / "result.json").read_text())
+    on_disk = json.loads((out_dir / "result.json").read_text(encoding="utf-8"))
     assert on_disk["verdict"] == result.verdict
     assert on_disk["steps_run"] == result.steps_run
-    manifest_on_disk = json.loads((out_dir / "manifest.json").read_text())
+    manifest_on_disk = json.loads((out_dir / "manifest.json").read_text(encoding="utf-8"))
     assert manifest_on_disk["base_url"] == VALID["base_url"]
-    console_on_disk = json.loads((out_dir / "console.json").read_text())
+    console_on_disk = json.loads((out_dir / "console.json").read_text(encoding="utf-8"))
     assert console_on_disk == {"errors": []}
 
 
@@ -766,7 +766,7 @@ def test_default_out_dir_is_fresh_writable_and_named_from_task_id(tmp_path, monk
     assert d1 != d2, "two calls for the same task must not collide"
     assert "deadbeef" in d1.name
     (d1 / "probe.txt").write_text("ok")
-    assert (d1 / "probe.txt").read_text() == "ok"
+    assert (d1 / "probe.txt").read_text(encoding="utf-8") == "ok"
 
 
 async def test_default_out_dir_works_as_runs_out_dir(tmp_path, monkeypatch):

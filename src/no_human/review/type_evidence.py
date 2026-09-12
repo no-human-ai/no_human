@@ -43,6 +43,20 @@ clean result:
     the REVIEW half executes anything the reviewed repo wrote, and that is
     worth knowing before this is ever promoted from advisory to a required
     gate.
+* NO CREDENTIAL REACHES THE CHECKER, AND THAT HAS A COST. `_checker_env`
+  strips every secret-shaped variable from the child environment
+  (`agent/child_env.drop_foreign_secrets`, empty keep-list), because the
+  bullet above means a `plugins =` line can make this collector run
+  repo-authored code — which must never hold our OAuth token, API key or
+  cloud credential. The cost is real and is not hypothetical: a plugin that
+  READS one of those variables no longer loads. `mypy_django_plugin` is the
+  canonical case, since it imports the settings module and that reads
+  `SECRET_KEY`/`DATABASE_URL`; mypy then exits non-zero, `_run_checker`
+  correctly distrusts the run, and the whole section would disappear. Rather
+  than let it disappear silently, `_run_checker` records `_PLUGIN_ENV_NOTE`
+  and the renderer prints a NOT COLLECTED line naming the cause. The trade is
+  deliberate: a repo-controlled plugin is repo-controlled code, and losing one
+  repo's type evidence is cheaper than handing that code a credential.
 * OUR BINARY, NEVER THE REPO'S. `pyright`/`mypy`/`tsc` are resolved from
   no_human's own PATH, never a `.venv` or `node_modules` inside the repo under
   review — the same rule `lint_evidence` follows and for the same reason. A
@@ -84,8 +98,15 @@ clean result:
 
 Advisory, exactly like its two siblings: any failure — no config, a missing
 binary, a timeout, output that does not parse, a base worktree that cannot be
-built — yields `ran=False`, which renders no section at all. It never blocks,
-and it never claims a clean result it did not establish.
+built — yields `ran=False`, and `ran=False` never renders a net-new count, a
+diagnostic, or anything a reviewer could read as a clean result.
+
+One failure does render a line, and only because the alternative is worse: a
+plugin that could not import (see the credential ceiling above) prints a NOT
+COLLECTED line naming the cause, so the reviewer can tell "the checker could
+not start" from "this repo configures no checker". It is a statement about
+this collector, never about the code, and `format_type_evidence` says so in
+the sentence itself.
 """
 
 from __future__ import annotations
@@ -163,6 +184,12 @@ class TypeEvidence:
     #: stronger claim than the run can support. Rendered as a coverage caveat
     #: whenever it is non-zero; see `format_type_evidence`.
     unresolved_imports: int = 0
+    #: Why the collection produced nothing, when we can say. `ran=False` still
+    #: means "no evidence", and this is never a claim about the code — it is a
+    #: claim about US. Rendered so a reviewer reading a diff with no TYPE
+    #: EVIDENCE section can tell "the checker could not start" apart from
+    #: "this repo configures no checker"; see `format_type_evidence`.
+    unavailable_reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -545,8 +572,48 @@ def _resolve_binary(name: str, repo_path: Path) -> str | None:
     return found
 
 
+def _checker_env() -> dict[str, str]:
+    """This process's environment with every secret-shaped variable removed.
+
+    A type checker needs `PATH`, `HOME` and a proxy; it has no business with a
+    credential. Inheriting one is not hypothetical here: `mypy` IMPORTS the
+    modules a `plugins =` line names, and it reads that line from the config of
+    the repo under review — so with a bare `os.environ` the reviewed repo's own
+    code runs holding this process's `CLAUDE_CODE_OAUTH_TOKEN`. Phase 2 makes
+    that sharper by firing the same channel once per edit, in the live
+    worktree, against a config the coder can write mid-attempt.
+
+    `drop_foreign_secrets` with an empty keep-list is the repo's existing rule
+    (`agent/child_env.py`), reused rather than restated: it drops by name shape
+    and by password-bearing URL value, and keeps the operational names — `PATH`,
+    `HOME`, `AWS_REGION`, the `*_PROXY` set the pyright launcher needs to reach
+    npm through a corporate network.
+    """
+    from ..agent.child_env import drop_foreign_secrets
+
+    env = os.environ.copy()
+    drop_foreign_secrets(env, keep=())
+    return env
+
+
+#: mypy's wording when `plugins =` names a module it cannot import.
+_PLUGIN_IMPORT_RE = re.compile(r"error importing plugin", re.IGNORECASE)
+
+#: What the reviewer is told when that happens. The scrub is a live cause of
+#: it, and silence here would hide a collector that went dark for a reason we
+#: chose. Named rather than inlined because `docs/verification.md` quotes it.
+_PLUGIN_ENV_NOTE = (
+    "the repo's own type-checker plugin failed to import. `_checker_env` "
+    "removes every secret-shaped variable before spawning the checker, and a "
+    "plugin that reads one (a settings module reaching for SECRET_KEY or "
+    "DATABASE_URL is the common shape) cannot load without it, so NO type "
+    "evidence was collected for this diff"
+)
+
+
 def _run_checker(
     checker: _Checker, cwd: Path, *, timeout: int, repo_path: Path | None = None,
+    notes: list[str] | None = None,
 ) -> list[TypeDiagnostic] | None:
     """Run one checker in `cwd`. `None` means the run cannot be trusted.
 
@@ -569,6 +636,7 @@ def _run_checker(
             text=True,
             errors="replace",
             timeout=timeout,
+            env=_checker_env(),
         )
     except subprocess.TimeoutExpired:
         log.warning("%s type check timed out after %ds in %s", checker.name, timeout, cwd)
@@ -586,6 +654,10 @@ def _run_checker(
             proc.returncode,
             (proc.stderr or "")[:500],
         )
+        if notes is not None and _PLUGIN_IMPORT_RE.search(
+            (proc.stdout or "") + " " + (proc.stderr or "")
+        ):
+            notes.append(_PLUGIN_ENV_NOTE)
         return None
 
     try:
@@ -627,7 +699,8 @@ def _resolve_sha(repo_path: Path, ref: str, *, timeout: int = 20) -> str | None:
 
 
 def _run_at_commit(
-    checker: _Checker, repo_path: Path, sha: str, *, timeout: int
+    checker: _Checker, repo_path: Path, sha: str, *, timeout: int,
+    notes: list[str] | None = None,
 ) -> list[TypeDiagnostic] | None:
     """Run `checker` over a throwaway worktree checked out at `sha`.
 
@@ -694,7 +767,7 @@ def _run_at_commit(
             )
             return None
         result = _run_checker(
-            checker, worktree, timeout=left, repo_path=repo_path,
+            checker, worktree, timeout=left, repo_path=repo_path, notes=notes,
         )
         if result is not None:
             _cache_put(key, result)
@@ -778,6 +851,9 @@ def collect_type_evidence(
         # whatever is left, and when nothing is left the collection stops with
         # what it has rather than starting a run it cannot finish.
         deadline = time.monotonic() + timeout
+        #: Reasons a run produced nothing that are worth telling the reviewer
+        #: rather than leaving in a `log.warning` nobody reads.
+        notes: list[str] = []
 
         def _remaining() -> int:
             return int(deadline - time.monotonic())
@@ -790,12 +866,12 @@ def collect_type_evidence(
                 )
                 break
             after = _run_at_commit(
-                checker, repo_path, after_sha, timeout=_remaining(),
+                checker, repo_path, after_sha, timeout=_remaining(), notes=notes,
             )
             if after is None or _remaining() <= 0:
                 continue
             base = _run_at_commit(
-                checker, repo_path, base_sha, timeout=_remaining(),
+                checker, repo_path, base_sha, timeout=_remaining(), notes=notes,
             )
             if base is None:
                 continue
@@ -813,7 +889,7 @@ def collect_type_evidence(
                 after_total=len(after),
                 unresolved_imports=_unresolved_import_count(after),
             )
-        return TypeEvidence()
+        return TypeEvidence(unavailable_reason=notes[0] if notes else "")
     except Exception:  # noqa: BLE001 — advisory evidence, never blocks the review
         log.warning("type evidence failed", exc_info=True)
         return TypeEvidence()
@@ -826,6 +902,14 @@ def collect_type_evidence(
 # Hard caps on the rendered block, same rationale as `lint_evidence`: a diff
 # that breaks a widely-imported signature can produce hundreds of net-new
 # diagnostics, and this is advisory evidence, not the diff itself.
+#: Opening words of the one block `format_type_evidence` renders for a run
+#: that did NOT happen. Exported because `reviewer.py`'s READING SCOPE
+#: enumerates what the prompt carries by testing these strings for emptiness,
+#: and a non-empty NOT-COLLECTED block would otherwise make it announce "the
+#: net-new type diagnostics" for a check that never ran — the exact false
+#: assurance this module's ceilings forbid.
+NOT_COLLECTED_PREFIX = "TYPE EVIDENCE: NOT COLLECTED"
+
 MAX_TYPE_DIAGNOSTICS = 40
 MAX_TYPE_BYTES = 8192
 
@@ -848,7 +932,18 @@ def format_type_evidence(evidence: TypeEvidence) -> str:
     a false clean.
     """
     if not evidence.ran:
-        return ""
+        if not evidence.unavailable_reason:
+            return ""
+        # A reason, never a result. `ran=False` still renders no net-new count
+        # and no diagnostics; what this adds is the difference between "this
+        # repo configures no checker" and "the checker could not start", which
+        # a reviewer otherwise cannot tell apart from an absent section. It is
+        # worded so it cannot be read as evidence about the code.
+        return (
+            f"{NOT_COLLECTED_PREFIX} — "
+            f"{evidence.unavailable_reason}. This says nothing about whether "
+            "the diff is type-clean; it says this check did not run."
+        )
     count = len(evidence.diagnostics)
     header = (
         f"TYPE EVIDENCE ({evidence.checker}, deterministic): net-new type "

@@ -88,6 +88,7 @@ from ..learning.ranking import rank_and_select
 from ..learning.triggers import filter_triggered, trigger_reason
 from ..notify.slack import SlackNotifier
 from ..review import selfcheck, tamper_adjudication
+from ..review.verdict_reason import review_failure_detail
 from ..review.reviewer import (
     REVIEW_SESSION_ERROR_MARKER as _SESSION_ERROR_BLOCKER_MARKER,
     ADVISORY_SEVERITIES,
@@ -5685,6 +5686,11 @@ class Orchestrator:
         # a lint command is known for the repo.
         lint_hook = await self._build_lint_hook(repo)
 
+        # Per-edit type feedback (#114 phase 2): the same deterministic shape as
+        # the lint hook, over the one file the edit touched. Config-gated
+        # (default off) and a no-op unless the repo configures pyright or mypy.
+        type_hook = await self._build_type_hook(repo)
+
         # Scope guard (Phase 5e): deterministic PostToolUse that warns when an
         # edit targets a file not declared in the plan's FILES TO CHANGE/CREATE.
         # Warn-not-block: legit refactors can touch unplanned files.
@@ -5713,6 +5719,7 @@ class Orchestrator:
         # (e.g. test doubles) are unaffected while they stay default-off.
         extra: dict = {}
         if not _can_hooks and (lint_hook is not None or scope_hook is not None
+                               or type_hook is not None
                                or supervisor is not None):
             # Said out loud, once, on the event stream — the operator chose
             # this backend and is entitled to know which guards it costs them.
@@ -5725,9 +5732,10 @@ class Orchestrator:
                 "backend_degraded",
                 f"backend {getattr(caps, 'name', '?')!r} has no PostToolUse "
                 "hook — superseding 'supervisor active': the supervisor's "
-                "per-tool-call course correction, the lint feedback hook and "
-                "the scope guard do not run this attempt (the pre-flight plan "
-                "check, which is not a hook, still did)",
+                "per-tool-call course correction, the lint feedback hook, the "
+                "per-edit type check and the scope guard do not run this "
+                "attempt (the pre-flight plan check, which is not a hook, "
+                "still did)",
                 backend=getattr(caps, "name", None),
             )
             supervisor = None
@@ -5749,7 +5757,7 @@ class Orchestrator:
 
         if _can_hooks:
             composed = self._compose_post_tool_hooks(
-                receipt_hook, lint_hook, scope_hook)
+                receipt_hook, lint_hook, scope_hook, type_hook)
             if composed is not None:
                 extra["lint_hook"] = composed
 
@@ -6950,9 +6958,8 @@ class Orchestrator:
             # Lead with what actually blocks. A nit in the feedback reads to the
             # coder exactly like a defect, and it spent attempts chasing them.
             failed = decision.blocking_items or decision.failed_items
-            detail = "review failed: " + "; ".join(
-                f"{i.label}: {i.evidence}" for i in failed[:3]
-            )
+            # An empty `failed` left the bare "review failed: " (#249).
+            detail = review_failure_detail(decision, failed)
             await self.store.update_attempt(
                 attempt_id,
                 review_checklist=decision.as_dict(),
@@ -14100,7 +14107,7 @@ class Orchestrator:
         else:
             def _verifier_read_file(path: str) -> str | None:
                 try:
-                    return (repo.path / path).read_text(errors="replace")
+                    return (repo.path / path).read_text(errors="replace", encoding="utf-8")
                 except OSError:
                     return None
 
@@ -15579,6 +15586,25 @@ class Orchestrator:
             repo_path=repo.path, lint_cmd=lint_cmd, on_event=self.emit,
         )
 
+    async def _build_type_hook(self, repo: GitRepo):
+        """Build the per-edit type feedback hook (#114 phase 2), or None.
+
+        Gated by ``hooks.per_edit_type`` (default off) and, independently, by
+        whether the repo CONFIGURES a checker a per-file run can honour — a
+        project that has not asked for type checking gets no hook and spawns
+        nothing, exactly as it gets no ruff evidence. Detection is a few file
+        reads, so it stays off the event loop with the rest of the build.
+        """
+        if not self.config.get("hooks", {}).get("per_edit_type", False):
+            return None
+        from ..agent.type_hook import TypeFeedbackHook, per_edit_checker
+        checker = await asyncio.to_thread(per_edit_checker, repo.path)
+        if not checker:
+            return None
+        return TypeFeedbackHook(
+            repo_path=repo.path, checker=checker, on_event=self.emit,
+        )
+
     def _open_repo(self, task: Task) -> GitRepo | None:
         try:
             return GitRepo(
@@ -17048,7 +17074,7 @@ class Orchestrator:
             try:
                 if not path.is_file():
                     continue
-                text = path.read_text(errors="replace").strip()
+                text = path.read_text(errors="replace", encoding="utf-8").strip()
             except OSError:
                 continue
             if not text:
@@ -21896,7 +21922,9 @@ SIX of them read a checkpoint and TWO do not — but do
         return current
 
     @staticmethod
-    def _ordered_post_tool_hooks(receipt_hook, lint_hook, scope_hook) -> list:
+    def _ordered_post_tool_hooks(
+        receipt_hook, lint_hook, scope_hook, type_hook=None
+    ) -> list:
         """The PostToolUse hooks, in the order they must run.
 
         🔴 ORDER IS LOAD-BEARING, AND IT IS TESTED HERE RATHER THAN ASSERTED IN
@@ -21907,14 +21935,33 @@ SIX of them read a checkpoint and TWO do not — but do
         receipts would go missing precisely on the attempts that had the most to
         report. Moving it last leaves every other test in the suite passing,
         which is why the property has its own.
+
+        The type hook (issue #114 phase 2) goes THIRD, ahead of the scope guard,
+        and that is the same kind of property rather than a preference. Its
+        feedback is once-only by construction — a report advances the file's
+        baseline, so the diagnostic is never re-sent — while `check_scope`
+        returns its warning on EVERY edit to an out-of-plan file. Behind the
+        scope guard, a coder legitimately working outside its plan would have
+        type feedback suppressed on every edit for the whole attempt, and
+        suppressed permanently, since the report it lost does not come back.
+        Ahead of it, the cost of the same collision is a scope warning deferred
+        to the next edit, which repeats anyway. It stays behind LINT for the
+        opposite reason: ruff is the cheaper call, and a file that does not
+        parse produces type output not worth the turn.
         """
-        return [h for h in (receipt_hook, lint_hook, scope_hook) if h is not None]
+        return [
+            h for h in (receipt_hook, lint_hook, type_hook, scope_hook)
+            if h is not None
+        ]
 
     @classmethod
-    def _compose_post_tool_hooks(cls, receipt_hook, lint_hook, scope_hook):
+    def _compose_post_tool_hooks(
+        cls, receipt_hook, lint_hook, scope_hook, type_hook=None
+    ):
         """One PostToolUse callable for the backend, or None when there are no
         hooks to install. ClaudeBackend accepts a single `lint_hook`."""
-        hooks = cls._ordered_post_tool_hooks(receipt_hook, lint_hook, scope_hook)
+        hooks = cls._ordered_post_tool_hooks(
+            receipt_hook, lint_hook, scope_hook, type_hook)
         if not hooks:
             return None
         if len(hooks) == 1:

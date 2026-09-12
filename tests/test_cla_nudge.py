@@ -15,7 +15,7 @@ REPO = Path(__file__).resolve().parents[1]
 SCRIPT = REPO / "scripts" / "cla_nudge.sh"
 CLA_VERSION = next(
     line.split("Version: ")[1].rstrip("*").strip()
-    for line in (REPO / "CLA.md").read_text().splitlines() if line.startswith("**Version:"))
+    for line in (REPO / "CLA.md").read_text(encoding="utf-8").splitlines() if line.startswith("**Version:"))
 
 STUB_GH = r'''#!/usr/bin/env bash
 # Stub `gh` for tests: replays canned answers from $STUB_DIR, logs every call.
@@ -75,13 +75,13 @@ def run(tmp_path):
 
 
 def _calls(stub_dir):
-    return (stub_dir / "calls.log").read_text().splitlines()
+    return (stub_dir / "calls.log").read_text(encoding="utf-8").splitlines()
 
 
 def test_unsigned_author_gets_one_posted_nudge_with_the_filled_in_file(run):
     res, d = run(authors=["newperson"], ledger_at={"m1": ["README.md"]})
     assert res.returncode == 0, res.stderr
-    body = (d / "posted.md").read_text()
+    body = (d / "posted.md").read_text(encoding="utf-8")
     assert "<!-- cla-nudge -->" in body
     assert "`@newperson`" in body and "@newperson\n" not in body.replace("- GitHub: @newperson\n", "")
     assert "contributors/newperson.md" in body
@@ -101,7 +101,7 @@ def test_api_budget_is_two_reads_plus_one_write_regardless_of_author_count(run):
     assert sum("/commits/m1 " in c for c in calls) == 1  # the merge commit's parent check
     assert sum("-X POST" in c for c in calls) == 1
     assert len(calls) == 5  # + the comment lookup: bounded whatever the PR carries
-    body = (d / "posted.md").read_text()
+    body = (d / "posted.md").read_text(encoding="utf-8")
     assert "250 distinct commit authors" in body
     assert len(body.encode()) < 4000  # far under GitHub's 65,536-byte comment cap
 
@@ -131,7 +131,7 @@ def test_forged_agent_author_on_a_strangers_pr_blocks_the_resolved_text(run):
     res, d = run(authors=["no-human"], ledger_at={"m1": ["README.md"]},
                  env={"PR_AUTHOR": "somestranger"})
     assert res.returncode == 0, res.stderr
-    body = (d / "posted.md").read_text()
+    body = (d / "posted.md").read_text(encoding="utf-8")
     assert "has what it needs" not in body
     assert "forged author email" in body
     assert "contributors/no-human.md" not in body
@@ -143,7 +143,7 @@ def test_forged_agent_author_never_patches_an_earlier_comment_green(run):
     res, d = run(authors=["no-human"], ledger_at={"m1": ["README.md"]},
                  existing="123", env={"PR_AUTHOR": "somestranger"})
     assert res.returncode == 0, res.stderr
-    body = (d / "patched.md").read_text()
+    body = (d / "patched.md").read_text(encoding="utf-8")
     assert "has what it needs" not in body
     assert "forged author email" in body
 
@@ -161,7 +161,7 @@ def test_a_pr_that_deletes_a_ledger_file_is_nudged_like_the_gate_fails(run):
     # the nudge must not say all-clear
     res, d = run(authors=["octocat"], ledger_at={"m1": ["README.md"]})
     assert res.returncode == 0, res.stderr
-    assert "contributors/octocat.md" in (d / "posted.md").read_text()
+    assert "contributors/octocat.md" in (d / "posted.md").read_text(encoding="utf-8")
 
 
 def test_polls_the_api_for_the_merge_commit_when_the_event_lacks_it(run):
@@ -229,14 +229,14 @@ def test_a_missing_contributors_directory_is_an_empty_ledger(run):
     # 404 on the listing = the tree has no contributors/ at all: nudge
     res, d = run(authors=["alice"], ledger_at={})
     assert res.returncode == 0, res.stderr
-    assert "contributors/alice.md" in (d / "posted.md").read_text()
+    assert "contributors/alice.md" in (d / "posted.md").read_text(encoding="utf-8")
 
 
 def test_ledger_match_is_whole_name_not_substring(run):
     # `ice` must not be satisfied by `alice.md`; `alice` must be
     res, d = run(authors=["ice", "alice"], ledger_at={"m1": ["README.md", "alice.md"]})
     assert res.returncode == 0, res.stderr
-    body = (d / "posted.md").read_text()
+    body = (d / "posted.md").read_text(encoding="utf-8")
     assert "contributors/ice.md" in body and "contributors/alice.md" not in body
 
 
@@ -250,7 +250,7 @@ def test_existing_bot_comment_is_updated_in_place_and_resolved_when_signed(run):
     res, d = run(authors=["octocat"], existing="4242\n", ledger_at={"m1": ["README.md", "octocat.md"]})
     assert res.returncode == 0, res.stderr
     assert not (d / "posted.md").exists()
-    patched = (d / "patched.md").read_text()
+    patched = (d / "patched.md").read_text(encoding="utf-8")
     assert "<!-- cla-nudge -->" in patched and "has what it needs" in patched
     assert any("-X PATCH repos/acme/thing/issues/comments/4242" in c for c in _calls(d))
     # the lookup asks only for the bot's own comments carrying the marker
@@ -261,7 +261,7 @@ def test_existing_bot_comment_is_updated_in_place_and_resolved_when_signed(run):
 def test_unlinked_email_is_explained_not_guessed(run):
     res, d = run(authors=["UNLINKED-EMAIL"], ledger_at={"m1": ["README.md"]})
     assert res.returncode == 0, res.stderr
-    body = (d / "posted.md").read_text()
+    body = (d / "posted.md").read_text(encoding="utf-8")
     assert "not attached to any GitHub account" in body
     assert "contributors/unlinked-email.md" not in body
 

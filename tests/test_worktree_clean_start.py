@@ -106,7 +106,7 @@ def test_dirty_tracked_file_does_not_crash_checkout_b(tmp_path, main_repo):
 
     # GREEN: the same operation that just crashed now succeeds.
     wt.create_branch("no-human/green", base="main")
-    assert (wt.path / "EXPORT_CLASSIFICATION.txt").read_text() == "B\n"
+    assert (wt.path / "EXPORT_CLASSIFICATION.txt").read_text(encoding="utf-8") == "B\n"
 
 
 def test_dirty_untracked_file_is_removed_before_branching(tmp_path, main_repo):
@@ -139,7 +139,7 @@ def test_dirty_untracked_file_is_removed_before_branching(tmp_path, main_repo):
     assert not wt_onboarding.exists()  # removed by clean; re-created by checkout below
 
     wt.create_branch("no-human/green", base="main")
-    assert wt_onboarding.read_text() == "export default function Onboarding() {}\n"
+    assert wt_onboarding.read_text(encoding="utf-8") == "export default function Onboarding() {}\n"
 
 
 # --------------------------------------------------------------------------- #
@@ -227,7 +227,7 @@ def test_one_tasks_leftovers_cannot_appear_in_another_tasks_workspace(tmp_path, 
 
     assert not wt_a.has_changes(), "task A's own leftover must be gone"
     assert wt_b.has_changes(), "resetting task A must never touch task B's workspace"
-    assert (wt_b.path / "EXPORT_CLASSIFICATION.txt").read_text() == "task-b-leftover\n"
+    assert (wt_b.path / "EXPORT_CLASSIFICATION.txt").read_text(encoding="utf-8") == "task-b-leftover\n"
 
 
 # --------------------------------------------------------------------------- #
@@ -301,7 +301,7 @@ def test_reset_workspace_keeps_ignored_build_artifacts(tmp_path, main_repo):
     assert node_modules.exists(), "node_modules is gitignored — must survive"
     assert plan.exists(), ".no_human is excluded via `clean -fd -e .no_human`"
     assert not scratch.exists(), "a genuinely uncommitted, non-ignored file must be discarded"
-    assert (wt.path / "calc.py").read_text() == "def add(a, b):\n    return a + b\n"
+    assert (wt.path / "calc.py").read_text(encoding="utf-8") == "def add(a, b):\n    return a + b\n"
     assert "scratch.txt" in discarded
     assert "calc.py" in discarded
 

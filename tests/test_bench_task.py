@@ -95,7 +95,7 @@ def test_only_first_user_message_reaches_the_spec(tmp_path):
     t = _transcript(cwd=str(_git_repo(tmp_path)),
                     extra_user=("the fix is to use the session token",))
     (path,) = build_bench_tasks([t], out_dir=tmp_path / "specs")
-    raw = path.read_text()
+    raw = path.read_text(encoding="utf-8")
     assert "Fix the login bug" in raw
     assert "session token" not in raw          # correction content
     assert "auth.py line 42" not in raw        # assistant content
@@ -124,7 +124,7 @@ def test_default_build_dir_is_gitignored():
     assert GENERATED_DIR.parent == NORTHSTAR_DIR
     assert GENERATED_DIR.name == "generated"
     repo_root = NORTHSTAR_DIR.parents[1]
-    gitignore = (repo_root / ".gitignore").read_text()
+    gitignore = (repo_root / ".gitignore").read_text(encoding="utf-8")
     assert "eval/northstar_tasks/generated/" in gitignore
 
     import inspect
@@ -223,7 +223,7 @@ def _results_file(res_dir):
                    key=lambda f: f.stat().st_mtime)
     assert files, "the run recorded no results file"
     import json as _j
-    return _j.loads(files[-1].read_text())
+    return _j.loads(files[-1].read_text(encoding="utf-8"))
 
 def test_cli_bench_run_wiring_end_to_end(tmp_path, monkeypatch):
     """Exercise bench run PAST the no-specs exit (the live baseline launch
@@ -500,7 +500,7 @@ def test_cli_bench_run_checkpoints_and_resumes(tmp_path, monkeypatch):
     CliRunner().invoke(cli, ["bench", "run", "--specs-dir", str(d)])
     ckpts = list(res_dir.glob("progress-*.json"))
     assert len(ckpts) == 1, f"expected one checkpoint, got {ckpts}"
-    ckpt = _json.loads(ckpts[0].read_text())
+    ckpt = _json.loads(ckpts[0].read_text(encoding="utf-8"))
     assert len({s["task_id"] for s in ckpt["scores"]}) >= 2
 
     # Resume: the 2 already-scored specs are skipped.
@@ -607,7 +607,7 @@ def test_a_probe_does_not_delete_another_runs_legacy_checkpoint(tmp_path, monkey
     CliRunner().invoke(cli, ["bench", "run", "--specs-dir", str(d), "--resume"])
 
     assert banked.exists(), "the probe deleted another run's banked checkpoint"
-    survived = _json.loads(banked.read_text())
+    survived = _json.loads(banked.read_text(encoding="utf-8"))
     assert len(survived["scores"]) == 56, "the banked checkpoint was rewritten"
     assert survived["label"] == "expanded-core-v15"
 
@@ -670,7 +670,7 @@ def test_a_run_records_but_publishes_nothing(tmp_path, monkeypatch):
 
     assert not (res_dir / "latest.json").exists(), \
         "a run wrote the gate baseline — publishing must be an explicit act"
-    assert report.read_text() == "PUBLISHED BASELINE — MUST NOT MOVE\n", \
+    assert report.read_text(encoding="utf-8") == "PUBLISHED BASELINE — MUST NOT MOVE\n", \
         "a run overwrote the committed report"
     assert list(res_dir.glob("run-*.json")), "the run recorded no results file"
 
@@ -726,7 +726,7 @@ def test_two_unlabelled_runs_with_different_specs_do_not_share_a_checkpoint(
     assert len(after_corpus) == 1, f"expected one checkpoint, got {after_corpus}"
     corpus_ckpt = after_corpus[0]
     corpus_scores = {s["task_id"] for s in
-                     _json.loads(corpus_ckpt.read_text())["scores"]}
+                     _json.loads(corpus_ckpt.read_text(encoding="utf-8"))["scores"]}
     assert corpus_scores == {"ns-full-1", "ns-full-2"}
 
     _run_dying_on_last(["ns-probe-1", "ns-probe-2"])
@@ -738,7 +738,7 @@ def test_two_unlabelled_runs_with_different_specs_do_not_share_a_checkpoint(
         f"run's resumable state again")
     assert corpus_ckpt.exists(), "the probe deleted the corpus run's checkpoint"
     assert {s["task_id"] for s in
-            _json.loads(corpus_ckpt.read_text())["scores"]} == corpus_scores, \
+            _json.loads(corpus_ckpt.read_text(encoding="utf-8"))["scores"]} == corpus_scores, \
         "the probe overwrote the corpus run's checkpoint"
 
 
@@ -781,7 +781,7 @@ def test_a_superset_run_does_not_consume_another_runs_legacy_checkpoint(
     assert banked.read_bytes() == before, "another run's checkpoint was rewritten"
     # ...and its dead spec must not have contaminated this run's card.
     results = [f for f in res_dir.glob("*.json") if not f.name.startswith("progress")]
-    card = _json.loads(results[0].read_text())
+    card = _json.loads(results[0].read_text(encoding="utf-8"))
     assert card["aggregate"]["dead_specs"] == 0, \
         "adopted a foreign run's zero-token spec into this run's card"
 
@@ -825,7 +825,7 @@ def test_an_owned_legacy_checkpoint_is_resumed_from_but_left_in_place(
     assert banked.exists() and banked.read_bytes() == before, \
         "the legacy checkpoint was consumed instead of copied"
     results = [f for f in res_dir.glob("*.json") if not f.name.startswith("progress")]
-    card = _json.loads(results[0].read_text())
+    card = _json.loads(results[0].read_text(encoding="utf-8"))
     scored = {s["task_id"]: s["nh_tokens"] for s in card["scores"]}
     assert scored == {"ns-a": 999, "ns-b": 5}, \
         f"the checkpointed spec was not carried into the final card: {scored}"
@@ -878,7 +878,7 @@ def test_an_unlabelled_legacy_checkpoint_is_declined_not_guessed_at(
 
     assert banked.read_bytes() == before, "an unlabelled checkpoint was consumed"
     results = [f for f in res_dir.glob("*.json") if not f.name.startswith("progress")]
-    card = _json.loads(results[0].read_text())
+    card = _json.loads(results[0].read_text(encoding="utf-8"))
     assert card["aggregate"]["dead_specs"] == 0, \
         "adopted an unidentifiable checkpoint's zero-token spec into this run"
     assert {s["task_id"] for s in card["scores"]} == {"ns-a", "ns-b"}
@@ -911,7 +911,7 @@ def test_a_same_label_checkpoint_from_a_different_spec_set_is_declined(
 
     assert banked.read_bytes() == before
     results = [f for f in res_dir.glob("*.json") if not f.name.startswith("progress")]
-    card = _json.loads(results[0].read_text())
+    card = _json.loads(results[0].read_text(encoding="utf-8"))
     assert {s["task_id"] for s in card["scores"]} == {"ns-a", "ns-b"}, \
         "a same-label checkpoint from a different spec set leaked into this run"
     scored = {s["task_id"]: s["nh_tokens"] for s in card["scores"]}

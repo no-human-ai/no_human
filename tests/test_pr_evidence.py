@@ -582,7 +582,7 @@ def test_a_real_pr_renders_under_300_visible_words_beyond_its_criteria(
     6,536 (all `<details>` folds, receipts included) to well under 3,000
     (see `test_the_short_section_carries_no_receipt_text` for the exact
     per-receipt check)."""
-    fx = json.loads(_FIXTURE_574.read_text())
+    fx = json.loads(_FIXTURE_574.read_text(encoding="utf-8"))
     orch = _orch(store, tmp_path)
     t = Task.new(fx["title"], repo_path="/r")
     t.acceptance_criteria = fx["acceptance_criteria"]
@@ -796,9 +796,9 @@ def test_the_artifact_is_attempt_scoped_not_task_scoped(store, tmp_path):
         attempt_n=2)
     assert p1 and p2 and p1 != p2, (p1, p2)
     from pathlib import Path
-    assert "pytest -q attempt1" in Path(p1).read_text(), (
+    assert "pytest -q attempt1" in Path(p1).read_text(encoding="utf-8"), (
         "attempt 2's write clobbered attempt 1's artifact file")
-    assert "pytest -q attempt2" in Path(p2).read_text()
+    assert "pytest -q attempt2" in Path(p2).read_text(encoding="utf-8")
 
 
 def test_an_unknown_attempt_number_still_writes_something(store, tmp_path):

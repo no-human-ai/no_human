@@ -316,7 +316,7 @@ class _FakeChecker:
             return _REAL_RUN(argv, **kwargs)  # let git through untouched
         cwd = Path(kwargs["cwd"])
         self.calls.append(cwd)
-        is_after = self.marker in (cwd / "app.py").read_text()
+        is_after = self.marker in (cwd / "app.py").read_text(encoding="utf-8")
         out = self.after_out if is_after else self.base_out
         rc = self.after_rc if is_after else self.base_rc
         if rc is None:
@@ -660,7 +660,7 @@ def test_the_checkout_spends_the_budget_it_uses(tmp_path, monkeypatch):
             return _sp.CompletedProcess(argv, 0, "", "")
         return real_run(argv, **kw)
 
-    def capture(checker, cwd, *, timeout, repo_path=None):
+    def capture(checker, cwd, *, timeout, repo_path=None, notes=None):
         handed.append(timeout)
         return []
 
@@ -1121,3 +1121,155 @@ def test_a_failed_collector_marker_is_never_counted_as_evidence_you_have():
     prompt = _prompt(type_evidence=marker)
     assert marker in prompt
     assert "the net-new type diagnostics" not in prompt
+
+
+# --------------------------------------------------------------------------- #
+# The checker subprocess carries no credential — and says when that costs us   #
+# --------------------------------------------------------------------------- #
+
+def test_the_checker_env_drops_every_secret_shape_not_a_sample():
+    """The keep-list itself, not three hard-coded names.
+
+    Asserting a sample is what let an earlier version of this pass while
+    `drop_foreign_secrets` was called with its MODULE DEFAULT keep-list
+    (`CODEX_CHILD_KEEP`), which keeps `OPENAI_` — and `llm.codex_auth_mode`
+    defaults to `api_key`, so `OPENAI_API_KEY` is a live credential on a real
+    share of installs. It would have reached the reviewed repo's mypy plugin
+    with the whole suite green.
+    """
+    import os as _os
+    from no_human.review.type_evidence import _checker_env
+
+    secrets = {
+        "CLAUDE_CODE_OAUTH_TOKEN": "oauth",
+        "ANTHROPIC_API_KEY": "sk-ant",
+        "OPENAI_API_KEY": "sk-openai",
+        "GITHUB_TOKEN": "ghp",
+        "AWS_SECRET_ACCESS_KEY": "aws",
+        "DATABASE_URL": "postgres://u:p@h/db",
+        "SSH_AUTH_SOCK": "/tmp/agent.sock",
+    }
+    operational = {"PATH", "HOME", "SYSTEMROOT", "TEMP", "TMP", "MYPYPATH"}
+    with patch.dict(_os.environ, secrets, clear=False):
+        env = _checker_env()
+    leaked = sorted(name for name in secrets if name in env)
+    assert leaked == [], f"secrets reached the checker: {leaked}"
+    kept = sorted(n for n in operational if n in _os.environ and n in env)
+    missing = sorted(n for n in operational if n in _os.environ and n not in env)
+    assert missing == [], f"operational vars were dropped: {missing}"
+    assert kept, "nothing operational survived — the checker needs PATH"
+
+
+def test_the_scrub_uses_an_empty_keep_list():
+    """Read over the AST, because the behavioural test above can only sample
+    the names it thought of. `keep=()` is the property: any non-empty keep-list
+    silently readmits a whole namespace."""
+    import ast
+
+    src = Path(__file__).resolve().parents[1] / "src" / "no_human" / "review"
+    tree = ast.parse((src / "type_evidence.py").read_text(encoding="utf-8"))
+    calls = [
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+        and n.func.id == "drop_foreign_secrets"
+    ]
+    assert calls, "type_evidence.py no longer scrubs the checker environment"
+    for call in calls:
+        keep = [kw for kw in call.keywords if kw.arg == "keep"]
+        assert keep, (
+            "drop_foreign_secrets called without `keep=` at line %d, so the "
+            "module default (CODEX_CHILD_KEEP) applies and OPENAI_* survives"
+            % call.lineno
+        )
+        value = keep[0].value
+        assert isinstance(value, ast.Tuple) and not value.elts, (
+            "keep= must be the empty tuple at line %d; a type checker needs no "
+            "credential of any namespace" % call.lineno
+        )
+
+
+def test_a_plugin_that_cannot_import_is_reported_not_swallowed(tmp_path):
+    """The cost of the scrub, made visible on the GATE path.
+
+    A repo whose mypy plugin reads an environment variable we removed
+    (`mypy_django_plugin` imports the settings module, which reads SECRET_KEY /
+    DATABASE_URL) now fails to load it. mypy exits 2, `_run_checker` correctly
+    distrusts the run, and the entire TYPE EVIDENCE section would vanish with
+    nothing above a `log.warning` to say why.
+    """
+    repo = _fixture_repo(tmp_path)
+    _commit_change(repo, "def f() -> str:\n    return 'ok'  # BROKEN\n")
+
+    class _PluginFailure:
+        def __call__(self, argv, **kwargs):
+            if Path(argv[0]).name != "mypy":
+                return _REAL_RUN(argv, **kwargs)
+            return subprocess.CompletedProcess(
+                argv, 2,
+                'mypy.ini:2:1: error: Error importing plugin "myplug": '
+                "'DATABASE_URL'\n",
+                "",
+            )
+
+    with patch("no_human.review.type_evidence.shutil.which", return_value=_FAKE_BIN), \
+         patch("no_human.review.type_evidence.subprocess.run",
+               side_effect=_PluginFailure()):
+        evidence = collect_type_evidence(repo, "HEAD~1", "HEAD")
+
+    assert evidence.ran is False, "a failed run must never be reported as a run"
+    assert evidence.diagnostics == []
+    assert "_checker_env" in evidence.unavailable_reason
+
+    rendered = format_type_evidence(evidence)
+    assert "NOT COLLECTED" in rendered
+    assert "plugin failed to import" in rendered
+    # It must not read as a result about the code.
+    assert "net-new" not in rendered
+    assert "says nothing about whether the diff is type-clean" in rendered
+
+
+def test_an_ordinary_failure_still_renders_absolutely_nothing(tmp_path):
+    """The contract the line above must not erode: only a cause we recognise
+    earns a line. A crash, a timeout or unparseable output stays silent, so
+    absence keeps meaning absence."""
+    repo = _fixture_repo(tmp_path)
+    _commit_change(repo, "def f() -> str:\n    return 'ok'  # BROKEN\n")
+    fake = _FakeChecker(after_out="Traceback (most recent call last):\n",
+                        after_rc=2)
+    evidence = _collect(repo, fake)
+    assert evidence.ran is False
+    assert evidence.unavailable_reason == ""
+    assert format_type_evidence(evidence) == ""
+
+
+def test_a_not_collected_block_is_not_counted_as_evidence_the_prompt_carries():
+    """The READING SCOPE sentence must never announce a check that did not run.
+
+    This is the failure mode the collector's ceilings are written against, and
+    it nearly came back through the front door: `_reading_scope` decides what
+    the prompt "already carries" by testing each evidence string for
+    EMPTINESS, and the NOT-COLLECTED block is a non-empty string. Without the
+    prefix exclusion the reviewer is told it has the net-new type diagnostics,
+    and told not to re-derive them, for a diff nothing type-checked.
+    """
+    from no_human.review.type_evidence import NOT_COLLECTED_PREFIX
+
+    block = format_type_evidence(
+        TypeEvidence(unavailable_reason="the repo's own plugin failed to import")
+    )
+    assert block.startswith(NOT_COLLECTED_PREFIX)
+
+    prompt = _prompt(type_evidence=block)
+    assert block in prompt, "the reason must still reach the reviewer"
+    assert "the net-new type diagnostics" not in prompt, (
+        "READING SCOPE claimed type evidence for a collector that did not run"
+    )
+
+
+def test_real_type_evidence_is_still_counted_as_evidence_the_prompt_carries():
+    """The other half — the exclusion must not silence a real result."""
+    block = format_type_evidence(
+        TypeEvidence(ran=True, checker="mypy", diagnostics=[], after_total=2)
+    )
+    prompt = _prompt(type_evidence=block)
+    assert "the net-new type diagnostics" in prompt

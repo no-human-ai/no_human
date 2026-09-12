@@ -162,7 +162,11 @@ FROZEN_FUNCTION_LINES = {
     # single-write invariant accurately instead of the old "may already have
     # written its own copy" hedge. Measured on this tree with the scanner
     # below.
-    "core/orchestrator.py:Orchestrator._run_attempt": 2254,
+    # 2254 -> 2261 (+7): #114 phase 2 — the `_build_type_hook` call site
+    # and its anchored comment, `type_hook` reaching
+    # `_compose_post_tool_hooks`, and the widened `backend_degraded`
+    # condition. Re-measured on the merge result.
+    "core/orchestrator.py:Orchestrator._run_attempt": 2261,
     # 760 -> 778 (+18): dispatch-time intake-eval hoisted path — the `elif
     # ctx.get("eval_result")` branch that acts on a grill/wizard-stored
     # verdict (idempotency marker, cost/residual-gap comments) added inside
@@ -452,7 +456,10 @@ FROZEN_FUNCTION_CC = {
     # guarding TESTING's own red `tests` emit so it only fires when this
     # step is NOT reusing the pre-review block's render. Measured on this
     # tree with the scanner below.
-    "core/orchestrator.py:Orchestrator._run_attempt": 250,
+    # 250 -> 251 (+1): #114 phase 2 adds `or type_hook is not None` to the
+    # `backend_degraded` condition, so that BoolOp carries one more value.
+    # Re-measured on the merge result.
+    "core/orchestrator.py:Orchestrator._run_attempt": 251,
     # Landing of 4e0299ad: unchanged at 115 — the harness row is dropped by
     # the comprehension filter inside `_reviewer_items`, which the scanner
     # counts the same as the `if` it replaced (the first landing pass had a
@@ -1183,7 +1190,11 @@ FROZEN_FILE_LINES = {
     # the scanner's own metric (ast/splitlines-based, not `wc -l` — this
     # file has a few non-`\n` line separators that make the two differ
     # by a constant 3 lines).
-    "core/orchestrator.py": 23846,
+    # 23846 -> 23893 (+47): #114 phase 2 — `_build_type_hook`, its call
+    # site, the `type_hook` parameter threaded through both PostToolUse
+    # compose helpers, and the order docstring recording why the type
+    # hook runs ahead of the scope guard. Re-measured on the merge result.
+    "core/orchestrator.py": 23893,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.
@@ -1633,7 +1644,10 @@ FROZEN_FILE_LINES = {
     # probe `nh start`/the API lifespan use to detect a missing credential
     # without triggering the scrub. Measured on this tree with the scanner
     # below.
-    "config.py": 3646,
+    # 3646 -> 3657 (+11): the `hooks.per_edit_type` default (#114 phase 2)
+    # and the comment recording why it ships off while `per_edit_lint`
+    # ships on. Re-measured on the merge result.
+    "config.py": 3657,
     # +61: the tamper-adjudication one-bounded-retry contract (mechanical-
     # failure classification + the extracted `_review_tamper_adjudication`
     # helper that keeps `AdversarialReviewer.review` itself under the
@@ -1695,7 +1709,13 @@ FROZEN_FILE_LINES = {
     # `_build_review_prompt` entry above — nothing executable changed, and
     # the whole rewritten block lies inside that function, so the file and
     # the function move by the same amount.
-    "review/reviewer.py": 3084,
+    # 3084 -> 3098 (+14): #114 phase 2 review round — `_reading_scope` must
+    # not count a NOT-COLLECTED type block as evidence the prompt carries
+    # (it is non-empty, so the emptiness test alone announced type
+    # diagnostics for a collector that never ran). The multi-line import
+    # of `NOT_COLLECTED_PREFIX`, the added condition and the comment
+    # recording why. Measured on the merge result with the scanner below.
+    "review/reviewer.py": 3098,
     # 2706 -> 2711 (+5): pre-existing red on main at 03b262d23 (e922e9b4's
     # landing, change-scoped tests missed the ratchet) — repaired, measured,
     # on this merge; same cause as the two function-level wake.py bumps above.
@@ -1839,7 +1859,7 @@ def scan_tree(root: Path) -> tuple[dict[str, int], dict[str, int], dict[str, int
     files = sorted(root.rglob("*.py"))
     for path in files:
         rel = path.relative_to(root).as_posix()
-        entries, lines = scan_source(path.read_text(), rel)
+        entries, lines = scan_source(path.read_text(encoding="utf-8"), rel)
         total_functions += len(entries)
         if lines > MAX_FILE_LINES:
             file_lines[rel] = lines
@@ -2131,7 +2151,7 @@ def test_the_whole_walk_finishes_under_five_seconds():
 
 
 def test_verification_doc_names_this_guard_and_its_thresholds():
-    doc = (REPO_ROOT / "docs" / "verification.md").read_text()
+    doc = (REPO_ROOT / "docs" / "verification.md").read_text(encoding="utf-8")
     assert "test_structural_budget.py" in doc
     assert "300" in doc
     assert "60" in doc

@@ -84,4 +84,4 @@ def test_restores_file_when_a_duplicate_write_would_result(tmp_path, monkeypatch
     p = _seed(tmp_path, seed)
     with pytest.raises(AuthError, match=r"duplicate top-level key.*'concurrency'"):
         set_concurrency(p, max_workers=8)
-    assert p.read_text() == seed
+    assert p.read_text(encoding="utf-8") == seed

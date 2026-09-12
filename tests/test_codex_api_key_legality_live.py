@@ -117,7 +117,7 @@ def test_api_key_mode_starts_only_when_the_cli_reports_an_api_key_session(monkey
     mode = cred_path.stat().st_mode & 0o777
     assert mode == 0o600, f"credential file mode is {oct(mode)}, want 0o600"
 
-    payload = json.loads(cred_path.read_text())
+    payload = json.loads(cred_path.read_text(encoding="utf-8"))
     assert payload["auth_mode"] == "apikey"
     assert payload["OPENAI_API_KEY"] == "sk-bogus-000"
 

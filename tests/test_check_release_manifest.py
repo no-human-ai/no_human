@@ -210,8 +210,9 @@ def test_a_manifest_listing_itself_fails(tmp_path):
     repo = make_repo(tmp_path)
     write_manifest(repo)
     manifest = repo / "RELEASE_MANIFEST.txt"
-    manifest.write_text(manifest.read_text()
-                        + "0" * 64 + "  RELEASE_MANIFEST.txt\n")
+    manifest.write_text(manifest.read_text(encoding="utf-8")
+                        + "0" * 64 + "  RELEASE_MANIFEST.txt\n",
+                        encoding="utf-8")
     proc = run("--root", str(repo))
     assert proc.returncode == 1, proc.stdout + proc.stderr
     assert "lists itself" in proc.stderr
@@ -222,7 +223,8 @@ def test_a_malformed_row_is_an_error_not_a_skip(tmp_path):
     repo = make_repo(tmp_path)
     write_manifest(repo)
     manifest = repo / "RELEASE_MANIFEST.txt"
-    manifest.write_text(manifest.read_text() + "not-a-hash  pkg/a.py2\n")
+    manifest.write_text(manifest.read_text(encoding="utf-8") + "not-a-hash  pkg/a.py2\n",
+                        encoding="utf-8")
     proc = run("--root", str(repo))
     assert proc.returncode != 0, proc.stdout + proc.stderr
     assert "cannot parse" in proc.stderr
@@ -233,7 +235,7 @@ def test_write_omits_the_manifest_itself_and_sorts_rows(tmp_path):
     write_manifest(repo)
     subprocess.check_call(["git", "add", "RELEASE_MANIFEST.txt"], cwd=str(repo))
     write_manifest(repo)   # second pass, with the manifest now tracked
-    rows = [l for l in (repo / "RELEASE_MANIFEST.txt").read_text().splitlines()
+    rows = [l for l in (repo / "RELEASE_MANIFEST.txt").read_text(encoding="utf-8").splitlines()
             if l and not l.startswith("#")]
     paths = [r.split("  ", 1)[1] for r in rows]
     assert "RELEASE_MANIFEST.txt" not in paths
@@ -264,7 +266,7 @@ def test_write_is_unguarded_where_there_is_no_classification(tmp_path):
 
     manifest = repo / "RELEASE_MANIFEST.txt"
     assert manifest.exists()
-    rows = [l for l in manifest.read_text().splitlines()
+    rows = [l for l in manifest.read_text(encoding="utf-8").splitlines()
             if l and not l.startswith("#")]
     parsed = [r.split("  ", 1) for r in rows]
     assert [rel for _, rel in parsed] == ["README.md", "pkg/a.py"]
@@ -529,7 +531,7 @@ def test_write_recovers_a_manifest_left_mid_merge(tmp_path):
     proc = run("--root", str(repo), "--write")
     assert proc.returncode == 0, proc.stdout + proc.stderr
 
-    written = (repo / "RELEASE_MANIFEST.txt").read_text()
+    written = (repo / "RELEASE_MANIFEST.txt").read_text(encoding="utf-8")
     assert "<<<<<<<" not in written
     assert ">>>>>>>" not in written
     assert "=======" not in written

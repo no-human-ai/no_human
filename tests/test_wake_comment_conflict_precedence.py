@@ -237,7 +237,7 @@ def test_every_pr_watch_ladder_kind_has_a_board_label():
 
     labels = Path(__file__).resolve().parents[1] / "web" / "src" / "eventLabels.js"
     assert labels.is_file(), f"{labels} is missing — the board label map moved"
-    text = labels.read_text()
+    text = labels.read_text(encoding="utf-8")
 
     # This guard owns exactly one question — WHICH kinds must have a label —
     # because MECHANISMS is the authoritative list and it is Python.
