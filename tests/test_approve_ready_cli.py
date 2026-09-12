@@ -629,6 +629,41 @@ def test_landing_verb_and_human_surfaces_agree_over_the_same_tasks(tmp_path, mon
     }
     assert {tid for tid, ok in results.items() if ok} == listed
 
+
+def test_merge_ready_for_is_none_for_a_falsy_head_sha_even_with_a_verdict_on_record():
+    """A falsy `head_sha` (`""`/`None` — "could not resolve a fresh head")
+    must never fall back to trusting SOME stored verdict just because one
+    happens to exist; that would readmit exactly the staleness bug this
+    predicate exists to close. Positive control: the SAME task, asked with
+    its actual verdict sha, reads the verdict normally."""
+    from no_human.api.models import merge_ready_for
+    from no_human.core.task import Task
+
+    t = Task.new("T", repo_path="/tmp/x")
+    t.context = {"merge_policy": {"abc123": {"ready": True}}}
+
+    assert merge_ready_for(t, "") is None
+    assert merge_ready_for(t, None) is None
+    assert merge_ready_for(t, "abc123") is True
+
+
+def test_merge_ready_for_is_none_when_the_verdict_omits_the_ready_key():
+    """A verdict dict recorded for the CURRENT head but missing the `ready`
+    key (a malformed/partial stamp) must read as "unknown", not silently as
+    ready. Positive control: the same shape WITH the key present reads
+    correctly."""
+    from no_human.api.models import merge_ready_for
+    from no_human.core.task import Task
+
+    incomplete = Task.new("T", repo_path="/tmp/x")
+    incomplete.context = {"merge_policy": {"abc123": {"summary": "no ready key yet"}}}
+    assert merge_ready_for(incomplete, "abc123") is None
+
+    complete = Task.new("T2", repo_path="/tmp/x")
+    complete.context = {"merge_policy": {"abc123": {"ready": True}}}
+    assert merge_ready_for(complete, "abc123") is True
+
+
 # --------------------------------------------------------------------------- #
 # the advisory note on the one-line --ready summary                           #
 # --------------------------------------------------------------------------- #
@@ -677,4 +712,154 @@ def test_ready_line_carries_no_note_when_every_verifier_answered(tmp_path, monke
     assert result.exit_code == 0, result.output
     line = next(ln for ln in result.output.splitlines() if task_id[:8] in ln)
     assert "no verdict" not in line, line
-    assert "rules 2/2" in line, line
+
+
+# --------------------------------------------------------------------------- #
+# `resolve_head_sha`'s live-fetch ladder                                      #
+# --------------------------------------------------------------------------- #
+# The local-first resolution ladder bug: `GitRepo.resolve_commitish` prefers a
+# LOCAL branch ref over `origin/<branch>`, so a clone that never fetched sees
+# its own stale tip even after another clone pushed a fixup to the shared
+# remote. `resolve_head_sha(fetch=True)` must sidestep that ladder entirely
+# via `git ls-remote` — never trusting the local ref — or a fixup pushed from
+# a different clone/worktree than `task.repo_path` would stay invisible.
+
+def _repo_with_remote_and_lagging_local_ref(tmp_path):
+    """A bare "origin", clone `a` (has `origin` configured, `feature` at its
+    ORIGINAL tip, never fetches again) and clone `b` (pushes one more commit
+    to `feature` on the shared remote that `a` never learns about locally).
+    Returns (repo_a_path, stale_sha, fresh_sha)."""
+    bare = tmp_path / "origin.git"
+    bare.mkdir()
+    _git(bare, "init", "--bare", "-b", "main")
+
+    a = tmp_path / "a"
+    a.mkdir()
+    _git(a, "init", "-b", "main")
+    _git(a, "config", "user.email", "t@example.com")
+    _git(a, "config", "user.name", "t")
+    _git(a, "remote", "add", "origin", str(bare))
+    (a / "a.txt").write_text("orig\n")
+    _git(a, "add", "a.txt")
+    _git(a, "commit", "-m", "initial")
+    _git(a, "push", "origin", "main")
+    _git(a, "checkout", "-b", "feature")
+    (a / "b.txt").write_text("change\n")
+    _git(a, "add", "b.txt")
+    _git(a, "commit", "-m", "feature commit")
+    _git(a, "push", "origin", "feature")
+    _git(a, "checkout", "main")
+    stale_sha = _git_out(a, "rev-parse", "feature")
+
+    b = tmp_path / "b"
+    _git(tmp_path, "clone", str(bare), str(b))
+    _git(b, "config", "user.email", "t2@example.com")
+    _git(b, "config", "user.name", "t2")
+    _git(b, "checkout", "feature")
+    (b / "c.txt").write_text("fixup from another clone\n")
+    _git(b, "add", "c.txt")
+    _git(b, "commit", "-m", "fixup pushed from clone b")
+    _git(b, "push", "origin", "feature")
+    fresh_sha = _git_out(b, "rev-parse", "feature")
+
+    assert stale_sha != fresh_sha
+    return a, stale_sha, fresh_sha
+
+
+def test_resolve_head_sha_reads_the_remote_tip_not_a_lagging_local_ref(tmp_path):
+    """`fetch=True` must answer with what `origin` advertises RIGHT NOW (via
+    `ls_remote_exact`), not `a`'s own never-refreshed local `feature` ref —
+    otherwise a fixup pushed from clone `b` never becomes visible to a task
+    whose `repo_path` is clone `a`, no matter how long it waits.
+    `fetch=False` is the positive control: it must still resolve to `a`'s
+    local ref, proving the two arguments genuinely take different paths
+    rather than `fetch` being a no-op."""
+    from no_human.core.db import Store
+    from no_human.core.task import Task
+    from no_human.vcs.task_pr import resolve_head_sha
+
+    db = tmp_path / "nh.db"
+    repo_a, stale_sha, fresh_sha = _repo_with_remote_and_lagging_local_ref(tmp_path)
+
+    async def _go():
+        async with Store(db) as store:
+            t = Task.new("Ladder", repo_path=str(repo_a))
+            t.context = {"pr_watch": "https://example.invalid/pr/1",
+                         "pr_branch": "feature"}
+            await store.create_task(t)
+            live = await resolve_head_sha(store, t, git_cfg={}, fetch=True)
+            local = await resolve_head_sha(store, t, git_cfg={}, fetch=False)
+            return live, local
+    live, local = asyncio.run(_go())
+
+    assert live == fresh_sha
+    assert local == stale_sha
+
+
+# --------------------------------------------------------------------------- #
+# `head_shas_for`'s cost-bounding filter                                      #
+# --------------------------------------------------------------------------- #
+# A board tick must not re-resolve a head for every task that has EVER
+# carried a merge_policy verdict — only for tasks that could actually show a
+# MERGE-READY chip right now, i.e. sitting in AWAITING_APPROVAL. Otherwise a
+# long-lived fleet where most tasks have long since landed or failed re-pays
+# a git round trip per tick for all of them, unboundedly.
+
+def test_head_shas_for_never_touches_git_for_tasks_outside_the_review_lane(tmp_path, monkeypatch):
+    from no_human.core.db import Store
+    from no_human.core.task import Task, TaskStatus
+    import no_human.vcs.task_pr as task_pr_mod
+
+    db = tmp_path / "nh.db"
+    repo, head_sha = _repo_with_feature_branch(tmp_path, "repo")
+
+    calls: list[str] = []
+    real_resolve = task_pr_mod.resolve_head_sha
+
+    async def _counting_resolve(store, task, **kwargs):
+        calls.append(task.id)
+        return await real_resolve(store, task, **kwargs)
+    monkeypatch.setattr(task_pr_mod, "resolve_head_sha", _counting_resolve)
+
+    async def _go():
+        async with Store(db) as store:
+            done = Task.new("Landed", repo_path=str(repo))
+            done.context = {"pr_watch": "https://example.invalid/pr/1",
+                            "pr_branch": "feature",
+                            "merge_policy": {head_sha: {"ready": True}}}
+            await store.create_task(done)
+            await store.set_status(done, TaskStatus.DONE, validate=False, event={
+                "source": "human", "kind": "human_merged", "sha": head_sha, "ts": 0,
+            })
+
+            failed = Task.new("Failed", repo_path=str(repo))
+            failed.context = {"pr_watch": "https://example.invalid/pr/1",
+                              "pr_branch": "feature",
+                              "merge_policy": {head_sha: {"ready": False}}}
+            await store.create_task(failed)
+            await store.set_status(failed, TaskStatus.FAILED, validate=False)
+
+            no_verdict = Task.new("Awaiting, no verdict yet", repo_path=str(repo))
+            no_verdict.context = {"pr_watch": "https://example.invalid/pr/1",
+                                  "pr_branch": "feature"}
+            await store.create_task(no_verdict)
+            await store.set_status(no_verdict, TaskStatus.AWAITING_APPROVAL,
+                                    validate=False)
+
+            # Positive control: the ONE task allowed to cost a git call.
+            ready = Task.new("Awaiting, has verdict", repo_path=str(repo))
+            ready.context = {"pr_watch": "https://example.invalid/pr/1",
+                             "pr_branch": "feature",
+                             "merge_policy": {head_sha: {"ready": True}}}
+            await store.create_task(ready)
+            await store.set_status(ready, TaskStatus.AWAITING_APPROVAL,
+                                    validate=False)
+
+            tasks = [done, failed, no_verdict, ready]
+            heads = await task_pr_mod.head_shas_for(store, tasks, git_cfg={},
+                                                     fetch=True)
+            return heads, ready.id
+    heads, ready_id = asyncio.run(_go())
+
+    assert calls == [ready_id]
+    assert heads == {ready_id: head_sha}

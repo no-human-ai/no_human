@@ -365,6 +365,112 @@ async def test_merge_ready_field_is_none_when_the_head_moved_past_the_verdict(cl
 
 
 @pytest.mark.asyncio
+async def test_subtask_summaries_carry_a_fresh_merge_ready_field(client, store, tmp_path):
+    """`GET /api/tasks/{id}/subtasks` (`list_subtasks` in api/app.py) must
+    resolve each subtask's head the same way `_board_tasks` does — a subtask
+    is exactly as capable of showing a MERGE-READY chip as a top-level task,
+    so a verdict stamped for a subtask's current head must read ready there,
+    and must stop the moment its branch moves past that sha (same freshness
+    rule, same surface agreement, just reached through the subtask route
+    instead of the top-level list)."""
+    parent = Task.new("Compound parent", repo_path="/tmp/parent-repo")
+    await store.create_task(parent)
+
+    repo, head_sha = _repo_with_branch(tmp_path, "repo-subtask")
+    child = Task.new("Compound child", repo_path=str(repo), parent_id=parent.id)
+    child.context = {"pr_watch": "https://example.invalid/pr/1", "pr_branch": "feature"}
+    await store.create_task(child)
+    await store.set_status(child, TaskStatus.AWAITING_APPROVAL, validate=False)
+    await store.merge_context(child.id, {
+        "merge_policy": {head_sha: {"ready": True, "summary": "ready — 1 of 1 rules satisfied"}}})
+
+    r = await client.get(f"/api/tasks/{parent.id}/subtasks")
+    assert r.status_code == 200
+    (item,) = r.json()
+    assert item["id"] == child.id
+    assert item["merge_ready"] is True
+
+    _git(repo, "checkout", "feature")
+    (repo / "c.txt").write_text("more change\n")
+    _git(repo, "add", "c.txt")
+    _git(repo, "commit", "-m", "fixup commit")
+    _git(repo, "checkout", "main")
+
+    r2 = await client.get(f"/api/tasks/{parent.id}/subtasks")
+    (item2,) = r2.json()
+    assert item2["merge_ready"] is None
+
+
+def _repo_with_remote_and_lagging_local_ref(tmp_path):
+    """A bare "origin", clone `a` (has `origin` configured, `feature` at its
+    ORIGINAL tip, never fetches again) and clone `b` (pushes one more commit
+    to `feature` on the shared remote that `a` never learns about locally) —
+    mirrors `tests/test_approve_ready_cli.py`'s helper of the same name.
+    Returns (repo_a_path, stale_sha, fresh_sha)."""
+    bare = tmp_path / "origin.git"
+    bare.mkdir()
+    _git(bare, "init", "--bare", "-b", "main")
+
+    a = tmp_path / "a"
+    a.mkdir()
+    _git(a, "init", "-b", "main")
+    _git(a, "config", "user.email", "t@example.com")
+    _git(a, "config", "user.name", "t")
+    _git(a, "remote", "add", "origin", str(bare))
+    (a / "a.txt").write_text("orig\n")
+    _git(a, "add", "a.txt")
+    _git(a, "commit", "-m", "initial")
+    _git(a, "push", "origin", "main")
+    _git(a, "checkout", "-b", "feature")
+    (a / "b.txt").write_text("change\n")
+    _git(a, "add", "b.txt")
+    _git(a, "commit", "-m", "feature commit")
+    _git(a, "push", "origin", "feature")
+    _git(a, "checkout", "main")
+    stale_sha = _git(a, "rev-parse", "feature")
+
+    b = tmp_path / "b"
+    _git(tmp_path, "clone", str(bare), str(b))
+    _git(b, "config", "user.email", "t2@example.com")
+    _git(b, "config", "user.name", "t2")
+    _git(b, "checkout", "feature")
+    (b / "c.txt").write_text("fixup from another clone\n")
+    _git(b, "add", "c.txt")
+    _git(b, "commit", "-m", "fixup pushed from clone b")
+    _git(b, "push", "origin", "feature")
+    fresh_sha = _git(b, "rev-parse", "feature")
+
+    assert stale_sha != fresh_sha
+    return a, stale_sha, fresh_sha
+
+
+@pytest.mark.asyncio
+async def test_board_list_resolves_the_remote_tip_not_a_lagging_local_clone(client, store, tmp_path):
+    """`_board_tasks` (`GET /api/tasks`) must call `head_shas_for` with
+    `fetch=True` meaningfully — reading `origin`'s live advertised tip via
+    `git ls-remote`, not the task's own clone's un-refreshed local ref. A
+    fixup pushed from a DIFFERENT clone than `task.repo_path` must be
+    visible on the board immediately: a verdict stamped for the now-stale
+    local tip must stop reading ready, and a verdict stamped for the new
+    remote tip must start."""
+    repo_a, stale_sha, fresh_sha = _repo_with_remote_and_lagging_local_ref(tmp_path)
+    t = await _pr_task(store, title="Ladder", repo_path=repo_a)
+    await store.merge_context(t.id, {
+        "merge_policy": {stale_sha: {"ready": True, "summary": "ready — 1 of 1 rules satisfied"}}})
+
+    r = await client.get("/api/tasks")
+    assert r.status_code == 200
+    (item,) = r.json()
+    assert item["merge_ready"] is None
+
+    await store.merge_context(t.id, {
+        "merge_policy": {fresh_sha: {"ready": True, "summary": "ready — 1 of 1 rules satisfied"}}})
+    r2 = await client.get("/api/tasks")
+    (item2,) = r2.json()
+    assert item2["merge_ready"] is True
+
+
+@pytest.mark.asyncio
 async def test_merge_ready_query_filter_returns_only_ready_tasks(client, store, tmp_path):
     """`?merge_ready=1` is a truthy-only filter: not-ready and
     never-evaluated tasks are both excluded, and the unfiltered list still
