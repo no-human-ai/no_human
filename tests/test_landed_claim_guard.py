@@ -140,6 +140,47 @@ def test_refusal_names_the_commit_and_the_branch():
     assert "is not an ancestor of" in message
 
 
+def test_refusal_emits_a_landed_claim_refused_event():
+    """Send-back (fourth review, surviving mutant): nothing in this file
+    previously asserted the `on_event(...)` call inside `hook()` even runs —
+    deleting it left every other assertion here green. `on_event` is how the
+    refusal reaches the run's own event/telemetry stream (the orchestrator
+    wires it to `self.emit`, see `_build_landed_claim_guard`); a silently
+    dropped emit call would make a refused claim invisible to anything
+    watching that stream even though the injection still landed."""
+    sha = "1234567890abcdef1234567890abcdef12345678"
+    probe = _real_probe(_FakeRepo(ancestor=False), lambda: sha)
+    events: list[tuple[str, str, dict]] = []
+
+    def on_event(kind, detail, **kw):
+        events.append((kind, detail, kw))
+
+    guard = LandedClaimGuard(probe=probe, head_sha=lambda: sha, on_event=on_event)
+    guard.note_text(f"already satisfied: the work already exists at {sha}")
+    result = _run(guard.hook({}, None, None))
+    assert result, "the refusal itself must still fire"
+    assert len(events) == 1, "exactly one event per refused claim"
+    kind, detail, kw = events[0]
+    assert kind == "landed_claim_refused"
+    assert "is not an ancestor of" in detail
+    assert kw.get("sha") == sha
+
+
+def test_a_raising_on_event_does_not_swallow_the_injection():
+    async def probe() -> tuple[bool, str, str]:
+        return (True, "deadbeef", "deadbeef is not an ancestor of main")
+
+    def raising_on_event(kind, detail, **kw):
+        raise RuntimeError("sink is down")
+
+    guard = LandedClaimGuard(
+        probe=probe, head_sha=lambda: "deadbeef", on_event=raising_on_event)
+    guard.note_text("this is already implemented in abc1234def")
+    result = _run(guard.hook({}, None, None))
+    assert result, "a broken telemetry sink must not cancel the refusal itself"
+    assert "hookSpecificOutput" in result
+
+
 # --- continues, does not end -------------------------------------------------
 
 def test_refusal_never_aborts_the_session():
@@ -198,6 +239,30 @@ def test_detect_claim_assertion_extracts_named_sha_and_falls_back_to_head():
 )
 def test_ordinary_prose_is_not_a_claim(text):
     assert detect_claim_assertion(text) is None
+
+
+@pytest.mark.parametrize(
+    "text, expected_sha",
+    [
+        ("this is already implemented at `abc1234def`", "abc1234def"),
+        ("this is already implemented at `abc1234def`.", "abc1234def"),
+        (
+            "already satisfied: committed as "
+            "`1234567890abcdef1234567890abcdef12345678`",
+            "1234567890abcdef1234567890abcdef12345678",
+        ),
+    ],
+)
+def test_a_backticked_sha_is_read_as_the_named_sha(text, expected_sha):
+    """(Recall nit) a coder narrating a claim in markdown routinely fences
+    the sha in backticks. The closing backtick sits right up against the
+    hex token with no trailing word character, so a plain `\\b` after an
+    *optional* backtick never fires there — the fix anchors the trailing
+    boundary on whichever delimiter (backtick or bare word edge) is
+    actually present instead of assuming a word boundary in both cases."""
+    assertion = detect_claim_assertion(text)
+    assert assertion is not None
+    assert assertion.sha == expected_sha
 
 
 def test_unrelated_hex_token_before_the_claim_is_not_the_named_sha():
@@ -335,13 +400,18 @@ def test_note_text_never_raises():
         return (True, "deadbeef", "deadbeef is not an ancestor of main")
 
     guard2 = LandedClaimGuard(probe=probe, head_sha=raising_head_sha)
-    guard2.note_text("the work is already there, nothing to do")  # no named sha, head_sha raises
-    # Send-back (third review, vacuous second half): `hook()` returning `{}`
-    # here is also what a *successful* latch that simply wasn't refuted would
-    # look like, so it alone doesn't prove `note_text` failed to latch. Pin
-    # the actual claim: a raising `head_sha` must leave nothing pending, so
-    # `hook()` never even calls the probe.
+    # Send-back (fourth review): the previous text here ("the work is
+    # already there, nothing to do") carries neither a cued sha nor the
+    # ALREADY-SATISFIED marker, so `_is_actionable_claim` already returns
+    # `None` for it and `_note_text` returns before ever calling
+    # `head_sha()` — the assertion below would pass even if `head_sha`
+    # never raised at all. Use a cued-sha claim so the actionable gate is
+    # actually cleared and the call reaches (and must survive) the raising
+    # `head_sha`.
+    guard2.note_text("this is already implemented in abc1234def")
     assert guard2._pending_head is None, (
         "a raising head_sha must never leave a pending injection latched")
+    assert probe_calls == [], (
+        "a raising head_sha must short-circuit before the probe is ever built")
     assert _run(guard2.hook({}, None, None)) == {}
     assert probe_calls == [], "hook() must not probe when head_sha raised in note_text"
