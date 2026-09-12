@@ -440,11 +440,11 @@ def _append(event: dict[str, Any]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         lines: list[str] = []
         if path.exists():
-            lines = [ln for ln in path.read_text().splitlines() if ln.strip()]
+            lines = [ln for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
         lines.append(json.dumps(event, separators=(",", ":")))
         if len(lines) > MAX_QUEUE_LINES:
             lines = lines[-MAX_QUEUE_LINES:]  # drop-oldest
-        path.write_text("\n".join(lines) + "\n")
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def _spawn_flush(section: dict[str, Any]) -> None:
@@ -556,7 +556,7 @@ def flush(section: dict[str, Any] | None = None,
         with _LOCK:
             if not path.exists():
                 return 0
-            lines = [ln for ln in path.read_text().splitlines() if ln.strip()]
+            lines = [ln for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
             batch_lines = lines[:FLUSH_BATCH]
         if not batch_lines:
             return 0
@@ -594,11 +594,11 @@ def flush(section: dict[str, Any] | None = None,
             with _LOCK:
                 current = []
                 if path.exists():
-                    current = [ln for ln in path.read_text().splitlines()
+                    current = [ln for ln in path.read_text(encoding="utf-8").splitlines()
                                if ln.strip()]
                 dropped = set(batch_lines)
                 kept = [ln for ln in current if ln not in dropped]
-                path.write_text("\n".join(kept) + "\n" if kept else "")
+                path.write_text("\n".join(kept) + "\n" if kept else "", encoding="utf-8")
             return 0
         from . import __version__  # the same string `nh --version` prints
         if kind == "posthog":
@@ -620,13 +620,13 @@ def flush(section: dict[str, Any] | None = None,
             # Only what we sent is removed; anything queued meanwhile stays.
             current = []
             if path.exists():
-                current = [ln for ln in path.read_text().splitlines() if ln.strip()]
+                current = [ln for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
             sent = set(batch_lines)
             kept = [ln for ln in current if ln not in sent]
             if kept:
-                path.write_text("\n".join(kept) + "\n")
+                path.write_text("\n".join(kept) + "\n", encoding="utf-8")
             else:
-                path.write_text("")
+                path.write_text("", encoding="utf-8")
         return len(events)
     except Exception:
         return 0  # fail-open: events stay queued

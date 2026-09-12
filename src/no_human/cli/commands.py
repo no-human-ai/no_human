@@ -163,7 +163,7 @@ def _pidfile_owner_alive() -> bool:
     """
     from ..config import NO_HUMAN_HOME
     try:
-        pid = int((NO_HUMAN_HOME / "nh.pid").read_text().strip())
+        pid = int((NO_HUMAN_HOME / "nh.pid").read_text(encoding="utf-8").strip())
     except (OSError, ValueError):
         return False
     # `_probe_pid` is tri-state (True/False/None-for-another-user's-pid); only
@@ -2351,7 +2351,7 @@ def config_cmd(action, key, extra):
         console.print(f"[yellow]no config file at {_cfg_path}[/]\n"
                        "Run [bold]nh init[/] to create one.")
         return
-    data = _yaml.safe_load(_cfg_path.read_text()) or {}
+    data = _yaml.safe_load(_cfg_path.read_text(encoding="utf-8")) or {}
     if key:
         parts = key.split(".")
         node = data
@@ -6220,7 +6220,7 @@ def learnings(confirm_id, reject_id, active, harvest, harvest_project,
                     "archived_ids": archived_ids,
                     "before_pending": before_pending,
                     "after_pending": after_pending,
-                }, indent=2))
+                }, indent=2), encoding="utf-8")
                 console.print(f"[dim]receipt: {receipt_path}[/]", emoji=False)
                 return
             if confirm_id:
@@ -6459,7 +6459,7 @@ def _acquire_pid_lock() -> bool:
 
     if lock_path.exists():
         try:
-            old_pid = int(lock_path.read_text().strip())
+            old_pid = int(lock_path.read_text(encoding="utf-8").strip())
             # Check if the old process is still alive — WITHOUT signalling it.
             alive = _probe_pid(old_pid)
         except (ValueError, OSError):
@@ -6470,7 +6470,7 @@ def _acquire_pid_lock() -> bool:
         # to reason about, so the lock is taken. Unchanged from the POSIX
         # behaviour, where PermissionError fell into the same branch.
 
-    lock_path.write_text(str(os.getpid()))
+    lock_path.write_text(str(os.getpid()), encoding="utf-8")
     return True
 
 
@@ -6479,7 +6479,7 @@ def _release_pid_lock() -> None:
     lock_path = NO_HUMAN_HOME / "nh.pid"
     try:
         if lock_path.exists():
-            pid = int(lock_path.read_text().strip())
+            pid = int(lock_path.read_text(encoding="utf-8").strip())
             if pid == os.getpid():
                 lock_path.unlink(missing_ok=True)
     except (ValueError, OSError):
@@ -7187,7 +7187,7 @@ def _stop_server(timeout: float) -> int:
         return 1
 
     try:
-        pid = int(lock_path.read_text().strip())
+        pid = int(lock_path.read_text(encoding="utf-8").strip())
     except ValueError:
         console.print("[yellow]stale pidfile[/] (unreadable) — cleaning up")
         lock_path.unlink(missing_ok=True)
@@ -8156,7 +8156,7 @@ def bench_publish(results_file: str, force: bool):
     if not refusals:
         card.save(published_file())
     REPORT_MD.parent.mkdir(parents=True, exist_ok=True)
-    REPORT_MD.write_text(md)
+    REPORT_MD.write_text(md, encoding="utf-8")
     agg = card.as_dict()["aggregate"]
     if refusals:
         console.print("[bold yellow]published WITH --force over:[/]")
@@ -8194,7 +8194,7 @@ def _load_results_json(name: str) -> tuple[dict, Path]:
     if not path.exists():
         path = RESULTS_DIR / name
     try:
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         console.print(f"[red]not a readable results file:[/] "
                       f"{escape(str(path))} — {escape(str(exc))}")
@@ -8537,7 +8537,7 @@ def bench_report(reviewer_recall: bool):
         _print_pr_outcome_block()
         sys.exit(1)
 
-    REPORT_MD.write_text(_render_report_or_refuse(card))
+    REPORT_MD.write_text(_render_report_or_refuse(card), encoding="utf-8")
     console.print(f"[green]report rendered[/] → {REPORT_MD}")
     console.print(escape(pin_rederivation_note(card)))
     _print_pr_outcome_block()

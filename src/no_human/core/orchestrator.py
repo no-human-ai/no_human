@@ -14301,7 +14301,7 @@ class Orchestrator:
         else:
             def _verifier_read_file(path: str) -> str | None:
                 try:
-                    return (repo.path / path).read_text(errors="replace")
+                    return (repo.path / path).read_text(errors="replace", encoding="utf-8")
                 except OSError:
                     return None
 
@@ -17269,7 +17269,7 @@ class Orchestrator:
             try:
                 if not path.is_file():
                     continue
-                text = path.read_text(errors="replace").strip()
+                text = path.read_text(errors="replace", encoding="utf-8").strip()
             except OSError:
                 continue
             if not text:
