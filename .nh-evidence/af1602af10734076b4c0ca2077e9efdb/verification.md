@@ -1,122 +1,119 @@
 # How I verified this — full log
 
-_Harness-captured record for task `af1602af`, commit `a14de447adf09586040f6961431801afa3c5190b` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `af1602af`, commit `ec467625e7407a8f65806f361eb80ef7ba14a3a8` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ## How I verified this
-12 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
+9 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
 
 ### test
-- `uv run pytest tests/test_task_show_preserves_brackets.py -v 2>&1 | tail -60`
+- `timeout 100 uv run pytest tests/test_reanchor_citations.py -q 2>&1 | tail -40`
+
+```
+(eval):1: command not found: timeout
+```
+
+- `uv run pytest tests/test_reanchor_citations.py -q 2>&1 | tail -60`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-   Building no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/af1602af10734076b4c0ca2077e9efdb.52752.e732f65f
-      Built no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/af1602af10734076b4c0ca2077e9efdb.52752.e732f65f
-Installed 73 packages in 640ms
-============================= test session starts ==============================
-platform darwin -- Python 3.12.13, pytest-9.1.1, pluggy-1.6.0 -- /Users/eyalgolan/.<redacted>/worktrees/af1602af10734076b4c0ca2077e9efdb.527
-[... 1,106 of 2,245 characters omitted from the middle ...]
-ag_does_not_crash_the_render PASSED [ 66%]
-tests/test_task_show_preserves_brackets.py::test_emoji_shortcode_is_not_substituted PASSED [ 77%]
-tests/test_task_show_preserves_brackets.py::test_attempt_test_results_with_brackets_survive_the_render PASSED [ 88%]
-tests/test_task_show_preserves_brackets.py::test_bracketed_text_round_trips_byte_exact_in_the_database PASSED [100%]
-
-============================== 9 passed in 5.69s ===============================
-```  
-  _excerpt - 2,233 characters of output in total_
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/af1602af10734076b4c0ca2077e9efdb.52752.e732f65f git show HEAD:src/<redacted>/cli/commands.py > /tmp/commands_old.py diff /tmp/commands_old.py /tmp/commands_fixed.py | head -5 cp /tmp/commands_old.py src/<redacted>/cli/commands.py uv run pytest tests/test_task_show_preserves_brackets.py -k "attempt_test_results or blocker" -v 2>&1 | tail -40`
-
+   Building no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/af1602af10734076b4c0ca2077e9efdb.52752.0758de50
+      Built no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/af1602af10734076b4c0ca2077e9efdb.52752.0758de50
+Installed 73 packages in 518ms
+.....                                                                    [100%]
+5 passed in 9.45s
 ```
-166c166
-<         pid = int((NO_HUMAN_HOME / "nh.pid").read_text(encoding="utf-8").strip())
----
->         pid = int((NO_HUMAN_HOME / "nh.pid").read_text().strip())
-1680,1683c1680
-monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x10c5c38c0>
 
-    def test_attempt_test_results_with_brackets_survive_the_render(tmp_path, monkeypatch):
-        db = tmp_path / "test.db"
-        t = _seed(db)
-        runner = _make_runner(db, monkeypatch)
-    
-        async def _add_attempt():
-            async with Store(db) as store:
-                attempt_id = await store.create_attempt(t.id, 1)
-                await store.update_attempt(
-                    attempt_id,
-                
-[... 731 of 1,870 characters omitted from the middle ...]
-       +  where 1 = <Result MarkupError("closing tag '[/tmp/wt]' at position 131 doesn't match any open tag")>.exit_code
-
-tests/test_task_show_preserves_brackets.py:211: AssertionError
-=========================== short test summary info ============================
-FAILED tests/test_task_show_preserves_brackets.py::test_attempt_test_results_with_brackets_survive_the_render
-================== 1 failed, 1 passed, 7 deselected in 1.09s ===================
-```  
-  _excerpt - 1,870 characters of output in total_
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/af1602af10734076b4c0ca2077e9efdb.52752.e732f65f uv run pytest tests/test_task_show_preserves_brackets.py -v 2>&1 | tail -30`
+- `uv run pytest tests/test_task_show_preserves_brackets.py -v 2>&1 | tail -50`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
 ============================= test session starts ==============================
-platform darwin -- Python 3.12.13, pytest-9.1.1, pluggy-1.6.0 -- /Users/eyalgolan/.<redacted>/worktrees/af1602af10734076b4c0ca2077e9efdb.52752.e732f65f/.venv/bin/python3
+platform darwin -- Python 3.12.13, pytest-9.1.1, pluggy-1.6.0 -- /Users/eyalgolan/.<redacted>/worktrees/af1602af10734076b4c0ca2077e9efdb.52752.0758de50/.venv/bin/python3
 cachedir: .pytest_cache
-<redacted> isolated HOME: /var/folders/1r/3r0rt1jd4j1456rsg_fh4d380000gn/T/nh-test-home-4ek3zm85
-rootdir: /Users/eyalgolan/.<redacted>/worktrees/af1602af10734076b4c0ca2077e9efdb.52752.e732f65f
+<redacted> isolated HOME: /var/folders/1r/3r0rt1jd4j1456rsg_fh4d380000gn/T/nh-test-home-iq21o1qe
+rootdir: /Users/eyalgolan/.<redacted>/worktrees/af1602af10734076b4c0ca2077e9efdb.52752.0758de50
 configfile: pyproj
-[... 841 of 1,980 characters omitted from the middle ...]
-ag_does_not_crash_the_render PASSED [ 66%]
-tests/test_task_show_preserves_brackets.py::test_emoji_shortcode_is_not_substituted PASSED [ 77%]
-tests/test_task_show_preserves_brackets.py::test_attempt_test_results_with_brackets_survive_the_render PASSED [ 88%]
+[... 1,055 of 2,194 characters omitted from the middle ...]
+ag_does_not_crash_the_render PASSED [ 72%]
+tests/test_task_show_preserves_brackets.py::test_emoji_shortcode_is_not_substituted PASSED [ 81%]
+tests/test_task_show_preserves_brackets.py::test_attempt_test_results_with_brackets_survive_the_render PASSED [ 90%]
 tests/test_task_show_preserves_brackets.py::test_bracketed_text_round_trips_byte_exact_in_the_database PASSED [100%]
 
-============================== 9 passed in 2.52s ===============================
+============================= 11 passed in 15.86s ==============================
 ```  
-  _excerpt - 1,972 characters of output in total_
+  _excerpt - 2,186 characters of output in total_
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/af1602af10734076b4c0ca2077e9efdb.52752.e732f65f uv run pytest tests/test_structural_budget.py -q 2>&1 | tail -30`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-..................                                                       [100%]
-18 passed in 3.37s
-```
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/af1602af10734076b4c0ca2077e9efdb.52752.e732f65f uv run pytest tests/test_reanchor_citations.py -q 2>&1 | tail -60`
+- `cp src/<redacted>/cli/commands.py /tmp/commands_fixed.py git show HEAD:src/<redacted>/cli/commands.py > /tmp/commands_prefix.py cp /tmp/commands_prefix.py src/<redacted>/cli/commands.py uv run pytest tests [... 117 of 460 characters omitted from the middle ...] ckets.py::test_blocker_wraps_without_overrunning_console_width -v 2>&1 | tail -40 cp /tmp/commands_fixed.py src/<redacted>/cli/commands.py`
 
 ```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-....F                                                                    [100%]
-=================================== FAILURES ===================================
-____________________ test_check_mode_is_clean_on_this_tree _____________________
+_____________ test_blocker_wraps_without_overrunning_console_width _____________
 
-    def test_check_mode_is_clean_on_this_tree():
-        """`--check` against the real repository must be clean (exit 0, the
-        same VERDICT `test_every_line_citation_currently_resolves_exactly`
-        implies) and must never write — the
-[... 1,430 of 2,569 characters omitted from the middle ...]
-n/.<redacted>/worktrees/af1602af10734076b4c0ca2077e9efdb.52752.e732f65f/.venv/bin...(would re-anchor)\nDRIFT: eval.md `:bench_run:7766` -> `:bench_run:7779` (would re-anchor)\nVERDICT=FAIL\n', stderr='').returncode
+tmp_path = PosixPath('/private/var/folders/1r/3r0rt1jd4j1456rsg_fh4d380000gn/T/pytest-of-eyalgolan/pytest-57014/test_blocker_wraps_without_ove0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x10a136ea0>
+
+    def test_blocker_wraps_without_overrunning_console_width(tmp_path, monkeypatch):
+        """A `console.print("[red]blocker:[/]", end=" ")` label followed by a
+        separate `markup=False` payload print (an earlier round of this fix) made
+        rich wrap the payload as though it started at column 0, ignoring the
+        9-character "blocker: " prefix already written -- rows
+[... 1,215 of 2,354 characters omitted from the middle ...]
+b ab ab ab ab ab ab ab ab ab ")
+
+tests/test_task_show_preserves_brackets.py:195: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_task_show_preserves_brackets.py::test_kind_with_brackets_survives_the_render
+FAILED tests/test_task_show_preserves_brackets.py::test_blocker_wraps_without_overrunning_console_width
+============================== 2 failed in 1.70s ===============================
+```  
+  _excerpt - 2,352 characters of output in total_
+
+- `uv run pytest tests/test_task_show_preserves_brackets.py tests/test_structural_budget.py tests/test_reanchor_citations.py -q 2>&1 | tail -30`
+
+```
+run that would otherwise silently touch a file's mtime.
+        """
+        docs = [REPO / "docs" / d for d in ("security.md", "eval.md", "KNOWN_ISSUES.md")]
+        table_path = REPO / "tests" / "test_readme_claims.py"
+        watched = docs + [table_path]
+        before = {p: p.stat().st_mtime_ns for p in watched}
+    
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), "--check"],
+            capture_output=True, text=True, check=False,
+        )
+    
+        after = {p: p.stat().st_mtime_ns for p in watched}
+>       assert result.returncode == 0, result.stdout + result.stderr
+E       AssertionError: DRIFT: security.md `cli/commands.py:merge
+[... 849 of 1,988 characters omitted from the middle ...]
+/.<redacted>/worktrees/af1602af10734076b4c0ca2077e9efdb.52752.0758de50/.venv/bin...(would re-anchor)\nDRIFT: eval.md `:bench_run:7779` -> `:bench_run:7791` (would re-anchor)\nVERDICT=FAIL\n', stderr='').returncode
 
 tests/test_reanchor_citations.py:171: AssertionError
 =========================== short test summary info ============================
 FAILED tests/test_reanchor_citations.py::test_check_mode_is_clean_on_this_tree
-1 failed, 4 passed in 2.31s
+1 failed, 33 passed in 6.57s
 ```  
-  _excerpt - 2,561 characters of output in total_
+  _excerpt - 1,982 characters of output in total_
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/af1602af10734076b4c0ca2077e9efdb.52752.e732f65f uv run pytest tests/test_reanchor_citations.py tests/test_readme_claims.py -q 2>&1 | tail -20`
+- `uv run pytest tests/test_reanchor_citations.py -q 2>&1 | tail -20`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-.................................s.s.s.s.s.s.s.s.s.s.................... [ 47%]
-...........................s..........................s................. [ 95%]
-.......                                                                  [100%]
-139 passed, 12 skipped in 6.10s
+.....                                                                    [100%]
+5 passed in 2.54s
 ```
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/af1602af10734076b4c0ca2077e9efdb.52752.e732f65f uv run pytest tests/test_cli_commands.py tests/test_full_report_surface.py \   tests/test_landing_actor.py tests/test_slot_wait_followups.py \   tests/test_bench_escalation_latency.py tests/test_task_lifecycle.py -q 2>&1 | tail -30`
+- `uv run pytest tests/test_task_show_preserves_brackets.py tests/test_structural_budget.py tests/test_reanchor_citations.py tests/test_readme_claims.py -q 2>&1 | tail -30`
+
+```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+..............................................................s.s.s.s.s. [ 40%]
+s.s.s.s.s...............................................s............... [ 80%]
+...........s........................                                     [100%]
+168 passed, 12 skipped in 10.00s
+```
+
+- `uv run pytest tests/test_cli_commands.py tests/test_full_report_surface.py \   tests/test_landing_actor.py tests/test_slot_wait_followups.py \   tests/test_bench_escalation_latency.py tests/test_task_lifecycle.py -q 2>&1 | tail -30`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
@@ -125,78 +122,25 @@ warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not mat
 ........................................................................ [ 73%]
 ........................................................................ [ 97%]
 .......                                                                  [100%]
-295 passed in 37.29s
+295 passed in 29.59s
 ```
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/af1602af10734076b4c0ca2077e9efdb.52752.e732f65f uv run pytest -m repoguard -q 2>&1 | tail -40`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-.....................................s.s.s.s.s.s.s.s.s.s................ [ 46%]
-...............................s..........................s............. [ 92%]
-...........                                                              [100%]
-=============================== warnings summary ===============================
-src/<redacted>/testing/test_layers.py:35
-  /Users/eyalgolan/.<redacted>/worktrees/af1602af10734076b4c0ca2077e9efdb.52752.e732f65f/src/<redacted>/testing/test_layers.
-[... 158 of 1,297 characters omitted from the middle ...]
-src/<redacted>/testing/test_layers.py:89
-  /Users/eyalgolan/.<redacted>/worktrees/af1602af10734076b4c0ca2077e9efdb.52752.e732f65f/src/<redacted>/testing/test_layers.py:89: PytestCollectionWarning: cannot collect test class 'TestPlan' because it has a __init__ constructor (from: tests/test_test_layers.py)
-    @dataclass
-
--- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-143 passed, 13 skipped, 12416 deselected, 2 warnings in 22.14s
-```  
-  _excerpt - 1,283 characters of output in total_
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/af1602af10734076b4c0ca2077e9efdb.52752.e732f65f uv run pytest tests/test_task_show_preserves_brackets.py tests/test_structural_budget.py tests/test_reanchor_citations.py tests/test_readme_claims.py -q -n 4 2>&1 | tail -30`
+- `uv run pytest -q -n 4 \   tests/test_task_show_preserves_brackets.py \   tests/test_structural_budget.py \   tests/test_reanchor_citations.py \   tests/test_readme_claims.py \   tests/test_cli_commands.py  [... 65 of 408 characters omitted from the middle ...] r.py \   tests/test_slot_wait_followups.py \   tests/test_bench_escalation_latency.py \   tests/test_task_lifecycle.py \   2>&1 | tail -20`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
 bringing up nodes...
 bringing up nodes...
 
-...............................s.s.s.s.s.s..s.s.s.s..................... [ 40%]
-.......................................s.........................s...... [ 80%]
-..................................                                       [100%]
-166 passed, 12 skipped in 5.76s
+....................................s...s...........s................s.s [ 15%]
+.s.s.s.s.s.s................................s........................... [ 30%]
+........................................................................ [ 45%]
+........................................................................ [ 60%]
+........................................................................ [ 75%]
+........................................................................ [ 90%]
+...........................................                              [100%]
+463 passed, 12 skipped in 18.38s
 ```
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/af1602af10734076b4c0ca2077e9efdb.52752.e732f65f uv run pytest tests/test_structural_budget.py -q 2>&1 | tail -10`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-..................                                                       [100%]
-18 passed in 3.32s
-```
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/af1602af10734076b4c0ca2077e9efdb.52752.e732f65f timeout 580 uv run pytest -q -n 4 2>&1 | tail -60`
-
-```
-(eval):2: command not found: timeout
-```
-
-- `\ echo "=== target test file ===" && uv run pytest tests/test_task_show_preserves_brackets.py -v -q 2>&1 | tail -20 && \ echo "=== structural budget ===" && uv run pytest tests/test_structural_budget.py -q [... 118 of 461 characters omitted from the middle ...] test_readme_claims.py -q 2>&1 | tail -10 && \ echo "=== release manifest strict ===" && python3 scripts/check_release_manifest.py --strict`
-
-```
-=== target test file ===
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-============================= test session starts ==============================
-platform darwin -- Python 3.12.13, pytest-9.1.1, pluggy-1.6.0
-<redacted> isolated HOME: /var/folders/1r/3r0rt1jd4j1456rsg_fh4d380000gn/T/nh-test-home-p2jp84t6
-rootdir: /Users/eyalgolan/.<redacted>/worktrees/af1602af10734076b4c0ca2077e9efdb.52752.e732f65f
-configfile: pyproject.toml
-plugins: anyio-4.14.0, no-human-0.2.2, cov-7.1.0, xdist-3.8.0, asyncio-1.4.0
-asyncio: mode=Mode.AU
-[... 723 of 1,862 characters omitted from the middle ...]
-roject environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-.................................s.s.s.s.s.s.s.s.s.s.................... [ 47%]
-...........................s..........................s................. [ 95%]
-.......                                                                  [100%]
-139 passed, 12 skipped in 6.76s
-=== release manifest strict ===
-OK: 1581 file(s) match RELEASE_MANIFEST.txt
-```  
-  _excerpt - 1,852 characters of output in total_
 
 
 **Not verified:** everything below is a limit of this section, listed whether or not it bit this attempt.
