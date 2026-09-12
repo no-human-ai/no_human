@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
-import { drainChip, formatDrainEta, formatPausedUntil, pausedPresentation } from "./drainChip.js";
+import React from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { drainChip, formatDrainEta, formatPausedUntil, pausedPresentation, PausedIndicator } from "./drainChip.js";
 
 test("idle: 0 busy, 0 queued, no drain time", () => {
   const chip = drainChip({ workers_busy: 0, max_workers: 4, queue_depth: 0, est_drain_seconds: null });
@@ -188,24 +188,54 @@ test("drainChip: an unrecognised paused_reason never renders as quota (regressio
 });
 
 // --------------------------------------------------------------------------- #
-// App.jsx source guard: the sidebar indicator must route through the SAME   #
-// pausedPresentation this file tests, not re-derive its own twin ternary.   #
-// A source-text check because the closed PR's regression was a UI branch    #
-// with no unit under test at all — this pins the fix at the source so a     #
-// future edit cannot quietly reintroduce the `!== "infra"` fallthrough      #
-// without a text search this test performs on every run.                    #
+// PausedIndicator: the sidebar's actual rendering (App.jsx renders this      #
+// exact component — see App.jsx's sidebar pause block). A prior version of  #
+// this test read App.jsx's source text and grepped for the old ternary's    #
+// literals; a reviewer (independent review, this refile) flagged that as    #
+// both evadable (a behavioral reintroduction of the bug that avoids the     #
+// exact guarded strings would pass) and false-positive-prone (an unrelated  #
+// dead-code edit could fail it). Rendering the real component and asserting #
+// on its output text, per paused_reason, has neither problem: it exercises  #
+// the same code App.jsx puts on screen.                                     #
 // --------------------------------------------------------------------------- #
 
-test("App.jsx: sidebar pause indicator delegates to pausedPresentation, not a hand-rolled infra/quota ternary", () => {
-  const appJsxPath = fileURLToPath(new URL("./App.jsx", import.meta.url));
-  const src = readFileSync(appJsxPath, "utf8");
+function renderPaused(paused_reason, extra = {}) {
+  return renderToStaticMarkup(React.createElement(PausedIndicator, { paused_reason, ...extra }));
+}
 
-  assert.match(src, /import\s*\{[^}]*\bpausedPresentation\b[^}]*\}\s*from\s*["']\.\/drainChip\.js["']/,
-    "App.jsx must import pausedPresentation from drainChip.js");
-  assert.ok(!src.includes('paused_reason === "infra"'),
-    "the old hand-rolled infra branch must be gone — pausedPresentation owns this now");
-  assert.ok(!src.includes('paused_reason !== "infra"'),
-    "the old `!== \"infra\"` fallthrough (the exact bug: anything not infra rendered as quota) must be gone");
-  assert.ok(!src.includes("Pool-wide quota cooldown"),
-    "the hardcoded quota-cooldown title must live only in pausedPresentation, not be duplicated in App.jsx");
+test("PausedIndicator: infra renders the SDK/auth-failure cooldown text (positive control)", () => {
+  const html = renderPaused("infra", { paused_until: "2026-08-20T17:20:00+00:00" });
+  assert.ok(html.includes("Paused — SDK/auth failures, resumes"), html);
+  assert.ok(!html.includes("quota"), html);
+  assert.match(html, /role="status"/);
+});
+
+test("PausedIndicator: quota renders the quota cooldown text (positive control)", () => {
+  const html = renderPaused("quota", { paused_until: "2026-08-20T17:20:00+00:00" });
+  assert.ok(html.includes("Paused — quota resets"), html);
+  assert.match(html, /role="status"/);
+});
+
+test("PausedIndicator: lease_lost renders a restart-only failure, never a self-resolving cooldown", () => {
+  const html = renderPaused("lease_lost", { paused_until: "2026-08-20T17:20:00+00:00" });
+  assert.ok(html.includes("Paused — pool lease lost; restart required"), html);
+  assert.ok(!html.toLowerCase().includes("cooldown"), html);
+  assert.ok(!html.toLowerCase().includes("resumes"), html);
+  assert.ok(!html.toLowerCase().includes("quota"), html);
+});
+
+test("PausedIndicator: a paused_reason this code has never seen renders honestly unknown", () => {
+  const html = renderPaused("totally_novel_reason_nobody_wrote_a_branch_for", { paused_until: "2026-08-20T17:20:00+00:00" });
+  assert.ok(html.includes("Paused — reason unknown"), html);
+  assert.ok(!html.toLowerCase().includes("cooldown"), html);
+  assert.ok(!html.toLowerCase().includes("resumes"), html);
+  assert.ok(!html.toLowerCase().includes("quota"), html);
+});
+
+test("PausedIndicator: a missing/null paused_reason renders unknown too, never quota (this used to be the bug)", () => {
+  const html = renderPaused(null, { paused_until: "2026-08-20T17:20:00+00:00" });
+  assert.ok(html.includes("Paused — reason unknown"), html);
+  assert.ok(!html.toLowerCase().includes("cooldown"), html);
+  assert.ok(!html.toLowerCase().includes("resumes"), html);
+  assert.ok(!html.toLowerCase().includes("quota"), html);
 });

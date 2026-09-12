@@ -31,7 +31,7 @@ import useIsPhone from "./useIsPhone.js";
 import { createReconnector } from "./wsReconnect.js";
 import { connectionBanner } from "./connectionBanner.js";
 import { updateBanner } from "./updateNotice.js";
-import { drainChip, pausedPresentation } from "./drainChip.js";
+import { drainChip, PausedIndicator } from "./drainChip.js";
 import { initialDrainReadout, nextDrainReadout, readoutPayload } from "./drainReadout.js";
 import { useEscapeKey } from "./useEscapeKey.js";
 import { promptFromIssue, externalIdFromIssue } from "./jiraImport.js";
@@ -1398,25 +1398,24 @@ export default function App() {
               pause is deliberate, not a wedge (`stuck` stays false), so it
               gets its own line rather than piggybacking on the alarm. */}
           {/* Single source of truth for what a paused_reason MEANS —
-              drainChip.js's pausedPresentation, also used by the header's
-              drain chip. Deliberately reason-agnostic here: an absent/null
-              paused_reason renders the same "unknown" as any value neither
-              this code nor pausedPresentation has ever heard of — it must
-              never fall through to "quota" merely for not being "infra"
-              (that fallthrough is the exact bug a lost pool lease exposed,
-              task 92e48491). */}
-          {!queueHealth?.stuck && queueHealth?.paused && (() => {
-            const p = pausedPresentation(queueHealth?.paused_reason, {
-              paused_until: queueHealth?.paused_until,
-              paused_profile: queueHealth?.paused_profile,
-            });
-            return (
-              <div className="nh-status-indicator" role="status" title={p.title}>
-                <div className="nh-ws-dot" />
-                <span className="nh-status-label">{p.text}</span>
-              </div>
-            );
-          })()}
+              drainChip.js's PausedIndicator (built on pausedPresentation),
+              also used by the header's drain chip. Deliberately reason-
+              agnostic here: an absent/null paused_reason renders the same
+              "unknown" as any value neither this code nor pausedPresentation
+              has ever heard of — it must never fall through to "quota"
+              merely for not being "infra" (that fallthrough is the exact bug
+              a lost pool lease exposed, task 92e48491). See
+              drainChip.test.mjs for the behavioral tests on this rendering
+              (renderToStaticMarkup, one assertion per paused_reason) — this
+              component is the actual code under test there, not a source
+              guard on this file. */}
+          {!queueHealth?.stuck && queueHealth?.paused && (
+            <PausedIndicator
+              paused_reason={queueHealth?.paused_reason}
+              paused_until={queueHealth?.paused_until}
+              paused_profile={queueHealth?.paused_profile}
+            />
+          )}
           {!queueHealth?.stuck && !queueHealth?.paused && queueHealth?.eta_minutes != null && queueHealth.open_tasks > 0 && (
             <div className="nh-status-indicator" title={`${queueHealth.completed_in_window} finished in the last ${queueHealth.window_minutes} min`}>
               <div className="nh-ws-dot live" />

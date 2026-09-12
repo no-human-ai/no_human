@@ -122,11 +122,23 @@ async def test_a_transient_lock_on_the_first_write_attempt_still_lands_the_claim
     sched = _sched(store)
 
     calls = {"n": 0}
+    # `test_scheduler.py::test_no_sleep_as_synchronisation_wait` bans a bare
+    # `asyncio.sleep(...)` as a synchronisation wait in its own file (two
+    # historical flakes); this file follows the same discipline even though
+    # the lint does not reach here — the spy sets this the instant attempt
+    # 1's real call has raised (still inside the `except` clause's `finally`,
+    # before the retry loop's `await asyncio.sleep(backoff)` yields control
+    # back to us), so waiting on it is exact, not a timing guess.
+    attempt1_done = asyncio.Event()
     real_cas = store.cas_scheduler_heartbeat
 
     async def _counting_cas(**kw):
         calls["n"] += 1
-        return await real_cas(**kw)
+        try:
+            return await real_cas(**kw)
+        finally:
+            if calls["n"] == 1:
+                attempt1_done.set()
 
     monkeypatch.setattr(store, "cas_scheduler_heartbeat", _counting_cas)
 
@@ -134,9 +146,7 @@ async def test_a_transient_lock_on_the_first_write_attempt_still_lands_the_claim
     lock.acquire()
     try:
         task = asyncio.ensure_future(sched._claim_pool_lease())
-        # Let attempt 1 run into the held lock and enter its backoff sleep —
-        # comfortably inside the 0.2s window, nowhere near attempt 2's fire time.
-        await asyncio.sleep(0.02)
+        await asyncio.wait_for(attempt1_done.wait(), timeout=5)
         assert calls["n"] == 1, "attempt 1 should already have hit the held lock"
     finally:
         lock.release()
@@ -246,6 +256,20 @@ async def test_a_non_transient_write_error_fails_closed_on_the_first_attempt(
         "retry budget — retrying it only delays an honest failure")
 
 
+def _locked(code=None):
+    """A `sqlite3.OperationalError("database is locked")`, optionally with a
+    manually-set `sqlite_errorcode` — real exceptions carry this attribute
+    (Python 3.11+) but a synthetic one built by `sqlite3.OperationalError(...)`
+    does not, so tests that want to exercise the code-based branch of
+    `_is_transient_db_lock` have to set it explicitly, same as a real
+    SQLITE_BUSY/SQLITE_BUSY_SNAPSHOT exception would arrive with it already
+    set."""
+    exc = sqlite3.OperationalError("database is locked")
+    if code is not None:
+        exc.sqlite_errorcode = code
+    return exc
+
+
 @pytest.mark.parametrize(
     "exc,expected",
     [
@@ -257,6 +281,20 @@ async def test_a_non_transient_write_error_fails_closed_on_the_first_attempt(
         (sqlite3.DatabaseError("database is locked"), False),
         (ValueError("database is locked"), False),
         (OSError("locked"), False),
+        # F4 (review round on this refile): "database is locked" alone cannot
+        # tell SQLITE_BUSY (5, transient — a peer merely holds the write lock
+        # right now) from SQLITE_BUSY_SNAPSHOT (517, "deterministic, and
+        # permanent until the statement is reset" per core/db.py) — same
+        # exception, same message. When the exception carries a real
+        # `sqlite_errorcode`, only 5 is retried; 517 (and any other code)
+        # fails closed even though the message names a lock.
+        (_locked(code=sqlite3.SQLITE_BUSY), True),
+        (_locked(code=sqlite3.SQLITE_BUSY_SNAPSHOT), False),
+        (_locked(code=9999), False),
+        # No error code at all (older bindings, or — as in every other case
+        # in this parametrize list — a synthetic test exception): falls back
+        # to the message match alone, same as before this distinction existed.
+        (_locked(code=None), True),
     ],
     ids=[
         "operational-locked",
@@ -267,6 +305,10 @@ async def test_a_non_transient_write_error_fails_closed_on_the_first_attempt(
         "databaseerror-not-operationalerror",
         "valueerror-not-operationalerror",
         "oserror-not-operationalerror",
+        "sqlite-busy-code-retried",
+        "sqlite-busy-snapshot-code-fails-closed",
+        "unrecognised-code-fails-closed",
+        "no-code-falls-back-to-message-match",
     ],
 )
 def test_the_classifier_retries_only_a_lock_message(exc, expected):
@@ -296,11 +338,20 @@ async def test_a_competitor_that_claims_the_row_inside_the_retry_window_still_st
     # No heartbeat row exists yet — this claim's `expect` will be None.
 
     calls = {"n": 0}
+    # See the AC1 test above for why an Event, not a sleep, marks "attempt 1
+    # has already raised": it is set the instant the spy's real call returns
+    # control (raising), strictly before the retry loop's own
+    # `await asyncio.sleep(backoff)` yields back to us.
+    attempt1_done = asyncio.Event()
     real_cas = store.cas_scheduler_heartbeat
 
     async def _counting_cas(**kw):
         calls["n"] += 1
-        return await real_cas(**kw)
+        try:
+            return await real_cas(**kw)
+        finally:
+            if calls["n"] == 1:
+                attempt1_done.set()
 
     monkeypatch.setattr(store, "cas_scheduler_heartbeat", _counting_cas)
 
@@ -313,7 +364,8 @@ async def test_a_competitor_that_claims_the_row_inside_the_retry_window_still_st
     competitor_pid = os.getppid()
 
     task = asyncio.ensure_future(sched._claim_pool_lease())
-    await asyncio.sleep(0.02)  # attempt 1 hits the lock, is now in its 0.2s backoff sleep
+    # attempt 1 has hit the lock and raised; it is now in its 0.2s backoff sleep
+    await asyncio.wait_for(attempt1_done.wait(), timeout=5)
     lock.release()
 
     landed = await real_cas(

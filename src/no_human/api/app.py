@@ -3933,9 +3933,12 @@ async def worker_status(request: Request) -> dict[str, Any]:
         and "health_error" not in out
         # A lost lease is permanent (no clearing site — a restart is the only
         # way back), and `tick_stalled` does not cover this window on its own:
-        # `run_forever` only unwinds the loop after `_stop_grace_s`, and a
-        # Scheduler ticked directly (no `run_forever` wrapper at all) has no
-        # such callback to ever set `tick_stalled` in the first place.
+        # `tick_stalled` is computed from timestamps inside `health_snapshot`
+        # (`since_tick > stall_after`, `stall_after` >= 60s), so it only trips
+        # after that threshold has elapsed since the last tick. `lease_lost`
+        # closes that earlier window immediately — the tick that raised
+        # `PoolLeaseLost` already knows dispatch is dead, well before
+        # `tick_stalled` would notice the same thing on its own.
         and not out.get("lease_lost")
     )
     return out

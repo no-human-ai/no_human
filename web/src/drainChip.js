@@ -13,6 +13,7 @@
 // guess. tone is a closed string token ("ok"/"warn"/"error"), consumed
 // elsewhere as `tone-${tone}` classes — no CSS vars are introduced here.
 
+import React from "react";
 import { parseTimestamp } from "./parseTimestamp.js";
 
 export function formatDrainEta(seconds) {
@@ -78,6 +79,22 @@ export function pausedPresentation(reason, { paused_until = null, paused_profile
     title: `Unrecognised paused_reason (${JSON.stringify(reason)}) — see /api/worker/status`,
     tone: "warn",
   };
+}
+
+// The sidebar's own pause indicator (App.jsx), factored out so its rendered
+// output is testable directly (`renderToStaticMarkup`) instead of only via a
+// source-text guard on App.jsx. Written with React.createElement rather than
+// JSX so this stays a plain .js module: no build-time transform is needed to
+// import and render it from a `node --test` file, and App.jsx still renders
+// it exactly as any other component (`<PausedIndicator .../>`).
+export function PausedIndicator({ paused_reason = null, paused_until = null, paused_profile = null } = {}) {
+  const p = pausedPresentation(paused_reason, { paused_until, paused_profile });
+  return React.createElement(
+    "div",
+    { className: "nh-status-indicator", role: "status", title: p.title },
+    React.createElement("div", { className: "nh-ws-dot" }),
+    React.createElement("span", { className: "nh-status-label" }, p.text)
+  );
 }
 
 // input: the flat {workers_busy, max_workers, queue_depth, est_drain_seconds,

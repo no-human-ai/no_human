@@ -1521,7 +1521,7 @@ FROZEN_FILE_LINES = {
     # `sched.lease_lost` and threads it into `queue_health(...)` alongside
     # the existing cooldown kwargs. Measured on this tree with the scanner
     # below.
-    "api/app.py": 6190,
+    "api/app.py": 6193,
     # +51: W5 active-time phase writer (phase instrumentation).
     # +84: `list_escalations`/`list_review_fails`/`list_tamper_trips` — the
     # three new failure-signal sources the recurring learning harvest mines.
@@ -1803,7 +1803,7 @@ FROZEN_FILE_LINES = {
     # legitimately-claimed row still cannot be overwritten. Plus the
     # read-only `lease_lost` property mirroring `_lease_lost` for
     # `health.py`/`api/app.py`. Measured on this tree with the scanner below.
-    "core/scheduler.py": 3176,
+    "core/scheduler.py": 3196,
 }
 
 

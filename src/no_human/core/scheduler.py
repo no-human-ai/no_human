@@ -480,12 +480,30 @@ def _lease_sibling_is_dead(
 
 def _is_transient_db_lock(exc: BaseException) -> bool:
     """NARROW on purpose. Only sqlite3.OperationalError whose message names a
-    lock is retried; any other OperationalError (`no such table`, `disk I/O
-    error`) is a fault the same write will keep hitting, and an unknown type
-    means the caller fails closed. A claim we cannot prove landed is not a
-    claim."""
-    return (isinstance(exc, sqlite3.OperationalError)
-            and "database is locked" in str(exc).lower())
+    lock is even a candidate for retry; any other OperationalError
+    (`no such table`, `disk I/O error`) is a fault the same write will keep
+    hitting, and an unknown type means the caller fails closed. A claim we
+    cannot prove landed is not a claim.
+
+    A "database is locked" message alone cannot tell SQLITE_BUSY (5 — a peer
+    merely holds the write lock right now, transient) from SQLITE_BUSY_SNAPSHOT
+    (517 — this connection is pinned to a snapshot a peer has since committed
+    past, "deterministic, and permanent until the statement is reset"; see
+    `core/db.py`'s "WHICH ERROR CODE, HONESTLY" comment): both raise the
+    identical exception, same file, same line, same message. Real
+    `sqlite3.OperationalError`s carry a `sqlite_errorcode` attribute
+    (Python 3.11+); when present, only code 5 is retried and 517 fails
+    closed on the first attempt like any other non-transient fault. When it
+    is absent — an older binding, or a synthetic exception built by a test —
+    this falls back to the message match alone, which cannot make that
+    distinction and does not claim to."""
+    if not (isinstance(exc, sqlite3.OperationalError)
+            and "database is locked" in str(exc).lower()):
+        return False
+    code = getattr(exc, "sqlite_errorcode", None)
+    if code is None:
+        return True
+    return code == sqlite3.SQLITE_BUSY
 
 
 class Scheduler:
@@ -1025,13 +1043,15 @@ class Scheduler:
 
     async def _cas_heartbeat_with_retry(self, **kw) -> bool:
         """`_claim_pool_lease`'s CAS write, retried a bounded number of times
-        ONLY when the failure is a transient same-database lock
-        (`_is_transient_db_lock`) — an ordinary write/write collision with
-        another local writer that the busy handler alone did not clear in
-        time. Anything else — an unrecognised exception type, or a message
-        that does not name a lock — fails on the FIRST attempt: those are
-        faults the same write will keep hitting, and retrying them only
-        delays an honest failure.
+        ONLY when the failure is classified transient by
+        `_is_transient_db_lock` — see that function for exactly what is and
+        is not retried, including the SQLITE_BUSY vs SQLITE_BUSY_SNAPSHOT
+        distinction it makes when the exception exposes an error code, and
+        falls back to a plain message match when it does not. Anything else
+        — an unrecognised exception type, a message that does not name a
+        lock, or a lock error classified non-transient — fails on the FIRST
+        attempt: those are faults the same write will keep hitting, and
+        retrying them only delays an honest failure.
 
         LOAD-BEARING INVARIANT: `**kw` — in particular the pre-retry `expect`
         row — is forwarded BYTE-IDENTICALLY on every attempt, and there is no
