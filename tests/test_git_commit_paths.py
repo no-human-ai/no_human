@@ -9,11 +9,13 @@ never flagged it either. See `src/no_human/vcs/git.py`'s `commit_paths` and
 `uncommitted_source_files` docstrings for the fix and its discriminator.
 """
 
+import os
 import subprocess
+from pathlib import Path
 
 import pytest
 
-from no_human.vcs import GitRepo
+from no_human.vcs import GitError, GitRepo
 
 
 def _git(cwd, *args):
@@ -44,6 +46,17 @@ def _committed_files(repo_path):
         ["git", "show", "--name-only", "--format=", "HEAD"],
         cwd=repo_path, capture_output=True, text=True,
     ).stdout
+
+
+def _committed_names(repo_path):
+    """Every path HEAD's commit touched, NUL-split so a leading/trailing
+    space in a filename (which `-z` preserves but is not C-quoted) is not
+    lost the way a whitespace-`.strip()`ed read would lose it."""
+    out = subprocess.run(
+        ["git", "show", "--name-only", "--format=", "-z", "HEAD"],
+        cwd=repo_path, capture_output=True, text=True,
+    ).stdout
+    return {n for n in out.split("\0") if n}
 
 
 def test_bash_created_md_beside_an_edit_created_py_is_committed(repo_with_bare_remote):
@@ -183,3 +196,273 @@ def test_root_commit_with_no_head_caret_still_flags_a_leftover(repo_with_bare_re
     repo = GitRepo(work)
     leftover = repo.uncommitted_source_files()
     assert "eval/x/REPORT.md" in leftover
+
+
+def test_a_created_then_deleted_path_no_longer_kills_the_commit(repo_with_bare_remote):
+    """Pre-fix: `git add -- app.py ghost.py` exits 128 (ghost.py is neither
+    on disk nor in the index — the coder created it and then deleted it
+    again within this attempt) and `commit_paths` raised GitError, killing
+    the WHOLE commit including the real app.py edit. Post-fix, app.py must
+    still land and ghost.py must simply be dropped, not raise."""
+    repo = GitRepo(repo_with_bare_remote)
+    repo.create_branch("no-human/phantom-path", base="main")
+    app = repo.path / "app.py"
+    app.write_text("x = 2\n")
+    ghost = repo.path / "ghost.py"  # never created on disk in this branch
+    repo.commit_paths([str(app), str(ghost)], "edit app.py; ghost.py never existed")
+    files = _committed_files(repo.path)
+    assert "app.py" in files
+    assert "ghost.py" not in files
+
+    # Positive control: when ghost.py DOES exist on disk, both land — proving
+    # the fix drops only genuinely-absent paths, not the whole batch.
+    repo.create_branch("no-human/phantom-path-control", base="main")
+    app.write_text("x = 3\n")
+    ghost.write_text("y = 1\n")
+    repo.commit_paths([str(app), str(ghost)], "edit app.py; ghost.py exists this time")
+    files = _committed_files(repo.path)
+    assert "app.py" in files
+    assert "ghost.py" in files
+
+
+def test_a_leading_space_tracked_edit_is_not_dropped_by_a_whole_output_strip(repo_with_bare_remote):
+    """`_run`'s `proc.stdout.strip()` is a whole-output strip: it eats the
+    leading space off the FIRST path in a `-z` git call's output (a
+    filename may legitimately begin with a space), even though `-z`
+    itself is present and NUL survives the strip fine. `" lead.py"` sorts
+    before `"app.py"` (space < 'a'), so it lands first in `git diff
+    --name-only -z`'s output — exactly where the bug bites. The `-z`
+    producers in `commit_paths` must route through `_run_null` (which
+    never strips), not `_run`, or this tracked edit is silently dropped:
+    `"lead.py"` (space stripped) does not exist on disk, the phantom
+    filter misclassifies it as missing, the `ls-files` lookup can't match
+    the mangled name either, and it is dropped as a phantom."""
+    repo = GitRepo(repo_with_bare_remote)
+    repo.create_branch("no-human/leading-space", base="main")
+    lead = repo.path / " lead.py"
+    lead.write_text("a = 1\n")
+    _git(repo.path, "add", "-A")
+    _git(repo.path, "commit", "-m", "add lead.py")
+
+    lead.write_text("a = 2\n")
+    app = repo.path / "app.py"
+    app.write_text("x = 2\n")
+    repo.commit_paths([], "edit both tracked files")
+
+    names = _committed_names(repo.path)
+    assert " lead.py" in names
+    assert "app.py" in names
+
+
+def test_a_tracked_deletion_is_still_staged_as_a_deletion(repo_with_bare_remote):
+    """A TRACKED path that was deleted must still be staged as a deletion —
+    it must not share ghost.py's fate just because both are absent from
+    disk. The `ls-files -z --` lookup is what tells the two apart.
+
+    Co-batched with a real edit (`app.py`, already tracked from the
+    fixture's init commit) so `rel_paths` can never end up empty and
+    `commit_paths`' own `if not staged: stage_all()` fallback can never
+    fire. Without that co-batch, a broken phantom/tracked split would drop
+    doomed.py's deletion from `rel_paths`, `git add` would stage nothing,
+    and `stage_all()` would silently sweep the deletion (and any other
+    dirty side-effect) back in — passing the test for the wrong reason. The
+    untouched `data/state.json` side-effect is the discriminator: it must
+    stay out of the commit, proving the fallback never ran."""
+    repo = GitRepo(repo_with_bare_remote)
+    repo.create_branch("no-human/tracked-deletion", base="main")
+    doomed = repo.path / "doomed.py"
+    doomed.write_text("z = 1\n")
+    repo.commit_paths([str(doomed)], "add doomed.py")
+
+    os.remove(doomed)
+    ghost = repo.path / "ghost.py"  # never existed at all
+    app = repo.path / "app.py"
+    app.write_text("x = 2\n")  # a real, always-stageable co-batched edit
+    data = repo.path / "data"
+    data.mkdir()
+    (data / "state.json").write_text('{"updated": true}')  # unrelated side-effect
+    repo.commit_paths([str(doomed), str(ghost), str(app)], "remove doomed.py")
+
+    deleted = subprocess.run(
+        ["git", "show", "--diff-filter=D", "--name-only", "--format=", "HEAD"],
+        cwd=repo.path, capture_output=True, text=True,
+    ).stdout
+    assert "doomed.py" in deleted
+    tree = subprocess.run(
+        ["git", "ls-tree", "HEAD", "--", "doomed.py"],
+        cwd=repo.path, capture_output=True, text=True,
+    ).stdout
+    assert tree.strip() == ""
+    files = _committed_files(repo.path)
+    assert "app.py" in files
+    assert "ghost.py" not in files
+    assert "state.json" not in files
+
+
+def test_an_add_that_fails_for_another_reason_still_raises(repo_with_bare_remote):
+    """An add failure for a reason OTHER than a coder-created-then-deleted
+    path (here: the path is explicitly gitignored, so it is present on disk
+    the whole time and never lands in `missing`) must still raise — the fix
+    must not swallow every `git add` failure."""
+    repo = GitRepo(repo_with_bare_remote)
+    repo.create_branch("no-human/ignored-add-fails", base="main")
+    (repo.path / ".gitignore").write_text("secret.txt\n")
+    secret = repo.path / "secret.txt"
+    secret.write_text("shh\n")
+    with pytest.raises(GitError):
+        repo.commit_paths([str(secret)], "try to add an ignored file")
+
+    # Positive control: without the ignore entry, the same call commits fine.
+    repo.create_branch("no-human/ignored-add-control", base="main")
+    (repo.path / ".gitignore").unlink()
+    secret.write_text("shh\n")
+    repo.commit_paths([str(secret)], "add secret.txt without the ignore rule")
+    files = _committed_files(repo.path)
+    assert "secret.txt" in files
+
+
+def test_the_missing_path_lookup_fails_closed(repo_with_bare_remote):
+    """The `ls-files -z --` missing-path lookup must fail closed: if IT
+    errors, `commit_paths` must raise rather than silently treating the
+    lookup's empty ("") result as "nothing is tracked" and dropping the
+    co-batched TRACKED deletion as if it were a phantom.
+
+    Forces a REAL `ls-files` failure (an invalid pathspec magic in one of
+    the missing paths, confirmed to exit 128) rather than monkeypatching
+    `_run`/`_run_null` to raise unconditionally — a monkeypatch that raises
+    regardless of the `check` kwarg can't tell `check=True` (must raise)
+    apart from a `check=False` mutation (must swallow and return ""), so it
+    cannot actually catch a regression to `check=False`. This can: with
+    `check=True` the real git failure propagates as GitError; a mutation to
+    `check=False` would instead return "" and reach `git commit`, which
+    this test's `pytest.raises` would catch as a failure to raise."""
+    repo = GitRepo(repo_with_bare_remote)
+    repo.create_branch("no-human/lookup-fails-closed", base="main")
+    doomed = repo.path / "doomed.py"
+    doomed.write_text("z = 1\n")
+    repo.commit_paths([str(doomed)], "add doomed.py")
+    head_before = repo.head_sha()
+
+    os.remove(doomed)
+    # `:(nosuchmagic)` is not a real git pathspec magic word — `ls-files`
+    # rejects it with exit 128 before it can report on anything else in the
+    # same invocation, including the co-batched `doomed.py`.
+    poison = repo.path / ":(nosuchmagic)ghost.py"
+
+    with pytest.raises(GitError):
+        repo.commit_paths([str(doomed), str(poison)], "remove doomed.py")
+
+    assert repo.head_sha() == head_before
+
+
+def test_a_broken_symlink_is_not_mistaken_for_a_phantom_path(repo_with_bare_remote):
+    """`Path.exists()` follows symlinks, so a broken symlink (its target
+    removed or never created) reports False exactly like a path that was
+    never created on disk at all — the phantom filter must use
+    `os.path.lexists`, which is True for a broken symlink, or a legitimate
+    on-disk symlink the coder created would be misclassified as `ghost.py`'s
+    phantom twin and silently dropped from the commit instead of staged."""
+    repo = GitRepo(repo_with_bare_remote)
+    repo.create_branch("no-human/broken-symlink", base="main")
+    link = repo.path / "link.py"
+    link.symlink_to("does-not-exist.py")  # broken on purpose: target absent
+    app = repo.path / "app.py"
+    app.write_text("x = 2\n")
+    repo.commit_paths([str(link), str(app)], "add a broken symlink")
+
+    files = _committed_files(repo.path)
+    assert "link.py" in files
+    assert "app.py" in files
+
+
+def test_a_deleted_tracked_directory_is_staged_as_a_deletion(repo_with_bare_remote):
+    """`commit_paths([str(sub), ...])` with `sub/` already deleted from disk
+    must still land both `sub/a.py` and `sub/b.py` in the commit as
+    deletions, and must not let an unrelated side-effect (`data/state.json`)
+    ride along.
+
+    `sub` itself (the bare directory pathspec passed to `commit_paths`) is
+    phantom by every measure this module uses — `os.path.lexists` says it is
+    gone, and `ls-files -- sub` never returns the literal string `"sub"`
+    (only the files under it) — so it is correctly dropped from the final
+    `git add` pathspec list. That is not the mechanism this test pins: the
+    two file deletions reach `rel_paths` on their own, as literal entries,
+    via the unrestricted (no-pathspec) `git diff --name-only` producer run
+    earlier in `commit_paths`, and each matches `tracked` by an exact
+    string equality — this test exists to confirm that path stays intact,
+    not to exercise any directory-vs-file prefix matching."""
+    repo = GitRepo(repo_with_bare_remote)
+    repo.create_branch("no-human/tracked-dir-deletion", base="main")
+    sub = repo.path / "sub"
+    sub.mkdir()
+    (sub / "a.py").write_text("x = 1\n")
+    (sub / "b.py").write_text("y = 1\n")
+    repo.commit_paths([str(sub / "a.py"), str(sub / "b.py")], "add sub/")
+
+    import shutil
+    shutil.rmtree(sub)
+    app = repo.path / "app.py"
+    app.write_text("x = 2\n")  # a real, always-stageable co-batched edit
+    data = repo.path / "data"
+    data.mkdir()
+    (data / "state.json").write_text('{"updated": true}')  # unrelated side-effect
+    repo.commit_paths([str(sub), str(app)], "remove sub/")
+
+    deleted = subprocess.run(
+        ["git", "show", "--diff-filter=D", "--name-only", "--format=", "HEAD"],
+        cwd=repo.path, capture_output=True, text=True,
+    ).stdout
+    assert "sub/a.py" in deleted
+    assert "sub/b.py" in deleted
+    files = _committed_files(repo.path)
+    assert "app.py" in files
+    assert "state.json" not in files
+
+
+def test_changed_files_returns_raw_leading_space_and_non_ascii_paths(repo_with_bare_remote):
+    """Behavioural coverage for `changed_files`: a `.strip()` added to its
+    `-z` output would silently eat the leading space of the first path in
+    sorted order (mirrors `test_a_leading_space_tracked_edit_is_not_dropped_
+    by_a_whole_output_strip` for `commit_paths`' own `-z` producers).
+    `" lead.py"` sorts before `café.py` (space < 'c'), so it lands first
+    exactly where that bug bites, and a non-ASCII name alongside it proves
+    `changed_files` never falls back to C-quoting either."""
+    repo = GitRepo(repo_with_bare_remote)
+    repo.create_branch("no-human/changed-files-quoted", base="main")
+    base_sha = repo.head_sha()
+    lead = repo.path / " lead.py"
+    lead.write_text("a = 1\n")
+    cafe = repo.path / "café.py"
+    cafe.write_text("b = 1\n")
+    repo.commit_paths([str(lead), str(cafe)], "add lead.py and cafe.py")
+
+    changed = repo.changed_files(base_sha)
+    assert " lead.py" in changed
+    assert "café.py" in changed
+    assert (repo.path / " lead.py").exists()
+    assert (repo.path / "café.py").exists()
+
+
+def test_a_staged_rename_does_not_fabricate_a_leftover_from_the_original_path_token(
+    repo_with_bare_remote,
+):
+    """`status --porcelain -z`'s rename/copy record is TWO NUL-separated
+    tokens — `XY <new>\\0<orig>\\0` — not the porcelain-v1 `XY <new> -> <orig>`
+    line. For `zzzsource.py` renamed to `zzznew.py` the raw bytes are
+    `R  zzznew.py\\0zzzsource.py\\0`. `uncommitted_source_files` must consume
+    and discard that bare second token (`if xy[:1] in ("R", "C"): i += 1`) or
+    it gets re-parsed on the next loop iteration as its own record: the
+    first three bytes of `zzzsource.py` ('z','z','z') are mistaken for a
+    2-char status code plus its separator, and the remaining `source.py` is
+    mistaken for `rel` — fabricating a leftover for a path
+    (`source.py`) that was never created, staged, or left uncommitted."""
+    repo = GitRepo(repo_with_bare_remote)
+    repo.create_branch("no-human/rename-token", base="main")
+    original = repo.path / "zzzsource.py"
+    original.write_text("x = 1\n")
+    repo.commit_paths([str(original)], "add zzzsource.py")
+
+    _git(repo.path, "mv", "zzzsource.py", "zzznew.py")  # staged rename
+    leftover = repo.uncommitted_source_files()
+
+    assert leftover == ["zzznew.py"], leftover
