@@ -26,6 +26,7 @@ import asyncio
 import logging
 import os
 import platform
+import sqlite3
 import time
 from collections import deque
 from datetime import datetime, timedelta, timezone
@@ -477,6 +478,16 @@ def _lease_sibling_is_dead(
     return current_token != token
 
 
+def _is_transient_db_lock(exc: BaseException) -> bool:
+    """NARROW on purpose. Only sqlite3.OperationalError whose message names a
+    lock is retried; any other OperationalError (`no such table`, `disk I/O
+    error`) is a fault the same write will keep hitting, and an unknown type
+    means the caller fails closed. A claim we cannot prove landed is not a
+    claim."""
+    return (isinstance(exc, sqlite3.OperationalError)
+            and "database is locked" in str(exc).lower())
+
+
 class Scheduler:
     def __init__(
         self,
@@ -662,6 +673,14 @@ class Scheduler:
         None. Read by `/api/queue/health` to label the pause "infra" instead
         of misattributing it to a stale quota park."""
         return self._quota_cooldown_until if self._infra_cooldown_active else None
+
+    @property
+    def lease_lost(self) -> str | None:
+        """The reason the last per-tick lease REFRESH failed, or None while
+        the lease still holds. Never cleared once set — see `_lease_lost`'s
+        own docstring at its assignment sites; this is a read-only mirror for
+        `health.py`/`api/app.py`, not a new mutation point."""
+        return self._lease_lost
 
     def get_live_status(self, task_id: str) -> str | None:
         """Return the latest live status summary for a task, or None."""
@@ -994,6 +1013,59 @@ class Scheduler:
     _LEASE_READ_ATTEMPTS = 3
     _LEASE_READ_BACKOFF_S = 0.05
 
+    # `_claim_pool_lease`'s CAS WRITE step, mirroring the read pair above —
+    # the write leg never had a budget at all (that asymmetry was the bug:
+    # one transient `database is locked` on the write became a permanent
+    # `PoolLeaseLost`, with no restart-free way back). Bounded and short —
+    # this accommodates a genuinely transient lock without turning a
+    # contended write into a long stall, and exhausting the budget still
+    # RAISES `PoolLeaseLost` exactly as an unbounded write always did.
+    _LEASE_WRITE_ATTEMPTS = 3
+    _LEASE_WRITE_BACKOFF_S = 0.05
+
+    async def _cas_heartbeat_with_retry(self, **kw) -> bool:
+        """`_claim_pool_lease`'s CAS write, retried a bounded number of times
+        ONLY when the failure is a transient same-database lock
+        (`_is_transient_db_lock`) — an ordinary write/write collision with
+        another local writer that the busy handler alone did not clear in
+        time. Anything else — an unrecognised exception type, or a message
+        that does not name a lock — fails on the FIRST attempt: those are
+        faults the same write will keep hitting, and retrying them only
+        delays an honest failure.
+
+        LOAD-BEARING INVARIANT: `**kw` — in particular the pre-retry `expect`
+        row — is forwarded BYTE-IDENTICALLY on every attempt, and there is no
+        re-read inside this loop. A competitor that takes the row inside the
+        retry window therefore cannot be overwritten: the retried CAS still
+        carries the stale `expect` and returns `False` against the
+        competitor's row, and `_claim_pool_lease`'s own re-read (after this
+        method returns) is what raises `SiblingSchedulerRunning` naming the
+        live pid. A CAS that *returns* `False` is never retried here — only
+        a CAS that *raises* is.
+        """
+        last_exc: Exception | None = None
+        for attempt in range(1, self._LEASE_WRITE_ATTEMPTS + 1):
+            try:
+                return await self.store.cas_scheduler_heartbeat(**kw)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 — classified below
+                if not _is_transient_db_lock(exc):
+                    raise
+                last_exc = exc
+                if attempt >= self._LEASE_WRITE_ATTEMPTS:
+                    log.error(
+                        "pool lease: write attempt %d/%d hit a transient "
+                        "lock and the retry budget is exhausted: %s",
+                        attempt, self._LEASE_WRITE_ATTEMPTS, exc)
+                    raise
+                log.warning(
+                    "pool lease: write attempt %d/%d hit a transient lock: "
+                    "%s", attempt, self._LEASE_WRITE_ATTEMPTS, exc)
+                await asyncio.sleep(
+                    self._LEASE_WRITE_BACKOFF_S * 2 ** (attempt - 1))
+        raise last_exc  # pragma: no cover - loop always returns or raises
+
     async def _is_terminal_row(self, task) -> bool:
         """Re-read the live row; terminal = DONE, or FAILED with a cancel
         reason (there is no separate 'cancelled' status). Mirrors
@@ -1306,9 +1378,15 @@ class Scheduler:
             write blindly (the winner may be a live sibling that now
             legitimately owns the lease): it re-reads once and either raises
             `SiblingSchedulerRunning` (a live interloper won the race) or
-            `PoolLeaseLost` (anything else changed). A CAS write that raises
-            is likewise `PoolLeaseLost`, not a swallowed warning — a claim
-            this process cannot PROVE landed is not a claim.
+            `PoolLeaseLost` (anything else changed). A CAS write that RAISES
+            goes through `_cas_heartbeat_with_retry` first — a bounded
+            number of retries, and ONLY when the exception is a transient
+            same-database lock (`_is_transient_db_lock`); every attempt
+            forwards the SAME `expect`, so a competitor's row still cannot
+            be overwritten. Once that budget is exhausted, or the exception
+            is not a transient lock to begin with, the write is
+            `PoolLeaseLost`, not a swallowed warning — a claim this process
+            cannot PROVE landed is not a claim.
         """
         my_pid = os.getpid()
         my_host = platform.node()
@@ -1337,7 +1415,7 @@ class Scheduler:
         started_at = (row["started_at"] if mine
                       else datetime.now(timezone.utc).isoformat())
         try:
-            landed = await self.store.cas_scheduler_heartbeat(
+            landed = await self._cas_heartbeat_with_retry(
                 pid=my_pid, host=my_host, started_at=started_at, ts=now,
                 start_token=my_token, expect=row)
         except Exception as exc:  # noqa: BLE001 — cannot prove the claim landed

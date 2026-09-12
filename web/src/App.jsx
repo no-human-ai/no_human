@@ -31,7 +31,7 @@ import useIsPhone from "./useIsPhone.js";
 import { createReconnector } from "./wsReconnect.js";
 import { connectionBanner } from "./connectionBanner.js";
 import { updateBanner } from "./updateNotice.js";
-import { drainChip, formatPausedUntil } from "./drainChip.js";
+import { drainChip, pausedPresentation } from "./drainChip.js";
 import { initialDrainReadout, nextDrainReadout, readoutPayload } from "./drainReadout.js";
 import { useEscapeKey } from "./useEscapeKey.js";
 import { promptFromIssue, externalIdFromIssue } from "./jiraImport.js";
@@ -1397,24 +1397,26 @@ export default function App() {
               wall — every field individually true, the picture false. A
               pause is deliberate, not a wedge (`stuck` stays false), so it
               gets its own line rather than piggybacking on the alarm. */}
-          {!queueHealth?.stuck && queueHealth?.paused && queueHealth?.paused_reason === "infra" && (
-            <div className="nh-status-indicator" role="status"
-                 title="Pool-wide pause — repeated SDK/auth failures">
-              <div className="nh-ws-dot" />
-              <span className="nh-status-label">
-                Paused — SDK/auth failures, resumes {formatPausedUntil(queueHealth.paused_until)}
-              </span>
-            </div>
-          )}
-          {!queueHealth?.stuck && queueHealth?.paused && queueHealth?.paused_reason !== "infra" && (
-            <div className="nh-status-indicator" role="status"
-                 title={queueHealth.paused_profile ? `${queueHealth.paused_profile} profile hit its quota` : "Pool-wide quota cooldown"}>
-              <div className="nh-ws-dot" />
-              <span className="nh-status-label">
-                Paused — quota resets {formatPausedUntil(queueHealth.paused_until)}
-              </span>
-            </div>
-          )}
+          {/* Single source of truth for what a paused_reason MEANS —
+              drainChip.js's pausedPresentation, also used by the header's
+              drain chip. Deliberately reason-agnostic here: an absent/null
+              paused_reason renders the same "unknown" as any value neither
+              this code nor pausedPresentation has ever heard of — it must
+              never fall through to "quota" merely for not being "infra"
+              (that fallthrough is the exact bug a lost pool lease exposed,
+              task 92e48491). */}
+          {!queueHealth?.stuck && queueHealth?.paused && (() => {
+            const p = pausedPresentation(queueHealth?.paused_reason, {
+              paused_until: queueHealth?.paused_until,
+              paused_profile: queueHealth?.paused_profile,
+            });
+            return (
+              <div className="nh-status-indicator" role="status" title={p.title}>
+                <div className="nh-ws-dot" />
+                <span className="nh-status-label">{p.text}</span>
+              </div>
+            );
+          })()}
           {!queueHealth?.stuck && !queueHealth?.paused && queueHealth?.eta_minutes != null && queueHealth.open_tasks > 0 && (
             <div className="nh-status-indicator" title={`${queueHealth.completed_in_window} finished in the last ${queueHealth.window_minutes} min`}>
               <div className="nh-ws-dot live" />

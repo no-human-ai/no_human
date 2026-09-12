@@ -3931,6 +3931,12 @@ async def worker_status(request: Request) -> dict[str, Any]:
         and watcher_error is None
         and worker_error is None
         and "health_error" not in out
+        # A lost lease is permanent (no clearing site — a restart is the only
+        # way back), and `tick_stalled` does not cover this window on its own:
+        # `run_forever` only unwinds the loop after `_stop_grace_s`, and a
+        # Scheduler ticked directly (no `run_forever` wrapper at all) has no
+        # such callback to ever set `tick_stalled` in the first place.
+        and not out.get("lease_lost")
     )
     return out
 
@@ -3948,9 +3954,11 @@ async def queue_health_endpoint(request: Request) -> dict[str, Any]:
     # would otherwise AttributeError on every /api/queue/health call.
     quota_cooldown_until = getattr(sched, "quota_cooldown_until", None) if sched is not None else None
     infra_cooldown_until = getattr(sched, "infra_cooldown_until", None) if sched is not None else None
+    lease_lost = getattr(sched, "lease_lost", None) if sched is not None else None
     h = await queue_health(store, inflight_ids=inflight, max_workers=max_workers,
                             quota_cooldown_until=quota_cooldown_until,
-                            infra_cooldown_until=infra_cooldown_until)
+                            infra_cooldown_until=infra_cooldown_until,
+                            lease_lost=lease_lost)
     return h.as_dict()
 
 

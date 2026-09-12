@@ -34,6 +34,52 @@ export function formatPausedUntil(iso) {
   return `${hh}:${mm}`;
 }
 
+// One place naming what each `paused_reason` MEANS to an operator — the
+// single spot both the header chip (drainChip, below) and the sidebar
+// indicator (App.jsx) read, so a reason added here is never explained one
+// way in one surface and a different way (or not at all) in the other.
+//
+// The DEFAULT branch matters as much as the named ones: a `paused_reason`
+// this code has never heard of — including a genuinely absent/null one on
+// a truthy `paused` — must render as UNKNOWN, never fall through to "quota"
+// by virtue of merely not being "infra". That fallthrough is the exact bug
+// a lost pool lease exposed (task 92e48491): a permanent, restart-only
+// failure rendered as a cooldown that would reset itself. Every reason this
+// module does not explicitly recognise gets the same honest "unknown" —
+// nothing here infers a specific cause from silence.
+export function pausedPresentation(reason, { paused_until = null, paused_profile = null } = {}) {
+  const at = formatPausedUntil(paused_until);
+  if (reason === "infra") {
+    return {
+      text: `Paused — SDK/auth failures, resumes ${at}`,
+      title: "Pool-wide pause — repeated SDK/auth failures",
+      tone: "warn",
+    };
+  }
+  if (reason === "quota") {
+    return {
+      text: `Paused — quota resets ${at}`,
+      title: paused_profile ? `${paused_profile} profile hit its quota` : "Pool-wide quota cooldown",
+      tone: "warn",
+    };
+  }
+  if (reason === "lease_lost") {
+    // No `at`: nothing resumes this on its own — only a restart does — so
+    // there is deliberately no time in the text, unlike the two cooldowns
+    // above.
+    return {
+      text: "Paused — pool lease lost; restart required",
+      title: "This scheduler lost the pool lease and will not dispatch again until it is restarted",
+      tone: "error",
+    };
+  }
+  return {
+    text: "Paused — reason unknown",
+    title: `Unrecognised paused_reason (${JSON.stringify(reason)}) — see /api/worker/status`,
+    tone: "warn",
+  };
+}
+
 // input: the flat {workers_busy, max_workers, queue_depth, est_drain_seconds,
 // error, paused, paused_until} object (the raw /api/queue/health payload —
 // field names match 1:1, see core/health.py QueueHealth.as_dict). error is
@@ -51,13 +97,12 @@ export function drainChip({
   paused = false,
   paused_until = null,
   paused_reason = null,
+  paused_profile = null,
 } = {}) {
   if (error) return { text: "server unreachable", tone: "error" };
   if (paused) {
-    const at = formatPausedUntil(paused_until);
-    return paused_reason === "infra"
-      ? { text: `Paused — SDK/auth failures, resumes ${at}`, tone: "warn" }
-      : { text: `Paused — quota resets ${at}`, tone: "warn" };
+    const { text, tone } = pausedPresentation(paused_reason, { paused_until, paused_profile });
+    return { text, tone };
   }
 
   const parts = [`${workers_busy}/${max_workers} workers busy`, `${queue_depth} queued`];
