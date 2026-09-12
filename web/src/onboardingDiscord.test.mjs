@@ -147,7 +147,13 @@ function filesMatching(pattern) {
 }
 
 test("the invite literal exists exactly once in source, at web/src/community.js — with controls", () => {
-  const hits = filesMatching(/discord\.gg\/mSARvj6yW6/);
+  // Derived from the constant, never re-typed. This line used to carry the
+  // invite code as a literal — the one thing this whole file exists to stop —
+  // so changing the invite turned the test red for a reason that had nothing
+  // to do with the invite being wrong.
+  const inviteRe = new RegExp(
+    DISCORD_INVITE_URL.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  const hits = filesMatching(inviteRe);
   assert.deepEqual(hits, ["web/src/community.js"], "the raw invite URL must live in exactly one source file");
 
   // Positive control: the same scanner, over the same tree, must find the
@@ -209,7 +215,11 @@ test("every doc occurrence of the invite is exactly the constant — docs discov
   // Bounded to the invite-code alphabet so trailing prose punctuation (a
   // markdown ")", a full-width Chinese "，", a Korean particle glued on with
   // no space) is never swept into the match — no stripping step needed.
-  const urlRe = /https:\/\/discord\.gg\/[A-Za-z0-9]+/g;
+  // `_` and `-` are legal in a Discord vanity code. Without them, the day
+  // this project buys `discord.gg/no-human-ai` the regex truncates it to
+  // `discord.gg/no` and the test goes permanently red against its own
+  // constant — failing for a reason that has nothing to do with drift.
+  const urlRe = /https:\/\/discord\.gg\/[A-Za-z0-9_-]+/g;
   const carriers = new Map();
   for (const f of docFiles) {
     const found = [...readFileSync(join(REPO_ROOT, f), "utf8").matchAll(urlRe)].map((m) => m[0]);
