@@ -93,6 +93,10 @@ def test_allowlist_is_the_documented_closed_set():
         "feature_used": frozenset({"name", "environment"}),
         "task_ended": frozenset({"outcome", "attempts", "duration_bucket", "environment"}),
         "tasks_orphaned": frozenset({"count_bucket", "environment"}),
+        "onboarding_step_viewed": frozenset({"step", "environment"}),
+        "onboarding_repo_selected": frozenset({"environment"}),
+        "onboarding_completed": frozenset({"path", "environment"}),
+        "task_create_refused": frozenset({"reason", "environment"}),
     }
 
 
@@ -600,10 +604,13 @@ def test_client_allowlist_matches_the_deployed_lambda_contract():
     event the deployed Lambda should accept — ship the server-side allowlist
     change FIRST, then update this fixture.
 
-    `task_ended`/`tasks_orphaned` are valid client-side (`_ALLOWED_EVENTS`,
-    PostHog gets them) but are NOT yet in this deployed contract — they are
-    kept out of the outgoing Lambda batch by `_LAMBDA_EVENTS` (see
-    telemetry.py, docs/TELEMETRY.md) until the server ships them.
+    `task_ended`/`tasks_orphaned` and the onboarding-funnel events
+    (`onboarding_step_viewed`, `onboarding_repo_selected`,
+    `onboarding_completed`, `task_create_refused`) are valid client-side
+    (`_ALLOWED_EVENTS`, PostHog gets them) but are NOT yet in this deployed
+    contract — they are kept out of the outgoing Lambda batch by
+    `_LAMBDA_EVENTS` (see telemetry.py, docs/TELEMETRY.md) until the server
+    ships them.
     """
     # "environment" is a client-side-only addition (stripped by
     # _strip_environment before the Lambda ever sees it — the server's
@@ -621,9 +628,11 @@ def test_client_allowlist_matches_the_deployed_lambda_contract():
     assert {k: v for k, v in telemetry._ALLOWED_EVENTS.items()
             if k in telemetry._LAMBDA_EVENTS} == deployed_lambda_events
     # Not-yet-shipped events are the EXACT difference — nothing else is held
-    # back, and the two new events are not silently forgotten either.
+    # back, and none of the six new events are silently forgotten either.
     assert set(telemetry._ALLOWED_EVENTS) - telemetry._LAMBDA_EVENTS == {
         "task_ended", "tasks_orphaned",
+        "onboarding_step_viewed", "onboarding_repo_selected",
+        "onboarding_completed", "task_create_refused",
     }
     # The server also regex-validates `version` (semver-ish, MAJOR.MINOR.
     # PATCH + optional short suffix) and 400s the whole batch otherwise —
