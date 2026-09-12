@@ -30,8 +30,15 @@ from __future__ import annotations
 
 import os
 
-#: Module constant, not an inline `os.name` test, precisely so a test can flip
-#: it -- the same seam `guard._IS_WINDOWS` and `fs_roots` already use.
+#: Module constant, not an inline `os.name` test, so the platform is decided
+#: in one place.
+#:
+#: NOT the test seam, despite being the obvious candidate: consumers bind
+#: their own copy at import (`venv_install_guard._IS_WINDOWS = ...`), so
+#: patching THIS name after import changes nothing and a test that flips it
+#: passes while proving nothing. Flip the consuming module's constant -- that
+#: is what the tests do. Caught in review, where the first version of this
+#: comment claimed the opposite.
 _IS_WINDOWS = os.name == "nt"
 
 

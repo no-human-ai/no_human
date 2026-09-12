@@ -171,8 +171,20 @@ _LOG = logging.getLogger(__name__)
 #: Shell interpreters whose ``-c``/``-lc`` argument is a script to execute —
 #: recursion is scoped to these so `echo "pip install foo"` (argument text
 #: that is never executed) is never mistaken for an invocation.
-_SHELL_RUNNERS = frozenset({"sh", "bash", "zsh", "dash", "ksh"})
-_SCRIPT_FLAGS = frozenset({"-c", "-lc", "-cl", "--command"})
+# `cmd`/`powershell`/`pwsh` sit beside the POSIX five because laundering a
+# payload through a nested shell is verdict 1 of the three review rounds this
+# module exists to survive, and on Windows those are the shells that do it.
+# Names are matched through `_basename`, so `bash.exe` and a fully-spelled
+# `C:/Program Files/Git/bin/bash.exe` reach the same entry (issue #105 round 2:
+# `PurePosixPath(tok).name` matched the bare five ONLY, so `bash.exe -c "..."`
+# and `cmd /c "..."` walked past both readings with the payload intact -- and
+# silently, because a payload with spaces resolves to no installer name).
+_SHELL_RUNNERS = frozenset({"sh", "bash", "zsh", "dash", "ksh",
+                            "cmd", "powershell", "pwsh"})
+#: Compared lowercased: cmd and PowerShell treat their switches
+#: case-insensitively, so `/C` and `-Command` are the same flag as `/c`.
+_SCRIPT_FLAGS = frozenset({"-c", "-lc", "-cl", "--command",
+                           "/c", "/k", "-command"})
 _SEGMENT_BREAKS = frozenset({";", "&", "&&", "||", "|", "(", ")", "{", "}"})
 _MAX_RECURSE_DEPTH = 3
 
@@ -316,10 +328,10 @@ def _flatten(text: str, _depth: int = 0) -> list[str]:
             out.append(tok)
             i += 1
             continue
-        name = PurePosixPath(tok).name
-        if name in _SHELL_RUNNERS:
+        name = _basename(tok)
+        if name.lower() in _SHELL_RUNNERS:
             seen_runner = True
-        if seen_runner and tok in _SCRIPT_FLAGS and i + 1 < n:
+        if seen_runner and tok.lower() in _SCRIPT_FLAGS and i + 1 < n:
             out.extend(_flatten(tokens[i + 1], _depth + 1))
             seen_runner = False
             out.append(tok)

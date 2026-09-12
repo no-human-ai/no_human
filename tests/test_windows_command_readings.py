@@ -199,3 +199,50 @@ def test_a_posix_host_does_not_gain_the_windows_reading(primary, worktree, on_po
     assert venv_install_guard.denial_reason(
         windows_spelled, cwd=str(worktree), env=_env_pointing_at(primary / ".venv"),
     ) is None
+
+
+# Round 2 of issue #105, found by an adversarial review of the first fix.
+# `_flatten` decided "is this a shell runner whose payload I must recurse
+# into" with `PurePosixPath(tok).name` against five bare POSIX names, so the
+# Windows spelling of the SAME command walked past both readings with the
+# payload intact -- and silently, because a quoted payload containing spaces
+# resolves to no installer name, so not even the WARNING fired. Quoting is not
+# exotic here: it is mandatory as soon as the path holds a space, which is
+# `C:\Program Files\...`, the shape this whole issue is about.
+NESTED_SHELL_TEMPLATES = [
+    'bash.exe -c "{p}/.venv/bin/pip install foo"',
+    'sh.exe -c "{p}/.venv/bin/pip install foo"',
+    'cmd /c "{p}/.venv/bin/pip install foo"',
+    'cmd.exe /c "{p}/.venv/bin/pip install foo"',
+    'cmd /C "{p}/.venv/bin/pip install foo"',
+    'powershell -Command "{p}/.venv/bin/pip install foo"',
+    'pwsh -c "{p}/.venv/bin/pip install foo"',
+]
+
+
+@pytest.mark.parametrize("template", NESTED_SHELL_TEMPLATES)
+def test_a_windows_nested_shell_cannot_launder_the_payload(
+    primary, worktree, template, on_windows
+):
+    cmd = _backslashed(template.format(p=primary))
+    assert venv_install_guard.denial_reason(
+        cmd, cwd=str(worktree), env=_env_pointing_at(primary / ".venv"),
+    ) is not None, cmd
+
+
+def test_the_posix_nested_shell_control_still_holds(primary, worktree, on_posix):
+    """`sh -c` was already refused before any of this. If this ever goes red
+    the runner change broke the case it was modelled on."""
+    cmd = f'sh -c "{primary}/.venv/bin/pip install foo"'
+    assert venv_install_guard.denial_reason(
+        cmd, cwd=str(worktree), env=_env_pointing_at(primary / ".venv"),
+    ) is not None
+
+
+def test_a_nested_shell_running_something_harmless_is_still_allowed(worktree, on_windows):
+    """Negative control: recursing into payloads must not deny every nested
+    shell. Installing into the session's OWN venv stays allowed."""
+    cmd = _backslashed(f'cmd /c "{worktree}/.venv/bin/pip install foo"')
+    assert venv_install_guard.denial_reason(
+        cmd, cwd=str(worktree), env=_env_pointing_at(worktree / ".venv"),
+    ) is None
