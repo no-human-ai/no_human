@@ -17022,7 +17022,7 @@ class Orchestrator:
                 try:
                     ahead = repo.commits_ahead(base)
                 except Exception:  # noqa: BLE001 — cannot tell is not refuted
-                    raise
+                    return False, "", ""
                 if ahead > 0:
                     return False, "", ""
             (shippable, head, _subject, subject_reason, _on_main,
