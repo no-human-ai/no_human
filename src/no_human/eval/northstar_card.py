@@ -746,13 +746,13 @@ class NorthStarCard:
         # and silently discard every completed spec on the next --resume.
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(path.suffix + ".tmp")
-        tmp.write_text(json.dumps(self.as_dict(), indent=2))
+        tmp.write_text(json.dumps(self.as_dict(), indent=2), encoding="utf-8")
         os.replace(tmp, path)
 
     @staticmethod
     def load(path: Path) -> "NorthStarCard | None":
         try:
-            data = json.loads(Path(path).read_text())
+            data = json.loads(Path(path).read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             return None
         scores = [BenchScore(
