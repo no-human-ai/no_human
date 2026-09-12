@@ -5,6 +5,7 @@ import { REPLAY_EXCLUDED_PATHS, maskCapturedNetworkRequest } from "./replayScrub
 test("REPLAY_EXCLUDED_PATHS names the address-carrying endpoints", () => {
   assert.ok(REPLAY_EXCLUDED_PATHS.includes("/api/onboarding/email"));
   assert.ok(REPLAY_EXCLUDED_PATHS.includes("/api/onboarding/status"));
+  assert.ok(REPLAY_EXCLUDED_PATHS.includes("/api/onboarding/reset"));
 });
 
 test("drops the onboarding email request in relative/absolute/query/trailing-slash forms", () => {
@@ -27,6 +28,18 @@ test("drops the onboarding status request/response in the same forms", () => {
     { name: "http://localhost:8420/api/onboarding/status" },
     { name: "/api/onboarding/status/" },
     { name: "/api/onboarding/status?ts=123" },
+  ];
+  for (const data of shapes) {
+    assert.equal(maskCapturedNetworkRequest(data), null, JSON.stringify(data));
+  }
+});
+
+test("drops the onboarding reset request/response in the same forms", () => {
+  const shapes = [
+    { name: "/api/onboarding/reset" },
+    { name: "http://localhost:8420/api/onboarding/reset" },
+    { name: "/api/onboarding/reset/" },
+    { name: "/api/onboarding/reset?ts=123" },
   ];
   for (const data of shapes) {
     assert.equal(maskCapturedNetworkRequest(data), null, JSON.stringify(data));

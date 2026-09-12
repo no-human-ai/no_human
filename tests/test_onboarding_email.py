@@ -25,6 +25,7 @@ its siblings under web/src/):
 """
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 import types
@@ -246,6 +247,108 @@ async def test_config_endpoint_does_not_echo_the_address_either(client, tmp_path
     import yaml
     on_disk = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
     assert on_disk["onboarding"]["email"] == "person@example.com"
+
+
+@pytest.mark.asyncio
+async def test_reset_endpoint_does_not_echo_the_address_either(client, tmp_path):
+    """A fourth leak vector, closed the same way as status/complete/config:
+    POST /api/onboarding/reset returns `{"completed": ..., **ob}` — the
+    board's desktop "Re-run Setup..." action (App.jsx) hits this after a
+    user has already completed onboarding once, so `ob` may already carry a
+    registered `email`/`email_at`/`welcome_status` from a prior POST to
+    /api/onboarding/email. It must never ride along in the reset response
+    either — same guarantee, same `_onboarding_public` helper as the other
+    three routes, not a fourth copy-pasted comprehension."""
+    reg = await client.post("/api/onboarding/email", json={"email": "person@example.com"})
+    assert reg.status_code == 200, reg.text
+
+    r = await client.post("/api/onboarding/reset")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    for field in ("email", "email_at", "welcome_status"):
+        assert field not in body, f"{field} must be redacted from /api/onboarding/reset"
+    assert "person@example.com" not in r.text, "the address must not appear anywhere in the reset response"
+    assert body["completed"] is False
+
+    # And it is still persisted on disk — reset only clears `completed`.
+    import yaml
+    on_disk = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
+    assert on_disk["onboarding"]["email"] == "person@example.com"
+
+
+@pytest.mark.asyncio
+async def test_no_route_in_the_app_ever_echoes_the_registered_address(
+    client, temp_home, no_network, no_thread
+):
+    """Behavioural proof over the app's REAL route table — not a source-text
+    scan for `_onboarding_public`/`_ONBOARDING_STATUS_REDACTED_FIELDS` call
+    sites (a regex over app.py asserting a helper is called N times proves
+    nothing about the N+1th route). Every GET route with no path parameter,
+    plus every POST route under /api/onboarding, is actually called; the
+    registered address must not appear in ANY response body, success or
+    error. This is what should have caught `/api/onboarding/reset` echoing
+    the unredacted onboarding block before this fix: the four routes fixed
+    so far (status, complete, config, reset) all pass this walk now, and a
+    fifth route that forgets `_onboarding_public` fails it immediately,
+    without anyone having to remember to write a fifth hand-written test.
+
+    No route is skipped. Errors are caught (a 503/422/500 is not itself a
+    leak) but the exception text is still searched for the address.
+    """
+    address = "route-walk-canary@example.invalid"
+    reg = await client.post("/api/onboarding/email", json={"email": address})
+    assert reg.status_code == 200, reg.text
+
+    get_routes = sorted(
+        {
+            r.path
+            for r in app.routes
+            if getattr(r, "path", None)
+            and "GET" in getattr(r, "methods", set())
+            and "{" not in r.path
+        }
+    )
+    onboarding_post_routes = sorted(
+        {
+            r.path
+            for r in app.routes
+            if getattr(r, "path", None)
+            and "POST" in getattr(r, "methods", set())
+            and r.path.startswith("/api/onboarding/")
+            and "{" not in r.path
+        }
+    )
+    # Sanity floor: this branch's route table has 39 matching GET routes and
+    # 11 matching /api/onboarding POST routes. The thresholds are well below
+    # that so a route added or removed later doesn't make this test flaky,
+    # but a bug in the walk itself (wrong attribute name, empty result)
+    # cannot silently pass as "no leaks found".
+    assert len(get_routes) >= 30, get_routes
+    assert len(onboarding_post_routes) >= 8, onboarding_post_routes
+
+    async def _hit(method: str, path: str) -> str:
+        try:
+            if method == "GET":
+                resp = await asyncio.wait_for(client.get(path), timeout=20)
+            else:
+                resp = await asyncio.wait_for(client.post(path, json={}), timeout=20)
+            return resp.text
+        except Exception as exc:  # noqa: BLE001 - an error is not a leak, but its text is still checked below
+            return repr(exc)
+
+    checked = 0
+    for path in get_routes:
+        text = await _hit("GET", path)
+        assert address not in text, f"GET {path} echoed the registered address"
+        assert "route-walk-canary" not in text, f"GET {path} echoed a fragment of the registered address"
+        checked += 1
+    for path in onboarding_post_routes:
+        text = await _hit("POST", path)
+        assert address not in text, f"POST {path} echoed the registered address"
+        assert "route-walk-canary" not in text, f"POST {path} echoed a fragment of the registered address"
+        checked += 1
+
+    assert checked == len(get_routes) + len(onboarding_post_routes)
 
 
 def test_render_welcome_reuses_the_frozen_template_byte_for_byte():

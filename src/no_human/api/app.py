@@ -4495,11 +4495,7 @@ async def show_config(request: Request) -> dict[str, Any]:
     # same exposure `_ONBOARDING_STATUS_REDACTED_FIELDS` already guards on
     # `/api/onboarding/status` and `/api/onboarding/complete`.
     if isinstance(data.get("onboarding"), dict):
-        data["onboarding"] = {
-            k: v
-            for k, v in data["onboarding"].items()
-            if k not in _ONBOARDING_STATUS_REDACTED_FIELDS
-        }
+        data["onboarding"] = _onboarding_public(data["onboarding"])
     scrubbed = _scrub_secrets(data)
     from ..agent.backend import CLAUDE_PINNED_ROLES, SUPPORTED_BACKENDS, resolve_backend_name
     from ..config import DEFAULT_CONFIG
@@ -5297,6 +5293,19 @@ class OnboardingEmailRequest(BaseModel):
 _ONBOARDING_STATUS_REDACTED_FIELDS = frozenset({"email", "email_at", "welcome_status"})
 
 
+def _onboarding_public(ob: dict[str, Any]) -> dict[str, Any]:
+    """The one function that decides what an onboarding block may carry over
+    HTTP. Every route that echoes the onboarding block — status, complete,
+    reset, and the onboarding slice of /api/config — MUST route through this,
+    not a copy-pasted comprehension: a dict copy-pasted at N call sites is
+    silent at the N+1th, which is exactly how the address leaked back out of
+    `/api/onboarding/reset` after being redacted everywhere else. Centralizing
+    the redaction here means a new route that echoes `ob` gets the guarantee
+    for free, and there is exactly one place to update if the redacted-field
+    set ever changes."""
+    return {k: v for k, v in ob.items() if k not in _ONBOARDING_STATUS_REDACTED_FIELDS}
+
+
 # The steps the minimal path skips, in the order the Finish-setup card lists them.
 DEFERRED_STEPS = ["docs", "integrations", "history", "rules"]
 
@@ -5403,11 +5412,9 @@ async def onboarding_status(request: Request) -> dict[str, Any]:
     # `email`/`email_at`/`welcome_status` are persisted (see
     # `onboarding_register_email` below) but never echoed here: this response
     # is polled repeatedly by the wizard and its plain `fetch` body is what
-    # PostHog session replay would otherwise capture unmasked.
-    redacted = {
-        k: v for k, v in ob.items() if k not in _ONBOARDING_STATUS_REDACTED_FIELDS
-    }
-    return {"completed": bool(ob.get("completed")), **redacted}
+    # PostHog session replay would otherwise capture unmasked. See
+    # `_onboarding_public` — the one function every echoing route must use.
+    return {"completed": bool(ob.get("completed")), **_onboarding_public(ob)}
 
 
 def _well_formed_email(addr: str) -> bool:
@@ -5977,14 +5984,14 @@ async def onboarding_complete(
     if body.telemetry_asked or prior.get("telemetry_asked"):
         patch["telemetry_asked"] = True
     ob = _persist_onboarding(config, patch)
-    # Same redaction as GET /api/onboarding/status: this response echoes the
-    # merged onboarding block, and `_persist_onboarding` may already carry a
-    # registered `email`/`email_at`/`welcome_status` from a prior POST to
+    # Same redaction as GET /api/onboarding/status, via `_onboarding_public`:
+    # this response echoes the merged onboarding block, and
+    # `_persist_onboarding` may already carry a registered
+    # `email`/`email_at`/`welcome_status` from a prior POST to
     # /api/onboarding/email. This endpoint is not in replayScrub.js's deny
     # list (it legitimately echoes repos/docs for the wizard to render), so
     # the address must never be IN the body in the first place.
-    redacted_ob = {k: v for k, v in ob.items() if k not in _ONBOARDING_STATUS_REDACTED_FIELDS}
-    return {"ok": True, "onboarding": redacted_ob}
+    return {"ok": True, "onboarding": _onboarding_public(ob)}
 
 
 async def _ensure_project_for_repo(store: Store, repo_path: str) -> None:
@@ -6047,7 +6054,12 @@ async def onboarding_reset(request: Request) -> dict[str, Any]:
     to reload the board itself.
     """
     ob = _persist_onboarding(request.app.state.config, {"completed": False})
-    return {"completed": bool(ob.get("completed")), **ob}
+    # Same redaction as GET /api/onboarding/status, via `_onboarding_public`:
+    # this response echoes the whole onboarding block back to the desktop's
+    # File -> "Re-run Setup..." caller, so a registered `email`/`email_at`/
+    # `welcome_status` from a prior /api/onboarding/email POST must never
+    # ride along here either.
+    return {"completed": bool(ob.get("completed")), **_onboarding_public(ob)}
 
 
 class DocsGenerateRequest(BaseModel):

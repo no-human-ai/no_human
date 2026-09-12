@@ -19,10 +19,22 @@
 // `deadClickFilter.js`'s `DEAD_CLICK_IGNORE_SELECTORS`/`deadClickBeforeSend`
 // are wired into `capture_dead_clicks`/`before_send` — a pure, exported,
 // unit-testable predicate handed to posthog-js as an init option.
+//
+// Which layer is load-bearing differs per path. `/api/onboarding/email`'s
+// REQUEST carries the address the user just typed — the server has no way to
+// avoid receiving it verbatim, so THIS list is the only thing standing
+// between that request body and a recording; there is no server-side
+// redaction possible for an outgoing request. `/api/onboarding/status`,
+// `/api/onboarding/complete`, `/api/onboarding/reset` and `/api/config`, by
+// contrast, are covered first by `app.py`'s `_onboarding_public()` — the
+// server never puts `email`/`email_at`/`welcome_status` in those response
+// bodies at all, for any caller, replay or not — so their entries here are
+// defence-in-depth, not the load-bearing layer.
 
 export const REPLAY_EXCLUDED_PATHS = [
-  "/api/onboarding/email", // request body carries the address
-  "/api/onboarding/status", // response body echoes onboarding state
+  "/api/onboarding/email", // request body carries the address (load-bearing: server can't redact an inbound request)
+  "/api/onboarding/status", // response body: defence-in-depth, server already redacts via _onboarding_public
+  "/api/onboarding/reset", // response body: defence-in-depth, server already redacts via _onboarding_public
 ];
 
 // Fails CLOSED: any error while inspecting `data` drops the request from
