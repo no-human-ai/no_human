@@ -474,7 +474,16 @@ def _resolve_installer(token: str, cwd: str | None, env: Mapping[str, str]) -> s
         # token spelling (`pip install evilpkg`, no explicit path) is the
         # one a coder actually types. Walked by hand with `_probe_is_file`
         # so an undetermined probe still counts as resolved.
-        for directory in (env.get("PATH") or "").split(os.pathsep):
+        #
+        # `env.get("PATH")` returning `None` (the key is simply absent from
+        # a caller-supplied `env` mapping) is not the same as an explicit,
+        # empty `PATH=""` — `shutil.which(path=None)` falls back to the
+        # real process `PATH` in that case, and this mirrors it, so a caller
+        # that omits the key entirely searches the same PATH trunk did.
+        path_value = env.get("PATH")
+        if path_value is None:
+            path_value = os.environ.get("PATH", os.defpath)
+        for directory in path_value.split(os.pathsep):
             if not directory:
                 continue
             candidate = os.path.join(directory, token)
