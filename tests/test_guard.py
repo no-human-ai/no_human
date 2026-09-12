@@ -1,6 +1,7 @@
 """PreToolUse safety guard policy (PLAN.md Part 10)."""
 
 import ast
+import contextlib
 import dataclasses
 import os
 import re
@@ -13,6 +14,31 @@ from pathlib import Path
 import pytest
 
 from no_human.agent import fs_roots, guard, venv_install_guard
+
+#: root/non-POSIX ignores mode bits entirely, so a `chmod` that is supposed
+#: to make a path unreadable is a no-op there — the probe under test is a
+#: permission probe, and a test built on it would be vacuously green (or
+#: hang) on a runner where `chmod` cannot actually remove access.
+_CHMOD_MEANINGFUL = os.name == "posix" and getattr(os, "geteuid", lambda: 1)() != 0
+requires_chmod = pytest.mark.skipif(
+    not _CHMOD_MEANINGFUL,
+    reason="root/non-POSIX ignores mode bits; the probe under test is a permission probe",
+)
+
+
+@contextlib.contextmanager
+def _unreadable(path):
+    """Strip the execute bit from `path` (a directory) for the duration of
+    the `with` block — `os.chmod(0o600)` on a directory removes traversal,
+    so anything INSIDE it cannot be stat'd, while `path` itself still stats
+    fine from its parent. Always restores the original mode: an unrestored
+    mode makes `tmp_path`'s own teardown fail."""
+    mode = os.stat(path).st_mode
+    os.chmod(path, 0o600)
+    try:
+        yield
+    finally:
+        os.chmod(path, mode)
 
 FORBIDDEN = [".env", "secrets/", "*.key", "*.pem"]
 PROTECTED = ["main", "master", "release/*"]
@@ -2540,6 +2566,50 @@ def test_protected_venvs_excludes_anything_under_the_session_cwd(tmp_path, monke
     protected = guard._protected_venvs(str(worktree))
     assert (primary / ".venv").resolve() in protected
     assert (worktree / ".venv").resolve() not in protected
+
+
+@requires_chmod
+def test_protected_venvs_keeps_an_unreadable_sys_prefix_venv(tmp_path, monkeypatch):
+    """Bugfix: chmod on the `sys.prefix` venv used to make `Path.is_file()`
+    raise `PermissionError` on its `pyvenv.cfg`, which the old `except
+    OSError: pass` swallowed — silently dropping the `sys.prefix` candidate
+    exactly when it needed to fail closed instead. This backstop must keep
+    contributing its candidate when `pyvenv.cfg` cannot be read, the same as
+    when it definitively can (positive control: before/after the chmod)."""
+    monkeypatch.setattr(guard, "_primary_checkout", lambda: None)
+    prefix_venv = tmp_path / "prefix-venv"
+    _make_venv_bin(prefix_venv)
+    other_cwd = tmp_path / "elsewhere"
+    other_cwd.mkdir()
+    monkeypatch.setattr(sys, "prefix", str(prefix_venv))
+
+    protected = guard._protected_venvs(str(other_cwd))
+    assert prefix_venv.resolve() in protected, "positive control: a readable venv must be kept"
+
+    with _unreadable(prefix_venv):
+        protected = guard._protected_venvs(str(other_cwd))
+        assert prefix_venv.resolve() in protected, (
+            "REGRESSION: an unreadable sys.prefix venv must still be protected"
+        )
+
+    protected = guard._protected_venvs(str(other_cwd))
+    assert prefix_venv.resolve() in protected, "must stay protected once permissions are restored"
+
+
+def test_protected_venvs_ignores_a_readable_sys_prefix_that_is_not_a_venv(tmp_path, monkeypatch):
+    """A genuinely absent `pyvenv.cfg` (readable dir, no such file) must
+    still resolve to "not a venv" for the `sys.prefix` backstop too — the
+    tri-state fix must not turn every readable `sys.prefix` directory into a
+    phantom protected venv."""
+    monkeypatch.setattr(guard, "_primary_checkout", lambda: None)
+    not_a_venv = tmp_path / "not-a-venv"
+    not_a_venv.mkdir()
+    other_cwd = tmp_path / "elsewhere"
+    other_cwd.mkdir()
+    monkeypatch.setattr(sys, "prefix", str(not_a_venv))
+
+    protected = guard._protected_venvs(str(other_cwd))
+    assert not_a_venv.resolve() not in protected
 
 
 # --------------------------------------------------------------------------- #

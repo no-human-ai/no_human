@@ -13,14 +13,45 @@ trivially deny-everything, only deny-the-things-that-actually-write-outside-
 the-worktree.
 """
 
+import ast
+import contextlib
+import inspect
+import logging
 import os
 import stat
 import tempfile
+
+import pytest
 
 from no_human.agent import guard, venv_install_guard
 
 FORBIDDEN = []
 PROTECTED = ["main", "master", "release/*"]
+
+#: root/non-POSIX ignores mode bits entirely, so a `chmod` that is supposed
+#: to make a path unreadable is a no-op there — the probe under test is a
+#: permission probe, and these tests would be vacuously green (or hang) on
+#: a runner where `chmod` cannot actually remove access.
+_CHMOD_MEANINGFUL = os.name == "posix" and getattr(os, "geteuid", lambda: 1)() != 0
+requires_chmod = pytest.mark.skipif(
+    not _CHMOD_MEANINGFUL,
+    reason="root/non-POSIX ignores mode bits; the probe under test is a permission probe",
+)
+
+
+@contextlib.contextmanager
+def _unreadable(path):
+    """Strip the execute bit from `path` (a directory) for the duration of
+    the `with` block — `os.chmod(0o600)` on a directory removes traversal,
+    so anything INSIDE it cannot be stat'd, while `path` itself still stats
+    fine from its parent. Always restores the original mode: an unrestored
+    mode makes `tmp_path`'s own teardown fail."""
+    mode = os.stat(path).st_mode
+    os.chmod(path, 0o600)
+    try:
+        yield
+    finally:
+        os.chmod(path, mode)
 
 
 def _mkvenv(root):
@@ -547,6 +578,210 @@ def test_evaluate_env_defaults_to_os_environ_when_omitted(tmp_path, monkeypatch)
     d = guard.evaluate("Bash", {"command": "git status"}, forbidden_paths=FORBIDDEN,
                         never_push_to=PROTECTED, cwd=tmp)
     assert d.allow
+
+
+# ---------------------------------------------------------------------------
+# Bugfix: chmod on a venv turns the install guard's DENY into ALLOW.
+# ---------------------------------------------------------------------------
+
+@requires_chmod
+def test_an_unreadable_venv_pyvenv_cfg_still_denies_the_install(tmp_path):
+    """The bug: `chmod` on a venv directory (stripping its execute bit)
+    makes `pyvenv.cfg` unstat'able. `os.path.isfile`/`Path.is_file()`
+    swallow the resulting `PermissionError` and report `False` —
+    indistinguishable from "no venv here" — so `_venv_root_of` used to
+    conclude "owns no venv" and the install stopped being denied.
+
+    Four spellings, all denied before/during/after the chmod: two that
+    resolve their installer via the explicit-path branch of
+    `_resolve_installer` (`_venv_root_of` reached directly), and two —
+    the bare token `pip install evilpkg` and its `bash -lc` wrapping, the
+    spelling a coder actually types — that resolve via the bare-token PATH
+    walk instead. The bare-token pair used to survive the earlier fix in
+    this ticket: `_resolve_installer`'s bare-token branch resolved through
+    `shutil.which`, which calls `os.path.exists` internally and swallows
+    the very same `PermissionError`, so it reported "not on PATH" and fell
+    through to allow-and-log BEFORE `_venv_root_of` ever ran — that branch
+    now walks `PATH` by hand with `_probe_is_file` instead. The "during"
+    assertion on every case is the regression this test pins."""
+    primary, primary_venv, wt, wt_venv, prod_env, wt_env = _session(tmp_path)
+    cases = [
+        (f"{primary_venv}/bin/pip install evilpkg", prod_env),
+        (f"uv pip install --python {primary_venv}/bin/python evilpkg", wt_env),
+        ("pip install evilpkg", prod_env),
+        ("bash -lc 'pip install evilpkg'", prod_env),
+    ]
+    for cmd, env in cases:
+        before = venv_install_guard.denial_reason(cmd, cwd=wt, env=env)
+        assert before is not None, f"positive control must deny before chmod: {cmd}"
+        assert primary_venv in before
+        with _unreadable(primary_venv):
+            inside = venv_install_guard.denial_reason(cmd, cwd=wt, env=env)
+            assert inside is not None, (
+                f"REGRESSION: an unreadable venv must still be denied: {cmd}"
+            )
+            d = _ev("Bash", {"command": cmd}, cwd=wt, env=env)
+            assert not d.allow, f"must still be blocked via evaluate(): {cmd}"
+        after = venv_install_guard.denial_reason(cmd, cwd=wt, env=env)
+        assert after is not None, f"must stay denied once permissions are restored: {cmd}"
+
+
+@requires_chmod
+def test_probe_distinguishes_absence_from_unreadability(tmp_path):
+    """`_probe_is_file`/`_probe_is_dir` are the tri-state replacement for
+    `os.path.isfile`/`os.path.isdir`: `True`/`False` agree with the stdlib
+    helpers, but a permission error resolves to `None` ("undetermined")
+    instead of being silently folded into `False` ("definitively absent")."""
+    d = tmp_path / "venv"
+    d.mkdir()
+    cfg = d / "pyvenv.cfg"
+    cfg.write_text("home = /usr/bin\n")
+    assert venv_install_guard._probe_is_file(str(cfg)) is True
+    assert venv_install_guard._probe_is_dir(str(d)) is True
+
+    missing_cfg = tmp_path / "nope" / "pyvenv.cfg"
+    assert venv_install_guard._probe_is_file(str(missing_cfg)) is False
+    missing_dir = tmp_path / "also-nope"
+    assert venv_install_guard._probe_is_dir(str(missing_dir)) is False
+
+    with _unreadable(d):
+        assert venv_install_guard._probe_is_file(str(cfg)) is None
+
+    assert venv_install_guard._probe_is_file(str(cfg)) is True
+
+
+def test_a_readable_directory_without_a_pyvenv_cfg_is_not_a_venv(tmp_path):
+    """A genuinely absent `pyvenv.cfg` (readable dir, no such file) must
+    still resolve to "not a venv" — the tri-state fix must not turn every
+    plain `bin/` directory into a phantom protected venv. Its twin, one
+    directory over, WITH a `pyvenv.cfg`, resolves to that root — both
+    directions of `_venv_root_of` asserted separately."""
+    plain_bin = tmp_path / "plain" / "bin"
+    plain_bin.mkdir(parents=True)
+    pip = plain_bin / "pip"
+    pip.write_text("#!/bin/sh\nexit 0\n")
+    st = os.stat(pip)
+    os.chmod(pip, st.st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    assert venv_install_guard._venv_root_of(str(pip)) is None
+
+    venv_root = tmp_path / "venvy"
+    venv_bin = venv_root / "bin"
+    venv_bin.mkdir(parents=True)
+    (venv_root / "pyvenv.cfg").write_text("home = /usr/bin\n")
+    pip2 = venv_bin / "pip"
+    pip2.write_text("#!/bin/sh\nexit 0\n")
+    st2 = os.stat(pip2)
+    os.chmod(pip2, st2.st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    assert venv_install_guard._venv_root_of(str(pip2)) == os.path.realpath(str(venv_root))
+
+
+_SWALLOWING_ATTRS = {
+    "isfile", "isdir", "exists", "islink", "is_file", "is_dir",
+    # `shutil.which` resolves via `os.path.exists` internally and swallows
+    # `OSError` exactly like the five names above — the review round that
+    # caught this ticket's first draft flagged it by name (it decided
+    # through this exact swallow, on the bare-token spelling a coder
+    # actually types) as the one this closed set was missing.
+    "which",
+}
+
+
+def _oserror_swallowing_call_sites(source):
+    """Real call sites only (an `ast.Call` whose method/function name is one
+    of the OSError-swallowing stdlib probes) — deliberately NOT a text/regex
+    search, which would also flag this module's own docstrings and comments
+    that talk ABOUT `os.path.isfile` while documenting why it was removed."""
+    tree = ast.parse(source)
+    return [
+        node.func.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in _SWALLOWING_ATTRS
+    ]
+
+
+def test_no_changed_probe_decides_through_an_oserror_swallowing_helper():
+    """None of the probe sites this patch touches may reach a decision
+    through a stdlib helper that swallows `OSError` (`os.path.isfile`/
+    `isdir`/`exists`/`islink`, `Path.is_file`/`is_dir`, `shutil.which`) —
+    that swallow is the root cause this patch removes. A positive control
+    against guard.py's untouched `_looks_like_pathspec` (which still calls
+    `os.path.exists`, unchanged and out of scope for this ticket) proves an
+    empty result above is a real absence, not a search that can never
+    match anything."""
+    module_src = inspect.getsource(venv_install_guard)
+    assert _oserror_swallowing_call_sites(module_src) == [], (
+        "venv_install_guard.py must not decide through an OSError-swallowing probe call"
+    )
+
+    protected_src = inspect.getsource(guard._protected_venvs)
+    resolve_src = inspect.getsource(guard._resolve_or_self)
+    assert _oserror_swallowing_call_sites(protected_src) == []
+    assert _oserror_swallowing_call_sites(resolve_src) == []
+
+    positive_src = inspect.getsource(guard._looks_like_pathspec)
+    assert _oserror_swallowing_call_sites(positive_src) == ["exists"], (
+        "positive control: a known, untouched os.path.exists() call must still be found"
+    )
+
+
+def test_installs_into_the_sessions_own_worktree_venv_stay_allowed(tmp_path):
+    """Containment, not readability, decides: a coder session installing
+    into ITS OWN venv must stay allowed whether that venv lives at the
+    worktree root OR nested in a monorepo subdirectory (its own separate
+    `cwd`/venv pair), with both bare and `uv`-prefixed spellings. This is
+    the fix's required negative space — no existing ALLOW may flip to
+    DENY."""
+    primary, primary_venv, wt, wt_venv, prod_env, wt_env = _session(tmp_path)
+    sub, sub_venv = _mkvenv(os.path.join(wt, "packages", "app"))
+    sub_env = {
+        "PATH": f"{sub_venv}/bin:/usr/bin:/bin",
+        "VIRTUAL_ENV": sub_venv,
+    }
+
+    cases = [
+        (f"{wt_venv}/bin/pip install foo", wt, wt_env),
+        ("pip install foo", wt, wt_env),
+        ("uv pip install foo", wt, wt_env),
+        (f"uv pip install --python {wt_venv}/bin/python foo", wt, wt_env),
+        (f"{sub_venv}/bin/pip install foo", sub, sub_env),
+        ("pip install foo", sub, sub_env),
+    ]
+    for cmd, cwd, env in cases:
+        r = venv_install_guard.denial_reason(cmd, cwd=cwd, env=env)
+        assert r is None, f"must stay allowed: {cmd} (cwd={cwd}) — {r}"
+        d = _ev("Bash", {"command": cmd}, cwd=cwd, env=env)
+        assert d.allow, f"must be allowed via evaluate(): {cmd} (cwd={cwd}) — {d.reason}"
+
+
+@requires_chmod
+def test_an_unreadable_own_worktree_venv_still_stays_allowed(tmp_path):
+    """`_is_within` compares realpath'd strings, not filesystem readability
+    — so even when a session's OWN venv directory has been made unreadable
+    (e.g. by another tool in the pipeline), an explicit-path install into it
+    must still be recognised as "inside cwd" and allowed, not denied by the
+    fail-closed probe added for the primary-checkout case."""
+    primary, primary_venv, wt, wt_venv, prod_env, wt_env = _session(tmp_path)
+    with _unreadable(wt_venv):
+        r = venv_install_guard.denial_reason(
+            f"{wt_venv}/bin/pip install foo", cwd=wt, env=wt_env
+        )
+        assert r is None, f"a coder's own (unreadable) venv must still be allowed: {r}"
+
+
+def test_a_nonexistent_installer_path_is_still_allowed_and_logged(tmp_path, caplog):
+    """A genuinely absent installer path (no such file, not merely
+    unreadable) must resolve to allow-and-log, the same as an unresolvable
+    bare token — proving `_probe_is_file`'s `False` branch (definitively
+    absent) is still reachable and distinct from the `None` branch this
+    patch adds."""
+    primary, primary_venv, wt, wt_venv, prod_env, wt_env = _session(tmp_path)
+    cmd = "/no/such/dir/pip install foo"
+    with caplog.at_level(logging.WARNING, logger="no_human.agent.venv_install_guard"):
+        r = venv_install_guard.denial_reason(cmd, cwd=wt, env=wt_env)
+    assert r is None, f"a genuinely absent installer path must be allowed, not denied: {r}"
+    assert any("pip" in rec.message for rec in caplog.records)
 
 
 # --------------------------------------------------------------------------- #

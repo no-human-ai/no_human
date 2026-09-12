@@ -563,6 +563,19 @@ def _primary_checkout() -> "Path | None":
     return None
 
 
+def _resolve_or_self(p: "Path") -> "Path":
+    """`p.resolve()`, or `p` itself when resolution fails.
+
+    A failing resolve must DEGRADE the candidate path, not drop it: this
+    is what keeps `_protected_venvs` fail-closed the same way its probes
+    below are — an unresolved path is still a path to protect, never
+    silently absent."""
+    try:
+        return p.resolve()
+    except OSError:  # pragma: no cover - defensive
+        return p
+
+
 def _protected_venvs(cwd: "str | None") -> list:
     """Venv roots a coder-session install must never write into.
 
@@ -573,26 +586,38 @@ def _protected_venvs(cwd: "str | None") -> list:
     BUT that candidate is dropped when it is at or under the session's own
     `cwd`, since that is exactly the case where it IS the session's own
     worktree venv, which must stay installable.
+
+    Both venv probes are tri-state (`venv_install_guard._probe_is_dir`/
+    `_probe_is_file`: True/False/None="undetermined") and fail closed on
+    `None` (`is not False`) rather than through `Path.is_dir()`/`is_file()`,
+    which RAISE `PermissionError` when a `chmod` has made the venv
+    directory unreadable — a raise the old `except OSError: pass` below
+    used to swallow, silently dropping the `sys.prefix` candidate exactly
+    when it needed to fail closed instead.
     """
     protected = []
     primary = _primary_checkout()
     if primary is not None:
         for name in _VENV_DIR_NAMES:
             d = primary / name
-            if d.is_dir():
-                protected.append(d.resolve())
-    try:
-        prefix_cfg = Path(sys.prefix) / "pyvenv.cfg"
-        if prefix_cfg.is_file():
-            prefix_venv = Path(sys.prefix).resolve()
-            if cwd is None:
+            if venv_install_guard._probe_is_dir(str(d)) is not False:
+                protected.append(_resolve_or_self(d))
+    # The sys.prefix backstop covers a venv OUTSIDE the checkout that the
+    # running process actually uses — the one case the is_dir branch above
+    # cannot see. Probed with the tri-state helper, unconditionally (no
+    # enclosing try/except): `Path.is_file()` RAISES `PermissionError` when
+    # the venv directory itself is unreadable, and the old
+    # `except OSError: pass` swallowed that raise and dropped the
+    # candidate — failing open on exactly the venv this branch exists to
+    # cover.
+    if venv_install_guard._probe_is_file(os.path.join(sys.prefix, "pyvenv.cfg")) is not False:
+        prefix_venv = _resolve_or_self(Path(sys.prefix))
+        if cwd is None:
+            protected.append(prefix_venv)
+        else:
+            cwd_p = _resolve_or_self(Path(cwd))
+            if not (prefix_venv == cwd_p or cwd_p in prefix_venv.parents):
                 protected.append(prefix_venv)
-            else:
-                cwd_p = Path(cwd).resolve()
-                if not (prefix_venv == cwd_p or cwd_p in prefix_venv.parents):
-                    protected.append(prefix_venv)
-    except OSError:  # pragma: no cover - defensive
-        pass
     return protected
 
 
