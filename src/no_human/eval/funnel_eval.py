@@ -317,7 +317,7 @@ async def _run_tier(task: CorpusTask, home: Path, data: dict,
 def load_baseline(path: Path | None = None) -> dict:
     p = Path(path or BASELINE_PATH)
     try:
-        return json.loads(p.read_text())
+        return json.loads(p.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         # A missing or unreadable baseline is UNSEEDED, not "everything passes".
         return {"unseeded": True, "tasks": []}
@@ -416,8 +416,8 @@ def _summary(report: dict) -> str:
 def _write(out: Path, report: dict) -> None:
     out.mkdir(parents=True, exist_ok=True)
     (out / f"nightly-{report['date']}.json").write_text(
-        json.dumps(report, indent=2) + "\n")
-    (out / "SUMMARY.md").write_text(_summary(report))
+        json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    (out / "SUMMARY.md").write_text(_summary(report), encoding="utf-8")
 
 
 def _corpus_refusal(tasks: list[CorpusTask], *, defaulted: bool) -> str | None:
@@ -557,7 +557,7 @@ def run_funnel_eval(home: Path, out: Path, *, backend_factory=None,
         (Path(out) / "SUMMARY.md").write_text(
             f"# Nightly funnel eval — {date.today().isoformat()}\n\n"
             f"**CRASHED**: {type(exc).__name__}: {exc}\n\n"
-            "A crash is a red night, not a missing one.\n")
+            "A crash is a red night, not a missing one.\n", encoding="utf-8")
         return 1
 
 
