@@ -78,7 +78,7 @@ from ..blockers import (
     user_pause_blocker,
 )
 from ..ci.base import CIResult, HumanGatedCI
-from ..config import NO_HUMAN_HOME, active_auth_profile, ui_evidence_should_run
+from ..config import NO_HUMAN_HOME, active_auth_profile, ui_evidence_should_run, permission_mode
 from ..history.skills import discover_skills
 from ..intake.classify import kind_criteria_mismatch
 from ..intake.split_proposal import generate_split_proposal
@@ -2358,7 +2358,7 @@ class Orchestrator:
         self._sink({"source": REVIEWER_ROLE, "kind": kind, "text": text, **meta})
 
     @staticmethod
-    def _subagent_definitions() -> dict[str, "AgentDefinition"]:
+    def _subagent_definitions(config_data: dict | None = None) -> dict[str, "AgentDefinition"]:
         """The Agent-tool subagents offered to the implementer.
 
         Extracted out of the attempt body so the Claude-SDK-only
@@ -2379,10 +2379,13 @@ class Orchestrator:
           future edit widens the allow-list.
         * There is no read-only ``PermissionMode`` in this SDK — the literal is
           ``default | acceptEdits | plan | bypassPermissions | dontAsk | auto``
-          (``claude_agent_sdk/types.py``). ``bypassPermissions`` stays because
-          every no_human session is headless: any prompting mode hangs, and
-          ``plan`` would change what the subagent *does*, not just what it may
-          touch. The restriction therefore lives in ``disallowedTools``.
+          (``claude_agent_sdk/types.py``). This subagent derives its mode from
+          configuration (defaulting to ``bypassPermissions``) because both of
+          the product's supported modes (``bypassPermissions`` and ``acceptEdits``)
+          are headless-safe. A prompting mode would hang, and ``plan`` would
+          change what the subagent *does*, not just what it may touch. The
+          security restriction preventing writes therefore lives in
+          ``disallowedTools``.
         * ``model``/``effort`` were unset, so the researcher silently inherited
           whatever the calling session ran on. Pinned now: a grep-and-report job
           does not need the implementer's reasoning budget, and pinning means a
@@ -2448,7 +2451,7 @@ class Orchestrator:
                 ),
                 tools=["Read", "Grep", "Glob", "Bash"],
                 disallowedTools=["Write", "Edit", "MultiEdit", "NotebookEdit"],
-                permissionMode="bypassPermissions",
+                permissionMode=permission_mode(config_data),
                 maxTurns=10,
                 model="sonnet",
                 effort="low",
@@ -5776,7 +5779,7 @@ class Orchestrator:
         # the import succeeding.
         if _can_subagents:
             self._materialize_subagents(repo.path, task)
-            extra["agents"] = self._subagent_definitions()
+            extra["agents"] = self._subagent_definitions(self.config)
         # Materialize the verify skill with the repo's proven test command
         # so the agent can re-read it after context compaction.
         self._materialize_verify_skill(repo.path)

@@ -215,11 +215,9 @@ async def test_orchestrator_advisory_calls_use_the_toolless_seam(
 _NOT_ROUTED_ALLOWLIST = frozenset({
     "no_human/agent/advisory.py",
     "no_human/agent/backend.py",
-    "no_human/agent/backend_check.py",
     "no_human/api/app.py",
     "no_human/cli/commands.py",
     "no_human/core/orchestrator.py",
-    "no_human/eval/funnel_eval.py",
     "no_human/eval/judge.py",
     "no_human/intake/evaluator.py",
     "no_human/review/reviewer.py",

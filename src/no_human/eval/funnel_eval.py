@@ -140,11 +140,12 @@ def _default_backend_factory(data: dict) -> Callable[[CorpusTask], Any]:
     Orchestrator wires itself per task and which a factory here would only
     be able to get wrong.
     """
-    from ..agent.claude_backend import ClaudeBackend
+    from ..agent.backend import make_backend
 
     def factory(_task: CorpusTask) -> Any:
-        return ClaudeBackend(
+        return make_backend(
             model=data["llm"]["primary_model"],
+            config=data,
             forbidden_paths=data["safety"]["forbidden_paths"],
             never_push_to=data["git"]["never_push_to"],
         )
