@@ -136,6 +136,18 @@ def test_acceptance_criteria_with_brackets_survive_the_render(tmp_path, monkeypa
     assert f"  - {c2}" in result.output, result.output
 
 
+def test_kind_with_brackets_survives_the_render(tmp_path, monkeypatch):
+    db = tmp_path / "test.db"
+    kind = "bugfix[main,master]"
+    t = _seed(db, kind=kind)
+    runner = _make_runner(db, monkeypatch)
+
+    result = runner.invoke(cli, ["task", "show", t.id[:8]])
+
+    assert result.exit_code == 0, result.output
+    assert kind in result.output, result.output
+
+
 def test_repo_path_with_brackets_survives_the_render(tmp_path, monkeypatch):
     db = tmp_path / "test.db"
     repo = "/tmp/repo[main,master]"
@@ -158,6 +170,29 @@ def test_blocker_with_brackets_survives_the_render(tmp_path, monkeypatch):
     assert result.exit_code == 0, result.output
     assert "blocker:" in result.output, result.output
     assert "never_push_to=[main,master]" in result.output, result.output
+
+
+def test_blocker_wraps_without_overrunning_console_width(tmp_path, monkeypatch):
+    """A `console.print("[red]blocker:[/]", end=" ")` label followed by a
+    separate `markup=False` payload print (an earlier round of this fix) made
+    rich wrap the payload as though it started at column 0, ignoring the
+    9-character "blocker: " prefix already written -- rows overran the
+    console width. A single `Text("blocker: ", style="red")` + `.append(...)`
+    print (this fix) folds the whole line, prefix included, as one unit.
+    """
+    import no_human.cli.commands as cmd_mod
+
+    db = tmp_path / "test.db"
+    long_question = "ab " * 30
+    t = _seed(db, blocker={"question": long_question})
+    runner = _make_runner(db, monkeypatch)
+
+    result = runner.invoke(cli, ["task", "show", t.id[:8]])
+
+    assert result.exit_code == 0, result.output
+    width = cmd_mod.console.width
+    for line in result.output.splitlines():
+        assert len(line) <= width, (line, width, result.output)
 
 
 def test_unbalanced_tag_does_not_crash_the_render(tmp_path, monkeypatch):

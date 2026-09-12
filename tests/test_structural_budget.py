@@ -1359,7 +1359,16 @@ FROZEN_FILE_LINES = {
     # `[`) was replaced with a static `[red]blocker:[/]` label print
     # followed by a `markup=False` payload print. Measured via
     # `wc -l src/no_human/cli/commands.py`.
-    "cli/commands.py": 8684,
+    # 8684 -> 8696 (+12): second review send-back on the same fix — the
+    # header line's `t.kind` (operator-supplied, unvalidated by
+    # `CreateTaskRequest.kind`) now goes through `escape()` so the
+    # surrounding `[bold]`/`[blue]`/`[magenta]` tags keep working; and the
+    # blocker line's two-print shape (`"[red]blocker:[/]"` then a
+    # `markup=False` payload) is replaced with one `rich.text.Text("blocker:
+    # ", style="red")` + `.append(...)` print, because the two-print form
+    # made rich wrap the payload as if it started at column 0, overrunning
+    # the terminal width. Measured via `wc -l src/no_human/cli/commands.py`.
+    "cli/commands.py": 8696,
     # api/app.py 5338 -> 5346 (+8): same budget-floor warning surfaced by
     # `send-back`/`reply` as `budget_warning` in the JSON response. Net cost
     # was trimmed from a naive +14 to +8 by computing `Bounds.from_config(...)`
