@@ -388,7 +388,7 @@ def _configured_auth_mode() -> str:
     """
     try:
         if CONFIG_PATH.exists():
-            data = yaml.safe_load(CONFIG_PATH.read_text()) or {}
+            data = yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8")) or {}
             mode = (data.get("llm") or {}).get("auth_mode")
             if mode in ("subscription", "api_key"):
                 return mode
@@ -557,7 +557,7 @@ def ensure_config(auth_mode: str = "subscription") -> bool:
 
     config = load_config(create_if_missing=True)
     # Re-read to update git identity and/or billing mode.
-    data = yaml.safe_load(CONFIG_PATH.read_text()) or {}
+    data = yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8")) or {}
     if git_name or git_email:
         git_section = data.setdefault("git", {})
         if git_name:
@@ -566,7 +566,7 @@ def ensure_config(auth_mode: str = "subscription") -> bool:
             git_section.setdefault("agent_identity_email", "no-human@acme.com")
     if auth_mode != "subscription":
         data.setdefault("llm", {})["auth_mode"] = auth_mode
-    CONFIG_PATH.write_text(yaml.safe_dump(data, sort_keys=False))
+    CONFIG_PATH.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
 
     console.print(f"  [green]✓[/] created config.yaml")
     if auth_mode != "subscription":
@@ -580,9 +580,9 @@ def ensure_config(auth_mode: str = "subscription") -> bool:
 def _set_auth_mode(auth_mode: str) -> None:
     """Upsert ``llm.auth_mode`` into an existing config.yaml, preserving the
     rest. Only the mode goes in config; the credential itself lives in .env."""
-    data = yaml.safe_load(CONFIG_PATH.read_text()) or {}
+    data = yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8")) or {}
     data.setdefault("llm", {})["auth_mode"] = auth_mode
-    CONFIG_PATH.write_text(yaml.safe_dump(data, sort_keys=False))
+    CONFIG_PATH.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
 
 
 def _git_config(key: str) -> str:

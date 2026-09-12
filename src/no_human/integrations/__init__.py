@@ -569,7 +569,7 @@ def _probe_github_ambient() -> bool:
         return any(
             _is_gh_oauth_token_line(line)
             for line in _gh_hosts_block_lines(
-                _gh_hosts_path().read_text(errors="replace"), "github.com")
+                _gh_hosts_path().read_text(errors="replace", encoding="utf-8"), "github.com")
         )
     except OSError:
         return False
@@ -687,7 +687,7 @@ def _write_config_values(config_path: Path, updates: dict[str, Any]) -> None:
     from .. import config as _config_mod
 
     try:
-        on_disk = yaml.safe_load(config_path.read_text()) if config_path.exists() else {}
+        on_disk = yaml.safe_load(config_path.read_text(encoding="utf-8")) if config_path.exists() else {}
     except (yaml.YAMLError, OSError):
         on_disk = {}
     on_disk = on_disk or {}
