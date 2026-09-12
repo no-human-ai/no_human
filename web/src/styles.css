@@ -6099,6 +6099,12 @@ a.so-chip-value:hover { color: var(--accent-300); }
 }
 .ob-btn-ghost:hover:not(:disabled) { color: var(--text-hi); border-color: var(--text-dim); background: var(--surface-2); }
 .ob-btn-ghost:disabled { opacity: 0.4; cursor: not-allowed; }
+/* An <a class="ob-btn-ghost"> (the Discord step's outbound invite) is a link,
+   not a <button> — Tailwind preflight is off, so without this it keeps the
+   UA's underline/visited-colour instead of looking like the other ghost
+   controls it sits beside. No new colour: inherits color/background above. */
+a.ob-btn-ghost { text-decoration: none; display: inline-flex; align-items: center; }
+a.ob-btn-ghost:hover, a.ob-btn-ghost:focus-visible { text-decoration: underline; }
 
 /* staggered entrance for step content */
 .ob-stagger { display: flex; flex-direction: column; }
