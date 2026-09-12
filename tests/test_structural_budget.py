@@ -166,7 +166,19 @@ FROZEN_FUNCTION_LINES = {
     # and its anchored comment, `type_hook` reaching
     # `_compose_post_tool_hooks`, and the widened `backend_degraded`
     # condition. Re-measured on the merge result.
-    "core/orchestrator.py:Orchestrator._run_attempt": 2261,
+    # 2261 -> 2272 (+11): landed-claim guard wiring (task: "An already-landed
+    # claim is refused when made, not 40 turns later") — builds
+    # `claim_guard = self._build_landed_claim_guard(...)`, stashes it on
+    # `self._active_landed_claim_guard`, folds it into the `backend_degraded`
+    # gate's condition and its `claim_guard = None` / `_active_landed_claim_guard
+    # = None` teardown, and threads it through `_compose_post_tool_hooks`.
+    # Re-measured on the merge result with the scanner below.
+    # 2272 -> 2273 (+1) (task: "The landed-claim probe refuses claims
+    # delivery would ship"): the `_build_landed_claim_guard(...)` call site
+    # (~5685) grows the `branched_from_own_partial=branched_from_own_partial`
+    # keyword argument onto its own line. Re-measured on this tree with the
+    # scanner below.
+    "core/orchestrator.py:Orchestrator._run_attempt": 2273,
     # 760 -> 778 (+18): dispatch-time intake-eval hoisted path — the `elif
     # ctx.get("eval_result")` branch that acts on a grill/wizard-stored
     # verdict (idempotency marker, cost/residual-gap comments) added inside
@@ -459,7 +471,12 @@ FROZEN_FUNCTION_CC = {
     # 250 -> 251 (+1): #114 phase 2 adds `or type_hook is not None` to the
     # `backend_degraded` condition, so that BoolOp carries one more value.
     # Re-measured on the merge result.
-    "core/orchestrator.py:Orchestrator._run_attempt": 251,
+    # 251 -> 252 (+1): landed-claim guard wiring (task: "An already-landed
+    # claim is refused when made, not 40 turns later") — the
+    # `backend_degraded` gate's condition grows a second extra `or
+    # claim_guard is not None` branch (one more `BoolOp` operand the scanner
+    # counts as a decision point). Re-measured on the merge result.
+    "core/orchestrator.py:Orchestrator._run_attempt": 252,
     # Landing of 4e0299ad: unchanged at 115 — the harness row is dropped by
     # the comprehension filter inside `_reviewer_items`, which the scanner
     # counts the same as the `if` it replaced (the first landing pass had a
@@ -1194,7 +1211,46 @@ FROZEN_FILE_LINES = {
     # site, the `type_hook` parameter threaded through both PostToolUse
     # compose helpers, and the order docstring recording why the type
     # hook runs ahead of the scope guard. Re-measured on the merge result.
-    "core/orchestrator.py": 23893,
+    # 23893 -> 23960 (+67): landed-claim guard (task: "An already-landed
+    # claim is refused when made, not 40 turns later") — new
+    # `_build_landed_claim_guard` method, its wiring into `_run_attempt`
+    # (build/stash/gate/teardown), the `_agent_sink` prose feed, and the
+    # `_ordered_post_tool_hooks`/`_compose_post_tool_hooks` 5th-parameter
+    # plumbing (main's #114 phase-2 `type_hook` and our `claim_guard` each
+    # extended the same helpers; reconciled into one 5-parameter signature
+    # during the rebase). Re-measured on the merge result by the scanner's
+    # own metric.
+    # (send-back, Blocker 1 & 2): the guard's probe was wrapping
+    # `classify_already_satisfied_landing` — a SECOND, narrower authority
+    # (ancestry against `base` only) than delivery's real gate, so it
+    # refused claims delivery would ACCEPT (a pushed-and-up-to-date offered
+    # branch, or a pushed sibling branch of the same task).
+    # `_build_landed_claim_guard`'s probe now calls
+    # `_already_satisfied_subject` itself — the exact function
+    # `_gate_already_satisfied` calls at delivery — and filters its
+    # "cannot tell" cases out of "refuted" by checking `subject_reason`
+    # starts with `"{head} is not on {ship_ref}"`; the import of
+    # `classify_already_satisfied_landing`/`LANDING_REQUIRED` and the
+    # `base_hint`-branch comment above it were dropped accordingly.
+    # Re-measured on the merge result by the scanner's own metric.
+    # (send-back, third review): `_already_satisfied_subject` is not the
+    # first thing delivery asks — `_run_attempt` hoists `_route_unjudged_
+    # head`/`_already_satisfied_eligible` before the claim is even parsed,
+    # routing an unreviewed `[WIP-*]` or machine-requeue head straight to a
+    # full review instead of the claim gate. The guard's probe now asks
+    # `_already_satisfied_eligible` first and stays silent whenever that
+    # would route to review, so it can no longer tell the coder delivery is
+    # refusing a claim delivery would actually review. Plus the fourth-
+    # review nits (backtick-fenced sha cue, on_event coverage) and comment-
+    # only corrections, none of which touch this file.
+    # Re-measured on the merge result by the scanner's own metric: 23985.
+    # 23985 -> 24016 (+31) (task: "The landed-claim probe refuses claims
+    # delivery would ship"): threads `branched_from_own_partial` through
+    # `_build_landed_claim_guard`'s signature and call site, adds the outer
+    # `commits_ahead(base)` silence check (and its guarding comment) inside
+    # `probe()`, and two new docstring paragraphs explaining both. Re-
+    # measured on this tree by the scanner's own metric: 24016.
+    "core/orchestrator.py": 24016,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.

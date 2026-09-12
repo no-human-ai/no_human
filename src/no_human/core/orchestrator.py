@@ -43,6 +43,7 @@ from ..agent.claude_backend import (
     ClaudeBackend,
     dewrap as _dewrap,
 )
+from ..agent.landed_claim_guard import LandedClaimGuard
 from ..agent.scope_guard import SCRATCH_DIR, is_agent_owned, is_outside_repo
 from ..agent.supervisor import SEND_BACK_UNREADABLE, SupervisorHook
 from ..agent.verification_receipts import KINDS
@@ -2680,6 +2681,13 @@ class Orchestrator:
         sv = getattr(self, "_active_supervisor", None)
         if sv is not None and event.text and event.kind in ("text", "assistant", "result"):
             sv.note_text(event.text)
+        # Feed the same prose to the landed-claim guard so an "already
+        # satisfied" claim is tested against the base branch the moment it
+        # is asserted, not 40 turns later at delivery — see
+        # `landed_claim_guard.py`'s module docstring.
+        cg = getattr(self, "_active_landed_claim_guard", None)
+        if cg is not None and event.text and event.kind in ("text", "assistant", "result"):
+            cg.note_text(event.text)
         # Track files the agent intentionally modified so we only commit those
         # (not test side-effects like state files updated during test runs).
         # Phase 7e: feed tool calls to the doom-loop detector.  If the
@@ -5668,6 +5676,17 @@ class Orchestrator:
         if supervisor is not None:
             self.emit("supervisor", "supervisor active")
 
+        # Landed-claim guard: a deterministic PostToolUse hook that tests an
+        # in-attempt "the work already exists" claim against the SAME
+        # question delivery asks (`_already_satisfied_subject`) the MOMENT
+        # it is made, not 40 turns later at delivery — see
+        # `landed_claim_guard.py`'s module docstring for the incident this
+        # closes. Never keyed on the commit subject.
+        claim_guard = self._build_landed_claim_guard(
+            task, repo, base=base, branch=branch,
+            branched_from_own_partial=branched_from_own_partial)
+        self._active_landed_claim_guard = claim_guard  # so _agent_sink can feed it agent prose
+
         # Pre-flight plan check (EVOLUTION_PLAN §1.2 #1): one cheap evaluation of
         # the agent's plan BEFORE it edits. When a gap is found, the correction
         # rides into the implement prompt so the agent closes it from turn one.
@@ -5720,7 +5739,7 @@ class Orchestrator:
         extra: dict = {}
         if not _can_hooks and (lint_hook is not None or scope_hook is not None
                                or type_hook is not None
-                               or supervisor is not None):
+                               or supervisor is not None or claim_guard is not None):
             # Said out loud, once, on the event stream — the operator chose
             # this backend and is entitled to know which guards it costs them.
             # Deliberately AFTER the "supervisor active" emit above, which it
@@ -5734,12 +5753,14 @@ class Orchestrator:
                 "hook — superseding 'supervisor active': the supervisor's "
                 "per-tool-call course correction, the lint feedback hook, the "
                 "per-edit type check and the scope guard do not run this "
-                "attempt (the pre-flight plan check, which is not a hook, "
-                "still did)",
+                "attempt — nor does the landed-claim guard — (the pre-flight "
+                "plan check, which is not a hook, still did)",
                 backend=getattr(caps, "name", None),
             )
             supervisor = None
             self._active_supervisor = None
+            claim_guard = None
+            self._active_landed_claim_guard = None
         # Verification receipts: a deterministic PostToolUse observer that
         # records the command lines the session submitted to check itself, and
         # what came back, so the PR can show a human evidence the model did not
@@ -5757,7 +5778,7 @@ class Orchestrator:
 
         if _can_hooks:
             composed = self._compose_post_tool_hooks(
-                receipt_hook, lint_hook, scope_hook, type_hook)
+                receipt_hook, lint_hook, scope_hook, type_hook, claim_guard)
             if composed is not None:
                 extra["lint_hook"] = composed
 
@@ -16930,6 +16951,100 @@ class Orchestrator:
             send_back_feedback=send_back_feedback,
         )
 
+    def _build_landed_claim_guard(
+        self, task: Task, repo: GitRepo, *, base: str | None, branch: str | None,
+        branched_from_own_partial: bool = False,
+    ) -> "LandedClaimGuard | None":
+        """Construct a `LandedClaimGuard` for the current attempt.
+
+        Wraps `_already_satisfied_subject` — the EXACT function
+        `_gate_already_satisfied` calls at delivery time — as the guard's
+        `probe`, so the in-attempt refusal and the delivery-time refusal ask
+        the SAME question and can never disagree. An earlier revision
+        wrapped `classify_already_satisfied_landing` instead (ancestry
+        against `base` only): narrower than delivery, so it refused claims
+        delivery would ACCEPT — a pushed branch up to date with the offered
+        one, or a pushed SIBLING branch of this same task (see
+        `_already_satisfied_subject`'s docstring for both shapes). `task`
+        supplies the task id `_already_satisfied_subject` needs to
+        enumerate this task's own pushed sibling branches. See
+        `landed_claim_guard.py`'s module docstring for the incident this
+        closes.
+
+        Send-back (third review): `_already_satisfied_subject` is not the
+        FIRST thing delivery asks. `_run_attempt` hoists `_route_unjudged_
+        head`/`_already_satisfied_eligible` (~12034/~11901) BEFORE the claim
+        is even parsed — a `[WIP-BLOCKED]`/`[WIP-PARTIAL]` head, or an
+        ordinary head resumed from `blockers.MACHINE_REQUEUE_PROVENANCE`,
+        with no completed review verdict recorded against it, is routed
+        straight to a full independent review and `_gate_already_satisfied`
+        (hence `_already_satisfied_subject`) is never reached at all. A
+        probe that skipped straight to `_already_satisfied_subject` would
+        tell the coder "delivery will refuse this claim right now" in a
+        shape where delivery instead reviews the diff for real — the same
+        disagreement-in-the-refuse-direction the earlier revision had in
+        the accept direction. So the probe asks `_already_satisfied_
+        eligible` first, exactly as `_route_unjudged_head` does, and stays
+        silent (never refutes) whenever that would route to review.
+
+        Fourth review, same class a third time: `_already_satisfied_subject`
+        is not reached merely because the head is eligible. Delivery parses
+        the claim at all only when `resumed_commit` is None (~6501) — that
+        is, when there is no base, or the branch is not ahead of it, or the
+        attempt resumed from its OWN `[WIP-PARTIAL]` checkpoint. An attempt
+        that made an ordinary in-session commit off `base` leaves
+        `resumed_commit` non-None, so delivery commits, reviews and opens a
+        PR; a probe that refused there would again say "delivery will refuse
+        this claim right now" about a shape delivery ships. So the probe
+        evaluates that same outer predicate, at probe time (`commits_ahead`
+        moves as the coder commits), and stays silent whenever delivery
+        would not reach the claim gate.
+        """
+        if not repo:
+            return None
+
+        async def probe() -> tuple[bool, str, str]:
+            eligible, _why = self._already_satisfied_eligible(task, repo, base)
+            if not eligible:
+                # Delivery routes this head to a full review instead of the
+                # claim gate — it is not refusing the claim, so the guard
+                # must not say it is.
+                return False, "", ""
+            # Delivery parses the claim at all only when `resumed_commit` is
+            # None (~6501): no base, or nothing ahead of it, or a resume from
+            # this attempt's own [WIP-PARTIAL]. With ordinary in-session
+            # commits ahead of `base`, delivery commits and reviews the diff
+            # instead of refusing — so the guard must stay silent. Evaluated
+            # here rather than at build time because the coder commits while
+            # the attempt runs. A `commits_ahead` that raises is a cannot-tell
+            # and also yields silence: the guard never refutes on ignorance.
+            if base and not branched_from_own_partial:
+                try:
+                    ahead = repo.commits_ahead(base)
+                except Exception:  # noqa: BLE001 — cannot tell is not refuted
+                    return False, "", ""
+                if ahead > 0:
+                    return False, "", ""
+            (shippable, head, _subject, subject_reason, _on_main,
+             ship_ref) = await self._already_satisfied_subject(
+                task, repo, base=base, branch=branch)
+            # A refusal must be a genuine "not on {ship_ref}" answer, not one
+            # of `_already_satisfied_subject`'s "cannot tell" cases (an
+            # unresolvable HEAD, an unresolvable ship ref, or an is_ancestor
+            # check that raised) — those also report `shippable=False` but
+            # must never look refuted here, matching the guard's own
+            # "unverifiable must never look refuted" rule.
+            refuted = (
+                not shippable and bool(head) and bool(ship_ref)
+                and subject_reason.startswith(f"{head} is not on {ship_ref}")
+            )
+            return (refuted, head, subject_reason)
+
+        def head_sha() -> str:
+            return repo.head_sha()
+
+        return LandedClaimGuard(probe=probe, head_sha=head_sha, on_event=self.emit)
+
     def _materialize_skills(self, repo_path: Path) -> list[str]:
         """Write confirmed skill memories to ``.claude/skills/<name>/SKILL.md``
         in the working tree so the SDK can load them via ``skills=``.
@@ -21923,7 +22038,7 @@ SIX of them read a checkpoint and TWO do not — but do
 
     @staticmethod
     def _ordered_post_tool_hooks(
-        receipt_hook, lint_hook, scope_hook, type_hook=None
+        receipt_hook, lint_hook, scope_hook, type_hook=None, claim_hook=None
     ) -> list:
         """The PostToolUse hooks, in the order they must run.
 
@@ -21936,8 +22051,16 @@ SIX of them read a checkpoint and TWO do not — but do
         report. Moving it last leaves every other test in the suite passing,
         which is why the property has its own.
 
-        The type hook (issue #114 phase 2) goes THIRD, ahead of the scope guard,
-        and that is the same kind of property rather than a preference. Its
+        `claim_hook` (the landed-claim guard) runs SECOND, right behind the
+        receipt observer and ahead of lint/type/scope: a refused "already
+        satisfied" claim is the highest-value correction an attempt can
+        receive (it is what stops a doomed ~47-turn burn), so it must not be
+        swallowed behind a lint, type or scope message that fired on the same
+        tool call. `claim_hook` defaults to `None` so every pre-existing
+        3- and 4-positional-arg call site is unaffected.
+
+        The type hook (issue #114 phase 2) goes ahead of the scope guard, and
+        that is the same kind of property rather than a preference. Its
         feedback is once-only by construction — a report advances the file's
         baseline, so the diagnostic is never re-sent — while `check_scope`
         returns its warning on EVERY edit to an out-of-plan file. Behind the
@@ -21950,18 +22073,18 @@ SIX of them read a checkpoint and TWO do not — but do
         parse produces type output not worth the turn.
         """
         return [
-            h for h in (receipt_hook, lint_hook, type_hook, scope_hook)
+            h for h in (receipt_hook, claim_hook, lint_hook, type_hook, scope_hook)
             if h is not None
         ]
 
     @classmethod
     def _compose_post_tool_hooks(
-        cls, receipt_hook, lint_hook, scope_hook, type_hook=None
+        cls, receipt_hook, lint_hook, scope_hook, type_hook=None, claim_hook=None
     ):
         """One PostToolUse callable for the backend, or None when there are no
         hooks to install. ClaudeBackend accepts a single `lint_hook`."""
         hooks = cls._ordered_post_tool_hooks(
-            receipt_hook, lint_hook, scope_hook, type_hook)
+            receipt_hook, lint_hook, scope_hook, type_hook, claim_hook)
         if not hooks:
             return None
         if len(hooks) == 1:
