@@ -5290,7 +5290,7 @@ def _persist_onboarding(config, patch: dict[str, Any]) -> dict[str, Any]:
     ob.update(patch)
     config.data["onboarding"] = ob
     try:
-        on_disk = yaml.safe_load(CONFIG_PATH.read_text()) if CONFIG_PATH.exists() else {}
+        on_disk = yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8")) if CONFIG_PATH.exists() else {}
     except Exception:  # noqa: BLE001
         on_disk = {}
     on_disk = on_disk or {}

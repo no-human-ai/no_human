@@ -90,7 +90,7 @@ def wrong_tree_imports(work: Path, *, python: str | None = None,
         # starts afterwards and never sees it.
         probe = work / f"test_nh_sandbox_selftest_{name}.py"
         try:
-            probe.write_text(_PROBE.format(name=name))
+            probe.write_text(_PROBE.format(name=name), encoding="utf-8")
             out = subprocess.run(
                 [python or sys.executable, "-m", "pytest", "-q", "-s",
                  "-p", "no:cacheprovider", str(probe)],
