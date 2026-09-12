@@ -12915,11 +12915,8 @@ class Orchestrator:
                     mapped_cwd = wt_dir / rel
                 except ValueError:
                     mapped_cwd = Path(cwd)  # cross-repo cwd: outside this repo
-            # `-rA` asks pytest to name every outcome in its short summary —
-            # reporting-only, selection/ordering/exit-status unchanged. It is
-            # the only way to learn WHICH ids the base run actually reported
-            # on, which the by-name accounting check below needs. Mirrors
-            # `_flaky_on_rerun`'s identical use of the flag.
+            # `-rA` names every outcome in the short summary — reporting-only
+            # — so the by-name checks below know WHICH ids base reported on.
             bounded_cmd = (
                 cmd + " -rA " + " ".join(shlex.quote(t) for t in failing_tests)
             )
@@ -12927,28 +12924,23 @@ class Orchestrator:
                 runner.run_tests, wt_dir, bounded_cmd, cwd=mapped_cwd
             )
             # Could not get a trustworthy per-id verdict on base (collection/
-            # import error, or a test id absent on base because the change added
-            # it) → inconclusive → fail-closed. A newly-added failing test is the
-            # change's fault anyway, so failing here is the right outcome. This
-            # also subsumes a timeout: `runner.run_tests` reports `ran=True` on
-            # timeout, but a timed-out run reports no names, which the identity
-            # check below catches.
+            # import error, added test absent on base, or a timeout — a
+            # timed-out run reports `ran=True` but no names, caught below) →
+            # inconclusive → fail-closed.
             if not result.ran or result.invocation_error:
                 return None
-            # The runner retries a bad invocation with a REWRITTEN command
-            # (dropping our node ids, widening to the whole suite). Its answer
-            # is honest, but not the answer to the bounded question we asked —
-            # mirrors `_flaky_on_rerun`'s identical guard.
+            # The runner may retry a bad invocation with a REWRITTEN command
+            # (dropping our node ids) — honest, but not the bounded answer we
+            # asked for. Mirrors `_flaky_on_rerun`'s identical guard.
             if getattr(result, "command", bounded_cmd) != bounded_cmd:
                 log.warning(
                     "base-tree recheck: runner substituted a command (%s); "
                     "verdict discarded", result.command,
                 )
                 return None
-            # ACCOUNTING IS BY IDENTITY, NEVER BY COUNT (mirrors
-            # `_flaky_on_rerun`): every requested id must appear BY NAME in
-            # this run's reported passes or failures, or the base run answers
-            # nothing about it — all-or-nothing, not a partial split.
+            # By NAME, never by count: every requested id must appear in
+            # base's reported passes/failures, or base answers nothing about
+            # it — all-or-nothing, not a partial split.
             reported = set(result.passed_tests or []) | set(
                 getattr(result, "failing_tests", []) or []
             )
@@ -13948,6 +13940,86 @@ class Orchestrator:
             infra_failure=1)
         raise QuotaExhausted(wall, infra=infra)
 
+    async def _handle_pre_review_red(
+        self, task: Task, repo: GitRepo, attempt_id: str, test_cmd, base: str | None,
+        test_cwd, test_result, test_was_cached: bool,
+    ) -> tuple[list[str], int, str]:
+        """Extracted out of `_run_review` (at its structural-budget ceiling)
+        so the NEW-vs-pre-existing split doesn't grow that function further.
+        Renders/persists the `_red_test_detail` artifact, computes the ONE
+        shared `_round_failure_attribution` split the reviewer-facing render
+        and this round's billing both read, emits the `tests` event, and
+        writes the `classified: False` row TESTING's own `update_attempt`
+        later replaces wholesale.
+
+        Returns `(pre_review_failing_ids, pre_review_ids_dropped,
+        attribution_text)` for `_pre_review_red_checklist_item` and the
+        reviewer prompt's `failing_test_attribution` kwarg.
+        """
+        text, blocks, blocks_dropped, artifact_path = self._red_test_detail(
+            task, [test_result],
+            attempt_n=getattr(self, "_active_attempt_number", None))
+        # Recorded keyed on the RESULT OBJECT's identity — not on
+        # `test_was_cached` — so TESTING's plain branch below (this same
+        # attempt, later in the round) can tell whether its own
+        # `test_result` IS this exact object (the `_run_tests_once` cache
+        # reuse) and, only then, reuse this render instead of calling
+        # `_red_test_detail`/writing the artifact a second time. See
+        # `_pre_review_red_render`'s definition in `__init__`.
+        self._pre_review_red_render = (
+            test_result, text, blocks, blocks_dropped, artifact_path)
+        failing_tests = getattr(test_result, "failing_tests", []) or []
+        pre_review_failing_ids, pre_review_ids_dropped = _bound_failing_test_ids(
+            failing_tests)
+        attribution = await self._round_failure_attribution(
+            repo, test_cmd, base, test_result, failing_tests, cwd=test_cwd,
+            env_dependent=bool((task.config or {}).get("env_setup")))
+        attribution_text = _render_failing_attribution(attribution)
+        # Same bound TESTING's own red `tests` event uses
+        # (`_bounded_failing_ids`, `_MAX_PERSISTED_FAILING_TESTS`) — this
+        # event is now the ONLY red `tests` event of the round whenever
+        # TESTING reuses this render, so it must carry the same shape
+        # TESTING's would have (kept ids + a `failing_tests_dropped`
+        # count when truncated), not the unbounded list.
+        _kept, _dropped = _bounded_failing_ids(failing_tests)
+        self.emit(
+            "tests",
+            test_result.summary
+            + (" (reused a prior run)" if test_was_cached else "")
+            + " — pre-review run, before the reviewer's verdict"
+            + (f"\n{text}" if text else ""),
+            ok=False, cached=test_was_cached, failing_tests=_kept,
+            ran=test_result.ran, tests_log=artifact_path,
+            **({"failing_tests_dropped": _dropped} if _dropped else {}),
+        )
+        # `classified: False` — this row was written before the reviewer's
+        # verdict and before TESTING (the sole classifier of a red run:
+        # flaky/pre-existing excuse vs. owned billing) ever ran. TESTING's
+        # own `update_attempt(..., test_results=...)` REPLACES this whole
+        # column (never merges — see the comment further down in
+        # `_run_attempt`), so when TESTING later classifies THIS SAME run
+        # it overwrites this row wholesale, including stamping
+        # `classified: True` via `_bounded_test_results`. If review FAILS
+        # for an unrelated reason first, `_run_attempt`'s FAIL branch
+        # returns before TESTING ever runs — so `classified: False`
+        # persists, and the board must render that "never classified"
+        # state distinctly from a billed failure (`web/src/
+        # slideOverSummary.js`'s `testResultVerdict`).
+        new_ids, pre_existing_ids, unknown_ids = _attribution_buckets(attribution)
+        await self.store.update_attempt(attempt_id, test_results=_bounded_test_results({
+            "ran": test_result.ran, "ok": test_result.ok,
+            "passed": test_result.passed, "failed": test_result.failed,
+            "errors": test_result.errors, "tamper_flag": False,
+            "failing_tests": failing_tests,
+            "failure_blocks": blocks,
+            "failure_blocks_dropped": blocks_dropped,
+            "classified": False,
+            "pre_review_new_failures": new_ids,
+            "pre_review_pre_existing_failures": pre_existing_ids,
+            "pre_review_unknown_failures": unknown_ids,
+        }))
+        return pre_review_failing_ids, pre_review_ids_dropped, attribution_text
+
     async def _run_review(
         self, task: Task, repo: GitRepo, attempt_id: str, base: str | None = None,
         draft_pr: str = "", draft_pr_absent: str = "",
@@ -14106,68 +14178,10 @@ class Orchestrator:
         attribution_text = ""
         if test_result.ran and not test_result.ok:
             pre_review_red = True
-            text, blocks, blocks_dropped, artifact_path = self._red_test_detail(
-                task, [test_result],
-                attempt_n=getattr(self, "_active_attempt_number", None))
-            # Recorded keyed on the RESULT OBJECT's identity — not on
-            # `test_was_cached` — so TESTING's plain branch below (this same
-            # attempt, later in the round) can tell whether its own
-            # `test_result` IS this exact object (the `_run_tests_once` cache
-            # reuse) and, only then, reuse this render instead of calling
-            # `_red_test_detail`/writing the artifact a second time. See
-            # `_pre_review_red_render`'s definition in `__init__`.
-            self._pre_review_red_render = (
-                test_result, text, blocks, blocks_dropped, artifact_path)
-            failing_tests = getattr(test_result, "failing_tests", []) or []
-            pre_review_failing_ids, pre_review_ids_dropped = _bound_failing_test_ids(
-                failing_tests)
-            attribution = await self._round_failure_attribution(
-                repo, test_cmd, base, test_result, failing_tests, cwd=test_cwd,
-                env_dependent=bool((task.config or {}).get("env_setup")))
-            attribution_text = _render_failing_attribution(attribution)
-            # Same bound TESTING's own red `tests` event uses
-            # (`_bounded_failing_ids`, `_MAX_PERSISTED_FAILING_TESTS`) — this
-            # event is now the ONLY red `tests` event of the round whenever
-            # TESTING reuses this render, so it must carry the same shape
-            # TESTING's would have (kept ids + a `failing_tests_dropped`
-            # count when truncated), not the unbounded list.
-            _kept, _dropped = _bounded_failing_ids(failing_tests)
-            self.emit(
-                "tests",
-                test_result.summary
-                + (" (reused a prior run)" if test_was_cached else "")
-                + " — pre-review run, before the reviewer's verdict"
-                + (f"\n{text}" if text else ""),
-                ok=False, cached=test_was_cached, failing_tests=_kept,
-                ran=test_result.ran, tests_log=artifact_path,
-                **({"failing_tests_dropped": _dropped} if _dropped else {}),
-            )
-            # `classified: False` — this row was written before the reviewer's
-            # verdict and before TESTING (the sole classifier of a red run:
-            # flaky/pre-existing excuse vs. owned billing) ever ran. TESTING's
-            # own `update_attempt(..., test_results=...)` REPLACES this whole
-            # column (never merges — see the comment further down in
-            # `_run_attempt`), so when TESTING later classifies THIS SAME run
-            # it overwrites this row wholesale, including stamping
-            # `classified: True` via `_bounded_test_results`. If review FAILS
-            # for an unrelated reason first, `_run_attempt`'s FAIL branch
-            # returns before TESTING ever runs — so `classified: False`
-            # persists, and the board must render that "never classified"
-            # state distinctly from a billed failure (`web/src/
-            # slideOverSummary.js`'s `testResultVerdict`).
-            new_ids, pre_existing_ids, unknown_ids = _attribution_buckets(attribution)
-            await self.store.update_attempt(attempt_id, test_results=_bounded_test_results({
-                "ran": test_result.ran, "ok": test_result.ok,
-                "passed": test_result.passed, "failed": test_result.failed,
-                "errors": test_result.errors, "tamper_flag": False,
-                "failing_tests": failing_tests,
-                "failure_blocks": blocks,
-                "failure_blocks_dropped": blocks_dropped,
-                "classified": False,
-                "pre_review_new_failures": new_ids,
-                "pre_review_pre_existing_failures": pre_existing_ids,
-                "pre_review_unknown_failures": unknown_ids,
-            }))
+            (pre_review_failing_ids, pre_review_ids_dropped, attribution_text
+             ) = await self._handle_pre_review_red(
+                task, repo, attempt_id, test_cmd, base, test_cwd,
+                test_result, test_was_cached)
 
         def _pre_review_red_checklist_item() -> ChecklistItem | None:
             # Shared by every `_run_review` exit that returns a `ReviewDecision`

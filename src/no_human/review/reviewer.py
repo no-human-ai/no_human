@@ -930,6 +930,27 @@ def _reviewed_target_section(reviewed_sha: str, reviewed_branch: str) -> str:
     )
 
 
+def _failing_test_attribution_sentence(failing_test_attribution: str) -> str:
+    """The one clause in `_build_review_prompt`'s failing-ids paragraph that
+    varies with whether the harness already has a NEW-vs-pre-existing split
+    for this round (`_render_failing_attribution` in `core/orchestrator.py`)
+    — split out so `_build_review_prompt` doesn't grow. Empty input falls
+    back to the original "not yet attributed" caveat.
+    """
+    if failing_test_attribution:
+        return (
+            "the harness has already checked each one against the base "
+            f"tree:\n{failing_test_attribution}"
+        )
+    return (
+        "the harness has NOT yet attributed them to this diff. A failing "
+        "id that also fails on the base tree is not this change's defect, "
+        "and the post-review testing step — not this review — is what "
+        "decides that (it classifies against the base tree and re-runs "
+        "for flakiness)."
+    )
+
+
 def _build_review_prompt(
     task: Task,
     diff: str,
@@ -1042,19 +1063,8 @@ def _build_review_prompt(
         ids_line = ", ".join(failing_test_ids)
         if failing_test_ids_dropped:
             ids_line += f" (+{failing_test_ids_dropped} more, not shown)"
-        if failing_test_attribution:
-            attribution_sentence = (
-                "the harness has already checked each one against the base "
-                f"tree:\n{failing_test_attribution}"
-            )
-        else:
-            attribution_sentence = (
-                "the harness has NOT yet attributed them to this diff. A failing "
-                "id that also fails on the base tree is not this change's defect, "
-                "and the post-review testing step — not this review — is what "
-                "decides that (it classifies against the base tree and re-runs "
-                "for flakiness)."
-            )
+        attribution_sentence = _failing_test_attribution_sentence(
+            failing_test_attribution)
         failing_ids_section = (
             "\nFailing tests in this tree (from the harness's own run, not an "
             f"opinion): {ids_line}\n"
