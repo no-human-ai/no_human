@@ -4489,6 +4489,17 @@ async def show_config(request: Request) -> dict[str, Any]:
     """
     cfg = request.app.state.config
     data = copy.deepcopy(cfg.data)
+    # `onboarding.email`/`email_at`/`welcome_status` must never be echoed
+    # here either: this config is fetched by plain `fetch` (TaskComposer,
+    # Settings) while PostHog session replay records bodies unmasked, the
+    # same exposure `_ONBOARDING_STATUS_REDACTED_FIELDS` already guards on
+    # `/api/onboarding/status` and `/api/onboarding/complete`.
+    if isinstance(data.get("onboarding"), dict):
+        data["onboarding"] = {
+            k: v
+            for k, v in data["onboarding"].items()
+            if k not in _ONBOARDING_STATUS_REDACTED_FIELDS
+        }
     scrubbed = _scrub_secrets(data)
     from ..agent.backend import CLAUDE_PINNED_ROLES, SUPPORTED_BACKENDS, resolve_backend_name
     from ..config import DEFAULT_CONFIG

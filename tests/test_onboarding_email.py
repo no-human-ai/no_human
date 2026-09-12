@@ -219,6 +219,35 @@ async def test_onboarding_complete_does_not_echo_the_address_either(client, tmp_
     assert on_disk["onboarding"]["email"] == "person@example.com"
 
 
+@pytest.mark.asyncio
+async def test_config_endpoint_does_not_echo_the_address_either(client, tmp_path):
+    """A third leak vector, distinct from /api/onboarding/status and
+    /api/onboarding/complete: GET /api/config returns `_scrub_secrets` over
+    the ENTIRE persisted config, including `onboarding`, and
+    `_SECRET_KEY_RE` (token|secret|password|webhook|key) does not match
+    "email" — so without an explicit redaction, the address registered
+    through /api/onboarding/email would come back verbatim on every poll of
+    this endpoint (TaskComposer.jsx and Settings.jsx both fetch it with a
+    plain `fetch`, and it is not in replayScrub.js's
+    REPLAY_EXCLUDED_PATHS, so PostHog session replay would capture it
+    unmasked for the life of the install)."""
+    reg = await client.post("/api/onboarding/email", json={"email": "person@example.com"})
+    assert reg.status_code == 200, reg.text
+
+    r = await client.get("/api/config")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    ob = body.get("onboarding") or {}
+    for field in ("email", "email_at", "welcome_status"):
+        assert field not in ob, f"{field} must be redacted from /api/config"
+    assert "person@example.com" not in r.text, "the address must not appear anywhere in /api/config's response"
+
+    # And it is still persisted on disk — redaction is response-shaping only.
+    import yaml
+    on_disk = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
+    assert on_disk["onboarding"]["email"] == "person@example.com"
+
+
 def test_render_welcome_reuses_the_frozen_template_byte_for_byte():
     address = "person@example.com"
     golden_subject, golden_body = base.mac_download(
