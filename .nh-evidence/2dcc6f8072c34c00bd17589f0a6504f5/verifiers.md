@@ -1,39 +1,44 @@
 # Verifiers
 
-_Harness-captured record for task `2dcc6f80`, commit `0649c534a63c55ce2c54a6a1bc7e4c50b89a02e2` — not model-authored: no_human wrote this file from the deterministic verifier rules selected for this commit's files. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `2dcc6f80`, commit `d81f22334e976a1dc484c0b9662ab071eb0de912` — not model-authored: no_human wrote this file from the deterministic verifier rules selected for this commit's files. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ```json
 [
   {
-    "comment": "Every added/modified test function carries at least one assertion (assert statement or pytest.raises). Non-test helpers like _git, _orch, _ClaimFeedingBackend are not test functions, and the test_structural_budget.py change only edits frozen data dicts, not test bodies.",
-    "evidence": "Every test_* function in the two new files and the added tests in test_verification_receipts.py contains assert statements or a pytest.raises block, e.g. test_guard_is_wired_into_the_real_run_attempt uses `with pytest.raises(QuotaExhausted):` plus multiple asserts, and test_composed_post_tool_hooks_place_the_claim_guard_after_receipts uses `assert Orchestrator._ordered_post_tool_hooks(...) == [...]`.",
+    "comment": "All newly added and modified test functions across the diff (integration, unit, line-endings, encoding, verification-receipts) contain assert statements, pytest.raises blocks, or parametrized assertions; helper/fixture functions with no assertions are not test functions.",
+    "evidence": "Every added/modified test function contains at least one assert, e.g. test_note_text_refutes_the_claim_before_any_delivery uses `assert calls == []`, `assert result`, `assert calls == [\"probed\"]`; test_the_claim_guard_is_ordered_second_behind_the_receipt_observer uses multiple `assert Orchestrator._ordered_post_tool_hooks(...) == [...]`.",
     "file": "",
     "files_checked": [
       "tests/test_landed_claim_early_refusal.py",
       "tests/test_landed_claim_guard.py",
+      "tests/test_line_endings.py",
       "tests/test_structural_budget.py",
+      "tests/test_text_reads_declare_encoding.py",
       "tests/test_verification_receipts.py"
     ],
     "line": 0,
     "no_verdict": false,
     "passed": true,
     "severity": "medium",
-    "tokens_used": 1231,
+    "tokens_used": 775,
     "unavailable": false,
     "verifier_id": "tests-assert-something"
   },
   {
-    "comment": "None of the new or modified code writes a task status; the changes are confined to constructing/wiring the LandedClaimGuard PostToolUse hook, so there is no unvalidated status write to flag.",
-    "evidence": "The diff adds only landed-claim-guard wiring (_build_landed_claim_guard, _agent_sink feed, PostToolUse hook ordering/composition changes). No added or modified line calls update_task at all, let alone with validate=False, and no status transition is written directly.",
+    "comment": "None of the new or modified code writes a task status; the changed lines add the LandedClaimGuard, reorder PostToolUse hooks, and add explicit utf-8 encoding to file reads/writes, so no update_task(validate=False) status write is introduced.",
+    "evidence": "The diff contains no calls to update_task at all (grep for 'update_task' or 'validate=False' in the changed hunks yields nothing); changes are the landed-claim guard wiring, hook ordering, and encoding='utf-8' additions to read_text/write_text.",
     "file": "",
     "files_checked": [
-      "src/no_human/core/orchestrator.py"
+      "src/no_human/core/db.py",
+      "src/no_human/core/orchestrator.py",
+      "src/no_human/core/reviewer_worktree.py",
+      "src/no_human/core/worktree.py"
     ],
     "line": 0,
     "no_verdict": false,
     "passed": true,
     "severity": "high",
-    "tokens_used": 507,
+    "tokens_used": 513,
     "unavailable": false,
     "verifier_id": "no-unvalidated-status-write"
   }
