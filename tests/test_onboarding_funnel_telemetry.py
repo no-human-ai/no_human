@@ -288,7 +288,12 @@ def test_step_key_matches_the_wizards_own_list():
     assert set(_WIZARD_STEPS) == telemetry.ONBOARDING_STEPS
     js_path = Path(__file__).resolve().parent.parent / "web" / "src" / "onboardingFunnel.js"
     js_src = js_path.read_text(encoding="utf-8")
-    m = re.search(r'FUNNEL_STEPS\s*=\s*\[([^\]]*)\]', js_src)
+    # Anchored at a line start with MULTILINE: the unanchored form took
+    # `re.search`'s FIRST match, so a comment carrying an out-of-date
+    # literal above the real export satisfied it while the real list had
+    # diverged. Demonstrated with a planted decoy.
+    m = re.search(r'^export const FUNNEL_STEPS\s*=\s*\[([^\]]*)\]',
+                  js_src, re.MULTILINE)
     assert m, "FUNNEL_STEPS literal not found in onboardingFunnel.js"
     js_steps = [s.strip().strip('"').strip("'") for s in m.group(1).split(",") if s.strip()]
     assert set(js_steps) == set(_WIZARD_STEPS)
@@ -540,3 +545,99 @@ def test_desktop_first_launch_gate_is_documented_as_uninstrumented():
         encoding="utf-8"
     )
     assert "desktop first-launch blind spot" in doc.lower()
+
+
+@pytest.mark.asyncio
+async def test_completing_the_wizard_emits_completed_once_with_the_full_path(
+    client, temp_home, tmp_path
+):
+    """The POSITIVE twin of `test_abandon_midway_leaves_started_but_not_completed`.
+
+    That test asserts `"onboarding_completed" not in names`, and nothing
+    anywhere asserted the name ever APPEARS -- an absence assertion whose
+    instrument had never been shown able to produce the thing. Deleting the
+    emit in `onboarding_complete` left 127 tests green across every file in the
+    repo that mentions the event or the endpoint.
+
+    Abandonment-vs-completion is the ticket's whole point, so the two runs must
+    differ ON THE WIRE, which is what this pins.
+    """
+    _seed_repo(tmp_path / "done-repo")
+    await client.post("/api/onboarding/step", json={"step": "welcome"})
+    r = await client.post("/api/onboarding/complete", json={
+        "team": "solo", "repos": [], "docs": [], "telemetry_asked": True,
+    })
+    assert r.status_code == 200, r.text
+
+    names = [ln["name"] for ln in _queue_lines(temp_home)]
+    assert names.count("onboarding_completed") == 1, names
+    # Control: the step event is on the same wire, so an empty/!-matching
+    # queue cannot be what makes the assertion above pass.
+    assert names.count("onboarding_step_viewed") == 1, names
+
+
+@pytest.mark.asyncio
+async def test_the_completed_path_prop_distinguishes_minimal_from_full(
+    client, temp_home, tmp_path
+):
+    """`path=("minimal" if body.minimal else "full")` had no coverage through
+    the endpoint -- inverting the two literals left 127 tests green, because
+    the only test touching `path` calls `telemetry.record(..., path="minimal")`
+    directly and so pins the enum, not the mapping. Inverted, every install
+    would report the wrong wizard exit, permanently, and the data would look
+    entirely plausible.
+    """
+    repo = _seed_repo(tmp_path / "minimal-repo")
+    r = await client.post("/api/onboarding/complete", json={
+        "team": "solo", "repos": [], "docs": [], "telemetry_asked": True,
+        "minimal": True, "repo_path": str(repo),
+    })
+    assert r.status_code == 200, r.text
+
+    completed = [ln for ln in _queue_lines(temp_home)
+                 if ln["name"] == "onboarding_completed"]
+    assert len(completed) == 1, completed
+    assert completed[0]["props"]["path"] == "minimal", completed[0]["props"]
+
+
+@pytest.mark.asyncio
+async def test_the_marker_is_latched_before_the_event_is_recorded(
+    client, temp_home, tmp_path, monkeypatch
+):
+    """`_record_onboarding_once`'s docstring claims the marker is persisted
+    BEFORE `telemetry.record()`, so a failing telemetry call can only
+    under-count, never duplicate. Swapping the two statements left 90 tests
+    green -- a claim in shipped source with no coverage.
+
+    The discriminator: make the FIRST record raise and the second succeed.
+    Persist-before latches on call 1, so call 2 emits nothing. Persist-after
+    would raise before latching, and call 2 would emit -- a duplicate for one
+    install, which is exactly what the docstring promises cannot happen.
+    """
+    # `app.py` imports telemetry function-locally (`from .. import telemetry
+    # as _telemetry`), so there is no module attribute to patch -- patch the
+    # telemetry module itself, which every local alias resolves to.
+    calls = {"n": 0}
+    real = telemetry.record
+
+    def flaky(kind, **kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("telemetry backend down")
+        return real(kind, **kw)
+
+    monkeypatch.setattr(telemetry, "record", flaky)
+
+    body = {"team": "solo", "repos": [], "docs": [], "telemetry_asked": True}
+    r1 = await client.post("/api/onboarding/complete", json=body)
+    assert r1.status_code == 200, r1.text        # the failure is swallowed
+    r2 = await client.post("/api/onboarding/complete", json=body)
+    assert r2.status_code == 200, r2.text
+
+    assert calls["n"] == 1, (
+        "the second call reached telemetry.record, so the marker was not "
+        "latched before the first (failing) record -- the docstring's "
+        "under-count-never-duplicate guarantee does not hold"
+    )
+    names = [ln["name"] for ln in _queue_lines(temp_home)]
+    assert names.count("onboarding_completed") == 0, names
