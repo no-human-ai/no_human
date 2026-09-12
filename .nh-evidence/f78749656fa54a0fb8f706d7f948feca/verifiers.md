@@ -5,8 +5,8 @@ _Harness-captured record for task `f7874965`, commit `cbe84e168c27a6dccec274bf20
 ```json
 [
   {
-    "comment": "All new tests across the three test files use assertion helpers (_assert_renders_unknown/_assert_renders_split) or direct asserts, and the two modified tests in test_pre_review_red_reaches_coder.py retain explicit assert/mock-assertion statements. No test function lacks an assertion.",
-    "evidence": "Every added/modified test_ function contains assertions or assertion-helper calls, e.g. test_base_run_errored_renders_unknown calls _assert_renders_unknown (which runs `assert newly is None`, `assert new_ids == []`, etc.), and test_the_split_is_computed_once_and_shared_with_billing has `assert owned_mock.await_count == 1`.",
+    "comment": "All new/modified test functions across the four shown files contain at least one assert statement or assertion-helper call (_assert_renders_unknown/_assert_renders_split, mock .assert_* calls), so none are assertion-free.",
+    "evidence": "Every added/modified test ends in an assertion or assertion-helper call, e.g. test_base_run_errored_renders_unknown calls `_assert_renders_unknown(ids, newly)` which contains `assert newly is None`; test_the_split_is_computed_once_and_shared_with_billing has `assert owned_mock.await_count == 1`; modified test_flaky_non_owned... has `newly_failing_mock.assert_awaited_once()`.",
     "file": "",
     "files_checked": [
       "tests/test_base_check_unknown_renders_unknown.py",
@@ -19,22 +19,22 @@ _Harness-captured record for task `f7874965`, commit `cbe84e168c27a6dccec274bf20
     "no_verdict": false,
     "passed": true,
     "severity": "medium",
-    "tokens_used": 760,
+    "tokens_used": 784,
     "unavailable": false,
     "verifier_id": "tests-assert-something"
   },
   {
-    "comment": "The changes only add/move `update_attempt(..., test_results=...)` writes for the pre-review test-result column and never touch task status transitions, so nothing bypasses set_status.",
-    "evidence": "The only new/modified store writes in the diff are `await self.store.update_attempt(attempt_id, test_results=...)` calls (in `_handle_pre_review_red` and the removed inline block); no new or modified code calls `update_task` with `validate=False`, and no task status is written.",
-    "file": "",
+    "comment": "The new/changed code only writes attempt test_results via update_attempt and never writes a task status, so there is no update_task(validate=False) status write to flag.",
+    "evidence": "The only store writes added/modified in the diff are `self.store.update_attempt(attempt_id, test_results=_bounded_test_results({...}))` in `_handle_pre_review_red`; no call to `update_task` with `validate=False` (nor any `update_task` status write) appears in the new or modified code.",
+    "file": "src/no_human/core/orchestrator.py",
     "files_checked": [
       "src/no_human/core/orchestrator.py"
     ],
-    "line": 0,
+    "line": 14005,
     "no_verdict": false,
     "passed": true,
     "severity": "high",
-    "tokens_used": 921,
+    "tokens_used": 552,
     "unavailable": false,
     "verifier_id": "no-unvalidated-status-write"
   }

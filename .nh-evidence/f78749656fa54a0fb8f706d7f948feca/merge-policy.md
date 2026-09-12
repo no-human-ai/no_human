@@ -6,7 +6,7 @@ _Harness-captured record for task `f7874965`, commit `cbe84e168c27a6dccec274bf20
 {
   "policy_changed_in_diff": false,
   "problems": [],
-  "ready": true,
+  "ready": false,
   "rules": [
     {
       "detail": "review PASSED on head",
@@ -24,9 +24,9 @@ _Harness-captured record for task `f7874965`, commit `cbe84e168c27a6dccec274bf20
       "passed": true
     },
     {
-      "detail": "repro gate pass",
+      "detail": "repro gate fail",
       "name": "repro_gate",
-      "passed": true
+      "passed": false
     },
     {
       "detail": "2 verifiers, none failed",
@@ -40,6 +40,6 @@ _Harness-captured record for task `f7874965`, commit `cbe84e168c27a6dccec274bf20
     }
   ],
   "source": "default",
-  "summary": "ready \u2014 6 of 6 rules satisfied"
+  "summary": "not ready \u2014 1 of 6 rules failed: repro_gate"
 }
 ```
