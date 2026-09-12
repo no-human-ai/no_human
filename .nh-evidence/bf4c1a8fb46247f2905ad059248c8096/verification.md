@@ -1,12 +1,50 @@
 # How I verified this — full log
 
-_Harness-captured record for task `bf4c1a8f`, commit `fbdb9bc38e906b20cb8e166dd0e0218ba06d4e26` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `bf4c1a8f`, commit `92c525839875c845bc8d8a0dba6fc76c3a24da0d` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ## How I verified this
-7 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
+9 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
 
 ### test
-- `uv run pytest tests/test_structural_budget.py -q 2>&1 | tail -40`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/bf4c1a8fb46247f2905ad059248c8096.52752.8d33b52e uv run pytest -q tests/test_slot_wait_pool_paused_text.py tests/test_slot_wait_followups.py 2>&1 | tail -40`
+
+```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+   Building no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/bf4c1a8fb46247f2905ad059248c8096.52752.8d33b52e
+      Built no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/bf4c1a8fb46247f2905ad059248c8096.52752.8d33b52e
+Installed 73 packages in 240ms
+.................                                                        [100%]
+17 passed in 45.57s
+```
+
+- `cd /Users/eyalgolan/.<redacted>/worktrees/bf4c1a8fb46247f2905ad059248c8096.52752.8d33b52e uv run pytest -q tests/test_scheduler_lease_write_retry.py -v 2>&1 | tail -60`
+
+```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.1.1, pluggy-1.6.0
+<redacted> isolated HOME: /var/folders/1r/3r0rt1jd4j1456rsg_fh4d380000gn/T/nh-test-home-iee_1k04
+rootdir: /Users/eyalgolan/.<redacted>/worktrees/bf4c1a8fb46247f2905ad059248c8096.52752.8d33b52e
+configfile: pyproject.toml
+plugins: anyio-4.14.0, no-human-0.2.2, cov-7.1.0, xdist-3.8.0, asyncio-1.4.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 20 items
+
+tests/test_scheduler_lease_write_retry.py ....................           [100%]
+
+============================== 20 passed in 1.89s ==============================
+```
+
+- `cd /Users/eyalgolan/.<redacted>/worktrees/bf4c1a8fb46247f2905ad059248c8096.52752.8d33b52e uv run pytest -q tests/test_scheduler_lease_write_retry.py tests/test_scheduler_lease_fail_closed.py tests/test_sta [... 86 of 429 characters omitted from the middle ...] ups.py tests/test_scheduler_quota_recovery.py tests/test_frozen_snapshot_guard.py tests/test_slot_wait_pool_paused_text.py 2>&1 | tail -40`
+
+```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+........................................................................ [ 50%]
+......................................................................   [100%]
+142 passed in 40.01s
+```
+
+- `cd /Users/eyalgolan/.<redacted>/worktrees/bf4c1a8fb46247f2905ad059248c8096.52752.8d33b52e uv run pytest -q tests/test_structural_budget.py 2>&1 | tail -60`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
@@ -14,117 +52,75 @@ warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not mat
 =================================== FAILURES ===================================
 ________________________ test_no_frozen_entry_has_grown ________________________
 
-scanned = ({'agent/claude_backend.py:ClaudeBackend.stream': 407, 'blockers/landed_override.py:approve_landed_override': 322, 'bl... ...}, {'agent/guard.py': 2892, 'api/app.py': 6190, 'blockers/wake.py': 2757, 'cli/commands.py': 8679, ...}, 229
-[... 820 of 1,959 characters omitted from the middle ...]
-tchets down'] == []
+scanned = ({'agent/claude_backend.py:ClaudeBackend.stream': 407, 'blockers/landed_override.py:approve_landed_override': 322, 'bl... ...}, {'agent/guard.py': 2892, 'api/app.py': 6193, 'blockers/wake.py': 2757, 'cli/commands.py': 8679, ...}, 229
+[... 816 of 1,955 characters omitted from the middle ...]
+y:...atchets down'] == []
 E             
-E             Left contains 2 more items, first extra item: 'cli/commands.py: frozen 8666, now 8679 (+13); this budget only ratchets down'
+E             Left contains 2 more items, first extra item: 'api/app.py: frozen 6190, now 6193 (+3); this budget only ratchets down'
 E             Use -v to get more diff
 
-tests/test_structural_budget.py:1968: AssertionError
+tests/test_structural_budget.py:1981: AssertionError
 =========================== short test summary info ============================
 FAILED tests/test_structural_budget.py::test_no_frozen_entry_has_grown - Asse...
-1 failed, 17 passed in 2.34s
+1 failed, 17 passed in 3.16s
 ```  
-  _excerpt - 1,957 characters of output in total_
+  _excerpt - 1,953 characters of output in total_
 
-- `uv run pytest tests/test_structural_budget.py -q 2>&1 | tail -40`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/bf4c1a8fb46247f2905ad059248c8096.52752.8d33b52e uv run pytest -q tests/test_structural_budget.py 2>&1 | tail -20`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
 ..................                                                       [100%]
-18 passed in 2.40s
+18 passed in 3.28s
 ```
 
-- `uv run pytest tests/test_scheduler_lease_write_retry.py tests/test_queue_health.py tests/test_api.py tests/test_cli_commands.py tests/test_structural_budget.py tests/test_scheduler_lease_fail_closed.py tes [... 92 of 435 characters omitted from the middle ...] ollowups.py tests/test_scheduler_quota_recovery.py tests/test_frozen_snapshot_guard.py tests/test_readme_claims.py -q -n 4 2>&1 | tail -80`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-bringing up nodes...
-bringing up nodes...
-
-........................................................................ [  9%]
-........................................................................ [ 18%]
-........................................................................ [ 28%]
-........................................................................ [ 37%]
-........................................................................ [ 47%]
-........................................................................ [ 56%]
-........................................................................ [ 66%]
-........................................................................ [ 75%]
-...............s.s.s..s.s.s.s.s.s.s..................................... [ 84%]
-..............s.........................s............................... [ 94%]
-...........................................                              [100%]
-751 passed, 12 skipped in 61.08s (0:01:01)
-```
-
-- `uv run pytest tests/ -m repoguard -q 2>&1 | tail -20`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/bf4c1a8fb46247f2905ad059248c8096.52752.8d33b52e uv run pytest -q tests/test_check_release_manifest.py tests/test_precommit_manifest_gate.py 2>&1 | tail -30`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-.....................................s.s.s.s.s.s.s.s.s.s................ [ 46%]
-...............................s..........................s............. [ 92%]
-...........                                                              [100%]
-=============================== warnings summary ===============================
-src/<redacted>/testing/test_layers.py:35
-  /Users/eyalgolan/.<redacted>/worktrees/bf4c1a8fb46247f2905ad059248c8096.52752.86846d83/src/<redacted>/testing/test_layers.
-[... 157 of 1,296 characters omitted from the middle ...]
+.........sss.ssss..................                                      [100%]
+28 passed, 7 skipped in 14.31s
+```
 
-src/<redacted>/testing/test_layers.py:89
-  /Users/eyalgolan/.<redacted>/worktrees/bf4c1a8fb46247f2905ad059248c8096.52752.86846d83/src/<redacted>/testing/test_layers.py:89: PytestCollectionWarning: cannot collect test class 'TestPlan' because it has a __init__ constructor (from: tests/test_test_layers.py)
-    @dataclass
-
--- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-143 passed, 13 skipped, 12421 deselected, 2 warnings in 4.31s
-```  
-  _excerpt - 1,282 characters of output in total_
-
-- `cp src/<redacted>/core/scheduler.py /tmp/scheduler_fixed.py git show f44eb993:src/<redacted>/core/scheduler.py > src/<redacted>/core/scheduler.py uv run pytest tests/test_scheduler_lease_write_retry.py::test_a_transient_lock_on_the_first_write_attempt_still_lands_the_claim -q 2>&1 | tail -40 echo "RESTORE" cp /tmp/scheduler_fixed.py src/<redacted>/core/scheduler.py`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/bf4c1a8fb46247f2905ad059248c8096.52752.8d33b52e uv run pytest -q tests/test_api.py tests/test_queue_health.py tests/test_cli_commands.py 2>&1 | tail -40`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-ERROR: found no collectors for /Users/eyalgolan/.<redacted>/worktrees/bf4c1a8fb46247f2905ad059248c8096.52752.86846d83/tests/test_scheduler_lease_write_retry.py::test_a_transient_lock_on_the_first_write_attempt_still_lands_the_claim
+........................................................................ [ 15%]
+........................................................................ [ 30%]
+........................................................................ [ 45%]
+........................................................................ [ 61%]
+........................................................................ [ 76%]
+........................................................................ [ 91%]
+.......................................                                  [100%]
+471 passed in 48.80s
+```
 
-
-==================================== ERRORS ====================================
-__________ ERROR collecting tests/test_scheduler_lease_write_retry.py __________
-ImportError while importing test module '/Users/eyalgolan/.<redacted>/worktrees/bf4c1a8fb4
-[... 428 of 1,567 characters omitted from the middle ...]
-eduler_lease_write_retry.py:48: in <module>
-    from <redacted>.core.scheduler import (
-E   ImportError: cannot import name '_is_transient_db_lock' from '<redacted>.core.scheduler' (/Users/eyalgolan/.<redacted>/worktrees/bf4c1a8fb46247f2905ad059248c8096.52752.86846d83/src/<redacted>/core/scheduler.py)
-=========================== short test summary info ============================
-ERROR tests/test_scheduler_lease_write_retry.py
-1 error in 0.09s
-RESTORE
-```  
-  _excerpt - 1,553 characters of output in total_
-
-- `git diff --stat src/<redacted>/core/scheduler.py uv run pytest tests/test_scheduler_lease_write_retry.py -q 2>&1 | tail -15`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/bf4c1a8fb46247f2905ad059248c8096.52752.8d33b52e uv run pytest -q \   tests/test_scheduler_lease_write_retry.py \   tests/test_slot_wait_pool_paused_text.py \   tes [... 241 of 584 characters omitted from the middle ...] \   tests/test_structural_budget.py \   tests/test_check_release_manifest.py \   tests/test_precommit_manifest_gate.py \   2>&1 | tail -40`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-................                                                         [100%]
-16 passed in 1.54s
+........................................................................ [ 36%]
+........................................................................ [ 73%]
+.........................sss.ssss..................                      [100%]
+188 passed, 7 skipped in 45.57s
 ```
 
-- `uv run pytest tests/test_scheduler_lease_write_retry.py tests/test_queue_health.py tests/test_api.py tests/test_cli_commands.py tests/test_structural_budget.py tests/test_scheduler_lease_fail_closed.py tes [... 92 of 435 characters omitted from the middle ...] ollowups.py tests/test_scheduler_quota_recovery.py tests/test_frozen_snapshot_guard.py tests/test_readme_claims.py -q -n 4 2>&1 | tail -15`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/bf4c1a8fb46247f2905ad059248c8096.52752.8d33b52e uv run python scripts/check_release_manifest.py 2>&1 | tail -5 echo "---" uv run pytest -q tests/test_api.py tests/test_queue_health.py tests/test_cli_commands.py 2>&1 | tail -15`
 
 ```
-bringing up nodes...
-bringing up nodes...
-
-........................................................................ [  9%]
-........................................................................ [ 18%]
-........................................................................ [ 28%]
-........................................................................ [ 37%]
-........................................................................ [ 47%]
-........................................................................ [ 56%]
-........................................................................ [ 66%]
-........................................................................ [ 75%]
-............s.s.s.s.s.s.s.s.s.s......................................... [ 84%]
-..........s...............................s............................. [ 94%]
-...........................................                              [100%]
-751 passed, 12 skipped in 44.32s
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+OK: 1581 file(s) match RELEASE_MANIFEST.txt
+---
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+........................................................................ [ 15%]
+........................................................................ [ 30%]
+........................................................................ [ 45%]
+........................................................................ [ 61%]
+........................................................................ [ 76%]
+........................................................................ [ 91%]
+.......................................                                  [100%]
+471 passed in 36.80s
 ```
 
 

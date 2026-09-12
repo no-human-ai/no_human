@@ -1,6 +1,6 @@
 # Merge-ready policy
 
-_Harness-captured record for task `bf4c1a8f`, commit `fbdb9bc38e906b20cb8e166dd0e0218ba06d4e26` — not model-authored: no_human wrote this file from the repo's merge policy evaluated against this commit — advisory to the human, nothing merges on it. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `bf4c1a8f`, commit `92c525839875c845bc8d8a0dba6fc76c3a24da0d` — not model-authored: no_human wrote this file from the repo's merge policy evaluated against this commit — advisory to the human, nothing merges on it. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ```json
 {
@@ -14,7 +14,7 @@ _Harness-captured record for task `bf4c1a8f`, commit `fbdb9bc38e906b20cb8e166dd0
       "passed": true
     },
     {
-      "detail": "tests: 0 failed of 12355 run",
+      "detail": "tests: 0 failed of 12379 run",
       "name": "tests_ran_and_passed",
       "passed": true
     },
@@ -34,7 +34,7 @@ _Harness-captured record for task `bf4c1a8f`, commit `fbdb9bc38e906b20cb8e166dd0
       "passed": true
     },
     {
-      "detail": "ci: none reported (tolerated)",
+      "detail": "ci: success",
       "name": "ci",
       "passed": true
     }
