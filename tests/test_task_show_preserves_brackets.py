@@ -17,22 +17,36 @@ text of any module: no regex over source, no AST walk, no
 `inspect.getsource`. Only `no_human.cli.commands.cli`, `Store`, `Task`,
 `TaskStatus`, `CliRunner`, `sqlite3` and `asyncio` are imported.
 
-ENUMERATION (the open question in the task description) — other call sites in
-`commands.py` that interpolate operator/model text into a markup-enabled
-print/rule and share this exact root cause, found by inspection while fixing
-`task_show`. Per the resolved intake decision, these are documented here for
-future action and are NOT changed by this patch:
+ENUMERATION (the open question in the task description). The root cause is
+not unique to `task_show`: the general RULE is that any `console.print` or
+`rich.table.Table` cell in `commands.py` that interpolates task-owned or
+model-owned text without `markup=False`/`escape()` is at risk of the same
+silent deletion (or, for an unclosed tag, a crash) — whether or not a hand
+enumeration below has caught it. Per the resolved intake decision, only
+`task_show` is fixed by this patch; the rest are documented here for future
+action, verified (not guessed) where noted:
 
-  * `task_show`, the slot-wait event line (~1668-1679) — machine-generated
+  * `nh blocked` (~3491/~3496) renders `blocker.question` the exact same way
+    `task_show` used to, unfixed — confirmed to both silently drop bracketed
+    text and raise `rich.errors.MarkupError` on an unbalanced tag.
+  * `nh task list` (~1646) renders `t.title[:50]` in a `Table` cell —
+    confirmed to raise `MarkupError` and abort the entire listing on one bad
+    title, not merely delete text from one row.
+  * `task_show`'s own slot-wait event line (~1668-1679) — machine-generated
     text, pinned separately by `tests/test_slot_wait_followups.py`.
-  * `task create`'s confirmation echo of `t.title` (~1161).
-  * the one-liner task-creation echo of `t.title` (~1275).
-  * `task list`'s table cell `t.title[:50]` (~1646) — `rich.table.Table`
-    cells parse markup too.
+  * `task create`'s confirmation echo of `t.title` (~1161) and the one-liner
+    task-creation echo of `t.title` (~1275).
+  * the interactive scoping echo of title/description/acceptance-criteria
+    (~504/506/507).
   * `investigate --show`'s `console.rule(f"...{t.title[:60]}")` (~5627) —
     the report body right below it is already `escape()`d.
   * `recall`'s query echo (~4529) — the result rows themselves are already
     `escape()`d (~4500/4521/4526).
+  * rules tables (~2617/~2990), playbooks (~2785) and transcripts (~6391).
+
+This list is a lead for follow-up work, not a claim of completeness: a hand
+enumeration can miss a call site, or misjudge whether it deletes text versus
+crashes, exactly as an earlier round of this list did.
 """
 
 from __future__ import annotations
@@ -166,6 +180,37 @@ def test_emoji_shortcode_is_not_substituted(tmp_path, monkeypatch):
 
     assert result.exit_code == 0, result.output
     assert "score :100: percent" in result.output, result.output
+
+
+def test_attempt_test_results_with_brackets_survive_the_render(tmp_path, monkeypatch):
+    db = tmp_path / "test.db"
+    t = _seed(db)
+    runner = _make_runner(db, monkeypatch)
+
+    async def _add_attempt():
+        async with Store(db) as store:
+            attempt_id = await store.create_attempt(t.id, 1)
+            await store.update_attempt(
+                attempt_id,
+                status="failed",
+                branch_name="task/x",
+                pr_url="",
+                turns_used=3,
+                test_results={
+                    "failing_tests": [
+                        "tests/test_x.py::test_a[context]",
+                        "tests/test_y.py::test_b[/tmp/wt]",
+                    ]
+                },
+            )
+
+    asyncio.run(_add_attempt())
+
+    result = runner.invoke(cli, ["task", "show", t.id[:8]])
+
+    assert result.exit_code == 0, result.output
+    assert "test_a[context]" in result.output, result.output
+    assert "test_b[/tmp/wt]" in result.output, result.output
 
 
 def test_bracketed_text_round_trips_byte_exact_in_the_database(tmp_path, monkeypatch):
