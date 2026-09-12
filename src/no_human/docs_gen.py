@@ -202,7 +202,7 @@ def _write_wiki_files(repo: Path, data: dict[str, str]) -> list[str]:
         if not content:
             continue
         path = wiki_dir / name
-        path.write_text(content if content.endswith("\n") else content + "\n")
+        path.write_text(content if content.endswith("\n") else content + "\n", encoding="utf-8")
         written.append(str(path.relative_to(repo)))
     return written
 
@@ -211,11 +211,11 @@ def _update_claude_md(repo: Path) -> None:
     """Insert or replace the wiki pointer block in ``CLAUDE.md``."""
     claude_md = repo / "CLAUDE.md"
     if claude_md.exists():
-        text = claude_md.read_text()
+        text = claude_md.read_text(encoding="utf-8")
     else:
         text = ""
     new_text = upsert_wiki_block(text)
-    claude_md.write_text(new_text)
+    claude_md.write_text(new_text, encoding="utf-8")
 
 
 def upsert_wiki_block(text: str) -> str:

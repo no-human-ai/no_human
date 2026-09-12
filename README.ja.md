@@ -6,11 +6,11 @@
 
 **チケットから、レビュー済みのプルリクエストへ。**<br>***無料・オープンソース。手元のマシンで動きます。***
 
-[English](README.md) · [简体中文](README.zh-CN.md) · **日本語** · [한국어](README.ko.md)
+[English](README.md) · [简体中文](README.zh-CN.md) · **日本語** · [한국어](README.ko.md) · [Español](README.es.md) · [Français](README.fr.md) · [Deutsch](README.de.md) · [Português (Brasil)](README.pt-BR.md)
 
-[![latest release](https://img.shields.io/github/v/release/no-human-ai/no_human?label=release&color=4C9AFF)](https://github.com/no-human-ai/no_human/releases/latest) [![CI](https://img.shields.io/github/actions/workflow/status/no-human-ai/no_human/ci.yml?branch=main&label=CI)](https://github.com/no-human-ai/no_human/actions/workflows/ci.yml) [![python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue)](https://www.python.org/) [![license MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE) [![Open Source Helpers](https://www.codetriage.com/no-human-ai/no_human/badges/users.svg)](https://www.codetriage.com/no-human-ai/no_human)
+[![latest release](https://img.shields.io/github/v/release/no-human-ai/no_human?label=release&color=4C9AFF)](https://github.com/no-human-ai/no_human/releases/latest) [![CI](https://img.shields.io/github/actions/workflow/status/no-human-ai/no_human/ci.yml?branch=main&label=CI)](https://github.com/no-human-ai/no_human/actions/workflows/ci.yml) [![python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue)](https://www.python.org/) [![license MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE) [![downloads](https://img.shields.io/github/downloads/no-human-ai/no_human/total?label=downloads&color=4C9AFF)](https://github.com/no-human-ai/no_human/releases) [![Discord](https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white)](https://discord.gg/mSARvj6yW6)
 
-[getnohuman.com](https://getnohuman.com) · [クイックスタート](docs/quickstart.md) · [ドキュメント](docs/README.md) · [スプリントをこなす様子を見る](https://getnohuman.com/demo)
+[getnohuman.com](https://getnohuman.com) · [クイックスタート](docs/quickstart.md) · [ドキュメント](docs/README.md) · [スプリントをこなす様子を見る](https://getnohuman.com/demo) · [Discord](https://discord.gg/mSARvj6yW6)
 
 [![macOS版をダウンロード](https://img.shields.io/badge/%E3%83%80%E3%82%A6%E3%83%B3%E3%83%AD%E3%83%BC%E3%83%89-macOS-4C9AFF?style=for-the-badge)](https://github.com/no-human-ai/no_human/releases/latest) [![Windows版をダウンロード](https://img.shields.io/badge/%E3%83%80%E3%82%A6%E3%83%B3%E3%83%AD%E3%83%BC%E3%83%89-Windows-4C9AFF?style=for-the-badge)](https://getnohuman.com/) [![Linux版をダウンロード](https://img.shields.io/badge/%E3%83%80%E3%82%A6%E3%83%B3%E3%83%AD%E3%83%BC%E3%83%89-Linux-4C9AFF?style=for-the-badge)](https://getnohuman.com/)
 
@@ -217,6 +217,12 @@ Issueとプルリクエストを歓迎します。提出前に`uv run pytest -q`
 
 no_humanがレビューを1周分でも省いてくれたなら、スターを付けていただけると、他の人がこのプロジェクトを見つけやすくなります：
 [![GitHub stars](https://img.shields.io/github/stars/no-human-ai/no_human?style=social)](https://github.com/no-human-ai/no_human/stargazers)
+
+## コミュニティ
+
+質問、バグ報告、見せたい実行結果は [Discord](https://discord.gg/mSARvj6yW6) へ。
+[r/no_human](https://www.reddit.com/r/no_human/) への投稿や
+[GitHub issue](https://github.com/no-human-ai/no_human/issues) でも歓迎です。
 
 ## ライセンス
 

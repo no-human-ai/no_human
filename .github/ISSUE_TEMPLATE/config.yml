@@ -6,3 +6,6 @@ contact_links:
   - name: Question or idea
     url: https://github.com/no-human-ai/no_human/issues/new?template=feature_request.yml
     about: Open a feature request — questions and ideas are welcome there.
+  - name: Ask on Discord
+    url: https://discord.gg/mSARvj6yW6
+    about: Setup questions, "why did it do that", and runs worth showing. Faster than an issue for anything that is not a bug.
