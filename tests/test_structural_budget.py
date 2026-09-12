@@ -1508,7 +1508,18 @@ FROZEN_FILE_LINES = {
     # path too, gated to avoid double-firing against `_run_attempt`'s own
     # in-process `cancelled_hard` emit when `stopped` is True. Measured on
     # this tree with the scanner below.
-    "api/app.py": 6183,
+    # 6183 -> 6268 (+85): onboarding funnel telemetry (task c4873934 REFILE) —
+    # `POST /api/onboarding/step` (server-side `_WIZARD_STEPS` validation,
+    # `require_local_origin(writing=True)`-gated), the shared
+    # `_record_onboarding_once` once-per-install latch (persisted under
+    # `config.onboarding.funnel_once`, deliberately NOT under `config.telemetry`
+    # — see its docstring re: the telemetry-key AST guard below in this file),
+    # its call sites in `onboarding_onboard_repo` (once per install, not once
+    # per repo) and `onboarding_complete`, and a `task_create_refused` emit
+    # (reason="setup_mode" only, never `SETUP_MODE_DETAIL`) in `create_task`'s
+    # existing credential-refusal path. Measured on this tree with the scanner
+    # below.
+    "api/app.py": 6268,
     # +51: W5 active-time phase writer (phase instrumentation).
     # +84: `list_escalations`/`list_review_fails`/`list_tamper_trips` — the
     # three new failure-signal sources the recurring learning harvest mines.
