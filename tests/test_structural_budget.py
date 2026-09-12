@@ -212,7 +212,15 @@ FROZEN_FUNCTION_LINES = {
     # `result.detail` (capped, whitespace-collapsed) in the event text and
     # `question`, and prefixes `step=` onto the stored `evidence` -- step
     # alone was not root-causeable. Measured on this tree.
-    "blockers/wake.py:WakeWatcher._check_pr_conflict": 458,
+    # 458 -> 464 (+6, 2026-09-13): stale-but-mergeable-PR bugfix (split from
+    # task 22c4ddf6's finding #3) — the inline `gh pr view` poll was
+    # extracted into the new shared `_poll_mergeable` (called once per tick
+    # by `_check_open_pr` and reused by `_check_base_stale`), and this
+    # function's signature/docstring gained the additive `info` keyword so a
+    # caller can hand it that shared poll instead of paying for a second one.
+    # CC dropped 74 -> 72 in the same change (no ratchet entry needed for a
+    # shrink). Measured on this tree.
+    "blockers/wake.py:WakeWatcher._check_pr_conflict": 464,
     # 418 -> 424 (+6): D1.1 fix round — attempt-scoped verification-artifact
     # write wired into `_finalize` (review findings #1/#7). Measured on the
     # D1.1 squash-merge result.
@@ -220,7 +228,13 @@ FROZEN_FUNCTION_LINES = {
     # best-effort call that runs the UI-evidence browser walk after tests
     # pass and threads its rendered media section into `_pr_body`.
     # Re-anchored on merge.
-    "core/orchestrator.py:Orchestrator._finalize": 437,
+    # 437 -> 444 (+7, 2026-09-13): stale-but-mergeable-PR bugfix (split from
+    # task 22c4ddf6's finding #3) — `_finalize` now records the trunk tip a
+    # delivered PR was measured against (`vcs.delivered_base
+    # .record_at_delivery`), the one piece of state `blockers.wake
+    # .WakeWatcher._check_base_stale` needs to re-measure freshness later.
+    # Measured on this tree.
+    "core/orchestrator.py:Orchestrator._finalize": 444,
     # Pre-existing on main (measured red at d3d7d3a82a, this session's start):
     # an earlier fleet land grew stream() +6 without re-freezing it on its
     # merge result — the same "landed without measuring the ratchet" failure
@@ -1194,7 +1208,11 @@ FROZEN_FILE_LINES = {
     # site, the `type_hook` parameter threaded through both PostToolUse
     # compose helpers, and the order docstring recording why the type
     # hook runs ahead of the scope guard. Re-measured on the merge result.
-    "core/orchestrator.py": 23893,
+    # 23893 -> 23900 (+7, 2026-09-13): stale-but-mergeable-PR bugfix (task
+    # 22c4ddf6 finding #3) — the `delivered_base` import plus `_finalize`'s
+    # new trunk-tip recording call. Measured on this tree (`len(text
+    # .splitlines())`, not `wc -l`).
+    "core/orchestrator.py": 23900,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.
@@ -1729,7 +1747,12 @@ FROZEN_FILE_LINES = {
     # 2752 -> 2757 (+5): same cause as the FROZEN_FUNCTION_LINES entry above
     # -- the whole-file delta equals the function's delta. Measured on this
     # tree.
-    "blockers/wake.py": 2757,
+    # 2757 -> 2918 (+161, 2026-09-13): stale-but-mergeable-PR bugfix (task
+    # 22c4ddf6 finding #3) — extracted `_poll_mergeable` (shared between the
+    # conflict rung and the new one), the new `_check_base_stale` rung
+    # itself, and the `info`-keyword docstring note on `_check_pr_conflict`.
+    # Measured on this tree with the scanner below.
+    "blockers/wake.py": 2918,
     # +91: `_SCAN_WRAPPER_NAMES` + `_peel_scan_wrappers` — peels
     # timeout/xargs/nice/stdbuf (and siblings) for the scan-severity check
     # only, so a wrapped `find … -delete` in a denied compound classifies

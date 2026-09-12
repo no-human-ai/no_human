@@ -1844,7 +1844,14 @@ class WakeWatcher:
             return pending
         injected = pending == _COMMENTS_INJECTED
 
-        acted = await self._check_pr_conflict(task, url, state, branch=pr.branch)
+        # Shared single poll (bugfix, split from task 22c4ddf6 finding #3):
+        # `_check_pr_conflict` and `_check_base_stale` both need the same
+        # `gh pr view --json mergeable,mergeStateStatus` answer this tick —
+        # poll once here and hand it to both via the additive `info` keyword
+        # rather than paying for the network round-trip twice.
+        info = await self._poll_mergeable(task, url)
+        acted = await self._check_pr_conflict(task, url, state, branch=pr.branch,
+                                              info=info)
         if acted:
             if injected and acted != "resumed":
                 # The conflict rung ended the tick WITHOUT resuming (it took
@@ -1884,6 +1891,19 @@ class WakeWatcher:
             # above — happens here instead.
             return await self._resume(task)
 
+        # Rung 4.5 (bugfix, split from task 22c4ddf6 finding #3): the PR
+        # stayed MERGEABLE while trunk moved past the sha it was measured
+        # against at delivery — no rung above acts on that shape, so a task
+        # delivered just before a landing was stranded until a human touched
+        # it or a fresh coder attempt happened to race the next landing.
+        # Observational only: re-measures and records against the real ref,
+        # never resumes, escalates, or touches conflict-round bookkeeping —
+        # so it can never consume a coder attempt, and never blocks the
+        # rungs below it from also running this same tick.
+        await self._check_base_stale(task, url, info or {})
+        if await self._is_terminal(task):
+            return None
+
         acted = await self._check_pr_ci(task, url)
         if acted:
             return acted
@@ -1892,9 +1912,25 @@ class WakeWatcher:
         #    once per PR head, bounded send-back on failure.
         return await self._check_ci_gate_integration(task, url)
 
+    async def _poll_mergeable(self, task: Task, url: str) -> dict | None:
+        """The single ``gh pr view --json mergeable,mergeStateStatus`` poll
+        each tick pays for, shared by `_check_pr_conflict` and
+        `_check_base_stale` (bugfix, split from task 22c4ddf6 finding #3) so
+        a tick never pays for the same network round-trip twice. Returns
+        `None` in exactly the cases `_check_pr_conflict`'s own inline poll
+        used to: no poller wired, or the poll raised."""
+        if self._pr_mergeable is None:
+            return None
+        try:
+            return await self._pr_mergeable(url)
+        except Exception as exc:  # noqa: BLE001 — a poll error must not crash the watcher
+            log.warning("failed to poll PR mergeability for %s: %s", task.id[:8], exc)
+            return None
+
     async def _check_pr_conflict(self, task: Task, url: str,
                                  forge_state: str = "", *,
-                                 branch: str | None = None) -> str | None:
+                                 branch: str | None = None,
+                                 info: dict | None = None) -> str | None:
         """Rung 3 (SCRUM-41): a textual conflict with main is invisible to CI
         (branch checks only run the PR's own branch) — this rung is the only
         one that polls `gh pr view --json mergeable,mergeStateStatus` directly.
@@ -1953,16 +1989,21 @@ class WakeWatcher:
         time and refuses any unmerged path outside the tolerated ledger
         files, so a wrong "clean" verdict here would still be caught before
         anything reaches ``main``.
+
+        ``info``: the caller (`_check_open_pr`) polls once and passes its
+        answer here via this additive keyword, shared with `_check_base_stale`
+        so a tick pays for `gh pr view` once, not twice. `None` means "not
+        provided" — this rung then polls for itself via `_poll_mergeable`,
+        exactly as it always did, so every existing direct caller (this
+        file's own tests included) keeps working unchanged.
         """
-        if self._pr_mergeable is None:
-            return None
-        try:
-            info = await self._pr_mergeable(url)
-        except Exception as exc:  # noqa: BLE001 — a poll error must not crash the watcher
-            log.warning("failed to poll PR mergeability for %s: %s", task.id[:8], exc)
-            return None
-        # The poll above just awaited a network call; re-verify terminal-ness
-        # before writing anything (conflict rung, SCRUM-68).
+        if info is None:
+            info = await self._poll_mergeable(task, url)
+            if info is None:
+                return None
+        # The poll (ours or the caller's) just awaited a network call;
+        # re-verify terminal-ness before writing anything (conflict rung,
+        # SCRUM-68).
         if await self._is_terminal(task):
             return None
         mergeable = str((info or {}).get("mergeable") or "").upper()
@@ -2350,6 +2391,126 @@ class WakeWatcher:
             extra={"error": recovered_error} if recovered_error else None,
         )
         return await self._resume(task)
+
+    async def _check_base_stale(self, task: Task, url: str,
+                                info: dict) -> str | None:
+        """Rung 4.5 (bugfix, split from task 22c4ddf6 finding #3): a PR that
+        stays MERGEABLE while trunk moves past the sha it was measured
+        against at delivery matched none of this ladder's other rungs, and
+        was never re-measured or woken — the only way back was a human
+        touching it or a fresh coder attempt racing the next landing.
+
+        ACTS ONLY ON A DEFINITE ``MERGEABLE``. Anything else — UNKNOWN, "",
+        or even a forge-reported ``mergeStateStatus`` of BEHIND alongside a
+        non-MERGEABLE ``mergeable`` — is a no-op: `_check_pr_conflict` above
+        is the sole owner of what a CONFLICTING/UNKNOWN verdict means, and
+        this rung must never substitute the forge's own (cached, asynchronous)
+        staleness flag for the real ref comparison it exists to do instead.
+
+        NEVER RESUMES, ESCALATES, OR TOUCHES CONFLICT-ROUND STATE. This rung
+        only ever re-measures and records; it cannot consume a coder attempt,
+        and a genuine conflict discovered at the new tip is left for
+        `_check_pr_conflict`'s own ladder (rounds, mechanical resolution,
+        escalation) to handle on a later tick — duplicating any of that here
+        would be a second, disagreeing owner of the same bookkeeping.
+
+        OBSERVATION, NOT AN EVENT HOOK (declared deviation from the intake's
+        preferred "event/hook triggered when trunk advances"). No in-process
+        pub/sub exists in this codebase (`core/events.py` is a SQLite
+        persister, not a bus), and hooking only `land_task` would miss a
+        trunk move made by a human merging on GitHub, or a landing from
+        another machine — exactly the `lander`-clone shape this bugfix's own
+        tests drive. So this rung asks the real ref at each watcher tick
+        instead of reacting to a push; there is no bound on how many times a
+        still-MERGEABLE PR can be re-measured this way, because each
+        measurement is a cheap local `git fetch` + `rev-parse`, not a coder
+        attempt.
+        """
+        mergeable = str((info or {}).get("mergeable") or "").upper()
+        if mergeable != "MERGEABLE":
+            return None
+
+        # Lazy import (blockers -> vcs at call time), matching the pattern
+        # `_check_pr_conflict` above already uses for the same reason: keep
+        # this module's import graph unchanged.
+        from ..vcs import delivered_base
+        from ..vcs.derived_conflict import conflicting_paths
+
+        ctx = task.context or {}
+        base_branch = ctx.get("base_branch")
+        branch_name = ctx.get("pr_branch")
+        recorded_sha = ctx.get("pr_base_sha")
+
+        result = await delivered_base.measure(task.repo_path, base_branch, recorded_sha)
+        # `measure` just awaited a fetch + rev-parse; re-verify terminal-ness
+        # before writing anything, same discipline as every other rung here.
+        if await self._is_terminal(task):
+            return None
+
+        if result.state == delivered_base.FRESH:
+            # Still fresh: nothing to record, nothing to wake.
+            return None
+
+        if result.state == delivered_base.UNDETERMINED:
+            patch: dict[str, Any] = {"pr_base_freshness": result.as_dict()}
+            if not recorded_sha and result.observed_sha:
+                # Never recorded at delivery (predates this bugfix, or the
+                # tip could not be resolved then either) — backfill so a
+                # future tick has something to compare against, but THIS
+                # tick's verdict stays undetermined, never fresh.
+                patch["pr_base_sha"] = result.observed_sha
+                patch["pr_base_sha_source"] = "backfilled"
+            task.context = await self.store.merge_context(task.id, patch)
+            await self._emit(
+                task, "pr_base_undetermined",
+                f"{task.id[:8]} could not measure PR base freshness for {url}: "
+                f"{result.reason}",
+            )
+            return "pr_base_undetermined"
+
+        # STALE: trunk moved past the recorded tip. Re-verify mergeability
+        # locally before recording the new tip as fresh — a real conflict at
+        # the new tip is left for `_check_pr_conflict`'s own ladder, never
+        # handled here (see the docstring above).
+        conflict_paths: set[str] | None = None
+        if task.repo_path and base_branch and branch_name:
+            try:
+                conflict_paths = await conflicting_paths(
+                    task.repo_path, base_branch, branch_name)
+            except Exception as exc:  # noqa: BLE001 — a probe error must not crash the watcher
+                log.warning(
+                    "failed to re-verify mergeability while re-measuring "
+                    "base freshness for %s: %s", task.id[:8], exc)
+                conflict_paths = None
+        if await self._is_terminal(task):
+            return None
+        if conflict_paths:
+            # A genuine conflict at the new tip: leave the sha unrecorded so
+            # this stays reachable as STALE (and eventually CONFLICTING once
+            # the forge catches up) rather than being silently marked fresh.
+            return None
+
+        previous_sha = result.recorded_sha
+        remeasures = int(ctx.get("pr_base_remeasures") or 0) + 1
+        patch = {
+            "pr_base_sha": result.observed_sha,
+            "pr_base_remeasures": remeasures,
+            "pr_base_freshness": {
+                "state": delivered_base.FRESH,
+                "base_ref": base_branch,
+                "previous_base_sha": previous_sha,
+                "base_sha": result.observed_sha,
+            },
+        }
+        task.context = await self.store.merge_context(task.id, patch)
+        await self._emit(
+            task, "pr_base_remeasured",
+            f"{task.id[:8]} PR {url} base re-measured: trunk moved "
+            f"{previous_sha[:8] if previous_sha else '(none)'} -> "
+            f"{result.observed_sha[:8]} while still MERGEABLE "
+            f"({remeasures} remeasure(s) so far) — no coder attempt consumed",
+        )
+        return "pr_base_remeasured"
 
     async def _check_pr_ci(self, task: Task, url: str) -> str | None:
         """Rung 5: react to a red check on the open PR's head, bounded."""
