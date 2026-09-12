@@ -20,6 +20,7 @@ import click
 from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
+from rich.text import Text
 
 from . import print_path_error, stdio_is_interactive
 from .. import __version__
@@ -1663,7 +1664,14 @@ def task_show(task_id):
             if not t:
                 print_no_task_matching(task_id)
                 return
-            console.print(f"[bold]{t.id}[/]  [blue]{t.status.value}[/]  [magenta]{t.kind}[/]")
+            # `t.kind` reaches this line unvalidated from the API
+            # (`CreateTaskRequest.kind` is a bare `str`); `escape()` keeps the
+            # surrounding [bold]/[blue]/[magenta] tags live while neutralising
+            # any bracket the operator put IN the value.
+            console.print(
+                f"[bold]{t.id}[/]  [blue]{t.status.value}[/]  "
+                f"[magenta]{escape(t.kind)}[/]"
+            )
             events = await store.list_events(t.id)
             if is_waiting_for_slot(events, status=t.status.value):
                 waits = [e for e in events if e.get("kind") == slot_wait.KIND]
@@ -1690,15 +1698,19 @@ def task_show(task_id):
                     console.print(f"  - {c}", markup=False, emoji=False)
             console.print(f"repo: {t.repo_path}", markup=False, emoji=False)
             if t.blocker:
-                # Two prints, not one escape()d f-string: `escape()` only
+                # A single Text with a styled prefix, not two console.print
+                # calls: printing the "[red]blocker:[/]" label and the
+                # payload separately made rich wrap the payload as if it
+                # started at column 0, ignoring the already-written prefix,
+                # and overrunning the terminal width. One print keeps trunk's
+                # wrapping. `escape()` is avoided on the payload too: it only
                 # escapes a backslash run immediately preceding a COMPLETE
-                # valid tag, so a lone "\[" (no closer) loses one backslash
-                # on render — not byte-exact. Printing the static "[red]"
-                # label and the payload as separate calls keeps the label
-                # styled while the payload goes through markup=False, which
-                # cannot rewrite backslashes at all.
-                console.print("[red]blocker:[/]", end=" ")
-                console.print(str(t.blocker), markup=False, emoji=False)
+                # valid tag, so a lone "\[" with no closer loses one
+                # backslash on render — not byte-exact; Text.append() with no
+                # style applied does not touch markup at all.
+                blocker_line = Text("blocker: ", style="red")
+                blocker_line.append(str(t.blocker))
+                console.print(blocker_line)
             lat = (t.blocker or {}).get("escalation_latency") if t.blocker else None
             if lat and t.status is TaskStatus.ESCALATED:
                 console.print(
