@@ -16,6 +16,7 @@ import { optionValue } from "./pathSuggest.js";
 import { basename } from "./pathBasename.js";
 import { splitRecent, relativeMtime, debounce } from "./repoRecency.js";
 import { LegionLogo } from "./Logo.jsx";
+import { DISCORD_INVITE_URL } from "./community.js";
 import { KIND_LABEL, NAME_LABEL } from "./integrationChip.js";
 import { IntegrationIcon } from "./integrationIcons.jsx";
 import FieldHint from "./FieldHint.jsx";
@@ -103,6 +104,12 @@ const BASE_STEPS = [
   // AI-learnings walk made onboarding long, and the work already lives in
   // Settings. The Settings "!" badge nudges the user to complete it there;
   // second-brain rules/learnings are viewed and added in the Settings panes.
+  // "Community" joined the wizard on the operator's 2026-09-12 request so every
+  // first-run user is offered the Discord once, in the place they are already
+  // looking, rather than only in a README they may never open. Kept to one
+  // decision and one action, for the same reason the team/docs/AI-history/
+  // telemetry steps above were removed: it offers, it never gates.
+  { key: "discord",  title: "Community" },
   { key: "summary",  title: "Launch" },
 ];
 
@@ -1107,6 +1114,28 @@ export default function Onboarding({ onComplete }) {
                 </div>
               )}
               <p className="ob-note">Everything here is also in Settings → Integrations, which additionally handles credentials and can test a live connection.</p>
+            </Stagger>
+          )}
+
+          {step.key === "discord" && (
+            <Stagger>
+              {/* States what is TRUE — the server exists and this opens it. No claim of
+                  a response time, nobody "waiting". Nothing here gates Continue. */}
+              <h2 className="ob-h2">There is a Discord <span className="ob-sub">(optional)</span></h2>
+              <p className="ob-sub">
+                Questions, bug reports and runs worth showing go there, alongside the people already
+                running no_human. Opening it is the whole step — nothing is sent from this screen and
+                nothing is read from Discord.
+              </p>
+              <div className="ob-row">
+                <a className="ob-btn-ghost" href={DISCORD_INVITE_URL}
+                   target="_blank" rel="noreferrer noopener">Open the invite ↗</a>
+                <span className="ob-note">{DISCORD_INVITE_URL}</span>
+              </div>
+              <p className="ob-note">
+                The link opens in your browser, not inside no_human. Skipping changes nothing: Continue
+                goes to Launch either way, and the invite stays in the README.
+              </p>
             </Stagger>
           )}
 

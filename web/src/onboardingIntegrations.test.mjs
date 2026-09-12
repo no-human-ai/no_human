@@ -28,7 +28,10 @@ const CARD = (() => {
 const STEP = (() => {
   const start = src.indexOf('{step.key === "integrations" &&');
   assert.ok(start > 0, "the integrations step must exist");
-  const end = src.indexOf('{step.key === "summary" &&', start);
+  // The Community step joined the wizard (2026-09-12) directly after this one,
+  // so the end marker moved to it — bounding on "summary" would now swallow
+  // the Discord step's markup into this step's assertions.
+  const end = src.indexOf('{step.key === "discord" &&', start);
   assert.ok(end > start, "could not bound the integrations step");
   return src.slice(start, end);
 })();
