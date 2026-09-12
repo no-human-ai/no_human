@@ -253,10 +253,91 @@ _ACTIVE_FLAG = "--active"
 _UNRESOLVABLE_CHARS = ("$", "`")
 
 
+#: Windows resolves a bare command name against PATHEXT, so `gh`, `gh.exe`,
+#: `gh.cmd` and `gh.ps1` are all "gh" to the person typing it -- and `.cmd`
+#: /`.ps1` are what scoop and npm-style shims actually install. Matching only
+#: `.exe` would close the spelling a reviewer thinks of first and leave the
+#: one users have.
+_PATHEXT_SUFFIXES = (".exe", ".bat", ".cmd", ".com", ".ps1")
+
+#: The same set as a regex fragment. Case-folded because the Windows
+#: filesystem is: `gh.EXE` and `gh.exe` are one file there.
+_PATHEXT_GROUP = r"\.(?:[Ee][Xx][Ee]|[Bb][Aa][Tt]|[Cc][Mm][Dd]|[Cc][Oo][Mm]|[Pp][Ss]1)"
+
+
+def _pathext_alt(*stems: str) -> str:
+    """Regex fragment matching `stems` in every spelling Windows resolves.
+
+    For the raw-text matchers in `guard.py` that name a binary directly and
+    so cannot go through `_basename`. ONE definition, because the first
+    version of this fix spelled `(?:\\.[Ee][Xx][Ee])?` inline at four sites,
+    missed four more, and shipped a body claiming the class was closed.
+
+    The two halves get DIFFERENT case treatment, and the asymmetry is the
+    point:
+
+    * the BARE stem stays case-sensitive, because on POSIX `RM` is a
+      genuinely different file from `rm` and folding it would be a text
+      match dressed up as a structural one (`RM -rf /` is allowed on main
+      and stays allowed here -- a separate question, not this one);
+    * a SUFFIXED stem folds, because the suffix is meaningful only on
+      Windows and the filesystem is case-insensitive there. Folding the
+      suffix while leaving the stem alone is the half-measure this replaces:
+      it denied `gh.EXE pr merge` and allowed `GH.EXE pr merge`, on the same
+      argument, in the same expression.
+
+    Mirrors `_basename`, which applies the identical rule structurally.
+
+    Several stems build one alternation, for the matchers that accept more
+    than one binary; the caller supplies its own `\\b` and context.
+
+    CONSUMERS WORTH NAMING, because their shape hides what they do:
+
+    * `guard._looks_like_git_push` is a PRE-FILTER, not a verdict: it decides
+      whether a quoted payload is recursed into at all, so a spelling it
+      misses is never analysed. It was the one raw-text `git` this sweep left
+      bare, and the miss read as `sh -c "GIT.CMD push origin main"` allowed
+      while its lowercase twin was refused. Widening a pre-filter can only
+      widen what is analysed, never allow more.
+    * `guard._FORGE_MENTION` is the same kind of pre-filter for `gh`/`glab`.
+    """
+    return r"(?:{})".format("|".join(
+        r"{stem}|(?i:{stem}){suffix}".format(stem=s, suffix=_PATHEXT_GROUP)
+        for s in stems))
+
+
 def _basename(path: str) -> str:
-    name = os.path.basename(path)
-    if name.lower().endswith(".exe"):
-        name = name[:-4]
+    r"""The command name `path` spells, with any PATHEXT suffix removed.
+
+    `PurePosixPath(...).name`, NOT `os.path.basename`, for two reasons:
+
+    * Trailing separators. `os.path.basename("/usr/bin/gh/")` is `""`, and
+      `""` is in no guarded set, so "could not read a name" collapsed into
+      "not a guarded binary" and the command was ALLOWED -- measured, as a
+      DENY->ALLOW against the spelling `/usr/bin/gh/ pr merge 7`, which a
+      shell runs exactly as `gh pr merge 7`.
+    * Host independence. `os.path.basename` splits on `\` on Windows and not
+      on POSIX, so the same string would get different verdicts on different
+      machines while CI runs POSIX only. `PurePosixPath` reads `/` on every
+      host. Backslash is therefore NOT a separator here, exactly as before
+      this change; the Windows-separator class is issue #105's, where the
+      alternate reading normalises `\` to `/` before resolution and so
+      before this function ever sees one.
+
+    A PATHEXT suffix folds its STEM as well as itself: that suffix is only
+    meaningful on Windows, where the filesystem is case-insensitive, so
+    `GH.EXE` and `gh.exe` are one file and must reach one verdict. A BARE
+    stem is left exactly as written -- on POSIX `RM` is a genuinely
+    different file from `rm`, and folding it would be a text match dressed
+    up as a structural one. `RM -rf /` is therefore still allowed here, as
+    it is on main; closing that is a separate question about POSIX case,
+    not about PATHEXT.
+    """
+    name = PurePosixPath(path).name
+    lowered = name.lower()
+    for suffix in _PATHEXT_SUFFIXES:
+        if lowered.endswith(suffix):
+            return lowered[: -len(suffix)]
     return name
 
 
