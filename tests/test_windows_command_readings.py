@@ -1,0 +1,201 @@
+"""A Windows-spelled command must reach the same verdict as its POSIX twin.
+
+Issue #105. Both command guards tokenise with POSIX `shlex`, where `\\` is an
+escape character, so every separator in `C:\\Users\\me\\.venv\\Scripts\\pip.exe`
+is deleted before resolution is attempted. The venv guard's one allow-and-log
+fallback then stops being an edge case and becomes the default, and the silent
+form logs nothing at all -- a guard that cannot fire looks exactly like a guard
+that passed.
+
+WHAT THESE TESTS SIMULATE, AND WHAT THEY DO NOT. They flip the `_IS_WINDOWS`
+module constants (the seam `fs_roots.is_windows_filesystem_root` already uses)
+and hand the guards backslash-spelled paths, on a POSIX filesystem. That
+covers the lexing and the resolution logic, which is where the defect lives.
+It does NOT cover Windows filesystem semantics -- drive letters, case folding,
+8.3 names -- and a green run here is not a substitute for running the suite on
+a Windows host.
+
+The design under test is deliberately shell-agnostic. Whether the coder's
+Bash tool runs Git Bash (where `\\` really is an escape and POSIX lexing is
+correct) or cmd/PowerShell (where it is not) is not settled, so the guards
+check BOTH readings and deny if either denies. Under Git Bash the extra
+reading only adds denials for strings Git Bash could not have run; under
+cmd/PowerShell it closes the fail-open.
+"""
+
+from __future__ import annotations
+
+import os
+import stat
+
+import pytest
+
+from no_human.agent import guard, venv_install_guard
+
+
+def _make_venv_bin(venv_dir):
+    bindir = venv_dir / "bin"
+    bindir.mkdir(parents=True)
+    (venv_dir / "pyvenv.cfg").write_text("home = /usr/bin\n")
+    for name in ("python", "python3", "pip", "pip3", "uv"):
+        path = bindir / name
+        path.write_text("#!/bin/sh\nexit 0\n")
+        st = os.stat(path)
+        os.chmod(path, st.st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+
+
+@pytest.fixture
+def primary(tmp_path, monkeypatch):
+    """The shared checkout whose venv every session must leave alone."""
+    root = tmp_path / "primary"
+    (root / "src" / "no_human").mkdir(parents=True)
+    (root / "src" / "no_human" / "__init__.py").write_text("")
+    _make_venv_bin(root / ".venv")
+    monkeypatch.setattr(guard, "_primary_checkout", lambda: root)
+    return root
+
+
+@pytest.fixture
+def worktree(tmp_path):
+    """Where the session actually runs. Installing into ITS venv is fine;
+    reaching back into the primary's is what these cases are about."""
+    root = tmp_path / "worktree"
+    _make_venv_bin(root / ".venv")
+    return root
+
+
+@pytest.fixture
+def on_windows(monkeypatch):
+    monkeypatch.setattr(guard, "_IS_WINDOWS", True, raising=False)
+    monkeypatch.setattr(venv_install_guard, "_IS_WINDOWS", True, raising=False)
+
+
+@pytest.fixture
+def on_posix(monkeypatch):
+    monkeypatch.setattr(guard, "_IS_WINDOWS", False, raising=False)
+    monkeypatch.setattr(venv_install_guard, "_IS_WINDOWS", False, raising=False)
+
+
+def _backslashed(text: str) -> str:
+    return text.replace("/", "\\")
+
+
+def _env_pointing_at(venv_dir) -> dict[str, str]:
+    """A PATH constructed, never inherited.
+
+    `tests/test_guard.py::test_installs_into_the_worktree_own_venv_are_allowed`
+    records why: passing no `env` lets `os.environ` decide, and the verdict
+    then depends on the PATH of whatever process happens to run the suite.
+    """
+    return {"PATH": str(venv_dir / "bin")}
+
+
+# The POSIX spellings below are lifted from the cases
+# `tests/test_guard.py::test_installing_into_the_primary_venv_is_refused`
+# already refuses, so the comparison is against a verdict this repo has
+# already committed to -- not against one invented here.
+BYPASS_TEMPLATES = [
+    "{p}/.venv/bin/pip install foo",
+    "VIRTUAL_ENV={p}/.venv pip install -e .",
+    "source {p}/.venv/bin/activate && uv pip install -e .",
+    "uv pip install --python {p}/.venv/bin/python -e .",
+    "cd {p} && uv sync",
+    'sh -c "{p}/.venv/bin/pip install foo && echo ok"',
+    "env -i {p}/.venv/bin/pip install foo",
+    "timeout 300 {p}/.venv/bin/pip install foo",
+]
+
+
+@pytest.mark.parametrize("template", BYPASS_TEMPLATES)
+def test_the_posix_spelling_is_refused(primary, worktree, template, on_posix):
+    """The control. Without it, a guard that denied everything would pass."""
+    cmd = template.format(p=primary)
+    assert venv_install_guard.denial_reason(
+        cmd, cwd=str(worktree), env=_env_pointing_at(primary / ".venv"),
+    ) is not None, cmd
+
+
+@pytest.mark.parametrize("template", BYPASS_TEMPLATES)
+def test_the_windows_spelling_is_refused_too(primary, worktree, template, on_windows):
+    cmd = _backslashed(template.format(p=primary))
+    assert venv_install_guard.denial_reason(
+        cmd, cwd=str(worktree), env=_env_pointing_at(primary / ".venv"),
+    ) is not None, cmd
+
+
+@pytest.mark.parametrize("template", BYPASS_TEMPLATES)
+def test_the_whole_guard_refuses_the_windows_spelling(primary, worktree, template, on_windows):
+    """Same cases through `guard.evaluate`, the PreToolUse entry point."""
+    cmd = _backslashed(template.format(p=primary))
+    decision = guard.evaluate(
+        "Bash", {"command": cmd},
+        forbidden_paths=[], never_push_to=[], cwd=str(worktree),
+        env=_env_pointing_at(primary / ".venv"),
+    )
+    assert not decision.allow, cmd
+
+
+def test_a_windows_spelling_is_still_allowed_when_the_posix_twin_is(worktree, on_windows):
+    """The negative control for the whole design.
+
+    Denying on the alternate reading must not turn the guard into one that
+    denies every backslash. An install into the session's OWN worktree venv
+    is the ordinary case and stays allowed in both spellings.
+    """
+    env = _env_pointing_at(worktree / ".venv")
+    allowed = f"{worktree}/.venv/bin/pip install foo"
+    assert venv_install_guard.denial_reason(allowed, cwd=str(worktree), env=env) is None
+    assert venv_install_guard.denial_reason(
+        _backslashed(allowed), cwd=str(worktree), env=env
+    ) is None
+
+
+def test_posix_hosts_keep_posix_escape_semantics(on_posix):
+    """`\\ ` is a real escape on POSIX and must stay one.
+
+    This is what stops the fix from being "treat backslash as literal
+    everywhere", which would change how every POSIX command is tokenised.
+    """
+    assert venv_install_guard._lex(r"pip\ install foo") == ["pip install", "foo"]
+
+
+def test_the_original_reading_is_still_checked_on_windows(tmp_path, monkeypatch, on_windows):
+    """Both readings, not just the normalised one.
+
+    `C:\\Program Files\\...` is the everyday Windows path with a space in it.
+    Escaped POSIX-style, `/tmp/my\\ proj/.venv/bin/pip` is ONE token and
+    resolves; normalising the backslash to `/` splits it into two and it
+    resolves to nothing. So a fix that only read the normalised spelling
+    would allow exactly the install this guard exists to refuse -- and would
+    do it on the path shape Windows users have.
+    """
+    spaced = tmp_path / "my proj"
+    (spaced / "src" / "no_human").mkdir(parents=True)
+    (spaced / "src" / "no_human" / "__init__.py").write_text("")
+    _make_venv_bin(spaced / ".venv")
+    monkeypatch.setattr(guard, "_primary_checkout", lambda: spaced)
+
+    session = tmp_path / "worktree"
+    _make_venv_bin(session / ".venv")
+
+    escaped = str(spaced).replace(" ", r"\ ")
+    cmd = f"{escaped}/.venv/bin/pip install foo"
+    assert venv_install_guard.denial_reason(
+        cmd, cwd=str(session), env=_env_pointing_at(spaced / ".venv"),
+    ) is not None, cmd
+
+
+def test_a_posix_host_does_not_gain_the_windows_reading(primary, worktree, on_posix):
+    """The platform gate has to be load-bearing, not decoration.
+
+    On a POSIX host `C:\\Users\\...\\pip.exe install foo` is not an install
+    command -- `\\` is an escape, the token is nonsense, and nothing runs. The
+    guard must keep allowing it. Without this test the whole `is_windows`
+    parameter could be deleted and the suite would stay green, which is
+    exactly what a mutation run showed before it was added: 325 tests passed
+    with the alternate reading applied unconditionally.
+    """
+    windows_spelled = _backslashed(f"{primary}/.venv/bin/pip install foo")
+    assert venv_install_guard.denial_reason(
+        windows_spelled, cwd=str(worktree), env=_env_pointing_at(primary / ".venv"),
+    ) is None

@@ -161,6 +161,11 @@ import shutil
 from pathlib import Path, PurePosixPath
 from typing import Mapping
 
+from . import win_readings
+
+#: Flipped by tests; see `win_readings` for why both spellings are read.
+_IS_WINDOWS = win_readings._IS_WINDOWS
+
 _LOG = logging.getLogger(__name__)
 
 #: Shell interpreters whose ``-c``/``-lc`` argument is a script to execute —
@@ -717,7 +722,24 @@ def denial_reason(cmd: str, *, cwd: str | None, env: Mapping[str, str] | None = 
     Structural, not lexical: this resolves canonical executable/target
     paths and compares them to `cwd` (the session's worktree). No text
     pattern is matched against `cmd` to make the allow/deny decision.
+
+    On Windows a native path reaches POSIX `shlex` as an escape sequence and
+    is destroyed before resolution is attempted (issue #105), so every
+    spelling `win_readings.readings` offers is resolved and the FIRST denial
+    wins. On POSIX, and for any command with no backslash in it, that is
+    exactly one reading and this costs a list construction.
     """
+    for reading in win_readings.readings(cmd, is_windows=_IS_WINDOWS):
+        reason = _denial_reason_for_reading(reading, cwd=cwd, env=env)
+        if reason is not None:
+            return reason
+    return None
+
+
+def _denial_reason_for_reading(
+    cmd: str, *, cwd: str | None, env: Mapping[str, str] | None = None
+) -> str | None:
+    """`denial_reason` for ONE spelling of the command. See its docstring."""
     if env is None:
         env = os.environ
     if not cmd or not cmd.strip():
