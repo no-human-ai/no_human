@@ -109,13 +109,27 @@ def test_the_check_can_actually_fail() -> None:
     assert carries_cr(b"\x00\r\r\r binary-ish") is False, "NUL means binary"
 
 
+#: The exact shape `git ls-files --eol` emits: the three eol/attr fields are
+#: SPACE-padded and only the path is tab-separated. Written as a builder rather
+#: than as literals because the first version of these fixtures used tabs
+#: throughout, which made `fields[0]` already equal to `"i/lf"` and turned the
+#: parser's `.split()[0]` into a no-op that no mutation could kill.
+def _real_eol_record(index: str, worktree: str, path: str) -> str:
+    return "i/{:<6}w/{:<6}attr/{:<17}{}{}".format(
+        index, worktree, "", chr(9), path)
+
+
 @pytest.mark.parametrize(
     ("line", "expected"),
     [
-        ("i/lf\tw/lf\tattr/\t\tsrc/a.py", ("src/a.py", "lf")),
-        ("i/crlf\tw/crlf\tattr/\t\ttests/b.py", ("tests/b.py", "crlf")),
-        ("i/mixed\tw/crlf\tattr/\t\tc.txt", ("c.txt", "mixed")),
-        ("i/-text\tw/-text\tattr/\t\td.png", ("d.png", "-text")),
+        (_real_eol_record("lf", "lf", "src/a.py"), ("src/a.py", "lf")),
+        (_real_eol_record("crlf", "crlf", "tests/b.py"), ("tests/b.py", "crlf")),
+        (_real_eol_record("mixed", "crlf", "c.txt"), ("c.txt", "mixed")),
+        (_real_eol_record("-text", "-text", "d.png"), ("d.png", "-text")),
+        # The working-tree half must never reach the verdict: this is the
+        # autocrlf=true shape, LF in the index and CRLF on disk, and reading
+        # the wrong half is what reported 1535 offenders on a clean checkout.
+        (_real_eol_record("lf", "crlf", "e.py"), ("e.py", "lf")),
         ("", None),
         ("   ", None),
         ("nonsense", None),
@@ -154,3 +168,30 @@ def test_the_guard_reads_the_index_and_not_the_working_tree():
         "git ls-files --eol no longer reports the index first; the parser "
         "assumes field order"
     )
+
+
+def test_the_fixtures_match_what_git_actually_emits():
+    """Pin the fixtures to reality, not to my memory of it.
+
+    The parser test above is only worth having if it is driven on the shape
+    git really produces. The first version of those fixtures was tab-separated
+    throughout, which git never emits, and the mutation the test exists to
+    catch survived it. So take a real record from this repository and assert
+    the builder reproduces its structure exactly.
+    """
+    out = subprocess.run(
+        ["git", "-C", str(REPO), "ls-files", "--eol"],
+        capture_output=True, text=True, check=True).stdout
+    real = next(ln for ln in out.splitlines() if ln.strip())
+
+    head, _, path = real.partition(chr(9))
+    assert path, "git no longer tab-separates the path from the eol fields"
+    assert " " in head.strip(), (
+        "git no longer SPACE-pads the eol fields; the fixtures in this file "
+        "assume it, and a tab-separated fixture makes the parser's .split() "
+        "unkillable by mutation"
+    )
+    # And the builder must produce something the parser reads identically.
+    built = _real_eol_record("lf", "lf", "some/path.py")
+    assert parse_eol_line(built) == ("some/path.py", "lf")
+    assert parse_eol_line(real) is not None
