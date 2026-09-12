@@ -1677,16 +1677,21 @@ def task_show(task_id):
                         f"[dim]({slot_wait.STALE_POOL_NOTE})[/]")
                 else:
                     console.print(f"[blue]{waits[-1]['text']}[/]")
-            console.print(f"title: {t.title}")
+            # rich parses `[main,master]` as a style tag and DELETES it, while
+            # `[]` on the same line survives — so this surface was dropping
+            # operator text with no mark. See tests/test_task_show_preserves_brackets.py
+            console.print(f"title: {t.title}", markup=False, emoji=False)
             if t.description:
-                console.print(f"description: {t.description}")
+                console.print(f"description: {t.description}",
+                               markup=False, emoji=False)
             if t.acceptance_criteria:
                 console.print("acceptance criteria:")
                 for c in t.acceptance_criteria:
-                    console.print(f"  - {c}")
-            console.print(f"repo: {t.repo_path}")
+                    console.print(f"  - {c}", markup=False, emoji=False)
+            console.print(f"repo: {t.repo_path}", markup=False, emoji=False)
             if t.blocker:
-                console.print(f"[red]blocker:[/] {t.blocker}")
+                # escape(), not markup=False: the [red] label must still render.
+                console.print(f"[red]blocker:[/] {escape(str(t.blocker))}", emoji=False)
             lat = (t.blocker or {}).get("escalation_latency") if t.blocker else None
             if lat and t.status is TaskStatus.ESCALATED:
                 console.print(

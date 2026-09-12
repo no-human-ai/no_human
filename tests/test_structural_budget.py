@@ -1346,7 +1346,12 @@ FROZEN_FILE_LINES = {
     # `nh approve --ready`'s one-line summary no longer silently drops the
     # only signal telling the operator a verifier never answered. Measured
     # via `wc -l src/no_human/cli/commands.py`.
-    "cli/commands.py": 8666,
+    # 8666 -> 8671 (+5): `task_show` renders operator text (title,
+    # description, acceptance criteria, repo, blocker) literally instead of
+    # through the markup parser, which was silently deleting bracketed
+    # substrings like `never_push_to=[main,master]` with no mark. Measured
+    # via `wc -l src/no_human/cli/commands.py`.
+    "cli/commands.py": 8671,
     # api/app.py 5338 -> 5346 (+8): same budget-floor warning surfaced by
     # `send-back`/`reply` as `budget_warning` in the JSON response. Net cost
     # was trimmed from a naive +14 to +8 by computing `Bounds.from_config(...)`
