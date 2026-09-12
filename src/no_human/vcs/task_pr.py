@@ -28,8 +28,13 @@ Rungs, in priority order, first non-empty wins:
 ``None`` and ``""`` both collapse to "absent" everywhere in here — never
 treated as different facts.
 
-No writes, no network calls. ``store``/``task`` are duck-typed (only
-``store.latest_attempt_pr_url`` and ``task.id``/``task.context`` are used) so
+``resolve_task_pr`` itself does no writes and no network calls. This module
+also has a second job — ``resolve_head_sha``/``head_shas_for`` below, which DO
+shell out to `git` (and, for a task with an "origin" remote, a live
+`git ls-remote` — never a `git fetch`) to answer "what is this branch's head
+*right now*". ``store``/``task`` are
+duck-typed (only ``store.latest_attempt_pr_url`` and
+``task.id``/``task.context``/``task.repo_path``/``task.status`` are used) so
 this module does not import ``core``.
 """
 
@@ -426,9 +431,27 @@ async def resolve_head_sha(store: Any, task: Any, *, git_cfg: dict | None = None
 
     ``""`` is never a head: every caller (`api.models.merge_ready_for` via
     `merge_policy_verdict_for`) must read it as "not fresh", the same way an
-    absent commit does. This is the ONE place that resolves it — extracted
-    from what `cli.commands._approve_find_ready` did inline, so `--ready`
-    and every human-facing surface derive the same fact the same way.
+    absent commit does. This is the resolver every merge-readiness caller
+    goes through — `cli.commands._approve_find_ready`, `status`, and the
+    board/subtask API routes all call it (directly or via `head_shas_for`)
+    instead of resolving a head sha inline, so they derive the same fact
+    the same way. (Unrelated resolvers elsewhere — e.g. the diff/PR-link
+    helpers in `cli.commands`/`api.app` — answer "what changed"/"where does
+    the PR point", not "is this branch's head fresh", and are out of scope
+    here.)
+
+    When `fetch` is true and the repo has an "origin" remote configured,
+    the sha comes from a live `git ls-remote origin <branch>`
+    (`GitRepo.ls_remote_exact`) — never a local ref, so a push made from a
+    different clone/worktree than `task.repo_path` is seen immediately, and
+    an unreachable/erroring/timed-out remote yields ``""`` (fail CLOSED —
+    "cannot prove fresh" reads as "not ready") instead of a stale local sha.
+    `GitRepo.fetch()` is deliberately not used here: it swallows failures
+    silently and updates local tracking refs that `resolve_commitish` would
+    then have to be trusted to prefer, which is exactly the ladder bug this
+    resolver must not have. With no "origin" configured, or when `fetch` is
+    false, resolution falls back to the LOCAL branch ref — unchanged from
+    before, so a task whose repo has no remote never git-fetches.
     """
     from .git import GitError, GitRepo
 
@@ -446,8 +469,8 @@ async def resolve_head_sha(store: Any, task: Any, *, git_cfg: dict | None = None
                 identity_email=cfg.get("agent_identity_email", "no-human@acme.com"),
                 never_push_to=cfg.get("never_push_to") or ["main", "master", "release/*"],
             )
-            if fetch:
-                repo.fetch()
+            if fetch and repo.remote_url("origin"):
+                return repo.ls_remote_exact(f"refs/heads/{branch}") or ""
             ref = repo.resolve_commitish(branch)
             return repo._run("rev-parse", ref) if ref else ""
         except (GitError, OSError):
@@ -458,18 +481,26 @@ async def resolve_head_sha(store: Any, task: Any, *, git_cfg: dict | None = None
 
 async def head_shas_for(store: Any, tasks: list, *, git_cfg: dict | None = None,
                          fetch: bool = True) -> dict[str, str]:
-    """`{task.id: resolve_head_sha(...)}` for every task that could possibly
-    have a fresh merge-policy verdict — skips any task with no `repo_path`
-    or no `context["merge_policy"]` dict, which keeps an ordinary board
-    tick's git cost at zero for the common case (most tasks never reach
-    AWAITING_APPROVAL with a verdict at all). Resolved concurrently
-    (`resolve_head_sha` itself offloads the git subprocess calls to a
-    thread), so a slow `fetch` on one task's repo does not serialize behind
-    another's.
+    """`{task.id: resolve_head_sha(...)}` for every task that could actually
+    show a merge-ready verdict anywhere — the `MERGE-READY` chip only ever
+    renders for a task sitting in `awaiting_approval` (`core.lanes`'s
+    `LANE_STATUSES`), so a task in any other status is skipped here
+    regardless of whether it carries a `merge_policy` dict, along with any
+    task with no `repo_path` or no `context["merge_policy"]` dict at all.
+    This is what keeps an ordinary board tick's git cost bounded by the
+    number of tasks actually awaiting approval — not by how many tasks in
+    the whole store have ever had a verdict stamped, which on a long-lived
+    fleet can be nearly all of them. Resolved concurrently (`resolve_head_sha`
+    itself offloads the git subprocess calls to a thread), so a slow `fetch`
+    on one task's repo does not serialize behind another's.
+
+    Compares `status` against the plain string `"awaiting_approval"`
+    (`TaskStatus` is a `str` Enum, so this needs no import of `core`).
     """
     candidates = [
         t for t in tasks
         if getattr(t, "repo_path", None)
+        and getattr(t, "status", None) == "awaiting_approval"
         and isinstance((t.context or {}).get("merge_policy"), dict)
     ]
     heads = await asyncio.gather(*(

@@ -281,10 +281,17 @@ async def _pr_task(store: Store, *, title: str, repo_path) -> Task:
     """A task with the `pr_watch`/`pr_branch` context `resolve_task_pr`
     needs to find `feature` as this task's PR branch — same shape as
     `tests/test_approve_ready_cli.py`'s `_ready_task`, minus the
-    `merge_policy` verdict (callers stamp their own)."""
+    `merge_policy` verdict (callers stamp their own).
+
+    Stamped AWAITING_APPROVAL: `head_shas_for` (the resolver behind
+    `merge_ready`) only git-resolves heads for tasks actually sitting in
+    that status — the MERGE-READY chip cannot render for any other one
+    (`core.lanes.LANE_STATUSES`) — so a task left at the default `PENDING`
+    would read `merge_ready: None` regardless of any verdict stamped below."""
     t = Task.new(title, repo_path=str(repo_path))
     t.context = {"pr_watch": "https://example.invalid/pr/1", "pr_branch": "feature"}
     await store.create_task(t)
+    await store.set_status(t, TaskStatus.AWAITING_APPROVAL, validate=False)
     return t
 
 

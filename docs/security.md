@@ -165,6 +165,14 @@ named here.
   `git fetch origin` (`vcs/git.py:GitRepo._have_remote_commit:1020`, `:GitRepo.fetch:1354`),
   while a task waits on CI or review.
   These read; they send only the identifiers of a PR you just created.
+- **Merge-ready freshness checks** — `nh approve --ready`, `nh status`, and the
+  board/subtask API routes each resolve a task's branch head before deciding
+  whether a stamped verdict still applies to it. When the task's repo has an
+  "origin" remote, this is a `git ls-remote origin <branch>` (`GitRepo.ls_remote_exact`
+  in `vcs/git.py`, called from `resolve_head_sha` in `vcs/task_pr.py`) — a
+  read, run at the time one of those three surfaces is queried, not at
+  delivery time. With no "origin" configured, resolution stays local and
+  sends nothing.
 - **`nh merge-stack run` calls `gh pr merge`** against your git host
   (`cli/commands.py:merge_stack_run:2940`). This is *your* command, not the agent's — an agent
   session's Bash is denied it for the spellings the rule models

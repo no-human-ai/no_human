@@ -716,16 +716,6 @@ def _max_pr_conflict_rounds() -> int:
         return 3
 
 
-def _git_cfg_or_empty() -> dict:
-    """The `git:` config block, defensively — same degrade-to-`{}` shape as
-    `_max_pr_conflict_rounds`, so a missing/malformed config never 500s
-    every board endpoint. Fed into `head_shas_for` so the board's head
-    resolution uses the same identity/never-push settings `--ready` does."""
-    cfg = getattr(app.state, "config", None)
-    git_cfg = cfg.data.get("git") if cfg is not None else None
-    return git_cfg if isinstance(git_cfg, dict) else {}
-
-
 async def _board_tasks(
     store: Store, scheduler=None, *, limit: int | None = None, offset: int | None = None,
 ) -> list[TaskSummaryOut]:
@@ -733,18 +723,8 @@ async def _board_tasks(
     route — every other caller here (approve/cancel/pause/..., `/ws`) needs
     the full board and calls this with the defaults, unchanged."""
     tasks = await store.list_tasks(limit=limit, offset=offset)
-    # B2 #16: ONE grouped query instead of an N+1 per board tick per socket.
-    by_task = await store.attempts_by_task()
-    # `fetch=True`, matching `status`/`--ready` exactly: `head_shas_for`
-    # already restricts the git calls to tasks that carry a stamped
-    # `merge_policy` verdict (see its docstring) — an ordinary board tick's
-    # git cost stays at zero for the common case. Skipping the fetch here
-    # would let this surface read a LOCAL ref that lags the remote tip
-    # whenever the push that produced the current head happened from a
-    # different worktree/clone than `task.repo_path`, so the chip could
-    # disagree with `nh status`/`nh approve --ready` on the very tasks this
-    # fix targets. One fetch policy, everywhere, is what keeps them agreeing.
-    heads = await head_shas_for(store, tasks, git_cfg=_git_cfg_or_empty(), fetch=True)
+    # B2 #16/`head_shas_for`: one grouped attempts query, one bounded head fetch — no N+1.
+    by_task, heads = await asyncio.gather(store.attempts_by_task(), head_shas_for(store, tasks, fetch=True))
     # SCRUM-15: `scheduler.inflight` returns a fresh set() copy per call — snapshot
     # once so every card in this response is judged against the same instant.
     inflight = scheduler.inflight if scheduler is not None else set()
@@ -753,8 +733,7 @@ async def _board_tasks(
         attempts = by_task.get(task.id, [])
         summary = TaskSummaryOut.from_task(
             task, _latest_pr_url(attempts), attempts=attempts,
-            max_pr_conflict_rounds=_max_pr_conflict_rounds(),
-            head_sha=heads.get(task.id, ""),
+            max_pr_conflict_rounds=_max_pr_conflict_rounds(), head_sha=heads.get(task.id, ""),
         )
         if scheduler is not None:
             summary.claimed = task.id in inflight
@@ -1507,16 +1486,13 @@ async def get_attempt_details(
 async def list_subtasks(task_id: str, request: Request) -> list[TaskSummaryOut]:
     store = _store(request)
     subs = await store.list_subtasks(task_id)
-    # Same fetch policy as `_board_tasks` — see there for why it must match
-    # `status`/`--ready` exactly.
-    heads = await head_shas_for(store, subs, git_cfg=_git_cfg_or_empty(), fetch=True)
+    heads = await head_shas_for(store, subs, fetch=True)  # see `_board_tasks`
     out = []
     for t in subs:
         attempts = await store.list_attempts(t.id)
         out.append(TaskSummaryOut.from_task(
             t, _latest_pr_url(attempts), attempts=attempts,
-            max_pr_conflict_rounds=_max_pr_conflict_rounds(),
-            head_sha=heads.get(t.id, "")))
+            max_pr_conflict_rounds=_max_pr_conflict_rounds(), head_sha=heads.get(t.id, "")))
     return out
 
 
