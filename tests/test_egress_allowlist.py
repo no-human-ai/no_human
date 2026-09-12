@@ -823,6 +823,17 @@ ALLOWLIST: dict[str, dict[str, Allowed]] = {
             "whatever the repo's test command / pytest runs",
             _ON + "the bugfix repro gate runs the repo's own tests"),
     },
+    "testing/citation_drift.py": {
+        "exec:<dynamic>": Allowed(
+            "the target repo's own scripts/reanchor_citations.py --apply — "
+            "reads/rewrites doc files the repo under review already ships, "
+            "nothing off this machine",
+            _ON + "fires only when the repo under review ships BOTH halves "
+                  "of the convention (scripts/reanchor_citations.py and "
+                  "tests/test_readme_claims.py); the citation-drift "
+                  "preflight runs before review on every bugfix/feature "
+                  "attempt against a repo that does"),
+    },
     # The same SHAPE as the two above — a tool the repo under review configures,
     # run one-shot — but not the same destination, so it is spelled out rather
     # than waved through. The collector runs exactly one of `pyright`, `mypy` or

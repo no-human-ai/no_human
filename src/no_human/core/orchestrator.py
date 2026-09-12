@@ -106,7 +106,7 @@ from ..review.verifiers import (
     summary_line as verifiers_summary_line,
     to_checklist_item as verifier_to_checklist_item,
 )
-from ..testing import ownership, runner, structural_budget, ui_evidence
+from ..testing import citation_drift, ownership, runner, structural_budget, ui_evidence
 from ..testing.repro_gate import MANIFEST as REPRO_MANIFEST
 from ..testing.repro_gate import (
     declared_test_files, has_persisted_manifest, persist_manifest,
@@ -350,6 +350,38 @@ def structural_budget_send_back_message(paths: list[str], failure_text: str) -> 
         "file, or any other frozen entry your diff did not itself change — "
         "widening the budget for anything you did not change, or editing "
         "the guard's assertions, is tampering and is not an option."
+    )
+
+
+def citation_drift_send_back_message(failures: list[str], detail: str) -> str:
+    """The instruction for the ONE bounded round bought when this attempt's
+    own `scripts/reanchor_citations.py --apply` could not mechanically
+    resolve every drifted citation
+    (`Orchestrator._citation_drift_preflight`) — either it named a citation
+    it will not guess at (occurs zero or more than once in its doc, or in
+    `tests/test_readme_claims.py`'s own `CITATION_TABLE`), or the run itself
+    was indeterminate (a timeout, a crash with no verdict).
+
+    Module-level and pure, same idiom as `structural_budget_send_back_message`:
+    it embeds the script's OWN stdout/stderr (already naming the exact doc
+    and raw citation text) so the coder never has to re-derive it, and it is
+    explicit that hand-editing a citation's line number is not the fix —
+    only re-anchoring it to point at the code it actually means, or fixing
+    the code reference itself, is.
+    """
+    named = ", ".join(failures) if failures else "a citation"
+    return (
+        f"{citation_drift.SCRIPT_RELPATH} could not mechanically re-anchor "
+        f"{named} — it will not guess which occurrence to rewrite.\n{detail}\n"
+        "Fix the underlying citation: either point it at the file/symbol it "
+        "actually means (there is more than one match, or none, for the "
+        "text it currently cites), or make the cited text occur exactly "
+        "once where it is supposed to. Do not hand-edit a line number to "
+        "make this pass, and do not edit "
+        f"{citation_drift.SCRIPT_RELPATH} or {citation_drift.CHECKER_RELPATH} "
+        "itself — after your fix, "
+        f"`python {citation_drift.SCRIPT_RELPATH} --check` must report "
+        "VERDICT=OK for the doc(s) named above."
     )
 
 
@@ -1450,6 +1482,12 @@ _DECLARED_FILES_ROUND_TURNS = 10
 # fresh coder pass, so it gets the smallest budget of the three.
 _STRUCTURAL_BUDGET_ROUND_TURNS = 6
 
+# One bounded round to fix a doc citation `scripts/reanchor_citations.py`
+# named but would not guess at (occurs zero or more than once), or to react
+# to an indeterminate run of it — same budget class as declared-files: a
+# targeted content fix, not a fresh coder pass.
+_CITATION_DRIFT_ROUND_TURNS = 10
+
 # Appended to `repro_send_back_message(detail)` for the corrective round
 # ONLY — the diff under review is already committed and tamper-clean (or the
 # round would never have been reached); this round exists to supply the
@@ -1467,7 +1505,9 @@ _REPRO_ROUND_SCOPE_NOTE = (
 )
 
 
-def _repro_round_out_of_scope(paths: Iterable[str]) -> list[str]:
+def _repro_round_out_of_scope(
+    paths: Iterable[str], *, extra_ok: Iterable[str] = (),
+) -> list[str]:
     """Which of *paths* the corrective round's scope note forbids — sorted.
 
     Module-level and pure, like `repro_send_back_message`, so it is testable
@@ -1479,10 +1519,20 @@ def _repro_round_out_of_scope(paths: Iterable[str]) -> list[str]:
     the worktree root, so a `tests/`-prefix-only rule would reject a
     legitimate round in a flat repo. Everything else — notably `src/…` — is
     out of scope.
+
+    `extra_ok` ADDITIVELY admits exact paths beyond that fixed allowlist —
+    every existing caller passes nothing, so this is a no-op for the
+    repro-waived/declared-files/structural-budget rounds. It exists for the
+    citation-drift corrective round, whose one legitimate non-test edit is
+    the specific doc path(s) `scripts/reanchor_citations.py` itself already
+    named as needing a fix — never `docs/` as a whole, and never anything
+    the round's own diff did not touch (a path not in *paths* is never
+    "admitted"; it simply never appears here to begin with).
     """
+    ok = set(extra_ok)
     bad: list[str] = []
     for raw in paths:
-        if raw == REPRO_MANIFEST:
+        if raw == REPRO_MANIFEST or raw in ok:
             continue
         p = PurePosixPath(raw)
         if "tests" in p.parts or "test" in p.parts:
@@ -6888,6 +6938,25 @@ class Orchestrator:
         if budget_outcome is not None:
             return budget_outcome
 
+        # Citation-drift preflight — same shape as the two gates above:
+        # deterministic, zero LLM spend unless the target repo ships this
+        # convention at all, and it buys one bounded corrective round on
+        # THIS branch BEFORE review so a drifted citation never costs a
+        # whole extra attempt (`_citation_drift_preflight`).
+        try:
+            citation_outcome = await self._citation_drift_preflight(
+                task, repo, attempt_id=attempt_id,
+                branch=branch, attempt_n=attempt_n, tamper_before=tamper_before,
+            )
+        except CancelRequested as exc:
+            return await self._honor_cancel(
+                task, repo, branch, str(exc), attempt_id=attempt_id)
+        except (BudgetAbort, StuckAbort, ConvergenceAbort) as exc:
+            return await self._abort_during_repro_corrective(
+                task, repo, attempt_id, exc, branch=branch)
+        if citation_outcome is not None:
+            return citation_outcome
+
         # 🔴 0a / PR-021 — OPEN THE DRAFT PR BEFORE THE GATE RUNS.
         #
         # `_run_review` used to be the only thing between the diff and `_finalize`,
@@ -9337,6 +9406,142 @@ class Orchestrator:
             )
         return None
 
+    async def _citation_drift_preflight(
+        self, task: Task, repo: GitRepo, *, attempt_id: str,
+        branch: str | None, attempt_n: int, tamper_before: str,
+    ) -> "TaskOutcome | None":
+        """A citation is a `file.py:LINE[-LINE]` reference a doc makes into
+        code; any edit above that line drifts it. A coder's otherwise-correct
+        change can pass review with zero blocking findings and only fail
+        later, in TESTING's full-suite run of the target repo's own
+        `tests/test_readme_claims.py` — a whole attempt spent on drift the
+        coder could not have known about at review time (task 7a9e7998,
+        attempt 1, 2026-09-09: exactly this). This buys the target repo's
+        own `scripts/reanchor_citations.py` a shot at fixing it BEFORE
+        review, on the SAME branch — mechanically where it can, one bounded
+        corrective round where it cannot — so drift never costs a whole
+        attempt when it could have cost neither.
+
+        Placement note (deviates from the task's own "after review, after
+        tests" framing — recorded in the PR body): that slot cannot work.
+        `_run_review` itself runs the full test suite as reviewer evidence,
+        so citation drift already goes red before the reviewer's verdict
+        even exists. This runs here instead, alongside the structural-budget
+        preflight it is modeled on — strictly BEFORE review.
+
+        Zero LLM spend when the target repo does not ship this convention at
+        all (`citation_drift.should_run`, one `Path.is_file()` pair) — a repo
+        without both halves pays nothing. When it does, the script itself is
+        the one and only doc-set definition consulted
+        (`citation_drift`'s module docstring): this method never re-declares
+        which docs are "citation docs" — delegating wholly to the script and
+        its checker is what keeps that definition from ever having two
+        copies to drift apart from each other.
+
+        FAIL CLOSED throughout: `citation_drift.run_reanchor` reports
+        `Status.UNKNOWN` — treated exactly like `Status.UNFIXABLE` below,
+        i.e. blocking, never silently "clean" — for a subprocess timeout, an
+        `OSError`, or a run that exited without ever printing its own
+        `VERDICT=` marker (a crash mid-run, including a citation this
+        parser cannot even recognize the shape of).
+
+        Returns None when there is nothing to fix, when this attempt's own
+        auto-reanchor commit landed cleanly, or when a second pre-flight
+        fire on a re-entered attempt should fall straight through to review.
+        Returns the `TaskOutcome` that ends the attempt only when the
+        corrective round itself ends it (a commit refusal or a tamper fire)
+        — like its siblings, this gate never fails an attempt on its own
+        verdict; drift still red after the round is left to TESTING's own
+        run of the checker, which stays the backstop. Never consumes one of
+        the task's `max_attempts` — the fix (mechanical or corrective-round)
+        lands on THIS attempt's own branch, same as its siblings.
+        """
+        if not citation_drift.should_run(repo.path):
+            return None
+        checked = self.__dict__.setdefault("_citation_drift_checked", set())
+        if attempt_id in checked:
+            return None
+        checked.add(attempt_id)
+
+        before = self._worktree_state(repo)
+        outcome = await asyncio.to_thread(citation_drift.run_reanchor, repo.path)
+        if outcome.status in (citation_drift.Status.INAPPLICABLE,
+                               citation_drift.Status.CLEAN):
+            return None
+
+        if outcome.status is citation_drift.Status.UNKNOWN and repo.has_changes():
+            # An indeterminate run (no VERDICT marker — a crash, a timeout)
+            # may have left a PARTIAL, untrusted write on disk: the script's
+            # own `_apply_all` only writes once every rewrite in the batch
+            # has resolved in memory, but the write loop after that can
+            # still fail partway through. Never commit content this
+            # preflight cannot vouch for — discard it uncommitted so the
+            # corrective round below starts from the clean tree the attempt
+            # already committed, not a half-rewritten doc.
+            self._revert_worktree_writes(repo, before)
+        elif repo.has_changes():
+            # REANCHORED, or an UNFIXABLE run whose fixable subset still got
+            # written (the script's per-batch all-or-nothing write only
+            # withholds THIS drift's own doc/table pair, not every drift in
+            # the run) — commit that clean, mechanical rewrite now, under
+            # its own message, rather than letting it ride uncommitted into
+            # whatever happens next.
+            commit_msg = (
+                f"{self._commit_message(task)}\n\n"
+                f"citation drift: auto-re-anchored via "
+                f"{citation_drift.SCRIPT_RELPATH} --apply"
+            )
+            try:
+                commit = await asyncio.to_thread(
+                    commit_with_manifest_repair, repo, None, commit_msg)
+            except GitError as exc:
+                self._advisory(f"citation drift auto-fix: commit failed: {exc}")
+            else:
+                await self.store.update_attempt(attempt_id, commit_sha=commit.sha)
+                self.emit("commit", f"citation drift auto-fix: {commit.sha[:8]}",
+                          sha=commit.sha)
+
+        if outcome.status is citation_drift.Status.REANCHORED:
+            self.emit(
+                "citation_drift",
+                "drifted citation(s) auto-re-anchored before review",
+                status=outcome.status.value, docs=list(outcome.docs),
+            )
+            return None
+
+        # UNFIXABLE or UNKNOWN: the script named something it would not (or
+        # a crash meant it could not) resolve on its own. One bounded round
+        # — never a second, silent guess at which occurrence to rewrite —
+        # before this falls through to review.
+        self.emit(
+            "citation_drift",
+            f"citation drift not mechanically resolved ({outcome.status.value}): "
+            f"{outcome.detail[:500]}",
+            status=outcome.status.value, docs=list(outcome.docs),
+            failures=list(outcome.failures),
+        )
+        result = await self._repro_corrective_round(
+            task, repo, "", attempt_id=attempt_id, branch=branch,
+            attempt_n=attempt_n, tamper_before=tamper_before,
+            instruction=citation_drift_send_back_message(
+                list(outcome.failures), outcome.detail),
+            why="a doc citation drifted and could not be re-anchored "
+                "mechanically — one bounded round to fix it before review",
+            turns=_CITATION_DRIFT_ROUND_TURNS,
+            event_kind="citation_drift_corrective_round",
+            cause="citation_drift",
+            allow_paths=outcome.docs,
+        )
+        if result is not None:
+            return result
+        again = await asyncio.to_thread(citation_drift.run_reanchor, repo.path)
+        if again.blocking:
+            self.emit(
+                "citation_drift", "still unresolved after the round",
+                status=again.status.value, still_failing=True,
+            )
+        return None
+
     def _restore_repro_manifest(self, task: Task, repo: GitRepo) -> bool:
         """Copy this task's persisted repro manifest into *repo* when the
         worktree copy is absent. True when a file was actually written.
@@ -9579,6 +9784,7 @@ class Orchestrator:
         event_kind: str = "repro_corrective_round",
         cause: str | None = None,
         effort: str = "high",
+        allow_paths: Iterable[str] = (),
     ) -> "TaskOutcome | None":
         """ONE bounded coder round to write the MISSING repro manifest, on
         the SAME branch/worktree the attempt already committed to — not a
@@ -9613,6 +9819,15 @@ class Orchestrator:
         failure by its event *kind* string, so a distinct kind (not a nested
         field alone) is what actually reaches that recall path; `cause` rides
         along as data for a consumer that groups by cause instead.
+
+        `allow_paths` is likewise an optional, additive override — threaded
+        straight into `_repro_round_out_of_scope(changed, extra_ok=...)` —
+        defaulting to `()` so the three callers above keep today's exact
+        scope (`REPRO_MANIFEST`/tests only; notably `src/…` and `docs/…`
+        stay out of scope). `_citation_drift_preflight` is the one caller
+        that passes it: the exact doc path(s)
+        `scripts/reanchor_citations.py` itself already named as needing a
+        fix, never `docs/` wholesale.
 
         Returns None to let the caller re-run the gate, or the `TaskOutcome`
         that ends the attempt (a commit refusal, or a tamper fire on the
@@ -9740,7 +9955,7 @@ class Orchestrator:
 
         after = self._worktree_state(repo)
         changed = sorted(p for p, c in after.items() if before.get(p) != c)
-        out_of_scope = _repro_round_out_of_scope(changed)
+        out_of_scope = _repro_round_out_of_scope(changed, extra_ok=allow_paths)
         if out_of_scope:
             self.emit(
                 event_kind,

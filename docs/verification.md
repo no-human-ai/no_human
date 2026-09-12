@@ -351,6 +351,24 @@ shrinks below its threshold (or its symbol disappears) without being deleted
 from the allow-list — the budget can only move down. It is a size ratchet,
 not a design review or a lint config, and adds no dependency.
 
+## A preflight that catches citation drift before review, not after
+
+A citation is a `file.py:LINE` reference a doc makes into code; any edit
+above that line drifts it. Left alone, drift only surfaces in the post-review
+TESTING step, on a coder change that review already passed — burning a full
+attempt on a defect the coder could not have known about while the code was
+otherwise correct. [`src/no_human/testing/citation_drift.py`](../src/no_human/testing/citation_drift.py)
+runs before review instead: when the target repo ships its own
+`scripts/reanchor_citations.py` and `tests/test_readme_claims.py`, the
+preflight shells out to that script exactly as the repo's own CI would,
+mechanically re-anchors and commits fixable drift on the same branch and
+attempt, and — only when a citation is unfixable or the script's own verdict
+is indeterminate — buys exactly one bounded corrective round before falling
+through to review. It never consumes one of the task's attempts, and it
+fails closed: an unreadable file, an erroring subprocess, or a citation the
+script will not guess at all block, never silently read as clean. A repo
+that does not ship the convention pays nothing for it.
+
 ## A reproduction gate that proves the fix fixed the bug
 
 [`src/no_human/testing/repro_gate.py`](../src/no_human/testing/repro_gate.py)
