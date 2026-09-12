@@ -66,6 +66,17 @@ test("the step renders a plain outbound anchor to the invite — no embed of any
   }
 });
 
+// ── warm-editorial copy: no implementation breadcrumb ───────────────────
+test("the step's rendered copy names no internal function or source file", () => {
+  // A first-run user reads this text; it must never surface an internal
+  // symbol/filename (e.g. "routeExternally in desktop/main.mjs") as if it
+  // were product copy — that reads like an implementation comment that
+  // leaked into the UI, not the warm-editorial voice DESIGN.md requires.
+  for (const forbidden of [/routeExternally/i, /desktop\/main\.mjs/i, /\.mjs\b/i, /\.jsx\b/i]) {
+    assert.doesNotMatch(STEP, forbidden, `the step's copy must not name an internal symbol/file: ${forbidden}`);
+  }
+});
+
 // ── AC1: never blocks ────────────────────────────────────────────────────
 test("the discord step never gates forward progress, behaviourally", () => {
   // discord is BASE_STEPS index 4, lastIndex is now 5 (6 steps).

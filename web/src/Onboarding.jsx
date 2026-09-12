@@ -1133,9 +1133,8 @@ export default function Onboarding({ onComplete }) {
                 <span className="ob-note">{DISCORD_INVITE_URL}</span>
               </div>
               <p className="ob-note">
-                The link opens in your browser, not inside no_human (the desktop shell routes it out —
-                see routeExternally in desktop/main.mjs). Skipping changes nothing: Continue goes to
-                Launch either way, and the invite stays in the README.
+                The link opens in your browser, not inside no_human. Skipping changes nothing: Continue
+                goes to Launch either way, and the invite stays in the README.
               </p>
             </Stagger>
           )}
