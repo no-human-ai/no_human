@@ -1,62 +1,25 @@
 # How I verified this — full log
 
-_Harness-captured record for task `2dcc6f80`, commit `701dd1fa860d49d1d07d77bd19d5c82cfbb8fa59` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `2dcc6f80`, commit `0649c534a63c55ce2c54a6a1bc7e4c50b89a02e2` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ## How I verified this
 11 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
 
 ### test
-- `uv run pytest -q tests/test_structural_budget.py 2>&1 | tail -60`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/2dcc6f8072c34c00bd17589f0a6504f5.52752.74064528 uv run pytest -q tests/test_structural_budget.py 2>&1 | tail -60`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-   Building no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/2dcc6f8072c34c00bd17589f0a6504f5.82890.2d8b8893
-      Built no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/2dcc6f8072c34c00bd17589f0a6504f5.82890.2d8b8893
-Installed 68 packages in 133ms
 ..................                                                       [100%]
-18 passed in 4.97s
+18 passed in 3.90s
 ```
 
-- `find tests -iname "*codex_teardown*" echo --- uv run pytest -q tests/test_landed_claim_guard.py tests/test_landed_claim_early_refusal.py tests/test_verification_receipts.py 2>&1 | tail -60`
-
-```
-tests/test_codex_teardown_does_not_hang.py
-tests/test_codex_teardown_closes_transport.py
----
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-........................................................................ [ 16%]
-........................................................................ [ 33%]
-........................................................................ [ 50%]
-........................................................................ [ 67%]
-........................................................................ [ 84%]
-...................................................................      [100%]
-427 passed in 9.05s
-```
-
-- `uv run pytest -q tests/test_codex_teardown_does_not_hang.py tests/test_codex_teardown_closes_transport.py 2>&1 | tail -40`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/2dcc6f8072c34c00bd17589f0a6504f5.52752.74064528 uv run pytest -q tests/test_landed_claim_guard.py -k test_note_text_never_raises 2>&1 | tail -20`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-.........                                                                [100%]
-9 passed in 33.19s
-```
-
-- `uv run pytest -q tests/test_landed_claim_guard.py -k "hex_token or english_word or manifest_hash" -v 2>&1 | tail -30`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-============================= test session starts ==============================
-platform darwin -- Python 3.12.13, pytest-9.1.1, pluggy-1.6.0
-<redacted> isolated HOME: /var/folders/1r/3r0rt1jd4j1456rsg_fh4d380000gn/T/nh-test-home-d3oemg_b
-rootdir: /Users/eyalgolan/.<redacted>/worktrees/2dcc6f8072c34c00bd17589f0a6504f5.82890.2d8b8893
-configfile: pyproject.toml
-plugins: anyio-4.14.0, no-human-0.2.2, cov-7.1.0, xdist-3.8.0, asyncio-1.4.0
-asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
-collected 22 items / 19 deselected / 3 selected
-
-tests/test_landed_claim_guard.py ...                                     [100%]
-
-======================= 3 passed, 19 deselected in 0.90s =======================
+.                                                                        [100%]
+1 passed, 21 deselected in 0.52s
 ```
 
 - `uv run pytest -q tests/test_structural_budget.py 2>&1 | tail -20`
@@ -64,104 +27,142 @@ tests/test_landed_claim_guard.py ...                                     [100%]
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
 ..................                                                       [100%]
-18 passed in 2.34s
+18 passed in 3.52s
 ```
 
-- `uv run pytest -q tests/test_landed_claim_early_refusal.py -v 2>&1 | tail -40`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-============================= test session starts ==============================
-platform darwin -- Python 3.12.13, pytest-9.1.1, pluggy-1.6.0
-<redacted> isolated HOME: /var/folders/1r/3r0rt1jd4j1456rsg_fh4d380000gn/T/nh-test-home-vjn69n_x
-rootdir: /Users/eyalgolan/.<redacted>/worktrees/2dcc6f8072c34c00bd17589f0a6504f5.82890.2d8b8893
-configfile: pyproject.toml
-plugins: anyio-4.14.0, no-human-0.2.2, cov-7.1.0, xdist-3.8.0, asyncio-1.4.0
-asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
-collected 10 items
-
-tests/test_landed_claim_early_refusal.py ..........                      [100%]
-
-============================== 10 passed in 4.88s ==============================
-```
-
-- `uv run pytest -q \   tests/test_landed_claim_guard.py \   tests/test_landed_claim_early_refusal.py \   tests/test_verification_receipts.py \   tests/test_structural_budget.py \   tests/test_already_satisfi [... 163 of 506 characters omitted from the middle ...] tests/test_already_satisfied.py \   tests/test_wip_checkpoint_routed_to_review.py \   tests/test_supervisor.py \   -q -n 4 2>&1 | tail -40`
+- `uv run pytest -q tests/test_landed_claim_guard.py 2>&1 | tail -20`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-bringing up nodes...
-bringing up nodes...
-
-........................................................................ [ 12%]
-........................................................................ [ 24%]
-........................................................................ [ 37%]
-........................................................................ [ 49%]
-........................................................................ [ 62%]
-........................................................................ [ 74%]
-........................................................................ [ 87%]
-........................................................................ [ 99%]
-.                                                                        [100%]
+........................                                                 [100%]
+24 passed in 1.20s
 ```
 
-- `uv run pytest -q \   tests/test_landed_claim_guard.py \   tests/test_landed_claim_early_refusal.py \   tests/test_verification_receipts.py \   tests/test_structural_budget.py \   tests/test_already_satisfi [... 159 of 502 characters omitted from the middle ...] \   tests/test_already_satisfied.py \   tests/test_wip_checkpoint_routed_to_review.py \   tests/test_supervisor.py \   -n 4 2>&1 | tail -5`
+- `uv run pytest -q tests/test_landed_claim_guard.py tests/test_landed_claim_early_refusal.py tests/test_verification_receipts.py tests/test_structural_budget.py 2>&1 | tail -30`
 
 ```
-........................................................................ [ 74%]
-........................................................................ [ 87%]
-........................................................................ [ 99%]
-.                                                                        [100%]
-577 passed in 22.67s
-```
+text = 'committed as `1234567890abcdef1234567890abcdef12345678`'
+expected_sha = '1234567890abcdef1234567890abcdef12345678'
 
-- `uv run pytest -q \   "tests/test_landed_claim_early_refusal.py::test_guard_is_wired_into_the_real_run_attempt_and_fires_on_a_refutable_claim" \   "tests/test_landed_claim_early_refusal.py::test_a_wip_parti [... 67 of 410 characters omitted from the middle ...] efuse_it" \   "tests/test_landed_claim_early_refusal.py::test_a_pushed_sibling_branch_of_the_same_task_is_not_blocked" \   2>&1 | tail -10`
+    @pytest.mark.parametrize(
+        "text, expected_sha",
+        [
+            ("this is already implemented at `abc1234def`", "abc1234def"),
+            ("this is already implemented at `abc1234def`.", "abc1234def"),
+            (
+                "committed as `1234567890abcdef1234567890abcdef12345678`",
+                "1234567890abcdef1234567890abcdef12345678",
+            ),
+        ],
+    )
+    def test_a_backticked_sha_is_read_as_the_named_sha(text, expected_sha):
+        """(Recall nit) a coder narrating a claim in markdown routinely fences
+  
+[... 393 of 1,532 characters omitted from the middle ...]
+tion = detect_claim_assertion(text)
+>       assert assertion is not None
+E       assert None is not None
 
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-...                                                                      [100%]
-3 passed in 2.39s
-```
+tests/test_landed_claim_guard.py:263: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_landed_claim_guard.py::test_a_backticked_sha_is_read_as_the_named_sha[committed as `1234567890abcdef1234567890abcdef12345678`-1234567890abcdef1234567890abcdef12345678]
+1 failed, 449 passed in 10.22s
+```  
+  _excerpt - 1,532 characters of output in total_
 
-- `uv run pytest -q -k "hex_token or english_word or manifest_hash" tests/test_landed_claim_guard.py -v 2>&1 | tail -15`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-============================= test session starts ==============================
-platform darwin -- Python 3.12.13, pytest-9.1.1, pluggy-1.6.0
-<redacted> isolated HOME: /var/folders/1r/3r0rt1jd4j1456rsg_fh4d380000gn/T/nh-test-home-2q9jgkq0
-rootdir: /Users/eyalgolan/.<redacted>/worktrees/2dcc6f8072c34c00bd17589f0a6504f5.82890.2d8b8893
-configfile: pyproject.toml
-plugins: anyio-4.14.0, no-human-0.2.2, cov-7.1.0, xdist-3.8.0, asyncio-1.4.0
-asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
-collected 22 items / 19 deselected / 3 selected
-
-tests/test_landed_claim_guard.py ...                                     [100%]
-
-======================= 3 passed, 19 deselected in 0.58s =======================
-```
-
-- `uv run pytest -q -n 4 \   tests/test_landed_claim_guard.py \   tests/test_landed_claim_early_refusal.py \   tests/test_verification_receipts.py \   tests/test_structural_budget.py \   tests/test_already_sa [... 257 of 600 characters omitted from the middle ...] ts/test_supervisor.py \   tests/test_codex_teardown_does_not_hang.py \   tests/test_codex_teardown_closes_transport.py \   2>&1 | tail -15`
+- `uv run pytest -q tests/test_landed_claim_guard.py tests/test_landed_claim_early_refusal.py tests/test_verification_receipts.py tests/test_structural_budget.py 2>&1 | tail -15`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-bringing up nodes...
-bringing up nodes...
+........................................................................ [ 16%]
+........................................................................ [ 32%]
+........................................................................ [ 48%]
+........................................................................ [ 64%]
+........................................................................ [ 80%]
+........................................................................ [ 96%]
+..................                                                       [100%]
+450 passed in 9.51s
+```
 
-........................................................................ [ 12%]
-........................................................................ [ 24%]
-........................................................................ [ 36%]
-........................................................................ [ 49%]
-........................................................................ [ 61%]
-........................................................................ [ 73%]
-........................................................................ [ 86%]
-........................................................................ [ 98%]
-..........                                                               [100%]
-586 passed in 32.05s
+- `uv run pytest -q tests/test_landed_claim_early_refusal.py -k "wip_partial_checkpoint_is_not_blocked or machine_requeue_provenance_is_not_blocked" -v 2>&1 | tail -40`
+
+```
+claimed_sha = GitRepo(bare_repo).head_sha()
+    
+        orch = _orch(store, tmp_path)
+        task = Task.new("existing", repo_path=<redacted> kind="feature")
+        task.context["resume_from"] = {"by": "server_stop"}
+        await store.create_task(task)
+    
+        assert orch._route_unjudged_head(
+            task, GitRepo(bare_repo), "main") is not None, (
+            "a machine-requeue-provenance head with no review verdict must "
+            "route to review")
+    
+        guard = orch._build_landed_claim_guard(
+            task, GitRepo(bare_repo), base="main", branch=attempt_branch,
+        )
+        assert guard is not None
+        guard.note_text(
+      
+[... 1,109 of 2,248 characters omitted from the middle ...]
+usal.py:203: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_landed_claim_early_refusal.py::test_a_wip_partial_checkpoint_is_not_blocked_because_delivery_would_review_it_not_refuse_it
+FAILED tests/test_landed_claim_early_refusal.py::test_an_ordinary_head_resumed_from_machine_requeue_provenance_is_not_blocked
+======================= 2 failed, 8 deselected in 2.03s ========================
+```  
+  _excerpt - 2,253 characters of output in total_
+
+- `uv run pytest -q tests/test_landed_claim_early_refusal.py tests/test_landed_claim_guard.py 2>&1 | tail -10`
+
+```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+.....................................                                    [100%]
+37 passed in 6.43s
+```
+
+- `uv run pytest -q tests/test_landed_claim_guard.py tests/test_landed_claim_early_refusal.py \   tests/test_verification_receipts.py tests/test_already_satisfied_subject_tree.py \   tests/test_already_satisfied.py tests/test_already_satisfied_landing.py \   tests/test_wip_checkpoint_routed_to_review.py tests/test_supervisor.py 2>&1 | tail -20`
+
+```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+........................................................................ [ 13%]
+........................................................................ [ 26%]
+........................................................................ [ 39%]
+........................................................................ [ 52%]
+........................................................................ [ 65%]
+........................................................................ [ 78%]
+........................................................................ [ 91%]
+............................................                             [100%]
+548 passed in 38.96s
+```
+
+- `uv run pytest -q tests/test_structural_budget.py 2>&1 | tail -10`
+
+```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+..................                                                       [100%]
+18 passed in 2.10s
+```
+
+- `uv run pytest -q tests/test_landed_claim_guard.py tests/test_landed_claim_early_refusal.py tests/test_structural_budget.py tests/test_verification_receipts.py 2>&1 | tail -20`
+
+```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+........................................................................ [ 16%]
+........................................................................ [ 32%]
+........................................................................ [ 48%]
+........................................................................ [ 64%]
+........................................................................ [ 80%]
+........................................................................ [ 96%]
+..................                                                       [100%]
+450 passed in 8.85s
 ```
 
 
 **Not verified:** everything below is a limit of this section, listed whether or not it bit this attempt.
 
-- no command recognised as e2e, http, typecheck, lint, build was recorded - and a recorded command is shown with its middle omitted, so a check inside the omitted part cannot be ruled out
+- no command recognised as e2e, http, typecheck, lint, build was recorded
 - an entry shows that a command LINE was submitted to the shell and what came back - never that the check recognised inside it RAN, and never that it was the RIGHT command: `pytest -k test_nothing` prints a clean run, and a recorded command line may name a check the shell never reached yet is still counted - TEN SHAPES WERE DRIVEN against bash 3.2.57 with the check replaced by a marker-printing stub and the marker was absent in every one: a failed `&&`, a taken `||`, an `exit`, an `exec`, an `exit` inside a `source`d script, a syntax error that aborts the REST of the line, a multi-line `if false`, a `case` that matches nothing, `set -e` aborting an earlier command, and `set -u` on an unset variable; that list is MEASURED, NOT EXHAUSTIVE, because this module is not bash, so a kind this section does NOT list as missing is a kind some recorded line named, which is not the same as a kind that ran
 - the text is the coder's: the session chose the command string and, through `echo`/`printf`, can choose the output too. Both are shown as inert text, and no entry ASSERTS a pass, a fail, or an exit status - `pytest -q | tail -3` exits with `tail`'s status, `Error: Exit code 1` is a line IN THE OUTPUT, and where the harness reported a timeout or an interruption instead of output that report is appended to the captured text in square brackets. Read the output
 - recognition reads the command line ONLY - it never looks inside what a command runs, so `bash -c 'uv run pytest -q'` leaves no receipt at all while `make test` leaves one that names `make` and not the recipe it ran; and the other way, a check merely NAMED in a heredoc body, or in a quoted string that happens to spell a shell separator, can be recorded as though it ran
