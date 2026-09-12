@@ -206,11 +206,11 @@ def test_inapplicable_when_only_the_script_is_present(tmp_path):
 
 def test_clean_tree_reports_clean_and_writes_nothing(tmp_path):
     _write_fixture_layout(tmp_path, mod_text=_MOD_BASELINE, doc_text=_DOC_BASELINE)
-    before = (tmp_path / "docs" / "cite.md").read_text()
+    before = (tmp_path / "docs" / "cite.md").read_text(encoding="utf-8")
     outcome = citation_drift.run_reanchor(tmp_path)
     assert outcome.status is citation_drift.Status.CLEAN
     assert outcome.blocking is False
-    assert (tmp_path / "docs" / "cite.md").read_text() == before
+    assert (tmp_path / "docs" / "cite.md").read_text(encoding="utf-8") == before
 
 
 def test_drifted_citation_is_mechanically_reanchored(tmp_path):
@@ -219,20 +219,20 @@ def test_drifted_citation_is_mechanically_reanchored(tmp_path):
     assert outcome.status is citation_drift.Status.REANCHORED
     assert outcome.blocking is False
     assert outcome.docs == ("docs/cite.md",)
-    rewritten = (tmp_path / "docs" / "cite.md").read_text()
+    rewritten = (tmp_path / "docs" / "cite.md").read_text(encoding="utf-8")
     assert "mod.py:5" in rewritten
     assert "mod.py:1" not in rewritten
 
 
 def test_duplicate_citation_is_unfixable_and_distinguishable_from_clean(tmp_path):
     _write_fixture_layout(tmp_path, mod_text=_MOD_DRIFTED, doc_text=_DOC_DUPLICATE)
-    before = (tmp_path / "docs" / "cite.md").read_text()
+    before = (tmp_path / "docs" / "cite.md").read_text(encoding="utf-8")
     outcome = citation_drift.run_reanchor(tmp_path)
     assert outcome.status is citation_drift.Status.UNFIXABLE
     assert outcome.blocking is True
     assert outcome.status is not citation_drift.Status.CLEAN
     assert outcome.failures, outcome
-    assert (tmp_path / "docs" / "cite.md").read_text() == before, (
+    assert (tmp_path / "docs" / "cite.md").read_text(encoding="utf-8") == before, (
         "an ambiguous citation must never be guessed at"
     )
 
