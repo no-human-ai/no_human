@@ -184,6 +184,41 @@ async def test_registering_an_email_persists_to_config_yaml_and_is_redacted_from
         assert field not in status.json(), f"{field} must be redacted from the polled status"
 
 
+@pytest.mark.asyncio
+async def test_onboarding_complete_does_not_echo_the_address_either(client, tmp_path):
+    """The redaction on GET /api/onboarding/status is not enough by itself:
+    POST /api/onboarding/complete merges and returns the SAME onboarding
+    block (`_persist_onboarding`'s return value), and it is not in
+    replayScrub.js's REPLAY_EXCLUDED_PATHS (it legitimately echoes
+    repos/docs for the wizard summary, so PostHog session replay captures
+    its body verbatim). If the address were ever registered before this
+    call, the `{"ok": True, "onboarding": ob}` response must still never
+    carry it."""
+    reg = await client.post("/api/onboarding/email", json={"email": "person@example.com"})
+    assert reg.status_code == 200, reg.text
+
+    r = await client.post(
+        "/api/onboarding/complete",
+        json={"team": "PLATFORM", "repos": ["/x/svc"], "docs": ["/docs/adr"]},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["ok"] is True
+    ob = body["onboarding"]
+    for field in ("email", "email_at", "welcome_status"):
+        assert field not in ob, f"{field} must be redacted from /api/onboarding/complete's response"
+    assert "person@example.com" not in json.dumps(body), "the address must not appear anywhere in the response body"
+    # Everything else the wizard summary reads still comes through unredacted.
+    assert ob["completed"] is True
+    assert ob["team"] == "PLATFORM"
+    assert ob["repos"] == ["/x/svc"]
+
+    # And it is still persisted on disk — redaction is response-shaping only.
+    import yaml
+    on_disk = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
+    assert on_disk["onboarding"]["email"] == "person@example.com"
+
+
 def test_render_welcome_reuses_the_frozen_template_byte_for_byte():
     address = "person@example.com"
     golden_subject, golden_body = base.mac_download(

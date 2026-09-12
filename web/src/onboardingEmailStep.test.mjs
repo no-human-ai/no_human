@@ -100,5 +100,23 @@ test("no new error-display surface was added for the email step — the wizard's
 
 test("registerOnboardingEmail and onboardingEmail.js helpers are imported, existing imports untouched", () => {
   assert.match(src, /registerOnboardingEmail,?\s*\n\} from "\.\/api\.js";/);
-  assert.match(src, /import \{ emailBlocksContinue, submitEmail \} from "\.\/onboardingEmail\.js";/);
+  assert.match(src, /import \{ emailBlocksContinue, submitEmail, EMAIL_REJECT_MESSAGE \} from "\.\/onboardingEmail\.js";/);
+});
+
+// ── stepper-jump / minimal-skip bypass: both completion paths must register ──
+
+test("finish() and startMinimal() both refuse to complete without a registered email", () => {
+  const helper = src.match(/async function ensureEmailRegistered\(\) \{([\s\S]*?)\n  \}/);
+  assert.ok(helper, "ensureEmailRegistered() not found");
+  assert.match(helper[1], /if \(emailBlocksContinue\(email\) !== null\) throw new Error\(EMAIL_REJECT_MESSAGE\);/);
+  assert.match(helper[1], /await submitEmail\(email, \{ registerOnboardingEmail \}\);/);
+
+  const finishBody = src.slice(src.indexOf("async function finish()"), src.indexOf("\n  }\n", src.indexOf("async function finish()")));
+  assert.match(finishBody, /await ensureEmailRegistered\(\);/, "finish() must require the address before launching");
+  // Refused before anything is created, same as the unbound-projects check.
+  assert.ok(finishBody.indexOf("ensureEmailRegistered()") < finishBody.indexOf("createProject("));
+
+  const startMinimalBody = src.slice(src.indexOf("async function startMinimal()"), src.indexOf("\n  }\n", src.indexOf("async function startMinimal()")));
+  assert.match(startMinimalBody, /await ensureEmailRegistered\(\);/, "startMinimal() must require the address too — it is a second completion path (the Repositories step's Skip-setup shortcut) that bypasses the Email step just like the stepper jump does");
+  assert.ok(startMinimalBody.indexOf("ensureEmailRegistered()") < startMinimalBody.indexOf("completeOnboarding("));
 });

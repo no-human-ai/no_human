@@ -5966,7 +5966,14 @@ async def onboarding_complete(
     if body.telemetry_asked or prior.get("telemetry_asked"):
         patch["telemetry_asked"] = True
     ob = _persist_onboarding(config, patch)
-    return {"ok": True, "onboarding": ob}
+    # Same redaction as GET /api/onboarding/status: this response echoes the
+    # merged onboarding block, and `_persist_onboarding` may already carry a
+    # registered `email`/`email_at`/`welcome_status` from a prior POST to
+    # /api/onboarding/email. This endpoint is not in replayScrub.js's deny
+    # list (it legitimately echoes repos/docs for the wizard to render), so
+    # the address must never be IN the body in the first place.
+    redacted_ob = {k: v for k, v in ob.items() if k not in _ONBOARDING_STATUS_REDACTED_FIELDS}
+    return {"ok": True, "onboarding": redacted_ob}
 
 
 async def _ensure_project_for_repo(store: Store, repo_path: str) -> None:

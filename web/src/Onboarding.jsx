@@ -34,7 +34,7 @@ import {
   dropRepoEverywhere, unboundProjects, unboundProjectsMessage, projectPayload,
   projectsBlockContinue, launchReadiness,
 } from "./onboardingProjects.js";
-import { emailBlocksContinue, submitEmail } from "./onboardingEmail.js";
+import { emailBlocksContinue, submitEmail, EMAIL_REJECT_MESSAGE } from "./onboardingEmail.js";
 
 // Input with live directory autocomplete (via /api/fs/suggest). As you type a
 // path, matching sub-directories are offered through a native <datalist>.
@@ -459,6 +459,22 @@ export default function Onboarding({ onComplete }) {
     }
   }
 
+  // The clickable stepper (onboardingNav.js `canJumpTo`) lets any step jump to
+  // any other, so a user can reach Summary — or the Repositories step's own
+  // "Skip setup" shortcut — without ever visiting Email or clicking its
+  // Continue. Email is REQUIRED (operator decision), so both completion paths
+  // below (`finish` and `startMinimal`) call this first, the same way `finish`
+  // already refuses `unbound` projects before anything is created: it throws
+  // (blocking launch, the terminal step's existing failure behaviour) rather
+  // than silently letting onboarding complete with no address on file.
+  // `submitEmail` is idempotent server-side (send.py's `changed` guard), so
+  // calling it again here after an earlier Continue on the Email step is a
+  // no-op, not a second welcome email.
+  async function ensureEmailRegistered() {
+    if (emailBlocksContinue(email) !== null) throw new Error(EMAIL_REJECT_MESSAGE);
+    await submitEmail(email, { registerOnboardingEmail });
+  }
+
   // Abort any live prove stream when the wizard unmounts. The server-side run
   // is bounded independently; this only stops us reading it.
   useEffect(() => () => {
@@ -620,6 +636,7 @@ export default function Onboarding({ onComplete }) {
     await guard(async () => {
       const repo_path = [...selectedRepos][0];
       if (!repo_path) return;
+      await ensureEmailRegistered();
       await completeOnboarding({ completed: true, minimal: true, repo_path });
       // Land on the board with the Finish-setup card (spec §3 B1) rather than
       // popping the composer — the deferred steps are the point of this path.
@@ -634,6 +651,7 @@ export default function Onboarding({ onComplete }) {
       // is written — so nothing is half-created and the user is told which
       // definition is the problem.
       if (unbound.length) throw new Error(unboundProjectsMessage(unbound));
+      await ensureEmailRegistered();
       // Create projects via API. primary_repo travels with the payload: it is
       // the project's default repo in the composer, and without it the server
       // falls back to whichever repo was ticked first.
