@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import shutil
 import tempfile
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -18,6 +19,67 @@ from typing import Any, Callable
 from .golden import GoldenTask, load_golden_tasks
 from .replay import ReplayRunner, TaskScore
 from .scorecard import GateResult, Scorecard, ci_gate
+
+CLEANUP_MARKER = ".nh-cleanup-incomplete"
+
+
+def _remove_sandbox(
+    base_tmp: Path, on_event: Callable[[dict], None] | None = None
+) -> list[str]:
+    """Remove a sandbox we created. Returns the paths ``rmtree`` could not
+    remove (empty when everything went).
+
+    Never raises: callers invoke this from a ``finally:`` where an exception
+    may already be propagating and cleanup must not mask it. Unlike a bare
+    best-effort ``rmtree`` that discards errors outright, a partial removal
+    here is recorded — via a marker file and (if given) an event — instead
+    of being silently thrown away.
+    """
+    failed: list[str] = []
+
+    def _record(_func, path, exc) -> None:
+        failed.append(f"{path}: {type(exc).__name__}: {exc}")
+
+    try:
+        shutil.rmtree(base_tmp, onexc=_record)
+    except Exception:
+        pass
+
+    # The callback only reports what it saw; a retried/racy removal can still
+    # have finished the job, so the filesystem — not the callback log — is
+    # the source of truth for whether anything is actually left. A
+    # root-level FileNotFoundError (nonexistent target) is therefore success.
+    if not base_tmp.exists() or not failed:
+        return []
+
+    if len(failed) > 50:
+        shown = failed[:50] + [f"... {len(failed) - 50} more"]
+    else:
+        shown = failed
+
+    marker_text = (
+        f"cleanup incomplete at {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+        + "\n".join(shown) + "\n"
+    )
+    try:
+        (base_tmp / CLEANUP_MARKER).write_text(marker_text)
+    except OSError:
+        try:
+            sibling = base_tmp.parent / (base_tmp.name + ".cleanup-incomplete")
+            sibling.write_text(marker_text)
+        except OSError:
+            pass  # Best-effort record; cleanup must never fail because of it.
+
+    if on_event:
+        try:
+            on_event({
+                "source": "eval", "kind": "sandbox_cleanup_incomplete",
+                "text": f"{base_tmp}: {len(failed)} item(s) could not be removed",
+            })
+        except Exception:
+            pass  # A caller-supplied sink must not break cleanup.
+
+    return shown
 
 
 @dataclass
@@ -63,10 +125,11 @@ async def run_eval(
         return EvalRun(scorecard=card, gate=gate, previous=previous)
     finally:
         # We own the sandbox only when we created it; a caller-supplied workdir
-        # is theirs. Best-effort so cleanup never masks a real error (0.4 —
-        # nh-eval-* dirs used to leak on every run, crash or not).
+        # is theirs. Cleanup records what it cannot remove instead of masking
+        # it, and still never raises, so it cannot swallow a real error
+        # propagating out of this block (0.4).
         if created_tmp:
-            shutil.rmtree(base_tmp, ignore_errors=True)
+            _remove_sandbox(base_tmp, on_event)
 
 
 @dataclass
@@ -168,8 +231,12 @@ async def run_shadow(
             notes="shadow run — clone only, real remote untouched",
         )
     finally:
-        await store.close()
         # ShadowResult (incl. draft_diff) is already built before this runs, so
-        # the clone is safe to drop. Only when we created the tmp (0.4).
-        if created_tmp:
-            shutil.rmtree(base_tmp, ignore_errors=True)
+        # the clone is safe to drop. Only when we created the tmp (0.4). Nested
+        # try/finally so a store.close() failure still lets cleanup run instead
+        # of resurrecting the "leak" by skipping it.
+        try:
+            await store.close()
+        finally:
+            if created_tmp:
+                _remove_sandbox(base_tmp)
