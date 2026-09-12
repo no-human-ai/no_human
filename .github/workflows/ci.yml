@@ -634,17 +634,24 @@ jobs:
     # by touching `desktop/` (see the `changed` job) or by carrying the
     # `desktop` label.
     needs: changed
-    # `always()`, not a bare condition and not `!cancelled()`: a `needs` job
-    # that fails OR is cancelled skips its dependents, and
-    # `tests/test_ci_network_step_bounds.py` records this repo MEASURING
-    # GitHub report a timed-out job as `cancelled`, not `failure`. Either
-    # terminal state would otherwise take Desktop shell off the push to main
-    # -- deleting today's only coverage, invisibly, since a skipped
-    # non-required job is not red.
+    # `!= 'false'`, NOT `== 'true'`, and that is the whole guard. A `changed`
+    # job that dies -- its own 3-minute step bound, the job's 5-minute bound,
+    # runner loss, an unbound variable -- leaves `outputs.desktop` EMPTY, and
+    # empty is not `'true'`, so the earlier spelling skipped Desktop shell on
+    # exactly the failures the fail-open branch inside the script cannot
+    # reach. Empty is not `'false'` either, so this runs the job instead:
+    # "fail towards RUNNING, never towards skipping" is what the script's own
+    # comment promises, and only this spelling keeps that promise.
+    #
+    # `!cancelled()` rather than `always()`: GitHub's expressions reference
+    # names it the recommended alternative and warns against `always()`, and
+    # with the `!= 'false'` guard above there is nothing left for `always()`
+    # to buy -- a failed `changed` already runs the job. `always()` would only
+    # add work to runs this repo deliberately cancels (`cancel-in-progress`).
     if: >-
-      always()
+      !cancelled()
       && (github.event_name != 'pull_request'
-      || needs.changed.outputs.desktop == 'true'
+      || needs.changed.outputs.desktop != 'false'
       || contains(github.event.pull_request.labels.*.name, 'desktop'))
     runs-on: ubuntu-latest
     timeout-minutes: 20

@@ -14,7 +14,10 @@ executed rather than read.
 
 from __future__ import annotations
 
+import json
 import os
+import re
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -41,8 +44,12 @@ def test_desktop_job_consumes_the_changed_job():
     desktop = _workflow()["jobs"]["desktop"]
     assert desktop.get("needs") == "changed"
     condition = desktop["if"]
-    # The paths clause is the new half...
-    assert "needs.changed.outputs.desktop == 'true'" in condition
+    # The paths clause is the new half. `!= 'false'`, never `== 'true'`:
+    # a `changed` job that dies leaves the output EMPTY, and empty is not
+    # `'true'`, so `== 'true'` skipped Desktop shell on exactly the failures
+    # the script's own fail-open branch cannot reach.
+    assert "needs.changed.outputs.desktop != 'false'" in condition
+    assert "== 'true'" not in condition
     # ...and neither of the two existing ways in may be dropped for it.
     assert "github.event_name != 'pull_request'" in condition
     assert "contains(github.event.pull_request.labels.*.name, 'desktop')" in condition
@@ -57,16 +64,17 @@ def test_the_changed_job_is_never_conditional():
     assert "if" not in _workflow()["jobs"]["changed"]
 
 
-def test_a_failing_or_cancelled_changed_job_cannot_silence_the_push_run():
-    """`always()`, not `!cancelled()`.
+def test_a_dead_changed_job_runs_desktop_shell_rather_than_silencing_it():
+    """The guard is the `!= 'false'` above, not the status function.
 
-    A `needs` job skips its dependents when it fails AND when it is
-    cancelled. `tests/test_ci_network_step_bounds.py` records this repo
-    measuring GitHub report a timed-out job as `cancelled`, not `failure` --
-    so `!cancelled()` leaves open exactly the terminal state we have seen,
-    and a skipped non-required job is not red.
+    GitHub's expressions reference names `!cancelled()` the recommended
+    alternative and warns against `always()`; with an empty output already
+    running the job, `always()` buys nothing and would only add work to runs
+    this repo deliberately cancels.
     """
-    assert _workflow()["jobs"]["desktop"]["if"].startswith("always()")
+    condition = _workflow()["jobs"]["desktop"]["if"]
+    assert condition.startswith("!cancelled()")
+    assert "always()" not in condition
 
 
 def test_the_changed_job_may_read_pull_requests():
@@ -233,3 +241,73 @@ def test_a_large_diff_that_touches_desktop_is_not_silently_missed(tmp_path):
         for i in range(2500)
     ]
     assert _run_changed_step(tmp_path, files=files)["desktop"] == "true"
+
+
+def test_the_changed_job_is_inside_the_workflow_cost_ratchet():
+    """`tests/test_ci_network_step_bounds.py` freezes every job's timeout and
+    only ratchets down. A new job outside that dict can grow its bound, or
+    move to a 2x-billed runner, with nothing red."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "_bounds", Path(__file__).resolve().parent / "test_ci_network_step_bounds.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    assert "changed" in mod.EXPECTED_JOB_TIMEOUTS, (
+        "add `changed` to EXPECTED_JOB_TIMEOUTS so its cost is ratcheted "
+        "like every other job's")
+
+
+def test_the_network_step_carries_its_own_bound():
+    """`gh api --paginate` is up to 100 sequential requests. The repo's
+    network-step test is scoped to `jobs.linux` and cannot see this one, so
+    nothing else pins it."""
+    steps = _workflow()["jobs"]["changed"]["steps"]
+    areas = [s for s in steps if s.get("id") == "areas"][0]
+    assert areas.get("timeout-minutes"), "the gh api step lost its bound"
+
+
+def _jq_filter() -> str:
+    """The `--jq` expression the `changed` job actually ships."""
+    match = re.search(r"--jq '([^']+)'", _changed_script())
+    assert match, "no --jq expression found in the changed job"
+    return match.group(1)
+
+
+def test_the_jq_filter_is_executed_not_merely_spelled(tmp_path):
+    """Runs the REAL filter over a renamed entry.
+
+    `test_the_script_asks_the_files_endpoint_for_both_path_fields` greps the
+    stub's argv for the string `previous_filename`. That is not the same as
+    the filter working: the stub replaces `gh` wholesale, so `--jq` is never
+    executed anywhere in the suite. Changing `//` to `/` in the expression
+    leaves real jq exiting 0 while silently dropping the renamed path, and
+    every structural test stays green -- measured, which is why this exists.
+
+    For a RENAME the files API reports the new path in `filename` and the old
+    one in `previous_filename`, so a file moved OUT of `desktop/` is only
+    visible through the second field.
+    """
+    jq = shutil.which("jq")
+    if not jq:  # pragma: no cover - jq ships on the ubuntu runners
+        pytest.skip("jq not installed; CI's ubuntu-latest image has it")
+
+    payload = tmp_path / "files.json"
+    payload.write_text(json.dumps([
+        {"filename": "desktop/a.mjs", "status": "modified"},
+        # moved OUT of desktop/: only `previous_filename` names it
+        {"filename": "shared/preload.mjs", "status": "renamed",
+         "previous_filename": "desktop/preload.mjs"},
+        {"filename": "src/no_human/config.py", "status": "modified"},
+    ]), encoding="utf-8")
+
+    out = subprocess.run([jq, "-r", _jq_filter(), str(payload)],
+                         capture_output=True, text=True, timeout=30)
+    assert out.returncode == 0, out.stderr
+    emitted = [line for line in out.stdout.splitlines() if line.strip()]
+
+    assert "desktop/preload.mjs" in emitted, (
+        "the renamed-out path is missing, so a file moved OUT of desktop/ "
+        f"would read as no desktop change; filter emitted {emitted}")
+    assert "desktop/a.mjs" in emitted
+    # No stray `null` lines from a filter that dropped the `// empty` guard.
+    assert "null" not in emitted, emitted
