@@ -1514,7 +1514,14 @@ FROZEN_FILE_LINES = {
     # `_persist_onboarding`; `onboarding_complete`'s response redacts those
     # fields (`_ONBOARDING_STATUS_REDACTED_FIELDS`) so the address is never
     # echoed back in the body. Measured on this tree with the scanner below.
-    "api/app.py": 6273,
+    # 6273 -> 6285 (+12): the ad-hoc redaction comprehension copy-pasted at
+    # each onboarding-echoing route (`/api/config`, `/api/onboarding/status`,
+    # `/api/onboarding/complete`, `/api/onboarding/reset`) is centralized
+    # into `_onboarding_public`, so a future route can't leak the address by
+    # forgetting the copy-paste; the net growth is the new function's
+    # docstring explaining why it must be the only place this redaction
+    # happens. Measured on this tree with the scanner below.
+    "api/app.py": 6285,
     # +51: W5 active-time phase writer (phase instrumentation).
     # +84: `list_escalations`/`list_review_fails`/`list_tamper_trips` — the
     # three new failure-signal sources the recurring learning harvest mines.
