@@ -220,7 +220,13 @@ FROZEN_FUNCTION_LINES = {
     # best-effort call that runs the UI-evidence browser walk after tests
     # pass and threads its rendered media section into `_pr_body`.
     # Re-anchored on merge.
-    "core/orchestrator.py:Orchestrator._finalize": 437,
+    # 437 -> 451 (+14): "Merge-ready certifies a branch that is green alone
+    # and red merged" resolves `merge_base_with_trunk(base)` before building
+    # `policy_facts` and threads it through as `base_sha=`, fails open
+    # (`base_sha=""`) via a `try`/`except Exception` when trunk can't be
+    # resolved locally, with a comment explaining why that failure stays
+    # open rather than joining `evidence_problems`. Measured on this merge.
+    "core/orchestrator.py:Orchestrator._finalize": 451,
     # Pre-existing on main (measured red at d3d7d3a82a, this session's start):
     # an earlier fleet land grew stream() +6 without re-freezing it on its
     # merge result — the same "landed without measuring the ratchet" failure
