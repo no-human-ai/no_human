@@ -169,26 +169,67 @@ test("the invite literal exists exactly once in source, at web/src/community.js 
   assert.match(src, /import \{ DISCORD_INVITE_URL \} from "\.\/community\.js";/, "Onboarding.jsx must import the constant");
 });
 
-// ── AC2: byte-identical to the published invite ─────────────────────────
-test("the constant is byte-identical to every doc occurrence, 13 of them across 5 files", () => {
-  const DOC_FILES = ["README.md", "README.ja.md", "README.ko.md", "README.zh-CN.md", ".github/ISSUE_TEMPLATE/config.yml"];
-  const EXPECTED_COUNTS = [3, 3, 3, 3, 1];
+// ── AC2: byte-identical to the published invite, wherever a doc publishes it ─
+// The docs are DISCOVERED on every run, never listed. A hand-kept list of doc
+// filenames is the defect this guards against: it can only ever describe the
+// repo as it stood the day it was typed, so the first translated README added
+// afterwards is scanned by nobody and a wrong or stale invite in it ships
+// green. Both halves of the comparison come from the repo itself — the files
+// from a walk, the URL from the DISCORD_INVITE_URL imported at the top of this
+// file — so the invite is never re-typed here either.
+const DOC_SKIP = new Set([
+  // Vendored and generated trees only. An omission here can only widen what
+  // gets scanned, never narrow it, so this set cannot hide a doc.
+  "node_modules", "dist", "build", "coverage", ".git", ".venv", "venv",
+  "__pycache__", ".pytest_cache", ".claude-worktrees",
+]);
+const DOC_EXT = /\.(md|ya?ml)$/i;
+
+const docFiles = walk(REPO_ROOT, DOC_SKIP)
+  .map((p) => relative(REPO_ROOT, p).split(sep).join("/"))
+  .filter((p) => DOC_EXT.test(p))
+  .sort();
+
+// A second, independent discovery of the same ground: every translation of the
+// README sits at the repo root as README.<lang>.md. readdirSync finds them, so
+// a language added tomorrow is covered with no edit here — and it gives the
+// walk above a floor the walk cannot satisfy by returning nothing.
+const rootReadmes = readdirSync(REPO_ROOT)
+  .filter((n) => /^README(\.[A-Za-z-]+)?\.md$/.test(n))
+  .sort();
+
+test("every doc occurrence of the invite is exactly the constant — docs discovered, never listed", () => {
+  // Fail closed. An empty walk, a walk that lost the READMEs, or a root with
+  // no README at all is a FAILURE here, not a vacuous pass over zero files.
+  assert.ok(rootReadmes.length > 0, "no README.md at the repo root — README discovery is broken");
+  for (const name of rootReadmes) {
+    assert.ok(docFiles.includes(name), `the doc walk never reached ${name} — doc discovery is broken`);
+  }
+
   // Bounded to the invite-code alphabet so trailing prose punctuation (a
   // markdown ")", a full-width Chinese "，", a Korean particle glued on with
   // no space) is never swept into the match — no stripping step needed.
   const urlRe = /https:\/\/discord\.gg\/[A-Za-z0-9]+/g;
-  let all = [];
-  const perFile = [];
-  for (const f of DOC_FILES) {
-    const body = readFileSync(join(REPO_ROOT, f), "utf8");
-    const found = [...body.matchAll(urlRe)].map((m) => m[0]);
-    perFile.push(found.length);
-    all = all.concat(found);
+  const carriers = new Map();
+  for (const f of docFiles) {
+    const found = [...readFileSync(join(REPO_ROOT, f), "utf8").matchAll(urlRe)].map((m) => m[0]);
+    if (found.length > 0) carriers.set(f, found);
   }
-  assert.deepEqual(perFile, EXPECTED_COUNTS, "a doc's invite count changed — this must be re-verified, not silently passed");
-  assert.equal(all.length, 13, "the regex must still find exactly 13 doc occurrences (control: a broken regex would return 0)");
-  assert.ok(all.every((u) => u === all[0]), "every doc occurrence must be identical");
-  assert.equal(all[0], DISCORD_INVITE_URL, "the constant must equal the published invite, byte for byte");
+
+  // The non-zero floor, established by discovery rather than by a number typed
+  // here: every README the repo actually has publishes the invite.
+  for (const name of rootReadmes) {
+    assert.ok(carriers.has(name), `${name} publishes no Discord invite, but every README translation does`);
+  }
+  const occurrences = [...carriers].flatMap(([f, found]) => found.map((u) => [f, u]));
+  assert.ok(
+    occurrences.length >= rootReadmes.length,
+    `expected at least one invite per README (${rootReadmes.length}), found ${occurrences.length} across ${carriers.size} file(s)`,
+  );
+
+  for (const [f, u] of occurrences) {
+    assert.equal(u, DISCORD_INVITE_URL, `${f} publishes ${u} — the one invite we have lives in web/src/community.js`);
+  }
 });
 
 // ── AC3: vocabulary ──────────────────────────────────────────────────────
