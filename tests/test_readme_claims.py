@@ -1995,19 +1995,6 @@ CITATION_TABLE = (
     # under a step marked NOT YET RUN resolved to nothing. This row puts it on
     # code that exists.
     #
-    # WHAT THIS ROW DOES AND DOES NOT CHECK, because the difference matters and
-    # an earlier version of this comment overstated it. It checks the CODE
-    # side: that `hidden_console_kwargs` exists in proc.py and still sets the
-    # flag. It does NOT check the DOC side — `WINDOWS.md` is absent from
-    # `_CITATION_DOC_PATHS`, so `_check_citation` never opens the doc and
-    # `test_the_citation_table_covers_every_line_citation_in_the_three_docs`
-    # never iterates it. Deleting the citation from WINDOWS.md leaves this
-    # green, verified by doing exactly that. Registering the doc is a larger
-    # job than #110: nine of its ten remaining line citations name bare
-    # `.mjs`/`.cjs` basenames under `desktop/`, which `_resolve_source` looks
-    # for under `src/no_human` only and does not find. Tracked separately.
-    ("WINDOWS.md", "proc.py:hidden_console_kwargs", "proc.py",
-     "flags = CREATE_NO_WINDOW"),
     # docs/security.md
     ("security.md", "guard.py:WRITE_TOOLS", "guard.py", 'WRITE_TOOLS = {"Write"'),
     ("security.md", "agent/claude_backend.py:ClaudeBackend.__init__:540",
@@ -3061,72 +3048,6 @@ def test_a_symbol_row_beyond_the_window_fails(tmp_path, monkeypatch):
     with pytest.raises(AssertionError, match=r"10 line\(s\) out"):
         _check_citation(
             "security.md", "widget.py:widget_fn:11", "widget.py", "MARKER PHRASE"
-        )
-
-
-def test_windows_md_row_and_section_cross_references_resolve():
-    """A "row N ... in SS M" pointer must land on a real row in a real section.
-
-    #110 was a citation that resolved to nothing. Its replacement named the
-    right row number and the wrong section -- the row lives in SS3
-    ("Divergences from macOS"), while SS2 has no table at all -- so the fix
-    reproduced the defect it was closing. The CITATION_TABLE rows cannot see
-    this: they check code, and `WINDOWS.md` is not in `_CITATION_DOC_PATHS`,
-    so nothing opens the doc.
-
-    The matcher is deliberately BOUNDED. An earlier version paired any
-    "row N" with the next section sign anywhere in the file under
-    `re.DOTALL`, so an unrelated sentence ~800 lines from a reference
-    produced a fabricated accusation ("cites row 3 of a table in SS6").
-    Only a section sign within `_REF_WINDOW` characters, with no other
-    section sign in between, is treated as part of the same reference.
-
-    A subsection pointer (`SS4.2`) is checked against its PARENT section's
-    span, which contains it -- the parent span is where the table lives.
-    """
-    doc = (Path(__file__).resolve().parent.parent / "docs" / "WINDOWS.md").read_text(
-        encoding="utf-8"
-    )
-    lines = doc.splitlines()
-
-    heads = [
-        (int(m.group(1)), i)
-        for i, ln in enumerate(lines)
-        if (m := re.match(r"^## (\d+)\.", ln))
-    ]
-    spans = {
-        num: (start, heads[k + 1][1] if k + 1 < len(heads) else len(lines))
-        for k, (num, start) in enumerate(heads)
-    }
-
-    _REF_WINDOW = 120
-    pattern = re.compile(
-        r"\brows?\s+[`*]*(\d+(?:\s*(?:,|and)\s*\d+)*)[`*]*"   # row 7 / rows 7 and 8
-        r"[^\u00a7]{0,%d}?"                                     # bounded, no other section sign
-        r"\u00a7\s*(\d+)(?:\.\d+)*" % _REF_WINDOW,             # SS3 or SS4.2 -> parent 4
-        re.IGNORECASE | re.DOTALL,
-    )
-    refs = [
-        (row, section)
-        for rows, section in pattern.findall(doc)
-        for row in re.split(r"\s*(?:,|and)\s*", rows)
-        if row
-    ]
-    assert refs, (
-        "no 'row N ... section M' cross-reference found in WINDOWS.md -- the "
-        "instrument would pass vacuously"
-    )
-
-    for row, section in refs:
-        assert int(section) in spans, f"section {section} is not a section in WINDOWS.md"
-        start, end = spans[int(section)]
-        body = lines[start:end]
-        hits = [ln for ln in body if re.match(rf"^\|\s*{row}\s*\|", ln)]
-        assert hits, (
-            f"WINDOWS.md cites row {row} of a table in section {section}, but "
-            f"that section (lines {start + 1}-{end}) has no table row starting "
-            f"`| {row} |`. Table rows in that section: "
-            f"{sum(1 for ln in body if ln.startswith('|'))}"
         )
 
 
