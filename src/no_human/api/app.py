@@ -5417,6 +5417,13 @@ async def onboarding_status(request: Request) -> dict[str, Any]:
     return {"completed": bool(ob.get("completed")), **_onboarding_public(ob)}
 
 
+#: RFC 5321 limits: the whole path, and the local part before the "@".
+_EMAIL_MAX_LEN = 254
+_EMAIL_MAX_LOCAL_LEN = 64
+#: Bidi overrides/isolates -- invisible, and they reorder how an address renders.
+_EMAIL_BIDI_OVERRIDES = frozenset("\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069")
+
+
 def _well_formed_email(addr: str) -> bool:
     """Basic well-formedness: one "@", non-empty local and domain parts, and a
     domain that itself looks like a domain (contains a dot, does not start or
@@ -5426,10 +5433,25 @@ def _well_formed_email(addr: str) -> bool:
     s = (addr or "").strip()
     if not s or any(c.isspace() for c in s):
         return False
+    # Length is a safety bound, not a style rule. Without it a 200,000-character
+    # address passed this check and was written verbatim into config.yaml, which
+    # `_persist_onboarding` then re-reads and rewrites on every later onboarding
+    # write and which is parsed at every server start. RFC 5321 caps the whole
+    # path at 254 and the local part at 64.
+    if len(s) > _EMAIL_MAX_LEN:
+        return False
+    # `isspace` happens to reject \n and \r -- so classic header injection was
+    # already refused -- but it is a whitespace test, not a control-character
+    # one: NUL, BEL, ESC and the bidi overrides all passed and were persisted
+    # verbatim, and `Message.to` hands them to whatever transport is wired next.
+    if any(ord(c) < 0x20 or ord(c) == 0x7F or c in _EMAIL_BIDI_OVERRIDES for c in s):
+        return False
     parts = s.split("@")
     if len(parts) != 2:
         return False
     local, domain = parts
+    if len(local) > _EMAIL_MAX_LOCAL_LEN:
+        return False
     return bool(
         local
         and domain

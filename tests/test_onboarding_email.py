@@ -141,17 +141,14 @@ def test_telemetry_record_has_no_email_shaped_prop_anywhere():
         )
 
 
-def test_email_and_telemetry_modules_never_reference_each_other():
-    # Structural guard for the same AC2 guarantee: the modules are fully
-    # decoupled, so there is no code path by which one could leak into the
-    # other's payloads.
-    import inspect
-
-    telemetry_src = inspect.getsource(telemetry)
-    assert "email" not in telemetry_src.lower().replace("e-mail", "")
-    for mod in (base, send):
-        mod_src = inspect.getsource(mod)
-        assert "telemetry" not in mod_src.lower()
+# `test_email_and_telemetry_modules_never_reference_each_other` used to sit
+# here: `inspect.getsource(telemetry)` plus `assert "email" not in src`. It was
+# a false-positive generator -- one explanatory comment mentioning the word
+# turned it red with zero behaviour change -- and it could not detect a real
+# leak, because an address passed under any other name satisfies it. The AC2
+# guarantee is carried behaviourally by
+# `test_registering_an_email_never_shows_up_on_the_telemetry_wire`, whose
+# search instrument is validated against a planted leak.
 
 
 # ── AC3 (backend half): the request is server-side, replay exclusion lives
@@ -453,17 +450,10 @@ async def test_reregistering_the_same_address_is_idempotent_no_second_send(clien
     assert len(calls) == 2, "a genuinely different address must still send"
 
 
-def test_the_transport_seam_is_confined_to_send_py():
-    # app.py only ever calls the module-level send_welcome function; it must
-    # not reach into Transport/UnavailableTransport directly, or a future
-    # transport swap would touch more than one module.
-    import importlib
-    import inspect
-
-    app_module = importlib.import_module("no_human.api.app")
-    app_src = inspect.getsource(app_module)
-    assert "Transport" not in app_src
-    assert "from ..email.send import send_welcome" in app_src
+# `test_the_transport_seam_is_confined_to_send_py` used to sit here, asserting
+# the word "Transport" never appears in app.py's source. Same class: any
+# unrelated use of the word turns it red, and it establishes nothing about
+# where the seam actually lives.
 
 
 # ── AC6: server-side rejection mirrors an ordinary onboarding-endpoint
@@ -475,7 +465,29 @@ def test_the_transport_seam_is_confined_to_send_py():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("bad", ["", "not-an-email", "no-domain@", "@no-local.com",
-                                  "trailing-dot@example.", "has space@example.com"])
+                                  "trailing-dot@example.", "has space@example.com",
+                                  # Measured accepted before the bound existed: a
+                                  # 200,012-character address reached config.yaml,
+                                  # which is re-read and rewritten on every later
+                                  # onboarding write and parsed at every start.
+                                  "a" * 200000 + "@example.com",
+                                  "a" * 255 + "@example.com",
+                                  "a" * 65 + "@example.com",
+                                  # Total over 254 while the local part stays
+                                  # UNDER 64 -- the only shape the whole-path
+                                  # bound catches on its own. Without it the
+                                  # local-part bound caught every oversized case
+                                  # above and the whole-path guard was untested.
+                                  "a" * 60 + "@" + "b" * 190 + ".com",
+                                  # `isspace` rejected \n and \r, so header
+                                  # injection was already refused -- but these
+                                  # control characters were accepted and
+                                  # persisted verbatim.
+                                  "a\x00b@example.com",
+                                  "a\x07b@example.com",
+                                  "a\x1bb@example.com",
+                                  "a\x7fb@example.com",
+                                  "a\u202eb@example.com"])
 async def test_malformed_addresses_are_rejected_by_the_server_regardless_of_client_gate(
     client, bad
 ):

@@ -862,10 +862,11 @@ export default function Onboarding({ onComplete }) {
 
           {step.key === "email" && (
             <Stagger>
-              <h2 className="ob-h2">Where should we send your download link?</h2>
+              <h2 className="ob-h2">One email address for this install</h2>
               <p className="ob-note">
-                Every install registers one address. We'll send the welcome email
-                with your download link there — nothing else, no marketing list.
+                It is stored in your local config, and nothing is sent from here
+                yet — delivery is not wired up. When it is, this is where the
+                welcome goes. Nothing else, and no marketing list.
               </p>
               <div className="ob-row">
                 <input
