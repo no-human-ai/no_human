@@ -246,3 +246,73 @@ def test_a_nested_shell_running_something_harmless_is_still_allowed(worktree, on
     assert venv_install_guard.denial_reason(
         cmd, cwd=str(worktree), env=_env_pointing_at(worktree / ".venv"),
     ) is None
+
+
+# --- round 3: what the round-2 fix still let through ------------------------
+# An adversarial re-review refuted the round-2 commit's own title. Each test
+# below is a command it found ALLOWED.
+
+
+@pytest.fixture
+def spaced_primary(tmp_path, monkeypatch):
+    """A primary checkout under a path with a space, as `C:\\Program Files`
+    has. The round-2 NESTED_SHELL_TEMPLATES all use a space-free path, so the
+    parametrisation structurally could not see this."""
+    root = tmp_path / "Program Files" / "proj"
+    (root / "src" / "no_human").mkdir(parents=True)
+    (root / "src" / "no_human" / "__init__.py").write_text("")
+    _make_venv_bin(root / ".venv")
+    monkeypatch.setattr(guard, "_primary_checkout", lambda: root)
+    return root
+
+
+SPACED_NESTED = [
+    'cmd /c "{p}/.venv/bin/pip install requests"',
+    'cmd.exe /c "{p}/.venv/bin/pip install requests"',
+    'bash.exe -c "{p}/.venv/bin/pip install requests"',
+    'powershell -Command "{p}/.venv/bin/pip install requests"',
+    'pwsh -c "{p}/.venv/bin/pip install requests"',
+]
+
+
+@pytest.mark.parametrize("template", SPACED_NESTED)
+def test_a_nested_shell_cannot_launder_a_path_with_a_space(
+    spaced_primary, worktree, template, on_windows
+):
+    """The outer lex eats the payload's quoting, so re-lexing splits the path
+    at the space -- in BOTH readings, because the split is at the space and
+    not the separator. Silent, too: the mangled token names no installer."""
+    cmd = _backslashed(template.format(p=spaced_primary))
+    assert venv_install_guard.denial_reason(
+        cmd, cwd=str(worktree), env=_env_pointing_at(spaced_primary / ".venv"),
+    ) is not None, cmd
+
+
+def test_the_direct_spaced_path_still_denies(spaced_primary, worktree, on_windows):
+    """Control: without a nested shell this already worked, and must keep
+    working -- otherwise the fix above is masking a regression."""
+    cmd = _backslashed(f'"{spaced_primary}/.venv/bin/pip" install requests')
+    assert venv_install_guard.denial_reason(
+        cmd, cwd=str(worktree), env=_env_pointing_at(spaced_primary / ".venv"),
+    ) is not None
+
+
+@pytest.mark.parametrize("installer, args", [
+    ("pip.exe", "install foo"), ("uv.exe", "pip install foo"),
+    ("PIP.EXE", "install foo"), ("Pip.Exe", "install foo"),
+])
+def test_a_bare_windows_installer_name_resolves(
+    primary, worktree, installer, args, on_windows, monkeypatch
+):
+    """`_resolve_installer`'s no-separator branch tested the RAW token, so
+    `pip.exe` was not an installer name and it returned before `shutil.which`
+    AND before the WARNING. A real Windows venv's Scripts/ contains exactly
+    these spellings."""
+    scripts = primary / ".venv" / "bin"
+    src = scripts / ("uv" if installer.lower().startswith("uv") else "pip")
+    (scripts / installer).write_bytes(src.read_bytes())
+    (scripts / installer).chmod(0o755)
+    assert venv_install_guard.denial_reason(
+        f"{installer} {args}", cwd=str(worktree),
+        env=_env_pointing_at(primary / ".venv"),
+    ) is not None, installer

@@ -278,6 +278,14 @@ def _basename(path: str) -> str:
 
 
 def _is_installer_name(name: str) -> bool:
+    # Case-folded on Windows ONLY, where the filesystem is: `PIP.EXE` and
+    # `pip.exe` are the same file there and must reach the same verdict, while
+    # on POSIX `PIP` is a genuinely different file and folding would be a text
+    # match masquerading as a structural one. Round 3 of #105 found
+    # `…\Scripts\PIP.EXE install requests` allowed while the lowercase
+    # spelling was refused.
+    if _IS_WINDOWS:
+        name = name.lower()
     if name in _EXACT_INSTALLERS:
         return True
     return any(
@@ -307,6 +315,37 @@ def _lex(text: str) -> list[str]:
         return text.split()
 
 
+#: Cap on how many leading tokens of a nested payload are rejoined. A guard
+#: must not become a parser with unbounded work.
+_MAX_PREFIX_JOIN = 8
+
+
+def _spaced_path_candidates(payload: str) -> list[str]:
+    """The installer path a nested payload's own quoting would have kept whole.
+
+    Round 3 of #105. `cmd /c "C:\\Program Files\\proj\\.venv\\Scripts\\pip.exe
+    install requests"`: the OUTER lex consumes the payload's quoting, so
+    re-lexing it splits the path at the space in `Program Files` and the
+    installer token is destroyed -- in BOTH readings, because the split is at
+    the SPACE, not the separator. The alternate reading cannot help, and the
+    miss is silent: `Filesproj.venvScriptspip.exe` names no installer, so not
+    even the WARNING fires.
+
+    `cmd` itself resolves the longest leading prefix that names an executable.
+    This rebuilds those prefixes and keeps only one that actually names an
+    installer, emitting it followed by its own arguments so the adjacent
+    mutating-subcommand check still sees `install` next to it.
+    """
+    toks = _lex(payload)
+    out: list[str] = []
+    for k in range(2, min(len(toks), _MAX_PREFIX_JOIN) + 1):
+        joined = " ".join(toks[:k])
+        if _is_installer_name(_basename(joined)):
+            out.append(joined)
+            out.extend(toks[k:])
+    return out
+
+
 def _flatten(text: str, _depth: int = 0) -> list[str]:
     """The full token stream for `text`, with shell-runner script arguments
     recursively expanded in place. Positionless by construction: the
@@ -333,6 +372,7 @@ def _flatten(text: str, _depth: int = 0) -> list[str]:
             seen_runner = True
         if seen_runner and tok.lower() in _SCRIPT_FLAGS and i + 1 < n:
             out.extend(_flatten(tokens[i + 1], _depth + 1))
+            out.extend(_spaced_path_candidates(tokens[i + 1]))
             seen_runner = False
             out.append(tok)
             i += 2
@@ -401,7 +441,14 @@ def _resolve_installer(token: str, cwd: str | None, env: Mapping[str, str]) -> s
                     "resolved via PATH; allowing", token,
                 )
             return None
-        if not _is_installer_name(token):
+        # `_basename`, not the raw token: it strips `.exe`, so `pip.exe` and
+        # `uv.exe` -- what a real Windows venv's Scripts/ actually contains --
+        # reach the same verdict as their POSIX spellings. This was the SECOND
+        # site left on the raw name; round 2 of #105 fixed only the one in
+        # `_flatten` and its commit message claimed there was one. Without it
+        # this returns before `shutil.which` AND before the WARNING, so a bare
+        # `pip.exe install foo` was allowed in silence.
+        if not _is_installer_name(_basename(token)):
             return None
         found = shutil.which(token, path=env.get("PATH"))
         if not found:
