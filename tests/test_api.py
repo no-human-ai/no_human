@@ -861,6 +861,109 @@ async def test_approve_landed_refusal_writes_approve_refused_event(client, store
 
 
 @pytest.mark.asyncio
+async def test_approve_refuses_a_stale_green_then_lands_after_a_recut(
+    client, store, tmp_path, monkeypatch,
+):
+    """The board's approve button and `nh approve` both ultimately reach
+    `_merge_task_pr` (src/no_human/api/app.py) — the SAME merge-ready
+    staleness check the CLI listing/landing surfaces apply must also refuse
+    here: a green recorded against a trunk tip that has since moved (the PR
+    #272 shape, task 2c916bff — trunk landed a new guard test after the
+    branch was cut) is refused with a reason naming the staleness, and the
+    SAME task is offered/accepted again once its green is re-measured
+    against the moved trunk. Both directions in one test, per the
+    acceptance criteria, so this can't be satisfied by never accepting."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-b", "main")
+    _git(repo, "config", "user.email", "u@e.com")
+    _git(repo, "config", "user.name", "u")
+    (repo / "base.txt").write_text("base\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "base")
+    _git(repo, "checkout", "-q", "-b", "feature")
+    (repo / "feature.txt").write_text("feature\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "feature commit")
+    head_sha = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "checkout", "-q", "main")
+    old_trunk_sha = _git(repo, "rev-parse", "main")
+
+    t = Task.new("API staleness", repo_path=str(repo))
+    t.context = {
+        "pr_watch": "https://example.invalid/pr/9",
+        "pr_branch": "feature",
+        "merge_policy": {head_sha: {"tests_green": True, "base_sha": old_trunk_sha}},
+        "review_history": [{"sha": head_sha, "passed": True}],
+    }
+    await store.create_task(t)
+    await store.set_status(t, TaskStatus.AWAITING_APPROVAL, validate=False)
+
+    # Trunk moves after the branch's green was measured — the guard-test
+    # shape from PR #272: the recorded green no longer describes a tree
+    # that will land.
+    (repo / "trunk_guard.txt").write_text("guard\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "trunk: add a guard after the branch was cut")
+    new_trunk_sha = _git(repo, "rev-parse", "main")
+
+    r = await client.post(f"/api/tasks/{t.id}/approve")
+    assert r.status_code == 500
+    detail = r.json()["detail"]
+    assert detail["step"] == "preconditions"
+    assert old_trunk_sha[:12] in detail["stderr"]
+    assert new_trunk_sha[:12] in detail["stderr"]
+    refreshed = await store.find_task(t.id)
+    assert refreshed.status == TaskStatus.AWAITING_APPROVAL, (
+        "a staleness refusal must not land anything or change status")
+    events = await store.list_events(t.id)
+    assert any(
+        e["kind"] == "approve_refused" and "trunk" in e["text"] for e in events
+    )
+
+    # Re-cut the branch onto the now-advanced trunk and re-stamp the
+    # verdict for the new head — the SAME task must be offered (accepted)
+    # again: the approve endpoint must proceed PAST the staleness gate this
+    # time (asserted below by `land_task` actually being invoked), not just
+    # "still refuses for a different reason".
+    _git(repo, "checkout", "-q", "feature")
+    _git(repo, "rebase", "main")
+    _git(repo, "checkout", "-q", "main")
+    new_head_sha = _git(repo, "rev-parse", "feature")
+
+    t.context = await store.merge_context(t.id, {
+        "merge_policy": {new_head_sha: {"tests_green": True, "base_sha": new_trunk_sha}},
+        "review_history": [{"sha": new_head_sha, "passed": True}],
+    })
+
+    from no_human.vcs import approve_merge as approve_merge_module
+
+    land_calls: list[dict] = []
+
+    class _FakeLandResult:
+        ok = True
+        skipped = False
+        landed_sha = new_head_sha
+        step = ""
+        stderr = ""
+        message = "merged"
+
+    def _fake_land_task(**kwargs):
+        land_calls.append(kwargs)
+        return _FakeLandResult()
+
+    monkeypatch.setattr(approve_merge_module, "land_task", _fake_land_task)
+
+    r2 = await client.post(f"/api/tasks/{t.id}/approve")
+    assert r2.status_code == 200, r2.json()
+    assert land_calls, "land_task must actually run — the staleness gate must not refuse this time"
+    body = r2.json()
+    assert body["landed_sha"] == new_head_sha
+    refreshed2 = await store.find_task(t.id)
+    assert refreshed2.status == TaskStatus.DONE
+
+
+@pytest.mark.asyncio
 async def test_successful_approve_writes_no_approve_refused_event(client, store):
     t = await _seed_task(store, status=TaskStatus.AWAITING_APPROVAL)
     r = await client.post(f"/api/tasks/{t.id}/approve")
