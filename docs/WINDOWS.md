@@ -626,8 +626,8 @@ screens". The verification is:
    a brief flash from the SDK's `claude -v` probe.
 
 **NOT YET RUN.** This step gates the 0.1.6 Windows walk and has not been executed
-on a Windows machine. The mechanism is stated in row 7 of the defect table in
-§2 — `DETACHED_PROCESS` makes Windows ignore `CREATE_NO_WINDOW`, so a detached
+on a Windows machine. The mechanism is stated in row 7 of the divergences
+table in §3 — `DETACHED_PROCESS` makes Windows ignore `CREATE_NO_WINDOW`, so a detached
 `nh` had no console and its console-subsystem grandchildren each got a visible
 one; dropping `detached` on win32 lets `windowsHide` apply and the hidden
 console is inherited. Microsoft's ["Process Creation

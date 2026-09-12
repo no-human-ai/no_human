@@ -3062,3 +3062,48 @@ def test_a_symbol_row_beyond_the_window_fails(tmp_path, monkeypatch):
         _check_citation(
             "security.md", "widget.py:widget_fn:11", "widget.py", "MARKER PHRASE"
         )
+
+
+def test_windows_md_row_and_section_cross_references_resolve():
+    """A "row N ... in §M" pointer must land on a real row in a real section.
+
+    #110 was a citation that resolved to nothing. Its replacement named the
+    right row number and the wrong section -- the row lives in §3
+    ("Divergences from macOS"), while §2 has no table at all -- so the fix
+    reproduced the defect it was closing. The CITATION_TABLE row added
+    alongside it cannot see this: it checks the code side, and `WINDOWS.md` is
+    not in `_CITATION_DOC_PATHS`, so nothing opens the doc.
+
+    This walks the doc's own structure instead: for every "row N ... table in
+    §M", the section headed `## M.` must actually contain a table row whose
+    first cell is N.
+    """
+    doc = (Path(__file__).resolve().parent.parent / "docs" / "WINDOWS.md").read_text(
+        encoding="utf-8"
+    )
+    lines = doc.splitlines()
+
+    # `## <n>. <title>` -> the half-open line range that section owns.
+    heads = [
+        (int(m.group(1)), i)
+        for i, ln in enumerate(lines)
+        if (m := re.match(r"^## (\d+)\.", ln))
+    ]
+    spans = {
+        num: (start, heads[k + 1][1] if k + 1 < len(heads) else len(lines))
+        for k, (num, start) in enumerate(heads)
+    }
+
+    refs = re.findall(r"row (\d+)\b[^§]*?§(\d+)", doc, flags=re.DOTALL)
+    assert refs, "no 'row N ... §M' cross-reference found — the instrument would pass vacuously"
+
+    for row, section in refs:
+        assert int(section) in spans, f"§{section} is not a section in WINDOWS.md"
+        start, end = spans[int(section)]
+        body = lines[start:end]
+        hits = [ln for ln in body if re.match(rf"^\|\s*{row}\s*\|", ln)]
+        assert hits, (
+            f"WINDOWS.md cites row {row} of a table in §{section}, but §{section} "
+            f"(lines {start + 1}-{end}) has no table row starting `| {row} |`. "
+            f"Table rows in that section: {sum(1 for ln in body if ln.startswith('|'))}"
+        )
