@@ -1798,7 +1798,14 @@ FROZEN_FILE_LINES = {
     # (every rebase spelling incl. `pull --rebase`, every reset mode, `commit
     # --amend`, `checkout -B`/`switch -C`/`branch -f`/`update-ref`,
     # `filter-branch`) -- prose only, no behavior change.
-    "agent/guard.py": 2911,
+    # 2911 -> 2914 (+3, 2026-09-13): the same docstring bullet once more, in
+    # the hand-finish round -- it now names `pull -r` and `switch
+    # --force-create` (two spellings measured bypassing the guard on a real
+    # bare remote) and records that a rebase which KEEPS the pushed tip stays
+    # allowed, which is what `pushed_tip_guard._classify_rebase` now decides.
+    # Prose only, no behavior change. Measured on this tree by the scanner's
+    # own metric.
+    "agent/guard.py": 2914,
     # +44: idle-path recover_quota_cooldown gate in tick() and the
     # never-shorten-a-live-wall guard in _run — the quota-wall storm cost fix.
     # +129: `HarvestJob` — the cadence job (`due()`/`maybe_run()`) that runs

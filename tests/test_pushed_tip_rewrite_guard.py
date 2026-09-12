@@ -14,6 +14,7 @@ the tip; a never-pushed branch must be unaffected.
 """
 from __future__ import annotations
 
+import os
 import subprocess
 import tempfile
 
@@ -70,6 +71,20 @@ def _is_ancestor(work, ancestor, descendant):
     ).returncode == 0
 
 
+def _advance_origin_main(work):
+    """Move origin/main on with a commit of its own, so it is DIVERGED from
+    the pushed feature branch rather than a plain ancestor of it — the
+    incident's shape (main advanced while the branch was out for review),
+    and the only shape in which a rebase actually rewrites anything (git
+    no-ops a rebase onto an ancestor of HEAD)."""
+    _git(work, "checkout", "-q", "main")
+    (work / "g.txt").write_text("main moved on\n")
+    _git(work, "add", "-A")
+    _git(work, "commit", "-q", "-m", "main advances")
+    _git(work, "push", "-q", "origin", "main")
+    _git(work, "checkout", "-q", "feature")
+
+
 @pytest.fixture
 def harness_repo(tmp_path):
     """Factory fixture: each call builds a fresh bare remote plus a fresh
@@ -124,6 +139,46 @@ _DENIED_FORMS = (
     "git branch -f feature origin/main",
     "git update-ref refs/heads/feature origin/main",
     "git filter-branch -- --all",
+    # The three spellings measured ALLOWING a real, executed rewrite
+    # (2026-09-13) -- one per reading error Phase A used to make. Each was
+    # run against a bare remote with a diverged origin/main and left the
+    # pushed tip no longer an ancestor of HEAD:
+    #   `-r` is git's short spelling of `--rebase` (only the long spellings
+    #   were matched);
+    "git pull -r origin main",
+    #   `--force-create` is git's long spelling of `switch -C` (only the
+    #   short one was scanned);
+    "git switch --force-create feature origin/main",
+    #   `-m` takes a VALUE, so `reason` was read as operand 0 and the
+    #   `refs/heads/` test never saw the ref.
+    "git update-ref -m reason refs/heads/feature origin/main",
+    # Same two classes, the other spellings of each:
+    "git pull --rebase=true origin main",
+    "git switch --force-create=feature origin/main",
+    "git update-ref --create-reflog -m reason refs/heads/feature origin/main",
+    "git checkout -Bfeature origin/main",
+    "git branch --force feature origin/main",
+    # `--force` on `switch` is `--discard-changes`, NOT `--force-create`.
+    # Reading it as an abbreviation of `--force-create` makes this row
+    # classify nothing (the abbreviation carries no value) and ALLOWS the
+    # `-C` reset sitting right next to it.
+    "git switch --force -C feature origin/main",
+    # A rebase still denies whenever its NEW BASE does not keep the tip --
+    # including the spellings whose base is not the first positional.
+    # `-x HEAD` is chosen deliberately: if `-x`'s VALUE were read as the new
+    # base (the operand-shifting error above), `HEAD` resolves and the tip
+    # IS its ancestor, so the guard would ALLOW this rewrite onto
+    # origin/main. It denies only if `-x` is parsed as taking a value.
+    "git rebase -x HEAD origin/main",
+    "git rebase -s recursive origin/main",
+    # `--strategy` is an EXACT option even though it prefixes
+    # `--strategy-option`; resolving it as an ambiguous abbreviation instead
+    # would leave `ours` an operand, read the base as `ours`, and read
+    # `origin/main` as the branch being rebased -- which is not the current
+    # branch, so the rewrite would be ALLOWED.
+    "git rebase --strategy ours origin/main",
+    "git rebase --keep-base origin/main",
+    "git rebase --root",
 )
 
 
@@ -147,6 +202,52 @@ def test_every_rewrite_form_on_a_pushed_branch_is_denied_naming_the_tip_and_the_
     assert d.severity == guard.GUARD_DESTRUCTIVE
     assert tip in d.reason
     assert "git merge" in d.reason
+
+
+#: The three spellings measured (2026-09-13) getting an ALLOW out of this
+#: module while stranding the pushed tip for real. Kept as (command string
+#: the guard is asked about, argv actually executed).
+_MEASURED_BYPASS_SPELLINGS = (
+    ("git pull -r origin main",
+     ["git", "pull", "-r", "origin", "main"]),
+    ("git switch --force-create feature origin/main",
+     ["git", "switch", "--force-create", "feature", "origin/main"]),
+    ("git update-ref -m reason refs/heads/feature origin/main",
+     ["git", "update-ref", "-m", "reason", "refs/heads/feature",
+      "origin/main"]),
+)
+
+
+def test_the_three_measured_bypass_spellings_deny_and_really_do_strand_the_tip(
+    harness_repo,
+):
+    """The denial is not asserted on its own: each row is EXECUTED against a
+    real bare remote with a diverged origin/main, and the tip really does
+    stop being an ancestor of HEAD afterwards. That second half is what
+    makes the denial earned rather than asserted — if a spelling did NOT
+    strand the tip, denying it would be an over-denial, and this test would
+    say so instead of quietly agreeing with the guard.
+
+    Each row is one of Phase A's two argv-reading errors:
+    `-r` (a short spelling of `--rebase` that was not matched),
+    `--force-create` (a long spelling of `switch -C` that was not scanned),
+    and `-m <reason>` (a VALUE read as the ref operand)."""
+    for cmd, argv in _MEASURED_BYPASS_SPELLINGS:
+        work, tip = harness_repo()
+        _advance_origin_main(work)
+        assert _is_ancestor(work, tip, "HEAD"), f"setup broken for {cmd!r}"
+
+        d = _ev(cmd, cwd=str(work))
+        assert d.allow is False, f"{cmd!r} -> {d.reason}"
+        assert d.severity == guard.GUARD_DESTRUCTIVE, f"{cmd!r} -> {d.severity}"
+        assert tip in d.reason, f"{cmd!r} -> {d.reason}"
+        assert "git merge" in d.reason, f"{cmd!r} -> {d.reason}"
+
+        proc = subprocess.run(argv, cwd=work, capture_output=True, text=True)
+        assert proc.returncode == 0, f"{cmd!r} -> {proc.stderr!r}"
+        assert not _is_ancestor(work, tip, "HEAD"), (
+            f"{cmd!r} left the tip an ancestor — the denial above would be "
+            f"an OVER-denial, not a fix")
 
 
 def test_the_reset_to_base_rows_get_the_pushed_tip_message_not_the_generic_one(
@@ -329,53 +430,164 @@ def test_git_itself_decides_what_a_bare_reset_pathspec_does(harness_repo):
     assert tip6 in d6.reason, d6.reason
 
 
-def test_allowed_forms_keep_the_pushed_tip_an_ancestor_of_head(harness_repo):
-    # git reset --hard HEAD: a no-op relative to the tip.
-    work, tip = harness_repo()
-    _git(work, "reset", "--hard", "HEAD")
-    assert _is_ancestor(work, tip, "HEAD")
-
-    # git reset --hard <tip sha>: resets exactly to the tip.
-    work, tip = harness_repo()
-    _git(work, "reset", "--hard", tip)
-    assert _is_ancestor(work, tip, "HEAD")
-
-    # git reset --soft <tip sha>: also exactly to the tip.
-    work, tip = harness_repo()
-    _git(work, "reset", "--soft", tip)
-    assert _is_ancestor(work, tip, "HEAD")
-
-    # commit --amend of an UNPUSHED commit made on top of the tip: the tip
-    # itself never moves.
-    work, tip = harness_repo()
+def _add_one_unpushed_commit(work):
     (work / "f.txt").write_text("unpushed\n")
     _git(work, "commit", "-aq", "-m", "unpushed")
-    _git(work, "commit", "-q", "--amend", "-m", "unpushed amended")
-    assert _is_ancestor(work, tip, "HEAD")
 
-    # git pull --no-rebase: a merge-flavored pull, ancestry-preserving even
-    # though nothing new is actually there to pull.
-    work, tip = harness_repo()
-    _git(work, "pull", "-q", "--no-rebase", "origin", "feature")
-    assert _is_ancestor(work, tip, "HEAD")
 
-    # git status / git log: no state change at all.
-    work, tip = harness_repo()
-    subprocess.run(["git", "status"], cwd=work, check=True,
-                    capture_output=True, text=True)
-    subprocess.run(["git", "log", "--oneline", "-1"], cwd=work, check=True,
-                    capture_output=True, text=True)
-    assert _is_ancestor(work, tip, "HEAD")
+def _add_two_unpushed_commits(work):
+    for n in (4, 5):
+        (work / "f.txt").write_text(f"{n}\n")
+        _git(work, "commit", "-aq", "-m", f"c{n} (unpushed)")
 
-    # git rebase --abort / --skip: this MODULE allows them outright (Phase A
-    # classifies them None before any subprocess) — they are still denied,
-    # with a more specific working-tree message, by
-    # guard._git_worktree_denial, so this asserts the module's own verdict
-    # directly rather than `evaluate().allow`.
-    work, tip = harness_repo()
-    for cmd in ("git rebase --abort", "git rebase --skip"):
+
+def _add_an_untracked_file(work):
+    (work / "new.txt").write_text("new\n")
+
+
+#: Rows this module must ALLOW, each with the setup that makes it a real
+#: workflow. `cmd` is what the guard is asked about AND (when `execute`) what
+#: is actually run, via the shell, so a compound row is exercised as written.
+#: `{tip}` is substituted with the pushed tip sha.
+#:
+#: `execute=False` marks a row that cannot be run in this fixture (`rebase
+#: --abort`/`--skip` need a rebase in progress) or that must not be (`uv run
+#: pytest` would run the whole suite) — the guard verdict is still asserted.
+_ALLOWED_FORMS = (
+    # (label, cmd, setup, env, execute)
+    ("reset --hard HEAD (no-op vs the tip)",
+     "git reset --hard HEAD", None, None, True),
+    ("reset --hard <tip> (exactly the tip)",
+     "git reset --hard {tip}", None, None, True),
+    ("reset --soft <tip> (exactly the tip)",
+     "git reset --soft {tip}", None, None, True),
+    ("commit --amend of an UNPUSHED commit on top of the tip",
+     "git commit -q --amend -m 'unpushed amended'",
+     _add_one_unpushed_commit, None, True),
+    ("pull --no-rebase (merge-flavored, ancestry-preserving)",
+     "git pull -q --no-rebase origin feature", None, None, True),
+    # `-X` takes a VALUE, so the `r` in `theirs` is that value, not the `-r`
+    # of `--rebase`. A short-option scan that does not stop at a
+    # value-taking short reads this as a rebase-flavored pull and denies an
+    # ordinary merge.
+    ("pull -Xtheirs (the `r` here is inside -X's VALUE)",
+     "git pull -q -Xtheirs origin feature", None, None, True),
+    ("switch --force (that is --discard-changes, not --force-create)",
+     "git switch --force feature", None, None, True),
+    ("status", "git status", None, None, True),
+    ("log", "git log --oneline -1", None, None, True),
+    ("diff", "git diff", None, None, True),
+    ("add -A && commit (the coder's normal way to save work)",
+     "git add -A && git commit -q -m 'ordinary work'",
+     _add_an_untracked_file, None, True),
+    ("pull --ff-only", "git pull -q --ff-only origin feature", None, None, True),
+    ("push (an ordinary fast-forward push of this branch)",
+     "git push -q origin feature", None, None, True),
+    ("reset -- <path> (unstage one file)",
+     "git reset -- f.txt", None, None, True),
+    # Blocker C: squashing UNPUSHED commits before delivery. The pushed tip
+    # is the new base here, so it survives -- and this is a normal thing to
+    # do, so denying it would train a coder to work around the guard.
+    ("rebase -i HEAD~2 to squash two UNPUSHED commits",
+     "git rebase -i HEAD~2", _add_two_unpushed_commits,
+     {"GIT_SEQUENCE_EDITOR": "sed -i '' -e '2s/^pick/squash/'",
+      "GIT_EDITOR": "true"}, True),
+    ("rebase --autosquash of UNPUSHED commits onto the tip",
+     "git rebase --autosquash {tip}", _add_two_unpushed_commits,
+     {"GIT_SEQUENCE_EDITOR": "true", "GIT_EDITOR": "true"}, True),
+    # A bare `git rebase` names no base on its argv: git uses the branch's
+    # configured upstream, which for this pushed branch is `origin/feature`
+    # -- the tip itself. The guard hands Phase B the literal revision
+    # expression `@{upstream}` for exactly this, so if that expression ever
+    # stopped resolving, the row would DENY (an unresolvable target denies)
+    # instead of allowing a command git itself calls a no-op.
+    ("bare rebase (git resolves the base from @{upstream})",
+     "git rebase", None, {"GIT_EDITOR": "true"}, True),
+    # `rebase --abort`/`--skip` need a rebase in progress, so they are
+    # verdict-only here. They are still denied, with a more specific
+    # working-tree message, by `guard._git_worktree_denial` -- which is
+    # exactly why every row in this table is asserted against
+    # `pushed_tip_guard.denial_reason` and NOT `guard.evaluate().allow`:
+    # `git reset --hard HEAD` is denied by that separate generic rule too,
+    # so `evaluate()` would be the wrong instrument for this table.
+    ("rebase --abort", "git rebase --abort", None, None, False),
+    ("rebase --skip", "git rebase --skip", None, None, False),
+    ("uv run pytest (not a git command at all)",
+     "uv run pytest -q", None, None, False),
+)
+
+
+def test_allowed_forms_keep_the_pushed_tip_an_ancestor_of_head(harness_repo):
+    """Each allowed row is asserted TWICE: this module must not deny it
+    (`denial_reason(...) is None`), and executing it for real must leave the
+    pushed tip an ancestor of HEAD.
+
+    Both halves are load-bearing and neither substitutes for the other. An
+    earlier version asserted only the ancestry half -- so a pure
+    OVER-DENIAL (making `target_denies` return True even when the target
+    resolves to the tip itself) left the whole suite green: every row still
+    kept the tip an ancestor, because the guard's verdict was never read.
+    The `denial_reason is None` assert is what closes that, and it runs
+    BEFORE the row is executed, when the repo is still in the state the
+    guard would really be asked about."""
+    for label, cmd_tpl, setup, env, execute in _ALLOWED_FORMS:
+        work, tip = harness_repo()
+        if setup is not None:
+            setup(work)
+        cmd = cmd_tpl.format(tip=tip)
         assert pushed_tip_guard.denial_reason(
-            guard._git_invocations(cmd), str(work)) is None, cmd
+            guard._git_invocations(cmd), str(work)) is None, (
+                f"over-denial on an allowed row: {label} -- {cmd!r}")
+        if not execute:
+            continue
+        proc = subprocess.run(
+            cmd, cwd=work, shell=True, capture_output=True, text=True,
+            env={**os.environ, **(env or {})},
+        )
+        assert proc.returncode == 0, (
+            f"{label}: {cmd!r} exited {proc.returncode}: {proc.stderr!r}")
+        assert _is_ancestor(work, tip, "HEAD"), (
+            f"{label}: {cmd!r} stranded the pushed tip")
+
+
+_SQUASH_ENV = {"GIT_SEQUENCE_EDITOR": "sed -i '' -e '2s/^pick/squash/'",
+               "GIT_EDITOR": "true"}
+
+
+def test_a_rebase_is_judged_by_its_new_base_not_denied_outright(harness_repo):
+    """The SAME command — `git rebase -i HEAD~2` — on two repos that differ
+    only in where the pushed tip sits, with opposite verdicts, each proved
+    by executing it:
+
+    (a) two UNPUSHED commits on top of the pushed tip: `HEAD~2` IS the tip,
+        the tip survives the squash, and the guard must ALLOW. Squashing
+        local work before delivery is a normal thing to do; an earlier
+        version classified every non-wind-back rebase `("outright",)` and
+        denied this, which is how a guard teaches a coder to work around it.
+    (b) one unpushed commit: `HEAD~2` is BELOW the pushed tip, the squash
+        rewrites the tip out of HEAD's ancestry, and the guard must DENY.
+    """
+    work, tip = harness_repo()
+    _add_two_unpushed_commits(work)
+    cmd = "git rebase -i HEAD~2"
+    assert pushed_tip_guard.denial_reason(
+        guard._git_invocations(cmd), str(work)) is None
+    proc = subprocess.run(cmd, cwd=work, shell=True, capture_output=True,
+                          text=True, env={**os.environ, **_SQUASH_ENV})
+    assert proc.returncode == 0, proc.stderr
+    assert _is_ancestor(work, tip, "HEAD"), (
+        "squashing two UNPUSHED commits must keep the pushed tip")
+
+    work2, tip2 = harness_repo()
+    _add_one_unpushed_commit(work2)
+    d = _ev(cmd, cwd=str(work2))
+    assert d.allow is False, d.reason
+    assert tip2 in d.reason, d.reason
+    proc2 = subprocess.run(cmd, cwd=work2, shell=True, capture_output=True,
+                           text=True, env={**os.environ, **_SQUASH_ENV})
+    assert proc2.returncode == 0, proc2.stderr
+    assert not _is_ancestor(work2, tip2, "HEAD"), (
+        "setup broken: this squash was supposed to strand the pushed tip")
 
 
 def test_a_never_pushed_branch_keeps_every_form_allowed(repo):
