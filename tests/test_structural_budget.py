@@ -216,7 +216,14 @@ FROZEN_FUNCTION_LINES = {
     # best-effort call that runs the UI-evidence browser walk after tests
     # pass and threads its rendered media section into `_pr_body`.
     # Re-anchored on merge.
-    "core/orchestrator.py:Orchestrator._finalize": 437,
+    # 437 -> 451 (+14): records the merge base the verdict was measured
+    # against (`policy_base_sha`, fed into `facts_from_evidence` as
+    # `base_sha`) so a later staleness check can tell a green measured on a
+    # tree trunk has since moved past from one that would still land clean.
+    # An unmeasurable base fails OPEN (`base_sha=""`), matching every other
+    # local-only, best-effort git read in this method -- see the inline
+    # comment at the call site. Re-anchored on merge.
+    "core/orchestrator.py:Orchestrator._finalize": 451,
     # Pre-existing on main (measured red at d3d7d3a82a, this session's start):
     # an earlier fleet land grew stream() +6 without re-freezing it on its
     # merge result — the same "landed without measuring the ratchet" failure
@@ -1183,7 +1190,10 @@ FROZEN_FILE_LINES = {
     # the scanner's own metric (ast/splitlines-based, not `wc -l` — this
     # file has a few non-`\n` line separators that make the two differ
     # by a constant 3 lines).
-    "core/orchestrator.py": 23846,
+    # 23846 -> 23860 (+14): merge-base staleness recording, same change as
+    # `Orchestrator._finalize` above. Measured on this tree by the
+    # scanner's own metric.
+    "core/orchestrator.py": 23860,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.
@@ -1335,7 +1345,12 @@ FROZEN_FILE_LINES = {
     # `nh approve --ready`'s one-line summary no longer silently drops the
     # only signal telling the operator a verifier never answered. Measured
     # via `wc -l src/no_human/cli/commands.py`.
-    "cli/commands.py": 8666,
+    # 8666 -> 8734 (+68): merge-ready staleness check — `nh approve --ready`'s
+    # listing and landing path both gained the trunk-moved-since-measurement
+    # refusal (`stale_base_reason`), plus the `--ready`/`status` JSON now
+    # surface the excluded-because-stale reason. Measured via
+    # `wc -l src/no_human/cli/commands.py`.
+    "cli/commands.py": 8734,
     # api/app.py 5338 -> 5346 (+8): same budget-floor warning surfaced by
     # `send-back`/`reply` as `budget_warning` in the JSON response. Net cost
     # was trimmed from a naive +14 to +8 by computing `Bounds.from_config(...)`
@@ -1497,7 +1512,12 @@ FROZEN_FILE_LINES = {
     # path too, gated to avoid double-firing against `_run_attempt`'s own
     # in-process `cancelled_hard` emit when `stopped` is True. Measured on
     # this tree with the scanner below.
-    "api/app.py": 6183,
+    # 6183 -> 6249 (+66): merge-ready staleness check — `_local_trunk_sha`
+    # helper plus `_board_tasks` and `_merge_task_pr` (`_resolve_head`) both
+    # consult `stale_base_reason` so the board's `merge_ready=1` filter and
+    # the API land path refuse the same stale-base verdicts the CLI does.
+    # Measured on this tree with the scanner below.
+    "api/app.py": 6249,
     # +51: W5 active-time phase writer (phase instrumentation).
     # +84: `list_escalations`/`list_review_fails`/`list_tamper_trips` — the
     # three new failure-signal sources the recurring learning harvest mines.

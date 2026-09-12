@@ -162,7 +162,7 @@ named here.
   and line and quote the lines they are about. Same destination as the push.
 - **PR receipt and status polling** — `gh` / `glab` calls for the PR's head SHA
   and its mergeability (`vcs/pr_watcher.py:default_pr_state`, `vcs/receipts.py`), plus
-  `git fetch origin` (`vcs/git.py:GitRepo._have_remote_commit:1020`, `:GitRepo.fetch:1354`),
+  `git fetch origin` (`vcs/git.py:GitRepo._have_remote_commit:1104`, `:GitRepo.fetch:1438`),
   while a task waits on CI or review.
   These read; they send only the identifiers of a PR you just created.
 - **`nh merge-stack run` calls `gh pr merge`** against your git host
@@ -258,7 +258,7 @@ named here.
   and `CodexBackend._child_env()` — with an
   env-var mark that is inherited by every descendant of that session, no
   matter how it is invoked. `nh approve` and `nh merge-stack run`
-  (`_refuse_agent_gate_act`, `cli/commands.py:approve:5175`, `:merge_stack_run:2910`) refuse before
+  (`_refuse_agent_gate_act`, `cli/commands.py:approve:5227`, `:merge_stack_run:2910`) refuse before
   `_bootstrap` runs when the calling process carries that mark, and an HTTP
   middleware in `api/app.py` (`_refuse_marked_gate_acts`, by `_csp_header`)
   refuses
