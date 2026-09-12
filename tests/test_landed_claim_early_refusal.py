@@ -421,26 +421,40 @@ async def test_an_unresolvable_ship_ref_is_not_a_refusal(tmp_path, store):
     ],
 )
 async def test_ordinary_prose_never_reaches_the_real_probe(
-    text, bare_repo, tmp_path, store,
+    text, diverged_repo, tmp_path, store,
 ):
     """Send-back (second review), Blocker 2, pinned against the REAL probe
     (`_build_landed_claim_guard`/`_already_satisfied_subject`) rather than a
     fake one — the reviewer's literal wording: "against a repo whose HEAD is
-    off base". `attempt_branch`'s head is genuinely not on `main`, so if this
-    unnamed-sha, non-marker prose reached the probe it would be refused; the
-    fix is that it must never reach the probe at all."""
+    off base".
+
+    (Sixth review) The original fixture here left the attempt branch AHEAD
+    of `main` (`commits_ahead("main") > 0`), which is exactly the shape the
+    new outer predicate added by this task silences unconditionally — so
+    `hook(...) == {}` was guaranteed by that predicate alone, regardless of
+    whether the non-actionable-prose filter ran at all; deleting
+    `_is_actionable_claim` would not have turned this test red. Re-based
+    onto `diverged_repo` instead: HEAD sits at the local `main` tip
+    (`commits_ahead("main") == 0`, pinned below), so the outer predicate
+    does NOT fire, and `test_build_landed_claim_guard_fires_on_a_refutable_
+    claim_via_the_real_probe` above proves an ACTIONABLE claim on this exact
+    fixture shape IS refused. So if this unnamed-sha, non-marker prose
+    reached the probe here it would be refused too; the only thing that can
+    make `hook(...) == {}` in this state is the non-actionable-prose filter
+    itself."""
+    old_tip = _git(diverged_repo, "rev-parse", "origin/main").stdout.strip()
     attempt_branch = "no-human/task-attempt-3"
-    _git(bare_repo, "checkout", "-b", attempt_branch)
-    (bare_repo / "fix.py").write_text("def fix():\n    return True\n")
-    _git(bare_repo, "add", "-A")
-    _git(bare_repo, "commit", "-m", "attempt at the fix, review FAILED")
+    # local-only, left at the OLD pushed tip — same trick as the sibling
+    # positive test, so the refusal path (were an actionable claim made)
+    # stays deterministic and network-free.
+    _git(diverged_repo, "branch", attempt_branch, old_tip)
 
     orch = _orch(store, tmp_path)
-    task = Task.new("existing", repo_path=str(bare_repo), kind="feature")
+    task = Task.new("existing", repo_path=str(diverged_repo), kind="feature")
     await store.create_task(task)
 
     guard = orch._build_landed_claim_guard(
-        task, GitRepo(bare_repo), base="main", branch=attempt_branch,
+        task, GitRepo(diverged_repo), base="main", branch=attempt_branch,
     )
     assert guard is not None
 
@@ -448,6 +462,8 @@ async def test_ordinary_prose_never_reaches_the_real_probe(
     result = await guard.hook({}, None, None)
     assert result == {}, (
         f"non-actionable prose must never reach the probe: {text!r}")
+    # Pin the state this ran in: NOT the outer predicate's silence shape.
+    assert GitRepo(diverged_repo).commits_ahead("main") == 0
 
 
 async def test_a_pushed_sibling_branch_of_the_same_task_is_not_blocked(
