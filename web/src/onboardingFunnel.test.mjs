@@ -141,3 +141,58 @@ test("Onboarding.jsx imports recordOnboardingStep from api.js", () => {
   assert.ok(importBlock, "expected a single api.js import block");
   assert.match(importBlock[0], /recordOnboardingStep/);
 });
+
+
+// ── The browser↔server junction. Nothing anywhere linked the client call to
+// the server route: Python drives the endpoint directly and JS never asserted
+// the URL or the body shape, so a one-character typo in either
+// (`/api/onboarding/steps`, or `{ stepName: step }`) shipped with the whole
+// 1657-test web suite green and every Python test still passing. These drive
+// the REAL exported `recordOnboardingStep` over a fake `fetch` and assert the
+// bytes that actually go on the wire. ──────────────────────────────────────
+test("recordOnboardingStep posts the exact route and body shape the server parses", async () => {
+  const seen = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, opts) => {
+    seen.push({ url: String(url), method: opts?.method, body: opts?.body });
+    return { ok: true, json: async () => ({}) };
+  };
+  try {
+    const { recordOnboardingStep } = await import("./api.js");
+    await recordOnboardingStep("repos");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+
+  assert.equal(seen.length, 1, "expected exactly one request");
+  const [req] = seen;
+  assert.equal(req.method, "POST");
+  assert.ok(
+    req.url.endsWith("/api/onboarding/step"),
+    `wrong route: ${req.url} — the server registers /api/onboarding/step, and a ` +
+      `typo here is invisible to every Python test because they call the route directly`,
+  );
+  assert.deepEqual(
+    JSON.parse(req.body),
+    { step: "repos" },
+    "the server reads body.step; any other key is a 422 the browser swallows",
+  );
+});
+
+test("every wizard step key the reporter can emit is one the server accepts", async () => {
+  // FUNNEL_STEPS is what the client sends; the server validates against its own
+  // _WIZARD_STEPS. Pinning the two lists as EQUAL here means adding a step on
+  // one side without the other fails in this suite rather than silently 422ing
+  // in a user's browser, where the error is swallowed by design.
+  const serverSrc = readFileSync(
+    new URL("../../src/no_human/api/app.py", import.meta.url), "utf8",
+  );
+  const m = serverSrc.match(/_WIZARD_STEPS\s*=\s*\(([^)]*)\)/);
+  assert.ok(m, "_WIZARD_STEPS tuple not found in app.py");
+  const serverSteps = [...m[1].matchAll(/"([a-z_]+)"/g)].map((x) => x[1]);
+  assert.deepEqual(
+    [...FUNNEL_STEPS].sort(),
+    [...serverSteps].sort(),
+    "the client's FUNNEL_STEPS and the server's _WIZARD_STEPS have diverged",
+  );
+});

@@ -569,8 +569,14 @@ async def test_completing_the_wizard_emits_completed_once_with_the_full_path(
     })
     assert r.status_code == 200, r.text
 
-    names = [ln["name"] for ln in _queue_lines(temp_home)]
+    lines = _queue_lines(temp_home)
+    names = [ln["name"] for ln in lines]
     assert names.count("onboarding_completed") == 1, names
+    # The test's NAME says "with the full path", so it has to assert it.
+    # Without this, inverting the two literals left this test green and only
+    # its sibling caught the swap -- a name claiming more than the body checks.
+    completed = next(ln for ln in lines if ln["name"] == "onboarding_completed")
+    assert completed["props"]["path"] == "full", completed["props"]
     # Control: the step event is on the same wire, so an empty/!-matching
     # queue cannot be what makes the assertion above pass.
     assert names.count("onboarding_step_viewed") == 1, names
@@ -641,3 +647,69 @@ async def test_the_marker_is_latched_before_the_event_is_recorded(
     )
     names = [ln["name"] for ln in _queue_lines(temp_home)]
     assert names.count("onboarding_completed") == 0, names
+
+
+@pytest_asyncio.fixture
+async def credentialed_client(store, tmp_path, temp_home, no_thread, monkeypatch):
+    """The same board, but WITH a credential on file.
+
+    Every other test here drives a board with no credential, so a refused
+    `POST /api/tasks` and a successful one are indistinguishable to the suite.
+    That let a real mutation through: moving the `task_create_refused` emit out
+    of `create_task`'s `except HTTPException:` so it fires on SUCCESS left all
+    151 tests green. Every install that ever created a task would then have
+    reported a refusal -- data that looks entirely plausible.
+    """
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat-probe")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    app.state.store = store
+    app.state.config = Config(
+        data={"llm": {"auth_mode": "subscription"}, "telemetry": dict(_ENABLED_LAMBDA)},
+        path=tmp_path / "config.yaml",
+    )
+    monkeypatch.setattr(nh_config, "CONFIG_PATH", tmp_path / "config.yaml")
+    app.state.setup_mode = True
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://localhost",
+            headers={"Origin": "http://127.0.0.1:8420"},
+        ) as c:
+            yield c
+    finally:
+        del app.state.setup_mode
+
+
+@pytest.mark.asyncio
+async def test_a_task_that_is_actually_created_does_not_report_a_refusal(
+    credentialed_client, temp_home, tmp_path
+):
+    """AC1's headline property: refused-first-task and closed-window must be
+    distinguishable. A successful create must emit NOTHING."""
+    repo = _seed_repo(tmp_path / "real-repo")
+    r = await credentialed_client.post(
+        "/api/tasks", json={"title": "a real task", "repo_path": str(repo)}
+    )
+    assert r.status_code == 201, (
+        f"the credentialed fixture did not actually lift the credential gate "
+        f"({r.status_code}) -- without a real 201 this test proves nothing. {r.text[:200]}"
+    )
+    names = [ln["name"] for ln in _queue_lines(temp_home)]
+    assert "task_create_refused" not in names, (
+        f"a SUCCESSFUL create reported a refusal: {names}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_refusal_still_fires_when_the_create_is_actually_refused(
+    client, temp_home, tmp_path
+):
+    """The positive control for the test above: without a credential the same
+    call IS refused and DOES emit. Without this pair, a mutation that deletes
+    the emit entirely would satisfy the assertion above."""
+    repo = _seed_repo(tmp_path / "refused-repo")
+    r = await client.post(
+        "/api/tasks", json={"title": "a refused task", "repo_path": str(repo)}
+    )
+    assert r.status_code == 503, r.text
+    names = [ln["name"] for ln in _queue_lines(temp_home)]
+    assert names.count("task_create_refused") == 1, names

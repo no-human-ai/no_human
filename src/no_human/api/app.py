@@ -5311,7 +5311,7 @@ def _persist_onboarding(config, patch: dict[str, Any]) -> dict[str, Any]:
 
 
 # The wizard's own step keys, in order — mirrors `Onboarding.jsx`'s
-# `BASE_STEPS` (:89) and `telemetry.ONBOARDING_STEPS`. Kept as a plain tuple
+# `BASE_STEPS` (:90) and `telemetry.ONBOARDING_STEPS`. Kept as a plain tuple
 # (not imported from the frontend, which the server cannot do) and pinned
 # equal to both by tests/test_onboarding_funnel_telemetry.py.
 _WIZARD_STEPS = ("welcome", "repos", "projects", "integrations", "summary")
