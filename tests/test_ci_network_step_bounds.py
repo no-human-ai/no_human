@@ -35,7 +35,7 @@ EXPECTED_JOB_TIMEOUTS = {
     "python": 30,
     "web": 15,
     "wheel": 20,
-    # The paths detector (#297): one  call, no checkout.
+    # The paths detector (#297): one gh api call, no checkout.
     "changed": 5,
     "desktop": 20,
     "windows": 45,

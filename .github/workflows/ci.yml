@@ -643,13 +643,25 @@ jobs:
     # "fail towards RUNNING, never towards skipping" is what the script's own
     # comment promises, and only this spelling keeps that promise.
     #
-    # `!cancelled()` rather than `always()`: GitHub's expressions reference
-    # names it the recommended alternative and warns against `always()`, and
-    # with the `!= 'false'` guard above there is nothing left for `always()`
-    # to buy -- a failed `changed` already runs the job. `always()` would only
-    # add work to runs this repo deliberately cancels (`cancel-in-progress`).
+    # `always()`, and this is a DELIBERATE trade rather than a preference.
+    # GitHub documents `cancelled()` as "returns true if the WORKFLOW was
+    # canceled" and `always()` as running "even when canceled"; the `needs`
+    # reference says a dependent is skipped when its upstream "fails or is
+    # skipped" and never mentions cancellation. So the state we actually care
+    # about -- upstream job's CONCLUSION is `cancelled` while the workflow was
+    # not -- is documented by neither, and `changed` can reach it by its own
+    # 5-minute job bound and 3-minute step bound. This repo has MEASURED that
+    # state: tests/test_ci_network_step_bounds.py records GitHub reporting a
+    # timed-out job as `cancelled`, not `failure`.
+    #
+    # `always()` certainly survives it; `!cancelled()` is undetermined. The
+    # cost of being wrong in the safe direction is ~2 Linux minutes on a
+    # cancelled run (Desktop shell measured 116s); the cost of being wrong in
+    # the other is losing the only desktop signal, silently, because a skipped
+    # non-required job is not red. Until someone measures the cancelled case,
+    # the trade goes to coverage.
     if: >-
-      !cancelled()
+      always()
       && (github.event_name != 'pull_request'
       || needs.changed.outputs.desktop != 'false'
       || contains(github.event.pull_request.labels.*.name, 'desktop'))

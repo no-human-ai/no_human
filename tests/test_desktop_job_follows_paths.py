@@ -65,16 +65,23 @@ def test_the_changed_job_is_never_conditional():
 
 
 def test_a_dead_changed_job_runs_desktop_shell_rather_than_silencing_it():
-    """The guard is the `!= 'false'` above, not the status function.
+    """Pins the PROPERTY, not the spelling.
 
-    GitHub's expressions reference names `!cancelled()` the recommended
-    alternative and warns against `always()`; with an empty output already
-    running the job, `always()` buys nothing and would only add work to runs
-    this repo deliberately cancels.
+    An earlier round asserted the literal `== 'true'` and thereby forbade the
+    correct expression; the round after it asserted `"always()" not in
+    condition` and did the same thing in the other direction, on a question
+    neither round had measured. Both are the same mistake: freezing an answer
+    a test was never in a position to decide.
+
+    What actually has to hold is that a `changed` job which DIED still runs
+    Desktop shell. Two spellings survive an upstream failure, so either is
+    accepted here; the `ci.yml` comment records why `always()` is the one
+    chosen and what would settle it.
     """
     condition = _workflow()["jobs"]["desktop"]["if"]
-    assert condition.startswith("!cancelled()")
-    assert "always()" not in condition
+    assert condition.startswith(("always()", "!cancelled()")), condition
+    # The real guard: empty (a dead job) is not 'false', so the job runs.
+    assert "needs.changed.outputs.desktop != 'false'" in condition
 
 
 def test_the_changed_job_may_read_pull_requests():
@@ -116,8 +123,16 @@ def _run_changed_step(
     }
     env.update(env_overrides)
 
+    # `bash -e <file>`, matching the runner. GitHub invokes a `run:` step as
+    # `/usr/bin/bash -e {0}` (confirmed in the job log), and `bash -c` does
+    # NOT imply `-e`: deleting `set -euo pipefail` from the script left this
+    # suite green while the same script under the runner's shell exited 1 with
+    # an empty $GITHUB_OUTPUT -- which is precisely the "dead changed job"
+    # state the gate above exists to survive.
+    script_file = tmp_path / "changed_step.sh"
+    script_file.write_text(_changed_script(), encoding="utf-8")
     result = subprocess.run(
-        ["bash", "-c", _changed_script()],
+        ["bash", "-e", str(script_file)],
         env=env,
         capture_output=True,
         text=True,
@@ -245,8 +260,9 @@ def test_a_large_diff_that_touches_desktop_is_not_silently_missed(tmp_path):
 
 def test_the_changed_job_is_inside_the_workflow_cost_ratchet():
     """`tests/test_ci_network_step_bounds.py` freezes every job's timeout and
-    only ratchets down. A new job outside that dict can grow its bound, or
-    move to a 2x-billed runner, with nothing red."""
+    only ratchets down, so a new job outside that dict can grow its bound with
+    nothing red. The runner is pinned separately below -- the timeout dict does
+    not cover it."""
     import importlib.util
     spec = importlib.util.spec_from_file_location(
         "_bounds", Path(__file__).resolve().parent / "test_ci_network_step_bounds.py")
@@ -255,6 +271,12 @@ def test_the_changed_job_is_inside_the_workflow_cost_ratchet():
     assert "changed" in mod.EXPECTED_JOB_TIMEOUTS, (
         "add `changed` to EXPECTED_JOB_TIMEOUTS so its cost is ratcheted "
         "like every other job's")
+    # Measured, because this docstring used to claim the ratchet covered a
+    # move to a 2x-billed runner and it did not: `EXPECTED_JOB_TIMEOUTS` pins
+    # timeouts only, and `runs-on: windows-latest` stayed green across all 15
+    # files that read ci.yml (it would also break the job outright -- the
+    # default shell there is pwsh and this script is bash).
+    assert _workflow()["jobs"]["changed"]["runs-on"] == "ubuntu-latest"
 
 
 def test_the_network_step_carries_its_own_bound():
@@ -311,3 +333,21 @@ def test_the_jq_filter_is_executed_not_merely_spelled(tmp_path):
     assert "desktop/a.mjs" in emitted
     # No stray `null` lines from a filter that dropped the `// empty` guard.
     assert "null" not in emitted, emitted
+
+
+def test_the_step_keeps_its_shell_safety_flags():
+    """`-o pipefail` is the mechanism the SIGPIPE comment block rests on, and
+    `-u` is what makes the `:-` defaults meaningful. Neither was pinned: the
+    script ran fine without them under the harness's old `bash -c`."""
+    assert _changed_script().lstrip().startswith("set -euo pipefail")
+
+
+@pytest.mark.parametrize("files, expected", [
+    # M3: the `/` in `^desktop/` was unpinned -- the old negative fixture only
+    # exercised the `^` anchor, so `^desktop` (no slash) stayed green and a
+    # root-level `desktop.md` would have bought a spurious 2-minute job.
+    (["desktopfoo/x.mjs", "desktop.md"], "false"),
+    (["desktop/x.mjs"], "true"),
+])
+def test_the_match_requires_the_path_separator(tmp_path, files, expected):
+    assert _run_changed_step(tmp_path, files=files)["desktop"] == expected
