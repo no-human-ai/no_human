@@ -171,7 +171,7 @@ def _looks_like_pytest(repo_path: Path) -> bool:
         return True
     for req in repo_path.glob("requirements*.txt"):
         try:
-            if "pytest" in req.read_text(errors="ignore").lower():
+            if "pytest" in req.read_text(errors="ignore", encoding="utf-8").lower():
                 return True
         except OSError:
             pass
@@ -183,7 +183,7 @@ def _declares_xdist(repo_path: Path) -> bool:
     File reads only, like every other check in this module."""
     for name in ("pyproject.toml", "uv.lock"):
         try:
-            if "pytest-xdist" in (repo_path / name).read_text(errors="ignore"):
+            if "pytest-xdist" in (repo_path / name).read_text(errors="ignore", encoding="utf-8"):
                 return True
         except OSError:
             pass
@@ -1047,7 +1047,7 @@ def _ensure_forced_build_artifacts(repo_path: Path, source_repo: Path | None) ->
         return
     repo_path, source_repo = Path(repo_path), Path(source_repo)
     try:
-        cfg = tomllib.loads((repo_path / "pyproject.toml").read_text())
+        cfg = tomllib.loads((repo_path / "pyproject.toml").read_text(encoding="utf-8"))
     except (OSError, tomllib.TOMLDecodeError):
         return
     targets = (cfg.get("tool", {}).get("hatch", {})

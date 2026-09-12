@@ -98,7 +98,7 @@ def load_golden_tasks(directory: Path = GOLDEN_DIR) -> list[GoldenTask]:
     if not directory.exists():
         return tasks
     for path in sorted(directory.glob("*.yaml")) + sorted(directory.glob("*.yml")):
-        data = yaml.safe_load(path.read_text()) or {}
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
         if data:
             tasks.append(GoldenTask.from_dict(data, path=path))
     return sorted(tasks, key=lambda t: t.id)

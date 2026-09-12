@@ -76,7 +76,7 @@ def load_repo_map(path: Path | None = None) -> dict[str, str]:
     if not p.exists():
         return {}
     try:
-        raw = yaml.safe_load(p.read_text()) or {}
+        raw = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
     except yaml.YAMLError as exc:
         raise ValueError(f"{p}: malformed YAML — {exc}") from exc
     if not isinstance(raw, dict):
@@ -463,7 +463,7 @@ def load_bench_tasks(directory: Path = NORTHSTAR_DIR, *,
     # tracked spec file and undo the vendor-neutral scrub.
     mapping = load_repo_map()
     for p in sorted(directory.glob("*.yaml")) + sorted(directory.glob("*.yml")):
-        data = yaml.safe_load(p.read_text()) or {}
+        data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
         if data:
             task = BenchTask.from_dict(data, path=p)
             # Recorded whether or not a map exists, so reporting has one rule.
@@ -767,7 +767,7 @@ def build_bench_tasks(
         existing_data: dict[str, Any] = {}
         if p.exists():
             try:
-                loaded = yaml.safe_load(p.read_text())
+                loaded = yaml.safe_load(p.read_text(encoding="utf-8"))
             except yaml.YAMLError:
                 log.warning("%s: malformed existing spec YAML — treating as absent", tid)
                 loaded = None
@@ -896,7 +896,7 @@ def build_bench_tasks(
             skip_reason=skip_reason,
         )
         p.write_text(yaml.safe_dump(spec.to_dict(), sort_keys=False,
-                                    allow_unicode=True, width=100))
+                                    allow_unicode=True, width=100), encoding="utf-8")
         written.append(p)
 
     _sweep_unreached_specs(out_dir, written, mapping)
@@ -925,7 +925,7 @@ def _sweep_unreached_specs(out_dir: Path, written: list[Path],
         if p in visited:
             continue
         try:
-            loaded = yaml.safe_load(p.read_text())
+            loaded = yaml.safe_load(p.read_text(encoding="utf-8"))
         except yaml.YAMLError:
             log.warning("%s: malformed spec YAML — sweep leaving it alone", p.name)
             continue
@@ -976,5 +976,5 @@ def _sweep_unreached_specs(out_dir: Path, written: list[Path],
 
         new_text = yaml.safe_dump(new_data, sort_keys=False,
                                   allow_unicode=True, width=100)
-        if new_text != p.read_text():
-            p.write_text(new_text)
+        if new_text != p.read_text(encoding="utf-8"):
+            p.write_text(new_text, encoding="utf-8")

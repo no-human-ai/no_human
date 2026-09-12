@@ -900,7 +900,7 @@ class Store:
                 f"migrations/ directory is present)."
             )
         for sql_file in sql_files:
-            await self.db.executescript(sql_file.read_text())
+            await self.db.executescript(sql_file.read_text(encoding="utf-8"))
         await self._ensure_task_columns()
         await self.db.commit()
 

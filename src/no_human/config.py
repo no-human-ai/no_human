@@ -2621,7 +2621,7 @@ def _linux_start_token(pid: int) -> str | None:
     only for equality against another read of the same pid. None on any read
     failure (dead pid, permission, unexpected format) — never raises."""
     try:
-        content = Path(f"/proc/{pid}/stat").read_text()
+        content = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
     except OSError:
         return None
     return _parse_linux_stat_starttime(content)
@@ -2798,7 +2798,7 @@ def _atomic_write_text(path: Path, content: str) -> None:
     half-written file.
     """
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(content)
+    tmp.write_text(content, encoding="utf-8")
     os.replace(tmp, path)
 
 
@@ -2832,7 +2832,7 @@ def load_config(
 
     user_data: dict[str, Any] = {}
     if config_path.exists():
-        user_data = yaml.safe_load(config_path.read_text()) or {}
+        user_data = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
 
     _reject_api_key_in_config(user_data)
     _reject_invalid_role_backends(user_data)
@@ -2940,7 +2940,7 @@ def _reject_duplicate_keys_after_write(config_path: Path, original: str, what: s
     pays) was just silently dropped. A verify that the bug itself can pass is
     not a verify.
     """
-    dupes = _duplicate_top_level_keys(config_path.read_text())
+    dupes = _duplicate_top_level_keys(config_path.read_text(encoding="utf-8"))
     if dupes:
         _atomic_write_text(config_path, original)
         raise AuthError(
@@ -2966,7 +2966,7 @@ def set_auth_profile(profile: str, config_path: Path = CONFIG_PATH) -> str:
     profile = validate_profile_name(profile)
 
     load_config(config_path)  # materialize a default file if there is none
-    original = config_path.read_text()
+    original = config_path.read_text(encoding="utf-8")
     lines = original.splitlines()
     _splice_llm_scalar(lines, "auth_profile", profile)
     _atomic_write_text(config_path, "\n".join(lines) + "\n")
@@ -3000,7 +3000,7 @@ def set_codex_auth_mode(mode: str, config_path: Path = CONFIG_PATH) -> str:
         )
 
     load_config(config_path)  # materialize a default file if there is none
-    original = config_path.read_text()
+    original = config_path.read_text(encoding="utf-8")
     lines = original.splitlines()
     _splice_llm_scalar(lines, "codex_auth_mode", mode)
     _atomic_write_text(config_path, "\n".join(lines) + "\n")
@@ -3067,7 +3067,7 @@ def set_model_ids(
             )
 
     load_config(config_path)  # materialize a default file if there is none
-    original = config_path.read_text()
+    original = config_path.read_text(encoding="utf-8")
     lines = original.splitlines()
     for key, value in updates.items():
         _splice_llm_scalar(lines, key, value)
@@ -3207,7 +3207,7 @@ def set_worker_backend(backend: str, config_path: Path = CONFIG_PATH) -> str:
         )
 
     load_config(config_path)  # materialize a default file if there is none
-    original = config_path.read_text()
+    original = config_path.read_text(encoding="utf-8")
     lines = original.splitlines()
     _splice_worker_scalar(lines, "backend", backend)
     _atomic_write_text(config_path, "\n".join(lines) + "\n")
@@ -3314,7 +3314,7 @@ def set_role_backend(
     else:
         current[role] = {"backend": backend, "model": model}
 
-    original = config_path.read_text()
+    original = config_path.read_text(encoding="utf-8")
     lines = original.splitlines()
     _splice_llm_scalar(lines, "role_backends", _role_backends_flow_mapping(current))
     _atomic_write_text(config_path, "\n".join(lines) + "\n")
@@ -3384,7 +3384,7 @@ def set_concurrency(
         raise ValueError(f"enabled must be a bool, got {type(enabled).__name__}")
 
     load_config(config_path)  # materialize a default file if there is none
-    original = config_path.read_text()
+    original = config_path.read_text(encoding="utf-8")
     lines = original.splitlines()
     if max_workers is not None:
         _splice_concurrency_scalar(lines, "max_workers", str(max_workers))
@@ -3458,7 +3458,7 @@ def set_local_backend_fields(
         assert_local_backend_mode(base_url)  # raises AuthError on a bad URL
 
     load_config(config_path)  # materialize a default file if there is none
-    original = config_path.read_text()
+    original = config_path.read_text(encoding="utf-8")
     lines = original.splitlines()
     for key, value in updates.items():
         quoted = "'" + value.replace("'", "''") + "'"
