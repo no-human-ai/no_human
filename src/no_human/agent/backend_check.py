@@ -214,6 +214,7 @@ _PROBE_TIMEOUT_S = 90.0
 async def verify_credential_live(*, model: str, profile: str | None = None,
                                  auth_mode: str = "subscription",
                                  timeout_s: float = _PROBE_TIMEOUT_S,
+                                 config_data: dict | None = None,
                                  ) -> tuple[str, str] | None:
     """Spend ONE cheap call to prove the credential actually works.
 
@@ -244,11 +245,11 @@ async def verify_credential_live(*, model: str, profile: str | None = None,
     except AuthError as exc:
         return ("rejected", str(exc))
 
-    from .claude_backend import ClaudeBackend
+    from .backend import make_backend
 
     try:
         result = await asyncio.wait_for(
-            ClaudeBackend(model=model, readonly=True).run(
+            make_backend(model=model, readonly=True, config=config_data).run(
                 _PROBE_PROMPT, cwd=Path.cwd(), max_turns=1, effort="low"),
             timeout=timeout_s,
         )

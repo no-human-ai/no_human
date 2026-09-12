@@ -2357,8 +2357,7 @@ class Orchestrator:
     def _emit_review(self, kind: str, text: str = "", **meta: Any) -> None:
         self._sink({"source": REVIEWER_ROLE, "kind": kind, "text": text, **meta})
 
-    @staticmethod
-    def _subagent_definitions() -> dict[str, "AgentDefinition"]:
+    def _subagent_definitions(self) -> dict[str, "AgentDefinition"]:
         """The Agent-tool subagents offered to the implementer.
 
         Extracted out of the attempt body so the Claude-SDK-only
@@ -2379,10 +2378,13 @@ class Orchestrator:
           future edit widens the allow-list.
         * There is no read-only ``PermissionMode`` in this SDK — the literal is
           ``default | acceptEdits | plan | bypassPermissions | dontAsk | auto``
-          (``claude_agent_sdk/types.py``). ``bypassPermissions`` stays because
-          every no_human session is headless: any prompting mode hangs, and
-          ``plan`` would change what the subagent *does*, not just what it may
-          touch. The restriction therefore lives in ``disallowedTools``.
+          (``claude_agent_sdk/types.py``). This subagent derives its mode from
+          configuration (defaulting to ``bypassPermissions``) because both of
+          the product's supported modes (``bypassPermissions`` and ``acceptEdits``)
+          are headless-safe. A prompting mode would hang, and ``plan`` would
+          change what the subagent *does*, not just what it may touch. The
+          security restriction preventing writes therefore lives in
+          ``disallowedTools``.
         * ``model``/``effort`` were unset, so the researcher silently inherited
           whatever the calling session ran on. Pinned now: a grep-and-report job
           does not need the implementer's reasoning budget, and pinning means a
@@ -2393,7 +2395,7 @@ class Orchestrator:
           is scoped to. Dropping it further is a separate, measured decision.
           ``model="sonnet"`` is an ALIAS, and the only bare alias in ``src/``.
           Deliberate, and exempt from the four-tier rule for three reasons: this
-          is a ``@staticmethod`` with no config handle, so routing it through
+          this is a method with no config handle for the model, so routing it through
           config would mean inventing an ``llm.researcher_model`` surface for
           one advisory subagent; an alias resolves to whatever the SDK currently
           calls that tier, so unlike a pinned ID it cannot go stale into a
@@ -2448,7 +2450,7 @@ class Orchestrator:
                 ),
                 tools=["Read", "Grep", "Glob", "Bash"],
                 disallowedTools=["Write", "Edit", "MultiEdit", "NotebookEdit"],
-                permissionMode="bypassPermissions",
+                permissionMode=(self.config.get("llm") or {}).get("permission_mode", "bypassPermissions"),
                 maxTurns=10,
                 model="sonnet",
                 effort="low",

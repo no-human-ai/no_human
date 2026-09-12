@@ -5984,10 +5984,11 @@ async def onboarding_docs_generate(
 
     async def _bg() -> None:
         from ..docs_gen import WikiGenerator
-        from ..agent.claude_backend import ClaudeBackend
+        from ..agent.backend import make_backend
         try:
-            backend = ClaudeBackend(
+            backend = make_backend(
                 model=config.primary_model,
+                config=config.data,
                 forbidden_paths=config["safety"]["forbidden_paths"],
             )
             gen = WikiGenerator(backend, max_turns=12)

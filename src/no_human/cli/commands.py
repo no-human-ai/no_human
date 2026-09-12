@@ -3302,12 +3302,13 @@ def docs_generate(repo):
     """
     config, _ = _bootstrap()
     repo_path = str(Path(repo).resolve())
-    from ..docs_gen import WikiGenerator
+    from ..agent.backend import make_backend
     from ..profile import ProjectProfile
 
     async def _go():
-        backend = ClaudeBackend(
+        backend = make_backend(
             model=config.primary_model,
+            config=config.data,
             forbidden_paths=config["safety"]["forbidden_paths"],
         )
         gen = WikiGenerator(backend, max_turns=12)
@@ -6678,7 +6679,7 @@ def doctor(verbose, verify_auth, fix_walks, dry_run):
 
             problem = await verify_credential_live(
                 model=config.utility_model, profile=profile,
-                auth_mode=auth_mode)
+                auth_mode=auth_mode, config_data=config.data)
             if problem is None:
                 auth_note = "verified by one live call"
             elif problem[0] == "inconclusive":
@@ -7310,14 +7311,15 @@ def eval_cmd(prev_path, out_path, gate):
     golden task must be escalated, never faked.
     """
     config, _ = _bootstrap()
-    from ..agent.claude_backend import ClaudeBackend
+    from ..agent.backend import make_backend
     from ..eval import Scorecard, render_scorecard, run_eval
     from ..eval.judge import IntentJudge
     from ..review.reviewer import AdversarialReviewer
 
     def backend_factory(_golden):
-        return ClaudeBackend(
+        return make_backend(
             model=config.primary_model,
+            config=config.data,
             forbidden_paths=config["safety"]["forbidden_paths"],
             never_push_to=config["git"]["never_push_to"],
         )
@@ -7649,8 +7651,10 @@ def bench_run(full, limit, gate, prev_path, label, specs_dir, resume, parallel,
     config, _ = _bootstrap()
 
     def backend_factory(_spec):
-        return ClaudeBackend(
+        from ..agent.backend import make_backend
+        return make_backend(
             model=config.primary_model,
+            config=config.data,
             forbidden_paths=config["safety"]["forbidden_paths"],
             never_push_to=config["git"]["never_push_to"],
         )
@@ -8589,12 +8593,13 @@ def _print_pr_outcome_block() -> None:
 def shadow_cmd(title, repo, criteria):
     """Shadow-run a task end-to-end in a sandbox clone WITHOUT pushing (21.3)."""
     config, _ = _bootstrap()
-    from ..agent.claude_backend import ClaudeBackend
+    from ..agent.backend import make_backend
     from ..eval import run_shadow
     from ..review.reviewer import AdversarialReviewer
 
-    backend = ClaudeBackend(
+    backend = make_backend(
         model=config.primary_model,
+        config=config.data,
         forbidden_paths=config["safety"]["forbidden_paths"],
         never_push_to=config["git"]["never_push_to"],
     )
