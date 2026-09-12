@@ -24,7 +24,15 @@ function stepKeysInOrder(source) {
 
 test("BASE_STEPS gains exactly one new required step, right after welcome", () => {
   const keys = stepKeysInOrder(src);
-  assert.deepEqual(keys, ["welcome", "email", "repos", "projects", "integrations", "summary"]);
+  // Asserted as the PROPERTY this test is named for, not as a re-typed list of
+  // every step: a closed set here would have to be edited by any unrelated step
+  // change (it was — "discord"/Community joined the wizard the same day). The
+  // full ordered list is still pinned, once, by onboardingConsent.test.mjs and
+  // onboardingDocsKickoff.test.mjs, so reordering/renaming is still caught.
+  assert.equal(keys.filter((k) => k === "email").length, 1,
+    "BASE_STEPS must gain exactly one email step — not two, not none");
+  assert.equal(keys[0], "welcome", "welcome must stay the first step");
+  assert.equal(keys[1], "email", "the email step must sit directly after welcome");
 });
 
 test("the email step is not skippable: no skip/remind-me-later affordance (button/link) in its block", () => {

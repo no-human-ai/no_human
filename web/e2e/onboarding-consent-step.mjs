@@ -89,7 +89,20 @@ async function newPage(browser, status) {
 // are lower-cased before comparison to stay independent of that styling.
 const railLabels = async (page) =>
   (await page.locator(".ob-stepper .ob-step-label").allInnerTexts()).map((t) => t.trim().toLowerCase());
+// The Email step (required, not skippable) sits between Welcome and
+// Repositories, and its Continue is `disabled` until the field holds a
+// well-formed address — a bare click would sit on Playwright's enabled
+// actionability check for 30s, and the walk below would die before reaching
+// Launch (making its "no insights step was ever shown" result vacuous). Go
+// THROUGH the step the way a user does: whenever the address field is on
+// screen, type into it, then Continue.
+const EMAIL = "walker@example.com";
 const cont = async (page) => {
+  const field = page.getByPlaceholder("you@example.com");
+  if (await field.isVisible().catch(() => false)) {
+    await field.fill(EMAIL);
+    await page.waitForTimeout(100);
+  }
   await page.getByRole("button", { name: /^Continue$/ }).click();
   await page.waitForTimeout(200);
 };
