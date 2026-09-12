@@ -188,7 +188,7 @@ class ProjectProfile:
         path.parent.mkdir(parents=True, exist_ok=True)
         # repo_path is implied by location; keep it out of the on-disk file.
         body = {k: v for k, v in self.to_dict().items() if k != "repo_path"}
-        path.write_text(yaml.safe_dump(body, sort_keys=False))
+        path.write_text(yaml.safe_dump(body, sort_keys=False), encoding="utf-8")
         return path
 
     @classmethod
@@ -196,7 +196,7 @@ class ProjectProfile:
         path = Path(repo_path).expanduser() / PROFILE_RELPATH
         if not path.exists():
             return None
-        data = yaml.safe_load(path.read_text()) or {}
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
         data["repo_path"] = str(Path(repo_path).expanduser())
         return cls.from_dict(data)
 
