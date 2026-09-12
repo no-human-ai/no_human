@@ -181,10 +181,29 @@ _LOG = logging.getLogger(__name__)
 # silently, because a payload with spaces resolves to no installer name).
 _SHELL_RUNNERS = frozenset({"sh", "bash", "zsh", "dash", "ksh",
                             "cmd", "powershell", "pwsh"})
-#: Compared lowercased: cmd and PowerShell treat their switches
-#: case-insensitively, so `/C` and `-Command` are the same flag as `/c`.
-_SCRIPT_FLAGS = frozenset({"-c", "-lc", "-cl", "--command",
-                           "/c", "/k", "-command"})
+#: POSIX shell script flags, compared EXACTLY. Case matters here and the two
+#: sets must stay apart: `"-C".lower()` is `"-c"`, and `-C` is `--directory`
+#: in this module's own `_TARGET_FLAGS`. Folding the whole set turned
+#: `<runner> pip -C <dir> install requests` into a stream where the payload
+#: was emitted BEFORE the flag, so `_mutating_subcommand` read `<dir>` as
+#: pip's subcommand instead of `install` and the command was allowed --
+#: measured refused on main, on POSIX, with no Windows anywhere in it.
+_POSIX_SCRIPT_FLAGS = frozenset({"-c", "-lc", "-cl", "--command"})
+
+#: cmd/PowerShell switches, compared case-INSENSITIVELY, because those shells
+#: are: `/C` and `-Command` are the same flag as `/c` and `-command`. None of
+#: these collides with a flag this module gives another meaning, which is what
+#: makes folding safe HERE and unsafe above.
+_WINDOWS_SCRIPT_FLAGS = frozenset({"/c", "/k", "-command"})
+
+_SCRIPT_FLAGS = _POSIX_SCRIPT_FLAGS | _WINDOWS_SCRIPT_FLAGS
+
+
+def _is_script_flag(tok: str) -> bool:
+    """Whether `tok` hands the NEXT token to a shell as a script to run."""
+    return tok in _POSIX_SCRIPT_FLAGS or tok.lower() in _WINDOWS_SCRIPT_FLAGS
+
+
 _SEGMENT_BREAKS = frozenset({";", "&", "&&", "||", "|", "(", ")", "{", "}"})
 _MAX_RECURSE_DEPTH = 3
 
@@ -271,7 +290,23 @@ _UNRESOLVABLE_CHARS = ("$", "`")
 
 
 def _basename(path: str) -> str:
-    name = os.path.basename(path)
+    r"""The command name `path` spells, with a `.exe` suffix removed.
+
+    `PurePosixPath(...).name`, NOT `os.path.basename`, for two reasons:
+
+    * Trailing separators. `os.path.basename("/bin/sh/")` is `""`, which is in
+      no name set, so `_flatten` stopped recognising the token as a shell
+      runner and never expanded the payload behind its `-c`. Measured as a
+      DENY->ALLOW on `/bin/sh/ -c "pip -C <dir> install requests"`, which a
+      shell runs exactly as `/bin/sh -c ...`.
+    * Host independence. `os.path.basename` splits on `\` on Windows and not
+      on POSIX, so the same string would reach different verdicts on
+      different machines while CI runs POSIX only. `PurePosixPath` reads `/`
+      on every host, and that is the right reading here precisely because
+      `win_readings.readings` has already offered the `/`-normalised spelling
+      of any backslashed command by the time this is called.
+    """
+    name = PurePosixPath(path).name
     if name.lower().endswith(".exe"):
         name = name[:-4]
     return name
@@ -386,7 +421,7 @@ def _flatten(text: str, _depth: int = 0) -> list[str]:
         name = _basename(tok)
         if name.lower() in _SHELL_RUNNERS:
             seen_runner = True
-        if seen_runner and tok.lower() in _SCRIPT_FLAGS and i + 1 < n:
+        if seen_runner and _is_script_flag(tok) and i + 1 < n:
             out.extend(_flatten(tokens[i + 1], _depth + 1))
             out.extend(_spaced_path_candidates(tokens[i + 1]))
             seen_runner = False

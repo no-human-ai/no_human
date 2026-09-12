@@ -25,12 +25,13 @@ cmd/PowerShell it closes the fail-open.
 
 from __future__ import annotations
 
+import importlib
 import os
 import stat
 
 import pytest
 
-from no_human.agent import guard, venv_install_guard
+from no_human.agent import guard, venv_install_guard, win_readings
 
 
 def _make_venv_bin(venv_dir):
@@ -343,3 +344,245 @@ def test_a_wrapper_inside_the_payload_is_not_yet_covered(
     assert venv_install_guard.denial_reason(
         cmd, cwd=str(worktree), env=_env_pointing_at(spaced_primary / ".venv"),
     ) is not None
+
+
+# --- what the Windows change cost POSIX ------------------------------------
+#
+# Lowercasing the script-flag test was added for cmd/PowerShell (`/C`,
+# `-Command`). `"-C".lower()` is `"-c"`, and `-C` is `--directory` in this
+# same module's `_TARGET_FLAGS`. So after a runner token, `-C` was read as
+# "hand me the next token as a script", the payload was emitted BEFORE the
+# flag, and `_mutating_subcommand` -- which walks RIGHT from the installer --
+# read the directory as pip's subcommand instead of `install`:
+#
+#     main: [... 'pip', '-C', '<dir>', 'install', ...] -> 'install' -> DENY
+#     here: [... 'pip', '<dir>', '-C', 'install', ...] -> '<dir>'   -> ALLOW
+#
+# Not Windows-gated, and nothing in the Windows corpus above could see it:
+# every row there is a Windows spelling, and this is a POSIX regression.
+
+@pytest.fixture
+def outside_dir(tmp_path):
+    """A directory that is not inside the session worktree, so an install
+    resolving to it is one the guard already refuses."""
+    d = tmp_path / "outside"
+    d.mkdir()
+    return d
+
+
+#: Shapes where a runner token precedes the installer, so `seen_runner` is
+#: set when `-C` is reached. `./cmd` is in there because `_basename` reads it
+#: as the Windows shell name, which is how an ordinary relative path lands in
+#: the runner set at all.
+DASH_C_TEMPLATES = [
+    "bash x.sh pip -C {d} install requests",
+    "sh x.sh pip -C {d} install requests",
+    "zsh pip -C {d} install requests",
+    "./cmd pip -C {d} install requests",
+    "powershell pip -C {d} install requests",
+    "bash x.sh uv pip install -C {d} -e .",
+]
+
+
+@pytest.mark.parametrize("template", DASH_C_TEMPLATES)
+@pytest.mark.parametrize("windows", [False, True])
+def test_a_capital_C_after_a_runner_is_still_the_directory_flag(
+    primary, worktree, outside_dir, template, windows, monkeypatch
+):
+    """`-C` is `--directory`, not `--command`, on BOTH platforms."""
+    monkeypatch.setattr(venv_install_guard, "_IS_WINDOWS", windows, raising=False)
+    cmd = template.format(d=outside_dir)
+    assert venv_install_guard.denial_reason(
+        cmd, cwd=str(worktree), env=_env_pointing_at(primary / ".venv"),
+    ) is not None, cmd
+
+
+@pytest.mark.parametrize("template", DASH_C_TEMPLATES)
+def test_the_whole_guard_refuses_the_capital_C_shape(
+    primary, worktree, outside_dir, template, on_posix
+):
+    """The same rows through `guard.evaluate`, the PreToolUse entry point."""
+    cmd = template.format(d=outside_dir)
+    decision = guard.evaluate(
+        "Bash", {"command": cmd},
+        forbidden_paths=[], never_push_to=[], cwd=str(worktree),
+        env=_env_pointing_at(primary / ".venv"),
+    )
+    assert not decision.allow, cmd
+
+
+def test_a_lowercase_c_after_a_runner_is_still_a_script_flag(
+    primary, worktree, on_posix
+):
+    """The control for the row above: `-c` must keep meaning `--command`, or
+    the fix would have closed the regression by disabling the recursion."""
+    cmd = f'sh -c "{primary}/.venv/bin/pip install foo"'
+    assert venv_install_guard.denial_reason(
+        cmd, cwd=str(worktree), env=_env_pointing_at(primary / ".venv"),
+    ) is not None
+
+
+def test_the_windows_switches_are_the_only_ones_folded():
+    """Stated on the predicate, because that is where the asymmetry lives:
+    folding the POSIX set is what collided `-C` with `-c`."""
+    assert venv_install_guard._is_script_flag("-c")
+    assert not venv_install_guard._is_script_flag("-C")
+    assert not venv_install_guard._is_script_flag("-LC")
+    assert venv_install_guard._is_script_flag("/c")
+    assert venv_install_guard._is_script_flag("/C")
+    assert venv_install_guard._is_script_flag("-Command")
+    assert venv_install_guard._is_script_flag("-command")
+
+
+# --- a trailing separator must not hide the runner -------------------------
+#
+# `_flatten` read the runner name with `os.path.basename`, which returns `""`
+# for `/bin/sh/` -- and `""` is in no name set, so the token stopped being a
+# runner and the payload behind its `-c` was never expanded. A shell runs
+# `/bin/sh/ -c ...` exactly as `/bin/sh -c ...`.
+
+TRAILING_SEPARATOR_RUNNERS = [
+    "/bin/sh/ -c",
+    "/bin/bash/ -c",
+    "sh/ -c",
+    "/usr/bin/env/../bin/sh -c",
+]
+
+
+@pytest.mark.parametrize("runner", TRAILING_SEPARATOR_RUNNERS)
+def test_a_trailing_separator_does_not_hide_the_shell_runner(
+    primary, worktree, outside_dir, runner, on_posix
+):
+    cmd = f'{runner} "pip -C {outside_dir} install requests"'
+    assert venv_install_guard.denial_reason(
+        cmd, cwd=str(worktree), env=_env_pointing_at(primary / ".venv"),
+    ) is not None, cmd
+
+
+@pytest.mark.parametrize("spelling, bare", [
+    ("/bin/sh/", "sh"), ("/bin/bash/", "bash"), ("sh/", "sh"),
+    ("/bin/sh//", "sh"), ("/bin/sh/.", "sh"),
+    ("/Scripts/pip.exe/", "pip"), ("/bin/cmd.EXE/", "cmd"),
+])
+def test_a_path_that_names_something_never_reads_as_an_empty_name(spelling, bare):
+    """`""` fails every name test this module makes at once -- runner,
+    installer, package manager -- so one empty return disarms all of them."""
+    assert venv_install_guard._basename(spelling) == bare
+
+
+# --- the shipped activation -------------------------------------------------
+#
+# Every Windows test above monkeypatches `venv_install_guard._IS_WINDOWS`,
+# which is the very constant deciding whether the fix is live as SHIPPED.
+# Setting it to a literal `False` -- the whole Windows path permanently off --
+# therefore left the suite fully green: 396 passed, 2 xfailed. The tests
+# proved the logic and proved nothing about whether it ever runs.
+
+
+def test_the_platform_constants_are_computed_from_os_name(monkeypatch):
+    """Asked on the OTHER platform, because value alone cannot answer it.
+
+    On a POSIX host `os.name == "nt"` is False, so a hard-coded
+    `_IS_WINDOWS = False` and the real expression are the same value and no
+    assertion comparing values can tell them apart -- which is exactly why
+    hard-coding it left the suite green. What distinguishes them is whether
+    the constant CHANGES when the platform does, so this re-imports the
+    modules under a patched `os.name` and requires that it does.
+
+    `win_readings` imports nothing but `os`, and `guard` is re-imported into
+    its own existing namespace; both are restored in `finally`.
+    """
+    assert win_readings._IS_WINDOWS == (os.name == "nt")
+    assert guard._IS_WINDOWS == (os.name == "nt")
+    monkeypatch.setattr(os, "name", "nt")
+    try:
+        assert importlib.reload(win_readings)._IS_WINDOWS is True
+        assert importlib.reload(guard)._IS_WINDOWS is True
+    finally:
+        monkeypatch.undo()
+        importlib.reload(win_readings)
+        importlib.reload(guard)
+    assert win_readings._IS_WINDOWS == (os.name == "nt")
+    assert guard._IS_WINDOWS == (os.name == "nt")
+
+
+def test_the_venv_guard_binds_the_shared_constant(monkeypatch):
+    """The other half of the wiring, and it fails the same way on its own:
+    `venv_install_guard._IS_WINDOWS = False` is indistinguishable from the
+    binding by value on a POSIX host. It is distinguishable by whether it
+    FOLLOWS `win_readings`, so that is what is asserted.
+    """
+    assert venv_install_guard._IS_WINDOWS is win_readings._IS_WINDOWS
+    monkeypatch.setattr(win_readings, "_IS_WINDOWS", True)
+    try:
+        assert importlib.reload(venv_install_guard)._IS_WINDOWS is True
+    finally:
+        monkeypatch.undo()
+        importlib.reload(venv_install_guard)
+    assert venv_install_guard._IS_WINDOWS is win_readings._IS_WINDOWS
+
+
+def test_readings_are_gated_on_the_flag_it_is_given():
+    """The positive control for the assertion above: the constant is worth
+    pinning only because passing it actually changes the answer."""
+    backslashed = r"C:\proj\.venv\Scripts\pip.exe install foo"
+    assert win_readings.readings(backslashed, is_windows=False) == [backslashed]
+    assert len(win_readings.readings(backslashed, is_windows=True)) == 2
+
+
+# --- an UPPERCASE runner name ----------------------------------------------
+#
+# `_basename(tok).lower() in _SHELL_RUNNERS`: dropping the `.lower()` left the
+# suite green, because no row above spells a runner in upper case. On Windows
+# `CMD` and `cmd` are one file, which is the same argument that put `cmd` in
+# the set at all.
+
+@pytest.mark.parametrize("runner", [
+    "CMD /c", "CMD.EXE /C", "Cmd.exe /c", "POWERSHELL -Command", "PWSH -c",
+    "BASH.EXE -c",
+])
+def test_an_uppercase_runner_name_is_still_a_runner(
+    primary, worktree, runner, on_windows
+):
+    cmd = _backslashed(f'{runner} "{primary}/.venv/bin/pip install foo"')
+    assert venv_install_guard.denial_reason(
+        cmd, cwd=str(worktree), env=_env_pointing_at(primary / ".venv"),
+    ) is not None, cmd
+
+
+# --- more than one space in the path ---------------------------------------
+#
+# `_MAX_PREFIX_JOIN` is 8, and every spaced row above uses `Program Files` --
+# exactly ONE space, so two tokens, so `k=2`. Lowering the cap to 2 left the
+# suite green. `C:\Program Files\My Project\...` has two.
+
+
+@pytest.fixture
+def double_spaced_primary(tmp_path, monkeypatch):
+    root = tmp_path / "Program Files" / "My Project"
+    (root / "src" / "no_human").mkdir(parents=True)
+    (root / "src" / "no_human" / "__init__.py").write_text("")
+    _make_venv_bin(root / ".venv")
+    monkeypatch.setattr(guard, "_primary_checkout", lambda: root)
+    return root
+
+
+@pytest.mark.parametrize("template", SPACED_NESTED)
+def test_a_path_with_two_spaces_is_reconstructed_too(
+    double_spaced_primary, worktree, template, on_windows
+):
+    """Three tokens, so the rejoin has to reach `k=3`. The one-space rows
+    above are satisfied by `k=2` and cannot measure the cap at all."""
+    cmd = _backslashed(template.format(p=double_spaced_primary))
+    assert venv_install_guard.denial_reason(
+        cmd, cwd=str(worktree), env=_env_pointing_at(double_spaced_primary / ".venv"),
+    ) is not None, cmd
+
+
+def test_the_rejoin_stops_at_its_bound(double_spaced_primary, worktree, on_windows):
+    """The bound is a bound: a path with `_MAX_PREFIX_JOIN` spaces or more is
+    NOT reconstructed, and issue #312 carries that. Asserted so raising the
+    cap is a deliberate act rather than a side effect.
+    """
+    toks = ["x"] * (venv_install_guard._MAX_PREFIX_JOIN + 2)
+    assert venv_install_guard._spaced_path_candidates(" ".join(toks)) == []
