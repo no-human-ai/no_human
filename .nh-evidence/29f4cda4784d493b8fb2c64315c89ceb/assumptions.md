@@ -1,0 +1,13 @@
+# Assumptions
+
+_Harness-captured record for task `29f4cda4`, commit `6e8aa604d23b59509892fe7fbb0376ed5731b683` — not model-authored: no_human wrote this file from the intake step's recorded questions and assumptions. It records what the gate produced; it is not a verdict of the model that wrote the code._
+
+<details><summary>⚠️ 4 assumptions made on your behalf — verify at review</summary>
+
+- **Q:** Where should the Discord invite URL be stored as the single source of truth—in a new constants file, existing configuration, environment variable, or elsewhere—and how should Onboarding.jsx import it? **A:** A new constants file (e.g., web/src/constants.js or web/src/config/discord.js) should define the URL once as a named export (e.g., DISCORD_INVITE_URL), which Onboarding.jsx then imports. This creates a single source of truth that avoids duplicating the literal URL in the component code, reversible via a simple find-replace if the URL changes, and keeps configuration separate from markup. _(assumption)_
+- **Q:** When existing outbound links are clicked in the app, do they open in the system browser, navigate within the embedded app view, or use a different app-specific handler? **A:** Follow the behavior of existing outbound links in the app (e.g., in headers, help text, or other wizard steps if any). The task identifies this as an open question requiring inspection of prior patterns. Most likely: window.open() to open in the system browser (standard for Electron/desktop-web hybrid apps), but this must be verified against how links like README URLs or support links currently be _(assumption)_
+- **Q:** What is the exact headline and description text for the Discord step? The task references 'The headline states what is TRUE, not what we hope,' but specific copy is not provided. **A:** Headline: A short, truthful statement following the house voice—e.g., 'Join the community' or 'Get help from our Discord'—that describes the actual benefit without aspirational language. Description: A single sentence explaining that Discord is where users can discuss, ask questions, and connect with others, matching the warm-editorial tone of existing steps. Exact phrasing should be proposed in c _(assumption)_
+- **Q:** Should the Discord step appear immediately before the Launch/summary step, or at a different position in the BASE_STEPS sequence? **A:** Immediately before the Launch/summary step, maintaining the sequence: welcome → repos → projects → integrations → discord → summary. This places the optional community offer at the end of the decision-making flow, mirroring the pattern of integrations as an optional enhancement, and ensures users reach Launch unchanged if they skip it. _(assumption)_
+
+</details>
+
