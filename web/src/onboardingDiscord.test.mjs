@@ -14,24 +14,20 @@ import { forwardDisabled, canJumpTo } from "./onboardingNav.js";
 // harness. Real-render coverage (clicking the step, opening the link,
 // reaching Launch either way) lives in e2e/onboarding-discord-step.mjs.
 //
-// Measured AA contrast table (WCAG 2.1, see test 8 below) for the three
+// Measured AA contrast table (WCAG 2.1, see test 8 below) for the two
 // tokens the step's text actually uses, against every opaque ambient surface
-// in both themes — all clear 4.5:1, including --surface-3, the hard rule:
+// in both themes — all clear 4.5:1, including --surface-3, the hard rule.
+// (`.ob-faint`, i.e. `--accent-500`, is deliberately NOT used by this step:
+// on light `--surface-2` — the top of `.ob-card`'s gradient, which is where
+// this step's content actually sits — it measures 4.41:1, under AA. That
+// pairing already ships elsewhere in the wizard, e.g. the integrations
+// step's "(optional)" tag, but this step must not add a second instance of
+// a failing pair, so "(optional)" and the echoed URL use `--text-muted`
+// instead via the existing `ob-sub`/`ob-note` classes.)
 //
 //   token         | dark: --base/-1/-2/-3        | light: --base/-1/-2/-3
 //   --text-hi     | 15.92 / 14.18 / 12.89 / 11.57 | 15.09 / 16.46 / 13.94 / 14.69
 //   --text-muted  |  8.63 /  7.69 /  6.99 /  6.27 |  7.02 /  7.65 /  6.48 /  6.83
-//   --accent-500  |  6.63 /  5.90 /  5.37 /  4.82 |  4.77 /  5.20 / *4.41/  4.64
-//
-//   * --accent-500 on light --surface-2 (4.41) is a PRE-EXISTING shortfall of
-//     `.ob-note code, .ob-faint` (styles.css) that this step reuses unchanged
-//     — the same rule already colours "(optional)" on the integrations step
-//     and every `<code>` in `.ob-note` across the wizard. It is not a pairing
-//     this step introduces, and the step never places it on --surface-2 (the
-//     wizard's .ob-card is a --surface-2→--surface-1 gradient at most, and
-//     --surface-3 — the hard-rule surface — clears 4.5 in both themes). Fixing
-//     that pre-existing pair is out of scope here (DESIGN.md: "do not reskin
-//     for its own sake").
 
 const here = dirname(fileURLToPath(import.meta.url));
 const src = readFileSync(join(here, "Onboarding.jsx"), "utf8");
@@ -165,7 +161,7 @@ test("the constant is byte-identical to every doc occurrence, 13 of them across 
 
 // ── AC3: vocabulary ──────────────────────────────────────────────────────
 test("the step uses only the wizard's existing class vocabulary, each backed by a real rule", () => {
-  const ALLOWED = new Set(["ob-h2", "ob-sub", "ob-note", "ob-row", "ob-faint", "ob-btn-ghost"]);
+  const ALLOWED = new Set(["ob-h2", "ob-sub", "ob-note", "ob-row", "ob-btn-ghost"]);
   const classNames = [...STEP.matchAll(/className="([^"]+)"/g)].flatMap((m) => m[1].split(/\s+/));
   assert.ok(classNames.length > 0, "the step must render at least one classed element");
   for (const cls of classNames) {
@@ -251,19 +247,16 @@ test("--text-hi and --text-muted clear AA against every surface (incl. --surface
   }
 });
 
-test("--accent-500 (.ob-faint, reused unchanged) clears AA against --surface-3, the hard rule, both themes", () => {
-  for (const theme of ["dark", "light"]) {
-    const fg = resolveToken("--accent-500", theme);
-    const bg = resolveToken("--surface-3", theme);
-    const ratio = contrast(fg, bg);
-    assert.ok(ratio >= AA_SMALL, `${theme}: --accent-500 on --surface-3 is ${ratio.toFixed(2)}:1 < ${AA_SMALL}:1`);
-  }
-  // Documented pre-existing exception (see file header): light --surface-2 is
-  // the one ambient surface where this ALREADY-SHIPPED pairing falls short.
-  // Recorded here so a future change to either token is forced to re-look at
-  // this number instead of silently drifting further from AA.
+test("the step never uses .ob-faint (--accent-500), which fails AA on the card's own light --surface-2", () => {
+  // .ob-card's background is a --surface-2 → --surface-1 gradient (styles.css),
+  // so text near the top of the card sits on --surface-2 — not just --surface-3.
+  // --accent-500 (what .ob-faint / .ob-note code render) falls under 4.5:1 there
+  // in light theme, so this step must not put "(optional)" or the echoed URL in
+  // that class, even though an older step (integrations) already does. Assert
+  // both the fact that drives this rule and that the step never uses the class.
   const lightAccent = resolveToken("--accent-500", "light");
   const lightS2 = resolveToken("--surface-2", "light");
   const ratio = contrast(lightAccent, lightS2);
-  assert.ok(ratio > 4.3 && ratio < 4.5, `pre-existing exception moved: --accent-500 on light --surface-2 is now ${ratio.toFixed(2)}:1 — re-verify whether it still needs documenting here`);
+  assert.ok(ratio < AA_SMALL, `expected --accent-500 on light --surface-2 to still be a known AA failure (got ${ratio.toFixed(2)}:1) — if this token pair now passes, .ob-faint may be safe to use here again`);
+  assert.doesNotMatch(STEP, /\bob-faint\b/, "the discord step must not render text in .ob-faint (--accent-500 fails AA on --surface-2 in light theme)");
 });

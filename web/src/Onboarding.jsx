@@ -1121,7 +1121,7 @@ export default function Onboarding({ onComplete }) {
             <Stagger>
               {/* States what is TRUE — the server exists and this opens it. No claim of
                   a response time, nobody "waiting". Nothing here gates Continue. */}
-              <h2 className="ob-h2">There is a Discord <span className="ob-faint">(optional)</span></h2>
+              <h2 className="ob-h2">There is a Discord <span className="ob-sub">(optional)</span></h2>
               <p className="ob-sub">
                 Questions, bug reports and runs worth showing go there, alongside the people already
                 running no_human. Opening it is the whole step — nothing is sent from this screen and
@@ -1130,7 +1130,7 @@ export default function Onboarding({ onComplete }) {
               <div className="ob-row">
                 <a className="ob-btn-ghost" href={DISCORD_INVITE_URL}
                    target="_blank" rel="noreferrer noopener">Open the invite ↗</a>
-                <span className="ob-faint">{DISCORD_INVITE_URL}</span>
+                <span className="ob-note">{DISCORD_INVITE_URL}</span>
               </div>
               <p className="ob-note">
                 The link opens in your browser, not inside no_human (the desktop shell routes it out —
