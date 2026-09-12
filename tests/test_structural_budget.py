@@ -1194,11 +1194,12 @@ FROZEN_FILE_LINES = {
     # site, the `type_hook` parameter threaded through both PostToolUse
     # compose helpers, and the order docstring recording why the type
     # hook runs ahead of the scope guard. Re-measured on the merge result.
-    # 2026-09-11 (task-retitle feature): the retitle branch trims dead
-    # code from `Orchestrator._commit_message` in favor of the shared
-    # `commit_subject()` helper. Measured value on THIS tree, directly
-    # (not by delta arithmetic): `len(Path("src/no_human/core/
-    # orchestrator.py").read_text().splitlines())` == 23840.
+    # 2026-09-12 (task-retitle feature, re-measured after a base merge):
+    # the retitle branch trims dead code from `Orchestrator._commit_message`
+    # in favor of the shared `commit_subject()` helper. Measured value on
+    # THIS merged tree, directly (not by delta arithmetic):
+    # `len(Path("src/no_human/core/orchestrator.py").read_text().
+    # splitlines())` == 23887.
     "core/orchestrator.py": 23887,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
