@@ -255,9 +255,12 @@ test("the ONLY thing that gates Continue on this step is a project with zero rep
   // fixed on the step that shows it. What must NEVER come back is the "no
   // projects" gate that dead-ended repo-less users — projectsBlockContinue fires
   // only on the zero-repo-project case, and the empty-state copy stays optional.
+  // 2026-09-12: continueBlocked also folds in the (unrelated) required-email
+  // step's gate — projectsBlockMsg !== null must still be exactly one of its
+  // OR'd terms, verbatim, not replaced or diluted into an inline count.
   assert.match(onboarding,
-    /const continueBlocked = projectsBlockMsg !== null;/,
-    "the gate must be the tested predicate, not an inline count");
+    /const continueBlocked = projectsBlockMsg !== null \|\| emailBlockMsg !== null;/,
+    "the gate must be the tested predicate OR'd with the email gate, not an inline count");
   assert.match(onboarding,
     /const projectsBlockMsg = step\.key === "projects" \? projectsBlockContinue\(projectDefs\) : null;/,
     "the block message must come from projectsBlockContinue, which fires only on a repo-less project");

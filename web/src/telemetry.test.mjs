@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { initTelemetry, telemetryConsent, captureScreen, _resetForTests } from "./telemetry.js";
 import { DEAD_CLICK_IGNORE_SELECTORS, deadClickBeforeSend } from "./deadClickFilter.js";
+import { maskCapturedNetworkRequest } from "./replayScrub.js";
 
 const SRC = dirname(fileURLToPath(import.meta.url));
 const WEB = join(SRC, "..");
@@ -89,7 +90,12 @@ test("consent → posthog-js imported once, init gets the exact masking options"
     capture_heatmaps: true,
     capture_performance: true,
     capture_exceptions: true,
-    session_recording: { maskAllInputs: true, recordHeaders: true, recordBody: true },
+    session_recording: {
+      maskAllInputs: true,
+      recordHeaders: true,
+      recordBody: true,
+      maskCapturedNetworkRequestFn: maskCapturedNetworkRequest,
+    },
     person_profiles: "always",
     bootstrap: { distinctID: "inst-uuid" },
   });
@@ -113,6 +119,24 @@ test("consent → posthog-js imported once, init gets the exact masking options"
   assert.equal(options.session_recording.maskAllInputs, true, "typed input is always masked");
   assert.equal(options.session_recording.maskTextSelector, undefined,
     "maskTextSelector matches zero elements in this UI and must not be configured");
+  // AC3: the onboarding email request/status response are excluded from
+  // replay body capture entirely (not merely DOM-masked) via posthog-js's
+  // own maskCapturedNetworkRequestFn seam — a test that fails if this wiring
+  // is ever removed.
+  assert.equal(
+    options.session_recording.maskCapturedNetworkRequestFn,
+    maskCapturedNetworkRequest,
+    "the onboarding email request must be excluded from replay body capture",
+  );
+  assert.equal(
+    options.session_recording.maskCapturedNetworkRequestFn({ name: "/api/onboarding/email" }),
+    null,
+  );
+  assert.equal(options.maskNetworkRequestFn, undefined,
+    "the deprecated field-redaction seam must not be used instead");
+  assert.equal(options.session_recording.recordBody, true,
+    "recordBody stays true for every other request — only excluded requests are dropped");
+  assert.equal(options.session_recording.recordHeaders, true);
   assert.equal(options.person_profiles, "always", "one person per install id");
   assert.equal(options.internal_or_test_user_hostname, null,
     "the board serves on 127.0.0.1 — posthog defaults would flag every real install $internal_or_test_user");

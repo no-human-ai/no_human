@@ -4489,6 +4489,13 @@ async def show_config(request: Request) -> dict[str, Any]:
     """
     cfg = request.app.state.config
     data = copy.deepcopy(cfg.data)
+    # `onboarding.email`/`email_at`/`welcome_status` must never be echoed
+    # here either: this config is fetched by plain `fetch` (TaskComposer,
+    # Settings) while PostHog session replay records bodies unmasked, the
+    # same exposure `_ONBOARDING_STATUS_REDACTED_FIELDS` already guards on
+    # `/api/onboarding/status` and `/api/onboarding/complete`.
+    if isinstance(data.get("onboarding"), dict):
+        data["onboarding"] = _onboarding_public(data["onboarding"])
     scrubbed = _scrub_secrets(data)
     from ..agent.backend import CLAUDE_PINNED_ROLES, SUPPORTED_BACKENDS, resolve_backend_name
     from ..config import DEFAULT_CONFIG
@@ -5273,6 +5280,32 @@ class OnboardingCompleteRequest(BaseModel):
     repo_path: str | None = None
 
 
+class OnboardingEmailRequest(BaseModel):
+    email: str = ""
+
+
+# Fields of the onboarding block that must never be echoed back to the
+# client outside the one POST that registers them: the browser already has
+# the address it just typed, and PostHog session replay records this app's
+# own network bodies (telemetry.py's contract is a separate, orthogonal
+# guarantee — this is the HTTP layer's own defence-in-depth, see
+# replayScrub.js on the frontend for the replay-capture exclusion itself).
+_ONBOARDING_STATUS_REDACTED_FIELDS = frozenset({"email", "email_at", "welcome_status"})
+
+
+def _onboarding_public(ob: dict[str, Any]) -> dict[str, Any]:
+    """The one function that decides what an onboarding block may carry over
+    HTTP. Every route that echoes the onboarding block — status, complete,
+    reset, and the onboarding slice of /api/config — MUST route through this,
+    not a copy-pasted comprehension: a dict copy-pasted at N call sites is
+    silent at the N+1th, which is exactly how the address leaked back out of
+    `/api/onboarding/reset` after being redacted everywhere else. Centralizing
+    the redaction here means a new route that echoes `ob` gets the guarantee
+    for free, and there is exactly one place to update if the redacted-field
+    set ever changes."""
+    return {k: v for k, v in ob.items() if k not in _ONBOARDING_STATUS_REDACTED_FIELDS}
+
+
 # The steps the minimal path skips, in the order the Finish-setup card lists them.
 DEFERRED_STEPS = ["docs", "integrations", "history", "rules"]
 
@@ -5376,7 +5409,94 @@ async def discover_repositories(
 @app.get("/api/onboarding/status")
 async def onboarding_status(request: Request) -> dict[str, Any]:
     ob = _read_onboarding(request.app.state.config)
-    return {"completed": bool(ob.get("completed")), **ob}
+    # `email`/`email_at`/`welcome_status` are persisted (see
+    # `onboarding_register_email` below) but never echoed here: this response
+    # is polled repeatedly by the wizard and its plain `fetch` body is what
+    # PostHog session replay would otherwise capture unmasked. See
+    # `_onboarding_public` — the one function every echoing route must use.
+    return {"completed": bool(ob.get("completed")), **_onboarding_public(ob)}
+
+
+#: RFC 5321 limits: the whole path, and the local part before the "@".
+_EMAIL_MAX_LEN = 254
+_EMAIL_MAX_LOCAL_LEN = 64
+#: Bidi overrides/isolates -- invisible, and they reorder how an address renders.
+_EMAIL_BIDI_OVERRIDES = frozenset("\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069")
+
+
+def _well_formed_email(addr: str) -> bool:
+    """Basic well-formedness: one "@", non-empty local and domain parts, and a
+    domain that itself looks like a domain (contains a dot, does not start or
+    end with one). Mirrors `isWellFormedEmail` in
+    web/src/onboardingEmail.js — the server re-checks because the client gate
+    is bypassable and the wizard must not trust it."""
+    s = (addr or "").strip()
+    if not s or any(c.isspace() for c in s):
+        return False
+    # Length is a safety bound, not a style rule. Without it a 200,000-character
+    # address passed this check and was written verbatim into config.yaml, which
+    # `_persist_onboarding` then re-reads and rewrites on every later onboarding
+    # write and which is parsed at every server start. RFC 5321 caps the whole
+    # path at 254 and the local part at 64.
+    if len(s) > _EMAIL_MAX_LEN:
+        return False
+    # `isspace` happens to reject \n and \r -- so classic header injection was
+    # already refused -- but it is a whitespace test, not a control-character
+    # one: NUL, BEL, ESC and the bidi overrides all passed and were persisted
+    # verbatim, and `Message.to` hands them to whatever transport is wired next.
+    if any(ord(c) < 0x20 or ord(c) == 0x7F or c in _EMAIL_BIDI_OVERRIDES for c in s):
+        return False
+    parts = s.split("@")
+    if len(parts) != 2:
+        return False
+    local, domain = parts
+    if len(local) > _EMAIL_MAX_LOCAL_LEN:
+        return False
+    return bool(
+        local
+        and domain
+        and "." in domain
+        and not domain.startswith(".")
+        and not domain.endswith(".")
+    )
+
+
+@app.post("/api/onboarding/email")
+async def onboarding_register_email(
+    body: OnboardingEmailRequest, request: Request
+) -> dict[str, Any]:
+    """Register the onboarding email and (best-effort) send the welcome email.
+
+    Persist-before-send: the address is written to `onboarding` FIRST, so a
+    transport failure (today, always — see `no_human.email.send`) never loses
+    a registered address. Re-posting the same, unchanged address is a no-op
+    for sending (idempotent) but still returns 200.
+
+    Idempotent means writing nothing either, not just sending nothing: the
+    wizard posts twice on the ordinary path (the Email step's Continue, then
+    `ensureEmailRegistered` at Finish), and persisting unconditionally
+    replaced the recorded `welcome_status` ("sent") with "skipped_unchanged"
+    and moved `email_at` off the moment of registration. The stored fields
+    describe the REGISTRATION, and a re-post is not one.
+
+    The response never echoes the address back (`{"ok": True, "welcome": ...}`
+    only) — `welcome` is either one of send_welcome's closed status strings or
+    this route's own `"skipped_unchanged"` when the address is unchanged, never
+    a claim that delivery to an arbitrary recipient succeeded.
+    """
+    from ..email.send import send_welcome
+
+    addr = (body.email or "").strip()
+    if not _well_formed_email(addr):
+        raise HTTPException(422, "a valid email address is required")
+    config = request.app.state.config
+    prior = _read_onboarding(config)
+    if prior.get("email") == addr:
+        return {"ok": True, "welcome": "skipped_unchanged"}
+    _persist_onboarding(config, {"email": addr, "email_at": _now()})
+    status = await asyncio.to_thread(send_welcome, addr)
+    _persist_onboarding(config, {"welcome_status": status})
+    return {"ok": True, "welcome": status}
 
 
 @app.post("/api/onboarding/repos/onboard")
@@ -5893,7 +6013,14 @@ async def onboarding_complete(
     if body.telemetry_asked or prior.get("telemetry_asked"):
         patch["telemetry_asked"] = True
     ob = _persist_onboarding(config, patch)
-    return {"ok": True, "onboarding": ob}
+    # Same redaction as GET /api/onboarding/status, via `_onboarding_public`:
+    # this response echoes the merged onboarding block, and
+    # `_persist_onboarding` may already carry a registered
+    # `email`/`email_at`/`welcome_status` from a prior POST to
+    # /api/onboarding/email. This endpoint is not in replayScrub.js's deny
+    # list (it legitimately echoes repos/docs for the wizard to render), so
+    # the address must never be IN the body in the first place.
+    return {"ok": True, "onboarding": _onboarding_public(ob)}
 
 
 async def _ensure_project_for_repo(store: Store, repo_path: str) -> None:
@@ -5956,7 +6083,12 @@ async def onboarding_reset(request: Request) -> dict[str, Any]:
     to reload the board itself.
     """
     ob = _persist_onboarding(request.app.state.config, {"completed": False})
-    return {"completed": bool(ob.get("completed")), **ob}
+    # Same redaction as GET /api/onboarding/status, via `_onboarding_public`:
+    # this response echoes the whole onboarding block back to the desktop's
+    # File -> "Re-run Setup..." caller, so a registered `email`/`email_at`/
+    # `welcome_status` from a prior /api/onboarding/email POST must never
+    # ride along here either.
+    return {"completed": bool(ob.get("completed")), **_onboarding_public(ob)}
 
 
 class DocsGenerateRequest(BaseModel):

@@ -57,10 +57,31 @@ async function runScenario(browser, { name, repos, readiness, tick, expectFix })
   await page.goto("http://127.0.0.1:4643/", { waitUntil: "networkidle" });
   await page.waitForTimeout(300);
 
-  const cont = async () => { await page.getByRole("button", { name: /^Continue$/ }).click(); await page.waitForTimeout(200); };
+  // The Email step (required, not skippable) sits between Welcome and
+  // Repositories, and its Continue is `disabled` until the field holds a
+  // well-formed address — a bare click would sit on Playwright's enabled
+  // actionability check for 30s. Go THROUGH the step the way a user does:
+  // whenever the address field is on screen, type into it, then Continue.
+  const EMAIL = "walker@example.com";
+  const cont = async () => {
+    const field = page.getByPlaceholder("you@example.com");
+    if (await field.isVisible().catch(() => false)) {
+      await field.fill(EMAIL);
+      await page.waitForTimeout(100);
+    }
+    await page.getByRole("button", { name: /^Continue$/ }).click();
+    await page.waitForTimeout(200);
+  };
 
-  // welcome -> repos.
-  await cont();
+  // welcome -> repos. Hop until the Repositories step is actually on screen
+  // rather than counting hops: the Email step now sits between the two, and a
+  // fixed single hop would land on it (same idiom as
+  // onboarding-recent-card-layout.mjs).
+  for (let hop = 0; hop < 6; hop++) {
+    if (await page.getByRole("heading", { name: /Which repositories do you work on/i })
+        .isVisible().catch(() => false)) break;
+    await cont();
+  }
   await page.waitForTimeout(300); // let the repos-step discovery scan land.
 
   if (tick && repos.length) {

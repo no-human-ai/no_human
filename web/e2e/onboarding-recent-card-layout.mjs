@@ -64,7 +64,20 @@ await page.route("**/api/**", (route) => {
 await page.goto("http://127.0.0.1:4652/", { waitUntil: "networkidle" });
 await page.waitForTimeout(400);
 
-const cont = () => page.getByRole("button", { name: /^Continue$/ }).click();
+// The Email step (required, not skippable) sits between Welcome and
+// Repositories, and its Continue is `disabled` until the field holds a
+// well-formed address — a bare click would sit on Playwright's enabled
+// actionability check for 30s. Go THROUGH the step the way a user does:
+// whenever the address field is on screen, type into it, then Continue.
+const EMAIL = "walker@example.com";
+const cont = async () => {
+  const field = page.getByPlaceholder("you@example.com");
+  if (await field.isVisible().catch(() => false)) {
+    await field.fill(EMAIL);
+    await page.waitForTimeout(100);
+  }
+  await page.getByRole("button", { name: /^Continue$/ }).click();
+};
 for (let hop = 0; hop < 6; hop++) {
   if (await page.getByRole("heading", { name: /Which repositories do you work on/i })
       .isVisible().catch(() => false)) break;

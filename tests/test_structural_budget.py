@@ -1508,7 +1508,32 @@ FROZEN_FILE_LINES = {
     # path too, gated to avoid double-firing against `_run_attempt`'s own
     # in-process `cancelled_hard` emit when `stopped` is True. Measured on
     # this tree with the scanner below.
-    "api/app.py": 6183,
+    # 6183 -> 6273 (+90): onboarding now registers the user's email
+    # (`POST /api/onboarding/email`) and renders the welcome through a
+    # transport seam whose shipped default sends nothing,
+    # persisting `email`/`email_at`/`welcome_status` via
+    # `_persist_onboarding`; `onboarding_complete`'s response redacts those
+    # fields (`_ONBOARDING_STATUS_REDACTED_FIELDS`) so the address is never
+    # echoed back in the body. Measured on this tree with the scanner below.
+    # 6273 -> 6285 (+12): the ad-hoc redaction comprehension copy-pasted at
+    # each onboarding-echoing route (`/api/config`, `/api/onboarding/status`,
+    # `/api/onboarding/complete`, `/api/onboarding/reset`) is centralized
+    # into `_onboarding_public`, so a future route can't leak the address by
+    # forgetting the copy-paste; the net growth is the new function's
+    # docstring explaining why it must be the only place this redaction
+    # happens. Measured on this tree with the scanner below.
+    # 6285 -> 6308: the email validator's RFC 5321 bounds (whole path 254,
+    # local part 64) and the C0/DEL/bidi-override rejection, with the comments
+    # recording what each was measured to let through. Re-measured on THIS tree
+    # after the change, not carried forward -- the previous value was written
+    # before these lines existed and turned the gate red.
+    # 6308 -> 6314 (+6): `onboarding_register_email` returns early when the
+    # posted address is unchanged, so the wizard's second POST (Continue, then
+    # `ensureEmailRegistered` at Finish) no longer overwrites the recorded
+    # `welcome_status` or `email_at`. The route body itself got one line
+    # shorter; the growth is the docstring recording what the unconditional
+    # persist did. Re-measured on THIS tree after the change.
+    "api/app.py": 6314,
     # +51: W5 active-time phase writer (phase instrumentation).
     # +84: `list_escalations`/`list_review_fails`/`list_tamper_trips` — the
     # three new failure-signal sources the recurring learning harvest mines.
