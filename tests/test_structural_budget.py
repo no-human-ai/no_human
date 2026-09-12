@@ -1508,7 +1508,17 @@ FROZEN_FILE_LINES = {
     # path too, gated to avoid double-firing against `_run_attempt`'s own
     # in-process `cancelled_hard` emit when `stopped` is True. Measured on
     # this tree with the scanner below.
-    "api/app.py": 6183,
+    # 6183 -> 6255 (+72): onboarding now registers the user's email and
+    # sends the welcome email. Adds `OnboardingEmailRequest`,
+    # `_ONBOARDING_STATUS_REDACTED_FIELDS` (email/email_at/welcome_status
+    # withheld from the polled `/api/onboarding/status` body so PostHog
+    # session replay never captures them unmasked), `_well_formed_email`
+    # (server-side mirror of the client's `isWellFormedEmail` gate), and the
+    # new `POST /api/onboarding/email` endpoint, which persists the address
+    # before sending (persist-before-send) and returns only a closed
+    # welcome-status string, never the address itself. Measured on this tree
+    # with the scanner below.
+    "api/app.py": 6255,
     # +51: W5 active-time phase writer (phase instrumentation).
     # +84: `list_escalations`/`list_review_fails`/`list_tamper_trips` — the
     # three new failure-signal sources the recurring learning harvest mines.
