@@ -157,7 +157,7 @@ def _load(repo_path: Path) -> tuple[object | None, str | None]:
     """
     p = repo_path / MANIFEST
     try:
-        text = p.read_text(errors="replace")
+        text = p.read_text(errors="replace", encoding="utf-8")
     except FileNotFoundError:
         return None, None
     except OSError as exc:
@@ -1200,13 +1200,13 @@ def _finalize_video(out_dir: Path) -> str | None:
 
 def _write_artifacts(out_dir: Path, result: UiEvidenceResult) -> None:
     with contextlib.suppress(OSError, TypeError):
-        (out_dir / "manifest.json").write_text(json.dumps(result.manifest, indent=2))
+        (out_dir / "manifest.json").write_text(json.dumps(result.manifest, indent=2), encoding="utf-8")
     with contextlib.suppress(OSError, TypeError):
         (out_dir / "console.json").write_text(
             json.dumps({"errors": list(result.console_errors)}, indent=2)
-        )
+        , encoding="utf-8")
     with contextlib.suppress(OSError, TypeError):
-        (out_dir / "result.json").write_text(json.dumps(result.as_dict(), indent=2))
+        (out_dir / "result.json").write_text(json.dumps(result.as_dict(), indent=2), encoding="utf-8")
 
 
 async def _run_body(

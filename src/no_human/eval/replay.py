@@ -103,7 +103,7 @@ class ReplayRunner:
         for rel, content in golden.setup.items():
             target = work / rel
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(content)
+            target.write_text(content, encoding="utf-8")
         _git(work, "add", "-A")
         _git(work, "commit", "-m", "base (pre-fix)")
         _git(work, "remote", "add", "origin", str(bare))
@@ -266,7 +266,7 @@ class ReplayRunner:
         held = work / "tests" / "held_out"
         held.mkdir(parents=True, exist_ok=True)
         test_file = held / "test_eval_holdout.py"
-        test_file.write_text(golden.held_out_tests)
+        test_file.write_text(golden.held_out_tests, encoding="utf-8")
         # sys.executable (not "python"): the server shell has python3 but no
         # `python`, so a raw "python" here died with the same env failure that
         # dominated the task ledger. Bounded + process-group-killed so a hung

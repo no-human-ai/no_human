@@ -607,7 +607,7 @@ def _setup_sandbox(spec: BenchTask, workdir: Path) -> Path:
             with target.open("a") as fh:
                 fh.write(content)
         else:
-            target.write_text(content)
+            target.write_text(content, encoding="utf-8")
     return work
 
 
@@ -1082,7 +1082,7 @@ class NorthStarRunner:
         held = work / "tests" / "bench_holdout"
         held.mkdir(parents=True, exist_ok=True)
         f = held / "test_bench_holdout.py"
-        f.write_text(spec.holdout)
+        f.write_text(spec.holdout, encoding="utf-8")
         proc = subprocess.Popen(
             [sys.executable, "-m", "pytest", "-q", str(f)], cwd=work,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,

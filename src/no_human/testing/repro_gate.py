@@ -119,7 +119,7 @@ def _load(repo_path: Path) -> tuple[object, str | None]:
         # raise — this runs inside the PostToolUse hook, which had no failure
         # mode before it (the tamper guard once died on a binary test file
         # AFTER the coder was paid; same class).
-        data = json.loads(p.read_text(errors="replace"))
+        data = json.loads(p.read_text(errors="replace", encoding="utf-8"))
     except OSError as exc:
         return _ABSENT, f"{MANIFEST} is present but unreadable ({exc.__class__.__name__})"
     except json.JSONDecodeError as exc:

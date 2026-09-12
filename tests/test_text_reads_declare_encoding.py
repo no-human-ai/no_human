@@ -64,22 +64,20 @@ them would be noise. The one write that mattered, `test_egress_allowlist.py`
 writing source it had just read, is fixed, because once the read is correct the
 write is what raises next.
 
-`src/` is covered only at `src/no_human/testing/`, and that exception is the
-whole point of the boundary. The first version of this change drew the line by
-DIRECTORY, guarding `tests/` and `scripts/`, and shipped with the suite still
-uncollectable: `pytest_isolated_home.py` reads this repository's own
-`pyproject.toml` at import during pytest bootstrap, and it lives under `src/`.
-The line that matters is WHOSE files are being read, not which folder the
-reader sits in. Three reads there are the harness reading its own repository
-and are fixed; five take a path under the TARGET repository and are exempted by
-name in `PRODUCT_SIDE_READERS`, all of them already passing `errors="ignore"`
-or `errors="replace"`.
+`src/` is covered too, as of the sweep that gave its 89 reads and writes an
+explicit encoding. The policy there was the conservative one: `encoding="utf-8"`
+and nothing else. On linux and in CI the preferred encoding is ALREADY utf-8,
+so that changes nothing; on Windows it replaces a silent mis-decode with the
+same loud error CI would have given. Adding `errors=` would have been a
+behaviour change on every platform, suppressing failures that surface today,
+and that is a product decision rather than an encoding one. The eleven call
+sites that already passed `errors=` kept it.
 
-The rest of `src/` stays out, and that is a real remaining exposure rather than
-an oversight: 54 unencoded `read_text` and 35 unencoded `write_text` calls.
-That is the PRODUCT reading a user's files, and it deserves its own change and
-its own thought about what should happen when a user's file genuinely is not
-UTF-8.
+WRITES are still not pinned by this guard, though `src/` now declares them.
+There are ~1700 unencoded `write_text` calls under `tests/` and eight
+write-mode `open()` calls, essentially all ASCII literals a test writes and
+reads back, where the platform default round-trips fine. Sweeping those would
+be noise.
 """
 from __future__ import annotations
 
@@ -90,46 +88,17 @@ import pytest
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 
-#: The harness: code that reads THIS repository's own files.
+#: Every directory that ships. `src/` joined the rest once its 89 unencoded
+#: reads and writes were given an explicit utf-8, which removed the last
+#: reason to reason about WHOSE files a call touches before trusting it.
 #:
-#: `src/no_human/testing/` is in scope even though it lives on the product side
-#: of the directory line, because the boundary that matters is WHOSE files are
-#: being read, not which folder the reader sits in. `pytest_isolated_home.py`
-#: reads this repository's own `pyproject.toml`, checking it for
-#: `name = "no-human"`, and it does so at import during pytest bootstrap, so an
-#: undecodable byte there blocks collection of the whole suite before a single
-#: test runs. Drawing the line by directory hid that, and the first version of
-#: this change shipped with the suite still uncollectable as a result.
-#:
-#: `e2e/` is in for the same reason and was added the same way: the ASCII
-#: locale lane caught `e2e/lane_model.py:53` reading this repository's own
-#: `web/src/boardLanes.js` at module scope, which `tests/` imports, so it was
-#: still a collection blocker after the first sweep. TWICE now the boundary has
-#: been drawn one directory too narrow, which is the argument for enumerating
-#: harness roots here rather than reasoning about them each time.
-#:
-#: The rest of `src/` stays out. That is the product reading a USER's files and
-#: it needs its own change, including a decision about what should happen when
-#: a user's file genuinely is not UTF-8.
-GUARDED_AREAS = ("tests", "scripts", "src/no_human/testing", "e2e")
-
-#: Reads inside a guarded area that are product-side after all: every one takes
-#: a path under the TARGET repository rather than this one, so "decode it as
-#: UTF-8" is not ours to assert. All of them already pass `errors="ignore"` or
-#: `errors="replace"` and cannot raise, which is the correct handling for a
-#: file we did not write.
-#:
-#: Keyed by file rather than by line so the list does not rot every time
-#: something above it moves. If one of these modules ever reads THIS
-#: repository's own files, that read belongs outside the exemption.
-PRODUCT_SIDE_READERS = {
-    # reads (repo_path / ...) for the repository under test
-    "src/no_human/testing/runner.py",
-    # reads the target repo's MANIFEST; errors="replace" is deliberate and
-    # documented there, so a non-UTF-8 byte reads as a JSON error, never raises
-    "src/no_human/testing/repro_gate.py",
-    "src/no_human/testing/ui_evidence.py",
-}
+#: The boundary used to be drawn by DIRECTORY and it was wrong twice, in two
+#: different shapes: `src/no_human/testing/` is harness living on the product
+#: side of the folder line, and `e2e/` was outside the list entirely until the
+#: ASCII locale lane caught it reading `web/src/boardLanes.js` at module
+#: scope. Both were found by someone else, after a sweep that claimed to be
+#: complete. Enumerating every root here is the answer to that.
+GUARDED_AREAS = ("tests", "scripts", "src", "e2e")
 
 
 def _read_mode(call: ast.Call) -> str:
@@ -185,8 +154,6 @@ def test_no_read_text_in_the_harness_omits_its_encoding(area):
     offenders = []
     for path in sorted((REPO_ROOT / area).rglob("*.py")):
         rel = path.relative_to(REPO_ROOT).as_posix()
-        if rel in PRODUCT_SIDE_READERS:
-            continue
         for lineno in _unencoded_read_text(path):
             offenders.append(f"{rel}:{lineno}")
 

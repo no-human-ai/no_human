@@ -150,7 +150,7 @@ def run_setup_commands(
     if marker is not None:
         try:
             marker.parent.mkdir(parents=True, exist_ok=True)
-            marker.write_text("\n".join(normalized))
+            marker.write_text("\n".join(normalized), encoding="utf-8")
         except OSError as exc:  # noqa: BLE001 — marker write must never fail the task
             log.warning("could not write setup marker at %s: %s", marker, exc)
     log.info("worktree setup OK for %s: %d command(s)", worktree_path, len(normalized))

@@ -102,7 +102,7 @@ def _quarantine(name: str, payload) -> str:
     from ..config import ensure_private_dir
     ensure_private_dir(directory)
     path = directory / f"{int(time.time())}-{name}.json"
-    path.write_text(json.dumps(payload, indent=2, default=str))
+    path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
     return str(path)
 
 
