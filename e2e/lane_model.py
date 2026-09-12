@@ -50,7 +50,7 @@ def parse_lanes(js_text: str | None = None) -> tuple[Lane, ...]:
     literal (true today — see module docstring). Raises ValueError if an
     entry doesn't look like that, rather than silently dropping it.
     """
-    text = js_text if js_text is not None else BOARD_LANES_JS.read_text()
+    text = js_text if js_text is not None else BOARD_LANES_JS.read_text(encoding="utf-8")
     block = _extract_lanes_block(text)
     entries = [ln.strip() for ln in block.splitlines() if ln.strip()]
     lanes: list[Lane] = []
@@ -86,7 +86,7 @@ def label_for(key: str) -> str:
 
 
 def _load_fixture_cases() -> list[dict]:
-    return json.loads(LANE_CONFORMANCE_JSON.read_text())["cases"]
+    return json.loads(LANE_CONFORMANCE_JSON.read_text(encoding="utf-8"))["cases"]
 
 
 FIXTURE_CASES: tuple[dict, ...] = tuple(_load_fixture_cases())

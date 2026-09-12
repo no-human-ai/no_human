@@ -234,14 +234,101 @@ the reviewer and the human, who draw the conclusion.
 
 Two things the checker itself does are worth knowing before you enable one,
 because they are the checker's behaviour and not no_human's; both are declared
-against this module in
-[`tests/test_egress_allowlist.py`](../tests/test_egress_allowlist.py). The PyPI
+against `review/type_evidence.py` in
+[`tests/test_egress_allowlist.py`](../tests/test_egress_allowlist.py), which is
+the module that spawns. The PyPI
 `pyright` distribution is a launcher whose first run **downloads** a node
 runtime and the `pyright` npm package, so a review on a machine that resolves
 that wrapper makes a network call. And `mypy` imports the modules a `plugins =`
 line names, read from the config of the repo under review — the harness already
 runs that repo's tests, so it is not a new trust boundary, but it is the first
 time the review half executes anything the reviewed repo wrote.
+
+Because of that second one, the checker is spawned with **no credential**: the
+child environment is this process's with every secret-shaped variable removed
+(`_checker_env`, over `agent/child_env.drop_foreign_secrets` with an empty
+keep-list), so a repo-authored plugin never holds our OAuth token, API key or
+cloud credential. `PATH`, `HOME` and the proxy variables stay. That trade has a
+real cost and it is not hypothetical: a plugin that *reads* one of those
+variables no longer loads — `mypy_django_plugin` is the canonical case, since
+it imports the settings module and that reads `SECRET_KEY`/`DATABASE_URL`. mypy
+then exits non-zero, the run is correctly distrusted, and the section would
+simply vanish. Rather than vanish, it renders a **`TYPE EVIDENCE: NOT
+COLLECTED`** line naming the cause — a statement about the collector, never
+about the code, and the line says so itself. Every other failure (a crash, a
+timeout, unparseable output) still renders nothing at all, so absence keeps
+meaning absence.
+
+## Per-edit type feedback — the same signal, one turn earlier
+
+[`src/no_human/agent/type_hook.py`](../src/no_human/agent/type_hook.py) puts type
+diagnostics in front of the **coder** rather than the reviewer. It is a
+`PostToolUse` hook beside the per-edit lint hook: after an `Edit`/`Write` to a
+`.py` or `.pyi` file it runs the checker the repo already configures over *that
+one file* and feeds back what the checker did not report on that file before the
+edit. Off by default — set `hooks.per_edit_type: true` — and a no-op on a repo
+that configures neither `pyright` nor `mypy`.
+
+The baseline is the difference from the section above. The gate diffs against
+the merge base, which is the right question to ask once per review and far too
+expensive to ask per edit. This hook diffs against **the same file, moments
+earlier, in the same tree**: the same checker, the same arguments, the same
+interpreter, seconds apart. What that identity buys is an identical
+*environment* between the two runs, and that is what makes the comparison sound
+without a comparability check — the degraded-base problem the gate has to detect
+and refuse cannot arise here.
+
+What it does **not** buy is attribution, and the feedback text says so rather
+than implying otherwise. A difference between the two runs means something the
+checker *read* changed, not that the triggering edit changed it. `mypy <file>`
+follows imports, so a change anywhere in the transitive graph lands in the
+comparison — edit `lib.py`, then `app.py`, and `lib.py`'s new error is reported
+at the edit to `app.py`, whose bytes never changed. And `Bash` is not one of the
+tools the hook watches, so `sed -i`, `patch`, `ruff --fix` and `black` are
+invisible to it and whatever they broke first surfaces at the next `Edit`. So
+the block reads "*N diagnostics on or reachable from X that were not reported
+when this file was last checked*", naming both ways it can be wrong, instead of
+borrowing the lint hook's "your edit introduced" — which ruff can say honestly
+because ruff sees exactly one file.
+
+What that buys is speed, and what it costs is coverage. Four ceilings, all of
+them named in the module and one of them printed in the feedback itself:
+
+- **The first edit to a file reports nothing.** It has nothing to subtract
+  against, and inventing a baseline would reintroduce exactly the asymmetry the
+  gate guards against. The gate is the backstop.
+- **Dependencies, not dependents.** `mypy <file>` and `pyright <file>` analyse
+  that file and what it imports, never its callers — so the characteristic type
+  break, a narrowed parameter lighting up every call site, is invisible here and
+  shows up at the gate. This is why phase 2 does not replace the gate, and the
+  feedback text says so in the turn.
+- **Python only.** Handed a single file, `tsc` ignores the repo's
+  `tsconfig.json`, so a per-file TypeScript run answers a different question
+  than the project's own configuration asks. TypeScript repos get the gate-time
+  evidence and nothing here.
+- **Reported once.** A report advances that file's baseline, so a diagnostic the
+  coder chose not to fix is not re-sent every turn. The gate still has the last
+  word on it.
+
+Bounded twice, because an advisory signal must never be the reason an attempt
+runs long: 20s per run, and 240s cumulative per attempt, after which the hook
+goes quiet for the rest of the attempt and says so once on the event stream. Any
+checker failure — missing binary, crash, timeout, unparseable output — reports
+nothing and records no baseline, so a failed run can never become the thing the
+next edit is compared against. Nothing is written inside the repo: `mypy`'s
+cache is relocated under the system temp root, and a run that cannot get such a
+directory does not happen.
+
+That cache is **one directory per attempt, removed with the attempt** — warm
+from the second edit onward within a run (measured 4.6s cold, 0.2s warm on a
+468-line file) and deliberately not shared across runs. It could not be: the
+path it would be keyed on is the attempt's worktree, which is minted per run,
+and mypy keys its own cache on source paths. Its parent is a single predictable
+directory created `0700` and refused outright unless it is ours alone; the
+per-attempt child inside it is random, so two attempts never share one — mypy
+takes no cross-process lock. A child left behind by a run that died is
+reclaimed by owner-pid liveness, the same rule `core/worktree.py` uses for
+worktrees.
 
 ## A tamper guard against a self-gutted test suite
 

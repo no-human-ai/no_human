@@ -106,7 +106,7 @@ def load() -> Credential | None:
     """The stored credential, or None. Never raises on a corrupt file."""
     _, path = _paths()
     try:
-        raw = json.loads(path.read_text())
+        raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
     if not isinstance(raw, dict) or not raw.get("refresh_token"):

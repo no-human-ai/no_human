@@ -121,7 +121,7 @@ class Scenario:
 def load_scenario(path: Path | str = DEFAULT_SCENARIO) -> Scenario:
     """Parse a scenario file. Structure only — see :func:`validate_scenario`."""
     p = Path(path)
-    data = yaml.safe_load(p.read_text()) or {}
+    data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
     if not isinstance(data, dict):
         raise ValueError(f"{p}: expected a mapping at the top level")
     return Scenario(
@@ -294,7 +294,7 @@ def write_tree(repo: Path, files: dict[str, str]) -> None:
     for rel, content in files.items():
         target = repo / rel
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content)
+        target.write_text(content, encoding="utf-8")
 
 
 def materialise(scenario: Scenario, dest: Path,
@@ -387,7 +387,7 @@ def write_specs(specs: Iterable[BenchTask], out_dir: Path) -> list[Path]:
     for spec in specs:
         p = out_dir / f"{spec.id}.yaml"
         p.write_text(yaml.safe_dump(spec.to_dict(), sort_keys=False,
-                                    allow_unicode=True, width=100))
+                                    allow_unicode=True, width=100), encoding="utf-8")
         written.append(p)
     return written
 
@@ -405,7 +405,7 @@ def apply_break_probe(repo: Path, probe: dict[str, str]) -> None:
     target = Path(repo) / probe["path"]
     if not target.exists():
         raise ValueError(f"break_probe path does not exist: {probe['path']}")
-    text = target.read_text()
+    text = target.read_text(encoding="utf-8")
     hits = text.count(probe["find"])
     if hits != 1:
         raise ValueError(
@@ -415,7 +415,7 @@ def apply_break_probe(repo: Path, probe: dict[str, str]) -> None:
     mutated = text.replace(probe["find"], probe["replace"])
     if mutated == text:
         raise ValueError(f"break_probe for {probe['path']} changed nothing")
-    target.write_text(mutated)
+    target.write_text(mutated, encoding="utf-8")
 
 
 # --------------------------------------------------------------------------- #

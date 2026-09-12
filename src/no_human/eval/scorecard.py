@@ -102,14 +102,14 @@ class Scorecard:
 
     def save(self, path: Path) -> None:
         Path(path).parent.mkdir(parents=True, exist_ok=True)
-        Path(path).write_text(json.dumps(self.as_dict(), indent=2))
+        Path(path).write_text(json.dumps(self.as_dict(), indent=2), encoding="utf-8")
 
     @staticmethod
     def load(path: Path) -> "Scorecard | None":
         p = Path(path)
         if not p.exists():
             return None
-        data = json.loads(p.read_text())
+        data = json.loads(p.read_text(encoding="utf-8"))
         scores = [TaskScore(**_score_kwargs(s)) for s in data.get("scores", [])]
         return Scorecard(scores=scores, created_at=data.get("created_at", ""))
 

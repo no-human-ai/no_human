@@ -106,10 +106,10 @@ def load_corpus(directory: Path = CORPUS_DIR) -> list[CorpusTask]:
         held = sorted((tier / "holdout").glob("test_*.py"))
         tasks.append(CorpusTask(
             name=tier.name,
-            ticket=json.loads((tier / "ticket.json").read_text()),
+            ticket=json.loads((tier / "ticket.json").read_text(encoding="utf-8")),
             repo_fixture=tier / "repo",
             criteria=FunnelCriteria.from_dict(
-                json.loads((tier / "criteria.json").read_text())),
+                json.loads((tier / "criteria.json").read_text(encoding="utf-8"))),
             holdout_cmd=([sys.executable, "-m", "pytest", "-q",
                           "-p", "no:cacheprovider", str(held[0])]
                          if held else []),

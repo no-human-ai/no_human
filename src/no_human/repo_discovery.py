@@ -301,7 +301,7 @@ def _git_dir(repo: Path) -> Path | None:
         return dot
     if stat.S_ISREG(mode):
         try:
-            line = dot.read_text(errors="replace").strip()
+            line = dot.read_text(errors="replace", encoding="utf-8").strip()
         except OSError:
             return None
         if line.startswith("gitdir:"):
@@ -366,7 +366,7 @@ def _head_info(repo: Path) -> tuple[str, bool]:
     if gd is None:
         return "", False
     try:
-        head = (gd / "HEAD").read_text(errors="replace").strip()
+        head = (gd / "HEAD").read_text(errors="replace", encoding="utf-8").strip()
     except OSError:
         return "", False
     if head.startswith("ref:"):

@@ -888,7 +888,7 @@ def snapshot(repo_path: Path, *, timeout: float) -> Snapshot:
     common_dir = _resolve_git_root(repo_path, "--git-common-dir", timeout=timeout)
     if common_dir != admin_dir:
         try:
-            common_head = (common_dir / "HEAD").read_text(errors="replace")
+            common_head = (common_dir / "HEAD").read_text(errors="replace", encoding="utf-8")
         except OSError:
             common_head = None  # unreadable reads as "not a symref" -> fail closed
     config_norm = _config_norm_map(admin_dir, common_dir, timeout=timeout)

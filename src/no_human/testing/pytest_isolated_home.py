@@ -117,7 +117,7 @@ def _seed(home: Path) -> None:
             "\temail = test-suite@no-human.invalid\n"
             "[init]\n"
             "\tdefaultBranch = main\n"
-        )
+        , encoding="utf-8")
 
 
 def _activate() -> Path | None:
