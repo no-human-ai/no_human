@@ -41,7 +41,7 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Protocol
 
-from . import base
+from . import base, in_app
 
 log = logging.getLogger("no_human.email")
 
@@ -259,18 +259,20 @@ def render_welcome(
     download_url: str = DOWNLOAD_URL,
     unsubscribe_url: str = UNSUBSCRIBE_URL,
 ) -> Message:
-    """Render one of the frozen templates in `base.py`, verbatim.
+    """Render the in-app welcome, verbatim from `in_app.py`.
 
-    This function only ever passes `base.*`'s own return values through — it
+    `platform` is accepted and ignored, and `download_url` with it. Both used
+    to select one of `base.py`'s four WEBSITE templates — a download link and
+    "drag no_human to Applications" — which is wrong for this reader: this
+    only ever runs inside the already-installed app, so the recipient has
+    downloaded it, installed it and is looking at it. Kept in the signature so
+    the call site and its tests do not have to change in the same commit as
+    the copy; a follow-up can drop them.
+
+    This function only ever passes a template's own return value through — it
     never edits a subject or body character.
     """
-    template = _platform_template(platform)
-    if template == "linux_download":
-        subject, body = base.linux_download(download_url, unsubscribe_url, address)
-    elif template == "windows_waitlist":
-        subject, body = base.windows_waitlist(unsubscribe_url, address)
-    else:
-        subject, body = base.mac_download(download_url, unsubscribe_url, address)
+    subject, body = in_app.in_app_welcome(unsubscribe_url, address)
     return Message(to=address, subject=subject, body=body)
 
 

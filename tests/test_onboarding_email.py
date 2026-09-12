@@ -39,7 +39,7 @@ from httpx import AsyncClient, ASGITransport
 import no_human.config as nh_config
 from no_human import telemetry
 from no_human.api.app import app
-from no_human.email import base, send
+from no_human.email import base, in_app, send
 
 # ── fixtures (patterns lifted verbatim from tests/test_onboarding_api.py and
 # tests/test_telemetry.py — not reinvented) ────────────────────────────────
@@ -350,35 +350,46 @@ async def test_no_route_in_the_app_ever_echoes_the_registered_address(
     assert checked == len(get_routes) + len(onboarding_post_routes)
 
 
-def test_render_welcome_reuses_the_frozen_template_byte_for_byte():
-    address = "person@example.com"
-    golden_subject, golden_body = base.mac_download(
-        send.DOWNLOAD_URL, send.UNSUBSCRIBE_URL, address
-    )
-    msg = send.render_welcome(address, platform="darwin")
-    assert msg.subject == golden_subject
-    assert msg.body == golden_body
-    # Pin the specific, human-legible facts the acceptance criterion names:
-    assert msg.subject == "Your no_human download for macOS"
-    assert msg.body.splitlines()[0] == "Hi Person,"
+def test_render_welcome_reuses_the_in_app_template_byte_for_byte():
+    """`render_welcome` passes a template's return value through untouched.
 
-
-def test_render_welcome_picks_the_right_template_per_platform():
+    Asserted against the whole subject and the whole body, not just the first
+    line: a previous version compared only the subject and `body.splitlines()[0]`,
+    which left every other line -- including the unsubscribe footer that
+    `base.py`'s docstring calls non-negotiable -- free to drift.
+    """
     address = "a@b.co"
-    linux_subject, linux_body = send.render_welcome(address, platform="linux").subject, \
-        send.render_welcome(address, platform="linux").body
-    assert (linux_subject, linux_body) == base.linux_download(
-        send.DOWNLOAD_URL, send.UNSUBSCRIBE_URL, address
-    )
-    win_msg = send.render_welcome(address, platform="win32")
-    assert (win_msg.subject, win_msg.body) == base.windows_waitlist(
+    msg = send.render_welcome(address)
+    assert (msg.subject, msg.body) == in_app.in_app_welcome(
         send.UNSUBSCRIBE_URL, address
     )
-    # Unrecognized/absent platform defaults to macOS (intake Q&A).
-    default_msg = send.render_welcome(address, platform="some-unknown-os")
-    assert default_msg.subject == base.mac_download(
-        send.DOWNLOAD_URL, send.UNSUBSCRIBE_URL, address
-    )[0]
+    assert "Unsubscribe: " in msg.body
+
+
+def test_the_platform_no_longer_selects_the_body():
+    """It used to, and that was the defect.
+
+    `base.py`'s four templates are the WEBSITE flows -- a visitor requesting a
+    download, or joining a waitlist. This step runs inside the already-installed
+    desktop app, so every platform branch produced copy that was false on
+    arrival: a download link for software the reader is looking at, and
+    "you requested this download at getnohuman.com" for something that never
+    happened. One body now, and `platform` is inert.
+    """
+    address = "a@b.co"
+    bodies = {
+        send.render_welcome(address, platform=p).body
+        for p in ("linux", "win32", "darwin", "some-unknown-os", None)
+    }
+    assert len(bodies) == 1, "platform still changes the body"
+    body = bodies.pop()
+    assert "getnohuman.com/download" not in body, "no download link: they have it"
+    assert "DMG" not in body and "Applications" not in body, "no install advice"
+    assert "requested this download" not in body, "a reason that never happened"
+    # Positive control: the shared founder voice IS present, so the assertions
+    # above are not passing over an empty string.
+    assert "I'm Eyal, the founder of no_human." in body
+    assert "Unsubscribe:" in body
 
 
 # ── AC5: one-module transport seam, closed failure vocabulary, idempotency ─
@@ -399,7 +410,7 @@ def test_a_fake_transport_substituted_in_observes_the_rendered_message():
     assert len(fake.sent) == 1
     [msg] = fake.sent
     assert msg.to == "person@example.com"
-    assert msg.subject == "Your no_human download for macOS"
+    assert msg.subject == "You're set up with no_human"
     assert msg.body.startswith("Hi Person,")
 
 
