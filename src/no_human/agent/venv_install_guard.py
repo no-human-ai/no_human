@@ -335,6 +335,22 @@ def _spaced_path_candidates(payload: str) -> list[str]:
     This rebuilds those prefixes and keeps only one that actually names an
     installer, emitting it followed by its own arguments so the adjacent
     mutating-subcommand check still sees `install` next to it.
+
+    WHAT THIS DOES NOT COVER -- issue #312, measured, not supposed:
+
+    * it runs only on a NESTED payload, so a top-level
+      `C:\\Program Files\\p\\.venv\\Scripts\\pip install x` is untouched;
+    * it anchors at token 0, so `cd X && <spaced path>\\pip install x` and the
+      `echo ... &&` / `timeout 5` / `env -i` / `VAR=1` forms move the installer
+      off the front and are untouched;
+    * `_MAX_PREFIX_JOIN` is a bound, and therefore also a limit: a path with 8
+      or more spaces is not reconstructed. Removing the bound is O(n^2)
+      (measured: 4x per doubling), so raising it is not the fix either.
+
+    Reconstructing lost quoting by guessing token boundaries fights an
+    information loss; #312 carries the class and sketches two approaches that
+    do not. This is kept because the shapes it DOES close are real, not
+    because it closes the class.
     """
     toks = _lex(payload)
     out: list[str] = []

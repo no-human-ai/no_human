@@ -316,3 +316,30 @@ def test_a_bare_windows_installer_name_resolves(
         f"{installer} {args}", cwd=str(worktree),
         env=_env_pointing_at(primary / ".venv"),
     ) is not None, installer
+
+
+# --- the residual, pinned as xfail so it cannot be quietly "fixed" by drift --
+# Issue #312. `_spaced_path_candidates` closes the nested, installer-first
+# shapes and nothing more. These are the shapes an adversarial review measured
+# still open at this tip. They are xfail(strict=True) rather than deleted: if
+# one starts passing, that is news and the suite says so, and meanwhile the
+# file states the gap instead of implying the class is closed.
+
+
+@pytest.mark.xfail(strict=True, reason="issue #312: top-level spaced path is not reconstructed")
+def test_a_top_level_spaced_path_is_not_yet_covered(spaced_primary, worktree, on_windows):
+    cmd = _backslashed(f"{spaced_primary}/.venv/bin/pip install foo")
+    assert venv_install_guard.denial_reason(
+        cmd, cwd=str(worktree), env=_env_pointing_at(spaced_primary / ".venv"),
+    ) is not None
+
+
+@pytest.mark.xfail(strict=True, reason="issue #312: the rejoin anchors at token 0")
+def test_a_wrapper_inside_the_payload_is_not_yet_covered(
+    spaced_primary, worktree, on_windows
+):
+    cmd = _backslashed(
+        f'cmd /c "cd {spaced_primary} && {spaced_primary}/.venv/bin/pip install foo"')
+    assert venv_install_guard.denial_reason(
+        cmd, cwd=str(worktree), env=_env_pointing_at(spaced_primary / ".venv"),
+    ) is not None
