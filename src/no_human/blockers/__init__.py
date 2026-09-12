@@ -11,7 +11,9 @@ from .answers import (
 from .report import (
     blocker_prompt_suffix,
     ci_misconfigured,
+    extract_code_mechanisms,
     fallback_blocker,
+    is_code_mechanism_supported,
     missing_access,
     notification_line,
     parse_blocker,
@@ -94,6 +96,8 @@ __all__ = [
     "fallback_blocker",
     "missing_access",
     "ci_misconfigured",
+    "extract_code_mechanisms",
+    "is_code_mechanism_supported",
     "blocker_prompt_suffix",
     "WakeWatcher",
     "parse_duration",

@@ -20,6 +20,118 @@ _BLOCKER_JSON = re.compile(
 )
 
 
+# Sources and extensions for code mechanisms
+_SOURCE_EXTENSIONS = (
+    "py", "js", "ts", "jsx", "tsx", "json", "yaml", "yml", "toml", "rs", "go",
+    "c", "cpp", "h", "sh", "sql", "html", "css",
+)
+
+_EXCLUDED_TERMS = frozenset({
+    "true", "false", "null", "none", "json", "http", "https", "github", "gitlab",
+    "pytest", "python", "node", "npm", "api", "ci", "pr", "url", "sdk", "cli",
+    "wip", "db", "ui", "id", "os", "rest", "sql", "git", "utf8", "ascii",
+    "blocker", "error", "failed", "warning", "info", "debug",
+})
+
+
+def extract_code_mechanisms(text: str) -> list[str]:
+    """Extract code-mechanism references (symbols, dotted paths, files, functions)
+    from a root-cause hypothesis."""
+    if not text:
+        return []
+
+    mechanisms: list[str] = []
+
+    # 1. Backticked expressions: `symbol` or `path/file.py` or `Class.method`
+    for match in re.findall(r"`([^`]+)`", text):
+        cleaned = match.strip()
+        if cleaned and cleaned.lower() not in _EXCLUDED_TERMS and cleaned not in mechanisms:
+            mechanisms.append(cleaned)
+
+    # 2. File paths with source extensions (e.g. src/no_human/report.py, core/db.py:120)
+    ext_pattern = "|".join(_SOURCE_EXTENSIONS)
+    file_pattern = rf"\b[\w./\\-]+\.(?:{ext_pattern})\b(?::\d+(?:-\d+)?)?"
+    for match in re.findall(file_pattern, text, re.IGNORECASE):
+        if match not in mechanisms:
+            mechanisms.append(match)
+
+    # 3. Dotted symbols (e.g. ClaudeBackend._options, module.function, Class.attr)
+    dotted_pattern = r"\b[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+\b"
+    for match in re.findall(dotted_pattern, text):
+        if match not in mechanisms and match.lower() not in _EXCLUDED_TERMS:
+            mechanisms.append(match)
+
+    # 4. Explicit function calls (e.g. parse_blocker(), get_config())
+    call_pattern = r"\b([A-Za-z_][A-Za-z0-9_]*)\(\)"
+    for match in re.findall(call_pattern, text):
+        if match not in mechanisms and match.lower() not in _EXCLUDED_TERMS:
+            mechanisms.append(match)
+
+    # 5. camelCase identifiers (e.g. bypassPermissions, permissionMode)
+    camel_pattern = r"\b[a-z]+[A-Z][a-zA-Z0-9]*\b"
+    for match in re.findall(camel_pattern, text):
+        if match not in mechanisms and match.lower() not in _EXCLUDED_TERMS:
+            mechanisms.append(match)
+
+    # 6. Multi-word PascalCase (e.g. ClaudeBackend, BlockerOption, TaskOutcome)
+    pascal_pattern = r"\b[A-Z][a-z0-9]+(?:[A-Z][a-zA-Z0-9]*)+\b"
+    for match in re.findall(pascal_pattern, text):
+        if match not in mechanisms and match.lower() not in _EXCLUDED_TERMS:
+            mechanisms.append(match)
+
+    # 7. Identifiers with underscores (e.g. permission_mode, _options, root_cause_hypothesis)
+    snake_pattern = r"\b_?[a-zA-Z0-9]+(?:_[a-zA-Z0-9]+)+\b"
+    for match in re.findall(snake_pattern, text):
+        if match not in mechanisms and match.lower() not in _EXCLUDED_TERMS:
+            mechanisms.append(match)
+
+    return mechanisms
+
+
+def is_code_mechanism_supported(
+    mechanisms: list[str],
+    evidence: str,
+    tried: list[str] | None = None,
+    goal: str = "",
+) -> bool:
+    """Check if the code mechanisms extracted from the hypothesis are supported
+    by evidence, tried attempts, or goal context."""
+    if not mechanisms:
+        return True
+
+    corpus_parts = [evidence or ""]
+    if tried:
+        corpus_parts.extend(tried)
+    if goal:
+        corpus_parts.append(goal)
+    corpus = "\n".join(corpus_parts)
+
+    if not corpus.strip():
+        return False
+
+    corpus_lower = corpus.lower()
+
+    for mech in mechanisms:
+        mech_clean = mech.strip("`()")
+        mech_lower = mech_clean.lower()
+
+        if mech_lower in corpus_lower:
+            return True
+
+        if "." in mech_clean:
+            parts = [p.lower() for p in mech_clean.split(".") if p]
+            if all(p in corpus_lower for p in parts):
+                return True
+
+        if "/" in mech_clean or "\\" in mech_clean or ":" in mech_clean:
+            base_file = mech_clean.split(":")[-2] if ":" in mech_clean else mech_clean
+            base_name = base_file.replace("\\", "/").split("/")[-1].lower()
+            if base_name in corpus_lower:
+                return True
+
+    return False
+
+
 def parse_blocker(text: str) -> Blocker | None:
     """Extract a Blocker from an agent's final text, or None if absent/malformed.
 
@@ -67,6 +179,20 @@ def parse_blocker(text: str) -> Blocker | None:
     # publish it as no_human's own words. The flag only ever moves toward "the
     # agent wrote this" here; nothing downstream may move it back.
     blocker.reason_is_agent_authored = True
+
+    # Trust boundary: Code-mechanism hypotheses require supporting evidence (Issue #223).
+    # If the hypothesis claims a specific code mechanism (symbols, files, methods)
+    # but provides no supporting evidence in `evidence` or `tried`,
+    # do not trust the agent's self-reported high confidence. Demote confidence
+    # below the escalation threshold (0.6) so it is treated as an unverified
+    # hypothesis rather than a high-confidence root cause.
+    if blocker.confidence >= 0.6:
+        mechs = extract_code_mechanisms(blocker.root_cause_hypothesis)
+        if mechs and not is_code_mechanism_supported(
+            mechs, blocker.evidence, blocker.tried, blocker.goal
+        ):
+            blocker.confidence = 0.5
+
     return blocker
 
 
