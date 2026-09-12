@@ -55,6 +55,49 @@ def test_desktop_job_consumes_the_changed_job():
     assert "contains(github.event.pull_request.labels.*.name, 'desktop')" in condition
 
 
+@pytest.mark.parametrize("job,label", [
+    ("desktop", "desktop"),
+    ("windows", "windows"),
+    ("linux", "linux"),
+])
+def test_every_packaging_job_follows_the_desktop_paths_gate(job, label):
+    """All THREE jobs package the Electron app, so all three owe the same gate.
+
+    Only `desktop` was pinned. Measured on the round that added the other two:
+    reverting `windows` to label-only, and deleting `linux`'s release-dispatch
+    arm, both left the whole suite green -- the entire change was unprotected,
+    including the arm that decides whether a release build happens at all.
+    """
+    spec = _workflow()["jobs"][job]
+    assert spec.get("needs") == "changed", f"{job} does not consume `changed`"
+    condition = spec["if"]
+    # Empty (a dead `changed`) is not 'false', so the job runs. `== 'true'`
+    # gets that backwards and skips on exactly the failures the script's own
+    # fail-open branch cannot reach.
+    assert "needs.changed.outputs.desktop != 'false'" in condition, condition
+    assert "== 'true'" not in condition, condition
+    # A status-check function is required, or `needs:` skips the job before
+    # any `if:` is read. Either spelling survives; the property is what is
+    # pinned, for the reason the sibling test above explains.
+    assert condition.startswith(("always()", "!cancelled()")), condition
+    # The label way in must not be dropped for the paths gate.
+    assert f"contains(github.event.pull_request.labels.*.name, '{label}')" in condition
+
+
+def test_the_linux_release_dispatch_arm_survives_the_paths_gate():
+    """`linux` is the only one of the three that builds a RELEASE, and it does
+    that on `workflow_dispatch` with `linux_release`. Scoping the paths clause
+    to the pull_request arm is what keeps that true; folding it into the whole
+    condition would make a release build depend on whether the dispatch
+    touched desktop/, which it never does.
+    """
+    condition = _workflow()["jobs"]["linux"]["if"]
+    assert "github.event_name == 'workflow_dispatch'" in condition, condition
+    assert "inputs.linux_release" in condition, condition
+    # A push must not be gated on the paths clause either.
+    assert "github.event_name == 'push'" in condition, condition
+
+
 def test_the_changed_job_is_never_conditional():
     """A skipped dependency skips its dependents, exactly like a failed one.
 
@@ -75,8 +118,7 @@ def test_a_dead_changed_job_runs_desktop_shell_rather_than_silencing_it():
 
     What actually has to hold is that a `changed` job which DIED still runs
     Desktop shell. Two spellings survive an upstream failure, so either is
-    accepted here; the `ci.yml` comment records why `always()` is the one
-    chosen and what would settle it.
+    accepted here; the `ci.yml` comment records which one is chosen and why.
     """
     condition = _workflow()["jobs"]["desktop"]["if"]
     assert condition.startswith(("always()", "!cancelled()")), condition

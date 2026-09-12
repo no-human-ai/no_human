@@ -643,25 +643,31 @@ jobs:
     # "fail towards RUNNING, never towards skipping" is what the script's own
     # comment promises, and only this spelling keeps that promise.
     #
-    # `always()`, and this is a DELIBERATE trade rather than a preference.
+    # `!cancelled()`, and an earlier revision of this branch had `always()`
+    # with an argument that its own quoted evidence refutes. That argument ran:
     # GitHub documents `cancelled()` as "returns true if the WORKFLOW was
-    # canceled" and `always()` as running "even when canceled"; the `needs`
-    # reference says a dependent is skipped when its upstream "fails or is
-    # skipped" and never mentions cancellation. So the state we actually care
-    # about -- upstream job's CONCLUSION is `cancelled` while the workflow was
-    # not -- is documented by neither, and `changed` can reach it by its own
-    # 5-minute job bound and 3-minute step bound. This repo has MEASURED that
-    # state: tests/test_ci_network_step_bounds.py records GitHub reporting a
-    # timed-out job as `cancelled`, not `failure`.
+    # canceled", the `needs` reference never mentions cancellation, therefore
+    # the case that matters -- `changed` hits its own 5-minute bound and
+    # concludes `cancelled` while the workflow keeps running -- is undetermined.
     #
-    # `always()` certainly survives it; `!cancelled()` is undetermined. The
-    # cost of being wrong in the safe direction is ~2 Linux minutes on a
-    # cancelled run (Desktop shell measured 116s); the cost of being wrong in
-    # the other is losing the only desktop signal, silently, because a skipped
-    # non-required job is not red. Until someone measures the cancelled case,
-    # the trade goes to coverage.
+    # But that quoted sentence IS the answer. If `cancelled()` keys on the
+    # WORKFLOW, then a job-level timeout leaves `cancelled()` FALSE, so
+    # `!cancelled()` is true and this job runs. And `!cancelled()` is itself a
+    # status-check function, so it overrides the `needs:` auto-skip exactly as
+    # `always()` does. The failure mode the trade was buying insurance against
+    # is already covered.
+    #
+    # `always()` is not free, and this workflow makes it expensive: it sets
+    # `concurrency: cancel-in-progress: true`, so every superseded push cancels
+    # the run. `changed` is cancelled, its output is EMPTY, empty is not
+    # 'false', and under `always()` the three packaging jobs then START on a
+    # dead run -- windows billing at 2x for up to 45 minutes -- regardless of
+    # whether the PR touched desktop/ at all. Before this branch these jobs had
+    # no `needs:`, so a cancel simply killed them. Paying for three jobs on
+    # every cancelled run, in a workflow whose own header calls exhausted
+    # Actions minutes the presenting problem, is the worse trade.
     if: >-
-      always()
+      !cancelled()
       && (github.event_name != 'pull_request'
       || needs.changed.outputs.desktop != 'false'
       || contains(github.event.pull_request.labels.*.name, 'desktop'))
@@ -764,21 +770,18 @@ jobs:
     # a pull request. A Python-only or docs-only PR leaves `changed` saying
     # `false` and skips exactly as before.
     #
-    # `!= 'false'` and `always()`, spelled exactly as `desktop` spells them
+    # `!= 'false'` and `!cancelled()`, spelled exactly as `desktop` does
     # and for its reasons: a dead `changed` job leaves the output EMPTY, and
     # empty must run the job rather than skip it, which `== 'true'` would get
     # backwards; and a `changed` job that does not SUCCEED would otherwise
     # skip this one through `needs:` alone, before any `if:` is read —
     # including on a push to main, the one run that covers this job today.
-    # The `always()` half is the trade `desktop` documents: GitHub reports a
-    # timed-out job as `cancelled`, not `failure`
-    # (tests/test_ci_network_step_bounds.py records that), and `changed`
-    # carries a 5-minute job bound and a 3-minute step bound, so
-    # `!cancelled()` could lose the packaging signal silently. One spelling
-    # across all three jobs.
+    # `!cancelled()` is GitHub's own recommended spelling and survives a
+    # timed-out `changed` job for the reason `desktop` documents above. One
+    # spelling across all three jobs.
     needs: changed
     if: >-
-      always()
+      !cancelled()
       && (github.event_name != 'pull_request'
       || needs.changed.outputs.desktop != 'false'
       || contains(github.event.pull_request.labels.*.name, 'windows'))
@@ -1026,7 +1029,7 @@ jobs:
     # `desktop/` ships in the .deb and the AppImage and should pay for the
     # packaging signal. A Python-only or docs-only PR still skips.
     #
-    # `!= 'false'` and `always()` for the reasons the windows job spells out.
+    # `!= 'false'` and `!cancelled()` for the reasons windows spells out.
     # The guard matters more here than anywhere: without it a `changed` job
     # that does not succeed would skip this one through `needs:` alone, and
     # that includes a workflow_dispatch with linux_release set — i.e. a
@@ -1034,7 +1037,7 @@ jobs:
     # died or timed out.
     needs: changed
     if: >-
-      always()
+      !cancelled()
       && (github.event_name == 'push'
       || (github.event_name == 'pull_request'
       && (needs.changed.outputs.desktop != 'false'
