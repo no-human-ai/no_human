@@ -8,9 +8,9 @@
 
 [English](README.md) · **简体中文** · [日本語](README.ja.md) · [한국어](README.ko.md)
 
-[![latest release](https://img.shields.io/github/v/release/no-human-ai/no_human?label=release&color=4C9AFF)](https://github.com/no-human-ai/no_human/releases/latest) [![CI](https://img.shields.io/github/actions/workflow/status/no-human-ai/no_human/ci.yml?branch=main&label=CI)](https://github.com/no-human-ai/no_human/actions/workflows/ci.yml) [![python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue)](https://www.python.org/) [![license MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE) [![Open Source Helpers](https://www.codetriage.com/no-human-ai/no_human/badges/users.svg)](https://www.codetriage.com/no-human-ai/no_human)
+[![latest release](https://img.shields.io/github/v/release/no-human-ai/no_human?label=release&color=4C9AFF)](https://github.com/no-human-ai/no_human/releases/latest) [![CI](https://img.shields.io/github/actions/workflow/status/no-human-ai/no_human/ci.yml?branch=main&label=CI)](https://github.com/no-human-ai/no_human/actions/workflows/ci.yml) [![python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue)](https://www.python.org/) [![license MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE) [![Open Source Helpers](https://www.codetriage.com/no-human-ai/no_human/badges/users.svg)](https://www.codetriage.com/no-human-ai/no_human) [![Discord](https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white)](https://discord.gg/mSARvj6yW6)
 
-[getnohuman.com](https://getnohuman.com) · [快速上手](docs/quickstart.md) · [文档](docs/README.md) · [看它跑完一个 Sprint](https://getnohuman.com/demo)
+[getnohuman.com](https://getnohuman.com) · [快速上手](docs/quickstart.md) · [文档](docs/README.md) · [看它跑完一个 Sprint](https://getnohuman.com/demo) · [Discord](https://discord.gg/mSARvj6yW6)
 
 [![下载 macOS](https://img.shields.io/badge/%E4%B8%8B%E8%BD%BD-macOS-4C9AFF?style=for-the-badge)](https://github.com/no-human-ai/no_human/releases/latest) [![下载 Windows](https://img.shields.io/badge/%E4%B8%8B%E8%BD%BD-Windows-4C9AFF?style=for-the-badge)](https://getnohuman.com/) [![下载 Linux](https://img.shields.io/badge/%E4%B8%8B%E8%BD%BD-Linux-4C9AFF?style=for-the-badge)](https://getnohuman.com/)
 
@@ -255,6 +255,12 @@ uv run nh --help
 
 如果 no_human 帮你省下过一轮评审，点个 star 能让更多人找到它：
 [![GitHub stars](https://img.shields.io/github/stars/no-human-ai/no_human?style=social)](https://github.com/no-human-ai/no_human/stargazers)
+
+## 社区
+
+提问、报 bug、晒运行结果：加入 [Discord](https://discord.gg/mSARvj6yW6)，
+在 [r/no_human](https://www.reddit.com/r/no_human/) 发帖，或提一个
+[GitHub issue](https://github.com/no-human-ai/no_human/issues)。
 
 ## 许可证
 

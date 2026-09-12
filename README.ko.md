@@ -8,9 +8,9 @@
 
 [English](README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · **한국어**
 
-[![latest release](https://img.shields.io/github/v/release/no-human-ai/no_human?label=release&color=4C9AFF)](https://github.com/no-human-ai/no_human/releases/latest) [![CI](https://img.shields.io/github/actions/workflow/status/no-human-ai/no_human/ci.yml?branch=main&label=CI)](https://github.com/no-human-ai/no_human/actions/workflows/ci.yml) [![python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue)](https://www.python.org/) [![license MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE) [![Open Source Helpers](https://www.codetriage.com/no-human-ai/no_human/badges/users.svg)](https://www.codetriage.com/no-human-ai/no_human)
+[![latest release](https://img.shields.io/github/v/release/no-human-ai/no_human?label=release&color=4C9AFF)](https://github.com/no-human-ai/no_human/releases/latest) [![CI](https://img.shields.io/github/actions/workflow/status/no-human-ai/no_human/ci.yml?branch=main&label=CI)](https://github.com/no-human-ai/no_human/actions/workflows/ci.yml) [![python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue)](https://www.python.org/) [![license MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE) [![Open Source Helpers](https://www.codetriage.com/no-human-ai/no_human/badges/users.svg)](https://www.codetriage.com/no-human-ai/no_human) [![Discord](https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white)](https://discord.gg/mSARvj6yW6)
 
-[getnohuman.com](https://getnohuman.com) · [퀵스타트](docs/quickstart.md) · [문서](docs/README.md) · [스프린트 하나를 통째로 처리하는 모습 보기](https://getnohuman.com/demo)
+[getnohuman.com](https://getnohuman.com) · [퀵스타트](docs/quickstart.md) · [문서](docs/README.md) · [스프린트 하나를 통째로 처리하는 모습 보기](https://getnohuman.com/demo) · [Discord](https://discord.gg/mSARvj6yW6)
 
 [![macOS용 다운로드](https://img.shields.io/badge/%EB%8B%A4%EC%9A%B4%EB%A1%9C%EB%93%9C-macOS-4C9AFF?style=for-the-badge)](https://github.com/no-human-ai/no_human/releases/latest) [![Windows용 다운로드](https://img.shields.io/badge/%EB%8B%A4%EC%9A%B4%EB%A1%9C%EB%93%9C-Windows-4C9AFF?style=for-the-badge)](https://getnohuman.com/) [![Linux용 다운로드](https://img.shields.io/badge/%EB%8B%A4%EC%9A%B4%EB%A1%9C%EB%93%9C-Linux-4C9AFF?style=for-the-badge)](https://getnohuman.com/)
 
@@ -270,6 +270,12 @@ uv run nh --help
 no_human 덕분에 리뷰 사이클을 한 번이라도 아꼈다면, 스타 하나가 다른
 사람들이 이 프로젝트를 찾는 데 도움이 됩니다:
 [![GitHub stars](https://img.shields.io/github/stars/no-human-ai/no_human?style=social)](https://github.com/no-human-ai/no_human/stargazers)
+
+## 커뮤니티
+
+질문, 버그 리포트, 보여주고 싶은 실행 결과는 [Discord](https://discord.gg/mSARvj6yW6)로,
+[r/no_human](https://www.reddit.com/r/no_human/) 게시글이나
+[GitHub issue](https://github.com/no-human-ai/no_human/issues)로도 환영합니다.
 
 ## 라이선스
 
