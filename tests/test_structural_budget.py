@@ -364,7 +364,14 @@ FROZEN_FUNCTION_LINES = {
     # conflict) tells the coder to run `git merge <base_pin>` themselves via
     # `base_merge_conflict_instruction`, instead of the old rebase-oriented
     # preamble text. Measured on this tree with the scanner below.
-    "core/orchestrator.py:Orchestrator._build_implement_prompt": 423,
+    # 423 -> 431 (+8): B2 fix (pushed-tip guard review round) — the
+    # `merge_conflict` branch's comment now explains why the preamble can't
+    # claim "CONFLICT" specifically (the flag also covers any other
+    # exception `_refresh_stale_base` caught), and the preamble text itself
+    # changed to the provable-in-every-case "did not finish — no partial
+    # merge was left in progress." Measured on this tree with the scanner
+    # below.
+    "core/orchestrator.py:Orchestrator._build_implement_prompt": 431,
     # 332 -> 333 (+1): pin-rederivation follow-up adds one
     # `pin_rederivation_note(card),` line to the markdown body list so the
     # published report carries the same recorded-branch/HEAD-fallback
@@ -1247,7 +1254,11 @@ FROZEN_FILE_LINES = {
     # wrongly) cited. Measured on THIS tree with the scanner below
     # (`scan_source`'s `len(text.splitlines())`, not `wc -l` — they disagree
     # by a constant 3 lines on this file, see the note two entries above).
-    "core/orchestrator.py": 24133,
+    # 24133 -> 24141 (+8): B2 fix (pushed-tip guard review round), same +8
+    # as `Orchestrator._build_implement_prompt`'s own entry above — no other
+    # function in this file changed line count this round. Measured on THIS
+    # tree with the scanner below.
+    "core/orchestrator.py": 24141,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.
@@ -1897,7 +1908,13 @@ FROZEN_FILE_LINES = {
     # reads `_FORGE_RUNNER_NAMES` (verified by
     # `tests/test_pushed_tip_rewrite_guard.py::test_the_pushed_tip_path_sees_every_runner_the_guard_knows`).
     # Measured on this tree with the scanner below.
-    "agent/guard.py": 2954,
+    # 2954 -> 2959 (+5): N5 fix (pushed-tip guard review round) — the module
+    # docstring's pushed-tip-rewrite bullet no longer overclaims "any
+    # spelling" for `git rebase`; it now says "every lexical spelling this
+    # module recognizes" and cross-references `pushed_tip_guard`'s own
+    # disclosed gaps (shell/interpreter indirection, brace groups, command
+    # substitution). Measured on this tree with the scanner below.
+    "agent/guard.py": 2959,
     # +44: idle-path recover_quota_cooldown gate in tick() and the
     # never-shorten-a-live-wall guard in _run — the quota-wall storm cost fix.
     # +129: `HarvestJob` — the cadence job (`due()`/`maybe_run()`) that runs

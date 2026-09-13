@@ -444,6 +444,64 @@ def test_a_never_pushed_branch_keeps_every_form_allowed(repo):
             guard._git_invocations(cmd), str(repo)) is None, cmd
 
 
+def test_a_shell_variable_branch_name_is_denied_like_an_unresolvable_target(
+    harness_repo,
+):
+    """BLOCKER B1: `_name_denies` must treat an unresolved shell-variable (or
+    command-substitution) branch-name literal the same way `target_denies`
+    already treats one on the target side — as UNSAFE, not as "not the
+    current branch". Before this fix, `denial_reason`'s `branch_target`/
+    `branch_outright` handling did a bare `name == branch` comparison: `git
+    checkout -B $B origin/main` run from a shell that has `B=feature`
+    exported rewrites the CURRENT branch exactly like `git checkout -B
+    feature origin/main` does, but the argv this module actually sees is the
+    literal text `$B`, which is never lexically equal to `"feature"` — the
+    bare `==` silently answered "not the current branch" and let it through.
+    Each row here first asserts the STATIC verdict (the guard sees only the
+    un-expanded `$B` text, exactly as it would from a real coder's shell
+    command), then actually RUNS the same command in a real, EXPANDING
+    bash subshell with `B=feature` exported, to prove `$B` really is
+    `feature` at runtime and that letting it through really would rewrite
+    the pushed branch off its tip — the denial is blocking a real rewrite,
+    not a phantom one."""
+    for cmd_template, tag in (
+        ("git checkout -B $B origin/main", "checkout -B"),
+        ("git switch -C $B origin/main", "switch -C"),
+        ("git branch -f $B origin/main", "branch -f"),
+        ("git update-ref refs/heads/$B origin/main", "update-ref"),
+    ):
+        work, tip = harness_repo()
+        base_sha = _git(work, "rev-parse", "origin/main")
+
+        d = _ev(cmd_template, cwd=str(work))
+        assert d.allow is False, f"{tag}: {cmd_template!r} should be denied"
+        assert d.severity == guard.GUARD_DESTRUCTIVE, f"{tag}: {d.severity}"
+        assert tip in d.reason, f"{tag}: {d.reason}"
+        assert "git merge" in d.reason, f"{tag}: {d.reason}"
+
+        # Positive control: run the SAME command in a real, expanding shell
+        # with $B actually bound to the current branch name. `branch -f`
+        # (unlike the other three) is one real git itself refuses against
+        # its OWN checked-out branch ("cannot force update the branch ...
+        # checked out"), so — exactly like
+        # `test_the_detached_head_gap_is_real_and_the_attached_spelling_is_denied`
+        # does for that same real-git restriction — detach HEAD first; that
+        # is orthogonal to what this row is proving (that `$B` really does
+        # expand to `feature` and really does move the ref).
+        if tag == "branch -f":
+            _git(work, "checkout", "-q", "--detach", "HEAD")
+        subprocess.run(
+            ["bash", "-c", f"export B=feature; {cmd_template}"],
+            cwd=work, check=True, capture_output=True, text=True,
+        )
+        new_sha = _git(work, "rev-parse", "refs/heads/feature")
+        assert new_sha == base_sha, (
+            f"{tag}: expanding $B=feature did not rewrite the branch down "
+            "to the base -- repro invalid"
+        )
+        assert new_sha != tip
+
+
 def test_update_ref_stdin_is_denied_outright_on_a_pushed_branch(harness_repo):
     """MINOR-2 from the c4f717d8 review: `--stdin` feeds the actual ref
     updates to git on stdin, invisible to this argv-only phase — a bare

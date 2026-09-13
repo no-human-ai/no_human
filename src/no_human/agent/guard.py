@@ -17,14 +17,19 @@ Blocks, before execution:
     create (`git stash`, `git restore`, `git checkout -- <path>`, `git clean
     -fd`, `git checkout-index -f`, ...) — in every session, coder included
   - rewriting a branch that is already PUSHED below its pushed tip: `git
-    rebase` (any spelling, incl. `pull --rebase`/`-c pull.rebase=true pull`),
-    `git reset` in any mode (`--soft`/`--mixed`/default/`--hard`/`--merge`/
-    `--keep`) to a target the tip isn't an ancestor of, `git commit --amend`
-    of the tip, `git checkout -B`/`switch -C`/`branch -f`/`git update-ref`
-    that moves the current branch, and `git filter-branch` — delivery only
-    ever fast-forwards a branch's remote ref, so a rewrite there can never be
-    delivered; the denial names the pushed tip and tells the coder to `git
-    merge` the base instead (2026-09-13, pushed_tip_guard)
+    rebase` (every lexical spelling this module recognizes, incl. `pull
+    --rebase`/`-c pull.rebase=true pull`), `git reset` in any mode
+    (`--soft`/`--mixed`/default/`--hard`/`--merge`/`--keep`) to a target the
+    tip isn't an ancestor of, `git commit --amend` of the tip, `git checkout
+    -B`/`switch -C`/`branch -f`/`git update-ref` that moves the current
+    branch, and `git filter-branch` — delivery only ever fast-forwards a
+    branch's remote ref, so a rewrite there can never be delivered; the
+    denial names the pushed tip and tells the coder to `git merge` the base
+    instead (2026-09-13, pushed_tip_guard). Argv-lexical, not a shell: a
+    script run via `sh script.sh`/`python3 -c ...`, or the same verb reached
+    through a brace group or a command substitution ahead of it, is not
+    guaranteed to present a recognizable `git <verb>` argv — see
+    `pushed_tip_guard`'s own module docstring for the disclosed gaps.
   - interactive prompts (`AskUserQuestion`) — nobody is at the keyboard (§22)
   - background polling (`Monitor`, `TaskStop`, `ToolSearch`) in a read-only
     session — a planner does not need to busy-wait on its own subagents

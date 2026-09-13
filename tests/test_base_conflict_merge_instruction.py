@@ -152,6 +152,38 @@ def test_the_implement_prompt_preamble_says_merge_not_rebase():
     assert "`git merge deadbee123`" in prompt
 
 
+def test_the_preamble_does_not_overclaim_a_conflict_or_a_clean_tree():
+    """BLOCKER B2: `merge_conflict` is set by `staleness_record()` for
+    `mode == "merge" and not merged` — which `_refresh_stale_base` reaches
+    both on a genuine merge conflict AND on any OTHER exception it caught
+    from `GitRepo.merge_base_into_branch` (see that method, git.py: it
+    raises `ProtectedBranch` before touching the repo, returns `False` with
+    nothing touched if the ref is unresolvable, and on an internal `GitError`
+    runs `git merge --abort` before returning `False`). The old wording
+    ("...stopped on a CONFLICT, leaving your tree clean and untouched.")
+    asserted a specific cause (a conflict) and an unverified state ("clean
+    and untouched") that are not both true for every case that sets this
+    flag. The only claim provable in EVERY case is that the merge did not
+    finish and left no partial merge in progress — that is what the
+    preamble must say instead."""
+    t = _task(id="eee")
+    t.context = {"base_staleness": {
+        "commits_behind": 3, "was_behind": 3, "rebased": False,
+        "merge_conflict": True, "base_pin": "cafef00d",
+    }}
+    prompt = _orch()._build_implement_prompt(t, "/tmp/repo")
+
+    assert "did not finish" in prompt
+    assert "no partial merge was left in progress" in prompt
+    # The old, over-specific/unverifiable wording must not survive. (Plain
+    # "CONFLICT" is not itself pinned absent here: `build_rules_block`'s own
+    # "BASE MERGE CONFLICT" section header legitimately uses the word — the
+    # bug was specifically claiming the harness *stopped on* one.)
+    assert "stopped on a" not in prompt
+    assert "stopped on a CONFLICT" not in prompt
+    assert "clean and untouched" not in prompt
+
+
 def test_the_implement_prompt_preamble_falls_back_when_base_pin_is_missing():
     t = _task(id="ddd")
     t.context = {"base_staleness": {

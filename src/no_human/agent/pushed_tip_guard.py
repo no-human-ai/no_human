@@ -40,11 +40,21 @@ detached-HEAD failure-policy paragraph below) — the same ``branch -f`` run
 on an ATTACHED branch is still DENIED. A shell script that runs ``git
 rebase`` from inside ``sh script.sh``, or a ``subprocess`` call from inside
 ``python3 -c``, rewrite the branch the same way: without ever presenting
-this module with a recognizable git argv. Denying every *lexical spelling*
-of the git forms listed above closes the direct path; it cannot close
-indirection through another interpreter. The retry's ``force_with_lease``
+this module with a recognizable git argv, because ``guard._git_invocations``
+never sees inside another interpreter's own command string. That is not the
+only way to slip past a lexical parser without leaving the same shell,
+either: ``guard._git_invocations`` (unlike its sibling
+``_forge_invocations``) does not strip a brace group or a command
+substitution before the verb — ``{ git rebase origin/main; }`` and
+``$(which git) rebase origin/main`` both run `git rebase` in the SAME
+shell, yet neither tokenizes to a recognizable ``git rebase`` argv today.
+Fixing that is a change to ``_git_invocations`` itself, which this module
+does not own and does not attempt here. Denying every *lexical spelling*
+this module recognizes closes the direct path; it cannot close indirection
+through another interpreter, and it does not yet close every same-shell
+grouping/substitution form either. The retry's ``force_with_lease``
 therefore stays exactly as load-bearing as ``GitRepo.push``'s own docstring
-in ``git.py`` says (~:1543-1555) and as the ``_finalize`` retry's comment
+in ``git.py`` says (~:1588-1611) and as the ``_finalize`` retry's comment
 in ``orchestrator.py`` says (~:7969-7980): most rewrites should now be
 caught before they run, but the lease is real defense-in-depth for the ones
 that are not.)
@@ -157,14 +167,18 @@ An earlier draft of this paragraph justified staying open here by claiming
 blocks every tree-clobbering git form regardless of what this module
 decides". Measured directly, that is false for exactly the forms this
 module exists to catch: ``_git_worktree_denial`` denies a bare
-``rebase --abort``/``--skip``/``--autostash`` (via ``_sequencer_clobbers``,
-which is why those wind-back forms are excluded from this module's OUTRIGHT
-denial — see ``_REBASE_WIND_BACK`` above) and a hard ``reset``/``clean``/
-``checkout -f`` (via ``_reset_clobbers``/``_clean_clobbers``/
-``_checkout_clobbers``), but it does NOT deny a plain ``git rebase
-<base>``, ``pull --rebase``, ``commit --amend``, ``update-ref``,
-``checkout -B``, or ``branch -f`` — precisely the OUTRIGHT/TARGET/
-HEAD_PARENT forms this module classifies. If this module fails open on one
+``rebase --abort``/``--skip``/``--autostash`` (via ``_sequencer_clobbers``)
+and a hard ``reset``/``clean``/``checkout -f`` (via ``_reset_clobbers``/
+``_clean_clobbers``/``_checkout_clobbers``), but it does NOT deny a plain
+``git rebase <base>``, ``pull --rebase``, ``commit --amend``,
+``update-ref``, ``checkout -B``, or ``branch -f`` — precisely the
+OUTRIGHT/TARGET/HEAD_PARENT forms this module classifies. Of the three
+sequencer wind-back forms `_git_worktree_denial` already covers, only
+``--abort``/``--skip`` are excluded from THIS module's own OUTRIGHT denial
+(see ``_REBASE_WIND_BACK`` above, and its comment on why `--autostash` is
+deliberately left out of that tuple): `--autostash` is NOT excluded here,
+so a bare ``rebase --autostash`` is denied twice over, once by each module
+— redundant, not a gap. If this module fails open on one
 of those (detached HEAD outside a rebase; no remotes; a timeout; an
 unreadable cwd), ``_git_worktree_denial`` does not catch it either.
 
@@ -174,7 +188,8 @@ paragraph of this docstring describes: delivery's own branch push
 (``GitRepo.push_sha_fast_forward``) is fast-forward-only and refuses a
 rewritten branch outright, and ``force_with_lease`` is the documented,
 load-bearing recovery for exactly that refusal (see ``git.py``'s ``push``
-docstring, ~:1551-1573). That backstop lives downstream of this module, at
+docstring, ~:1613-1630, for the lease's safety properties). That backstop
+lives downstream of this module, at
 delivery time, not in another PreToolUse guard alongside it. Two things
 justify leaving the detached-HEAD-outside-a-rebase case open rather than
 guessing at a heuristic: a false positive here would break the legitimate
@@ -188,6 +203,7 @@ allow direction defers the catch to delivery time instead of losing it.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 
 #: Prefix-matched (>=3 chars, git's own abbreviation rule) against these to
@@ -196,6 +212,18 @@ import subprocess
 #: `guard._sequencer_clobbers`. Deliberately excludes `--autostash`: unlike
 #: `--abort`/`--skip`, it does not undo a rewrite in progress, it starts one.
 _REBASE_WIND_BACK = ("--abort", "--skip")
+
+#: A local copy of `guard._UNRESOLVABLE` (same "must not import guard.py"
+#: reasoning as `_GIT_GLOBAL_OPT_WITH_ARG` below). A `$`/backtick marks a
+#: shell variable or command substitution that this module — a lexical
+#: parser of the argv string, not a shell — sees only as un-expanded
+#: literal text: `git checkout -B $B origin/main` never lexically equals
+#: the real branch name, so a bare `==` against it always says "not the
+#: current branch" for a case exactly this rule exists to catch. See
+#: `_name_denies` below, and
+#: `test_a_shell_variable_branch_name_is_denied_like_an_unresolvable_target`
+#: for this run for real and denied.
+_UNRESOLVABLE = re.compile(r"[$`]")
 
 #: Truthy `pull.rebase` config values (`-c pull.rebase=<value>`) that make a
 #: `git pull` rebase-flavored. `false`/`0`/`no`/anything else is not.
@@ -547,6 +575,18 @@ def _is_existing_path(cwd: str | None, expr: str) -> bool:
     return bool(cwd and expr and os.path.exists(os.path.join(cwd, expr)))
 
 
+def _name_denies(name: str, branch: str) -> bool:
+    """True when `name` — the argv-parsed branch-name literal from
+    `checkout -B`/`switch -C`/`branch -f`/`update-ref`'s `refs/heads/<name>`
+    — is either literally the current branch, or an unresolvable shell
+    expansion this module cannot rule out. Mirrors `target_denies`'s
+    conservative-deny-unless-provably-safe stance (see its docstring) on the
+    branch-NAME side of the same commands: an unresolved `$B`/`` `cmd` ``
+    reaches here as literal text too, and a bare `==` against it can never
+    match the real branch even when it names it at runtime."""
+    return name == branch or bool(_UNRESOLVABLE.search(name))
+
+
 def _message(seg: str, remote: str, branch: str, tip: str) -> str:
     return (
         f"rewriting a pushed branch is blocked: {seg}. {remote}/{branch} is "
@@ -633,12 +673,12 @@ def denial_reason(
             continue
         if tag == "branch_target":
             name, expr = kind[1], kind[2]
-            if name == branch and target_denies(expr):
+            if _name_denies(name, branch) and target_denies(expr):
                 return _message(seg, remote, branch, tip)
             continue
         if tag == "branch_outright":
             name = kind[1]
-            if name == branch:
+            if _name_denies(name, branch):
                 return _message(seg, remote, branch, tip)
             continue
     return None

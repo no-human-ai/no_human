@@ -18787,16 +18787,24 @@ class Orchestrator:
                 "behavior before assuming a symptom is still present.\n\n"
             )
         elif stale.get("merge_conflict"):
-            # The merge path (pushed branch) hit a conflict and was left for
-            # the coder — this is the ONE case where the coder must run git
-            # themselves, and it must be a MERGE, never a rebase: this
-            # branch has a pushed tip, and delivery only ever fast-forwards
-            # against it (see `base_merge_conflict_instruction`).
+            # The merge path (pushed branch) was left for the coder — this is
+            # the ONE case where the coder must run git themselves, and it
+            # must be a MERGE, never a rebase: this branch has a pushed tip,
+            # and delivery only ever fast-forwards against it (see
+            # `base_merge_conflict_instruction`). `merge_conflict` is set by
+            # `staleness_record()` for `mode == "merge" and not merged`,
+            # which covers a real conflict AND any other exception
+            # `_refresh_stale_base` caught from `merge_base_into_branch` —
+            # we cannot claim "CONFLICT" specifically. What IS guaranteed
+            # regardless of cause (see `merge_base_into_branch`, git.py): it
+            # never leaves a partial merge in progress — either the merge
+            # never started, or a caught `GitError` triggered `git merge
+            # --abort` before returning, so the tree is always restored.
             overlap = stale.get("overlapping_files") or []
             staleness_preamble = (
                 f"YOUR BRANCH IS {stale['commits_behind']} COMMIT(S) BEHIND the current "
-                "base. The harness tried to merge the base in for you and stopped on a "
-                "CONFLICT, leaving your tree clean and untouched. "
+                "base. The harness tried to merge the base in for you and did not "
+                "finish — no partial merge was left in progress. "
                 + base_merge_conflict_instruction(
                     stale.get("base_pin") or "the current base")
                 + "\n\n"
