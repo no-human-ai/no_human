@@ -191,6 +191,63 @@ video with every step):
 
 <p align="center">▶️&nbsp;&nbsp;<strong><a href="https://getnohuman.com/assets/demo-jira.mp4">Play the full demo</a></strong> — 1:33, from Jira board to review-passed PR</p>
 
+## GitHub Action
+
+Run the same adversarial reviewer and tamper guard as a pull-request check —
+one shot, no daemon, no `~/.no_human` database, and not the queueing `nh
+review` CLI path. It posts a single pass/fail checklist comment with
+`file:line` citations, created once and then updated in place — never
+duplicated.
+
+```yaml
+# .github/workflows/review-gate.yml
+name: no_human review gate
+on:
+  pull_request:
+
+permissions:
+  pull-requests: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: no-human-ai/no_human@v1
+        with:
+          credential: ${{ secrets.ANTHROPIC_API_KEY }}
+```
+
+`credential` takes either shape of your own Anthropic credential — an
+`ANTHROPIC_API_KEY` (`sk-ant-api...`) or a Claude subscription OAuth token
+minted with `claude setup-token` (`sk-ant-oat...`) — auto-detected from its
+prefix, or pinned explicitly with `credential_mode: oauth` /
+`credential_mode: api_key`. Whichever shape you pass, the other credential
+path is scrubbed from the job's environment before the reviewer runs, and the
+value itself is masked in the log the moment it is read.
+
+**Forks are skipped, not reviewed.** A pull request whose head is not this
+repository — including one from an already-deleted fork — never reaches the
+reviewer or the model; the Action exits 0 with a comment-free explanation
+instead of running review code against an unvetted head in a job that can see
+your secrets. `pull_request_target` is refused outright (exit 2), even with a
+valid credential, because that trigger is the one shape that can carry a
+fork's head into a secret-bearing job.
+
+**Cost is bounded by files, not tokens or time.** `max_files` (default `15`)
+caps how many changed files are sent to the reviewer, sorted by path,
+first-N; the comment reports how many of the total were actually reviewed.
+
+The Action never merges, pushes, approves, or edits anything about the pull
+request beyond its own single comment — enforced in code, not just by
+convention: every GitHub API call is checked against a two-endpoint allowlist
+(list/create/update that one comment thread) before it is sent. Set
+`fail_on_findings: false` to keep the comment without failing the check, or
+`dry_run: true` to print the verdict to the job log/summary and make no
+GitHub API calls at all.
+
 ## MCP server — hand it work from the agent you are already in
 
 no_human ships an **MCP (Model Context Protocol) server**: a stdio bridge, built

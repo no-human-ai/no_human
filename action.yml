@@ -1,0 +1,72 @@
+name: "no_human review gate"
+description: >-
+  Run the no_human adversarial review gate and tamper guard once on a pull
+  request, and post the verdict as a single comment (created or updated in
+  place, never duplicated). No daemon, no database, no merges or pushes.
+author: "no_human"
+
+branding:
+  icon: "shield"
+  color: "purple"
+
+inputs:
+  credential:
+    description: >-
+      Your own Anthropic credential: either an ANTHROPIC_API_KEY
+      (sk-ant-api...) or a Claude subscription OAuth token minted with
+      `claude setup-token` (sk-ant-oat...). Pass it from a repository or
+      organization secret — never hard-code it. Required; the Action fails
+      loudly (exit 2) if this is empty.
+    required: true
+  credential_mode:
+    description: >-
+      "auto" (default) detects the credential's shape from its prefix.
+      Set "oauth" or "api_key" explicitly if you use a credential whose
+      shape auto-detection cannot recognize.
+    required: false
+    default: "auto"
+  model:
+    description: "Model passed to the reviewer."
+    required: false
+    default: "claude-opus-5"
+  max_files:
+    description: >-
+      Maximum number of changed files to review, sorted by path, first-N.
+      This is the Action's cost bound. Files beyond this count are reported
+      as skipped, not silently dropped.
+    required: false
+    default: "15"
+  github_token:
+    description: >-
+      Token used only to read and write the gate's own comment on this pull
+      request (`issues/comments` read/create/update). Never used for merges,
+      pushes, reviews, or any other endpoint. Usually `${{ github.token }}`.
+    required: false
+    default: ${{ github.token }}
+  fail_on_findings:
+    description: >-
+      When "true" (default), the step exits non-zero if the gate's verdict
+      is FAIL (blocking findings or tamper detected) so the check can block
+      merging. When "false", the comment still reports FAIL but the step
+      exits 0.
+    required: false
+    default: "true"
+  dry_run:
+    description: >-
+      When "true", render the verdict to the job log and step summary but
+      make no GitHub API calls at all — useful for testing the Action on a
+      fork or before granting it `pull-requests: write`.
+    required: false
+    default: "false"
+
+outputs:
+  verdict:
+    description: "PASS, FAIL, or SKIPPED (fork pull requests are skipped, not reviewed)."
+  comment_url:
+    description: "URL of the posted/updated comment, empty for a skip or dry run."
+  skipped:
+    description: "\"true\" when this run was a fork-PR skip, \"false\" otherwise."
+
+runs:
+  using: "docker"
+  image: "action/Dockerfile"
