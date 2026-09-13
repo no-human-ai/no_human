@@ -1685,6 +1685,31 @@ def task_show(task_id):
                 for c in t.acceptance_criteria:
                     console.print(f"  - {c}")
             console.print(f"repo: {t.repo_path}")
+            # A delivered PR's recorded base can go stale when trunk moves
+            # past it (`blockers.wake.WakeWatcher._check_base_stale`,
+            # bugfix split from task 22c4ddf6 finding #3). `pr_base_freshness`
+            # is written there and otherwise read only inside that rung
+            # itself — surface it here so a human deciding whether a parked
+            # PR is still good sees the answer instead of it being invisible
+            # outside the watcher. Never "fresh": that state writes nothing
+            # to context (nothing to report), so any presence here is by
+            # construction stale or undetermined and worth a human's eye.
+            tctx = t.context or {}
+            freshness = tctx.get("pr_base_freshness")
+            if freshness:
+                remeasures = tctx.get("pr_base_remeasures") or 0
+                source_note = (
+                    " (base sha was backfilled, not recorded at delivery)"
+                    if tctx.get("pr_base_sha_source") == "backfilled" else "")
+                recorded = (tctx.get("pr_base_sha") or "")[:8] or "(none)"
+                observed = (freshness.get("observed_sha") or "")[:8] or "(none)"
+                console.print(
+                    f"PR base {freshness.get('state')} against "
+                    f"{tctx.get('pr_base_ref') or '?'}: recorded {recorded} "
+                    f"vs trunk {observed}{source_note} "
+                    f"({remeasures} remeasure(s)) — {freshness.get('reason', '')}",
+                    markup=False,
+                )
             if t.blocker:
                 console.print(f"[red]blocker:[/] {t.blocker}")
             lat = (t.blocker or {}).get("escalation_latency") if t.blocker else None

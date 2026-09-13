@@ -20,10 +20,16 @@ No test here asserts on the source text of the code under test.
 """
 from __future__ import annotations
 
+import asyncio
 import subprocess
 from pathlib import Path
 
+from click.testing import CliRunner
+
+import no_human.cli.commands as cli_commands
 from no_human.blockers.wake import WakeWatcher
+from no_human.cli.commands import cli
+from no_human.core.db import Store
 from no_human.core.task import Task, TaskStatus
 from no_human.vcs import delivered_base
 
@@ -555,3 +561,82 @@ async def test_measure_is_a_three_state_answer(tmp_path):
 
     undetermined_no_sha = await delivered_base.measure(str(work), "main", None)
     assert undetermined_no_sha.state == delivered_base.UNDETERMINED
+
+
+# ---------------------------------------------------------------------------
+# The written fields must have a reader outside this rung. `pr_base_sha` /
+# `pr_base_freshness` / `pr_base_remeasures` / `pr_base_ref` /
+# `pr_base_sha_source` are written by `_check_base_stale` and by
+# `delivered_base.record_at_delivery`, and grepping `src/` for a reader of any
+# of them outside `blockers/wake.py` / `vcs/delivered_base.py` turns up
+# nothing — a freshness answer nothing consumes cannot change any decision.
+# `nh task show` now renders them (see `cli/commands.py:task_show`); this
+# proves that reader is real, not merely present in source, by actually
+# invoking the CLI command and asserting on its rendered output.
+# ---------------------------------------------------------------------------
+
+def _make_cli_runner(path, monkeypatch):
+    class _Cfg:
+        data: dict = {}
+        db_path = path
+
+        def get(self, key, default=None):
+            return self.data.get(key, default)
+
+    monkeypatch.setattr(cli_commands, "load_config", lambda: _Cfg())
+    monkeypatch.setattr(cli_commands, "assert_subscription_mode", lambda **kw: None)
+    return CliRunner()
+
+
+def test_task_show_renders_the_stale_base_freshness(tmp_path, monkeypatch):
+    db = tmp_path / "test.db"
+    recorded = "a" * 40
+    observed = "b" * 40
+
+    async def _seed():
+        async with Store(db) as s:
+            t = Task.new("stale-base-cli", repo_path="/tmp/repo")
+            t.context = {
+                "pr_watch": "https://code.example.com/dev/x/pull/9",
+                "pr_base_ref": "main",
+                "pr_base_sha": recorded,
+                "pr_base_sha_source": "backfilled",
+                "pr_base_remeasures": 2,
+                "pr_base_freshness": delivered_base.BaseFreshness(
+                    delivered_base.STALE, "main", recorded, observed,
+                    "trunk moved past the recorded base",
+                ).as_dict(),
+            }
+            await s.create_task(t)
+            await s.set_status(t, TaskStatus.AWAITING_APPROVAL, validate=False)
+            return t.id
+
+    tid = asyncio.run(_seed())
+    runner = _make_cli_runner(db, monkeypatch)
+    result = runner.invoke(cli, ["task", "show", tid[:8]])
+    assert result.exit_code == 0, result.output
+    assert delivered_base.STALE in result.output, result.output
+    assert "main" in result.output, result.output
+    assert recorded[:8] in result.output, result.output
+    assert observed[:8] in result.output, result.output
+    assert "backfilled" in result.output, result.output
+    assert "2 remeasure" in result.output, result.output
+
+
+def test_task_show_is_silent_when_base_freshness_was_never_recorded(tmp_path, monkeypatch):
+    # No PR-freshness fields at all (a task with no delivered PR, or one
+    # delivered before this change) — `task show` must not fabricate a line
+    # for a field that was never written.
+    db = tmp_path / "test.db"
+
+    async def _seed():
+        async with Store(db) as s:
+            t = Task.new("no-base-freshness", repo_path="/tmp/repo")
+            await s.create_task(t)
+            return t.id
+
+    tid = asyncio.run(_seed())
+    runner = _make_cli_runner(db, monkeypatch)
+    result = runner.invoke(cli, ["task", "show", tid[:8]])
+    assert result.exit_code == 0, result.output
+    assert "PR base" not in result.output, result.output
