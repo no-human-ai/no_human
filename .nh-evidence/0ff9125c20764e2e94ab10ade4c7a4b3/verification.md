@@ -1,230 +1,219 @@
 # How I verified this — full log
 
-_Harness-captured record for task `0ff9125c`, commit `0ce237c405e3decd752a05faa222a41cb30e8bb4` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `0ff9125c`, commit `a3e3beec80b1062e6f8a5089c5ae199b7de8e970` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ## How I verified this
-11 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
+19 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
+
+**Not everything recorded is shown:** the 12 most recent of those listed are shown with their captured output, and the other 7 commands are shown as a command line only.
 
 ### test
-- `python3 -m pytest tests/test_structural_budget.py -q 2>&1 | tail -60`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/0ff9125c20764e2e94ab10ade4c7a4b3.52752.1032a34a uv run pytest -q tests/test_citation_drift_preflight.py -k "checker_import_failure or interpreter" 2>&1 | tail -40`
+  _output not shown - see the note above._
+- `cd /Users/eyalgolan/.<redacted>/worktrees/0ff9125c20764e2e94ab10ade4c7a4b3.52752.1032a34a uv run pytest -q tests/test_citation_drift_preflight.py -k "checker_import_failure" 2>&1 | tail -40`
+  _output not shown - see the note above._
+- `cd /Users/eyalgolan/.<redacted>/worktrees/0ff9125c20764e2e94ab10ade4c7a4b3.52752.1032a34a uv run pytest -q tests/test_citation_drift_preflight.py 2>&1 | tail -15`
+  _output not shown - see the note above._
+- `uv run pytest -q tests/test_citation_drift_preflight.py -k "re_entered" 2>&1 | tail -40`
+  _output not shown - see the note above._
+- `uv run pytest -q tests/test_citation_drift_preflight.py 2>&1 | tail -20`
+  _output not shown - see the note above._
+- `uv run pytest -q tests/test_citation_drift_preflight.py -k "send_back_message" -v 2>&1 | tail -40`
+  _output not shown - see the note above._
+- `uv run pytest -q tests/test_citation_drift_preflight.py 2>&1 | tail -10`
+  _output not shown - see the note above._
+- `uv run pytest -q tests/test_citation_drift_preflight.py 2>&1 | tail -30`
 
 ```
-..................                                                       [100%]
-18 passed in 2.35s
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+..................................                                       [100%]
+34 passed in 16.35s
 ```
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/0ff9125c20764e2e94ab10ade4c7a4b3.52752.60ae0d86 python3 -m pytest tests/test_citation_drift_preflight.py -v -k "self_contradictory_ok_verdict_with_fail_line or self_contradictory_ok_verdict_with_applied_and_fail_line or revert_worktree_writes_unguarded_requires_component" 2>&1 | tail -40`
+- `uv run pytest -q tests/test_citation_drift_preflight.py -k "scope_note or an_unfixable_citation_buys_one_corrective_round" 2>&1 | tail -50`
 
 ```
-with BOTH an `applied N re-anchor(s)` marker (so a naive check would read
-        it as `Status.REANCHORED`) AND an unresolved `FAIL:` line for a separate,
-        unfixable citation the script's `_apply_all` batch never touched.
+only ONE attempt row total."""
+        backend = _AmbiguousDriftThenFixesItBackend()
+        orch, task, repo, events = await _run_one_task_attempt(store, bare_repo, tmp_path, backend)
     
-        BUGGY behaviour this pins against: `verdict == "OK"` + `applied` fell
-        straight to `Status.REANCHORED`, reporting only the `drifts` it fixed and
-        silently discarding the named `fails` entry — `failures` would have come
-        back empty even though the raw stdout named an unfixable citation right
-        next to the applied one. FIXED: the `if fails:` check runs before the
-        `if applied:` check, so this shap
-[... 1,073 of 2,212 characters omitted from the middle ...]
-sts/test_citation_drift_preflight.py:332: AssertionError
-=========================== short test summary info ============================
-FAILED tests/test_citation_drift_preflight.py::test_self_contradictory_ok_verdict_with_fail_line_is_unknown_not_clean
-FAILED tests/test_citation_drift_preflight.py::test_self_contradictory_ok_verdict_with_applied_and_fail_line_is_unknown
-================== 2 failed, 1 passed, 20 deselected in 1.84s ==================
-```  
-  _excerpt - 2,212 characters of output in total_
+        outcome = await orch._run_attempt(task, repo, 1, "main")
+    
+        assert outcome.status is TaskStatus.AWAITING_APPROVAL, outcome.detail
+        assert backend.calls == 2
+    
+        kinds = [e["kind"] for e in events]
+        assert kinds.count("citation_drift") >= 1, events
+        assert kinds.count("citation_drift_corrective_round") == 1, events
+    
+        round_idx = kinds.index("citation_drift_corrective_round")
+        review_idx = next(i for i, e in enumerate
+[... 2,788 of 3,927 characters omitted from the middle ...]
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/0ff9125c20764e2e94ab10ade4c7a4b3.52752.60ae0d86 python3 -m pytest tests/test_citation_drift_preflight.py -v -k "self_contradictory_ok_verdict_with_fail_line or self_contradictory_ok_verdict_with_applied_and_fail_line or revert_worktree_writes_unguarded_requires_component" 2>&1 | tail -15`
+WARNING  <redacted>.orchestrator:orchestrator.py:2525 advisory: verification comment not posted (unverifiable): could not read existing comments on local-pr://remote.git/no-human/f5c4a911; not posting
+=========================== short test summary info ============================
+FAILED tests/test_citation_drift_preflight.py::test_an_unfixable_citation_buys_one_corrective_round_before_review_no_extra_attempt
+1 failed, 2 passed, 31 deselected in 2.12s
+```  
+  _excerpt - 3,917 characters of output in total_
+
+- `python3 - <<'EOF' p = "src/<redacted>/core/orchestrator.py" s = open(p).read() new = '''                self.backend.run(                     (instruction or repro_send_back_message(detail))                [... 213 of 556 characters omitted from the middle ...] sert s.count(old) == 1 open(p, "w").write(s.replace(old, new)) EOF uv run pytest -q tests/test_citation_drift_preflight.py 2>&1 | tail -10`
 
 ```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+..................................                                       [100%]
+34 passed in 15.38s
+```
+
+- `uv run pytest -q tests/test_citation_drift_preflight.py -k "manifest_repair" -v 2>&1 | tail -40`
+
+```
+once before delegating to the real function, and this test asserts the
+        resulting `manifest_repaired` event actually carries what the callback
+        reported — never by reading `_citation_drift_preflight`'s source for the
+        keyword argument."""
+        seen_kwargs = {}
+    
+        def fake_commit(repo, paths, message, on_repair=None):
+            seen_kwargs["on_repair"] = on_repair
+            if on_repair is not None:
+                on_repair(["docs/cite.md"], "re-approved a stale pin")
+            return commit_with_manifest_repair(repo, paths, message, on_repair=on_repair)
+    
+        monkeypatch.setattr(orch_mod, "commit_with_manifest_repair", 
+[... 1,833 of 2,972 characters omitted from the middle ...]
+hestrator:orchestrator.py:2525 advisory: verification comment not posted (unverifiable): could not read existing comments on local-pr://remote.git/no-human/fef8e58c; not posting
+=========================== short test summary info ============================
+FAILED tests/test_citation_drift_preflight.py::test_the_mechanical_fix_commit_reports_a_manifest_repair_not_silently
+======================= 1 failed, 34 deselected in 1.93s =======================
+```  
+  _excerpt - 2,966 characters of output in total_
+
+- `uv run pytest -q tests/test_citation_drift_preflight.py -k "manifest_repair" -v 2>&1 | tail -20`
+
+```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
 ============================= test session starts ==============================
-platform darwin -- Python 3.12.13, pytest-9.1.1, pluggy-1.6.0 -- /Users/eyalgolan/git/<redacted>-public/.venv/bin/python3
-cachedir: .pytest_cache
-<redacted> isolated HOME: /var/folders/1r/3r0rt1jd4j1456rsg_fh4d380000gn/T/nh-test-home-a88tp3bm
-rootdir: /Users/eyalgolan/.<redacted>/worktrees/0ff9125c20764e2e94ab10ade4c7a4b3.52752.60ae0d86
+platform darwin -- Python 3.12.13, pytest-9.1.1, pluggy-1.6.0
+<redacted> isolated HOME: /var/folders/1r/3r0rt1jd4j1456rsg_fh4d380000gn/T/nh-test-home-t8oq7rvq
+rootdir: /Users/eyalgolan/.<redacted>/worktrees/0ff9125c20764e2e94ab10ade4c7a4b3.52752.1032a34a
 configfile: pyproject.toml
 plugins: anyio-4.14.0, no-human-0.2.2, cov-7.1.0, xdist-3.8.0, asyncio-1.4.0
 asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
-collecting ... collected 23 items / 20 deselected / 3 selected
+collected 35 items / 34 deselected / 1 selected
 
-tests/test_citation_drift_preflight.py::test_self_contradictory_ok_verdict_with_fail_line_is_unknown_not_clean PASSED [ 33%]
-tests/test_citation_drift_preflight.py::test_self_contradictory_ok_verdict_with_applied_and_fail_line_is_unknown PASSED [ 66%]
-tests/test_citation_drift_preflight.py::test_revert_worktree_writes_unguarded_requires_component_argument PASSED [100%]
+tests/test_citation_drift_preflight.py .                                 [100%]
 
-======================= 3 passed, 20 deselected in 0.91s =======================
+======================= 1 passed, 34 deselected in 2.16s =======================
 ```
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/0ff9125c20764e2e94ab10ade4c7a4b3.52752.60ae0d86 python3 -m pytest tests/test_structural_budget.py -q 2>&1 | tail -30`
+- `python3 - <<'EOF' p = "src/<redacted>/core/orchestrator.py" s = open(p).read() old = '''            repaired: list[tuple[list[str], str]] = []             try:                 commit = await asyncio.to_t [... 1,036 of 1,375 characters omitted from the middle ...] n(p, "w").write(s2.replace(old2, new2)) EOF uv run pytest -q tests/test_citation_drift_preflight.py -k "manifest_repair" 2>&1 | tail -30`
 
 ```
+# fake does not also inject a repair into the unrelated main commit.
+            if "citation drift: auto-re-anchored" in message:
+                seen_kwargs["on_repair"] = on_repair
+                if on_repair is not None:
+                    on_repair(["docs/cite.md"], "re-approved a stale pin")
+            return commit_with_manifest_repair(repo, paths, message, on_repair=on_repair)
+    
+        monkeypatch.setattr(orch_mod, "commit_with_manifest_repair", fake_commit)
+    
+        backend = _DriftsThenLeavesItBackend()
+        orch, task, repo, events = await _run_one_task_attempt(store, bare_repo, tmp_path, backend)
+    
+        outcome = await orch._run_at
+[... 920 of 2,059 characters omitted from the middle ...]
+will fail honestly here.
+WARNING  <redacted>.orchestrator:orchestrator.py:2525 advisory: verification comment not posted (unverifiable): could not read existing comments on local-pr://remote.git/no-human/890de82f; not posting
+=========================== short test summary info ============================
+FAILED tests/test_citation_drift_preflight.py::test_the_mechanical_fix_commit_reports_a_manifest_repair_not_silently
+1 failed, 34 deselected in 2.14s
+```  
+  _excerpt - 2,053 characters of output in total_
+
+- `python3 - <<'EOF' p = "src/<redacted>/core/orchestrator.py" s = open(p).read() old = '''            try:                 commit = await asyncio.to_thread(                     commit_with_manifest_repair, [... 1,015 of 1,354 characters omitted from the middle ...] .count(old2) == 1 open(p, "w").write(s2.replace(old2, new2)) EOF uv run pytest -q tests/test_citation_drift_preflight.py 2>&1 | tail -10`
+
+```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+...................................                                      [100%]
+35 passed in 18.66s
+```
+
+- `uv run pytest -q tests/test_egress_allowlist.py tests/test_structural_budget_preflight.py tests/test_readme_claims.py tests/test_reanchor_citations.py tests/test_egress_disclosure.py tests/test_check_context_files.py 2>&1 | tail -30`
+
+```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+.......................................................................s [ 34%]
+.s.s.s.s.s.s.s.s.s...............................................s...... [ 69%]
+....................s...........................................         [100%]
+196 passed, 12 skipped in 38.41s
+```
+
+- `wc -l src/<redacted>/core/orchestrator.py; uv run pytest -q tests/test_structural_budget.py 2>&1 | tail -60`
+
+```
+24603 src/<redacted>/core/orchestrator.py
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
 .....F............                                                       [100%]
 =================================== FAILURES ===================================
 ________________________ test_no_frozen_entry_has_grown ________________________
 
-scanned = ({'agent/claude_backend.py:ClaudeBackend.stream': 407, 'blockers/landed_override.py:approve_landed_override': 322, 'bl... ...}, {'agent/guard.py': 2926, 'api/app.py': 6330, 'blockers/wake.py': 2757, 'cli/commands.py': 8851, ...}, 235, 3542)
-
-    def test_no_frozen_entry_has_grown(scanned):
-        function_lines, function_cc, file_lines, _, _ = scanned
-        checks = [
-            (function_lines, FROZEN_FUNCTION_LINES, MAX_
-[... 535 of 1,674 characters omitted from the middle ...]
-orches...atchets down'] == []
+scanned = ({'agent/claude_backend.py:ClaudeBackend.stream': 407, 'blockers/landed_override.py:approve_landed_override': 322, 'bl... ...}, {'agent/guard.py': 2925, 'api/app.py': 6332, 'blockers/wake.
+[... 779 of 1,918 characters omitted from the middle ...]
+rches...atchets down'] == []
 E             
-E             Left contains one more item: 'core/orchestrator.py: frozen 24441, now 24481 (+40); this budget only ratchets down'
+E             Left contains one more item: 'core/orchestrator.py: frozen 24481, now 24606 (+125); this budget only ratchets down'
 E             Use -v to get more diff
 
-tests/test_structural_budget.py:2166: AssertionError
+tests/test_structural_budget.py:2202: AssertionError
 =========================== short test summary info ============================
 FAILED tests/test_structural_budget.py::test_no_frozen_entry_has_grown - Asse...
-1 failed, 17 passed in 3.32s
+1 failed, 17 passed in 2.67s
 ```  
-  _excerpt - 1,674 characters of output in total_
+  _excerpt - 1,914 characters of output in total_
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/0ff9125c20764e2e94ab10ade4c7a4b3.52752.60ae0d86 python3 -m pytest tests/test_structural_budget.py -q 2>&1 | tail -10`
+- `uv run pytest -q tests/test_structural_budget.py 2>&1 | tail -20`
 
 ```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
 ..................                                                       [100%]
-18 passed in 3.43s
+18 passed in 2.59s
 ```
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/0ff9125c20764e2e94ab10ade4c7a4b3.52752.60ae0d86 python3 -m pytest tests/test_citation_drift_preflight.py::test_revert_worktree_writes_unguarded_requires_component_argument -v 2>&1 | tail -20`
+- `uv run pytest -q -n 4 \   tests/test_citation_drift_preflight.py \   tests/test_egress_allowlist.py \   tests/test_structural_budget.py \   tests/test_structural_budget_preflight.py \   tests/test_readme_claims.py \   tests/test_reanchor_citations.py \   tests/test_egress_disclosure.py \   tests/test_check_context_files.py 2>&1 | tail -30`
 
 ```
-def _revert_worktree_writes_unguarded(
-        self, repo: GitRepo, before: dict[str, str], *, component: str = "the reformat nudge",
-    ) -> list[str]:
-        """*component* is REQUIRED, not defaulted: this is the method that
-        actually emits the success-path advisory below, so there is no safe
-        generic wording to fall back to the way `_revert_worktree_writes`
-        (its only caller) can default ITS OWN, rarer exception-fallback
-        advisory to the original "the reformat nudge" wording. A caller that
-        forgets to pass its own name here should get a `TypeError` at the
-        call site, not a wrong component silently credited (or blamed) for
-  
-[... 74 of 1,213 characters omitted from the middle ...]
-tate(repo)
-                ^^^^^^^^^^^^^^^^^^^^
-E       AttributeError: 'object' object has no attribute '_worktree_state'
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+bringing up nodes...
+bringing up nodes...
 
-src/<redacted>/core/orchestrator.py:10461: AttributeError
-=========================== short test summary info ============================
-FAILED tests/test_citation_drift_preflight.py::test_revert_worktree_writes_unguarded_requires_component_argument
-============================== 1 failed in 1.30s ===============================
-```  
-  _excerpt - 1,211 characters of output in total_
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/0ff9125c20764e2e94ab10ade4c7a4b3.52752.60ae0d86 python3 -m pytest tests/test_citation_drift_preflight.py::test_revert_worktree_writes_unguarded_requires_component_argument -v 2>&1 | tail -10 echo "--- confirm no stray diff remains ---" git diff --stat -- src/<redacted>/core/orchestrator.py | tail -1`
-
-```
-<redacted> isolated HOME: /var/folders/1r/3r0rt1jd4j1456rsg_fh4d380000gn/T/nh-test-home-jxa2dcum
-rootdir: /Users/eyalgolan/.<redacted>/worktrees/0ff9125c20764e2e94ab10ade4c7a4b3.52752.60ae0d86
-configfile: pyproject.toml
-plugins: anyio-4.14.0, no-human-0.2.2, cov-7.1.0, xdist-3.8.0, asyncio-1.4.0
-asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
-collecting ... collected 1 item
-
-tests/test_citation_drift_preflight.py::test_revert_worktree_writes_unguarded_requires_component_argument PASSED [100%]
-
-============================== 1 passed in 0.71s ===============================
---- confirm no stray diff remains ---
- 1 file changed, 107 insertions(+), 22 deletions(-)
+........................................................................ [ 27%]
+.......s.s.s.s.s.s.s.s.s.s.............................................. [ 55%]
+..s...........................s......................................... [ 82%]
+.............................................                            [100%]
+249 passed, 12 skipped in 21.01s
 ```
 
-- `python3 -m pytest tests/test_citation_drift_preflight.py -k "interpreter_prefers_target_repos_own_venv or interpreter_falls_back_to_sys_executable" -v 2>&1 | tail -40`
+- `uv run pytest -q -n 4 \   tests/test_citation_drift_preflight.py \   tests/test_egress_allowlist.py \   tests/test_structural_budget.py \   tests/test_structural_budget_preflight.py \   tests/test_readme_claims.py \   tests/test_reanchor_citations.py \   tests/test_egress_disclosure.py \   tests/test_check_context_files.py 2>&1 | tail -10`
 
 ```
-============================= test session starts ==============================
-platform darwin -- Python 3.12.13, pytest-9.1.1, pluggy-1.6.0 -- /Users/eyalgolan/git/<redacted>-public/.venv/bin/python3
-cachedir: .pytest_cache
-<redacted> isolated HOME: /var/folders/1r/3r0rt1jd4j1456rsg_fh4d380000gn/T/nh-test-home-c1251wry
-rootdir: /Users/eyalgolan/.<redacted>/worktrees/0ff9125c20764e2e94ab10ade4c7a4b3.52752.60ae0d86
-configfile: pyproject.toml
-plugins: anyio-4.14.0, no-human-0.2.2, cov-7.1.0, xdist-3.8.0, asyncio-1.4.0
-asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
-collecting ... collected 25 items / 23 deselected / 2 selected
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+bringing up nodes...
+bringing up nodes...
 
-tests/test_citation_drift_preflight.py::test_interpreter_prefers_target_repos_own_venv_over_sys_executable PASSED [ 50%]
-tests/test_citation_drift_preflight.py::test_interpreter_falls_back_to_sys_executable_when_repo_has_no_venv PASSED [100%]
-
-======================= 2 passed, 23 deselected in 1.09s =======================
+........................................................................ [ 27%]
+.......s.s.s.s.s.s.s.s.s.s.............................................. [ 55%]
+..s..........................s.......................................... [ 82%]
+.............................................                            [100%]
+249 passed, 12 skipped in 21.36s
 ```
-
-- `python3 -m pytest tests/test_citation_drift_preflight.py::test_interpreter_prefers_target_repos_own_venv_over_sys_executable -v 2>&1 | tail -40`
-
-```
-=================================== FAILURES ===================================
-______ test_interpreter_prefers_target_repos_own_venv_over_sys_executable ______
-
-tmp_path = PosixPath('/private/var/folders/1r/3r0rt1jd4j1456rsg_fh4d380000gn/T/pytest-of-eyalgolan/pytest-63386/test_interpreter_prefers_targe0')
-monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x10c2095e0>
-
-    def test_interpreter_prefers_target_repos_own_venv_over_sys_executable(
-            tmp_path, monkeypatch):
-        """Send-back finding (Blocker C): `scripts/reanchor_citations.py` is
-        stdlib-only, but it loads `tests/test_readme_claims.py` by path, and
-        THAT module `import pytest`s 
-[... 1,399 of 2,538 characters omitted from the middle ...]
-st-of-eyalgolan/pytest-63386/test_interpreter_prefers_targe0/.venv/bin/python
-E         + /definitely/not/the/repos/venv
-
-tests/test_citation_drift_preflight.py:359: AssertionError
-=========================== short test summary info ============================
-FAILED tests/test_citation_drift_preflight.py::test_interpreter_prefers_target_repos_own_venv_over_sys_executable
-============================== 1 failed in 0.64s ===============================
-```  
-  _excerpt - 2,538 characters of output in total_
-
-- `python3 -m pytest tests/test_citation_drift_preflight.py -k "interpreter_prefers_target_repos_own_venv or interpreter_falls_back_to_sys_executable" -v 2>&1 | tail -20 && echo "---DIFF STAT---" && git diff --stat -- src/<redacted>/testing/citation_drift.py`
-
-```
-============================= test session starts ==============================
-platform darwin -- Python 3.12.13, pytest-9.1.1, pluggy-1.6.0 -- /Users/eyalgolan/git/<redacted>-public/.venv/bin/python3
-cachedir: .pytest_cache
-<redacted> isolated HOME: /var/folders/1r/3r0rt1jd4j1456rsg_fh4d380000gn/T/nh-test-home-i913zb6b
-rootdir: /Users/eyalgolan/.<redacted>/worktrees/0ff9125c20764e2e94ab10ade4c7a4b3.52752.60ae0d86
-configfile: pyproject.toml
-plugins: anyio-4.14.0, no-human-0.2.2, cov-7.1.0, xdist-3.8.0, asyncio-1.4.0
-asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
-collecting ... collected 25 items / 23 deselected / 2 selected
-
-tests/test_citation_drift_preflight.py::test_interpreter_prefers_target_repos_own_venv_over_sys_executable PASSED [ 50%]
-tests/test_citation_drift_preflight.py::test_interpreter_falls_back_to_sys_executable_when_repo_has_no_venv PASSED [100%]
-
-======================= 2 passed, 23 deselected in 0.90s =======================
----DIFF STAT---
- src/<redacted>/testing/citation_drift.py | 61 +++++++++++++++++++++++++++++++---
- 1 file changed, 57 insertions(+), 4 deletions(-)
-```
-
-- `python3 -m pytest tests/test_citation_drift_preflight.py -v 2>&1 | tail -40`
-
-```
-============================= test session starts ==============================
-platform darwin -- Python 3.12.13, pytest-9.1.1, pluggy-1.6.0 -- /Users/eyalgolan/git/<redacted>-public/.venv/bin/python3
-cachedir: .pytest_cache
-<redacted> isolated HOME: /var/folders/1r/3r0rt1jd4j1456rsg_fh4d380000gn/T/nh-test-home-39ayglel
-rootdir: /Users/eyalgolan/.<redacted>/worktrees/0ff9125c20764e2e94ab10ade4c7a4b3.52752.60ae0d86
-configfile: pyproject.toml
-plugins: anyio-4.14.0, no-human-0.2.2, cov-7.1.0, xdist-3.8.0, asyncio-1.4.0
-asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
-collecting ... collected 25 items
-
-test
-[... 2,589 of 3,728 characters omitted from the middle ...]
-8%]
-tests/test_citation_drift_preflight.py::test_an_indeterminate_run_lets_the_corrective_round_land_a_doc_fix PASSED [ 92%]
-tests/test_citation_drift_preflight.py::test_an_unfixable_run_with_an_unrelated_dirty_stray_file_never_commits_it PASSED [ 96%]
-tests/test_citation_drift_preflight.py::test_the_post_round_verification_recheck_never_mutates_the_worktree PASSED [100%]
-
-============================= 25 passed in 27.88s ==============================
-```  
-  _excerpt - 3,722 characters of output in total_
 
 
 **Not verified:** everything below is a limit of this section, listed whether or not it bit this attempt.
 
-- no command recognised as e2e, http, typecheck, lint, build was recorded
+- no command recognised as e2e, http, typecheck, lint, build was recorded - and a recorded command is shown with its middle omitted, so a check inside the omitted part cannot be ruled out
+- 7 commands listed above are shown without their captured output: only the 12 most recent carry it
 - an entry shows that a command LINE was submitted to the shell and what came back - never that the check recognised inside it RAN, and never that it was the RIGHT command: `pytest -k test_nothing` prints a clean run, and a recorded command line may name a check the shell never reached yet is still counted - TEN SHAPES WERE DRIVEN against bash 3.2.57 with the check replaced by a marker-printing stub and the marker was absent in every one: a failed `&&`, a taken `||`, an `exit`, an `exec`, an `exit` inside a `source`d script, a syntax error that aborts the REST of the line, a multi-line `if false`, a `case` that matches nothing, `set -e` aborting an earlier command, and `set -u` on an unset variable; that list is MEASURED, NOT EXHAUSTIVE, because this module is not bash, so a kind this section does NOT list as missing is a kind some recorded line named, which is not the same as a kind that ran
 - the text is the coder's: the session chose the command string and, through `echo`/`printf`, can choose the output too. Both are shown as inert text, and no entry ASSERTS a pass, a fail, or an exit status - `pytest -q | tail -3` exits with `tail`'s status, `Error: Exit code 1` is a line IN THE OUTPUT, and where the harness reported a timeout or an interruption instead of output that report is appended to the captured text in square brackets. Read the output
 - recognition reads the command line ONLY - it never looks inside what a command runs, so `bash -c 'uv run pytest -q'` leaves no receipt at all while `make test` leaves one that names `make` and not the recipe it ran; and the other way, a check merely NAMED in a heredoc body, or in a quoted string that happens to spell a shell separator, can be recorded as though it ran
