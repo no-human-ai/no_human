@@ -1,222 +1,143 @@
 # How I verified this — full log
 
-_Harness-captured record for task `9b6e928a`, commit `29364b0f3c6d2c9171b4c1bec8e756ecc938bd21` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `9b6e928a`, commit `9ea0906e833c81e89ad9e51407a80877c6605dbd` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ## How I verified this
-11 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
+9 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
 
 ### test
-- `uv run pytest tests/test_structural_budget.py -q 2>&1 | tail -60`
+- `uv run pytest -q tests/test_readme_claims.py::test_windows_md_code_line_citations_resolve tests/test_reanchor_citations.py::test_check_mode_is_clean_on_this_tree 2>&1 | tail -50`
 
 ```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-   Building no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/9b6e928a14104282b416d03e963ee58d.52752.9f301002
-      Built no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/9b6e928a14104282b416d03e963ee58d.52752.9f301002
-Installed 73 packages in 104ms
-..................                                                       [100%]
-18 passed in 4.23s
-```
+n = int(lineno)
+            assert 1 <= n <= len(lines), (
+                f"WINDOWS.md cites {rel}:{n}, but that file has {len(lines)} lines"
+            )
+            token = EXPECTED[rel]
+>           assert token in lines[n - 1], (
+                f"WINDOWS.md cites {rel}:{n} for `{token}`, but that line reads "
+                f"{lines[n - 1].strip()!r}. The citation has rotted -- this is the "
+                f"defect #110 reported."
+            )
+E           AssertionError: WINDOWS.md cites cli/commands.py:7303 for `signal.SIGKILL`, but that line reads 'return None'. The citation has rotted -- this is the defect #110 reported.
+E           assert 'signal.SIG
+[... 1,906 of 3,045 characters omitted from the middle ...]
+d/.venv/bin...(would re-anchor)\nDRIFT: eval.md `:bench_run:7946` -> `:bench_run:7971` (would re-anchor)\nVERDICT=FAIL\n', stderr='').returncode
 
-- `uv run pytest tests/test_wake_base_stale.py -q 2>&1 | tail -80`
-
-```
-out = await w._check_open_pr(t)
-        # Observational only: never resumes, never returns a truthy outcome from
-        # `_check_open_pr` itself (nothing downstream acted either).
->       assert out is None
-E       AssertionError: assert 'pr_base_remeasured' is None
-
-tests/test_wake_base_stale.py:162: AssertionError
-________ test_stale_pr_is_recorded_stale_not_fresh_on_a_semantic_break _________
-
-store = <<redacted>.core.db.Store object at 0x10c104d70>
-tmp_path = PosixPath('/private/var/folders/1r/3r0rt1jd4j1456rsg_fh4d380000gn/T/pytest-of-eyalgolan/pytest-61115/test_stale_pr_is_recorded_stal0')
-
-    async def test_stale_pr_is_recorded_stale_not_fresh_on_a_semantic
-[... 3,136 of 4,275 characters omitted from the middle ...]
-d.py'] failed rc=128
-E           
-E           fatal: bad source, source=mod.py, destination=mod_renamed.py
-
-tests/test_wake_base_stale.py:39: RuntimeError
+tests/test_reanchor_citations.py:171: AssertionError
 =========================== short test summary info ============================
-FAILED tests/test_wake_base_stale.py::test_a_landing_on_trunk_remeasures_the_delivered_base
-FAILED tests/test_wake_base_stale.py::test_stale_pr_is_recorded_stale_not_fresh_on_a_semantic_break
-2 failed, 12 passed in 7.06s
+FAILED tests/test_readme_claims.py::test_windows_md_code_line_citations_resolve
+FAILED tests/test_reanchor_citations.py::test_check_mode_is_clean_on_this_tree
+2 failed in 1.27s
 ```  
-  _excerpt - 4,273 characters of output in total_
+  _excerpt - 3,039 characters of output in total_
 
-- `uv run pytest tests/test_wake_base_stale.py -q 2>&1 | tail -60`
+- `uv run pytest -q tests/test_readme_claims.py tests/test_reanchor_citations.py 2>&1 | tail -30`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-..............                                                           [100%]
-14 passed in 6.86s
+............................s.s.s.s.s.s.s.s.s.s......................... [ 47%]
+......................s..........................s...................... [ 94%]
+........                                                                 [100%]
+140 passed, 12 skipped in 3.34s
 ```
 
-- `uv run pytest tests/test_wake_base_stale.py tests/test_wake_conflict.py tests/test_wake_comment_conflict_precedence.py tests/test_wake_pr_closed_repair.py tests/test_orchestrator_pr_conflict.py tests/test_merge_policy_wiring.py tests/test_structural_budget.py tests/test_tamper_guard.py -q -n 4 2>&1 | tail -100`
+- `uv run pytest -q tests/test_wake_base_stale.py tests/test_structural_budget.py tests/test_readme_claims.py tests/test_reanchor_citations.py tests/test_wake_conflict.py tests/test_orchestrator_pr_conflict.py 2>&1 | tail -60`
+
+```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+..............................................................s.s.s.s.s. [ 26%]
+s.s.s.s.s...............................................s............... [ 52%]
+...........s............................................................ [ 79%]
+.........................................................                [100%]
+261 passed, 12 skipped in 50.02s
+```
+
+- `uv run pytest -q -n 4 tests/test_wake_base_stale.py tests/test_structural_budget.py tests/test_readme_claims.py tests/test_reanchor_citations.py tests/test_wake_conflict.py tests/test_orchestrator_pr_conflict.py tests/test_release_manifest.py 2>&1 | tail -60`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
 bringing up nodes...
 bringing up nodes...
 
-.........F.F......................F..................................... [ 31%]
-........................................................................ [ 63%]
-........................................................................ [ 95%]
-...........                                                              [100%]
-=================================== FAILURES ===================================
-__________ test_mergeable_state_is_a_pure_
-[... 3,136 of 4,275 characters omitted from the middle ...]
-e_conflict.py:216: AssertionError
-=========================== short test summary info ============================
-FAILED tests/test_wake_conflict.py::test_mergeable_state_is_a_pure_noop_when_never_conflicted
-FAILED tests/test_wake_comment_conflict_precedence.py::test_the_comment_cursor_advances_so_the_same_comment_is_not_reinjected
-FAILED tests/test_wake_conflict.py::test_mergeable_after_conflict_resets_the_round_counter
-3 failed, 224 passed in 25.22s
+
+no tests ran in 0.21s
+```
+
+- `uv run pytest -q -n 4 tests/test_wake_base_stale.py tests/test_structural_budget.py tests/test_readme_claims.py tests/test_reanchor_citations.py tests/test_wake_conflict.py tests/test_orchestrator_pr_conflict.py tests/test_check_release_manifest.py 2>&1 | tail -60`
+
+```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+bringing up nodes...
+bringing up nodes...
+
+..........s..s.s.s.s.s.s.s.s.s.......................................... [ 24%]
+.........s.............................................................. [ 48%]
+...............s........................................................ [ 72%]
+............................................................sss.ssss.... [ 96%]
+.........                                                                [100%]
+278 passed, 19 skipped in 17.17s
+```
+
+- `uv run pytest -q tests/test_wake_base_stale.py::test_task_show_renders_the_stale_base_freshness -v 2>&1 | tail -20 echo "=== grep confirming all 5 keys are read outside writer modules ===" for k in pr_base [... 64 of 407 characters omitted from the middle ...] a_source; do   echo "-- $k --"   grep -rn "$k" src/ | grep -v "src/<redacted>/blockers/wake.py\|src/<redacted>/vcs/delivered_base.py" done`
+
+```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.1.1, pluggy-1.6.0
+<redacted> isolated HOME: /var/folders/1r/3r0rt1jd4j1456rsg_fh4d380000gn/T/nh-test-home-y2tenrlh
+rootdir: /Users/eyalgolan/.<redacted>/worktrees/9b6e928a14104282b416d03e963ee58d.52752.0b2fdcbd
+configfile: pyproject.toml
+plugins: anyio-4.14.0, no-human-0.2.2, cov-7.1.0, xdist-3.8.0, asyncio-1.4.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_
+[... 735 of 1,874 characters omitted from the middle ...]
+1698:            freshness = tctx.get("pr_base_freshness")
+-- pr_base_remeasures --
+src/<redacted>/cli/commands.py:1700:                remeasures = tctx.get("pr_base_remeasures") or 0
+-- pr_base_ref --
+src/<redacted>/cli/commands.py:1708:                    f"{tctx.get('pr_base_ref') or '?'}: recorded {recorded} "
+-- pr_base_sha_source --
+src/<redacted>/cli/commands.py:1703:                    if tctx.get("pr_base_sha_source") == "backfilled" else "")
 ```  
-  _excerpt - 4,261 characters of output in total_
+  _excerpt - 1,854 characters of output in total_
 
-- `uv run pytest tests/test_wake_base_stale.py tests/test_wake_conflict.py tests/test_wake_comment_conflict_precedence.py tests/test_wake_pr_closed_repair.py tests/test_orchestrator_pr_conflict.py tests/test_merge_policy_wiring.py tests/test_structural_budget.py tests/test_tamper_guard.py -q -n 4 2>&1 | tail -60`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-bringing up nodes...
-bringing up nodes...
-
-........................................................................ [ 31%]
-........................................................................ [ 63%]
-........................................................................ [ 95%]
-..........F                                                              [100%]
-=================================== FAILURES ===================================
-________________________ test_no_frozen_en
-[... 1,141 of 2,280 characters omitted from the middle ...]
-lockers/wa...atchets down'] == []
-E             
-E             Left contains one more item: 'blockers/wake.py: frozen 3080, now 3092 (+12); this budget only ratchets down'
-E             Use -v to get more diff
-
-tests/test_structural_budget.py:2069: AssertionError
-=========================== short test summary info ============================
-FAILED tests/test_structural_budget.py::test_no_frozen_entry_has_grown - Asse...
-1 failed, 226 passed in 18.38s
-```  
-  _excerpt - 2,276 characters of output in total_
-
-- `uv run pytest tests/test_structural_budget.py -q 2>&1 | tail -30`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-..................                                                       [100%]
-18 passed in 1.60s
-```
-
-- `uv run pytest tests/test_wake_base_stale.py tests/test_wake_conflict.py tests/test_wake_comment_conflict_precedence.py tests/test_wake_pr_closed_repair.py tests/test_orchestrator_pr_conflict.py tests/test_merge_policy_wiring.py tests/test_structural_budget.py tests/test_tamper_guard.py -q -n 4 2>&1 | tail -40`
+- `uv run pytest -q -n 4 tests/test_wake_base_stale.py tests/test_structural_budget.py tests/test_readme_claims.py tests/test_reanchor_citations.py tests/test_wake_conflict.py tests/test_orchestrator_pr_conflict.py tests/test_check_release_manifest.py 2>&1 | tail -20`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
 bringing up nodes...
 bringing up nodes...
 
-........................................................................ [ 31%]
-........................................................................ [ 63%]
-........................................................................ [ 95%]
-...........                                                              [100%]
-227 passed in 18.54s
+..........s..s.s.s.s.s.s.s.s.s.......................................... [ 24%]
+..........s............................................................. [ 48%]
+...............s........................................................ [ 72%]
+............................................................sss.ssss.... [ 96%]
+.........                                                                [100%]
+278 passed, 19 skipped in 17.08s
 ```
 
-- `uv run pytest tests/ -m repoguard -q -n 4 2>&1 | tail -40`
+- `uv run pytest -q tests/test_wake_base_stale.py::test_stale_pr_is_recorded_stale_not_fresh_on_a_semantic_break tests/test_wake_base_stale.py::test_a_landing_on_trunk_remeasures_the_delivered_base tests/test_wake_base_stale.py::test_the_rung_acts_on_stale_but_mergeable tests/test_wake_base_stale.py::test_task_show_renders_the_stale_base_freshness 2>&1 | tail -15`
+
+```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+....                                                                     [100%]
+4 passed in 2.19s
+```
+
+- `uv run pytest -q -n 4 tests/test_wake_base_stale.py tests/test_structural_budget.py tests/test_readme_claims.py tests/test_reanchor_citations.py tests/test_wake_conflict.py tests/test_orchestrator_pr_conflict.py tests/test_check_release_manifest.py 2>&1 | tail -20`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
 bringing up nodes...
 bringing up nodes...
 
-.........................ss...ss....s.......s........................... [ 46%]
-........s..........................s.s.s.s.......s...................... [ 92%]
-............                                                             [100%]
-=============================== warnings summary ===============================
-src/<redacted>/testing/test_layers.py:35
-src/<redacted>/testing/test_layers.py:35
-src/<redacted>/testing/test_layers.py:35
-[... 429 of 1,568 characters omitted from the middle ...]
-test_layers.py:89
-src/<redacted>/testing/test_layers.py:89
-  /Users/eyalgolan/.<redacted>/worktrees/9b6e928a14104282b416d03e963ee58d.52752.9f301002/src/<redacted>/testing/test_layers.py:89: PytestCollectionWarning: cannot collect test class 'TestPlan' because it has a __init__ constructor (from: tests/test_test_layers.py)
-    @dataclass
-
--- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-144 passed, 13 skipped, 8 warnings in 13.45s
-```  
-  _excerpt - 1,542 characters of output in total_
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/9b6e928a14104282b416d03e963ee58d.52752.9f301002 cp src/<redacted>/blockers/wake.py /tmp/wake_new.py git show HEAD:src/<redacted>/blockers/wake.py > src/<redacted>/ [... 214 of 557 characters omitted from the middle ...] /test_wake_base_stale.py::test_the_rung_acts_on_stale_but_mergeable -q 2>&1 | tail -60 cp /tmp/wake_new.py src/<redacted>/blockers/wake.py`
-
+..........s..s.s.s.s.s.s.s.s.s.......................................... [ 24%]
+.........s.............................................................. [ 48%]
+..............s......................................................... [ 72%]
+............................................................sss.ssss.... [ 96%]
+.........                                                                [100%]
+278 passed, 19 skipped in 19.00s
 ```
-# Before anything lands: still fresh, must not be touched.
-        out = await w._check_open_pr(t)
-        assert out is None
-        fresh = await store.get_task(t.id)
-        assert "pr_base_freshness" not in (fresh.context or {})
-        assert "pr_base_remeasures" not in (fresh.context or {})
-    
-        # A real landing on trunk — made entirely through the independent
-        # `lander` clone, never touching `work` or this task.
-        new_sha = _land(lander, "feature_x.py")
-        assert new_sha != recorded
-    
-        out = await w._check_open_pr(t)
-        # The base-staleness rung's outcome is threaded through `_check_open_pr`
-        # (blocking finding
-[... 1,963 of 3,102 characters omitted from the middle ...]
-2d0749596417e2505be95d9cc4c261f745
-
-tests/test_wake_base_stale.py:222: AssertionError
-=========================== short test summary info ============================
-FAILED tests/test_wake_base_stale.py::test_stale_pr_is_recorded_stale_not_fresh_on_a_semantic_break
-FAILED tests/test_wake_base_stale.py::test_a_landing_on_trunk_remeasures_the_delivered_base
-FAILED tests/test_wake_base_stale.py::test_the_rung_acts_on_stale_but_mergeable
-3 failed in 2.73s
-```  
-  _excerpt - 3,100 characters of output in total_
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/9b6e928a14104282b416d03e963ee58d.52752.9f301002 diff /tmp/wake_new.py src/<redacted>/blockers/wake.py && echo "RESTORED_OK" uv run pytest tests/test_wake_base_stale.py -q 2>&1 | tail -10`
-
-```
-RESTORED_OK
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-..............                                                           [100%]
-14 passed in 5.54s
-```
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/9b6e928a14104282b416d03e963ee58d.52752.9f301002 uv run pytest tests/test_wake_base_stale.py tests/test_wake_conflict.py tests/test_wake_comment_conflict_precedence [... 227 of 570 characters omitted from the middle ...] ytest tests/ -m repoguard -q -n 4 2>&1 | tail -10 echo "---manifest---" python3 scripts/check_release_manifest.py --strict 2>&1 | tail -10`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-bringing up nodes...
-bringing up nodes...
-
-........................................................................ [ 31%]
-........................................................................ [ 63%]
-........................................................................ [ 95%]
-...........                                                              [100%]
-227 passed in 20.30s
----repoguard---
-
-src/<redacted>/testing/test_layers.py:89
-src/<redacted>/testing/test_layers.py:89
-src
-[... 78 of 1,217 characters omitted from the middle ...]
-
-  /Users/eyalgolan/.<redacted>/worktrees/9b6e928a14104282b416d03e963ee58d.52752.9f301002/src/<redacted>/testing/test_layers.py:89: PytestCollectionWarning: cannot collect test class 'TestPlan' because it has a __init__ constructor (from: tests/test_test_layers.py)
-    @dataclass
-
--- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-144 passed, 13 skipped, 8 warnings in 3.78s
----manifest---
-OK: 1595 file(s) match RELEASE_MANIFEST.txt
-```  
-  _excerpt - 1,203 characters of output in total_
 
 
 **Not verified:** everything below is a limit of this section, listed whether or not it bit this attempt.
