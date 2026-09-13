@@ -1186,6 +1186,83 @@ async def _dispatch(page, step: Step, base_url: str, out_dir: Path, shots: list)
         raise RuntimeError(f"unknown action: {action}")
 
 
+def frame_lines(shots: list[dict], alt_prefix: str,
+                raw_url: "Callable[[str], str]") -> list[str]:
+    """Every markdown line embedding `shots`: one image per distinct frame,
+    each run of repeats followed by the line that names it as a repeat.
+
+    `raw_url` turns a shot's repo-relative path into the URL the PR body
+    links; the caller owns it because only it knows the evidence branch.
+    """
+    out: list[str] = []
+    for first, names in frame_runs(shots):
+        out.append(f"![{alt_prefix}{first['name']}]({raw_url(first['path'])})")
+        note = repeat_note(names)
+        if note is not None:
+            out.append(note)
+    return out
+
+
+def shot_record(name: str, rel_path: str, data: bytes) -> dict:
+    """One delivered frame, carrying the digest `frame_runs` groups on.
+
+    The digest is taken here, where the bytes have just been read for
+    delivery, so grouping costs no second read of the file.
+    """
+    return {"name": name, "path": rel_path,
+            "sha": hashlib.sha256(data).hexdigest()}
+
+
+def video_line(url: str) -> str:
+    """The PR-body line for the walk video at `url`.
+
+    It says "download" because that is what the link does. Measured against
+    the raw host that serves the evidence branch, the response carries
+    `content-type: audio/webm`, `content-disposition: attachment` and
+    `x-content-type-options: nosniff` -- the browser is told it is audio,
+    told not to sniff, and told to save it. A bare `[walk video](...)` reads
+    as an inline player, and an HTML `<video>` tag pointing here would render
+    an empty box.
+    """
+    return (f"[walk video]({url}) -- downloads the `.webm`; the raw host "
+            f"serves it as an attachment, so it does not play inline here.")
+
+
+def frame_runs(shots: list[dict]) -> list[tuple[dict, list[str]]]:
+    """`shots` grouped so each consecutive run of byte-identical frames is one
+    entry: `(the first shot of the run, every step name in it)`.
+
+    A walk step that re-captures the same pixels observed nothing new, and
+    rendering it as its own frame asserts a page change that did not happen --
+    PR #317 shipped `landing`, `landing-settled` and `final` as three embeds
+    of one file (sha256 `f57898ac...`, 81304 bytes, all three).
+
+    Only a CONSECUTIVE repeat groups. An A/B/A walk really did change and
+    change back, so all three of its steps stay separate. A shot carrying no
+    `sha` never groups, so a digest that could not be taken shows MORE frames
+    rather than silently merging distinct ones.
+    """
+    runs: list[tuple[dict, list[str]]] = []
+    for shot in shots:
+        prev = runs[-1][0] if runs else None
+        if prev is not None and prev.get("sha") and shot.get("sha") == prev.get("sha"):
+            runs[-1][1].append(str(shot.get("name", "")))
+        else:
+            runs.append((shot, [str(shot.get("name", ""))]))
+    return runs
+
+
+def repeat_note(names: list[str]) -> str | None:
+    """The line that says a run of `names` was one observation, or None when
+    the run is a single frame and there is nothing to disclose."""
+    if len(names) < 2:
+        return None
+    repeats = ", ".join(f"`{n}`" for n in names[1:])
+    return (f"_{len(names) - 1} further step(s) -- {repeats} -- captured a "
+            f"byte-identical frame: the page did not change between them, so "
+            f"this is one observation, not {len(names)}._")
+
+
 def _finalize_video(out_dir: Path) -> str | None:
     target = out_dir / "walk.webm"
     if target.exists():

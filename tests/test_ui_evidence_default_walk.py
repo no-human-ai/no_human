@@ -54,6 +54,19 @@ PNG_1x1 = (
     + b"\x00\x00\x00\x00IEND\xaeB`\x82"
 )
 
+# A SECOND structurally-real 1x1 PNG whose bytes differ from PNG_1x1 (2x1
+# instead of 1x1), so a test can tell "the page changed" from "the same frame
+# was captured again" without either being a made-up blob.
+PNG_1x1_ALT = (
+    b"\x89PNG\r\n\x1a\n"
+    + b"\x00\x00\x00\x0d"
+    + b"IHDR"
+    + struct.pack(">II", 2, 1)
+    + b"\x08\x06\x00\x00\x00"
+    + b"\x00\x00\x00\x00"
+    + b"\x00\x00\x00\x00IEND\xaeB`\x82"
+)
+
 
 # ─────────────────────── layer 1: default_manifest / run ─────────────────── #
 
@@ -423,3 +436,84 @@ async def test_no_coder_manifest_and_no_configured_base_url_still_skips(
 
     assert "Visual proof skipped:" in section
     assert "the default walk could not run" in section
+
+
+def _section_for_shots(tmp_path, monkeypatch, frames):
+    """Render the UI-evidence section for `frames` — an ordered list of
+    `(shot name, file bytes)`. Two entries sharing bytes are the same frame."""
+    monkeypatch.setattr(evidence_ledger_mod, "deliver", lambda *a, **k: True)
+    orch = Orchestrator.__new__(Orchestrator)
+    repo = _FakeRepoForDeliver(tmp_path / "repo")
+    out_dir = tmp_path / "evidence"
+    out_dir.mkdir()
+    shots = []
+    for name, data in frames:
+        (out_dir / f"{name}.png").write_bytes(data)
+        shots.append({"name": name, "path": f"{name}.png"})
+    result = ui_evidence.UiEvidenceResult(verdict="ran", shots=shots)
+    return orch._deliver_ui_evidence(repo, "task123", out_dir, result,
+                                     default_walk=True)
+
+
+def test_repeated_identical_frames_are_not_presented_as_distinct_steps(
+        tmp_path, monkeypatch):
+    """PR #317 shipped three embeds — `landing`, `landing-settled` and
+    `final` — whose files were one byte-identical screenshot
+    (sha256 f57898ac..., 81304 bytes, all three). Read as three steps it
+    asserts the walk observed three page states; it observed one. A frame
+    that repeats is embedded once and the repeat is named as a repeat."""
+    section = _section_for_shots(tmp_path, monkeypatch, [
+        ("landing", PNG_1x1), ("landing-settled", PNG_1x1), ("final", PNG_1x1)])
+
+    assert section.count("![") == 1, section
+    assert "![default walk (no coder manifest): landing](" in section
+    assert "landing-settled" in section and "final" in section
+    assert "byte-identical" in section, section
+
+
+def test_frames_that_really_differ_each_keep_their_own_embed(
+        tmp_path, monkeypatch):
+    """Positive control for the test above: the collapse must key on the
+    BYTES, so a walk whose page actually changed still renders every step
+    and says nothing about identical frames."""
+    section = _section_for_shots(tmp_path, monkeypatch, [
+        ("landing", PNG_1x1), ("expanded", PNG_1x1_ALT), ("final", PNG_1x1)])
+
+    assert section.count("![") == 3, section
+    assert "byte-identical" not in section, section
+
+
+def test_a_frame_repeating_after_the_page_changed_is_still_its_own_step(
+        tmp_path, monkeypatch):
+    """A->B->A is three real observations: the page changed and changed
+    back. Only a CONSECUTIVE repeat is a step that observed nothing new,
+    so this must not collapse to two embeds."""
+    section = _section_for_shots(tmp_path, monkeypatch, [
+        ("landing", PNG_1x1), ("menu-open", PNG_1x1_ALT), ("menu-shut", PNG_1x1)])
+
+    assert section.count("![") == 3, section
+    assert "byte-identical" not in section, section
+
+
+def test_the_walk_video_link_says_it_downloads_rather_than_plays(
+        tmp_path, monkeypatch):
+    """`[walk video](raw...)` reads as an inline player and is not one.
+    Measured against the URL PR #317 shipped, raw.githubusercontent returns
+    `content-type: audio/webm` with `content-disposition: attachment` and
+    `x-content-type-options: nosniff` — a browser is told not to sniff, that
+    it is audio, and to save it. The line must not promise otherwise."""
+    monkeypatch.setattr(evidence_ledger_mod, "deliver", lambda *a, **k: True)
+    orch = Orchestrator.__new__(Orchestrator)
+    repo = _FakeRepoForDeliver(tmp_path / "repo")
+    out_dir = tmp_path / "evidence"
+    out_dir.mkdir()
+    (out_dir / "landing.png").write_bytes(PNG_1x1)
+    (out_dir / "walk.webm").write_bytes(b"\x1a\x45\xdf\xa3not-really-a-video")
+    result = ui_evidence.UiEvidenceResult(
+        verdict="ran", shots=[{"name": "landing", "path": "landing.png"}],
+        video="walk.webm")
+
+    section = orch._deliver_ui_evidence(repo, "task123", out_dir, result)
+
+    assert "walk.webm)" in section
+    assert "download" in section.lower(), section
