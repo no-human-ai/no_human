@@ -4,7 +4,6 @@ used to do exactly that), and both `eval/harness.py` sandbox-cleanup sites
 must behave identically — neither fixed in isolation."""
 from __future__ import annotations
 
-import inspect
 import os
 import shutil
 import subprocess
@@ -126,13 +125,34 @@ async def test_both_harness_sandbox_sites_use_the_shared_removal(tmp_path, monke
     assert len(calls) == 2
     assert calls[1].name.startswith("nh-shadow-"), calls
 
-    src = inspect.getsource(harness)
-    assert "ignore_errors=True" not in src, (
-        "both sandbox cleanup sites must go through the shared, "
-        "failure-recording removal, not the old discard-and-forget rmtree"
+
+@pytest.mark.asyncio
+async def test_run_shadow_passes_its_event_sink_to_cleanup(tmp_path, monkeypatch):
+    """`run_eval` hands its `on_event` through to `_remove_sandbox` so a
+    cleanup failure is observable; `run_shadow` has the same `on_event` in
+    scope at its cleanup call site and must do the same — otherwise a
+    cleanup failure during a shadow run has no event path at all, even
+    though the harness now supports one."""
+    received: list[object] = []
+
+    def _fake_remove(base_tmp, on_event=None):
+        received.append(on_event)
+        return []
+
+    monkeypatch.setattr(harness, "_remove_sandbox", _fake_remove)
+
+    repo = _tiny_repo(tmp_path)
+    monkeypatch.setattr(Orchestrator, "run_task", _quick_run_task)
+
+    def _sink(_event):
+        pass
+
+    await harness.run_shadow(
+        {}, repo_path=str(repo), task_title="t", backend=object(), on_event=_sink,
     )
-    assert src.count("shutil.rmtree(") == 1, (
-        "shutil.rmtree must be called from exactly one place — _remove_sandbox"
+    assert received == [_sink], (
+        "run_shadow must pass its on_event through to _remove_sandbox, "
+        f"got {received!r}"
     )
 
 

@@ -839,6 +839,23 @@ def codex_readiness(
     return row, contradictions
 
 
+def _safe_exists(p: Path) -> bool:
+    """``Path.exists()`` only swallows ENOENT/ENOTDIR/EBADF/ELOOP — it
+    re-raises ``PermissionError`` (EACCES) instead of returning ``False``.
+    A caller checking one path among many unreadable-subtree probes must not
+    let that propagate: use this wherever "does this exist" is a best-effort
+    probe over a directory that may itself be unreadable. On EACCES we
+    cannot tell either way; callers that need to distinguish "no" from
+    "unknown" have another signal available (``sandbox_residue``'s own
+    ``unreadable`` flag) and must not rely on this returning ``False`` to
+    mean the file is absent.
+    """
+    try:
+        return p.exists()
+    except OSError:
+        return False
+
+
 def sandbox_residue(path: Path, *, max_entries: int = 50_000) -> dict[str, Any]:
     """Measure what is actually left in a sandbox-looking directory, so a
     caller can report reality instead of assuming a cost or a cause.
@@ -873,13 +890,19 @@ def sandbox_residue(path: Path, *, max_entries: int = 50_000) -> dict[str, Any]:
                 total_bytes += os.lstat(full).st_size
                 files += 1
             except OSError:
-                pass
+                # Could not stat this entry — e.g. its parent directory is
+                # readable but not searchable (mode 0o400), which lets
+                # `os.walk` enumerate the name without being able to size it.
+                # That size is unknown, not zero: folding it into 0 would
+                # under-report real residue exactly like the crash this
+                # measurement exists to stop asserting.
+                unreadable = True
         if truncated:
             break
 
     marker = path / CLEANUP_MARKER
     sibling = path.parent / (path.name + ".cleanup-incomplete")
-    cleanup_incomplete = marker.exists() or sibling.exists()
+    cleanup_incomplete = _safe_exists(marker) or _safe_exists(sibling)
 
     return {
         "files": files,
@@ -908,7 +931,10 @@ def _apply_sandbox_outlived_advisories(d: "Diagnosis") -> None:
     an abandoned run OR a cleanup that removed what it could and left an
     empty skeleton (see _remove_sandbox's marker) — the two are
     indistinguishable from here, so this measures the residue instead of
-    naming a cause. Empty residue is not a disk leak and is not reported.
+    naming a cause. Reported whenever there is something to say: measured
+    bytes, an unreadable subtree (unknown — never treated as zero), or a
+    recorded cleanup failure even if it left only empty directories. A
+    residue that is both empty AND has no recorded failure is not reported.
     Advisory only, never a contradiction, so it never fails the doctor gate.
     >2h old avoids flagging a sandbox from an eval that is still running."""
     from .eval.harness import CLEANUP_MARKER
@@ -921,18 +947,33 @@ def _apply_sandbox_outlived_advisories(d: "Diagnosis") -> None:
                 if not (entry.is_dir() and entry.stat().st_mtime < stale_cut):
                     continue
                 residue = sandbox_residue(entry)
-                if residue["files"] == 0 and not residue["unreadable"]:
-                    continue  # nothing measured to reclaim — no advisory
+                if (
+                    residue["files"] == 0
+                    and not residue["unreadable"]
+                    and not residue["cleanup_incomplete"]
+                ):
+                    continue  # nothing measured and no recorded failure — no advisory
 
                 if residue["unreadable"]:
                     size_text = "size could not be fully measured (permission denied)"
-                else:
+                    reclaim_clause = f"; `rm -rf {entry}` to reclaim disk"
+                elif residue["bytes"] > 0:
                     size_text = f"{residue['files']} file(s), {_human_bytes(residue['bytes'])}"
+                    reclaim_clause = f"; `rm -rf {entry}` to reclaim disk"
+                elif residue["files"] > 0:
+                    # Real files, but they measure to zero bytes — there is
+                    # nothing to reclaim, so say that instead of the original
+                    # defect in miniature ("0 B ... to reclaim disk").
+                    size_text = f"{residue['files']} file(s), 0 B"
+                    reclaim_clause = f"; `rm -rf {entry}` to remove it (no measurable disk to reclaim)"
+                else:
+                    size_text = "no measurable files left"
+                    reclaim_clause = f"; `rm -rf {entry}` to remove it (no measurable disk to reclaim)"
 
                 incomplete_clause = ""
                 if residue["cleanup_incomplete"]:
                     marker = entry / CLEANUP_MARKER
-                    if not marker.exists():
+                    if not _safe_exists(marker):
                         marker = entry.parent / (entry.name + ".cleanup-incomplete")
                     incomplete_clause = (
                         f" — its cleanup could not finish; see `{marker}` "
@@ -941,8 +982,7 @@ def _apply_sandbox_outlived_advisories(d: "Diagnosis") -> None:
 
                 d.advisories.append(
                     f"SANDBOX DIRECTORY OUTLIVED ITS RUN: {entry} (>2h old, "
-                    f"{size_text}){incomplete_clause}; `rm -rf {entry}` to "
-                    "reclaim disk."
+                    f"{size_text}){incomplete_clause}{reclaim_clause}."
                 )
             except OSError:
                 pass

@@ -239,4 +239,4 @@ async def run_shadow(
             await store.close()
         finally:
             if created_tmp:
-                _remove_sandbox(base_tmp)
+                _remove_sandbox(base_tmp, on_event)

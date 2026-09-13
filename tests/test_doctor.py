@@ -169,6 +169,36 @@ def test_sandbox_residue_measures_files_not_directories(tmp_path):
     assert residue["cleanup_incomplete"] is True
 
 
+def test_a_nonexecutable_subdirectory_does_not_hide_its_bytes(tmp_path):
+    """A subdirectory that is readable but not searchable (mode 0o400) lets
+    `os.walk` enumerate its entry names (readdir only needs read) but makes
+    every per-entry stat fail (search/execute is needed to resolve a path
+    inside it) — including the `is_dir()` check `os.walk` itself uses, which
+    silently mis-files the subdirectory as a leaf. The real bytes inside must
+    be flagged `unreadable`, not folded into a reported zero: a chmod-000
+    directory already sets this flag correctly (via `onerror`), so a green
+    suite that only exercises that shape would miss this one."""
+    if os.name != "posix":
+        pytest.skip("chmod-based permission test needs POSIX")
+    if hasattr(os, "getuid") and os.getuid() == 0:
+        pytest.skip("root ignores directory permission bits")
+
+    sandbox = tmp_path / "nh-eval-hiddenbytes"
+    sub = sandbox / "sub"
+    sub.mkdir(parents=True)
+    (sub / "big.bin").write_bytes(b"x" * 8888)
+    os.chmod(sub, 0o400)
+    try:
+        residue = sandbox_residue(sandbox)
+    finally:
+        os.chmod(sub, 0o700)
+
+    assert residue["unreadable"] is True, (
+        f"8888 real bytes were hidden behind a non-executable subdirectory "
+        f"and reported as clean: {residue}"
+    )
+
+
 async def test_the_silent_watcher_pattern_is_a_contradiction(store):
     """A task parked at awaiting_approval with zero watcher events ever."""
     t = Task.new("x", repo_path="/tmp/x")
@@ -928,6 +958,67 @@ def test_an_empty_sandbox_skeleton_raises_no_disk_advisory(tmp_path):
     proc = _run_doctor(tmp_path / "home", tmpdir)
     assert str(sandbox) not in proc.stdout, (
         f"an empty residue must not produce a disk-reclamation advisory:"
+        f"\n{proc.stdout}"
+    )
+    assert proc.returncode == 0, proc.stdout
+
+
+def test_an_unreadable_sandbox_still_produces_an_advisory(tmp_path):
+    """`Path.exists()` only swallows ENOENT/ENOTDIR/EBADF/ELOOP — it
+    re-raises `PermissionError` (EACCES). A chmod-000 sandbox makes the
+    cleanup-incomplete probe (`marker.exists() or sibling.exists()`) raise,
+    and `_apply_sandbox_outlived_advisories` catches `except OSError` around
+    the whole per-entry block — so an unreadable sandbox with real bytes
+    inside must not go completely silent just because a later probe blew up
+    on the same unreadable directory that `os.walk`'s `onerror` already
+    correctly flagged."""
+    if os.name != "posix":
+        pytest.skip("chmod-based permission test needs POSIX")
+    if hasattr(os, "getuid") and os.getuid() == 0:
+        pytest.skip("root ignores directory permission bits")
+
+    tmpdir = _mktmp(tmp_path)
+    sandbox = tmpdir / "nh-eval-unreadable"
+    sandbox.mkdir()
+    (sandbox / "big.bin").write_bytes(b"x" * 5000)
+    old = time.time() - 3 * 3600
+    os.utime(sandbox, (old, old))
+    os.chmod(sandbox, 0o000)
+    try:
+        proc = _run_doctor(tmp_path / "home", tmpdir)
+    finally:
+        os.chmod(sandbox, 0o700)
+
+    assert str(sandbox) in proc.stdout, (
+        f"an unreadable sandbox must still be reported, not silently "
+        f"dropped when the cleanup-incomplete probe raises:\n{proc.stdout}"
+    )
+    assert "permission denied" in proc.stdout.lower(), proc.stdout
+    assert proc.returncode == 0, proc.stdout
+
+
+def test_a_directories_only_failed_cleanup_is_still_reported(tmp_path):
+    """A cleanup that removed every file but could not remove a directory
+    leaves a marker and zero measurable files — the harness recorded a real
+    failure. The `files == 0` suppression gate must not discard that
+    signal just because there is no disk-reclamation angle to it; it must
+    also not claim a reclaimable size that was never measured."""
+    tmpdir = _mktmp(tmp_path)
+    sandbox = tmpdir / "nh-eval-dironly"
+    (sandbox / "sub").mkdir(parents=True)
+    (sandbox / CLEANUP_MARKER).write_text(
+        "cleanup incomplete at ...\nsub: OSError: [Errno 13] Permission denied\n"
+    )
+    old = time.time() - 3 * 3600
+    os.utime(sandbox, (old, old))
+
+    proc = _run_doctor(tmp_path / "home", tmpdir)
+    assert str(sandbox) in proc.stdout, (
+        f"a recorded cleanup failure must not be discarded just because no "
+        f"files remain:\n{proc.stdout}"
+    )
+    assert "to reclaim disk" not in proc.stdout, (
+        f"zero measured bytes must not be advertised as reclaimable disk:"
         f"\n{proc.stdout}"
     )
     assert proc.returncode == 0, proc.stdout
