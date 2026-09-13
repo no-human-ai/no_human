@@ -120,6 +120,7 @@ def case_flags() -> int:
     return re.IGNORECASE if host_folds_case() else 0
 
 
+@lru_cache(maxsize=1)
 def host_folds_case() -> bool:
     r"""Whether this host's filesystem resolves two spellings of one name to the
     same file. Measured, not assumed.
@@ -136,8 +137,27 @@ def host_folds_case() -> bool:
     `samefile` rather than `exists`, so a genuinely different file that happens
     to carry the swapped spelling is not mistaken for a fold.
 
-    Cached: the answer cannot change while the process runs, and it is read on
-    every guarded command.
+    Cached HERE, not only in `_folds_case`: the answer cannot change while the
+    process runs, and it is read on every guarded command.
+
+    An earlier version of this paragraph said only "Cached: the answer cannot
+    change while the process runs". That was TRUE of the ANSWER -- the inner
+    `_folds_case` memo returned it, 4008 hits to 1 miss on a single key -- and
+    false of the COST, which is the distinction that mattered.
+    `os.path.realpath(__file__)` runs BEFORE that memo and lstats every path
+    component, so each call paid the syscalls the cache exists to avoid.
+
+    Callers read this per TOKEN and per SEGMENT: `command_name`'s
+    `fold_case=None` default is the heavier of the two -- 14000 of the 16000
+    probes a 2000-segment command drives, against `_looks_like_git_push`'s
+    2000 -- and a 4000-quoted-argument command drove 4007 probes through one
+    `evaluate`, 4000 of them from `_looks_like_git_push`.
+    Measured, the realpath was within noise of the entire `case_flags()` cost,
+    and `guard.evaluate` on that shape ran 0.132s unfixed against 0.036s here.
+    That was enough to push `test_unmask_is_one_pass_not_one_per_table_entry`
+    past its 0.4s bound on a shared CI runner and turn trunk red -- a bound
+    that test calls deliberately loose, and which has roughly 10x headroom
+    when this probe is cached.
 
     Folding on a case-insensitive host denies nothing that could not already
     run, and skipping it on a case-sensitive one refuses nothing a user is

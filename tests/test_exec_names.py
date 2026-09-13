@@ -188,6 +188,57 @@ def test_the_probe_measures_the_volume_it_is_asked_about(tmp_path):
     assert exec_names._folds_case(str(written)) is folds_here
 
 
+def test_the_host_probe_is_measured_once_not_once_per_token(monkeypatch):
+    """`host_folds_case` must do its filesystem work ONCE per process.
+
+    It is read on every guarded command, and `guard._looks_like_git_push`
+    reads it per TOKEN -- so a command of 4000 quoted arguments read it 4000
+    times. The inner `_folds_case` memo did not help: `os.path.realpath`
+    runs BEFORE it and lstats every path component, so the cache was only
+    reached after paying the syscalls it exists to avoid.
+
+    Measured: the realpath was within noise of the entire `case_flags()` cost,
+    and `guard.evaluate` on that shape ran 0.132s unfixed against 0.036s with
+    the probe cached. That was enough to push
+    `test_unmask_is_one_pass_not_one_per_table_entry` past its 0.4s bound on a
+    shared CI runner and turn trunk red.
+
+    This counts realpath CALLS rather than timing them. The wall-clock bound that
+    caught the regression is deliberately loose -- it asserts a shape, not a
+    machine -- so it detected this once and should not be relied on to do it
+    again.
+
+    It asserts the PROPERTY ("probed once"), not the mechanism: the
+    `cache_clear` calls below are optional, so an implementation that hoists
+    the realpath to a module constant, or memoizes some other way, passes on
+    its merits. An earlier version called `cache_clear()` unguarded, which
+    made this fail with AttributeError under any non-`lru_cache` fix -- it
+    would have rejected a correct alternative without ever reaching the
+    assertion.
+    """
+    import os as _os
+    calls = []
+    real_realpath = _os.path.realpath
+    monkeypatch.setattr(
+        _os.path, "realpath",
+        lambda p, *a, **k: (calls.append(p), real_realpath(p, *a, **k))[1])
+
+    # Optional by design -- see the docstring. Clearing the OUTER cache does
+    # not restore freshness anyway, because `_folds_case`'s memo survives it.
+    clear = getattr(exec_names.host_folds_case, "cache_clear", lambda: None)
+    clear()
+    try:
+        for _ in range(50):
+            exec_names.host_folds_case()
+    finally:
+        clear()
+
+    mine = [c for c in calls if str(c).endswith("exec_names.py")]
+    assert len(mine) <= 1, (
+        "host_folds_case re-probed the filesystem instead of answering from "
+        f"its cache: {len(mine)} realpath calls for 50 invocations")
+
+
 def test_the_probe_matches_this_host():
     """The same question about the volume the module itself lives on, which is
     the one `host_folds_case` answers."""
