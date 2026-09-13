@@ -273,43 +273,32 @@ def test_an_incidental_cued_hex_in_a_separate_clause_is_not_the_named_sha():
     assert assertion.sha == ""
 
 
-@pytest.mark.parametrize(
-    "text, expected_sha",
-    [
-        (
-            "No code changes are needed; already satisfied at abc1234def.",
-            "abc1234def",
-        ),
-        (
-            "The work is already there. Confirmed: already committed at "
-            "abc1234def.",
-            "abc1234def",
-        ),
-        (
-            "The change already exists in main! It was already landed at "
-            "abc1234def.",
-            "abc1234def",
-        ),
-    ],
-)
-def test_a_claim_phrase_and_its_sha_in_different_clauses_is_still_the_named_sha(
-    text, expected_sha
-):
-    """(Seventh review) the Sixth review's clause-bounding fix (see
-    `test_an_incidental_cued_hex_in_a_separate_clause_is_not_the_named_sha`)
-    bounded the sha-cue search to ONLY the clause containing the `_CLAIM`
-    match — but a natural claim routinely splits the phrase and the cued
-    sha across two DIFFERENT clauses of the same utterance, each clause
-    independently asserting the same already-satisfied claim. Before this
-    fix, all three of these cases returned ``sha == ""`` because the sha
-    lived in a clause the search never looked at; the fix widens the
-    search to any OTHER clause in the snippet window that itself
-    independently matches `_CLAIM` and is not negated, without pulling in
-    the incidental-hex or negation MUST_NOT_FIRE shapes (pinned by the two
-    tests immediately above)."""
+def test_a_second_clause_that_also_matches_claim_does_not_donate_its_sha():
+    """(Eighth review) an earlier revision widened the sha-cue search from
+    the primary clause only to the primary clause PLUS any OTHER clause,
+    still in the snippet window, that independently matched `_CLAIM` —
+    reasoning that a natural claim can split the phrase and the cued sha
+    across two clauses of the same utterance. That widening was reverted:
+    measured against 74,709 real agent utterances it recovered zero real
+    claims, while firing on 10 of 10 hand-constructed two-clause non-claim
+    prose shapes shaped exactly like this one — a first clause that trips
+    the loose `_CLAIM` regex with no sha of its own, and an unrelated
+    SECOND clause that also happens to match `_CLAIM` and separately names
+    a commit for an unrelated reason (an archived baseline, not this fix).
+    Before the revert this text's sha was donated from the second clause
+    into the first clause's claim, making an unrelated baseline mention
+    look like an actionable, commit-naming claim; the amended criterion is
+    that the detector must not fire on prose where a second clause merely
+    happens to match the loose claim regex."""
+    text = (
+        "No changes needed here; the archived baseline commit already "
+        "exists at 1a2b3c4d5e6f for reference."
+    )
     assertion = detect_claim_assertion(text)
     assert assertion is not None
-    assert assertion.sha == expected_sha
+    assert assertion.sha == "", (
+        "a sha cued in a DIFFERENT clause that merely also matches the "
+        "loose claim regex must not be read as the named sha")
 
 
 @pytest.mark.parametrize(

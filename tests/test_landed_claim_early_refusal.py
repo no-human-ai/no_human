@@ -176,12 +176,24 @@ async def test_a_wip_partial_checkpoint_is_not_blocked_because_delivery_would_re
         "an unreviewed [WIP-PARTIAL] head off main must route to review")
     # Pin WHY the guard is silent here: ineligibility (this predicate),
     # not the new outer `commits_ahead` predicate this task adds — those
-    # are two different silence reasons and must not be conflated.
+    # are two different silence reasons and must not be conflated. Both
+    # predicates trip on `commits_ahead(base) > 0` in the SAME direction,
+    # so without isolating them a fixture like this one (ahead of main)
+    # would pass even if `_already_satisfied_eligible` were mutated away —
+    # confirmed by the eighth review: bypassing the eligibility gate
+    # entirely inside `probe()` leaves this test green regardless. Pass
+    # `branched_from_own_partial=True` to skip the outer predicate outright
+    # (this head genuinely is its own [WIP-PARTIAL] resume), and assert
+    # `commits_ahead` independently so it is explicit that the outer
+    # predicate WOULD also have silenced the guard here were it not skipped
+    # — only `_already_satisfied_eligible` is what this test is pinning.
+    assert GitRepo(bare_repo).commits_ahead("main") > 0
     assert orch._already_satisfied_eligible(
         task, GitRepo(bare_repo), "main")[0] is False
 
     guard = orch._build_landed_claim_guard(
         task, GitRepo(bare_repo), base="main", branch=attempt_branch,
+        branched_from_own_partial=True,
     )
     assert guard is not None
     guard.note_text(
@@ -221,12 +233,18 @@ async def test_an_ordinary_head_resumed_from_machine_requeue_provenance_is_not_b
         "a machine-requeue-provenance head with no review verdict must "
         "route to review")
     # Same distinction as the [WIP-PARTIAL] test above: silence here is
-    # ineligibility, not the new outer `commits_ahead` predicate.
+    # ineligibility, not the new outer `commits_ahead` predicate — and the
+    # same confound applies (this fixture is also ahead of main, so the
+    # outer predicate alone would silence it too). Isolate with
+    # `branched_from_own_partial=True` and pin the outer predicate's own
+    # trigger independently.
+    assert GitRepo(bare_repo).commits_ahead("main") > 0
     assert orch._already_satisfied_eligible(
         task, GitRepo(bare_repo), "main")[0] is False
 
     guard = orch._build_landed_claim_guard(
         task, GitRepo(bare_repo), base="main", branch=attempt_branch,
+        branched_from_own_partial=True,
     )
     assert guard is not None
     guard.note_text(
@@ -308,6 +326,67 @@ async def test_a_branch_ahead_of_its_base_is_not_refused_because_delivery_never_
     # `_already_satisfied_eligible`.
     assert orch._already_satisfied_eligible(
         task, probe_repo, "main")[0] is True
+
+
+async def test_branched_from_own_partial_true_skips_the_outer_ahead_check(
+    bare_repo, tmp_path, store,
+):
+    """Mutant pin: `if base and not branched_from_own_partial:` (~17268)
+    mutated to `if base:` ignores the flag entirely and silences the guard
+    on `commits_ahead(base) > 0` alone, regardless of `branched_from_own_
+    partial`. Neither confounded-test fix above (the [WIP-PARTIAL] and
+    machine-requeue tests) reaches this line at all — both are already
+    ineligible one step earlier, so they cannot tell this mutant apart from
+    the real code.
+
+    Isolate it with an ORDINARY head — eligible per `_already_satisfied_
+    eligible` (no `[WIP-*]` subject, no machine-requeue provenance) — so
+    control actually reaches the outer `commits_ahead` block. `_is_own_
+    partial` never actually produces this exact combination in production
+    (a real own-`[WIP-PARTIAL]` resume implies a `[WIP-PARTIAL]` HEAD,
+    already ineligible — see the module docstring); this constructs it
+    directly as a unit-level probe of `_build_landed_claim_guard`'s own
+    parameter, exactly as it is threaded through the function.
+
+    With `branched_from_own_partial=True` the outer block is skipped and
+    the probe reaches `_already_satisfied_subject`, which determinately
+    refuses this head (a never-pushed branch, so `remote_branch_relation`
+    is `"unknown"` — treated as a determinate, not a transient, verdict).
+    The mutant instead silences the guard purely on `commits_ahead(base) >
+    0`, dropping the refusal."""
+    attempt_branch = "no-human/task-attempt-own-partial-flag"
+    _git(bare_repo, "checkout", "-b", attempt_branch)
+    (bare_repo / "fix.py").write_text("def fix():\n    return True\n")
+    _git(bare_repo, "add", "-A")
+    _git(bare_repo, "commit", "-m", "attempt at the fix")
+    claimed_sha = GitRepo(bare_repo).head_sha()
+
+    orch = _orch(store, tmp_path)
+    task = Task.new("existing", repo_path=str(bare_repo), kind="feature")
+    await store.create_task(task)
+
+    probe_repo = GitRepo(bare_repo)
+    assert orch._already_satisfied_eligible(task, probe_repo, "main")[0] is True
+    assert probe_repo.commits_ahead("main") > 0, (
+        "the outer predicate would fire here were branched_from_own_partial "
+        "not True — this is what isolates the flag from eligibility")
+
+    guard = orch._build_landed_claim_guard(
+        task, probe_repo, base="main", branch=attempt_branch,
+        branched_from_own_partial=True,
+    )
+    assert guard is not None
+    guard.note_text(
+        f"This is already implemented — the work already exists at "
+        f"{claimed_sha}, no changes needed."
+    )
+    result = await guard.hook({}, None, None)
+    assert result, (
+        "branched_from_own_partial=True must skip the outer commits_ahead "
+        "silence so a determinately-refused head still reaches "
+        "_already_satisfied_subject")
+    message = result["hookSpecificOutput"]["additionalContext"]
+    assert claimed_sha in message
 
 
 class _AheadRaisesRepo:

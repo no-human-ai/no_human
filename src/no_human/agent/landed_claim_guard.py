@@ -148,23 +148,29 @@ Four revisions since the first version landed:
   a copy/paste drift, not two different measurements. The docstring's "42"
   is the one with a matching detailed breakdown (9 + 33 below) so it is the
   number kept; the test file was corrected to match.
-* (Seventh review) the Sixth review's clause-bounding fix (finding 2 above)
-  was itself over-broad in the other direction: bounding the sha-cue search
-  to ONLY the clause containing the `_CLAIM` match missed 3 of 5 natural
-  claim shapes where the phrase and the cued sha sit in DIFFERENT clauses
-  of the same utterance — e.g. "No code changes are needed; already
-  satisfied at abc1234def." names the phrase in the first clause and the
-  cued sha in the second. Fixed by widening the search to the primary
-  clause PLUS any other clause, still inside the bounded snippet window,
-  that independently matches `_CLAIM` and is not itself negated — i.e. a
-  clause that is ALSO asserting the same already-satisfied claim. The two
-  MUST_NOT_FIRE shapes finding 2 was fixed for are unaffected: the negation
-  clause is still excluded by the negation check on the PRIMARY match, and
-  the incidental-hex clause ("the tamper baseline is at 1a2b3c4d5e6f...")
-  never independently matches `_CLAIM`, so it is never pulled in. Pinned by
+* (Seventh review, WITHDRAWN by the Eighth review below) a round claimed the
+  Sixth review's clause-bounding fix (finding 2 above) was itself over-broad
+  in the other direction — that bounding the sha-cue search to ONLY the
+  clause containing the `_CLAIM` match missed "3 of 5 natural claim shapes"
+  where the phrase and the cued sha sit in DIFFERENT clauses of the same
+  utterance — and widened the search to the primary clause PLUS any other
+  clause, still inside the bounded snippet window, that independently
+  matched `_CLAIM` and was not itself negated.
+* (Eighth review) the Seventh review's premise was fabricated: its "3 of 5"
+  measurement was five hand-written sentences, not a real corpus, and its
+  own author withdrew the finding. Measured against 74,709 real agent
+  utterances, the widening recovered ZERO real claims — the same 580
+  firings, byte-identical, with or without it — while adding false-positive
+  firings on 10 of 10 hand-constructed two-clause non-claim prose shapes,
+  four of which inject a full LANDED-CLAIM REFUSED correction through the
+  real probe, and letting a second, unrelated clause's `_CLAIM` match
+  short-circuit the composite PostToolUse hook and swallow other tool-call
+  feedback. Reverted `detect_claim_assertion` back to the primary-clause-only
+  search (the shape the Sixth review's fix originally produced) and dropped
   `test_a_claim_phrase_and_its_sha_in_different_clauses_is_still_the_named_sha`
-  (`tests/test_landed_claim_guard.py`); the negation and incidental-hex
-  tests alongside it remain green, unchanged.
+  (`tests/test_landed_claim_guard.py`), which pinned the withdrawn shape. The
+  negation and incidental-hex tests the Sixth review added remain green,
+  unchanged — they are genuinely fixed and were never in question.
 """
 
 from __future__ import annotations
@@ -262,8 +268,10 @@ class ClaimAssertion:
     was named. Cosmetic only: the guard's probe always judges the branch's
     CURRENT head (exactly as delivery's `_already_satisfied_subject` does —
     it never consults a commit named in the claim's own prose either), so
-    ``sha`` is used only to decide whether the claim is actionable and to
-    quote it back in the injected message.
+    ``sha`` is used only to decide whether the claim is actionable
+    (`_is_actionable_claim`). It is NOT quoted back in the injected message —
+    that message names the probe's own `resolved_sha`/HEAD instead (see
+    `LandedClaimGuard.hook`); only `snippet` from this dataclass is echoed.
     """
 
     sha: str
@@ -291,35 +299,25 @@ def detect_claim_assertion(text: str) -> ClaimAssertion | None:
     snippet = window.strip().replace("\n", " ")
     if len(snippet) > _SNIPPET_MAX:
         snippet = snippet[:_SNIPPET_MAX]
-    # (Seventh review) the clause-bounded search above was itself too
-    # narrow: a natural claim routinely splits the phrase and the cued sha
-    # across two clauses of the SAME utterance — "No code changes are
-    # needed; already satisfied at abc1234def." — and the strict
-    # same-clause-only search missed 3 of 5 natural claim shapes measured
-    # against a corpus that put the phrase and the sha in different clauses
-    # (every prior MUST_FIRE case happened to keep both in one clause, so
-    # nothing pinned the gap). Search the primary clause PLUS any other
-    # clause, still inside the bounded snippet window, that independently
-    # matches `_CLAIM` and is not itself negated — i.e. a clause that is
-    # ALSO asserting the same already-satisfied claim, just with its own
-    # phrase. The incidental-hex shape this bounding was built to reject
-    # ("No code changes are needed; the tamper baseline is at
-    # 1a2b3c4d5e6f...") is unaffected: its second clause never matches
-    # `_CLAIM` at all, so it is never pulled in.
-    clause_spans = [(clause_start, clause_end)]
-    for other in _CLAIM.finditer(text, max(start, 0), min(end, len(text))):
-        o_start, o_end = _clause_span(text, other.start())
-        if (o_start, o_end) in clause_spans:
-            continue
-        if _NEGATION.search(text, o_start, other.start()):
-            continue
-        clause_spans.append((o_start, o_end))
-    sha_match = None
-    for c_start, c_end in clause_spans:
-        clause = text[max(start, c_start):min(end, c_end)]
-        sha_match = _SHA_CUE.search(clause)
-        if sha_match:
-            break
+    # The sha-cue search is bounded to the PRIMARY clause only — the same
+    # clause the `_CLAIM` match itself is in. (Eighth review) an earlier
+    # revision of this function widened the search to also cover any OTHER
+    # clause, still inside the snippet window, that independently matched
+    # `_CLAIM` — reasoning that a natural claim can split the phrase and the
+    # cued sha across two clauses of the same utterance. That widening has
+    # been reverted. Measured against 74,709 real agent utterances, it
+    # recovered zero real claims (580 firings, byte-identical before and
+    # after the widening) while adding false-positive firings on 10 of 10
+    # hand-constructed two-clause non-claim prose shapes, four of which
+    # inject a full LANDED-CLAIM REFUSED correction through the real probe —
+    # and it let a second, unrelated clause's `_CLAIM` match short-circuit
+    # the composite PostToolUse hook, swallowing other tool-call feedback.
+    # The "3 of 5 natural claim shapes" measurement that motivated the
+    # widening was withdrawn by its own author: it was five hand-written
+    # sentences, not a real measurement. Bounding to the primary clause only
+    # is the shape that survived actual measurement.
+    clause = text[max(start, clause_start):min(end, clause_end)]
+    sha_match = _SHA_CUE.search(clause)
     return ClaimAssertion(sha=(sha_match.group(1) if sha_match else ""), snippet=snippet)
 
 
