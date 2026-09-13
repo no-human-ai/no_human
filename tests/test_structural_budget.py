@@ -1491,9 +1491,18 @@ FROZEN_FILE_LINES = {
     # src/no_human/cli/commands.py`.
     # 8679 -> 8851 (+172): `nh task retitle` — the state gate, the
     # `--description`/`--criteria` refusal callback, the PR-evidence branch
-    # (refuse/update-both/landed-refuse), and the audit event. Measured via
-    # `wc -l src/no_human/cli/commands.py` on this merge result.
-    "cli/commands.py": 8851,
+    # (refuse/update-both/landed-refuse), and the audit event.
+    # 8851 -> 8920 (+69): `task_show` renders operator-owned text with markup
+    # off, the blocker line becomes one `Text` with a styled label span, and
+    # the slot-wait lines stop interpolating the operator's auth-profile name
+    # into a markup string -- the last of those built span by span, because a
+    # base style there bled blue into a note that must stay dim. Measured with
+    # this module's own `scan_source` on the merge result. (`wc -l` happens to
+    # agree on THIS file -- it reports 8920 too; the two disagree only on
+    # `core/orchestrator.py`, 24073 vs 24070. An earlier version of this
+    # comment, and the commit message, claimed they disagreed here. They do
+    # not.)
+    "cli/commands.py": 8920,
     # api/app.py 5338 -> 5346 (+8): same budget-floor warning surfaced by
     # `send-back`/`reply` as `budget_warning` in the JSON response. Net cost
     # was trimmed from a naive +14 to +8 by computing `Bounds.from_config(...)`
