@@ -1,0 +1,13 @@
+# Assumptions
+
+_Harness-captured record for task `9c59b93c`, commit `0762ac0ed68b1ba24fdda258bf7a3f81cc0ae164` — not model-authored: no_human wrote this file from the intake step's recorded questions and assumptions. It records what the gate produced; it is not a verdict of the model that wrote the code._
+
+<details><summary>⚠️ 4 assumptions made on your behalf — verify at review</summary>
+
+- **Q:** What method should the case-folding probe use to determine at runtime whether the `cwd` filesystem is case-insensitive? For example: create a temporary test file with different case and check if it resolves, use `os.listdir()` to check if directory entries appear in multiple cases, examine mount point properties, or another approach? **A:** Test the `cwd` filesystem directly using `os.stat()` to compare inodes of the path and a case-swapped variant, or use `os.listdir()` on the `cwd` to detect if different-case entries resolve to the same file. This works in both frozen and source layouts because `cwd` is guaranteed to exist, unlike `__file__` in a PyInstaller onedir bundle. If the probe cannot complete (inode comparison fails or lis _(assumption)_
+- **Q:** Are there case-folding guards in files or functions beyond `venv_install_guard.py::_is_installer_name` and `exec_names.py::host_folds_case` that need similar updates to use filesystem-aware case-folding? **A:** Based on the task description, only `venv_install_guard.py::_is_installer_name` and `exec_names.py::host_folds_case` are identified. A grep sweep could reveal others, but the scope appears limited to these two functions. _(assumption)_
+- **Q:** Should automated tests for the frozen PyInstaller bundle scenario be added to the CI pipeline as part of this fix, or should the fix rely on ensuring that unmeasurable probes fail safely (FOLD) with the existing test infrastructure? **A:** The fix should make unmeasurable probes default to folding (closed failure mode) rather than to `os.name == 'nt'`. Frozen-layout testing should be added to CI only if practical during implementation; otherwise, the safe default makes the test infrastructure sufficient—a wrong probe cannot open a bypass if folding is the default. _(assumption)_
+- **Q:** For the `_is_installer_name()` function in venv_install_guard.py: should it be modified to accept `cwd` as a new parameter, and should it call a corrected `host_folds_case(cwd)` function or implement its own cwd-aware case-folding logic? **A:** Yes. `_is_installer_name()` should accept `cwd` as a parameter and call a corrected `host_folds_case(cwd)` function. The task notes that `evaluate` and `denial_reason` already receive `cwd`, so threading it into the installer name check is the natural integration point. _(assumption)_
+
+</details>
+
