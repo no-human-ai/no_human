@@ -1643,7 +1643,18 @@ FROZEN_FILE_LINES = {
     # the column list (unlike status, ordinary callers legitimately mutate
     # `task.title` and expect it persisted). Measured via
     # `wc -l src/no_human/core/db.py` on this merge result.
-    "core/db.py": 5149,
+    # 5149 -> 5193 (+44): that F2 fix keyed off `updated_at`, which is bumped
+    # by ANY row write (e.g. a plain `set_status`), not just a retitle, so it
+    # could not tell "someone retitled since I read this handle" from
+    # "something unrelated wrote this row" — a legitimate title edit on a
+    # handle whose row had merely advanced in status was silently dropped
+    # (broke `test_update_task_never_moves_status`). Reworked to stamp
+    # `context.title_updated_at` in the same statement as the title write
+    # (`update_task_title`) and compare THAT marker instead, carrying the
+    # winning marker forward into the new context blob the same way
+    # `cancel_reason` already is, plus the expanded docstrings explaining why.
+    # Measured via `wc -l src/no_human/core/db.py` on this merge result.
+    "core/db.py": 5193,
     # +71: set_local_backend_fields — the config-write helper for the Settings
     # pane's local coder-backend fields (llm.local_model / llm.local_base_url).
     # +75: Codex account config helpers.
