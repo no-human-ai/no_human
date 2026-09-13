@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import pytest
 
-from no_human.agent import exec_names
+from no_human.agent import exec_names, guard
 from no_human.agent.guard import evaluate
 
 
@@ -38,6 +38,24 @@ def _decide(command: str) -> bool:
         "Bash", {"command": command},
         forbidden_paths=[], never_push_to=["main"], cwd=".", env={"PATH": ""})
     return not decision.allow
+
+
+@pytest.fixture
+def on_windows(monkeypatch):
+    """Run the gate as a Windows host reads it, whatever host this is.
+
+    `guard._IS_WINDOWS` is a module constant precisely so a test can flip it,
+    which is what makes the Windows behaviour testable on a POSIX runner and
+    the POSIX behaviour testable on a Windows one. Without this the rows below
+    that cover the gated half pass on Windows and fail on CI, which is the same
+    blind spot the bug itself lives in.
+    """
+    monkeypatch.setattr(guard, "_IS_WINDOWS", True)
+
+
+@pytest.fixture
+def on_posix(monkeypatch):
+    monkeypatch.setattr(guard, "_IS_WINDOWS", False)
 
 
 # ----------------------------------------------------------------- the reader
@@ -108,15 +126,27 @@ def test_the_reader_is_not_vacuous():
     "command",
     [
         "git push origin main",
-        "git.exe push origin main",
+        "git.exe push origin main",          # suffix strip is ungated (#107)
+        "C:/tools/git.exe push origin main",  # PurePosixPath already splits `/`
+    ],
+)
+def test_never_push_to_main_denies_on_every_host(command):
+    """Rows that need no platform gating, so they must hold on both."""
+    assert _decide(command), "push to a protected branch was allowed"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
         "GIT.EXE push origin main",
-        "C:/tools/git.exe push origin main",
+        '"C:\\tools\\git.exe" push origin main',
         '"C:\\Program Files\\Git\\cmd\\git.exe" push origin main',
     ],
 )
-def test_never_push_to_main_survives_every_spelling(command):
-    """`never_push_to` is the gate on pushing to a protected branch. Before
-    #305 only the first row denied."""
+def test_never_push_to_main_denies_the_windows_spellings(command, on_windows):
+    """Rows that depend on the gated half: case folding and backslash
+    splitting. Asserted with the constant flipped, so a POSIX runner proves the
+    Windows behaviour rather than skipping it."""
     assert _decide(command), "push to a protected branch was allowed"
 
 
@@ -125,17 +155,35 @@ def test_never_push_to_main_survives_every_spelling(command):
     [
         "gh pr merge 7",
         "gh.exe pr merge 7",
-        "GH.EXE pr merge 7",
         "C:/tools/gh.exe pr merge 7",
         "nh approve 7",
         "nh.exe approve 7",
-        "NH.exe approve 7",
     ],
 )
-def test_the_agent_still_never_merges(command):
+def test_the_agent_still_never_merges_on_every_host(command):
     """Constraint #2. `gh pr merge` and `nh approve` are the two commands that
     land work, and a trailing `.exe` walked past both."""
     assert _decide(command), "a merge/approve command was allowed"
+
+
+@pytest.mark.parametrize("command", ["GH.EXE pr merge 7", "NH.exe approve 7"])
+def test_the_agent_still_never_merges_in_windows_case(command, on_windows):
+    assert _decide(command), "a merge/approve command was allowed"
+
+
+def test_the_windows_spellings_are_left_alone_on_posix(on_posix):
+    """The other half of the gate, and the reason it IS a gate.
+
+    On POSIX `GIT` is a genuinely different file from `git`, and a backslash is
+    a legal character in a filename. Denying these there would be a text match
+    masquerading as a structural one, and could refuse a command the user is
+    entitled to run.
+    """
+    assert not _decide("GIT.EXE push origin main")
+    assert not _decide('"C:\\tools\\git.exe" push origin main')
+    # ...while the ungated rows still deny on POSIX.
+    assert _decide("git.exe push origin main")
+    assert _decide("git push origin main")
 
 
 def test_the_unquoted_backslash_path_is_still_open_and_that_is_recorded():
