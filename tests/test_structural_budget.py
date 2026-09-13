@@ -212,7 +212,12 @@ FROZEN_FUNCTION_LINES = {
     # `result.detail` (capped, whitespace-collapsed) in the event text and
     # `question`, and prefixes `step=` onto the stored `evidence` -- step
     # alone was not root-causeable. Measured on this tree.
-    "blockers/wake.py:WakeWatcher._check_pr_conflict": 458,
+    # 458 -> 464 (+6): pushed-tip rewrite fix (2026-09-13) — the pr_conflict
+    # send-back message now calls `base_merge_conflict_instruction` instead
+    # of a hardcoded rebase string, so the coder is told to merge the pinned
+    # base and never rewrite the already-pushed branch. Measured on this
+    # tree with the scanner below.
+    "blockers/wake.py:WakeWatcher._check_pr_conflict": 464,
     # 418 -> 424 (+6): D1.1 fix round — attempt-scoped verification-artifact
     # write wired into `_finalize` (review findings #1/#7). Measured on the
     # D1.1 squash-merge result.
@@ -220,7 +225,13 @@ FROZEN_FUNCTION_LINES = {
     # best-effort call that runs the UI-evidence browser walk after tests
     # pass and threads its rendered media section into `_pr_body`.
     # Re-anchored on merge.
-    "core/orchestrator.py:Orchestrator._finalize": 437,
+    # 437 -> 441 (+4): pushed-tip rewrite fix (2026-09-13) — the PR-open
+    # retry's comment explaining `force_with_lease`'s scope was expanded to
+    # describe `agent/pushed_tip_guard.py` now denying the rebase that used
+    # to make this retry's non-fast-forward path the expected outcome
+    # (comment-only; `forced = _is_non_fast_forward(exc)` itself is
+    # unchanged). Measured on this tree with the scanner below.
+    "core/orchestrator.py:Orchestrator._finalize": 441,
     # Pre-existing on main (measured red at d3d7d3a82a, this session's start):
     # an earlier fleet land grew stream() +6 without re-freezing it on its
     # merge result — the same "landed without measuring the ratchet" failure
@@ -342,7 +353,12 @@ FROZEN_FUNCTION_LINES = {
     # it forever). `base_staleness` now merges instead of rebasing a pushed
     # branch, and this preamble gained an `elif stale.get("merged")` branch
     # narrating that case to the coder. Measured with the scanner below.
-    "core/orchestrator.py:Orchestrator._build_implement_prompt": 394,
+    # 394 -> 423 (+29): pushed-tip rewrite fix (2026-09-13) — a new branch
+    # for the `merge_conflict` case (base-refresh skipped a merge on a
+    # conflict) tells the coder to run `git merge <base_pin>` themselves via
+    # `base_merge_conflict_instruction`, instead of the old rebase-oriented
+    # preamble text. Measured on this tree with the scanner below.
+    "core/orchestrator.py:Orchestrator._build_implement_prompt": 423,
     # 332 -> 333 (+1): pin-rederivation follow-up adds one
     # `pin_rederivation_note(card),` line to the markdown body list so the
     # published report carries the same recorded-branch/HEAD-fallback
@@ -513,7 +529,12 @@ FROZEN_FUNCTION_CC = {
     # FROZEN_FUNCTION_LINES entry above for the incident) -- one new `elif
     # stale.get("merged"):` branch narrates the merged case to the coder.
     # Measured with the scanner below.
-    "core/orchestrator.py:Orchestrator._build_implement_prompt": 71,
+    # 71 -> 79 (+8): pushed-tip rewrite fix (2026-09-13) -- the new
+    # `merge_conflict` branch (see the FROZEN_FUNCTION_LINES entry above)
+    # adds an `if merge_conflict:` / `if overlap:` pair and an `or []` and
+    # an `or "the current base"` BoolOp-style fallback for the base_pin
+    # lookup. Measured on this tree with the scanner below.
+    "core/orchestrator.py:Orchestrator._build_implement_prompt": 79,
 }
 
 # 9 files > 2,500 lines.
@@ -1209,7 +1230,12 @@ FROZEN_FILE_LINES = {
     # frozen ceiling, so that function's own entry did not have to grow).
     # Measured after extracting/trimming as far as possible without cutting
     # the fail-closed guards' rationale comments.
-    "core/orchestrator.py": 24079,
+    # 24079 -> 24139 (+60): pushed-tip rewrite fix (2026-09-13) -- sum of
+    # this file's own FROZEN_FUNCTION_LINES/CC deltas above
+    # (`_finalize` +4, `_build_implement_prompt` +29) plus the PR-open
+    # retry's comment expansion and the new `base_merge_conflict_instruction`
+    # import/threading. Measured on this tree with the scanner below.
+    "core/orchestrator.py": 24139,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.
@@ -1779,7 +1805,11 @@ FROZEN_FILE_LINES = {
     # 2752 -> 2757 (+5): same cause as the FROZEN_FUNCTION_LINES entry above
     # -- the whole-file delta equals the function's delta. Measured on this
     # tree.
-    "blockers/wake.py": 2757,
+    # 2757 -> 2763 (+6): pushed-tip rewrite fix (2026-09-13) -- same cause as
+    # the FROZEN_FUNCTION_LINES `_check_pr_conflict` entry above (the
+    # whole-file delta equals that function's delta). Measured on this tree
+    # with the scanner below.
+    "blockers/wake.py": 2763,
     # +91: `_SCAN_WRAPPER_NAMES` + `_peel_scan_wrappers` — peels
     # timeout/xargs/nice/stdbuf (and siblings) for the scan-severity check
     # only, so a wrapped `find … -delete` in a denied compound classifies
@@ -1795,7 +1825,14 @@ FROZEN_FILE_LINES = {
     # a bare `Path.is_file()`, so an unreadable ancestor directory (e.g. a
     # chmod'd `<checkout>/src`) can't raise `PermissionError` out of this
     # unguarded helper and abort the guard instead of denying.
-    "agent/guard.py": 2926,
+    # 2926 -> 2945 (+19): pushed-tip rewrite fix (2026-09-13) -- the module
+    # docstring gains a bullet naming the new pushed-tip-rewrite denial
+    # (+10), the `pushed_tip_guard` import is added, and `evaluate` gains
+    # the `pushed_reason = pushed_tip_guard.denial_reason(...)` dispatch
+    # plus its rationale comment (+9). No change to any pre-existing
+    # function's own frozen entry -- this is new code, not growth of an
+    # existing offender. Measured on this tree with the scanner below.
+    "agent/guard.py": 2945,
     # +44: idle-path recover_quota_cooldown gate in tick() and the
     # never-shorten-a-live-wall guard in _run — the quota-wall storm cost fix.
     # +129: `HarvestJob` — the cadence job (`due()`/`maybe_run()`) that runs

@@ -28,6 +28,7 @@ from no_human.config import load_config
 from no_human.core.orchestrator import (
     BASE_STALENESS_REBASE_THRESHOLD,
     Orchestrator,
+    ReviewedShaMismatch,
 )
 from no_human.core.task import Task, TaskStatus
 from no_human.notify.slack import SlackNotifier
@@ -428,6 +429,56 @@ async def test_a_diverged_branch_still_merges_the_base_and_is_not_force_pushed(
     )
 
 
+# --------------------------------------------------------------------------- #
+# Concern D: `pushed_tip_guard._message` quotes the exact string
+# `_reconcile_remote_branch` raises `ReviewedShaMismatch` with — this must be
+# proven from the REAL orchestrator code path (a genuine `ReviewedShaMismatch`
+# caught from a live call against a real bare remote), not from a literal
+# copy-pasted into a test file that would stay green even if the two drifted
+# apart.
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.asyncio
+async def test_reconcile_remote_branch_raises_the_exact_string_the_guard_quotes(
+    repo, tmp_path, store, monkeypatch,
+):
+    remote_tip = _make_pushed_diverged_branch(
+        repo, "no-human/t8", BASE_STALENESS_REBASE_THRESHOLD)
+
+    gr = GitRepo(repo)
+    target = gr.head_sha()
+    # Positive control: genuinely diverged, so `_reconcile_remote_branch`
+    # must take its "otherwise" branch, not the ancestor fast-forward one.
+    assert gr.is_ancestor(remote_tip, target) is False
+
+    orch = Orchestrator.__new__(Orchestrator)
+    with pytest.raises(ReviewedShaMismatch) as exc_info:
+        orch._reconcile_remote_branch(
+            gr, "no-human/t8", target, human_gated_resume=False)
+
+    message = str(exc_info.value)
+    assert message == (
+        f"delivery refused: branch no-human/t8 remote tip {remote_tip} "
+        f"(fetched) is not an ancestor of the reviewed sha {target} "
+        f"(human_gated_resume=False)"
+    ), message
+
+    # And independent of the exact wording above: the fragment
+    # `pushed_tip_guard._message` quotes verbatim really is a substring of
+    # what the real code path produces — if the two ever drift apart this
+    # line goes red even though the assertion above might still (wrongly)
+    # be hand-updated to match.
+    assert "is not an ancestor of the reviewed sha" in message
+
+    # Refusal must be pure observation: nothing pushed or moved the remote.
+    origin_dir = repo.parent / "origin.git"
+    origin_ref = subprocess.run(
+        ["git", "rev-parse", "refs/heads/no-human/t8"],
+        cwd=str(origin_dir), check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    assert origin_ref == remote_tip
+
+
 @pytest.mark.asyncio
 async def test_no_divergence_advisory_when_the_branch_has_no_remote_tip(
     repo, tmp_path, store, monkeypatch,
@@ -574,6 +625,53 @@ async def test_a_conflicting_merge_does_not_fail_the_attempt_and_never_falls_bac
         "a failed/no-op action keeps the record shape unchanged, per "
         "staleness_record's contract"
     )
+
+
+# --------------------------------------------------------------------------- #
+# THE end-to-end FAILS-BEFORE test for the bug this task fixes: a coder that
+# (wrongly) rebases after a skipped merge must be BOTH stopped by the guard
+# AND, independent of the guard, the branch as the harness left it must still
+# satisfy the delivery ancestor predicate — before this fix nothing told the
+# coder not to rebase, and the guard did not refuse it either.
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.asyncio
+async def test_a_pushed_branch_behind_a_conflicting_main_ends_with_the_remote_tip_an_ancestor_of_head(
+    repo, tmp_path, store, monkeypatch,
+):
+    from no_human.agent import guard
+
+    remote_tip = _make_pushed_conflicting_branch(repo, "no-human/t6")
+    ctx = {"pr_branch": "no-human/t6"}
+
+    t, events, orch = await _attempt(repo, tmp_path, store, monkeypatch, ctx)
+
+    evs = _staleness_events(events)
+    assert len(evs) == 1
+    assert evs[0]["merged"] is False
+
+    gr = GitRepo(repo)
+    _git(repo, "checkout", "-q", "no-human/t6")
+    head = gr.head_sha()
+
+    # The delivery ancestor predicate: the tip already on the remote before
+    # this attempt touched the branch is still an ancestor of HEAD — a
+    # rebase (had the coder run one, or had the harness fallen back to one)
+    # would break this.
+    assert gr.is_ancestor(remote_tip, head), (
+        "the pushed remote tip is no longer an ancestor of HEAD after a "
+        "skipped merge — delivery would refuse this branch"
+    )
+
+    # And independent of the harness's own behavior above: the guard itself
+    # must refuse a coder that tries to rebase this same branch.
+    d = guard.evaluate(
+        "Bash", {"command": "git rebase origin/main"},
+        forbidden_paths=[], never_push_to=["main"], cwd=str(repo),
+    )
+    assert d.allow is False
+    assert remote_tip in d.reason
+    assert "git merge" in d.reason
 
 
 # --------------------------------------------------------------------------- #
