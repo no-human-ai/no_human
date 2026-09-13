@@ -2487,6 +2487,22 @@ class WakeWatcher:
         would make the very next `measure()` see the recorded sha equal the
         observed tip and answer FRESH from then on, which would destroy the
         only signal a later, more thorough consumer could act on.
+
+        NOT A CONTRADICTION WITH `_check_pr_conflict`'s "TRUST THE LOCAL
+        MERGE" (above): that rung also treats a definite empty
+        `conflicting_paths` result as good enough to act on — but the
+        ACTION differs, and that's the whole reason the same signal reads
+        two different ways here. `_check_pr_conflict` asks "is there a real
+        CONFLICT a coder round needs to resolve"; an empty result answers
+        that question completely; a real conflict, if one exists, is
+        visible to `land_task`'s own squash-merge re-check before anything
+        reaches `main`, so trusting it to stand DOWN a conflict round costs
+        nothing if wrong. This rung asks a strictly harder question — "is
+        the recorded base SAFE TO CALL FRESH" — where being wrong costs the
+        one signal this whole bugfix exists to preserve (see above: FRESH
+        is a terminal, self-reinforcing state once `pr_base_sha` bumps to
+        match). An empty `conflicting_paths` is necessary evidence for both
+        rungs' questions but sufficient only for the cheaper one.
         """
         mergeable = str((info or {}).get("mergeable") or "").upper()
         if mergeable != "MERGEABLE":
@@ -2516,15 +2532,24 @@ class WakeWatcher:
             return None
 
         if result.state == delivered_base.FRESH:
-            # Still fresh: nothing to record, nothing to wake.
+            # Still fresh. But a PREVIOUS tick may have recorded a
+            # stale/undetermined freshness verdict here (trunk was stale,
+            # then a later landing brought it back in line with the
+            # recorded sha, or a since-corrected fetch resolved what an
+            # earlier flaky tick could not) — leaving that record forever
+            # would make `cli/commands.py`'s `task_show` reader render a
+            # permanently wrong verdict for a PR that is, right now, fresh
+            # (that reader only checks truthiness of `pr_base_freshness`, so
+            # a stale dict left behind renders as if it were still current).
+            # `store.merge_context` is RFC 7396: a `None` value DELETES the
+            # key, so clear it here rather than leaving a stale answer for a
+            # later observer to misread as current.
+            if ctx.get("pr_base_freshness"):
+                task.context = await self.store.merge_context(
+                    task.id, {"pr_base_freshness": None})
             return None
 
         if result.state == delivered_base.UNDETERMINED:
-            if ctx.get("pr_base_freshness") == result.as_dict():
-                # Already recorded exactly this undetermined answer on a
-                # previous tick — bound the noise instead of re-emitting an
-                # identical event on every single tick forever.
-                return None
             patch: dict[str, Any] = {"pr_base_freshness": result.as_dict()}
             if not recorded_sha and result.observed_sha:
                 # Never recorded at delivery (predates this bugfix, or the
@@ -2533,6 +2558,15 @@ class WakeWatcher:
                 # tick's verdict stays undetermined, never fresh.
                 patch["pr_base_sha"] = result.observed_sha
                 patch["pr_base_sha_source"] = "backfilled"
+                if not ctx.get("pr_base_ref") and measure_base:
+                    # Same pre-bugfix-task gap: `pr_base_ref` was never
+                    # written either, only the live `base_branch` we fell
+                    # back to above. Without this, `cli/commands.py`'s
+                    # `task_show` reader falls back to a bare `'?'` forever
+                    # even after the sha itself gets backfilled — record the
+                    # ref we actually measured against so that reader has
+                    # something real to print.
+                    patch["pr_base_ref"] = measure_base
             task.context = await self.store.merge_context(task.id, patch)
             await self._emit(
                 task, "pr_base_undetermined",
