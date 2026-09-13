@@ -13,14 +13,44 @@ trivially deny-everything, only deny-the-things-that-actually-write-outside-
 the-worktree.
 """
 
+import contextlib
+import logging
 import os
+import shutil
 import stat
 import tempfile
+
+import pytest
 
 from no_human.agent import guard, venv_install_guard
 
 FORBIDDEN = []
 PROTECTED = ["main", "master", "release/*"]
+
+#: root/non-POSIX ignores mode bits entirely, so a `chmod` that is supposed
+#: to make a path unreadable is a no-op there — the probe under test is a
+#: permission probe, and these tests would be vacuously green (or hang) on
+#: a runner where `chmod` cannot actually remove access.
+_CHMOD_MEANINGFUL = os.name == "posix" and getattr(os, "geteuid", lambda: 1)() != 0
+requires_chmod = pytest.mark.skipif(
+    not _CHMOD_MEANINGFUL,
+    reason="root/non-POSIX ignores mode bits; the probe under test is a permission probe",
+)
+
+
+@contextlib.contextmanager
+def _unreadable(path):
+    """Strip the execute bit from `path` (a directory) for the duration of
+    the `with` block — `os.chmod(0o600)` on a directory removes traversal,
+    so anything INSIDE it cannot be stat'd, while `path` itself still stats
+    fine from its parent. Always restores the original mode: an unrestored
+    mode makes `tmp_path`'s own teardown fail."""
+    mode = os.stat(path).st_mode
+    os.chmod(path, 0o600)
+    try:
+        yield
+    finally:
+        os.chmod(path, mode)
 
 
 def _mkvenv(root):
@@ -549,6 +579,379 @@ def test_evaluate_env_defaults_to_os_environ_when_omitted(tmp_path, monkeypatch)
     assert d.allow
 
 
+# ---------------------------------------------------------------------------
+# Bugfix: chmod on a venv turns the install guard's DENY into ALLOW.
+# ---------------------------------------------------------------------------
+
+@requires_chmod
+def test_an_unreadable_venv_pyvenv_cfg_still_denies_the_install(tmp_path):
+    """The bug: `chmod` on a venv directory (stripping its execute bit)
+    makes `pyvenv.cfg` unstat'able. `os.path.isfile`/`Path.is_file()`
+    swallow the resulting `PermissionError` and report `False` —
+    indistinguishable from "no venv here" — so `_venv_root_of` used to
+    conclude "owns no venv" and the install stopped being denied.
+
+    Four spellings, all denied before/during/after the chmod: two that
+    resolve their installer via the explicit-path branch of
+    `_resolve_installer` (`_venv_root_of` reached directly), and two —
+    the bare token `pip install evilpkg` and its `bash -lc` wrapping, the
+    spelling a coder actually types — that resolve via the bare-token PATH
+    walk instead. The bare-token pair used to survive the earlier fix in
+    this ticket: `_resolve_installer`'s bare-token branch resolved through
+    `shutil.which`, which calls `os.path.exists` internally and swallows
+    the very same `PermissionError`, so it reported "not on PATH" and fell
+    through to allow-and-log BEFORE `_venv_root_of` ever ran — that branch
+    now walks `PATH` by hand with `_probe_is_file` instead. The "during"
+    assertion on every case is the regression this test pins."""
+    primary, primary_venv, wt, wt_venv, prod_env, wt_env = _session(tmp_path)
+    cases = [
+        (f"{primary_venv}/bin/pip install evilpkg", prod_env),
+        (f"uv pip install --python {primary_venv}/bin/python evilpkg", wt_env),
+        ("pip install evilpkg", prod_env),
+        ("bash -lc 'pip install evilpkg'", prod_env),
+    ]
+    for cmd, env in cases:
+        before = venv_install_guard.denial_reason(cmd, cwd=wt, env=env)
+        assert before is not None, f"positive control must deny before chmod: {cmd}"
+        assert primary_venv in before
+        with _unreadable(primary_venv):
+            inside = venv_install_guard.denial_reason(cmd, cwd=wt, env=env)
+            assert inside is not None, (
+                f"REGRESSION: an unreadable venv must still be denied: {cmd}"
+            )
+            d = _ev("Bash", {"command": cmd}, cwd=wt, env=env)
+            assert not d.allow, f"must still be blocked via evaluate(): {cmd}"
+        after = venv_install_guard.denial_reason(cmd, cwd=wt, env=env)
+        assert after is not None, f"must stay denied once permissions are restored: {cmd}"
+
+
+@requires_chmod
+def test_probe_distinguishes_absence_from_unreadability(tmp_path):
+    """`_probe_is_file`/`_probe_is_dir` are the tri-state replacement for
+    `os.path.isfile`/`os.path.isdir`: `True`/`False` agree with the stdlib
+    helpers, but a permission error resolves to `None` ("undetermined")
+    instead of being silently folded into `False` ("definitively absent")."""
+    d = tmp_path / "venv"
+    d.mkdir()
+    cfg = d / "pyvenv.cfg"
+    cfg.write_text("home = /usr/bin\n")
+    assert venv_install_guard._probe_is_file(str(cfg)) is True
+    assert venv_install_guard._probe_is_dir(str(d)) is True
+
+    missing_cfg = tmp_path / "nope" / "pyvenv.cfg"
+    assert venv_install_guard._probe_is_file(str(missing_cfg)) is False
+    missing_dir = tmp_path / "also-nope"
+    assert venv_install_guard._probe_is_dir(str(missing_dir)) is False
+
+    with _unreadable(d):
+        assert venv_install_guard._probe_is_file(str(cfg)) is None
+
+    assert venv_install_guard._probe_is_file(str(cfg)) is True
+
+
+def test_a_readable_directory_without_a_pyvenv_cfg_is_not_a_venv(tmp_path):
+    """A genuinely absent `pyvenv.cfg` (readable dir, no such file) must
+    still resolve to "not a venv" — the tri-state fix must not turn every
+    plain `bin/` directory into a phantom protected venv. Its twin, one
+    directory over, WITH a `pyvenv.cfg`, resolves to that root — both
+    directions of `_venv_root_of` asserted separately."""
+    plain_bin = tmp_path / "plain" / "bin"
+    plain_bin.mkdir(parents=True)
+    pip = plain_bin / "pip"
+    pip.write_text("#!/bin/sh\nexit 0\n")
+    st = os.stat(pip)
+    os.chmod(pip, st.st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    assert venv_install_guard._venv_root_of(str(pip)) is None
+
+    venv_root = tmp_path / "venvy"
+    venv_bin = venv_root / "bin"
+    venv_bin.mkdir(parents=True)
+    (venv_root / "pyvenv.cfg").write_text("home = /usr/bin\n")
+    pip2 = venv_bin / "pip"
+    pip2.write_text("#!/bin/sh\nexit 0\n")
+    st2 = os.stat(pip2)
+    os.chmod(pip2, st2.st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    assert venv_install_guard._venv_root_of(str(pip2)) == os.path.realpath(str(venv_root))
+
+
+# ---------------------------------------------------------------------------
+# Item 4 (mutation-testing gaps, round-2 review): `_effective_prefixes` has
+# two more sites that changed from a bare stdlib stat call to the tri-state
+# `_probe_is_file`/`_probe_is_dir` contract, and neither had a test that
+# would fail if `is not False` were mutated to plain truthiness (which
+# folds `None` back into "falsy" and reintroduces the exact fail class this
+# ticket exists to close).
+# ---------------------------------------------------------------------------
+
+def test_python_flag_owning_venv_is_still_found_when_its_probe_is_undetermined(tmp_path, monkeypatch):
+    """Mutation-kill for `_effective_prefixes`'s `--python`/`-p` handling
+    (`owning = _venv_root_of(joined) if _probe_is_file(real) is not False
+    else None`). `real` is the FULLY symlink-followed path (potentially deep
+    in an out-of-tree uv cache); `joined` is the value AS NAMED (still
+    in-tree, e.g. `<wt>/.venv/bin/python3`). When `real` cannot be stat'd,
+    the probe returns `None`, and the fix's `is not False` still takes the
+    `_venv_root_of` branch — finding the worktree's OWN venv via `joined`
+    and adding that in-tree root as the candidate. A mutant that used bare
+    truthiness (or `is True`) would treat `None` as "not a file", skip
+    `_venv_root_of` entirely, and fall back to adding `real` itself — the
+    out-of-tree cache path — turning a legitimate in-tree install into a
+    false DENY.
+
+    A real `chmod` cannot isolate this line by itself: the generic
+    path-like-token loop a few lines down (`_probe_is_dir(real) is not
+    False`, the OTHER tri-state site in this function) stats the exact same
+    `real` path, so a permission failure that makes `_probe_is_file`
+    undetermined makes `_probe_is_dir` undetermined too — and that other
+    loop then independently (and correctly, per ITS OWN fail-closed
+    contract) adds the unstat'able path as a candidate, denying the install
+    regardless of what this line decides. That masks this line's own
+    contribution rather than testing it — confirmed empirically: chmod-ing
+    the cache directory denies the install both before and after reverting
+    just this line, so a chmod-based version of this test cannot
+    distinguish fixed from mutant.
+
+    `_probe_is_file` is instead monkeypatched to return `None` for exactly
+    the resolved cache path, leaving `_probe_is_dir` genuinely untouched —
+    it stats the (fully readable) file for real and correctly reports
+    `False` ("not a directory"), so the generic loop does not also add it,
+    and only this line's own branch selection is under test."""
+    primary, primary_venv, wt, wt_venv, prod_env, wt_env = _session(tmp_path)
+    cache_dir = tmp_path / "cache-uv" / "python3.12"
+    cache_dir.mkdir(parents=True)
+    interpreter = cache_dir / "python3"
+    interpreter.write_text("#!/bin/sh\nexit 0\n")
+    st = os.stat(interpreter)
+    os.chmod(interpreter, st.st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    linked = os.path.join(wt_venv, "bin", "python3")
+    os.remove(linked)
+    os.symlink(str(interpreter), linked)
+    real_target = os.path.realpath(linked)
+    cmd = f"uv pip install --python {linked} foo"
+
+    r = venv_install_guard.denial_reason(cmd, cwd=wt, env=wt_env)
+    assert r is None, f"positive control: unobstructed cache symlink stays allowed: {r}"
+
+    real_probe_is_file = venv_install_guard._probe_is_file
+
+    def stub(path):
+        if path == real_target:
+            return None
+        return real_probe_is_file(path)
+
+    monkeypatch.setattr(venv_install_guard, "_probe_is_file", stub)
+
+    undetermined = venv_install_guard.denial_reason(cmd, cwd=wt, env=wt_env)
+    assert undetermined is None, (
+        "REGRESSION: an undetermined probe on the symlink-followed cache "
+        f"path must not defeat resolution of the in-tree venv named by "
+        f"the value as given: {undetermined}"
+    )
+    d = _ev("Bash", {"command": cmd}, cwd=wt, env=wt_env)
+    assert d.allow, f"must be allowed via evaluate(): {d.reason}"
+
+
+@requires_chmod
+def test_an_unstattable_cd_target_outside_the_worktree_still_denies(tmp_path):
+    """Mutation-kill for `_effective_prefixes`'s path-like-token handling
+    (`if real and _probe_is_dir(real) is not False:`), the structural
+    stand-in for `cd`/`pushd`/subshell-group operands. An out-of-worktree
+    directory named by a `cd` token must still count as a write candidate
+    even when it cannot be stat'd (its parent made unreadable) — dropping
+    an undetermined directory candidate is exactly the fail-open this
+    ticket exists to close, just reached through the OTHER tri-state site
+    in this function rather than through a venv probe. A mutant that used
+    bare truthiness here (`None` is falsy) would silently exclude the
+    unstat'able target and let the install through."""
+    primary, primary_venv, wt, wt_venv, prod_env, wt_env = _session(tmp_path)
+    outer = tmp_path / "outer"
+    target = outer / "somewhere"
+    target.mkdir(parents=True)
+    cmd = f"cd {target} && uv sync"
+
+    r = venv_install_guard.denial_reason(cmd, cwd=wt, env=wt_env)
+    assert r is not None, f"positive control: an out-of-worktree cd target is denied: {cmd}"
+
+    with _unreadable(outer):
+        inside = venv_install_guard.denial_reason(cmd, cwd=wt, env=wt_env)
+        assert inside is not None, (
+            "REGRESSION: an unstat'able out-of-worktree cd target must still "
+            f"be denied, not silently dropped from the candidate set: {cmd}"
+        )
+        d = _ev("Bash", {"command": cmd}, cwd=wt, env=wt_env)
+        assert not d.allow, f"must still be blocked via evaluate(): {cmd}"
+
+    after = venv_install_guard.denial_reason(cmd, cwd=wt, env=wt_env)
+    assert after is not None, f"must stay denied once permissions are restored: {cmd}"
+
+
+def test_an_unreadable_path_entry_ahead_of_the_sessions_own_venv_is_skipped_not_denied(tmp_path):
+    """Blocker 1: `_resolve_installer`'s bare-token `PATH` walk used to
+    RETURN on the very first candidate whose file type could not be
+    determined, instead of continuing to look for a later, determinate
+    match — a POSIX shell's own `command -v`/`type -p` SKIP an EACCES `PATH`
+    entry and keep walking, so a shell would resolve `pip` straight past an
+    unreadable decoy to the session's own venv, and this guard must agree
+    with what would actually execute.
+
+    Measured before the fix: a decoy venv placed AHEAD of the session's own
+    venv on `PATH`, with its `bin/` made unreadable, made `_resolve_installer`
+    return the decoy path (undetermined, but returned immediately) instead
+    of the determinate match one entry later — resolving to a path that
+    could never execute, and DENYING an install that was actually headed
+    into the coder's own worktree venv. That is a false DENY, the same
+    fail-open class this ticket exists to close, just pointed the other way:
+    "could not determine" must not silently win over a real, later match
+    either."""
+    primary, primary_venv, wt, wt_venv, prod_env, wt_env = _session(tmp_path)
+    decoy, decoy_venv = _mkvenv(tmp_path / "decoy")
+    env = {
+        "PATH": f"{decoy_venv}/bin{os.pathsep}{wt_venv}/bin{os.pathsep}/usr/bin{os.pathsep}/bin",
+        "VIRTUAL_ENV": wt_venv,
+    }
+    cmd = "pip install foo"
+
+    # Positive control: with the decoy fully readable, direct resolution to
+    # it — not the session's own venv — proves PATH order is what is being
+    # exercised (the decoy really is found first when nothing hides it).
+    resolved = venv_install_guard._resolve_installer("pip", wt, env)
+    assert resolved == os.path.join(decoy_venv, "bin", "pip"), (
+        "positive control: an untouched decoy earlier on PATH must resolve first"
+    )
+
+    with _unreadable(decoy_venv):
+        resolved = venv_install_guard._resolve_installer("pip", wt, env)
+        assert resolved == os.path.join(wt_venv, "bin", "pip"), (
+            "REGRESSION: an undetermined earlier PATH entry must not pre-empt "
+            f"a later determinate match; got {resolved!r}"
+        )
+        r = venv_install_guard.denial_reason(cmd, cwd=wt, env=env)
+        assert r is None, f"must resolve past the unreadable decoy and stay allowed: {r}"
+        d = _ev("Bash", {"command": cmd}, cwd=wt, env=env)
+        assert d.allow, f"must be allowed via evaluate(): {d.reason}"
+
+
+def test_an_executable_bit_is_still_required_and_a_later_path_entry_is_used(tmp_path):
+    """The `os.access(X_OK)` filter this module keeps (mirroring
+    `shutil.which`'s own filter, not its swallow) must still reject a
+    readable-but-not-executable candidate and keep walking to a later,
+    executable one — otherwise a stray non-executable file named `pip`
+    earlier on `PATH` would shadow the real installer."""
+    bindir1 = tmp_path / "d1" / "bin"
+    bindir2 = tmp_path / "d2" / "bin"
+    bindir1.mkdir(parents=True)
+    bindir2.mkdir(parents=True)
+    not_exec = bindir1 / "pip"
+    not_exec.write_text("not actually executable\n")
+    os.chmod(not_exec, 0o600)
+    real_pip = bindir2 / "pip"
+    real_pip.write_text("#!/bin/sh\nexit 0\n")
+    st = os.stat(real_pip)
+    os.chmod(real_pip, st.st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+
+    env = {"PATH": f"{bindir1}{os.pathsep}{bindir2}"}
+    resolved = venv_install_guard._resolve_installer("pip", str(tmp_path), env)
+    assert resolved == os.path.realpath(str(real_pip)), (
+        "a non-executable earlier candidate must be skipped for a later executable one"
+    )
+
+
+def test_pathext_expansion_resolves_a_windows_shaped_bare_token(tmp_path, monkeypatch):
+    """Blocker 2: abandoning `shutil.which` also dropped its `PATHEXT`
+    expansion — on Windows, a bare `pip` on `PATH` names `pip.exe` on disk,
+    not a file literally called `pip`. Without expanding `PATHEXT` the same
+    way `shutil.which` does, the bare-token spelling this module's own
+    comments call "the spelling a coder actually types" would stop
+    resolving on Windows and silently fall through to allow-and-log —
+    a DENY→ALLOW regression on the platform this guard must also cover.
+
+    `_IS_WINDOWS` is monkeypatched directly (the suffix computation is the
+    only platform-gated branch; the filesystem calls underneath are ordinary
+    OS calls against real files this test creates) so the PATHEXT expansion
+    path is exercised on whatever host runs the suite."""
+    monkeypatch.setattr(venv_install_guard, "_IS_WINDOWS", True)
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    exe = bindir / "pip.EXE"
+    exe.write_text("not a real PE, just needs to exist\n")
+    os.chmod(exe, 0o755)
+
+    # Split with `os.pathsep`, same as the code under test (and cpython's own
+    # `shutil.which`) — on real Windows that is `;`; on this (POSIX) test
+    # host it is `:`, and using anything else here would desync the test
+    # from what the code actually parses without that being a real bug.
+    env = {"PATH": str(bindir), "PATHEXT": os.pathsep.join([".COM", ".EXE", ".BAT"])}
+    resolved = venv_install_guard._resolve_installer("pip", str(tmp_path), env)
+    assert resolved == os.path.realpath(str(exe)), (
+        f"must expand PATHEXT to find pip.EXE, got {resolved!r}"
+    )
+
+    # Negative control: without PATHEXT expansion (non-Windows), the literal
+    # `pip` name is not on PATH and must resolve to nothing (allow-and-log),
+    # proving the assertion above is really about PATHEXT, not some other
+    # fallback.
+    monkeypatch.setattr(venv_install_guard, "_IS_WINDOWS", False)
+    resolved = venv_install_guard._resolve_installer("pip", str(tmp_path), env)
+    assert resolved is None
+
+
+def test_installs_into_the_sessions_own_worktree_venv_stay_allowed(tmp_path):
+    """Containment, not readability, decides: a coder session installing
+    into ITS OWN venv must stay allowed whether that venv lives at the
+    worktree root OR nested in a monorepo subdirectory (its own separate
+    `cwd`/venv pair), with both bare and `uv`-prefixed spellings. This is
+    the fix's required negative space — no existing ALLOW may flip to
+    DENY."""
+    primary, primary_venv, wt, wt_venv, prod_env, wt_env = _session(tmp_path)
+    sub, sub_venv = _mkvenv(os.path.join(wt, "packages", "app"))
+    sub_env = {
+        "PATH": f"{sub_venv}/bin:/usr/bin:/bin",
+        "VIRTUAL_ENV": sub_venv,
+    }
+
+    cases = [
+        (f"{wt_venv}/bin/pip install foo", wt, wt_env),
+        ("pip install foo", wt, wt_env),
+        ("uv pip install foo", wt, wt_env),
+        (f"uv pip install --python {wt_venv}/bin/python foo", wt, wt_env),
+        (f"{sub_venv}/bin/pip install foo", sub, sub_env),
+        ("pip install foo", sub, sub_env),
+    ]
+    for cmd, cwd, env in cases:
+        r = venv_install_guard.denial_reason(cmd, cwd=cwd, env=env)
+        assert r is None, f"must stay allowed: {cmd} (cwd={cwd}) — {r}"
+        d = _ev("Bash", {"command": cmd}, cwd=cwd, env=env)
+        assert d.allow, f"must be allowed via evaluate(): {cmd} (cwd={cwd}) — {d.reason}"
+
+
+@requires_chmod
+def test_an_unreadable_own_worktree_venv_still_stays_allowed(tmp_path):
+    """`_is_within` compares realpath'd strings, not filesystem readability
+    — so even when a session's OWN venv directory has been made unreadable
+    (e.g. by another tool in the pipeline), an explicit-path install into it
+    must still be recognised as "inside cwd" and allowed, not denied by the
+    fail-closed probe added for the primary-checkout case."""
+    primary, primary_venv, wt, wt_venv, prod_env, wt_env = _session(tmp_path)
+    with _unreadable(wt_venv):
+        r = venv_install_guard.denial_reason(
+            f"{wt_venv}/bin/pip install foo", cwd=wt, env=wt_env
+        )
+        assert r is None, f"a coder's own (unreadable) venv must still be allowed: {r}"
+
+
+def test_a_nonexistent_installer_path_is_still_allowed_and_logged(tmp_path, caplog):
+    """A genuinely absent installer path (no such file, not merely
+    unreadable) must resolve to allow-and-log, the same as an unresolvable
+    bare token — proving `_probe_is_file`'s `False` branch (definitively
+    absent) is still reachable and distinct from the `None` branch this
+    patch adds."""
+    primary, primary_venv, wt, wt_venv, prod_env, wt_env = _session(tmp_path)
+    cmd = "/no/such/dir/pip install foo"
+    with caplog.at_level(logging.WARNING, logger="no_human.agent.venv_install_guard"):
+        r = venv_install_guard.denial_reason(cmd, cwd=wt, env=wt_env)
+    assert r is None, f"a genuinely absent installer path must be allowed, not denied: {r}"
+    assert any("pip" in rec.message for rec in caplog.records)
+
+
 # --------------------------------------------------------------------------- #
 # `--active`: the coder-session half of #128.
 #
@@ -789,3 +1192,300 @@ def test_the_full_bypass_set_stays_denied(tmp_path):
         "uv --directory . run --active pytest -q",
     ):
         assert venv_install_guard.denial_reason(cmd, cwd=wt, env=prod_env), cmd
+
+
+# ---------------------------------------------------------------------------
+# `shutil.which` parity for the hand-walked PATH scan. This module deliberately
+# does NOT call `shutil.which` (it swallows `PermissionError`), so every OTHER
+# resolution rule `which` implements has to be reproduced here by hand — and
+# each one that is not is a DENY->ALLOW, because an installer this scan fails
+# to resolve falls through to the module's one allow-and-log fallback.
+# ---------------------------------------------------------------------------
+
+def _mkwinvenv(root):
+    """A Windows-shaped venv: the only `pip` on disk is `pip.EXE`, so the scan
+    resolves it ONLY if it expands `PATHEXT` the way `shutil.which` does."""
+    venv = os.path.join(root, ".venv")
+    bindir = os.path.join(venv, "bin")
+    os.makedirs(bindir, exist_ok=True)
+    with open(os.path.join(venv, "pyvenv.cfg"), "w") as f:
+        f.write("home = /usr/bin\n")
+    for name in ("python.EXE", "pip.EXE"):
+        path = os.path.join(bindir, name)
+        with open(path, "w") as f:
+            f.write("#!/bin/sh\nexit 0\n")
+        st = os.stat(path)
+        os.chmod(path, st.st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    with open(os.path.join(root, "pyproject.toml"), "w") as f:
+        f.write("[project]\nname = \"x\"\n")
+    return os.path.realpath(root), os.path.realpath(venv)
+
+
+def test_default_pathext_constant_matches_the_stdlibs_own_value():
+    """The fallback list is a copy of `shutil._WIN_DEFAULT_PATHEXT`; pin it so
+    it cannot drift from the resolver this module claims parity with. Skipped
+    rather than guessed if the stdlib ever drops the private name."""
+    import shutil as _shutil
+    stdlib = getattr(_shutil, "_WIN_DEFAULT_PATHEXT", None)
+    if stdlib is None:  # pragma: no cover - stdlib-version dependent
+        pytest.skip("this cpython has no shutil._WIN_DEFAULT_PATHEXT to pin against")
+    assert venv_install_guard._WIN_DEFAULT_PATHEXT == tuple(stdlib.split(";"))
+
+
+@pytest.mark.parametrize(
+    "pathext,label",
+    [
+        (None, "PATHEXT absent from env AND from os.environ"),
+        ("", "PATHEXT set to the empty string"),
+        (os.pathsep.join([".COM", ".EXE", ".BAT"]) + os.pathsep, "trailing separator"),
+        (os.pathsep.join([".COM", ".EXE.", ".BAT"]), "trailing dot on an entry"),
+    ],
+)
+def test_pathext_readings_that_shutil_which_resolves_still_deny(
+    tmp_path, monkeypatch, pathext, label
+):
+    """`shutil.which`'s win32 branch reads `PATHEXT` as
+    `os.getenv("PATHEXT") or _WIN_DEFAULT_PATHEXT`, then
+    `[ext.rstrip('.') for ext in ... if ext]`. Three consequences this scan
+    must share, or a bare `pip install` on Windows resolves to nothing and is
+    ALLOWED into the shared venv:
+
+    * unset OR EMPTY `PATHEXT` falls back to the DEFAULT list — it does not
+      mean "no expansion" (`cmd.exe` still runs `pip.EXE`);
+    * an empty entry, which a trailing `;` produces and real Windows
+      `PATHEXT` values commonly carry, is DROPPED. Keeping it makes
+      `token.endswith("")` true for EVERY token, which flips the candidate
+      ORDER to bare-token-first for everything and produces a false DENY —
+      see `test_a_trailing_separator_does_not_flip_the_candidate_order`;
+    * a trailing dot on an entry is stripped.
+
+    `_IS_WINDOWS` is monkeypatched, exactly as the neighbouring PATHEXT test
+    does: the suffix computation is the only platform-gated branch and the
+    filesystem calls under it are ordinary OS calls on files this test
+    creates."""
+    monkeypatch.setattr(venv_install_guard, "_IS_WINDOWS", True)
+    monkeypatch.delenv("PATHEXT", raising=False)
+    primary, primary_venv = _mkwinvenv(str(tmp_path / "primary"))
+    wt, wt_venv = _mkwinvenv(str(tmp_path / "wt"))
+    env = {"PATH": os.path.join(primary_venv, "bin"), "VIRTUAL_ENV": primary_venv}
+    if pathext is not None:
+        env["PATHEXT"] = pathext
+
+    resolved = venv_install_guard._resolve_installer("pip", wt, env)
+    assert resolved == os.path.join(primary_venv, "bin", "pip.EXE"), (
+        f"{label}: the scan must expand PATHEXT the way shutil.which does; "
+        f"got {resolved!r}"
+    )
+    r = venv_install_guard.denial_reason("pip install evilpkg", cwd=wt, env=env)
+    assert r is not None, (
+        f"{label}: an install into the shared venv outside {wt} must be "
+        "DENIED, not allowed-and-logged because PATHEXT failed to expand"
+    )
+    assert primary_venv in r
+    d = _ev("Bash", {"command": "pip install evilpkg"}, cwd=wt, env=env)
+    assert not d.allow, f"{label}: must be denied via evaluate(): {d.reason}"
+
+
+def test_pathext_negative_control_a_genuinely_absent_installer_is_not_invented(
+    tmp_path, monkeypatch
+):
+    """Positive control for the parametrized test above: the same fixture with
+    NO `pip.EXE` on PATH must resolve to nothing, proving those assertions are
+    about PATHEXT expansion finding a real file and not about the scan
+    accepting any candidate it forms."""
+    monkeypatch.setattr(venv_install_guard, "_IS_WINDOWS", True)
+    monkeypatch.delenv("PATHEXT", raising=False)
+    wt, wt_venv = _mkwinvenv(str(tmp_path / "wt"))
+    empty_bin = tmp_path / "empty-bin"
+    empty_bin.mkdir()
+    env = {"PATH": str(empty_bin)}
+    assert venv_install_guard._resolve_installer("pip", wt, env) is None
+
+
+def test_an_empty_path_entry_is_the_current_directory(tmp_path):
+    """An empty `PATH` entry means THE CURRENT DIRECTORY — POSIX ("a
+    zero-length prefix ... indicates the current working directory") and
+    cpython's `shutil.which`, whose source says so outright ("PATH='' doesn't
+    match, whereas PATH=':' looks in the current directory") and implements it
+    by leaving `os.path.join("", thefile)` relative.
+
+    Skipping that entry made `PATH=:<dir>` plus a `pip` in the session's own
+    cwd — a laundering a coder can set up with one symlink — resolve to
+    NOTHING and fall through to allow-and-log, while the shell the command is
+    actually handed to runs that `pip` and writes into the shared venv."""
+    primary, primary_venv, wt, wt_venv, prod_env, wt_env = _session(tmp_path)
+    os.symlink(os.path.join(primary_venv, "bin", "pip"), os.path.join(wt, "pip"))
+    empty_bin = tmp_path / "empty-bin"
+    empty_bin.mkdir()
+    env = {"PATH": "" + os.pathsep + str(empty_bin), "VIRTUAL_ENV": primary_venv}
+
+    # What the real resolver does with the same PATH, from the same cwd.
+    old = os.getcwd()
+    os.chdir(wt)
+    try:
+        assert shutil.which("pip", path=env["PATH"]) is not None, (
+            "premise: cpython's own resolver finds ./pip through the empty entry"
+        )
+    finally:
+        os.chdir(old)
+
+    resolved = venv_install_guard._resolve_installer("pip", wt, env)
+    assert resolved == os.path.join(primary_venv, "bin", "pip"), (
+        f"the empty PATH entry must resolve against the command's cwd; got {resolved!r}"
+    )
+    r = venv_install_guard.denial_reason("pip install evilpkg", cwd=wt, env=env)
+    assert r is not None and primary_venv in r, (
+        f"must DENY an install that resolves into {primary_venv}: {r!r}"
+    )
+    d = _ev("Bash", {"command": "pip install evilpkg"}, cwd=wt, env=env)
+    assert not d.allow, f"must be denied via evaluate(): {d.reason}"
+
+
+def test_an_empty_path_entry_does_not_invent_a_deny(tmp_path):
+    """Positive control for the test above, and the property that keeps the
+    reading from becoming a blanket DENY: the identical PATH with NO `pip` in
+    the cwd resolves to nothing, and a `pip` in the cwd that belongs to the
+    session's OWN worktree venv stays ALLOWED."""
+    primary, primary_venv, wt, wt_venv, prod_env, wt_env = _session(tmp_path)
+    empty_bin = tmp_path / "empty-bin"
+    empty_bin.mkdir()
+    env = {"PATH": "" + os.pathsep + str(empty_bin)}
+    assert venv_install_guard._resolve_installer("pip", wt, env) is None, (
+        "nothing named pip in the cwd -> nothing to resolve"
+    )
+    # ...and the session's own venv, reached through the same empty entry.
+    os.symlink(os.path.join(wt_venv, "bin", "pip"), os.path.join(wt, "pip"))
+    assert venv_install_guard._resolve_installer("pip", wt, env) == os.path.join(
+        wt_venv, "bin", "pip"
+    )
+    assert venv_install_guard.denial_reason("pip install foo", cwd=wt, env=env) is None, (
+        "installing into the session's OWN worktree venv must stay allowed"
+    )
+
+
+def test_windows_searches_the_current_directory_like_cmd_exe(tmp_path, monkeypatch):
+    """Same class as the empty-entry reading, one platform over: on win32
+    `shutil.which` prepends the current directory (`_win_path_needs_curdir` ->
+    `NeedCurrentDirectoryForExePath`, true unless
+    `NoDefaultCurrentDirectoryInExePath` is set) because that is what
+    `cmd.exe` searches. A `pip.EXE` dropped in the session's cwd that points
+    into the shared venv must therefore be DENIED, not allowed-and-logged."""
+    monkeypatch.setattr(venv_install_guard, "_IS_WINDOWS", True)
+    monkeypatch.delenv("PATHEXT", raising=False)
+    primary, primary_venv = _mkwinvenv(str(tmp_path / "primary"))
+    wt, wt_venv = _mkwinvenv(str(tmp_path / "wt"))
+    os.symlink(os.path.join(primary_venv, "bin", "pip.EXE"),
+               os.path.join(wt, "pip.EXE"))
+    empty_bin = tmp_path / "empty-bin"
+    empty_bin.mkdir()
+    env = {"PATH": str(empty_bin), "VIRTUAL_ENV": primary_venv}
+
+    resolved = venv_install_guard._resolve_installer("pip", wt, env)
+    assert resolved == os.path.join(primary_venv, "bin", "pip.EXE"), (
+        f"the cwd must be searched on Windows, as cmd.exe does; got {resolved!r}"
+    )
+    r = venv_install_guard.denial_reason("pip install evilpkg", cwd=wt, env=env)
+    assert r is not None and primary_venv in r, f"must DENY: {r!r}"
+
+    # Negative control: the identical fixture on POSIX, where the cwd is NOT
+    # on the search path, resolves to nothing — proving the assertion above is
+    # about the win32 curdir rule and not about some other fallback.
+    monkeypatch.setattr(venv_install_guard, "_IS_WINDOWS", False)
+    assert venv_install_guard._resolve_installer("pip", wt, env) is None
+
+
+def _win_pathdir(tmp_path, monkeypatch, names_to_venv):
+    """One PATH directory whose entries point into DIFFERENT venvs.
+
+    `names_to_venv` maps a filename on PATH to either the OWN venv (under the
+    session's cwd) or the FOREIGN one (outside it). Containment under `cwd` is
+    what makes a venv "own" — naming a directory does not.
+    """
+    monkeypatch.setattr(venv_install_guard, "_IS_WINDOWS", True)
+    wt, wt_venv = _mkwinvenv(str(tmp_path / "wt"))
+    foreign, foreign_venv = _mkwinvenv(str(tmp_path / "primary"))
+    pathdir = os.path.join(str(tmp_path), "pathdir")
+    os.makedirs(pathdir, exist_ok=True)
+    for name, which in names_to_venv.items():
+        target = os.path.join(
+            wt_venv if which == "own" else foreign_venv, "bin", "pip.EXE")
+        os.symlink(target, os.path.join(pathdir, name))
+    # `_resolve_installer` splits PATHEXT on `os.pathsep`, which is ":" on the
+    # POSIX hosts that run this suite with `_IS_WINDOWS` monkeypatched. Writing
+    # the Windows ";" spelling here leaves the whole value as ONE bogus
+    # extension and the test silently measures nothing.
+    env = {"PATH": pathdir,
+           "PATHEXT": os.pathsep.join((".COM", ".EXE", ".BAT")),
+           "VIRTUAL_ENV": foreign_venv}
+    return wt, wt_venv, foreign_venv, env
+
+
+def test_the_pathext_candidate_ORDER_matches_which_in_both_of_its_cases(
+    tmp_path, monkeypatch
+):
+    """`shutil.which`'s win32 order is CONDITIONAL and no fixed order matches it.
+
+    `which` builds `[cmd + ext for ext in pathext]` and inserts the BARE token
+    at the FRONT only when the token already ends with a PATHEXT entry. So:
+
+    * bare-token-first is wrong for a plain `pip` — it resolves an
+      extensionless decoy ahead of the `pip.EXE` the shell would run;
+    * bare-token-last is wrong for `pip.exe` — `which` prefers the bare token
+      there, and appending it lets `pip.exe.COM` win instead.
+
+    Each fixed order produces a FALSE DENY in the case the other gets right;
+    both were measured before this test existed. This pins the condition, and
+    it is the only thing that does — reverting the order left every other test
+    green.
+    """
+    # Case 1: plain token. `which` runs pip.EXE (own) -> must ALLOW.
+    wt, wt_venv, _, env = _win_pathdir(
+        tmp_path / "a", monkeypatch, {"pip": "foreign", "pip.EXE": "own"})
+    got = venv_install_guard._resolve_installer("pip", wt, env)
+    assert got == os.path.join(wt_venv, "bin", "pip.EXE"), (
+        "a bare token must not resolve an extensionless decoy ahead of the "
+        f"pip.EXE the shell would run; got {got!r}")
+
+    # Case 2: the mirror. `which` runs pip.EXE (foreign) -> must DENY.
+    wt2, _, foreign2, env2 = _win_pathdir(
+        tmp_path / "b", monkeypatch, {"pip": "own", "pip.EXE": "foreign"})
+    got2 = venv_install_guard._resolve_installer("pip", wt2, env2)
+    assert got2 == os.path.join(foreign2, "bin", "pip.EXE"), (
+        f"the foreign pip.EXE is what the shell runs; got {got2!r}")
+
+    # Case 3: token ALREADY carries an extension. `which` puts the bare token
+    # FIRST here, so pip.exe (own) must win over pip.exe.COM (foreign).
+    wt3, wt3_venv, _, env3 = _win_pathdir(
+        tmp_path / "c", monkeypatch,
+        {"pip.exe": "own", "pip.exe.COM": "foreign"})
+    got3 = venv_install_guard._resolve_installer("pip.exe", wt3, env3)
+    assert got3 == os.path.join(wt3_venv, "bin", "pip.EXE"), (
+        "an already-extended token prefers the bare spelling, as which does; "
+        f"got {got3!r}")
+
+
+def test_a_trailing_separator_does_not_flip_the_candidate_order(
+    tmp_path, monkeypatch
+):
+    """`.COM;.EXE;.BAT;` is an ordinary Windows `PATHEXT`, and the empty entry
+    it produces must not reach the ORDER condition.
+
+    That condition asks whether the token already ends with a PATHEXT entry,
+    and `"PIP".endswith("")` is true for EVERY token. So a surviving empty
+    entry flips every token to bare-token-first and reinstates exactly the
+    false DENY the conditional order exists to prevent. The `if ext` filter in
+    `_resolve_installer` is what stops that, and before this test nothing
+    measured it: replacing the filter with `if True` left the whole suite
+    green while resolving the FOREIGN venv here.
+    """
+    wt, wt_venv, foreign_venv, env = _win_pathdir(
+        tmp_path, monkeypatch, {"pip": "foreign", "pip.EXE": "own"})
+    env["PATHEXT"] = os.pathsep.join((".COM", ".EXE", ".BAT")) + os.pathsep
+
+    got = venv_install_guard._resolve_installer("pip", wt, env)
+    assert got == os.path.join(wt_venv, "bin", "pip.EXE"), (
+        "a trailing PATHEXT separator must not flip the candidate order; "
+        f"the shell runs pip.EXE (own venv), got {got!r}")
+    assert venv_install_guard.denial_reason(
+        "pip install requests", cwd=wt, env=env) is None, (
+        "resolving the session's OWN venv must not be denied")
