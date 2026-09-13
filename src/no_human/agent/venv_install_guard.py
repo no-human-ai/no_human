@@ -150,6 +150,34 @@ residual set is CAPABILITY-level: run coder sessions with the shared dev
 venv not writable by the session's UID (or a read-only bind-mount) and
 with ``VIRTUAL_ENV``/``UV_PROJECT_ENVIRONMENT`` pinned to the worktree's
 own venv for the whole session — not attempted in this ticket.
+
+  - **Bugfix (this ticket): an unreadable ``pyvenv.cfg`` used to ALLOW.**
+    ``chmod`` on a venv directory (e.g. ``chmod 600``/``chmod -x``) strips
+    its execute bit, so anything inside it cannot be stat'd, while the
+    directory itself still stats fine from its parent. ``os.path.isfile``
+    swallows the resulting ``PermissionError`` and reports ``False`` —
+    indistinguishable from "no ``pyvenv.cfg`` here" — so ``_venv_root_of``
+    concluded "owns no venv" and the shared venv stopped being a write
+    candidate. The bare-token branch of ``_resolve_installer`` had the
+    same swallow one layer deeper: it resolved PATH entries via
+    ``shutil.which``, which calls ``os.path.exists`` internally and
+    reports the same ``PermissionError`` as "not found" — and because
+    this branch runs BEFORE the venv-root probe below it, a bare ``pip
+    install evilpkg`` (the spelling a coder actually types, no explicit
+    path) never reached ``_venv_root_of`` at all: it fell through to the
+    unresolvable-installer allow-and-log branch instead. Fixed by probing
+    tri-state (``_probe_is_file``/``_probe_is_dir``: ``True``/``False``/
+    ``None`` = "undetermined") and failing closed (``is not False``) at
+    every site that used to ask ``os.path.isfile``/``os.path.isdir``/
+    ``shutil.which`` directly (``None`` means undetermined). Scoped
+    honestly: in the DEFAULT layout the primary checkout's own ``.venv``
+    was never the hole (``guard._protected_venvs``'s ``is_dir`` branch is
+    unaffected by this particular ``chmod``) — what this closes is the
+    structural resolution in this module (``_venv_root_of``,
+    ``_resolve_installer``'s explicit-path AND bare-token branches, the
+    ``--python``/directory-token probes above) and the ``sys.prefix``
+    backstop in ``guard.py``, all of which failed open on exactly this
+    input before this fix.
 """
 
 from __future__ import annotations
@@ -157,7 +185,7 @@ from __future__ import annotations
 import logging
 import os
 import shlex
-import shutil
+import stat
 from pathlib import Path, PurePosixPath
 from typing import Mapping
 
@@ -167,6 +195,15 @@ from . import win_readings
 _IS_WINDOWS = win_readings._IS_WINDOWS
 
 _LOG = logging.getLogger(__name__)
+
+#: The extension list cpython's `shutil.which` falls back to when `PATHEXT`
+#: is unset OR empty (`shutil._WIN_DEFAULT_PATHEXT`). Held as a tuple, not the
+#: `;`-joined string the stdlib keeps, so reading it does not depend on
+#: `os.pathsep`: the stdlib spelling is a Windows literal whose separator is
+#: `;` by definition, while `os.pathsep` is `:` on the POSIX hosts that run
+#: this suite with `_IS_WINDOWS` monkeypatched. Pinned against the stdlib's
+#: own value by a test, so it cannot drift silently.
+_WIN_DEFAULT_PATHEXT = (".COM", ".EXE", ".BAT", ".CMD", ".VBS", ".JS", ".WS", ".MSC")
 
 #: Shell interpreters whose ``-c``/``-lc`` argument is a script to execute —
 #: recursion is scoped to these so `echo "pip install foo"` (argument text
@@ -450,23 +487,59 @@ def _safe_realpath(path: str) -> str | None:
         return None
 
 
+def _probe_is_file(path: str) -> bool | None:
+    """True = is a regular file; False = definitively NOT there (or not a
+    file); None = COULD NOT BE DETERMINED (e.g. a `chmod` that blocks
+    stat'ing it or a parent directory).
+
+    Deliberately not `os.path.isfile`, which catches every `OSError` inside
+    the stdlib and reports `False` — making "unreadable" indistinguishable
+    from "absent". Callers that must fail closed on an undetermined probe
+    test `is not False`.
+    """
+    try:
+        return stat.S_ISREG(os.stat(path).st_mode)
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+    except (OSError, ValueError):
+        return None
+
+
+def _probe_is_dir(path: str) -> bool | None:
+    """Same tri-state contract as `_probe_is_file`, for directories."""
+    try:
+        return stat.S_ISDIR(os.stat(path).st_mode)
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+    except (OSError, ValueError):
+        return None
+
+
 def _venv_root_of(exe_path: str) -> str | None:
-    """The venv root owning `exe_path` (`<root>/pyvenv.cfg` exists), or None.
+    """The venv root owning `exe_path` (`<root>/pyvenv.cfg` exists), or None
+    ONLY when a venv is definitively absent there.
 
     A filesystem probe, not a text match — this is what lets `source
     .../activate && pip install foo` resolve correctly even though
     `activate` is never itself treated as an installer: `pip` resolves via
     PATH to the same venv's `bin/pip`, and this probe finds its root.
+
+    Tri-state via `_probe_is_file`: a root whose `pyvenv.cfg` cannot be
+    determined (`None` — e.g. the venv directory's execute bit was
+    stripped) is treated as A VENV ROOT, not as "no venv here" — a root
+    that cannot be determined must fail closed so the write candidate is
+    kept and the install refused. Only a determinate `False` (no
+    `pyvenv.cfg` at all) returns `None` here. (The old `except OSError:
+    pass` this replaced was unreachable dead code: `os.path.isfile`,
+    which it guarded, already swallows every `OSError` itself one line
+    above — that swallow, not a missing guard, was the bug.)
     """
     parent = os.path.dirname(exe_path)
     root = os.path.dirname(parent)
     if not root:
         return None
-    try:
-        if os.path.isfile(os.path.join(root, "pyvenv.cfg")):
-            return os.path.realpath(root)
-    except OSError:  # pragma: no cover - defensive
-        pass
+    if _probe_is_file(os.path.join(root, "pyvenv.cfg")) is not False:
+        return _safe_realpath(root) or root
     return None
 
 
@@ -484,8 +557,24 @@ def _resolve_installer(token: str, cwd: str | None, env: Mapping[str, str]) -> s
     try:
         if "/" in token:
             real = _safe_realpath(_join(cwd, token))
-            if real and os.path.isfile(real) and _is_installer_name(_basename(real)):
-                return real
+            if real and _is_installer_name(_basename(real)):
+                probe = _probe_is_file(real)
+                # `None` (undeterminable — e.g. a `chmod` on the venv
+                # directory two levels up makes even stat'ing this file
+                # raise `PermissionError`) is NOT the same as `False`
+                # (genuinely absent): a resolution that cannot be verified
+                # must still count as resolved, or the install-target probe
+                # downstream (`_venv_root_of` via `_effective_prefixes`)
+                # never sees this installer at all.
+                if probe is not False:
+                    if probe is None:
+                        _LOG.warning(
+                            "venv guard: %r resolved to %r but its file "
+                            "type could not be verified (permission "
+                            "denied?); treating it as a resolved installer "
+                            "rather than assuming it is absent", token, real,
+                        )
+                    return real
             if _is_installer_name(_basename(token)):
                 _LOG.warning(
                     "venv guard: %r names an installer but could not be "
@@ -501,16 +590,176 @@ def _resolve_installer(token: str, cwd: str | None, env: Mapping[str, str]) -> s
         # `pip.exe install foo` was allowed in silence.
         if not _is_installer_name(_basename(token)):
             return None
-        found = shutil.which(token, path=env.get("PATH"))
-        if not found:
+        # Deliberately NOT `shutil.which`: it resolves via `os.path.exists`
+        # internally, which swallows `PermissionError` exactly like
+        # `os.path.isfile` did above — a `chmod` on a `PATH` directory (or
+        # the venv it leads into) would make `which` report "not found",
+        # indistinguishable from "genuinely not on PATH", and this bare-
+        # token spelling (`pip install evilpkg`, no explicit path) is the
+        # one a coder actually types. Walked by hand with `_probe_is_file`
+        # so an undetermined probe still counts as resolved.
+        #
+        # `env.get("PATH")` returning `None` (the key is simply absent from
+        # a caller-supplied `env` mapping) is not the same as an explicit,
+        # empty `PATH=""` — `shutil.which(path=None)` falls back to the
+        # real process `PATH` in that case, and this mirrors it, so a caller
+        # that omits the key entirely searches the same PATH trunk did.
+        path_value = env.get("PATH")
+        if path_value is None:
+            path_value = os.environ.get("PATH", os.defpath)
+        # PATHEXT parity with `shutil.which`: on Windows a bare `pip` on
+        # `PATH` names `pip.exe` on disk, not a file literally called `pip`.
+        # `shutil.which` expands `PATHEXT` internally; hand-walking `PATH`
+        # without doing the same would make `os.path.join(directory, token)`
+        # name a file that never exists, so the bare-token spelling this
+        # module's own comment calls "the spelling a coder actually types"
+        # would stop resolving on Windows and fall through to allow-and-log.
+        # Read the way cpython's win32 branch reads it, which is not the same
+        # as splitting the raw value — three divergences, each measured as a
+        # DENY->ALLOW on a Windows-shaped venv before this spelling:
+        #
+        #   * `os.getenv("PATHEXT") or _WIN_DEFAULT_PATHEXT` — an UNSET *or
+        #     EMPTY* `PATHEXT` falls back to the DEFAULT extension list. It
+        #     does not mean "no expansion": `cmd.exe` still runs `pip.EXE`
+        #     when `PATHEXT` is empty, so a guard that stops expanding there
+        #     simply stops resolving the installer.
+        #   * `[... for ext in pathext if ext]` — an EMPTY entry is DROPPED,
+        #     matching `which`. DO NOT REMOVE THIS FILTER. It is load-bearing
+        #     for the ORDER condition below, which asks whether the token
+        #     already ends with a PATHEXT entry — and `"PIP".endswith("")` is
+        #     TRUE FOR EVERY TOKEN. So one empty entry, which the ordinary
+        #     Windows spelling `.COM;.EXE;.BAT;` produces, would flip every
+        #     token to bare-token-first and reinstate the false DENY that
+        #     order exists to prevent. Measured on the row-H shape: with the
+        #     filter, `.COM;.EXE;.BAT;` resolves the OWN venv (ALLOW); with
+        #     `if True` it resolves the FOREIGN one (DENY).
+        #   * `ext.rstrip('.')` — a trailing dot is stripped.
+        #
+        # The ONE place this deliberately does not copy `which`: the bare
+        # token is ALWAYS tried as well, not only when it already carries one
+        # of those extensions (`which` adds it conditionally, via
+        # `files.insert(0, cmd)`). `which`'s job is to predict what will
+        # execute, so declining to consider a candidate is free; this
+        # function's job is to find every path an install could WRITE
+        # through, and an unconsidered candidate is a silent ALLOW.
+        # Measured: making it exact parity instead turned 15 existing
+        # `test_windows_command_readings.py` cases (a POSIX-named `pip` on a
+        # `PATH` read with `_IS_WINDOWS` true) from DENY to ALLOW.
+        #
+        # ORDER IS LOAD-BEARING, and a wider candidate SET is not by itself
+        # safe. `_resolve_installer` returns the FIRST match, so an extra
+        # candidate placed ahead of `which`'s own winner REPLACES it rather
+        # than adding to it. With the bare token first, a single Windows
+        # `PATH` directory holding both `pip` (foreign venv) and `pip.EXE`
+        # (this session's venv) resolved to the foreign one and produced a
+        # DENY the shell would never have earned — and its mirror produced a
+        # fresh ALLOW. The order below therefore mirrors `which`'s CONDITION
+        # rather than picking a fixed side of it.
+        if _IS_WINDOWS:
+            pathext_value = env.get("PATHEXT")
+            if pathext_value is None:
+                pathext_value = os.environ.get("PATHEXT")
+            if pathext_value:
+                pathext = [
+                    ext.rstrip(".")
+                    for ext in pathext_value.split(os.pathsep)
+                    if ext
+                ]
+            else:
+                pathext = list(_WIN_DEFAULT_PATHEXT)
+            # `which`'s own order is CONDITIONAL: it puts the bare token
+            # FIRST when the token already ends with a PATHEXT entry, and
+            # omits it entirely otherwise. Neither fixed order can match
+            # both cases -- measured, each fixed order produces a false
+            # DENY in the case the other gets right. So mirror the
+            # condition, and APPEND the bare token in the branch `which`
+            # omits it: that append is what carries the 15
+            # `test_windows_command_readings.py` refusals, and deleting it
+            # turns them red.
+            suffixes = list(pathext)
+            if any(token.upper().endswith(ext.upper()) for ext in pathext):
+                suffixes.insert(0, "")
+            else:
+                suffixes.append("")
+        else:
+            suffixes = [""]
+        # A candidate whose file type could not be determined (permission
+        # denied on an ancestor directory, a dead NFS mount, ...) is kept as
+        # a FALLBACK rather than returned immediately: a `PATH` entry that
+        # merely could not be stat'd must not pre-empt a LATER, determinate
+        # match — a POSIX shell skips an EACCES entry and keeps walking, so
+        # `command -v`/`type -p` resolve past it to the same later match a
+        # determinate scan below finds. Returning the undetermined entry
+        # first (measured: an unreadable directory placed ahead of the
+        # session's own venv on `PATH`) resolved to a path that could never
+        # execute and DENIED an install that would have gone into the
+        # coder's own venv — a false DENY, not a fail-closed one. Only when
+        # the WHOLE scan turns up no determinate match does the remembered
+        # fallback get used, and even then it counts as "resolved" rather
+        # than "absent" — undetermined must not collapse into
+        # found-to-be-missing either.
+        fallback = None
+        directories = path_value.split(os.pathsep)
+        if _IS_WINDOWS:
+            # Same reading as the empty entry below, one platform over:
+            # `shutil.which` prepends the current directory on win32
+            # because that is what `cmd.exe` searches. `which` gates this on
+            # `_win_path_needs_curdir` (`_winapi.NeedCurrentDirectoryForExePath`,
+            # false when `NoDefaultCurrentDirectoryInExePath` is set); this
+            # inserts unconditionally. On a real Windows host `_winapi` IS
+            # importable, so this is a CHOICE, not an impossibility: it is the
+            # POSIX hosts running this suite with `_IS_WINDOWS` monkeypatched
+            # that cannot read it, and over-searching is the fail-closed side. That is a
+            # deliberate over-search, not parity: with the registry key set,
+            # this considers a directory the shell would skip. It is also
+            # not certain to be the shell's cwd at exec time — `cd foo &&
+            # pip install ...` moves it. Both are accepted as fail-closed.
+            directories.insert(0, cwd or os.curdir)
+        for directory in directories:
+            if not directory:
+                # An EMPTY `PATH` entry is THE CURRENT DIRECTORY, not a hole
+                # to skip. POSIX: "a zero-length prefix ... indicates the
+                # current working directory". cpython's `shutil.which` says
+                # it outright — "PATH='' doesn't match, whereas PATH=':'
+                # looks in the current directory" — and implements it by
+                # leaving `os.path.join("", thefile)` relative. Skipping it
+                # made `PATH=:<dir>` plus a `pip` in the session's own cwd
+                # resolve to NOTHING and fall through to allow-and-log, while
+                # the shell the coder types into runs that `pip`. Resolved
+                # against the COMMAND's `cwd`, not this process's, because
+                # that is where the command actually runs.
+                directory = cwd or os.curdir
+            for suffix in suffixes:
+                candidate = os.path.join(directory, token + suffix)
+                probe = _probe_is_file(candidate)
+                if probe is False:
+                    continue
+                if probe is None:
+                    if fallback is None:
+                        real = _safe_realpath(candidate) or candidate
+                        if _is_installer_name(_basename(real)):
+                            fallback = real
+                    continue
+                # probe is True: a real, stat'able candidate — `shutil.which`
+                # also filters on executability before accepting a match, so
+                # this mirrors that (not the swallowing part, just the filter).
+                if not os.access(candidate, os.X_OK):
+                    continue
+                real = _safe_realpath(candidate)
+                if real and _is_installer_name(_basename(real)):
+                    return real
+        if fallback is not None:
             _LOG.warning(
-                "venv guard: %r names an installer but could not be "
-                "resolved via PATH; allowing", token,
+                "venv guard: %r resolved via PATH to %r but its file type "
+                "could not be verified (permission denied?); treating it "
+                "as a resolved installer rather than assuming it is absent",
+                token, fallback,
             )
-            return None
-        real = _safe_realpath(found)
-        if real and _is_installer_name(_basename(real)):
-            return real
+            return fallback
+        _LOG.warning(
+            "venv guard: %r names an installer but could not be "
+            "resolved via PATH; allowing", token,
+        )
         return None
     except (OSError, ValueError):  # pragma: no cover - defensive
         return None
@@ -783,7 +1032,7 @@ def _effective_prefixes(
         # e.g. `--python /usr/bin/python3.11`) still falls through to
         # `real` unchanged, so a genuine out-of-tree target is still
         # blocked.
-        owning = _venv_root_of(joined) if os.path.isfile(real) else None
+        owning = _venv_root_of(joined) if _probe_is_file(real) is not False else None
         candidates.add(owning or real)
 
     # The venv owning each resolved installer — for pip/python only. `pip`/
@@ -813,7 +1062,7 @@ def _effective_prefixes(
         if not _looks_like_path(tok):
             continue
         real = _safe_realpath(_join(cwd, tok))
-        if real and os.path.isdir(real):
+        if real and _probe_is_dir(real) is not False:
             candidates.add(real)
 
     return candidates
