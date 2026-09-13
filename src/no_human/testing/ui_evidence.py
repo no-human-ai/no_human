@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from typing import Callable
 import hashlib
 import inspect
 import json
@@ -1184,6 +1185,99 @@ async def _dispatch(page, step: Step, base_url: str, out_dir: Path, shots: list)
                 await _maybe_await(waiter(value))
     else:  # pragma: no cover - validation forbids this
         raise RuntimeError(f"unknown action: {action}")
+
+
+def frame_lines(shots: list[dict], alt_prefix: str,
+                raw_url: Callable[[str], str],
+                max_frames: int) -> tuple[list[str], int]:
+    """Markdown for `shots`, and how many shots it could not show.
+
+    Returns `(lines, omitted)`. The cap is on DISTINCT FRAMES, applied AFTER
+    grouping, and that ordering is the whole point: capping the shot list
+    first spends the budget on repeats. Measured on a walk of six identical
+    frames followed by two genuinely different page states, a
+    cap-then-group order rendered ONE embed and hid both distinct states
+    behind "+2 more" -- with five embed slots still free.
+
+    `raw_url` turns a shot's repo-relative path into the URL the PR body
+    links; the caller owns it because only it knows the evidence branch.
+    """
+    runs = frame_runs(shots)
+    kept, dropped = runs[:max_frames], runs[max_frames:]
+    out: list[str] = []
+    for first, names in kept:
+        out.append(f"![{alt_prefix}{first['name']}]({raw_url(first['path'])})")
+        note = repeat_note(names)
+        if note is not None:
+            out.append(note)
+    return out, sum(len(names) for _, names in dropped)
+
+
+def shot_record(name: str, rel_path: str, data: bytes,
+                sha256: str | None = None) -> dict:
+    """One delivered frame, carrying the digest `frame_runs` groups on.
+
+    The digest is taken here, where the bytes have just been read for
+    delivery, so grouping costs no second read of the file.
+    """
+    return {"name": name, "path": rel_path,
+            "sha256": sha256 or hashlib.sha256(data).hexdigest()}
+
+
+def video_line(url: str) -> str:
+    """The PR-body line for the walk video at `url`.
+
+    It says "download" because that is what the link does. Measured against
+    the raw host that serves the evidence branch, the response carries
+    `content-type: audio/webm`, `content-disposition: attachment` and
+    `x-content-type-options: nosniff` -- the browser is told it is audio,
+    told not to sniff, and told to save it. A bare `[walk video](...)` reads
+    as an inline player, and an HTML `<video>` tag pointing here would render
+    an empty box.
+    """
+    return (f"[walk video]({url}) -- downloads the `.webm`; the raw host "
+            f"serves it as an attachment, so it does not play inline here.")
+
+
+def frame_runs(shots: list[dict]) -> list[tuple[dict, list[str]]]:
+    """`shots` grouped so each consecutive run of byte-identical frames is one
+    entry: `(the first shot of the run, every step name in it)`.
+
+    A walk step that re-captures the same pixels observed nothing new, and
+    rendering it as its own frame asserts a page change that did not happen --
+    PR #317 shipped `landing`, `landing-settled` and `final` as three embeds
+    of one file (sha256 `f57898ac...`, 81304 bytes, all three).
+
+    Only a CONSECUTIVE repeat groups. An A/B/A walk really did change and
+    change back, so all three of its steps stay separate. A shot carrying no
+    `sha` never groups, so a digest that could not be taken shows MORE frames
+    rather than silently merging distinct ones.
+    """
+    runs: list[tuple[dict, list[str]]] = []
+    for shot in shots:
+        prev = runs[-1][0] if runs else None
+        digest = shot.get("sha256")
+        if prev is not None and digest and prev.get("sha256") == digest:
+            runs[-1][1].append(str(shot.get("name", "")))
+        else:
+            runs.append((shot, [str(shot.get("name", ""))]))
+    return runs
+
+
+def repeat_note(names: list[str]) -> str | None:
+    """The line disclosing that a run of `names` produced one image, or None.
+
+    Says only what was measured: the same bytes came back. It deliberately
+    makes NO claim about the page -- identical pixels do not mean the page
+    did not change (a modal can open and close, a scroll can return, a reload
+    can restore), and a save-then-reload walk is a case where identical
+    pixels are the POINT rather than a redundancy.
+    """
+    if len(names) < 2:
+        return None
+    repeats = ", ".join(f"`{n}`" for n in names[1:])
+    return (f"_{len(names) - 1} further step(s) -- {repeats} -- captured a "
+            f"byte-identical image, so it is embedded once above._")
 
 
 def _finalize_video(out_dir: Path) -> str | None:
