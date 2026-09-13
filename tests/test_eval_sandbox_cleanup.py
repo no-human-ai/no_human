@@ -157,6 +157,33 @@ async def test_run_shadow_passes_its_event_sink_to_cleanup(tmp_path, monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_cleanup_survives_a_root_it_cannot_even_stat(tmp_path):
+    """``Path.exists()`` re-raises EACCES instead of returning False when an
+    ancestor directory becomes unreadable — a bare ``base_tmp.exists()``
+    check would let that propagate straight out of ``_remove_sandbox`` and
+    (since it is called from a ``finally:``) destroy whatever the caller's
+    original error was. "Cannot tell if it's gone" must not raise and must
+    not be treated as "it's gone"."""
+    if os.name != "posix":
+        pytest.skip("chmod-based permission test needs POSIX")
+    if hasattr(os, "getuid") and os.getuid() == 0:
+        pytest.skip("root ignores directory permission bits")
+
+    outer = tmp_path / "outer"
+    outer.mkdir()
+    base = outer / "sbx"
+    base.mkdir()
+    (base / "f.txt").write_text("x")
+    os.chmod(outer, 0o000)  # even stat()-ing `base` now raises EACCES
+    try:
+        result = _remove_sandbox(base)  # must not raise
+        assert isinstance(result, list)
+    finally:
+        os.chmod(outer, 0o700)
+        shutil.rmtree(outer, ignore_errors=True)
+
+
+@pytest.mark.asyncio
 async def test_a_caller_supplied_workdir_is_never_removed(tmp_path, monkeypatch):
     eval_workdir = tmp_path / "eval_wd"
     eval_workdir.mkdir()

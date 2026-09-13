@@ -169,6 +169,77 @@ def test_sandbox_residue_measures_files_not_directories(tmp_path):
     assert residue["cleanup_incomplete"] is True
 
 
+def test_sandbox_residue_reports_truncation_as_a_floor(tmp_path):
+    """When the walk stops at ``max_entries``, the counts collected so far
+    are a floor, not a total — a caller must be able to tell that more
+    residue may exist beyond what was counted."""
+    d = tmp_path / "big"
+    d.mkdir()
+    for i in range(10):
+        (d / f"f{i}.bin").write_bytes(b"x" * 100)
+
+    residue = sandbox_residue(d, max_entries=5)
+    assert residue["truncated"] is True
+    assert residue["files"] == 5
+    assert residue["bytes"] == 500  # only the first 5 counted, not all 1000
+
+    residue = sandbox_residue(d, max_entries=50)
+    assert residue["truncated"] is False
+    assert residue["files"] == 10
+    assert residue["bytes"] == 1000
+
+
+async def test_a_truncated_measurement_never_claims_nothing_to_reclaim(
+    store, monkeypatch
+):
+    """A walk that hits the entry cap has only measured a floor. The
+    advisory must say the measurement stopped early and must never claim
+    there is "no measurable disk to reclaim" for a tree it did not finish
+    reading — that claim requires having actually finished reading it."""
+    import os
+    import shutil
+    import tempfile
+    import time
+    from pathlib import Path
+
+    from no_human import doctor as doctor_mod
+
+    sandbox = (
+        Path(tempfile.gettempdir())
+        / f"nh-eval-doctortest-truncated-{os.getpid()}"
+    )
+    sandbox.mkdir(exist_ok=True)
+    old = time.time() - 3 * 3600
+    os.utime(sandbox, (old, old))
+
+    real_residue = doctor_mod.sandbox_residue
+
+    def _fake_residue(path, **kwargs):
+        if path == sandbox:
+            # Mirrors a real above-the-cap tree: a huge file count, and the
+            # bytes counted before the cap happen to be zero (e.g. the first
+            # entries walked were empty placeholders) — the dangerous case,
+            # since it is what makes "no measurable disk to reclaim" look
+            # superficially justified when it is not.
+            return {
+                "files": 50000, "bytes": 0, "truncated": True,
+                "unreadable": False, "cleanup_incomplete": False,
+            }
+        return real_residue(path, **kwargs)
+
+    monkeypatch.setattr(doctor_mod, "sandbox_residue", _fake_residue)
+    try:
+        d = await diagnose(store)
+        matches = [a for a in d.advisories if str(sandbox) in a]
+        assert matches, d.advisories
+        advisory = matches[0]
+        assert "no measurable disk to reclaim" not in advisory, advisory
+        assert "50000" in advisory, advisory
+        assert "stopped early" in advisory or "at least" in advisory, advisory
+    finally:
+        shutil.rmtree(sandbox, ignore_errors=True)
+
+
 def test_a_nonexecutable_subdirectory_does_not_hide_its_bytes(tmp_path):
     """A subdirectory that is readable but not searchable (mode 0o400) lets
     `os.walk` enumerate its entry names (readdir only needs read) but makes

@@ -934,7 +934,14 @@ def _apply_sandbox_outlived_advisories(d: "Diagnosis") -> None:
     naming a cause. Reported whenever there is something to say: measured
     bytes, an unreadable subtree (unknown — never treated as zero), or a
     recorded cleanup failure even if it left only empty directories. A
-    residue that is both empty AND has no recorded failure is not reported.
+    residue that is both empty AND has no recorded failure is not reported —
+    this is a deliberate trade-off (0.4 intake), not an oversight: a
+    directory tree with zero files (however many empty subdirectories) holds
+    no bytes a user would reclaim, so surfacing it would be noise on a
+    command read to find real problems, at the cost of not naming any
+    directory-only skeletons that a legacy/SIGKILL death (not this harness's
+    own cleanup, which always leaves a marker when it cannot finish) may
+    have left behind.
     Advisory only, never a contradiction, so it never fails the doctor gate.
     >2h old avoids flagging a sandbox from an eval that is still running."""
     from .eval.harness import CLEANUP_MARKER
@@ -956,6 +963,16 @@ def _apply_sandbox_outlived_advisories(d: "Diagnosis") -> None:
 
                 if residue["unreadable"]:
                     size_text = "size could not be fully measured (permission denied)"
+                    reclaim_clause = f"; `rm -rf {entry}` to reclaim disk"
+                elif residue["truncated"]:
+                    # The walk stopped at the entry cap — both counts are a
+                    # floor, not a total. Never claim there is nothing left
+                    # to reclaim for a tree we did not finish reading.
+                    size_text = (
+                        f"at least {residue['files']} file(s), at least "
+                        f"{_human_bytes(residue['bytes'])} (measurement "
+                        "stopped early)"
+                    )
                     reclaim_clause = f"; `rm -rf {entry}` to reclaim disk"
                 elif residue["bytes"] > 0:
                     size_text = f"{residue['files']} file(s), {_human_bytes(residue['bytes'])}"

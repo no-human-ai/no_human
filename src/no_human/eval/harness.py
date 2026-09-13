@@ -23,6 +23,20 @@ from .scorecard import GateResult, Scorecard, ci_gate
 CLEANUP_MARKER = ".nh-cleanup-incomplete"
 
 
+def _still_present(p: Path) -> bool:
+    """``Path.exists()`` re-raises ``PermissionError`` (EACCES) instead of
+    returning ``False`` when an ancestor directory becomes unreadable mid
+    cleanup — it does not mean the path is gone, it means we cannot tell.
+    Treat "cannot tell" as "still there": the dangerous direction here is
+    concluding cleanup succeeded (and discarding the recorded failures)
+    when we never actually confirmed it, not the reverse.
+    """
+    try:
+        return p.exists()
+    except OSError:
+        return True
+
+
 def _remove_sandbox(
     base_tmp: Path, on_event: Callable[[dict], None] | None = None
 ) -> list[str]:
@@ -49,7 +63,7 @@ def _remove_sandbox(
     # have finished the job, so the filesystem — not the callback log — is
     # the source of truth for whether anything is actually left. A
     # root-level FileNotFoundError (nonexistent target) is therefore success.
-    if not base_tmp.exists() or not failed:
+    if not _still_present(base_tmp) or not failed:
         return []
 
     if len(failed) > 50:
