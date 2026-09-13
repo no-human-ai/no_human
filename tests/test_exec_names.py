@@ -1,0 +1,293 @@
+r"""A trailing `.exe` must not walk past the never-merge and never-push gates.
+
+Issue #305. `guard.py` resolved argv[0] with `PurePosixPath(argv[0]).name` and
+compared it against bare lowercase names. `nh.exe` is not `nh`, so three
+`GUARD_DESTRUCTIVE` checks stopped firing, two of which enforce constraint #2,
+that the agent never merges.
+
+The issue was filed about the suffix. Measuring its five rows turned up two
+more defects at the same sites, and a fix for any one alone leaves the others
+open, so all three are pinned here:
+
+    git.exe push origin main        the suffix is never stripped
+    GIT push origin main            never case-folded, though on Windows
+                                    `GIT` and `git` are the same file
+    C:/tools/git.exe push ...       `PurePosixPath` does not split a backslash
+
+WHAT THIS DOES NOT CLOSE, and why that is not this change's to close:
+an UNQUOTED backslash path (`C:\tools\git.exe push origin main`) still passes,
+because POSIX `shlex` deletes the separators before any name resolution
+happens. `guard.py` does not consult `win_readings`, which is the half of #105
+that PR #301 fixed for the venv guard only. `_basename`'s docstring already
+says a caller is expected to have been offered the `/`-normalised spelling by
+then. The quoted spelling of the same path IS closed here, because quoting
+preserves the backslashes for the resolver to split. A space additionally
+splits the token, which is issue #312.
+"""
+from __future__ import annotations
+
+import pytest
+
+from no_human.agent import exec_names, guard
+from no_human.agent.guard import evaluate
+
+
+def _decide(command: str) -> bool:
+    """True when the guard DENIES `command`."""
+    decision = evaluate(
+        "Bash", {"command": command},
+        forbidden_paths=[], never_push_to=["main"], cwd=".", env={"PATH": ""})
+    return not decision.allow
+
+
+@pytest.fixture
+def on_windows(monkeypatch):
+    """Run the gate as a Windows host reads it, whatever host this is.
+
+    `guard._IS_WINDOWS` is a module constant precisely so a test can flip it,
+    which is what makes the Windows behaviour testable on a POSIX runner and
+    the POSIX behaviour testable on a Windows one. Without this the rows below
+    that cover the gated half pass on Windows and fail on CI, which is the same
+    blind spot the bug itself lives in.
+    """
+    monkeypatch.setattr(guard, "_IS_WINDOWS", True)
+
+
+@pytest.fixture
+def on_posix(monkeypatch):
+    monkeypatch.setattr(guard, "_IS_WINDOWS", False)
+
+
+# ----------------------------------------------------------------- the reader
+
+@pytest.mark.parametrize(
+    ("token", "expected"),
+    [
+        ("git", "git"),
+        ("git.exe", "git"),
+        ("GIT.EXE", "git"),
+        ("/usr/bin/git", "git"),
+        ("/usr/bin/git.exe", "git"),
+        ("C:/tools/git.exe", "git"),
+        (r"C:\tools\git.exe", "git"),
+        (r"C:\Program Files\Git\cmd\git.exe", "git"),
+        (r"C:/tools\git.exe", "git"),          # mixed separators
+        ("/bin/sh/", "sh"),                    # trailing separator, cf. _basename
+        # Every extension Windows executes, not only `.exe`. A CLI installed by
+        # scoop or npm is spelled `gh.cmd`, which is the spelling users have.
+        ("gh.cmd", "gh"),
+        ("nh.bat", "nh"),
+        ("gh.ps1", "gh"),
+        ("git.com", "git"),
+        ("GH.CMD", "gh"),
+        # Win32 strips trailing dots when resolving.
+        ("gh.", "gh"),
+        ("nh.exe.", "nh"),
+        # NTFS default data stream opens the same file.
+        ("gh.exe::$DATA", "gh"),
+        (r"C:\tools\gh.cmd::$DATA", "gh"),
+        ("", ""),
+    ],
+)
+def test_windows_reads_either_separator_and_folds_case(token, expected):
+    assert exec_names.command_name(token, is_windows=True) == expected
+
+
+@pytest.mark.parametrize(
+    ("token", "expected"),
+    [
+        ("git", "git"),
+        ("git.exe", "git"),                    # suffix strip is NOT gated (#107)
+        ("/usr/bin/git", "git"),
+        ("C:/tools/git.exe", "git"),
+        # A backslash is a legal character in a POSIX filename, so splitting on
+        # it here would invent a name the user never wrote and could deny a
+        # command they are entitled to run.
+        (r"weird\name", r"weird\name"),
+        (r"C:\tools\git.exe", r"c:\tools\git"),
+        # `GIT` and `git` are different files on POSIX, so folding would be a
+        # text match masquerading as a structural one.
+        ("GIT", "GIT"),
+        ("/bin/sh/", "sh"),
+        # A trailing dot and a colon are ordinary filename characters here, so
+        # neither is stripped: doing so would name a different file.
+        ("gh.", "gh."),
+        ("gh.exe::$DATA", "gh.exe::$DATA"),
+        # ...but the suffix set itself is ungated, like `.exe` (#107).
+        ("gh.cmd", "gh"),
+        ("", ""),
+    ],
+)
+def test_posix_splits_only_on_slash_and_never_folds(token, expected):
+    got = exec_names.command_name(token, is_windows=False)
+    if token == r"C:\tools\git.exe":
+        # Suffix stripped, separators untouched: still not the name `git`, which
+        # is correct on a host where that really is one filename.
+        assert got == r"C:\tools\git"
+        return
+    assert got == expected
+
+
+def test_the_reader_is_not_vacuous():
+    """The suffix strip and the fold must each be observable on their own, or a
+    later 'simplification' of either could pass this file unchanged."""
+    assert exec_names.command_name("git.exe", is_windows=True) == "git"
+    assert exec_names.command_name("git.exe", is_windows=False) == "git"
+    assert exec_names.command_name("GIT", is_windows=True) == "git"
+    assert exec_names.command_name("GIT", is_windows=False) == "GIT"
+    assert exec_names.command_name(r"a\b", is_windows=True) == "b"
+    assert exec_names.command_name(r"a\b", is_windows=False) == r"a\b"
+
+
+# ------------------------------------------------------------- the real gates
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git push origin main",
+        "git.exe push origin main",          # suffix strip is ungated (#107)
+        "C:/tools/git.exe push origin main",  # PurePosixPath already splits `/`
+    ],
+)
+def test_never_push_to_main_denies_on_every_host(command):
+    """Rows that need no platform gating, so they must hold on both."""
+    assert _decide(command), "push to a protected branch was allowed"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "GIT.EXE push origin main",
+        '"C:\\tools\\git.exe" push origin main',
+        '"C:\\Program Files\\Git\\cmd\\git.exe" push origin main',
+    ],
+)
+def test_never_push_to_main_denies_the_windows_spellings(command, on_windows):
+    """Rows that depend on the gated half: case folding and backslash
+    splitting. Asserted with the constant flipped, so a POSIX runner proves the
+    Windows behaviour rather than skipping it."""
+    assert _decide(command), "push to a protected branch was allowed"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "gh pr merge 7",
+        "gh.exe pr merge 7",
+        "C:/tools/gh.exe pr merge 7",
+        "nh approve 7",
+        "nh.exe approve 7",
+    ],
+)
+def test_the_agent_still_never_merges_on_every_host(command):
+    """Constraint #2. `gh pr merge` and `nh approve` are the two commands that
+    land work, and a trailing `.exe` walked past both."""
+    assert _decide(command), "a merge/approve command was allowed"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # The spellings a Windows user actually has. `gh` from scoop or npm is
+        # `gh.cmd`, so `.exe` alone would close the reviewer's spelling and
+        # leave the user's.
+        "gh.cmd pr merge 7",
+        "gh.ps1 pr merge 7",
+        "nh.bat approve 7",
+        "git.com push origin main",
+        # Win32 resolution quirks that reach the same binary.
+        "gh. pr merge 7",
+        "nh.exe. approve 7",
+        "gh.exe::$DATA pr merge 7",
+    ],
+)
+def test_the_other_windows_executable_spellings_deny_too(command, on_windows):
+    assert _decide(command), "a guarded binary was reachable under this spelling"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "rm.exe -rf /",
+        'echo "gh.exe pr merge 7" | sh',
+        "timeout 30 git.exe push origin main",
+    ],
+)
+def test_the_raw_text_matchers_are_still_open_and_that_is_recorded(command, on_windows):
+    """Not a fix, a boundary, and the reason this PR says Refs and not Closes.
+
+    These three decide through RAW-TEXT matchers (`_RM_RF`, the lexical
+    merge-stack matcher, and the `timeout` wrapper which is not in `_WRAPPERS`)
+    rather than through argv[0], so no name resolver can reach them. Closing
+    them means widening those patterns, which is a separate change against the
+    same issue.
+
+    Asserted so that whoever widens them sees this go red and removes it
+    deliberately, instead of the residual being rediscovered from scratch.
+    """
+    assert not _decide(command), (
+        "this now denies, so the raw-text matchers have been widened: delete "
+        "this test and move the row into the parametrised cases above"
+    )
+
+
+@pytest.mark.parametrize("command", ["GH.EXE pr merge 7", "NH.exe approve 7"])
+def test_the_agent_still_never_merges_in_windows_case(command, on_windows):
+    assert _decide(command), "a merge/approve command was allowed"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "grep.exe -r secret /",
+        "rg.exe secret /",
+        "find.exe / -name x",
+    ],
+)
+def test_whole_volume_scans_deny_under_the_exe_spelling(command, on_windows):
+    """Found by measuring, not by reading.
+
+    Review suggested reverting each of the ten sites on its own and diffing a
+    corpus rather than assuming any were redundant. Three sites
+    (`root_scan_denial`, `_segment_scans_and_mutates`,
+    `_scan_for_install_denial`) turned out to be individually reachable, and
+    the verdict that moved was this one: reverting any of them takes
+    `grep.exe -r secret /` from DENY to ALLOW, a whole-volume read that the
+    bare spelling refuses. Nothing in the first version of this file covered
+    it.
+    """
+    assert _decide(command), "a whole-volume scan was allowed under .exe"
+
+
+def test_the_windows_spellings_are_left_alone_on_posix(on_posix):
+    """The other half of the gate, and the reason it IS a gate.
+
+    On POSIX `GIT` is a genuinely different file from `git`, and a backslash is
+    a legal character in a filename. Denying these there would be a text match
+    masquerading as a structural one, and could refuse a command the user is
+    entitled to run.
+    """
+    assert not _decide("GIT.EXE push origin main")
+    assert not _decide('"C:\\tools\\git.exe" push origin main')
+    # ...while the ungated rows still deny on POSIX.
+    assert _decide("git.exe push origin main")
+    assert _decide("git push origin main")
+
+
+def test_the_unquoted_backslash_path_is_still_open_and_that_is_recorded():
+    """Not a fix, a boundary.
+
+    POSIX `shlex` deletes the separators before any name resolution, so this
+    reaches the resolver as `C:toolsgit.exe` and no basename can recover it.
+    Closing it means `guard.py` consulting `win_readings`, which is the half of
+    #105 that #301 fixed for the venv guard only.
+
+    Asserted rather than left unsaid so that whoever closes that half sees this
+    test go red and deletes it deliberately, instead of the gap being
+    rediscovered from scratch a third time.
+    """
+    assert not _decide(r"C:\tools\git.exe push origin main"), (
+        "the unquoted backslash path now denies; #105's remaining half has "
+        "landed, so delete this test and add the row to the parametrised "
+        "never_push_to case above"
+    )
