@@ -1894,7 +1894,23 @@ FROZEN_FILE_LINES = {
     # wrong, and a reviewer flagged the two stances as reading like an
     # unexplained inconsistency without it. Measured on this tree with the
     # scanner below.
-    "blockers/wake.py": 3131,
+    # 3131 -> 3138 (+7, 2026-09-13): same task, this send-back's Finding —
+    # the measure()-level UNDETERMINED branch in `_check_base_stale` (an
+    # unreadable/errored trunk read, e.g. a broken repo path) was missing
+    # the same debounce the other two UNDETERMINED branches already had,
+    # so it re-wrote context and re-emitted an event on every tick forever;
+    # added the dedup guard to match. Measured on this tree with the
+    # scanner below.
+    # 3138 -> 3156 (+18, 2026-09-13): same task, same send-back — the dedup
+    # fix above grew `_check_base_stale` to 305 lines, over
+    # MAX_FUNCTION_LINES (300). Extracted the STALE-branch local
+    # re-verification (the `conflicting_paths` fetch-and-retry block) into
+    # a new sibling method, `_reverify_base_locally`, rather than bumping a
+    # frozen per-function ceiling — same behavior, moved verbatim, plus the
+    # new `def`/docstring overhead. Measured via
+    # `python3 -c "print(len(open('src/no_human/blockers/wake.py').read().splitlines()))"`
+    # on this tree.
+    "blockers/wake.py": 3156,
     # +91: `_SCAN_WRAPPER_NAMES` + `_peel_scan_wrappers` — peels
     # timeout/xargs/nice/stdbuf (and siblings) for the scan-severity check
     # only, so a wrapped `find … -delete` in a denied compound classifies
