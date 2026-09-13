@@ -1740,7 +1740,12 @@ FROZEN_FILE_LINES = {
     # `None`) instead of `Path.is_dir()`/`Path.is_file()`, which raised
     # `PermissionError` on a chmod'd-unreadable venv and got swallowed by
     # the old `except OSError: pass`, turning a DENY into an ALLOW.
-    "agent/guard.py": 2917,
+    # 2917 -> 2926 (+9): `_primary_checkout` now probes its `__init__.py`
+    # marker via the tri-state `venv_install_guard._probe_is_file` instead of
+    # a bare `Path.is_file()`, so an unreadable ancestor directory (e.g. a
+    # chmod'd `<checkout>/src`) can't raise `PermissionError` out of this
+    # unguarded helper and abort the guard instead of denying.
+    "agent/guard.py": 2926,
     # +44: idle-path recover_quota_cooldown gate in tick() and the
     # never-shorten-a-live-wall guard in _run — the quota-wall storm cost fix.
     # +129: `HarvestJob` — the cadence job (`due()`/`maybe_run()`) that runs
