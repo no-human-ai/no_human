@@ -118,6 +118,19 @@ def main() -> int:
     if os.environ.get("FIXTURE_CRASH"):
         raise RuntimeError("fixture-injected crash")
 
+    if os.environ.get("FIXTURE_CHECKER_IMPORT_FAILS"):
+        # Mirrors the REAL script's own `_load_checker` try/except in
+        # `main()` exactly (same two `print`s, same `return 2`) -- but the
+        # `except` here is live, not scripted: whether it fires depends on
+        # whether THIS interpreter can actually `import pytest`, same as
+        # the real checker's own module-scope `import pytest`.
+        try:
+            import pytest  # noqa: F401
+        except Exception as exc:
+            print(f"FAIL: could not load tests/test_readme_claims.py: {exc}")
+            print("VERDICT=FAIL")
+            return 2
+
     doc_text = DOC.read_text()
     actual = _foo_line()
     if actual is None:
@@ -347,8 +360,10 @@ def test_interpreter_prefers_target_repos_own_venv_over_sys_executable(
     `_venv_bin` (reused from `testing/runner.py`, not duplicated) only
     checks that `<name>/bin/python` exists as a path, so a stub file is
     exactly as decisive here as a real interpreter — the separate,
-    end-to-end pytest-less-interpreter reproduction (real venv, real
-    subprocess) lives in this file's `run_reanchor` fixture tests instead,
+    end-to-end pytest-less-interpreter reproduction (real subprocess, this
+    process's own interpreter run with `-S` to genuinely drop
+    site-packages) lives below, in
+    `test_checker_import_failure_for_missing_pytest_is_inapplicable_not_unknown`,
     where the difference in behaviour (not just routing) is observable."""
     venv_bin = tmp_path / ".venv" / "bin"
     venv_bin.mkdir(parents=True)
@@ -369,6 +384,67 @@ def test_interpreter_falls_back_to_sys_executable_when_repo_has_no_venv(
     assert citation_drift._interpreter(tmp_path) == "/some/real/interpreter/python3"
 
 
+def test_checker_import_failure_for_missing_pytest_is_inapplicable_not_unknown(
+        tmp_path, monkeypatch):
+    """Send-back finding (N3): before this fix, `classify` had no way to
+    tell "the checker never loaded, so there is no finding to report"
+    (`_interpreter` falls back to a `sys.executable` that lacks the
+    dev-only `pytest` `tests/test_readme_claims.py` imports) apart from the
+    generic "VERDICT=FAIL with no recognizable finding" shape, which is
+    `Status.UNKNOWN` — BLOCKING. That misclassified an environment fact as
+    an unfixable citation, buying a corrective round every single attempt
+    run under such an interpreter, one the coder can never actually clear
+    (there is no citation to fix).
+
+    Real subprocess, real failure: the fixture script's
+    `FIXTURE_CHECKER_IMPORT_FAILS` knob attempts a genuine `import pytest`
+    and only prints the real script's exact `FAIL:`/`VERDICT=FAIL`/`exit 2`
+    shape if that import actually raises — forced here by running this
+    process's OWN interpreter with `-S` (skip `site`, so site-packages,
+    where pytest lives, is never added to `sys.path`), not by hand-writing
+    the exception text. Never mocked, never a read of `classify`'s or
+    `citation_drift`'s own source text."""
+    _write_fixture_layout(tmp_path, mod_text=_MOD_BASELINE, doc_text=_DOC_BASELINE)
+    before = (tmp_path / "docs" / "cite.md").read_text(encoding="utf-8")
+    monkeypatch.setenv("FIXTURE_CHECKER_IMPORT_FAILS", "1")
+    monkeypatch.setattr(
+        citation_drift, "reanchor_command",
+        lambda repo_path, *, apply: [
+            sys.executable, "-S",
+            str(repo_path / citation_drift.SCRIPT_RELPATH),
+            "--apply" if apply else "--check",
+        ],
+    )
+    outcome = citation_drift.run_reanchor(tmp_path)
+    assert outcome.status is citation_drift.Status.INAPPLICABLE
+    assert outcome.blocking is False
+    assert outcome.status is not citation_drift.Status.UNKNOWN
+    assert "pytest" in outcome.detail
+    assert (tmp_path / "docs" / "cite.md").read_text(encoding="utf-8") == before
+
+
+def test_checker_import_failure_for_another_reason_stays_unknown_not_inapplicable():
+    """Sibling/anti-bypass case for N3: `classify`'s new branch is narrowed
+    to the ONE reason `_interpreter`'s docstring documents
+    (`No module named 'pytest'`) on purpose. A checker that fails to import
+    for ANY other reason — a syntax error, a genuinely broken import a
+    coder introduced — must still block as `Status.UNKNOWN`, exactly as
+    before this fix. Otherwise a coder could dodge a real citation defect
+    entirely by breaking `tests/test_readme_claims.py`'s import some other
+    way and having it wrongly read as an inert environment fact. Pure
+    function, direct input/output, same idiom as this file's other
+    `classify(...)`-only tests."""
+    stdout = (
+        "FAIL: could not load tests/test_readme_claims.py: "
+        "SyntaxError: invalid syntax (test_readme_claims.py, line 42)\n"
+        "VERDICT=FAIL\n"
+    )
+    outcome = citation_drift.classify(2, stdout, "")
+    assert outcome.status is citation_drift.Status.UNKNOWN
+    assert outcome.blocking is True
+    assert outcome.status is not citation_drift.Status.INAPPLICABLE
+
+
 def test_revert_worktree_writes_unguarded_requires_component_argument():
     """Send-back finding (Blocker A) mutation test: `component` on
     `_revert_worktree_writes_unguarded` must be a required keyword-only
@@ -383,6 +459,103 @@ def test_revert_worktree_writes_unguarded_requires_component_argument():
     with pytest.raises(TypeError):
         Orchestrator._revert_worktree_writes_unguarded(  # type: ignore[call-arg]
             object(), object(), {})
+
+
+def test_send_back_message_names_shown_failures_and_omitted_count():
+    """N6/N7: `citation_drift_send_back_message` is module-level and pure
+    (see its docstring) — tested here directly against its return value for
+    given inputs, never by reading its own source text. With more failures
+    than `_CITATION_DRIFT_FAILURES_NAMED`, the message must name only the
+    first N and say how many more were omitted, must quote the script path
+    (never a bare `python`/`python3` invocation — `reanchor_command`'s own
+    docstring explains why that would not work in a uv/venv project), must
+    tell the coder not to hand-edit a line number, and must mention the
+    CITATION_TABLE row exception (the one carve-out N1 added)."""
+    named = orch_mod._CITATION_DRIFT_FAILURES_NAMED
+    failures = [f"docs/x.md `pkg/mod.py:{i}` — ambiguous" for i in range(named + 3)]
+    msg = orch_mod.citation_drift_send_back_message(failures, "some stdout detail")
+
+    for f in failures[:named]:
+        assert f in msg
+    for f in failures[named:]:
+        assert f not in msg
+    assert "(+3 more)" in msg
+    assert str(citation_drift.SCRIPT_RELPATH) in msg
+    assert "python " not in msg and not msg.startswith("python")
+    assert "do not hand-edit a line number" in msg.lower()
+    assert str(citation_drift.CHECKER_RELPATH) in msg
+    assert "CITATION_TABLE" in msg
+    assert "some stdout detail" in msg
+
+
+def test_send_back_message_omits_more_count_when_nothing_is_omitted():
+    """Sibling of the above: with failures at or below
+    `_CITATION_DRIFT_FAILURES_NAMED`, nothing was actually omitted, so the
+    "(+N more)" clause must not appear at all — it would otherwise falsely
+    claim failures were dropped that never existed."""
+    msg = orch_mod.citation_drift_send_back_message(["docs/x.md `mod.py:1` — dup"], "detail")
+    assert "more)" not in msg
+    assert "docs/x.md `mod.py:1` — dup" in msg
+
+
+def test_send_back_message_with_no_named_failures_reports_indeterminate_run():
+    """N7: when `failures` is empty (an `UNKNOWN` outcome from a timeout,
+    crash, or unparsable output — never a specific citation the script
+    refused to guess at), the message must say the run itself did not
+    finish cleanly, and must NOT claim a citation was named or that a fix
+    is needed "for the doc(s) named above" — no doc was named. Both this
+    test and the one above go through the same function; together they
+    prove it differentiates the two paths rather than always returning the
+    same templated text."""
+    msg = orch_mod.citation_drift_send_back_message([], "a crash happened")
+    assert "could not confirm this repo's doc citations are clean" in msg
+    assert "for the doc(s) named above" not in msg
+    assert "a crash happened" in msg
+    # Still carries the shared, non-branch-specific guidance both paths need.
+    assert str(citation_drift.SCRIPT_RELPATH) in msg
+    assert str(citation_drift.CHECKER_RELPATH) in msg
+    assert "CITATION_TABLE" in msg
+
+
+def test_send_back_message_truncates_overlong_detail():
+    """The embedded script stdout/stderr is bounded by
+    `_CITATION_DRIFT_DETAIL_CHARS` before it ever reaches the prompt (see
+    the function's own docstring) — proven here by actually overflowing it
+    with a real, oversized string and checking the result is shorter than
+    the input and carries a visible truncation marker, not by reading the
+    slicing code itself."""
+    limit = orch_mod._CITATION_DRIFT_DETAIL_CHARS
+    detail = "x" * (limit + 500)
+    msg = orch_mod.citation_drift_send_back_message(["docs/x.md `mod.py:1` — dup"], detail)
+    assert "(truncated)" in msg
+    assert "x" * (limit + 500) not in msg
+    assert "x" * limit in msg
+
+
+def test_repro_round_scope_note_unchanged_with_no_allow_paths():
+    """N1/N7: `_repro_round_scope_note` is what actually reaches the coder
+    (see `_repro_corrective_round`'s call site). With no `allow_paths` — the
+    three pre-existing callers (repro-waived, declared-files,
+    structural-budget) never pass it — this must return
+    `_REPRO_ROUND_SCOPE_NOTE` completely unchanged, byte for byte, so this
+    fix cannot alter their prompt text at all."""
+    assert orch_mod._repro_round_scope_note() == orch_mod._REPRO_ROUND_SCOPE_NOTE
+    assert orch_mod._repro_round_scope_note([]) == orch_mod._REPRO_ROUND_SCOPE_NOTE
+    assert "docs/" not in orch_mod._REPRO_ROUND_SCOPE_NOTE
+
+
+def test_repro_round_scope_note_names_allowed_doc_paths():
+    """N1/N7: with `allow_paths` given (only `_citation_drift_preflight`
+    does), the note must still contain the original text (a coder relying
+    on the base rule — tests/manifest — must keep seeing it) AND must
+    additionally name every given path as in-scope — proving the
+    enforcement (`_repro_round_out_of_scope(..., extra_ok=allow_paths)`)
+    and the prompt the coder reads never disagree."""
+    note = orch_mod._repro_round_scope_note(["docs/security.md", "docs/eval.md"])
+    assert orch_mod._REPRO_ROUND_SCOPE_NOTE in note
+    assert "docs/security.md" in note
+    assert "docs/eval.md" in note
+    assert note != orch_mod._REPRO_ROUND_SCOPE_NOTE
 
 
 def test_unreadable_file_fails_closed_and_is_distinguishable_from_clean(tmp_path):
@@ -556,6 +729,55 @@ async def test_a_drifted_citation_is_mechanically_reanchored_before_review_no_ex
     assert len(attempts) == 1
 
 
+async def test_the_mechanical_fix_commit_reports_a_manifest_repair_not_silently(
+        bare_repo, tmp_path, store, monkeypatch):
+    """N8 (send-back finding): every other `commit_with_manifest_repair`
+    call site in orchestrator.py passes `on_repair` and drains it into a
+    `manifest_repaired` event (`_emit_manifest_repairs`) — the citation
+    drift preflight's own mechanical-fix commit was the one call site that
+    silently dropped a repair callback on the floor, so a re-approved pinned
+    file this commit incidentally touched would never reach the task's
+    event record. Proven behaviourally: `orch_mod.commit_with_manifest_repair`
+    is replaced with a fake that (like a real repair) invokes `on_repair`
+    once before delegating to the real function, and this test asserts the
+    resulting `manifest_repaired` event actually carries what the callback
+    reported — never by reading `_citation_drift_preflight`'s source for the
+    keyword argument."""
+    seen_kwargs = {}
+
+    def fake_commit(repo, paths, message, on_repair=None):
+        # This patches the module-level name every commit call site in
+        # orchestrator.py resolves, including the attempt's own initial
+        # commit earlier in the same `_run_attempt` — scoped to the citation
+        # drift auto-fix commit specifically (its own distinct message,
+        # same marker the "no stray file" test above keys off of) so this
+        # fake does not also inject a repair into the unrelated main commit.
+        if "citation drift: auto-re-anchored" in message:
+            seen_kwargs["on_repair"] = on_repair
+            if on_repair is not None:
+                on_repair(["docs/cite.md"], "re-approved a stale pin")
+        return commit_with_manifest_repair(repo, paths, message, on_repair=on_repair)
+
+    monkeypatch.setattr(orch_mod, "commit_with_manifest_repair", fake_commit)
+
+    backend = _DriftsThenLeavesItBackend()
+    orch, task, repo, events = await _run_one_task_attempt(store, bare_repo, tmp_path, backend)
+
+    outcome = await orch._run_attempt(task, repo, 1, "main")
+    assert outcome.status is TaskStatus.AWAITING_APPROVAL, outcome.detail
+
+    assert "on_repair" in seen_kwargs, (
+        "the citation drift preflight's commit must pass on_repair, like "
+        "every other commit_with_manifest_repair call site in this file"
+    )
+    assert seen_kwargs["on_repair"] is not None
+
+    repaired_events = [e for e in events if e["kind"] == "manifest_repaired"]
+    assert len(repaired_events) == 1, events
+    assert "docs/cite.md" in repaired_events[0]["paths"]
+    assert "re-approved a stale pin" in repaired_events[0]["notes"]
+
+
 class _DriftsAndLeavesAnUnannouncedStrayFileBackend:
     """Same mechanically-fixable drift as `_DriftsThenLeavesItBackend`
     (`pkg/mod.py` shifted, `docs/cite.md` left stale) — but this turn ALSO
@@ -725,6 +947,23 @@ async def test_an_unfixable_citation_buys_one_corrective_round_before_review_no_
     assert "cite.md" in instruction
     assert "mod.py:1" in instruction
 
+    # N1/N7 (send-back finding): the SCOPE text appended to this round's
+    # prompt must itself say the doc path is writable — before this fix,
+    # `_REPRO_ROUND_SCOPE_NOTE` was appended unconditionally and said "this
+    # round may write ONLY the reproduction manifest ... and test file(s)
+    # ... nothing else. Any other path you change is discarded uncommitted
+    # and the attempt fails.", flatly contradicting the instruction above
+    # that tells the coder to fix the doc. `_repro_round_out_of_scope`
+    # already admitted the doc path via `extra_ok`/`allow_paths`, but a
+    # compliant coder reading only the prompt had no way to know that. This
+    # checks the actual rendered SCOPE clause, not the failures list quoted
+    # above it (which also happens to mention "cite.md").
+    scope_text = instruction[instruction.index("SCOPE:"):]
+    assert "docs/cite.md" in scope_text, (
+        "the SCOPE clause itself must name the doc path as in-scope, "
+        f"matching what the enforcement already permits: {scope_text!r}"
+    )
+
     committed = subprocess.run(
         ["git", "show", "HEAD:docs/cite.md"], cwd=repo.path,
         check=True, capture_output=True, text=True,
@@ -756,6 +995,95 @@ async def test_a_re_entered_attempt_does_not_buy_a_second_round(bare_repo, tmp_p
     )
 
     assert again is None
+    assert backend.calls == 2, "a re-entered attempt must not dispatch a third backend call"
+    assert len(
+        [e for e in events if e["kind"] == "citation_drift_corrective_round"]
+    ) == 1, events
+
+
+class _DriftsAmbiguouslyAndNeverFixesItBackend:
+    """Turn 1: the same ambiguous-citation drift as
+    `_AmbiguousDriftThenFixesItBackend` (shifts `foo()`, duplicates the
+    citation). Turn 2 (the corrective round): does NOT touch the doc at
+    all — the round ends with the citation just as broken as before it
+    ran. Models the once-per-attempt latch's OTHER case, distinct from
+    `_AmbiguousDriftThenFixesItBackend`: there, by the time of re-entry the
+    tree is genuinely clean, so a re-check returning "nothing to do" is
+    ambiguous between "the latch fired" and "run_reanchor found it clean on
+    its own." Here the tree is still genuinely broken at re-entry time, so
+    the same "nothing to do" result can only be the latch."""
+
+    def __init__(self):
+        self.calls = 0
+        self.prompts = []
+
+    async def run(self, prompt, *, cwd, max_turns, effort=None, resume=None,
+                  on_event=None, supervisor_hook=None, **kwargs):
+        self.calls += 1
+        self.prompts.append(prompt)
+        cwd = Path(cwd)
+        if self.calls == 1:
+            if on_event is not None:
+                on_event(AgentEvent("tool_use", tool_name="Edit",
+                                    tool_input={"file_path": "pkg/mod.py"}))
+                on_event(AgentEvent("tool_use", tool_name="Edit",
+                                    tool_input={"file_path": "docs/cite.md"}))
+            cwd.joinpath("pkg", "mod.py").write_text(_MOD_DRIFTED)
+            cwd.joinpath("docs", "cite.md").write_text(_DOC_DUPLICATE)
+            return AgentResult(final_text="added helper(), touched doc", num_turns=2,
+                               is_error=False, tokens_used=100, session_id="s1",
+                               stop_reason="end_turn")
+        return AgentResult(final_text="did not touch the citation", num_turns=1,
+                           is_error=False, tokens_used=10, session_id="s2",
+                           stop_reason="end_turn")
+
+
+async def test_a_re_entered_attempt_while_still_drifted_does_not_buy_a_second_round(
+        bare_repo, tmp_path, store):
+    """N5 (send-back finding): `test_a_re_entered_attempt_does_not_buy_a_second_round`
+    above only proves the latch where the corrective round's own turn
+    happened to FIX the citation before re-entry — a second call returning
+    "nothing to do" there is consistent with either the latch firing OR
+    `run_reanchor` genuinely finding a clean tree on its own, so it does not
+    by itself prove the latch holds once the tree is CONFIRMED still broken.
+
+    This test closes that gap: the corrective round's turn leaves the
+    citation exactly as ambiguous as before it ran, confirmed independently
+    with a fresh, direct `run_reanchor(..., apply=False)` call (never
+    trusting the premise), and a second, direct call to
+    `_citation_drift_preflight` with the SAME attempt_id must still return
+    None and must not dispatch a third backend call or emit a second
+    corrective-round event — proving the once-per-attempt latch keys off
+    the attempt id alone, never off whether the problem actually got
+    fixed."""
+    backend = _DriftsAmbiguouslyAndNeverFixesItBackend()
+    orch, task, repo, events = await _run_one_task_attempt(store, bare_repo, tmp_path, backend)
+
+    outcome = await orch._run_attempt(task, repo, 1, "main")
+    assert outcome.status is TaskStatus.AWAITING_APPROVAL, outcome.detail
+    assert backend.calls == 2
+
+    attempts = await store.list_attempts(task.id)
+    assert len(attempts) == 1
+    attempt_id = attempts[0]["id"]
+
+    # Confirm, independently of the preflight under test, that the tree
+    # really is still drifted — a fresh, read-only re-check, never an
+    # assumption. If this were CLEAN, the assertion below would prove
+    # nothing about the latch.
+    fresh = citation_drift.run_reanchor(repo.path, apply=False)
+    assert fresh.status is citation_drift.Status.UNFIXABLE, fresh
+
+    again = await orch._citation_drift_preflight(
+        task, repo, attempt_id=attempt_id, branch="main",
+        attempt_n=1, tamper_before=repo.head_sha(),
+    )
+
+    assert again is None, (
+        "the once-per-attempt latch must hold even while the citation is "
+        "still genuinely broken — a second bounded round must never be "
+        "bought for the same attempt id"
+    )
     assert backend.calls == 2, "a re-entered attempt must not dispatch a third backend call"
     assert len(
         [e for e in events if e["kind"] == "citation_drift_corrective_round"]

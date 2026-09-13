@@ -1335,7 +1335,36 @@ FROZEN_FILE_LINES = {
     # (verified directly, not read) returns `tampered=False` for a
     # before/after pair differing by exactly one re-anchored line number.
     # Re-measured on this tree with the scanner's own metric.
-    "core/orchestrator.py": 24481,
+    # 24481 -> 24606 (+125): send-back round N1-N8 on the same preflight.
+    # (N5) a new backend/test pins the once-per-attempt latch's OTHER case —
+    # it must hold even when the corrective round's own fix does not
+    # actually resolve the drift, not just the already-covered case where it
+    # does. (N6/N7) `citation_drift_send_back_message` gained no new
+    # branches, but its two shapes (named failures vs. an indeterminate
+    # crash/timeout run naming none) are now exercised directly by four
+    # tests calling the function itself. (N1/N7) the citation-drift
+    # corrective round's own SCOPE prompt text (`_REPRO_ROUND_SCOPE_NOTE`)
+    # was appended unconditionally to every `_repro_corrective_round` caller
+    # and unconditionally said "nothing else... discarded uncommitted",
+    # directly contradicting this preflight's own instruction to fix a doc
+    # citation — `_repro_round_out_of_scope`'s `extra_ok`/`allow_paths`
+    # already admitted the doc path at the enforcement layer, but the coder
+    # reading only the prompt had no way to know that. New module-level pure
+    # function `_repro_round_scope_note(allow_paths=())` returns the
+    # existing constant byte-for-byte when `allow_paths` is empty (the three
+    # pre-existing callers), else appends a sentence naming the admitted doc
+    # path(s); the one call site now uses it. (N8) the citation-drift
+    # auto-reanchor commit was the one `commit_with_manifest_repair` call
+    # site in this file that never passed `on_repair`, unlike
+    # `_checkpoint_commit` and the main pipeline commit — a repair made
+    # while re-anchoring a doc citation (e.g. re-approving a stale export
+    # pin the same doc also happens to be watching) was dropped silently
+    # instead of surfacing as the `manifest_repaired` event every sibling
+    # call site already reports; it now threads `on_repair` and drains it
+    # via `self._emit_manifest_repairs` in a `finally`. Re-measured on this
+    # tree with the scanner's own metric (`tests/test_structural_budget.py`'s
+    # `scan_tree`, not carried-over arithmetic).
+    "core/orchestrator.py": 24606,
 
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo

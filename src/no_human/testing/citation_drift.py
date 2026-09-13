@@ -19,9 +19,15 @@ will not guess at (occurs zero or more-than-once), and `applied N
 re-anchor(s)` when `--apply` actually wrote files.
 
 Deliberately the INVERSE of `structural_budget.py`'s "FAIL-OPEN, ALWAYS"
-doctrine: fail-open (`Status.INAPPLICABLE`) ONLY when the convention itself
-is absent from the target repo (no script, or no checker for it to load) —
-every OTHER failure mode this module can observe (a timeout, an `OSError`
+doctrine: fail-open (`Status.INAPPLICABLE`) only in the two cases this
+module can prove carry no citation finding at all — the convention itself
+is absent from the target repo (no script, or no checker for it to load),
+or the checker failed to import for the one, narrowly-matched reason of
+missing the dev-only `pytest` dependency under the interpreter this module
+chose (`classify`'s `_CHECKER_IMPORT_FAIL_RE` branch; see `_interpreter`'s
+docstring for why that specific case is reachable without any citation
+ever being examined, and why it cannot be used to hide a real one). Every
+OTHER failure mode this module can observe (a timeout, an `OSError`
 starting the subprocess, a crash inside the script that exits without ever
 printing a `VERDICT=` marker) resolves to `Status.UNKNOWN`, which is
 BLOCKING. An unreadable file, an erroring subprocess, or a citation the
@@ -62,6 +68,20 @@ _FAIL_RE = re.compile(
     re.MULTILINE,
 )
 _APPLIED_RE = re.compile(r"^applied (\d+) re-anchor\(s\)\s*$", re.MULTILINE)
+#: The ONE `FAIL:` shape `scripts/reanchor_citations.py` prints that never
+#: names a citation at all: `_load_checker()` raised before `plan()` ever
+#: ran (confirmed against the script's own `main()`, which prints this exact
+#: literal — not `CHECKER_RELPATH`-interpolated, hardcoded the same way the
+#: constant's value is — then `VERDICT=FAIL`, then `return 2`, all before
+#: touching `plan()`). See `_interpreter`'s docstring: the single reproduced
+#: cause is a `sys.executable` fallback that lacks the dev-only `pytest`
+#: `tests/test_readme_claims.py` imports at module scope. Narrowed further
+#: to that one reason in `classify` below — this regex alone only isolates
+#: the SHAPE (checker never loaded), not the cause.
+_CHECKER_IMPORT_FAIL_RE = re.compile(
+    r"^FAIL: could not load tests/test_readme_claims\.py: (?P<reason>.*)$",
+    re.MULTILINE,
+)
 
 
 class Status(enum.Enum):
@@ -263,6 +283,30 @@ def classify(returncode: int, stdout: str, stderr: str) -> CitationOutcome:
 
     # verdict == "FAIL"
     if not fails and not drifts:
+        import_fail = _CHECKER_IMPORT_FAIL_RE.search(stdout)
+        if (import_fail is not None
+                and "No module named 'pytest'" in import_fail.group("reason")):
+            # The checker (CHECKER_RELPATH) never loaded at all — `plan()`
+            # never ran, so there is no citation finding to report, real or
+            # missed. Narrowed to this ONE reason on purpose: a coder could
+            # in principle break the checker's import some OTHER way to
+            # reach the generic shape below, but cannot reach THIS exact
+            # substring without either genuinely lacking the dev-only
+            # `pytest` dependency (an environment fact, not a citation
+            # finding — the target repo's own `.venv` prefers this away
+            # already, see `_interpreter`) or deleting `pytest` from that
+            # dependency itself — which breaks CHECKER_RELPATH's own
+            # collection under a REAL pytest too (it is not merely imported,
+            # it IS a pytest test module), so TESTING's own scoped run of it
+            # fails independently either way. Falling open here costs
+            # nothing a tamper could exploit and stops a fact about THIS
+            # process's own interpreter from permanently, falsely blocking
+            # every attempt as an unfixable citation.
+            return CitationOutcome(
+                Status.INAPPLICABLE,
+                detail=f"{CHECKER_RELPATH} could not be imported under this "
+                       f"interpreter (missing pytest, a dev-only dependency) "
+                       f"— not a citation finding: {import_fail.group('reason')}")
         # A FAIL verdict naming nothing recognizable is a shape this parser
         # does not understand — block rather than guess why.
         return CitationOutcome(
