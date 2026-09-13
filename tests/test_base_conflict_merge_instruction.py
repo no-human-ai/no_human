@@ -216,52 +216,64 @@ async def test_the_pr_conflict_round_tells_the_coder_to_merge_not_rebase(
 # assertion's own cross-check: it counts every real invocation of
 # `base_merge_conflict_instruction(` in the tree (excluding the def itself
 # and the comments that merely name the function) and pins the count and the
-# exact file:line set, so a fifth call site added anywhere — or one of the
-# four silently deleted — is caught here rather than discovered by chance.
+# exact multiset of FILES it appears in — deliberately not the line numbers
+# too, since a line number rots on any semantically-null edit above a call
+# site (e.g. a blank line inserted, an unrelated docstring growing by a
+# line) with no bearing on this test's actual claim, which is about WHICH
+# files call this helper and HOW MANY TIMES, not WHERE on the page. A fifth
+# call site added anywhere — or one of the four silently deleted, or one
+# moving to a different file — is still caught here; one moving a few lines
+# within the SAME file is not, and should not be.
 # --------------------------------------------------------------------------- #
 
 _CALL_RE = re.compile(r"(?<!def )\bbase_merge_conflict_instruction\(")
 
 
 def _merge_instruction_call_sites() -> list[str]:
+    """Returns one file path per real call site, in tree order, WITHOUT a
+    line number — see the module comment above this function for why line
+    numbers are deliberately excluded from this pin."""
     root = Path(__file__).resolve().parent.parent / "src" / "no_human"
     hits: list[str] = []
     for path in sorted(root.rglob("*.py")):
-        for lineno, line in enumerate(
-            path.read_text(encoding="utf-8").splitlines(), start=1
-        ):
+        for line in path.read_text(encoding="utf-8").splitlines():
             stripped = line.strip()
             if stripped.startswith("#"):
                 continue
             if _CALL_RE.search(line):
-                hits.append(f"{path.relative_to(root.parent.parent)}:{lineno}")
+                hits.append(str(path.relative_to(root.parent.parent)))
     return hits
 
 
 def test_every_merge_instruction_site_is_exercised_and_the_count_matches_the_tree():
     sites = _merge_instruction_call_sites()
     assert sites == [
-        "src/no_human/blockers/wake.py:2343",
-        "src/no_human/core/orchestrator.py:3865",
-        "src/no_human/core/orchestrator.py:18800",
-        "src/no_human/core/prompt_blocks.py:958",
+        "src/no_human/blockers/wake.py",
+        "src/no_human/core/orchestrator.py",
+        "src/no_human/core/orchestrator.py",
+        "src/no_human/core/prompt_blocks.py",
     ], (
         "the shared merge-not-rebase wording is called from exactly four "
-        "places; this list must be kept in sync by hand whenever a call "
-        "site moves, is added, or is removed — that's the point of pinning "
-        "it here rather than trusting the module docstring's prose count"
+        "places — wake.py once, orchestrator.py twice, prompt_blocks.py "
+        "once; this FILES-only (no line numbers) multiset must be kept in "
+        "sync by hand whenever a call site's file changes, is added, or is "
+        "removed — that's the point of pinning it here rather than trusting "
+        "the module docstring's prose count. Line numbers are deliberately "
+        "excluded: they rot on any semantically-null edit with no bearing "
+        "on this test's claim"
     )
+    assert len(sites) == 4
     # Each site is exercised by a test in this module (or its sibling
     # `test_base_staleness_pushed_branch.py`, whose staleness event test is
-    # reused verbatim above): prompt_blocks.py:958 by
+    # reused verbatim above): `prompt_blocks.build_rules_block`'s call by
     # `test_the_rules_block_carries_the_merge_instruction_only_when_asked`
     # (directly) and by the two end-to-end tests below it (through
-    # `build_rules_block`'s `base_merge_conflict=` kwarg);
-    # orchestrator.py:3865 by
+    # `build_rules_block`'s `base_merge_conflict=` kwarg); the first
+    # `orchestrator.py` call (the conflict event text) by
     # `test_the_conflict_event_text_tells_the_coder_to_merge_not_rebase`;
-    # orchestrator.py:18800 by
+    # the second `orchestrator.py` call (the implement-prompt preamble) by
     # `test_the_implement_prompt_preamble_says_merge_not_rebase` and its
-    # fallback sibling; wake.py:2343 by
+    # fallback sibling; the `wake.py` call (the pr_conflict send-back) by
     # `test_the_pr_conflict_round_tells_the_coder_to_merge_not_rebase`.
 
 

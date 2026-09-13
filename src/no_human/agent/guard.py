@@ -2457,14 +2457,16 @@ def _git_subcommand(argv: list[str]) -> tuple[str, list[str]]:
     return "", []
 
 
-#: Runner names `_forge_invocations` — and, as of the pushed-tip rewrite
-#: guard, `_git_invocations` — recurse into: the union of `_SHELL_RUNNERS`
-#: and the trailing-argv runners the package-install guard already
-#: recognises (`setsid`, `unbuffer`, `nice`, `ionice`, `chrt`, ... — see
-#: `_TRAILING_ARGV_RUNNERS`). Correction 2026-09 (this comment previously,
-#: and wrongly, claimed `_git_invocations` kept matching on `_SHELL_RUNNERS`
-#: alone, "byte-identical" to before this name existed — read the function:
-#: it checks `name in _FORGE_RUNNER_NAMES`, the full 18-name union, exactly
+#: Runner names both `_forge_invocations` and `_git_invocations` recurse
+#: into: the union of `_SHELL_RUNNERS` and the trailing-argv runners the
+#: package-install guard already recognises (`setsid`, `unbuffer`, `nice`,
+#: `ionice`, `chrt`, ... — see `_TRAILING_ARGV_RUNNERS`). Correction 2026-09
+#: (this comment previously, and wrongly, claimed `_git_invocations` kept
+#: matching on `_SHELL_RUNNERS` alone, "byte-identical" to before this name
+#: existed — `_git_invocations` already read `_FORGE_RUNNER_NAMES` before
+#: the pushed-tip rewrite guard landed; that guard did not widen it, this
+#: comment was simply wrong. Read the function: it checks `name in
+#: _FORGE_RUNNER_NAMES`, the full 18-name union, exactly
 #: like `_forge_invocations` does. Verified by
 #: `tests/test_pushed_tip_rewrite_guard.py::test_the_pushed_tip_path_sees_every_runner_the_guard_knows`,
 #: which denies a rewrite wrapped in each of the 18 for real. Found
@@ -2482,9 +2484,11 @@ def _forge_invocations(cmd: str, _depth: int = 0) -> list[list[str]]:
     Recurses up to two levels into nested shell runners — `bash -c "gh -R o/r
     pr merge 7"`, `sh -c "glab -R o/r mr merge 12"`, `timeout 30 gh …`,
     `xargs gh …`, `setsid gh …`, `chrt -f 1 gh …` (`_FORGE_RUNNER_NAMES`) —
-    the same bound `_git_invocations` uses over its own (narrower)
-    `_SHELL_RUNNERS`, mirrored rather than shared (no helper refactor across
-    the two paths). `$(...)`, `` `...` `` and `{ ...; }` are stripped per
+    the same `_FORGE_RUNNER_NAMES` bound `_git_invocations` recurses into
+    (see the correction on `_FORGE_RUNNER_NAMES` above — the two sets are
+    identical, not narrower/wider). The two recursions are mirrored rather
+    than shared (no helper refactor across the two paths). `$(...)`,
+    `` `...` `` and `{ ...; }` are stripped per
     segment with `_SUBST_HEAD` (a `_GROUPING` sibling — `_GROUPING` itself is
     untouched); `_ASSIGN_SUBST_HEAD` runs first so the same substitution
     heads are also stripped when glued onto an assignment (`x=$(gh …)`); and
@@ -2851,11 +2855,15 @@ def evaluate(
             return GuardDecision(False, f"destructive command blocked (rm -rf): {cmd}", severity=GUARD_DESTRUCTIVE)
         # Must run BEFORE `_GIT_DESTRUCTIVE` (which already matches `reset
         # --hard <ref>` lexically, with a generic message) and before
-        # `_git_worktree_denial` (which matches every clobbering git form,
-        # `rebase` included, also with a generic message): this is the only
-        # one of the three that names the pushed tip and the merge
-        # alternative, so it has to get first refusal or its message can
-        # never surface.
+        # `_git_worktree_denial` (which matches a rebase/merge/pull
+        # wind-back — `--abort`/`--skip`/`--autostash`, via
+        # `_sequencer_clobbers` — and a hard reset/clean/checkout, also with
+        # a generic message; it does NOT match a plain `rebase`, `commit
+        # --amend`, `update-ref`, `checkout -B` or `branch -f` at all — see
+        # `pushed_tip_guard`'s module docstring for the measurement): this
+        # is the only one of the three that names the pushed tip and the
+        # merge alternative, so it has to get first refusal or its message
+        # can never surface.
         pushed_reason = pushed_tip_guard.denial_reason(_git_invocations(cmd), cwd)
         if pushed_reason:
             return GuardDecision(False, pushed_reason, severity=GUARD_DESTRUCTIVE)

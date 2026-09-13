@@ -108,6 +108,7 @@ _DENIED_FORMS = (
     "git rebase --autostash origin/main",
     "git rebase --continue",
     "git pull --rebase origin main",
+    "git pull -r origin main",
     "git -c pull.rebase=true pull origin main",
     "git reset --soft HEAD~1",
     "git reset HEAD~1",
@@ -121,8 +122,11 @@ _DENIED_FORMS = (
     "git commit --amend -m x",
     "git checkout -B feature origin/main",
     "git switch -C feature origin/main",
+    "git switch --force-create feature origin/main",
+    "git switch --force-create=feature origin/main",
     "git branch -f feature origin/main",
     "git update-ref refs/heads/feature origin/main",
+    "git update-ref -m reason refs/heads/feature origin/main",
     "git filter-branch -- --all",
 )
 
@@ -640,6 +644,86 @@ def test_the_detached_head_gap_is_real_and_the_attached_spelling_is_denied(repo)
     assert not _is_ancestor(repo, tip, "feature")
 
 
+def test_the_branch_rename_then_recreate_gap_is_real_and_the_forced_spelling_is_denied(
+    repo,
+):
+    """Module docstring: `_classify_branch` only triggers on `-f`/`--force`,
+    so an un-forced `git branch -m <branch> <tmp>` (rename the pushed branch
+    out of the way) followed, in a SEPARATE Bash call, by an un-forced `git
+    branch <branch> <target>` (recreate the name fresh, since it no longer
+    exists locally) rewrites the same pointer without either command ever
+    carrying `-f`. The identical single-command `branch -f` spelling of the
+    same rewrite is still denied. Executes the real two-command sequence to
+    show the gap's actual consequence, not just the guard's None verdict."""
+    tip = _make_pushed_branch(repo)
+    base_sha = _git(repo, "rev-parse", "origin/main")
+
+    # The forced, single-command spelling of this exact rewrite: denied.
+    d = _ev(f"git branch -f feature {base_sha}", cwd=str(repo))
+    assert d.allow is False
+    assert tip in d.reason
+    assert "git merge" in d.reason
+
+    # The un-forced rename: this module stands down (no -f/--force at all).
+    d_rename = _ev("git branch -m feature away", cwd=str(repo))
+    assert d_rename.allow is True, d_rename.reason
+    _git(repo, "branch", "-m", "feature", "away")
+
+    # The un-forced recreate under the old name: also stands down — "feature"
+    # no longer exists locally, so this is git's own plain "create a branch"
+    # form, not a `-f`/`--force` rewrite of an existing one.
+    d_recreate = _ev(f"git branch feature {base_sha}", cwd=str(repo))
+    assert d_recreate.allow is True, d_recreate.reason
+    _git(repo, "branch", "feature", base_sha)
+
+    # Real git executed both steps: "feature" now points below its old
+    # pushed tip, exactly like the forced single-command form would have.
+    assert _git(repo, "rev-parse", "feature") == base_sha
+    assert not _is_ancestor(repo, tip, "feature")
+
+
+def test_the_dash_c_global_flag_cwd_mismatch_gap_is_real_and_the_same_cwd_case_is_denied(
+    harness_repo, tmp_path,
+):
+    """Module docstring: `git -C <dir> rebase ...` is skipped as a global
+    option by `_subcommand`, but Phase B still runs its subprocess calls
+    against the PreToolUse hook's own session cwd, never `<dir>`. When the
+    session cwd is unrelated to `<dir>` (here: a bare, non-git directory),
+    this module cannot find `<dir>`'s pushed tip and fails open — even
+    though real git, which does honor `-C`, rewrites `<dir>`'s pushed
+    branch anyway. The identical rebase run WITH the session cwd equal to
+    `<dir>` (the ordinary case every other test in this file uses) is still
+    denied, bounding the gap to the cwd-mismatch case specifically."""
+    work, tip = harness_repo()
+    _git(work, "checkout", "-q", "main")
+    (work / "g.txt").write_text("main moved on\n")
+    _git(work, "add", "-A")
+    _git(work, "commit", "-q", "-m", "main advances")
+    _git(work, "push", "-q", "origin", "main")
+    _git(work, "checkout", "-q", "feature")
+
+    # Ordinary case: session cwd IS the target repo. Denied, as every other
+    # form in this file is.
+    d_same = _ev(f"git -C {work} rebase origin/main", cwd=str(work))
+    assert d_same.allow is False, d_same.reason
+    assert tip in d_same.reason
+
+    # Mismatch case: session cwd is a bare, unrelated, non-git directory.
+    unrelated = tmp_path / "unrelated-session-cwd"
+    unrelated.mkdir()
+    d_mismatch = _ev(f"git -C {work} rebase origin/main", cwd=str(unrelated))
+    assert d_mismatch.allow is True, d_mismatch.reason
+
+    # Real git, run exactly as the hypothetical PreToolUse hook would (shell
+    # cwd is the unrelated directory; `-C` tells git itself where to operate)
+    # still rewrites "feature" in `work`.
+    subprocess.run(
+        ["git", "-C", str(work), "rebase", "origin/main"],
+        cwd=str(unrelated), check=True, capture_output=True, text=True,
+    )
+    assert not _is_ancestor(work, tip, "feature")
+
+
 def test_both_rebase_backends_record_the_head_name_the_guard_reads(harness_repo):
     """`_rebase_head_name` reads `rebase-merge/head-name` OR
     `rebase-apply/head-name` — git has two rebase backends (the default
@@ -787,8 +871,8 @@ def test_the_pushed_tip_path_sees_every_runner_the_guard_knows(harness_repo):
     `guard._SHELL_RUNNERS` (13 names), silently losing eval/flock/nice/
     script/stdbuf/timeout/watch/xargs as live bypasses. This module never
     derives its own runner list — it consumes `guard._git_invocations`,
-    which (per `guard.py`'s own `_git_invocations`, read at
-    `guard.py:2577` — `elif name in _FORGE_RUNNER_NAMES`) recurses into
+    which (per `guard.py`'s own `_git_invocations` function body — its
+    `elif name in _FORGE_RUNNER_NAMES` branch) recurses into
     every name in `guard._FORGE_RUNNER_NAMES`, the union of
     `_SHELL_RUNNERS` (13) and `_TRAILING_ARGV_RUNNERS` (12, overlapping
     `_SHELL_RUNNERS` on xargs/timeout/nice/stdbuf/script/flock/watch), for

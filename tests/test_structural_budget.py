@@ -1874,7 +1874,7 @@ FROZEN_FILE_LINES = {
     # reads `_FORGE_RUNNER_NAMES` (verified by
     # `tests/test_pushed_tip_rewrite_guard.py::test_the_pushed_tip_path_sees_every_runner_the_guard_knows`).
     # Measured on this tree with the scanner below.
-    "agent/guard.py": 2947,
+    "agent/guard.py": 2954,
     # +44: idle-path recover_quota_cooldown gate in tick() and the
     # never-shorten-a-live-wall guard in _run — the quota-wall storm cost fix.
     # +129: `HarvestJob` — the cadence job (`due()`/`maybe_run()`) that runs

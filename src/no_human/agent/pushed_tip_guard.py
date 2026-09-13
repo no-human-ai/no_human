@@ -49,6 +49,30 @@ in ``orchestrator.py`` says (~:7969-7980): most rewrites should now be
 caught before they run, but the lease is real defense-in-depth for the ones
 that are not.)
 
+Two more single-command-scoped gaps, named honestly rather than closed,
+because closing either needs more than argv lexing:
+
+* ``git -C <dir> rebase ...`` (a *global* ``-C``, before the subcommand,
+  naming a different repo to operate in) is skipped by ``_subcommand`` like
+  any other global option-with-argument, but Phase B's subprocess calls
+  (``_pushed_tip``, ``_git``) still run against the PreToolUse hook's own
+  session ``cwd`` — never against ``<dir>``. The classification (`OUTRIGHT`
+  for a bare ``rebase``, say) is therefore checked against the wrong
+  worktree's pushed tip whenever ``<dir>`` differs from the session cwd:
+  this can misfire in either direction, an ALLOW on a rewrite of a pushed
+  branch in ``<dir>``, or a spurious DENY driven by ``cwd``'s unrelated
+  state. Resolving it means plumbing ``<dir>`` through as the effective cwd
+  for the rest of classification, which this module does not do.
+* ``git branch -f`` is the only OUTRIGHT-triggering spelling
+  ``_classify_branch`` recognizes; an un-forced ``git branch -m <branch>
+  <tmp>`` (rename the pushed branch out of the way) followed, in a SEPARATE
+  Bash call, by an un-forced ``git branch <branch> <target>`` (recreate the
+  name fresh, since it no longer exists locally) rewrites the same pointer
+  without either command ever carrying ``-f``/``--force``. This is the same
+  class of gap as the detached-HEAD ``branch -f`` bypass above: a two-command
+  sequence that never presents this module with a single recognizable
+  rewrite of an existing branch.
+
 Detection is local-only: it reads the current branch's remote-tracking ref
 (``refs/remotes/<remote>/<branch>``), never ``ls-remote`` or any other
 network round-trip. ``GitRepo.fetch_remote_branch_sha`` (base-refresh) can
@@ -126,15 +150,39 @@ legitimate detached-HEAD workflow with no narrow, testable trigger to catch
 the mistake — worse than the known, documented gap this leaves instead, and
 ``tests/test_pushed_tip_rewrite_guard.py``'s
 ``test_a_detached_head_and_a_bare_reset_hard_fall_through`` pins exactly
-this as intended. Two things justify the rest staying open: this rule is an
-*addition* stacked on top of ``guard._git_worktree_denial``, which already
-independently blocks every tree-clobbering git form regardless of what this
-module decides; and a false positive here would break the legitimate
+this as intended.
+
+An earlier draft of this paragraph justified staying open here by claiming
+``guard._git_worktree_denial`` is an independent backstop that "already
+blocks every tree-clobbering git form regardless of what this module
+decides". Measured directly, that is false for exactly the forms this
+module exists to catch: ``_git_worktree_denial`` denies a bare
+``rebase --abort``/``--skip``/``--autostash`` (via ``_sequencer_clobbers``,
+which is why those wind-back forms are excluded from this module's OUTRIGHT
+denial — see ``_REBASE_WIND_BACK`` above) and a hard ``reset``/``clean``/
+``checkout -f`` (via ``_reset_clobbers``/``_clean_clobbers``/
+``_checkout_clobbers``), but it does NOT deny a plain ``git rebase
+<base>``, ``pull --rebase``, ``commit --amend``, ``update-ref``,
+``checkout -B``, or ``branch -f`` — precisely the OUTRIGHT/TARGET/
+HEAD_PARENT forms this module classifies. If this module fails open on one
+of those (detached HEAD outside a rebase; no remotes; a timeout; an
+unreadable cwd), ``_git_worktree_denial`` does not catch it either.
+
+What actually backstops a rewrite that slips past every lexical guard —
+this module and ``_git_worktree_denial`` both — is the property the second
+paragraph of this docstring describes: delivery's own branch push
+(``GitRepo.push_sha_fast_forward``) is fast-forward-only and refuses a
+rewritten branch outright, and ``force_with_lease`` is the documented,
+load-bearing recovery for exactly that refusal (see ``git.py``'s ``push``
+docstring, ~:1551-1573). That backstop lives downstream of this module, at
+delivery time, not in another PreToolUse guard alongside it. Two things
+justify leaving the detached-HEAD-outside-a-rebase case open rather than
+guessing at a heuristic: a false positive here would break the legitimate
 rebase-on-a-never-pushed-branch workflow that ``tests/test_guard.py``'s
-``_SEQUENCER_PAIRS`` pins as allowed. Getting this wrong in the deny
-direction breaks real work; getting it wrong in the allow direction just
-means the pre-existing, less specific denial (or no denial, if the branch
-truly was never pushed) applies instead.
+``_SEQUENCER_PAIRS`` pins as allowed, and the downstream fast-forward
+refusal still catches the rewrite before it reaches the remote. Getting
+this wrong in the deny direction breaks real work; getting it wrong in the
+allow direction defers the catch to delivery time instead of losing it.
 """
 
 from __future__ import annotations
@@ -277,10 +325,12 @@ def _subcommand(argv: list[str]) -> tuple[str, list[str], list[str]]:
 def _split_flag_value_operands(
     rest: list[str], flag: str,
 ) -> tuple[str | None, list[str]]:
-    """Scans `rest` for a short option `flag` (`-B name` or bundled
-    `-Bname`), returning its value (or None if absent) and the remaining
-    non-flag tokens (operands), in order, with the flag and its value
-    removed."""
+    """Scans `rest` for an option `flag` (`-B name`/`--force-create name`,
+    or glued `-Bname`/`--force-create=name`), returning its value (or None
+    if absent) and the remaining non-flag tokens (operands), in order, with
+    the flag and its value removed. The `=` in a glued long option is
+    stripped; a bundled short option never has one, so stripping it there
+    too is a no-op."""
     value = None
     operands = []
     i = 0
@@ -295,6 +345,8 @@ def _split_flag_value_operands(
             continue
         if tok.startswith(flag) and len(tok) > len(flag):
             value = tok[len(flag):]
+            if value.startswith("="):
+                value = value[1:]
             i += 1
             continue
         if not tok.startswith("-"):
@@ -320,7 +372,7 @@ def _rebase_is_wind_back(rest: list[str]) -> bool:
 
 
 def _pull_is_rebase_flavored(rest: list[str], config_values: list[str]) -> bool:
-    """An explicit `--rebase[=<v>]`/`--no-rebase` on the `pull` command
+    """An explicit `--rebase[=<v>]`/`-r`/`--no-rebase` on the `pull` command
     itself wins over a `-c pull.rebase=<v>` global (matching git's own
     precedence); with neither, falls back to the config value. A config
     FILE's `pull.rebase = true` (as opposed to `-c` on this argv) is out of
@@ -328,7 +380,7 @@ def _pull_is_rebase_flavored(rest: list[str], config_values: list[str]) -> bool:
     already documents."""
     explicit: bool | None = None
     for tok in rest:
-        if tok == "--rebase":
+        if tok == "--rebase" or tok == "-r":
             explicit = True
         elif tok.startswith("--rebase="):
             explicit = tok.split("=", 1)[1].strip().lower() not in ("false", "no", "0")
@@ -370,7 +422,12 @@ def _classify_checkout(rest: list[str]) -> tuple | None:
 
 
 def _classify_switch(rest: list[str]) -> tuple | None:
+    """`-C <name>` and its long spelling `--force-create[=<name>]` are the
+    same flag (git accepts either); both must be recognized or the long
+    spelling is a lexical bypass of the pushed-tip check `-C` triggers."""
     name, operands = _split_flag_value_operands(rest, "-C")
+    if name is None:
+        name, operands = _split_flag_value_operands(rest, "--force-create")
     if name is None:
         return None
     start_point = operands[0] if operands else "HEAD"
@@ -387,6 +444,10 @@ def _classify_branch(rest: list[str]) -> tuple | None:
 
 
 def _classify_update_ref(rest: list[str]) -> tuple | None:
+    """`-m <reason>` takes a value that is stripped before the positional
+    ref/newvalue/oldvalue operands are read off — otherwise the reason
+    string itself would be misread as `ref`, hiding the actual update from
+    this classifier."""
     if "--stdin" in rest:
         # `--stdin` reads the actual ref updates from stdin, which this
         # argv-only phase never sees — it could rewrite refs/heads/<branch>
@@ -395,6 +456,7 @@ def _classify_update_ref(rest: list[str]) -> tuple | None:
         # OUTRIGHT forms below rather than silently falling through None.
         return ("outright",)
     delete = any(f in ("-d", "--delete") for f in rest)
+    _reason, rest = _split_flag_value_operands(rest, "-m")
     operands = [t for t in rest if not t.startswith("-")]
     if not operands:
         return None

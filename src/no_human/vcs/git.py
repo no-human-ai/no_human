@@ -1548,19 +1548,30 @@ class GitRepo:
         head against a re-resolved `repo.head_sha()` that had drifted to
         main's tip, not the commit this push actually sent.
 
-        ``force_with_lease`` exists for ONE caller: a delivery retry whose plain
-        push was rejected non-fast-forward because the agent REBASED its own
-        already-pushed branch. That is not a corner case — `git reflog` on a
-        stranded branch reads ``rebase (finish): refs/heads/no-human/<id> onto
-        <new main>``. `agent/pushed_tip_guard.py` now refuses that rebase (and
-        every other pushed-tip rewrite it recognizes) before the coder can run
-        it, so new attempts should not reach this path via their own rebase —
-        but it stays load-bearing for branches rewritten before that rule
-        existed, or by any other means that lands a non-fast-forwardable
-        branch here. A rebased branch cannot be fast-forwarded; force is the
-        ONLY correct push, and without it the attempt's reviewed, green work
-        is thrown away. Measured 2026-08-11: 81 rejections in one week, and 0
-        of the 7 tasks that ever hit one reached `done`.
+        ``force_with_lease`` has THREE callers, of two different kinds.
+        `evidence_ledger.py:91` (`deliver`) passes it unconditionally on
+        every push of the `nh-evidence/<task-id>` side branch: that branch
+        is not a delivery retry at all — it is force-pushed because the
+        local branch can be re-cut from the current branch (`create_branch`)
+        whenever no local ref for it survives (e.g. a fresh worktree), which
+        is not guaranteed to be a descendant of whatever a prior attempt
+        already pushed there.
+
+        The other two — `orchestrator.py`'s `_finalize` retry and
+        `_open_draft_pr_for_review`'s `pr_conflict` mechanical-round retry —
+        ARE delivery retries: a plain push was rejected non-fast-forward
+        because the agent REBASED its own already-pushed branch. That is not
+        a corner case — `git reflog` on a stranded branch reads ``rebase
+        (finish): refs/heads/no-human/<id> onto <new main>``.
+        `agent/pushed_tip_guard.py` now refuses that rebase (and every other
+        pushed-tip rewrite it recognizes) before the coder can run it, so new
+        attempts should not reach this path via their own rebase — but it
+        stays load-bearing for branches rewritten before that rule existed,
+        or by any other means that lands a non-fast-forwardable branch here.
+        A rebased branch cannot be fast-forwarded; force is the ONLY correct
+        push, and without it the attempt's reviewed, green work is thrown
+        away. Measured 2026-08-11: 81 rejections in one week, and 0 of the 7
+        tasks that ever hit one reached `done`.
 
         Two safety properties, both load-bearing:
 
