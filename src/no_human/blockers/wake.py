@@ -85,6 +85,15 @@ _CI_INFRA_RE = re.compile(
 # for this tick. Never leaks out of `_check_open_pr` itself.
 _COMMENTS_INJECTED = "_comments_injected"
 
+# Sentinel default for `_check_pr_conflict`'s `info` keyword: distinguishes
+# "the caller did not pass `info` at all" (poll for it) from "the caller
+# passed `info=None` because the shared `_poll_mergeable` call it already
+# paid for this tick failed" (bugfix, split from task 22c4ddf6 finding #3 —
+# `None` used to mean both, so a failed shared poll was silently re-polled a
+# second time by this rung, doubling the network round-trip and the warning
+# log on every error tick).
+_INFO_UNSET = object()
+
 
 def parse_duration(text: str) -> timedelta | None:
     """Parse ``2h`` / ``30m`` / ``48h`` / ``1d`` into a timedelta, or None."""
@@ -1899,8 +1908,11 @@ class WakeWatcher:
         # Observational only: re-measures and records against the real ref,
         # never resumes, escalates, or touches conflict-round bookkeeping —
         # so it can never consume a coder attempt, and never blocks the
-        # rungs below it from also running this same tick.
-        await self._check_base_stale(task, url, info or {})
+        # rungs below it from also running this same tick. A bare `await`
+        # here used to discard its return value entirely, so `tick()`'s
+        # `actions` list (and so `nh wake`) never learned a re-measure
+        # happened even when nothing else this tick claimed the result.
+        base_stale_acted = await self._check_base_stale(task, url, info or {})
         if await self._is_terminal(task):
             return None
 
@@ -1910,7 +1922,23 @@ class WakeWatcher:
         # 6. CI_GATE integration gate (M6): PR CI is green (or unknown, which
         #    the gate re-checks explicitly) — run the integration validation
         #    once per PR head, bounded send-back on failure.
-        return await self._check_ci_gate_integration(task, url)
+        acted = await self._check_ci_gate_integration(task, url)
+        if acted:
+            return acted
+        # Only the actionable "woken" outcome — a genuine re-measure of a
+        # trunk move, the AC1 behavior this bugfix exists to deliver — is
+        # surfaced as this tick's result. `pr_base_undetermined` (could-not-
+        # verify, e.g. an unreadable repo) is already durably recorded via
+        # the context patch and the emitted event `_check_base_stale` wrote
+        # above regardless of this return value, so it is deliberately not
+        # promoted to a ladder-level "action": every rung above this one
+        # already treats "nothing to resume, nothing to escalate" as `None`
+        # once its own concern resolves, and an unrelated task whose repo
+        # happens to be unreadable should not appear to have had something
+        # "done" to it on a tick where no rung actually acted on its behalf.
+        if base_stale_acted == "pr_base_remeasured":
+            return base_stale_acted
+        return None
 
     async def _poll_mergeable(self, task: Task, url: str) -> dict | None:
         """The single ``gh pr view --json mergeable,mergeStateStatus`` poll
@@ -1930,7 +1958,7 @@ class WakeWatcher:
     async def _check_pr_conflict(self, task: Task, url: str,
                                  forge_state: str = "", *,
                                  branch: str | None = None,
-                                 info: dict | None = None) -> str | None:
+                                 info: dict | None = _INFO_UNSET) -> str | None:
         """Rung 3 (SCRUM-41): a textual conflict with main is invisible to CI
         (branch checks only run the PR's own branch) — this rung is the only
         one that polls `gh pr view --json mergeable,mergeStateStatus` directly.
@@ -1992,15 +2020,21 @@ class WakeWatcher:
 
         ``info``: the caller (`_check_open_pr`) polls once and passes its
         answer here via this additive keyword, shared with `_check_base_stale`
-        so a tick pays for `gh pr view` once, not twice. `None` means "not
-        provided" — this rung then polls for itself via `_poll_mergeable`,
-        exactly as it always did, so every existing direct caller (this
-        file's own tests included) keeps working unchanged.
+        so a tick pays for `gh pr view` once, not twice. The default,
+        `_INFO_UNSET`, means "not provided" — this rung then polls for itself
+        via `_poll_mergeable`, exactly as it always did, so every existing
+        direct caller (this file's own tests included) keeps working
+        unchanged. An explicit `info=None` means the caller DID share its
+        poll and that poll failed — this rung must not re-poll in that case
+        (it used to: `None` meant both "not provided" and "provided but
+        failed", so a failed shared poll was paid for twice, once per rung,
+        doubling the network round-trip and the warning log on every error
+        tick).
         """
-        if info is None:
+        if info is _INFO_UNSET:
             info = await self._poll_mergeable(task, url)
-            if info is None:
-                return None
+        if info is None:
+            return None
         # The poll (ours or the caller's) just awaited a network call;
         # re-verify terminal-ness before writing anything (conflict rung,
         # SCRUM-68).
@@ -2423,8 +2457,10 @@ class WakeWatcher:
         tests drive. So this rung asks the real ref at each watcher tick
         instead of reacting to a push; there is no bound on how many times a
         still-MERGEABLE PR can be re-measured this way, because each
-        measurement is a cheap local `git fetch` + `rev-parse`, not a coder
-        attempt.
+        measurement — a real `git fetch origin <base>` against the remote
+        (`delivered_base.fetch_base_ref`) followed by a local `rev-parse` —
+        is a genuine network round-trip on every tick for every parked PR,
+        but never a coder attempt.
 
         FAIL CLOSED ON THE LOCAL RE-VERIFICATION TOO. `conflicting_paths`
         documents `None` as "the question could not be asked at all" — a
@@ -2437,6 +2473,20 @@ class WakeWatcher:
         shipped. Below, `None` is checked for explicitly and fetches the
         branch ref (mirroring `_check_pr_conflict`'s own fetch-and-retry)
         before giving up and recording UNDETERMINED, never FRESH.
+
+        AC2' (amended, current, authoritative — supersedes the original AC2):
+        "when trunk moves under a still-MERGEABLE PR, the rung records an
+        answer a later consumer can act on, and it never records 'fresh' for
+        a base it has not verified beyond textual mergeability." An empty
+        `conflicting_paths` result answers "does `git merge-tree` see a
+        conflicting path", not "is the merged result safe" — a trunk rename
+        of `mod.old` -> `mod.renamed` merges textually clean against a
+        branch whose own `caller.py` still imports `mod.old`, and only
+        raises at runtime. So an empty result here is recorded STALE (never
+        FRESH), and `pr_base_sha` is deliberately left unbumped: bumping it
+        would make the very next `measure()` see the recorded sha equal the
+        observed tip and answer FRESH from then on, which would destroy the
+        only signal a later, more thorough consumer could act on.
         """
         mergeable = str((info or {}).get("mergeable") or "").upper()
         if mergeable != "MERGEABLE":
@@ -2492,9 +2542,12 @@ class WakeWatcher:
             return "pr_base_undetermined"
 
         # STALE: trunk moved past the recorded tip. Re-verify mergeability
-        # locally before recording the new tip as fresh — a real conflict at
-        # the new tip is left for `_check_pr_conflict`'s own ladder, never
-        # handled here (see the docstring above).
+        # locally first — not to decide fresh-vs-stale (merge-tree can only
+        # ever confirm textual mergeability, never semantic safety; see AC2'
+        # below), but to distinguish "textually clean" from "a real conflict"
+        # from "could not even ask". A real conflict at the new tip is left
+        # for `_check_pr_conflict`'s own ladder, never handled here (see the
+        # docstring above).
         conflict_paths: set[str] | None = None
         local_check_error = ""
         if task.repo_path and measure_base and branch_name:
@@ -2583,27 +2636,52 @@ class WakeWatcher:
             )
             return "pr_base_undetermined"
 
-        # conflict_paths == set(): a genuinely clean local merge against the
-        # new tip (asked and answered, not merely unresolved) — safe to
-        # record as fresh.
-        previous_sha = result.recorded_sha
-        remeasures = int(ctx.get("pr_base_remeasures") or 0) + 1
-        patch = {
-            "pr_base_sha": result.observed_sha,
-            "pr_base_remeasures": remeasures,
-            "pr_base_freshness": {
-                "state": delivered_base.FRESH,
-                "base_ref": measure_base,
-                "previous_base_sha": previous_sha,
-                "base_sha": result.observed_sha,
-            },
+        # conflict_paths == set(): TEXTUALLY clean (git merge-tree found no
+        # conflicting path) against the new tip. That is NOT the same
+        # question as "safe" — merge-tree never runs a build, an import, or
+        # a test, so a trunk rename (`mod.old` -> `mod.renamed`) that leaves
+        # this branch's own `caller.py` still importing `mod.old` merges
+        # clean and breaks at runtime. Recording that as FRESH (and bumping
+        # `pr_base_sha` to the new tip) was the exact defect an earlier round
+        # of this bugfix shipped: tick 1 would mark it fresh, and tick 2's
+        # `measure()` would then see the (just-bumped) recorded sha equal
+        # the observed tip and short-circuit FRESH forever — destroying the
+        # only signal that could have surfaced the break, and answering a
+        # question ("is this semantically safe?") this rung never asked.
+        # AC2' (amended): never record fresh for a base verified only this
+        # far. So this stays STALE — recorded_sha is left untouched (bumping
+        # it would recreate the same silent-fresh-forever failure one level
+        # up) — with `reason` naming exactly how far verification went, and
+        # a `pr_base_remeasured` event so a later consumer (a human, or a
+        # future rung) has an answer to act on instead of silence.
+        freshness = {
+            **result.as_dict(),
+            "reason": (
+                "trunk moved; the new tip merges without a textual "
+                "conflict, but that is merge-tree only (no build/import/"
+                "test check) — recorded as stale, not fresh, until "
+                "verified beyond textual mergeability"),
         }
-        task.context = await self.store.merge_context(task.id, patch)
+        if ctx.get("pr_base_freshness") == freshness:
+            # Already recorded exactly this answer on a previous tick —
+            # bound the noise instead of re-emitting identically forever
+            # while trunk sits still (same debounce as the UNDETERMINED
+            # branches above).
+            return None
+        remeasures = int(ctx.get("pr_base_remeasures") or 0) + 1
+        task.context = await self.store.merge_context(
+            task.id, {"pr_base_remeasures": remeasures, "pr_base_freshness": freshness})
+        backfill_note = (
+            " (recorded base sha was itself backfilled from an earlier "
+            "observation, not the true delivery-time base)"
+            if ctx.get("pr_base_sha_source") == "backfilled" else "")
         await self._emit(
             task, "pr_base_remeasured",
-            f"{task.id[:8]} PR {url} base re-measured: trunk moved "
-            f"{previous_sha[:8] if previous_sha else '(none)'} -> "
-            f"{result.observed_sha[:8]} while still MERGEABLE "
+            f"{task.id[:8]} PR {url} base moved: trunk advanced "
+            f"{result.recorded_sha[:8] if result.recorded_sha else '(none)'} -> "
+            f"{result.observed_sha[:8]} while still MERGEABLE; textually "
+            f"clean against the new tip but not verified beyond merge-tree, "
+            f"so recorded as stale{backfill_note} "
             f"({remeasures} remeasure(s) so far) — no coder attempt consumed",
         )
         return "pr_base_remeasured"

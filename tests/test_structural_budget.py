@@ -220,7 +220,12 @@ FROZEN_FUNCTION_LINES = {
     # caller can hand it that shared poll instead of paying for a second one.
     # CC dropped 74 -> 72 in the same change (no ratchet entry needed for a
     # shrink). Measured on this tree.
-    "blockers/wake.py:WakeWatcher._check_pr_conflict": 464,
+    # 464 -> 470 (+6, 2026-09-13): same task, re-attempt after a human
+    # send-back — the `info` sentinel fix (distinguishing "not provided"
+    # from "provided as None because the shared poll failed", so this rung
+    # no longer re-polls and double-logs on the error path) grew the
+    # docstring and the guard by 6 lines; CC unchanged. Measured on this tree.
+    "blockers/wake.py:WakeWatcher._check_pr_conflict": 470,
     # 418 -> 424 (+6): D1.1 fix round — attempt-scoped verification-artifact
     # write wired into `_finalize` (review findings #1/#7). Measured on the
     # D1.1 squash-merge result.
@@ -1223,7 +1228,7 @@ FROZEN_FILE_LINES = {
     # frozen ceiling, so that function's own entry did not have to grow).
     # Measured after extracting/trimming as far as possible without cutting
     # the fail-closed guards' rationale comments.
-    # 23893 -> 23900 (+7, 2026-09-13): stale-but-mergeable-PR bugfix (task
+    # 24079 -> 24086 (+7, 2026-09-13): stale-but-mergeable-PR bugfix (task
     # 22c4ddf6 finding #3) — the `delivered_base` import plus `_finalize`'s
     # new trunk-tip recording call. Measured on this tree (`len(text
     # .splitlines())`, not `wc -l`).
@@ -1811,7 +1816,34 @@ FROZEN_FILE_LINES = {
     # `pr_base_undetermined` write path, and dedup logic bounding repeated
     # identical undetermined answers across ticks. Measured on this tree
     # with the scanner below.
-    "blockers/wake.py": 3014,
+    # 3014 -> 3080 (+66, 2026-09-13): same task, second re-attempt after a
+    # further human send-back (AC2 amended to AC2'). An empty
+    # `conflicting_paths` result (textually clean) no longer records `fresh`
+    # or bumps `pr_base_sha` — merge-tree only proves textual mergeability,
+    # not semantic safety — so it now records `stale` with a `reason` and
+    # its own dedup guard; `_check_open_pr`'s bare `await
+    # self._check_base_stale(...)` became `base_stale_acted`, threaded
+    # through as the tick's own result when no rung below it claims the
+    # tick, so its outcome reaches `tick()`'s `actions` (and `nh wake`)
+    # instead of being discarded; the `_INFO_UNSET` sentinel (see
+    # `_check_pr_conflict` above) was added; and two docstring passages
+    # (AC2', and correcting a false "cheap local git fetch" claim —
+    # `delivered_base.fetch_base_ref` is a real network fetch) grew in
+    # place. Measured on this tree with the scanner below.
+    # 3080 -> 3092 (+12, 2026-09-13): same task, third re-attempt. Threading
+    # `base_stale_acted` through unconditionally (previous entry) made
+    # `_check_open_pr` surface `pr_base_undetermined` as a top-level "acted"
+    # result for ANY task whose repo/base cannot be resolved — including
+    # pre-existing wake-ladder tests unrelated to this bugfix that use a
+    # placeholder, non-existent `repo_path` and never recorded a
+    # `pr_base_sha`, breaking their `out is None` assertions. Only the
+    # actionable `pr_base_remeasured` outcome (AC1's "re-measured" signal)
+    # is now promoted to the tick's result; `pr_base_undetermined` stays
+    # recorded via its own context patch and emitted event (already a real
+    # production consumer, per the `_emit` call in `_check_base_stale`)
+    # without also being promoted to a ladder-level action. Measured on this
+    # tree with the scanner below.
+    "blockers/wake.py": 3092,
     # +91: `_SCAN_WRAPPER_NAMES` + `_peel_scan_wrappers` — peels
     # timeout/xargs/nice/stdbuf (and siblings) for the scan-severity check
     # only, so a wrapped `find … -delete` in a denied compound classifies
