@@ -23129,8 +23129,8 @@ SIX of them read a checkpoint and TWO do not — but do
         for shot in result.shots:
             rel = shot.get("path") if isinstance(shot, dict) else None
             if rel and (out_dir / rel).is_file():
-                files[rel] = (out_dir / rel).read_bytes()
-                delivered_names.append({"name": shot.get("name", rel), "path": rel})
+                files[rel] = data = (out_dir / rel).read_bytes()
+                delivered_names.append(ui_evidence.shot_record(shot.get("name", rel), rel, data))
         if result.video and (out_dir / result.video).is_file():
             files[result.video] = (out_dir / result.video).read_bytes()
             video_name = result.video
@@ -23199,13 +23199,12 @@ SIX of them read a checkpoint and TWO do not — but do
                 "hermetic backend — this walk was not hermetic.\n")
         shown = delivered_names[: self._UI_EVIDENCE_MAX_EMBEDDED_SHOTS]
         alt_prefix = "default walk (no coder manifest): " if default_walk else ""
-        for shot in shown:
-            lines.append(f"![{alt_prefix}{shot['name']}]({_raw_url(shot['path'])})")
+        lines.extend(ui_evidence.frame_lines(shown, alt_prefix, _raw_url))
         omitted = len(delivered_names) - len(shown)
         if omitted > 0:
             lines.append(f"_(+{omitted} more shot(s) on `{evidence_branch}`)_")
         if video_name:
-            lines.append(f"[walk video]({_raw_url(video_name)})")
+            lines.append(ui_evidence.video_line(_raw_url(video_name)))
         return "\n".join(lines) + "\n\n"
 
     #: Directory name every task's written artifacts (this section's full
