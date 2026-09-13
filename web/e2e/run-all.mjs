@@ -38,6 +38,7 @@ const SUITES = [
   ["onboarding summary counts", "onboarding-summary-counts.mjs"],
   ["onboarding minimal path", "onboarding-minimal-path.mjs"],
   ["onboarding step nav", "onboarding-step-nav.mjs"],
+  ["onboarding discord step", "onboarding-discord-step.mjs"],
   ["onboarding recent card layout", "onboarding-recent-card-layout.mjs"],
   ["integrations help + validate", "integrations-help-validate.mjs"],
   ["settings a11y", "settings-a11y.mjs"],

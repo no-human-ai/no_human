@@ -1886,6 +1886,56 @@ def test_status_prints_infra_pause_line(tmp_path, monkeypatch):
     assert "quota" not in out, out
 
 
+def test_status_prints_lease_lost_pause_line(tmp_path, monkeypatch):
+    """Task 92e48491 (refile): a lost pool lease is permanent — no resume
+    time, no profile, and the operator must be told the one thing that
+    actually fixes it (restart), not a cooldown ETA that will never arrive.
+    This is the CLI side of the surface the closed PR #251 got right; the
+    web board side is `web/src/drainChip.test.mjs`."""
+    db = tmp_path / "test.db"
+    for _ in range(7):
+        _seed_task(db, TaskStatus.PENDING)
+    runner = _status_runner_with_config_width(db, monkeypatch, 2)
+    _stub_health(monkeypatch, {
+        "max_workers": 4, "workers_busy": 0, "queue_depth": 7,
+        "paused": True, "paused_reason": "lease_lost",
+        "paused_until": None, "paused_profile": None,
+    })
+
+    out = " ".join(runner.invoke(cli, ["status"]).output.split())
+
+    assert "paused" in out, out
+    assert "lost the pool lease" in out, out
+    assert "restart" in out, out
+    assert "quota" not in out, out
+    assert "resumes" not in out, out
+
+
+def test_status_prints_unknown_pause_reason_honestly(tmp_path, monkeypatch):
+    """The default branch for a `paused_reason` this CLI has never heard of
+    must say so explicitly — it must NEVER fall through to a quota-shaped
+    line merely for not being "infra". That silent-then-wrong fallthrough is
+    exactly the bug a lost pool lease exposed on the closed PR #251's web
+    board (`paused_reason === "infra" ? ... : "quota"`); this locks the CLI
+    side of the same honesty requirement."""
+    db = tmp_path / "test.db"
+    for _ in range(7):
+        _seed_task(db, TaskStatus.PENDING)
+    runner = _status_runner_with_config_width(db, monkeypatch, 2)
+    _stub_health(monkeypatch, {
+        "max_workers": 4, "workers_busy": 0, "queue_depth": 7,
+        "paused": True, "paused_reason": "some_future_reason",
+        "paused_until": None, "paused_profile": None,
+    })
+
+    out = " ".join(runner.invoke(cli, ["status"]).output.split())
+
+    assert "paused" in out, out
+    assert "reason unknown" in out, out
+    assert "some_future_reason" in out, out
+    assert "quota" not in out, out
+
+
 def test_status_prints_no_pause_line_when_not_paused(tmp_path, monkeypatch):
     """Negative control: an ordinary (non-cooldown) payload must not grow a
     pause line — unchanged from today, per the acceptance criterion."""

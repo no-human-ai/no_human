@@ -62,3 +62,9 @@ desktop/dist/
 
 # The adoption harness writes its report here on every run.
 e2e/adoption/out/
+
+# A developer-local symlink into whatever checkout the operator is running
+# from. Never shipped: it carries an absolute path off this machine, and it
+# dangles anywhere else. It was NOT ignored, so a `git add -A` during a hand
+# landing swept it into a public commit (83b0b364) on 2026-09-13.
+.nh-local
