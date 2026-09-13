@@ -218,6 +218,7 @@ jobs:
       - uses: no-human-ai/no_human@v1
         with:
           credential: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ github.token }}
 ```
 
 `credential` takes either shape of your own Anthropic credential — an
