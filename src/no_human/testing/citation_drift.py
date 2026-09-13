@@ -209,9 +209,21 @@ def classify(returncode: int, stdout: str, stderr: str) -> CitationOutcome:
         Status.UNFIXABLE, docs=doc_paths, failures=failures, detail=stdout.strip())
 
 
-def run_reanchor(repo_path: Path, *, timeout: float = DEFAULT_TIMEOUT_S) -> CitationOutcome:
-    """Run the target repo's OWN `scripts/reanchor_citations.py --apply`
-    inside *repo_path* and translate the result via `classify`.
+def run_reanchor(
+    repo_path: Path, *, apply: bool = True, timeout: float = DEFAULT_TIMEOUT_S,
+) -> CitationOutcome:
+    """Run the target repo's OWN `scripts/reanchor_citations.py` inside
+    *repo_path* and translate the result via `classify`.
+
+    *apply* defaults to True (the mechanical-fix call every existing caller
+    already relies on) but a caller that only wants to know whether drift
+    remains — WITHOUT writing to the worktree, e.g. a verification re-check
+    after a corrective round has already had its chance to fix things —
+    should pass `apply=False` to run the script's own read-only `--check`
+    instead. Either way a citation that is fixable-in-principle but was not
+    (because this call did not `--apply`) still reports as blocking
+    (`Status.UNFIXABLE`, since the script's own `--check` verdict is FAIL
+    while drift remains) — never mistaken for clean.
 
     FAIL CLOSED, unconditionally: every branch that is not a clean
     `classify()` call returns `Status.UNKNOWN`. Deliberately no
@@ -226,7 +238,7 @@ def run_reanchor(repo_path: Path, *, timeout: float = DEFAULT_TIMEOUT_S) -> Cita
         return CitationOutcome(Status.INAPPLICABLE, detail="convention not present")
     try:
         proc = subprocess.run(
-            reanchor_command(repo_path, apply=True),
+            reanchor_command(repo_path, apply=apply),
             cwd=repo_path,
             capture_output=True,
             text=True,

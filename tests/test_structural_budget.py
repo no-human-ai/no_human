@@ -166,14 +166,14 @@ FROZEN_FUNCTION_LINES = {
     # and its anchored comment, `type_hook` reaching
     # `_compose_post_tool_hooks`, and the widened `backend_degraded`
     # condition. Re-measured on the merge result.
-    # 2261 -> 2279 (+18): citation-drift preflight call site — the
+    # 2261 -> 2280 (+19): citation-drift preflight call site — the
     # `_citation_drift_preflight` invocation immediately after the
     # structural-budget preflight block, wrapped in the same
     # `try/except CancelRequested` / `except (BudgetAbort, StuckAbort,
     # ConvergenceAbort)` pattern the two sibling preflight call sites
     # already use. The preflight body itself lives in its own method, not
-    # here. Re-measured on the merge result with the scanner below.
-    "core/orchestrator.py:Orchestrator._run_attempt": 2279,
+    # here. Re-measured on the MERGED tree with the scanner's own metric.
+    "core/orchestrator.py:Orchestrator._run_attempt": 2280,
     # 760 -> 778 (+18): dispatch-time intake-eval hoisted path — the `elif
     # ctx.get("eval_result")` branch that acts on a grill/wizard-stored
     # verdict (idempotency marker, cost/residual-gap comments) added inside
@@ -1221,7 +1221,7 @@ FROZEN_FILE_LINES = {
     # frozen ceiling, so that function's own entry did not have to grow).
     # Measured after extracting/trimming as far as possible without cutting
     # the fail-closed guards' rationale comments.
-    # 24079 -> 24298 (+219): citation-drift preflight, added on top of the
+    # 24079 -> 24294 (+215): citation-drift preflight, added on top of the
     # above — the `citation_drift_send_back_message` helper, the
     # `_CITATION_DRIFT_ROUND_TURNS` constant, the `_citation_drift_preflight`
     # method (reads the target repo's own `scripts/reanchor_citations.py`
@@ -1230,9 +1230,16 @@ FROZEN_FILE_LINES = {
     # its call site in `_run_attempt`, and the additive `allow_paths`
     # parameter threaded through `_repro_corrective_round` ->
     # `_repro_round_out_of_scope(changed, extra_ok=allow_paths)`.
-    # Re-measured on the MERGED tree with the scanner below (placeholder,
-    # corrected to the scanner's own number below).
-    "core/orchestrator.py": 24079,
+    # Re-measured on the MERGED tree with the scanner's own metric
+    # (`tests/test_structural_budget.py::scan_tree`).
+    # 24294 -> 24318 (+24): a `GitError` from `commit_with_manifest_repair`
+    # after a mechanical re-anchor must not be silently reported as
+    # "auto-re-anchored" success — the write is now reverted and the run is
+    # re-labelled UNKNOWN so it falls through to the same bounded corrective
+    # round an UNFIXABLE/UNKNOWN run gets, plus the post-round verification
+    # re-check now passes `apply=False` so it can never itself mutate the
+    # worktree. Re-measured on the merged tree with the scanner's own metric.
+    "core/orchestrator.py": 24318,
 
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo

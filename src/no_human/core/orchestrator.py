@@ -9599,7 +9599,22 @@ class Orchestrator:
                 commit = await asyncio.to_thread(
                     commit_with_manifest_repair, repo, None, commit_msg)
             except GitError as exc:
-                self._advisory(f"citation drift auto-fix: commit failed: {exc}")
+                # A preflight that cannot COMMIT its mechanical fix has not
+                # fixed anything — discard the uncommitted rewrite (the
+                # corrective round below, like the UNFIXABLE/UNKNOWN case,
+                # must start from the clean tree the attempt already
+                # committed) and re-label this run UNKNOWN so the branch
+                # below falls through to the same bounded round rather than
+                # reporting a fix that never landed on the branch.
+                self._revert_worktree_writes(repo, before)
+                self.emit(
+                    "citation_drift",
+                    f"citation drift auto-fix could not be committed: {exc}",
+                    status="commit_failed", docs=list(outcome.docs),
+                )
+                outcome = replace(
+                    outcome, status=citation_drift.Status.UNKNOWN,
+                    detail=f"auto-re-anchor commit failed: {exc}\n{outcome.detail}")
             else:
                 await self.store.update_attempt(attempt_id, commit_sha=commit.sha)
                 self.emit("commit", f"citation drift auto-fix: {commit.sha[:8]}",
@@ -9638,7 +9653,16 @@ class Orchestrator:
         )
         if result is not None:
             return result
-        again = await asyncio.to_thread(citation_drift.run_reanchor, repo.path)
+        # Read-only: this is a report, not another fix attempt — a
+        # `--check` never mutates the worktree, so an uncommitted rewrite
+        # can never linger here for the attempt to carry into review as if
+        # it were the coder's own change (see module docstring on `apply`).
+        # A citation that is still mechanically fixable in principle but was
+        # not applied here still reports as blocking (`Status.UNFIXABLE`,
+        # since the script's own `--check` verdict is FAIL while drift
+        # remains) — never mistaken for clean.
+        again = await asyncio.to_thread(
+            citation_drift.run_reanchor, repo.path, apply=False)
         if again.blocking:
             self.emit(
                 "citation_drift", "still unresolved after the round",

@@ -44,12 +44,13 @@ import pytest
 
 from no_human.agent.claude_backend import AgentEvent, AgentResult
 from no_human.config import load_config
+from no_human.core import orchestrator as orch_mod
 from no_human.core.infra_breaker import infra_breaker
 from no_human.core.orchestrator import Orchestrator
 from no_human.core.task import Task, TaskStatus
 from no_human.notify.slack import SlackNotifier
 from no_human.testing import citation_drift
-from no_human.vcs import GitRepo
+from no_human.vcs import GitError, GitRepo, commit_with_manifest_repair
 
 
 @pytest.fixture(autouse=True)
@@ -545,6 +546,101 @@ async def test_a_clean_tree_emits_no_citation_drift_event(bare_repo, tmp_path, s
     kinds = [e["kind"] for e in events]
     assert "citation_drift" not in kinds, events
     assert "citation_drift_corrective_round" not in kinds, events
+
+    attempts = await store.list_attempts(task.id)
+    assert len(attempts) == 1
+
+
+class _DriftsThenFixedByRoundBackend:
+    """Turn 1: the same mechanically-fixable drift as
+    `_DriftsThenLeavesItBackend` — never touches the doc itself, so the
+    preflight's own auto-re-anchor write is the only thing that could fix
+    it. Turn 2 exists ONLY for the case where that auto-fix could not be
+    committed and a bounded corrective round is bought instead: it writes
+    the doc citation by hand, since the mechanical rewrite was reverted."""
+
+    def __init__(self):
+        self.calls = 0
+        self.prompts = []
+
+    async def run(self, prompt, *, cwd, max_turns, effort=None, resume=None,
+                  on_event=None, supervisor_hook=None, **kwargs):
+        self.calls += 1
+        self.prompts.append(prompt)
+        cwd = Path(cwd)
+        if self.calls == 1:
+            if on_event is not None:
+                on_event(AgentEvent("tool_use", tool_name="Edit",
+                                    tool_input={"file_path": "pkg/mod.py"}))
+            cwd.joinpath("pkg", "mod.py").write_text(_MOD_DRIFTED)
+            return AgentResult(final_text="added helper()", num_turns=2, is_error=False,
+                               tokens_used=100, session_id="s1", stop_reason="end_turn")
+        if on_event is not None:
+            on_event(AgentEvent("tool_use", tool_name="Edit",
+                                tool_input={"file_path": "docs/cite.md"}))
+        cwd.joinpath("docs", "cite.md").write_text("See mod.py:5 for foo().\n")
+        return AgentResult(final_text="fixed the citation by hand after commit failure",
+                           num_turns=1, is_error=False, tokens_used=10,
+                           session_id="s2", stop_reason="end_turn")
+
+
+async def test_a_commit_failure_after_mechanical_reanchor_buys_a_round_not_false_success(
+        bare_repo, tmp_path, store, monkeypatch):
+    """Reproduces the dead-attempt failure mode a prior review round flagged:
+    a `GitError` from `commit_with_manifest_repair` right after the
+    preflight's OWN mechanical re-anchor write landed on disk must never be
+    reported as "auto-re-anchored" success while that fix never actually
+    reached the branch — a preflight that cannot COMMIT its fix has not
+    fixed anything. Forced behaviourally: `commit_with_manifest_repair` is
+    made to fail for exactly the preflight's own auto-fix commit (identified
+    by its own commit message, which names the doc auto-fix — never by
+    call order, since the coder's own attempt commit runs through the same
+    helper first), then delegates to the real implementation for every
+    other commit (the coder's own, and the corrective round's) — never by
+    reading `_citation_drift_preflight`'s source.
+
+    On the buggy code this reproduces: the failure was only logged as an
+    advisory and the method fell straight through to reporting
+    `Status.REANCHORED` success and returning `None` — the coder's backend
+    was never called a second time (`backend.calls` stayed 1) and the
+    never-committed doc rewrite was left sitting uncommitted in the
+    worktree, never reaching `HEAD`. FIXED: the failed write is discarded
+    and the run falls through to the SAME bounded corrective round an
+    unfixable citation gets, so the coder's own (this time successfully
+    committed) fix is what actually lands on the branch."""
+    failed_once = []
+
+    def flaky_commit(repo, paths, message, on_repair=None):
+        if "citation drift: auto-re-anchored" in message and not failed_once:
+            failed_once.append(message)
+            raise GitError("simulated: manifest gate wedged")
+        return commit_with_manifest_repair(repo, paths, message, on_repair=on_repair)
+
+    monkeypatch.setattr(orch_mod, "commit_with_manifest_repair", flaky_commit)
+
+    backend = _DriftsThenFixedByRoundBackend()
+    orch, task, repo, events = await _run_one_task_attempt(store, bare_repo, tmp_path, backend)
+
+    outcome = await orch._run_attempt(task, repo, 1, "main")
+
+    assert outcome.status is TaskStatus.AWAITING_APPROVAL, outcome.detail
+    assert backend.calls == 2, (
+        "a commit failure on the preflight's own mechanical fix must buy "
+        "the coder a bounded corrective round, never report false success "
+        "off turn 1 alone"
+    )
+
+    kinds = [e["kind"] for e in events]
+    assert "citation_drift_corrective_round" in kinds, events
+
+    # The reverted, never-committed mechanical rewrite must never be what
+    # ships on the branch — only the round's OWN, successfully committed
+    # hand fix may land at HEAD.
+    committed = subprocess.run(
+        ["git", "show", "HEAD:docs/cite.md"], cwd=repo.path,
+        check=True, capture_output=True, text=True,
+    ).stdout
+    assert "mod.py:5" in committed
 
     attempts = await store.list_attempts(task.id)
     assert len(attempts) == 1
