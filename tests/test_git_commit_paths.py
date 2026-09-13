@@ -466,3 +466,73 @@ def test_a_staged_rename_does_not_fabricate_a_leftover_from_the_original_path_to
     leftover = repo.uncommitted_source_files()
 
     assert leftover == ["zzznew.py"], leftover
+
+
+def test_a_caller_supplied_broken_symlink_is_staged_under_its_own_name(repo_with_bare_remote):
+    """`Path(p).resolve()` FOLLOWS a symlink, so a caller-supplied broken one was rewritten
+    to its missing target before the `os.path.lexists` filter ever saw it: that filter asked
+    whether the TARGET exists, answered no, and dropped the entry — the commit landed without
+    the link and said nothing (#322).
+
+    `.md`, not `.py`, is the whole point. A code-extension link is re-added by the untracked
+    `_CODE_EXTS` producer, which is why
+    `test_a_broken_symlink_is_not_mistaken_for_a_phantom_path` passes either way; a
+    non-code name falls through that producer and reaches the commit only as the caller's
+    own path."""
+    repo = GitRepo(repo_with_bare_remote)
+    repo.create_branch("no-human/broken-symlink-md", base="main")
+    link = repo.path / "note.md"
+    link.symlink_to("gone-target")  # broken on purpose: target absent
+    real = repo.path / "real.py"
+    real.write_text("x = 3\n")
+
+    repo.commit_paths([str(link), str(real)], "add a note and its source")
+
+    files = _committed_files(repo.path)
+    assert "note.md" in files, files
+    assert "real.py" in files, files
+
+
+def test_a_path_reached_through_a_symlinked_repo_root_is_still_inside_the_repo(
+    repo_with_bare_remote,
+):
+    """Resolving the parent rather than the entry keeps the membership test working where the
+    repo is reached through a symlink — the shape `/tmp` -> `/private/tmp` gives every macOS
+    temp directory. A purely lexical path would sit outside the resolved root and be skipped
+    as "outside the repo", dropping the file."""
+    repo = GitRepo(repo_with_bare_remote)
+    repo.create_branch("no-human/symlinked-root", base="main")
+    # `.md`, for the same reason as the test above: a code extension is re-added by the
+    # untracked producer, so it would land whatever the membership test decided.
+    (repo.path / "via_link.md").write_text("through the alias\n")
+    # A second, ordinarily-addressed change, so `rel_paths` is non-empty and the
+    # commit_all fallback ("none of the paths carry changes") cannot rescue the first one:
+    # without it the fallback stages everything and the test passes whatever the membership
+    # test decided.
+    (repo.path / "sibling.py").write_text("x = 7\n")
+    alias = repo.path.parent / "work-alias"
+    alias.symlink_to(repo.path, target_is_directory=True)
+
+    repo.commit_paths(
+        [str(alias / "via_link.md"), str(repo.path / "sibling.py")], "add through the alias")
+
+    files = _committed_files(repo.path)
+    assert "via_link.md" in files, files
+    assert "sibling.py" in files, files
+
+
+def test_a_path_outside_the_repo_is_still_skipped(repo_with_bare_remote, tmp_path):
+    """The membership test still refuses what is genuinely elsewhere, so the fix does not buy
+    broken symlinks by widening what may be staged."""
+    repo = GitRepo(repo_with_bare_remote)
+    repo.create_branch("no-human/outside", base="main")
+    outside = tmp_path / "outside.py"
+    outside.write_text("x = 5\n")
+    inside = repo.path / "inside.py"
+    inside.write_text("x = 6\n")
+
+    repo.commit_paths([str(outside), str(inside)], "add one inside, one outside")
+
+    files = _committed_files(repo.path)
+    assert "inside.py" in files
+    assert not [f for f in files if "outside" in f], files
