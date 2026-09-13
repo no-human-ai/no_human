@@ -18,7 +18,8 @@ from no_human import config as cfgmod
 from no_human.agent import codex_backend as _cx
 from no_human.core.db import Store
 from no_human.core.task import Task, TaskStatus
-from no_human.doctor import MECHANISMS, codex_row, diagnose
+from no_human.doctor import MECHANISMS, codex_row, diagnose, sandbox_residue
+from no_human.eval.harness import CLEANUP_MARKER
 
 from tests.test_codex_backend import _MODERN_HELP_TEXT, _MODERN_RESUME_HELP_TEXT
 
@@ -45,8 +46,9 @@ async def test_the_testing_dead_pattern_is_a_contradiction(store):
 
 
 async def test_stale_eval_sandbox_is_an_advisory_not_a_contradiction(store):
-    """0.4: a leaked eval sandbox is surfaced as an advisory — it must inform
-    without failing the doctor gate (healthy stays True)."""
+    """0.4: a stale eval sandbox with real residue is surfaced as an advisory
+    — it must inform, carry the measured size, and never fail the doctor gate
+    (healthy stays True)."""
     import os
     import shutil
     import tempfile
@@ -54,15 +56,219 @@ async def test_stale_eval_sandbox_is_an_advisory_not_a_contradiction(store):
 
     sandbox = Path(tempfile.gettempdir()) / f"nh-eval-doctortest-{os.getpid()}"
     sandbox.mkdir(exist_ok=True)
+    (sandbox / "leftover.bin").write_bytes(b"x" * 4096)  # real residue to measure
     old = time.time() - 3 * 3600  # older than the 2h staleness cutoff
     os.utime(sandbox, (old, old))
     try:
         d = await diagnose(store)
-        assert any(str(sandbox) in a for a in d.advisories)
+        matches = [a for a in d.advisories if str(sandbox) in a]
+        assert matches, d.advisories
+        assert "4.0 KB" in matches[0], matches[0]
         assert not any(str(sandbox) in c for c in d.contradictions)
         assert d.healthy, "an advisory must never fail the doctor gate"
     finally:
         shutil.rmtree(sandbox, ignore_errors=True)
+
+
+async def test_the_advisory_reports_a_size_it_measured(store):
+    """The advisory must state a size it actually walked and summed, not the
+    directory entry's own `st_size` (which on most filesystems is a small,
+    unrelated constant regardless of what the tree contains)."""
+    import os
+    import shutil
+    import tempfile
+    from pathlib import Path
+
+    sandbox = Path(tempfile.gettempdir()) / f"nh-shadow-doctortest-{os.getpid()}"
+    (sandbox / "clone").mkdir(parents=True, exist_ok=True)
+    (sandbox / "clone" / "payload.bin").write_bytes(b"y" * 2048)
+    old = time.time() - 3 * 3600
+    os.utime(sandbox, (old, old))
+    try:
+        d = await diagnose(store)
+        matches = [a for a in d.advisories if str(sandbox) in a]
+        assert matches, d.advisories
+        assert "2.0 KB" in matches[0], matches[0]
+        assert "1 file" in matches[0], matches[0]
+    finally:
+        shutil.rmtree(sandbox, ignore_errors=True)
+
+
+async def test_the_advisory_does_not_attribute_the_residue_to_a_crash(store):
+    """A failed cleanup and a crashed eval leave the same residue on disk —
+    the advisory must not claim to know which one happened."""
+    import os
+    import shutil
+    import tempfile
+    from pathlib import Path
+
+    sandbox = Path(tempfile.gettempdir()) / f"nh-eval-doctortest-attribution-{os.getpid()}"
+    sandbox.mkdir(exist_ok=True)
+    (sandbox / "leftover.bin").write_bytes(b"z" * 100)
+    old = time.time() - 3 * 3600
+    os.utime(sandbox, (old, old))
+    try:
+        d = await diagnose(store)
+        matches = [a for a in d.advisories if str(sandbox) in a]
+        assert matches, d.advisories
+        advisory = matches[0]
+        assert "crash" not in advisory.lower(), advisory
+        assert "outlived its run" in advisory.lower(), advisory
+    finally:
+        shutil.rmtree(sandbox, ignore_errors=True)
+
+
+async def test_a_recorded_incomplete_cleanup_is_named_in_the_advisory(store):
+    """When `_remove_sandbox` left its marker behind, the advisory should say
+    so by name — and the file count must still reflect only real residue,
+    not the bookkeeping marker itself."""
+    import os
+    import shutil
+    import tempfile
+    from pathlib import Path
+
+    sandbox = Path(tempfile.gettempdir()) / f"nh-shadow-doctortest-marker-{os.getpid()}"
+    sandbox.mkdir(exist_ok=True)
+    (sandbox / "real.bin").write_bytes(b"a" * 512)
+    (sandbox / CLEANUP_MARKER).write_text("cleanup incomplete at ...\nfoo: PermissionError\n")
+    old = time.time() - 3 * 3600
+    os.utime(sandbox, (old, old))
+    try:
+        d = await diagnose(store)
+        matches = [a for a in d.advisories if str(sandbox) in a]
+        assert matches, d.advisories
+        advisory = matches[0]
+        assert CLEANUP_MARKER in advisory, advisory
+        assert "1 file" in advisory, advisory
+    finally:
+        shutil.rmtree(sandbox, ignore_errors=True)
+
+
+def test_sandbox_residue_measures_files_not_directories(tmp_path):
+    empty_skeleton = tmp_path / "nh-shadow-empty"
+    (empty_skeleton / "clone" / ".git").mkdir(parents=True)
+    (empty_skeleton / "shadow-remote.git" / "objects" / "pack").mkdir(parents=True)
+    residue = sandbox_residue(empty_skeleton)
+    assert residue["files"] == 0
+    assert residue["bytes"] == 0
+    assert residue["cleanup_incomplete"] is False
+
+    known_tree = tmp_path / "known"
+    (known_tree / "sub").mkdir(parents=True)
+    (known_tree / "a.bin").write_bytes(b"1" * 100)
+    (known_tree / "sub" / "b.bin").write_bytes(b"2" * 300)
+    residue = sandbox_residue(known_tree)
+    assert residue["files"] == 2
+    assert residue["bytes"] == 400
+
+    marker_only = tmp_path / "marker_only"
+    marker_only.mkdir()
+    (marker_only / CLEANUP_MARKER).write_text("cleanup incomplete\n")
+    residue = sandbox_residue(marker_only)
+    assert residue["files"] == 0
+    assert residue["cleanup_incomplete"] is True
+
+
+def test_sandbox_residue_reports_truncation_as_a_floor(tmp_path):
+    """When the walk stops at ``max_entries``, the counts collected so far
+    are a floor, not a total — a caller must be able to tell that more
+    residue may exist beyond what was counted."""
+    d = tmp_path / "big"
+    d.mkdir()
+    for i in range(10):
+        (d / f"f{i}.bin").write_bytes(b"x" * 100)
+
+    residue = sandbox_residue(d, max_entries=5)
+    assert residue["truncated"] is True
+    assert residue["files"] == 5
+    assert residue["bytes"] == 500  # only the first 5 counted, not all 1000
+
+    residue = sandbox_residue(d, max_entries=50)
+    assert residue["truncated"] is False
+    assert residue["files"] == 10
+    assert residue["bytes"] == 1000
+
+
+async def test_a_truncated_measurement_never_claims_nothing_to_reclaim(
+    store, monkeypatch
+):
+    """A walk that hits the entry cap has only measured a floor. The
+    advisory must say the measurement stopped early and must never claim
+    there is "no measurable disk to reclaim" for a tree it did not finish
+    reading — that claim requires having actually finished reading it."""
+    import os
+    import shutil
+    import tempfile
+    import time
+    from pathlib import Path
+
+    from no_human import doctor as doctor_mod
+
+    sandbox = (
+        Path(tempfile.gettempdir())
+        / f"nh-eval-doctortest-truncated-{os.getpid()}"
+    )
+    sandbox.mkdir(exist_ok=True)
+    old = time.time() - 3 * 3600
+    os.utime(sandbox, (old, old))
+
+    real_residue = doctor_mod.sandbox_residue
+
+    def _fake_residue(path, **kwargs):
+        if path == sandbox:
+            # Mirrors a real above-the-cap tree: a huge file count, and the
+            # bytes counted before the cap happen to be zero (e.g. the first
+            # entries walked were empty placeholders) — the dangerous case,
+            # since it is what makes "no measurable disk to reclaim" look
+            # superficially justified when it is not.
+            return {
+                "files": 50000, "bytes": 0, "truncated": True,
+                "unreadable": False, "cleanup_incomplete": False,
+            }
+        return real_residue(path, **kwargs)
+
+    monkeypatch.setattr(doctor_mod, "sandbox_residue", _fake_residue)
+    try:
+        d = await diagnose(store)
+        matches = [a for a in d.advisories if str(sandbox) in a]
+        assert matches, d.advisories
+        advisory = matches[0]
+        assert "no measurable disk to reclaim" not in advisory, advisory
+        assert "50000" in advisory, advisory
+        assert "stopped early" in advisory or "at least" in advisory, advisory
+    finally:
+        shutil.rmtree(sandbox, ignore_errors=True)
+
+
+def test_a_nonexecutable_subdirectory_does_not_hide_its_bytes(tmp_path):
+    """A subdirectory that is readable but not searchable (mode 0o400) lets
+    `os.walk` enumerate its entry names (readdir only needs read) but makes
+    every per-entry stat fail (search/execute is needed to resolve a path
+    inside it). `os.walk` itself still classifies the subdirectory correctly —
+    `scandir` reads `d_type` from `readdir` and needs no stat — so the walk
+    descends; what fails is the per-entry `lstat`. The real bytes inside must
+    be flagged `unreadable`, not folded into a reported zero: a chmod-000
+    directory already sets this flag correctly (via `onerror`), so a green
+    suite that only exercises that shape would miss this one."""
+    if os.name != "posix":
+        pytest.skip("chmod-based permission test needs POSIX")
+    if hasattr(os, "getuid") and os.getuid() == 0:
+        pytest.skip("root ignores directory permission bits")
+
+    sandbox = tmp_path / "nh-eval-hiddenbytes"
+    sub = sandbox / "sub"
+    sub.mkdir(parents=True)
+    (sub / "big.bin").write_bytes(b"x" * 8888)
+    os.chmod(sub, 0o400)
+    try:
+        residue = sandbox_residue(sandbox)
+    finally:
+        os.chmod(sub, 0o700)
+
+    assert residue["unreadable"] is True, (
+        f"8888 real bytes were hidden behind a non-executable subdirectory "
+        f"and reported as clean: {residue}"
+    )
 
 
 async def test_the_silent_watcher_pattern_is_a_contradiction(store):
@@ -794,11 +1000,12 @@ def test_doctor_advisory_alone_does_not_change_the_exit_code(tmp_path):
     tmpdir = _mktmp(tmp_path)
     sandbox = tmpdir / "nh-eval-advisory-only"
     sandbox.mkdir()
+    (sandbox / "leftover.bin").write_bytes(b"x" * 4096)  # real residue to measure
     old = time.time() - 3 * 3600  # older than doctor's 2h staleness cutoff
     os.utime(sandbox, (old, old))
 
     proc = _run_doctor(tmp_path / "home", tmpdir)
-    assert "LEAKED EVAL SANDBOX" in proc.stdout, (
+    assert "SANDBOX DIRECTORY OUTLIVED ITS RUN" in proc.stdout, (
         f"the advisory was not even reported:\n{proc.stdout}")
     assert "✗" not in proc.stdout, (  # the contradiction bullet
         f"this fixture must produce an advisory ONLY:\n{proc.stdout}")
@@ -807,6 +1014,113 @@ def test_doctor_advisory_alone_does_not_change_the_exit_code(tmp_path):
         f"an advisory must never fail the doctor gate, got {proc.returncode}:"
         f"\n{proc.stdout}"
     )
+
+
+def test_an_empty_sandbox_skeleton_raises_no_disk_advisory(tmp_path):
+    """A cleanup that removed every file it created leaves an empty skeleton
+    — `clone/.git`, `shadow-remote.git/objects/pack`, zero files. There is no
+    disk to reclaim, so this must not be reported."""
+    tmpdir = _mktmp(tmp_path)
+    sandbox = tmpdir / "nh-shadow-empty"
+    (sandbox / "clone" / ".git").mkdir(parents=True)
+    (sandbox / "shadow-remote.git" / "objects" / "pack").mkdir(parents=True)
+    old = time.time() - 3 * 3600  # older than doctor's 2h staleness cutoff
+    os.utime(sandbox, (old, old))
+
+    proc = _run_doctor(tmp_path / "home", tmpdir)
+    assert str(sandbox) not in proc.stdout, (
+        f"an empty residue must not produce a disk-reclamation advisory:"
+        f"\n{proc.stdout}"
+    )
+    assert proc.returncode == 0, proc.stdout
+
+
+def test_an_unreadable_sandbox_still_produces_an_advisory(tmp_path):
+    """`Path.exists()` only swallows ENOENT/ENOTDIR/EBADF/ELOOP — it
+    re-raises `PermissionError` (EACCES). A chmod-000 sandbox makes the
+    cleanup-incomplete probe (`marker.exists() or sibling.exists()`) raise,
+    and `_apply_sandbox_outlived_advisories` catches `except OSError` around
+    the whole per-entry block — so an unreadable sandbox with real bytes
+    inside must not go completely silent just because a later probe blew up
+    on the same unreadable directory that `os.walk`'s `onerror` already
+    correctly flagged."""
+    if os.name != "posix":
+        pytest.skip("chmod-based permission test needs POSIX")
+    if hasattr(os, "getuid") and os.getuid() == 0:
+        pytest.skip("root ignores directory permission bits")
+
+    tmpdir = _mktmp(tmp_path)
+    sandbox = tmpdir / "nh-eval-unreadable"
+    sandbox.mkdir()
+    (sandbox / "big.bin").write_bytes(b"x" * 5000)
+    old = time.time() - 3 * 3600
+    os.utime(sandbox, (old, old))
+    os.chmod(sandbox, 0o000)
+    try:
+        proc = _run_doctor(tmp_path / "home", tmpdir)
+    finally:
+        os.chmod(sandbox, 0o700)
+
+    assert str(sandbox) in proc.stdout, (
+        f"an unreadable sandbox must still be reported, not silently "
+        f"dropped when the cleanup-incomplete probe raises:\n{proc.stdout}"
+    )
+    # NOT "permission denied": `unreadable` is set by `os.walk`'s `onerror`
+    # for ANY OSError, so the advisory must not name a cause the flag does
+    # not carry. What it must do is say the measurement was incomplete.
+    assert "could not be fully measured" in proc.stdout.lower(), proc.stdout
+    assert proc.returncode == 0, proc.stdout
+
+
+def test_a_directories_only_failed_cleanup_is_still_reported(tmp_path):
+    """A cleanup that removed every file but could not remove a directory
+    leaves a marker and zero measurable files — the harness recorded a real
+    failure. The `files == 0` suppression gate must not discard that
+    signal just because there is no disk-reclamation angle to it; it must
+    also not claim a reclaimable size that was never measured."""
+    tmpdir = _mktmp(tmp_path)
+    sandbox = tmpdir / "nh-eval-dironly"
+    (sandbox / "sub").mkdir(parents=True)
+    (sandbox / CLEANUP_MARKER).write_text(
+        "cleanup incomplete at ...\nsub: OSError: [Errno 13] Permission denied\n"
+    )
+    old = time.time() - 3 * 3600
+    os.utime(sandbox, (old, old))
+
+    proc = _run_doctor(tmp_path / "home", tmpdir)
+    assert str(sandbox) in proc.stdout, (
+        f"a recorded cleanup failure must not be discarded just because no "
+        f"files remain:\n{proc.stdout}"
+    )
+    assert "to reclaim disk" not in proc.stdout, (
+        f"zero measured bytes must not be advertised as reclaimable disk:"
+        f"\n{proc.stdout}"
+    )
+    assert proc.returncode == 0, proc.stdout
+
+
+def test_the_doctor_deletes_nothing_it_reports(tmp_path):
+    """`nh doctor` reports; it never deletes. A run over a fixture with real,
+    reportable residue must leave that residue byte-for-byte untouched."""
+    tmpdir = _mktmp(tmp_path)
+    sandbox = tmpdir / "nh-eval-snapshot"
+    sandbox.mkdir()
+    (sandbox / "leftover.bin").write_bytes(b"x" * 4096)
+    old = time.time() - 3 * 3600
+    os.utime(sandbox, (old, old))
+
+    def _snapshot(root: Path) -> dict[str, bytes]:
+        return {
+            str(p.relative_to(root)): p.read_bytes()
+            for p in sorted(root.rglob("*")) if p.is_file()
+        }
+
+    before = _snapshot(tmpdir)
+    proc = _run_doctor(tmp_path / "home", tmpdir)
+    after = _snapshot(tmpdir)
+
+    assert "SANDBOX DIRECTORY OUTLIVED ITS RUN" in proc.stdout, proc.stdout
+    assert before == after, "the doctor must not modify or delete what it reports"
 
 
 def test_doctor_leads_with_a_three_line_verdict(tmp_path):
