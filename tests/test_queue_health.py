@@ -343,3 +343,60 @@ async def test_paused_profile_names_the_wall_not_a_newer_infra_park(store):
 
     assert h.paused_profile == "personal2", (
         f"the infra park's profile was reported: {h.paused_profile!r}")
+
+
+# --------------------------------------------------------------------------- #
+# lease_lost (task 92e48491 refile): a lost pool lease is permanent — not a   #
+# cooldown, and not something the empty-queue early return may hide.         #
+# --------------------------------------------------------------------------- #
+
+
+async def test_lease_lost_reports_paused_reason_lease_lost_with_no_reset_time(store):
+    """A lost lease is not a "wait it out" wall: `paused_until` must stay
+    None (nothing resumes this on its own — only a restart does), and no
+    quota profile is attributed to it."""
+    await _task(store, TaskStatus.PENDING)
+    h = await queue_health(store, max_workers=4, lease_lost="the CAS write raised")
+
+    assert h.paused is True
+    assert h.paused_reason == "lease_lost"
+    assert h.paused_until is None
+    assert h.paused_profile is None
+    assert h.eta_minutes is None
+    assert h.stuck is False, "a lost lease is a deliberate-shaped pause, not a wedge"
+
+
+async def test_lease_lost_outranks_the_empty_queue_early_return(store):
+    """Nothing owed right now does not mean dispatch will resume the moment
+    something IS owed — a lost lease matters even at open_tasks == 0, unlike
+    every other pause reason (which the empty-queue early return legitimately
+    skips, since there is nothing to be stuck or paused about)."""
+    h = await queue_health(store, max_workers=4, lease_lost="boom")
+    assert h.open_tasks == 0
+    assert h.paused is True
+    assert h.paused_reason == "lease_lost"
+
+
+async def test_lease_lost_outranks_a_supplied_quota_cooldown(store):
+    """Defence in depth, mirroring `test_infra_cooldown_wins_when_both_clocks_are_set`:
+    a lost lease must win even when a (stale, or merely still-armed) quota
+    cooldown is also passed in — the lease is the more severe condition and
+    is checked first."""
+    await _task(store, TaskStatus.PENDING)
+    reset_at = datetime.now(timezone.utc) + timedelta(minutes=30)
+    h = await queue_health(
+        store, max_workers=4, quota_cooldown_until=reset_at,
+        lease_lost="the CAS write raised")
+    assert h.paused_reason == "lease_lost"
+    assert h.paused_until is None, (
+        "the quota reset time must not leak through when lease_lost wins")
+
+
+async def test_no_lease_lost_leaves_payload_unchanged(store):
+    """Default (no `lease_lost` passed): existing behaviour is untouched."""
+    await _task(store, TaskStatus.PENDING)
+    h = await queue_health(store, max_workers=2)
+    assert h.paused is False
+    assert h.paused_reason is None
+    d = h.as_dict()
+    assert d["paused_reason"] is None
