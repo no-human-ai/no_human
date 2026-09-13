@@ -49,14 +49,20 @@
 //    backlog ticket titles. Never your code. (No blanket text-mask selector
 //    is configured: `maskTextSelector` would match zero elements in this UI,
 //    so it is deliberately unset — pinned by web/src/telemetry.test.mjs.)
-//    Replay network request/response headers and bodies ARE recorded and
-//    are NOT masked — see docs/configuration.md.
+//    Replay network request/response headers and bodies ARE recorded and are
+//    NOT masked in general — see docs/configuration.md — EXCEPT the specific
+//    requests listed in ./replayScrub.js (onboarding's email registration and
+//    status endpoints), which are excluded from replay capture entirely via
+//    `maskCapturedNetworkRequestFn` below. `.ph-no-capture` above protects the
+//    DOM only; it has no effect on network body capture, so an address-
+//    carrying request needs this separate mechanism.
 //  - ONE IDENTIFIER: events are tagged with the same anonymous `instance_id`
 //    as the server channel (registered below), not PostHog's own generated
 //    device id. `person_profiles: "always"` keys one person per install id;
 //    still no human identity, no `identify()` call.
 import { fetchVersion } from "./api.js";
 import { DEAD_CLICK_IGNORE_SELECTORS, deadClickBeforeSend } from "./deadClickFilter.js";
+import { maskCapturedNetworkRequest } from "./replayScrub.js";
 
 let posthog = null; // the initialized client, or null when not consented
 let started = false;
@@ -99,7 +105,9 @@ export async function initTelemetry(cfg, { importer } = {}) {
       // content is still kept out of autocapture and replay pixels by the
       // hand-applied `ph-no-capture` blocks (posthog-js skips any element
       // with a ph-no-capture ancestor) and by maskAllInputs. Replay network
-      // bodies are NOT masked — docs/configuration.md says so.
+      // bodies are NOT masked in general — docs/configuration.md says so —
+      // except the specific requests `maskCapturedNetworkRequestFn` below
+      // excludes entirely.
       autocapture: true,
       capture_pageview: true,
       capture_pageleave: true,
@@ -111,7 +119,16 @@ export async function initTelemetry(cfg, { importer } = {}) {
       capture_heatmaps: true,
       capture_performance: true,
       capture_exceptions: true,
-      session_recording: { maskAllInputs: true, recordHeaders: true, recordBody: true },
+      session_recording: {
+        maskAllInputs: true,
+        recordHeaders: true,
+        recordBody: true,
+        // Excludes the onboarding email request/status response from replay
+        // body capture entirely (see replayScrub.js) — `.ph-no-capture`
+        // protects the DOM only, not network bodies, which is why this is a
+        // separate mechanism rather than another CSS class.
+        maskCapturedNetworkRequestFn: maskCapturedNetworkRequest,
+      },
       person_profiles: "always",
       ...(consent.instanceId ? { bootstrap: { distinctID: consent.instanceId } } : {}),
     });

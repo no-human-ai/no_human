@@ -7345,7 +7345,7 @@ def eval_cmd(prev_path, out_path, gate):
             previous=previous,
             now=_now_iso(),
             on_event=lambda e: console.print(
-                f"[dim]· {e.get('kind')}: {e.get('task', '')}"
+                f"[dim]· {e.get('kind')}: {e.get('task') or e.get('text', '')}"
                 f"{' ✓' if e.get('correct') else ''}[/]"),
         )
         console.print(render_scorecard(run.scorecard, previous))

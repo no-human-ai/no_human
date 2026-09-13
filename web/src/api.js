@@ -941,6 +941,10 @@ export const extractHistory    = ()        => _post("/api/onboarding/history/ext
 export const analyzeHistory    = (days = 30, repo_paths = []) => _post("/api/onboarding/history/analyze", { days, repo_paths });
 export const confirmRules      = (ids)     => _post("/api/onboarding/rules/confirm", { ids });
 export const completeOnboarding = (payload) => _post("/api/onboarding/complete", payload);
+// Registers the onboarding email address. The response never echoes the
+// address back; see replayScrub.js for why this exact request's body is
+// excluded from session-replay capture on top of that.
+export const registerOnboardingEmail = (email) => _post("/api/onboarding/email", { email });
 // Minimal path (spec §3 B1): the deferred steps carried on the board's Finish-setup card.
 export const fetchDeferred     = ()        => _get("/api/onboarding/deferred");
 export const markDeferredDone  = (step)    => _post(`/api/onboarding/deferred/${encodeURIComponent(step)}/done`, {});
