@@ -276,6 +276,45 @@ def test_an_incidental_cued_hex_in_a_separate_clause_is_not_the_named_sha():
 @pytest.mark.parametrize(
     "text, expected_sha",
     [
+        (
+            "No code changes are needed; already satisfied at abc1234def.",
+            "abc1234def",
+        ),
+        (
+            "The work is already there. Confirmed: already committed at "
+            "abc1234def.",
+            "abc1234def",
+        ),
+        (
+            "The change already exists in main! It was already landed at "
+            "abc1234def.",
+            "abc1234def",
+        ),
+    ],
+)
+def test_a_claim_phrase_and_its_sha_in_different_clauses_is_still_the_named_sha(
+    text, expected_sha
+):
+    """(Seventh review) the Sixth review's clause-bounding fix (see
+    `test_an_incidental_cued_hex_in_a_separate_clause_is_not_the_named_sha`)
+    bounded the sha-cue search to ONLY the clause containing the `_CLAIM`
+    match — but a natural claim routinely splits the phrase and the cued
+    sha across two DIFFERENT clauses of the same utterance, each clause
+    independently asserting the same already-satisfied claim. Before this
+    fix, all three of these cases returned ``sha == ""`` because the sha
+    lived in a clause the search never looked at; the fix widens the
+    search to any OTHER clause in the snippet window that itself
+    independently matches `_CLAIM` and is not negated, without pulling in
+    the incidental-hex or negation MUST_NOT_FIRE shapes (pinned by the two
+    tests immediately above)."""
+    assertion = detect_claim_assertion(text)
+    assert assertion is not None
+    assert assertion.sha == expected_sha
+
+
+@pytest.mark.parametrize(
+    "text, expected_sha",
+    [
         ("this is already implemented at `abc1234def`", "abc1234def"),
         ("this is already implemented at `abc1234def`.", "abc1234def"),
         (

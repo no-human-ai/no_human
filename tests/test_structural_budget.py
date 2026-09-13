@@ -178,7 +178,18 @@ FROZEN_FUNCTION_LINES = {
     # (~5685) grows the `branched_from_own_partial=branched_from_own_partial`
     # keyword argument onto its own line. Re-measured on this tree with the
     # scanner below.
-    "core/orchestrator.py:Orchestrator._run_attempt": 2273,
+    # 2273 -> 2274 (+1): merge of main (d34a9c5b) into this branch replaced
+    # the two inline `_owned_failing_tests`/`_newly_failing_vs_base` calls
+    # inside `_run_attempt` with a single `_round_failure_attribution(...)`
+    # call plus `owned = attribution.owned` / `newly_failing =
+    # attribution.newly` — net +1 line within the function body, unrelated
+    # to this task's own diff. Measured with:
+    #   uv run python -c "import sys; sys.path.insert(0,'tests');
+    #   from test_structural_budget import scan_tree, SRC;
+    #   fl,_,_,_,_ = scan_tree(SRC);
+    #   print(fl['core/orchestrator.py:Orchestrator._run_attempt'])"
+    # -> 2274, on the tip merged with current main.
+    "core/orchestrator.py:Orchestrator._run_attempt": 2274,
     # 760 -> 778 (+18): dispatch-time intake-eval hoisted path — the `elif
     # ctx.get("eval_result")` branch that acts on a grill/wizard-stored
     # verdict (idempotency marker, cost/residual-gap comments) added inside
@@ -1273,6 +1284,15 @@ FROZEN_FILE_LINES = {
     # with a new docstring paragraph and inline comments explaining the fix
     # (see `landed_claim_guard.py`'s module docstring, "(Sixth review)").
     # Re-measured on this tree by the scanner's own metric: 24088.
+    # 24088 -> 24274 (+186): merge of main (d34a9c5b) into this branch —
+    # unrelated file growth (e.g. the `_FailureAttribution`/
+    # `_round_failure_attribution` refactor and its dataclass), not this
+    # task's own diff. Measured with:
+    #   uv run python -c "import sys; sys.path.insert(0,'tests');
+    #   from test_structural_budget import scan_tree, SRC;
+    #   _,_,files,_,_ = scan_tree(SRC);
+    #   print(files['core/orchestrator.py'])"
+    # -> 24274, on the tip merged with current main.
     "core/orchestrator.py": 24274,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo

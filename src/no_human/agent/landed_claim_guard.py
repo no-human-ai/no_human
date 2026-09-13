@@ -148,6 +148,23 @@ Four revisions since the first version landed:
   a copy/paste drift, not two different measurements. The docstring's "42"
   is the one with a matching detailed breakdown (9 + 33 below) so it is the
   number kept; the test file was corrected to match.
+* (Seventh review) the Sixth review's clause-bounding fix (finding 2 above)
+  was itself over-broad in the other direction: bounding the sha-cue search
+  to ONLY the clause containing the `_CLAIM` match missed 3 of 5 natural
+  claim shapes where the phrase and the cued sha sit in DIFFERENT clauses
+  of the same utterance — e.g. "No code changes are needed; already
+  satisfied at abc1234def." names the phrase in the first clause and the
+  cued sha in the second. Fixed by widening the search to the primary
+  clause PLUS any other clause, still inside the bounded snippet window,
+  that independently matches `_CLAIM` and is not itself negated — i.e. a
+  clause that is ALSO asserting the same already-satisfied claim. The two
+  MUST_NOT_FIRE shapes finding 2 was fixed for are unaffected: the negation
+  clause is still excluded by the negation check on the PRIMARY match, and
+  the incidental-hex clause ("the tamper baseline is at 1a2b3c4d5e6f...")
+  never independently matches `_CLAIM`, so it is never pulled in. Pinned by
+  `test_a_claim_phrase_and_its_sha_in_different_clauses_is_still_the_named_sha`
+  (`tests/test_landed_claim_guard.py`); the negation and incidental-hex
+  tests alongside it remain green, unchanged.
 """
 
 from __future__ import annotations
@@ -274,14 +291,35 @@ def detect_claim_assertion(text: str) -> ClaimAssertion | None:
     snippet = window.strip().replace("\n", " ")
     if len(snippet) > _SNIPPET_MAX:
         snippet = snippet[:_SNIPPET_MAX]
-    # Search the claim's own CLAUSE, intersected with the bounded snippet
-    # window: an unrelated cued hex token elsewhere in a long utterance, OR
-    # in a SEPARATE clause of the same fixed-width window (e.g. "No code
-    # changes are needed; the tamper baseline is at 1a2b3c4d5e6f and the
-    # suite is green."), must not be mistaken for the commit this particular
-    # claim names.
-    clause = text[max(start, clause_start):min(end, clause_end)]
-    sha_match = _SHA_CUE.search(clause)
+    # (Seventh review) the clause-bounded search above was itself too
+    # narrow: a natural claim routinely splits the phrase and the cued sha
+    # across two clauses of the SAME utterance — "No code changes are
+    # needed; already satisfied at abc1234def." — and the strict
+    # same-clause-only search missed 3 of 5 natural claim shapes measured
+    # against a corpus that put the phrase and the sha in different clauses
+    # (every prior MUST_FIRE case happened to keep both in one clause, so
+    # nothing pinned the gap). Search the primary clause PLUS any other
+    # clause, still inside the bounded snippet window, that independently
+    # matches `_CLAIM` and is not itself negated — i.e. a clause that is
+    # ALSO asserting the same already-satisfied claim, just with its own
+    # phrase. The incidental-hex shape this bounding was built to reject
+    # ("No code changes are needed; the tamper baseline is at
+    # 1a2b3c4d5e6f...") is unaffected: its second clause never matches
+    # `_CLAIM` at all, so it is never pulled in.
+    clause_spans = [(clause_start, clause_end)]
+    for other in _CLAIM.finditer(text, max(start, 0), min(end, len(text))):
+        o_start, o_end = _clause_span(text, other.start())
+        if (o_start, o_end) in clause_spans:
+            continue
+        if _NEGATION.search(text, o_start, other.start()):
+            continue
+        clause_spans.append((o_start, o_end))
+    sha_match = None
+    for c_start, c_end in clause_spans:
+        clause = text[max(start, c_start):min(end, c_end)]
+        sha_match = _SHA_CUE.search(clause)
+        if sha_match:
+            break
     return ClaimAssertion(sha=(sha_match.group(1) if sha_match else ""), snippet=snippet)
 
 
