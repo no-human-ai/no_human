@@ -190,6 +190,22 @@ def classify(returncode: int, stdout: str, stderr: str) -> CitationOutcome:
         if applied:
             docs = tuple(sorted({_doc_path(d) for d, _old, _new in drifts}))
             return CitationOutcome(Status.REANCHORED, docs=docs, detail=stdout.strip())
+        if drifts:
+            # Self-contradictory shape: the script claims `VERDICT=OK` (rc 0
+            # already checked above) yet also printed `DRIFT:` lines for
+            # citations it never confirmed applying (no `applied N
+            # re-anchor(s)` marker). The real script never emits this combo —
+            # a resolved drift always earns its `applied` line before
+            # `VERDICT=OK` — so a parser that saw it anyway is looking at
+            # output this contract does not define. Trusting the "OK" half
+            # would report `Status.CLEAN` ("rewrote nothing", per
+            # `CitationOutcome`'s own docstring) while unresolved `DRIFT:`
+            # lines sat right there in the same stdout; block instead.
+            docs = tuple(sorted({_doc_path(d) for d, _old, _new in drifts}))
+            return CitationOutcome(
+                Status.UNKNOWN, docs=docs,
+                detail=f"VERDICT=OK with unresolved DRIFT lines and no "
+                       f"'applied' marker: {stdout.strip()}")
         return CitationOutcome(Status.CLEAN, detail=stdout.strip())
 
     # verdict == "FAIL"

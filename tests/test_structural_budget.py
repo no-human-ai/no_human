@@ -1239,7 +1239,7 @@ FROZEN_FILE_LINES = {
     # round an UNFIXABLE/UNKNOWN run gets, plus the post-round verification
     # re-check now passes `apply=False` so it can never itself mutate the
     # worktree. Re-measured on the merged tree with the scanner's own metric.
-    # 24318 -> 24341 (+23): two send-back fixes to the same preflight. (1)
+    # 24318 -> 24335 (+17): two send-back fixes to the same preflight. (1)
     # `_citation_drift_preflight`'s own mechanical-fix commit no longer
     # calls `commit_with_manifest_repair(repo, None, ...)` (which sweeps
     # EVERY current worktree change, including anything unrelated already
@@ -1253,7 +1253,32 @@ FROZEN_FILE_LINES = {
     # when `outcome.docs` is empty, `allow_paths` now falls back to every
     # `docs/*.md` file that concretely exists on disk. Re-measured on this
     # tree with the scanner's own metric.
-    "core/orchestrator.py": 24335,
+    # 24335 -> 24396 (+61): code-review send-back on the same preflight,
+    # three more fixes plus their rationale comments. (1) BLOCKER: the
+    # mechanical-fix commit branch was gated on `repo.has_changes()` (true
+    # for ANY dirty path in the whole worktree) instead of `changed` (this
+    # run's own before/after delta) — an UNFIXABLE run that writes nothing
+    # (`changed` empty) with an unrelated dirty stray file elsewhere in the
+    # tree could still enter the commit branch and fall through to
+    # `commit_with_manifest_repair`'s `commit_all` (empty list is as falsy
+    # as `None`), sweeping the stray file into a commit that falsely
+    # credits the re-anchor script. Both `if outcome.status is UNKNOWN and
+    # repo.has_changes():` and `elif repo.has_changes():` now read `changed`
+    # instead, with a rationale comment explaining the distinction and a
+    # second comment documenting the accepted, narrower status-code-only
+    # limit this still carries. (2) `_revert_worktree_writes`'s exception-
+    # fallback advisory hardcoded "the reformat nudge" as the blamed
+    # component even when called from this preflight (whose actual writer
+    # is `scripts/reanchor_citations.py`) — it now takes a `component`
+    # keyword-only parameter (default preserves the existing text at every
+    # other call site), and this preflight's two call sites pass "the
+    # citation drift preflight". (3) a documentation-only comment
+    # explaining why an absent `docs/` directory's resulting empty
+    # `allow_paths` is an accepted limitation rather than a widened,
+    # directory-prefix `_repro_round_out_of_scope` allowlist shared by every
+    # other corrective-round caller. Re-measured on this tree with the
+    # scanner's own metric.
+    "core/orchestrator.py": 24396,
 
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo

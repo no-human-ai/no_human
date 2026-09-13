@@ -9573,7 +9573,39 @@ class Orchestrator:
                                citation_drift.Status.CLEAN):
             return None
 
-        if outcome.status is citation_drift.Status.UNKNOWN and repo.has_changes():
+        # Scope EVERYTHING below to exactly what THIS run wrote — `changed`,
+        # never `repo.has_changes()`. `has_changes()` is true for ANY dirty
+        # path anywhere in the worktree, including something unrelated
+        # already sitting uncommitted (an unannounced stray write the coder's
+        # turn left behind, never reported via `on_event` and so never part
+        # of the coder's own commit). `changed` is the before/after porcelain
+        # delta and is empty whenever the script itself wrote nothing — even
+        # while the tree is dirty for some other reason entirely. That
+        # distinction is load-bearing: an empty list is exactly the shape
+        # `commit_with_manifest_repair` treats as "nothing scoped, commit
+        # everything" (`if paths: commit_paths(...) else: commit_all(...)` —
+        # `[]` is as falsy as `None`), so gating the commit on
+        # `repo.has_changes()` instead of `changed` let a mechanically
+        # UNFIXABLE run (which writes nothing) with an unrelated dirty stray
+        # file sweep that stray file into a commit whose message credits the
+        # re-anchor script for content it never produced.
+        #
+        # Honest limit, decided rather than fixed (same shape
+        # `_revert_worktree_writes` already accepts for its own purposes):
+        # `changed` compares porcelain STATUS CODES, not content. A doc that
+        # was ALREADY dirty (e.g. `M `) before this preflight ran and stays
+        # at that same status code after the script rewrites it again would
+        # not show up here even though its bytes changed. By the time this
+        # method runs, the coder's own reported edits are already committed
+        # by the outer attempt machinery (`_agent_edited_files`-scoped), so
+        # this can only happen via an unreported stray write to a file this
+        # convention also touches — narrower than the stray-*new*-file case
+        # this method already handles, and accepted rather than swapping a
+        # status-code diff for a content-hash one here alone.
+        after = self._worktree_state(repo)
+        changed = sorted(p for p, c in after.items() if before.get(p) != c)
+
+        if outcome.status is citation_drift.Status.UNKNOWN and changed:
             # An indeterminate run (no VERDICT marker — a crash, a timeout)
             # may have left a PARTIAL, untrusted write on disk: the script's
             # own `_apply_all` only writes once every rewrite in the batch
@@ -9582,8 +9614,9 @@ class Orchestrator:
             # preflight cannot vouch for — discard it uncommitted so the
             # corrective round below starts from the clean tree the attempt
             # already committed, not a half-rewritten doc.
-            self._revert_worktree_writes(repo, before)
-        elif repo.has_changes():
+            self._revert_worktree_writes(
+                repo, before, component="the citation drift preflight")
+        elif changed:
             # REANCHORED, or an UNFIXABLE run whose fixable subset still got
             # written (the script's per-batch all-or-nothing write only
             # withholds THIS drift's own doc/table pair, not every drift in
@@ -9595,13 +9628,14 @@ class Orchestrator:
                 f"citation drift: auto-re-anchored via "
                 f"{citation_drift.SCRIPT_RELPATH} --apply"
             )
-            # Scope the commit to exactly what THIS run wrote — never
-            # `paths=None` (which stages every current worktree change,
-            # including anything unrelated already sitting uncommitted) —
-            # so the commit body's claim that the script produced this
-            # content is never falsified by files the script never touched.
-            after = self._worktree_state(repo)
-            changed = sorted(p for p, c in after.items() if before.get(p) != c)
+            # `changed` is already scoped to exactly what THIS run wrote —
+            # never `paths=None`/`[]` (either of which stages every current
+            # worktree change, including anything unrelated already sitting
+            # uncommitted) — so the commit body's claim that the script
+            # produced this content is never falsified by files the script
+            # never touched. This branch is only reached when `changed` is
+            # non-empty, so `commit_with_manifest_repair` can never fall
+            # through to its own `commit_all` here.
             try:
                 commit = await asyncio.to_thread(
                     commit_with_manifest_repair, repo, changed, commit_msg)
@@ -9613,7 +9647,8 @@ class Orchestrator:
                 # committed) and re-label this run UNKNOWN so the branch
                 # below falls through to the same bounded round rather than
                 # reporting a fix that never landed on the branch.
-                self._revert_worktree_writes(repo, before)
+                self._revert_worktree_writes(
+                    repo, before, component="the citation drift preflight")
                 self.emit(
                     "citation_drift",
                     f"citation drift auto-fix could not be committed: {exc}",
@@ -9658,6 +9693,20 @@ class Orchestrator:
             # files that already exist on disk right now — an enumerated
             # list of real, concrete paths, never a `docs/**` wildcard and
             # never a name this module invented.
+            #
+            # Decided limitation, not fixed: if `docs/` does not exist at
+            # all yet, `allow_paths` is `()` — the round's own fix is then
+            # judged against the SAME fixed allowlist every other corrective
+            # round uses (`_repro_round_out_of_scope`'s tests-only default),
+            # so a round whose only legitimate edit is a brand-new file
+            # under a `docs/` that does not exist yet is indistinguishable,
+            # from here, from one that wandered into `src/…`. This is a
+            # narrow bootstrapping case — `convention_present` only requires
+            # `scripts/reanchor_citations.py` and `tests/test_readme_claims.py`
+            # to exist, never `docs/` itself — accepted rather than widening
+            # `_repro_round_out_of_scope`'s shared, prefix-agnostic exact-path
+            # allowlist (used by every OTHER corrective round too) to a
+            # directory-prefix match on this one caller's say-so.
             docs_dir = repo.path / "docs"
             allow_paths = tuple(sorted(
                 f"docs/{p.name}" for p in docs_dir.glob("*.md")
@@ -10239,9 +10288,21 @@ class Orchestrator:
         return state
 
     def _revert_worktree_writes(
-        self, repo: GitRepo, before: dict[str, str],
+        self, repo: GitRepo, before: dict[str, str], *,
+        component: str = "the reformat nudge",
     ) -> list[str]:
         """Undo whatever the nudge wrote, and SAY so. Returns the paths.
+
+        *component* names the caller in the one advisory this method can
+        itself emit (the exception-fallback branch, below) — it defaults to
+        the original "the reformat nudge" wording so every pre-existing
+        caller's advisory text is byte-identical to before this parameter
+        existed. A caller whose writer is NOT the reformat nudge (the
+        citation-drift preflight's own mechanical re-anchor, or its
+        commit-failure fallback) must pass its own name here: `_advisory`
+        emits a real, CLI-rendered, `nh doctor`-counted event, and crediting
+        the wrong component for a fault it did not cause is itself a
+        misdiagnosis, not a cosmetic detail.
 
         Scoped to exactly the paths whose status changed since *before* — never
         a whole-tree `reset --hard`, `checkout -- .` or `clean -fd`, whose blast
@@ -10288,7 +10349,7 @@ class Orchestrator:
             return self._revert_worktree_writes_unguarded(repo, before)
         except Exception as exc:  # noqa: BLE001 — see TOTAL, above
             self._advisory(
-                "could not restore the worktree after the reformat nudge "
+                f"could not restore the worktree after {component} "
                 f"({exc}) — a file it wrote may survive into the next attempt")
             return []
 

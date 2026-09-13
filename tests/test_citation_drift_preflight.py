@@ -246,6 +246,37 @@ def test_missing_citation_is_unfixable_and_distinguishable_from_clean(tmp_path):
     assert outcome.status is not citation_drift.Status.CLEAN
 
 
+def test_self_contradictory_ok_verdict_with_drift_and_no_applied_marker_is_unknown():
+    """Send-back finding: `classify` is a pure, exhaustive translator and
+    must never trust one half of a self-contradictory shape. A `VERDICT=OK`
+    (rc 0) alongside an unresolved `DRIFT:` line but no `applied N
+    re-anchor(s)` marker is exactly that — the real script never emits this
+    combination (a resolved drift always earns its `applied` line before
+    printing `VERDICT=OK`), but a pure function that only pattern-matches
+    stdout must still handle it correctly rather than assume the shape can
+    never occur.
+
+    BUGGY behaviour this pins against: `verdict == "OK"` with `applied`
+    False fell straight through to `Status.CLEAN` — "rewrote nothing", per
+    `CitationOutcome`'s own docstring — even with a live `DRIFT:` line sitting
+    in the same stdout. `Orchestrator._citation_drift_preflight` returns
+    `None` on `Status.CLEAN` before ever consulting `repo.has_changes()`, so
+    an uncommitted rewrite from a run this self-contradictory could silently
+    ride into review as if it were the coder's own change. FIXED: this shape
+    now reports `Status.UNKNOWN` (blocking), not `Status.CLEAN`. Pure
+    function, no subprocess needed — direct input/output only, never a read
+    of `classify`'s own source text."""
+    stdout = (
+        "DRIFT: cite.md `mod.py:1` -> `mod.py:5` (re-anchoring)\n"
+        "VERDICT=OK\n"
+    )
+    outcome = citation_drift.classify(0, stdout, "")
+    assert outcome.status is citation_drift.Status.UNKNOWN
+    assert outcome.blocking is True
+    assert outcome.status is not citation_drift.Status.CLEAN
+    assert outcome.docs == ("docs/cite.md",)
+
+
 def test_unreadable_file_fails_closed_and_is_distinguishable_from_clean(tmp_path):
     """A real, unreadable file (mode 000) makes the fixture script's own
     `DOC.read_text()` raise `PermissionError`, uncaught — exactly the
@@ -799,3 +830,185 @@ async def test_an_indeterminate_run_lets_the_corrective_round_land_a_doc_fix(
 
     attempts = await store.list_attempts(task.id)
     assert len(attempts) == 1
+
+
+class _UnfixableDriftWithStrayFileThenFixesItBackend:
+    """Turn 1: the SAME ambiguous (duplicate) citation as
+    `_AmbiguousDriftThenFixesItBackend` — the script names it and refuses to
+    guess, writing NOTHING to disk itself — but this turn ALSO drops a
+    second file, `STRAY_SCRATCH.txt`, straight to disk WITHOUT ever
+    reporting it through `on_event`, exactly like
+    `_DriftsAndLeavesAnUnannouncedStrayFileBackend`. The combination is the
+    gap the sibling stray-file test does not cover: THAT test's drift is
+    mechanically fixable (`changed` is non-empty — the script's own write),
+    so it never exercises what happens when the run writes nothing at all
+    (`changed` empty) while the worktree is still dirty for an unrelated
+    reason. Turn 2 (the bought corrective round): fixes the doc by hand."""
+
+    def __init__(self):
+        self.calls = 0
+        self.prompts = []
+
+    async def run(self, prompt, *, cwd, max_turns, effort=None, resume=None,
+                  on_event=None, supervisor_hook=None, **kwargs):
+        self.calls += 1
+        self.prompts.append(prompt)
+        cwd = Path(cwd)
+        if self.calls == 1:
+            if on_event is not None:
+                on_event(AgentEvent("tool_use", tool_name="Edit",
+                                    tool_input={"file_path": "pkg/mod.py"}))
+                on_event(AgentEvent("tool_use", tool_name="Edit",
+                                    tool_input={"file_path": "docs/cite.md"}))
+            cwd.joinpath("pkg", "mod.py").write_text(_MOD_DRIFTED)
+            cwd.joinpath("docs", "cite.md").write_text(_DOC_DUPLICATE)
+            # Never announced via on_event — rides along, uncommitted and
+            # untracked, into the preflight's own decision of whether to
+            # commit anything at all.
+            cwd.joinpath("STRAY_SCRATCH.txt").write_text("unrelated scratch data\n")
+            return AgentResult(final_text="added helper(), touched doc", num_turns=2,
+                               is_error=False, tokens_used=100, session_id="s1",
+                               stop_reason="end_turn")
+        if on_event is not None:
+            on_event(AgentEvent("tool_use", tool_name="Edit",
+                                tool_input={"file_path": "docs/cite.md"}))
+        cwd.joinpath("docs", "cite.md").write_text("See mod.py:5 for foo().\n")
+        return AgentResult(final_text="fixed the citation by hand", num_turns=1,
+                           is_error=False, tokens_used=10, session_id="s2",
+                           stop_reason="end_turn")
+
+
+async def test_an_unfixable_run_with_an_unrelated_dirty_stray_file_never_commits_it(
+        bare_repo, tmp_path, store, monkeypatch):
+    """BLOCKER send-back finding: the mechanical-fix commit branch used to
+    be gated on `repo.has_changes()` (true for ANY dirty path anywhere in
+    the worktree) rather than on `changed` (the before/after porcelain
+    delta — true only when THIS run itself wrote something). An UNFIXABLE
+    run (an ambiguous, duplicate citation the script will not guess at)
+    writes nothing on disk, so `changed` is empty — but if the worktree is
+    ALSO dirty for an unrelated reason (an unannounced stray file, exactly
+    like `test_the_mechanical_fix_commit_never_sweeps_in_an_unannounced_
+    stray_file`'s scenario, but for the REANCHORED path only), the OLD code
+    still entered the commit branch with an EMPTY `changed` list.
+    `commit_with_manifest_repair(repo, [], message)` treats an empty list
+    exactly like `None` (`if paths: commit_paths(...) else: commit_all(...)`
+    — `[]` is falsy) and fell through to `commit_all`, sweeping the stray
+    file into a commit whose message credits the re-anchor script for
+    content it never produced. Reproduced by the same recipe the human
+    reviewer used: an UNFIXABLE (not REANCHORED) drift plus a stray file.
+
+    FIXED: the commit branch is now gated on `changed` truthiness alone, so
+    an UNFIXABLE run that writes nothing never even attempts a commit —
+    proven here by capturing every `commit_with_manifest_repair` call whose
+    message claims the auto-re-anchor and asserting there are none, and by
+    checking that `STRAY_SCRATCH.txt` never reaches HEAD."""
+    seen_auto_fix_commits = []
+
+    def capturing_commit(repo, paths, message, on_repair=None):
+        if "citation drift: auto-re-anchored" in message:
+            seen_auto_fix_commits.append(list(paths) if paths else paths)
+        return commit_with_manifest_repair(repo, paths, message, on_repair=on_repair)
+
+    monkeypatch.setattr(orch_mod, "commit_with_manifest_repair", capturing_commit)
+
+    backend = _UnfixableDriftWithStrayFileThenFixesItBackend()
+    orch, task, repo, events = await _run_one_task_attempt(store, bare_repo, tmp_path, backend)
+
+    outcome = await orch._run_attempt(task, repo, 1, "main")
+
+    assert outcome.status is TaskStatus.AWAITING_APPROVAL, outcome.detail
+    assert backend.calls == 2, "an unfixable citation still buys one bounded round"
+
+    assert seen_auto_fix_commits == [], (
+        "an UNFIXABLE run that wrote nothing must never attempt a "
+        f"mechanical-fix commit at all: {seen_auto_fix_commits}"
+    )
+
+    kinds = [e["kind"] for e in events]
+    assert kinds.count("citation_drift_corrective_round") == 1, events
+
+    # STRAY_SCRATCH.txt must never reach HEAD via any commit this preflight
+    # made on the coder's behalf — only the round's own hand fix may land.
+    stray_in_head = subprocess.run(
+        ["git", "show", "HEAD:STRAY_SCRATCH.txt"], cwd=repo.path,
+        capture_output=True, text=True,
+    )
+    assert stray_in_head.returncode != 0, (
+        "STRAY_SCRATCH.txt must never reach HEAD via the citation "
+        f"preflight's own commit: {stray_in_head.stdout!r}"
+    )
+
+    # Still sitting in the worktree, untracked — never silently discarded,
+    # just correctly left out of every commit this preflight made.
+    status = subprocess.run(
+        ["git", "status", "--porcelain", "STRAY_SCRATCH.txt"],
+        cwd=repo.path, check=True, capture_output=True, text=True,
+    ).stdout
+    assert "STRAY_SCRATCH.txt" in status, status
+
+    committed = subprocess.run(
+        ["git", "show", "HEAD:docs/cite.md"], cwd=repo.path,
+        check=True, capture_output=True, text=True,
+    ).stdout
+    assert "mod.py:5" in committed
+
+    attempts = await store.list_attempts(task.id)
+    assert len(attempts) == 1
+
+
+async def test_the_post_round_verification_recheck_never_mutates_the_worktree(
+        bare_repo, tmp_path, store, monkeypatch):
+    """Send-back finding: a claimed fix ("the post-round verification
+    re-check now passes `apply=False` so it can never itself mutate the
+    worktree") was not pinned by any test — flipping that literal back to
+    `apply=True` would leave the whole existing suite green, since the
+    fixture's own hand fix already leaves the tree clean either way and
+    nothing else distinguishes the two call shapes.
+
+    Pinned directly and behaviourally: wrap the REAL
+    `citation_drift.run_reanchor` so that, for exactly the call this
+    preflight makes with `apply=False` (the post-round re-check), the
+    wrapper snapshots the full worktree state — `git status --porcelain`
+    PLUS the actual bytes of every fixture file — immediately before and
+    after the real, unwrapped call runs, and records whether they are
+    byte-for-byte identical. Never by reading `_citation_drift_preflight`'s
+    source to see which literal it passes at that call site."""
+    real_run_reanchor = citation_drift.run_reanchor
+    recheck_snapshots = []
+
+    def _snapshot(repo_path):
+        status = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=all"],
+            cwd=repo_path, check=True, capture_output=True, text=True,
+        ).stdout
+        contents = []
+        for rel in ("docs/cite.md", "pkg/mod.py", "STRAY_SCRATCH.txt"):
+            p = Path(repo_path) / rel
+            contents.append(p.read_bytes() if p.exists() else b"<absent>")
+        return (status, tuple(contents))
+
+    def _wrapped(repo_path, *, apply=True, timeout=citation_drift.DEFAULT_TIMEOUT_S):
+        if apply:
+            return real_run_reanchor(repo_path, apply=apply, timeout=timeout)
+        before_snap = _snapshot(repo_path)
+        result = real_run_reanchor(repo_path, apply=apply, timeout=timeout)
+        after_snap = _snapshot(repo_path)
+        recheck_snapshots.append((before_snap, after_snap))
+        return result
+
+    monkeypatch.setattr(citation_drift, "run_reanchor", _wrapped)
+
+    backend = _AmbiguousDriftThenFixesItBackend()
+    orch, task, repo, events = await _run_one_task_attempt(store, bare_repo, tmp_path, backend)
+
+    outcome = await orch._run_attempt(task, repo, 1, "main")
+
+    assert outcome.status is TaskStatus.AWAITING_APPROVAL, outcome.detail
+    assert recheck_snapshots, (
+        "the round must be verified by a read-only (`apply=False`) re-check"
+    )
+    for before_snap, after_snap in recheck_snapshots:
+        assert before_snap == after_snap, (
+            "the post-round verification re-check must never itself mutate "
+            "the worktree"
+        )
