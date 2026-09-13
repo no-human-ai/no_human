@@ -3697,3 +3697,37 @@ def test_recount_exits_non_zero_on_an_empty_population(tmp_path):
         capture_output=True, text=True, check=False,
     )
     assert proc.returncode != 0
+
+
+# --- The no-hedge guard must hold on both sides of the block -------------- #
+#
+# `test_the_gate_caught_block_gained_no_extra_sentence` only scans from the
+# block's own start down to `## Install`, so a caveat/disclaimer/limitation
+# sentence inserted immediately *above* the block -- still on the README's
+# first screen, still between the feature bullets and the block -- would
+# pass every existing guard. This test closes that side too.
+
+def test_no_hedge_immediately_above_the_gate_caught_block():
+    readme = README.read_text(encoding="utf-8")
+    bullets_idx = readme.index("Proof the fix fixed the bug")
+    block_idx = readme.index(_GATE_CAUGHT_BLOCK)
+    above = readme[bullets_idx:block_idx]
+    for line in above.splitlines():
+        assert not _FORBIDDEN_HEDGE.search(line), (
+            f"a hedge/caveat/disclaimer word was found between the feature "
+            f"bullets and the gate-caught block: {line!r}"
+        )
+
+
+def test_no_hedge_guard_above_the_block_is_not_vacuous():
+    readme = README.read_text(encoding="utf-8")
+    bullets_idx = readme.index("Proof the fix fixed the bug")
+    block_idx = readme.index(_GATE_CAUGHT_BLOCK)
+    above = readme[bullets_idx:block_idx]
+    poisoned = above + (
+        "\nCaveat: these numbers are a limitation of one window and do not "
+        "mean much.\n"
+    )
+    assert any(
+        _FORBIDDEN_HEDGE.search(line) for line in poisoned.splitlines()
+    ), "the hedge regex must actually catch a caveat inserted above the block"
