@@ -1,12 +1,12 @@
 # Verifiers
 
-_Harness-captured record for task `4135165f`, commit `b2c4fdc67f355a0d1d0142b178b6baef7add959d` — not model-authored: no_human wrote this file from the deterministic verifier rules selected for this commit's files. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `4135165f`, commit `e1dcbbe396fea5fbc9842fbd8ab6ced968b5a912` — not model-authored: no_human wrote this file from the deterministic verifier rules selected for this commit's files. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ```json
 [
   {
-    "comment": "All added/modified test functions across the four files carry at least one assertion or pytest.raises block; the structural_budget changes are dict-data edits, not test function bodies.",
-    "evidence": "Every added test_ function contains assert statements or pytest.raises, e.g. test_a_commit_that_is_on_the_base_branch_is_not_blocked ends with `assert result == {}` and test_guard_is_wired_into_the_real_run_attempt uses `with pytest.raises(QuotaExhausted):` plus several asserts.",
+    "comment": "Reviewed all added/modified test functions across the four files; each contains at least one assert (many use pytest.raises or parametrized asserts too). No assertion-free test function exists in the diff.",
+    "evidence": "Every added test function contains assert statements, e.g. test_a_commit_that_is_on_the_base_branch_is_not_blocked ends with `assert result == {}, \"a commit already reachable from main must not be blocked\"`",
     "file": "tests/test_landed_claim_early_refusal.py",
     "files_checked": [
       "tests/test_landed_claim_early_refusal.py",
@@ -14,17 +14,17 @@ _Harness-captured record for task `4135165f`, commit `b2c4fdc67f355a0d1d0142b178
       "tests/test_structural_budget.py",
       "tests/test_verification_receipts.py"
     ],
-    "line": 232,
+    "line": 0,
     "no_verdict": false,
     "passed": true,
     "severity": "medium",
-    "tokens_used": 1054,
+    "tokens_used": 913,
     "unavailable": false,
     "verifier_id": "tests-assert-something"
   },
   {
-    "comment": "No new or modified code performs any task status write, so there is no update_task(validate=False) status bypass introduced; the statement holds vacuously for this change.",
-    "evidence": "The diff contains no calls to update_task, validate=False, or set_status; the changes concern the LandedClaimGuard, PostToolUse hook ordering, and _already_satisfied_subject's added `determinate` return element \u2014 none of which write a task status.",
+    "comment": "The change is confined to the read-only landed-claim guard and already-satisfied classification plumbing; it performs no task-status writes at all, so nothing bypasses set_status via update_task(validate=False).",
+    "evidence": "The diff adds the landed-claim guard (LandedClaimGuard, _build_landed_claim_guard, _already_satisfied_subject's new 'determinate' return value, and PostToolUse hook composition). None of the added or modified code contains any call to update_task, and there is no status-write with validate=False anywhere in the change.",
     "file": "",
     "files_checked": [
       "src/no_human/core/orchestrator.py"
@@ -33,7 +33,7 @@ _Harness-captured record for task `4135165f`, commit `b2c4fdc67f355a0d1d0142b178
     "no_verdict": false,
     "passed": true,
     "severity": "high",
-    "tokens_used": 519,
+    "tokens_used": 1103,
     "unavailable": false,
     "verifier_id": "no-unvalidated-status-write"
   }

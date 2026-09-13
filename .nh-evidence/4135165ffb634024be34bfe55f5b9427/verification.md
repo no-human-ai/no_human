@@ -1,107 +1,23 @@
 # How I verified this — full log
 
-_Harness-captured record for task `4135165f`, commit `b2c4fdc67f355a0d1d0142b178b6baef7add959d` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `4135165f`, commit `e1dcbbe396fea5fbc9842fbd8ab6ced968b5a912` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ## How I verified this
 12 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
 
 ### test
-- `uv run pytest -q tests/test_landed_claim_early_refusal.py -k already_satisfied_subject_reports_indeterminate 2>&1 | tail -60`
+- `uv run pytest tests/test_landed_claim_guard.py tests/test_landed_claim_early_refusal.py -q 2>&1 | tail -60`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-   Building no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/4135165ffb634024be34bfe55f5b9427.52752.b9a0466e
-      Built no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/4135165ffb634024be34bfe55f5b9427.52752.b9a0466e
-Installed 73 packages in 222ms
-.                                                                        [100%]
-1 passed, 13 deselected in 5.68s
+   Building no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/4135165ffb634024be34bfe55f5b9427.52752.adb490d6
+      Built no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/4135165ffb634024be34bfe55f5b9427.52752.adb490d6
+Installed 73 packages in 360ms
+...............................................                          [100%]
+47 passed in 7.54s
 ```
 
-- `uv run pytest -q tests/test_landed_claim_early_refusal.py -k already_satisfied_subject_reports_indeterminate 2>&1 | tail -40`
-
-```
-# The trap the old code fell into: this reason shares the genuine
-        # refusal's exact prefix.
-        assert subject_reason.startswith(f"{head} is not on {ship_ref}"), (
-            "this fixture must reproduce the exact prefix collision the sixth "
-            "review's fix addresses — otherwise this test does not pin it")
-        assert determinate is False, (
-            "an unresolvable delivery branch is a transient 'cannot tell', not "
-            "a genuine refusal, even though its reason text shares the "
-            "refusal's prefix")
-    
-        guard = orch._build_landed_claim_guard(
-            task, GitRepo(diverged_repo), base="main", branch=bog
-[... 1,308 of 2,447 characters omitted from the middle ...]
-                                          'work already exists at '...
-E         
-E         ...Full output truncated (27 lines hidden), use '-vv' to show
-
-tests/test_landed_claim_early_refusal.py:473: AssertionError
-=========================== short test summary info ============================
-FAILED tests/test_landed_claim_early_refusal.py::test_already_satisfied_subject_reports_indeterminate_for_transient_conditions
-1 failed, 13 deselected in 1.60s
-```  
-  _excerpt - 2,447 characters of output in total_
-
-- `uv run pytest -q tests/test_landed_claim_early_refusal.py tests/test_landed_claim_guard.py tests/test_already_satisfied_subject_tree.py -n 4 2>&1 | tail -80`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-bringing up nodes...
-bringing up nodes...
-
-......F................................................................. [ 98%]
-.                                                                        [100%]
-=================================== FAILURES ===================================
-_ test_guard_is_wired_into_the_real_run_attempt_and_fires_on_a_refutable_claim _
-[gw3] darwin -- Python 3.12.13 /Users/eyalgolan/.<redacted>/worktrees/4135165ffb634024be34bfe55f5b9427.52752.b9a0466e/.ve
-[... 3,021 of 4,160 characters omitted from the middle ...]
------------
-WARNING  <redacted>.orchestrator:orchestrator.py:2260 advisory: pre-push hook pattern refresh skipped (no guard installed at this worktree) — base branch is only enforced by the PreToolUse lexical guard here
-=========================== short test summary info ============================
-FAILED tests/test_landed_claim_early_refusal.py::test_guard_is_wired_into_the_real_run_attempt_and_fires_on_a_refutable_claim
-1 failed, 72 passed in 12.49s
-```  
-  _excerpt - 4,161 characters of output in total_
-
-- `uv run pytest -q tests/test_landed_claim_early_refusal.py tests/test_landed_claim_guard.py tests/test_already_satisfied_subject_tree.py -n 4 2>&1 | tail -40`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-bringing up nodes...
-bringing up nodes...
-
-........................................................................ [ 98%]
-.                                                                        [100%]
-73 passed in 12.42s
-```
-
-- `uv run pytest -q tests/test_landed_claim_early_refusal.py tests/test_landed_claim_guard.py tests/test_already_satisfied_subject_tree.py -n 4 2>&1 | tail -20`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-bringing up nodes...
-bringing up nodes...
-
-........................................................................ [ 98%]
-.                                                                        [100%]
-73 passed in 12.47s
-```
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/4135165ffb634024be34bfe55f5b9427.52752.b9a0466e python3 - <<'EOF' import re path = "src/<redacted>/core/orchestrator.py" s = open(path).read() old = "refuted = (\n [... 306 of 649 characters omitted from the middle ...] ests/test_landed_claim_early_refusal.py tests/test_landed_claim_guard.py tests/test_already_satisfied_subject_tree.py -n 4 2>&1 | tail -15`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-bringing up nodes...
-bringing up nodes...
-
-........................................................................ [ 98%]
-.                                                                        [100%]
-73 passed in 12.18s
-```
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/4135165ffb634024be34bfe55f5b9427.52752.b9a0466e uv run pytest -q tests/test_structural_budget.py 2>&1 | tail -100`
+- `uv run pytest tests/test_structural_budget.py -q 2>&1 | tail -40`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
@@ -109,88 +25,140 @@ warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not mat
 =================================== FAILURES ===================================
 ________________________ test_no_frozen_entry_has_grown ________________________
 
-scanned = ({'agent/claude_backend.py:ClaudeBackend.stream': 407, 'blockers/landed_override.py:approve_landed_override': 322, 'bl... ...}, {'agent/guard.py': 2892, 'api/app.py': 6193, 'blockers/wake.py': 2757, 'cli/commands.py': 8679, ...}, 231
-[... 732 of 1,871 characters omitted from the middle ...]
-orches...atchets down'] == []
+scanned = ({'agent/claude_backend.py:ClaudeBackend.stream': 407, 'blockers/landed_override.py:approve_landed_override': 322, 'bl... ...}, {'agent/guard.py': 2892, 'api/app.py': 6193, 'blockers/wake.py': 2757, 'cli/commands.py': 8679, ...}, 232
+[... 778 of 1,917 characters omitted from the middle ...]
+ == []
 E             
-E             Left contains one more item: 'core/orchestrator.py: frozen 24016, now 24088 (+72); this budget only ratchets down'
+E             Left contains one more item: 'core/orchestrator.py:Orchestrator._run_attempt: frozen 2273, now 2274 (+1); this budget only ratchets down'
 E             Use -v to get more diff
 
-tests/test_structural_budget.py:2042: AssertionError
+tests/test_structural_budget.py:2082: AssertionError
 =========================== short test summary info ============================
 FAILED tests/test_structural_budget.py::test_no_frozen_entry_has_grown - Asse...
-1 failed, 17 passed in 2.71s
+1 failed, 17 passed in 1.60s
 ```  
-  _excerpt - 1,869 characters of output in total_
+  _excerpt - 1,915 characters of output in total_
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/4135165ffb634024be34bfe55f5b9427.52752.b9a0466e uv run pytest -q tests/test_structural_budget.py 2>&1 | tail -30`
+- `uv run pytest tests/test_structural_budget.py -q 2>&1 | tail -20`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
 ..................                                                       [100%]
-18 passed in 2.24s
+18 passed in 1.55s
 ```
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/4135165ffb634024be34bfe55f5b9427.52752.b9a0466e uv run pytest -q tests/test_landed_claim_early_refusal.py tests/test_landed_claim_guard.py tests/test_already_satisfied_subject_tree.py tests/test_structural_budget.py -n 4 2>&1 | tail -20`
+- `uv run python -c " import sys; sys.path.insert(0,'tests') from test_structural_budget import scan_tree, SRC fl,_,files,_,_ = scan_tree(SRC) print('run_attempt', fl['core/orchestrator.py:Orchestrator._run_a [... 61 of 404 characters omitted from the middle ...]  | grep -v VIRTUAL_ENV echo --- uv run pytest tests/test_structural_budget.py tests/test_structural_budget_preflight.py -q 2>&1 | tail -20`
+
+```
+run_attempt 2274
+file 24274
+---
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+.......................................                                  [100%]
+39 passed in 11.78s
+```
+
+- `uv run pytest tests/test_landed_claim_guard.py -q -k "clause or negation or incidental" 2>&1 | tail -40`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-bringing up nodes...
-bringing up nodes...
-
-........................................................................ [ 79%]
-...................                                                      [100%]
-91 passed in 13.79s
+.....                                                                    [100%]
+5 passed, 31 deselected in 0.56s
 ```
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/4135165ffb634024be34bfe55f5b9427.52752.b9a0466e uv run pytest -q tests/test_landed_claim_early_refusal.py tests/test_landed_claim_guard.py 2>&1 | tail -40`
+- `uv run pytest tests/test_landed_claim_guard.py -q 2>&1 | tail -20`
 
 ```
-# refusal's exact prefix.
-        assert subject_reason.startswith(f"{head} is not on {ship_ref}"), (
-            "this fixture must reproduce the exact prefix collision the sixth "
-            "review's fix addresses — otherwise this test does not pin it")
-        assert determinate is False, (
-            "an unresolvable delivery branch is a transient 'cannot tell', not "
-            "a genuine refusal, even though its reason text shares the "
-            "refusal's prefix")
-    
-        guard = orch._build_landed_claim_guard(
-            task, GitRepo(diverged_repo), base="main", branch=bogus_branch,
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+....................................                                     [100%]
+36 passed in 1.20s
+```
+
+- `uv run pytest tests/test_landed_claim_guard.py tests/test_landed_claim_early_refusal.py -q 2>&1 | tail -20`
+
+```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+..................................................                       [100%]
+50 passed in 5.10s
+```
+
+- `uv run pytest tests/test_structural_budget.py tests/test_structural_budget_preflight.py -q 2>&1 | tail -20`
+
+```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+.......................................                                  [100%]
+39 passed in 14.40s
+```
+
+- `uv run pytest "tests/test_landed_claim_guard.py::test_a_claim_phrase_and_its_sha_in_different_clauses_is_still_the_named_sha" -q 2>&1 | tail -10`
+
+```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+...                                                                      [100%]
+3 passed in 0.78s
+```
+
+- `uv run pytest tests/test_landed_claim_early_refusal.py tests/test_landed_claim_guard.py -q 2>&1 | tail -20`
+
+```
+"recovery of determinacy would wrongly refuse here because the "
+            "reason text happens to share the genuine refusal's prefix"
         )
-        assert guard is not None
-        guard.note_t
-[... 1,326 of 2,465 characters omitted from the middle ...]
+E       AssertionError: a transient, unresolvable-branch 'cannot tell' must never be reported by the guard as a refusal — a `subject_reason.startswith` recovery of determinacy would wrongly refuse here because the reason text happens to share the genuine refusal's prefix
+E       assert {'hookSpecifi...his branch.'}} == {}
+E         
+E         Left contains 1 more item:
+E         {'hookSpecificOutput': {'additionalContext': '[SUPERVISOR:dc6a02ea] '
+E                                                      'LANDED-CLAIM REF
+[... 298 of 1,437 characters omitted from the middle ...]
 ...Full output truncated (27 lines hidden), use '-vv' to show
 
 tests/test_landed_claim_early_refusal.py:473: AssertionError
 =========================== short test summary info ============================
 FAILED tests/test_landed_claim_early_refusal.py::test_an_unresolvable_ship_ref_is_not_a_refusal
 FAILED tests/test_landed_claim_early_refusal.py::test_already_satisfied_subject_reports_indeterminate_for_transient_conditions
-2 failed, 45 passed in 5.62s
+2 failed, 48 passed in 5.77s
 ```  
-  _excerpt - 2,465 characters of output in total_
+  _excerpt - 1,437 characters of output in total_
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/4135165ffb634024be34bfe55f5b9427.52752.b9a0466e uv run pytest -q -n 4 tests/test_landed_claim_early_refusal.py tests/test_landed_claim_guard.py tests/test_already_satisfied_subject_tree.py tests/test_structural_budget.py 2>&1 | tail -30`
+- `uv run pytest tests/test_landed_claim_guard.py tests/test_landed_claim_early_refusal.py -q 2>&1 | tail -20`
 
 ```
+distinct case from `test_note_text_never_raises`'s raising `head_sha`)
+        through to a probe call and a bogus refusal."""
+        probe_calls: list[str] = []
+    
+        async def probe() -> tuple[bool, str, str]:
+            probe_calls.append("probed")
+            return (True, "deadbeef", "deadbeef is not an ancestor of main")
+    
+        guard = LandedClaimGuard(probe=probe, head_sha=lambda: "")
+        guard.note_text("this is already implemented in abc1234def")
+>       assert guard._pending_head is None, (
+            "an empty head_sha must never leave a pending injection latched")
+E       AssertionError: an empty head_sha must never leave a pending injection latched
+E       assert '' is None
+E        +  where '' = <<redacted>.agent.landed_claim_guard.LandedClaimGuard object at 0x10a80eb70>._pending_head
+
+tests/test_landed_claim_guard.py:519: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_landed_claim_guard.py::test_an_empty_head_sha_never_reaches_the_probe
+1 failed, 49 passed in 5.23s
+```
+
+- `git diff --stat echo --- uv run pytest tests/test_landed_claim_guard.py tests/test_landed_claim_early_refusal.py tests/test_structural_budget.py tests/test_structural_budget_preflight.py tests/test_already_satisfied_subject_tree.py -q 2>&1 | tail -20`
+
+```
+RELEASE_MANIFEST.txt                     |  6 ++--
+ src/<redacted>/agent/landed_claim_guard.py | 54 +++++++++++++++++++++++++++-----
+ tests/test_landed_claim_guard.py         | 39 +++++++++++++++++++++++
+ tests/test_structural_budget.py          | 22 ++++++++++++-
+ 4 files changed, 109 insertions(+), 12 deletions(-)
+---
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-bringing up nodes...
-bringing up nodes...
-
-........................................................................ [ 79%]
-...................                                                      [100%]
-91 passed in 7.93s
-```
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/4135165ffb634024be34bfe55f5b9427.52752.b9a0466e grep -n '"core/orchestrator.py":' tests/test_structural_budget.py echo "---scanner measurement check---" uv run pytest -q tests/test_structural_budget.py -k "frozen_lists_are_the_measured_baseline or no_frozen_entry_has_grown" 2>&1 | tail -10`
-
-```
-1261:    "core/orchestrator.py": 24088,
----scanner measurement check---
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-..                                                                       [100%]
-2 passed, 16 deselected in 1.09s
+........................................................................ [ 62%]
+...........................................                              [100%]
+115 passed in 31.65s
 ```
 
 
