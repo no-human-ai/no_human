@@ -839,6 +839,189 @@ def codex_readiness(
     return row, contradictions
 
 
+def _safe_exists(p: Path) -> bool:
+    """``Path.exists()`` only swallows ENOENT/ENOTDIR/EBADF/ELOOP — it
+    re-raises ``PermissionError`` (EACCES) instead of returning ``False``.
+    A caller checking one path among many unreadable-subtree probes must not
+    let that propagate: use this wherever "does this exist" is a best-effort
+    probe over a directory that may itself be unreadable. On EACCES we
+    cannot tell either way; callers that need to distinguish "no" from
+    "unknown" have another signal available (``sandbox_residue``'s own
+    ``unreadable`` flag) and must not rely on this returning ``False`` to
+    mean the file is absent.
+    """
+    try:
+        return p.exists()
+    except OSError:
+        return False
+
+
+def sandbox_residue(path: Path, *, max_entries: int = 50_000) -> dict[str, Any]:
+    """Measure what is actually left in a sandbox-looking directory, so a
+    caller can report reality instead of assuming a cost or a cause.
+
+    Returns ``{"files", "bytes", "truncated", "unreadable", "cleanup_incomplete"}``.
+    A ``_remove_sandbox`` cleanup-failure marker (see eval/harness.py) is
+    excluded from ``files``/``bytes`` — it is our own bookkeeping, not residue
+    a user would reclaim — and instead flips ``cleanup_incomplete``.
+    """
+    from .eval.harness import CLEANUP_MARKER
+
+    files = 0
+    total_bytes = 0
+    truncated = False
+    unreadable = False
+
+    def _onerror(_exc: OSError) -> None:
+        nonlocal unreadable
+        unreadable = True
+
+    for dirpath, _dirnames, filenames in os.walk(
+        path, onerror=_onerror, followlinks=False
+    ):
+        for name in filenames:
+            if name == CLEANUP_MARKER:
+                continue
+            if files >= max_entries:
+                truncated = True
+                break
+            full = os.path.join(dirpath, name)
+            try:
+                total_bytes += os.lstat(full).st_size
+                files += 1
+            except OSError:
+                # Could not stat this entry — e.g. its parent directory is
+                # readable but not searchable (mode 0o400), which lets
+                # `os.walk` enumerate the name without being able to size it.
+                # That size is unknown, not zero: folding it into 0 would
+                # under-report real residue exactly like the crash this
+                # measurement exists to stop asserting.
+                unreadable = True
+        if truncated:
+            break
+
+    marker = path / CLEANUP_MARKER
+    sibling = path.parent / (path.name + ".cleanup-incomplete")
+    cleanup_incomplete = _safe_exists(marker) or _safe_exists(sibling)
+
+    return {
+        "files": files,
+        "bytes": total_bytes,
+        "truncated": truncated,
+        "unreadable": unreadable,
+        "cleanup_incomplete": cleanup_incomplete,
+    }
+
+
+def _human_bytes(n: int) -> str:
+    """1024-based, one decimal place, B/KB/MB/GB."""
+    value = float(n)
+    for unit in ("B", "KB", "MB"):
+        if value < 1024:
+            return f"{int(value)} {unit}" if unit == "B" else f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{value:.1f} GB"
+
+
+def _apply_sandbox_outlived_advisories(d: "Diagnosis") -> None:
+    """0.4: eval/shadow sandboxes under tempfile.mkdtemp(nh-eval-*/nh-shadow-*)
+    are meant to be gone once the run that created them finishes — cleanup
+    in eval/harness.py runs in a `finally:` on both the success and the
+    crash path. A directory that outlives its run is consistent with either
+    an abandoned run OR a cleanup that removed what it could and left an
+    empty skeleton (see _remove_sandbox's marker) — the two are
+    indistinguishable from here, so this measures the residue instead of
+    naming a cause. Reported whenever there is something to say: measured
+    bytes, an unreadable subtree (unknown — never treated as zero), or a
+    recorded cleanup failure even if it left only empty directories. A
+    residue that is both empty AND has no recorded failure is not reported —
+    this is a deliberate trade-off (0.4 intake), not an oversight: a
+    directory tree with zero files (however many empty subdirectories) holds
+    no bytes a user would reclaim, so surfacing it would be noise on a
+    command read to find real problems, at the cost of not naming any
+    directory-only skeletons that a legacy/SIGKILL death may have left
+    behind. This harness's own cleanup USUALLY marks a failure, but the
+    marker is best-effort and is itself written into the tree being removed
+    (`eval/harness.py`: "cleanup must never fail because of it"), so a
+    sandbox whose PARENT is also unwritable can fail to clean AND fail to
+    mark. What survives then decides whether this suppression sees it, and
+    both shapes were measured: a surviving FILE gives files>0 and is caught
+    by the residue arms, while a surviving EMPTY DIRECTORY (rmtree unlinked
+    the file but could not rmdir its parent) gives files==0, unreadable
+    False and cleanup_incomplete False — a recorded cleanup failure this
+    suppression drops SILENTLY. That is part of the same accepted
+    directory-only trade-off above, not a case the marker rescues.
+    It is unreachable in the product as it stands: `base_tmp` comes from
+    `tempfile.mkdtemp` (measured mode 0o700, owner-writable) and nothing in
+    `src/no_human/eval/` calls chmod — the single textual match there is a
+    docstring about a rejected hardlink design — so the in-dir marker write
+    always succeeds and `cleanup_incomplete` catches the failure.
+    Advisory only, never a contradiction, so it never fails the doctor gate.
+    >2h old avoids flagging a sandbox from an eval that is still running."""
+    from .eval.harness import CLEANUP_MARKER
+
+    tmp_root = Path(tempfile.gettempdir())
+    stale_cut = time.time() - 2 * 3600
+    for pat in ("nh-eval-*", "nh-shadow-*"):
+        for entry in sorted(tmp_root.glob(pat)):
+            try:
+                if not (entry.is_dir() and entry.stat().st_mtime < stale_cut):
+                    continue
+                residue = sandbox_residue(entry)
+                if (
+                    residue["files"] == 0
+                    and not residue["unreadable"]
+                    and not residue["cleanup_incomplete"]
+                ):
+                    continue  # nothing measured and no recorded failure — no advisory
+
+                if residue["unreadable"]:
+                    # `unreadable` is set by `os.walk`'s `onerror` for ANY
+                    # OSError, not only EACCES, so do not name a cause the
+                    # flag does not carry.
+                    size_text = "size could not be fully measured"
+                    reclaim_clause = f"; `rm -rf {entry}` to reclaim disk"
+                elif residue["truncated"]:
+                    # The walk stopped at the entry cap — both counts are a
+                    # floor, not a total. Never claim there is nothing left
+                    # to reclaim for a tree we did not finish reading.
+                    size_text = (
+                        f"at least {residue['files']} file(s), at least "
+                        f"{_human_bytes(residue['bytes'])} (measurement "
+                        "stopped early)"
+                    )
+                    reclaim_clause = f"; `rm -rf {entry}` to reclaim disk"
+                elif residue["bytes"] > 0:
+                    size_text = f"{residue['files']} file(s), {_human_bytes(residue['bytes'])}"
+                    reclaim_clause = f"; `rm -rf {entry}` to reclaim disk"
+                elif residue["files"] > 0:
+                    # Real files, but they measure to zero bytes — there is
+                    # nothing to reclaim, so say that instead of the original
+                    # defect in miniature ("0 B ... to reclaim disk").
+                    size_text = f"{residue['files']} file(s), 0 B"
+                    reclaim_clause = f"; `rm -rf {entry}` to remove it (no measurable disk to reclaim)"
+                else:
+                    size_text = "no measurable files left"
+                    reclaim_clause = f"; `rm -rf {entry}` to remove it (no measurable disk to reclaim)"
+
+                incomplete_clause = ""
+                if residue["cleanup_incomplete"]:
+                    marker = entry / CLEANUP_MARKER
+                    if not _safe_exists(marker):
+                        marker = entry.parent / (entry.name + ".cleanup-incomplete")
+                    incomplete_clause = (
+                        f" — its cleanup could not finish; see `{marker}` "
+                        "for what it left behind"
+                    )
+
+                d.advisories.append(
+                    f"SANDBOX DIRECTORY OUTLIVED ITS RUN: {entry} (>2h old, "
+                    f"{size_text}){incomplete_clause}{reclaim_clause}."
+                )
+            except OSError:
+                pass
+
+
 async def diagnose(store: Store, config: dict[str, Any] | None = None) -> Diagnosis:
     d = Diagnosis()
     d.contradictions.extend(ci_config_problems(config))
@@ -1035,23 +1218,10 @@ async def diagnose(store: Store, config: dict[str, Any] | None = None) -> Diagno
                     "`git worktree prune`."
                 )
 
-    # 0.4: leaked eval sandboxes. The eval harness clones into
-    # tempfile.mkdtemp(nh-eval-*/nh-shadow-*); a crash before cleanup used to
-    # leave them behind (the cleanup is now in eval/harness.py). Advisory — a
-    # disk leak, not a state contradiction, so it never fails the doctor gate.
-    # >2h old avoids flagging a sandbox from an eval that is still running.
-    tmp_root = Path(tempfile.gettempdir())
-    stale_cut = time.time() - 2 * 3600
-    for pat in ("nh-eval-*", "nh-shadow-*"):
-        for entry in sorted(tmp_root.glob(pat)):
-            try:
-                if entry.is_dir() and entry.stat().st_mtime < stale_cut:
-                    d.advisories.append(
-                        f"LEAKED EVAL SANDBOX: {entry} (>2h old) — a crashed eval "
-                        f"left it behind; `rm -rf {entry}` to reclaim disk."
-                    )
-            except OSError:
-                pass
+    # 0.4: eval/shadow sandbox directories that outlived their run — see
+    # `_apply_sandbox_outlived_advisories` for the reasoning (advisory only,
+    # measured residue not an assumed cause, never fails the doctor gate).
+    _apply_sandbox_outlived_advisories(d)
 
     # The documented `.no_human/project.yml` is a DECOY once a confirmed DB
     # row exists: `Orchestrator._usable_profile` prefers the row, so an edit

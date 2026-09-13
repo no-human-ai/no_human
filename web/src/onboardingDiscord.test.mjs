@@ -47,7 +47,16 @@ test("BASE_STEPS carries a discord step directly before summary, which stays las
   const base = src.match(/const BASE_STEPS = \[([\s\S]*?)\n\];/);
   assert.ok(base, "the base-step list must still exist as its own array");
   const keys = [...base[1].matchAll(/key: "(\w+)"/g)].map((m) => m[1]);
-  assert.deepEqual(keys, ["welcome", "repos", "projects", "integrations", "discord", "summary"]);
+  // Asserted as the PROPERTY this test is named for, not as a re-typed list of
+  // every step: a closed set here would have to be edited by any unrelated step
+  // change (it was — "email" joined the wizard the same day). The full ordered
+  // list is still pinned, once, by onboardingConsent.test.mjs and
+  // onboardingDocsKickoff.test.mjs, so reordering/renaming is still caught.
+  assert.equal(keys.filter((k) => k === "discord").length, 1,
+    "BASE_STEPS must carry exactly one discord step");
+  assert.equal(keys[keys.length - 1], "summary", "summary must stay the last step");
+  assert.equal(keys.indexOf("discord"), keys.length - 2,
+    "the discord step must sit directly before summary — nothing may be inserted between them");
   const titles = Object.fromEntries(
     [...base[1].matchAll(/key: "(\w+)",\s+title: "([^"]+)"/g)].map((m) => [m[1], m[2]]),
   );

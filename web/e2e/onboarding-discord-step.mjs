@@ -87,7 +87,7 @@ const browser = await chromium.launch();
   await page.goto("http://127.0.0.1:4645/", { waitUntil: "networkidle" });
   await page.waitForTimeout(400);
 
-  const communityStep = page.getByRole("button", { name: /^Community, step 5 of 6/ });
+  const communityStep = page.getByRole("button", { name: /^Community, step 6 of 7/ });
   check("the step indicator exposes a 'Community' step button", await communityStep.isVisible().catch(() => false));
   await communityStep.click();
   await page.waitForTimeout(300);
@@ -149,7 +149,7 @@ const browser = await chromium.launch();
   await page.goto("http://127.0.0.1:4645/", { waitUntil: "networkidle" });
   await page.waitForTimeout(400);
 
-  const communityStep = page.getByRole("button", { name: /^Community, step 5 of 6/ });
+  const communityStep = page.getByRole("button", { name: /^Community, step 6 of 7/ });
   await communityStep.click();
   await page.waitForTimeout(300);
 
