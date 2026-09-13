@@ -891,7 +891,7 @@ def base_merge_conflict_instruction(base_ref: str) -> str:
         "`git reset --hard` — this branch is already pushed, and delivery is "
         "fast-forward-only against the pushed tip: a rebase rewrites the pushed "
         "commits, the tip stops being an ancestor of your head, and the work "
-        "cannot be delivered at all. The guard refuses a rebase here."
+        "cannot be delivered at all."
     )
 
 

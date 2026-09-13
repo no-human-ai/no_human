@@ -333,6 +333,49 @@ def test_git_itself_decides_what_a_bare_reset_pathspec_does(harness_repo):
     assert tip6 in d6.reason, d6.reason
 
 
+def test_a_tree_ish_before_the_pathspec_separator_stays_an_index_only_reset(
+    harness_repo,
+):
+    """Prior bug: `_classify_reset` scanned operands up to `--` and, if any
+    were collected before it, still returned `("target", operands[0])` —
+    so `git reset HEAD~1 -- f.txt` was misread as moving the branch to
+    `HEAD~1` and denied (the pushed tip is not an ancestor of `HEAD~1`)
+    even though `git reset [<tree-ish>] [--] <pathspec>...` is git's
+    documented index-only form: it stages `f.txt` from `HEAD~1` into the
+    index and never touches the branch ref. This is a plausible command a
+    coder runs while resolving a base-merge conflict (restage one file's
+    content from another ref). This test EXECUTES the real command (not
+    only the guard's verdict) to prove git does not move HEAD, then checks
+    the guard allows it — both with a resolvable tree-ish (`HEAD~1`) and an
+    unresolvable one (`origin/main`, a remote-tracking ref that still
+    parses as a valid tree-ish here), since the bug fired identically for
+    both."""
+    work, tip = harness_repo()
+    before = _git(work, "rev-parse", "HEAD")
+
+    for tree_ish in ("HEAD~1", "origin/main"):
+        cmd = f"git reset {tree_ish} -- f.txt"
+        d = _ev(cmd, cwd=str(work))
+        assert d.allow is True, f"{cmd!r} should be allowed: {d.reason}"
+
+        proc = subprocess.run(
+            ["git", "reset", tree_ish, "--", "f.txt"],
+            cwd=work, capture_output=True, text=True,
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert _git(work, "rev-parse", "HEAD") == before, (
+            f"{cmd!r} moved HEAD — it must only touch the index"
+        )
+        assert _is_ancestor(work, tip, "HEAD")
+
+    # Control: no `--` at all, so the same `HEAD~1` operand IS a branch-move
+    # target and must still be denied — this fix must not turn into "any
+    # reset with a resolvable tree-ish is allowed".
+    d_no_sep = _ev("git reset HEAD~1", cwd=str(work))
+    assert d_no_sep.allow is False, d_no_sep.reason
+    assert tip in d_no_sep.reason, d_no_sep.reason
+
+
 def test_allowed_forms_keep_the_pushed_tip_an_ancestor_of_head(harness_repo):
     # git reset --hard HEAD: a no-op relative to the tip.
     work, tip = harness_repo()

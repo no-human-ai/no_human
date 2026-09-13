@@ -396,10 +396,21 @@ def _pull_is_rebase_flavored(rest: list[str], config_values: list[str]) -> bool:
 
 
 def _classify_reset(rest: list[str]) -> tuple | None:
+    """`git reset [<tree-ish>] [--] <pathspec>...` is git's documented
+    index-only form: any operand before a `--` is the optional source
+    tree-ish for staging the named paths, not a branch-move target — this
+    form never touches the branch ref, no matter what precedes `--`. Once
+    `--` is seen this returns None immediately instead of falling through
+    to the collected operand, or `git reset HEAD~1 -- f.txt` (a coder
+    restaging one file from another ref while resolving a base-merge
+    conflict) would be misread as moving the branch to `HEAD~1` and denied
+    even though it never leaves the index. See
+    `test_a_tree_ish_before_the_pathspec_separator_stays_an_index_only_reset`
+    for this run for real and proven not to move HEAD."""
     operands = []
     for tok in rest:
         if tok == "--":
-            break
+            return None
         if not tok.startswith("-"):
             operands.append(tok)
     if not operands:
