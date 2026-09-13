@@ -1289,7 +1289,7 @@ _SOCKET_TOOLS = frozenset({"nc", "netcat", "ncat", "telnet", "socat"})
 
 _TRAILING_ARGV_RUNNERS = frozenset({
     "xargs", "timeout", "nice", "stdbuf", "script", "flock", "watch", "ionice",
-    "chrt", "setsid", "unbuffer",
+    "chrt", "setsid", "unbuffer", "taskset",
 })
 
 _PY_INTERPRETER = re.compile(
@@ -2531,7 +2531,7 @@ def _git_invocations(cmd: str, _depth: int = 0) -> list[tuple[str, list[str]]]:
         name = exec_names.command_name(argv[0], is_windows=_IS_WINDOWS)
         if name == "git":
             found.append((seg, argv))
-        elif name in _SHELL_RUNNERS and _depth < 2:
+        elif name in _FORGE_RUNNER_NAMES and _depth < 2:
             for j, tok in enumerate(argv[1:], start=1):
                 # `sh -c "git stash"` — the command is one quoted token.
                 if re.search(r"\bgit\s+\S", tok):
