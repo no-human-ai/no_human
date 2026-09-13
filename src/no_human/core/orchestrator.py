@@ -11872,9 +11872,15 @@ class Orchestrator:
         HEAD, a raised `is_ancestor`, an unresolvable delivery branch, an
         unresolvable origin remote, or a `remote_branch_relation` call that
         itself raised), or no ship-ref candidate resolved at all (there is
-        no branch to even compare against), or (defensively, currently
-        unreachable) `remote_branch_relation` returned a value outside the
-        four it can ever actually produce.
+        no branch to even compare against), or `remote_branch_relation`
+        reported a value in its own `TRANSIENT_RELATIONS` set (currently
+        just `"unreachable"` — the `ls-remote` call itself failed to reach
+        the remote at all, a condition that can clear up on its own, unlike
+        plain "unknown" above), or (defensively, currently unreachable)
+        `remote_branch_relation` returned a value outside the ones it can
+        ever actually produce. The indeterminate/transient values are
+        derived from `GitRepo.TRANSIENT_RELATIONS` rather than hand-
+        enumerated here — see that set's docstring.
 
         (Sixth review, HIGH) a caller must NEVER recover this distinction by
         pattern-matching `subject_reason`'s prose — several of the "cannot
@@ -12030,18 +12036,33 @@ class Orchestrator:
         if relation is not None:
             # `"unknown"` is a NORMAL, non-exceptional return from
             # `remote_branch_relation` (never pushed, or its object isn't
-            # available locally) — delivery's own `_gate_already_satisfied`
-            # treats it as a fully final refusal, not a retry-later state
-            # (see `test_an_unknown_pushed_branch_relation_is_refused`), so
-            # it is determinate here too. Only a relation value outside the
-            # four this method can ever actually return is genuinely
-            # unrecognized/indeterminate — defensive, and currently
-            # unreachable in practice.
-            determinate_relation = relation in ("behind", "diverged", "unknown")
+            # available locally even after a fetch attempt) — delivery's own
+            # `_gate_already_satisfied` treats it as a fully final refusal,
+            # not a retry-later state (see
+            # `test_an_unknown_pushed_branch_relation_is_refused`), so it is
+            # determinate here too. `"unreachable"` is DIFFERENT: it means
+            # `remote_branch_relation` never got an answer from the remote at
+            # all (the `ls-remote` call itself failed — network, auth, a bad
+            # URL) — a transient condition that can clear up on its own, so
+            # it must NOT be treated as a stable refusal (send-back: an
+            # unreachable remote was folded into "unknown" and classified
+            # determinate here, letting a transient network blip produce a
+            # DEFINITE refusal message). Derived directly from
+            # `GitRepo.TRANSIENT_RELATIONS` — the callee's own declared set
+            # of return values that mean "could not ask," not a second,
+            # hand-enumerated closed list here: a hand-written closed set
+            # has gone stale in this exact spot more than once (this is the
+            # second time; see the send-back that added `TRANSIENT_RELATIONS`
+            # itself). Any relation value NOT in that set (including one
+            # `remote_branch_relation` might add in the future without ever
+            # touching this call site) is treated as determinate by default,
+            # matching today's behaviour for "behind"/"diverged"/"unknown".
+            determinate_relation = relation not in GitRepo.TRANSIENT_RELATIONS
             relation_reason = {
                 "behind": "the remote branch contains commits the reviewer did not judge",
                 "diverged": "the remote branch diverged from the reviewed commit",
                 "unknown": "the pushed branch could not be verified",
+                "unreachable": "the remote could not be reached to verify the pushed branch",
             }.get(relation, f"the pushed branch relation is unrecognized ({relation!r})")
             return False, head, "", (
                 f"{prefix}; {relation_reason}"), False, ship_ref, determinate_relation
@@ -17273,16 +17294,23 @@ class Orchestrator:
             # answer, not one of `_already_satisfied_subject`'s "cannot
             # tell" cases (an unresolvable HEAD, no ship-ref candidate at
             # all, an is_ancestor check that raised, an unresolvable
-            # delivery branch, an unresolvable origin remote, or a
-            # `remote_branch_relation` call that itself raised) — those also
-            # report `shippable=False` but must never look refuted here,
-            # matching the guard's own "unverifiable must never look
-            # refuted" rule. Note a plain "unknown" relation (e.g. simply
-            # never pushed) is NOT one of these — delivery treats it as a
-            # final refusal too, so it is determinate. `determinate` is the
-            # explicit status code `_already_satisfied_subject` returns for
-            # exactly this purpose; do NOT recover it by pattern-matching
-            # `subject_reason`'s prose — an earlier revision did that with
+            # delivery branch, an unresolvable origin remote, a
+            # `remote_branch_relation` call that itself raised, or —
+            # send-back — a `remote_branch_relation` call that returned
+            # cleanly but with a value in its own `TRANSIENT_RELATIONS`
+            # set, currently just "unreachable": the `ls-remote` call itself
+            # could not reach the remote at all, a transient condition, not
+            # a raised exception) — those also report `shippable=False` but
+            # must never look refuted here, matching the guard's own
+            # "unverifiable must never look refuted" rule. Note a plain
+            # "unknown" relation (e.g. simply never pushed) is NOT one of
+            # these — delivery treats it as a final refusal too, so it is
+            # determinate. `determinate` is the explicit status code
+            # `_already_satisfied_subject` returns for exactly this purpose
+            # (derived from `GitRepo.TRANSIENT_RELATIONS`, not a second
+            # hand-enumerated list here); do NOT recover it by pattern-
+            # matching `subject_reason`'s prose — an earlier revision did
+            # that with
             # ``subject_reason.startswith(f"{head} is not on {ship_ref}")``,
             # which silently mis-classified several distinct "cannot tell"
             # reasons as refusals because they happen to share that same

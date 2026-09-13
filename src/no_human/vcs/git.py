@@ -1448,6 +1448,18 @@ class GitRepo:
         self._run(*args)
         return sha
 
+    #: Values `remote_branch_relation` can return whose cause is a
+    #: transient, retry-later condition rather than a stable fact about the
+    #: branch itself — currently just `"unreachable"` (the `ls-remote`
+    #: command itself failed: network/auth/bad remote URL). Callers that
+    #: need to decide whether a relation is safe to treat as a FINAL answer
+    #: (e.g. `Orchestrator._already_satisfied_subject`'s `determinate`
+    #: status) should derive that decision from this set instead of
+    #: hand-enumerating `remote_branch_relation`'s return values themselves
+    #: — see that method's docstring for why a hand-enumerated closed set
+    #: has repeatedly gone stale here.
+    TRANSIENT_RELATIONS = frozenset({"unreachable"})
+
     def remote_branch_relation(self, branch: str, *, remote: str = "origin",
                                 timeout: int = 30) -> str:
         """How local ``branch`` relates to its own tip on ``remote``.
@@ -1455,11 +1467,18 @@ class GitRepo:
         Returns ``"behind"`` (local is an ancestor of the remote tip — the
         remote holds commits this tree does not, e.g. an earlier attempt's
         push), ``"diverged"`` (neither is an ancestor of the other, e.g. a
-        local rebase of an already-pushed branch), ``"up_to_date"``, or
-        ``"unknown"`` when the relation cannot be determined (branch never
-        pushed, remote unreachable, or its object isn't available locally —
-        fail-open to today's behaviour: nothing here BLOCKS a force, only a
-        *proven* ancestry does).
+        local rebase of an already-pushed branch), ``"up_to_date"``,
+        ``"unknown"`` when the relation is STABLY undetermined (branch never
+        pushed — the remote was reachable and answered, it simply has no
+        such ref — or the remote object isn't available locally even after
+        a fetch attempt), or ``"unreachable"`` when the remote could not be
+        asked at all (``ls-remote`` itself failed: network, auth, or a bad
+        remote URL — a condition that can clear up on its own and is
+        genuinely TRANSIENT, unlike the other three). All are fail-open for
+        `push`'s purposes: nothing here BLOCKS a force, only a *proven*
+        ancestry does. `TRANSIENT_RELATIONS` names exactly the subset of
+        this method's return values a caller should treat as retry-later
+        rather than a final answer.
 
         Deliberately does NOT touch ``refs/remotes/<remote>/<branch>`` — that
         is the ref `push`'s ``--force-with-lease`` is judged against, and
@@ -1483,7 +1502,15 @@ class GitRepo:
             cwd=self.path, capture_output=True, text=True, timeout=timeout,
             **hidden_console_kwargs(),
         )
-        if ls.returncode != 0 or not ls.stdout.strip():
+        if ls.returncode != 0:
+            # The `ls-remote` command itself failed — network/auth/bad URL.
+            # Distinct from an empty-but-successful answer below: the remote
+            # was never actually asked, so this is transient, not a stable
+            # fact about the branch (see `TRANSIENT_RELATIONS`).
+            return "unreachable"
+        if not ls.stdout.strip():
+            # The remote answered (exit 0) and simply has no such ref — a
+            # stable fact, not a transient failure to ask.
             return "unknown"
         remote_sha = ls.stdout.split()[0]
         if remote_sha == local:
@@ -1600,8 +1627,8 @@ class GitRepo:
                 relation = "unknown"
             if relation == "behind":
                 raise PushBehindRemote(_behind_message(branch, remote, sha))
-            # "unknown" / "diverged" / "up_to_date" all fall through and
-            # force, exactly as today.
+            # "unknown" / "diverged" / "up_to_date" / "unreachable" all fall
+            # through and force, exactly as today.
             # NO fetch here — see the docstring: refreshing the tracking ref
             # is what would make the lease vacuous.
             args += ["--force-with-lease"]

@@ -825,6 +825,31 @@ def test_remote_branch_relation_is_unknown_for_an_unpushed_branch(repo_with_bare
     assert repo.remote_branch_relation("no-human/never-pushed") == "unknown"
 
 
+def test_remote_branch_relation_is_unreachable_when_ls_remote_itself_fails(
+        repo_with_bare_remote):
+    """Distinct from `..._is_unknown_for_an_unpushed_branch` above: there the
+    remote answers (exit 0) and simply has no such ref — a STABLE fact.
+    Here `ls-remote` itself cannot even reach the remote (bad URL/network) —
+    a TRANSIENT condition that can clear up on its own. Folding both into
+    the same `"unknown"` string was the root cause of a send-back: a caller
+    (`Orchestrator._already_satisfied_subject`) treated `"unknown"` as
+    always a final, determinate answer, which let an unreachable remote
+    produce a DEFINITE refusal message about a condition that might no
+    longer hold moments later. `"unreachable"` is in `GitRepo
+    .TRANSIENT_RELATIONS`; `"unknown"` (this method's other indeterminate
+    return) deliberately is not — see `test_remote_branch_relation_is_
+    unknown_for_an_unpushed_branch` and `_already_satisfied_subject`'s
+    docstring for why a plain "never pushed" unknown stays a final
+    refusal."""
+    repo = GitRepo(repo_with_bare_remote)
+    repo.create_branch("no-human/t1")
+    bogus_remote = str(repo_with_bare_remote / "no-such-remote.git")
+    assert repo.remote_branch_relation("no-human/t1", remote=bogus_remote) == (
+        "unreachable")
+    assert "unreachable" in GitRepo.TRANSIENT_RELATIONS
+    assert "unknown" not in GitRepo.TRANSIENT_RELATIONS
+
+
 def test_a_behind_branch_never_reaches_a_force_push(
         repo_with_bare_remote, tmp_path, monkeypatch):
     """The real guarantee, asserted on the push ARGUMENTS rather than the

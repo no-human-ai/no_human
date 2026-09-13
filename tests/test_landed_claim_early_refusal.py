@@ -443,15 +443,18 @@ async def test_the_new_outer_predicate_stays_silent_on_its_own_commits_ahead_exc
 
 async def test_an_unresolvable_ship_ref_is_not_a_refusal(tmp_path, store):
     """Mutant pin (STEP 3a): the `refuted = (...)` filter in
-    `_build_landed_claim_guard`'s probe (~17007) must require BOTH a
-    negative `shippable` AND a `reason` that actually names an unreachable
-    branch — not merely `shippable is False`. When the ship ref itself
+    `_build_landed_claim_guard`'s probe (~17318) must require a negative
+    `shippable` AND a non-empty `head` AND a non-empty `ship_ref` AND
+    `determinate` — not merely `shippable is False`. (An earlier revision
+    expressed this as "a reason that actually names an unreachable branch";
+    that prose-shape check has since been replaced outright by the explicit
+    `determinate` status code plus the `bool(ship_ref)` check — see
+    `_already_satisfied_subject`'s docstring.) When the ship ref itself
     cannot be resolved (no base, no remote, no local `main`),
-    `_already_satisfied_subject` returns `shippable=False` with a reason
-    that names no branch at all; a mutant that dropped the reason-shape
-    check from `refuted` would refuse here too. It must not: refusing a
-    claim by naming a branch that was never determined would be worse than
-    silence."""
+    `_already_satisfied_subject` returns `shippable=False` with `ship_ref=""`;
+    a mutant that dropped the `bool(ship_ref)` check from `refuted` would
+    refuse here too. It must not: refusing a claim by naming a branch that
+    was never determined would be worse than silence."""
     work = tmp_path / "solo"
     work.mkdir()
     _git(work, "init", "-b", "work")
@@ -554,6 +557,73 @@ async def test_already_satisfied_subject_reports_indeterminate_for_transient_con
         "reported by the guard as a refusal — a `subject_reason.startswith` "
         "recovery of determinacy would wrongly refuse here because the "
         "reason text happens to share the genuine refusal's prefix"
+    )
+
+
+async def test_an_unreachable_remote_is_not_a_refusal(
+    diverged_repo, tmp_path, store,
+):
+    """(Send-back, BLOCKER, Finding 1) Before this fix, `GitRepo.
+    remote_branch_relation` folded two very different failures into the same
+    `"unknown"` string: the remote answering "no such ref" (a STABLE fact —
+    never pushed) and the `ls-remote` command itself failing to even reach
+    the remote (network/auth/bad URL — a TRANSIENT condition). Because
+    `_already_satisfied_subject` treated plain `"unknown"` as determinate
+    (matching delivery's own `_gate_already_satisfied`, which is right for
+    the stable "never pushed" case), an unreachable remote was ALSO
+    classified determinate — producing a DEFINITE refusal message about a
+    condition that might no longer hold moments later, violating criterion 6
+    ("never assert a definite outcome about a transient condition"). Fixed
+    by giving `ls-remote` failure its own `"unreachable"` value, declared in
+    `GitRepo.TRANSIENT_RELATIONS`, which `_already_satisfied_subject` now
+    consults directly (`relation not in GitRepo.TRANSIENT_RELATIONS`) instead
+    of hand-enumerating a closed set of "determinate" relation strings.
+
+    This drives the REAL probe end to end (not just `remote_branch_relation`
+    in isolation — see `tests/test_vcs.py` for that unit-level pin): a local
+    branch pointer that matches HEAD (so `local_is_reviewed` is True and
+    `remote_branch_relation` is actually called), with `origin` repointed at
+    a path that does not exist, so `git ls-remote` itself fails."""
+    attempt_branch = "no-human/task-attempt-unreachable"
+    head = GitRepo(diverged_repo).head_sha()
+    # Local-only, at the CURRENT tip — unlike the sibling tests above, this
+    # one needs `branch_sha == head` (`local_is_reviewed`) so the probe
+    # actually reaches the `remote_branch_relation` call instead of skipping
+    # it via the lagging-local-pointer path.
+    _git(diverged_repo, "branch", attempt_branch, head)
+    bogus_remote = str(tmp_path / "no-such-remote.git")
+    _git(diverged_repo, "remote", "set-url", "origin", bogus_remote)
+
+    orch = _orch(store, tmp_path)
+    task = Task.new("existing", repo_path=str(diverged_repo), kind="feature")
+    await store.create_task(task)
+
+    shippable, probed_head, _subject, subject_reason, _on_main, _ship_ref, \
+        determinate = (
+        await orch._already_satisfied_subject(
+            task, GitRepo(diverged_repo), base="main", branch=attempt_branch,
+        )
+    )
+    assert shippable is False
+    assert probed_head == head
+    assert "the remote could not be reached to verify the pushed branch" in (
+        subject_reason)
+    assert determinate is False, (
+        "an unreachable remote must be a transient 'cannot tell', never a "
+        "genuine, determinate refusal")
+
+    guard = orch._build_landed_claim_guard(
+        task, GitRepo(diverged_repo), base="main", branch=attempt_branch,
+    )
+    assert guard is not None
+    guard.note_text(
+        f"This is already implemented — the work already exists at "
+        f"{head}, no changes needed."
+    )
+    assert await guard.hook({}, None, None) == {}, (
+        "an unreachable remote must never be reported by the guard as a "
+        "refusal — that would assert a definite outcome about a condition "
+        "that could clear up on its own moments later"
     )
 
 

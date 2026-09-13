@@ -16,7 +16,7 @@ had FAILED. A fix keyed on the checkpoint subject would cover only the 9
 (21%); the delivery-time question covers all 42, because the subject is
 never what makes (or doesn't make) the claim false.
 
-Four revisions since the first version landed:
+Nine revisions since the first version landed:
 
 * (Send-back, sha extraction) a bare ``[0-9a-f]{7,40}`` token also matches
   ordinary English words ("defaced") and unrelated hex-shaped tokens
@@ -43,9 +43,18 @@ Four revisions since the first version landed:
      or used the formal marker. Fixed by requiring the phrase match to also
      carry either an explicitly cued commit (the
      existing sha-cue requirement) or the formal ``ALREADY-SATISFIED``
-     contract marker `Orchestrator._parse_already_satisfied` requires at
-     delivery — i.e. the SAME bar delivery itself uses to decide whether a
-     zero-diff completion is even a claim worth routing anywhere.
+     marker line by itself — the same marker text
+     `Orchestrator._parse_already_satisfied` looks for, but NOT the same
+     bar: delivery additionally requires at least `n_criteria`
+     well-formed ``CRITERION: ... — MET — evidence: ...`` lines with none
+     marked NOT-MET before it will route a zero-diff completion to the
+     already-satisfied gate at all. The marker alone is enough to make the
+     detector here treat an utterance as actionable — a deliberately looser
+     bar than delivery's, because this probe only needs to decide whether
+     to ask delivery's own question early, not whether delivery would
+     ultimately accept the claim (see Finding 2 in the most recent review
+     for the false-positive shapes this looseness lets through, and the
+     ninth-review bullet below for how they are handled).
 * (Send-back, third review) `_already_satisfied_subject` is delivery's
   containment check, but it is only ever REACHED once delivery has already
   decided the head belongs on the claim gate at all —
@@ -171,6 +180,51 @@ Four revisions since the first version landed:
   (`tests/test_landed_claim_guard.py`), which pinned the withdrawn shape. The
   negation and incidental-hex tests the Sixth review added remain green,
   unchanged — they are genuinely fixed and were never in question.
+* (Ninth review) two findings:
+
+  1. (BLOCKER) An unreachable `origin` remote (``ls-remote`` itself failing —
+     network/auth/bad URL) was indistinguishable, at the
+     `GitRepo.remote_branch_relation` level, from a branch that was simply
+     never pushed — both returned the same ``"unknown"`` string, and
+     `Orchestrator._already_satisfied_subject` treated that string as
+     determinate. That let a transient remote failure produce a DEFINITE
+     refusal through this guard, exactly the outcome the Fifth review's
+     reword was meant to prevent. Fixed in `GitRepo`/`Orchestrator`, not
+     here: `remote_branch_relation` now returns a distinct ``"unreachable"``
+     for that case (declared in `GitRepo.TRANSIENT_RELATIONS`), and
+     `_already_satisfied_subject` derives its `determinate` status directly
+     from that set instead of a hand-enumerated list of "determinate"
+     relation strings — see both docstrings for the full account, and
+     `tests/test_landed_claim_early_refusal.py::
+     test_an_unreachable_remote_is_not_a_refusal` for the guard-level pin.
+  2. (HIGH) Several hand-constructed non-claim prose shapes — a quoted
+     excerpt, a question, a hypothetical, quoting the marker itself, prose
+     naming a DIFFERENT branch, a manifest hash mentioned nearby, a
+     self-correction — still satisfy `_is_actionable_claim`'s marker-alone
+     path, because that path was never meant to be as strict as delivery's
+     own `_parse_already_satisfied` (which additionally requires
+     `n_criteria` well-formed ``CRITERION:`` lines). Two sentences here had
+     drifted into claiming an equivalence with delivery's bar that was never
+     true. Corrected both (the second-review bullet above and
+     `_is_actionable_claim`'s own docstring) to say what the code actually
+     checks, rather than narrow the detector further — narrowing has
+     repeatedly regressed real claim coverage for zero measured benefit (see
+     the Seventh/Eighth review above). An earlier revision of this bullet
+     claimed the only cost of a false positive here was a wasted probe call
+     with no message ever injected — that was wrong: `probe()` is a
+     zero-argument callable keyed on the branch's actual state, not on the
+     text that triggered it, so whenever the branch genuinely IS in the live
+     refusal shape (criterion 3), these non-claim shapes inject a message
+     too, exactly like a real claim would. What that message is NOT is
+     FALSE: `detail` is always delivery's own real answer about the branch's
+     actual state (see `hook`'s docstring), never fabricated from the
+     prose — only the message's "you said the work already exists" framing
+     is unwarranted on these shapes. The residual cost this choice accepts
+     is a spurious-but-truthful correction, never an assertion the repo
+     cannot back up. Proven directly, both halves (message suppressed when
+     the branch is not actually refused, message truthful when it is), in
+     `tests/test_landed_claim_guard.py::
+     test_non_claim_shapes_that_still_fire_the_actionability_gate_never_lie`.
 """
 
 from __future__ import annotations
@@ -333,9 +387,24 @@ def _is_actionable_claim(text: str) -> ClaimAssertion | None:
     CLI; only the docs move."). None of those are a claim delivery would
     ever act on. A claim only becomes ACTIONABLE once it commits to
     something checkable: an explicitly cued commit, or the
-    ``ALREADY-SATISFIED`` contract marker — the exact bar
-    `Orchestrator._parse_already_satisfied` applies before delivery will
-    even route a zero-diff completion to the already-satisfied gate.
+    ``ALREADY-SATISFIED`` contract marker line on its own — this is
+    deliberately LOOSER than `Orchestrator._parse_already_satisfied`'s own
+    bar, which additionally requires at least `n_criteria` well-formed
+    ``CRITERION: ... — MET — evidence: ...`` lines with none NOT-MET before
+    delivery will route a zero-diff completion to the already-satisfied
+    gate. The marker alone is enough here because this gate only decides
+    whether to ask delivery's real question early, not whether delivery
+    would ultimately accept the claim; some non-claim prose that merely
+    quotes, questions, or hypothesizes about the marker can still pass this
+    looser bar. When it does and the branch is genuinely in the live
+    refusal shape, `hook` DOES still inject a message over it — the message
+    is never false (`detail` always names delivery's own real, current
+    answer), only its "you said the work already exists" framing is
+    unwarranted on such prose. See the ninth-review bullet in the module
+    docstring, and
+    `tests/test_landed_claim_guard.py::
+    test_non_claim_shapes_that_still_fire_the_actionability_gate_never_lie`
+    for both halves proven directly.
     """
     assertion = detect_claim_assertion(text)
     if assertion is None:

@@ -23,6 +23,7 @@ import pytest
 from no_human.agent.landed_claim_guard import (
     ClaimAssertion,
     LandedClaimGuard,
+    _is_actionable_claim,
     detect_claim_assertion,
 )
 from no_human.vcs.task_pr import (
@@ -402,9 +403,11 @@ def test_unnamed_sha_prose_without_the_contract_marker_never_reaches_the_probe(t
 
 def test_the_formal_already_satisfied_marker_is_actionable_even_without_a_cued_sha():
     """The other side of the Blocker 2 gate: a claim carrying the formal
-    ``ALREADY-SATISFIED`` contract marker `Orchestrator._parse_already_satisfied`
-    requires at delivery IS actionable even when it names no cued sha —
-    matching delivery's own bar for routing a zero-diff completion at all."""
+    ``ALREADY-SATISFIED`` contract marker is actionable even when it names
+    no cued sha and even when it does not (yet) carry the ``CRITERION``
+    lines `Orchestrator._parse_already_satisfied` additionally requires —
+    see `test_the_marker_alone_is_looser_than_delivery_s_own_bar` below for
+    that gap pinned directly against delivery's own parser."""
     text = "ALREADY-SATISFIED\nCRITERION: it works — MET — evidence: ran it"
 
     async def probe() -> tuple[bool, str, str]:
@@ -413,6 +416,129 @@ def test_the_formal_already_satisfied_marker_is_actionable_even_without_a_cued_s
     guard = LandedClaimGuard(probe=probe, head_sha=lambda: "deadbeefdeadbeef")
     guard.note_text(text)
     assert _run(guard.hook({}, None, None)), "the formal marker must be actionable on its own"
+
+
+def test_the_marker_alone_is_looser_than_delivery_s_own_bar():
+    """(Send-back, Finding 2) `_is_actionable_claim`'s bar for the formal
+    ``ALREADY-SATISFIED`` marker is the marker line by itself — deliberately
+    LOOSER than `Orchestrator._parse_already_satisfied`'s own bar, which
+    additionally requires at least `n_criteria` well-formed
+    ``CRITERION: ... — MET — evidence: ...`` lines with none NOT-MET. An
+    earlier revision's docstrings claimed these were "the SAME bar"/"the
+    exact bar" delivery uses; they were not, and both have since been
+    corrected (module docstring, "(Ninth review)"; `_is_actionable_claim`'s
+    own docstring). Pinned here directly against delivery's real parser
+    rather than just against prose, on the SAME marker-only text, so a
+    future edit that quietly re-equalizes (or re-diverges) the two bars
+    shows up as a test failure, not just a stale comment."""
+    from no_human.core.orchestrator import _parse_already_satisfied
+
+    text = "ALREADY-SATISFIED\nno criterion lines follow this."
+    assert _is_actionable_claim(text) is not None, (
+        "the guard's detector treats the marker alone as actionable")
+    assert _parse_already_satisfied(text, 1) is None, (
+        "delivery itself requires at least one well-formed MET CRITERION "
+        "line and refuses to treat the bare marker as a claim at all — "
+        "this is the gap the corrected docstrings describe")
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # Quoted excerpt: the marker appears verbatim, on its own line, but
+        # only as a quotation of a PAST report — not an assertion about
+        # this attempt.
+        "The last status update literally read:\nALREADY-SATISFIED\n"
+        "That was from a week ago, for a completely different task.",
+        # Question: asking whether the condition holds, not asserting it.
+        "Before I go implement this — is it possible the work is\n"
+        "ALREADY-SATISFIED\nalready, and I'm about to duplicate it?",
+        # Hypothetical: an "if this held" framing, not a claim.
+        "If the marker below were true I could stop right now:\n"
+        "ALREADY-SATISFIED\nbut I have not actually verified that yet.",
+        # Quoting the marker itself, e.g. while explaining the contract.
+        "For reference, the exact contract marker text is:\n"
+        "ALREADY-SATISFIED\nwhich is what delivery's parser looks for.",
+        # Referencing another branch, not this one.
+        "Branch no-human/task-attempt-other reported:\n"
+        "ALREADY-SATISFIED\nbut that is a sibling attempt, not this branch.",
+        # Manifest hash mentioned nearby — unrelated numeric noise, not a
+        # claim about this branch's code.
+        "Manifest hash 8a9049bcdbc7db86 is unchanged.\nALREADY-SATISFIED\n"
+        "(this line is only illustrating the report format, not asserting it)",
+        # Self-correction: asserts, then immediately retracts, in a later
+        # clause the marker's own clause/line does not span.
+        "ALREADY-SATISFIED\nWait — scratch that, I have not actually "
+        "finished, I still need to implement the change.",
+    ],
+    ids=[
+        "quoted_excerpt",
+        "question",
+        "hypothetical",
+        "quoting_the_marker_itself",
+        "referencing_another_branch",
+        "manifest_hash",
+        "self_correction",
+    ],
+)
+def test_non_claim_shapes_that_still_fire_the_actionability_gate_never_lie(text):
+    """(Send-back, Finding 2) These seven hand-constructed shapes are NOT
+    genuine "already exists" claims, yet each still satisfies
+    `_is_actionable_claim`'s marker-alone path (the ``ALREADY-SATISFIED``
+    line stands on its own, matching `_CLAIM` too, and outside any negation
+    clause) — proving the false-positive premise Finding 2 raised. The
+    chosen fix (see the module docstring's ninth-review bullet and
+    `_is_actionable_claim`'s own docstring) was NOT to narrow the detector —
+    narrowing has repeatedly regressed real claim coverage for zero measured
+    benefit (Seventh/Eighth review) — but to accept the residual cost
+    honestly. `probe()` is a zero-argument callable keyed on the branch's
+    actual state, not on the text that triggered it, so this proves BOTH
+    halves of that honesty directly, on the SAME shape:
+
+    1. When the branch is not actually in the refusal shape (`probe`
+       reports not-refuted, exactly what delivery's own
+       `_already_satisfied_subject` would say when nothing is actually
+       wrong), `hook` yields `{}` — no message at all.
+    2. When the branch genuinely IS in the refusal shape (`probe` reports
+       refuted, as it would for a branch that really isn't on
+       `origin/main`), `hook` DOES still inject a message over this
+       non-claim prose — but that message is never a lie: `detail` is
+       always delivery's own real, current answer, named verbatim in the
+       injected text. The only thing wrong with the message is its "you
+       said the work already exists" framing being unwarranted here — not
+       any fact it asserts about the repo.
+    """
+    assert _is_actionable_claim(text) is not None, (
+        "this shape must fire the actionability gate — that's Finding 2's "
+        "premise; if this assertion starts failing, the detector was "
+        "narrowed and the shape below no longer demonstrates the gap")
+
+    async def not_refuted_probe() -> tuple[bool, str, str]:
+        return (False, "deadbeefdeadbeef", "")
+
+    guard = LandedClaimGuard(probe=not_refuted_probe, head_sha=lambda: "deadbeefdeadbeef")
+    guard.note_text(text)
+    assert _run(guard.hook({}, None, None)) == {}, (
+        "a non-claim shape that merely fires the actionability gate must "
+        "never surface a refusal when the branch is not actually refused")
+
+    truthful_detail = "deadbeefdeadbeef is not on origin/main"
+
+    async def refuted_probe() -> tuple[bool, str, str]:
+        return (True, "deadbeefdeadbeef", truthful_detail)
+
+    guard2 = LandedClaimGuard(probe=refuted_probe, head_sha=lambda: "deadbeefdeadbeef")
+    guard2.note_text(text)
+    result = _run(guard2.hook({}, None, None))
+    assert result, (
+        "when the branch genuinely is refused, this shape DOES still "
+        "inject a message — the fix accepted this cost rather than "
+        "narrowing the detector")
+    message = result["hookSpecificOutput"]["additionalContext"]
+    assert truthful_detail in message, (
+        "whatever the message says, it must be delivery's own real, "
+        "current answer about the branch — never fabricated from the "
+        "non-claim prose that happened to trigger the probe")
 
 
 def test_latch_injects_once_per_sha():

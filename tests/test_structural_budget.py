@@ -1284,7 +1284,7 @@ FROZEN_FILE_LINES = {
     # with a new docstring paragraph and inline comments explaining the fix
     # (see `landed_claim_guard.py`'s module docstring, "(Sixth review)").
     # Re-measured on this tree by the scanner's own metric: 24088.
-    # 24088 -> 24274 (+186): merge of main (d34a9c5b) into this branch —
+    # 24088 -> 24268 (+180): merge of main (d34a9c5b) into this branch —
     # unrelated file growth (e.g. the `_FailureAttribution`/
     # `_round_failure_attribution` refactor and its dataclass), not this
     # task's own diff. Measured with:
@@ -1292,8 +1292,22 @@ FROZEN_FILE_LINES = {
     #   from test_structural_budget import scan_tree, SRC;
     #   _,_,files,_,_ = scan_tree(SRC);
     #   print(files['core/orchestrator.py'])"
-    # -> 24274, on the tip merged with current main.
-    "core/orchestrator.py": 24268,
+    # -> 24268, on the tip merged with current main. (A prior revision of
+    # this comment said "24274 (+186)" — a transcription error caught by
+    # review; the frozen value below was always the correct 24268.)
+    # 24268 -> 24296 (+28): send-back (BLOCKER, finding 1) — an unreachable
+    # `origin` remote was indistinguishable from a stably-never-pushed
+    # branch at the `remote_branch_relation` level (both returned
+    # `"unknown"`), so `_already_satisfied_subject` classified a transient
+    # network failure as determinate and let this guard emit a DEFINITE
+    # refusal over it. Fixed by deriving `determinate_relation` from
+    # `GitRepo.TRANSIENT_RELATIONS` (`relation not in ...`) instead of a
+    # hand-enumerated tuple, adding a `relation_reason["unreachable"]`
+    # entry, and expanding this method's docstring and
+    # `_build_landed_claim_guard`'s probe comment to explain both — no
+    # behaviour change outside the new `"unreachable"` case. Re-measured on
+    # this tree by the scanner's own metric: 24296.
+    "core/orchestrator.py": 24296,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.
