@@ -72,7 +72,7 @@ def _clear_fold_cache():
 
 
 def _load_corpus():
-    return json.loads(CORPUS_PATH.read_text())
+    return json.loads(CORPUS_PATH.read_text(encoding="utf-8"))
 
 
 def _now_denied(rows):

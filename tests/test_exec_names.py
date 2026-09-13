@@ -391,7 +391,7 @@ def test_no_test_asserts_the_permissive_fallback():
     The needle is assembled from parts rather than written as one literal, so
     this test's own source does not trip its own check.
     """
-    source = Path(__file__).read_text()
+    source = Path(__file__).read_text(encoding="utf-8")
     quote = chr(34)
     apostrophe = chr(39)
     needle_double = "os" + ".name" + " == " + quote + "nt" + quote
