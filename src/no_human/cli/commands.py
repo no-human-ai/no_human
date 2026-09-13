@@ -20,6 +20,7 @@ import click
 from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
+from rich.text import Text
 
 from . import print_path_error, stdio_is_interactive
 from .. import __version__
@@ -1663,7 +1664,14 @@ def task_show(task_id):
             if not t:
                 print_no_task_matching(task_id)
                 return
-            console.print(f"[bold]{t.id}[/]  [blue]{t.status.value}[/]  [magenta]{t.kind}[/]")
+            # `t.kind` reaches this line unvalidated from the API
+            # (`CreateTaskRequest.kind` is a bare `str`); `escape()` keeps the
+            # surrounding [bold]/[blue]/[magenta] tags live while neutralising
+            # any bracket the operator put IN the value.
+            console.print(
+                f"[bold]{t.id}[/]  [blue]{t.status.value}[/]  "
+                f"[magenta]{escape(t.kind)}[/]"
+            )
             events = await store.list_events(t.id)
             if is_waiting_for_slot(events, status=t.status.value):
                 waits = [e for e in events if e.get("kind") == slot_wait.KIND]
@@ -1677,16 +1685,32 @@ def task_show(task_id):
                         f"[dim]({slot_wait.STALE_POOL_NOTE})[/]")
                 else:
                     console.print(f"[blue]{waits[-1]['text']}[/]")
-            console.print(f"title: {t.title}")
+            # rich parses `[main,master]` as a style tag and DELETES it, while
+            # `[]` on the same line survives — so this surface was dropping
+            # operator text with no mark. See tests/test_task_show_preserves_brackets.py
+            console.print(f"title: {t.title}", markup=False, emoji=False)
             if t.description:
-                console.print(f"description: {t.description}")
+                console.print(f"description: {t.description}",
+                               markup=False, emoji=False)
             if t.acceptance_criteria:
                 console.print("acceptance criteria:")
                 for c in t.acceptance_criteria:
-                    console.print(f"  - {c}")
-            console.print(f"repo: {t.repo_path}")
+                    console.print(f"  - {c}", markup=False, emoji=False)
+            console.print(f"repo: {t.repo_path}", markup=False, emoji=False)
             if t.blocker:
-                console.print(f"[red]blocker:[/] {t.blocker}")
+                # A single Text with a styled prefix, not two console.print
+                # calls: printing the "[red]blocker:[/]" label and the
+                # payload separately made rich wrap the payload as if it
+                # started at column 0, ignoring the already-written prefix,
+                # and overrunning the terminal width. One print keeps trunk's
+                # wrapping. `escape()` is avoided on the payload too: it only
+                # escapes a backslash run immediately preceding a COMPLETE
+                # valid tag, so a lone "\[" with no closer loses one
+                # backslash on render — not byte-exact; Text.append() with no
+                # style applied does not touch markup at all.
+                blocker_line = Text("blocker: ", style="red")
+                blocker_line.append(str(t.blocker))
+                console.print(blocker_line)
             lat = (t.blocker or {}).get("escalation_latency") if t.blocker else None
             if lat and t.status is TaskStatus.ESCALATED:
                 console.print(
@@ -1707,10 +1731,15 @@ def task_show(task_id):
                     console.print(line, markup=False)
             attempts = await store.list_attempts(t.id)
             for a in attempts:
+                # markup=False, emoji=False: `test_results` embeds pytest
+                # parametrize ids (e.g. "[context]") which rich would parse as
+                # style tags and delete, and a worktree-path id starting with
+                # "/" (e.g. "[/tmp/wt]") would read as a closing tag and crash.
                 console.print(
                     f"  attempt {a['attempt_number']}: {a['status']} "
                     f"branch={a['branch_name']} pr={a['pr_url']} "
-                    f"turns={a['turns_used']} tests={a['test_results']}"
+                    f"turns={a['turns_used']} tests={a['test_results']}",
+                    markup=False, emoji=False,
                 )
                 # Which code produced this verdict. Printed from the RECORDED
                 # column — a pure DB read of what the server stamped at the
@@ -1722,7 +1751,8 @@ def task_show(task_id):
                 # than inviting a guess.
                 if a.get("loaded_code_version"):
                     console.print(
-                        f"    code: {a['loaded_code_version']}"
+                        f"    code: {a['loaded_code_version']}",
+                        markup=False, emoji=False,
                     )
             # The surface `_SUMMARY_TRUNCATED_MARKER` (PR body, capped at
             # `_SUMMARY_MAX_CHARS`) now points a reader at. Walk attempts

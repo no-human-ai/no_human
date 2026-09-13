@@ -1346,7 +1346,29 @@ FROZEN_FILE_LINES = {
     # `nh approve --ready`'s one-line summary no longer silently drops the
     # only signal telling the operator a verifier never answered. Measured
     # via `wc -l src/no_human/cli/commands.py`.
-    "cli/commands.py": 8666,
+    # 8666 -> 8671 (+5): `task_show` renders operator text (title,
+    # description, acceptance criteria, repo, blocker) literally instead of
+    # through the markup parser, which was silently deleting bracketed
+    # substrings like `never_push_to=[main,master]` with no mark. Measured
+    # via `wc -l src/no_human/cli/commands.py`.
+    # 8671 -> 8684 (+13): review send-back on the same fix — the attempt row
+    # (`test_results`, which embeds pytest parametrize ids like `[context]`
+    # or a worktree-path id like `[/tmp/wt]`) and `loaded_code_version` now
+    # render with `markup=False, emoji=False` too, and the blocker line's
+    # `escape()` (not byte-exact for a lone backslash before an unclosed
+    # `[`) was replaced with a static `[red]blocker:[/]` label print
+    # followed by a `markup=False` payload print. Measured via
+    # `wc -l src/no_human/cli/commands.py`.
+    # 8684 -> 8696 (+12): second review send-back on the same fix — the
+    # header line's `t.kind` (operator-supplied, unvalidated by
+    # `CreateTaskRequest.kind`) now goes through `escape()` so the
+    # surrounding `[bold]`/`[blue]`/`[magenta]` tags keep working; and the
+    # blocker line's two-print shape (`"[red]blocker:[/]"` then a
+    # `markup=False` payload) is replaced with one `rich.text.Text("blocker:
+    # ", style="red")` + `.append(...)` print, because the two-print form
+    # made rich wrap the payload as if it started at column 0, overrunning
+    # the terminal width. Measured via `wc -l src/no_human/cli/commands.py`.
+    "cli/commands.py": 8696,
     # api/app.py 5338 -> 5346 (+8): same budget-floor warning surfaced by
     # `send-back`/`reply` as `budget_warning` in the JSON response. Net cost
     # was trimmed from a naive +14 to +8 by computing `Bounds.from_config(...)`
