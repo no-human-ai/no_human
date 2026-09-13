@@ -47,13 +47,6 @@ import textwrap
 
 from .base import SITE, _footer, _greet, _INTRO
 
-#: Mirrors config.DEFAULT_CONFIG["server"]["port"]. Used only when the config
-#: cannot be read at all -- `local_board_url` prefers the install's real value.
-_DEFAULT_PORT = 8420
-#: A host the app binds to but a browser cannot open. 0.0.0.0 / :: mean "every
-#: interface"; the URL a human clicks has to name a reachable one.
-_WILDCARD_HOSTS = {"0.0.0.0", "::", "[::]", ""}
-
 # ── Copy: the single source for BOTH the text and the HTML part ──────────────
 SUBJECT = "Welcome to no_human"
 #: The wordmark at the top of the card. A constant, not an inline literal,
@@ -69,6 +62,23 @@ UNSUBSCRIBE_LABEL = "Unsubscribe"
 #: for the same reason as the two above: it is a character a reader sees, and
 #: the drift test can only police what it can name.
 FOOTER_SEP = "\u00b7"
+#: Where the CTA points. A page on the SITE, not on this install, because a
+#: handoff served by the app it launches is dead whenever the app is closed.
+#:
+#: EXTERNAL DEPENDENCY, stated because nothing in this repo can satisfy it:
+#: the page is served by the `no_human-site` repo, not by us, so the button is
+#: only as good as that deployment. No test here can catch its removal.
+#:
+#: Measured against the live site after deploying it, 2026-09-13:
+#:     /open        -> 200
+#:     /open.html   -> 404
+#: Note the second row. The `*.html -> /x` 307 that `/about.html` and
+#: `/docs.html` get does NOT apply to this page, so the extensionless spelling
+#: is not merely canonical here, it is the only one that resolves. An earlier
+#: revision of this comment claimed the 307 held for `/open.html` on the
+#: strength of having measured it on `/about.html` -- a convention observed
+#: elsewhere is not a measurement of this URL.
+OPEN_URL = "https://getnohuman.com/open"
 EYEBROW = "WELCOME"
 HEADLINE = "Welcome to no_human."
 #: Three sentences, and every one of them has to be true for EVERY install.
@@ -84,9 +94,6 @@ BODY = (
     "see what comes back."
 )
 CTA_LABEL = "Open no_human"
-#: Fallback only. The real URL is this install's own board -- see
-#: `local_board_url`, which the renderer calls when no URL is passed.
-CTA_URL_FALLBACK = f"http://127.0.0.1:{_DEFAULT_PORT}"
 SIGNOFF = "— Eyal, founder"
 REPLY_NOTE = "Questions, ideas, something broken? Just hit reply. I read every one."
 WHY = ("You're receiving this because you registered this address while "
@@ -115,124 +122,7 @@ _SANS = ("'DM Sans',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,"
 _MONO = ("'IBM Plex Mono',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace")
 
 
-def _safe_host(host: str) -> str:
-    """A host a browser can open, or loopback. Shared by BOTH entry points.
-
-    This lived only in `local_board_url`, i.e. only on the CONFIG path -- while
-    the route PREFERS `app.state.board_url`, which `nh start` builds from a raw
-    `--host`. The preferred path skipped every check here. Measured before this
-    was shared: `--host 0.0.0.0` (the container image's own documented default,
-    docs/security.md) mailed `http://0.0.0.0:8420/open`; `--host ::1` mailed
-    `http://::1:8420/open`, the exact spelling this module claims to fix; and
-    `--host '['` made `send_welcome` RAISE, which its docstring forbids.
-    """
-    host = (host or "").strip()
-    if host in _WILDCARD_HOSTS:
-        return "127.0.0.1"
-    if ":" in host:
-        import ipaddress
-        bare = host.strip("[]")
-        try:
-            ipaddress.IPv6Address(bare)
-        except ValueError:
-            return "127.0.0.1"
-        # A ZONE id is accepted by ipaddress but needs percent-encoding to be
-        # legal in a URL (RFC 6874: `%25en0`), and a link-local address is not
-        # reachable from a mail client anyway.
-        return "127.0.0.1" if "%" in bare else f"[{bare}]"
-    # A host that cannot appear in a URL is a broken config, and the honest
-    # answer is the documented default, not a link that cannot resolve.
-    if not host or any(c in host for c in ' \t\r\n/?#@\\[]'):
-        return "127.0.0.1"
-    return host
-
-
-def _safe_port(port: object) -> int:
-    """A port in range, or the documented default."""
-    try:
-        # bool before int: `port: yes` in YAML parses as True, and int(True)
-        # is 1 -- a plausible-looking port nothing is listening on.
-        n = _DEFAULT_PORT if isinstance(port, bool) else int(port)
-    except (TypeError, ValueError):
-        return _DEFAULT_PORT
-    return n if 1 <= n <= 65535 else _DEFAULT_PORT
-
-
-def sanitize_board_url(url: str) -> str:
-    """Re-assemble `url` from validated parts, or fall back to the default.
-
-    Returns a REBUILT url rather than the input, so a value that merely parsed
-    cannot carry anything through: `http://box:8420\nX-Evil: 1` used to come
-    back with the newline intact.
-    """
-    from urllib.parse import urlsplit, urlunsplit
-    try:
-        parts = urlsplit((url or "").strip())
-        # `.hostname`/`.port` are PARSED values; `.netloc` is not -- a netloc
-        # of ":8420" is truthy and names no host at all. `.port` raises on an
-        # out-of-range value, and urlsplit itself raises on a bare "[".
-        host, port = parts.hostname, parts.port
-    except ValueError:
-        return CTA_URL_FALLBACK
-    if parts.scheme.lower() not in ("http", "https") or not host or parts.username:
-        return CTA_URL_FALLBACK
-    # Keep the port ONLY if the URL carried one. Defaulting an absent port to
-    # the board's 8420 rewrote `https://proxy.example.com/nh` into
-    # `https://proxy.example.com:8420/nh` -- a different address, on a URL that
-    # was already correct and whose scheme default (443) is what it meant.
-    netloc = _safe_host(host) if port is None else f"{_safe_host(host)}:{_safe_port(port)}"
-    # Path is KEPT (a board behind a proxy at /nh is legitimate); query and
-    # fragment are dropped, as the `/open` join already did.
-    return urlunsplit((parts.scheme.lower(), netloc, parts.path.rstrip("/"), "", ""))
-
-
-def local_board_url(config: dict | None = None) -> str:
-    """The URL that opens THIS install's board.
-
-    `notifications.board_url` first: that key already exists for exactly this
-    purpose (the Teams notifier's Action.OpenUrl button), and an operator whose
-    board is reachable from another device is the one who sets it. Otherwise
-    the configured `server.host`/`server.port`, with a wildcard bind rewritten
-    to loopback because 0.0.0.0 is not something a browser can open.
-
-    Never raises. This runs on the onboarding path, where a transport problem
-    must not break registration, so an unreadable config degrades to the
-    documented default rather than propagating.
-
-    KNOWN BOUND, stated rather than hidden: this is a LOOPBACK URL, so it only
-    works on the machine running no_human. Read on a phone it goes nowhere.
-    The link is still http rather than the `nohuman://` scheme the desktop app
-    registers (see desktop/main.mjs) because a mail client will not keep a
-    custom-scheme href -- measured against Gmail, which strips it and leaves a
-    dead button. The `/open` route this URL points at is what bridges the two.
-    """
-    try:
-        if config is None:
-            from ..config import load_config
-            # create_if_missing=False: rendering an email must not CREATE
-            # ~/.no_human/config.yaml, nor chmod the directory. Measured: the
-            # default (True) did exactly that, turning a pure renderer into a
-            # filesystem side effect on a path nothing had tested.
-            config = load_config(create_if_missing=False)
-        notifications = config.get("notifications") or {}
-        explicit = notifications.get("board_url")
-        if isinstance(explicit, str) and explicit.strip():
-            # Parsed, not split on ":". Taking the prefix accepted a BARE
-            # scheme -- "http" has no colon at all, so `split(":")[0]` is
-            # "http", and the button's href became the relative `http/open`.
-            # urlsplit plus a netloc requirement is what actually establishes
-            # "this is an absolute http(s) URL". Credentials are refused too:
-            # a userinfo in a mailed link is a phishing shape, not a board.
-            return sanitize_board_url(explicit)
-        server = config.get("server") or {}
-        host = str(server.get("host") or "").strip()
-        port = server.get("port")
-    except Exception:  # noqa: BLE001 - see "never raises" above
-        return CTA_URL_FALLBACK
-    return f"http://{_safe_host(host)}:{_safe_port(port)}"
-
-
-def _text_part(unsubscribe_url: str, email: str, board_url: str) -> str:
+def _text_part(unsubscribe_url: str, email: str) -> str:
     """The plain-text part: same copy, wrapped, in base.py's own shape."""
     return f"""{_greet(email)}
 
@@ -240,14 +130,14 @@ def _text_part(unsubscribe_url: str, email: str, board_url: str) -> str:
 
 {textwrap.fill(BODY, 72)}
 
-{CTA_LABEL}: {board_url}
+{CTA_LABEL}: {OPEN_URL}
 
 {REPLY_NOTE}
 
 {SIGNOFF}""" + _footer(WHY, unsubscribe_url)
 
 
-def _html_part(unsubscribe_url: str, email: str, board_url: str) -> str:
+def _html_part(unsubscribe_url: str, email: str) -> str:
     """The HTML part: a single centred card on the board canvas.
 
     Table-based and fully inlined because that is what survives the clients
@@ -256,24 +146,33 @@ def _html_part(unsubscribe_url: str, email: str, board_url: str) -> str:
     alongside every background) and drops border-radius (the pill degrades to
     a rectangle, which is fine — no VML hack).
 
-    The THREE RUNTIME INPUTS are escaped -- the greeting, the unsubscribe URL
-    and the board URL -- because those are the only values here that come from
-    outside this module. `greeting_name` derives the greeting from the
-    address's local part and does NOT sanitise: measured,
+    The TWO RUNTIME INPUTS are escaped -- the greeting and the unsubscribe URL
+    -- because those are the only values here that come from outside this
+    module. `greeting_name` derives the greeting from the address's local part
+    and does NOT sanitise: measured,
     `greeting_name("dana<script>alert(1)</script>@x.io")` returns
     'Dana<script>alert(1)</script>'. Harmless while the body was text; an
     injection the moment it is markup.
 
+    The CTA's href used to be a third: it was a URL the caller supplied, built
+    from this install's own `server.host`/`server.port`. It is now `OPEN_URL`,
+    a literal in this file, so it joins the class below rather than the class
+    above -- there is no longer any path by which a config value, a CLI flag
+    or an API caller can decide where the button points.
+
     The copy constants and the palette are NOT escaped: they are trusted
-    literals in this file. That is a constraint on editing them, so it is
-    stated rather than assumed -- a `<`, `&` or quote added to a copy constant
-    lands raw in the markup. Keep them free of those three characters, or
-    escape at the interpolation site when that stops being practical.
+    literals in this file. That is a constraint on editing them, and it is
+    position-dependent: a constant landing in TEXT CONTENT must carry no `<`,
+    `>` or `&`, and one landing inside a double-quoted attribute (`OPEN_URL`,
+    `SITE`) must additionally carry no `"`. An apostrophe is safe in both, and
+    is ordinary copy -- "You're set up" is BODY's first word. A test enforces
+    exactly that, per position, rather than leaving it as a note here; if a
+    constant ever needs one of those characters, escape at its interpolation
+    site instead of relaxing the rule.
     """
     p = PALETTE
     greet = _html.escape(_greet(email))
     unsub = _html.escape(unsubscribe_url, quote=True)
-    cta = _html.escape(board_url, quote=True)
 
     return f"""<!doctype html>
 <html lang="en"><head>
@@ -313,7 +212,7 @@ def _html_part(unsubscribe_url: str, email: str, board_url: str) -> str:
  <tr><td align="center" style="padding-bottom:28px">
   <table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr>
   <td bgcolor="{p['accent-500']}" style="background:{p['accent-500']};
-   border-radius:999px"><a href="{cta}"
+   border-radius:999px"><a href="{OPEN_URL}"
    style="display:inline-block;padding:14px 32px;font-family:{_SANS};font-size:15px;
    font-weight:700;color:{p['base']};text-decoration:none">{CTA_LABEL}</a></td>
   </tr></table>
@@ -340,27 +239,27 @@ def _html_part(unsubscribe_url: str, email: str, board_url: str) -> str:
 </body></html>"""
 
 
-def in_app_welcome(unsubscribe_url: str, email: str = "",
-                   board_url: str | None = None) -> tuple[str, str, str]:
+def in_app_welcome(unsubscribe_url: str, email: str = "") -> tuple[str, str, str]:
     """Subject, text part and HTML part for an address registered in-app.
 
-    `board_url` defaults to this install's own board: the one action the mail
-    offers is opening the app the reader just set up.
+    The one action the mail offers is opening the app the reader just set up,
+    and its target is `OPEN_URL` — a fixed page on the site. It takes no URL
+    from its caller; `board_url` used to be a parameter here and is gone.
     """
-    # `/open` rather than the board root: that route hands off to the
-    # `nohuman://` scheme the desktop app registers, so the button opens the
-    # APP. It cannot link to the scheme directly — measured, Gmail strips the
-    # href of any non-standard scheme, leaving a dead button.
-    from urllib.parse import urlsplit, urlunsplit
-    base = urlsplit(sanitize_board_url(board_url) if board_url
-                    else local_board_url())
-    # urlsplit, not concatenation: `http://box:8420/?theme=dark` + "/open"
-    # produced a QUERY of `theme=dark/open` and a path of `/`, i.e. the board
-    # root, not the handoff. Query and fragment are dropped on purpose.
-    path = base.path.rstrip("/")
-    if not path.endswith("/open"):
-        path += "/open"
-    target = urlunsplit((base.scheme, base.netloc, path, "", ""))
+    # WHY THE BUTTON DOES NOT POINT AT THIS INSTALL.
+    #
+    # It cannot link to `nohuman://` directly -- a mail client will not keep
+    # the href of a non-standard scheme. The obvious alternative, and what an
+    # earlier revision shipped, was this install's own `<board>/open` route.
+    # That route works, but it is served by the very process the button is
+    # meant to launch: with no_human closed there is nothing listening (no
+    # login item, and `desktop/serverLifecycle.mjs` SIGKILLs the server on
+    # quit), so the button was dead in exactly the case it exists for. It was
+    # also loopback, so it went nowhere when the mail was read on a phone.
+    #
+    # A page on the site has neither problem: it does not depend on the
+    # reader's machine running anything, and it is reachable from a phone. See
+    # `OPEN_URL` for what that page still owes -- it is not deployed yet.
     return (SUBJECT,
-            _text_part(unsubscribe_url, email, target),
-            _html_part(unsubscribe_url, email, target))
+            _text_part(unsubscribe_url, email),
+            _html_part(unsubscribe_url, email))

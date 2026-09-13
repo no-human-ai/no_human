@@ -549,12 +549,14 @@ import re as _re
 _ADDR = "dana.lee@example.com"
 
 
-_BOARD = "http://127.0.0.1:8420"
-_CTA = _BOARD + "/open"
+#: The one link the mail offers. It is a module constant of `in_app`, not
+#: anything a caller passes: `in_app_welcome` used to take a `board_url` and
+#: build `<that board>/open`, and that whole seam is gone.
+_CTA = in_app.OPEN_URL
 
 
 def _rendered():
-    return in_app.in_app_welcome(send.UNSUBSCRIBE_URL, _ADDR, _BOARD)
+    return in_app.in_app_welcome(send.UNSUBSCRIBE_URL, _ADDR)
 
 
 def _strip_tags(html: str) -> str:
@@ -785,42 +787,168 @@ def test_the_unsubscribe_is_reachable_rather_than_merely_present():
     assert "Unsubscribe" in _strip_tags(html)
 
 
-def test_the_one_action_is_opening_this_installs_own_board():
+def test_the_one_action_is_opening_the_app_from_a_page_the_site_serves():
     """The reader just set the app up; the action is to open it, not to read
-    about it. The URL is THIS install's board, so a user who moved the server
-    off the default port gets their own address rather than a wrong one.
+    about it. The target is `in_app.OPEN_URL` and nothing else, in BOTH parts.
+
+    It used to be this install's own `<board>/open`. Two measured problems
+    with that, both of which this test's successor has to keep out: that URL
+    is loopback (nothing on a phone can open it) and it is served by the very
+    process the button exists to launch (`desktop/serverLifecycle.mjs` SIGKILLs
+    the server on quit, and no login item starts it), so the button was dead
+    in exactly the case it was for.
     """
-    _, text, html = in_app.in_app_welcome(
-        send.UNSUBSCRIBE_URL, _ADDR, "http://127.0.0.1:9137")
+    _, text, html = _rendered()
     assert "Open no_human" in _strip_tags(html)
-    # /open, not the board root: that route hands off to the `nohuman://`
-    # scheme so the DESKTOP APP comes to the front. The button cannot link to
-    # the scheme directly — measured against real Gmail, which strips the href
-    # of any non-standard scheme and leaves a dead button.
-    assert 'href="http://127.0.0.1:9137/open"' in html
-    assert "http://127.0.0.1:9137/open" in text
+    # EXACTLY the constant -- not "starts with", not "contains". A suffix
+    # quietly re-appended (`OPEN_URL + "/open"`) would pass a containment
+    # check and send the reader to a 404.
+    assert f'href="{in_app.OPEN_URL}"' in html
+    assert f"{in_app.CTA_LABEL}: {in_app.OPEN_URL}\n" in text
+    # And it is the ONLY action-shaped link: the other two hrefs are the
+    # site wordmark in the footer and the unsubscribe mailto.
+    hrefs = _re.findall(r'href="([^"]+)"', html)
+    assert hrefs.count(in_app.OPEN_URL) == 1, hrefs
+    assert sorted(hrefs) == sorted(
+        [in_app.OPEN_URL, in_app.SITE, send.UNSUBSCRIBE_URL]), hrefs
     # The docs link the button used to carry is not the action any more.
     assert f'href="{in_app.SITE}/docs"' not in html
 
 
-def test_the_board_url_resolves_from_config_and_never_raises():
-    """Positive controls on every arm, including the one that matters most:
-    a wildcard bind is not something a browser can open.
+def test_no_address_only_the_readers_own_machine_can_answer_reaches_either_part():
+    """Loopback and wildcard binds, in both parts.
+
+    `127.0.0.1` and `localhost` resolve to the READER's machine, which is the
+    right one only if they open the mail there AND the app is running -- and
+    `desktop/serverLifecycle.mjs` SIGKILLs the server on quit with no login
+    item to restart it. `0.0.0.0` and `[::]` are binds, not addresses a
+    browser can open at all. Every one of these was measured in a mailed href
+    at some point in this module's history, which is why they are named.
+
+    Plain `http://` is here too: this mail now has no legitimate reason to
+    carry an unencrypted URL, and every loopback form above wore one.
     """
-    assert in_app.local_board_url(
-        {"notifications": {"board_url": "https://board.example.com/"}}
-    ) == "https://board.example.com"
-    assert in_app.local_board_url(
-        {"server": {"host": "0.0.0.0", "port": 9999}}
-    ) == "http://127.0.0.1:9999"
-    assert in_app.local_board_url(
-        {"server": {"host": "127.0.0.1", "port": 8420}}
-    ) == "http://127.0.0.1:8420"
-    # Unreadable config degrades, never raises: this runs on the onboarding
-    # path and a transport problem must not break registration.
-    assert in_app.local_board_url({"server": {"port": "not-a-port"}}) == (
-        in_app.CTA_URL_FALLBACK)
-    assert in_app.local_board_url({}) == "http://127.0.0.1:8420"
+    _, text, html = _rendered()
+    for part_name, part in (("HTML", html), ("text", text)):
+        for dead in ("127.0.0.1", "localhost", "0.0.0.0", "[::]", "::1",
+                     "http://"):
+            assert dead not in part, f"{dead!r} is in the {part_name} part"
+    # Positive control: the scan CAN find something, so the loop above is not
+    # passing over an empty document or a mistyped variable.
+    assert "https://" in html and "https://" in text
+    assert in_app.OPEN_URL in html and in_app.OPEN_URL in text
+
+
+def test_no_custom_scheme_reaches_either_part():
+    """A `nohuman://` href in a mail is a dead button, and that is measured,
+    not argued: 2026-09-12, a real message to Gmail, reading the delivered DOM
+    back — the custom-scheme anchor arrived with NO href at all, while an
+    `http://127.0.0.1` href passed through untouched.
+
+    This is a separate property from the loopback one above and fails for a
+    separate reason: an address nobody can reach vs. a link the client
+    deletes. The app's `/open` route exists precisely to bridge this, and the
+    site page the CTA points at does the same job off this machine.
+    """
+    _, text, html = _rendered()
+    for part_name, part in (("HTML", html), ("text", text)):
+        assert "nohuman:" not in part, f"a custom scheme is in the {part_name} part"
+    # Positive control: the tree DOES contain that spelling where it belongs,
+    # so "absent from the mail" is a fact about the mail and not about a
+    # string that exists nowhere.
+    import sys
+    import no_human.api.app  # noqa: F401  (registers the module in sys.modules)
+    assert "nohuman://open" in sys.modules["no_human.api.app"]._OPEN_HANDOFF
+
+
+def test_the_cta_points_at_the_site_this_module_already_names():
+    """`OPEN_URL` and `SITE` must not drift apart, and the URL must be in the
+    form the host actually serves.
+
+    Measured against the live site on 2026-09-13: `/about` and `/docs` answer
+    200 while `/about.html` and `/docs.html` answer 307 to the extensionless
+    form, so extensionless is the canonical spelling and the one a mail should
+    carry. This pins the shape only -- whether the page EXISTS is a
+    `no_human-site` deployment question that no test in this repo can answer.
+    """
+    from urllib.parse import urlsplit
+    u = urlsplit(in_app.OPEN_URL)
+    assert u.scheme == "https", f"a mailed link must not be plaintext: {u.scheme}"
+    assert f"{u.scheme}://{u.netloc}" == in_app.SITE, (
+        f"the CTA host {u.netloc} is not the site {in_app.SITE}")
+    assert u.path and u.path != "/", "the CTA is the site root, not a page"
+    assert not u.path.endswith("/"), f"trailing slash: {u.path}"
+    assert not u.path.endswith(".html"), (
+        f"the host serves the extensionless form; {u.path} would take a 307")
+    # A query or a fragment in a mailed URL is a tracking shape; there is none
+    # here and there must not be one.
+    assert u.query == "" and u.fragment == ""
+
+
+#: Characters that end an element when they land unescaped in TEXT CONTENT.
+_MARKUP_DELIMS = ("<", ">", "&")
+#: Constants `_html_part` interpolates into text content, unescaped. `SUBJECT`
+#: is deliberately absent: it is the one constant the renderer DOES escape
+#: (`<title>{_html.escape(SUBJECT)}</title>`), so the rule does not apply to it.
+_RAW_IN_TEXT = in_app.SHARED_COPY + in_app.HTML_ONLY_COPY + (
+    "WORDMARK", "UNSUBSCRIBE_LABEL", "FOOTER_SEP")
+#: Constants it interpolates inside a DOUBLE-QUOTED attribute, unescaped.
+#: `OPEN_URL` is here because it stopped being a runtime input when the
+#: caller-supplied board URL went: it used to arrive at
+#: `_html.escape(..., quote=True)` and now lands raw in an `href="..."`.
+_RAW_IN_ATTRIBUTE = ("OPEN_URL", "SITE")
+
+
+def _offending(value, chars):
+    """Which of `chars` are present in `value`, in the order given."""
+    return [c for c in chars if c in value]
+
+
+def test_the_offending_character_predicate_reports_what_is_there():
+    """The two tests below are only as good as this. It must fire on exactly
+    the two kinds of string a careless edit introduces, and must NOT fire on
+    the apostrophe those tests deliberately allow -- "You're set up" is BODY's
+    first word, and banning it would be a rule the document does not need.
+    """
+    assert _offending("Reply &amp; we'll help <you>", _MARKUP_DELIMS) == ["<", ">", "&"]
+    assert _offending('https://x.test/a"b', _MARKUP_DELIMS + ('"',)) == ['"']
+    assert _offending("You're set up", _MARKUP_DELIMS + ('"',)) == []
+    # The input SET is real too: these names resolve to constants, and there
+    # are enough of them that the sweeps below are not checking two strings.
+    for name in _RAW_IN_TEXT + _RAW_IN_ATTRIBUTE:
+        assert isinstance(getattr(in_app, name), str), f"{name} is not a string"
+    assert len(_RAW_IN_TEXT) + len(_RAW_IN_ATTRIBUTE) >= 10
+
+
+def test_every_constant_landing_in_text_content_is_free_of_markup_delimiters():
+    """`_html_part` escapes its two runtime inputs and deliberately does NOT
+    escape the module's own copy -- its docstring states that as a constraint
+    on editing it. This is that constraint, for the text-content position.
+    """
+    for name in _RAW_IN_TEXT:
+        value = getattr(in_app, name)
+        assert _offending(value, _MARKUP_DELIMS) == [], (
+            f"{name} lands raw in text content and contains "
+            f"{_offending(value, _MARKUP_DELIMS)}")
+
+
+def test_every_constant_landing_in_an_attribute_is_free_of_its_delimiter_too():
+    """Same rule, stricter position. A constant inside `href="..."` can close
+    the attribute as well as the element, so the double quote is unsafe there
+    and only there -- which is why this is a separate check and not a wider
+    character set applied to all the copy.
+    """
+    chars = _MARKUP_DELIMS + ('"',)
+    for name in _RAW_IN_ATTRIBUTE:
+        value = getattr(in_app, name)
+        assert _offending(value, chars) == [], (
+            f"{name} lands raw inside a double-quoted attribute and contains "
+            f"{_offending(value, chars)}")
+    # And the rendered document agrees: every href closes where it should, so
+    # the attribute really does end at the delimiter this test protects.
+    _, _, html = _rendered()
+    assert _re.findall(r'href="([^"]*)"', html) == [
+        in_app.OPEN_URL, in_app.SITE, send.UNSUBSCRIBE_URL]
 
 
 def test_the_email_carries_no_agent_role_colours():
@@ -844,65 +972,42 @@ def test_the_email_carries_no_agent_role_colours():
     assert colours == {v.lower() for v in in_app.PALETTE.values()}
 
 
-def test_the_default_path_reads_config_and_creates_nothing(monkeypatch, tmp_path):
-    """`local_board_url()` with no argument is the only form that ships, and
-    it was the one form no test exercised — replacing its `load_config()` call
-    with `{}` left the suite green.
+def test_rendering_the_welcome_reads_no_config_and_writes_no_file(monkeypatch, tmp_path):
+    """Rendering this mail is a pure string composition, and must stay one.
 
-    It also must not WRITE: `load_config`'s default is create_if_missing=True,
-    so rendering an email created ~/.no_human/config.yaml and chmod'd the
-    directory as a side effect of composing a string.
+    It was not. `local_board_url()` called `load_config()`, whose default is
+    create_if_missing=True, so composing a welcome email CREATED
+    ~/.no_human/config.yaml and chmod'd the directory. That call is gone with
+    the board URL it served; this pins that it stays gone rather than trusting
+    the deletion.
     """
-    seen = {}
+    calls = []
 
-    def fake_load_config(*a, **kw):
-        seen["kwargs"] = kw
-        return {"server": {"host": "127.0.0.1", "port": 7331}}
+    def boom(*a, **kw):
+        calls.append(kw)
+        raise AssertionError("rendering the welcome must not read the config")
 
-    monkeypatch.setattr("no_human.config.load_config", fake_load_config)
-    assert in_app.local_board_url() == "http://127.0.0.1:7331"
-    assert seen["kwargs"].get("create_if_missing") is False, (
-        "rendering an email must not create the user's config file")
-
-
-def test_an_ipv6_wildcard_bind_becomes_loopback_not_a_bracketed_wildcard():
-    """`::` means "every interface" exactly as 0.0.0.0 does, so it must become
-    loopback. Bracketing it instead yields http://[::]:8420, which is
-    well-formed and still not something a reader can open.
-    """
-    for wildcard in ("::", "[::]", "0.0.0.0", ""):
-        url = in_app.local_board_url({"server": {"host": wildcard, "port": 8420}})
-        assert url == "http://127.0.0.1:8420", f"host {wildcard!r} gave {url}"
-
-
-def test_a_bare_ipv6_host_is_bracketed():
-    """`http://::1:8420` is not an address. Only the WILDCARD ipv6 form was
-    handled, so a loopback-ipv6 install got an unopenable URL.
-    """
-    assert in_app.local_board_url(
-        {"server": {"host": "::1", "port": 8420}}) == "http://[::1]:8420"
-    assert in_app.local_board_url(
-        {"server": {"host": "[::1]", "port": 8420}}) == "http://[::1]:8420"
+    monkeypatch.setattr("no_human.config.load_config", boom)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    _, text, html = in_app.in_app_welcome(send.UNSUBSCRIBE_URL, _ADDR)
+    assert in_app.OPEN_URL in text and in_app.OPEN_URL in html
+    assert calls == [], "the renderer read the config"
+    assert not (tmp_path / ".no_human").exists(), (
+        "rendering an email created something under the user's home")
+    # Positive control: the trap is armed. Without this the two assertions
+    # above would also pass against a monkeypatch that never took effect.
+    import no_human.config as _cfg
+    with pytest.raises(AssertionError):
+        _cfg.load_config()
+    assert calls, "the trap never fired, so it was never installed"
 
 
-def test_an_out_of_range_port_falls_back_instead_of_shipping_a_dead_url():
-    """`int(port or DEFAULT)` was wrong twice: a configured port 0 was
-    silently rewritten to 8420, and -1 / 999999 went straight into the URL.
-    """
-    for bad in (0, -1, 999999, 65536, "not-a-port", None, True):
-        url = in_app.local_board_url({"server": {"host": "127.0.0.1", "port": bad}})
-        assert url == "http://127.0.0.1:8420", f"port {bad!r} produced {url}"
-    # Positive control: a legal non-default port IS honoured, so the assertions
-    # above are not passing because everything falls back.
-    assert in_app.local_board_url(
-        {"server": {"host": "127.0.0.1", "port": 9000}}) == "http://127.0.0.1:9000"
+def test_the_seam_delivers_the_site_cta_end_to_end():
+    """End to end through `send_welcome`, on the `Message` a transport gets.
 
-
-def test_the_seam_carries_a_caller_supplied_board_url():
-    """`nh start --port N` is never written back to config.yaml, so config is
-    not a source of truth for where the server is listening. The address the
-    server actually bound is recorded on app.state and passed down; this pins
-    that the seam honours it end to end.
+    The rendering tests above call `in_app_welcome` directly; this one goes
+    through the two layers a real send crosses, so a URL substituted in
+    `render_welcome` or `send_welcome` would be visible here and nowhere else.
     """
     captured = []
 
@@ -910,21 +1015,109 @@ def test_the_seam_carries_a_caller_supplied_board_url():
         def send(self, msg):
             captured.append(msg)
 
-    status = send.send_welcome("a@b.co", transport=_T(),
-                               board_url="http://127.0.0.1:9000")
+    status = send.send_welcome("a@b.co", transport=_T())
     assert status == "sent"
     [msg] = captured
-    assert 'href="http://127.0.0.1:9000/open"' in msg.html
-    assert "http://127.0.0.1:9000/open" in msg.body
+    assert f'href="{in_app.OPEN_URL}"' in msg.html
+    assert in_app.OPEN_URL in msg.body
+    assert "127.0.0.1" not in msg.html and "127.0.0.1" not in msg.body
+
+
+def test_the_caller_supplied_url_is_gone_from_the_seam_not_merely_ignored():
+    """The seam used to carry a URL: `nh start` recorded the address it bound
+    on `app.state.board_url`, the route read it, and `send_welcome` /
+    `render_welcome` / `in_app_welcome` threaded it down into the href.
+
+    An INERT `board_url=` left in any of those three signatures would be worse
+    than the old behaviour: a caller would believe it still steers the button
+    while the mail quietly ignored it. TypeError is the observable difference
+    between "removed" and "accepted and dropped", so that is what this asserts.
+    """
+    class _T:
+        def send(self, msg):
+            pass
+
+    for call in (lambda: send.send_welcome("a@b.co", transport=_T(),
+                                           board_url="http://127.0.0.1:9000"),
+                 lambda: send.render_welcome("a@b.co",
+                                             board_url="http://127.0.0.1:9000"),
+                 lambda: in_app.in_app_welcome(send.UNSUBSCRIBE_URL, "a@b.co",
+                                               "http://127.0.0.1:9000")):
+        with pytest.raises(TypeError):
+            call()
+    # Positive control: the same three calls WITHOUT that argument work, so
+    # each one above failed on the argument and not on something else.
+    assert send.send_welcome("a@b.co", transport=_T()) == "sent"
+    assert send.render_welcome("a@b.co").subject == in_app.SUBJECT
+    assert in_app.in_app_welcome(send.UNSUBSCRIBE_URL, "a@b.co")[0] == in_app.SUBJECT
+
+
+@pytest.mark.asyncio
+async def test_the_registration_route_ignores_a_board_url_left_on_app_state(
+    client, monkeypatch
+):
+    """The CONSUMER side, which is where the old wiring actually lived.
+
+    `nh start` wrote `_app.state.board_url` and `onboarding_register_email`
+    read it back with `getattr(request.app.state, "board_url", None)`. Both
+    are gone, but `app.state` is PROCESS-WIDE and a stale attribute can
+    outlive the code that set it — an embedder, a test, an older process in
+    the same interpreter. So this plants exactly that and drives the real
+    route: the mail must be indifferent to it.
+    """
+    captured = []
+
+    class _T:
+        def send(self, msg):
+            captured.append(msg)
+
+    monkeypatch.setattr(send, "_default_transport", lambda: _T())
+    # `app` is the module-level FastAPI instance the `client` fixture serves,
+    # and `app.state` is PROCESS-WIDE -- hence the unconditional cleanup, so
+    # this cannot leak the attribute into whatever test runs next.
+    app.state.board_url = "http://attacker.example:9000"
+    try:
+        r = await client.post("/api/onboarding/email",
+                              json={"email": "person@example.com"})
+        assert r.status_code == 200, r.text
+        assert r.json()["welcome"] == "sent", r.text
+    finally:
+        del app.state.board_url
+    [msg] = captured
+    assert "attacker.example" not in msg.html and "attacker.example" not in msg.body
+    # Positive control: the transport really did observe THIS mail, so the two
+    # assertions above are not passing over an unrelated or empty message.
+    assert f'href="{in_app.OPEN_URL}"' in msg.html
+    assert msg.to == "person@example.com"
+
+
+def test_the_text_part_offers_the_same_closed_set_of_links_as_the_html_part():
+    """`test_the_html_part_fetches_nothing_and_tracks_nobody` closes the href
+    set for the HTML part only. The text part had no equivalent, so a URL
+    added there alone -- a tracking link, a stale docs link, a second CTA --
+    was invisible to every test in this file.
+    """
+    _, text, html = _rendered()
+    in_text = set(_re.findall(r'(?:https?://[^\s<>"\']+|mailto:[^\s<>"\']+)', text))
+    in_html = set(_re.findall(r'href="([^"]+)"', html))
+    assert in_text == in_html, (
+        f"the two parts offer different links: text-only {in_text - in_html}, "
+        f"html-only {in_html - in_text}")
+    assert in_text == {in_app.OPEN_URL, in_app.SITE, send.UNSUBSCRIBE_URL}
 
 
 def test_the_open_route_hands_off_to_the_desktop_app():
-    """The button's target. It exists because a mail client will not keep a
-    `nohuman://` href — measured by sending a real message to Gmail and
-    reading the delivered DOM: the custom-scheme anchor came back with NO
-    href, while an `http://127.0.0.1` href survived untouched.
+    """The only working handoff in the tree. It exists because a click cannot
+    go straight at a `nohuman://` href — measured by sending a real message to
+    Gmail and reading the delivered DOM: the custom-scheme anchor came back
+    with NO href, while an `http://127.0.0.1` href survived untouched. So an
+    http page has to perform the handoff.
 
-    So the email links to this server, and this page performs the handoff.
+    The welcome email no longer links here (it points at `in_app.OPEN_URL`, a
+    page on the site), and nothing else in the tree does either — so this test
+    and its sibling below are what keep the route honest until the site page
+    is deployed and has been seen to work.
+
     No JavaScript: the app's CSP is `script-src 'self'`, which would block an
     inline script, and a meta refresh needs none.
     """
@@ -947,7 +1140,10 @@ def test_the_open_route_hands_off_to_the_desktop_app():
     body = r.text
     assert "nohuman://open" in body, "the page does not hand off to the app"
     assert 'http-equiv="refresh"' in body, "no automatic handoff"
-    assert 'href="/"' in body, "no in-browser fallback for an unregistered scheme"
+    # The visible anchor is the fallback for a browser that declines to hand
+    # off without a click. It is the page's ONLY link, and it is the scheme:
+    # the page has exactly one job and must not offer a second destination.
+    assert _re.findall(r'href="([^"]+)"', body) == ["nohuman://open"], body
     # The CSP forbids inline script; a handoff that needs one would be dead.
     assert "<script" not in body.lower()
 
@@ -1021,109 +1217,38 @@ def no_human_email_src_root():
     return str(Path(in_app.__file__).resolve().parents[2])
 
 
-def test_a_board_url_that_is_not_an_absolute_http_url_never_reaches_the_href():
-    """These three guards were added in answer to a review and had NO test:
-    deleting any one of them left the whole named gate green.
+def test_send_welcome_never_raises_whatever_the_address_is():
+    """`send_welcome`'s docstring says it never raises, and that is load
+    bearing: the registration route has ALREADY persisted the address by the
+    time it runs, so an exception here would fail a registration that in fact
+    succeeded.
 
-    The scheme check used to be `cleaned.split(":", 1)[0]`, which accepts a
-    BARE scheme -- "http" has no colon, so the prefix is "http" and the
-    button's href became the relative `http/open`.
-    """
-    for bad in ("javascript:alert(1)", "ftp://box:8420", "http", "https",
-                "http:", "//box:8420", "box:8420", "data:text/html,x",
-                "http://u:p@box:8420"):
-        got = in_app.local_board_url({"notifications": {"board_url": bad}})
-        assert got == in_app.CTA_URL_FALLBACK, f"{bad!r} produced {got!r}"
-    # Positive control: a legitimate absolute http(s) URL IS honoured, so the
-    # assertions above are not passing because everything falls back.
-    for good in ("https://board.example.com/", "http://box.local:8420"):
-        assert in_app.local_board_url(
-            {"notifications": {"board_url": good}}) == good.rstrip("/")
-
-
-def test_a_host_that_cannot_appear_in_a_url_falls_back():
-    """The comment above this guard promises the port's reasoning applied to
-    the host: a value that cannot resolve is a broken config, and the honest
-    answer is the documented default rather than a mailed dead link.
-
-    The IPv6 arm is the subtle one: bracketing anything containing a colon
-    turned `host:8080` into `http://[host:8080]:8420` -- dressing a broken
-    host as a valid one. Only a real IPv6 literal is bracketed now, and a
-    zoned link-local falls back because its `%` needs percent-encoding
-    (RFC 6874) and it is unreachable from a mail client anyway.
-    """
-    for bad in ("a b", "a/b", "u@h", "a\r\nb", "a\tb", "h?x", "h#f",
-                "host:8080", "1.2.3.4:99", "fe80::1%en0", "a\\b"):
-        got = in_app.local_board_url({"server": {"host": bad, "port": 8420}})
-        assert got == "http://127.0.0.1:8420", f"host {bad!r} produced {got!r}"
-    # Positive controls: legal hosts survive, including a real IPv6 literal.
-    assert in_app.local_board_url(
-        {"server": {"host": "box.local", "port": 8420}}) == "http://box.local:8420"
-    assert in_app.local_board_url(
-        {"server": {"host": "::1", "port": 8420}}) == "http://[::1]:8420"
-
-
-def test_the_open_suffix_is_joined_not_concatenated():
-    """`board_url + "/open"` put the query BEFORE the path segment:
-    `http://box:8420/?theme=dark` became a query of `theme=dark/open` and a
-    path of `/`, i.e. the board root -- the button silently stopped being the
-    handoff.
-    """
-    cases = {
-        "http://box:8420/?theme=dark": "http://box:8420/open",
-        "http://box:8420/#/tasks": "http://box:8420/open",
-        "http://box:8420/open": "http://box:8420/open",
-        "http://box:8420/open/": "http://box:8420/open",
-        "http://box:8420": "http://box:8420/open",
-        "https://proxy.example.com/nh": "https://proxy.example.com/nh/open",
-    }
-    for given, want in cases.items():
-        _, text, html = in_app.in_app_welcome(send.UNSUBSCRIBE_URL, _ADDR, given)
-        assert f'href="{want}"' in html, f"{given!r} -> expected {want!r}"
-        assert want in text
-
-
-def test_a_caller_supplied_board_url_is_validated_like_the_config_one():
-    """The route PREFERS `app.state.board_url`, which `nh start` builds from a
-    raw `--host`. Every guard used to live only in `local_board_url`, i.e. only
-    on the config path, so the preferred path skipped all of them.
-
-    Measured before the validator was shared: `--host 0.0.0.0` — the container
-    image's own documented default — mailed `http://0.0.0.0:8420/open`;
-    `--host ::1` mailed `http://::1:8420/open`, the exact spelling this module
-    claims to fix; and `--host '['` made `send_welcome` RAISE, which its
-    docstring forbids. The pre-existing seam test passes only
-    `http://127.0.0.1:9000`, so it structurally could not see any of it.
-    """
-    for host in ("0.0.0.0", "::", "::1", "", "box:8080", "[", "1.2.3.4:99"):
-        raw = f"http://{host}:8420"
-        _, text, html = in_app.in_app_welcome(send.UNSUBSCRIBE_URL, _ADDR, raw)
-        assert f'href="{in_app.CTA_URL_FALLBACK}/open"' in html, (
-            f"--host {host!r} produced {raw!r} and it reached the href")
-        assert "0.0.0.0" not in html and "://:" not in html
-
-    # Positive controls: legitimate caller values are NOT mangled, or the
-    # assertions above would pass by refusing everything.
-    keep = {
-        "http://127.0.0.1:9000": "http://127.0.0.1:9000/open",
-        "http://box.local:8420": "http://box.local:8420/open",
-        # No explicit port means the scheme's default; adding the board's 8420
-        # would silently point at a different address.
-        "https://proxy.example.com/nh": "https://proxy.example.com/nh/open",
-    }
-    for given, want in keep.items():
-        _, _, html = in_app.in_app_welcome(send.UNSUBSCRIBE_URL, _ADDR, given)
-        assert f'href="{want}"' in html, f"{given!r} should stay {want!r}"
-
-
-def test_send_welcome_never_raises_on_a_malformed_board_url():
-    """`send_welcome`'s docstring says it never raises, and the registration
-    route has ALREADY persisted the address by the time it runs. `render_welcome`
-    sits outside its try, so a urlsplit ValueError on a bare `[` escaped the
-    route entirely.
+    `render_welcome` sits OUTSIDE `send_welcome`'s try, which is how a
+    urlsplit ValueError on a bare `[` once escaped the route -- that came in
+    through the board URL, which is gone. The remaining input that reaches the
+    renderer unvalidated is the ADDRESS: `_greet` derives a display name from
+    its local part.
     """
     class _T:
         def send(self, msg):
             pass
-    for bad in ("http://[:8420", "http://[", "::::", "http://box:99999"):
-        assert send.send_welcome("a@b.co", transport=_T(), board_url=bad) == "sent"
+
+    hostile = [
+        "",                       # no local part, no domain
+        "@",                      # nothing to derive a greeting from
+        "a@b.co",                 # ordinary
+        "dana<script>alert(1)</script>@x.io",
+        "‮eval@x.io",        # bidi override
+        "x" * 300 + "@x.io",      # far past RFC 5321's 254
+        "a@[",                    # the shape that broke the route before
+    ]
+    for addr in hostile:
+        assert send.send_welcome(addr, transport=_T()) == "sent", addr
+
+    # Positive control: the closed return vocabulary is real -- a transport
+    # that fails is reported, not raised, so "sent" above means something.
+    class _Boom:
+        def send(self, msg):
+            raise RuntimeError("network is down")
+
+    assert send.send_welcome("a@b.co", transport=_Boom()) == "not_sent:transport_error"

@@ -5488,13 +5488,7 @@ async def onboarding_register_email(
     _persist_onboarding(config, {"email": addr, "email_at": _now()})
     status = "skipped_unchanged"
     if changed:
-        # The address this server actually bound, set by `nh start`. Falls back
-        # to the config only when it is absent (a test client, or an embedder
-        # that builds the app directly) — config cannot see a `--port`
-        # override, so it is the fallback, never the first choice.
-        board_url = getattr(request.app.state, "board_url", None)
-        status = await asyncio.to_thread(
-            send_welcome, addr, board_url=board_url)
+        status = await asyncio.to_thread(send_welcome, addr)
     _persist_onboarding(config, {"welcome_status": status})
     return {"ok": True, "welcome": status}
 
@@ -6236,13 +6230,19 @@ async def ws_board(ws: WebSocket) -> None:
 # /open — the handoff that raises the desktop app                              #
 # --------------------------------------------------------------------------- #
 #
-# The welcome email's one button points here. It cannot point straight at
-# `nohuman://open`: MEASURED 2026-09-12 by sending a real message to Gmail and
-# reading the delivered DOM back — Gmail STRIPS the href of any non-standard
-# scheme (the anchor survives with no href at all), while an `http://127.0.0.1`
-# href passes through untouched. So the link a mail client will actually keep
-# is one to this server, and this page does the handoff to the scheme that the
-# desktop app registers (`desktop/main.mjs`, APP_SCHEME "nohuman").
+# A click cannot go straight at `nohuman://open`: MEASURED 2026-09-12 by
+# sending a real message to Gmail and reading the delivered DOM back — Gmail
+# STRIPS the href of any non-standard scheme (the anchor survives with no href
+# at all), while an `http://127.0.0.1` href passes through untouched. So an
+# http page does the handoff to the scheme the desktop app registers
+# (`desktop/main.mjs`, APP_SCHEME "nohuman").
+#
+# NOTHING IN THIS REPO LINKS HERE. The welcome email used to — `in_app.py`
+# built `<this install's board>/open` — and stopped: that URL is loopback and
+# is served by the very process the button exists to launch. The button is now
+# `in_app.OPEN_URL`, a page on the site. Kept anyway because it is the only
+# working handoff we have: that site page answered 404 when measured
+# (2026-09-13, see `in_app.OPEN_URL`). Reconsider once it is up and works.
 #
 # No JavaScript on purpose: the app's CSP is `script-src 'self'`, so an inline
 # script would be blocked. A meta refresh needs none, and the visible link is
@@ -6263,14 +6263,13 @@ _OPEN_HANDOFF = """<!doctype html>
 <h1 style="color:#E8ECF2;font-size:1.2rem;margin:0 0 .6rem">Opening no_human…</h1>
 <p style="margin:0 0 1.4rem;font-size:.95rem;line-height:1.6">
 If the app does not come to the front,
-<a href="nohuman://open" style="color:#4C9AFF">open it</a> —
-or <a href="/" style="color:#4C9AFF">use the board in this browser</a>.</p>
+<a href="nohuman://open" style="color:#4C9AFF">open it</a>.</p>
 </div></body></html>"""
 
 
 @app.get("/open", include_in_schema=False)
 async def open_app() -> HTMLResponse:
-    """Hand off to the desktop app, falling back to the board in-browser."""
+    """Hand off to the desktop app via the `nohuman://` scheme it registers."""
     return HTMLResponse(_OPEN_HANDOFF)
 
 

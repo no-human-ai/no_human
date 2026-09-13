@@ -309,7 +309,6 @@ def render_welcome(
     platform: str | None = None,
     download_url: str = DOWNLOAD_URL,
     unsubscribe_url: str = UNSUBSCRIBE_URL,
-    board_url: str | None = None,
 ) -> Message:
     """Render the in-app welcome, verbatim from `in_app.py`.
 
@@ -321,11 +320,16 @@ def render_welcome(
     the call site and its tests do not have to change in the same commit as
     the copy; a follow-up can drop them.
 
+    `board_url` was a third such parameter and is GONE rather than inert: the
+    welcome's one button now points at a fixed page on the site (`in_app.
+    OPEN_URL`), so there is no URL left for a caller to supply. Passing it
+    raises TypeError, which is the intended answer — an inert kwarg would have
+    let a caller believe it still steered the button.
+
     This function only ever passes a template's own return value through — it
     never edits a subject or body character.
     """
-    subject, body, html = in_app.in_app_welcome(
-        unsubscribe_url, address, board_url)
+    subject, body, html = in_app.in_app_welcome(unsubscribe_url, address)
     return Message(to=address, subject=subject, body=body, html=html)
 
 
@@ -334,7 +338,6 @@ def send_welcome(
     *,
     transport: Transport | None = None,
     platform: str | None = None,
-    board_url: str | None = None,
 ) -> str:
     """Render the welcome email and hand it to `transport`.
 
@@ -343,7 +346,7 @@ def send_welcome(
     A caller (the API route) can persist this status but must not infer that
     "not_sent:..." means the registration itself failed: it did not.
     """
-    msg = render_welcome(address, platform=platform, board_url=board_url)
+    msg = render_welcome(address, platform=platform)
     active_transport = transport if transport is not None else _default_transport()
     try:
         active_transport.send(msg)

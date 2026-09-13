@@ -1351,7 +1351,12 @@ FROZEN_FILE_LINES = {
     # the welcome email can link to THIS server -- `--port`/`--host` are never
     # written back to config.yaml, so config cannot answer that question.
     # Measured on this tree with the scanner below.
-    "cli/commands.py": 8669,
+    # 8669 -> 8666 (-3): and removed again. The welcome email's button points
+    # at a fixed page on the site, so nothing reads `_app.state.board_url` any
+    # more and `nh start` no longer writes it. Ratcheted DOWN to the measured
+    # value rather than left slack -- slack is budget a later change spends
+    # without anyone deciding to. Measured on this tree with the scanner below.
+    "cli/commands.py": 8666,
     # api/app.py 5338 -> 5346 (+8): same budget-floor warning surfaced by
     # `send-back`/`reply` as `budget_warning` in the JSON response. Net cost
     # was trimmed from a naive +14 to +8 by computing `Bounds.from_config(...)`
@@ -1540,7 +1545,14 @@ FROZEN_FILE_LINES = {
     # not keep a custom-scheme href — measured against Gmail). Registered
     # before the SPA catch-all, which would otherwise swallow it.
     # Measured on this tree with the scanner below.
-    "api/app.py": 6356,
+    # 6356 -> 6355 (-1): the `app.state.board_url` half of that is gone. The
+    # welcome email's button is a fixed page on the site, so the route hands
+    # `send_welcome` nothing and `nh start` records nothing. The `/open` route
+    # and its handoff page STAY -- nothing in the repo links to them now, but
+    # they are the only working implementation of the scheme handoff and the
+    # site page that replaced them is not deployed (see `in_app.OPEN_URL`).
+    # Measured on this tree with the scanner below.
+    "api/app.py": 6355,
     # +51: W5 active-time phase writer (phase instrumentation).
     # +84: `list_escalations`/`list_review_fails`/`list_tamper_trips` — the
     # three new failure-signal sources the recurring learning harvest mines.
