@@ -1194,7 +1194,22 @@ FROZEN_FILE_LINES = {
     # site, the `type_hook` parameter threaded through both PostToolUse
     # compose helpers, and the order docstring recording why the type
     # hook runs ahead of the scope guard. Re-measured on the merge result.
-    "core/orchestrator.py": 23893,
+    # 23893 -> 24079 (+186): REFILE bugfix — pre-review red runs now share
+    # the SAME NEW-vs-pre-existing-vs-unknown split TESTING already computes
+    # post-review, instead of handing the reviewer an undifferentiated
+    # failing-id list under `classified: False`. New genuinely-required
+    # machinery, not duplicated/movable code: `_FailureAttribution` /
+    # `_attribution_buckets` / `_render_failing_attribution` (the ownership-
+    # as-annotation render), `_round_failure_attribution` (computes the
+    # split ONCE per round, identity-cached, shared by the reviewer render
+    # and the round's billing), the by-name/command-identity/timeout guards
+    # added to `_newly_failing_vs_base` so a substituted or partial base run
+    # is never mistaken for a trustworthy verdict, and `_handle_pre_review_
+    # red` (extracted out of `_run_review`, which was already at its own
+    # frozen ceiling, so that function's own entry did not have to grow).
+    # Measured after extracting/trimming as far as possible without cutting
+    # the fail-closed guards' rationale comments.
+    "core/orchestrator.py": 24079,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.
@@ -1346,7 +1361,14 @@ FROZEN_FILE_LINES = {
     # `nh approve --ready`'s one-line summary no longer silently drops the
     # only signal telling the operator a verifier never answered. Measured
     # via `wc -l src/no_human/cli/commands.py`.
-    "cli/commands.py": 8666,
+    # 8666 -> 8679 (+13): `nh status`'s pause-reason branch gains an explicit
+    # `pause.get("reason") == "lease_lost"` arm (restart-only message, no
+    # ETA) ahead of the existing "infra"/quota checks, plus an honest
+    # `elif pause:` fallthrough for any future unrecognised reason — closing
+    # the old silent-fallthrough gap where an unmatched reason printed
+    # nothing and could be misread as "not paused". Measured via `wc -l
+    # src/no_human/cli/commands.py`.
+    "cli/commands.py": 8679,
     # api/app.py 5338 -> 5346 (+8): same budget-floor warning surfaced by
     # `send-back`/`reply` as `budget_warning` in the JSON response. Net cost
     # was trimmed from a naive +14 to +8 by computing `Bounds.from_config(...)`
@@ -1508,7 +1530,18 @@ FROZEN_FILE_LINES = {
     # path too, gated to avoid double-firing against `_run_attempt`'s own
     # in-process `cancelled_hard` emit when `stopped` is True. Measured on
     # this tree with the scanner below.
-    "api/app.py": 6183,
+    # 6182 -> 6193 (+11): the baseline is the MEASURED line count, not the
+    # frozen entry. main's entry says 6183 while the tree is 6182, and
+    # `offenders()` reports grown (measured > frozen) and stale (measured <=
+    # threshold) but never a stale-HIGH baseline, so that one-line gap sat
+    # unnoticed and an earlier version of this comment inherited it instead
+    # of measuring. This entry closes the gap. `worker_status`'s `healthy` conjunction gains
+    # `and not out.get("lease_lost")` (a lost lease is permanent and
+    # `tick_stalled` does not cover it), and `queue_health_endpoint` reads
+    # `sched.lease_lost` and threads it into `queue_health(...)` alongside
+    # the existing cooldown kwargs. Measured on this tree with the scanner
+    # below.
+    "api/app.py": 6193,
     # +51: W5 active-time phase writer (phase instrumentation).
     # +84: `list_escalations`/`list_review_fails`/`list_tamper_trips` — the
     # three new failure-signal sources the recurring learning harvest mines.
@@ -1715,7 +1748,24 @@ FROZEN_FILE_LINES = {
     # diagnostics for a collector that never ran). The multi-line import
     # of `NOT_COLLECTED_PREFIX`, the added condition and the comment
     # recording why. Measured on the merge result with the scanner below.
-    "review/reviewer.py": 3098,
+    # 3098 -> 3120 (+22): REFILE bugfix, same round as the orchestrator.py
+    # bump above — `_build_review_prompt` and `AdversarialReviewer.review`
+    # gained a `failing_test_attribution` parameter so the reviewer can be
+    # told the NEW-vs-pre-existing split `_run_review` now computes, and
+    # `_failing_test_attribution_sentence` (extracted so `_build_review_
+    # prompt` itself did not have to grow past its own frozen ceiling)
+    # renders the two cases. `_build_review_prompt` had zero headroom on
+    # this file's budget already, so the new parameter/plumbing could not
+    # be added at zero net file growth.
+    # 3120 -> 3134 (+14): post-merge review send-back on the same REFILE
+    # bugfix ("a red suite reaches the reviewer unattributed") fixed F2 —
+    # `_failing_test_attribution_sentence`'s lead-in falsely claimed "the
+    # harness has already checked each one against the base tree" even when
+    # the base check was fully inconclusive (an ATTRIBUTION-UNKNOWN-only
+    # render). Added a branch (plus docstring) giving that case its own
+    # honest lead-in instead of reusing the "determined" one. Measured on
+    # this merge.
+    "review/reviewer.py": 3134,
     # 2706 -> 2711 (+5): pre-existing red on main at 03b262d23 (e922e9b4's
     # landing, change-scoped tests missed the ratchet) — repaired, measured,
     # on this merge; same cause as the two function-level wake.py bumps above.
@@ -1792,7 +1842,16 @@ FROZEN_FILE_LINES = {
     # `_honor_server_stop` close leaves exactly this shape, and the old
     # open-attempt-only staleness check under-counted it. Still read-only:
     # counts, never mutates. Measured on this tree with the scanner below.
-    "core/scheduler.py": 3098,
+    # 3098 -> 3196 (+98): pool-lease CAS-write retry — `_is_transient_db_lock`
+    # (module-level; narrows to `sqlite3.OperationalError` naming a lock, so
+    # every other exception still fails closed), `_LEASE_WRITE_ATTEMPTS`/
+    # `_LEASE_WRITE_BACKOFF_S`, and `_cas_heartbeat_with_retry` — a bounded,
+    # exponential-backoff retry of `_claim_pool_lease`'s CAS write that
+    # forwards the SAME `expect` row on every attempt, so a competitor's
+    # legitimately-claimed row still cannot be overwritten. Plus the
+    # read-only `lease_lost` property mirroring `_lease_lost` for
+    # `health.py`/`api/app.py`. Measured on this tree with the scanner below.
+    "core/scheduler.py": 3196,
 }
 
 

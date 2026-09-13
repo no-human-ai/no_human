@@ -283,6 +283,55 @@ class GitRepo:
             )
         return [line for line in proc.stdout.split("\n") if line]
 
+    def _run_null(self, *args: str, check: bool = True) -> str:
+        """Like `_run`, but for `-z` output specifically.
+
+        `_run`'s `proc.stdout.strip()` is a whole-output strip: NUL is not
+        Python whitespace, so it survives, but the leading space of the
+        FIRST path in the list does not (`" lead.py\\0zzz.py\\0"` ->
+        `"lead.py\\0zzz.py\\0"`) — silently dropping that filename's leading
+        character everywhere it's later compared byte-for-byte against the
+        filesystem or re-quoted as a pathspec. Same inline retry/identity
+        duplication as `_run`/`_run_porcelain_lines` (see the note on
+        `_run`) — this file accepts that duplication so the egress-allowlist
+        scanner can classify every `["git", ...]` construction statically.
+        Never call `.strip()` on the result; feed it straight to
+        `_null_paths`."""
+        cmd = [
+            "git",
+            "-c", f"user.name={self.identity_name}",
+            "-c", f"user.email={self.identity_email}",
+            *args,
+        ]
+        proc = subprocess.run(
+            cmd, cwd=self.path, capture_output=True, text=True,
+            **hidden_console_kwargs(),
+        )
+        if check:
+            for backoff in _GIT_RETRY_BACKOFFS_S:
+                if proc.returncode == 0 or not is_transient_git_failure(proc.stderr):
+                    break
+                time.sleep(backoff)
+                proc = subprocess.run(
+                    cmd, cwd=self.path, capture_output=True, text=True,
+                    **hidden_console_kwargs(),
+                )
+        if check and proc.returncode != 0:
+            raise GitError(
+                f"git {' '.join(args)} failed ({proc.returncode}): {proc.stderr.strip()}"
+            )
+        return proc.stdout
+
+    @staticmethod
+    def _null_paths(out: str) -> list[str]:
+        """Paths from a `-z` git call: NUL-separated, never C-quoted, so they
+        can be compared against the filesystem and fed back as pathspecs.
+        Empty pieces dropped; never `.strip()`ed — a filename may begin/end
+        with a space. Callers MUST pass output from `_run_null`, not `_run`
+        — `_run`'s whole-output `.strip()` eats the leading space of the
+        first path."""
+        return [p for p in out.split("\0") if p]
+
     def current_branch(self) -> str:
         return self._run("rev-parse", "--abbrev-ref", "HEAD")
 
@@ -452,15 +501,34 @@ class GitRepo:
         which directories HEAD just brought into existence — an input
         `commit_paths` never consults when deciding what to stage, so it can
         catch the class the other two predicates cannot."""
-        out = self._run("status", "--porcelain", check=False).strip()
+        # `-z`, not `-c core.quotePath=false`: `core.quotePath` only disables
+        # quoting for non-ASCII bytes (>= 0x80) — git C-quotes `"`, `\`, TAB
+        # and LF UNCONDITIONALLY regardless of that setting, so a leftover
+        # like `report".json` would still arrive mangled and never match a
+        # raw `coder_touched` entry. `-z` disables ALL of it and replaces the
+        # porcelain-v1 `"old -> new"` rename line with two separate
+        # NUL-terminated tokens (`XY <new>\0<orig>\0`, no `" -> "`), parsed
+        # below instead of split on `" -> "`.
+        #
+        # check=True (the default — no check=False here): this call feeds a
+        # completeness GATE, not a staging decision — "no evidence" cannot
+        # degrade to "assume clean" (empty leftovers) without defeating the
+        # guard's entire purpose. A truncated/locked index makes `status`
+        # exit non-zero; with check=False that silently became `[]` (gate
+        # passes vacuously on a healthy leftover). Raising GitError instead
+        # fails the attempt loudly, which is the guard doing its job.
+        tokens = self._null_paths(
+            self._run_null("status", "--porcelain", "-z")
+        )
         newly_added_dirs = self._dirs_newly_added_by_head()
         leftovers: list[str] = []
-        for line in out.splitlines():
-            rel = line[3:].strip() if len(line) > 3 else ""
-            if rel.startswith('"') and rel.endswith('"'):
-                rel = rel[1:-1]
-            if " -> " in rel:            # rename: "old -> new"
-                rel = rel.split(" -> ", 1)[1]
+        i = 0
+        while i < len(tokens):
+            tok = tokens[i]
+            i += 1
+            xy, rel = tok[:2], tok[3:] if len(tok) > 3 else ""
+            if xy[:1] in ("R", "C"):
+                i += 1  # bare original-path token for a rename/copy; skip it
             if not rel or self._is_ephemeral_path(rel):
                 continue
             if Path(rel).suffix.lower() in self._CODE_EXTS:
@@ -488,12 +556,22 @@ class GitRepo:
         An unresolvable *treeish* (unborn repo, root commit with no parent)
         gives no evidence either way, so this degrades to False — the
         conservative, exclude-leaning answer used everywhere else in this
-        class — rather than raising or guessing "new"."""
+        class — rather than raising or guessing "new". A *readable* treeish
+        whose `ls-tree` nonetheless fails (corrupted tree object) gets the
+        SAME conservative False: an empty `check=False` stdout on failure
+        used to be indistinguishable from a genuine empty (= "absent, so
+        new") result, silently turning "cannot read" into "yes, new" — the
+        opposite of the documented degrade. Fixed by using `check=True` and
+        explicitly catching the failure, rather than reading a real answer
+        out of an error's blank stdout."""
         if not rel_dir or rel_dir == ".":
             return False
         if not self._run("rev-parse", "--verify", treeish, check=False).strip():
             return False
-        out = self._run("ls-tree", treeish, "--", rel_dir + "/", check=False).strip()
+        try:
+            out = self._run("ls-tree", treeish, "--", rel_dir + "/").strip()
+        except GitError:
+            return False
         return out == ""
 
     def _dirs_newly_added_by_head(self) -> set[str]:
@@ -504,10 +582,26 @@ class GitRepo:
         files counts as newly added — there is no prior tree it could have
         existed in. Unborn repo (no HEAD at all): returns the empty set, the
         same conservative degrade as `_dir_absent_from_tree`."""
-        names = self._run(
-            "show", "--pretty=format:", "--name-only", "HEAD", check=False
-        )
-        dirs = {str(Path(n).parent) for n in names.splitlines() if n.strip()}
+        # `-z`, not `-c core.quotePath=false`: `core.quotePath` leaves `"`,
+        # `\`, TAB and LF C-quoted regardless of the setting (see
+        # `uncommitted_source_files`), which would mangle a directory name
+        # containing one of those before it ever reaches
+        # `_dir_absent_from_tree`'s `ls-tree` pathspec below. `-z` disables
+        # all of it, so the round-trip stays byte-for-byte.
+        #
+        # check=False here is deliberate and distinct from the status-call
+        # fix above: on an unborn repo `HEAD` does not resolve and `show`
+        # exits non-zero, which `test_unborn_repo_degrades_to_old_behaviour_
+        # without_crashing` pins as a *legitimate* empty-set degrade, not a
+        # read failure to hide. A failure here only silences the third (of
+        # three) `uncommitted_source_files` predicates — the strict
+        # `_CODE_EXTS` check on every token is untouched and still fires —
+        # so the guard is weakened, never made vacuous, by a `HEAD` that
+        # cannot be read.
+        names = self._null_paths(self._run_null(
+            "show", "--pretty=format:", "--name-only", "-z", "HEAD", check=False
+        ))
+        dirs = {str(Path(n).parent) for n in names}
         dirs.discard(".")
         if not dirs:
             return dirs
@@ -666,6 +760,18 @@ class GitRepo:
         are staged alongside the explicitly listed paths. This covers files
         the agent created or modified via Bash/Run tools (which the
         orchestrator cannot track file-by-file).
+
+        Every git path this method reads back and compares against the
+        filesystem or feeds back into `git add` as a pathspec goes through
+        `-z`/`_null_paths` (`diff --name-only -z`, `ls-files -z --others`,
+        the `ls-files -z --` missing-path lookup) rather than the default
+        C-quoted form, so a non-ASCII path (`café.py`) is never mistaken for
+        missing and dropped. All three of those calls are also `check=True`
+        (the default): a non-empty *paths* means `rel_paths` is already
+        non-empty going in, so the `stage_all()` empty-commit fallback below
+        can never rescue a producer that failed and silently returned
+        nothing — the failure must raise instead of being read as "no
+        further files."
         """
         branch = self.current_branch()
         if _branch_protected(branch, self.never_push_to):
@@ -685,19 +791,32 @@ class GitRepo:
             rel_paths.append(rel)
         # Also include modified tracked files — these are always intentional
         # (the agent must have touched them, even if via Bash).
-        modified = self._run(
-            "diff", "--name-only", check=False
-        ).strip().splitlines()
-        rel_paths.extend(m.strip() for m in modified if m.strip())
+        # `-z`: without it, `core.quotePath` C-quotes a non-ASCII path (e.g.
+        # `café.py` -> `"caf\303\251.py"`), whose literal form never matches
+        # anything on disk. The `os.path.lexists` filter below would then
+        # call it missing, the ls-files lookup couldn't match the mangled
+        # string either, and the file would be silently dropped from the
+        # commit — trading a loud crash for silent work loss. `-z` keeps the
+        # path literal so it round-trips through both.
+        #
+        # check=True (the default — no check=False here, nor on the
+        # `ls-files --others` producer below): with a non-empty *paths* (the
+        # orchestrator's normal call shape) a failure of either producer used
+        # to return "" -> [] silently. `rel_paths` stayed non-empty (it
+        # already has the caller's explicit paths), so the `stage_all()`
+        # fallback below never fires to rescue the loss — the commit
+        # succeeds while quietly missing every OTHER modified/untracked file
+        # this batch should have included. Raising GitError here instead
+        # surfaces the read failure as a failed attempt, not a silently
+        # incomplete PR.
+        modified = self._null_paths(self._run_null("diff", "--name-only", "-z"))
+        rel_paths.extend(modified)
         # Include untracked source files (e.g. new .py created via Bash).
-        untracked = self._run(
-            "ls-files", "--others", "--exclude-standard", check=False
-        ).strip().splitlines()
+        untracked = self._null_paths(self._run_null(
+            "ls-files", "-z", "--others", "--exclude-standard"
+        ))
         rejected_non_code: list[str] = []
         for u in untracked:
-            u = u.strip()
-            if not u:
-                continue
             ext = Path(u).suffix.lower()
             if ext in self._CODE_EXTS:
                 rel_paths.append(u)
@@ -736,10 +855,48 @@ class GitRepo:
         # stages exactly what we intend.
         rel_paths = [r for r in dict.fromkeys(rel_paths)
                      if not self._is_ephemeral_path(r)]
+        # `git add` exits 128 for the WHOLE pathspec list when any one entry
+        # is neither on disk nor in the index (e.g. a path the coder created
+        # and then deleted within the attempt) — killing the commit of
+        # everything else in the batch. Ask the index which absent paths it
+        # still knows about: those are real DELETIONS and must stay (add
+        # stages them as such); the rest never existed and are dropped from
+        # the list only. `os.path.lexists`, not `Path.exists()`: `exists()`
+        # follows symlinks, so a broken symlink the coder created would be
+        # called absent, miss the index, and be dropped.
+        missing = [r for r in rel_paths if not os.path.lexists(repo_root / r)]
+        if missing:
+            # check=True on purpose: with check=False an `ls-files` error
+            # returns "", `tracked` empties, and every tracked deletion in
+            # the batch is misclassified as a phantom and silently dropped —
+            # lost work traded for a loud crash. Fail closed.
+            tracked = set(self._null_paths(
+                self._run_null("ls-files", "-z", "--", *missing)
+            ))
+            # A deleted tracked DIRECTORY passed in `paths` (e.g. `"sub"`)
+            # never appears in `tracked` as that literal string — `ls-files
+            # -- sub` only ever returns the FILES under it (`sub/a.py`,
+            # `sub/b.py`, ...) — so it is always dropped here as phantom.
+            # That is fine and not a loss: `git diff --name-only` above is
+            # unrestricted (no pathspec), so every deletion under `sub/`
+            # already reached `rel_paths` as its own literal entry and
+            # matches `tracked` exactly, independent of whatever happens to
+            # the directory entry itself. (A `t.startswith(r + "/")` rescue
+            # for the bare directory entry was tried here previously; ablating
+            # it left every test green because of the above, so it added a
+            # redundant, never-exercised pathspec entry rather than fixing a
+            # real gap. Removed rather than kept unproven.)
+            phantom = {r for r in missing if r not in tracked}
+            rel_paths = [r for r in rel_paths if r not in phantom]
         if rel_paths:
             self._run("add", "--", *rel_paths)
         # If no files were actually staged (e.g. agent only used Bash to
         # create files), fall back to stage_all so the commit isn't empty.
+        # check=False here is deliberate and safe: on failure `staged` reads
+        # as "" exactly like the true-empty case, and the ONLY consequence is
+        # calling `stage_all()` (`git add -A`) — strictly MORE inclusive than
+        # doing nothing. Unlike the producers above, a read failure here
+        # cannot cause silent under-staging, only a broader add than usual.
         staged = self._run("diff", "--cached", "--name-only", check=False).strip()
         if not staged:
             self.stage_all()
@@ -1339,8 +1496,10 @@ class GitRepo:
         return self._run("diff", ref, "HEAD", check=False)
 
     def changed_files(self, ref: str = "HEAD~1") -> list[str]:
-        out = self._run("diff", "--name-only", ref, "HEAD", check=False)
-        return [f for f in out.splitlines() if f]
+        # `-z`: callers join this against the filesystem (`repo.path / f`),
+        # so a C-quoted non-ASCII path here would never match on disk.
+        out = self._run_null("diff", "--name-only", "-z", ref, "HEAD", check=False)
+        return self._null_paths(out)
 
     def fetch(self, remote: str = "origin", *, prune: bool = True,
               timeout: int = 30) -> None:

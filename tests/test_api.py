@@ -2531,6 +2531,115 @@ async def test_queue_health_endpoint_reports_infra_pause_without_profile(client,
     assert body["stuck"] is False, "a breaker cooldown is a deliberate pause, not a wedge"
 
 
+async def test_queue_health_endpoint_reports_lease_lost(client, store):
+    """Task 92e48491 (refile): a lost pool lease is not a cooldown — it must
+    win over a supplied quota clock (defence in depth, same shape as the
+    infra-vs-quota test above) and must never resolve to `paused_until` being
+    populated, since nothing resumes this on its own."""
+    from datetime import datetime, timedelta, timezone
+    from types import SimpleNamespace
+
+    from no_human.api.app import app as fastapi_app
+    from no_human.core.task import Task, TaskStatus
+
+    for i in range(3):
+        t = Task.new(f"queued-{i}", repo_path="/r")
+        await store.create_task(t)
+    await store.set_status(t, TaskStatus.IMPLEMENTING, validate=False)
+
+    reset_at = datetime.now(timezone.utc) + timedelta(minutes=30)
+    fastapi_app.state.scheduler = SimpleNamespace(
+        inflight=set(), max_workers=4,
+        quota_cooldown_until=reset_at, infra_cooldown_until=None,
+        lease_lost="the CAS write raised: database is locked")
+    try:
+        r = await client.get("/api/queue/health")
+    finally:
+        del fastapi_app.state.scheduler
+
+    body = r.json()
+    assert body["paused"] is True
+    assert body["paused_reason"] == "lease_lost"
+    assert body["paused_until"] is None
+    assert body["paused_profile"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_real_scheduler_reaches_queue_health_through_the_property(client, store):
+    """The test above stubs the scheduler with a SimpleNamespace, so the REAL
+    `Scheduler.lease_lost` property is never on the path: mutating its body to
+    `return None` leaves the whole suite green. `api/app.py`'s
+    `getattr(sched, "lease_lost", None)` is a fail-OPEN default, so a rename
+    would switch the signal off with nothing failing.
+
+    This drives the endpoint against an ACTUAL `Scheduler`, so the property
+    itself is exercised. `_lease_lost` is set directly because that is what the
+    CAS-write path assigns; what is under test here is the read-only mirror
+    and its route, not how the value gets there.
+    """
+    from no_human.api.app import app as fastapi_app
+    from no_human.core.scheduler import Scheduler
+
+    sched = Scheduler(store, lambda task=None: None, max_workers=4)
+    # Positive control FIRST: a scheduler holding its lease must not report
+    # one lost, or the assertion below proves nothing about the property.
+    assert sched.lease_lost is None
+
+    sched._lease_lost = "the CAS write raised: database is locked"
+    assert sched.lease_lost == "the CAS write raised: database is locked"
+
+    fastapi_app.state.scheduler = sched
+    try:
+        body = (await client.get("/api/queue/health")).json()
+    finally:
+        del fastapi_app.state.scheduler
+
+    assert body["paused"] is True
+    assert body["paused_reason"] == "lease_lost"
+
+
+async def test_worker_status_reports_unhealthy_when_lease_lost(client):
+    """The `healthy` boolean must fall for a lost lease exactly as it does for
+    `tick_stalled`/`db_view_stale`/etc — a wedged dispatch loop that is still
+    answering requests must not read as green. This is the exact
+    `paused_reason == "lease_lost"` scenario the closed PR #251 got backwards
+    on the CLI/web board side; this test locks the JSON health surface."""
+    from types import SimpleNamespace
+
+    from no_human.api.app import app as fastapi_app
+
+    def _snapshot(lease_lost):
+        return {"lease_lost": lease_lost,
+                "tick_stalled": False,
+                "db_view_stale": False,
+                "consecutive_probe_failures": 0,
+                "consecutive_status_write_failures": 0}
+
+    fastapi_app.state.watcher_error = None
+    fastapi_app.state.worker_error = None
+    try:
+        # Control, in the same test: with everything else identical and
+        # `lease_lost` falsy, the endpoint must report healthy — proving the
+        # `False` above is caused by `lease_lost` specifically, not some
+        # other field in the stub.
+        fastapi_app.state.scheduler = SimpleNamespace(
+            inflight=set(), max_workers=4,
+            health_snapshot=lambda: _snapshot(None))
+        control = await client.get("/api/worker/status")
+        assert control.json()["healthy"] is True
+
+        fastapi_app.state.scheduler = SimpleNamespace(
+            inflight=set(), max_workers=4,
+            health_snapshot=lambda: _snapshot("the CAS write raised"))
+        r = await client.get("/api/worker/status")
+    finally:
+        del fastapi_app.state.scheduler
+
+    body = r.json()
+    assert body["lease_lost"] == "the CAS write raised"
+    assert body["healthy"] is False, "a lost lease must never read as healthy"
+
+
 async def test_board_query_is_not_n_plus_1(client, store, monkeypatch):
     """B2 #16: the board issued one attempts query PER TASK, every 2s, per
     socket. It must now use a single grouped query regardless of task count."""
