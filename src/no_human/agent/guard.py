@@ -49,7 +49,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Mapping
 
-from . import fs_roots, venv_install_guard
+from . import exec_names, fs_roots, venv_install_guard
 
 # Read the platform through a constant, never an inline `os.name` test, so the
 # Windows branch below is reachable from a test on any host.
@@ -284,7 +284,7 @@ def _peel_scan_wrappers(words: list[str]) -> list[str]:
     for _ in range(_SCAN_WRAPPER_PEEL_CAP):
         if not argv:
             return argv
-        name = PurePosixPath(argv[0]).name
+        name = exec_names.command_name(argv[0], is_windows=_IS_WINDOWS)
         if name in _SCAN_EXECUTABLES:
             return argv
         if name not in _SCAN_WRAPPER_NAMES:
@@ -443,7 +443,7 @@ def root_scan_denial(cmd: str, cwd: "str | None") -> "str | None":
         argv = _strip_wrappers(tokens, _is_scan_exe_name)
         if not argv:
             continue
-        name = PurePosixPath(argv[0]).name
+        name = exec_names.command_name(argv[0], is_windows=_IS_WINDOWS)
         if name not in _SCAN_EXECUTABLES:
             continue
         args = argv[1:]
@@ -529,7 +529,7 @@ def _segment_scans_and_mutates(words: list[str]) -> bool:
     via `_peel_scan_wrappers` so a wrapped mutation is not mislabelled a pure
     read — see that function's docstring."""
     argv = _peel_scan_wrappers(words)
-    return (bool(argv) and PurePosixPath(argv[0]).name in _SCAN_EXECUTABLES
+    return (bool(argv) and exec_names.command_name(argv[0], is_windows=_IS_WINDOWS) in _SCAN_EXECUTABLES
             and any(a in _SCAN_MUTATION_PRIMARIES for a in argv[1:]))
 
 # --------------------------------------------------------------------------- #
@@ -1014,7 +1014,7 @@ def _scan_for_install_denial(text: str, cwd: "str | None", running_cwd: "str | N
 
         if depth >= 2:
             continue
-        name = PurePosixPath(argv[0]).name
+        name = exec_names.command_name(argv[0], is_windows=_IS_WINDOWS)
         rest = argv[1:]
         if name == "uv" and rest and rest[0] == "run" and len(rest) >= 2:
             reason = _check_install_argv(rest[1:], {}, activated, running_cwd,
@@ -1429,7 +1429,7 @@ def _effective_name(argv: list[str]) -> str:
             skip_operand = name in _FLAGS_WITH_VALUE
             continue
         return name
-    return PurePosixPath(argv[0]).name if argv else ""
+    return exec_names.command_name(argv[0], is_windows=_IS_WINDOWS) if argv else ""
 
 
 def _decode_ansi_c_body(body: str) -> str:
@@ -1637,7 +1637,7 @@ def _peel_runners(argv: list[str]) -> list[str]:
     for _ in range(4):
         if not argv:
             return argv
-        name = PurePosixPath(argv[0]).name
+        name = exec_names.command_name(argv[0], is_windows=_IS_WINDOWS)
         if name == "env":
             argv = argv[1:]
             while argv:
@@ -1722,7 +1722,7 @@ def _approve_denial(cmd: str, _depth: int = 0) -> str | None:
         # outer form only — `_dequote` existed for `appro''ve` and was applied
         # to the verb but not to the binary. Review 2026-08-22 executed both.
         argv = [_dequote(_unmask(argv[0], table))] + argv[1:]
-        name = PurePosixPath(argv[0]).name
+        name = exec_names.command_name(argv[0], is_windows=_IS_WINDOWS)
         # `nh\ approve` — an escaped space makes shlex produce ONE token. In a
         # real shell that names a binary "nh approve", which does not exist, so
         # this is not a live evasion; it is matched anyway because doing so is
@@ -2232,7 +2232,7 @@ def _git_push_invocations(cmd: str, _depth: int = 0) -> list[tuple[str, list[str
         except ValueError:
             tokens = seg.split()
         argv = _strip_wrappers(tokens)
-        if argv and PurePosixPath(argv[0]).name == "git" and "push" in argv:
+        if argv and exec_names.command_name(argv[0], is_windows=_IS_WINDOWS) == "git" and "push" in argv:
             found.append((seg, argv))
             continue
         if _depth < 2:
@@ -2491,7 +2491,7 @@ def _forge_invocations(cmd: str, _depth: int = 0) -> list[list[str]]:
             tokens, is_extra_target=lambda n: n in {"gh", "glab"})
         if not argv:
             continue
-        name = PurePosixPath(argv[0]).name
+        name = exec_names.command_name(argv[0], is_windows=_IS_WINDOWS)
         if name in {"gh", "glab"}:
             found.append(argv)
         elif name in _FORGE_RUNNER_NAMES and _depth < 2:
@@ -2528,7 +2528,7 @@ def _git_invocations(cmd: str, _depth: int = 0) -> list[tuple[str, list[str]]]:
         argv = _strip_wrappers(tokens)
         if not argv:
             continue
-        name = PurePosixPath(argv[0]).name
+        name = exec_names.command_name(argv[0], is_windows=_IS_WINDOWS)
         if name == "git":
             found.append((seg, argv))
         elif name in _SHELL_RUNNERS and _depth < 2:
