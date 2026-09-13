@@ -152,7 +152,13 @@ def _stage_untracked_for_approve(repo: GitRepo, paths: list[str] | None) -> None
         try:
             rel_paths.append(str(Path(p).resolve().relative_to(root)))
         except ValueError:
-            continue  # outside the repo — commit_paths will skip it too
+            # Outside the repo. `commit_paths` skips it too, by the same
+            # membership test — but it decides it on the ENTRY, not on
+            # `Path(p).resolve()`, so a broken symlink reaches its staging
+            # and is dropped here (#354). That direction only costs this
+            # pin check a look at the link, not a bypass: the export guard
+            # reads the index at commit time.
+            continue
     untracked = repo._run(
         "ls-files", "--others", "--exclude-standard", check=False
     ).splitlines()
@@ -770,11 +776,11 @@ def _repair_by_manifest_write(
       needs no change for this new route.
     * `0` calls `on_repair(pinned, note)` exactly once, then retries the
       commit exactly once with `RELEASE_MANIFEST.txt` appended to *paths*
-      (as an ABSOLUTE path: `GitRepo.commit_paths` resolves each entry with
-      `Path(p).resolve()`, which resolves a bare relative name against the
-      process CWD, not the repo root, and silently drops it when that does
-      not land inside the repo). A second refusal from the retry propagates
-      untouched.
+      (as an ABSOLUTE path: `GitRepo.commit_paths` resolves each entry's
+      PARENT chain and joins the entry's own name, which resolves a bare
+      relative name against the process CWD, not the repo root, and silently
+      drops it when that does not land inside the repo). A second refusal
+      from the retry propagates untouched.
     """
     root = Path(repo.path)
     script = root / "scripts" / "check_release_manifest.py"

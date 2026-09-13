@@ -8,6 +8,7 @@ branch (never_push_to).
 from __future__ import annotations
 
 import fnmatch
+import logging
 import os
 import re
 import subprocess
@@ -176,6 +177,22 @@ class CommitIdentity:
     committer_name: str
     committer_email: str
     subject: str
+
+
+log = logging.getLogger("no_human.vcs")
+
+
+def _within(path: Path, root: Path) -> bool:
+    """Is *path* inside *root*? String containment on already-resolved paths.
+
+    `Path.is_relative_to` is 3.9+, and this is the same test `relative_to`
+    performs above without the exception round trip.
+    """
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
 
 
 def _branch_protected(branch: str, never_push_to: list[str]) -> bool:
@@ -790,12 +807,32 @@ class GitRepo:
             # link — the silent-work-loss direction, where an unresolved name would have made
             # `git add` fail loudly instead. Resolving the parent still normalises a symlinked
             # root (macOS `/tmp` -> `/private/tmp`), which is what `relative_to` needs.
-            abs_p = Path(os.path.abspath(p))
+            #
+            # NOT `os.path.abspath`, which is `normpath(join(cwd, path))` and collapses `..`
+            # TEXTUALLY, before anything is resolved. `work/dirlink/../victim.md` became
+            # `work/victim.md` — an in-repo file of the same basename, committed in place of
+            # the one the caller named (#354). Joining without normalising leaves the `..`
+            # for `.parent.resolve()`, which walks the link first and the `..` after.
+            named = Path(p)
+            abs_p = named if named.is_absolute() else Path.cwd() / named
             abs_p = abs_p.parent.resolve() / abs_p.name
             try:
                 rel = str(abs_p.relative_to(repo_root))
             except ValueError:
                 continue  # outside the repo — skip
+            # The entry's own name, resolved. Containment was decided on the PARENT only, so
+            # an in-repo symlink pointing OUT of the repo passed it: git stages such a link
+            # happily and the committed blob is then an absolute local filesystem path
+            # (`/Users/<name>/...`), published in the tree (#354). `realpath` does not raise
+            # on a broken link — it returns the missing target — so the link this method
+            # exists to stage still passes here whenever that target is in-repo.
+            target = Path(os.path.realpath(abs_p))
+            if target != abs_p and not _within(target, repo_root):
+                log.warning(
+                    "skipping %s: it is a symlink to %s, outside the repository",
+                    rel, target,
+                )
+                continue
             rel_paths.append(rel)
         # Also include modified tracked files — these are always intentional
         # (the agent must have touched them, even if via Bash).

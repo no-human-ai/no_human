@@ -522,8 +522,16 @@ def test_a_path_reached_through_a_symlinked_repo_root_is_still_inside_the_repo(
 
 
 def test_a_path_outside_the_repo_is_still_skipped(repo_with_bare_remote, tmp_path):
-    """The membership test still refuses what is genuinely elsewhere, so the fix does not buy
-    broken symlinks by widening what may be staged."""
+    """A path that is genuinely elsewhere is refused.
+
+    Graded on `_committed_names`, a SET, not on `_committed_files`, a str:
+    iterating a str yields single characters, so the old
+    `[f for f in files if "outside" in f]` could never be non-empty and the
+    assertion passed for any commit at all (#354). The fixture was also
+    incapable of exhibiting the class it stood for — an outside path handed
+    to `git add` makes git itself refuse, so the membership test was never
+    what kept `outside.py` out.
+    """
     repo = GitRepo(repo_with_bare_remote)
     repo.create_branch("no-human/outside", base="main")
     outside = tmp_path / "outside.py"
@@ -533,6 +541,67 @@ def test_a_path_outside_the_repo_is_still_skipped(repo_with_bare_remote, tmp_pat
 
     repo.commit_paths([str(outside), str(inside)], "add one inside, one outside")
 
-    files = _committed_files(repo.path)
-    assert "inside.py" in files
-    assert not [f for f in files if "outside" in f], files
+    names = _committed_names(repo.path)
+    assert "inside.py" in names, names
+    assert "outside.py" not in names, names
+
+
+def test_a_symlink_pointing_out_of_the_repo_is_not_committed(
+    repo_with_bare_remote, tmp_path
+):
+    """Containment is decided on the ENTRY, not only on its parent.
+
+    A link that lives inside the repo and points outside passed the parent-only
+    check, and git stages such a link happily — so the committed blob was an
+    absolute local filesystem path, published in the tree (#354). This repo's
+    first constraint is that no local trace reaches the public tree, and that
+    blob is one.
+    """
+    repo = GitRepo(repo_with_bare_remote)
+    repo.create_branch("no-human/escaping-link", base="main")
+    secret = tmp_path / "outside_secret.txt"
+    secret.write_text("SECRET\n")
+    escaping = repo.path / "esc.md"
+    escaping.symlink_to(secret)
+    inside = repo.path / "inside.py"
+    inside.write_text("x = 7\n")
+
+    repo.commit_paths([str(escaping), str(inside)], "one link out, one file in")
+
+    names = _committed_names(repo.path)
+    # Arrival: the commit did happen and did carry the in-repo file, so the
+    # absence below is a refusal and not an empty commit.
+    assert "inside.py" in names, names
+    assert "esc.md" not in names, names
+
+
+def test_dotdot_through_a_symlinked_directory_does_not_swap_the_file(
+    repo_with_bare_remote, tmp_path
+):
+    """`..` is resolved AFTER the link, not collapsed before it.
+
+    `os.path.abspath` is `normpath(join(cwd, path))`, which collapses `..`
+    textually. `work/dirlink/../victim.md` therefore became `work/victim.md`
+    — an in-repo file of the same basename — and the commit captured a
+    DIFFERENT file than the caller named (#354).
+    """
+    repo = GitRepo(repo_with_bare_remote)
+    repo.create_branch("no-human/dotdot", base="main")
+    (tmp_path / "elsewhere" / "d").mkdir(parents=True)
+    (tmp_path / "elsewhere" / "victim.md").write_text("I LIVE OUTSIDE THE REPO\n")
+    (repo.path / "dirlink").symlink_to(tmp_path / "elsewhere" / "d")
+    namesake = repo.path / "victim.md"
+    namesake.write_text("I LIVE INSIDE THE REPO\n")
+    inside = repo.path / "inside.py"
+    inside.write_text("x = 8\n")
+
+    repo.commit_paths(
+        [str(repo.path / "dirlink" / ".." / "victim.md"), str(inside)],
+        "name the outside victim through a link",
+    )
+
+    names = _committed_names(repo.path)
+    assert "inside.py" in names, names
+    # The caller named a file outside the repo; the same-named file INSIDE it
+    # must not be committed in its place.
+    assert "victim.md" not in names, names
