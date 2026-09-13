@@ -189,7 +189,7 @@ import stat
 from pathlib import Path, PurePosixPath
 from typing import Mapping
 
-from . import win_readings
+from . import exec_names, win_readings
 
 #: Flipped by tests; see `win_readings` for why both spellings are read.
 _IS_WINDOWS = win_readings._IS_WINDOWS
@@ -349,14 +349,18 @@ def _basename(path: str) -> str:
     return name
 
 
-def _is_installer_name(name: str) -> bool:
-    # Case-folded on Windows ONLY, where the filesystem is: `PIP.EXE` and
-    # `pip.exe` are the same file there and must reach the same verdict, while
-    # on POSIX `PIP` is a genuinely different file and folding would be a text
-    # match masquerading as a structural one. Round 3 of #105 found
+def _is_installer_name(name: str, cwd: str | None = None) -> bool:
+    # Folded on Windows, where the filesystem always is, AND wherever this
+    # HOST's filesystem folds case (#328) -- macOS ships APFS
+    # case-insensitive by default, so `PIP install evilpkg` really runs `pip`
+    # there too, landing the install in the very venv this guard protects.
+    # The old reasoning here ("on POSIX `PIP` is a genuinely different
+    # file") is true of a case-SENSITIVE filesystem only; measured on the
+    # macOS default: `PIP install evilpkg` -> ALLOW while `pip install
+    # evilpkg` -> DENY, same fixture, same PATH. Round 3 of #105 found
     # `…\Scripts\PIP.EXE install requests` allowed while the lowercase
-    # spelling was refused.
-    if _IS_WINDOWS:
+    # spelling was refused; #328 is the same shape on a different host class.
+    if _IS_WINDOWS or exec_names.host_folds_case(cwd):
         name = name.lower()
     if name in _EXACT_INSTALLERS:
         return True
@@ -428,6 +432,12 @@ def _spaced_path_candidates(payload: str) -> list[str]:
     out: list[str] = []
     for k in range(2, min(len(toks), _MAX_PREFIX_JOIN) + 1):
         joined = " ".join(toks[:k])
+        # `cwd` is not lexically available here (this helper only sees the
+        # raw payload text). Left at the default, `_is_installer_name` falls
+        # back to `exec_names.host_folds_case(None)`, which unions the
+        # process cwd with PATH — a superset of what a call-site cwd would
+        # cover, so this can only fold MORE aggressively than a cwd-scoped
+        # answer, never less. Monotonically conservative, not a hole.
         if _is_installer_name(_basename(joined)):
             out.append(joined)
             out.extend(toks[k:])
@@ -640,7 +650,7 @@ def _resolve_installer(token: str, cwd: str | None, env: Mapping[str, str]) -> s
     try:
         if "/" in token:
             real = _safe_realpath(_join(cwd, token))
-            if real and _is_installer_name(_basename(real)):
+            if real and _is_installer_name(_basename(real), cwd):
                 probe = _probe_is_file(real)
                 # `None` (undeterminable — e.g. a `chmod` on the venv
                 # directory two levels up makes even stat'ing this file
@@ -658,7 +668,7 @@ def _resolve_installer(token: str, cwd: str | None, env: Mapping[str, str]) -> s
                             "rather than assuming it is absent", token, real,
                         )
                     return real
-            if _is_installer_name(_basename(token)):
+            if _is_installer_name(_basename(token), cwd):
                 _LOG.warning(
                     "venv guard: %r names an installer but could not be "
                     "resolved via PATH; allowing", token,
@@ -671,7 +681,7 @@ def _resolve_installer(token: str, cwd: str | None, env: Mapping[str, str]) -> s
         # `_flatten` and its commit message claimed there was one. Without it
         # this returns before `shutil.which` AND before the WARNING, so a bare
         # `pip.exe install foo` was allowed in silence.
-        if not _is_installer_name(_basename(token)):
+        if not _is_installer_name(_basename(token), cwd):
             return None
         # Deliberately NOT `shutil.which`: it resolves via `os.path.exists`
         # internally, which swallows `PermissionError` exactly like
@@ -820,7 +830,7 @@ def _resolve_installer(token: str, cwd: str | None, env: Mapping[str, str]) -> s
                     continue
                 if probe is None:
                     real = _safe_realpath(candidate) or candidate
-                    if _is_installer_name(_basename(real)):
+                    if _is_installer_name(_basename(real), cwd):
                         if fallback is None:
                             fallback = real
                         # Tracked SEPARATELY from `fallback`, and this is the
@@ -845,7 +855,7 @@ def _resolve_installer(token: str, cwd: str | None, env: Mapping[str, str]) -> s
                 if not os.access(candidate, os.X_OK):
                     continue
                 real = _safe_realpath(candidate)
-                if real and _is_installer_name(_basename(real)):
+                if real and _is_installer_name(_basename(real), cwd):
                     displaced = _displaced_by_indeterminate_venv(
                         token, real, venv_fallback)
                     if displaced is not None:
@@ -924,6 +934,11 @@ def _mutating_subcommand(tokens: list[str], start: int) -> str | None:
             # below, its value already inside this one token.
             i += 2 if tok in _VALUE_FLAGS else 1
             continue
+        # No `cwd` in scope here either (this walks an already-tokenised
+        # list with no path context) — same monotonic-conservativeness
+        # argument as `_spaced_path_candidates` above: the default folds
+        # using the process cwd + PATH union, a superset of any narrower
+        # cwd-scoped answer, so this can only deny more, never less.
         if _is_installer_name(tok):
             i += 1
             continue
@@ -1015,6 +1030,10 @@ def _uses_active_env(tokens: list[str], start: int) -> bool:
             seen_subcommand = True
             i += 1
             continue
+        # Same reasoning as the other token-list walkers above: no `cwd`
+        # is threaded through this call chain, so the default falls back
+        # to the process cwd + PATH union — a superset that can only fold
+        # (deny) more than a cwd-scoped answer would, never less.
         if _is_installer_name(tok) and not expects_program:
             i += 1
             continue

@@ -22,7 +22,7 @@ import tempfile
 
 import pytest
 
-from no_human.agent import guard, venv_install_guard
+from no_human.agent import exec_names, guard, venv_install_guard
 
 FORBIDDEN = []
 PROTECTED = ["main", "master", "release/*"]
@@ -36,6 +36,21 @@ requires_chmod = pytest.mark.skipif(
     not _CHMOD_MEANINGFUL,
     reason="root/non-POSIX ignores mode bits; the probe under test is a permission probe",
 )
+
+
+@pytest.fixture(autouse=True)
+def _clear_fold_cache():
+    """`host_folds_case` is `lru_cache`d per-process; without this a test that
+    pins the probe (via monkeypatch) or measures a real `tmp_path` volume can
+    read a stale answer left behind by a previous test in this file.
+    """
+    clear = getattr(exec_names.host_folds_case, "cache_clear", None)
+    if clear is not None:
+        clear()
+    yield
+    clear = getattr(exec_names.host_folds_case, "cache_clear", None)
+    if clear is not None:
+        clear()
 
 
 @contextlib.contextmanager
@@ -1701,3 +1716,85 @@ def test_a_trailing_separator_does_not_flip_the_candidate_order(
     assert venv_install_guard.denial_reason(
         "pip install requests", cwd=wt, env=env) is None, (
         "resolving the session's OWN venv must not be denied")
+
+
+# ---------------------------------------------------------------------------
+# AC1 — a capitalised installer spelling is refused wherever the lowercase
+# spelling is refused. Issue: `_is_installer_name` only folded case when
+# `_IS_WINDOWS`, so on a case-insensitive filesystem (macOS APFS by default)
+# `PIP install evilpkg` was ALLOWED into the shared dev venv while
+# `pip install evilpkg` was correctly DENIED — even though the shell resolves
+# `PIP` to the very same `pip` binary there.
+# ---------------------------------------------------------------------------
+
+def test_a_capitalised_installer_is_refused_on_a_folding_cwd(tmp_path, monkeypatch):
+    """With the probe pinned to `True` (a folding host), every capitalised
+    spelling of an installer must be refused exactly where the lowercase
+    spelling is — the measured `PIP install evilpkg -> ALLOW` bug closed."""
+    monkeypatch.setattr(exec_names, "host_folds_case", lambda *a, **k: True)
+    primary, primary_venv, wt, wt_venv, prod_env, wt_env = _session(tmp_path)
+    cases = [
+        "pip install evilpkg",
+        "PIP install evilpkg",
+        "Pip install evilpkg",
+        "PIP3 install evilpkg",
+        "UV add evilpkg",
+    ]
+    for cmd in cases:
+        r = venv_install_guard.denial_reason(cmd, cwd=wt, env=prod_env)
+        assert r is not None, f"must be denied on a folding host: {cmd}"
+        d = _ev("Bash", {"command": cmd}, cwd=wt, env=prod_env)
+        assert not d.allow, f"must be blocked via evaluate(): {cmd}"
+
+
+def test_a_case_sensitive_host_still_allows_the_capitalised_spelling(
+    tmp_path, monkeypatch
+):
+    """The #320 position, preserved: where `PIP` really is a different file
+    from `pip` (a case-SENSITIVE volume), denying the capitalised spelling
+    would refuse a command the user is entitled to run. This is also the
+    control proving the fold — not some unrelated tightening — is what does
+    the work in the test above."""
+    monkeypatch.setattr(exec_names, "host_folds_case", lambda *a, **k: False)
+    primary, primary_venv, wt, wt_venv, prod_env, wt_env = _session(tmp_path)
+
+    lower = venv_install_guard.denial_reason(
+        "pip install evilpkg", cwd=wt, env=prod_env)
+    assert lower is not None, "the lowercase spelling must still be denied"
+
+    upper = venv_install_guard.denial_reason(
+        "PIP install evilpkg", cwd=wt, env=prod_env)
+    assert upper is None, (
+        "on a case-sensitive host PIP is a genuinely different program from "
+        f"pip, and must not be refused: {upper}"
+    )
+    d = _ev("Bash", {"command": "PIP install evilpkg"}, cwd=wt, env=prod_env)
+    assert d.allow, f"must stay allowed via evaluate(): {d.reason}"
+
+
+def test_this_hosts_real_filesystem_answer_is_honoured(tmp_path):
+    """No pinning: measure `tmp_path` for real and assert the `PIP` verdict
+    tracks the measurement — the row that would have caught the live macOS
+    bug with no mocks at all."""
+    import os as _os
+
+    written = tmp_path / "probe"
+    written.write_text("x")
+    other_spelling = tmp_path / "PROBE"
+    folds_here = other_spelling.exists() and _os.path.samefile(
+        other_spelling, written)
+
+    primary, primary_venv, wt, wt_venv, prod_env, wt_env = _session(tmp_path)
+    upper = venv_install_guard.denial_reason(
+        "PIP install evilpkg", cwd=wt, env=prod_env)
+
+    if folds_here:
+        assert upper is not None, (
+            "this volume folds case, so PIP resolves to the same program as "
+            "pip, and the install must be denied"
+        )
+    else:
+        assert upper is None, (
+            "this volume does not fold case, so PIP is a distinct program "
+            "from pip, and must not be refused"
+        )

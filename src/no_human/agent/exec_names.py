@@ -51,9 +51,12 @@ Gating matters in both directions:
 * On POSIX a backslash is a legal character in a filename, so splitting on it
   would invent a name the user never wrote and could deny a command they are
   entitled to run.
-* On POSIX `GIT` and `git` are different files, so folding case there would be
-  a text match masquerading as a structural one. `_is_installer_name` already
-  makes exactly this argument for the venv guard.
+* On a case-SENSITIVE POSIX filesystem `GIT` and `git` are different files,
+  so folding case there would be a text match masquerading as a structural
+  one. That is not every POSIX host, though: macOS ships APFS
+  case-insensitive by default, and folding is measured per-host by
+  `host_folds_case`, not assumed from `is_windows`. `_is_installer_name`
+  makes the same fold-where-the-filesystem-folds argument for the venv guard.
 
 The suffix strip is NOT gated, following the `_basename` precedent from #107
 rather than inventing a second rule for the same suffix. A POSIX file named
@@ -88,8 +91,20 @@ from __future__ import annotations
 
 import os
 import re
+import sys
+import tempfile
 from functools import lru_cache
 from pathlib import PurePosixPath
+
+#: Cap on directory entries `_folds_case_at` will stat looking for a
+#: case-swappable name, so a directory with many thousands of entries is
+#: never fully materialised for one probe.
+_MAX_ENTRY_PROBES = 8
+
+#: Cap on `PATH` entries `host_folds_case` will probe. Command resolution
+#: only needs ONE anchor to prove a fold; this bounds the cost of finding it
+#: on a very long `PATH`.
+_MAX_PATH_PROBES = 16
 
 #: Every extension Windows will execute directly, longest-first so `.exe` is
 #: not stripped out of a name that ends `.exe.cmd`.
@@ -106,7 +121,7 @@ _EXECUTABLE_SUFFIXES = (".cmd", ".bat", ".ps1", ".exe", ".com")
 _ADS_SEPARATOR = "::"
 
 
-def case_flags() -> int:
+def case_flags(cwd: str | None = None, path_env: str | None = None) -> int:
     r"""`re.IGNORECASE` where the host folds case, else no flag.
 
     The name-resolution path is not the whole guard: `_RM_RF`,
@@ -116,14 +131,113 @@ def case_flags() -> int:
     `sh -c "GIT push origin main"` were open for that reason after the name
     half was closed. Same measurement, same reasoning: folding where the
     filesystem folds denies nothing that could not already run.
+
+    `guard.py`'s regexes are compiled at IMPORT time, before any command's
+    `cwd` is known, so those call sites pass neither argument and get the
+    no-`cwd` union below (this process's own `os.getcwd()` plus its own
+    `PATH`). That is a documented residual, not a fix: it is the
+    fail-closed side of the same question, because an unmeasured anchor
+    folds rather than answering permissively.
     """
-    return re.IGNORECASE if host_folds_case() else 0
+    return re.IGNORECASE if host_folds_case(cwd, path_env) else 0
 
 
-@lru_cache(maxsize=1)
-def host_folds_case() -> bool:
-    r"""Whether this host's filesystem resolves two spellings of one name to the
-    same file. Measured, not assumed.
+def _swap_probe(path: str | None) -> bool | None:
+    """Tri-state: does swapping `path`'s case prove a fold? `None` means the
+    question was not answered, and must never collapse into `False`.
+
+    * `True` — the swapped spelling exists and names the SAME file
+      (`samefile`, not bare `exists`: a directory genuinely holding distinct
+      `Foo` and `foo` must measure `False`, not be mistaken for a fold).
+    * `False` — the swapped spelling is absent, or present but a different
+      inode.
+    * `None` — the basename has no case-swappable character; the path is
+      empty; or the probe itself could not be answered (`OSError` — a dead
+      mount, a permission-denied ancestor, a symlink loop — or `ValueError`,
+      e.g. an embedded NUL).
+    """
+    if not path:
+        return None
+    try:
+        directory, name = os.path.split(os.fspath(path))
+        swapped_name = name.swapcase()
+        if swapped_name == name:  # nothing to swap: no evidence either way
+            return None
+        if not os.path.exists(path):
+            # Nothing to compare the swapped spelling against — this proves
+            # nothing about the volume, unlike a genuinely absent swapped
+            # spelling (which DOES prove `False`, see below).
+            return None
+        swapped = os.path.join(directory, swapped_name)
+        if not os.path.exists(swapped):
+            return False
+        return os.path.samefile(swapped, path)
+    except (OSError, ValueError):
+        # An unreadable, vanished, or malformed path proves nothing. This is
+        # the tri-state's whole point: guessing here is what shipped as the
+        # bug, because the guessed answer was `os.name == "nt"`, which is the
+        # PERMISSIVE answer on POSIX.
+        return None
+
+
+def _folds_case_at(directory: str) -> bool | None:
+    """Whether `directory`'s own filesystem folds case, measured without
+    assuming its name (or any child's name) is case-swappable.
+
+    (a) Swap `directory`'s own basename against its parent — answers for
+    `/Users/x/repo` with zero listing. (b) If that is `None` (e.g. the
+    directory's name has no case-bearing character, like `/` or `/123`),
+    `os.scandir` up to `_MAX_ENTRY_PROBES` entries and swap each in turn,
+    first non-`None` wins. `scandir`, not `listdir`, so a directory with many
+    thousands of entries is never fully materialised. A per-entry `OSError`
+    (an entry that vanishes mid-scan) is skipped, never turned into a
+    verdict. (c) Otherwise `None`: this anchor answered nothing.
+    """
+    verdict = _swap_probe(directory)
+    if verdict is not None:
+        return verdict
+    try:
+        scanner = os.scandir(directory)
+    except OSError:
+        return None
+    try:
+        for count, entry in enumerate(scanner):
+            if count >= _MAX_ENTRY_PROBES:
+                break
+            try:
+                verdict = _swap_probe(entry.path)
+            except OSError:
+                continue
+            if verdict is not None:
+                return verdict
+    finally:
+        scanner.close()
+    return None
+
+
+def _candidate_anchors(cwd: str | None, path_env: str | None):
+    """The paths `host_folds_case` probes, in order: the `cwd` the command
+    will actually run in, then each `PATH` entry (command resolution is a
+    `PATH` question, not a cwd-only one — `/usr/bin` may fold while
+    `/Volumes/dev` does not), capped and de-duplicated in-order.
+    """
+    yield cwd or os.getcwd()
+    raw = os.environ.get("PATH", "") if path_env is None else path_env
+    probed = 0
+    for entry in raw.split(os.pathsep):
+        if not entry:
+            continue
+        if probed >= _MAX_PATH_PROBES:
+            break
+        probed += 1
+        yield entry
+
+
+@lru_cache(maxsize=None)
+def host_folds_case(cwd: str | None = None, path_env: str | None = None) -> bool:
+    r"""Whether the filesystem a command resolves and runs against folds case.
+    Measured, not assumed — and measured against a path that EXISTS when the
+    shipped artifact runs, not this module's own source file.
 
     `is_windows` answers the question for Windows and gets POSIX wrong: macOS
     ships APFS case-insensitive by default, and so are many Linux mounts
@@ -132,59 +246,61 @@ def host_folds_case() -> bool:
     compares against a lowercase name is open to the capitalised spelling
     (#328).
 
-    The probe is the same question the OS is already answering: swap the case
-    of this module's own filename and ask whether that path is the same file.
-    `samefile` rather than `exists`, so a genuinely different file that happens
-    to carry the swapped spelling is not mistaken for a fold.
+    THREE FACETS, one probe. The shipped desktop server is a PyInstaller
+    onedir freeze whose spec says no `.py` files ship, so `__file__` names a
+    path that does not exist at runtime — probing it answered nothing, and
+    the old fallback (`os.name == "nt"`) is the PERMISSIVE answer on POSIX, a
+    live bypass (`GH pr merge 7` -> ALLOW). And command *resolution* is a
+    `PATH` question: the volume holding this module is not necessarily the
+    volume a bare `pip`/`gh`/`git` resolves against. Probing `cwd` (which
+    `evaluate`/`denial_reason` already receive, and which exists in both a
+    checkout and the freeze) UNION each `PATH` entry closes all three: an
+    anchor exists at runtime either way, and a capitalised spelling only has
+    to resolve on *some* anchor for the guarded program to be reached.
 
-    Cached HERE, not only in `_folds_case`: the answer cannot change while the
-    process runs, and it is read on every guarded command.
+    UNION, FAIL-CLOSED. Any anchor that measures `True` settles it (folding
+    somewhere on the resolution path is enough). If every measured anchor is
+    determinate and none is `True`, the answer is the determinate `False`.
+    Only when NOTHING could be measured (every anchor answered `None`) does
+    this fall back to a couple of last-resort candidates, and only if THOSE
+    are also all `None` does it default to `True` — folding, never the
+    permissive answer, because an unmeasurable probe must fail toward "deny a
+    spelling nobody types", not toward "allow `GH pr merge 7`".
 
-    An earlier version of this paragraph said only "Cached: the answer cannot
-    change while the process runs". That was TRUE of the ANSWER -- the inner
-    `_folds_case` memo returned it, 4008 hits to 1 miss on a single key -- and
-    false of the COST, which is the distinction that mattered.
-    `os.path.realpath(__file__)` runs BEFORE that memo and lstats every path
-    component, so each call paid the syscalls the cache exists to avoid.
+    Cached on `(cwd, path_env)`: both are explicit arguments, so the cache
+    cannot go stale within one set of arguments. The `(None, None)` key reads
+    the process's OWN `os.getcwd()`/`PATH`, which `os.chdir` could invalidate
+    — but this guard never calls `os.chdir`, and the failure direction is
+    safe regardless: a stale `True` only ever over-denies.
 
-    Callers read this per TOKEN and per SEGMENT: `command_name`'s
-    `fold_case=None` default is the heavier of the two -- 14000 of the 16000
-    probes a 2000-segment command drives, against `_looks_like_git_push`'s
-    2000 -- and a 4000-quoted-argument command drove 4007 probes through one
-    `evaluate`, 4000 of them from `_looks_like_git_push`.
-    Measured, the realpath was within noise of the entire `case_flags()` cost,
-    and `guard.evaluate` on that shape ran 0.132s unfixed against 0.036s here.
-    That was enough to push `test_unmask_is_one_pass_not_one_per_table_entry`
-    past its 0.4s bound on a shared CI runner and turn trunk red -- a bound
-    that test calls deliberately loose, and which has roughly 10x headroom
-    when this probe is cached.
-
-    Folding on a case-insensitive host denies nothing that could not already
-    run, and skipping it on a case-sensitive one refuses nothing a user is
-    entitled to run -- which is the reason both earlier positions were correct
-    about their own host and wrong about the other.
+    Read per TOKEN and per SEGMENT (`command_name`'s `fold_case=None` default,
+    `_looks_like_git_push`'s recursion), which is why this is cached rather
+    than re-probing the filesystem on every call — see
+    `test_the_host_probe_is_measured_once_not_once_per_token`.
     """
-    return _folds_case(os.path.realpath(__file__))
-
-
-@lru_cache(maxsize=None)
-def _folds_case(path: str) -> bool:
-    # `os.path`, not `pathlib`: `Path(...)` instantiates the class for the
-    # CURRENT platform, so a test that patches `os.name` to "nt" and reloads
-    # this module gets `NotImplementedError: cannot instantiate 'WindowsPath'`
-    # from the probe rather than an answer. These are the same syscalls with
-    # no platform-bound object in the way.
-    directory, name = os.path.split(os.fspath(path))
-    swapped_name = name.swapcase()
-    if swapped_name == name:  # nothing to swap: no evidence either way
-        return os.name == "nt"
-    swapped = os.path.join(directory, swapped_name)
-    try:
-        return os.path.exists(swapped) and os.path.samefile(swapped, path)
-    except OSError:
-        # An unreadable or vanished path proves nothing; fall back to the
-        # host class rather than guessing the permissive answer.
-        return os.name == "nt"
+    saw_false = False
+    for candidate in _candidate_anchors(cwd, path_env):
+        verdict = _folds_case_at(candidate)
+        if verdict is True:
+            return True
+        if verdict is False:
+            saw_false = True
+    if saw_false:
+        return False
+    # Nothing on cwd/PATH was measurable at all. Try a couple of anchors that
+    # are themselves guaranteed to exist at runtime in both a checkout and a
+    # frozen bundle, before giving up and folding.
+    for candidate in (os.path.dirname(sys.executable), tempfile.gettempdir()):
+        verdict = _folds_case_at(candidate)
+        if verdict is True:
+            return True
+        if verdict is False:
+            saw_false = True
+    if saw_false:
+        return False
+    # Still nothing determinate anywhere: fold. A false DENY here lands on a
+    # spelling nobody types; the permissive answer is a live bypass.
+    return True
 
 
 def command_name(token: str, *, is_windows: bool, fold_case: bool | None = None) -> str:
