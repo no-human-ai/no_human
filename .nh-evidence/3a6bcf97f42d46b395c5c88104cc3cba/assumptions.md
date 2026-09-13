@@ -1,8 +1,8 @@
 # Assumptions
 
-_Harness-captured record for task `3a6bcf97`, commit `ffdee1b25051c81bae8e87ef66f4fb7e898cac2d` — not model-authored: no_human wrote this file from the intake step's recorded questions and assumptions. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `3a6bcf97`, commit `289ca5aafa4d4ff87ce201f169cef7ba83d35757` — not model-authored: no_human wrote this file from the intake step's recorded questions and assumptions. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
-> ⚠️ **Unresolved:** You've hit your monthly spend limit · raise it at claude.ai/settings/usage?from=cc_cli_limit_message ('default' subscription)
+> ⚠️ **Unresolved:** PR feedback revised 3 time(s), exceeding max_revision_rounds=2; escalating so a human can decide rather than revising indefinitely.
 
 <details><summary>⚠️ 2 assumptions made on your behalf — verify at review</summary>
 

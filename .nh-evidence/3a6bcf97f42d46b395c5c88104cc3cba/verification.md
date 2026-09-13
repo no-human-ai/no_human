@@ -1,143 +1,234 @@
 # How I verified this — full log
 
-_Harness-captured record for task `3a6bcf97`, commit `ffdee1b25051c81bae8e87ef66f4fb7e898cac2d` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `3a6bcf97`, commit `289ca5aafa4d4ff87ce201f169cef7ba83d35757` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ## How I verified this
-12 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
+14 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
+
+**Not everything recorded is shown:** the 12 most recent of those listed are shown with their captured output, and the other 2 commands are shown as a command line only.
 
 ### test
-- `uv run pytest tests/test_structural_budget.py -q -k orchestrator 2>&1 | tail -40`
+- `uv run pytest -q tests/test_status_clobber.py::test_update_task_never_moves_status 2>&1 | tail -30`
+  _output not shown - see the note above._
+- `uv run pytest -q tests/test_status_clobber.py tests/test_db_concurrency.py tests/test_task_retitle.py 2>&1 | tail -60`
+  _output not shown - see the note above._
+- `uv run pytest -q tests/test_task_retitle.py -v 2>&1 | tail -40`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-   Building no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/3a6bcf97f42d46b395c5c88104cc3cba.52752.79770f1d
-      Built no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/3a6bcf97f42d46b395c5c88104cc3cba.52752.79770f1d
-Installed 73 packages in 89ms
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.1.1, pluggy-1.6.0
+<redacted> isolated HOME: /var/folders/1r/3r0rt1jd4j1456rsg_fh4d380000gn/T/nh-test-home-wjice498
+rootdir: /Users/eyalgolan/.<redacted>/worktrees/3a6bcf97f42d46b395c5c88104cc3cba.52752.225fc462
+configfile: pyproject.toml
+plugins: anyio-4.14.0, no-human-0.2.2, cov-7.1.0, xdist-3.8.0, asyncio-1.4.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 22 items
 
-18 deselected in 0.04s
+tests/test_task_retitle.py ......................                        [100%]
+
+============================== 22 passed in 1.09s ==============================
 ```
 
-- `uv run pytest tests/test_structural_budget.py -q 2>&1 | tail -60`
+- `uv run pytest -q tests/test_task_config_cli.py tests/test_task_cancel_relabel.py tests/test_db.py tests/test_db_concurrency.py tests/test_status_clobber.py 2>&1 | tail -30`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-..................                                                       [100%]
-18 passed in 3.89s
+........................................................................ [ 58%]
+...................................................                      [100%]
+123 passed in 4.19s
 ```
 
-- `uv run pytest tests/test_text_reads_declare_encoding.py -q 2>&1 | tail -40`
+- `uv run pytest -q tests/test_abandoned_draft_closed.py tests/test_outbound_scrub.py tests/test_pr_body_truthfulness.py tests/test_task_spec.py tests/test_brain_invariants.py 2>&1 | tail -30`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-...............                                                          [100%]
-15 passed in 1.73s
-```
+........................................................................ [  6%]
+........................................................................ [ 13%]
+........................................................................ [ 19%]
+........................................................................ [ 26%]
+........................................................................ [ 32%]
+........................................................................ [ 39%]
+......
+[... 371 of 1,510 characters omitted from the middle ...]
+sssssssssssssss [ 72%]
+ssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssss [ 78%]
+ssssssssssssssssssssssssssss.ssssssssssssssssssssssssssssss............. [ 85%]
+....................ssss................................................ [ 91%]
+........................................................................ [ 98%]
+.................                                                        [100%]
+905 passed, 192 skipped in 46.84s
+```  
+  _excerpt - 1,508 characters of output in total_
 
-- `uv run pytest tests/test_task_retitle.py -q 2>&1 | tail -60`
+- `uv run pytest -q -k "commit_message or commit_subject" 2>&1 | tail -20`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
 .............                                                            [100%]
-13 passed in 1.37s
+=============================== warnings summary ===============================
+src/<redacted>/testing/test_layers.py:35
+  /Users/eyalgolan/.<redacted>/worktrees/3a6bcf97f42d46b395c5c88104cc3cba.52752.225fc462/src/<redacted>/testing/test_layers.py:35: PytestCollectionWarning: cannot collect test class 'TestLayer' because it has a __init__ constructor (from: tests/test_test_layers.py)
+    @dataclass
+
+src/<redacted>/testing/test_layers.py:89
+  /Users/eyalgolan/.<redacted>/worktrees/3a6bcf97f42d46b395c5c88104cc3cba.52752.225fc462/src/<redacted>/testing/test_layers.py:89: PytestCollectionWarning: cannot collect test class 'TestPlan' because it has a __init__ constructor (from: tests/test_test_layers.py)
+    @dataclass
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+13 passed, 1 skipped, 12571 deselected, 2 warnings in 7.29s
 ```
 
-- `uv run pytest tests/test_readme_claims.py -q 2>&1 | tail -20`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-............................s.s.s.s.s.s.s.s.s.s......................... [ 49%]
-......................s..........................s...................... [ 98%]
-..                                                                       [100%]
-134 passed, 12 skipped in 2.67s
-```
-
-- `uv run pytest tests/test_task_retitle.py tests/test_structural_budget.py tests/test_readme_claims.py tests/test_text_reads_declare_encoding.py -q -n 4 2>&1 | tail -40`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-bringing up nodes...
-bringing up nodes...
-
-.......................s.s..s.s.s.s..................................... [ 37%]
-....s.s.s.s........s...................................................s [ 75%]
-................................................                         [100%]
-180 passed, 12 skipped in 3.90s
-```
-
-- `uv run pytest tests/test_pr_hygiene.py -q -k commit_message 2>&1 | tail -30`
+- `uv run pytest -q tests/test_structural_budget.py 2>&1 | tail -60`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-....                                                                     [100%]
-4 passed, 52 deselected in 0.79s
-```
+.....F............                                                       [100%]
+=================================== FAILURES ===================================
+________________________ test_no_frozen_entry_has_grown ________________________
 
-- `uv run pytest tests/test_pr_hygiene.py tests/test_approve_merge.py -q -k "commit_message" 2>&1 | tail -20`
+scanned = ({'agent/claude_backend.py:ClaudeBackend.stream': 407, 'blockers/landed_override.py:approve_landed_override': 322, 'bl... ...}, {'agent/guard.py': 2892, 'api/app.py': 6182, 'blockers/wake.py': 2757, 'cli/commands.py': 8838, ...}, 229
+[... 708 of 1,847 characters omitted from the middle ...]
+sert ['core/db.py:...atchets down'] == []
+E             
+E             Left contains one more item: 'core/db.py: frozen 5149, now 5193 (+44); this budget only ratchets down'
+E             Use -v to get more diff
 
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-.......                                                                  [100%]
-7 passed, 104 deselected in 6.74s
-```
+tests/test_structural_budget.py:1999: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_structural_budget.py::test_no_frozen_entry_has_grown - Asse...
+1 failed, 17 passed in 1.56s
+```  
+  _excerpt - 1,845 characters of output in total_
 
-- `uv run pytest tests/test_db.py tests/test_task_cancel_relabel.py -q -n 4 2>&1 | tail -30`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-bringing up nodes...
-bringing up nodes...
-
-...........................................................              [100%]
-59 passed in 2.43s
-```
-
-- `uv run pytest -q -n 4 \   tests/test_task_retitle.py \   tests/test_structural_budget.py \   tests/test_readme_claims.py \   tests/test_text_reads_declare_encoding.py \   tests/test_pr_hygiene.py \   tests/test_approve_merge.py \   tests/test_db.py \   tests/test_task_cancel_relabel.py \   2>&1 | tail -40`
+- `uv run pytest -q tests/test_structural_budget.py 2>&1 | tail -30`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-bringing up nodes...
-bringing up nodes...
-
-.....s......s...s....s...s...s....s.....s...s..s........................ [ 19%]
-......s................................................................. [ 39%]
-.................................s...................................... [ 59%]
-........................................................................ [ 79%]
-........................................................................ [ 99%]
-..                                                                       [100%]
-350 passed, 12 skipped in 27.39s
+..................                                                       [100%]
+18 passed in 1.52s
 ```
 
-- `uv run pytest tests/test_check_release_manifest.py tests/test_structural_budget.py tests/test_precommit_manifest_gate.py -q -n 4 2>&1 | tail -30`
+- `uv run pytest -q tests/test_task_retitle.py tests/test_status_clobber.py tests/test_db_concurrency.py tests/test_db.py tests/test_task_config_cli.py tests/test_task_cancel_relabel.py tests/test_structural_budget.py 2>&1 | tail -30`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-bringing up nodes...
-bringing up nodes...
-
-sss.ssss.............................................                    [100%]
-46 passed, 7 skipped in 4.34s
+........................................................................ [ 44%]
+........................................................................ [ 88%]
+...................                                                      [100%]
+163 passed in 6.16s
 ```
 
-- `uv run pytest -q -n 4 \   tests/test_task_retitle.py \   tests/test_structural_budget.py \   tests/test_readme_claims.py \   tests/test_text_reads_declare_encoding.py \   tests/test_pr_hygiene.py \   tests/test_approve_merge.py \   tests/test_db.py \   tests/test_task_cancel_relabel.py \   tests/test_check_release_manifest.py \   tests/test_precommit_manifest_gate.py \   2>&1 | tail -20`
+- `uv run pytest -q tests/test_abandoned_draft_closed.py tests/test_outbound_scrub.py tests/test_pr_body_truthfulness.py tests/test_task_spec.py tests/test_brain_invariants.py 2>&1 | tail -15`
+
+```
+........................................................................ [ 19%]
+........................................................................ [ 26%]
+........................................................................ [ 32%]
+........................................................................ [ 39%]
+........................................................................ [ 45%]
+........................................................................ [ 52%]
+........................................................................ [ 59%]
+........................................................................ [ 65%]
+..............ssssssssssssssssssssssssssssssssssssssssssssssssssssssssss [ 72%]
+ssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssss [ 78%]
+ssssssssssssssssssssssssssss.ssssssssssssssssssssssssssssss............. [ 85%]
+....................ssss................................................ [ 91%]
+........................................................................ [ 98%]
+.................                                                        [100%]
+905 passed, 192 skipped in 48.31s
+```
+
+- `uv run pytest -q -k "commit_message or commit_subject" 2>&1 | tail -10; echo "---repoguard---"; uv run pytest -q -m repoguard 2>&1 | tail -10`
+
+```
+src/<redacted>/testing/test_layers.py:35
+  /Users/eyalgolan/.<redacted>/worktrees/3a6bcf97f42d46b395c5c88104cc3cba.52752.225fc462/src/<redacted>/testing/test_layers.py:35: PytestCollectionWarning: cannot collect test class 'TestLayer' because it has a __init__ constructor (from: tests/test_test_layers.py)
+    @dataclass
+
+src/<redacted>/testing/test_layers.py:89
+  /Users/eyalgolan/.<redacted>/worktrees/3a6bcf97f42d46b395c5c88104cc3cba.52752.225fc462/src/<redacted>/testing/test_layers.py:89: PytestCollectionWarning: cannot collect test class 'TestPlan' because it has a __init__ constructor (from: tests/test_test_layers.py)
+    @dataclass
+
+-- Docs: https://docs.pytest.org/en/st
+[... 432 of 1,571 characters omitted from the middle ...]
+
+src/<redacted>/testing/test_layers.py:89
+  /Users/eyalgolan/.<redacted>/worktrees/3a6bcf97f42d46b395c5c88104cc3cba.52752.225fc462/src/<redacted>/testing/test_layers.py:89: PytestCollectionWarning: cannot collect test class 'TestPlan' because it has a __init__ constructor (from: tests/test_test_layers.py)
+    @dataclass
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+143 passed, 13 skipped, 12429 deselected, 2 warnings in 3.91s
+```  
+  _excerpt - 1,547 characters of output in total_
+
+- `uv run pytest -q tests/test_task_retitle.py::test_db_write_failure_after_forge_success_names_both_and_disagreement tests/test_task_retitle.py::test_retitle_refused_for_compound_parent_with_a_true_reason -v 2>&1 | tail -15`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-bringing up nodes...
-bringing up nodes...
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.1.1, pluggy-1.6.0
+<redacted> isolated HOME: /var/folders/1r/3r0rt1jd4j1456rsg_fh4d380000gn/T/nh-test-home-1r0lptv0
+rootdir: /Users/eyalgolan/.<redacted>/worktrees/3a6bcf97f42d46b395c5c88104cc3cba.52752.225fc462
+configfile: pyproject.toml
+plugins: anyio-4.14.0, no-human-0.2.2, cov-7.1.0, xdist-3.8.0, asyncio-1.4.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 2 items
 
-.....s.....s...s.......s..s.....s.s...s.....s....s....................s. [ 18%]
-........s............................................................... [ 36%]
-........................................................................ [ 54%]
-........................................................................ [ 72%]
-.................................................................s.ssss. [ 90%]
-..ss.................................                                    [100%]
-378 passed, 19 skipped in 30.63s
+tests/test_task_retitle.py ..                                            [100%]
+
+============================== 2 passed in 0.53s ===============================
+```
+
+- `uv run pytest -q tests/test_status_clobber.py::test_update_task_never_moves_status -v 2>&1 | tail -30`
+
+```
+=================================== FAILURES ===================================
+_____________________ test_update_task_never_moves_status ______________________
+
+store = <<redacted>.core.db.Store object at 0x109e55fd0>
+
+    async def test_update_task_never_moves_status(store):
+        """A stale handle's status must not overwrite a live row's status; the
+        handle is refreshed to the row's truth instead."""
+        t = Task.new("x", repo_path=<redacted>
+        await store.create_task(t)
+        stale = await store.get_task(t.id)          # snapshot at PENDING
+    
+        await store.set_status(t, TaskStatus.REVIEWING, validate=False)
+    
+        stale.title = "renam
+[... 278 of 1,417 characters omitted from the middle ...]
+        # the edit still landed
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       AssertionError: assert 'x' == 'renamed'
+E         
+E         - renamed
+E         + x
+
+tests/test_status_clobber.py:50: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_status_clobber.py::test_update_task_never_moves_status - As...
+============================== 1 failed in 0.86s ===============================
+```  
+  _excerpt - 1,414 characters of output in total_
+
+- `grep -n "TEMP-REVERT" src/<redacted>/core/db.py; echo "---rerun---"; uv run pytest -q tests/test_task_retitle.py tests/test_status_clobber.py tests/test_db_concurrency.py tests/test_db.py tests/test_task_config_cli.py tests/test_task_cancel_relabel.py tests/test_structural_budget.py 2>&1 | tail -10`
+
+```
+---rerun---
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+........................................................................ [ 44%]
+........................................................................ [ 88%]
+...................                                                      [100%]
+163 passed in 6.09s
 ```
 
 
 **Not verified:** everything below is a limit of this section, listed whether or not it bit this attempt.
 
 - no command recognised as e2e, http, typecheck, lint, build was recorded
+- 2 commands listed above are shown without their captured output: only the 12 most recent carry it
 - an entry shows that a command LINE was submitted to the shell and what came back - never that the check recognised inside it RAN, and never that it was the RIGHT command: `pytest -k test_nothing` prints a clean run, and a recorded command line may name a check the shell never reached yet is still counted - TEN SHAPES WERE DRIVEN against bash 3.2.57 with the check replaced by a marker-printing stub and the marker was absent in every one: a failed `&&`, a taken `||`, an `exit`, an `exec`, an `exit` inside a `source`d script, a syntax error that aborts the REST of the line, a multi-line `if false`, a `case` that matches nothing, `set -e` aborting an earlier command, and `set -u` on an unset variable; that list is MEASURED, NOT EXHAUSTIVE, because this module is not bash, so a kind this section does NOT list as missing is a kind some recorded line named, which is not the same as a kind that ran
 - the text is the coder's: the session chose the command string and, through `echo`/`printf`, can choose the output too. Both are shown as inert text, and no entry ASSERTS a pass, a fail, or an exit status - `pytest -q | tail -3` exits with `tail`'s status, `Error: Exit code 1` is a line IN THE OUTPUT, and where the harness reported a timeout or an interruption instead of output that report is appended to the captured text in square brackets. Read the output
 - recognition reads the command line ONLY - it never looks inside what a command runs, so `bash -c 'uv run pytest -q'` leaves no receipt at all while `make test` leaves one that names `make` and not the recipe it ran; and the other way, a check merely NAMED in a heredoc body, or in a quoted string that happens to spell a shell separator, can be recorded as though it ran
