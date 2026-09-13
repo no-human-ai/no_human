@@ -797,28 +797,103 @@ def test_running_the_tests_for_the_landing_code_is_not_landing():
         'python -c "import os; os.system(\'nh approve abc\')"'}).allow
 
 
-def test_unmask_is_one_pass_not_one_per_table_entry():
+class _CountingTable(dict):
+    """A mask table that records how much of itself each call touched.
+
+    `lookups` counts single-key reads; `full_scans` counts every request for a
+    view over the WHOLE table (`items`/`keys`/`values`/iteration), which is the
+    operation the quadratic version performed once per token.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.lookups = 0
+        self.full_scans = 0
+
+    def get(self, key, default=None):
+        self.lookups += 1
+        return super().get(key, default)
+
+    def __getitem__(self, key):
+        self.lookups += 1
+        return super().__getitem__(key)
+
+    def items(self):
+        self.full_scans += 1
+        return super().items()
+
+    def keys(self):
+        self.full_scans += 1
+        return super().keys()
+
+    def values(self):
+        self.full_scans += 1
+        return super().values()
+
+    def __iter__(self):
+        self.full_scans += 1
+        return super().__iter__()
+
+
+def test_unmask_is_one_pass_not_one_per_table_entry(monkeypatch):
     """A regression guard for the quadratic review round 4 found: `_unmask`
     looped the whole table per token, so `nh "a" x16000` cost 14.6 SECONDS
     inside a PreToolUse hook (192M str.replace calls) against 34 ms without the
-    rule. Generous bound — this asserts the SHAPE, not a machine speed."""
+    rule.
+
+    This asserts the SHAPE by COUNTING what the table gives up, not by timing
+    it. The previous version asserted wall-clock `< 0.4s`, which its own
+    docstring said was meant to measure shape rather than machine speed — on a
+    loaded CI runner it measured the runner instead, and reddened unrelated
+    contributor PRs (#349). A count is the same claim without the clock: it is
+    identical on a fast laptop and a saturated runner, and it fails for the one
+    reason the test exists.
+    """
     table = {f"\x00m{i}\x00": f"value-{i}" for i in range(5000)}
     assert guard._unmask("\x00m4999\x00 and \x00m0\x00", table) == \
         "value-4999 and value-0"
 
-    # The shape that actually regressed: MANY tokens against a big table, which
-    # is what a command full of quoted arguments produces. A table loop is
-    # O(tokens x table) and took 14.6s at n=16000; one pass is linear. The
-    # bound is deliberately loose — this asserts the shape, not a machine.
+    # The invariant: cost per call follows the number of MASKS IN THE STRING,
+    # never the size of the table. Ten times the table, same two masks, must
+    # cost exactly the same — a table loop is O(tokens x table) and would scan.
+    tok = "\x00m7\x00 and \x00m0\x00"
+    lookups_by_size = {}
+    for size in (5_000, 50_000):
+        counting = _CountingTable(
+            {f"\x00m{i}\x00": f"value-{i}" for i in range(size)})
+        assert guard._unmask(tok, counting) == "value-7 and value-0"
+        assert counting.full_scans == 0, (
+            f"_unmask scanned the whole {size}-entry table "
+            f"{counting.full_scans} time(s); it must substitute in one pass "
+            "over the STRING, not one pass per table entry")
+        lookups_by_size[size] = counting.lookups
+
+    assert lookups_by_size[5_000] == lookups_by_size[50_000] == 2, (
+        "cost must follow the 2 masks in the string, not the table size — got "
+        f"{lookups_by_size}")
+
+    # ...and the same invariant through the real entry point, on the shape that
+    # actually regressed: a command full of quoted arguments. The spy hands the
+    # real `_unmask` a counting copy of whatever table `evaluate` built, so a
+    # table loop reintroduced anywhere under here still shows up as a scan.
+    scans = []
+    real_unmask = guard._unmask
+
+    def spy(tok_, table_):
+        counting = _CountingTable(table_)
+        result = real_unmask(tok_, counting)
+        scans.append(counting.full_scans)
+        return result
+
     cmd = "nh " + '"a" ' * 4000
-    start = time.monotonic()
+    monkeypatch.setattr(guard, "_unmask", spy)
     guard.evaluate("Bash", {"command": cmd}, forbidden_paths=FORBIDDEN,
                    never_push_to=PROTECTED, readonly=False)
-    elapsed = time.monotonic() - start
-    assert elapsed < 0.4, (
-        f"guard.evaluate took {elapsed:.3f}s on 4000 quoted tokens — _unmask "
-        "is looping the table per token again instead of substituting in one "
-        "pass")
+
+    assert scans, "evaluate never called _unmask — the spy proved nothing"
+    assert not any(scans), (
+        f"_unmask scanned the whole table on {sum(1 for s in scans if s)} of "
+        f"{len(scans)} calls from evaluate() — the quadratic table loop is back")
 
 
 def test_an_interpreter_flag_before_the_code_does_not_hide_it():
