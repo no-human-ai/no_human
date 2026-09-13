@@ -1,23 +1,23 @@
 # Verifiers
 
-_Harness-captured record for task `af1602af`, commit `ec467625e7407a8f65806f361eb80ef7ba14a3a8` — not model-authored: no_human wrote this file from the deterministic verifier rules selected for this commit's files. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `af1602af`, commit `f054fc76e32a2f74e24fbbaa47824b8bed7ff392` — not model-authored: no_human wrote this file from the deterministic verifier rules selected for this commit's files. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ```json
 [
   {
-    "comment": "All added test functions carry assert statements, and the other two files' changes are to module-level data (CITATION_TABLE, FROZEN_FILE_LINES), not test functions, so no assertion-free test is introduced.",
-    "evidence": "Each new test function in test_task_show_preserves_brackets.py contains at least one assert, e.g. test_kind_with_brackets_survives_the_render: 'assert kind in result.output, result.output'; the diffs to test_readme_claims.py and test_structural_budget.py only edit data tables, not test bodies.",
+    "comment": "All 11 added test functions assert at least once, and no test functions were modified in the other two files (only module-level data constants), so the statement holds.",
+    "evidence": "Every new test function in test_task_show_preserves_brackets.py contains assert statements, e.g. 'assert result.exit_code == 0' and 'assert \"never_push_to=[main,master]\" in result.output'; the edits to test_readme_claims.py and test_structural_budget.py only changed data tables (CITATION_TABLE, FROZEN_FILE_LINES), not any test function body.",
     "file": "tests/test_task_show_preserves_brackets.py",
     "files_checked": [
       "tests/test_readme_claims.py",
       "tests/test_structural_budget.py",
       "tests/test_task_show_preserves_brackets.py"
     ],
-    "line": 148,
+    "line": 105,
     "no_verdict": false,
     "passed": true,
     "severity": "medium",
-    "tokens_used": 399,
+    "tokens_used": 681,
     "unavailable": false,
     "verifier_id": "tests-assert-something"
   }
