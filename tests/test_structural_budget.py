@@ -212,7 +212,23 @@ FROZEN_FUNCTION_LINES = {
     # `result.detail` (capped, whitespace-collapsed) in the event text and
     # `question`, and prefixes `step=` onto the stored `evidence` -- step
     # alone was not root-causeable. Measured on this tree.
-    "blockers/wake.py:WakeWatcher._check_pr_conflict": 458,
+    # 458 -> 464 (+6, 2026-09-13): stale-but-mergeable-PR bugfix (split from
+    # task 22c4ddf6's finding #3) — the inline `gh pr view` poll was
+    # extracted into the new shared `_poll_mergeable` (called once per tick
+    # by `_check_open_pr` and reused by `_check_base_stale`), and this
+    # function's signature/docstring gained the additive `info` keyword so a
+    # caller can hand it that shared poll instead of paying for a second one.
+    # CC unchanged at 72 (the frozen `FROZEN_FUNCTION_CC` entry below reads
+    # 74, which was already-existing slack on origin/main before this
+    # change — `scan_tree` on origin/main measures 72 there too, so nothing
+    # dropped; the 74 ceiling was just never tightened to match). Measured
+    # with `scan_tree` on both origin/main and this tree.
+    # 464 -> 470 (+6, 2026-09-13): same task, re-attempt after a human
+    # send-back — the `info` sentinel fix (distinguishing "not provided"
+    # from "provided as None because the shared poll failed", so this rung
+    # no longer re-polls and double-logs on the error path) grew the
+    # docstring and the guard by 6 lines; CC unchanged. Measured on this tree.
+    "blockers/wake.py:WakeWatcher._check_pr_conflict": 470,
     # 418 -> 424 (+6): D1.1 fix round — attempt-scoped verification-artifact
     # write wired into `_finalize` (review findings #1/#7). Measured on the
     # D1.1 squash-merge result.
@@ -220,7 +236,13 @@ FROZEN_FUNCTION_LINES = {
     # best-effort call that runs the UI-evidence browser walk after tests
     # pass and threads its rendered media section into `_pr_body`.
     # Re-anchored on merge.
-    "core/orchestrator.py:Orchestrator._finalize": 437,
+    # 437 -> 444 (+7, 2026-09-13): stale-but-mergeable-PR bugfix (split from
+    # task 22c4ddf6's finding #3) — `_finalize` now records the trunk tip a
+    # delivered PR was measured against (`vcs.delivered_base
+    # .record_at_delivery`), the one piece of state `blockers.wake
+    # .WakeWatcher._check_base_stale` needs to re-measure freshness later.
+    # Measured on this tree.
+    "core/orchestrator.py:Orchestrator._finalize": 444,
     # Pre-existing on main (measured red at d3d7d3a82a, this session's start):
     # an earlier fleet land grew stream() +6 without re-freezing it on its
     # merge result — the same "landed without measuring the ratchet" failure
@@ -1209,7 +1231,15 @@ FROZEN_FILE_LINES = {
     # frozen ceiling, so that function's own entry did not have to grow).
     # Measured after extracting/trimming as far as possible without cutting
     # the fail-closed guards' rationale comments.
-    "core/orchestrator.py": 24073,
+    # 24073 -> 24080 (+7, 2026-09-13): stale-but-mergeable-PR bugfix (task
+    # 22c4ddf6 finding #3) — the `delivered_base` import plus `_finalize`'s
+    # new trunk-tip recording call, measured on the merge result (the REFILE
+    # bugfix above had already landed on trunk at the time this was
+    # measured, so 24073 — not 23893 — is the true "before"). Pasted from
+    # `scan_tree`'s own `file_lines["core/orchestrator.py"]`
+    # (`len(text.splitlines())`, not `wc -l`): 24073 on origin/main, 24080
+    # on this tree.
+    "core/orchestrator.py": 24080,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.
@@ -1372,7 +1402,13 @@ FROZEN_FILE_LINES = {
     # `--description`/`--criteria` refusal callback, the PR-evidence branch
     # (refuse/update-both/landed-refuse), and the audit event. Measured via
     # `wc -l src/no_human/cli/commands.py` on this merge result.
-    "cli/commands.py": 8851,
+    # 8851 -> 8876 (+25, 2026-09-13): `nh task show` now renders
+    # `pr_base_freshness`/`pr_base_sha`/`pr_base_ref`/`pr_base_remeasures`/
+    # `pr_base_sha_source` (stale-but-mergeable PR re-measure, task
+    # 9b6e928a) — those context keys had no reader outside
+    # `blockers/wake.py` and `vcs/delivered_base.py`. Measured via `wc -l
+    # src/no_human/cli/commands.py`.
+    "cli/commands.py": 8876,
     # api/app.py 5338 -> 5346 (+8): same budget-floor warning surfaced by
     # `send-back`/`reply` as `budget_warning` in the JSON response. Net cost
     # was trimmed from a naive +14 to +8 by computing `Bounds.from_config(...)`
@@ -1808,7 +1844,73 @@ FROZEN_FILE_LINES = {
     # 2752 -> 2757 (+5): same cause as the FROZEN_FUNCTION_LINES entry above
     # -- the whole-file delta equals the function's delta. Measured on this
     # tree.
-    "blockers/wake.py": 2757,
+    # 2757 -> 2918 (+161, 2026-09-13): stale-but-mergeable-PR bugfix (task
+    # 22c4ddf6 finding #3) — extracted `_poll_mergeable` (shared between the
+    # conflict rung and the new one), the new `_check_base_stale` rung
+    # itself, and the `info`-keyword docstring note on `_check_pr_conflict`.
+    # Measured on this tree with the scanner below.
+    # 2918 -> 3014 (+96, 2026-09-13): same task, re-attempt after a human
+    # send-back — `_check_base_stale` was rewritten to fail CLOSED on a
+    # `None` (could-not-determine) local re-verification instead of
+    # conflating it with an empty (verified-clean) conflict set: explicit
+    # `is None` handling, a fetch-and-retry recovery for the branch ref
+    # (mirroring `_check_pr_conflict`'s own pattern), a dedicated
+    # `pr_base_undetermined` write path, and dedup logic bounding repeated
+    # identical undetermined answers across ticks. Measured on this tree
+    # with the scanner below.
+    # 3014 -> 3080 (+66, 2026-09-13): same task, second re-attempt after a
+    # further human send-back (AC2 amended to AC2'). An empty
+    # `conflicting_paths` result (textually clean) no longer records `fresh`
+    # or bumps `pr_base_sha` — merge-tree only proves textual mergeability,
+    # not semantic safety — so it now records `stale` with a `reason` and
+    # its own dedup guard; `_check_open_pr`'s bare `await
+    # self._check_base_stale(...)` became `base_stale_acted`, threaded
+    # through as the tick's own result when no rung below it claims the
+    # tick, so its outcome reaches `tick()`'s `actions` (and `nh wake`)
+    # instead of being discarded; the `_INFO_UNSET` sentinel (see
+    # `_check_pr_conflict` above) was added; and two docstring passages
+    # (AC2', and correcting a false "cheap local git fetch" claim —
+    # `delivered_base.fetch_base_ref` is a real network fetch) grew in
+    # place. Measured on this tree with the scanner below.
+    # 3080 -> 3092 (+12, 2026-09-13): same task, third re-attempt. Threading
+    # `base_stale_acted` through unconditionally (previous entry) made
+    # `_check_open_pr` surface `pr_base_undetermined` as a top-level "acted"
+    # result for ANY task whose repo/base cannot be resolved — including
+    # pre-existing wake-ladder tests unrelated to this bugfix that use a
+    # placeholder, non-existent `repo_path` and never recorded a
+    # `pr_base_sha`, breaking their `out is None` assertions. Only the
+    # actionable `pr_base_remeasured` outcome (AC1's "re-measured" signal)
+    # is now promoted to the tick's result; `pr_base_undetermined` stays
+    # recorded via its own context patch and emitted event (already a real
+    # production consumer, per the `_emit` call in `_check_base_stale`)
+    # without also being promoted to a ladder-level action. Measured on this
+    # tree with the scanner below.
+    # 3092 -> 3131 (+39, 2026-09-13): same task, independent-review send-back
+    # (Finding 10) — `_check_base_stale`'s AC2' docstring paragraph gained a
+    # "NOT A CONTRADICTION WITH `_check_pr_conflict`'s TRUST THE LOCAL MERGE"
+    # note: both rungs treat a definite empty `conflicting_paths` result as
+    # actionable, but for different questions ("stand down a conflict round"
+    # vs. "is this base safe to call fresh") with different costs of being
+    # wrong, and a reviewer flagged the two stances as reading like an
+    # unexplained inconsistency without it. Measured on this tree with the
+    # scanner below.
+    # 3131 -> 3138 (+7, 2026-09-13): same task, this send-back's Finding —
+    # the measure()-level UNDETERMINED branch in `_check_base_stale` (an
+    # unreadable/errored trunk read, e.g. a broken repo path) was missing
+    # the same debounce the other two UNDETERMINED branches already had,
+    # so it re-wrote context and re-emitted an event on every tick forever;
+    # added the dedup guard to match. Measured on this tree with the
+    # scanner below.
+    # 3138 -> 3156 (+18, 2026-09-13): same task, same send-back — the dedup
+    # fix above grew `_check_base_stale` to 305 lines, over
+    # MAX_FUNCTION_LINES (300). Extracted the STALE-branch local
+    # re-verification (the `conflicting_paths` fetch-and-retry block) into
+    # a new sibling method, `_reverify_base_locally`, rather than bumping a
+    # frozen per-function ceiling — same behavior, moved verbatim, plus the
+    # new `def`/docstring overhead. Measured via
+    # `python3 -c "print(len(open('src/no_human/blockers/wake.py').read().splitlines()))"`
+    # on this tree.
+    "blockers/wake.py": 3156,
     # +91: `_SCAN_WRAPPER_NAMES` + `_peel_scan_wrappers` — peels
     # timeout/xargs/nice/stdbuf (and siblings) for the scan-severity check
     # only, so a wrapped `find … -delete` in a denied compound classifies
