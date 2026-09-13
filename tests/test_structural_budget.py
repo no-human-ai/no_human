@@ -1515,7 +1515,12 @@ FROZEN_FILE_LINES = {
     # path too, gated to avoid double-firing against `_run_attempt`'s own
     # in-process `cancelled_hard` emit when `stopped` is True. Measured on
     # this tree with the scanner below.
-    # 6183 -> 6193 (+10): `worker_status`'s `healthy` conjunction gains
+    # 6182 -> 6193 (+11): the baseline is the MEASURED line count, not the
+    # frozen entry. main's entry says 6183 while the tree is 6182, and
+    # `offenders()` reports grown (measured > frozen) and stale (measured <=
+    # threshold) but never a stale-HIGH baseline, so that one-line gap sat
+    # unnoticed and an earlier version of this comment inherited it instead
+    # of measuring. This entry closes the gap. `worker_status`'s `healthy` conjunction gains
     # `and not out.get("lease_lost")` (a lost lease is permanent and
     # `tick_stalled` does not cover it), and `queue_health_endpoint` reads
     # `sched.lease_lost` and threads it into `queue_health(...)` alongside

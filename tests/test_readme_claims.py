@@ -3044,3 +3044,53 @@ def test_a_symbol_row_beyond_the_window_fails(tmp_path, monkeypatch):
         _check_citation(
             "security.md", "widget.py:widget_fn:11", "widget.py", "MARKER PHRASE"
         )
+
+
+def test_windows_md_code_line_citations_resolve():
+    """The OTHER half of #110: a bare line number into a live source file.
+
+    The reporter found `docs/WINDOWS.md` citing `cli/commands.py:4352` when
+    the line it described had moved 2,766 lines. A CITATION_TABLE row cannot
+    catch that: `_CITATION_DOC_PATHS` does not include `WINDOWS.md`, so
+    `_check_citation` never opens the doc -- I added such a row first and
+    measured it inert (rotting the citation back to 4352 left the file at
+    `137 passed`).
+
+    This reads the doc instead. For every `path/to/file.py:N` citation naming
+    a file under `src/no_human`, the cited line must still contain the token
+    the surrounding table cell describes. Only `.py` citations are checked:
+    nine of the doc's other citations name bare `.mjs`/`.cjs` basenames under
+    `desktop/`, which `_resolve_source` looks for under `src/no_human` only
+    and does not find -- registering the whole doc is a larger job than #110.
+    """
+    doc_path = Path(__file__).resolve().parent.parent / "docs" / "WINDOWS.md"
+    doc = doc_path.read_text(encoding="utf-8")
+    src_root = Path(__file__).resolve().parent.parent / "src" / "no_human"
+
+    #: cited path -> a token that must appear on the cited line
+    EXPECTED = {"cli/commands.py": "signal.SIGKILL"}
+
+    cites = re.findall(r"`([a-z_/]+\.py):(\d+)`", doc)
+    checked = 0
+    for rel, lineno in cites:
+        if rel not in EXPECTED:
+            continue
+        target = src_root / rel
+        assert target.is_file(), f"WINDOWS.md cites {rel}, which does not exist"
+        lines = target.read_text(encoding="utf-8").splitlines()
+        n = int(lineno)
+        assert 1 <= n <= len(lines), (
+            f"WINDOWS.md cites {rel}:{n}, but that file has {len(lines)} lines"
+        )
+        token = EXPECTED[rel]
+        assert token in lines[n - 1], (
+            f"WINDOWS.md cites {rel}:{n} for `{token}`, but that line reads "
+            f"{lines[n - 1].strip()!r}. The citation has rotted -- this is the "
+            f"defect #110 reported."
+        )
+        checked += 1
+
+    assert checked, (
+        "no checkable .py line citation found in WINDOWS.md -- the instrument "
+        "would pass vacuously"
+    )
