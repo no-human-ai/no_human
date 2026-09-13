@@ -1633,7 +1633,17 @@ FROZEN_FILE_LINES = {
     # single-column `UPDATE tasks SET title=?, updated_at=? WHERE id=?`
     # for the new `nh task retitle` command, avoiding a read-modify-write
     # race. Measured on this tree with the scanner below.
-    "core/db.py": 5123,
+    # 5123 -> 5149 (+26): review-round F2 fix — `update_task` and
+    # `update_task_columns` both keyed their `title=:title` SET clause off
+    # an `updated_at`-compared CASE (mirroring the existing `cancel_reason`
+    # CASE just above it), so a stale in-memory `Task` handle snapshotted
+    # BEFORE a `retitle` can no longer stomp the row back to the old title
+    # once that retitle has landed — the same stale-handle protection
+    # `status` already had, applied to `title` without dropping it from
+    # the column list (unlike status, ordinary callers legitimately mutate
+    # `task.title` and expect it persisted). Measured via
+    # `wc -l src/no_human/core/db.py` on this merge result.
+    "core/db.py": 5149,
     # +71: set_local_backend_fields — the config-write helper for the Settings
     # pane's local coder-backend fields (llm.local_model / llm.local_base_url).
     # +75: Codex account config helpers.

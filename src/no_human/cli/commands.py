@@ -1804,6 +1804,21 @@ def task_retitle(task_id, new_title, update_pr):
                 console.print("[red]title cannot be empty[/]")
                 sys.exit(1)
 
+            if t.status == TaskStatus.COMPOUND_PARENT:
+                # Legacy, nothing-creates-it-anymore status — no attempt
+                # runs and no commit subject is ever built against a parent
+                # row, so the generic "running attempt" wording below would
+                # be false here; refuse for what's actually true instead.
+                console.print(
+                    f"[red]cannot retitle[/] {t.id[:8]} — status is "
+                    f"compound_parent, a legacy parent-coordination status "
+                    f"no code path creates anymore. There is no attempt "
+                    f"running and no commit subject at stake here, but this "
+                    f"command has no tested transition for it either, so it "
+                    f"refuses rather than guess."
+                )
+                sys.exit(1)
+
             if t.status not in _RETITLE_SAFE_STATES:
                 console.print(
                     f"[red]cannot retitle[/] {t.id[:8]} — status is "
@@ -1817,49 +1832,85 @@ def task_retitle(task_id, new_title, update_pr):
                 sys.exit(1)
 
             old_title = t.title
-            from ..vcs.task_pr import resolve_task_pr
-            pr = await resolve_task_pr(store, t)
+            # `resolve_task_pr` alone misses a PR recorded only via events
+            # (the pr_draft-only shape `task_pr.py` documents as the 8c8b36b5
+            # incident); `task_has_pr_evidence` is the one call every other
+            # "does this task have a PR" site already uses.
+            pr_url = await task_has_pr_evidence(store, t)
 
             pr_title_updated = False
-            if pr.url:
-                if not update_pr:
+            if pr_url:
+                from ..vcs.pr_watcher import default_pr_state
+                state = await default_pr_state(pr_url)
+                landed = state in ("MERGED", "CLOSED")
+
+                if landed and update_pr:
                     console.print(
-                        f"[red]refusing[/] — task has an open PR at "
-                        f"{pr.url}; retitling would leave the task title "
-                        f"and the PR title disagreeing. Pass --update-pr "
-                        f"to retitle both."
+                        f"[red]refusing[/] — the PR at {pr_url} is already "
+                        f"{state.lower()}; its title is history now (the "
+                        f"commit subject it carried has already landed, if "
+                        f"it merged) and must not be rewritten. Retitle "
+                        f"without --update-pr to correct the task's own "
+                        f"title only."
                     )
                     sys.exit(1)
 
-                from ..vcs.comment_poster import set_pr_title
-                git_cfg = config.get("git") or {}
-                subject = commit_subject(
-                    new_title, t.external_id, git_cfg.get("commit_prefix", ""))
-                res = await asyncio.to_thread(set_pr_title, pr.url, subject)
-                if not res.get("ok"):
+                if not landed and not update_pr:
                     console.print(
-                        f"[red]failed to retitle PR[/] {pr.url}: "
-                        f"{res.get('error')} — task title left unchanged "
-                        f"so the two still agree."
+                        f"[red]refusing[/] — task has a PR at {pr_url} "
+                        f"(state: {state or 'unknown'}); retitling would "
+                        f"leave the task title and the PR title "
+                        f"disagreeing. Pass --update-pr to retitle both."
                     )
                     sys.exit(1)
-                pr_title_updated = True
+
+                if not landed and update_pr:
+                    from ..vcs.comment_poster import set_pr_title
+                    git_cfg = config.get("git") or {}
+                    subject = commit_subject(
+                        new_title, t.external_id,
+                        git_cfg.get("commit_prefix", ""))
+                    res = await asyncio.to_thread(
+                        set_pr_title, pr_url, subject)
+                    if not res.get("ok"):
+                        console.print(
+                            f"[red]failed to retitle PR[/] {pr_url}: "
+                            f"{res.get('error')} — task title left "
+                            f"unchanged so the two still agree."
+                        )
+                        sys.exit(1)
+                    pr_title_updated = True
+                # landed and not update_pr: fall through — the task's own
+                # title may still be corrected; the forge is untouched.
 
             from ..blockers import human_event
-            await store.update_task_title(t.id, new_title)
-            await store.save_events(t.id, [{
-                **human_event(
-                    "retitle", prior_status=t.status,
-                    reason=f"{old_title!r} -> {new_title!r}",
-                    text="title corrected by human"),
-                "prior_title": old_title,
-                "new_title": new_title,
-                "ts": time.time(),
-            }])
+            try:
+                await store.update_task_title(t.id, new_title)
+                await store.save_events(t.id, [{
+                    **human_event(
+                        "retitle", prior_status=t.status,
+                        reason=f"{old_title!r} -> {new_title!r}",
+                        text="title corrected by human"),
+                    "prior_title": old_title,
+                    "new_title": new_title,
+                    "ts": time.time(),
+                }])
+            except Exception as exc:
+                if pr_title_updated:
+                    # Forge write already landed; the DB write meant to
+                    # follow it just failed — say so loudly, by name.
+                    console.print(
+                        f"[red]PR title was updated but the task row was "
+                        f"not[/]: {exc}. PR {pr_url} now reads {subject!r} "
+                        f"while the task record still says {old_title!r} — "
+                        f"they disagree; fix the task title (retitle again, "
+                        f"or by hand) to match."
+                    )
+                raise
 
             console.print(f"[green]retitled[/] {t.id[:8]}")
             if pr_title_updated:
-                console.print(f"PR title updated: {pr.url}")
+                console.print(f"PR title updated: {pr_url}")
 
     asyncio.run(_go())
 

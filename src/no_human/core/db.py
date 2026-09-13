@@ -1990,12 +1990,30 @@ class Store:
         way to clear it is an explicit `merge_context({"cancel_reason": None})`
         (used by retry), which this does not affect since it targets a
         different UPDATE.
+
+        ``title`` gets a narrower version of the same idea, not an exclusion
+        (legitimate callers, e.g. `_run_cli_grill`'s pre-file scoping, mutate
+        `task.title` in memory and expect this method to persist it, so it
+        can't just drop off the column list like status did). A handle
+        snapshotted BEFORE a `nh task retitle` must not stomp the row back
+        to the old title once that retitle has landed (`_resume_human_gated`
+        does a slow `repo.checkout` then `update_task(task)` — a retitle
+        arriving in that window must survive). The CASE keys off
+        `updated_at`: `handle_updated_at` is this handle's row-synced
+        timestamp, captured BEFORE the `_now()` bump below. If the row's
+        `updated_at` has since moved past it, the row's own title wins;
+        otherwise this handle is the latest writer and its title wins, same
+        as a plain non-stale `update_task(t)` call today.
         """
+        handle_updated_at = task.updated_at
         task.updated_at = _now()
         row = task.to_row()
+        row["handle_updated_at"] = handle_updated_at
         await self.db.execute(
             """UPDATE tasks SET
-                 external_id=:external_id, source=:source, title=:title,
+                 external_id=:external_id, source=:source,
+                 title = CASE WHEN updated_at > :handle_updated_at
+                               THEN title ELSE :title END,
                  description=:description, requirements=:requirements,
                  acceptance_criteria=:acceptance_criteria, repo_path=:repo_path,
                  kind=:kind, parent_id=:parent_id, follows_id=:follows_id,
@@ -2155,12 +2173,20 @@ class Store:
         without clobbering concurrent context merges with a stale blob.
         Status is excluded for the same reason as in ``update_task`` (R15):
         ``set_status`` is the only status writer; a stale handle here had
-        no terminal guard at all."""
+        no terminal guard at all. ``title`` gets the same `updated_at`-keyed
+        CASE as `update_task` (see its docstring) rather than exclusion: a
+        stale handle must not revert a `nh task retitle` that landed while
+        this handle was in flight, but a fresh handle's own title edit must
+        still persist."""
+        handle_updated_at = task.updated_at
         task.updated_at = _now()
         row = task.to_row()
+        row["handle_updated_at"] = handle_updated_at
         await self.db.execute(
             """UPDATE tasks SET
-                 external_id=:external_id, source=:source, title=:title,
+                 external_id=:external_id, source=:source,
+                 title = CASE WHEN updated_at > :handle_updated_at
+                               THEN title ELSE :title END,
                  description=:description, requirements=:requirements,
                  acceptance_criteria=:acceptance_criteria, repo_path=:repo_path,
                  kind=:kind, parent_id=:parent_id, follows_id=:follows_id,

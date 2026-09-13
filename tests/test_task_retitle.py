@@ -107,6 +107,20 @@ def _recorder():
     return calls, fake_set_pr_title
 
 
+def _patch_pr_state(monkeypatch, state):
+    """Stub the forge-state check the retitle command runs on any resolved
+    PR. Tests that only care about the resolve/refuse plumbing pin this to
+    "OPEN" so they exercise the pre-existing open-PR behaviour deterministically
+    (no real `gh`/`glab` subprocess call, whether or not those CLIs happen to
+    be installed on the machine running the suite)."""
+    import no_human.vcs.pr_watcher as pr_watcher
+
+    async def fake_default_pr_state(ref):
+        return state
+
+    monkeypatch.setattr(pr_watcher, "default_pr_state", fake_default_pr_state)
+
+
 # --------------------------------------------------------------------------- #
 # AC1 — retitle works; board + `task show` read it back                      #
 # --------------------------------------------------------------------------- #
@@ -146,6 +160,7 @@ def test_open_pr_without_flag_refuses_and_names_pr(tmp_path, monkeypatch):
     import no_human.vcs.comment_poster as cp
     calls, fake = _recorder()
     monkeypatch.setattr(cp, "set_pr_title", fake)
+    _patch_pr_state(monkeypatch, "OPEN")
 
     db = tmp_path / "nh.db"
     url = "https://github.com/o/r/pull/7"
@@ -167,6 +182,7 @@ def test_open_pr_with_update_pr_retitles_both(tmp_path, monkeypatch):
     import no_human.vcs.comment_poster as cp
     calls, fake = _recorder()
     monkeypatch.setattr(cp, "set_pr_title", fake)
+    _patch_pr_state(monkeypatch, "OPEN")
 
     db = tmp_path / "nh.db"
     url = "https://github.com/o/r/pull/7"
@@ -228,6 +244,7 @@ def test_forge_failure_refuses_and_leaves_titles_agreeing(tmp_path, monkeypatch)
         return {"ok": False, "error": "gh: 403"}
 
     monkeypatch.setattr(cp, "set_pr_title", failing_set_pr_title)
+    _patch_pr_state(monkeypatch, "OPEN")
 
     db = tmp_path / "nh.db"
     url = "https://github.com/o/r/pull/7"
@@ -240,6 +257,242 @@ def test_forge_failure_refuses_and_leaves_titles_agreeing(tmp_path, monkeypatch)
     assert url in result.output, result.output
     t, _ = _task_state(db, tid)
     assert t.title == "old title"
+
+
+def test_db_write_failure_after_forge_success_names_both_and_disagreement(
+    tmp_path, monkeypatch,
+):
+    """The forge write (`set_pr_title`) runs before the DB write
+    (`update_task_title`). If the DB write then raises, the PR and the task
+    row are left disagreeing — silence there would be worse than a crash;
+    the command must say so by name (PR URL, new PR title, old task title)."""
+    import no_human.vcs.comment_poster as cp
+    calls, fake = _recorder()
+    monkeypatch.setattr(cp, "set_pr_title", fake)
+    _patch_pr_state(monkeypatch, "OPEN")
+
+    import no_human.core.db as db_mod
+
+    async def failing_update_task_title(self, task_id, title):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(db_mod.Store, "update_task_title",
+                         failing_update_task_title)
+
+    db = tmp_path / "nh.db"
+    url = "https://github.com/o/r/pull/7"
+    tid = asyncio.run(_seed(db, status=TaskStatus.AWAITING_APPROVAL,
+                            title="old title", pr_watch=url,
+                            external_id="JIRA-1"))
+
+    result = _invoke(task, db, ["retitle", tid, "new title", "--update-pr"])
+
+    assert result.exit_code != 0, result.output
+    # The forge write DID happen — that's the whole problem.
+    assert calls == [(url, commit_subject("new title", "JIRA-1", ""))], calls
+    assert url in result.output, result.output
+    assert "old title" in result.output, result.output
+    assert commit_subject("new title", "JIRA-1", "") in result.output, (
+        result.output)
+    assert "disagree" in result.output, result.output
+
+
+# --------------------------------------------------------------------------- #
+# A merged/closed PR's title is history — the task's own title may still be  #
+# corrected, but the forge must never be touched once its commits landed.    #
+# --------------------------------------------------------------------------- #
+
+def test_done_task_merged_pr_retitles_task_without_touching_forge(
+    tmp_path, monkeypatch,
+):
+    import no_human.vcs.comment_poster as cp
+    calls, fake = _recorder()
+    monkeypatch.setattr(cp, "set_pr_title", fake)
+    _patch_pr_state(monkeypatch, "MERGED")
+
+    db = tmp_path / "nh.db"
+    url = "https://github.com/o/r/pull/7"
+    tid = asyncio.run(_seed(db, status=TaskStatus.DONE,
+                            title="old title", pr_watch=url))
+
+    result = _invoke(task, db, ["retitle", tid, "new title"])
+
+    assert result.exit_code == 0, result.output
+    assert calls == [], calls  # forge never touched
+
+    t, _ = _task_state(db, tid)
+    assert t.title == "new title"
+
+
+def test_done_task_merged_pr_with_update_pr_refuses_and_names_merged(
+    tmp_path, monkeypatch,
+):
+    import no_human.vcs.comment_poster as cp
+    calls, fake = _recorder()
+    monkeypatch.setattr(cp, "set_pr_title", fake)
+    _patch_pr_state(monkeypatch, "MERGED")
+
+    db = tmp_path / "nh.db"
+    url = "https://github.com/o/r/pull/7"
+    tid = asyncio.run(_seed(db, status=TaskStatus.DONE,
+                            title="old title", pr_watch=url))
+
+    result = _invoke(task, db, ["retitle", tid, "new title", "--update-pr"])
+
+    assert result.exit_code != 0, result.output
+    assert url in result.output, result.output
+    assert "merged" in result.output.lower(), result.output
+    assert "open" not in result.output.lower(), result.output
+    assert calls == [], calls  # forge never touched
+
+    t, _ = _task_state(db, tid)
+    assert t.title == "old title"
+
+
+def test_failed_task_closed_pr_with_update_pr_refuses_and_names_closed(
+    tmp_path, monkeypatch,
+):
+    import no_human.vcs.comment_poster as cp
+    calls, fake = _recorder()
+    monkeypatch.setattr(cp, "set_pr_title", fake)
+    _patch_pr_state(monkeypatch, "CLOSED")
+
+    db = tmp_path / "nh.db"
+    url = "https://github.com/o/r/pull/9"
+    tid = asyncio.run(_seed(db, status=TaskStatus.FAILED,
+                            title="old title", pr_watch=url))
+
+    result = _invoke(task, db, ["retitle", tid, "new title", "--update-pr"])
+
+    assert result.exit_code != 0, result.output
+    assert url in result.output, result.output
+    assert "closed" in result.output.lower(), result.output
+    assert calls == [], calls
+
+    t, _ = _task_state(db, tid)
+    assert t.title == "old title"
+
+
+def test_failed_task_closed_pr_without_flag_retitles_task(tmp_path, monkeypatch):
+    """Positive control paired with the refusal above: without --update-pr
+    the same closed-PR task's own title is still correctable."""
+    import no_human.vcs.comment_poster as cp
+    calls, fake = _recorder()
+    monkeypatch.setattr(cp, "set_pr_title", fake)
+    _patch_pr_state(monkeypatch, "CLOSED")
+
+    db = tmp_path / "nh.db"
+    url = "https://github.com/o/r/pull/9"
+    tid = asyncio.run(_seed(db, status=TaskStatus.FAILED,
+                            title="old title", pr_watch=url))
+
+    result = _invoke(task, db, ["retitle", tid, "new title"])
+
+    assert result.exit_code == 0, result.output
+    assert calls == [], calls
+
+    t, _ = _task_state(db, tid)
+    assert t.title == "new title"
+
+
+# --------------------------------------------------------------------------- #
+# F1 regression — a PR recorded ONLY via task_events (no pr_watch, no        #
+# attempts.pr_url) must still be found by the PR gate. `resolve_task_pr`     #
+# alone misses this shape (the 8c8b36b5 incident `task_pr.py` documents);    #
+# `task_has_pr_evidence` is the belt-and-braces check every sibling site     #
+# already uses, and is what the retitle command must use too.               #
+# --------------------------------------------------------------------------- #
+
+def test_pr_recorded_only_via_event_still_refuses_without_flag(
+    tmp_path, monkeypatch,
+):
+    import no_human.vcs.comment_poster as cp
+    calls, fake = _recorder()
+    monkeypatch.setattr(cp, "set_pr_title", fake)
+    _patch_pr_state(monkeypatch, "OPEN")
+
+    db = tmp_path / "nh.db"
+    url = "https://github.com/o/r/pull/42"
+
+    async def _seed_event_only():
+        async with Store(db) as store:
+            t = Task.new("old title", repo_path="/tmp/does-not-matter",
+                          description="do the thing")
+            t.status = TaskStatus.AWAITING_APPROVAL
+            t.acceptance_criteria = ["it does the thing"]
+            t.context = {}
+            await store.create_task(t)
+            await store.save_events(t.id, [{
+                "kind": "pr_draft", "pr_url": url, "text": "opened draft PR",
+            }])
+            return t.id
+
+    tid = asyncio.run(_seed_event_only())
+
+    result = _invoke(task, db, ["retitle", tid, "new title"])
+
+    assert result.exit_code != 0, result.output
+    assert url in result.output, result.output
+    assert calls == []
+
+    t, _ = _task_state(db, tid)
+    assert t.title == "old title"
+
+
+# --------------------------------------------------------------------------- #
+# F2 regression — a stale in-memory Task handle must not revert a retitle    #
+# that landed while the handle was in flight. `update_task`/                #
+# `update_task_columns` both key their `title` write off `updated_at`: the  #
+# row's own title wins whenever the row moved on since this handle last     #
+# synced (see `core/db.py`'s `update_task` docstring).                      #
+# --------------------------------------------------------------------------- #
+
+def test_stale_handle_update_task_does_not_revert_a_landed_retitle(tmp_path):
+    db = tmp_path / "nh.db"
+    tid = asyncio.run(_seed(db, status=TaskStatus.AWAITING_APPROVAL,
+                            title="old title"))
+
+    async def _load():
+        async with Store(db) as store:
+            return await store.get_task(tid)  # snapshot BEFORE the retitle
+    stale = asyncio.run(_load())
+
+    result = _invoke(task, db, ["retitle", tid, "corrected title"])
+    assert result.exit_code == 0, result.output
+
+    async def _stale_write():
+        async with Store(db) as store:
+            await store.update_task(stale)
+
+    asyncio.run(_stale_write())
+
+    t, _ = _task_state(db, tid)
+    assert t.title == "corrected title", t.title
+
+
+def test_stale_handle_update_task_columns_does_not_revert_a_landed_retitle(
+    tmp_path,
+):
+    db = tmp_path / "nh.db"
+    tid = asyncio.run(_seed(db, status=TaskStatus.AWAITING_APPROVAL,
+                            title="old title"))
+
+    async def _load():
+        async with Store(db) as store:
+            return await store.get_task(tid)
+    stale = asyncio.run(_load())
+
+    result = _invoke(task, db, ["retitle", tid, "corrected title"])
+    assert result.exit_code == 0, result.output
+
+    async def _stale_write():
+        async with Store(db) as store:
+            await store.update_task_columns(stale)
+
+    asyncio.run(_stale_write())
+
+    t, _ = _task_state(db, tid)
+    assert t.title == "corrected title", t.title
 
 
 # --------------------------------------------------------------------------- #
@@ -319,6 +572,28 @@ def test_retitle_refused_while_implementing_names_prompt_and_commit_subject(
     assert result.exit_code != 0, result.output
     assert "prompt" in result.output, result.output
     assert "commit subject" in result.output, result.output
+
+    t, _ = _task_state(db, tid)
+    assert t.title == "old title"
+
+
+def test_retitle_refused_for_compound_parent_with_a_true_reason(tmp_path):
+    """`compound_parent` is a legacy, nothing-creates-it-anymore status
+    (`core/task.py`) — no attempt runs and no commit subject is ever built
+    against a parent row, so the generic "running attempt" wording used for
+    CONTEXT/PLANNING/IMPLEMENTING/REVIEWING/TESTING would be false here.
+    The refusal must say something true of what was actually checked, not
+    borrow that reason."""
+    db = tmp_path / "nh.db"
+    tid = asyncio.run(_seed(db, status=TaskStatus.COMPOUND_PARENT,
+                            title="old title"))
+
+    result = _invoke(task, db, ["retitle", tid, "new title"])
+
+    assert result.exit_code != 0, result.output
+    assert "compound_parent" in result.output, result.output
+    # Must NOT claim an attempt is running against a parent row.
+    assert "running attempt" not in result.output, result.output
 
     t, _ = _task_state(db, tid)
     assert t.title == "old title"
