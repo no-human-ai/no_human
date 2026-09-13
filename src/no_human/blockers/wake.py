@@ -2426,6 +2426,74 @@ class WakeWatcher:
         )
         return await self._resume(task)
 
+    async def _reverify_base_locally(
+        self, task: Task, measure_base: str | None, branch_name: str | None,
+    ) -> tuple[set[str] | None, str]:
+        """`_check_base_stale`'s STALE branch, split out to keep that
+        function under the file's function-size budget: re-run
+        `conflicting_paths` with the same fetch-and-retry recovery
+        `_check_pr_conflict` performs for the same reason — a pruned or
+        never-fetched head branch is the NORMAL state of a watcher
+        checkout, not evidence of anything. Returns
+        ``(conflict_paths, local_check_error)``; ``conflict_paths is None``
+        means the question could not be asked at all even after retrying,
+        and `local_check_error` is always populated in that case.
+        """
+        from ..vcs.derived_conflict import conflicting_paths, fetch_conflict_refs
+
+        conflict_paths: set[str] | None = None
+        local_check_error = ""
+        if task.repo_path and measure_base and branch_name:
+            try:
+                conflict_paths = await conflicting_paths(
+                    task.repo_path, measure_base, branch_name)
+            except Exception as exc:  # noqa: BLE001 — a probe error must not crash the watcher
+                log.warning(
+                    "failed to re-verify mergeability while re-measuring "
+                    "base freshness for %s: %s", task.id[:8], exc)
+                conflict_paths = None
+                local_check_error = f"{exc.__class__.__name__}: {exc}"
+            if conflict_paths is None:
+                # Could not resolve one of the refs — commonly because the
+                # branch was never fetched into this checkout. Fetch both
+                # and retry once before giving up, exactly the recovery
+                # `_check_pr_conflict` already performs above.
+                if not local_check_error:
+                    local_check_error = (
+                        "conflicting_paths() returned no result "
+                        "(unresolvable ref?)")
+                try:
+                    fetched = await fetch_conflict_refs(
+                        task.repo_path, measure_base, branch_name)
+                except Exception as fexc:  # noqa: BLE001 — best-effort precondition
+                    fetched = False
+                    log.warning(
+                        "ref fetch before the base-staleness retry failed "
+                        "for %s: %s", task.id[:8], fexc)
+                try:
+                    conflict_paths = await conflicting_paths(
+                        task.repo_path, measure_base, branch_name)
+                except Exception as exc2:  # noqa: BLE001
+                    conflict_paths = None
+                    local_check_error = (
+                        f"{local_check_error}; retry after git fetch "
+                        f"(fetch_ok={fetched}) also failed: "
+                        f"{exc2.__class__.__name__}: {exc2}")
+                else:
+                    if conflict_paths is None:
+                        local_check_error = (
+                            f"{local_check_error}; retry after git fetch "
+                            f"(fetch_ok={fetched}) also unresolvable")
+        else:
+            missing = [name for name, val in (
+                ("repo_path", task.repo_path),
+                ("base_branch", measure_base),
+                ("pr_branch", branch_name),
+            ) if not val]
+            local_check_error = (
+                f"cannot re-verify locally: missing {', '.join(missing)}")
+        return conflict_paths, local_check_error
+
     async def _check_base_stale(self, task: Task, url: str,
                                 info: dict) -> str | None:
         """Rung 4.5 (bugfix, split from task 22c4ddf6 finding #3): a PR that
@@ -2512,7 +2580,6 @@ class WakeWatcher:
         # `_check_pr_conflict` above already uses for the same reason: keep
         # this module's import graph unchanged.
         from ..vcs import delivered_base
-        from ..vcs.derived_conflict import conflicting_paths, fetch_conflict_refs
 
         ctx = task.context or {}
         base_branch = ctx.get("base_branch")
@@ -2550,7 +2617,19 @@ class WakeWatcher:
             return None
 
         if result.state == delivered_base.UNDETERMINED:
-            patch: dict[str, Any] = {"pr_base_freshness": result.as_dict()}
+            measure_freshness = result.as_dict()
+            if (ctx.get("pr_base_freshness") == measure_freshness
+                    and (recorded_sha or not result.observed_sha)):
+                # Already recorded exactly this undetermined answer on a
+                # previous tick and there is nothing left to backfill (either
+                # a base sha was already recorded, so the backfill branch
+                # below never fires, or this tick has no observed sha to
+                # backfill with either) — bound the noise instead of
+                # re-writing identical context and re-emitting an event on
+                # every single tick forever, same debounce as the other two
+                # UNDETERMINED branches below.
+                return None
+            patch: dict[str, Any] = {"pr_base_freshness": measure_freshness}
             if not recorded_sha and result.observed_sha:
                 # Never recorded at delivery (predates this bugfix, or the
                 # tip could not be resolved then either) — backfill so a
@@ -2582,57 +2661,8 @@ class WakeWatcher:
         # from "could not even ask". A real conflict at the new tip is left
         # for `_check_pr_conflict`'s own ladder, never handled here (see the
         # docstring above).
-        conflict_paths: set[str] | None = None
-        local_check_error = ""
-        if task.repo_path and measure_base and branch_name:
-            try:
-                conflict_paths = await conflicting_paths(
-                    task.repo_path, measure_base, branch_name)
-            except Exception as exc:  # noqa: BLE001 — a probe error must not crash the watcher
-                log.warning(
-                    "failed to re-verify mergeability while re-measuring "
-                    "base freshness for %s: %s", task.id[:8], exc)
-                conflict_paths = None
-                local_check_error = f"{exc.__class__.__name__}: {exc}"
-            if conflict_paths is None:
-                # Could not resolve one of the refs — commonly because the
-                # branch was never fetched into this checkout. Fetch both
-                # and retry once before giving up, exactly the recovery
-                # `_check_pr_conflict` already performs above.
-                if not local_check_error:
-                    local_check_error = (
-                        "conflicting_paths() returned no result "
-                        "(unresolvable ref?)")
-                try:
-                    fetched = await fetch_conflict_refs(
-                        task.repo_path, measure_base, branch_name)
-                except Exception as fexc:  # noqa: BLE001 — best-effort precondition
-                    fetched = False
-                    log.warning(
-                        "ref fetch before the base-staleness retry failed "
-                        "for %s: %s", task.id[:8], fexc)
-                try:
-                    conflict_paths = await conflicting_paths(
-                        task.repo_path, measure_base, branch_name)
-                except Exception as exc2:  # noqa: BLE001
-                    conflict_paths = None
-                    local_check_error = (
-                        f"{local_check_error}; retry after git fetch "
-                        f"(fetch_ok={fetched}) also failed: "
-                        f"{exc2.__class__.__name__}: {exc2}")
-                else:
-                    if conflict_paths is None:
-                        local_check_error = (
-                            f"{local_check_error}; retry after git fetch "
-                            f"(fetch_ok={fetched}) also unresolvable")
-        else:
-            missing = [name for name, val in (
-                ("repo_path", task.repo_path),
-                ("base_branch", measure_base),
-                ("pr_branch", branch_name),
-            ) if not val]
-            local_check_error = (
-                f"cannot re-verify locally: missing {', '.join(missing)}")
+        conflict_paths, local_check_error = await self._reverify_base_locally(
+            task, measure_base, branch_name)
 
         if await self._is_terminal(task):
             return None
