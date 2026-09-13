@@ -9469,6 +9469,7 @@ class Orchestrator:
                                citation_drift.Status.CLEAN):
             return None
 
+        commit_landed = False
         if outcome.status is citation_drift.Status.UNKNOWN and repo.has_changes():
             # An indeterminate run (no VERDICT marker — a crash, a timeout)
             # may have left a PARTIAL, untrusted write on disk: the script's
@@ -9495,13 +9496,23 @@ class Orchestrator:
                 commit = await asyncio.to_thread(
                     commit_with_manifest_repair, repo, None, commit_msg)
             except GitError as exc:
+                # The bytes are real but never reached the branch. Reporting
+                # REANCHORED from here would tell the caller a fix landed
+                # that in fact did not — the exact silent-failure this gate
+                # exists to prevent. Roll the write back (it may be a partial
+                # manifest-repair artifact, not just the doc) and fall
+                # through to the same "not mechanically resolved" handling
+                # UNFIXABLE/UNKNOWN get below, so a corrective round — never
+                # a quiet "handled" — is what the caller sees.
                 self._advisory(f"citation drift auto-fix: commit failed: {exc}")
+                self._revert_worktree_writes(repo, before)
             else:
                 await self.store.update_attempt(attempt_id, commit_sha=commit.sha)
                 self.emit("commit", f"citation drift auto-fix: {commit.sha[:8]}",
                           sha=commit.sha)
+                commit_landed = True
 
-        if outcome.status is citation_drift.Status.REANCHORED:
+        if outcome.status is citation_drift.Status.REANCHORED and commit_landed:
             self.emit(
                 "citation_drift",
                 "drifted citation(s) auto-re-anchored before review",
@@ -9509,22 +9520,32 @@ class Orchestrator:
             )
             return None
 
-        # UNFIXABLE or UNKNOWN: the script named something it would not (or
-        # a crash meant it could not) resolve on its own. One bounded round
-        # — never a second, silent guess at which occurrence to rewrite —
-        # before this falls through to review.
+        # UNFIXABLE, UNKNOWN, or a REANCHORED rewrite that never made it onto
+        # the branch (commit refused, or the script claimed drift but wrote
+        # nothing): the script named something it would not (or a crash/
+        # commit failure meant it could not) resolve on its own. One bounded
+        # round — never a second, silent guess at which occurrence to
+        # rewrite — before this falls through to review.
+        uncommitted_reanchor = (
+            outcome.status is citation_drift.Status.REANCHORED and not commit_landed)
+        status_label = "commit_failed" if uncommitted_reanchor else outcome.status.value
+        failures = (outcome.failures if not uncommitted_reanchor
+                    else tuple(f"{doc}: auto-re-anchor commit failed" for doc in outcome.docs))
+        detail = (outcome.detail if not uncommitted_reanchor
+                  else "citation drift auto-fix committed to disk but the "
+                       "commit itself failed and was rolled back")
         self.emit(
             "citation_drift",
-            f"citation drift not mechanically resolved ({outcome.status.value}): "
-            f"{outcome.detail[:500]}",
-            status=outcome.status.value, docs=list(outcome.docs),
-            failures=list(outcome.failures),
+            f"citation drift not mechanically resolved ({status_label}): "
+            f"{detail[:500]}",
+            status=status_label, docs=list(outcome.docs),
+            failures=list(failures),
         )
         result = await self._repro_corrective_round(
             task, repo, "", attempt_id=attempt_id, branch=branch,
             attempt_n=attempt_n, tamper_before=tamper_before,
             instruction=citation_drift_send_back_message(
-                list(outcome.failures), outcome.detail),
+                list(failures), detail),
             why="a doc citation drifted and could not be re-anchored "
                 "mechanically — one bounded round to fix it before review",
             turns=_CITATION_DRIFT_ROUND_TURNS,

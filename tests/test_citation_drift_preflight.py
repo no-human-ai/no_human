@@ -44,6 +44,7 @@ import pytest
 
 from no_human.agent.claude_backend import AgentEvent, AgentResult
 from no_human.config import load_config
+from no_human.core import orchestrator
 from no_human.core.infra_breaker import infra_breaker
 from no_human.core.orchestrator import Orchestrator
 from no_human.core.task import Task, TaskStatus
@@ -545,6 +546,118 @@ async def test_a_clean_tree_emits_no_citation_drift_event(bare_repo, tmp_path, s
     kinds = [e["kind"] for e in events]
     assert "citation_drift" not in kinds, events
     assert "citation_drift_corrective_round" not in kinds, events
+
+    attempts = await store.list_attempts(task.id)
+    assert len(attempts) == 1
+
+
+class _DriftsThenFixesDocOnRoundBackend:
+    """Turn 1: identical to `_DriftsThenLeavesItBackend` — shifts `foo()`
+    down, leaving the citation stale, and never touches the doc itself.
+    Turn 2 exists ONLY because this test forces the preflight's own
+    mechanical-fix commit to fail (see the test below): it fixes the doc by
+    hand, exactly as `_AmbiguousDriftThenFixesItBackend`'s round turn does,
+    proving the corrective round bought here behaves like any other."""
+
+    def __init__(self):
+        self.calls = 0
+        self.prompts = []
+
+    async def run(self, prompt, *, cwd, max_turns, effort=None, resume=None,
+                  on_event=None, supervisor_hook=None, **kwargs):
+        self.calls += 1
+        self.prompts.append(prompt)
+        cwd = Path(cwd)
+        if self.calls == 1:
+            if on_event is not None:
+                on_event(AgentEvent("tool_use", tool_name="Edit",
+                                    tool_input={"file_path": "pkg/mod.py"}))
+            cwd.joinpath("pkg", "mod.py").write_text(_MOD_DRIFTED)
+            return AgentResult(final_text="added helper()", num_turns=2, is_error=False,
+                               tokens_used=100, session_id="s1", stop_reason="end_turn")
+        if on_event is not None:
+            on_event(AgentEvent("tool_use", tool_name="Edit",
+                                tool_input={"file_path": "docs/cite.md"}))
+        cwd.joinpath("docs", "cite.md").write_text("See mod.py:5 for foo().\n")
+        return AgentResult(final_text="fixed the citation by hand", num_turns=1,
+                           is_error=False, tokens_used=10, session_id="s2",
+                           stop_reason="end_turn")
+
+
+async def test_a_commit_failure_after_reanchor_is_not_reported_as_success(
+        bare_repo, tmp_path, store, monkeypatch):
+    """Reviewer-cited regression (attempt 3 of this task): when the script
+    mechanically re-anchors a drifted citation but the preflight's own
+    commit of that rewrite then raises `GitError` (a hook rejection, a full
+    disk, whatever), the fix never actually landed on the branch — nothing
+    is sitting there but an uncommitted, about-to-be-discarded write. The
+    preflight must NOT report this as the REANCHORED-success outcome (no
+    "auto-re-anchored before review" event); it must instead roll the write
+    back and buy the SAME one bounded corrective round the unfixable-citation
+    path buys, still without spending a second attempt.
+
+    Forced purely behaviourally, never by reading either module's source:
+    `no_human.core.orchestrator` binds `commit_with_manifest_repair` as a
+    plain module-level name (imported once at the top of the file), so
+    patching that name intercepts every call this module makes to it. The
+    wrapper below fails ONLY the one call carrying the citation-drift
+    auto-fix's own commit message; every other commit in the same attempt
+    (the corrective round's own commit of the coder's turn-2 fix) goes
+    through untouched, so a real fix still lands and this does not conflate
+    two different code paths' commit behaviour into one failure.
+    """
+    real_commit = orchestrator.commit_with_manifest_repair
+
+    def _flaky_commit(repo, files, message, *args, **kwargs):
+        if "citation drift: auto-re-anchored via" in message:
+            raise orchestrator.GitError(
+                "simulated: commit rejected after mechanical re-anchor")
+        return real_commit(repo, files, message, *args, **kwargs)
+
+    monkeypatch.setattr(orchestrator, "commit_with_manifest_repair", _flaky_commit)
+
+    backend = _DriftsThenFixesDocOnRoundBackend()
+    orch, task, repo, events = await _run_one_task_attempt(store, bare_repo, tmp_path, backend)
+
+    outcome = await orch._run_attempt(task, repo, 1, "main")
+
+    assert outcome.status is TaskStatus.AWAITING_APPROVAL, outcome.detail
+    assert backend.calls == 2, (
+        "a mechanical fix that could not be committed must buy the same one "
+        "corrective round an unfixable citation buys")
+
+    kinds = [e["kind"] for e in events]
+    assert kinds.count("citation_drift_corrective_round") == 1, events
+
+    drift_events = [e for e in events if e["kind"] == "citation_drift"]
+    assert drift_events, events
+    for e in drift_events:
+        assert e.get("status") != "reanchored", (
+            "a rewrite that never made it into a commit must never be "
+            f"reported under the REANCHORED-success status: {e}")
+        assert "auto-re-anchored before review" not in e.get("text", ""), e
+
+    round_idx = kinds.index("citation_drift_corrective_round")
+    review_idx = next(i for i, e in enumerate(events) if _is_review_boundary(e))
+    assert round_idx < review_idx, events
+
+    # The corrective round's own commit (turn 2, untouched by the patch
+    # above) still lands the real fix on the branch.
+    committed = subprocess.run(
+        ["git", "show", "HEAD:docs/cite.md"], cwd=repo.path,
+        check=True, capture_output=True, text=True,
+    ).stdout
+    assert "mod.py:5" in committed
+
+    # And the write the failed commit could never land must not have been
+    # left behind uncommitted for the corrective round to trip over: the
+    # doc itself is clean relative to HEAD (the round's own commit already
+    # absorbed the real fix above).
+    status = subprocess.run(
+        ["git", "status", "--porcelain", "--", "docs/cite.md"], cwd=repo.path,
+        check=True, capture_output=True, text=True,
+    ).stdout
+    assert status.strip() == "", status
 
     attempts = await store.list_attempts(task.id)
     assert len(attempts) == 1

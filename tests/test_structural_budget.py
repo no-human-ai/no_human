@@ -1215,8 +1215,14 @@ FROZEN_FILE_LINES = {
     # its call site in `_run_attempt`, and the additive `allow_paths`
     # parameter threaded through `_repro_corrective_round` ->
     # `_repro_round_out_of_scope(changed, extra_ok=allow_paths)`.
+    # +21 on top of that (24108 -> 24129): the GitError-swallowing bugfix in
+    # `_citation_drift_preflight` (a commit failure must not report the
+    # REANCHORED-success outcome) — a `commit_landed` flag, a worktree
+    # revert on the failed-commit path, and a synthesized
+    # status_label/failures/detail for the uncommitted-REANCHORED case that
+    # now shares the UNFIXABLE/UNKNOWN corrective-round fallthrough.
     # Re-measured on the merge result with the scanner below.
-    "core/orchestrator.py": 24108,
+    "core/orchestrator.py": 24129,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.
