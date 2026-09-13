@@ -1910,7 +1910,28 @@ FROZEN_FILE_LINES = {
     # new `def`/docstring overhead. Measured via
     # `python3 -c "print(len(open('src/no_human/blockers/wake.py').read().splitlines()))"`
     # on this tree.
-    "blockers/wake.py": 3156,
+    # 3156 -> 3158 (+2, 2026-09-13): same task, same send-back — a review
+    # flagged three comments that narrated this task's own review-round
+    # history ("None used to mean both...", "A bare await here used to
+    # discard...") as if it were real, already-shipped product history
+    # instead of what it actually is: something an earlier round of THIS
+    # bugfix did before a later round of THIS bugfix fixed it. Reworded
+    # those three to say "in an earlier round of this task"/"an earlier
+    # round of this task", matching the two comments the reviewer already
+    # accepted as correctly phrased ("a prior round of this task" /
+    # "an earlier round of this bugfix"). Purely textual; no behavior
+    # changed. Measured the same way as above, on this tree.
+    # 3158 -> 3174 (+16, 2026-09-13): same task, same send-back — Finding 10
+    # asked that the STALE branch's "trunk moved AND the branch now
+    # conflicts at the new tip" case (which writes/emits nothing this tick)
+    # either be fixed or have its dependency on the forge's own unbounded-
+    # delay mergeability recomputation spelled out explicitly, rather than
+    # left implicit in "eventually CONFLICTING once the forge catches up".
+    # Expanded the inline comment at that `if conflict_paths:` branch to say
+    # so in those terms; no behavior changed (still an intentional no-op,
+    # per `_check_base_stale`'s own docstring on why this rung never owns
+    # conflict-round state). Measured the same way as above, on this tree.
+    "blockers/wake.py": 3174,
     # +91: `_SCAN_WRAPPER_NAMES` + `_peel_scan_wrappers` — peels
     # timeout/xargs/nice/stdbuf (and siblings) for the scan-severity check
     # only, so a wrapped `find … -delete` in a denied compound classifies

@@ -89,7 +89,8 @@ _COMMENTS_INJECTED = "_comments_injected"
 # "the caller did not pass `info` at all" (poll for it) from "the caller
 # passed `info=None` because the shared `_poll_mergeable` call it already
 # paid for this tick failed" (bugfix, split from task 22c4ddf6 finding #3 —
-# `None` used to mean both, so a failed shared poll was silently re-polled a
+# in an earlier round of this task, before this sentinel existed, `None`
+# used to mean both, so a failed shared poll was silently re-polled a
 # second time by this rung, doubling the network round-trip and the warning
 # log on every error tick).
 _INFO_UNSET = object()
@@ -1908,10 +1909,11 @@ class WakeWatcher:
         # Observational only: re-measures and records against the real ref,
         # never resumes, escalates, or touches conflict-round bookkeeping —
         # so it can never consume a coder attempt, and never blocks the
-        # rungs below it from also running this same tick. A bare `await`
-        # here used to discard its return value entirely, so `tick()`'s
-        # `actions` list (and so `nh wake`) never learned a re-measure
-        # happened even when nothing else this tick claimed the result.
+        # rungs below it from also running this same tick. In an earlier
+        # round of this task, a bare `await` here used to discard its
+        # return value entirely, so `tick()`'s `actions` list (and so
+        # `nh wake`) never learned a re-measure happened even when nothing
+        # else this tick claimed the result.
         base_stale_acted = await self._check_base_stale(task, url, info or {})
         if await self._is_terminal(task):
             return None
@@ -2026,10 +2028,10 @@ class WakeWatcher:
         direct caller (this file's own tests included) keeps working
         unchanged. An explicit `info=None` means the caller DID share its
         poll and that poll failed — this rung must not re-poll in that case
-        (it used to: `None` meant both "not provided" and "provided but
-        failed", so a failed shared poll was paid for twice, once per rung,
-        doubling the network round-trip and the warning log on every error
-        tick).
+        (in an earlier round of this task, before `_INFO_UNSET` existed,
+        `None` meant both "not provided" and "provided but failed", so a
+        failed shared poll was paid for twice, once per rung, doubling the
+        network round-trip and the warning log on every error tick).
         """
         if info is _INFO_UNSET:
             info = await self._poll_mergeable(task, url)
@@ -2671,15 +2673,31 @@ class WakeWatcher:
             # A genuine conflict at the new tip: leave the sha unrecorded so
             # this stays reachable as STALE (and eventually CONFLICTING once
             # the forge catches up) rather than being silently marked fresh.
+            # Deliberately writes and emits nothing this tick, not even an
+            # UNDETERMINED record: this rung already knows more than the
+            # forge does at this instant (a local merge-tree check just
+            # found a conflict `mergeable=MERGEABLE` hasn't caught up to
+            # yet), but recording that here would be a second, disagreeing
+            # owner of conflict state alongside `_check_pr_conflict`'s own
+            # round bookkeeping. So this is a genuine gap by design: between
+            # "local check finds a conflict" and "the forge's own
+            # asynchronous mergeability recomputation notices and flips
+            # `mergeable` to CONFLICTING so `_check_pr_conflict` picks it
+            # up", the PR is silently unactionable for as long as that
+            # forge-side recomputation takes — which GitHub does not bound
+            # or expose a completion signal for. If that gap proves too
+            # long in practice, the fix belongs in `_check_pr_conflict`
+            # (teach it to trust this rung's local finding directly), not
+            # here — this rung stays observation-only, per its docstring.
             return None
 
         if conflict_paths is None:
             # Could not ask git the question at all, even after the fetch
             # retry: fail CLOSED, exactly per `conflicting_paths`'s own
-            # contract. This is the sole point that used to coerce "could
-            # not verify" into "verified fresh" via a bare `if
-            # conflict_paths:` truthiness check — `None` must never reach
-            # the FRESH branch below.
+            # contract. This is the sole point where an earlier round of
+            # this task used to coerce "could not verify" into "verified
+            # fresh" via a bare `if conflict_paths:` truthiness check —
+            # `None` must never reach the FRESH branch below.
             undetermined_freshness = {
                 "state": delivered_base.UNDETERMINED,
                 "base_ref": measure_base,
