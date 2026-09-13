@@ -157,9 +157,13 @@ async def test_a_landing_on_trunk_remeasures_the_delivered_base(store, tmp_path)
     assert new_sha != recorded
 
     out = await w._check_open_pr(t)
-    # Observational only: never resumes, never returns a truthy outcome from
-    # `_check_open_pr` itself (nothing downstream acted either).
-    assert out is None
+    # The base-staleness rung's outcome is threaded through `_check_open_pr`
+    # (blocking finding #2 of this round's send-back: it used to be
+    # discarded with a bare `await self._check_base_stale(...)`) so a caller
+    # driving the ladder end-to-end — `tick()`, and the `wake` CLI command
+    # through it — sees that something happened, even though nothing here
+    # resumes the task or consumes a coder attempt.
+    assert out == "pr_base_remeasured"
 
     fresh = await store.get_task(t.id)
     ctx = fresh.context or {}
@@ -168,12 +172,18 @@ async def test_a_landing_on_trunk_remeasures_the_delivered_base(store, tmp_path)
     assert fresh.status is TaskStatus.AWAITING_APPROVAL
     assert "pr_conflict_rounds" not in ctx
     assert not ctx.get("send_back_feedback")
-    # The re-measure happened, driven by the real ref.
-    assert ctx["pr_base_sha"] == new_sha
+    # The re-measure happened, driven by the real ref — but AC2' forbids
+    # recording "fresh" for a base `git merge-tree` only proved textually
+    # clean, never semantically safe, so this stays STALE and `pr_base_sha`
+    # is deliberately left unbumped: bumping it would make the very next
+    # `measure()` see recorded == observed and answer FRESH forever,
+    # destroying the only signal a later, more thorough consumer could act
+    # on.
+    assert ctx["pr_base_sha"] == recorded
     assert ctx["pr_base_remeasures"] == 1
-    assert ctx["pr_base_freshness"]["state"] == delivered_base.FRESH
-    assert ctx["pr_base_freshness"]["previous_base_sha"] == recorded
-    assert ctx["pr_base_freshness"]["base_sha"] == new_sha
+    assert ctx["pr_base_freshness"]["state"] == delivered_base.STALE
+    assert ctx["pr_base_freshness"]["recorded_sha"] == recorded
+    assert ctx["pr_base_freshness"]["observed_sha"] == new_sha
     assert any(k == "pr_base_remeasured" for k, _ in events)
 
 
@@ -205,8 +215,85 @@ async def test_the_rung_acts_on_stale_but_mergeable(store, tmp_path):
                                      {"mergeable": "MERGEABLE"})
     assert out == "pr_base_remeasured"
     fresh = await store.get_task(t.id)
-    assert fresh.context["pr_base_sha"] == new_sha
+    ctx = fresh.context
+    # `pr_base_sha` stays at the originally recorded value — AC2' forbids
+    # bumping it on a merely textually-clean re-verification (see the
+    # `_check_base_stale` docstring's AC2' paragraph for why).
+    assert ctx["pr_base_sha"] == recorded
+    assert ctx["pr_base_freshness"]["state"] == delivered_base.STALE
+    assert ctx["pr_base_freshness"]["observed_sha"] == new_sha
     assert fresh.status is TaskStatus.AWAITING_APPROVAL
+
+
+async def test_stale_pr_is_recorded_stale_not_fresh_on_a_semantic_break(
+        store, tmp_path):
+    """AC2''s planted case, reproduced against REAL git state (blocking
+    finding #1 of this round's send-back): `git merge-tree` only proves
+    TEXTUAL mergeability, never semantic safety. Trunk renames `mod.py` ->
+    `mod_renamed.py`; the PR branch independently adds `caller.py` that
+    still imports the old module name. The two changes touch disjoint
+    paths, so merge-tree finds zero conflicting paths — textually clean —
+    even though the merged result is broken (an import of a module that no
+    longer exists once merged).
+
+    Before this fix, an empty `conflicting_paths` result here was recorded
+    as ``state: fresh`` and bumped `pr_base_sha` to the new tip, which would
+    have made the very next `measure()` see recorded == observed and
+    answered fresh forever — permanently destroying the only signal
+    available to catch this. AC2' requires this be recorded `stale` (never
+    `fresh`), with `pr_base_sha` left unbumped so the signal survives."""
+    work = _repo(tmp_path)
+    lander = _clone(tmp_path, work, "lander")
+
+    (work / "mod.py").write_text("def old_name():\n    return 1\n",
+                                  encoding="utf-8")
+    _git(work, "add", "-A")
+    _git(work, "commit", "-qm", "add mod.py")
+    _git(work, "push", "-q", "origin", "main")
+    recorded = _trunk_sha(work)
+
+    branch = "feature-semantic-break"
+    _make_branch(work, branch)
+    _git(work, "checkout", "-q", branch)
+    (work / "caller.py").write_text(
+        "from mod import old_name\n\nold_name()\n", encoding="utf-8")
+    _git(work, "add", "-A")
+    _git(work, "commit", "-qm", "caller imports mod.old_name")
+    _git(work, "push", "-q", "origin", branch)
+    _git(work, "checkout", "-q", "main")
+
+    # Trunk renames the module out from under the PR — a genuine landing via
+    # the independent `lander` clone, on a path disjoint from `caller.py`,
+    # so `git merge-tree` sees no conflicting path at all.
+    # `lander` was cloned before "add mod.py" landed, so its local `main`
+    # must be brought forward before the file it is about to rename exists
+    # in its own working tree.
+    _git(lander, "fetch", "-q", "origin", "main")
+    _git(lander, "reset", "-q", "--hard", "origin/main")
+    _git(lander, "mv", "mod.py", "mod_renamed.py")
+    _git(lander, "commit", "-qm", "rename mod.py -> mod_renamed.py")
+    _git(lander, "push", "-q", "origin", "main")
+    new_sha = _git(lander, "rev-parse", "HEAD").stdout.strip()
+    assert new_sha != recorded
+
+    t = await _pr_task(store, work, base_sha=recorded, pr_branch=branch)
+    events = []
+    w = _watcher(store, mergeable="MERGEABLE", merge_state="CLEAN", events=events)
+
+    out = await w._check_base_stale(t, "https://x/pull/9",
+                                     {"mergeable": "MERGEABLE"})
+    assert out == "pr_base_remeasured"
+    fresh = await store.get_task(t.id)
+    ctx = fresh.context
+    # Never fresh — the merge is only textually clean, not verified safe.
+    assert ctx["pr_base_freshness"]["state"] == delivered_base.STALE
+    assert ctx["pr_base_freshness"]["state"] != delivered_base.FRESH
+    assert ctx["pr_base_freshness"]["observed_sha"] == new_sha
+    # The recorded sha must stay put so the staleness signal survives a
+    # later tick — bumping it here would make the next `measure()` see
+    # recorded == observed and answer FRESH forever.
+    assert ctx["pr_base_sha"] == recorded
+    assert any(k == "pr_base_remeasured" for k, _ in events)
 
 
 async def test_stale_pr_recovers_after_a_flaky_first_enumeration(
@@ -256,7 +343,13 @@ async def test_stale_pr_recovers_after_a_flaky_first_enumeration(
     assert calls["n"] == 2  # first call raised, retry (after a fetch) succeeded
     assert len(fetch_calls) == 1
     fresh = await store.get_task(t.id)
-    assert fresh.context["pr_base_sha"] == new_sha
+    ctx = fresh.context
+    # The fetch-and-retry recovers the ABILITY to ask the merge-tree
+    # question; a textually-clean answer is still only textual (AC2'), never
+    # a license to bump the recorded sha.
+    assert ctx["pr_base_sha"] == recorded
+    assert ctx["pr_base_freshness"]["state"] == delivered_base.STALE
+    assert ctx["pr_base_freshness"]["observed_sha"] == new_sha
 
 
 async def test_stale_pr_with_missing_branch_is_undetermined_not_fresh(store, tmp_path):
