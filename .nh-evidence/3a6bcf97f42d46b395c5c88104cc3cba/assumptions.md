@@ -1,6 +1,6 @@
 # Assumptions
 
-_Harness-captured record for task `3a6bcf97`, commit `289ca5aafa4d4ff87ce201f169cef7ba83d35757` — not model-authored: no_human wrote this file from the intake step's recorded questions and assumptions. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `3a6bcf97`, commit `f7790964a6507d7c5e5bca51d03c5475bd627ebf` — not model-authored: no_human wrote this file from the intake step's recorded questions and assumptions. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 > ⚠️ **Unresolved:** PR feedback revised 3 time(s), exceeding max_revision_rounds=2; escalating so a human can decide rather than revising indefinitely.
 
