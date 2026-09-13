@@ -73,6 +73,19 @@ def on_posix(monkeypatch):
         (r"C:\Program Files\Git\cmd\git.exe", "git"),
         (r"C:/tools\git.exe", "git"),          # mixed separators
         ("/bin/sh/", "sh"),                    # trailing separator, cf. _basename
+        # Every extension Windows executes, not only `.exe`. A CLI installed by
+        # scoop or npm is spelled `gh.cmd`, which is the spelling users have.
+        ("gh.cmd", "gh"),
+        ("nh.bat", "nh"),
+        ("gh.ps1", "gh"),
+        ("git.com", "git"),
+        ("GH.CMD", "gh"),
+        # Win32 strips trailing dots when resolving.
+        ("gh.", "gh"),
+        ("nh.exe.", "nh"),
+        # NTFS default data stream opens the same file.
+        ("gh.exe::$DATA", "gh"),
+        (r"C:\tools\gh.cmd::$DATA", "gh"),
         ("", ""),
     ],
 )
@@ -96,6 +109,12 @@ def test_windows_reads_either_separator_and_folds_case(token, expected):
         # text match masquerading as a structural one.
         ("GIT", "GIT"),
         ("/bin/sh/", "sh"),
+        # A trailing dot and a colon are ordinary filename characters here, so
+        # neither is stripped: doing so would name a different file.
+        ("gh.", "gh."),
+        ("gh.exe::$DATA", "gh.exe::$DATA"),
+        # ...but the suffix set itself is ungated, like `.exe` (#107).
+        ("gh.cmd", "gh"),
         ("", ""),
     ],
 )
@@ -166,9 +185,78 @@ def test_the_agent_still_never_merges_on_every_host(command):
     assert _decide(command), "a merge/approve command was allowed"
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        # The spellings a Windows user actually has. `gh` from scoop or npm is
+        # `gh.cmd`, so `.exe` alone would close the reviewer's spelling and
+        # leave the user's.
+        "gh.cmd pr merge 7",
+        "gh.ps1 pr merge 7",
+        "nh.bat approve 7",
+        "git.com push origin main",
+        # Win32 resolution quirks that reach the same binary.
+        "gh. pr merge 7",
+        "nh.exe. approve 7",
+        "gh.exe::$DATA pr merge 7",
+    ],
+)
+def test_the_other_windows_executable_spellings_deny_too(command, on_windows):
+    assert _decide(command), "a guarded binary was reachable under this spelling"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "rm.exe -rf /",
+        'echo "gh.exe pr merge 7" | sh',
+        "timeout 30 git.exe push origin main",
+    ],
+)
+def test_the_raw_text_matchers_are_still_open_and_that_is_recorded(command, on_windows):
+    """Not a fix, a boundary, and the reason this PR says Refs and not Closes.
+
+    These three decide through RAW-TEXT matchers (`_RM_RF`, the lexical
+    merge-stack matcher, and the `timeout` wrapper which is not in `_WRAPPERS`)
+    rather than through argv[0], so no name resolver can reach them. Closing
+    them means widening those patterns, which is a separate change against the
+    same issue.
+
+    Asserted so that whoever widens them sees this go red and removes it
+    deliberately, instead of the residual being rediscovered from scratch.
+    """
+    assert not _decide(command), (
+        "this now denies, so the raw-text matchers have been widened: delete "
+        "this test and move the row into the parametrised cases above"
+    )
+
+
 @pytest.mark.parametrize("command", ["GH.EXE pr merge 7", "NH.exe approve 7"])
 def test_the_agent_still_never_merges_in_windows_case(command, on_windows):
     assert _decide(command), "a merge/approve command was allowed"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "grep.exe -r secret /",
+        "rg.exe secret /",
+        "find.exe / -name x",
+    ],
+)
+def test_whole_volume_scans_deny_under_the_exe_spelling(command, on_windows):
+    """Found by measuring, not by reading.
+
+    Review suggested reverting each of the ten sites on its own and diffing a
+    corpus rather than assuming any were redundant. Three sites
+    (`root_scan_denial`, `_segment_scans_and_mutates`,
+    `_scan_for_install_denial`) turned out to be individually reachable, and
+    the verdict that moved was this one: reverting any of them takes
+    `grep.exe -r secret /` from DENY to ALLOW, a whole-volume read that the
+    bare spelling refuses. Nothing in the first version of this file covered
+    it.
+    """
+    assert _decide(command), "a whole-volume scan was allowed under .exe"
 
 
 def test_the_windows_spellings_are_left_alone_on_posix(on_posix):
