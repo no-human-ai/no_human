@@ -1,6 +1,6 @@
 # Tests — the orchestrator's own run
 
-_Harness-captured record for task `4135165f`, commit `262e128c6e056d5970611da441842178d6e30b5e` — not model-authored: no_human wrote this file from the layered test run on the final tree. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `4135165f`, commit `c8f77d57003edf0e8b35253e9d4637c55aa42344` — not model-authored: no_human wrote this file from the layered test run on the final tree. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ```json
 {
@@ -11,7 +11,7 @@ _Harness-captured record for task `4135165f`, commit `262e128c6e056d5970611da441
   "failure_blocks": [],
   "failure_blocks_dropped": 0,
   "ok": true,
-  "passed": 12814,
+  "passed": 12828,
   "ran": true,
   "tamper_flag": false
 }
