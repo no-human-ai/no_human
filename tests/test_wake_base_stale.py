@@ -87,10 +87,12 @@ def _land(lander: Path, filename: str) -> str:
     return _git(lander, "rev-parse", "HEAD").stdout.strip()
 
 
-def _make_branch(work: Path, lander_origin_url: str, branch: str) -> None:
-    """A real feature branch off current `main`, pushed to origin — gives
-    `conflicting_paths` a genuine ref to merge-tree against instead of
-    silently failing to resolve one."""
+def _make_branch(work: Path, branch: str) -> None:
+    """A real feature branch off current `main`, created directly in `work`
+    and pushed to origin — gives `conflicting_paths` a genuine, DIFFERENT
+    ref to merge-tree against instead of the degenerate `base == branch`
+    self-merge (which returns an empty conflict set unconditionally,
+    regardless of whether the real re-verification logic is even reached)."""
     _git(work, "branch", branch)
     _git(work, "push", "-q", "origin", f"{branch}:refs/heads/{branch}")
 
@@ -132,8 +134,13 @@ async def test_a_landing_on_trunk_remeasures_the_delivered_base(store, tmp_path)
     work = _repo(tmp_path)
     lander = _clone(tmp_path, work, "lander")
     recorded = _trunk_sha(work)
+    # A genuinely different ref from the base — never the degenerate
+    # base==branch self-merge, which would trivially return an empty
+    # conflict set without exercising the real merge-tree comparison at all.
+    branch = "feature-a"
+    _make_branch(work, branch)
 
-    t = await _pr_task(store, work, base_sha=recorded)
+    t = await _pr_task(store, work, base_sha=recorded, pr_branch=branch)
     events = []
     w = _watcher(store, mergeable="MERGEABLE", merge_state="CLEAN", events=events)
 
@@ -186,9 +193,11 @@ async def test_the_rung_acts_on_stale_but_mergeable(store, tmp_path):
     work = _repo(tmp_path)
     lander = _clone(tmp_path, work, "lander")
     recorded = _trunk_sha(work)
+    branch = "feature-b"
+    _make_branch(work, branch)
     new_sha = _land(lander, "another.py")
 
-    t = await _pr_task(store, work, base_sha=recorded)
+    t = await _pr_task(store, work, base_sha=recorded, pr_branch=branch)
     events = []
     w = _watcher(store, mergeable="MERGEABLE", merge_state="CLEAN", events=events)
 
@@ -198,6 +207,146 @@ async def test_the_rung_acts_on_stale_but_mergeable(store, tmp_path):
     fresh = await store.get_task(t.id)
     assert fresh.context["pr_base_sha"] == new_sha
     assert fresh.status is TaskStatus.AWAITING_APPROVAL
+
+
+async def test_stale_pr_recovers_after_a_flaky_first_enumeration(
+        store, tmp_path, monkeypatch):
+    """A transient enumeration failure (the common real-world cause: the
+    watcher's local branch ref is present but momentarily stale/racing a
+    concurrent fetch) must not be the final word — `_check_base_stale`
+    fetches and retries once, exactly as `_check_pr_conflict` already does
+    for the same failure shape (see
+    `test_orchestrator_pr_conflict.py::test_a_raising_enumeration_recovers_after_a_ref_fetch_and_resolves_mechanically`
+    for the established pattern this mirrors). Drives a REAL branch and a
+    REAL trunk landing; only the first `conflicting_paths` call is faked to
+    fail, so the retry that follows resolves against actual git state."""
+    from no_human.vcs import derived_conflict as dc
+
+    work = _repo(tmp_path)
+    lander = _clone(tmp_path, work, "lander")
+    recorded = _trunk_sha(work)
+    branch = "feature-flaky"
+    _make_branch(work, branch)
+    new_sha = _land(lander, "another.py")
+
+    real_conflicting_paths = dc.conflicting_paths
+    real_fetch = dc.fetch_conflict_refs
+    calls = {"n": 0}
+    fetch_calls = []
+
+    async def flaky(repo_path, base_tip, branch_arg):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("bad object main")
+        return await real_conflicting_paths(repo_path, base_tip, branch_arg)
+
+    async def spying_fetch(repo_path, base, branch_arg):
+        fetch_calls.append((repo_path, base, branch_arg))
+        return await real_fetch(repo_path, base, branch_arg)
+
+    monkeypatch.setattr(dc, "conflicting_paths", flaky)
+    monkeypatch.setattr(dc, "fetch_conflict_refs", spying_fetch)
+
+    t = await _pr_task(store, work, base_sha=recorded, pr_branch=branch)
+    w = _watcher(store, mergeable="MERGEABLE", merge_state="CLEAN")
+
+    out = await w._check_base_stale(t, "https://x/pull/9",
+                                     {"mergeable": "MERGEABLE"})
+    assert out == "pr_base_remeasured"
+    assert calls["n"] == 2  # first call raised, retry (after a fetch) succeeded
+    assert len(fetch_calls) == 1
+    fresh = await store.get_task(t.id)
+    assert fresh.context["pr_base_sha"] == new_sha
+
+
+async def test_stale_pr_with_missing_branch_is_undetermined_not_fresh(store, tmp_path):
+    """Blocker-1 regression: `conflicting_paths` returning ``None`` (the
+    question could not be asked at all — here because the recorded PR
+    branch never existed anywhere, so even a fetch-and-retry cannot resolve
+    it) must never be coerced into a determined-fresh answer. Before the
+    fix, a bare ``if conflict_paths:`` treated ``None`` the same as an
+    empty (verified-clean) set and recorded ``state: fresh`` with zero
+    verification performed."""
+    work = _repo(tmp_path)
+    lander = _clone(tmp_path, work, "lander")
+    recorded = _trunk_sha(work)
+    _land(lander, "feature_y.py")
+
+    t = await _pr_task(store, work, base_sha=recorded, pr_branch="ghost-branch")
+    events = []
+    w = _watcher(store, mergeable="MERGEABLE", merge_state="CLEAN", events=events)
+
+    out = await w._check_base_stale(t, "https://x/pull/9",
+                                     {"mergeable": "MERGEABLE"})
+    assert out == "pr_base_undetermined"
+    fresh = await store.get_task(t.id)
+    ctx = fresh.context
+    assert ctx["pr_base_freshness"]["state"] == delivered_base.UNDETERMINED
+    assert ctx["pr_base_freshness"]["state"] != delivered_base.FRESH
+    # The stale recorded sha must not be silently advanced.
+    assert ctx["pr_base_sha"] == recorded
+    assert any(k == "pr_base_undetermined" for k, _ in events)
+
+
+async def test_stale_pr_undetermined_answer_does_not_repeat_forever(store, tmp_path):
+    """The undetermined record is bounded: an identical undetermined answer
+    on a later tick must not re-write context or re-emit an event."""
+    work = _repo(tmp_path)
+    lander = _clone(tmp_path, work, "lander")
+    recorded = _trunk_sha(work)
+    _land(lander, "feature_z.py")
+
+    t = await _pr_task(store, work, base_sha=recorded, pr_branch="ghost-branch-2")
+    events = []
+    w = _watcher(store, mergeable="MERGEABLE", merge_state="CLEAN", events=events)
+
+    first = await w._check_base_stale(t, "https://x/pull/9",
+                                       {"mergeable": "MERGEABLE"})
+    assert first == "pr_base_undetermined"
+    assert len(events) == 1
+
+    t2 = await store.get_task(t.id)
+    second = await w._check_base_stale(t2, "https://x/pull/9",
+                                        {"mergeable": "MERGEABLE"})
+    assert second is None
+    assert len(events) == 1
+
+
+async def test_stale_pr_with_a_real_conflict_is_left_for_the_conflict_rung(store, tmp_path):
+    """A genuine merge-tree conflict at the new tip must not be recorded as
+    fresh — that stays reachable as STALE (and eventually CONFLICTING once
+    the forge catches up) for `_check_pr_conflict`'s own ladder to own."""
+    work = _repo(tmp_path)
+    lander = _clone(tmp_path, work, "lander")
+    recorded = _trunk_sha(work)
+
+    branch = "feature-conflict"
+    _make_branch(work, branch)
+    _git(work, "checkout", "-q", branch)
+    (work / "README.md").write_text("branch change\n", encoding="utf-8")
+    _git(work, "add", "-A")
+    _git(work, "commit", "-qm", "branch edits README")
+    _git(work, "push", "-q", "origin", branch)
+    _git(work, "checkout", "-q", "main")
+
+    # A conflicting edit lands on trunk via the independent `lander` clone.
+    (lander / "README.md").write_text("trunk change\n", encoding="utf-8")
+    _git(lander, "add", "-A")
+    _git(lander, "commit", "-qm", "trunk edits README")
+    _git(lander, "push", "-q", "origin", "main")
+
+    t = await _pr_task(store, work, base_sha=recorded, pr_branch=branch)
+    events = []
+    w = _watcher(store, mergeable="MERGEABLE", merge_state="CLEAN", events=events)
+
+    out = await w._check_base_stale(t, "https://x/pull/9",
+                                     {"mergeable": "MERGEABLE"})
+    assert out is None
+    fresh = await store.get_task(t.id)
+    ctx = fresh.context or {}
+    assert ctx.get("pr_base_sha") == recorded
+    assert "pr_base_freshness" not in ctx
+    assert not any(k.startswith("pr_base_") for k, _ in events)
 
 
 async def test_a_fresh_mergeable_pr_is_not_woken(store, tmp_path):

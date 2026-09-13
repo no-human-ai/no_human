@@ -137,8 +137,16 @@ async def record_at_delivery(repo_path: str, base: str) -> dict:
     is opened: the trunk tip the PR was measured against. Returns ``{}``
     (the keys absent, not empty strings) when the tip could not be resolved
     — load-bearing, because an absent `pr_base_sha` reads back through
-    `measure` as `UNDETERMINED`, never as fresh. Never raises."""
+    `measure` as `UNDETERMINED`, never as fresh. Never raises.
+
+    Fetches first, exactly as `measure` does by default: without this, a
+    watcher checkout whose local mirror lags the delivery-time fetch would
+    record a stale local tip here and then see it as STALE on the very next
+    re-measure tick — a spurious "trunk moved" event for a PR that never
+    actually raced a landing.
+    """
     try:
+        await fetch_base_ref(repo_path, base)
         tip = await resolve_trunk_tip(repo_path, base)
     except Exception:  # noqa: BLE001 — delivery must never fail on this
         tip = None

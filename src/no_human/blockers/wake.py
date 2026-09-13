@@ -2425,6 +2425,18 @@ class WakeWatcher:
         still-MERGEABLE PR can be re-measured this way, because each
         measurement is a cheap local `git fetch` + `rev-parse`, not a coder
         attempt.
+
+        FAIL CLOSED ON THE LOCAL RE-VERIFICATION TOO. `conflicting_paths`
+        documents `None` as "the question could not be asked at all" — a
+        pruned or never-fetched head branch is the NORMAL state of a watcher
+        checkout (`delivered_base.fetch_base_ref` deliberately fetches only
+        the base). `None` is falsy, so a naive `if conflict_paths:` guard
+        treats "could not ask" the same as "asked, found nothing" and
+        records a determined-fresh answer for a PR that was never actually
+        re-verified — that was the exact defect a prior round of this task
+        shipped. Below, `None` is checked for explicitly and fetches the
+        branch ref (mirroring `_check_pr_conflict`'s own fetch-and-retry)
+        before giving up and recording UNDETERMINED, never FRESH.
         """
         mergeable = str((info or {}).get("mergeable") or "").upper()
         if mergeable != "MERGEABLE":
@@ -2434,14 +2446,20 @@ class WakeWatcher:
         # `_check_pr_conflict` above already uses for the same reason: keep
         # this module's import graph unchanged.
         from ..vcs import delivered_base
-        from ..vcs.derived_conflict import conflicting_paths
+        from ..vcs.derived_conflict import conflicting_paths, fetch_conflict_refs
 
         ctx = task.context or {}
         base_branch = ctx.get("base_branch")
+        # The base ref delivery actually measured against, when recorded —
+        # `pr_base_ref` is the historical, immutable record; `base_branch`
+        # is a live context key a caller could in principle retarget later.
+        # Falls back to `base_branch` for tasks delivered before this
+        # bugfix, where `pr_base_ref` was never written.
+        measure_base = ctx.get("pr_base_ref") or base_branch
         branch_name = ctx.get("pr_branch")
         recorded_sha = ctx.get("pr_base_sha")
 
-        result = await delivered_base.measure(task.repo_path, base_branch, recorded_sha)
+        result = await delivered_base.measure(task.repo_path, measure_base, recorded_sha)
         # `measure` just awaited a fetch + rev-parse; re-verify terminal-ness
         # before writing anything, same discipline as every other rung here.
         if await self._is_terminal(task):
@@ -2452,6 +2470,11 @@ class WakeWatcher:
             return None
 
         if result.state == delivered_base.UNDETERMINED:
+            if ctx.get("pr_base_freshness") == result.as_dict():
+                # Already recorded exactly this undetermined answer on a
+                # previous tick — bound the noise instead of re-emitting an
+                # identical event on every single tick forever.
+                return None
             patch: dict[str, Any] = {"pr_base_freshness": result.as_dict()}
             if not recorded_sha and result.observed_sha:
                 # Never recorded at delivery (predates this bugfix, or the
@@ -2473,23 +2496,96 @@ class WakeWatcher:
         # the new tip is left for `_check_pr_conflict`'s own ladder, never
         # handled here (see the docstring above).
         conflict_paths: set[str] | None = None
-        if task.repo_path and base_branch and branch_name:
+        local_check_error = ""
+        if task.repo_path and measure_base and branch_name:
             try:
                 conflict_paths = await conflicting_paths(
-                    task.repo_path, base_branch, branch_name)
+                    task.repo_path, measure_base, branch_name)
             except Exception as exc:  # noqa: BLE001 — a probe error must not crash the watcher
                 log.warning(
                     "failed to re-verify mergeability while re-measuring "
                     "base freshness for %s: %s", task.id[:8], exc)
                 conflict_paths = None
+                local_check_error = f"{exc.__class__.__name__}: {exc}"
+            if conflict_paths is None:
+                # Could not resolve one of the refs — commonly because the
+                # branch was never fetched into this checkout. Fetch both
+                # and retry once before giving up, exactly the recovery
+                # `_check_pr_conflict` already performs above.
+                if not local_check_error:
+                    local_check_error = (
+                        "conflicting_paths() returned no result "
+                        "(unresolvable ref?)")
+                try:
+                    fetched = await fetch_conflict_refs(
+                        task.repo_path, measure_base, branch_name)
+                except Exception as fexc:  # noqa: BLE001 — best-effort precondition
+                    fetched = False
+                    log.warning(
+                        "ref fetch before the base-staleness retry failed "
+                        "for %s: %s", task.id[:8], fexc)
+                try:
+                    conflict_paths = await conflicting_paths(
+                        task.repo_path, measure_base, branch_name)
+                except Exception as exc2:  # noqa: BLE001
+                    conflict_paths = None
+                    local_check_error = (
+                        f"{local_check_error}; retry after git fetch "
+                        f"(fetch_ok={fetched}) also failed: "
+                        f"{exc2.__class__.__name__}: {exc2}")
+                else:
+                    if conflict_paths is None:
+                        local_check_error = (
+                            f"{local_check_error}; retry after git fetch "
+                            f"(fetch_ok={fetched}) also unresolvable")
+        else:
+            missing = [name for name, val in (
+                ("repo_path", task.repo_path),
+                ("base_branch", measure_base),
+                ("pr_branch", branch_name),
+            ) if not val]
+            local_check_error = (
+                f"cannot re-verify locally: missing {', '.join(missing)}")
+
         if await self._is_terminal(task):
             return None
+
         if conflict_paths:
             # A genuine conflict at the new tip: leave the sha unrecorded so
             # this stays reachable as STALE (and eventually CONFLICTING once
             # the forge catches up) rather than being silently marked fresh.
             return None
 
+        if conflict_paths is None:
+            # Could not ask git the question at all, even after the fetch
+            # retry: fail CLOSED, exactly per `conflicting_paths`'s own
+            # contract. This is the sole point that used to coerce "could
+            # not verify" into "verified fresh" via a bare `if
+            # conflict_paths:` truthiness check — `None` must never reach
+            # the FRESH branch below.
+            undetermined_freshness = {
+                "state": delivered_base.UNDETERMINED,
+                "base_ref": measure_base,
+                "recorded_sha": recorded_sha or "",
+                "observed_sha": result.observed_sha,
+                "reason": (
+                    "trunk moved but local re-verification failed: "
+                    f"{local_check_error}"),
+            }
+            if ctx.get("pr_base_freshness") == undetermined_freshness:
+                return None
+            task.context = await self.store.merge_context(
+                task.id, {"pr_base_freshness": undetermined_freshness})
+            await self._emit(
+                task, "pr_base_undetermined",
+                f"{task.id[:8]} PR {url} base moved but local "
+                f"re-verification could not be completed: {local_check_error}",
+            )
+            return "pr_base_undetermined"
+
+        # conflict_paths == set(): a genuinely clean local merge against the
+        # new tip (asked and answered, not merely unresolved) — safe to
+        # record as fresh.
         previous_sha = result.recorded_sha
         remeasures = int(ctx.get("pr_base_remeasures") or 0) + 1
         patch = {
@@ -2497,7 +2593,7 @@ class WakeWatcher:
             "pr_base_remeasures": remeasures,
             "pr_base_freshness": {
                 "state": delivered_base.FRESH,
-                "base_ref": base_branch,
+                "base_ref": measure_base,
                 "previous_base_sha": previous_sha,
                 "base_sha": result.observed_sha,
             },
