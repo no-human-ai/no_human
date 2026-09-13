@@ -26,6 +26,12 @@ splits the token, which is issue #312.
 """
 from __future__ import annotations
 
+import json
+import subprocess
+import sys
+from pathlib import Path
+from textwrap import dedent
+
 import pytest
 
 from no_human.agent import exec_names, guard
@@ -56,6 +62,12 @@ def on_windows(monkeypatch):
 @pytest.fixture
 def on_posix(monkeypatch):
     monkeypatch.setattr(guard, "_IS_WINDOWS", False)
+
+
+@pytest.fixture
+def on_case_sensitive_host(monkeypatch):
+    """A host where two spellings are two files, whatever this machine is."""
+    monkeypatch.setattr(exec_names, "host_folds_case", lambda: False)
 
 
 # ----------------------------------------------------------------- the reader
@@ -105,8 +117,9 @@ def test_windows_reads_either_separator_and_folds_case(token, expected):
         # command they are entitled to run.
         (r"weird\name", r"weird\name"),
         (r"C:\tools\git.exe", r"c:\tools\git"),
-        # `GIT` and `git` are different files on POSIX, so folding would be a
-        # text match masquerading as a structural one.
+        # On a case-SENSITIVE host `GIT` and `git` are different files, so
+        # folding would be a text match masquerading as a structural one. The
+        # host that folds is covered by `test_a_folding_host_reads_one_name`.
         ("GIT", "GIT"),
         ("/bin/sh/", "sh"),
         # A trailing dot and a colon are ordinary filename characters here, so
@@ -119,7 +132,10 @@ def test_windows_reads_either_separator_and_folds_case(token, expected):
     ],
 )
 def test_posix_splits_only_on_slash_and_never_folds(token, expected):
-    got = exec_names.command_name(token, is_windows=False)
+    # `fold_case` pinned rather than left to the probe: this table is the
+    # case-SENSITIVE host's contract, and it must read the same on a developer
+    # machine whose own filesystem folds (#328).
+    got = exec_names.command_name(token, is_windows=False, fold_case=False)
     if token == r"C:\tools\git.exe":
         # Suffix stripped, separators untouched: still not the name `git`, which
         # is correct on a host where that really is one filename.
@@ -132,11 +148,127 @@ def test_the_reader_is_not_vacuous():
     """The suffix strip and the fold must each be observable on their own, or a
     later 'simplification' of either could pass this file unchanged."""
     assert exec_names.command_name("git.exe", is_windows=True) == "git"
-    assert exec_names.command_name("git.exe", is_windows=False) == "git"
+    assert exec_names.command_name("git.exe", is_windows=False, fold_case=False) == "git"
     assert exec_names.command_name("GIT", is_windows=True) == "git"
-    assert exec_names.command_name("GIT", is_windows=False) == "GIT"
+    assert exec_names.command_name("GIT", is_windows=False, fold_case=False) == "GIT"
     assert exec_names.command_name(r"a\b", is_windows=True) == "b"
-    assert exec_names.command_name(r"a\b", is_windows=False) == r"a\b"
+    assert exec_names.command_name(r"a\b", is_windows=False, fold_case=False) == r"a\b"
+
+
+def test_a_folding_host_reads_one_name():
+    """The half #320 left open: on a case-insensitive filesystem `GIT` really
+    IS `git`, so a name-set comparison against lowercase names has to fold or
+    the capitalised spelling walks past every gate (#328). Separators stay
+    ungated — folding case is not the same question as splitting a backslash.
+    """
+    assert exec_names.command_name("GIT", is_windows=False, fold_case=True) == "git"
+    assert exec_names.command_name("GH.EXE", is_windows=False, fold_case=True) == "gh"
+    assert exec_names.command_name("NH.Cmd", is_windows=False, fold_case=True) == "nh"
+    assert exec_names.command_name(r"weird\Name", is_windows=False, fold_case=True) == r"weird\name"
+
+
+def test_the_probe_measures_the_volume_it_is_asked_about(tmp_path):
+    """Derived a second way so the probe cannot pass by asserting itself: write
+    ONE spelling, then ask the OS whether the other names the same file.
+
+    Note what this can and cannot catch. On a case-INSENSITIVE developer
+    machine a probe hardcoded to `True` agrees with every measurement and
+    survives; on a case-sensitive runner — which CI is — it fails here and at
+    `test_the_probe_matches_this_host` below. The asymmetry is inherent: a host
+    that folds cannot observe the difference between measuring and assuming
+    that it folds.
+    """
+    import os
+
+    written = tmp_path / "probe"
+    written.write_text("x")
+    other_spelling = tmp_path / "PROBE"
+    folds_here = other_spelling.exists() and os.path.samefile(other_spelling, written)
+
+    assert exec_names._folds_case(str(written)) is folds_here
+
+
+def test_the_probe_matches_this_host():
+    """The same question about the volume the module itself lives on, which is
+    the one `host_folds_case` answers."""
+    import os
+
+    module = Path(exec_names.__file__).resolve()
+    swapped = module.with_name(module.name.swapcase())
+    really_folds = swapped.exists() and os.path.samefile(str(swapped), str(module))
+
+    assert exec_names.host_folds_case() is really_folds
+    assert bool(exec_names.case_flags()) is really_folds
+
+
+def test_an_unmeasurable_path_falls_back_to_the_host_class():
+    """A path that cannot be stat'ed proves nothing about the volume, so the
+    probe returns the `os.name` answer rather than guessing the permissive one.
+    """
+    import os
+
+    missing = "/no_human-nonexistent-probe-dir/AbC"
+
+    assert exec_names._folds_case(missing) is (os.name == "nt")
+
+
+#: The four rows #328 measured as open on main, plus the flag spelling of the
+#: first one. On a case-insensitive volume every one of them really invokes the
+#: lowercase program the gates were written for.
+_FOLD_SENSITIVE_ROWS = (
+    "GH pr merge 7",
+    "RM -rf /",
+    "rm -RF /",
+    "FIND / -delete",
+    'sh -c "GIT push origin main"',
+    'sh -c "GIT.CMD push origin main"',
+)
+
+
+def _verdicts_with_fold(fold: bool) -> dict:
+    """Guard verdicts from a fresh interpreter with the probe pinned to `fold`.
+
+    A subprocess, not a monkeypatch: `_RM_RF`, `_GIT_DESTRUCTIVE` and the
+    `_looks_like_git_push` recursion gate bake `case_flags()` into compiled
+    patterns at import time, so patching after the fact reaches the name path
+    only -- which is how a fix for the name half alone can look complete while
+    three text gates stay open.
+    """
+    code = dedent(f"""
+        import json
+        from no_human.agent import exec_names
+        exec_names.host_folds_case = lambda: {fold!r}
+        from no_human.agent.guard import evaluate
+        out = {{}}
+        for cmd in {list(_FOLD_SENSITIVE_ROWS)!r}:
+            decision = evaluate(
+                "Bash", {{"command": cmd}}, forbidden_paths=[],
+                never_push_to=["main"], cwd=".", env={{"PATH": ""}})
+            out[cmd] = not decision.allow
+        print(json.dumps(out))
+    """)
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=300)
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
+def test_a_folding_host_denies_every_capitalised_spelling():
+    """Two of these walk past the NAME resolution and two past the TEXT gates,
+    so a fix that closes either half alone fails this."""
+    denied = _verdicts_with_fold(True)
+
+    assert denied == {cmd: True for cmd in _FOLD_SENSITIVE_ROWS}, denied
+
+
+def test_a_case_sensitive_host_is_not_punished():
+    """The #320 position, kept intact and made observable: where `GIT` and
+    `git` are two files, denying the capitalised spelling would refuse a
+    command the user is entitled to run. This is also the control that shows
+    the fold is what does the work above, not some unrelated tightening."""
+    denied = _verdicts_with_fold(False)
+
+    assert denied == {cmd: False for cmd in _FOLD_SENSITIVE_ROWS}, denied
 
 
 # ------------------------------------------------------------- the real gates
@@ -259,13 +391,15 @@ def test_whole_volume_scans_deny_under_the_exe_spelling(command, on_windows):
     assert _decide(command), "a whole-volume scan was allowed under .exe"
 
 
-def test_the_windows_spellings_are_left_alone_on_posix(on_posix):
+def test_the_windows_spellings_are_left_alone_on_posix(on_posix, on_case_sensitive_host):
     """The other half of the gate, and the reason it IS a gate.
 
-    On POSIX `GIT` is a genuinely different file from `git`, and a backslash is
-    a legal character in a filename. Denying these there would be a text match
-    masquerading as a structural one, and could refuse a command the user is
-    entitled to run.
+    On a case-SENSITIVE POSIX host `GIT` is a genuinely different file from
+    `git`, and a backslash is a legal character in a filename. Denying these
+    there would be a text match masquerading as a structural one, and could
+    refuse a command the user is entitled to run. The fold is pinned off so
+    this stays the case-sensitive host's contract even when the developer's own
+    filesystem folds (#328).
     """
     assert not _decide("GIT.EXE push origin main")
     assert not _decide('"C:\\tools\\git.exe" push origin main')

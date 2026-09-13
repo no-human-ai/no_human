@@ -86,6 +86,9 @@ Pure string work, no filesystem access, matching the rest of the guard.
 
 from __future__ import annotations
 
+import os
+import re
+from functools import lru_cache
 from pathlib import PurePosixPath
 
 #: Every extension Windows will execute directly, longest-first so `.exe` is
@@ -103,7 +106,68 @@ _EXECUTABLE_SUFFIXES = (".cmd", ".bat", ".ps1", ".exe", ".com")
 _ADS_SEPARATOR = "::"
 
 
-def command_name(token: str, *, is_windows: bool) -> str:
+def case_flags() -> int:
+    r"""`re.IGNORECASE` where the host folds case, else no flag.
+
+    The name-resolution path is not the whole guard: `_RM_RF`,
+    `_GIT_DESTRUCTIVE` and the `_looks_like_git_push` recursion gate read the
+    command as TEXT, and a capitalised spelling walks past all three on a
+    case-insensitive host (#328) — `RM -rf /`, `rm -RF /` and
+    `sh -c "GIT push origin main"` were open for that reason after the name
+    half was closed. Same measurement, same reasoning: folding where the
+    filesystem folds denies nothing that could not already run.
+    """
+    return re.IGNORECASE if host_folds_case() else 0
+
+
+def host_folds_case() -> bool:
+    r"""Whether this host's filesystem resolves two spellings of one name to the
+    same file. Measured, not assumed.
+
+    `is_windows` answers the question for Windows and gets POSIX wrong: macOS
+    ships APFS case-insensitive by default, and so are many Linux mounts
+    (exFAT/NTFS volumes, ciopfs, a case-insensitive ZFS dataset). On such a
+    host `GH pr merge 7` really invokes `gh pr merge 7`, and every gate that
+    compares against a lowercase name is open to the capitalised spelling
+    (#328).
+
+    The probe is the same question the OS is already answering: swap the case
+    of this module's own filename and ask whether that path is the same file.
+    `samefile` rather than `exists`, so a genuinely different file that happens
+    to carry the swapped spelling is not mistaken for a fold.
+
+    Cached: the answer cannot change while the process runs, and it is read on
+    every guarded command.
+
+    Folding on a case-insensitive host denies nothing that could not already
+    run, and skipping it on a case-sensitive one refuses nothing a user is
+    entitled to run -- which is the reason both earlier positions were correct
+    about their own host and wrong about the other.
+    """
+    return _folds_case(os.path.realpath(__file__))
+
+
+@lru_cache(maxsize=None)
+def _folds_case(path: str) -> bool:
+    # `os.path`, not `pathlib`: `Path(...)` instantiates the class for the
+    # CURRENT platform, so a test that patches `os.name` to "nt" and reloads
+    # this module gets `NotImplementedError: cannot instantiate 'WindowsPath'`
+    # from the probe rather than an answer. These are the same syscalls with
+    # no platform-bound object in the way.
+    directory, name = os.path.split(os.fspath(path))
+    swapped_name = name.swapcase()
+    if swapped_name == name:  # nothing to swap: no evidence either way
+        return os.name == "nt"
+    swapped = os.path.join(directory, swapped_name)
+    try:
+        return os.path.exists(swapped) and os.path.samefile(swapped, path)
+    except OSError:
+        # An unreadable or vanished path proves nothing; fall back to the
+        # host class rather than guessing the permissive answer.
+        return os.name == "nt"
+
+
+def command_name(token: str, *, is_windows: bool, fold_case: bool | None = None) -> str:
     r"""The command name `token` spells, or `""` if it names nothing.
 
     `PurePosixPath(...).name` rather than `os.path.basename`, so a trailing
@@ -131,9 +195,12 @@ def command_name(token: str, *, is_windows: bool) -> str:
         if lowered.endswith(suffix):
             name = name[: -len(suffix)]
             break
-    if is_windows:
-        # The filesystem is case-insensitive there, so `GIT.EXE` and `git.exe`
-        # are one file and must reach one verdict. Every name set this is
-        # compared against is lowercase.
+    if fold_case is None:
+        fold_case = is_windows or host_folds_case()
+    if fold_case:
+        # `GIT.EXE` and `git.exe` are one file wherever the filesystem folds
+        # case, so they must reach one verdict. Every name set this is compared
+        # against is lowercase. A parameter as well as a probe, so both answers
+        # stay reachable from one runner -- the same reason `is_windows` is one.
         name = name.lower()
     return name
