@@ -1,12 +1,12 @@
 # Verifiers
 
-_Harness-captured record for task `811fffb9`, commit `139536b29691ba52d93b524e8e6b3bc2dd0b3187` — not model-authored: no_human wrote this file from the deterministic verifier rules selected for this commit's files. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `811fffb9`, commit `69b0a0d8df93022c2fc810faf8eb30c2726bfaca` — not model-authored: no_human wrote this file from the deterministic verifier rules selected for this commit's files. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ```json
 [
   {
-    "comment": "All new and modified test functions in both test_doctor.py and test_eval_sandbox_cleanup.py contain at least one assert statement or pytest.raises block; the only assertion-free additions are non-test helpers (_tiny_repo, _backend_factory, _quick_run_task) which the statement does not cover.",
-    "evidence": "Every added/modified test function contains assertions or pytest.raises, e.g. test_sandbox_residue_measures_files_not_directories has `assert residue[\"files\"] == 0` and test_cleanup_never_raises_and_never_masks_the_propagating_error uses `with pytest.raises(RuntimeError, match=\"original\")`.",
+    "comment": "All test functions added in test_doctor.py and the new test_eval_sandbox_cleanup.py include at least one assert or pytest.raises block; non-test helpers (_tiny_repo, _backend_factory, _quick_run_task) are not test functions.",
+    "evidence": "Every added/modified test function contains assertions, e.g. test_a_fully_successful_cleanup_records_nothing has 'assert result == []' / 'assert not base.exists()', and test_cleanup_never_raises... uses 'with pytest.raises(RuntimeError, match=\"original\")'.",
     "file": "",
     "files_checked": [
       "tests/test_doctor.py",
@@ -16,7 +16,7 @@ _Harness-captured record for task `811fffb9`, commit `139536b29691ba52d93b524e8e
     "no_verdict": false,
     "passed": true,
     "severity": "medium",
-    "tokens_used": 993,
+    "tokens_used": 1049,
     "unavailable": false,
     "verifier_id": "tests-assert-something"
   }
