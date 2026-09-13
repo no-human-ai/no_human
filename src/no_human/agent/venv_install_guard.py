@@ -543,6 +543,89 @@ def _venv_root_of(exe_path: str) -> str | None:
     return None
 
 
+def _is_worth_remembering(real: str, cwd: str | None) -> bool:
+    """Is `real` — a PATH candidate whose file type could NOT be determined —
+    the one to remember as the possible install target?
+
+    Skipping a venv INSIDE `cwd` is not an optimisation, it is the selection
+    rule: among candidates the guard admits it cannot read, prefer the one
+    that would be DENIED. A venv inside the session's own worktree would be
+    waved through, so keeping it discards the only candidate whose verdict
+    differs from the default.
+
+    Without this rule the caller repeats, one level in, the bug this
+    remembering was added to fix: first-one-wins over a set the code cannot
+    distinguish, so PATH ORDER ALONE decides ALLOW vs DENY between entries
+    that are equally indeterminate. Measured with two venvs both chmod'd
+    0600: own venv first gave ALLOW, foreign venv first gave DENY, same two
+    directories. And the bad ordering is the ORDINARY production one, not a
+    contrived PATH -- `uv run` prepends the project's own venv ahead of the
+    inherited shared venv, so a coder session running under it manufactures
+    own-venv-first for free.
+    """
+    root = _venv_root_of(real)
+    if not root:
+        return False
+    cwd_real = _safe_realpath(cwd) if cwd else None
+    return not (cwd_real and _is_within(root, cwd_real))
+
+
+def _displaced_by_indeterminate_venv(
+    token: str, real: str, venv_fallback: str | None
+) -> str | None:
+    """The remembered indeterminate venv when it must displace the
+    determinate winner `real`, else None.
+
+    A determinate match settles the install TARGET only when that binary
+    belongs to a venv. When it does not -- a system `pip` -- resolution has
+    NOT established where the install lands, and an earlier PATH entry that
+    could not be stat'd is the one piece of evidence it was unable to rule
+    out. Preferring it is fail-closed on an indeterminate read, which is this
+    module's standing rule for a tri-state probe; skipping it reports "no venv
+    is involved", a positive claim nothing established, and the `chmod` buys
+    the ALLOW.
+
+    DO NOT restate this as "an installer outside a venv installs into
+    whatever VIRTUAL_ENV names". That was the first justification written
+    here and it is FALSE, measured three ways: `pip` decides venv membership
+    by `sys.prefix != sys.base_prefix` (its own `_internal/utils/virtualenv.py`)
+    and never reads the variable -- `grep -rn VIRTUAL_ENV pip/_internal`
+    returns nothing against a 9-file positive control, and
+    `VIRTUAL_ENV=/tmp/fake /usr/bin/python3` still reports the system purelib;
+    and `uv sync` prints "does not match the project environment path `.venv`
+    and will be ignored". Only `uv pip` honours it. The justification is
+    indeterminacy, not a claim about any installer's target-selection rule.
+
+    Measured on a Linux runner, where `/usr/bin/pip` exists and on the macOS
+    dev host it does not: `PATH=<foreign venv>/bin:/usr/bin:/bin` with that
+    venv chmod'd 0600 resolved to `/usr/bin/pip`, owning venv None, and
+    `pip install evilpkg` flipped DENY -> ALLOW.
+
+    Requiring the WINNER to own no venv is what keeps an unreadable decoy
+    ahead of the session's OWN venv resolving to the session's venv: a
+    determinate, venv-owning answer wins outright.
+
+    A known and accepted imprecision, stated rather than hidden:
+    `_venv_root_of` treats an UNDETERMINED `pyvenv.cfg` probe as a venv root
+    (see its docstring), so a non-venv directory whose own parent is
+    unreadable reads as a venv here and produces a DENY for a path no install
+    would reach. That is the fail-closed side of a deliberate tri-state and it
+    is not a bug, but it means this branch cannot claim to fire only on real
+    venvs.
+    """
+    if venv_fallback is None or _venv_root_of(real) is not None:
+        return None
+    _LOG.warning(
+        "venv guard: %r resolved via PATH to %r, which belongs to no "
+        "virtualenv, while an earlier PATH entry %r could not be stat'd "
+        "(permission denied?) and so could not be shown NOT to be a "
+        "virtualenv; using the earlier entry, because this resolution has "
+        "not established where the install would land",
+        token, real, venv_fallback,
+    )
+    return venv_fallback
+
+
 def _resolve_installer(token: str, cwd: str | None, env: Mapping[str, str]) -> str | None:
     """The canonical, symlink-followed path of `token` iff it resolves to an
     existing installer executable — a property of the RESOLVED file's
@@ -699,6 +782,7 @@ def _resolve_installer(token: str, cwd: str | None, env: Mapping[str, str]) -> s
         # than "absent" — undetermined must not collapse into
         # found-to-be-missing either.
         fallback = None
+        venv_fallback = None
         directories = path_value.split(os.pathsep)
         if _IS_WINDOWS:
             # Same reading as the empty entry below, one platform over:
@@ -735,10 +819,25 @@ def _resolve_installer(token: str, cwd: str | None, env: Mapping[str, str]) -> s
                 if probe is False:
                     continue
                 if probe is None:
-                    if fallback is None:
-                        real = _safe_realpath(candidate) or candidate
-                        if _is_installer_name(_basename(real)):
+                    real = _safe_realpath(candidate) or candidate
+                    if _is_installer_name(_basename(real)):
+                        if fallback is None:
                             fallback = real
+                        # Tracked SEPARATELY from `fallback`, and this is the
+                        # whole point: `fallback` is the first undetermined
+                        # candidate with an INSTALLER NAME, which is not the
+                        # same thing as the first one that could be a venv. A
+                        # single unreadable non-venv directory ahead of an
+                        # unreadable venv claims the `fallback` slot, and the
+                        # venv's evidence — the only reason to prefer an
+                        # unstat'able entry at all — is then silently dropped.
+                        # Measured: PATH=<unreadable non-venv>:<unreadable
+                        # foreign venv>/bin:<sysbin> resolved to the system
+                        # pip and ALLOWED `pip install evilpkg`, reinstating
+                        # the DENY->ALLOW this whole branch exists to close.
+                        if venv_fallback is None and _is_worth_remembering(
+                                real, cwd):
+                            venv_fallback = real
                     continue
                 # probe is True: a real, stat'able candidate — `shutil.which`
                 # also filters on executability before accepting a match, so
@@ -747,15 +846,28 @@ def _resolve_installer(token: str, cwd: str | None, env: Mapping[str, str]) -> s
                     continue
                 real = _safe_realpath(candidate)
                 if real and _is_installer_name(_basename(real)):
+                    displaced = _displaced_by_indeterminate_venv(
+                        token, real, venv_fallback)
+                    if displaced is not None:
+                        return displaced
                     return real
-        if fallback is not None:
+        # `venv_fallback` first, for the same reason it is preferred over a
+        # determinate non-venv winner above: when NOTHING on PATH could be
+        # stat'd, the candidates are still not interchangeable. Returning
+        # whichever came first means PATH order decides ALLOW vs DENY across
+        # entries the guard cannot read — the first-one-wins shape this
+        # module has now had to close at three separate points. Preferring
+        # the candidate that would be DENIED is the same rule applied to the
+        # same ambiguity, so the two paths cannot disagree about one PATH.
+        remembered = venv_fallback if venv_fallback is not None else fallback
+        if remembered is not None:
             _LOG.warning(
                 "venv guard: %r resolved via PATH to %r but its file type "
                 "could not be verified (permission denied?); treating it "
                 "as a resolved installer rather than assuming it is absent",
-                token, fallback,
+                token, remembered,
             )
-            return fallback
+            return remembered
         _LOG.warning(
             "venv guard: %r names an installer but could not be "
             "resolved via PATH; allowing", token,

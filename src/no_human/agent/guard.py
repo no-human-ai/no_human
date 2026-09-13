@@ -152,7 +152,7 @@ _RM_TESTS = re.compile(
 _NO_HUMAN_YML_WRITE = re.compile(
     r"(?:sed\s+-i|>\s*|>>\s*|tee\s+)[^|;&]*\.no_human\.ya?ml", re.IGNORECASE)
 
-_RM_RF = re.compile(r"\brm\s+(-[a-z]*r[a-z]*f|-[a-z]*f[a-z]*r|-rf|-fr)\b")
+_RM_RF = re.compile(r"\brm\s+(-[a-z]*r[a-z]*f|-[a-z]*f[a-z]*r|-rf|-fr)\b", exec_names.case_flags())
 # `find` primaries that WRITE or RUN — none of them matched by `_RM_RF`.
 _SCAN_MUTATION_PRIMARIES = frozenset({
     "-delete", "-exec", "-execdir", "-ok", "-okdir",
@@ -162,8 +162,7 @@ _SCAN_MUTATION_PRIMARIES = frozenset({
 _SHELL_PUNCT = frozenset("();<>|&")
 _GIT_DESTRUCTIVE = re.compile(
     r"\bgit\s+(push\s+.*--force|push\s+.*-f\b|reset\s+--hard\s+\S|"
-    r"clean\s+-[a-z]*f|filter-branch|update-ref\s+-d)"
-)
+    r"clean\s+-[a-z]*f|filter-branch|update-ref\s+-d)", exec_names.case_flags())
 
 # A live product server/runner launched from an agent session. `nh serve` /
 # `nh start` run against the OPERATOR's ~/.no_human (config, DB, credentials)
@@ -2220,7 +2219,7 @@ _HOOK_DISARM = re.compile(
 
 
 def _looks_like_git_push(text: str) -> bool:
-    return bool(re.search(r"\bgit\b.*\bpush\b", text, re.DOTALL))
+    return bool(re.search(r"\bgit\b.*\bpush\b", text, re.DOTALL | exec_names.case_flags()))
 
 
 def _strip_wrappers(tokens: list[str], is_extra_target=None) -> list[str]:
@@ -2251,7 +2250,7 @@ def _strip_wrappers(tokens: list[str], is_extra_target=None) -> list[str]:
     argv = tokens[i:]
     if saw_wrapper and argv and argv[0].startswith("-"):
         for j, tok in enumerate(argv):
-            name = PurePosixPath(tok).name
+            name = exec_names.command_name(tok, is_windows=_IS_WINDOWS)
             if (name == "git" or name in _SHELL_RUNNERS
                     or (is_extra_target is not None and is_extra_target(name))):
                 return argv[j:]
