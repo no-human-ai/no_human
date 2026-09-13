@@ -589,8 +589,11 @@ def test_a_detached_head_and_a_bare_reset_hard_fall_through(repo):
 # fast-forward refusal is exercised for real, the wind-back forms are told
 # apart from --autostash by EXECUTING each rather than trusting the comment,
 # and the module's runner coverage is proven identical to guard.py's own
-# `_SHELL_RUNNERS` at runtime — the exact set the historical narrowing bug
-# (venv_install_guard's 8 names instead of guard.py's 13) silently lost.
+# `_FORGE_RUNNER_NAMES` at runtime — the actual set `_git_invocations`
+# recurses into (`_SHELL_RUNNERS | _TRAILING_ARGV_RUNNERS`, 18 names), not
+# the narrower 13-name `_SHELL_RUNNERS` alone and not
+# venv_install_guard's separate 8-name set the historical narrowing bug
+# substituted.
 # --------------------------------------------------------------------------- #
 
 
@@ -782,21 +785,36 @@ def test_the_pushed_tip_path_sees_every_runner_the_guard_knows(harness_repo):
     """The historical bug this guards against: a prior attempt at this exact
     fix read `venv_install_guard._SHELL_RUNNERS` (8 names) instead of
     `guard._SHELL_RUNNERS` (13 names), silently losing eval/flock/nice/
-    script/stdbuf/timeout/watch/xargs as live bypasses — a coder could wrap
-    a rewrite in any of those eight and the guard would never see the `git`
-    argv inside. This module never derives its own runner list — it
-    consumes `guard._git_invocations`, which is bound to
-    `guard._SHELL_RUNNERS` — so this test pins that by enumerating
-    `guard._SHELL_RUNNERS` itself AT RUNTIME (not a hardcoded literal copy)
-    and confirming every single one denies a rewrite wrapped inside it."""
+    script/stdbuf/timeout/watch/xargs as live bypasses. This module never
+    derives its own runner list — it consumes `guard._git_invocations`,
+    which (per `guard.py`'s own `_git_invocations`, read at
+    `guard.py:2577` — `elif name in _FORGE_RUNNER_NAMES`) recurses into
+    every name in `guard._FORGE_RUNNER_NAMES`, the union of
+    `_SHELL_RUNNERS` (13) and `_TRAILING_ARGV_RUNNERS` (12, overlapping
+    `_SHELL_RUNNERS` on xargs/timeout/nice/stdbuf/script/flock/watch), for
+    18 names total — five more than `_SHELL_RUNNERS` alone
+    (chrt/ionice/setsid/taskset/unbuffer). A prior version of this test
+    asserted only against `_SHELL_RUNNERS` and a 13-row wrap table; that
+    table actively forbade covering the five runners the guard really
+    recurses into, so it would not have caught a regression that widened
+    or narrowed that set. This test pins the full 18 AT RUNTIME (not a
+    hardcoded literal copy) and confirms every single one denies a
+    rewrite wrapped inside it."""
     from no_human.agent import venv_install_guard
 
-    # The runner set actually consulted by `_git_invocations` (and therefore
-    # by this module) must be the full 13, not the narrower 8 the historical
-    # bug substituted.
+    # The runner set actually consulted by `_git_invocations` (and
+    # therefore by this module) must be the full 18-name
+    # `_FORGE_RUNNER_NAMES`, not the narrower 13-name `_SHELL_RUNNERS` and
+    # not the even narrower 8 the historical bug substituted.
     assert guard._SHELL_RUNNERS == frozenset({
         "sh", "bash", "zsh", "dash", "ksh", "eval", "xargs", "timeout",
         "nice", "stdbuf", "script", "watch", "flock",
+    })
+    assert guard._SHELL_RUNNERS <= guard._FORGE_RUNNER_NAMES
+    assert guard._FORGE_RUNNER_NAMES == frozenset({
+        "sh", "bash", "zsh", "dash", "ksh", "eval", "xargs", "timeout",
+        "nice", "stdbuf", "script", "watch", "flock",
+        "ionice", "chrt", "setsid", "unbuffer", "taskset",
     })
     # venv_install_guard's set is not a subset of guard's (it separately
     # carries Windows-shell names — cmd/powershell/pwsh — that are out of
@@ -807,7 +825,7 @@ def test_the_pushed_tip_path_sees_every_runner_the_guard_knows(harness_repo):
         "eval", "flock", "nice", "script", "stdbuf", "timeout", "watch",
         "xargs",
     })
-    assert lost_by_the_historical_bug <= guard._SHELL_RUNNERS
+    assert lost_by_the_historical_bug <= guard._FORGE_RUNNER_NAMES
     assert lost_by_the_historical_bug.isdisjoint(venv_install_guard._SHELL_RUNNERS), (
         "the eight names the historical bug lost must be genuinely absent "
         "from venv_install_guard._SHELL_RUNNERS, or this test would not "
@@ -828,10 +846,16 @@ def test_the_pushed_tip_path_sees_every_runner_the_guard_knows(harness_repo):
         "script": "script -q /dev/null git rebase origin/main",
         "watch": "watch -n1 git rebase origin/main",
         "flock": "flock /tmp/pushed-tip-guard-test.lock git rebase origin/main",
+        "ionice": "ionice -c2 git rebase origin/main",
+        "chrt": "chrt -f 1 git rebase origin/main",
+        "setsid": "setsid git rebase origin/main",
+        "unbuffer": "unbuffer git rebase origin/main",
+        "taskset": "taskset 1 git rebase origin/main",
     }
-    assert set(wrap) == guard._SHELL_RUNNERS, (
-        "this table must cover exactly guard._SHELL_RUNNERS, not a "
-        "hand-copied subset of it"
+    assert set(wrap) == guard._FORGE_RUNNER_NAMES, (
+        "this table must cover exactly guard._FORGE_RUNNER_NAMES — the set "
+        "guard._git_invocations actually recurses into — not a hand-copied "
+        "subset of it"
     )
 
     for runner, cmd in wrap.items():

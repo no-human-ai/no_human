@@ -87,6 +87,25 @@ guard sees only as un-expanded literal text is not given that pass, since
 it could just as easily be a real rewrite target as a typo (see
 ``_is_existing_path``).
 
+Multi-remote repositories get a deliberately simple answer, not a
+most-current one: ``_remotes`` sorts the locally configured remotes with
+``origin`` first and the rest alphabetically, and ``_pushed_tip`` returns the
+tip of the FIRST of those that has a tracking ref for the current branch —
+not whichever remote's tip is actually newest. ``GitRepo`` (this harness's
+own git wrapper) always pushes to and reads from a hardcoded
+``remote="origin"``, so the harness's own path never has more than one
+candidate remote and cannot observe this; a repo a coder hand-configured
+with a second remote could, in principle, get a stale non-``origin`` tip
+back if ``origin``'s own tracking ref happened to be absent, or a stale
+``origin`` tip preferred while a second remote is actually ahead. This is a
+deliberate simplification, not an oversight: comparing tips across every
+configured remote would add subprocesses to the common case the Phase A/B
+split above is written specifically to keep cheap, to resolve an ordering
+question the harness's own single-remote flow never asks. Left undocumented
+in earlier drafts of this module; noted here explicitly rather than fixed,
+since fixing it would mean either a network round-trip (ruled out above) or
+guessing at multi-remote intent this module has no basis to guess at.
+
 A detached HEAD *during* a rebase is resolved rather than treated as
 failure: ``git rebase --continue`` only ever runs while a rebase is in
 progress, and git detaches HEAD for that whole duration (see

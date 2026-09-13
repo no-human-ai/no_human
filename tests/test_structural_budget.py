@@ -1230,11 +1230,17 @@ FROZEN_FILE_LINES = {
     # frozen ceiling, so that function's own entry did not have to grow).
     # Measured after extracting/trimming as far as possible without cutting
     # the fail-closed guards' rationale comments.
-    # 24079 -> 24139 (+60): pushed-tip rewrite fix (2026-09-13) -- sum of
+    # 24073 -> 24133 (+60): pushed-tip rewrite fix (2026-09-13) -- sum of
     # this file's own FROZEN_FUNCTION_LINES/CC deltas above
     # (`_finalize` +4, `_build_implement_prompt` +29) plus the PR-open
     # retry's comment expansion and the new `base_merge_conflict_instruction`
-    # import/threading. Measured on this tree with the scanner below.
+    # import/threading, applied on top of current main (24073, this file's
+    # scanner count on main `dded20a5`) and re-measured AFTER the base-refresh
+    # merge into this tip (`c15b1145`) landed the same +60 net — not the
+    # pre-merge parent's own 24139, which this comment previously (and
+    # wrongly) cited. Measured on THIS tree with the scanner below
+    # (`scan_source`'s `len(text.splitlines())`, not `wc -l` — they disagree
+    # by a constant 3 lines on this file, see the note two entries above).
     "core/orchestrator.py": 24133,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
@@ -1860,8 +1866,15 @@ FROZEN_FILE_LINES = {
     # the `pushed_reason = pushed_tip_guard.denial_reason(...)` dispatch
     # plus its rationale comment (+9). No change to any pre-existing
     # function's own frozen entry -- this is new code, not growth of an
-    # existing offender. Measured on this tree with the scanner below.
-    "agent/guard.py": 2945,
+    # existing offender.
+    # 2945 -> 2947 (+2): corrected the pre-existing `_FORGE_RUNNER_NAMES`
+    # comment above `_forge_invocations`, which wrongly claimed
+    # `_git_invocations` kept matching on `_SHELL_RUNNERS` alone,
+    # "byte-identical" to before that name existed -- the function actually
+    # reads `_FORGE_RUNNER_NAMES` (verified by
+    # `tests/test_pushed_tip_rewrite_guard.py::test_the_pushed_tip_path_sees_every_runner_the_guard_knows`).
+    # Measured on this tree with the scanner below.
+    "agent/guard.py": 2947,
     # +44: idle-path recover_quota_cooldown gate in tick() and the
     # never-shorten-a-live-wall guard in _run — the quota-wall storm cost fix.
     # +129: `HarvestJob` — the cadence job (`due()`/`maybe_run()`) that runs

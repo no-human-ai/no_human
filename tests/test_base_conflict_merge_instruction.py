@@ -243,7 +243,7 @@ def test_every_merge_instruction_site_is_exercised_and_the_count_matches_the_tre
     assert sites == [
         "src/no_human/blockers/wake.py:2343",
         "src/no_human/core/orchestrator.py:3865",
-        "src/no_human/core/orchestrator.py:18806",
+        "src/no_human/core/orchestrator.py:18800",
         "src/no_human/core/prompt_blocks.py:958",
     ], (
         "the shared merge-not-rebase wording is called from exactly four "
@@ -259,7 +259,7 @@ def test_every_merge_instruction_site_is_exercised_and_the_count_matches_the_tre
     # `build_rules_block`'s `base_merge_conflict=` kwarg);
     # orchestrator.py:3865 by
     # `test_the_conflict_event_text_tells_the_coder_to_merge_not_rebase`;
-    # orchestrator.py:18806 by
+    # orchestrator.py:18800 by
     # `test_the_implement_prompt_preamble_says_merge_not_rebase` and its
     # fallback sibling; wake.py:2343 by
     # `test_the_pr_conflict_round_tells_the_coder_to_merge_not_rebase`.

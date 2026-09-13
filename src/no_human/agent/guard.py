@@ -2458,15 +2458,17 @@ def _git_subcommand(argv: list[str]) -> tuple[str, list[str]]:
     return "", []
 
 
-#: Runner names `_forge_invocations` recurses into. A union of the shell
-#: runners `_git_invocations` also uses and the trailing-argv runners the
-#: package-install guard already recognises (`setsid`, `unbuffer`, `nice`,
-#: `ionice`, `chrt`, ... — see `_TRAILING_ARGV_RUNNERS`): `setsid gh -R o/r pr
-#: merge 7` read as ALLOW because `setsid` was consulted by `_approve_denial`
-#: elsewhere but never by this recursion. New name so the widening is scoped
-#: to `_forge_invocations` alone — `_git_invocations`, `_git_push_invocations`
-#: and the install guard keep matching on `_SHELL_RUNNERS`/
-#: `_TRAILING_ARGV_RUNNERS` exactly as before, byte-identical. Found
+#: Runner names `_forge_invocations` — and, as of the pushed-tip rewrite
+#: guard, `_git_invocations` — recurse into: the union of `_SHELL_RUNNERS`
+#: and the trailing-argv runners the package-install guard already
+#: recognises (`setsid`, `unbuffer`, `nice`, `ionice`, `chrt`, ... — see
+#: `_TRAILING_ARGV_RUNNERS`). Correction 2026-09 (this comment previously,
+#: and wrongly, claimed `_git_invocations` kept matching on `_SHELL_RUNNERS`
+#: alone, "byte-identical" to before this name existed — read the function:
+#: it checks `name in _FORGE_RUNNER_NAMES`, the full 18-name union, exactly
+#: like `_forge_invocations` does. Verified by
+#: `tests/test_pushed_tip_rewrite_guard.py::test_the_pushed_tip_path_sees_every_runner_the_guard_knows`,
+#: which denies a rewrite wrapped in each of the 18 for real. Found
 #: 2026-08-23.
 _FORGE_RUNNER_NAMES = _SHELL_RUNNERS | _TRAILING_ARGV_RUNNERS
 
