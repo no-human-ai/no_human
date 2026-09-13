@@ -188,7 +188,7 @@ def _rebase_head_name(cwd: str) -> str | None:
     git_dir = git_dir if os.path.isabs(git_dir) else os.path.join(cwd, git_dir)
     for state_dir in ("rebase-merge", "rebase-apply"):
         try:
-            with open(os.path.join(git_dir, state_dir, "head-name"), "r") as f:
+            with open(os.path.join(git_dir, state_dir, "head-name"), "r", encoding="utf-8") as f:
                 ref = f.read().strip()
         except OSError:
             continue

@@ -671,7 +671,7 @@ def test_both_rebase_backends_record_the_head_name_the_guard_reads(harness_repo)
             f"{flag} rebase did not record state under {state_dir}/ "
             f"(stdout={result.stdout!r} stderr={result.stderr!r})"
         )
-        with open(head_name_path) as f:
+        with open(head_name_path, encoding="utf-8") as f:
             assert f.read().strip() == "refs/heads/feature"
 
         d = _ev("git rebase --continue", cwd=str(work))

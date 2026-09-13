@@ -228,7 +228,7 @@ def _merge_instruction_call_sites() -> list[str]:
     hits: list[str] = []
     for path in sorted(root.rglob("*.py")):
         for lineno, line in enumerate(
-            path.read_text().splitlines(), start=1
+            path.read_text(encoding="utf-8").splitlines(), start=1
         ):
             stripped = line.strip()
             if stripped.startswith("#"):
@@ -276,7 +276,7 @@ def test_no_hardcoded_rebase_onto_wording_survives_anywhere_in_src():
     root = Path(__file__).resolve().parent.parent / "src" / "no_human"
     hits = []
     for path in sorted(root.rglob("*.py")):
-        for lineno, line in enumerate(path.read_text().splitlines(), start=1):
+        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
             if "Rebase onto" in line:
                 hits.append(f"{path.relative_to(root.parent.parent)}:{lineno}: {line.strip()}")
     assert hits == [], hits
