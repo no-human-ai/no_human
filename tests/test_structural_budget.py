@@ -1770,7 +1770,16 @@ FROZEN_FILE_LINES = {
     # conflict rung and the new one), the new `_check_base_stale` rung
     # itself, and the `info`-keyword docstring note on `_check_pr_conflict`.
     # Measured on this tree with the scanner below.
-    "blockers/wake.py": 2918,
+    # 2918 -> 3014 (+96, 2026-09-13): same task, re-attempt after a human
+    # send-back — `_check_base_stale` was rewritten to fail CLOSED on a
+    # `None` (could-not-determine) local re-verification instead of
+    # conflating it with an empty (verified-clean) conflict set: explicit
+    # `is None` handling, a fetch-and-retry recovery for the branch ref
+    # (mirroring `_check_pr_conflict`'s own pattern), a dedicated
+    # `pr_base_undetermined` write path, and dedup logic bounding repeated
+    # identical undetermined answers across ticks. Measured on this tree
+    # with the scanner below.
+    "blockers/wake.py": 3014,
     # +91: `_SCAN_WRAPPER_NAMES` + `_peel_scan_wrappers` — peels
     # timeout/xargs/nice/stdbuf (and siblings) for the scan-severity check
     # only, so a wrapped `find … -delete` in a denied compound classifies
