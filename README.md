@@ -240,6 +240,10 @@ fork's head into a secret-bearing job.
 **Cost is bounded by files, not tokens or time.** `max_files` (default `15`)
 caps how many changed files are sent to the reviewer, sorted by path,
 first-N; the comment reports how many of the total were actually reviewed.
+In rough terms, a single run against a typically-sized pull request is a
+handful of model calls over a capped diff — usually a few cents to a few
+tens of cents of your own Anthropic usage, similar in shape to one local `nh
+review`. Lower `max_files` (or split large pull requests) to spend less.
 
 The Action never merges, pushes, approves, or edits anything about the pull
 request beyond its own single comment — enforced in code, not just by
