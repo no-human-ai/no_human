@@ -40,9 +40,13 @@ inputs:
     description: >-
       Token used only to read and write the gate's own comment on this pull
       request (`issues/comments` read/create/update). Never used for merges,
-      pushes, reviews, or any other endpoint. Usually `${{ github.token }}`.
+      pushes, reviews, or any other endpoint. Pass it explicitly from the
+      workflow's own job token (see the README example) — a literal
+      double-brace expression referencing the github context is rejected as
+      an input default for a docker-type action before the container ever
+      starts, so this input intentionally has no default here; omitting it
+      fails loudly at run time instead.
     required: false
-    default: ${{ github.token }}
   fail_on_findings:
     description: >-
       When "true" (default), the step exits non-zero if the gate's verdict
@@ -69,4 +73,4 @@ outputs:
 
 runs:
   using: "docker"
-  image: "action/Dockerfile"
+  image: "Dockerfile.action"

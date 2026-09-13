@@ -1,4 +1,4 @@
-"""Cross-checks between `action.yml`, `action/Dockerfile`, the README's
+"""Cross-checks between `action.yml`, `Dockerfile.action`, the README's
 GitHub Action snippet, and `no_human.ci_action.run`'s own constants.
 
 These are the "two places say the same thing" guards: a default changed in one
@@ -21,7 +21,7 @@ pytestmark = pytest.mark.repoguard
 
 REPO = Path(__file__).resolve().parents[1]
 ACTION_YML = REPO / "action.yml"
-DOCKERFILE = REPO / "action" / "Dockerfile"
+DOCKERFILE = REPO / "Dockerfile.action"
 README = REPO / "README.md"
 
 
@@ -38,8 +38,33 @@ def test_action_yml_exists_and_parses(action_yml):
 def test_runs_using_docker_image_matches_dockerfile_path(action_yml):
     runs = action_yml["runs"]
     assert runs["using"] == "docker"
-    assert runs["image"] == "action/Dockerfile"
+    assert runs["image"] == "Dockerfile.action"
     assert DOCKERFILE.exists()
+
+
+def test_dockerfile_action_lives_at_repo_root_not_a_subdirectory():
+    # Verified against a real GitHub Actions run: for a `using: docker`
+    # action, the build context docker uses is the DIRECTORY CONTAINING the
+    # `runs.image` Dockerfile, not the repository root. `action/Dockerfile`
+    # (in a subdirectory containing only the Dockerfile itself) built with an
+    # effectively empty context ("transferring context: 2B done" in the real
+    # run log) and every `COPY src/ ./src/` / `COPY pyproject.toml ...`
+    # instruction failed with "not found" — 100% reproducible, every run.
+    # Moving the Dockerfile to the repo root (this file) makes the build
+    # context the repo root, where those COPY sources actually live.
+    assert DOCKERFILE.parent == REPO
+
+
+def test_action_yml_has_no_double_brace_expression_anywhere():
+    # Verified against a real GitHub Actions run: the runner expands
+    # `${{ ... }}` wherever it appears in action.yml — including inside a
+    # plain description string, not just in a `default:` field — before a
+    # docker-type action's container starts, and the `github` context is not
+    # available at that phase ("Unrecognized named-value: 'github'"). A
+    # `${{ github.token }}` default (or even a mention of it in prose) fails
+    # every single run. So the file must never contain a literal `${{`.
+    text = ACTION_YML.read_text(encoding="utf-8")
+    assert "${{" not in text
 
 
 @pytest.mark.parametrize(
@@ -66,8 +91,15 @@ def test_credential_input_is_required_with_no_default(action_yml):
     assert "default" not in credential
 
 
-def test_github_token_defaults_to_the_job_token(action_yml):
-    assert action_yml["inputs"]["github_token"]["default"] == "${{ github.token }}"
+def test_github_token_has_no_default(action_yml):
+    # A verified-live GitHub Actions run proved `default: ${{ github.token }}`
+    # is rejected for a `using: docker` action's inputs before the container
+    # ever starts: "Unrecognized named-value: 'github'" — the `github`
+    # context is not available while input defaults are resolved. So this
+    # input must have no default; the workflow passes it explicitly instead.
+    github_token = action_yml["inputs"]["github_token"]
+    assert github_token.get("required") is False
+    assert "default" not in github_token
 
 
 def test_outputs_declare_verdict_comment_url_and_skipped(action_yml):
@@ -116,3 +148,16 @@ def test_readme_workflow_snippet_parses_and_uses_this_action():
     assert any(u.startswith("no-human-ai/no_human") for u in uses)
     credential_step = next(s for s in steps if s.get("uses", "").startswith("no-human-ai/no_human"))
     assert "credential" in credential_step.get("with", {})
+
+
+def test_readme_workflow_snippet_passes_github_token_explicitly(action_yml):
+    # github_token has no action.yml default (see
+    # test_github_token_has_no_default), so the README's own example must
+    # pass it explicitly or a user copying it verbatim gets an empty-token
+    # failure on their very first run.
+    assert "default" not in action_yml["inputs"]["github_token"]
+    snippets = [s for s in _readme_workflow_snippets() if "no-human-ai/no_human" in s]
+    parsed = yaml.safe_load(snippets[0])
+    steps = next(iter(parsed["jobs"].values()))["steps"]
+    credential_step = next(s for s in steps if s.get("uses", "").startswith("no-human-ai/no_human"))
+    assert credential_step.get("with", {}).get("github_token") == "${{ github.token }}"
