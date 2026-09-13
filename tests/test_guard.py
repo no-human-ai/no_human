@@ -2389,6 +2389,120 @@ def _fake_worktree(tmp_path):
     return worktree
 
 
+@requires_chmod
+def test_primary_checkout_treats_an_unreadable_ancestor_as_protected(tmp_path, monkeypatch):
+    """Every test above monkeypatches `guard._primary_checkout` itself away
+    with a lambda, so none of them ever runs ITS OWN body — including the
+    bug that body used to have. `_primary_checkout` used to probe its marker
+    (`<checkout>/src/no_human/__init__.py`) with a bare `Path.is_file()`,
+    which RAISES `PermissionError` (not returns `False`) when an ancestor
+    directory (`<checkout>/src`) has been made unreadable, e.g. by a `chmod`
+    on the checkout root itself. `_primary_checkout` is called unguarded from
+    `_protected_venvs`, which `evaluate()` calls unguarded in turn — so an
+    unreadable ancestor used to crash the WHOLE guard (an uncaught
+    exception) instead of degrading, which is worse than a silent fail-open:
+    it stops the guard from running at all rather than merely mis-deciding.
+    The fix probes with `venv_install_guard._probe_is_file` and treats
+    undetermined the same as present (fail closed: still protect it).
+
+    `guard.__file__` is monkeypatched (not `_primary_checkout` itself) so
+    this exercises the REAL function body end to end — `Path(__file__)
+    .resolve().parents[3]` still lands on `tmp_path / "fake_checkout"`
+    because that mirrors this repo's own `<checkout>/src/no_human/agent/
+    guard.py` layout exactly."""
+    fake_checkout = tmp_path / "fake_checkout"
+    marker_dir = fake_checkout / "src" / "no_human"
+    marker_dir.mkdir(parents=True)
+    (marker_dir / "__init__.py").write_text("")
+    (fake_checkout / ".venv").mkdir()
+    fake_guard_file = marker_dir / "agent" / "guard.py"
+    monkeypatch.setattr(guard, "__file__", str(fake_guard_file))
+
+    resolved = fake_checkout.resolve()
+    assert guard._primary_checkout() == resolved, "positive control: a readable marker resolves"
+
+    with _unreadable(fake_checkout / "src"):
+        result = guard._primary_checkout()  # must not raise
+        assert result == resolved, (
+            "REGRESSION: an unreadable ancestor must still be treated as "
+            "protected, not crash and not silently become None"
+        )
+        # And the crash-vs-deny distinction actually matters end to end:
+        # `_protected_venvs` must still be able to run (not propagate the
+        # exception) and must still list the (undetermined-but-protected)
+        # primary venv.
+        protected = guard._protected_venvs(str(tmp_path / "elsewhere"))
+        assert (resolved / ".venv") in protected
+
+    assert guard._primary_checkout() == resolved, "must stay correct once permissions are restored"
+
+
+def test_primary_checkout_is_none_when_the_marker_is_genuinely_absent(tmp_path, monkeypatch):
+    """A genuinely absent marker (readable dirs, no such file) must still
+    resolve to "no primary checkout" — the tri-state fix must not turn every
+    readable checkout-shaped directory into a phantom primary."""
+    fake_checkout = tmp_path / "fake_checkout"
+    marker_dir = fake_checkout / "src" / "no_human"
+    marker_dir.mkdir(parents=True)
+    # Deliberately no __init__.py written.
+    fake_guard_file = marker_dir / "agent" / "guard.py"
+    monkeypatch.setattr(guard, "__file__", str(fake_guard_file))
+
+    assert guard._primary_checkout() is None
+
+
+def test_resolve_or_self_degrades_to_the_original_path_when_resolve_raises(tmp_path, monkeypatch):
+    """`_resolve_or_self` must DEGRADE a candidate path to itself, not drop it
+    and not propagate the exception, when `Path.resolve()` genuinely raises
+    `OSError`. `_protected_venvs` depends on this: a candidate that fails to
+    resolve is still a path to protect, never silently absent.
+
+    A real symlink loop does not reliably reproduce `OSError` here: cpython's
+    own `pathlib.Path.resolve()` catches the raw `OSError` a loop produces
+    internally and re-raises `RuntimeError` instead (confirmed empirically on
+    this interpreter/version) -- which `_resolve_or_self`'s `except OSError`
+    would NOT catch either, so it wouldn't exercise the branch under test.
+    `Path.resolve` is instead monkeypatched to raise `OSError` for exactly
+    the one path under test, leaving every other path's real resolution
+    (including the ones `_protected_venvs` itself performs along the way)
+    completely untouched."""
+    target = tmp_path / "primary" / ".venv"
+    target.mkdir(parents=True)
+    real_resolve = Path.resolve
+
+    def flaky_resolve(self, *a, **k):
+        if self == target:
+            raise OSError("simulated resolve failure")
+        return real_resolve(self, *a, **k)
+
+    monkeypatch.setattr(Path, "resolve", flaky_resolve)
+
+    other = tmp_path / "other"
+    other.mkdir()
+    assert guard._resolve_or_self(other) == real_resolve(other), (
+        "positive control: a path whose resolve() does not fail is unaffected"
+    )
+
+    result = guard._resolve_or_self(target)  # must not raise
+    assert result == target, (
+        "REGRESSION: a real resolve() failure must degrade to the original "
+        f"path, not drop it or propagate the exception: got {result!r}"
+    )
+
+    # And this matters end to end: `_protected_venvs` must still include the
+    # (unresolved-but-degraded) primary venv rather than silently omitting it
+    # or crashing when resolving it fails.
+    primary = tmp_path / "primary"
+    (primary / "src" / "no_human").mkdir(parents=True)
+    (primary / "src" / "no_human" / "__init__.py").write_text("")
+    monkeypatch.setattr(guard, "_primary_checkout", lambda: primary)
+    protected = guard._protected_venvs(str(tmp_path / "elsewhere"))  # must not raise
+    assert target in protected, (
+        "REGRESSION: an unresolvable primary venv candidate must still be "
+        "protected"
+    )
+
+
 def test_installing_into_the_primary_venv_is_refused(tmp_path, monkeypatch):
     primary = _fake_primary_checkout(tmp_path)
     worktree = _fake_worktree(tmp_path)

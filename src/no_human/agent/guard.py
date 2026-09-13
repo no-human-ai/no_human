@@ -556,9 +556,18 @@ def _primary_checkout() -> "Path | None":
     <checkout>/src/no_human/agent/guard.py, so parents[3] is the checkout
     root. `None` for a non-editable/site-packages/frozen install — the same
     false-positive guard `doctor.editable_install_problem` uses — in which
-    case there is nothing to protect."""
+    case there is nothing to protect.
+
+    Probed with the tri-state `venv_install_guard._probe_is_file`, not a bare
+    `Path.is_file()`: that RAISES `PermissionError` when an ancestor
+    directory (e.g. `<checkout>/src`) has been made unreadable, and this
+    function is called unguarded from `_protected_venvs` — a raise here
+    means the whole guard throws instead of denying. Undetermined counts as
+    "yes, protect it": dropping protection because a stat failed is exactly
+    the fail-open this task exists to close."""
     root = Path(__file__).resolve().parents[3]
-    if (root / "src" / "no_human" / "__init__.py").is_file():
+    marker = str(root / "src" / "no_human" / "__init__.py")
+    if venv_install_guard._probe_is_file(marker) is not False:
         return root
     return None
 

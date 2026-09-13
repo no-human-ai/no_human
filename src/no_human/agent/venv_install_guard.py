@@ -598,32 +598,73 @@ def _resolve_installer(token: str, cwd: str | None, env: Mapping[str, str]) -> s
         path_value = env.get("PATH")
         if path_value is None:
             path_value = os.environ.get("PATH", os.defpath)
+        # PATHEXT parity with `shutil.which`: on Windows a bare `pip` on
+        # `PATH` names `pip.exe` on disk, not a file literally called `pip`.
+        # `shutil.which` expands `PATHEXT` internally; hand-walking `PATH`
+        # without doing the same would make `os.path.join(directory, token)`
+        # name a file that never exists, so the bare-token spelling this
+        # module's own comment calls "the spelling a coder actually types"
+        # would stop resolving on Windows and fall through to allow-and-log.
+        # Mirrors cpython's `shutil.which`: no suffix added when `token`
+        # already ends with one of `PATHEXT`'s extensions, and an unset/empty
+        # `PATHEXT` degrades to `[""]` (no expansion), matching POSIX.
+        if _IS_WINDOWS:
+            pathext_value = env.get("PATHEXT")
+            if pathext_value is None:
+                pathext_value = os.environ.get("PATHEXT", "")
+            pathext = pathext_value.split(os.pathsep)
+            if any(token.lower().endswith(ext.lower()) for ext in pathext):
+                suffixes = [""]
+            else:
+                suffixes = pathext
+        else:
+            suffixes = [""]
+        # A candidate whose file type could not be determined (permission
+        # denied on an ancestor directory, a dead NFS mount, ...) is kept as
+        # a FALLBACK rather than returned immediately: a `PATH` entry that
+        # merely could not be stat'd must not pre-empt a LATER, determinate
+        # match — a POSIX shell skips an EACCES entry and keeps walking, so
+        # `command -v`/`type -p` resolve past it to the same later match a
+        # determinate scan below finds. Returning the undetermined entry
+        # first (measured: an unreadable directory placed ahead of the
+        # session's own venv on `PATH`) resolved to a path that could never
+        # execute and DENIED an install that would have gone into the
+        # coder's own venv — a false DENY, not a fail-closed one. Only when
+        # the WHOLE scan turns up no determinate match does the remembered
+        # fallback get used, and even then it counts as "resolved" rather
+        # than "absent" — undetermined must not collapse into
+        # found-to-be-missing either.
+        fallback = None
         for directory in path_value.split(os.pathsep):
             if not directory:
                 continue
-            candidate = os.path.join(directory, token)
-            probe = _probe_is_file(candidate)
-            if probe is False:
-                continue
-            if probe is None:
-                real = _safe_realpath(candidate) or candidate
-                if _is_installer_name(_basename(real)):
-                    _LOG.warning(
-                        "venv guard: %r resolved via PATH to %r but its "
-                        "file type could not be verified (permission "
-                        "denied?); treating it as a resolved installer "
-                        "rather than assuming it is absent", token, candidate,
-                    )
+            for suffix in suffixes:
+                candidate = os.path.join(directory, token + suffix)
+                probe = _probe_is_file(candidate)
+                if probe is False:
+                    continue
+                if probe is None:
+                    if fallback is None:
+                        real = _safe_realpath(candidate) or candidate
+                        if _is_installer_name(_basename(real)):
+                            fallback = real
+                    continue
+                # probe is True: a real, stat'able candidate — `shutil.which`
+                # also filters on executability before accepting a match, so
+                # this mirrors that (not the swallowing part, just the filter).
+                if not os.access(candidate, os.X_OK):
+                    continue
+                real = _safe_realpath(candidate)
+                if real and _is_installer_name(_basename(real)):
                     return real
-                continue
-            # probe is True: a real, stat'able candidate — `shutil.which`
-            # also filters on executability before accepting a match, so
-            # this mirrors that (not the swallowing part, just the filter).
-            if not os.access(candidate, os.X_OK):
-                continue
-            real = _safe_realpath(candidate)
-            if real and _is_installer_name(_basename(real)):
-                return real
+        if fallback is not None:
+            _LOG.warning(
+                "venv guard: %r resolved via PATH to %r but its file type "
+                "could not be verified (permission denied?); treating it "
+                "as a resolved installer rather than assuming it is absent",
+                token, fallback,
+            )
+            return fallback
         _LOG.warning(
             "venv guard: %r names an installer but could not be "
             "resolved via PATH; allowing", token,
