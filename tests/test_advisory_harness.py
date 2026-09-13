@@ -206,8 +206,7 @@ async def test_orchestrator_advisory_calls_use_the_toolless_seam(
 #: Every file under `src/no_human` that still constructs a bare
 #: `ClaudeBackend(...)`, on purpose: the coder/reviewer/planner/eval tiers
 #: (genuinely multi-turn and tool-using), `grill_spec` (explores a real repo,
-#: `max_turns=8`), `verify_credential_live` (must exercise the production
-#: construction path), the reviewer-tier transcript analyzer in `api/app.py`
+#: `max_turns=8`), the reviewer-tier transcript analyzer in `api/app.py`
 #: (routing it would falsify advisory.py's own "coder/reviewer/planner
 #: untouched" docstring claim) — and `agent/advisory.py` itself, the one seam
 #: allowed to construct a bare backend. A NEW un-routed utility/supervisor
@@ -215,7 +214,6 @@ async def test_orchestrator_advisory_calls_use_the_toolless_seam(
 _NOT_ROUTED_ALLOWLIST = frozenset({
     "no_human/agent/advisory.py",
     "no_human/agent/backend.py",
-    "no_human/agent/backend_check.py",
     "no_human/api/app.py",
     "no_human/cli/commands.py",
     "no_human/core/orchestrator.py",
