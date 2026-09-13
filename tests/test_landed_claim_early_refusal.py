@@ -44,7 +44,7 @@ def bare_repo(tmp_path):
 
 @pytest.fixture
 def diverged_repo(bare_repo):
-    """The shape the 43 live delivery-time refusals actually are: HEAD sits at
+    """The shape the 42 live delivery-time refusals actually are: HEAD sits at
     the LOCAL base tip (commits_ahead('main') == 0, so delivery's
     `resumed_commit` is None and the claim really is parsed) while the ship ref
     `origin/main` does NOT contain it."""
@@ -389,7 +389,8 @@ async def test_an_unresolvable_ship_ref_is_not_a_refusal(tmp_path, store):
     task = Task.new("existing", repo_path=str(work), kind="feature")
     await store.create_task(task)
 
-    shippable, probed_head, _subject, subject_reason, _on_main, ship_ref = (
+    shippable, probed_head, _subject, subject_reason, _on_main, ship_ref, \
+        determinate = (
         await orch._already_satisfied_subject(
             task, GitRepo(work), base=None, branch="work",
         )
@@ -398,6 +399,8 @@ async def test_an_unresolvable_ship_ref_is_not_a_refusal(tmp_path, store):
     assert probed_head == head
     assert ship_ref == ""
     assert "cannot resolve the branch this task would ship to" in subject_reason
+    assert determinate is False, (
+        "an unresolvable ship ref is a 'cannot tell', not a genuine refusal")
 
     guard = orch._build_landed_claim_guard(
         task, GitRepo(work), base=None, branch="work",
@@ -409,6 +412,70 @@ async def test_an_unresolvable_ship_ref_is_not_a_refusal(tmp_path, store):
     )
     assert await guard.hook({}, None, None) == {}, (
         "an unresolvable ship ref must not be reported as a refusal")
+
+
+async def test_already_satisfied_subject_reports_indeterminate_for_transient_conditions(
+    diverged_repo, tmp_path, store,
+):
+    """(Sixth review, HIGH) Mutant pin: `_already_satisfied_subject`'s 7th
+    element, `determinate`, must be `False` for a "cannot tell" verdict even
+    though the `subject_reason` text still starts with the exact same
+    ``f"{head} is not on {ship_ref}"`` prefix a genuine refusal uses — that
+    shared prefix is precisely why an earlier revision's
+    ``subject_reason.startswith(f"{head} is not on {ship_ref}")`` filter in
+    `_build_landed_claim_guard`'s probe could not distinguish this case from
+    a real refusal (see both docstrings this review touched).
+
+    `diverged_repo` gives HEAD sitting at the local `main` tip, not on
+    `origin/main` — same shape `test_build_landed_claim_guard_fires_on_a_
+    refutable_claim_via_the_real_probe` above uses for a GENUINE refusal.
+    The only difference here: the offered `branch` name does not resolve to
+    any ref at all, so `repo.branch_sha(branch)` raises and
+    `_already_satisfied_subject` returns its "delivery branch ... is
+    unresolvable" cannot-tell verdict instead of a real one — a transient,
+    environment-shaped failure (the branch could be created and pushed a
+    moment later), not a fact about the claim."""
+    bogus_branch = "no-human/does-not-exist-anywhere"
+    head = GitRepo(diverged_repo).head_sha()
+
+    orch = _orch(store, tmp_path)
+    task = Task.new("existing", repo_path=str(diverged_repo), kind="feature")
+    await store.create_task(task)
+
+    shippable, probed_head, _subject, subject_reason, _on_main, ship_ref, \
+        determinate = (
+        await orch._already_satisfied_subject(
+            task, GitRepo(diverged_repo), base="main", branch=bogus_branch,
+        )
+    )
+    assert shippable is False
+    assert probed_head == head
+    assert ship_ref == "origin/main"
+    assert f"delivery branch {bogus_branch!r} is unresolvable" in subject_reason
+    # The trap the old code fell into: this reason shares the genuine
+    # refusal's exact prefix.
+    assert subject_reason.startswith(f"{head} is not on {ship_ref}"), (
+        "this fixture must reproduce the exact prefix collision the sixth "
+        "review's fix addresses — otherwise this test does not pin it")
+    assert determinate is False, (
+        "an unresolvable delivery branch is a transient 'cannot tell', not "
+        "a genuine refusal, even though its reason text shares the "
+        "refusal's prefix")
+
+    guard = orch._build_landed_claim_guard(
+        task, GitRepo(diverged_repo), base="main", branch=bogus_branch,
+    )
+    assert guard is not None
+    guard.note_text(
+        f"This is already implemented — the work already exists at "
+        f"{head}, no changes needed."
+    )
+    assert await guard.hook({}, None, None) == {}, (
+        "a transient, unresolvable-branch 'cannot tell' must never be "
+        "reported by the guard as a refusal — a `subject_reason.startswith` "
+        "recovery of determinacy would wrongly refuse here because the "
+        "reason text happens to share the genuine refusal's prefix"
+    )
 
 
 @pytest.mark.parametrize(
@@ -498,13 +565,15 @@ async def test_a_pushed_sibling_branch_of_the_same_task_is_not_blocked(
     _git(bare_repo, "push", "-u", "origin", sibling_branch)
     head = GitRepo(bare_repo).head_sha()
 
-    shippable, probed_head, _subject, subject_reason, _on_main, ship_ref = (
+    shippable, probed_head, _subject, subject_reason, _on_main, ship_ref, \
+        determinate = (
         await orch._already_satisfied_subject(
             task, GitRepo(bare_repo), base="main", branch=offered_branch,
         )
     )
     assert shippable is True, subject_reason
     assert probed_head == head
+    assert determinate is True, "a shippable verdict is always determinate"
 
     guard = orch._build_landed_claim_guard(
         task, GitRepo(bare_repo), base="main", branch=offered_branch,

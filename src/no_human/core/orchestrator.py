@@ -10383,7 +10383,7 @@ class Orchestrator:
         # token on it. An already-satisfied verdict is meaningful only for a
         # tree a delivery could actually ship.
         (shippable, reviewed_sha, subject, subject_reason, subject_on_main,
-         ship_ref) = await self._already_satisfied_subject(
+         ship_ref, _determinate) = await self._already_satisfied_subject(
             task, repo, base=base, branch=branch)
         try:
             reviewed_branch = repo.current_branch()
@@ -11746,12 +11746,44 @@ class Orchestrator:
 
     async def _already_satisfied_subject(
         self, task: Task, repo, *, base: str | None, branch: str | None,
-    ) -> tuple[bool, str, str, str, bool, str]:
+    ) -> tuple[bool, str, str, str, bool, str, bool]:
         """Classify the exact tree an already-satisfied claim may judge.
 
         A claim can describe an existing shipping tree, or the exact pushed
         tip a delivery offers. Everything else fails closed: a reviewer must
         never verify an unpushable checkpoint and turn it into approval proof.
+
+        The 7th element, ``determinate``, is a STATUS CODE, not a hint about
+        ``subject_reason``'s wording: it is `True` exactly when this verdict
+        is a genuine, stable answer — shippable, or refused for a real,
+        reproducible reason a retry would not change (an unfinished
+        checkpoint, no branch offered, no remote configured, a pushed
+        pointer naming the wrong sha, a remote tip that is behind/diverged,
+        or a relation `remote_branch_relation` reports as plain "unknown" —
+        e.g. simply never pushed, which delivery itself treats as a final
+        refusal, not a retry-later state; see
+        `test_an_unknown_pushed_branch_relation_is_refused`). It is `False`
+        exactly when the verdict is "cannot tell" — this method caught an
+        exception it cannot attribute to the claim itself (an unreadable
+        HEAD, a raised `is_ancestor`, an unresolvable delivery branch, an
+        unresolvable origin remote, or a `remote_branch_relation` call that
+        itself raised), or no ship-ref candidate resolved at all (there is
+        no branch to even compare against), or (defensively, currently
+        unreachable) `remote_branch_relation` returned a value outside the
+        four it can ever actually produce.
+
+        (Sixth review, HIGH) a caller must NEVER recover this distinction by
+        pattern-matching `subject_reason`'s prose — several of the "cannot
+        tell" reasons below happen to share the exact same
+        ``f"{head} is not on {ship_ref}"`` prefix as genuine refusals (they
+        are built from the same `prefix` local), so a `str.startswith` check
+        over that prefix cannot tell them apart, and a reworded sentence
+        could silently flip which bucket a reason lands in. Any caller that
+        needs "is this a genuine refusal" MUST use `determinate` (and
+        `shippable`), never inspect `subject_reason` text. See
+        `Orchestrator._build_landed_claim_guard`'s `probe` for the fix this
+        replaced (`subject_reason.startswith(...)`), and
+        `landed_claim_guard.py`'s module docstring for the incident.
         """
         # `task` is needed below to enumerate THIS task's own pushed agent
         # branches (attempt 2+ pushes to a distinct branch — see
@@ -11762,10 +11794,11 @@ class Orchestrator:
         except Exception as exc:  # noqa: BLE001 — unreadable means unshippable
             return False, "", "", (
                 "the sha the claim would be judged against is unresolvable "
-                f"({exc})"), False, ""
+                f"({exc})"), False, "", False
         if not head:
             return False, "", "", (
-                "the sha the claim would be judged against is empty"), False, ""
+                "the sha the claim would be judged against is empty"), \
+                False, "", False
 
         names: list[str] = []
 
@@ -11806,16 +11839,16 @@ class Orchestrator:
             target = (base or "the default branch").strip() or "the default branch"
             return False, head, "", (
                 f"cannot resolve the branch this task would ship to ({target})"), \
-                False, ""
+                False, "", False
 
         try:
             on_ship_ref = repo.is_ancestor(head, ship_sha)
         except Exception as exc:  # noqa: BLE001 — cannot prove shipping truth
             return False, head, "", (
                 f"cannot determine whether {head} is on {ship_ref} ({exc})"), \
-                False, ship_ref
+                False, ship_ref, False
         if on_ship_ref:
-            return True, head, f"{head[:12]} (on {ship_ref})", "", True, ship_ref
+            return True, head, f"{head[:12]} (on {ship_ref})", "", True, ship_ref, True
 
         prefix = f"{head} is not on {ship_ref}"
         try:
@@ -11826,17 +11859,17 @@ class Orchestrator:
         if subject.startswith(("[WIP-BLOCKED]", "[WIP-PARTIAL]")):
             return False, head, "", (
                 f"{prefix}; its unfinished checkpoint subject is {subject!r}"), \
-                False, ship_ref
+                False, ship_ref, True
         if not branch:
             return False, head, "", (
                 f"{prefix}; no delivery branch was offered for this commit"), \
-                False, ship_ref
+                False, ship_ref, True
         try:
             branch_sha = repo.branch_sha(branch).strip()
         except Exception as exc:  # noqa: BLE001 — an unresolved branch cannot ship
             return False, head, "", (
                 f"{prefix}; delivery branch {branch!r} is unresolvable ({exc})"), \
-                False, ship_ref
+                False, ship_ref, False
         # The local pointer is still a refusal signal, but the decision is
         # made *after* the remote evidence below: attempt 2+ pushes to a
         # DIFFERENT, attempt-suffixed branch of this same task (~4407)
@@ -11848,11 +11881,12 @@ class Orchestrator:
             remote_url = repo.remote_url()
         except Exception as exc:  # noqa: BLE001 — a remote check must be proof
             return False, head, "", (
-                f"{prefix}; cannot resolve origin remote ({exc})"), False, ship_ref
+                f"{prefix}; cannot resolve origin remote ({exc})"), \
+                False, ship_ref, False
         if remote_url is None:
             return False, head, "", (
                 f"{prefix}; no origin remote exists, so nothing could have been pushed"), \
-                False, ship_ref
+                False, ship_ref, True
         relation = None
         if local_is_reviewed:
             try:
@@ -11860,10 +11894,10 @@ class Orchestrator:
             except Exception as exc:  # noqa: BLE001 — external check must fail closed
                 return False, head, "", (
                     f"{prefix}; cannot verify pushed branch {branch!r} ({exc})"), \
-                    False, ship_ref
+                    False, ship_ref, False
             if relation == "up_to_date":
                 label = f"{head[:12]} (pushed branch {branch}, not on {ship_ref})"
-                return True, head, label, "", False, ship_ref
+                return True, head, label, "", False, ship_ref, True
         # `branch` itself isn't up to date (or its local pointer lags) — but
         # constraint #2 forbids the agent merging to `ship_ref`, so attempt
         # 2+ pushes to a DIFFERENT, attempt-suffixed branch of this same
@@ -11888,23 +11922,33 @@ class Orchestrator:
         siblings = [name for name in task_branches if name != branch]
         if siblings:
             label = f"{head[:12]} (pushed branch {siblings[0]}, not on {ship_ref})"
-            return True, head, label, "", False, ship_ref
+            return True, head, label, "", False, ship_ref, True
         if relation is not None:
+            # `"unknown"` is a NORMAL, non-exceptional return from
+            # `remote_branch_relation` (never pushed, or its object isn't
+            # available locally) — delivery's own `_gate_already_satisfied`
+            # treats it as a fully final refusal, not a retry-later state
+            # (see `test_an_unknown_pushed_branch_relation_is_refused`), so
+            # it is determinate here too. Only a relation value outside the
+            # four this method can ever actually return is genuinely
+            # unrecognized/indeterminate — defensive, and currently
+            # unreachable in practice.
+            determinate_relation = relation in ("behind", "diverged", "unknown")
             relation_reason = {
                 "behind": "the remote branch contains commits the reviewer did not judge",
                 "diverged": "the remote branch diverged from the reviewed commit",
                 "unknown": "the pushed branch could not be verified",
             }.get(relation, f"the pushed branch relation is unrecognized ({relation!r})")
             return False, head, "", (
-                f"{prefix}; {relation_reason}"), False, ship_ref
+                f"{prefix}; {relation_reason}"), False, ship_ref, determinate_relation
         if task_branches:
             return False, head, "", (
                 f"{prefix}; delivery branch {branch!r} points at {branch_sha}, "
-                "not the reviewed sha"), False, ship_ref
+                "not the reviewed sha"), False, ship_ref, True
         return False, head, "", (
             f"{prefix}; the reviewed commit {head} is on no pushed branch of "
             f"this task ({stem}, {stem}-N) — it was never pushed, or origin "
-            "was unreadable"), False, ship_ref
+            "was unreadable"), False, ship_ref, True
 
     def _already_satisfied_eligible(
         self, task: Task, repo, base: str | None,
@@ -16999,6 +17043,23 @@ class Orchestrator:
         evaluates that same outer predicate, at probe time (`commits_ahead`
         moves as the coder commits), and stays silent whenever delivery
         would not reach the claim gate.
+
+        Sixth review (HIGH): `refuted` used to be recovered from
+        `subject_reason` — delivery's human-readable prose — via
+        ``subject_reason.startswith(f"{head} is not on {ship_ref}")``. Five
+        of `_already_satisfied_subject`'s "cannot tell" reasons (an
+        unresolvable delivery branch, an unresolvable origin remote, an
+        unverifiable pushed branch, and an "unknown" or otherwise
+        unrecognized remote relation) are built from that exact same prefix,
+        so the prefix match could not tell a transient condition from a
+        genuine refusal — a one-off network blip resolving the remote could
+        make the guard tell the coder delivery refuses the claim, even
+        though the branch might in fact be pushed and up to date. Fixed by
+        having `_already_satisfied_subject` return `determinate` — an
+        explicit status code, not prose — and deriving `refuted` from that
+        code instead of from any wording in `subject_reason`. A reworded
+        `subject_reason` sentence can no longer change which bucket a
+        verdict falls into.
         """
         if not repo:
             return None
@@ -17026,17 +17087,28 @@ class Orchestrator:
                 if ahead > 0:
                     return False, "", ""
             (shippable, head, _subject, subject_reason, _on_main,
-             ship_ref) = await self._already_satisfied_subject(
+             ship_ref, determinate) = await self._already_satisfied_subject(
                 task, repo, base=base, branch=branch)
-            # A refusal must be a genuine "not on {ship_ref}" answer, not one
-            # of `_already_satisfied_subject`'s "cannot tell" cases (an
-            # unresolvable HEAD, an unresolvable ship ref, or an is_ancestor
-            # check that raised) — those also report `shippable=False` but
-            # must never look refuted here, matching the guard's own
-            # "unverifiable must never look refuted" rule.
+            # (Sixth review, HIGH) a refusal must be a genuine, determinate
+            # answer, not one of `_already_satisfied_subject`'s "cannot
+            # tell" cases (an unresolvable HEAD, no ship-ref candidate at
+            # all, an is_ancestor check that raised, an unresolvable
+            # delivery branch, an unresolvable origin remote, or a
+            # `remote_branch_relation` call that itself raised) — those also
+            # report `shippable=False` but must never look refuted here,
+            # matching the guard's own "unverifiable must never look
+            # refuted" rule. Note a plain "unknown" relation (e.g. simply
+            # never pushed) is NOT one of these — delivery treats it as a
+            # final refusal too, so it is determinate. `determinate` is the
+            # explicit status code `_already_satisfied_subject` returns for
+            # exactly this purpose; do NOT recover it by pattern-matching
+            # `subject_reason`'s prose — an earlier revision did that with
+            # ``subject_reason.startswith(f"{head} is not on {ship_ref}")``,
+            # which silently mis-classified several distinct "cannot tell"
+            # reasons as refusals because they happen to share that same
+            # prefix. See `_already_satisfied_subject`'s docstring.
             refuted = (
-                not shippable and bool(head) and bool(ship_ref)
-                and subject_reason.startswith(f"{head} is not on {ship_ref}")
+                not shippable and bool(head) and bool(ship_ref) and determinate
             )
             return (refuted, head, subject_reason)
 

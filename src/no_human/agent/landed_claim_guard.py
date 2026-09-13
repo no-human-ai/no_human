@@ -84,6 +84,70 @@ Four revisions since the first version landed:
   transient remote condition (an unreadable origin, an unverifiable
   pushed branch) and the guard must never assert a definite outcome about
   those.
+* (Sixth review) four findings:
+
+  1. (HIGH) The reword above stopped the MESSAGE from asserting a definite
+     outcome, but `Orchestrator._build_landed_claim_guard`'s `probe` still
+     recovered `refuted` by `subject_reason.startswith(f"{head} is not on
+     {ship_ref}")` — pattern-matching `_already_satisfied_subject`'s
+     human-readable prose. Several of that function's genuinely
+     exception-driven "cannot tell" reasons (an unresolvable delivery
+     branch, an unresolvable origin remote, a `remote_branch_relation` call
+     that itself raised) are built from that exact same prefix — so a
+     transient failure in any of those git/network calls could make the
+     guard tell the coder "delivery does not accept it as it stands" — a
+     REFUSAL — over a condition that could clear up moments later. (A plain
+     "unknown" relation, e.g. simply never pushed, is NOT one of these —
+     delivery treats that as a final refusal too, so it stays determinate;
+     see `test_an_unknown_pushed_branch_relation_is_refused` in
+     `tests/test_already_satisfied_subject_tree.py`, which this fix's first
+     draft got wrong and which caught the mistake.) Fixed by having
+     `_already_satisfied_subject` return an explicit `determinate` status
+     code as its 7th element, and deriving `refuted` from that code instead
+     of any wording in `subject_reason` — see that method's docstring and
+     `_build_landed_claim_guard`'s probe. Pinned by
+     `test_already_satisfied_subject_reports_indeterminate_for_transient_
+     conditions` (`tests/test_landed_claim_early_refusal.py`) and by the
+     `determinate` assertions added to the existing fixture-based tests
+     here.
+  2. The detector fired on two shapes outside the MUST_NOT_FIRE corpus: a
+     NEGATION sentence mentioning the claim phrase ("Checked: this is NOT
+     already satisfied at commit 1a2b3c4d5e6f - the change is still
+     missing, I will implement it now.") and an INCIDENTAL cued hex token
+     in a separate clause of the same utterance ("No code changes are
+     needed; the tamper baseline is at 1a2b3c4d5e6f and the suite is
+     green."). Fixed by bounding both the negation check and the sha-cue
+     search to the CLAUSE containing the `_CLAIM` match — see
+     `_clause_span` and its use in `detect_claim_assertion`.
+  3. There is no "flush" path: `note_text` only LATCHES a pending claim;
+     `hook` (which awaits the real probe) fires on the next PostToolUse
+     event. A claim made in the agent's FINAL utterance, with no further
+     tool call in the attempt, is latched but never probed — the exact
+     incident shape this module exists to catch early would, in that one
+     case, still only be caught at delivery time. This is an accepted,
+     deliberate limitation, not an oversight: `hook` is the only place that
+     may `await` (see its docstring), and `note_text` is called from a
+     synchronous sink with no safe way to schedule a trailing probe once
+     the attempt has already ended. A claim with no subsequent tool call
+     still gets `_already_satisfied_subject`'s answer — just at delivery
+     time, exactly as before this module existed, not earlier.
+  4. `_seen` is keyed on the head alone and added to BEFORE the probe runs
+     (`_note_text`), by design (see `_note_text`'s docstring) — one probe
+     per head per attempt. A "cannot tell" probe result now returns
+     `refuted=False` the same as a genuine accept (finding 1 above), so a
+     transient failure here no longer produces a false refusal; it does
+     still consume that head's one probe for the attempt, so a LATER
+     network blip clearing up cannot be re-checked until the head changes.
+     Accepted for the same reason as the third-review fix does not retry:
+     a fresh commit changes the head and gets its own probe, and delivery
+     itself re-asks the same question at delivery time regardless.
+
+  Also: an earlier revision of this module docstring said "42" while
+  `tests/test_landed_claim_early_refusal.py` said "43" for the same
+  population (the live delivery-time refusals `diverged_repo` models) —
+  a copy/paste drift, not two different measurements. The docstring's "42"
+  is the one with a matching detailed breakdown (9 + 33 below) so it is the
+  number kept; the test file was corrected to match.
 """
 
 from __future__ import annotations
@@ -128,6 +192,43 @@ _SNIPPET_BEFORE = 40
 _SNIPPET_AFTER = 80
 _SNIPPET_MAX = 120
 
+# (Sixth review) two shapes the loose `_CLAIM`/`_SHA_CUE` match alone cannot
+# tell apart from a real claim:
+#
+# 1. A NEGATION sentence mentioning the claim phrase — "Checked: this is NOT
+#    already satisfied at commit 1a2b3c4d5e6f - the change is still missing,
+#    I will implement it now." `_parse_already_satisfied` already treats a
+#    negation sentence mentioning the marker as not-a-claim at delivery time;
+#    this detector must apply the same bar.
+# 2. An INCIDENTAL cued hex token in a SEPARATE clause of the same
+#    utterance — "No code changes are needed; the tamper baseline is at
+#    1a2b3c4d5e6f and the suite is green." The fixed-width snippet window
+#    alone can span both clauses, so an unrelated `at <sha>` mention makes an
+#    unrelated statement look like an actionable, commit-naming claim.
+#
+# Both are fixed the same way: bound both the negation check and the sha-cue
+# search to the CLAUSE containing the `_CLAIM` match (split on `.;!?`/
+# newline), not the whole utterance or the whole fixed-width window — a sha
+# or a negation word belongs to the claim only when it is part of the same
+# clause the claim phrase itself is in.
+_CLAUSE_BOUNDARY = re.compile(r"[.;!?\n]")
+_NEGATION = re.compile(
+    r"\b(?:not|never|no longer|isn't|wasn't|doesn't|didn't|won't|can't|cannot)\b",
+    re.I,
+)
+
+
+def _clause_span(text: str, pos: int) -> tuple[int, int]:
+    """The ``[start, end)`` span of the clause containing offset ``pos`` —
+    bounded by the nearest ``.;!?``/newline (or the start/end of ``text``) on
+    each side."""
+    start = 0
+    for boundary in _CLAUSE_BOUNDARY.finditer(text, 0, pos):
+        start = boundary.end()
+    end_match = _CLAUSE_BOUNDARY.search(text, pos)
+    end = end_match.start() if end_match else len(text)
+    return start, end
+
 #: The exact contract marker `Orchestrator._parse_already_satisfied` requires
 #: on a line of its own before it will treat a final report as a claim at
 #: all. Mirrored here (not imported — `core.orchestrator` imports THIS
@@ -159,16 +260,28 @@ def detect_claim_assertion(text: str) -> ClaimAssertion | None:
     m = _CLAIM.search(text)
     if m is None:
         return None
+    clause_start, clause_end = _clause_span(text, m.start())
+    # A negation sentence mentioning the claim phrase is not a claim — the
+    # same bar `Orchestrator._parse_already_satisfied` applies at delivery
+    # time ("a negation sentence mentioning the marker is not a claim").
+    # Bounded to the claim's own clause: a negation word in an EARLIER,
+    # unrelated clause must not suppress a real claim later in the utterance.
+    if _NEGATION.search(text, clause_start, m.start()):
+        return None
     start = max(0, m.start() - _SNIPPET_BEFORE)
     end = min(len(text), m.end() + _SNIPPET_AFTER)
     window = text[start:end]
     snippet = window.strip().replace("\n", " ")
     if len(snippet) > _SNIPPET_MAX:
         snippet = snippet[:_SNIPPET_MAX]
-    # Search the same bounded window the snippet uses, not the whole text:
-    # an unrelated cued hex token elsewhere in a long utterance must not be
-    # mistaken for the commit this particular claim names.
-    sha_match = _SHA_CUE.search(window)
+    # Search the claim's own CLAUSE, intersected with the bounded snippet
+    # window: an unrelated cued hex token elsewhere in a long utterance, OR
+    # in a SEPARATE clause of the same fixed-width window (e.g. "No code
+    # changes are needed; the tamper baseline is at 1a2b3c4d5e6f and the
+    # suite is green."), must not be mistaken for the commit this particular
+    # claim names.
+    clause = text[max(start, clause_start):min(end, clause_end)]
+    sha_match = _SHA_CUE.search(clause)
     return ClaimAssertion(sha=(sha_match.group(1) if sha_match else ""), snippet=snippet)
 
 
@@ -241,7 +354,16 @@ class LandedClaimGuard:
         directly from a synchronous event sink on the shared event loop
         thread. A failure here is logged and swallowed, never raised into
         the caller (the same "advisory never breaks the hook" convention
-        `supervisor.py` uses for its own budget/send-back formatting)."""
+        `supervisor.py` uses for its own budget/send-back formatting).
+
+        (Sixth review) No flush path: a claim latched here is only ever
+        probed by a SUBSEQUENT `hook()` call (the next PostToolUse event).
+        A claim made in the agent's FINAL utterance, with no further tool
+        call in the attempt, is latched but never probed here — delivery
+        still asks the same question later, at delivery time, exactly as
+        it did before this module existed. See the module docstring,
+        sixth review, point 3, for why this is accepted rather than fixed.
+        """
         try:
             self._note_text(text)
         except Exception:  # noqa: BLE001 — advisory, never break the caller

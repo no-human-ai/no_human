@@ -241,6 +241,38 @@ def test_ordinary_prose_is_not_a_claim(text):
     assert detect_claim_assertion(text) is None
 
 
+def test_a_negation_sentence_mentioning_the_claim_is_not_a_claim():
+    """(Sixth review) `Orchestrator._parse_already_satisfied` explicitly
+    treats a negation sentence mentioning the marker as not-a-claim at
+    delivery time; the detector's looser `_CLAIM` regex + cued-sha
+    actionability gate did not check for negation at all, so this exact
+    shape (a named, cued sha AND the claim phrase) used to be read as an
+    actionable claim even though the sentence explicitly says the work is
+    NOT already satisfied."""
+    text = (
+        "Checked: this is NOT already satisfied at commit 1a2b3c4d5e6f - "
+        "the change is still missing, I will implement it now."
+    )
+    assert detect_claim_assertion(text) is None
+
+
+def test_an_incidental_cued_hex_in_a_separate_clause_is_not_the_named_sha():
+    """(Sixth review) the fixed-width snippet window can span more than one
+    clause of the same utterance — an unrelated `at <sha>` mention in a
+    SEPARATE clause must not make an unrelated statement look like a claim
+    that names a commit. The positive control (same sentence, token pushed
+    outside the window) already passes
+    (`test_manifest_hash_mentioned_alongside_the_claim_is_not_the_named_sha`);
+    this pins the in-window/same-utterance shape that used to slip through."""
+    text = (
+        "No code changes are needed; the tamper baseline is at "
+        "1a2b3c4d5e6f and the suite is green."
+    )
+    assertion = detect_claim_assertion(text)
+    assert assertion is not None
+    assert assertion.sha == ""
+
+
 @pytest.mark.parametrize(
     "text, expected_sha",
     [
@@ -308,6 +340,16 @@ def test_manifest_hash_mentioned_alongside_the_claim_is_not_the_named_sha():
         "Let me check whether the prior session's work is already there.",
         "Refactor complete. No code changes are needed to the CLI; only the "
         "docs move.",
+        # (Sixth review) a negation sentence naming a cued sha — the sha
+        # cue alone must not make this actionable when the sentence denies
+        # the claim.
+        "Checked: this is NOT already satisfied at commit 1a2b3c4d5e6f - "
+        "the change is still missing, I will implement it now.",
+        # (Sixth review) an incidental cued hex in a separate clause of the
+        # same utterance — the sha cue belongs to an unrelated statement,
+        # not to this claim.
+        "No code changes are needed; the tamper baseline is at "
+        "1a2b3c4d5e6f and the suite is green.",
     ],
 )
 def test_unnamed_sha_prose_without_the_contract_marker_never_reaches_the_probe(text):

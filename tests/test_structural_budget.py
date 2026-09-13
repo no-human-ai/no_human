@@ -1250,7 +1250,15 @@ FROZEN_FILE_LINES = {
     # `commits_ahead(base)` silence check (and its guarding comment) inside
     # `probe()`, and two new docstring paragraphs explaining both. Re-
     # measured on this tree by the scanner's own metric: 24016.
-    "core/orchestrator.py": 24016,
+    # 24016 -> 24088 (+72): sixth review (HIGH) — `_already_satisfied_subject`
+    # gains a 7th `determinate` return element (with an expanded docstring
+    # explaining it) on every `return` statement, `_gate_already_satisfied`'s
+    # unpacking grows by one name, and `_build_landed_claim_guard`'s `probe`
+    # unpacks/uses `determinate` instead of pattern-matching `subject_reason`,
+    # with a new docstring paragraph and inline comments explaining the fix
+    # (see `landed_claim_guard.py`'s module docstring, "(Sixth review)").
+    # Re-measured on this tree by the scanner's own metric: 24088.
+    "core/orchestrator.py": 24088,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.
