@@ -2017,11 +2017,29 @@ class Store:
         blob the same way `cancel_reason` already is, so the next stale
         writer still sees the true marker rather than reverting to this
         handle's stale copy of it.
+
+        ``config`` is the third defended column, and the reason it needs a
+        marker rather than exclusion is identical to `title`'s: legitimate
+        callers (`nh task config`, `reply --choose` on a `set_task_config`
+        option) mutate `task.config` in memory and expect this method to
+        persist it. The 2026-09-13 incident this defends against: a human
+        raised `lifetime_tokens` 10,000,000 -> 14,000,000 on a task parked
+        `awaiting_approval`; the CLI wrote it and confirmed; a watcher tick's
+        stale handle, snapshotted before the raise, then called `update_task`
+        and its whole-blob `config=:config` silently restored the old cap —
+        the ONE setting reserved to a human, undone by a tick that logged
+        "nothing to do". Keyed off `context.config_updated_at` for the same
+        reason `title` is keyed off `context.title_updated_at` and not
+        `updated_at`: `updated_at` is bumped by every write, so it cannot
+        distinguish "someone raised the cap since I read this handle" from
+        "something unrelated wrote this row since I read it".
         """
         handle_title_marker = (task.context or {}).get("title_updated_at", "")
+        handle_config_marker = (task.context or {}).get("config_updated_at", "")
         task.updated_at = _now()
         row = task.to_row()
         row["handle_title_marker"] = handle_title_marker
+        row["handle_config_marker"] = handle_config_marker
         await self.db.execute(
             """UPDATE tasks SET
                  external_id=:external_id, source=:source,
@@ -2038,22 +2056,37 @@ class Store:
                  context = json_patch(
                      :context,
                      json_patch(
-                         CASE WHEN json_extract(COALESCE(context, '{}'), '$.cancel_reason')
-                                   IS NOT NULL
-                              THEN json_object(
-                                  'cancel_reason',
-                                  json_extract(COALESCE(context, '{}'), '$.cancel_reason'))
-                              ELSE '{}' END,
+                         json_patch(
+                             CASE WHEN json_extract(COALESCE(context, '{}'), '$.cancel_reason')
+                                       IS NOT NULL
+                                  THEN json_object(
+                                      'cancel_reason',
+                                      json_extract(COALESCE(context, '{}'), '$.cancel_reason'))
+                                  ELSE '{}' END,
+                             CASE WHEN COALESCE(
+                                         json_extract(COALESCE(context, '{}'),
+                                                      '$.title_updated_at'), '')
+                                       > :handle_title_marker
+                                  THEN json_object(
+                                      'title_updated_at',
+                                      json_extract(COALESCE(context, '{}'),
+                                                   '$.title_updated_at'))
+                                  ELSE '{}' END),
                          CASE WHEN COALESCE(
                                      json_extract(COALESCE(context, '{}'),
-                                                  '$.title_updated_at'), '')
-                                   > :handle_title_marker
+                                                  '$.config_updated_at'), '')
+                                   > :handle_config_marker
                               THEN json_object(
-                                  'title_updated_at',
+                                  'config_updated_at',
                                   json_extract(COALESCE(context, '{}'),
-                                               '$.title_updated_at'))
+                                               '$.config_updated_at'))
                               ELSE '{}' END)),
-                 plan=:plan, config=:config,
+                 plan=:plan,
+                 config = CASE WHEN COALESCE(
+                                      json_extract(COALESCE(context, '{}'),
+                                                   '$.config_updated_at'), '')
+                               > :handle_config_marker
+                               THEN config ELSE :config END,
                  updated_at=:updated_at
                WHERE id=:id""",
             row,
@@ -2206,11 +2239,19 @@ class Store:
         handle was in flight, but a fresh handle's own title edit must
         still persist. This method never writes `context`, so — unlike
         `update_task` — there is no marker to carry forward here; it only
-        reads the row's current marker to decide the winner."""
+        reads the row's current marker to decide the winner.
+
+        ``config`` gets the identical `context.config_updated_at`-keyed CASE,
+        for the identical reason (see `update_task`'s docstring for the
+        2026-09-13 incident this defends against): the watcher's stale
+        handle went through this exact method, not `update_task`, when it
+        silently reverted a human's raised `lifetime_tokens` cap."""
         handle_title_marker = (task.context or {}).get("title_updated_at", "")
+        handle_config_marker = (task.context or {}).get("config_updated_at", "")
         task.updated_at = _now()
         row = task.to_row()
         row["handle_title_marker"] = handle_title_marker
+        row["handle_config_marker"] = handle_config_marker
         await self.db.execute(
             """UPDATE tasks SET
                  external_id=:external_id, source=:source,
@@ -2223,7 +2264,12 @@ class Store:
                  acceptance_criteria=:acceptance_criteria, repo_path=:repo_path,
                  kind=:kind, parent_id=:parent_id, follows_id=:follows_id,
                  blocker=:blocker, wake_check_at=:wake_check_at,
-                 priority=:priority, plan=:plan, config=:config,
+                 priority=:priority, plan=:plan,
+                 config = CASE WHEN COALESCE(
+                                      json_extract(COALESCE(context, '{}'),
+                                                   '$.config_updated_at'), '')
+                               > :handle_config_marker
+                               THEN config ELSE :config END,
                  updated_at=:updated_at
                WHERE id=:id""",
             row,
@@ -2253,6 +2299,43 @@ class Store:
             (title, now, now, task_id),
         )
         await self.db.commit()
+
+    @serialized_write
+    async def update_task_config(self, task_id: str, config: dict) -> str:
+        """Write ONE task's `config` blob. A targeted single-column UPDATE,
+        modelled verbatim on `update_task_title` — it must not
+        read-modify-write the row and structurally cannot touch any other
+        column.
+
+        Also stamps `context.config_updated_at` in the SAME statement as the
+        config write, and returns that marker — the 2026-09-13 fix for the
+        incident where a human raised `lifetime_tokens` 10,000,000 ->
+        14,000,000 on a BUDGET_EXHAUSTED-parked task, the CLI confirmed it,
+        and a watcher tick's stale handle then called `update_task_columns`
+        and silently restored the old cap via its whole-blob `config=:config`
+        write. `update_task`/`update_task_columns` compare a stale handle's
+        own copy of this marker against the row's (see their docstrings), so
+        a handle snapshotted before this call can never overwrite the raise
+        it makes. Callers that go on to call `update_task`/`update_task_columns`
+        with the same in-memory task afterward must copy the returned marker
+        into `task.context["config_updated_at"]` first, or their own
+        immediately-following write will look stale against the row it just
+        wrote and get its `config` clobbered right back to what it already
+        had — harmless in that specific case (same value), but exactly the
+        footgun this method exists to remove everywhere else.
+        """
+        now = _now()
+        await self.db.execute(
+            """UPDATE tasks SET
+                 config = ?,
+                 context = json_set(COALESCE(context, '{}'),
+                                     '$.config_updated_at', ?),
+                 updated_at = ?
+               WHERE id = ?""",
+            (json.dumps(config or {}), now, now, task_id),
+        )
+        await self.db.commit()
+        return now
 
     @serialized_write
     async def request_cancel(self, task_id: str, reason: str) -> None:

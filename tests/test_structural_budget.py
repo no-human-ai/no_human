@@ -1381,7 +1381,14 @@ FROZEN_FILE_LINES = {
     # `core/orchestrator.py`, 24073 vs 24070. An earlier version of this
     # comment, and the commit message, claimed they disagreed here. They do
     # not.)
-    "cli/commands.py": 8920,
+    # 8920 -> 8944 (+24): 2026-09-13 fix — `task_config` and `nh reply
+    # --choose` now persist a `set_task_config` change through the new
+    # `Store.update_task_config` single-column writer (stamping
+    # `context.config_updated_at`) before the existing `update_task_columns`
+    # call, so a concurrent stale handle (e.g. a watcher tick) cannot
+    # silently revert a human's raised cap. Measured via
+    # `wc -l src/no_human/cli/commands.py`.
+    "cli/commands.py": 8944,
     # api/app.py 5338 -> 5346 (+8): same budget-floor warning surfaced by
     # `send-back`/`reply` as `budget_warning` in the JSON response. Net cost
     # was trimmed from a naive +14 to +8 by computing `Bounds.from_config(...)`
@@ -1554,7 +1561,13 @@ FROZEN_FILE_LINES = {
     # `sched.lease_lost` and threads it into `queue_health(...)` alongside
     # the existing cooldown kwargs. Measured on this tree with the scanner
     # below.
-    "api/app.py": 6330,
+    # 6330 -> 6342 (+12): 2026-09-13 fix — the board reply endpoint now
+    # persists a `set_task_config` change through `Store.update_task_config`
+    # (stamping `context.config_updated_at`) before its existing
+    # `update_task_columns` call, so a concurrent stale handle cannot
+    # silently revert a human's raised cap. Measured via
+    # `wc -l src/no_human/api/app.py`.
+    "api/app.py": 6342,
     # +51: W5 active-time phase writer (phase instrumentation).
     # +84: `list_escalations`/`list_review_fails`/`list_tamper_trips` — the
     # three new failure-signal sources the recurring learning harvest mines.
@@ -1667,7 +1680,13 @@ FROZEN_FILE_LINES = {
     # winning marker forward into the new context blob the same way
     # `cancel_reason` already is, plus the expanded docstrings explaining why.
     # Measured via `wc -l src/no_human/core/db.py` on this merge result.
-    "core/db.py": 5193,
+    # 5193 -> 5276 (+83): 2026-09-13 fix — `config` becomes the third
+    # `context.*_updated_at`-keyed defended column in `update_task`/
+    # `update_task_columns` (a stale watcher handle was silently reverting a
+    # human's raised `lifetime_tokens` cap via the whole-blob `config=:config`
+    # write), plus the new single-column `update_task_config` writer modelled
+    # on `update_task_title`. Measured via `wc -l src/no_human/core/db.py`.
+    "core/db.py": 5276,
     # +71: set_local_backend_fields — the config-write helper for the Settings
     # pane's local coder-backend fields (llm.local_model / llm.local_base_url).
     # +75: Codex account config helpers.

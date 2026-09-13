@@ -4061,6 +4061,18 @@ async def reply_task(
             applied = apply_action(task, option.action, bounds=_bounds)
         except ActionError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        # `set_task_config` mutated `task.config` in place above — persist it
+        # through the dedicated single-column writer, stamped with
+        # `config_updated_at`, before the `update_task_columns` calls below
+        # so a concurrent stale handle (e.g. a watcher tick) cannot silently
+        # revert the raise/lower this option just applied (2026-09-13
+        # incident). The marker is copied onto `task.context` so this
+        # request's own later write does not look stale against the write
+        # it just made.
+        if applied and isinstance(option.action, dict) \
+                and "set_task_config" in option.action:
+            marker = await store.update_task_config(task.id, task.config)
+            task.context = {**(task.context or {}), "config_updated_at": marker}
 
     record = answer_record(
         question=question, answer=answer,
