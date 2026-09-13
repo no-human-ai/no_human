@@ -2007,7 +2007,7 @@ CITATION_TABLE = (
      '"gh", "pr", "merge"'),
     ("security.md", "cli/commands.py:approve:5431", "cli/commands.py",
      '_refuse_agent_gate_act("approve")'),
-    ("security.md", ":merge_stack_run:3151", "cli/commands.py",
+    ("security.md", ":merge_stack_run:3163", "cli/commands.py",
      '_refuse_agent_gate_act("merge_stack_run")'),
     ("security.md", "updates.py:44", "updates.py", "PYPI_JSON_URL"),
     ("security.md", "updates.py:57", "updates.py", "DISABLE_ENV_VAR"),
