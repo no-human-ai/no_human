@@ -783,7 +783,15 @@ class GitRepo:
         repo_root = Path(self.path).resolve()
         rel_paths: list[str] = []
         for p in paths:
-            abs_p = Path(p).resolve()
+            # Resolve the DIRECTORY chain, never the entry itself. `Path(p).resolve()` follows
+            # a symlink, so a broken one is rewritten to its missing target before the
+            # `os.path.lexists` filter below ever sees it: that filter then asks "does the
+            # target exist", answers no, drops the entry, and the commit lands without the
+            # link — the silent-work-loss direction, where an unresolved name would have made
+            # `git add` fail loudly instead. Resolving the parent still normalises a symlinked
+            # root (macOS `/tmp` -> `/private/tmp`), which is what `relative_to` needs.
+            abs_p = Path(os.path.abspath(p))
+            abs_p = abs_p.parent.resolve() / abs_p.name
             try:
                 rel = str(abs_p.relative_to(repo_root))
             except ValueError:
