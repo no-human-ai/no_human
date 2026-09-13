@@ -1396,7 +1396,14 @@ FROZEN_FILE_LINES = {
     # 6-line `permission_mode` validation to `doctor`, so an invalid
     # `llm.permission_mode` is reported as a contradiction instead of dying at
     # the first task. Measured on the merge result with the scanner below.
-    "cli/commands.py": 8935,
+    # 8935 -> 8959 (+24): 2026-09-13 fix — `task_config` and `nh reply
+    # --choose` now persist a `set_task_config` change through the new
+    # `Store.update_task_config` single-column writer (stamping
+    # `context.config_updated_at`) before the existing `update_task_columns`
+    # call, so a concurrent stale handle (e.g. a watcher tick) cannot
+    # silently revert a human's raised cap. Re-anchored onto the #227 rebase
+    # result. Measured via `wc -l src/no_human/cli/commands.py`.
+    "cli/commands.py": 8959,
     # api/app.py 5338 -> 5346 (+8): same budget-floor warning surfaced by
     # `send-back`/`reply` as `budget_warning` in the JSON response. Net cost
     # was trimmed from a naive +14 to +8 by computing `Bounds.from_config(...)`
@@ -1575,7 +1582,13 @@ FROZEN_FILE_LINES = {
     # 6332 -> 6340 (+8): board/detail/subtask/post-approve sites now pass
     # `ledger=` through to TaskOut/TaskSummaryOut.from_task so owned
     # unattributed_usage spend folds into a task's displayed cost.
-    "api/app.py": 6340,
+    # 6340 -> 6352 (+12): 2026-09-13 fix — the board reply endpoint now
+    # persists a `set_task_config` change through `Store.update_task_config`
+    # (stamping `context.config_updated_at`) before its existing
+    # `update_task_columns` call, so a concurrent stale handle cannot
+    # silently revert a human's raised cap. Re-anchored onto the #227/
+    # per-task-cost rebase result. Measured via `wc -l src/no_human/api/app.py`.
+    "api/app.py": 6352,
     # +51: W5 active-time phase writer (phase instrumentation).
     # +84: `list_escalations`/`list_review_fails`/`list_tamper_trips` — the
     # three new failure-signal sources the recurring learning harvest mines.
@@ -1691,7 +1704,14 @@ FROZEN_FILE_LINES = {
     # 5193 -> 5285 (+92): OWNED_LEDGER_SQL, the `owned=` split on
     # unattributed_usage_totals, and usage_ledger_rows_by_task/
     # task_usage_ledger_rows — the per-task ledger fold's query layer.
-    "core/db.py": 5285,
+    # 5285 -> 5368 (+83): 2026-09-13 fix — `config` becomes the third
+    # `context.*_updated_at`-keyed defended column in `update_task`/
+    # `update_task_columns` (a stale watcher handle was silently reverting a
+    # human's raised `lifetime_tokens` cap via the whole-blob `config=:config`
+    # write), plus the new single-column `update_task_config` writer modelled
+    # on `update_task_title`. Re-anchored onto the per-task-cost rebase
+    # result. Measured via `wc -l src/no_human/core/db.py`.
+    "core/db.py": 5368,
     # +71: set_local_backend_fields — the config-write helper for the Settings
     # pane's local coder-backend fields (llm.local_model / llm.local_base_url).
     # +75: Codex account config helpers.

@@ -1358,6 +1358,18 @@ def task_config(task_id, assignments):
             # Write the column BEFORE the event that attests to it: if the
             # column write fails, no event claims a change that didn't
             # happen (the evidence-gap class `nh doctor` is built to catch).
+            # `config` goes through the dedicated single-column writer, not
+            # the `update_task_columns` call below, so the raise/lower this
+            # command applies is stamped with `config_updated_at` and cannot
+            # be reverted by a concurrent stale handle (2026-09-13 incident:
+            # a watcher tick's stale handle silently undid a human's raised
+            # `lifetime_tokens` cap). The marker is copied onto `t.context`
+            # so the immediately-following `update_task_columns(t)` — which
+            # still carries the `priority` write — does not look stale
+            # against the write it just made.
+            if settings:
+                marker = await store.update_task_config(t.id, t.config)
+                t.context = {**(t.context or {}), "config_updated_at": marker}
             await store.update_task_columns(t)
 
             if priority_note is not None:
@@ -3828,6 +3840,18 @@ def reply(task_id, answer, choose, run):
                     sys.exit(1)
                 if applied:
                     console.print(f"[green]applied[/] {applied}")
+                # `set_task_config` mutated `t.config` in place above — persist
+                # it through the dedicated single-column writer, stamped with
+                # `config_updated_at`, before the `update_task_columns(t)`
+                # calls below so a concurrent stale handle (e.g. a watcher
+                # tick) cannot silently revert the raise/lower this option
+                # just applied (2026-09-13 incident). The marker is copied
+                # onto `t.context` so this command's own later write does not
+                # look stale against the write it just made.
+                if applied and isinstance(option.action, dict) \
+                        and "set_task_config" in option.action:
+                    marker = await store.update_task_config(t.id, t.config)
+                    t.context = {**(t.context or {}), "config_updated_at": marker}
 
             record = answer_record(
                 question=question, answer=answer,
