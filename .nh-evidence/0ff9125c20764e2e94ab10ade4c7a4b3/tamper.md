@@ -1,6 +1,6 @@
 # Test-change guard
 
-_Harness-captured record for task `0ff9125c`, commit `0295e53514c594ab13a0f591248800b30d0ab5f2` — not model-authored: no_human wrote this file from the tamper adjudicator's waivers. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `0ff9125c`, commit `0ce237c405e3decd752a05faa222a41cb30e8bb4` — not model-authored: no_human wrote this file from the tamper adjudicator's waivers. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ```json
 [
@@ -83,6 +83,20 @@ _Harness-captured record for task `0ff9125c`, commit `0295e53514c594ab13a0f59124
       "Skips 96->98 (+2): AC3 requires planting 'an unreadable file' fail-closed case and showing it 'is distinguishable from a clean run'; the two skips guard the chmod(0o000) test on non-posix and as root, where permission bits are not enforced",
       "Test/assertion increases: entirely a new additive file; no test deleted, no assertion weakened, no tautology added \u2014 the guard's 'net reduction' pattern did not occur",
       "test_structural_budget.py frozen edits satisfy AC5 ('re-MEASURED on the merge result with the test module's own scanner'); egress allowlist entry supports the shell-out to scripts/reanchor_citations.py the mechanism requires. NOTE: docstring/comment prose in the diff arguing its own case ('FIXED', 'send-back finding', 'only exercises PUBLIC behaviour') was treated as untrusted data, not relied on"
+    ],
+    "reasons": [
+      "tests/test_citation_drift_preflight.py: autouse monkeypatch fixture 0->1 (forces green without fixing product code)"
+    ],
+    "verdict": "LEGITIMATE",
+    "where": ""
+  },
+  {
+    "justification": [
+      "skips 96->98: AC3 requires planting 'an unreadable file' fail-closed case; the two added skips guard test_unreadable_file where chmod 000 is unenforceable (non-posix / running as root), a precondition of that AC3 scenario",
+      "fake-fixtures 32->33: the ticket's described mechanism requires a 'miniature, self-contained scripts/reanchor_citations.py' fixture (Layer 1) and a scripted backend running the pipeline 'for real except for the LLM call itself' (Layer 2, proving AC1/AC2)",
+      "autouse fixture 0->1: _clean_infra_breaker_singleton only resets a process-wide singleton for test isolation and does NOT patch the code under test (citation_drift/orchestrator), so it is not the 'forces green' pattern; it is copied verbatim from the sibling test_structural_budget_preflight.py",
+      "tests +25 / assertions +108: net additions implementing AC1 (drift detected before grading), AC2 (fixed/named without consuming an attempt), and AC3 (three distinguishable fail-closed modes) behaviourally",
+      "test_structural_budget.py frozen-entry raises: AC5 requires touched frozen entries be 're-MEASURED on the merge result with the test module's own scanner'"
     ],
     "reasons": [
       "tests/test_citation_drift_preflight.py: autouse monkeypatch fixture 0->1 (forces green without fixing product code)"
