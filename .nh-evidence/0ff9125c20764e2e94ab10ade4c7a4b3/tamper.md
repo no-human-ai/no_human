@@ -1,6 +1,6 @@
 # Test-change guard
 
-_Harness-captured record for task `0ff9125c`, commit `32fa78d9aa751d86c830c047ce7b6645f5636c49` — not model-authored: no_human wrote this file from the tamper adjudicator's waivers. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `0ff9125c`, commit `71a15a81480c3a01590b5415927aaefcc102f167` — not model-authored: no_human wrote this file from the tamper adjudicator's waivers. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ```json
 [
@@ -57,6 +57,19 @@ _Harness-captured record for task `0ff9125c`, commit `32fa78d9aa751d86c830c047ce
     "justification": [
       "skips +2: AC3 requires planting 'an unreadable file' fail-closed case shown 'distinguishable from a clean run'; the two skips guard the chmod(0o000)-based test where non-posix/root cannot make the file unreadable, so the planted-case premise holds only where skipped-out \u2014 the test still asserts Status.UNKNOWN elsewhere",
       "fake-fixture +1 (autouse `_clean_infra_breaker_singleton`): resets a process-wide infra singleton for isolation, does NOT patch the code under test and cannot force product assertions green (reset runs outside the test body); it supports the Layer-2 integration tests AC1/AC2 mandate ('detected BEFORE the attempt is graded' / 'attempt count is unchanged'). The file's docstring claims are untrusted and were not relied on \u2014 verified directly from the code."
+    ],
+    "reasons": [
+      "tests/test_citation_drift_preflight.py: autouse monkeypatch fixture 0->1 (forces green without fixing product code)"
+    ],
+    "verdict": "LEGITIMATE",
+    "where": ""
+  },
+  {
+    "justification": [
+      "Autouse fixture only calls infra_breaker().reset() (a singleton, not the code under test) \u2014 AC3 requires each fail-closed case be 'distinguishable from a clean run', which demands breaker-state isolation between the UNKNOWN/blocking tests",
+      "Skips (+2) guard the chmod(0o000) unreadable-file test to non-root posix \u2014 AC3 requires planting 'an unreadable file' and showing it distinguishable from clean, only valid where permission bits are enforced",
+      "Fake-fixture (+1) is a scripted backend mocking only the LLM call \u2014 ticket prescribes 'the same house pattern as tests/test_structural_budget_preflight.py ... runs for real except for the LLM call itself'",
+      "Frozen entries raised/re-measured in test_structural_budget.py satisfy AC5: 'Any frozen entry ... this change touches is re-MEASURED on the merge result with the test module's own scanner'"
     ],
     "reasons": [
       "tests/test_citation_drift_preflight.py: autouse monkeypatch fixture 0->1 (forces green without fixing product code)"
