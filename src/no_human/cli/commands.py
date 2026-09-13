@@ -4246,7 +4246,11 @@ def status(as_json):
             # a quota-paused pool prints WHY nothing is moving instead of a
             # bare `working 0/N` next to a ETA computed as if work were
             # flowing (2026-08-20 evidence: "not stuck, 0 busy, ETA 210 min").
-            if pause and pause.get("reason") == "infra":
+            if pause and pause.get("reason") == "lease_lost":
+                console.print(
+                    "[magenta]paused[/] — this scheduler lost the pool "
+                    "lease and will not dispatch again; restart the server")
+            elif pause and pause.get("reason") == "infra":
                 until = _local_hhmm(pause.get("until"))
                 console.print(
                     f"[magenta]paused[/] — SDK/auth failures, resumes {until}")
@@ -4255,6 +4259,15 @@ def status(as_json):
                 until = _local_hhmm(pause.get("until"))
                 console.print(
                     f"[magenta]paused[/] — quota cooldown{who}, resumes {until}")
+            elif pause:
+                # A future `paused_reason` this CLI has never heard of. The
+                # OLD default here was silence — a truthy `paused` with an
+                # unmatched reason printed nothing at all — which is exactly
+                # the failure this branch closes: an unrecognised cause must
+                # say so, never read as neither of the two known ones.
+                console.print(
+                    f"[magenta]paused[/] — reason unknown "
+                    f"({pause.get('reason')!r})")
             # Printed only when there IS a residual (whole-ledger total, same
             # gate as before), so the line appears exactly when it has
             # something to say. Within it, "no task owns it" is scoped to the
