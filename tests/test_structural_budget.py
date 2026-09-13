@@ -1228,10 +1228,12 @@ FROZEN_FILE_LINES = {
     # frozen ceiling, so that function's own entry did not have to grow).
     # Measured after extracting/trimming as far as possible without cutting
     # the fail-closed guards' rationale comments.
-    # 24079 -> 24086 (+7, 2026-09-13): stale-but-mergeable-PR bugfix (task
+    # 23893 -> 23900 (+7, 2026-09-13): stale-but-mergeable-PR bugfix (task
     # 22c4ddf6 finding #3) — the `delivered_base` import plus `_finalize`'s
-    # new trunk-tip recording call. Measured on this tree (`len(text
-    # .splitlines())`, not `wc -l`).
+    # new trunk-tip recording call, measured on this task's own base before
+    # the REFILE bugfix above landed. 24079 -> 24080 (+1): re-measured on
+    # the merge result once both landed on trunk together. Measured on this
+    # tree (`len(text.splitlines())`, not `wc -l`).
     "core/orchestrator.py": 24080,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
