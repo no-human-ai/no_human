@@ -38,6 +38,12 @@ secrets/
 # IDE-generated (skills, local settings)
 .claude/
 .windsurf/
+# A git worktree directory created by tooling, not by this project. `.claude/`
+# above does not match the name, and `git add -A` stages an unignored worktree
+# as a gitlink (mode 160000). No slash, for the same reason `.nh-local` below
+# carries none: a trailing slash matches the directory but not a symlink of
+# that name.
+.claude-worktrees
 
 # web build
 web/node_modules/

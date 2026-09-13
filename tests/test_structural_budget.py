@@ -1829,7 +1829,18 @@ FROZEN_FILE_LINES = {
     # timeout/xargs/nice/stdbuf (and siblings) for the scan-severity check
     # only, so a wrapped `find … -delete` in a denied compound classifies
     # DESTRUCTIVE instead of HYGIENE. Local sibling list, `_WRAPPERS` untouched.
-    "agent/guard.py": 2892,
+    # 2892 -> 2917 (+25): `_resolve_or_self` helper plus switching both venv
+    # probes in `_protected_venvs` to the tri-state
+    # `venv_install_guard._probe_is_dir`/`_probe_is_file` (fail-closed on
+    # `None`) instead of `Path.is_dir()`/`Path.is_file()`, which raised
+    # `PermissionError` on a chmod'd-unreadable venv and got swallowed by
+    # the old `except OSError: pass`, turning a DENY into an ALLOW.
+    # 2917 -> 2926 (+9): `_primary_checkout` now probes its `__init__.py`
+    # marker via the tri-state `venv_install_guard._probe_is_file` instead of
+    # a bare `Path.is_file()`, so an unreadable ancestor directory (e.g. a
+    # chmod'd `<checkout>/src`) can't raise `PermissionError` out of this
+    # unguarded helper and abort the guard instead of denying.
+    "agent/guard.py": 2926,
     # +44: idle-path recover_quota_cooldown gate in tick() and the
     # never-shorten-a-live-wall guard in _run — the quota-wall storm cost fix.
     # +129: `HarvestJob` — the cadence job (`due()`/`maybe_run()`) that runs
