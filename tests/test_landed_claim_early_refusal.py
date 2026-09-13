@@ -14,7 +14,7 @@ import pytest
 from no_human.agent.backend import AgentEvent, AgentResult
 from no_human.config import load_config
 from no_human.core.bounds import QuotaExhausted
-from no_human.core.orchestrator import Orchestrator
+from no_human.core.orchestrator import Orchestrator, StuckAbort
 from no_human.core.task import Task, TaskStatus
 from no_human.notify.slack import SlackNotifier
 from no_human.vcs import GitRepo
@@ -847,6 +847,106 @@ async def test_guard_is_wired_into_the_real_run_attempt_and_fires_on_a_refutable
     # `main` — this really is the claim-gate-reachable state, not the
     # never-reaches-the-gate state the old fixture (mis)modelled here.
     assert GitRepo(diverged_repo).commits_ahead("main") == 0
+
+
+class _ResumeThenClaimBackend:
+    """Attempt 1 leaves the loop's OWN `[WIP-PARTIAL]` via a stuck-abort, with
+    no human gate anywhere in `ctx` — the real `_is_own_partial` shape
+    (~20056). Attempt 2 therefore has `_run_attempt` compute
+    `branched_from_own_partial=True` itself, through the real call-site
+    wiring (~5788-5790), not passed in by the test. Every existing
+    own-partial test in this file instead calls `_build_landed_claim_guard`
+    directly with `branched_from_own_partial=True` BY HAND (to isolate the
+    probe's behaviour once the flag is true) or uses a shape where
+    `commits_ahead(base) == 0`, so none of them would notice the kwarg
+    vanishing from the real `_run_attempt` call site — mutation ladder item
+    (3). Attempt 2 adds one ORDINARY commit on top of the inherited
+    `[WIP-PARTIAL]` (so `_already_satisfied_eligible` sees an ordinary,
+    reviewable subject at HEAD, not the checkpoint itself — otherwise the
+    eligibility gate would silence the guard for an unrelated reason and
+    this test would prove nothing about the wiring under test) before
+    asserting the same claim `_already_satisfied_subject` would refute."""
+
+    def __init__(self):
+        self.calls = 0
+        self.captured_on_event = None
+        self.captured_lint_hook = None
+        self.hook_result: dict | None = None
+        self.claimed_sha: str | None = None
+
+    async def run(self, prompt, *, cwd, max_turns, effort=None, resume=None,
+                  on_event=None, supervisor_hook=None, **kwargs):
+        self.calls += 1
+        if self.calls == 1:
+            (cwd / "partial.py").write_text("# left mid-turn\n")
+            raise StuckAbort("doom-loop: identical tool call repeated 3x")
+        (cwd / "extra.py").write_text("def extra():\n    return 1\n")
+        subprocess.run(["git", "add", "-A"], cwd=cwd, check=True)
+        subprocess.run(["git", "commit", "-m", "continue the fix"], cwd=cwd,
+                       check=True)
+        self.claimed_sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=cwd, check=True,
+            capture_output=True, text=True,
+        ).stdout.strip()
+        self.captured_on_event = on_event
+        self.captured_lint_hook = kwargs.get("lint_hook")
+        if on_event is not None:
+            on_event(AgentEvent(
+                kind="text",
+                text=(
+                    f"This is already implemented — the work already "
+                    f"exists at {self.claimed_sha}, no changes needed."
+                ),
+            ))
+        if self.captured_lint_hook is not None:
+            self.hook_result = await self.captured_lint_hook.hook({}, None, None)
+        return AgentResult(
+            final_text="Exception: Claude Code returned an error result: success",
+            num_turns=1, is_error=True, tokens_used=0, session_id=None,
+            stop_reason="error", cache_read_tokens=0, cache_creation_tokens=0,
+        )
+
+
+async def test_branched_from_own_partial_is_wired_from_the_real_call_site_not_assumed(
+    bare_repo, tmp_path, store,
+):
+    """Mutation ladder (3): dropping the `branched_from_own_partial=` kwarg
+    at the `_run_attempt` call site must turn a test red. With the kwarg
+    wired, the guard fires anyway on attempt 2's claim even though its
+    branch is ahead of `base` (the inherited `[WIP-PARTIAL]` plus one more
+    ordinary commit) — `branched_from_own_partial=True` skips the outer
+    `commits_ahead` predicate, exactly matching delivery's own
+    `resumed_commit is None` rule for a resume from the loop's own partial.
+    Drop the kwarg and it silently reads its `False` default, the outer
+    predicate reads `ahead > 0` as true, and the guard goes silent for a
+    claim delivery would still refuse."""
+    backend = _ResumeThenClaimBackend()
+    orch = Orchestrator(store, _config(tmp_path).data, backend,
+                        SlackNotifier(None), event_sink=[].append)
+    task = Task.new("existing", repo_path=str(bare_repo), kind="feature")
+    await store.create_task(task)
+
+    # `run_task` catches `QuotaExhausted` internally (it does not propagate
+    # to the caller the way a bare `_run_attempt` call does) — the claim was
+    # already fed to the real composed hook, inside the backend's own
+    # `run()`, before that exception is raised, so the assertions below do
+    # not depend on how `run_task` disposes of the attempt afterward.
+    await orch.run_task(task)
+
+    assert backend.calls >= 2, "attempt 2 never ran"
+    assert backend.captured_on_event is not None, (
+        "on_event must reach the backend on the resumed attempt too")
+    assert backend.captured_lint_hook is not None, (
+        "the composed post-tool hook must reach the backend on the resumed "
+        "attempt too")
+    assert backend.hook_result, (
+        "the real wiring must have refused the claim even though the "
+        "branch is ahead of base on its own inherited [WIP-PARTIAL] plus "
+        "one ordinary commit — branched_from_own_partial must have been "
+        "threaded from the real call site")
+    message = backend.hook_result["hookSpecificOutput"]["additionalContext"]
+    assert backend.claimed_sha in message
+    assert "continue_" not in backend.hook_result
 
 
 def test_composed_post_tool_hooks_place_the_claim_guard_after_receipts():
