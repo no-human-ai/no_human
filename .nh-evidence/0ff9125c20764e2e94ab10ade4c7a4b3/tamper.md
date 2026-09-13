@@ -1,0 +1,68 @@
+# Test-change guard
+
+_Harness-captured record for task `0ff9125c`, commit `32fa78d9aa751d86c830c047ce7b6645f5636c49` — not model-authored: no_human wrote this file from the tamper adjudicator's waivers. It records what the gate produced; it is not a verdict of the model that wrote the code._
+
+```json
+[
+  {
+    "justification": [
+      "Aggregate tests (+14) and assertions (+60) INCREASED \u2014 this is a new feature test file, not a reduction",
+      "skips +2: AC3 requires 'Plant each of those three cases' including 'an unreadable file'; the two skips guard the chmod(0o000) unreadable-file test on non-posix/root where that condition cannot be created",
+      "autouse fixture +1: `_clean_infra_breaker_singleton` only resets the process-wide infra_breaker singleton for isolation of the AC2 real-`_run_attempt` integration tests ('Demonstrate the attempt count is unchanged across a preflight that fires'); it does not patch citation_drift/orchestrator (the code under test), so it is not behaviour-faking",
+      "structural_budget frozen bumps: AC5 requires 'Any frozen entry... this change touches is re-MEASURED on the merge result'"
+    ],
+    "reasons": [
+      "tests/test_citation_drift_preflight.py: autouse monkeypatch fixture 0->1 (forces green without fixing product code)"
+    ],
+    "verdict": "LEGITIMATE",
+    "where": ""
+  },
+  {
+    "justification": [
+      "+2 skips: AC3 ('an unreadable file \u2026 Plant each of those three cases') \u2014 a 0o000 unreadable file can only be planted on posix and non-root, so the two skips guard that precondition of the fail-closed test",
+      "+1 autouse fixture: the code calls infra_breaker().reset() (no monkeypatch, no patch of citation_drift.py/orchestrator.py); it isolates a process-wide singleton across the AC1/AC2 integration tests and the AC3 fail-closed tests that deliberately trip it \u2014 supporting AC1 'observing the preflight's behaviour' and AC3 'distinguishable from a clean run', not faking product behaviour",
+      "net tests/assertions increase: a wholly new behavioural test file required by AC1/AC2 (drift detected before grading, attempt count unchanged), AC3 (three fail-closed modes), and AC4 (behaviour, not source text) \u2014 the file uses no inspect.getsource/read_text/ast.parse over the module under test"
+    ],
+    "reasons": [
+      "tests/test_citation_drift_preflight.py: autouse monkeypatch fixture 0->1 (forces green without fixing product code)"
+    ],
+    "verdict": "LEGITIMATE",
+    "where": ""
+  },
+  {
+    "justification": [
+      "Net tests/assertions increase is the ticket's core deliverable \u2014 a behavioural replacement for the killed test_citation_drift_preflight.py ('REFILE... Take the mechanism from that branch, not its tests'); no test bodies removed or weakened, tautologies unchanged 3->3",
+      "skips 84->86: the two pytest.skip guards make AC3's 'an unreadable file' fail-closed case valid \u2014 a mode-000 file is only enforceable on posix and non-root, and AC3 requires 'Plant each of those three cases and show each is distinguishable from a clean run'",
+      "fake-fixtures 31->32 (autouse): the sole autouse fixture only calls infra_breaker().reset() for isolation (the AC2 'same house pattern as tests/test_structural_budget_preflight.py'); it patches no code under test, so the guard's 'forces green without fixing product code' is refuted by the diff",
+      "the product-touching monkeypatch (citation_drift.reanchor_command) is non-autouse and injects OSError to assert the fail-closed UNKNOWN branch AC3 demands ('a subprocess that errors'), not to fake a pass"
+    ],
+    "reasons": [
+      "tests/test_citation_drift_preflight.py: autouse monkeypatch fixture 0->1 (forces green without fixing product code)"
+    ],
+    "verdict": "LEGITIMATE",
+    "where": ""
+  },
+  {
+    "justification": [
+      "skips +2: AC3 requires planting the 'unreadable file' fail-closed case ('if it cannot determine whether citations resolve - an unreadable file ... Plant each of those three cases'); chmod 000 is unenforced as root and on non-posix, so the two pytest.skip calls guard the test's premise and it still asserts UNKNOWN/blocking/not-CLEAN",
+      "fake-fixture +1: the autouse fixture calls infra_breaker().reset() for cross-test isolation of a process-wide singleton \u2014 it does not monkeypatch the code under test and fakes no behaviour; it supports AC2's integration tests ('Demonstrate the attempt count is unchanged across a preflight that fires') driven through orch._run_attempt, mirroring the ticket-named house pattern in test_structural_budget_preflight.py"
+    ],
+    "reasons": [
+      "tests/test_citation_drift_preflight.py: autouse monkeypatch fixture 0->1 (forces green without fixing product code)"
+    ],
+    "verdict": "LEGITIMATE",
+    "where": ""
+  },
+  {
+    "justification": [
+      "skips +2: AC3 requires planting 'an unreadable file' fail-closed case shown 'distinguishable from a clean run'; the two skips guard the chmod(0o000)-based test where non-posix/root cannot make the file unreadable, so the planted-case premise holds only where skipped-out \u2014 the test still asserts Status.UNKNOWN elsewhere",
+      "fake-fixture +1 (autouse `_clean_infra_breaker_singleton`): resets a process-wide infra singleton for isolation, does NOT patch the code under test and cannot force product assertions green (reset runs outside the test body); it supports the Layer-2 integration tests AC1/AC2 mandate ('detected BEFORE the attempt is graded' / 'attempt count is unchanged'). The file's docstring claims are untrusted and were not relied on \u2014 verified directly from the code."
+    ],
+    "reasons": [
+      "tests/test_citation_drift_preflight.py: autouse monkeypatch fixture 0->1 (forces green without fixing product code)"
+    ],
+    "verdict": "LEGITIMATE",
+    "where": ""
+  }
+]
+```
