@@ -66,15 +66,31 @@ def waits_are_live(pause: Mapping | None, *, reachable: bool = True) -> bool:
 def pool_paused_text(pause: Mapping) -> str:
     """Render the same pause a task is behind, using only the fields
     `_running_pool_stats` already exposes (`/api/queue/health`'s
-    ``paused_*``) — no second derivation of the wall clock."""
-    reason = pause.get("reason") or "unknown"
-    label = "quota cooldown" if reason == "quota" else f"{reason} cooldown"
-    until = pause.get("until") or "unknown"
-    text = f"pool paused — {label}, resumes {until}"
-    profile = pause.get("profile")
-    if profile:
-        text += f" ({profile} profile)"
-    return text
+    ``paused_*``, renamed to ``reason``/``until``/``profile`` by
+    `cli/pool_probe.py`) — no second derivation of the wall clock.
+
+    ``quota``/``infra`` are genuine cooldowns: they carry a resume time.
+    ``lease_lost`` (task 92e48491) is not — a scheduler that lost its pool
+    lease never resumes dispatch on its own (no clearing site; a restart is
+    the only way back), so its line never says "cooldown" or "resumes".
+    Anything this function has never heard of — a genuinely unrecognised
+    reason string, or a missing one — renders the same honest "unrecognised"
+    line for the same reason: a permanent, restart-only failure rendered as
+    a self-resolving cooldown (the closed PR #251's exact regression, and
+    this task's F1 review finding) is worse than saying nothing."""
+    reason = pause.get("reason")
+    if reason in ("quota", "infra"):
+        label = "quota cooldown" if reason == "quota" else "infra cooldown"
+        until = pause.get("until") or "unknown"
+        text = f"pool paused — {label}, resumes {until}"
+        profile = pause.get("profile")
+        if profile:
+            text += f" ({profile} profile)"
+        return text
+    if reason == "lease_lost":
+        return "pool paused — pool lease lost; restart required"
+    label = reason if reason else "unknown"
+    return f"pool paused — reason unrecognised ({label})"
 
 
 #: Printed alongside a stale wait line when the pool's live state cannot be

@@ -2000,12 +2000,12 @@ CITATION_TABLE = (
      "PreToolUse guard"),
     ("security.md", "vcs/pr_watcher.py:default_pr_state", "vcs/pr_watcher.py",
      '"gh", "pr", "view"'),
-    ("security.md", "vcs/git.py:GitRepo._have_remote_commit:1020", "vcs/git.py",
+    ("security.md", "vcs/git.py:GitRepo._have_remote_commit:1177", "vcs/git.py",
      '"git", "fetch"'),
-    ("security.md", ":GitRepo.fetch:1354", "vcs/git.py", '["fetch", remote]'),
+    ("security.md", ":GitRepo.fetch:1513", "vcs/git.py", '["fetch", remote]'),
     ("security.md", "cli/commands.py:merge_stack_run:2940", "cli/commands.py",
      '"gh", "pr", "merge"'),
-    ("security.md", "cli/commands.py:approve:5175", "cli/commands.py",
+    ("security.md", "cli/commands.py:approve:5188", "cli/commands.py",
      '_refuse_agent_gate_act("approve")'),
     ("security.md", ":merge_stack_run:2910", "cli/commands.py",
      '_refuse_agent_gate_act("merge_stack_run")'),
@@ -2055,10 +2055,10 @@ CITATION_TABLE = (
     ("security.md", "history/extractor.py:65-72", "history/extractor.py",
      "csrf_token"),
     # docs/eval.md
-    ("eval.md", "src/no_human/cli/commands.py:bench_run:7732",
+    ("eval.md", "src/no_human/cli/commands.py:bench_run:7745",
      "src/no_human/cli/commands.py", "different --trials are not resumed"),
-    ("eval.md", ":bench_run:7883", "src/no_human/cli/commands.py", "asyncio.gather"),
-    ("eval.md", ":bench_run:7761", "src/no_human/cli/commands.py",
+    ("eval.md", ":bench_run:7896", "src/no_human/cli/commands.py", "asyncio.gather"),
+    ("eval.md", ":bench_run:7774", "src/no_human/cli/commands.py",
      "(sc.task_id, sc.trial)"),
     ("eval.md", "src/no_human/eval/northstar_card.py:NorthStarCard.pass_k_rate:456",
      "src/no_human/eval/northstar_card.py", "def pass_k_rate("),
@@ -3044,3 +3044,53 @@ def test_a_symbol_row_beyond_the_window_fails(tmp_path, monkeypatch):
         _check_citation(
             "security.md", "widget.py:widget_fn:11", "widget.py", "MARKER PHRASE"
         )
+
+
+def test_windows_md_code_line_citations_resolve():
+    """The OTHER half of #110: a bare line number into a live source file.
+
+    The reporter found `docs/WINDOWS.md` citing `cli/commands.py:4352` when
+    the line it described had moved 2,766 lines. A CITATION_TABLE row cannot
+    catch that: `_CITATION_DOC_PATHS` does not include `WINDOWS.md`, so
+    `_check_citation` never opens the doc -- I added such a row first and
+    measured it inert (rotting the citation back to 4352 left the file at
+    `137 passed`).
+
+    This reads the doc instead. For every `path/to/file.py:N` citation naming
+    a file under `src/no_human`, the cited line must still contain the token
+    the surrounding table cell describes. Only `.py` citations are checked:
+    nine of the doc's other citations name bare `.mjs`/`.cjs` basenames under
+    `desktop/`, which `_resolve_source` looks for under `src/no_human` only
+    and does not find -- registering the whole doc is a larger job than #110.
+    """
+    doc_path = Path(__file__).resolve().parent.parent / "docs" / "WINDOWS.md"
+    doc = doc_path.read_text(encoding="utf-8")
+    src_root = Path(__file__).resolve().parent.parent / "src" / "no_human"
+
+    #: cited path -> a token that must appear on the cited line
+    EXPECTED = {"cli/commands.py": "signal.SIGKILL"}
+
+    cites = re.findall(r"`([a-z_/]+\.py):(\d+)`", doc)
+    checked = 0
+    for rel, lineno in cites:
+        if rel not in EXPECTED:
+            continue
+        target = src_root / rel
+        assert target.is_file(), f"WINDOWS.md cites {rel}, which does not exist"
+        lines = target.read_text(encoding="utf-8").splitlines()
+        n = int(lineno)
+        assert 1 <= n <= len(lines), (
+            f"WINDOWS.md cites {rel}:{n}, but that file has {len(lines)} lines"
+        )
+        token = EXPECTED[rel]
+        assert token in lines[n - 1], (
+            f"WINDOWS.md cites {rel}:{n} for `{token}`, but that line reads "
+            f"{lines[n - 1].strip()!r}. The citation has rotted -- this is the "
+            f"defect #110 reported."
+        )
+        checked += 1
+
+    assert checked, (
+        "no checkable .py line citation found in WINDOWS.md -- the instrument "
+        "would pass vacuously"
+    )

@@ -539,15 +539,149 @@ jobs:
       - name: Build the product image
         run: docker build -t no-human:ci .
 
+  # GitHub has no per-job `paths:` filter, so a job that only some PRs should
+  # pay for can either be labelled by hand or ask what the PR touched. PR #279
+  # is why this job exists: its entire content was `desktop/package-lock.json`
+  # (a js-yaml security bump that ships inside app.asar), it carried no label,
+  # so `Desktop shell` skipped and the only desktop signal arrived after the
+  # merge, on the push to main. The label stays as the manual override; this
+  # job makes the common case automatic.
+  changed:
+    name: Which areas a PR touches
+    # No `if:` on purpose. A job that is skipped is not a job that succeeded,
+    # and `needs:` treats the two alike -- gating this on `pull_request` would
+    # therefore skip every packaging job on the push to main, which is the one
+    # signal that exists today.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      desktop: ${{ steps.areas.outputs.desktop }}
+    steps:
+      - name: Does this PR touch desktop/?
+        id: areas
+        # `--paginate` is up to 100 sequential requests for a capped diff, and
+        # `tests/test_ci_network_step_bounds.py` -- which exists to bound every
+        # network step -- is scoped to `jobs.linux` and cannot see this one. So
+        # the bound is written here by hand.
+        timeout-minutes: 3
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          CHANGED_FILES: ${{ github.event.pull_request.changed_files }}
+        run: |
+          set -euo pipefail
+
+          # Not a pull request: there is no PR to ask the files API about, and
+          # every consumer below runs anyway on its `!= 'pull_request'` clause.
+          # `:-` because an `env:` key someone deletes must not hard-fail the
+          # job under `set -u` -- every other read here is defensive too.
+          if [ -z "${PR_NUMBER:-}" ]; then
+            echo "desktop=false" >> "$GITHUB_OUTPUT"
+            echo "event=${GITHUB_EVENT_NAME:-unknown}; not a pull request, nothing to filter"
+            exit 0
+          fi
+
+          # The files endpoint stops at 3000 entries. Past that, "no desktop
+          # files" would be an artefact of the cap rather than a fact about the
+          # diff -- so fail towards RUNNING the job, never towards skipping it.
+          if [ "${CHANGED_FILES:-0}" -gt 3000 ]; then
+            echo "desktop=true" >> "$GITHUB_OUTPUT"
+            echo "${CHANGED_FILES} files changed, past the API's 3000 cap; assuming desktop"
+            exit 0
+          fi
+
+          # Same rule as the cap above, for the same reason: if the API call
+          # fails we know nothing about the diff, and "nothing" must not read
+          # as "no desktop files". `set -e` would otherwise fail this job, and
+          # a failed `changed` leaves `outputs.desktop` empty -- which on a
+          # pull request skips `Desktop shell`, the exact outcome this job
+          # exists to prevent.
+          #
+          # `previous_filename` as well as `filename`: for a RENAME the API
+          # reports only the new path in `filename`, so a file moved OUT of
+          # desktop/ would read as "no desktop change" while being exactly the
+          # kind of change the desktop job should see.
+          if ! files=$(gh api --paginate \
+            "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files" \
+            --jq '.[] | .filename, (.previous_filename // empty)'); then
+            echo "desktop=true" >> "$GITHUB_OUTPUT"
+            echo "files API failed; running the job rather than skipping it"
+            exit 0
+          fi
+
+          # A HERESTRING, never `printf ... | grep -q`. `grep -q` exits at the
+          # first match, `printf` then dies on SIGPIPE, and `pipefail` turns
+          # that into a non-zero pipeline -- so the `if` took the else branch
+          # and answered "no desktop files" for a large PR that HAD them.
+          # Measured: wrong from ~2000 filenames, nondeterministic below that,
+          # silent either way. Found in review of the first version of this job.
+          if grep -q '^desktop/' <<<"$files"; then
+            echo "desktop=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "desktop=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "desktop files in this PR:"
+          grep '^desktop/' <<<"$files" || echo "  (none)"
+
   desktop:
     name: Desktop shell
     # Same billing philosophy as the windows job below: ~20 Linux minutes a
     # run that a docs-only or Python-only PR should not pay for. Every push
     # to main runs it, so every merged state carries the signal; a PR opts in
-    # by carrying the `desktop` label.
+    # by touching `desktop/` (see the `changed` job) or by carrying the
+    # `desktop` label.
+    needs: changed
+    # `!= 'false'`, NOT `== 'true'`, and that is the whole guard. A `changed`
+    # job that dies -- its own 3-minute step bound, the job's 5-minute bound,
+    # runner loss, an unbound variable -- leaves `outputs.desktop` EMPTY, and
+    # empty is not `'true'`, so the earlier spelling skipped Desktop shell on
+    # exactly the failures the fail-open branch inside the script cannot
+    # reach. Empty is not `'false'` either, so this runs the job instead:
+    # "fail towards RUNNING, never towards skipping" is what the script's own
+    # comment promises, and only this spelling keeps that promise.
+    #
+    # `!cancelled()`, and an earlier revision of this branch had `always()`
+    # with an argument that its own quoted evidence refutes. That argument ran:
+    # GitHub documents `cancelled()` as "returns true if the WORKFLOW was
+    # canceled", the `needs` reference never mentions cancellation, therefore
+    # the case that matters -- `changed` hits its own 5-minute bound and
+    # concludes `cancelled` while the workflow keeps running -- is undetermined.
+    #
+    # That quoted sentence is the whole basis for reading it the other way.
+    # INFERENCE, not documented mechanism, and flagged as such: GitHub's docs
+    # say nothing about what a job-level `timeout-minutes` does to
+    # `cancelled()`. We read the WORKFLOW-scoped definition as implying it
+    # stays false for a job that timed out while the workflow ran on, which
+    # would make `!cancelled()` true and run this job. If someone establishes
+    # otherwise, this block is the thing to revisit.
+    #
+    # What IS documented: `!cancelled()` is a status-check function, and "a
+    # default status check of `success()` is applied unless you include one of
+    # these functions" -- so it overrides the `needs:` auto-skip exactly as
+    # `always()` does. And the docs' own `always()` entry says to avoid it
+    # "for any task that could suffer from a critical failure" and recommends
+    # `if: ${{ !cancelled() }}`. That recommendation, on the record, is the
+    # reason for this spelling; the timeout reading is a supporting belief.
+    #
+    # We also BELIEVE `always()` is not free here, and this half is likewise
+    # undocumented rather than measured: this workflow sets `concurrency:
+    # cancel-in-progress: true`, so a superseded push cancels the run,
+    # `changed` is cancelled, its output is EMPTY, and empty is not 'false'.
+    # The cancellation docs say only that the server "re-evaluates `if`
+    # conditions for all CURRENTLY RUNNING jobs" -- they say nothing about
+    # jobs that have not started yet, which is exactly the case here now that
+    # these three `needs: changed`. If `always()` does start them, that is
+    # three jobs (windows at 2x for up to 45 minutes) bought on a dead run in
+    # a workflow whose own header calls exhausted Actions minutes the
+    # presenting problem. Unverified; it did not decide the spelling.
     if: >-
-      github.event_name != 'pull_request'
-      || contains(github.event.pull_request.labels.*.name, 'desktop')
+      !cancelled()
+      && (github.event_name != 'pull_request'
+      || needs.changed.outputs.desktop != 'false'
+      || contains(github.event.pull_request.labels.*.name, 'desktop'))
     runs-on: ubuntu-latest
     timeout-minutes: 20
     defaults:
@@ -628,11 +762,44 @@ jobs:
     # must not pay for it, because a job that bills on every commit is a job
     # that gets switched off. It runs on every push to main, so every merged
     # state carries the signal, and on demand for any PR that opts in by
-    # carrying the `windows` label. Add the label to get a run; remove it to
-    # stop paying.
+    # touching `desktop/` (see the `changed` job) or by carrying the `windows`
+    # label. Add the label to get a run; remove it to stop paying.
+    #
+    # The paths clause is the same one `Desktop shell` carries, and it belongs
+    # here for the same reason: `desktop/` is the Electron app this job
+    # packages (electron-builder reads `nhPackagedFiles.files` from
+    # desktop/package.json and packs it with `asar: true` —
+    # desktop/electron-builder.config.cjs), and three of the steps below
+    # — `npm ci`, derive-icons and `Desktop shell tests` — are already
+    # desktop/ steps. PR #279 was one `desktop/package-lock.json` bump and got
+    # packaging signal from NONE of the three jobs; the `changed` job fixed
+    # that for `Desktop shell` only. A change that ships in the packaged app
+    # should pay for packaging signal.
+    #
+    # What this does NOT widen: the non-desktop half of this job (the
+    # PyInstaller freeze, the Windows portability suite) is still label-only on
+    # a pull request. A Python-only or docs-only PR leaves `changed` saying
+    # `false` and skips exactly as before -- WHEN `changed` SUCCEEDS. If it
+    # fails or times out its output is empty, empty must run rather than skip,
+    # and a docs-only PR then starts all THREE packaging jobs where before it
+    # started none. That is the deliberate fail-towards-running trade; the
+    # blast radius of one flaky `gh api` call is now three jobs, not one.
+    #
+    # `!= 'false'` and `!cancelled()`, spelled exactly as `desktop` does
+    # and for its reasons: a dead `changed` job leaves the output EMPTY, and
+    # empty must run the job rather than skip it, which `== 'true'` would get
+    # backwards; and a `changed` job that does not SUCCEED would otherwise
+    # skip this one through `needs:` alone, before any `if:` is read —
+    # including on a push to main, the one run that covers this job today.
+    # `!cancelled()` is GitHub's own recommended spelling and survives a
+    # timed-out `changed` job for the reason `desktop` documents above. One
+    # spelling across all three jobs.
+    needs: changed
     if: >-
-      github.event_name != 'pull_request'
-      || contains(github.event.pull_request.labels.*.name, 'windows')
+      !cancelled()
+      && (github.event_name != 'pull_request'
+      || needs.changed.outputs.desktop != 'false'
+      || contains(github.event.pull_request.labels.*.name, 'windows'))
     runs-on: windows-latest
     timeout-minutes: 45
     defaults:
@@ -868,10 +1035,29 @@ jobs:
     # Same gate as windows, plus: a workflow_dispatch runs this job ONLY when
     # linux_release is set — a dispatch fired for the nightly guards must not
     # bill 15-25 minutes here nor produce packages (see the on: block).
+    #
+    # The paths clause is the same one `Desktop shell` and `windows` carry, and
+    # is scoped to the pull_request arm alone so the dispatch arm keeps meaning
+    # exactly what it meant: linux_release, and nothing else, decides there.
+    # `desktop/` is where this job builds the packages from — `npm run
+    # dist:linux` runs there and is electron-builder — so a change under
+    # `desktop/` ships in the .deb and the AppImage and should pay for the
+    # packaging signal. A Python-only or docs-only PR still skips.
+    #
+    # `!= 'false'` and `!cancelled()` for the reasons windows spells out.
+    # The guard matters more here than anywhere: without it a `changed` job
+    # that does not succeed would skip this one through `needs:` alone, and
+    # that includes a workflow_dispatch with linux_release set — i.e. a
+    # release build silently not happening because a 3-minute files-API step
+    # died or timed out.
+    needs: changed
     if: >-
-      github.event_name == 'push'
-      || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'linux'))
-      || (github.event_name == 'workflow_dispatch' && inputs.linux_release)
+      !cancelled()
+      && (github.event_name == 'push'
+      || (github.event_name == 'pull_request'
+      && (needs.changed.outputs.desktop != 'false'
+      || contains(github.event.pull_request.labels.*.name, 'linux')))
+      || (github.event_name == 'workflow_dispatch' && inputs.linux_release))
     runs-on: ubuntu-22.04
     timeout-minutes: 45
     steps:
