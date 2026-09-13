@@ -1,30 +1,30 @@
 # Verifiers
 
-_Harness-captured record for task `e810bcdd`, commit `9c109cbf1bbe78a5149539a992f16c2606e5787d` — not model-authored: no_human wrote this file from the deterministic verifier rules selected for this commit's files. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `e810bcdd`, commit `159ea60396433a519ae5c9ec06e38feb518d77de` — not model-authored: no_human wrote this file from the deterministic verifier rules selected for this commit's files. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ```json
 [
   {
-    "comment": "All new test functions across the three test files carry at least one assert or pytest.raises; the structural-budget file only changed data dicts, not test functions. No assertion-free test was introduced.",
-    "evidence": "Every added/modified test_* function contains assert statements or pytest.raises blocks, e.g. test_the_rules_block_carries_the_merge_instruction_only_when_asked has 'assert baseline == unset' and test_reconcile_remote_branch_raises_the_exact_string_the_guard_quotes uses 'with pytest.raises(ReviewedShaMismatch)'.",
-    "file": "tests/test_base_conflict_merge_instruction.py",
+    "comment": "All test functions across the new/modified test files (test_base_conflict_merge_instruction.py, test_base_staleness_pushed_branch.py, test_pushed_tip_rewrite_guard.py) contain assert statements or pytest.raises blocks; non-test helpers/fixtures without assertions are not test functions. The structural_budget change is data/comments only.",
+    "evidence": "Every added/modified test function contains assertions, e.g. test_no_git_subprocess_for_non_rewrite_commands has `assert calls[\"n\"] == 0` and `assert calls[\"n\"] > 0`; test_the_rules_block_carries_the_merge_instruction_only_when_asked has multiple asserts.",
+    "file": "",
     "files_checked": [
       "tests/test_base_conflict_merge_instruction.py",
       "tests/test_base_staleness_pushed_branch.py",
       "tests/test_pushed_tip_rewrite_guard.py",
       "tests/test_structural_budget.py"
     ],
-    "line": 84,
+    "line": 0,
     "no_verdict": false,
     "passed": true,
     "severity": "medium",
-    "tokens_used": 1771,
+    "tokens_used": 769,
     "unavailable": false,
     "verifier_id": "tests-assert-something"
   },
   {
-    "comment": "The diff changes prompt/staleness/comment text and adds a base_pin field; the single update_task call writes context (not status) with default validation, and nothing sets validate=False or bypasses set_status for a status transition.",
-    "evidence": "The only update_task call in the diff is in _refresh_stale_base: `task.context = ctx; await self.store.update_task(task)` \u2014 it persists the base_staleness context, not a status, and passes no validate=False. No new/modified code writes task status at all.",
+    "comment": "The diff adds a base_pin threaded into staleness_record and one update_task call that writes task.context only; no status transition is written via update_task(validate=False), so the statement holds for the changed code.",
+    "evidence": "The only update_task call in the diff is `await self.store.update_task(task)` in `_refresh_stale_base`, which persists `task.context['base_staleness']` (a context payload), not a status, and passes no `validate=False`. No new/modified code performs a status write at all.",
     "file": "src/no_human/core/orchestrator.py",
     "files_checked": [
       "src/no_human/blockers/wake.py",
@@ -32,11 +32,11 @@ _Harness-captured record for task `e810bcdd`, commit `9c109cbf1bbe78a5149539a992
       "src/no_human/core/orchestrator.py",
       "src/no_human/core/prompt_blocks.py"
     ],
-    "line": 3847,
+    "line": 3849,
     "no_verdict": false,
     "passed": true,
     "severity": "high",
-    "tokens_used": 612,
+    "tokens_used": 743,
     "unavailable": false,
     "verifier_id": "no-unvalidated-status-write"
   }
