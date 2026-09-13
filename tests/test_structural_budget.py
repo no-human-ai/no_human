@@ -1239,7 +1239,21 @@ FROZEN_FILE_LINES = {
     # round an UNFIXABLE/UNKNOWN run gets, plus the post-round verification
     # re-check now passes `apply=False` so it can never itself mutate the
     # worktree. Re-measured on the merged tree with the scanner's own metric.
-    "core/orchestrator.py": 24318,
+    # 24318 -> 24341 (+23): two send-back fixes to the same preflight. (1)
+    # `_citation_drift_preflight`'s own mechanical-fix commit no longer
+    # calls `commit_with_manifest_repair(repo, None, ...)` (which sweeps
+    # EVERY current worktree change, including anything unrelated already
+    # sitting uncommitted, into a commit that claims to be the re-anchor
+    # script's own output) — it now diffs `_worktree_state` before/after and
+    # commits exactly that delta. (2) the UNFIXABLE/UNKNOWN branch's
+    # `_repro_corrective_round` call no longer passes `allow_paths=
+    # outcome.docs` unconditionally — a raw `Status.UNKNOWN` (crash,
+    # timeout, self-contradictory verdict) always carries `docs=()`, which
+    # silently discarded the bought round's own hand fix as "out of scope";
+    # when `outcome.docs` is empty, `allow_paths` now falls back to every
+    # `docs/*.md` file that concretely exists on disk. Re-measured on this
+    # tree with the scanner's own metric.
+    "core/orchestrator.py": 24341,
 
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo

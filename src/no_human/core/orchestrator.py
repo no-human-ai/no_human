@@ -9595,9 +9595,16 @@ class Orchestrator:
                 f"citation drift: auto-re-anchored via "
                 f"{citation_drift.SCRIPT_RELPATH} --apply"
             )
+            # Scope the commit to exactly what THIS run wrote — never
+            # `paths=None` (which stages every current worktree change,
+            # including anything unrelated already sitting uncommitted) —
+            # so the commit body's claim that the script produced this
+            # content is never falsified by files the script never touched.
+            after = self._worktree_state(repo)
+            changed = sorted(p for p, c in after.items() if before.get(p) != c)
             try:
                 commit = await asyncio.to_thread(
-                    commit_with_manifest_repair, repo, None, commit_msg)
+                    commit_with_manifest_repair, repo, changed, commit_msg)
             except GitError as exc:
                 # A preflight that cannot COMMIT its mechanical fix has not
                 # fixed anything — discard the uncommitted rewrite (the
@@ -9639,6 +9646,22 @@ class Orchestrator:
             status=outcome.status.value, docs=list(outcome.docs),
             failures=list(outcome.failures),
         )
+        if outcome.docs:
+            allow_paths = outcome.docs
+        else:
+            # A genuinely indeterminate run (a crash, a timeout, a
+            # self-contradictory VERDICT/rc pair) names no doc at all — the
+            # script gave us nothing to scope to, yet the round must still
+            # be able to commit whatever fix it makes. Every doc this
+            # convention could ever involve already lives under `docs/`
+            # (see `citation_drift._doc_path`), so admit exactly the doc
+            # files that already exist on disk right now — an enumerated
+            # list of real, concrete paths, never a `docs/**` wildcard and
+            # never a name this module invented.
+            docs_dir = repo.path / "docs"
+            allow_paths = tuple(sorted(
+                f"docs/{p.name}" for p in docs_dir.glob("*.md")
+            )) if docs_dir.is_dir() else ()
         result = await self._repro_corrective_round(
             task, repo, "", attempt_id=attempt_id, branch=branch,
             attempt_n=attempt_n, tamper_before=tamper_before,
@@ -9649,7 +9672,7 @@ class Orchestrator:
             turns=_CITATION_DRIFT_ROUND_TURNS,
             event_kind="citation_drift_corrective_round",
             cause="citation_drift",
-            allow_paths=outcome.docs,
+            allow_paths=allow_paths,
         )
         if result is not None:
             return result

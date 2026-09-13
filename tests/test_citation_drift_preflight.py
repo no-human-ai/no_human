@@ -417,6 +417,113 @@ async def test_a_drifted_citation_is_mechanically_reanchored_before_review_no_ex
     assert len(attempts) == 1
 
 
+class _DriftsAndLeavesAnUnannouncedStrayFileBackend:
+    """Same mechanically-fixable drift as `_DriftsThenLeavesItBackend`
+    (`pkg/mod.py` shifted, `docs/cite.md` left stale) — but this turn ALSO
+    writes a second file, `STRAY_SCRATCH.txt`, straight to disk WITHOUT ever
+    reporting it through `on_event`. The orchestrator's own attempt-commit
+    only stages what it was told the coder edited (`_agent_edited_files`),
+    so this file rides along, uncommitted and untracked, into the citation
+    preflight's own mechanical-fix step — exactly the "something unrelated
+    already sitting uncommitted" shape the preflight's own commit must never
+    sweep in under a message claiming the re-anchor script produced it."""
+
+    def __init__(self):
+        self.calls = 0
+
+    async def run(self, prompt, *, cwd, max_turns, effort=None, resume=None,
+                  on_event=None, supervisor_hook=None, **kwargs):
+        self.calls += 1
+        cwd = Path(cwd)
+        if on_event is not None:
+            on_event(AgentEvent("tool_use", tool_name="Edit",
+                                tool_input={"file_path": "pkg/mod.py"}))
+        cwd.joinpath("pkg", "mod.py").write_text(_MOD_DRIFTED)
+        # Never announced via on_event — must not be swept into ANY commit
+        # this preflight makes on the coder's behalf.
+        cwd.joinpath("STRAY_SCRATCH.txt").write_text("unrelated scratch data\n")
+        return AgentResult(final_text="added helper()", num_turns=2, is_error=False,
+                           tokens_used=100, session_id="s1", stop_reason="end_turn")
+
+
+async def test_the_mechanical_fix_commit_never_sweeps_in_an_unannounced_stray_file(
+        bare_repo, tmp_path, store, monkeypatch):
+    """Reproduces the second send-back bug: `_citation_drift_preflight`'s own
+    mechanical-fix commit called `commit_with_manifest_repair(repo, None,
+    commit_msg)` — and `paths=None` means `repo.commit_all(...)`, which
+    stages and commits EVERYTHING currently dirty in the worktree, not just
+    what the re-anchor script itself wrote. A file the coder's turn dropped
+    on disk but never told the orchestrator about (so it was never part of
+    the coder's OWN commit) would ride along into this commit under a
+    message that claims the re-anchor script produced it — a false
+    attribution the commit's own contents contradict.
+
+    FIXED: the method already captures `before = self._worktree_state(repo)`
+    near its top; it must diff that against the worktree state right before
+    committing and pass exactly that delta as `paths`, never `None`.
+
+    Proven two ways, both behavioural: (1) intercepting
+    `commit_with_manifest_repair` to capture the exact `paths` argument used
+    for the "citation drift: auto-re-anchored" commit, and (2) checking HEAD
+    itself afterwards — never by reading `_citation_drift_preflight`'s
+    source text."""
+    seen_paths = {}
+
+    def capturing_commit(repo, paths, message, on_repair=None):
+        if "citation drift: auto-re-anchored" in message:
+            seen_paths["paths"] = list(paths) if paths else paths
+        return commit_with_manifest_repair(repo, paths, message, on_repair=on_repair)
+
+    monkeypatch.setattr(orch_mod, "commit_with_manifest_repair", capturing_commit)
+
+    backend = _DriftsAndLeavesAnUnannouncedStrayFileBackend()
+    orch, task, repo, events = await _run_one_task_attempt(store, bare_repo, tmp_path, backend)
+
+    outcome = await orch._run_attempt(task, repo, 1, "main")
+
+    assert outcome.status is TaskStatus.AWAITING_APPROVAL, outcome.detail
+    assert backend.calls == 1, "a mechanical re-anchor needs no extra coder turn"
+
+    assert "paths" in seen_paths, events
+    assert seen_paths["paths"], (
+        "the mechanical-fix commit must be scoped to a concrete path list, "
+        f"never None/empty: {events}"
+    )
+    assert "STRAY_SCRATCH.txt" not in seen_paths["paths"], (
+        "an unannounced stray file must never be scoped into the citation "
+        f"preflight's own commit: {seen_paths}"
+    )
+    assert any(p.endswith("docs/cite.md") for p in seen_paths["paths"]), seen_paths
+
+    # HEAD itself must show the same story: the doc fix landed, the stray
+    # file never did.
+    committed = subprocess.run(
+        ["git", "show", "HEAD:docs/cite.md"], cwd=repo.path,
+        check=True, capture_output=True, text=True,
+    ).stdout
+    assert "mod.py:5" in committed
+
+    stray_in_head = subprocess.run(
+        ["git", "show", "HEAD:STRAY_SCRATCH.txt"], cwd=repo.path,
+        capture_output=True, text=True,
+    )
+    assert stray_in_head.returncode != 0, (
+        "STRAY_SCRATCH.txt must never reach HEAD via the citation "
+        f"preflight's own commit: {stray_in_head.stdout!r}"
+    )
+
+    # Still sitting in the worktree, untracked — never silently discarded
+    # either, just correctly left out of THIS commit.
+    status = subprocess.run(
+        ["git", "status", "--porcelain", "STRAY_SCRATCH.txt"],
+        cwd=repo.path, check=True, capture_output=True, text=True,
+    ).stdout
+    assert "STRAY_SCRATCH.txt" in status, status
+
+    attempts = await store.list_attempts(task.id)
+    assert len(attempts) == 1
+
+
 class _AmbiguousDriftThenFixesItBackend:
     """Turn 1: shifts `foo()` AND makes the citation ambiguous (duplicates
     it) — the script will not guess which occurrence to rewrite, so this
@@ -641,6 +748,54 @@ async def test_a_commit_failure_after_mechanical_reanchor_buys_a_round_not_false
         check=True, capture_output=True, text=True,
     ).stdout
     assert "mod.py:5" in committed
+
+    attempts = await store.list_attempts(task.id)
+    assert len(attempts) == 1
+
+
+async def test_an_indeterminate_run_lets_the_corrective_round_land_a_doc_fix(
+        bare_repo, tmp_path, store, monkeypatch):
+    """The `FIXTURE_CRASH` knob forces a genuine `Status.UNKNOWN` with NO
+    doc named at all (no VERDICT marker, no DRIFT/FAIL line whatsoever — a
+    plain crash) for every invocation of the fixture script, including the
+    preflight's own initial `--apply` and its post-round `--check`. Unlike
+    `test_an_unfixable_citation_buys_one_corrective_round...` (whose script
+    names `cite.md` before refusing to guess), this outcome carries
+    `outcome.docs == ()`: the script gave the preflight nothing to scope a
+    corrective round to.
+
+    The bounded round it buys must still be ABLE to commit whatever fix the
+    coder makes by hand — never silently discard that fix as "out of scope"
+    for the sole reason that the run which bought the round could not name
+    a doc. Forced entirely behaviourally (an env var reaching a real
+    subprocess); nothing here reads `_citation_drift_preflight`'s or
+    `citation_drift.py`'s own source text."""
+    monkeypatch.setenv("FIXTURE_CRASH", "1")
+    backend = _DriftsThenFixedByRoundBackend()
+    orch, task, repo, events = await _run_one_task_attempt(store, bare_repo, tmp_path, backend)
+
+    outcome = await orch._run_attempt(task, repo, 1, "main")
+
+    assert outcome.status is TaskStatus.AWAITING_APPROVAL, outcome.detail
+    assert backend.calls == 2, (
+        "an indeterminate (crashed) run must still buy exactly one "
+        "corrective round"
+    )
+
+    kinds = [e["kind"] for e in events]
+    assert kinds.count("citation_drift_corrective_round") == 1, events
+
+    # The round's own hand fix must actually reach HEAD — never discarded
+    # as "out of scope" merely because the crashed script named no doc to
+    # scope the round to.
+    committed = subprocess.run(
+        ["git", "show", "HEAD:docs/cite.md"], cwd=repo.path,
+        check=True, capture_output=True, text=True,
+    ).stdout
+    assert "mod.py:5" in committed, (
+        "the corrective round's own doc fix for an indeterminate run must "
+        f"land at HEAD, not be discarded as out of scope: {events}"
+    )
 
     attempts = await store.list_attempts(task.id)
     assert len(attempts) == 1
