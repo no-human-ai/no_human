@@ -26,23 +26,30 @@ enumeration below has caught it. Per the resolved intake decision, only
 `task_show` is fixed by this patch; the rest are documented here for future
 action, verified (not guessed) where noted:
 
-  * `nh blocked` (~3491/~3496) renders `blocker.question` the exact same way
-    `task_show` used to, unfixed — confirmed to both silently drop bracketed
-    text and raise `rich.errors.MarkupError` on an unbalanced tag.
-  * `nh task list` (~1646) renders `t.title[:50]` in a `Table` cell —
+  * `nh blocked` (~3518/~3521) renders `t.title` and `blocker.question` the
+    exact same way `task_show` used to, unfixed — confirmed to both silently
+    drop bracketed text and raise `rich.errors.MarkupError` on an unbalanced
+    tag.
+  * `nh task list` (~1647) renders `t.title[:50]` in a `Table` cell —
     confirmed to raise `MarkupError` and abort the entire listing on one bad
     title, not merely delete text from one row.
-  * `task_show`'s own slot-wait event line (~1668-1679) — machine-generated
+  * `nh agents --all` (~4726) renders the same `t.title[:50]` pattern in its
+    own `Table` — same crash risk, a separate call site from `task list`'s.
+  * `task_show`'s own slot-wait event line (~1676-1687) — machine-generated
     text, pinned separately by `tests/test_slot_wait_followups.py`.
-  * `task create`'s confirmation echo of `t.title` (~1161) and the one-liner
-    task-creation echo of `t.title` (~1275).
+  * `task create`'s confirmation echo of `t.title` (~1162) and the one-liner
+    task-creation echo of `t.title` (~1276).
   * the interactive scoping echo of title/description/acceptance-criteria
-    (~504/506/507).
-  * `investigate --show`'s `console.rule(f"...{t.title[:60]}")` (~5627) —
+    (~505/507/509).
+  * `investigate --show`'s `console.rule(f"...{t.title[:60]}")` (~5657) —
     the report body right below it is already `escape()`d.
   * `recall`'s query echo (~4529) — the result rows themselves are already
-    `escape()`d (~4500/4521/4526).
-  * rules tables (~2617/~2990), playbooks (~2785) and transcripts (~6391).
+    `escape()`d (~4520-4530).
+  * rules tables (~2615/~2988), playbooks (~2782) and transcripts (~6394).
+
+  (Line numbers above are re-measured against this branch's tree, not
+  copied from an earlier revision — they will drift again the next time
+  anything above them in the file changes; re-grep before trusting them.)
 
 This list is a lead for follow-up work, not a claim of completeness: a hand
 enumeration can miss a call site, or misjudge whether it deletes text versus
