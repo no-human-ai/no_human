@@ -218,8 +218,11 @@ FROZEN_FUNCTION_LINES = {
     # by `_check_open_pr` and reused by `_check_base_stale`), and this
     # function's signature/docstring gained the additive `info` keyword so a
     # caller can hand it that shared poll instead of paying for a second one.
-    # CC dropped 74 -> 72 in the same change (no ratchet entry needed for a
-    # shrink). Measured on this tree.
+    # CC unchanged at 72 (the frozen `FROZEN_FUNCTION_CC` entry below reads
+    # 74, which was already-existing slack on origin/main before this
+    # change — `scan_tree` on origin/main measures 72 there too, so nothing
+    # dropped; the 74 ceiling was just never tightened to match). Measured
+    # with `scan_tree` on both origin/main and this tree.
     # 464 -> 470 (+6, 2026-09-13): same task, re-attempt after a human
     # send-back — the `info` sentinel fix (distinguishing "not provided"
     # from "provided as None because the shared poll failed", so this rung
@@ -1228,12 +1231,14 @@ FROZEN_FILE_LINES = {
     # frozen ceiling, so that function's own entry did not have to grow).
     # Measured after extracting/trimming as far as possible without cutting
     # the fail-closed guards' rationale comments.
-    # 23893 -> 23900 (+7, 2026-09-13): stale-but-mergeable-PR bugfix (task
+    # 24073 -> 24080 (+7, 2026-09-13): stale-but-mergeable-PR bugfix (task
     # 22c4ddf6 finding #3) — the `delivered_base` import plus `_finalize`'s
-    # new trunk-tip recording call, measured on this task's own base before
-    # the REFILE bugfix above landed. 24079 -> 24080 (+1): re-measured on
-    # the merge result once both landed on trunk together. Measured on this
-    # tree (`len(text.splitlines())`, not `wc -l`).
+    # new trunk-tip recording call, measured on the merge result (the REFILE
+    # bugfix above had already landed on trunk at the time this was
+    # measured, so 24073 — not 23893 — is the true "before"). Pasted from
+    # `scan_tree`'s own `file_lines["core/orchestrator.py"]`
+    # (`len(text.splitlines())`, not `wc -l`): 24073 on origin/main, 24080
+    # on this tree.
     "core/orchestrator.py": 24080,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
@@ -1880,7 +1885,16 @@ FROZEN_FILE_LINES = {
     # production consumer, per the `_emit` call in `_check_base_stale`)
     # without also being promoted to a ladder-level action. Measured on this
     # tree with the scanner below.
-    "blockers/wake.py": 3092,
+    # 3092 -> 3131 (+39, 2026-09-13): same task, independent-review send-back
+    # (Finding 10) — `_check_base_stale`'s AC2' docstring paragraph gained a
+    # "NOT A CONTRADICTION WITH `_check_pr_conflict`'s TRUST THE LOCAL MERGE"
+    # note: both rungs treat a definite empty `conflicting_paths` result as
+    # actionable, but for different questions ("stand down a conflict round"
+    # vs. "is this base safe to call fresh") with different costs of being
+    # wrong, and a reviewer flagged the two stances as reading like an
+    # unexplained inconsistency without it. Measured on this tree with the
+    # scanner below.
+    "blockers/wake.py": 3131,
     # +91: `_SCAN_WRAPPER_NAMES` + `_peel_scan_wrappers` — peels
     # timeout/xargs/nice/stdbuf (and siblings) for the scan-severity check
     # only, so a wrapped `find … -delete` in a denied compound classifies

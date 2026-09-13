@@ -9,11 +9,10 @@ the PR was measured against — so nothing could tell a fresh AWAITING_APPROVAL
 task from a stale one. `blockers.wake.WakeWatcher._check_open_pr`'s ladder
 acts only on MERGED / CLOSED / CONFLICTING / new comments; a PR that stayed
 MERGEABLE while trunk moved past it matched none of those rungs and was never
-re-measured or woken. Trunk cadence measured over the last 60 landings: p25
-507s, median 1507s — a task delivered just before a landing goes stale within
-minutes, and the only way back was a fresh coder attempt racing the next
-landing. This module gives delivery a base sha to record and the watcher a
-way to ask, from the real ref, whether that sha is still the trunk tip.
+re-measured or woken — trunk can move repeatedly while a PR sits at
+AWAITING_APPROVAL, and the only way back was a fresh coder attempt racing the
+next landing. This module gives delivery a base sha to record and the watcher
+a way to ask, from the real ref, whether that sha is still the trunk tip.
 
 THE TRI-STATE (mirrors `vcs/task_pr.AlreadySatisfiedLanding`'s
 UNVERIFIABLE/NOTHING_TO_LAND/LANDING_REQUIRED shape: fail CLOSED, never guess
@@ -29,6 +28,24 @@ on both the delivery side and the re-measure side, so this module introduces
 no NEW disagreement about how a base ref resolves. Any existing disagreement
 between that ladder and other surfaces is a separate, already-filed finding;
 this module does not touch it.
+
+WHY NOT `core/base_staleness.py`. That module already answers a
+staleness-shaped question — `overlapping_paths`/`base_gap_overlap` decide
+whether an IN-FLIGHT retry should rebase, using a commit-count threshold plus
+a path-overlap heuristic so a fleet of related landings doesn't force a
+rebase on every small, unrelated gap. This module answers a different
+question at a different lifecycle point: whether an ALREADY-DELIVERED PR's
+recorded base sha still IS the trunk tip, a plain equality check with no
+threshold and no heuristic. Reusing `overlapping_paths` here would be wrong
+on both axes: it is deliberately heuristic (a below-threshold, non-
+overlapping gap returns "no need to rebase" even though trunk visibly moved),
+and AC2' for this bugfix requires the opposite — the rung must never record
+"fresh" for a base that only passed a heuristic, only for one verified
+against the real ref. So `measure()` reuses `resolve_base_tip` (the ref
+ladder) but not `overlapping_paths` or `BASE_STALENESS_REBASE_THRESHOLD` —
+they are answering "is a rebase worth it right now", not "is this recorded
+sha still true", and conflating the two would let a mergeable-looking gap
+read as fresh when it was never actually re-verified.
 """
 
 from __future__ import annotations
@@ -96,9 +113,22 @@ async def measure(repo_path: str | None, base: str | None,
     """The tri-state freshness answer, driven by the ACTUAL ref state — never
     by a flag a caller passes in. Fails CLOSED: anything that prevents a real
     comparison (missing inputs, an unreadable repo, an unresolvable ref, a
-    raised exception) comes back `UNDETERMINED`, never `FRESH`. This is the
-    sole fail-closed point in the module and must never itself decide
-    `FRESH`.
+    raised exception, or — see below — a failed fetch that leaves `FRESH`
+    unconfirmable) comes back `UNDETERMINED`, never `FRESH`.
+
+    A FAILED FETCH MUST NEVER PRODUCE A DETERMINED FRESH. `resolve_trunk_tip`
+    reads the LOCAL tracking ref; if `fetch_base_ref` above it failed (auth
+    expired, network down, rate-limited) that local ref can be an arbitrarily
+    old mirror of the real trunk. If it happens to equal `recorded_sha` this
+    proves nothing about the REAL current tip — the real trunk may have moved
+    on while every fetch since kept failing, and this function would then
+    answer FRESH forever with nothing recorded and nothing for a caller to
+    act on (the exact defect this module exists to close). So `fetch_ok` is
+    threaded all the way to the equality check: a failed fetch downgrades
+    what would otherwise be FRESH to UNDETERMINED. It never downgrades STALE
+    — a local mirror that already disagrees with `recorded_sha` proves trunk
+    moved regardless of whether the LATEST fetch also succeeded, so STALE
+    stays a safe, actionable answer even on a failed fetch.
     """
     base = base or ""
     recorded_sha = recorded_sha or ""
@@ -125,6 +155,18 @@ async def measure(repo_path: str | None, base: str | None,
             return BaseFreshness(UNDETERMINED, base, recorded_sha, observed,
                                   "no base sha was recorded at delivery")
         if observed == recorded_sha:
+            if fetch and not fetch_ok:
+                # See the docstring: a failed fetch means `observed` came
+                # from a local mirror of unknown age. It matching the
+                # recorded sha could be a real, current match — or it could
+                # be that trunk moved and every fetch since has failed. Fail
+                # CLOSED rather than assert FRESH on an unconfirmed compare.
+                return BaseFreshness(
+                    UNDETERMINED, base, recorded_sha, observed,
+                    f"local mirror equals the recorded base sha, but the "
+                    f"fetch of {base!r} from origin failed (fetch_ok=False) "
+                    f"— cannot confirm this against the real current trunk "
+                    f"tip, only a possibly-stale local mirror")
             return BaseFreshness(FRESH, base, recorded_sha, observed)
         return BaseFreshness(STALE, base, recorded_sha, observed)
     except Exception as exc:  # noqa: BLE001 — a watcher rung may never raise
