@@ -1,71 +1,63 @@
 # How I verified this — full log
 
-_Harness-captured record for task `f2dea6f3`, commit `6a10ae5cd022295b3303c7440c0628c6ffd69377` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `f2dea6f3`, commit `2b3f51b850f5371bb62571d9b754153beeb91d6e` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ## How I verified this
 5 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
 
 ### test
-- `uv run pytest tests/test_readme_claims.py -q 2>&1 | tail -100`
+- `uv run pytest tests/test_readme_claims.py -q -k "hedge or gate_caught or snapshot or recount or gate" 2>&1 | tail -60`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-   Building no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/f2dea6f3ef0245748c782b10255ecd7e.52752.821e9e68
-      Built no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/f2dea6f3ef0245748c782b10255ecd7e.52752.821e9e68
-Installed 73 packages in 606ms
-............................s.s.s.s.s.s.s.s.s.s......................... [ 41%]
-......................s..........................s...................... [ 82%]
-...............................                                          [100%]
-163 passed, 12 skipped in 9.45s
+   Building no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/f2dea6f3ef0245748c782b10255ecd7e.52752.a1b12f93
+      Built no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/f2dea6f3ef0245748c782b10255ecd7e.52752.a1b12f93
+Installed 73 packages in 243ms
+..s.s.......................                                             [100%]
+26 passed, 2 skipped, 149 deselected in 2.91s
 ```
 
-- `uv run pytest tests/test_readme_claims.py -q -k "gate_caught or snapshot or recount or refuse or tamper or reviewer or resume or scope or window or basename" 2>&1 | tail -60`
+- `HOME=/tmp/nh_fake_home_$$ uv run pytest tests/test_readme_claims.py -q 2>&1 | tail -40`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-........s.s.s.ss............................                             [100%]
-39 passed, 5 skipped, 131 deselected in 1.38s
+............................s.s.s.s.s.s.s.s.s.s......................... [ 40%]
+......................s..........................s...................... [ 81%]
+.................................                                        [100%]
+165 passed, 12 skipped in 2.94s
 ```
-
-- `uv run pytest tests/test_readme_claims.py -v -k "gate_caught or snapshot or recount or refuse or tamper or reviewer or resume or scope or window or basename" -rs 2>&1 | tail -80`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-============================= test session starts ==============================
-platform darwin -- Python 3.12.13, pytest-9.1.1, pluggy-1.6.0 -- /Users/eyalgolan/.<redacted>/worktrees/f2dea6f3ef0245748c782b10255ecd7e.52752.821e9e68/.venv/bin/python3
-cachedir: .pytest_cache
-<redacted> isolated HOME: /var/folders/1r/3r0rt1jd4j1456rsg_fh4d380000gn/T/nh-test-home-6ag9mf56
-rootdir: /Users/eyalgolan/.<redacted>/worktrees/f2dea6f3ef0245748c782b10255ecd7e.52752.821e9e68
-configfile: pyproj
-[... 4,809 of 5,948 characters omitted from the middle ...]
-sts/test_readme_claims.py::test_recount_exits_non_zero_on_an_empty_population PASSED [100%]
-
-=========================== short test summary info ============================
-SKIPPED [4] tests/test_readme_claims.py:836: PRODUCT.md is DROP-classified and absent from this tree
-SKIPPED [1] tests/test_readme_claims.py:958: PRODUCT.md is DROP-classified and absent from this tree
-================ 39 passed, 5 skipped, 131 deselected in 1.46s =================
-```  
-  _excerpt - 5,940 characters of output in total_
 
 - `uv run pytest tests/test_readme_claims.py -q 2>&1 | tail -20`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-............................s.s.s.s.s.s.s.s.s.s......................... [ 41%]
-......................s..........................s...................... [ 82%]
-...............................                                          [100%]
-163 passed, 12 skipped in 5.03s
+............................s.s.s.s.s.s.s.s.s.s......................... [ 40%]
+......................s..........................s...................... [ 81%]
+.................................                                        [100%]
+165 passed, 12 skipped in 2.93s
 ```
 
-- `echo "=== uv run pytest tests/test_readme_claims.py -q ==="  uv run pytest tests/test_readme_claims.py -q 2>&1 | tail -10`
+- `uv run pytest tests/test_readme_claims.py -q -n 4 2>&1 | tail -20`
 
 ```
-=== uv run pytest tests/test_readme_claims.py -q ===
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-............................s.s.s.s.s.s.s.s.s.s......................... [ 41%]
-......................s..........................s...................... [ 82%]
-...............................                                          [100%]
-163 passed, 12 skipped in 33.52s
+bringing up nodes...
+bringing up nodes...
+
+...............ss....ss.....ss.........s.........s..................s... [ 40%]
+.........................s..........s.s................................. [ 81%]
+.................................                                        [100%]
+165 passed, 12 skipped in 1.67s
+```
+
+- `uv run pytest tests/test_readme_claims.py -q 2>&1 | tail -10`
+
+```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+............................s.s.s.s.s.s.s.s.s.s......................... [ 40%]
+......................s..........................s...................... [ 81%]
+.................................                                        [100%]
+165 passed, 12 skipped in 2.83s
 ```
 
 
