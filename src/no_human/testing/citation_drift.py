@@ -132,12 +132,43 @@ def should_run(repo_path: Path) -> bool:
     return convention_present(repo_path)
 
 
+def _interpreter(repo_path: Path) -> str:
+    """The interpreter to run `scripts/reanchor_citations.py` under.
+
+    `scripts/reanchor_citations.py` itself is stdlib-only, but it loads
+    `tests/test_readme_claims.py` by path (`_load_checker`), and THAT module
+    `import pytest`s at module scope — a dev-only dependency
+    (`[dependency-groups] dev` in `pyproject.toml`, not `[project]
+    dependencies`) that a plain `pip install no-human` run of this pipeline's
+    own `sys.executable` is not guaranteed to have. Running the checker under
+    an interpreter that lacks it fails every single time
+    (`FAIL: could not load tests/test_readme_claims.py: No module named
+    'pytest'`, confirmed by direct reproduction) — not a real citation
+    finding, an environment mismatch this module must not mistake for one.
+
+    Same precedent `testing/repro_gate.py`'s `_pytest_python` already
+    established for the identical problem: prefer the TARGET REPO's own
+    venv (`testing/runner.py`'s `_venv_bin`) — it has the repo's own dev
+    dependencies, including pytest — and fall back to `sys.executable` only
+    when the repo ships no venv this module can find. Imported lazily to
+    avoid a module-level import cycle between `testing.citation_drift` and
+    `testing.runner`.
+    """
+    from .runner import _venv_bin, _IS_WINDOWS
+
+    bin_dir = _venv_bin(repo_path)
+    if bin_dir is not None:
+        return str(bin_dir / ("python.exe" if _IS_WINDOWS else "python"))
+    return sys.executable
+
+
 def reanchor_command(repo_path: Path, *, apply: bool) -> list[str]:
-    """The argv this module runs, always via `sys.executable` — never a bare
-    `python`/`python3` off PATH, so this matches the interpreter the rest of
-    the pipeline is already running under, target-repo venv or not."""
+    """The argv this module runs: the target repo's own venv interpreter
+    when it has one (see `_interpreter`), `sys.executable` otherwise —
+    never a bare `python`/`python3` off PATH, which does not exist at all
+    in a uv/venv project."""
     return [
-        sys.executable,
+        _interpreter(repo_path),
         str(repo_path / SCRIPT_RELPATH),
         "--apply" if apply else "--check",
     ]
@@ -187,6 +218,28 @@ def classify(returncode: int, stdout: str, stderr: str) -> CitationOutcome:
             return CitationOutcome(
                 Status.UNKNOWN,
                 detail=f"VERDICT=OK but rc={returncode}: {(stdout + stderr).strip()}")
+        if fails:
+            # Self-contradictory shape: the script claims `VERDICT=OK` (rc 0
+            # already checked above) yet also printed `FAIL:` lines. In the
+            # real script's own `main()`, `VERDICT=OK` is only ever printed
+            # when BOTH `drifts` and the plan-level `unfixable` list are
+            # empty — a `FAIL:` line can only come from that `unfixable`
+            # list, so this contract never lets "OK" and "FAIL:" coexist.
+            # Trusting the "OK" half here would silently drop the finding —
+            # CLEAN if there were also no drifts/applied marker, or
+            # REANCHORED with an empty `failures` tuple if there were —
+            # either way reporting non-blocking while a named citation the
+            # script refused to guess at sat right there in the same stdout.
+            # Block instead, same as the drifts-without-applied case below.
+            docs = tuple(sorted(
+                {_doc_path(d) for d, _raw, _reason in fails}
+                | {_doc_path(d) for d, _old, _new in drifts}
+            ))
+            failures = tuple(f"{doc}:{raw}" for doc, raw, _reason in fails)
+            return CitationOutcome(
+                Status.UNKNOWN, docs=docs, failures=failures,
+                detail=f"VERDICT=OK with unresolved FAIL lines: "
+                       f"{(stdout + stderr).strip()}")
         if applied:
             docs = tuple(sorted({_doc_path(d) for d, _old, _new in drifts}))
             return CitationOutcome(Status.REANCHORED, docs=docs, detail=stdout.strip())

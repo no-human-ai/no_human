@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -275,6 +276,113 @@ def test_self_contradictory_ok_verdict_with_drift_and_no_applied_marker_is_unkno
     assert outcome.blocking is True
     assert outcome.status is not citation_drift.Status.CLEAN
     assert outcome.docs == ("docs/cite.md",)
+
+
+def test_self_contradictory_ok_verdict_with_fail_line_is_unknown_not_clean():
+    """Send-back finding (Blocker B, sibling shape A): `VERDICT=OK` (rc 0)
+    alongside an unresolved `FAIL:` line, with no `DRIFT:`/`applied` markers
+    at all. In the real script's own `main()`, `VERDICT=OK` is only ever
+    printed when the plan-level `unfixable` list is empty, and a `FAIL:`
+    line can only come from that list — so this exact combination never
+    occurs in practice, but `classify` is a pure pattern-matcher over stdout
+    and must still fail closed on it rather than assume the contract holds.
+
+    BUGGY behaviour this pins against: `verdict == "OK"` fell straight to
+    the trailing `return CitationOutcome(Status.CLEAN, ...)` whenever
+    `applied` and `drifts` were both empty, silently dropping a named
+    unfixable citation as if the run were spotless. FIXED: any `fails` at
+    all under `VERDICT=OK` now blocks with `Status.UNKNOWN`, checked before
+    either the `applied` or `drifts` branch is even considered."""
+    stdout = (
+        "FAIL: cite.md `mod.py:1` — occurs 0 times\n"
+        "VERDICT=OK\n"
+    )
+    outcome = citation_drift.classify(0, stdout, "")
+    assert outcome.status is citation_drift.Status.UNKNOWN
+    assert outcome.blocking is True
+    assert outcome.status is not citation_drift.Status.CLEAN
+    assert outcome.docs == ("docs/cite.md",)
+    assert outcome.failures == ("cite.md:mod.py:1",)
+
+
+def test_self_contradictory_ok_verdict_with_applied_and_fail_line_is_unknown():
+    """Send-back finding (Blocker B, sibling shape B): `VERDICT=OK` (rc 0)
+    with BOTH an `applied N re-anchor(s)` marker (so a naive check would read
+    it as `Status.REANCHORED`) AND an unresolved `FAIL:` line for a separate,
+    unfixable citation the script's `_apply_all` batch never touched.
+
+    BUGGY behaviour this pins against: `verdict == "OK"` + `applied` fell
+    straight to `Status.REANCHORED`, reporting only the `drifts` it fixed and
+    silently discarding the named `fails` entry — `failures` would have come
+    back empty even though the raw stdout named an unfixable citation right
+    next to the applied one. FIXED: the `if fails:` check runs before the
+    `if applied:` check, so this shape blocks as `Status.UNKNOWN` with the
+    `FAIL:` line's document folded into `docs` and its raw citation into
+    `failures`, same as the no-`applied` sibling above."""
+    stdout = (
+        "DRIFT: cite.md `mod.py:1` -> `mod.py:5` (re-anchoring)\n"
+        "applied 1 re-anchor(s)\n"
+        "FAIL: cite.md `mod.py:9` — occurs 0 times\n"
+        "VERDICT=OK\n"
+    )
+    outcome = citation_drift.classify(0, stdout, "")
+    assert outcome.status is citation_drift.Status.UNKNOWN
+    assert outcome.status is not citation_drift.Status.REANCHORED
+    assert outcome.blocking is True
+    assert outcome.docs == ("docs/cite.md",)
+    assert outcome.failures == ("cite.md:mod.py:9",)
+
+
+def test_interpreter_prefers_target_repos_own_venv_over_sys_executable(
+        tmp_path, monkeypatch):
+    """Send-back finding (Blocker C): `scripts/reanchor_citations.py` is
+    stdlib-only, but it loads `tests/test_readme_claims.py` by path, and
+    THAT module `import pytest`s at module scope — a dev-only dependency a
+    plain `pip install no-human` run of this pipeline's own `sys.executable`
+    is not guaranteed to have. `_interpreter` must prefer the TARGET REPO's
+    own venv (which has its dev dependencies, including pytest) over
+    whatever `sys.executable` happens to be.
+
+    No real venv or subprocess needed to pin the ROUTING decision itself:
+    `_venv_bin` (reused from `testing/runner.py`, not duplicated) only
+    checks that `<name>/bin/python` exists as a path, so a stub file is
+    exactly as decisive here as a real interpreter — the separate,
+    end-to-end pytest-less-interpreter reproduction (real venv, real
+    subprocess) lives in this file's `run_reanchor` fixture tests instead,
+    where the difference in behaviour (not just routing) is observable."""
+    venv_bin = tmp_path / ".venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    stub_python = venv_bin / "python"
+    stub_python.write_text("#!/bin/sh\n")
+    stub_python.chmod(0o755)
+    monkeypatch.setattr(sys, "executable", "/definitely/not/the/repos/venv")
+    assert citation_drift._interpreter(tmp_path) == str(stub_python)
+
+
+def test_interpreter_falls_back_to_sys_executable_when_repo_has_no_venv(
+        tmp_path, monkeypatch):
+    """Sibling of the test above: a repo that ships no venv at all (no
+    `.venv`, `venv`, or `.venv*` directory containing a `bin/python`) must
+    still work — `_interpreter` falls back to `sys.executable` rather than
+    raising or returning something that does not exist."""
+    monkeypatch.setattr(sys, "executable", "/some/real/interpreter/python3")
+    assert citation_drift._interpreter(tmp_path) == "/some/real/interpreter/python3"
+
+
+def test_revert_worktree_writes_unguarded_requires_component_argument():
+    """Send-back finding (Blocker A) mutation test: `component` on
+    `_revert_worktree_writes_unguarded` must be a required keyword-only
+    argument, not a silently-defaulted one — a caller added later (or a
+    refactor of an existing one) that forgets to name its own writer must
+    fail LOUDLY at the call site, not credit (or blame) the wrong component
+    for writes it did not make. Called unbound, with no repo/store/config at
+    all, because the argument-binding failure this test pins happens before
+    any of `self`'s attributes are ever touched — a real `Orchestrator`
+    instance is unnecessary machinery for what `TypeError` alone already
+    proves."""
+    with pytest.raises(TypeError):
+        Orchestrator._revert_worktree_writes_unguarded(  # type: ignore[call-arg]
+            object(), object(), {})
 
 
 def test_unreadable_file_fails_closed_and_is_distinguishable_from_clean(tmp_path):
