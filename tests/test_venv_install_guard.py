@@ -626,6 +626,218 @@ def test_an_unreadable_venv_pyvenv_cfg_still_denies_the_install(tmp_path):
 
 
 @requires_chmod
+def test_an_unreadable_venv_is_not_escaped_by_a_system_installer_later_on_path(tmp_path):
+    """The regression that turned `main` red and that
+    `test_an_unreadable_venv_pyvenv_cfg_still_denies_the_install` could not
+    see: that test inherits `/usr/bin:/bin` from `_session`, so whether a
+    SECOND, determinate `pip` exists behind the unreadable venv is a
+    property of the HOST. `/usr/bin/pip` exists on the Ubuntu CI runner and
+    does not exist on the macOS dev machine, so the bare-token case proved
+    the fail-open was closed locally while it was still wide open on CI.
+
+    This test owns both `PATH` entries instead of inheriting one, so the
+    condition is the same on every host: an unreadable venv first, and a
+    determinate `pip` that belongs to NO venv immediately behind it. Without
+    the fix the walk skips the unstat'able venv, returns the system `pip`,
+    finds it owns no venv, and allows the install — reporting "no venv is
+    involved", a positive claim it never established, about a `PATH` entry it
+    could not read. The `chmod` buys the ALLOW, which is exactly what this
+    ticket exists to prevent.
+
+    Deliberately NOT justified by `VIRTUAL_ENV`: `pip` does not read it (it
+    decides on `sys.prefix != sys.base_prefix`) and `uv sync` ignores it with
+    a warning. See the DO-NOT-RESTATE paragraph in `_resolve_installer`."""
+    primary, primary_venv, wt, wt_venv, prod_env, wt_env = _session(tmp_path)
+    sysbin = tmp_path / "sysbin"
+    sysbin.mkdir()
+    system_pip = sysbin / "pip"
+    system_pip.write_text("#!/bin/sh\nexit 0\n")
+    os.chmod(system_pip, 0o755)
+    # `sysbin` is a plain directory, NOT a venv: no pyvenv.cfg anywhere above
+    # it, so `_venv_root_of` answers None for it. That is the whole point --
+    # a winner that owns no venv cannot say where the install lands.
+    assert venv_install_guard._venv_root_of(str(system_pip)) is None
+
+    env = {
+        "PATH": f"{primary_venv}/bin{os.pathsep}{sysbin}",
+        "VIRTUAL_ENV": primary_venv,
+    }
+    cmd = "pip install evilpkg"
+
+    before = venv_install_guard.denial_reason(cmd, cwd=wt, env=env)
+    assert before is not None, "positive control: denied while the venv is readable"
+    assert primary_venv in before
+
+    with _unreadable(primary_venv):
+        resolved = venv_install_guard._resolve_installer("pip", wt, env)
+        assert resolved == os.path.join(primary_venv, "bin", "pip"), (
+            "an undetermined venv entry must not be displaced by a LATER "
+            f"match that belongs to no venv; got {resolved!r}"
+        )
+        inside = venv_install_guard.denial_reason(cmd, cwd=wt, env=env)
+        assert inside is not None, (
+            "REGRESSION: a chmod'd venv plus a system pip behind it on PATH "
+            "must still deny the install"
+        )
+        assert primary_venv in inside
+        d = _ev("Bash", {"command": cmd}, cwd=wt, env=env)
+        assert not d.allow, f"must still be blocked via evaluate(): {d.reason}"
+
+    after = venv_install_guard.denial_reason(cmd, cwd=wt, env=env)
+    assert after is not None, "must stay denied once permissions are restored"
+
+
+@requires_chmod
+def test_an_unreadable_non_venv_path_entry_does_not_displace_a_system_installer(tmp_path):
+    """The other half of the condition, and the reason it is not simply
+    "prefer the undetermined entry". An unreadable `PATH` entry that is
+    DETERMINATELY not inside a venv carries no information about where an
+    install would land, so preferring it over a determinate match would only
+    discard a real answer.
+
+    The word DETERMINATELY is load-bearing and this test only covers the
+    shallow shape. `_venv_root_of` treats an UNDETERMINED `pyvenv.cfg` probe
+    as a venv root, so a non-venv directory whose own PARENT is unreadable
+    reads as a venv and does displace the system match. That is fail-closed
+    and accepted; it is recorded in the module comment rather than claimed
+    away. Here the chmod is on the pip's immediate parent, whose own parent
+    (`tmp_path`) stays readable, so the probe two levels up is a determinate
+    False."""
+    primary, primary_venv, wt, wt_venv, prod_env, wt_env = _session(tmp_path)
+    opaque = tmp_path / "opaque"
+    opaque.mkdir()
+    decoy = opaque / "pip"
+    decoy.write_text("#!/bin/sh\nexit 0\n")
+    os.chmod(decoy, 0o755)
+    assert venv_install_guard._venv_root_of(str(decoy)) is None
+
+    sysbin = tmp_path / "sysbin"
+    sysbin.mkdir()
+    system_pip = sysbin / "pip"
+    system_pip.write_text("#!/bin/sh\nexit 0\n")
+    os.chmod(system_pip, 0o755)
+
+    env = {"PATH": f"{opaque}{os.pathsep}{sysbin}"}
+    with _unreadable(opaque):
+        resolved = venv_install_guard._resolve_installer("pip", wt, env)
+        assert resolved == os.path.realpath(str(system_pip)), (
+            "an unreadable NON-venv entry must not displace a determinate "
+            f"match; got {resolved!r}"
+        )
+
+
+@requires_chmod
+def test_a_non_venv_undetermined_entry_does_not_shadow_a_later_undetermined_venv(tmp_path):
+    """The bypass an independent review found in the first version of this
+    fix. The walk remembered ONE undetermined candidate — the first one with
+    an installer NAME — and then asked whether it owned a venv. Those are not
+    the same question. A single unreadable non-venv directory placed ahead of
+    the unreadable venv claims that slot, answers "no venv", and the venv's
+    evidence is dropped: the guard resolves to the system `pip` and ALLOWS,
+    which is the exact DENY->ALLOW the ticket exists to close, reachable by
+    adding one PATH entry.
+
+    Both undetermined entries are built here, non-venv FIRST, so the test
+    fails if the code ever goes back to tracking a single fallback."""
+    primary, primary_venv, wt, wt_venv, prod_env, wt_env = _session(tmp_path)
+
+    opaque = tmp_path / "opaque"
+    opaque.mkdir()
+    (opaque / "pip").write_text("#!/bin/sh\nexit 0\n")
+    os.chmod(opaque / "pip", 0o755)
+    # Determinately NOT a venv: its parent is readable and holds no
+    # pyvenv.cfg, so the probe two levels up is a real False, not undetermined.
+    assert venv_install_guard._venv_root_of(str(opaque / "pip")) is None
+
+    sysbin = tmp_path / "sysbin"
+    sysbin.mkdir()
+    (sysbin / "pip").write_text("#!/bin/sh\nexit 0\n")
+    os.chmod(sysbin / "pip", 0o755)
+
+    env = {
+        "PATH": os.pathsep.join(
+            [str(opaque), f"{primary_venv}/bin", str(sysbin)]),
+        "VIRTUAL_ENV": primary_venv,
+    }
+    cmd = "pip install evilpkg"
+
+    with _unreadable(opaque), _unreadable(primary_venv):
+        resolved = venv_install_guard._resolve_installer("pip", wt, env)
+        assert resolved == os.path.join(primary_venv, "bin", "pip"), (
+            "an unreadable NON-venv entry must not consume the slot that the "
+            "unreadable VENV entry needs; the venv is the only entry carrying "
+            f"evidence of a target. got {resolved!r}"
+        )
+        inside = venv_install_guard.denial_reason(cmd, cwd=wt, env=env)
+        assert inside is not None, (
+            "REGRESSION: one extra unreadable non-venv PATH entry re-opened "
+            "the chmod bypass"
+        )
+        assert primary_venv in inside
+        d = _ev("Bash", {"command": cmd}, cwd=wt, env=env)
+        assert not d.allow, f"must still be blocked via evaluate(): {d.reason}"
+
+
+@requires_chmod
+def test_the_sessions_own_unreadable_venv_does_not_shadow_a_foreign_one(tmp_path):
+    """The SECOND instance of the first-one-wins bug, one level in from the
+    first, found by an independent review after the first was fixed.
+
+    Remembering "the first undetermined entry that owns a venv" repeats the
+    same mistake it was introduced to fix: when TWO entries are equally
+    indeterminate, PATH ORDER ALONE decides ALLOW vs DENY between candidates
+    the guard has admitted it cannot read. Measured on the same two
+    directories: own venv first gave ALLOW, foreign venv first gave DENY.
+
+    The bad ordering is the ORDINARY production one, not a contrived PATH.
+    `uv run` prepends the project's own venv ahead of the inherited shared
+    venv, so a coder session running under it produces own-venv-first for
+    free, and chmod'ing both venvs — one of which it owns outright — buys
+    back the bypass this whole ticket exists to close.
+
+    The rule that resolves it is not positional: among candidates that cannot
+    be read, prefer the one that would be DENIED. A venv inside `cwd` would
+    be waved through, so keeping it discards the only candidate whose verdict
+    differs from the default."""
+    primary, primary_venv, wt, wt_venv, prod_env, wt_env = _session(tmp_path)
+    # BOTH shapes, because they leave `_resolve_installer` by different
+    # doors and each door had to be fixed separately. With a determinate
+    # system `pip` behind them the displacement branch decides; with nothing
+    # determinate anywhere the end-of-scan remembered-candidate path decides.
+    # The first version of this fix closed only the former, and the latter
+    # still returned the session's own venv and ALLOWED.
+    sysbin = tmp_path / "sysbin"
+    sysbin.mkdir()
+    (sysbin / "pip").write_text("#!/bin/sh\nexit 0\n")
+    os.chmod(sysbin / "pip", 0o755)
+
+    cmd = "pip install evilpkg"
+    shapes = {
+        "a determinate system pip behind both venvs": [
+            f"{wt_venv}/bin", f"{primary_venv}/bin", str(sysbin)],
+        "nothing determinate anywhere on PATH": [
+            f"{wt_venv}/bin", f"{primary_venv}/bin"],
+    }
+    for label, parts in shapes.items():
+        env = {"PATH": os.pathsep.join(parts), "VIRTUAL_ENV": wt_venv}
+        with _unreadable(wt_venv), _unreadable(primary_venv):
+            resolved = venv_install_guard._resolve_installer("pip", wt, env)
+            assert resolved == os.path.join(primary_venv, "bin", "pip"), (
+                f"with {label}: among two unreadable venvs the guard must "
+                "keep the one it would DENY, not whichever PATH happened to "
+                f"list first; got {resolved!r}"
+            )
+            inside = venv_install_guard.denial_reason(cmd, cwd=wt, env=env)
+            assert inside is not None, (
+                f"REGRESSION with {label}: the session's own unreadable venv "
+                "shadowed the foreign one and bought back the chmod bypass"
+            )
+            assert primary_venv in inside
+            d = _ev("Bash", {"command": cmd}, cwd=wt, env=env)
+            assert not d.allow, f"{label}: blocked via evaluate(): {d.reason}"
+
+
+@requires_chmod
 def test_probe_distinguishes_absence_from_unreadability(tmp_path):
     """`_probe_is_file`/`_probe_is_dir` are the tri-state replacement for
     `os.path.isfile`/`os.path.isdir`: `True`/`False` agree with the stdlib
