@@ -1990,12 +1990,46 @@ class Store:
         way to clear it is an explicit `merge_context({"cancel_reason": None})`
         (used by retry), which this does not affect since it targets a
         different UPDATE.
+
+        ``title`` gets a narrower version of the same idea, not an exclusion
+        (legitimate callers, e.g. `_run_cli_grill`'s pre-file scoping, mutate
+        `task.title` in memory and expect this method to persist it, so it
+        can't just drop off the column list like status did). A handle
+        snapshotted BEFORE a `nh task retitle` must not stomp the row back
+        to the old title once that retitle has landed (`_resume_human_gated`
+        does a slow `repo.checkout` then `update_task(task)` — a retitle
+        arriving in that window must survive).
+
+        The CASE does NOT key off `updated_at` — that column is bumped by
+        every write to the row (a plain `set_status`, a context merge, ...),
+        not just a retitle, so keying off it cannot tell "someone retitled
+        since I read this handle" from "something unrelated wrote this row
+        since I read it", and a legitimate title edit on a handle whose row
+        merely advanced in status would be silently dropped (that broke
+        `test_update_task_never_moves_status`). Instead `update_task_title`
+        stamps `context.title_updated_at` in the SAME statement as the title
+        write; the CASE compares the ROW's current marker to the HANDLE's
+        own copy of it (`handle_title_marker`, read from `task.context`
+        before this call touches anything). Only an actual retitle moves
+        that marker, so it changes if and only if the title itself changed
+        underneath this handle. The winning marker (if it is the row's, i.e.
+        newer than the handle's) is carried forward into the new context
+        blob the same way `cancel_reason` already is, so the next stale
+        writer still sees the true marker rather than reverting to this
+        handle's stale copy of it.
         """
+        handle_title_marker = (task.context or {}).get("title_updated_at", "")
         task.updated_at = _now()
         row = task.to_row()
+        row["handle_title_marker"] = handle_title_marker
         await self.db.execute(
             """UPDATE tasks SET
-                 external_id=:external_id, source=:source, title=:title,
+                 external_id=:external_id, source=:source,
+                 title = CASE WHEN COALESCE(
+                                      json_extract(COALESCE(context, '{}'),
+                                                   '$.title_updated_at'), '')
+                               > :handle_title_marker
+                               THEN title ELSE :title END,
                  description=:description, requirements=:requirements,
                  acceptance_criteria=:acceptance_criteria, repo_path=:repo_path,
                  kind=:kind, parent_id=:parent_id, follows_id=:follows_id,
@@ -2003,12 +2037,22 @@ class Store:
                  priority=:priority,
                  context = json_patch(
                      :context,
-                     CASE WHEN json_extract(COALESCE(context, '{}'), '$.cancel_reason')
-                               IS NOT NULL
-                          THEN json_object(
-                              'cancel_reason',
-                              json_extract(COALESCE(context, '{}'), '$.cancel_reason'))
-                          ELSE '{}' END),
+                     json_patch(
+                         CASE WHEN json_extract(COALESCE(context, '{}'), '$.cancel_reason')
+                                   IS NOT NULL
+                              THEN json_object(
+                                  'cancel_reason',
+                                  json_extract(COALESCE(context, '{}'), '$.cancel_reason'))
+                              ELSE '{}' END,
+                         CASE WHEN COALESCE(
+                                     json_extract(COALESCE(context, '{}'),
+                                                  '$.title_updated_at'), '')
+                                   > :handle_title_marker
+                              THEN json_object(
+                                  'title_updated_at',
+                                  json_extract(COALESCE(context, '{}'),
+                                               '$.title_updated_at'))
+                              ELSE '{}' END)),
                  plan=:plan, config=:config,
                  updated_at=:updated_at
                WHERE id=:id""",
@@ -2155,12 +2199,26 @@ class Store:
         without clobbering concurrent context merges with a stale blob.
         Status is excluded for the same reason as in ``update_task`` (R15):
         ``set_status`` is the only status writer; a stale handle here had
-        no terminal guard at all."""
+        no terminal guard at all. ``title`` gets the same `context.
+        title_updated_at`-keyed CASE as `update_task` (see its docstring for
+        why it is not `updated_at`-keyed) rather than exclusion: a stale
+        handle must not revert a `nh task retitle` that landed while this
+        handle was in flight, but a fresh handle's own title edit must
+        still persist. This method never writes `context`, so — unlike
+        `update_task` — there is no marker to carry forward here; it only
+        reads the row's current marker to decide the winner."""
+        handle_title_marker = (task.context or {}).get("title_updated_at", "")
         task.updated_at = _now()
         row = task.to_row()
+        row["handle_title_marker"] = handle_title_marker
         await self.db.execute(
             """UPDATE tasks SET
-                 external_id=:external_id, source=:source, title=:title,
+                 external_id=:external_id, source=:source,
+                 title = CASE WHEN COALESCE(
+                                      json_extract(COALESCE(context, '{}'),
+                                                   '$.title_updated_at'), '')
+                               > :handle_title_marker
+                               THEN title ELSE :title END,
                  description=:description, requirements=:requirements,
                  acceptance_criteria=:acceptance_criteria, repo_path=:repo_path,
                  kind=:kind, parent_id=:parent_id, follows_id=:follows_id,
@@ -2172,6 +2230,29 @@ class Store:
         )
         await self.db.commit()
         return task
+
+    @serialized_write
+    async def update_task_title(self, task_id: str, title: str) -> None:
+        """Retitle ONE task. A targeted single-column UPDATE — it must not
+        read-modify-write the row (would race the orchestrator) and it
+        structurally cannot touch description/acceptance_criteria.
+
+        Also stamps `context.title_updated_at` in the SAME statement as the
+        title write — the marker `update_task`/`update_task_columns` compare
+        a stale handle's own copy of against the row's, so a handle
+        snapshotted before this call can never overwrite the correction it
+        makes (see their docstrings)."""
+        now = _now()
+        await self.db.execute(
+            """UPDATE tasks SET
+                 title = ?,
+                 context = json_set(COALESCE(context, '{}'),
+                                     '$.title_updated_at', ?),
+                 updated_at = ?
+               WHERE id = ?""",
+            (title, now, now, task_id),
+        )
+        await self.db.commit()
 
     @serialized_write
     async def request_cancel(self, task_id: str, reason: str) -> None:

@@ -1235,7 +1235,7 @@ FROZEN_FILE_LINES = {
     # (`_finalize` +4, `_build_implement_prompt` +29) plus the PR-open
     # retry's comment expansion and the new `base_merge_conflict_instruction`
     # import/threading. Measured on this tree with the scanner below.
-    "core/orchestrator.py": 24139,
+    "core/orchestrator.py": 24133,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.
@@ -1394,7 +1394,11 @@ FROZEN_FILE_LINES = {
     # the old silent-fallthrough gap where an unmatched reason printed
     # nothing and could be misread as "not paused". Measured via `wc -l
     # src/no_human/cli/commands.py`.
-    "cli/commands.py": 8679,
+    # 8679 -> 8851 (+172): `nh task retitle` — the state gate, the
+    # `--description`/`--criteria` refusal callback, the PR-evidence branch
+    # (refuse/update-both/landed-refuse), and the audit event. Measured via
+    # `wc -l src/no_human/cli/commands.py` on this merge result.
+    "cli/commands.py": 8851,
     # api/app.py 5338 -> 5346 (+8): same budget-floor warning surfaced by
     # `send-back`/`reply` as `budget_warning` in the JSON response. Net cost
     # was trimmed from a naive +14 to +8 by computing `Bounds.from_config(...)`
@@ -1567,7 +1571,7 @@ FROZEN_FILE_LINES = {
     # `sched.lease_lost` and threads it into `queue_health(...)` alongside
     # the existing cooldown kwargs. Measured on this tree with the scanner
     # below.
-    "api/app.py": 6193,
+    "api/app.py": 6330,
     # +51: W5 active-time phase writer (phase instrumentation).
     # +84: `list_escalations`/`list_review_fails`/`list_tamper_trips` — the
     # three new failure-signal sources the recurring learning harvest mines.
@@ -1655,7 +1659,32 @@ FROZEN_FILE_LINES = {
     # attempt at all — the gracefully-interrupted-by-`_honor_server_stop`
     # case. Placed next to `latest_open_attempt`/`latest_review_attempt`, its
     # existing siblings. Measured on this tree with the scanner below.
-    "core/db.py": 5112,
+    # 5112 -> 5123 (+11): `Store.update_task_title(task_id, title)` — a
+    # single-column `UPDATE tasks SET title=?, updated_at=? WHERE id=?`
+    # for the new `nh task retitle` command, avoiding a read-modify-write
+    # race. Measured on this tree with the scanner below.
+    # 5123 -> 5149 (+26): review-round F2 fix — `update_task` and
+    # `update_task_columns` both keyed their `title=:title` SET clause off
+    # an `updated_at`-compared CASE (mirroring the existing `cancel_reason`
+    # CASE just above it), so a stale in-memory `Task` handle snapshotted
+    # BEFORE a `retitle` can no longer stomp the row back to the old title
+    # once that retitle has landed — the same stale-handle protection
+    # `status` already had, applied to `title` without dropping it from
+    # the column list (unlike status, ordinary callers legitimately mutate
+    # `task.title` and expect it persisted). Measured via
+    # `wc -l src/no_human/core/db.py` on this merge result.
+    # 5149 -> 5193 (+44): that F2 fix keyed off `updated_at`, which is bumped
+    # by ANY row write (e.g. a plain `set_status`), not just a retitle, so it
+    # could not tell "someone retitled since I read this handle" from
+    # "something unrelated wrote this row" — a legitimate title edit on a
+    # handle whose row had merely advanced in status was silently dropped
+    # (broke `test_update_task_never_moves_status`). Reworked to stamp
+    # `context.title_updated_at` in the same statement as the title write
+    # (`update_task_title`) and compare THAT marker instead, carrying the
+    # winning marker forward into the new context blob the same way
+    # `cancel_reason` already is, plus the expanded docstrings explaining why.
+    # Measured via `wc -l src/no_human/core/db.py` on this merge result.
+    "core/db.py": 5193,
     # +71: set_local_backend_fields — the config-write helper for the Settings
     # pane's local coder-backend fields (llm.local_model / llm.local_base_url).
     # +75: Codex account config helpers.
