@@ -1,6 +1,6 @@
 # Test-change guard
 
-_Harness-captured record for task `0ff9125c`, commit `a3e3beec80b1062e6f8a5089c5ae199b7de8e970` — not model-authored: no_human wrote this file from the tamper adjudicator's waivers. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `0ff9125c`, commit `a07b942d962e68934d9d31a106ce4cc2748057ab` — not model-authored: no_human wrote this file from the tamper adjudicator's waivers. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ```json
 [
@@ -109,6 +109,29 @@ _Harness-captured record for task `0ff9125c`, commit `a3e3beec80b1062e6f8a5089c5
       "Skips 96->98: AC3 requires 'an unreadable file ... Plant each of those three cases and show each is distinguishable from a clean run' \u2014 the two pytest.skip guards protect the chmod-000 unreadable-file case on non-posix and on root, where the planted condition cannot hold.",
       "Autouse fixture (fake-fixtures 32->33): the only autouse fixture calls solely infra_breaker().reset() for cross-test isolation of a process-wide singleton; per its visible code it patches/mocks no code under test and forces no assertion green, so the guard's 'behaviour-faking' premise is false (fixture docstrings treated as untrusted prose, not evidence).",
       "Net tests/assertions increase: this is a brand-new test file that is the ticket's deliverable \u2014 the REFILE requires rebuilding behavioural detection, attempt-count, and fail-closed tests per AC1-AC4."
+    ],
+    "reasons": [
+      "tests/test_citation_drift_preflight.py: autouse monkeypatch fixture 0->1 (forces green without fixing product code)"
+    ],
+    "verdict": "LEGITIMATE",
+    "where": ""
+  },
+  {
+    "justification": [
+      "Skips +2: AC3 requires 'an unreadable file ... Plant each of those three cases and show each is distinguishable from a clean run' \u2014 the chmod-000 test must skip on non-posix/root where permission bits aren't enforced, so the two skips are the mechanism AC3 demands, not weakening.",
+      "Autouse fixture +1 (_clean_infra_breaker_singleton): resets a process-wide singleton for isolation of the AC1/AC2 Layer-2 tests that 'Demonstrate the attempt count is unchanged across a preflight that fires' by driving the real orchestrator; it patches no code under test and does not force green \u2014 the guard's 'forces green' characterization is a heuristic misfire."
+    ],
+    "reasons": [
+      "tests/test_citation_drift_preflight.py: autouse monkeypatch fixture 0->1 (forces green without fixing product code)"
+    ],
+    "verdict": "LEGITIMATE",
+    "where": ""
+  },
+  {
+    "justification": [
+      "Skips 96->98 (+2): both live in test_unreadable_file_fails_closed... and guard the chmod-000 case on non-posix/root where permission bits do not apply \u2014 AC3 requires 'an unreadable file ... Plant each of those three cases and show each is distinguishable from a clean run', which this test supplies",
+      "Fake-fixtures 32->33 (+1): the scripted backend fakes ONLY the LLM turn, not the preflight under test ('the whole pipeline ... runs for real except for the LLM call itself'), which is the only way to satisfy AC1 'the detection is proven by observing the preflight's behaviour on a tree with a planted drift' and AC2 'Demonstrate the attempt count is unchanged across a preflight that fires'",
+      "Autouse fixture 0->1 (_clean_infra_breaker_singleton): resets the process-wide infra_breaker singleton around each test \u2014 it does NOT patch the code under test (not the banned pattern) and does not suppress any in-test assertion; it is state isolation supporting the AC1/AC2 integration tests, and the change is a net ADDITION of tests (+39) and assertions (+172), the opposite of a weakening"
     ],
     "reasons": [
       "tests/test_citation_drift_preflight.py: autouse monkeypatch fixture 0->1 (forces green without fixing product code)"
