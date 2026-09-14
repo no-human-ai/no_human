@@ -3124,11 +3124,11 @@ _GATE_CAUGHT_BLOCK = (
     "reached a pull request:\n"
     "\n"
     "- **505 of 1,709 attempts** the coder called done were sent back by the "
-    "second model, each with a pass/fail checklist citing file and line.\n"
+    "second model, each with a pass/fail checklist.\n"
     "- **44 attempts** were stopped before the review even ran, for deleting "
     "or weakening a test.\n"
     "- **46 bug-fix proofs** were refused because the test offered as "
-    "evidence passed on the old code too.\n"
+    "evidence did not prove the fix.\n"
     "\n"
     "[How these were counted]"
     "(https://github.com/no-human-ai/no_human/releases/tag/metrics-2026-09)"
@@ -3460,6 +3460,55 @@ def test_resume_shape_repro_failure_is_not_a_refused_proof(tmp_path):
     db_path = _build_fixture_db(tmp_path, tasks=tasks, attempts=attempts)
     result = recount_mod.recount(db_path, start=WINDOW_START, end=WINDOW_END)
     assert result["figures"]["refused_proofs"] == 1
+
+
+def test_refused_proofs_are_broken_down_by_cause(tmp_path):
+    # The README's refused-proofs sentence names one cause for a total that
+    # can cover three; the recount script must report all three so a future
+    # edit can be checked against which one actually dominates.
+    tasks = [{"id": "t1", "repo_path": IN_SCOPE_REPO, "kind": "feature"}]
+    attempts = [
+        {"id": "a-fails-before", "task_id": "t1",
+         "failure_reason": (
+             "repro gate fail: fails-before failed -- the declared repro "
+             "tests already pass at base ref deadbeef"),
+         "started_at": IN_WINDOW_TS},
+        {"id": "a-fails-before-2", "task_id": "t1",
+         "failure_reason": (
+             "repro gate fail: fails-before failed -- the declared repro "
+             "tests already pass at base ref cafef00d"),
+         "started_at": IN_WINDOW_TS},
+        {"id": "a-passes-after", "task_id": "t1",
+         "failure_reason": (
+             "repro gate fail: passes-after failed -- the declared repro "
+             "tests do not pass on the attempt's own tree"),
+         "started_at": IN_WINDOW_TS},
+        {"id": "a-declared-missing", "task_id": "t1",
+         "failure_reason": (
+             "repro gate fail: declared test file(s) missing from the "
+             "attempt tree: ['tests/test_x.py']"),
+         "started_at": IN_WINDOW_TS},
+        # A resume-shape variant is excluded from the total, so it must not
+        # appear in the breakdown either.
+        {"id": "a-resume", "task_id": "t1",
+         "failure_reason": "repro gate fail: resume-shape: fails-before failed",
+         "started_at": IN_WINDOW_TS},
+        # A refusal this script does not recognise as one of the three named
+        # causes still counts toward the total, filed under "other" rather
+        # than silently folded into one of the three.
+        {"id": "a-other", "task_id": "t1",
+         "failure_reason": "repro gate fail: could not execute the repro tests",
+         "started_at": IN_WINDOW_TS},
+    ]
+    db_path = _build_fixture_db(tmp_path, tasks=tasks, attempts=attempts)
+    result = recount_mod.recount(db_path, start=WINDOW_START, end=WINDOW_END)
+    breakdown = result["refused_proofs_by_cause"]
+    assert breakdown["fails_before"] == 2
+    assert breakdown["passes_after"] == 1
+    assert breakdown["declared_missing"] == 1
+    assert breakdown["other"] == 1
+    assert result["figures"]["refused_proofs"] == 5
+    assert sum(breakdown.values()) == result["figures"]["refused_proofs"]
 
 
 def test_tamper_flag_false_and_unparseable_are_not_tamper_stops(tmp_path):

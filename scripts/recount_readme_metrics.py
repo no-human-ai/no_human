@@ -84,17 +84,29 @@ DEFINITIONS (the whole reason a loose text match gets this wrong):
     -- a resumed attempt's repro failure is prefixed `resume-shape:` inside
     the same detail string and is excluded, because it is testing a
     different claim (the resumed checkpoint's own tree) than a first-attempt
-    refusal.
+    refusal. The README states only the total; this script ALSO reports it
+    broken down by the three causes `src/no_human/testing/repro_gate.py` can
+    name for a "fail" verdict, so the next person to touch the README's
+    sentence can see at a glance whether it still names the dominant cause:
+      * `fails_before` -- the declared repro tests already pass at the merge
+        base (they do not demonstrate this change).
+      * `passes_after` -- the declared repro tests do not pass on the
+        attempt's own tree (the fix itself is not proven).
+      * `declared_missing` -- the declared test file(s) are absent from the
+        attempt's committed tree (no test was offered at all).
+      * `other` -- a refusal this script does not recognise as one of the
+        three above; never silently folded into one of them.
 
 Scope is otherwise the whole `attempts` table for a database of any size;
 there is no LIMIT and no sampling.
 
 OUTPUT: a human-readable table by default; `--json` emits the four figures
-under the snapshot's own key names, plus the window, scope, resolved DB
-path, and the diagnostics above (`kind_column_present`,
-`skipped_no_timestamp`, `unparseable_test_results`, `population`). Nothing
-is written anywhere except the disposable temp copy, which is removed
-before this script exits.
+under the snapshot's own key names, plus `refused_proofs_by_cause` (the
+breakdown above -- never printed in the README, which states only the
+total), the window, scope, resolved DB path, and the diagnostics above
+(`kind_column_present`, `skipped_no_timestamp`, `unparseable_test_results`,
+`population`). Nothing is written anywhere except the disposable temp copy,
+which is removed before this script exits.
 
 NON-HAPPY PATHS: a path inside the live home, a missing path, a directory,
 a non-SQLite file, or a SQLite file with no `attempts` table are all
@@ -127,6 +139,14 @@ CODE_REVIEW_KIND = "code_review"
 REVIEWER_INFRA_PREFIXES = ("review failed: reviewer", "review failed: Reviewer")
 REFUSED_PROOF_PREFIX = "repro gate fail: "
 RESUME_SHAPE_PREFIX = "repro gate fail: resume-shape:"
+# The three causes a refused proof can carry (`src/no_human/testing/
+# repro_gate.py`'s three "fail" reasons), so a future edit to the README's
+# refused-proofs sentence can be checked against which cause actually
+# dominates -- the README states only the total, never this breakdown.
+FAILS_BEFORE_PREFIX = "repro gate fail: fails-before failed"
+PASSES_AFTER_PREFIX = "repro gate fail: passes-after failed"
+DECLARED_MISSING_PREFIX = "repro gate fail: declared test file(s) missing"
+REFUSED_PROOF_CAUSES = ("fails_before", "passes_after", "declared_missing", "other")
 
 
 class DbRefusal(Exception):
@@ -259,6 +279,23 @@ def _is_refused_proof(failure_reason: str) -> bool:
             and not failure_reason.startswith(RESUME_SHAPE_PREFIX))
 
 
+def _refused_proof_cause(failure_reason: str) -> str | None:
+    """One of `REFUSED_PROOF_CAUSES`, or None if *failure_reason* is not a
+    refused proof at all. "other" covers a refusal this script's three named
+    causes do not recognise -- never silently folded into one of the three
+    so a new repro-gate reason shows up instead of hiding inside a count it
+    does not belong to."""
+    if not _is_refused_proof(failure_reason):
+        return None
+    if failure_reason.startswith(FAILS_BEFORE_PREFIX):
+        return "fails_before"
+    if failure_reason.startswith(PASSES_AFTER_PREFIX):
+        return "passes_after"
+    if failure_reason.startswith(DECLARED_MISSING_PREFIX):
+        return "declared_missing"
+    return "other"
+
+
 def recount(db_path: Path, *, start: str, end: str) -> dict:
     """Read *db_path* (already a disposable copy) and return the four
     figures plus diagnostics. Never opens anything but *db_path* itself."""
@@ -282,6 +319,7 @@ def recount(db_path: Path, *, start: str, end: str) -> dict:
     reviewer_rejections = 0
     tamper_stops = 0
     refused_proofs = 0
+    refused_proofs_by_cause = {cause: 0 for cause in REFUSED_PROOF_CAUSES}
     population = 0
     skipped_no_timestamp = 0
     unparseable_test_results = 0
@@ -315,8 +353,10 @@ def recount(db_path: Path, *, start: str, end: str) -> dict:
         elif tamper:
             tamper_stops += 1
 
-        if _is_refused_proof(failure_reason):
+        cause = _refused_proof_cause(failure_reason)
+        if cause is not None:
             refused_proofs += 1
+            refused_proofs_by_cause[cause] += 1
 
     return {
         "figures": {
@@ -325,6 +365,7 @@ def recount(db_path: Path, *, start: str, end: str) -> dict:
             "tamper_stops": tamper_stops,
             "refused_proofs": refused_proofs,
         },
+        "refused_proofs_by_cause": refused_proofs_by_cause,
         "window": {"start": start, "end": end},
         "scope": {"repo_basenames": sorted(SCOPE_BASENAMES)},
         "kind_column_present": kind_present,
@@ -370,6 +411,9 @@ def _print_table(result: dict) -> None:
     print(f"population (scope+window): {result['population']}")
     for key, value in figures.items():
         print(f"{key}: {value}")
+    print("refused_proofs_by_cause:")
+    for cause, count in result["refused_proofs_by_cause"].items():
+        print(f"  {cause}: {count}")
     print(f"skipped_no_timestamp: {result['skipped_no_timestamp']}")
     print(f"unparseable_test_results: {result['unparseable_test_results']}")
 

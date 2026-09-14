@@ -48,9 +48,9 @@ The AI coding factory you <ins>**can trust**</ins>:
 
 no_human builds no_human. Over 65 days on its own board, none of this reached a pull request:
 
-- **505 of 1,709 attempts** the coder called done were sent back by the second model, each with a pass/fail checklist citing file and line.
+- **505 of 1,709 attempts** the coder called done were sent back by the second model, each with a pass/fail checklist.
 - **44 attempts** were stopped before the review even ran, for deleting or weakening a test.
-- **46 bug-fix proofs** were refused because the test offered as evidence passed on the old code too.
+- **46 bug-fix proofs** were refused because the test offered as evidence did not prove the fix.
 
 [How these were counted](https://github.com/no-human-ai/no_human/releases/tag/metrics-2026-09)
 
