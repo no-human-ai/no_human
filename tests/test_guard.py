@@ -207,14 +207,43 @@ def test_a_capitalised_nh_approve_or_merge_stack_is_denied_in_every_mode():
     Approve 7`, `nh MERGE-STACK run`, and `nh merge-stack RUN` all reached
     allow=True while `nh approve 7`/`nh merge-stack run` (documented case)
     stayed denied — the product's own merge door was open to a one-letter
-    case change on either the verb or the noun. Reverting the fold makes
-    this test fail; it does not ride on the two tests above, which never
-    exercise a capitalised verb/noun.
+    case change on either the verb or the noun.
+
+    Which row pins which fold, checked by reverting ONE at a time rather than
+    trusting the compound revert above (#328 second review send-back,
+    Blocker NB1 — a compound revert dies on the first row and never proves
+    the rest discriminate anything):
+
+      - the first three rows (`APPROVE`/`Approve`/`APPROVE-landed`) are
+        pinned by `_is_approve_verb` alone: reverting ONLY that fold flips
+        them to allow=True while every merge-stack row below stays denied
+        (the merge-stack argv/lexical folds are untouched by that revert).
+      - the four `MERGE-STACK`/`merge-stack RUN`/`Merge-Stack Run` rows are
+        each reachable through `guard._approve_denial`'s argv path, so
+        `_MERGE_VERB_PAIRS`'s fold alone already denies them; reverting
+        `_LEXICAL_MERGE_STACK`'s `IGNORECASE` alone leaves them denied too,
+        because the argv fold still catches them first. Measured: reverting
+        `_MERGE_VERB_PAIRS`'s fold at both call sites moves 0 of a
+        5,477-row case-spelling sweep — `_LEXICAL_MERGE_STACK` (with
+        `IGNORECASE`) re-denies every one of those rows on its own. That
+        fold is real but currently-unobserved defense-in-depth, not a gap
+        this test can honestly claim to pin by itself.
+      - the last row, a heredoc body (`cat <<EOF` / `nh MERGE-STACK run` /
+        `EOF`), is NOT an `nh` invocation's own argv, so `_approve_denial`
+        never runs `_is_approve_verb`/`_MERGE_VERB_PAIRS` on it at all —
+        confirmed by calling `guard._approve_denial` on it directly and
+        getting `None`. Only `_LEXICAL_MERGE_STACK`'s regex, run against the
+        whole joined command text, reaches it. This is the row that pins
+        `IGNORECASE` on `_LEXICAL_MERGE_STACK` specifically: reverting ONLY
+        that flag flips this one row to allow=True (a real merge door —
+        `nh merge-stack run` shells `gh pr merge` for every ready PR in the
+        stack) while every row above it stays denied through the argv fold.
 
     Binary capitalisation (`NH approve 7`) is a pre-existing, separately
     pinned case (the `name.lower() in _APPROVE_BINARIES` fold, 2026-08-22)
     and is not what this test is about — every row below keeps the binary
-    lowercase and varies only the verb or the noun+verb pair."""
+    lowercase and varies only the verb, the noun+verb pair, or (last row)
+    reaches the noun+verb through prose rather than argv at all."""
     for readonly in (False, True):
         for cmd in (
             "nh APPROVE 7",
@@ -224,6 +253,7 @@ def test_a_capitalised_nh_approve_or_merge_stack_is_denied_in_every_mode():
             "nh merge-stack RUN",
             "nh Merge-Stack Run --yes",
             'sh -c "nh MERGE-STACK run --yes"',
+            "cat <<EOF\nnh MERGE-STACK run\nEOF",
         ):
             d = guard.evaluate("Bash", {"command": cmd},
                                forbidden_paths=FORBIDDEN,

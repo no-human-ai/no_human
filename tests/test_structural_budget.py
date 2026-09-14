@@ -1998,7 +1998,19 @@ FROZEN_FILE_LINES = {
     # token (`if`/`elif`) over disjoint token shapes -- quoted-payload vs
     # trailing-argv -- so one never waits on the other. Reworded to say so.
     # Measured on this tree with the scanner below.
-    "agent/guard.py": 3031,
+    # 3031 -> 3036 (+5): third-round send-back on #328, blocker N2 -- the
+    # `_FORGE_MERGE` comment still ranked it as "the one whose miss opens the
+    # merge door specifically" one clause after naming `_LEXICAL_MERGE_STACK`
+    # in the same sentence, and a companion send-back (NB1) measured
+    # `_LEXICAL_MERGE_STACK`'s own `IGNORECASE` miss reopening a merge door
+    # too (`nh MERGE-STACK run` inside a heredoc body, which never reaches
+    # `_approve_denial`'s argv path). Deleted the ranking clause and replaced
+    # it with the two rows the revert actually reopens (`GH api
+    # .../pulls/7/merge --method PUT` and the unbalanced-quote `sh -c "GH pr
+    # merge 7`), both pinned by
+    # `test_every_capitalised_merge_spelling_is_denied_on_a_folding_host`.
+    # Measured on this tree with the scanner below.
+    "agent/guard.py": 3036,
     # +44: idle-path recover_quota_cooldown gate in tick() and the
     # never-shorten-a-live-wall guard in _run — the quota-wall storm cost fix.
     # +129: `HarvestJob` — the cadence job (`due()`/`maybe_run()`) that runs

@@ -1130,14 +1130,19 @@ _FORGE_MERGE = re.compile(
     # `exec_names.case_flags()`, matching `_RM_RF`/`_GIT_DESTRUCTIVE`: before
     # #328 this pattern was exact-case, like most of the module's other
     # lexical gates (`_FORGE_WRITE`, `_GIT_WRITE`, `_LEXICAL_LIVE_SERVER`, and
-    # -- until #328 also folded it below -- `_LEXICAL_MERGE_STACK`), but it is
-    # the one whose miss opens the merge door specifically, the reason a
-    # capitalised `gh`/`glab` merge command reached ALLOW on a folding host
-    # even before the runner-recursion fix above. Folding also widens the
-    # GraphQL mutation names, which the API itself treats case-sensitively —
-    # that can only ADD a denial for a string that could never have run as a
-    # real mutation, which matches this pattern's stated polarity: a false
-    # denial costs one message, a missed one merges a PR.
+    # -- until #328 also folded it below -- `_LEXICAL_MERGE_STACK`).
+    # Reverting `_FORGE_MERGE`'s `case_flags()` alone (checked in isolation,
+    # not compounded with the runner-recursion fix above) reopens exactly two
+    # rows no other gate reaches: `GH api /repos/o/r/pulls/7/merge --method
+    # PUT` and the unbalanced-quote row `sh -c "GH pr merge 7` (no closing
+    # quote — deliberately unbalanced, see `_CASE_MATRIX_EXTRA_ROWS`), both
+    # pinned by
+    # `test_every_capitalised_merge_spelling_is_denied_on_a_folding_host`.
+    # Folding also widens the GraphQL mutation names, which the API itself
+    # treats case-sensitively — that can only ADD a denial for a string that
+    # could never have run as a real mutation, which matches this pattern's
+    # stated polarity: a false denial costs one message, a missed one merges
+    # a PR.
     r"|mergePullRequest\b|enablePullRequestAutoMerge\b)", exec_names.case_flags())
 
 # The product's OWN spelling of the same act: `nh merge-stack run` shells
