@@ -499,22 +499,29 @@ async def run_gate(
     config = load_config()
     _check_credential(config)
 
-    try:  # ABLATION: Blocker 2 — narrowed back to only GitRepo() construction
+    # Every `GitRepo` call below (`head_sha`, `current_branch`, the mode
+    # resolvers) runs `git` with `check=True` and raises `GitError` on a
+    # non-zero exit — e.g. `rev-parse HEAD` on a repo with no commits yet.
+    # That is exactly "cannot run the gate", the same as every other named
+    # precondition here, and must never escape as an unhandled exception
+    # (the CLI would report a generic exit 1, indistinguishable from a real
+    # review FAIL, instead of refusing by name at exit 2).
+    try:
         repo = GitRepo(repo_path)
+        if pr_url:
+            mode = "pr"
+            before_ref, after_ref, _base_label, comparison, uncommitted = (
+                _resolve_pr_mode(repo, repo_path, pr_url, base)
+            )
+            label = f"pull request {pr_url}"
+        else:
+            mode = "branch"
+            before_ref, after_ref, _base_label, comparison, uncommitted = (
+                _resolve_branch_mode(repo, repo_path, base)
+            )
+            label = repo.current_branch()
     except GitError as exc:
         raise GateUnavailable(str(exc)) from exc
-    if pr_url:
-        mode = "pr"
-        before_ref, after_ref, _base_label, comparison, uncommitted = (
-            _resolve_pr_mode(repo, repo_path, pr_url, base)
-        )
-        label = f"pull request {pr_url}"
-    else:
-        mode = "branch"
-        before_ref, after_ref, _base_label, comparison, uncommitted = (
-            _resolve_branch_mode(repo, repo_path, base)
-        )
-        label = repo.current_branch()
 
     if uncommitted:
         comparison += (
