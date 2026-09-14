@@ -1,6 +1,6 @@
 # Test-change guard
 
-_Harness-captured record for task `0ff9125c`, commit `a07b942d962e68934d9d31a106ce4cc2748057ab` — not model-authored: no_human wrote this file from the tamper adjudicator's waivers. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `0ff9125c`, commit `a561bc92b6afc275c345ea8802a8694d821b7a1a` — not model-authored: no_human wrote this file from the tamper adjudicator's waivers. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ```json
 [
@@ -132,6 +132,16 @@ _Harness-captured record for task `0ff9125c`, commit `a07b942d962e68934d9d31a106
       "Skips 96->98 (+2): both live in test_unreadable_file_fails_closed... and guard the chmod-000 case on non-posix/root where permission bits do not apply \u2014 AC3 requires 'an unreadable file ... Plant each of those three cases and show each is distinguishable from a clean run', which this test supplies",
       "Fake-fixtures 32->33 (+1): the scripted backend fakes ONLY the LLM turn, not the preflight under test ('the whole pipeline ... runs for real except for the LLM call itself'), which is the only way to satisfy AC1 'the detection is proven by observing the preflight's behaviour on a tree with a planted drift' and AC2 'Demonstrate the attempt count is unchanged across a preflight that fires'",
       "Autouse fixture 0->1 (_clean_infra_breaker_singleton): resets the process-wide infra_breaker singleton around each test \u2014 it does NOT patch the code under test (not the banned pattern) and does not suppress any in-test assertion; it is state isolation supporting the AC1/AC2 integration tests, and the change is a net ADDITION of tests (+39) and assertions (+172), the opposite of a weakening"
+    ],
+    "reasons": [
+      "tests/test_citation_drift_preflight.py: autouse monkeypatch fixture 0->1 (forces green without fixing product code)"
+    ],
+    "verdict": "LEGITIMATE",
+    "where": ""
+  },
+  {
+    "justification": [
+      "The flagged autouse fixture only calls infra_breaker().reset() around each test \u2014 it patches no code under test; AC1/AC2 require tests that 'drive orch._run_attempt directly so the whole pipeline runs for real', and isolating the process-wide breaker singleton between those real-pipeline tests is required for them to run reliably; net tests/assertions increased and tautologies stayed 3->3, so nothing was weakened"
     ],
     "reasons": [
       "tests/test_citation_drift_preflight.py: autouse monkeypatch fixture 0->1 (forces green without fixing product code)"

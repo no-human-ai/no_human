@@ -1,135 +1,96 @@
 # How I verified this — full log
 
-_Harness-captured record for task `0ff9125c`, commit `a07b942d962e68934d9d31a106ce4cc2748057ab` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `0ff9125c`, commit `a561bc92b6afc275c345ea8802a8694d821b7a1a` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ## How I verified this
-10 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
+8 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
 
 ### test
-- `uv run pytest -q tests/test_text_reads_declare_encoding.py 2>&1 | tail -40`
+- `uv run pytest -q tests/test_citation_drift_preflight.py::test_a_commit_failure_after_mechanical_reanchor_buys_a_round_not_false_success 2>&1 | tail -40`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-...............                                                          [100%]
-15 passed in 2.01s
+   Building no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/0ff9125c20764e2e94ab10ade4c7a4b3.52752.06cede7a
+      Built no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/0ff9125c20764e2e94ab10ade4c7a4b3.52752.06cede7a
+Installed 73 packages in 248ms
+.                                                                        [100%]
+1 passed in 17.61s
 ```
 
-- `time uv run pytest -q tests/test_citation_drift_preflight.py 2>&1 | tail -60`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-......................................                                   [100%]
-38 passed in 18.32s
-uv run pytest -q tests/test_citation_drift_preflight.py 2>&1  8.56s user 7.87s system 88% cpu 18.554 total
-tail -60  0.00s user 0.00s system 0% cpu 18.554 total
-```
-
-- `time uv run pytest -q tests/test_structural_budget.py 2>&1 | tail -30`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-..................                                                       [100%]
-18 passed in 1.62s
-uv run pytest -q tests/test_structural_budget.py 2>&1  1.70s user 0.11s system 99% cpu 1.832 total
-tail -30  0.00s user 0.00s system 0% cpu 1.831 total
-```
-
-- `time uv run pytest -q tests/test_readme_claims.py tests/test_reanchor_citations.py 2>&1 | tail -20`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-............................s.s.s.s.s.s.s.s.s.s......................... [ 47%]
-......................s..........................s...................... [ 94%]
-........                                                                 [100%]
-140 passed, 12 skipped in 3.20s
-uv run pytest -q tests/test_readme_claims.py tests/test_reanchor_citations.py  3.22s user 0.20s system 99% cpu 3.437 total
-tail -20  0.00s user 0.00s system 0% cpu 3.436 total
-```
-
-- `time uv run pytest -q tests/test_egress_allowlist.py 2>&1 | tail -20`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-......................                                                   [100%]
-22 passed in 15.17s
-uv run pytest -q tests/test_egress_allowlist.py 2>&1  14.99s user 0.34s system 99% cpu 15.376 total
-tail -20  0.00s user 0.00s system 0% cpu 15.376 total
-```
-
-- `time uv run pytest -q -n 4 tests/test_citation_drift_preflight.py tests/test_structural_budget.py tests/test_readme_claims.py tests/test_reanchor_citations.py tests/test_egress_allowlist.py tests/test_text_reads_declare_encoding.py 2>&1 | tail -30`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-bringing up nodes...
-bringing up nodes...
-
-...................................s.s.s.s.s.s.s.s.s.................... [ 29%]
-.......................................s...s....................s....... [ 58%]
-........................................................................ [ 88%]
-.............................                                            [100%]
-233 passed, 12 skipped in 14.34s
-uv run pytest -q -n 4 tests/test_citation_drift_preflight.py      2>&1  34.49s user 9.68s system 304% cpu 14.490 total
-tail -30  0.00s user 0.00s system 0% cpu 14.490 total
-```
-
-- `uv run pytest -q "tests/test_text_reads_declare_encoding.py::test_no_read_text_in_the_harness_omits_its_encoding[tests]" 2>&1 | tail -20`
-
-```
-rel = path.relative_to(REPO_ROOT).as_posix()
-            for lineno in _unencoded_read_text(path):
-                offenders.append(f"{rel}:{lineno}")
-    
->       assert offenders == [], (
-            "these read a file without saying how to decode it, so they use the "
-            "platform's preferred encoding and die on the first UTF-8 multi-byte "
-            "character when run on Windows (issue #267). Pass "
-            'encoding="utf-8": ' + ", ".join(offenders)
-        )
-E       AssertionError: these read a file without saying how to decode it, so they use the platform's preferred encoding and die on the first UTF-8 multi-byte character when run on Windo
-[... 80 of 1,219 characters omitted from the middle ...]
-364
-E       assert ['tests/test_...ight.py:1364'] == []
-E         
-E         Left contains one more item: 'tests/test_citation_drift_preflight.py:1364'
-E         Use -v to get more diff
-
-tests/test_text_reads_declare_encoding.py:160: AssertionError
-=========================== short test summary info ============================
-FAILED tests/test_text_reads_declare_encoding.py::test_no_read_text_in_the_harness_omits_its_encoding[tests]
-1 failed in 1.42s
-```  
-  _excerpt - 1,219 characters of output in total_
-
-- `uv run pytest -q "tests/test_text_reads_declare_encoding.py::test_no_read_text_in_the_harness_omits_its_encoding[tests]" 2>&1 | tail -10`
+- `uv run pytest -q tests/test_citation_drift_preflight.py::test_a_tamper_fire_on_the_rounds_own_commit_ends_the_attempt_right_there 2>&1 | tail -60`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
 .                                                                        [100%]
-1 passed in 1.38s
+1 passed in 12.27s
 ```
 
-- `uv run pytest -q "tests/test_citation_drift_preflight.py::test_checker_import_failure_for_missing_pytest_is_inapplicable_not_unknown" "tests/test_citation_drift_preflight.py::test_an_unfixable_citation_buy [... 156 of 499 characters omitted from the middle ...] _silently" "tests/test_citation_drift_preflight.py::test_an_unknown_run_with_a_partial_write_is_reverted_before_the_round" 2>&1 | tail -10`
+- `cp src/<redacted>/core/orchestrator.py /tmp/orchestrator.py.bak && python3 - <<'EOF' import re path = "src/<redacted>/core/orchestrator.py" with open(path) as f:     text = f.read() old = "        if citat [... 292 of 635 characters omitted from the middle ...] pytest -q tests/test_citation_drift_preflight.py::test_a_tamper_fire_on_the_rounds_own_commit_ends_the_attempt_right_there 2>&1 | tail -40`
+
+```
+never silently dropped in favour of falling through to review. Forced
+        entirely behaviourally: the round backend's own in-scope write (a skip
+        marker added to `tests/test_readme_claims.py`, same file the ordinary
+        doc fix backends in this module never touch) is exactly the shape
+        `tamper_guard.check` already flags real callers for elsewhere in this
+        suite (`tests/test_tamper_guard.py`) — never read from
+        `orchestrator.py`'s or `tamper_guard.py`'s own source text."""
+        backend = _AmbiguousDriftThenRoundTampersBackend()
+        orch, task, repo, events = await _run_one_task_attempt(store, bare_repo, tmp_path, backend)
+   
+[... 1,922 of 3,061 characters omitted from the middle ...]
+ criterion will fail honestly here.
+WARNING  <redacted>.orchestrator:orchestrator.py:2526 advisory: verification comment not posted (unverifiable): could not read existing comments on local-pr://remote.git/no-human/2b5a9515; not posting
+=========================== short test summary info ============================
+FAILED tests/test_citation_drift_preflight.py::test_a_tamper_fire_on_the_rounds_own_commit_ends_the_attempt_right_there
+1 failed in 51.14s
+```  
+  _excerpt - 3,055 characters of output in total_
+
+- `uv run pytest -q tests/test_citation_drift_preflight.py 2>&1 | tail -40`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-....                                                                     [100%]
-4 passed in 4.69s
+.......................................                                  [100%]
+39 passed in 29.07s
 ```
 
-- `time uv run pytest -q -n 4 tests/test_citation_drift_preflight.py tests/test_structural_budget.py tests/test_readme_claims.py tests/test_reanchor_citations.py tests/test_egress_allowlist.py tests/test_text_reads_declare_encoding.py tests/test_repro_waived_corrective_round.py 2>&1 | tail -15`
+- `uv run pytest -q tests/test_structural_budget.py 2>&1 | tail -60`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-bringing up nodes...
-bringing up nodes...
+..................                                                       [100%]
+18 passed in 1.89s
+```
 
-................................s.s.s.s.s.s............................. [ 27%]
-..........................s..........................s.s.s.s..s......... [ 54%]
-........................................................................ [ 81%]
-................................................                         [100%]
-252 passed, 12 skipped in 17.27s
-uv run pytest -q -n 4 tests/test_citation_drift_preflight.py       2>&1  41.83s user 19.48s system 352% cpu 17.408 total
-tail -15  0.00s user 0.00s system 0% cpu 17.408 total
+- `uv run pytest -q tests/test_readme_claims.py tests/test_egress_allowlist.py 2>&1 | tail -40`
+
+```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+............................s.s.s.s.s.s.s.s.s.s......................... [ 42%]
+......................s..........................s...................... [ 85%]
+.........................                                                [100%]
+157 passed, 12 skipped in 21.43s
+```
+
+- `python3 -c "import json; json.load(open('.<redacted>/repro_tests.json'))" && echo "valid json" uv run pytest -q \   "tests/test_citation_drift_preflight.py::test_checker_import_failure_for_missing_pytest_i [... 515 of 858 characters omitted from the middle ...] \   "tests/test_citation_drift_preflight.py::test_a_tamper_fire_on_the_rounds_own_commit_ends_the_attempt_right_there" \   2>&1 | tail -20`
+
+```
+valid json
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+......                                                                   [100%]
+6 passed in 7.62s
+```
+
+- `uv run pytest -q tests/test_citation_drift_preflight.py tests/test_structural_budget.py tests/test_readme_claims.py tests/test_egress_allowlist.py tests/test_structural_budget_preflight.py 2>&1 | tail -20`
+
+```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+........................................................................ [ 29%]
+.............s.s.s.s.s.s.s.s.s.s........................................ [ 58%]
+.......s..........................s..................................... [ 87%]
+...............................                                          [100%]
+235 passed, 12 skipped in 57.40s
 ```
 
 
