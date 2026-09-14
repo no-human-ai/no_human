@@ -1847,7 +1847,24 @@ FROZEN_FILE_LINES = {
     # a bare `Path.is_file()`, so an unreadable ancestor directory (e.g. a
     # chmod'd `<checkout>/src`) can't raise `PermissionError` out of this
     # unguarded helper and abort the guard instead of denying.
-    "agent/guard.py": 2926,
+    # 2926 -> 2954 (+28): runner-recursion case fold (#328's remaining half).
+    # `_forge_invocations`/`_git_invocations` resolved a wrapped runner's
+    # nested command name via `PurePosixPath(tok).name`, case-blind, while
+    # the top-level `argv[0]` path already folded through
+    # `exec_names.command_name`; `timeout 30 GH pr merge 7` and
+    # `sh -c "GIT push origin main"` recursed past their capitalised name
+    # instead of finding it. Both `PurePosixPath(tok).name` comparisons now
+    # go through `command_name` too, and the two mention-gates
+    # (`_FORGE_MENTION`, new `_GIT_MENTION`) are precompiled with
+    # `exec_names.case_flags()` so the recursion into a quoted payload stays
+    # host-gated and linear. `_FORGE_MERGE` gained the same `case_flags()`
+    # it was missing relative to `_RM_RF`/`_GIT_DESTRUCTIVE`, so a
+    # capitalised merge spelling denies lexically even where no structural
+    # path reaches it (`GH api .../pulls/7/merge`). `_forge_subcommand`
+    # folds its returned noun/verb unconditionally (a CLI subcommand word,
+    # not a filesystem name) so `gh pr MERGE 7` pairs against
+    # `_FORGE_MERGE_PAIRS` lowercase. Measured on this tree.
+    "agent/guard.py": 2954,
     # +44: idle-path recover_quota_cooldown gate in tick() and the
     # never-shorten-a-live-wall guard in _run — the quota-wall storm cost fix.
     # +129: `HarvestJob` — the cadence job (`due()`/`maybe_run()`) that runs

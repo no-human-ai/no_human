@@ -104,6 +104,33 @@ def test_blocks_merging_a_pull_request():
     ).allow
 
 
+def test_a_capitalised_forge_merge_is_denied_structurally_not_only_lexically():
+    """#328: capitalising the binary, noun or verb of a forge merge command,
+    wrapped in a runner, must still deny — and each row here carries a global
+    `-R o/r` option, which breaks `_FORGE_MERGE`'s contiguous `gh\\s+pr\\s+merge`
+    anchor. If these denied only because of the lexical pattern, un-flagging
+    the fix in `_forge_subcommand` (returning raw-case tokens instead of
+    folding them) would still pass; it does not, which is the point.
+
+    Asserted at both `readonly` values: the structural pair-fold underlies
+    both the default merge-ban check and the read-only write-block, and
+    `_forge_subcommand`'s fold is host-independent, so this needs no
+    subprocess or fold pinning — it is a noun/verb case, not a binary-name
+    one, on the taxonomy `tests/test_exec_names.py` pins."""
+    rows = [
+        'sh -c "gh -R o/r pr MERGE 7"',
+        'bash -c "gh PR -R o/r merge 7"',
+        "timeout 30 glab MR accept 12",
+        "xargs gh pr MERGE",
+    ]
+    for readonly in (False, True):
+        for command in rows:
+            d = guard.evaluate(
+                "Bash", {"command": command}, forbidden_paths=FORBIDDEN,
+                never_push_to=PROTECTED, readonly=readonly, cwd=_WT)
+            assert not d.allow, (readonly, command, d.reason)
+
+
 def test_allows_the_agent_to_merge_into_its_own_branch():
     """User, 2026-07-10: the agent may commit, push its own branch, merge a ref
     into it, and open a PR. Only merging the PR is forbidden. A local merge can

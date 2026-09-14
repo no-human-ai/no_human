@@ -29,6 +29,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import time
 from pathlib import Path
 from textwrap import dedent
 
@@ -276,14 +277,22 @@ _FOLD_SENSITIVE_ROWS = (
 )
 
 
-def _verdicts_with_fold(fold: bool) -> dict:
+def _verdicts_with_fold(fold: bool, rows=_FOLD_SENSITIVE_ROWS, readonly=False) -> dict:
     """Guard verdicts from a fresh interpreter with the probe pinned to `fold`.
 
     A subprocess, not a monkeypatch: `_RM_RF`, `_GIT_DESTRUCTIVE` and the
     `_looks_like_git_push` recursion gate bake `case_flags()` into compiled
     patterns at import time, so patching after the fact reaches the name path
     only -- which is how a fix for the name half alone can look complete while
-    three text gates stay open.
+    three text gates stay open. `rows` defaults to `_FOLD_SENSITIVE_ROWS` so
+    the two callers below (#305/#320's original regression) are unchanged;
+    the #328 runner-recursion matrix below passes its own. `readonly` defaults
+    to `False`, matching every existing caller; the git-recursion test below
+    passes `True` because `_git_invocations` (the function #328 fixes) is
+    consulted ONLY by the read-only write-block -- the default-mode
+    protected-branch check is a wholly separate extractor
+    (`_git_push_invocations`) with its own, out-of-scope, gap for a
+    trailing-argv runner (`timeout`/`xargs` without `-c`).
     """
     code = dedent(f"""
         import json
@@ -291,10 +300,11 @@ def _verdicts_with_fold(fold: bool) -> dict:
         exec_names.host_folds_case = lambda: {fold!r}
         from no_human.agent.guard import evaluate
         out = {{}}
-        for cmd in {list(_FOLD_SENSITIVE_ROWS)!r}:
+        for cmd in {list(rows)!r}:
             decision = evaluate(
                 "Bash", {{"command": cmd}}, forbidden_paths=[],
-                never_push_to=["main"], cwd=".", env={{"PATH": ""}})
+                never_push_to=["main"], readonly={readonly!r}, cwd=".",
+                env={{"PATH": ""}})
             out[cmd] = not decision.allow
         print(json.dumps(out))
     """)
@@ -320,6 +330,162 @@ def test_a_case_sensitive_host_is_not_punished():
     denied = _verdicts_with_fold(False)
 
     assert denied == {cmd: False for cmd in _FOLD_SENSITIVE_ROWS}, denied
+
+
+# ------------------------------------------------ #328's runner-recursion half
+#
+# Capitalising one letter of the BINARY (`gh`/`glab`), the NOUN (`pr`/`mr`) or
+# the VERB (`merge`/`accept`) of a forge merge command, wrapped in a shell
+# runner (`sh -c`, `bash -c`, `timeout`, `xargs`), let a merge through that
+# the bare/lowercase spelling correctly denies. Two independent defects, both
+# required to close it: `_forge_invocations`/`_git_invocations` resolved a
+# wrapped runner's nested command name case-blind instead of through
+# `exec_names.command_name` (the same resolver the top-level `argv[0]` path
+# already used), and `_forge_subcommand` compared/returned raw-case tokens so
+# a capitalised noun/verb never matched `_FORGE_MERGE_PAIRS` even once found.
+
+#: `(noun, verb)` for the two forges' merge subcommand, per `_FORGE_MERGE_PAIRS`.
+_CASE_FORGE_SUBCOMMANDS = {"gh": ("pr", "merge"), "glab": ("mr", "merge")}
+
+#: Every runner the guard recurses into for a forge command, `{cmd}` standing
+#: in for the (possibly capitalised, possibly `-R`-flagged) invocation.
+_CASE_MATRIX_RUNNERS = (
+    "{cmd}",
+    'sh -c "{cmd}"',
+    'bash -c "{cmd}"',
+    "timeout 30 {cmd}",
+    "xargs {cmd}",
+)
+
+
+def _case_matrix_cell(binary: str, noun: str, verb: str, position: str,
+                       flagged: bool, runner_tmpl: str) -> str:
+    """One matrix cell: `binary`/`noun`/`verb` with the token named by
+    `position` capitalised, optionally carrying the `-R o/r` global option
+    that defeats `_FORGE_MERGE`'s contiguous lexical anchor (so only the
+    structural pair-fold can reach it), wrapped in `runner_tmpl`."""
+    parts = {"binary": binary, "noun": noun, "verb": verb}
+    parts[position] = parts[position].upper()
+    flag = "-R o/r " if flagged else ""
+    cmd = f"{parts['binary']} {flag}{parts['noun']} {parts['verb']} 7"
+    return runner_tmpl.format(cmd=cmd)
+
+
+#: `(binary, position, flagged, runner, cell)` for every cell, kept alongside
+#: the generated command so the expected-value table below can be built from
+#: the SAME metadata rather than from running the guard.
+_CASE_MATRIX_CELLS = [
+    (binary, position, flagged, runner_tmpl,
+     _case_matrix_cell(binary, noun, verb, position, flagged, runner_tmpl))
+    for binary, (noun, verb) in _CASE_FORGE_SUBCOMMANDS.items()
+    for position in ("binary", "noun", "verb")
+    for flagged in (False, True)
+    for runner_tmpl in _CASE_MATRIX_RUNNERS
+]  # 2 forges x 3 positions x 2 flag flavours x 5 runners = 60 cells.
+
+_CASE_MATRIX_EXTRA_ROWS = (
+    # `glab mr accept 12` is `_FORGE_MERGE_PAIRS`'s third pair, `accept` an
+    # alias of `merge` -- capitalise each of its three tokens in turn too.
+    "glab mr accept 12",
+    "GLAB mr accept 12",
+    "glab MR accept 12",
+    "glab mr ACCEPT 12",
+    # Unbalanced quote: `shlex.split` raises inside `_forge_invocations` and
+    # the function falls back to `.split()` -- one row exercising that
+    # fallback under a capitalised binary.
+    'sh -c "GH pr merge 7',
+    # Lexical-only: no `_forge_subcommand` pair reaches an `api` REST call or
+    # a GraphQL mutation string, so these pin `_FORGE_MERGE`'s own
+    # `case_flags()` in isolation from the structural fix.
+    "GH api /repos/o/r/pulls/7/merge --method PUT",
+    'gh API graphql -f query="mutation{mergePullRequest(input:{})}"',
+)
+
+_CASE_MATRIX_ROWS = tuple(cell for *_meta, cell in _CASE_MATRIX_CELLS) + _CASE_MATRIX_EXTRA_ROWS
+
+
+def test_every_capitalised_merge_spelling_is_denied_on_a_folding_host():
+    """Asserted against the WHOLE dict, not `all(...)`, so a failure prints
+    every still-open cell rather than just the first."""
+    denied = _verdicts_with_fold(True, _CASE_MATRIX_ROWS)
+
+    assert denied == {cmd: True for cmd in _CASE_MATRIX_ROWS}, denied
+
+
+def test_a_case_sensitive_host_keeps_the_documented_table():
+    """Answers the plan's open intake question by measurement: the fix must
+    hold under BOTH `host_folds_case()` answers, because the binary-name half
+    is deliberately host-gated (`GH` really is a different file on a
+    case-sensitive host, the #320 position) while the noun/verb half
+    deliberately is not (`gh pr MERGE` is not a runnable subcommand on any
+    host, so denying it refuses nothing anyone is entitled to run).
+
+    The expected table is built from the generating metadata (`position`),
+    not from a second run of the guard -- a regression in either half of the
+    fix shows up as a documented-table mismatch, not a tautology."""
+    expected = {
+        cell: position != "binary"
+        for _binary, position, _flagged, _runner, cell in _CASE_MATRIX_CELLS
+    }
+    expected.update({
+        "glab mr accept 12": True,
+        "GLAB mr accept 12": False,
+        "glab MR accept 12": True,
+        "glab mr ACCEPT 12": True,
+        'sh -c "GH pr merge 7': False,
+        "GH api /repos/o/r/pulls/7/merge --method PUT": False,
+        'gh API graphql -f query="mutation{mergePullRequest(input:{})}"': True,
+    })
+
+    denied = _verdicts_with_fold(False, _CASE_MATRIX_ROWS)
+
+    assert denied == expected, denied
+
+
+def test_the_runner_recursion_folds_a_wrapped_name_for_git_too():
+    """#328's other extractor: `_git_invocations` had the identical defect,
+    fixed identically (`exec_names.command_name`, not `PurePosixPath(tok).name`,
+    on the trailing-argv branch; a precompiled `_GIT_MENTION` gated by
+    `case_flags()` on the quoted-mention branch). The `-C .` row is the one no
+    lexical git pattern reaches at all, so it pins the git half specifically
+    rather than riding on some other gate. Asserted through `evaluate`, never
+    `_git_invocations` directly.
+
+    `readonly=True`: `_git_invocations` (the function this test's fix touches)
+    is consulted only by the read-only session's write-block. At the default
+    `readonly=False` the protected-branch check goes through the separate,
+    out-of-scope `_git_push_invocations`, which has its own pre-existing gap
+    for a trailing-argv runner -- a different bug this task does not fix, and
+    asserting this row there would either mask that gap or misattribute it."""
+    rows = (
+        'sh -c "GIT push origin main"',
+        'bash -c "GIT -C . push origin main"',
+        "timeout 30 GIT push origin main",
+        "xargs GIT push origin main",
+    )
+
+    denied_folding = _verdicts_with_fold(True, rows, readonly=True)
+    assert denied_folding == {cmd: True for cmd in rows}, denied_folding
+
+    denied_sensitive = _verdicts_with_fold(False, rows, readonly=True)
+    assert denied_sensitive == {cmd: False for cmd in rows}, denied_sensitive
+
+
+def test_the_widened_mention_gate_stays_linear():
+    """`_FORGE_MENTION`/`_GIT_MENTION` must stay precompiled -- a per-call
+    `re.compile` here would turn the documented linear recursion bound into
+    quadratic-or-worse well before 1000 wrappers. Wall-clock ceiling is
+    generous on purpose; this is a linearity smoke test, not a benchmark."""
+    nested = "GIT push origin main"
+    for _ in range(1000):
+        nested = f'sh -c "{nested}"'
+
+    started = time.monotonic()
+    denied = _verdicts_with_fold(True, (nested,))
+    elapsed = time.monotonic() - started
+
+    assert isinstance(denied[nested], bool)  # completed at all, didn't hang
+    assert elapsed < 30, f"linearity bound appears lost: {elapsed}s"
 
 
 # ------------------------------------------------------------- the real gates

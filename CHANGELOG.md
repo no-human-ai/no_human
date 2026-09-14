@@ -16,6 +16,22 @@ All notable changes to no_human. The format follows
   `--criteria` are declared only to refuse and explain why. Every correction
   is recorded as a `human_retitle` event carrying the prior title.
 
+### Fixed
+- **A capitalised binary, noun or verb in a wrapped git/forge command no
+  longer opens a merge or a read-only-mode write the bare spelling correctly
+  denies.** `_forge_invocations`/`_git_invocations` resolved a shell runner's
+  (`sh -c`, `bash -c`, `timeout`, `xargs`, …) nested command name with a raw,
+  case-blind comparison instead of the host-gated `exec_names.command_name`
+  the top-level `argv[0]` path already used, so `timeout 30 GH pr merge 7` and
+  `sh -c "GIT push origin main"` recursed past their capitalised name
+  entirely; separately, `_forge_subcommand` compared and returned raw-case
+  tokens, so even a structurally-found `("pr", "MERGE")` never matched
+  `_FORGE_MERGE_PAIRS`, and the lexical `_FORGE_MERGE` pattern lacked the
+  `exec_names.case_flags()` its siblings already carried. All three are
+  fixed; a matrix test in `tests/test_exec_names.py` pins every
+  binary/noun/verb capitalisation across both forges and every recursed
+  runner through the real guard entry point.
+
 ### Changed
 - Second brain is now called Memories.
 - The Claude Code plugin manifest carries the release version (it had stayed at

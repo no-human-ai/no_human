@@ -564,6 +564,25 @@ modelled, not a closed door — the modelled set is not closed. Treat
 the matcher as a cost on the obvious spellings, not as the door: the control
 that closes it is a check at the act, not a longer pattern.
 
+Capitalising one letter of the binary, the noun or the verb used to walk past
+both the wrapper recursion above and the pair check behind it (#328). The
+recursion resolved a runner's nested command name — `timeout 30 GH pr merge
+7`, `sh -c "GIT push origin main"` — with a raw, case-blind name comparison
+instead of the host-gated `exec_names.command_name` the top-level `argv[0]`
+path already used, so a capitalised name never reached the recursive call at
+all; `_forge_invocations` and `_git_invocations` both go through
+`command_name` now, on a folding host exactly where `git.exe`/`gh.exe`
+already do. `_forge_subcommand` also compared and returned raw-case tokens,
+so even a structurally-found `("pr", "MERGE")` failed the `_FORGE_MERGE_PAIRS`
+membership check; that fold is unconditional (a CLI subcommand spelling is
+not a filesystem name, so a case-sensitive host is not entitled to run `gh pr
+MERGE` any more than a folding one is). `_FORGE_MERGE` itself gained the
+`exec_names.case_flags()` its siblings `_RM_RF`/`_GIT_DESTRUCTIVE` already
+carried, so a capitalised name denies lexically too wherever no structural
+path reaches it (`GH api .../pulls/7/merge`). `tests/test_exec_names.py`'s
+`_CASE_MATRIX_ROWS` pins the full binary/noun/verb × forge × runner matrix
+through `evaluate`.
+
 Pushes to `main`, `master` and `release/*` are refused too, and that rule has
 a second enforcement point, which is the part worth knowing. The first is
 `_push_targets_protected` in `agent/guard.py`: it looks for a protected branch

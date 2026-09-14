@@ -1113,8 +1113,15 @@ _FORGE_MERGE = re.compile(
     # the project's standing rules forbid in as many words: there is no
     # auto-merge anywhere, and "as soon as checks pass" is auto-merge.
     # Missed by the first sweep, found by review 2026-08-22.
-    r"|mergePullRequest\b|enablePullRequestAutoMerge\b)"
-)
+    # `exec_names.case_flags()`, matching `_RM_RF`/`_GIT_DESTRUCTIVE`: this
+    # pattern was the one lexical gate WITHOUT it (#328), the reason a
+    # capitalised `gh`/`glab` merge command reached ALLOW on a folding host
+    # even before the runner-recursion fix above. Folding also widens the
+    # GraphQL mutation names, which the API itself treats case-sensitively —
+    # that can only ADD a denial for a string that could never have run as a
+    # real mutation, which matches this pattern's stated polarity: a false
+    # denial costs one message, a missed one merges a PR.
+    r"|mergePullRequest\b|enablePullRequestAutoMerge\b)", exec_names.case_flags())
 
 # The product's OWN spelling of the same act: `nh merge-stack run` shells
 # `gh pr merge` for every READY PR in the stack (cli/commands.py,
@@ -1576,8 +1583,16 @@ _ASSIGN_DECLARATORS = frozenset({"export", "local", "readonly", "declare", "type
 
 #: A `gh`/`glab` mention inside a shell-runner argument — precompiled once so
 #: the depth-bounded recursion in `_forge_invocations` stays linear even on
-#: the 50k-char / 1000-wrapper adversarial case.
-_FORGE_MENTION = re.compile(r"\b(?:gh|glab)\s+\S")
+#: the 50k-char / 1000-wrapper adversarial case. Host-gated `case_flags()`,
+#: not unconditional `IGNORECASE`: `sh -c "GH pr merge 7"` recurses into the
+#: quoted payload either way, and the deciding fold happens after recursion
+#: in `command_name` (also host-gated) — this gate only needs to widen where
+#: that later fold would anyway (#328's runner-recursion half).
+_FORGE_MENTION = re.compile(r"\b(?:gh|glab)\s+\S", exec_names.case_flags())
+
+#: `git` mention inside a shell-runner argument, `_FORGE_MENTION`'s sibling
+#: for `_git_invocations` — same precompiled-for-linearity, same host gate.
+_GIT_MENTION = re.compile(r"\bgit\s+\S", exec_names.case_flags())
 
 _MASK_KEY = re.compile(r"\x00m\d+\x00")
 
@@ -2059,14 +2074,22 @@ def _forge_subcommand(argv: list[str]) -> tuple[str, str]:
     noun this time, and only the modelled `-R`/`--repo` forms are skipped
     there, never an arbitrary flag. `gh -H pr merge 7` -> ("pr", "merge")
     also — `-H` is not in `_FORGE_GLOBAL_OPT_WITH_ARG` so it is skipped by
-    one token, not two, and the noun is still found."""
+    one token, not two, and the noun is still found.
+
+    The returned noun/verb are folded UNCONDITIONALLY, not behind
+    `exec_names.case_flags()`: a CLI subcommand word is not a filesystem
+    name, so `host_folds_case()` has no bearing on whether `gh pr MERGE 7`
+    is the same invocation as `gh pr merge 7` — it always is, on every host.
+    Flags are matched exact-case still: folding the argv up front would turn
+    `-R` into `-r`, which is not in `_FORGE_GLOBAL_OPT_WITH_ARG`, misreading
+    it as the verb instead of skipping it (#328)."""
     i = 1
     while i < len(argv):
         tok = argv[i]
         if tok.startswith("-"):
             i += 2 if tok in _FORGE_GLOBAL_OPT_WITH_ARG else 1
             continue
-        if tok in _FORGE_NOUNS:
+        if tok.lower() in _FORGE_NOUNS:
             j = i + 1
             while j < len(argv):
                 vtok = argv[j]
@@ -2077,7 +2100,7 @@ def _forge_subcommand(argv: list[str]) -> tuple[str, str]:
                     j += 1
                     continue
                 break
-            return tok, (argv[j] if j < len(argv) else "")
+            return tok.lower(), (argv[j].lower() if j < len(argv) else "")
         i += 1
     return "", ""
 
@@ -2533,7 +2556,10 @@ def _forge_invocations(cmd: str, _depth: int = 0) -> list[list[str]]:
                 if _FORGE_MENTION.search(tok):
                     found.extend(_forge_invocations(tok, _depth + 1))
                 # `timeout 30 gh …` / `xargs gh …` — the rest of THIS argv.
-                elif PurePosixPath(tok).name in {"gh", "glab"}:
+                # `command_name`, not `PurePosixPath(tok).name`: the same
+                # host-gated fold the top-level branch above already applies
+                # to `argv[0]`, so `timeout 30 GH pr merge 7` is seen too.
+                elif exec_names.command_name(tok, is_windows=_IS_WINDOWS) in {"gh", "glab"}:
                     found.append(argv[j:])
                     break
     return found
@@ -2567,11 +2593,14 @@ def _git_invocations(cmd: str, _depth: int = 0) -> list[tuple[str, list[str]]]:
         elif name in _FORGE_RUNNER_NAMES and _depth < 2:
             for j, tok in enumerate(argv[1:], start=1):
                 # `sh -c "git stash"` — the command is one quoted token.
-                if re.search(r"\bgit\s+\S", tok):
+                if _GIT_MENTION.search(tok):
                     found.extend(_git_invocations(tok, _depth + 1))
                 # `xargs git restore` / `timeout 30 git restore .` — the
                 # command is the rest of THIS argv, already tokenised.
-                elif PurePosixPath(tok).name == "git":
+                # `command_name`, not `PurePosixPath(tok).name`: the same
+                # host-gated fold the top-level branch above already applies
+                # to `argv[0]`, so `timeout 30 GIT restore .` is seen too.
+                elif exec_names.command_name(tok, is_windows=_IS_WINDOWS) == "git":
                     found.append((seg, argv[j:]))
                     break
     return found
