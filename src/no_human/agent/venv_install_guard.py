@@ -189,7 +189,7 @@ import stat
 from pathlib import Path, PurePosixPath
 from typing import Mapping
 
-from . import win_readings
+from . import exec_names, win_readings
 
 #: Flipped by tests; see `win_readings` for why both spellings are read.
 _IS_WINDOWS = win_readings._IS_WINDOWS
@@ -349,14 +349,36 @@ def _basename(path: str) -> str:
     return name
 
 
-def _is_installer_name(name: str) -> bool:
-    # Case-folded on Windows ONLY, where the filesystem is: `PIP.EXE` and
-    # `pip.exe` are the same file there and must reach the same verdict, while
-    # on POSIX `PIP` is a genuinely different file and folding would be a text
-    # match masquerading as a structural one. Round 3 of #105 found
+def _is_installer_name(name: str, cwd: str | None = None) -> bool:
+    # Folded on Windows, where the filesystem always is, AND wherever this
+    # HOST's filesystem folds case (#328) -- macOS ships APFS
+    # case-insensitive by default, so `PIP install evilpkg` really runs `pip`
+    # there too, landing the install in the very venv this guard protects.
+    # The old reasoning here ("on POSIX `PIP` is a genuinely different
+    # file") is true of a case-SENSITIVE filesystem only; measured on the
+    # macOS default: `PIP install evilpkg` -> ALLOW while `pip install
+    # evilpkg` -> DENY, same fixture, same PATH. Round 3 of #105 found
     # `…\Scripts\PIP.EXE install requests` allowed while the lowercase
-    # spelling was refused.
-    if _IS_WINDOWS:
+    # spelling was refused; #328 is the same shape on a different host class.
+    #
+    # `host_folds_case(cwd)` — `cwd` only, deliberately no `path_env` — is
+    # the other half of this decision (case-fold review, ALSO-FIX): the
+    # probe's second argument would add the SESSION's own `PATH` entries as
+    # extra fold-measurement anchors, which this call site does not have on
+    # hand without threading `env` through all 8 of its callers (a much
+    # wider change than this fix needs). This is judged sufficient because
+    # `cwd` is the anchor that matters for what this function decides: the
+    # question is never "does the volume the INSTALLER BINARY lives on fold
+    # case" (that volume can be a shared system path, irrelevant to this
+    # guard's target check) but "does the volume the WRITE would land on
+    # fold case" -- and every existing call site passes the SESSION's own
+    # worktree as `cwd` for exactly that reason. A `PATH` entry on a
+    # different volume with different fold behaviour from `cwd` is an
+    # unmeasured edge this function does not claim to cover; `cwd` plus the
+    # process-wide anchors `host_folds_case` already falls back to
+    # (`sys.executable`'s dir, `tempfile.gettempdir()`) is the documented,
+    # deliberately narrower contract this module relies on.
+    if _IS_WINDOWS or exec_names.host_folds_case(cwd):
         name = name.lower()
     if name in _EXACT_INSTALLERS:
         return True
@@ -392,7 +414,7 @@ def _lex(text: str) -> list[str]:
 _MAX_PREFIX_JOIN = 8
 
 
-def _spaced_path_candidates(payload: str) -> list[str]:
+def _spaced_path_candidates(payload: str, cwd: str | None = None) -> list[str]:
     """The installer path a nested payload's own quoting would have kept whole.
 
     Round 3 of #105. `cmd /c "C:\\Program Files\\proj\\.venv\\Scripts\\pip.exe
@@ -428,18 +450,23 @@ def _spaced_path_candidates(payload: str) -> list[str]:
     out: list[str] = []
     for k in range(2, min(len(toks), _MAX_PREFIX_JOIN) + 1):
         joined = " ".join(toks[:k])
-        if _is_installer_name(_basename(joined)):
+        if _is_installer_name(_basename(joined), cwd):
             out.append(joined)
             out.extend(toks[k:])
     return out
 
 
-def _flatten(text: str, _depth: int = 0) -> list[str]:
+def _flatten(text: str, cwd: str | None = None, _depth: int = 0) -> list[str]:
     """The full token stream for `text`, with shell-runner script arguments
     recursively expanded in place. Positionless by construction: the
     resulting list is one flat multiset in which no caller ever asks "what
     is argv[0]" — `(`, `\\n\\n`, `&`, `;` and a quoted payload are all
     structurally irrelevant to what gets resolved next.
+
+    `cwd` is threaded through to `_spaced_path_candidates` (the only helper
+    called from here that classifies an installer name) so its fold decision
+    matches the command's own working directory rather than falling back to
+    the process-wide union.
     """
     tokens = _lex(text)
     if _depth >= _MAX_RECURSE_DEPTH:
@@ -459,8 +486,8 @@ def _flatten(text: str, _depth: int = 0) -> list[str]:
         if name.lower() in _SHELL_RUNNERS:
             seen_runner = True
         if seen_runner and _is_script_flag(tok) and i + 1 < n:
-            out.extend(_flatten(tokens[i + 1], _depth + 1))
-            out.extend(_spaced_path_candidates(tokens[i + 1]))
+            out.extend(_flatten(tokens[i + 1], cwd, _depth + 1))
+            out.extend(_spaced_path_candidates(tokens[i + 1], cwd))
             seen_runner = False
             out.append(tok)
             i += 2
@@ -640,7 +667,7 @@ def _resolve_installer(token: str, cwd: str | None, env: Mapping[str, str]) -> s
     try:
         if "/" in token:
             real = _safe_realpath(_join(cwd, token))
-            if real and _is_installer_name(_basename(real)):
+            if real and _is_installer_name(_basename(real), cwd):
                 probe = _probe_is_file(real)
                 # `None` (undeterminable — e.g. a `chmod` on the venv
                 # directory two levels up makes even stat'ing this file
@@ -658,7 +685,7 @@ def _resolve_installer(token: str, cwd: str | None, env: Mapping[str, str]) -> s
                             "rather than assuming it is absent", token, real,
                         )
                     return real
-            if _is_installer_name(_basename(token)):
+            if _is_installer_name(_basename(token), cwd):
                 _LOG.warning(
                     "venv guard: %r names an installer but could not be "
                     "resolved via PATH; allowing", token,
@@ -671,7 +698,7 @@ def _resolve_installer(token: str, cwd: str | None, env: Mapping[str, str]) -> s
         # `_flatten` and its commit message claimed there was one. Without it
         # this returns before `shutil.which` AND before the WARNING, so a bare
         # `pip.exe install foo` was allowed in silence.
-        if not _is_installer_name(_basename(token)):
+        if not _is_installer_name(_basename(token), cwd):
             return None
         # Deliberately NOT `shutil.which`: it resolves via `os.path.exists`
         # internally, which swallows `PermissionError` exactly like
@@ -820,7 +847,7 @@ def _resolve_installer(token: str, cwd: str | None, env: Mapping[str, str]) -> s
                     continue
                 if probe is None:
                     real = _safe_realpath(candidate) or candidate
-                    if _is_installer_name(_basename(real)):
+                    if _is_installer_name(_basename(real), cwd):
                         if fallback is None:
                             fallback = real
                         # Tracked SEPARATELY from `fallback`, and this is the
@@ -845,7 +872,7 @@ def _resolve_installer(token: str, cwd: str | None, env: Mapping[str, str]) -> s
                 if not os.access(candidate, os.X_OK):
                     continue
                 real = _safe_realpath(candidate)
-                if real and _is_installer_name(_basename(real)):
+                if real and _is_installer_name(_basename(real), cwd):
                     displaced = _displaced_by_indeterminate_venv(
                         token, real, venv_fallback)
                     if displaced is not None:
@@ -887,7 +914,9 @@ def _flag_value(tok: str, nxt: str | None, flags: frozenset[str]) -> str | None:
     return None
 
 
-def _mutating_subcommand(tokens: list[str], start: int) -> str | None:
+def _mutating_subcommand(
+    tokens: list[str], start: int, cwd: str | None = None
+) -> str | None:
     """The subcommand `tokens[start]` (a RESOLVED installer) would invoke,
     or None.
 
@@ -904,6 +933,11 @@ def _mutating_subcommand(tokens: list[str], start: int) -> str | None:
     own flag scan; it still starts from a specific resolved-installer
     position because "the subcommand of installer X" is inherently about
     that occurrence, not the whole flat token multiset.
+
+    `cwd` is threaded through to `_is_installer_name` below so the inner
+    installer-name check (d) folds case on the command's own working
+    directory, matching the outer resolution that put `start` here in the
+    first place, rather than falling back to the process-wide union.
     """
     n = len(tokens)
     i = start + 1
@@ -924,14 +958,16 @@ def _mutating_subcommand(tokens: list[str], start: int) -> str | None:
             # below, its value already inside this one token.
             i += 2 if tok in _VALUE_FLAGS else 1
             continue
-        if _is_installer_name(tok):
+        if _is_installer_name(tok, cwd):
             i += 1
             continue
         return tok
     return None
 
 
-def _uses_active_env(tokens: list[str], start: int) -> bool:
+def _uses_active_env(
+    tokens: list[str], start: int, cwd: str | None = None
+) -> bool:
     """True when the installer at `tokens[start]` is itself given `--active`.
 
     Scoped to that installer's OWN segment, exactly like
@@ -984,10 +1020,16 @@ def _uses_active_env(tokens: list[str], start: int) -> bool:
         return False
 
     n = len(tokens)
-    subcommand = _mutating_subcommand(tokens, start)
+    subcommand = _mutating_subcommand(tokens, start, cwd)
+    # `.lower()`, not a bare `.startswith("uvx")`: `_is_installer_name`
+    # (the check whose folding this walker is supposed to mirror) already
+    # folds case where the host folds it, so an un-folded comparison here
+    # disagreed with its own upstream classifier — `UVX ruff check --active`
+    # measured as an installer invocation but `expects_program` stayed
+    # False, so the tool's own `--active` flag was read as uv's.
     expects_program = (
         subcommand in _PROGRAM_INVOKING_SUBCOMMANDS
-        or _basename(tokens[start]).startswith("uvx")
+        or _basename(tokens[start]).lower().startswith("uvx")
     )
     seen_subcommand = subcommand is None
     active = False
@@ -1015,7 +1057,7 @@ def _uses_active_env(tokens: list[str], start: int) -> bool:
             seen_subcommand = True
             i += 1
             continue
-        if _is_installer_name(tok) and not expects_program:
+        if _is_installer_name(tok, cwd) and not expects_program:
             i += 1
             continue
         # A bare positional once a program is expected: this is the program,
@@ -1160,7 +1202,14 @@ def _effective_prefixes(
     # venv's `bin/` (it is installed there like any other tool) even though
     # `uv sync`/`uv run pytest -q` correctly target the worktree via `cwd`.
     for exe in installers:
-        if _basename(exe) in ("uv", "uvx"):
+        # `.lower()`, not a bare comparison: `_is_installer_name` (the check
+        # that populated `installers` in the first place) already folds case
+        # where the host folds it, so a bare `_basename(exe) in (...)` here
+        # disagreed with its own upstream classifier -- `UV sync` measured as
+        # an installer invocation but not as `uv` for this exclusion, so it
+        # fell through to being treated like `pip`/`python` and got denied
+        # even though `uv sync` (lowercase) is allowed on the identical host.
+        if _basename(exe).lower() in ("uv", "uvx"):
             continue
         owning = _venv_root_of(exe)
         if owning:
@@ -1216,7 +1265,7 @@ def _denial_reason_for_reading(
     if not cmd or not cmd.strip():
         return None
 
-    tokens = _flatten(cmd)
+    tokens = _flatten(cmd, cwd)
     if not tokens:
         return None
 
@@ -1242,9 +1291,11 @@ def _denial_reason_for_reading(
     # is the broad reading this module's residual register warns about. This
     # is the narrow half: `--active` is rare, explicit, and always names an
     # environment.
-    uses_active = any(_uses_active_env(tokens, i) for i, _ in resolved_positions)
+    uses_active = any(
+        _uses_active_env(tokens, i, cwd) for i, _ in resolved_positions
+    )
     intent = uses_active or any(
-        _mutating_subcommand(tokens, i) in _MUTATING_SUBCOMMANDS
+        _mutating_subcommand(tokens, i, cwd) in _MUTATING_SUBCOMMANDS
         for i, _ in resolved_positions
     )
     if not intent:
