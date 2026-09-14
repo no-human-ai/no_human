@@ -17,24 +17,50 @@ Two things are asserted, and they are asserted separately on purpose:
   allowed (pre-fix) to denied (now) — the capitalised installer spellings
   (`PIP`/`Pip`/`PIP3`/`UV`) the bug let through.
 
-`testdata/case_fold_corpus.json`'s `baseline` was captured by restoring
-`exec_names.py`/`venv_install_guard.py` to their pre-fix (parent-commit)
-content — via `git show HEAD:<path>`, since this sandbox's destructive-op
-guard blocks `git worktree add` — into a scratch copy of `src/no_human` and
-re-running the same corpus against it with `sys.path` pointed there instead.
-On this dev host that measurement coincides with post-fix for every row in
-the JSON corpus (both the old `__file__`-probe and the new cwd/PATH-union
-probe happen to measure the same single APFS volume here), so the JSON
-corpus alone only exercises the safety net. The closing-direction proof
-needs a constructed two-venv session (a foreign "primary" venv on `PATH`,
-a separate worktree `cwd`) to structurally trigger the venv-install guard at
-all, which is not representable as static `cwd`/`env` string literals — so
-that half lives in its own test, below, that builds the session and calls
-`guard.evaluate` directly.
+`testdata/case_fold_corpus.json` carries no baseline table — a hand-typed
+"what the pre-fix code would have denied" dict cannot be trusted to reflect
+what the pre-fix code actually did on whatever host runs the suite, which is
+exactly the defect an earlier version of this file shipped: it worked out a
+`baseline_nonfolding` table by REASONING about the post-fix matchers rather
+than by running the pre-fix probe, so a future regression in the probe's own
+measurement could have been compared against an answer authored to match it.
+
+Instead, `test_no_corpus_row_moved_from_denied_to_allowed` computes the
+"pre-fix" baseline at run time: `_pre_fix_host_folds_case` is a literal
+reproduction of `host_folds_case()` as it read at the commit before this
+change (`git show 0b8c2dc4:src/no_human/agent/exec_names.py` —
+`_folds_case(os.path.realpath(__file__))` with an `os.name == "nt"`
+fallback), executed for real against THIS process's own `exec_names.py` on
+THIS host — a genuine measurement, not a transcription. Every corpus row's
+denied-ness is driven by call sites (`command_name`'s `fold_case=None`
+default, `guard.py`'s import-time `case_flags()`) that pass `host_folds_case`
+the exact same no-argument shape both before and after this change — only
+what the probe MEASURES changed, not how guard.py consumes the boolean — so
+forcing that measured boolean into a FRESH interpreter (`_RM_RF` and
+`_GIT_DESTRUCTIVE` bake `case_flags()` into compiled patterns at import time,
+so an in-process monkeypatch after `guard` is already imported cannot reach
+them; see `exec_names.case_flags`'s own docstring) and importing the
+CURRENT, already-fixed `guard.py`/`venv_install_guard.py` fresh reproduces
+exactly what the pre-fix code would have decided for these rows, on any
+host, without needing the pre-fix source at all. (No corpus row resolves an
+installer via `PATH` — every row's `env` is `{"PATH": ""}` — so this
+argument does not have to also cover `_is_installer_name`'s `cwd`-threading
+change; that half is pinned separately, below and in
+`test_venv_install_guard.py`.)
+
+The closing-direction proof needs a constructed two-venv session (a foreign
+"primary" venv on `PATH`, a separate worktree `cwd`) to structurally trigger
+the venv-install guard at all, which is not representable as static
+`cwd`/`env` string literals — so that half lives in its own test, below,
+that builds the session and calls `guard.evaluate` directly.
 """
 
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
+from textwrap import dedent
 
 import pytest
 
@@ -87,37 +113,104 @@ def _now_denied(rows):
     return out
 
 
+def _pre_fix_host_folds_case() -> bool:
+    """A literal reproduction of `host_folds_case()` as it read at
+    `0b8c2dc4` (the commit immediately before this change), executed for
+    real against THIS process's OWN `exec_names.py` module file on THIS
+    host -- a genuine measurement of what the pre-fix probe would have
+    answered here, not a transcription of what it answered somewhere else.
+
+    Pre-fix: `_folds_case(os.path.realpath(__file__))` --  swap the case of
+    `exec_names.py`'s own basename and ask `samefile`; an unswappable name
+    or an unreadable/vanished swapped path falls back to `os.name == "nt"`,
+    the permissive answer on POSIX. That fallback is exactly the defect
+    this task closes (AC2/AC3) -- reproduced here on purpose, since the
+    point of this helper is to measure what the OLD, buggy probe did, not
+    to already apply the fix under test.
+    """
+    directory, name = os.path.split(os.path.realpath(exec_names.__file__))
+    swapped_name = name.swapcase()
+    if swapped_name == name:
+        return os.name == "nt"
+    swapped = os.path.join(directory, swapped_name)
+    try:
+        return os.path.exists(swapped) and os.path.samefile(
+            swapped, os.path.realpath(exec_names.__file__))
+    except OSError:
+        return os.name == "nt"
+
+
+def _denied_with_forced_fold(commands, fold: bool) -> dict:
+    """Guard verdicts for `commands`, from a FRESH interpreter with the fold
+    probe pinned to `fold` before `guard` is imported.
+
+    Not an in-process monkeypatch: `_RM_RF`, `_GIT_DESTRUCTIVE` and the
+    `_looks_like_git_push` recursion gate bake `exec_names.case_flags()`
+    into compiled regex patterns at import time (see `case_flags`'s own
+    docstring), so patching `host_folds_case` after `guard` is already
+    imported only reaches the name-resolution half -- exactly the shape of
+    bug that let a fix for one half look complete while the raw-text half
+    stayed open. Mirrors `tests/test_exec_names.py::_verdicts_with_fold`,
+    generalised to an arbitrary command list instead of one fixed tuple.
+
+    Reusing the CURRENT, already-fixed `guard.py`/`venv_install_guard.py`
+    here (rather than checking out the pre-fix source tree) is sound
+    because every corpus row's `env` is `{"PATH": ""}` -- none resolves an
+    installer via PATH, so `_is_installer_name`'s cwd-threading fix (the
+    other half of this change) never fires for these rows -- and because
+    `guard.py`'s call sites pass `host_folds_case`/`case_flags()` the exact
+    same no-argument shape both before and after this change; only what the
+    probe MEASURES changed, not how the boolean is consumed. Forcing the
+    measured pre-fix boolean through the current consumption code therefore
+    reproduces exactly what the pre-fix code decided for these rows.
+    """
+    code = dedent(f"""
+        import json
+        from no_human.agent import exec_names
+        exec_names.host_folds_case = lambda *a, **k: {fold!r}
+        from no_human.agent.guard import evaluate
+        out = {{}}
+        for cmd in {list(commands)!r}:
+            decision = evaluate(
+                "Bash", {{"command": cmd}}, forbidden_paths=[],
+                never_push_to=["main"], cwd=".", env={{"PATH": ""}})
+            out[cmd] = not decision.allow
+        print(json.dumps(out))
+    """)
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=300)
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
 def test_no_corpus_row_moved_from_denied_to_allowed():
     """AC4's safety net: nothing this change touches may move a command from
-    denied to allowed. This is checked against the corpus's own baseline for
-    THIS run's measured host class, not against `now` in the other direction
-    -- a row absent from the selected baseline simply was not measured
-    pre-fix and cannot regress.
+    denied to allowed.
 
-    Several corpus rows (the capitalised GH/RM/FIND/GIT spellings) are only
-    denied via guard.py matchers that key off `exec_names.host_folds_case()`
-    with no cwd/path_env override -- their correct denied-ness is a genuine
-    property of the host running this suite (a folding host's shell really
-    does resolve `RM` to `rm`; a non-folding host's shell cannot run it at
-    all, so there is nothing to deny). A single macOS-captured baseline
-    fails on a case-sensitive CI runner for reasons that are not
-    regressions, so the corpus carries one baseline per host class and this
-    test measures the REAL host (no monkeypatching) to pick the matching
-    one -- see the corpus's own `_comment` for how each `baseline_nonfolding`
-    entry was derived."""
+    The baseline is not read from a static table -- see the module
+    docstring for why an earlier, hand-typed `baseline_nonfolding` dict was
+    exactly the defect this test now avoids. Instead: measure what the
+    PRE-FIX probe would answer on THIS real host
+    (`_pre_fix_host_folds_case`, real I/O, no monkeypatching), then force
+    that measured boolean through the CURRENT guard in a fresh interpreter
+    (`_denied_with_forced_fold`) to get the true pre-fix-equivalent denied
+    set for every row in the corpus -- on whatever host class runs this
+    suite, folding or not."""
     corpus = _load_corpus()
+    commands = [row["cmd"] for row in corpus["rows"]]
     now = _now_denied(corpus["rows"])
-    folds = exec_names.host_folds_case()
-    baseline = corpus["baseline_folding"] if folds else corpus["baseline_nonfolding"]
+
+    pre_fold = _pre_fix_host_folds_case()
+    baseline = _denied_with_forced_fold(commands, pre_fold)
 
     was_denied = {cmd for cmd, denied in baseline.items() if denied}
     still_denied = {cmd for cmd, denied in now.items() if denied}
     regressed = was_denied - still_denied
 
     assert not regressed, (
-        f"host_folds_case()={folds} baseline -- these commands were DENIED "
-        "pre-fix and are now ALLOWED -- a regression this change must not "
-        f"introduce: {sorted(regressed)}")
+        f"pre-fix host_folds_case()={pre_fold} baseline -- these commands "
+        "were DENIED pre-fix and are now ALLOWED -- a regression this "
+        f"change must not introduce: {sorted(regressed)}")
 
 
 def test_the_allow_side_controls_still_run():
