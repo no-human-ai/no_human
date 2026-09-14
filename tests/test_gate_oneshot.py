@@ -538,3 +538,71 @@ def test_pr_mode_never_shells_out_to_a_write_command_against_the_users_checkout(
     monkeypatch.setattr(subprocess, "run", _spy)
     import asyncio
     asyncio.run(run_gate(repo, pr_url="https://github.com/acme/widgets/pull/13"))
+
+
+# --------------------------------------------------------------------------- #
+# 9. an empty diff must refuse, never fall through to the tool-enabled path   #
+# --------------------------------------------------------------------------- #
+
+def test_empty_diff_refuses_without_invoking_the_reviewer(tmp_path, monkeypatch):
+    """Regression: `AdversarialReviewer.review` treats `diff_override=""` as
+    falsy — identical to "no diff override" — and would silently switch to
+    the multi-turn, tool-enabled gate path (reviewer.py:2566, 2588, 2601),
+    defeating the single-turn/no-tools property the gate promises. A branch
+    whose net diff against the merge base is empty (added then reverted)
+    must refuse instead of handing the reviewer that empty string."""
+    repo, _bare = _make_repo_with_origin(tmp_path)
+    _git(repo, "checkout", "-b", "feature")
+    (repo / "b.txt").write_text("temp\n")
+    _git(repo, "add", "b.txt")
+    _git(repo, "commit", "-m", "add b.txt")
+    _git(repo, "rm", "b.txt")
+    _git(repo, "commit", "-m", "revert b.txt")
+
+    _ok_credential(monkeypatch)
+
+    class _ExplodingReviewer:
+        @classmethod
+        def from_config(cls, data, **kw):
+            return cls()
+
+        async def review(self, *a, **kw):
+            raise AssertionError(
+                "the reviewer must never be invoked on an empty diff"
+            )
+
+    monkeypatch.setattr(oneshot, "AdversarialReviewer", _ExplodingReviewer)
+
+    import asyncio
+    with pytest.raises(GateUnavailable, match="diff is empty"):
+        asyncio.run(run_gate(repo))
+
+
+def test_pr_mode_refuses_when_pr_head_has_no_commits_beyond_base(tmp_path, monkeypatch):
+    """Same empty-diff hazard, PR mode: a PR ref pushed straight at the same
+    commit as `origin/main` has `merge_base == head`, which branch mode
+    already guards (`_resolve_branch_mode`) but PR mode did not."""
+    repo, bare = _make_repo_with_origin(tmp_path)
+    pr_src = _push_pr_ref(bare, tmp_path / "pr_src4", 17)
+    _git(pr_src, "push", "origin", "HEAD:refs/pull/17/head")
+
+    _ok_credential(monkeypatch)
+
+    class _ExplodingReviewer:
+        @classmethod
+        def from_config(cls, data, **kw):
+            return cls()
+
+        async def review(self, *a, **kw):
+            raise AssertionError(
+                "the reviewer must never be invoked when the PR has no "
+                "commits beyond the base"
+            )
+
+    monkeypatch.setattr(oneshot, "AdversarialReviewer", _ExplodingReviewer)
+
+    import asyncio
+    with pytest.raises(GateUnavailable, match="no commits beyond"):
+        asyncio.run(run_gate(
+            repo, pr_url="https://github.com/acme/widgets/pull/17",
+        ))
