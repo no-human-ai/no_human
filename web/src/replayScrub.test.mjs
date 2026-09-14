@@ -277,6 +277,12 @@ function sweepApiEndpoints() {
   }
   const quotedRe = /"(\/api\/[^"]*)"/g;
   while ((m = quotedRe.exec(src))) found.add(normalizeApiPath(m[1]));
+  // Single-quoted call sites (e.g. `fetch(BASE + '/api/foo')`) are a valid
+  // JS string form api.js could use even though it doesn't today — without
+  // this, a single-quoted endpoint added later would silently escape the
+  // sweep and default-deny would be the only thing protecting it.
+  const singleQuotedRe = /'(\/api\/[^']*)'/g;
+  while ((m = singleQuotedRe.exec(src))) found.add(normalizeApiPath(m[1]));
   return found;
 }
 

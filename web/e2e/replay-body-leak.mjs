@@ -46,21 +46,45 @@
 //                            user-chosen auth-profile name, whenever
 //                            `paused_reason == "quota"` — a routine state.
 //                            This plants that exact field and asserts it is
-//                            ABSENT from the masked pass and PRESENT in the
-//                            control pass, closing that specific finding
-//                            with live bytes rather than a re-read of the
-//                            classification table.
+//                            ABSENT from the masked pass's NETWORK-capture
+//                            body and PRESENT in the control pass, closing
+//                            that specific finding with live bytes rather
+//                            than a re-read of the classification table.
+//                            This check is scoped to the network-capture
+//                            channel only, NOT "every captured byte": the
+//                            same name is also rendered into the DOM (a
+//                            status-indicator `title` attribute —
+//                            web/src/drainChip.js) and leaks via that
+//                            separate DOM/rrweb capture channel in BOTH the
+//                            masked and unmasked pass, unaffected by
+//                            maskCapturedNetworkRequestFn. That is a known,
+//                            pre-existing, separately-filed leak this PR
+//                            does not fix — the harness surfaces it as an
+//                            INFO line, not a failing assertion.
+//
+// Checks 2, 3, and 4 (and their controls) ARE scoped to "every captured
+// byte" across BOTH channels. posthog-js's recorder chunk gzip-compresses
+// individual rrweb snapshot fields (FullSnapshot's whole `data`, or a
+// Mutation/StyleSheetRule IncrementalSnapshot's `texts`/`attributes`/
+// `removes`/`adds`) before they reach a $snapshot event's
+// `properties.$snapshot_data` — independent of, and NOT disabled by, the
+// mock server's `supportedCompression: []` (which only governs the OUTER
+// whole-POST-body transport encoding). decode() below reverses that
+// per-field gzip so the haystack used for checks 2/3/4 is the actual full
+// decompressed byte content, not just whatever a naive scan of the outer
+// JSON happens to see.
 //
 // A second, "control" pass of the SAME dist bundle string-patches
 // `maskCapturedNetworkRequestFn:` out of the one chunk that wires it, so
 // posthog-js's own init() never calls it. That pass must leak the sentinels —
 // proof this harness has discriminating power (mirrors dead-click-race.mjs's
 // before_send/beforeSendOff A/B). Every masked-pass ABSENCE check (2, 3, 5)
-// has a matching control-pass PRESENCE check on the same sentinel, so a
-// clean masked result can never be explained by "this harness never
-// observed the request at all" — including check 3, the default-deny check,
-// whose sentinel (SENTINEL_UNLISTED) must be shown leaking in the unmasked
-// pass or the absence in the masked pass proves nothing.
+// has a matching control-pass PRESENCE check on the same sentinel and the
+// same channel scope, so a clean masked result can never be explained by
+// "this harness never observed the request at all" — including check 3, the
+// default-deny check, whose sentinel (SENTINEL_UNLISTED) must be shown
+// leaking in the unmasked pass or the absence in the masked pass proves
+// nothing.
 //
 //   node e2e/replay-body-leak.mjs   # needs `npm run build` first (drives web/dist)
 import http from "node:http";
@@ -148,9 +172,71 @@ function readBody(req) {
   });
 }
 
-// Returns both the decoded raw TEXT (for byte-level substring inspection —
-// the point of this harness) and best-effort parsed events (for the vacuity
-// guard: proving $snapshot events were actually captured).
+// posthog-js's recorder chunk (lazy-recorder.js) gzip-compresses individual
+// rrweb snapshot fields BEFORE they ever reach a "$snapshot" event's
+// `properties.$snapshot_data` array — independent of, and NOT disabled by,
+// this harness's mock `supportedCompression: []` config (which only
+// controls the OUTER whole-POST-body transport encoding, e.g. a
+// content-encoding: gzip header on the fetch/XHR itself). For a
+// `FullSnapshot` event the whole `data` field is replaced by compressed
+// bytes; for a `Mutation`/`StyleSheetRule` `IncrementalSnapshot`, the
+// `texts`/`attributes`/`removes`/`adds` sub-fields are each compressed
+// individually — both cases marked with `cv: "2024-10"` on the event. The
+// compressed bytes are encoded as a JS "binary string" (one UTF-16 code
+// unit per raw byte, via `String.fromCharCode`) — NOT base64 — so
+// `Buffer.from(s, "binary")` (Node's alias for latin1) reverses it
+// byte-for-byte before `zlib.gunzipSync`.
+//
+// Without reversing this, a substring search over the outer captured JSON
+// text is blind to whatever DOM content (element text nodes, attributes —
+// e.g. a rendered `title="..."` attribute) got swept into a FullSnapshot or
+// a Mutation record. That DOM/rrweb capture channel is entirely separate
+// from the network-capture channel `maskCapturedNetworkRequestFn`
+// (replayScrub.js) redacts — so a substring check that never decompresses
+// this can't tell "not on the wire at all" apart from "on the wire, just
+// gzip'd where a naive scan can't see it".
+function inflateBinaryGzipString(s) {
+  if (typeof s !== "string" || s.length === 0) return undefined;
+  try {
+    return zlib.gunzipSync(Buffer.from(s, "binary")).toString("utf8");
+  } catch {
+    return undefined;
+  }
+}
+
+// Decompresses one rrweb event's `cv: "2024-10"`-marked field(s) (see above)
+// into plain text, so its DOM content can be substring-checked like
+// anything else. Returns "" for events that aren't compressed (most —
+// e.g. the "rrweb/network@1" Plugin-type events that actually carry HTTP
+// request/response bodies are never in the compression-eligible set: only
+// FullSnapshot and Mutation/StyleSheetRule IncrementalSnapshot events are).
+function decompressRrwebEvent(ev) {
+  if (!ev || ev.cv !== "2024-10" || ev.data == null) return "";
+  const pieces = [];
+  if (typeof ev.data === "string") {
+    const out = inflateBinaryGzipString(ev.data);
+    if (out !== undefined) pieces.push(out);
+  } else if (typeof ev.data === "object") {
+    for (const key of ["texts", "attributes", "removes", "adds"]) {
+      const out = inflateBinaryGzipString(ev.data[key]);
+      if (out !== undefined) pieces.push(out);
+    }
+  }
+  return pieces.join("\n");
+}
+
+// Returns:
+//   - text: the decoded raw outer TEXT (byte-level substring inspection
+//     scope for the NETWORK-capture channel specifically — this is what
+//     maskCapturedNetworkRequestFn actually redacts, and it is never
+//     gzip'd per-field the way DOM snapshot data is, so this text already
+//     contains any network-capture body content in the clear).
+//   - expandedText: `text` plus every inner rrweb DOM snapshot field this
+//     request's $snapshot event(s) carried, decompressed — the broader
+//     scope for "absent from every captured byte" claims that must also
+//     account for the DOM/rrweb channel, not just the network sub-channel.
+//   - events: best-effort parsed top-level PostHog events (for the vacuity
+//     guard: proving $snapshot events were actually captured).
 function decode(raw, req) {
   let buf = raw;
   try {
@@ -172,13 +258,23 @@ function decode(raw, req) {
   try {
     parsed = JSON.parse(text);
   } catch {
-    return { text, events: [] };
+    return { text, expandedText: text, events: [] };
   }
   const events = Array.isArray(parsed) ? parsed : parsed.batch ? parsed.batch : [parsed];
-  return { text, events };
+  const inner = [];
+  for (const ev of events) {
+    const rrwebEvents =
+      ev && ev.properties && Array.isArray(ev.properties.$snapshot_data) ? ev.properties.$snapshot_data : [];
+    for (const re of rrwebEvents) {
+      const d = decompressRrwebEvent(re);
+      if (d) inner.push(d);
+    }
+  }
+  const expandedText = inner.length ? text + "\n\x00\n" + inner.join("\n\x00\n") : text;
+  return { text, expandedText, events };
 }
 
-function makeServer({ variant, rawTexts, capturedEvents, unmatched }) {
+function makeServer({ variant, rawTexts, expandedTexts, capturedEvents, unmatched }) {
   return http.createServer(async (req, res) => {
     const url = new URL(req.url, "http://localhost");
     const p = url.pathname;
@@ -244,8 +340,9 @@ function makeServer({ variant, rawTexts, capturedEvents, unmatched }) {
 
     if (req.method === "POST" && (p === "/ph/e/" || p === "/ph/i/v0/e/" || p === "/ph/s/" || p === "/ph/batch/")) {
       const raw = await readBody(req);
-      const { text, events } = decode(raw, req);
+      const { text, expandedText, events } = decode(raw, req);
       rawTexts.push(text);
+      expandedTexts.push(expandedText);
       for (const ev of events) {
         if (ev && ev.event) capturedEvents.push({ path: p, event: ev.event });
       }
@@ -349,9 +446,10 @@ async function listen(server) {
 
 async function runPass(browser, variant) {
   const rawTexts = [];
+  const expandedTexts = [];
   const capturedEvents = [];
   const unmatched = [];
-  const server = makeServer({ variant, rawTexts, capturedEvents, unmatched });
+  const server = makeServer({ variant, rawTexts, expandedTexts, capturedEvents, unmatched });
   const port = await listen(server);
   const base = `http://${TEST_HOST}:${port}`;
 
@@ -487,6 +585,7 @@ async function runPass(browser, variant) {
   await new Promise((resolve) => server.close(resolve));
   return {
     rawTexts,
+    expandedTexts,
     capturedEvents,
     unmatched: [...new Set(unmatched)],
     consoleErrors: consoleErrors.slice(0, 5),
@@ -505,6 +604,7 @@ try {
       console.log(`=== DIAG ${label}: ${r.capturedEvents.length} events, ${r.rawTexts.length} POST bodies ===`);
       r.capturedEvents.forEach((e, i) => console.log(`  event[${i}]: ${e.event}`));
       fs.writeFileSync(`/tmp/rawtexts-${label}.log`, r.rawTexts.join("\n\n=====\n\n"));
+      fs.writeFileSync(`/tmp/expandedtexts-${label}.log`, r.expandedTexts.join("\n\n=====\n\n"));
     }
     if (r.unmatched.length) {
       console.log(`=== unmatched/log (${label} pass) ===`);
@@ -513,9 +613,19 @@ try {
     if (r.consoleErrors.length) console.log(`console errors (${label}):`, r.consoleErrors);
   }
 
-  const haystack = (r) => r.rawTexts.join("\n\x00\n");
-  const mHay = haystack(masked);
-  const uHay = haystack(unmasked);
+  // netHay: the network-capture channel only (what maskCapturedNetworkRequestFn
+  // actually redacts) — never per-field gzip'd, so this is already "every
+  // captured byte" *for that channel* without any decompression.
+  // fullHay: netHay PLUS every DOM/rrweb snapshot field decompressed (see
+  // decode()'s header comment) — "every captured byte" across BOTH the
+  // network-capture and DOM/rrweb capture channels, which are separate
+  // mechanisms wired to separate seams (only the former is this fix's scope).
+  const netHaystack = (r) => r.rawTexts.join("\n\x00\n");
+  const fullHaystack = (r) => r.expandedTexts.join("\n\x00\n");
+  const mNetHay = netHaystack(masked);
+  const uNetHay = netHaystack(unmasked);
+  const mFullHay = fullHaystack(masked);
+  const uFullHay = fullHaystack(unmasked);
 
   const checks = [];
   function check(name, ok, detail) {
@@ -531,51 +641,74 @@ try {
     `captured ${snapshotCount} $snapshot event(s) across ${masked.rawTexts.length} POST bodies`,
   );
 
-  // 2. redact-tier: the planted repo path/name must not reach PostHog
-  check("masked: sentinel repo PATH is absent from every captured byte", !mHay.includes(SENTINEL_PATH));
-  check("masked: sentinel repo NAME is absent from every captured byte", !mHay.includes(SENTINEL_NAME));
+  // 2. redact-tier: the planted repo path/name must not reach PostHog —
+  // checked against fullHay (network capture + decompressed DOM/rrweb
+  // fields), so "absent from every captured byte" is literally true, not
+  // just true of the one channel a naive scan happens to see.
+  check("masked: sentinel repo PATH is absent from every captured byte", !mFullHay.includes(SENTINEL_PATH));
+  check("masked: sentinel repo NAME is absent from every captured byte", !mFullHay.includes(SENTINEL_NAME));
 
   // 3. default-deny for an endpoint nobody enumerated
   check(
     "masked: default-deny — sentinel for an endpoint NOT in api.js's classification map is absent",
-    !mHay.includes(SENTINEL_UNLISTED),
+    !mFullHay.includes(SENTINEL_UNLISTED),
   );
 
   // 4. allow-tier passthrough actually captures real bytes (rules out "1-3
   // pass because nothing is ever captured")
   check(
     "masked: allowlisted /api/version marker IS present (tier-2 passthrough proven live, not just by omission)",
-    mHay.includes(ALLOWLIST_MARKER),
+    mFullHay.includes(ALLOWLIST_MARKER),
   );
 
   // 5. redact-tier leak (quota profile) — the finding this attempt fixes:
   // /api/queue/health was allowlisted on the mistaken belief its body was
   // "pure timestamps"; its real paused_profile field is a user-chosen name.
+  // Scoped to netHay (the NETWORK-capture channel maskCapturedNetworkRequestFn
+  // actually governs), not fullHay: paused_profile is also rendered into the
+  // DOM (a status-indicator `title` attribute — web/src/drainChip.js) and
+  // that DOM/rrweb capture channel leaks it in BOTH the masked and unmasked
+  // pass, unaffected by this fix — a separate, pre-existing leak filed
+  // separately, not something this check can claim to close. Asserting
+  // "absent from every captured byte" here would overclaim past what this
+  // fix actually does.
   check(
-    "masked: queue/health's paused_profile (quota-wall auth-profile name) is absent from every captured byte",
-    !mHay.includes(SENTINEL_QUOTA_PROFILE),
+    "masked: queue/health's paused_profile (quota-wall auth-profile name) is absent from the captured NETWORK-capture body",
+    !mNetHay.includes(SENTINEL_QUOTA_PROFILE),
+  );
+  // Known, separately-filed leak (informational only — not a build-breaking
+  // assertion, and deliberately not treated as "fixed" by this check): the
+  // same sentinel DOES appear in the decompressed DOM/rrweb channel of the
+  // MASKED pass, via drainChip.js rendering the profile name into a `title`
+  // attribute. This is surfaced here so the gap stays visible rather than
+  // silently disappearing once fullHay exists, without blocking this PR on
+  // a fix that's explicitly out of scope for it.
+  console.log(
+    `INFO: masked pass — paused_profile present in decompressed DOM/rrweb channel: ` +
+      `${mFullHay.includes(SENTINEL_QUOTA_PROFILE)} (known drainChip.js leak, filed separately, not fixed here)`,
   );
 
   // Control: same bundle, masking mechanism string-patched away — must leak.
   check(
     "control (masking removed): sentinel repo PATH DOES leak — proves this harness has discriminating power",
-    uHay.includes(SENTINEL_PATH),
+    uFullHay.includes(SENTINEL_PATH),
   );
   check(
-    "control (masking removed): paused_profile DOES leak — proves the queue/health check above is not vacuous",
-    uHay.includes(SENTINEL_QUOTA_PROFILE),
+    "control (masking removed): paused_profile DOES leak (network-capture body) — proves the queue/health check above is not vacuous",
+    uNetHay.includes(SENTINEL_QUOTA_PROFILE),
   );
   // Without this, check 3 (masked: default-deny for UNLISTED_PATH) could
   // pass for the wrong reason — the fetch never fired before the recorder
   // patch landed, the response never got captured, or the sentinel never
-  // made it onto the wire — and "absent from mHay" would be true regardless
-  // of whether the mask function ever ran. This proves the sentinel DOES
-  // reach the captured bytes when masking is off, so check 3's absence in
-  // the masked pass is evidence the redact-tier default actually fired, not
-  // an artifact of the harness never observing this request at all.
+  // made it onto the wire — and "absent from mFullHay" would be true
+  // regardless of whether the mask function ever ran. This proves the
+  // sentinel DOES reach the captured bytes when masking is off, so check
+  // 3's absence in the masked pass is evidence the redact-tier default
+  // actually fired, not an artifact of the harness never observing this
+  // request at all.
   check(
     "control (masking removed): default-deny sentinel for the UNLISTED endpoint DOES leak — proves check 3 is not vacuous",
-    uHay.includes(SENTINEL_UNLISTED),
+    uFullHay.includes(SENTINEL_UNLISTED),
   );
 
   const failed = checks.filter((c) => !c.ok);
