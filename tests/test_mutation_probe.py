@@ -377,15 +377,15 @@ def test_blocker1_reports_a_budget_limited_reason_not_an_overclaim(decoy_and_rea
 
 
 def test_tree_is_byte_identical_after_a_successful_probe_run(decoy_and_real_target_repo):
-    before = (decoy_and_real_target_repo / "pkg" / "calc.py").read_text()
-    before_vol = (decoy_and_real_target_repo / "pkg" / "volumetric.py").read_text()
+    before = (decoy_and_real_target_repo / "pkg" / "calc.py").read_text(encoding="utf-8")
+    before_vol = (decoy_and_real_target_repo / "pkg" / "volumetric.py").read_text(encoding="utf-8")
     result = mutation_probe.run_mutation_probe(
         decoy_and_real_target_repo, "HEAD~1", "HEAD",
         max_tests=30, max_mutations=8, timeout=120,
     )
     assert result.tree_intact is True
-    assert (decoy_and_real_target_repo / "pkg" / "calc.py").read_text() == before
-    assert (decoy_and_real_target_repo / "pkg" / "volumetric.py").read_text() == before_vol
+    assert (decoy_and_real_target_repo / "pkg" / "calc.py").read_text(encoding="utf-8") == before
+    assert (decoy_and_real_target_repo / "pkg" / "volumetric.py").read_text(encoding="utf-8") == before_vol
 
 
 # --------------------------------------------------------------------------
