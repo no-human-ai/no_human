@@ -1361,7 +1361,9 @@ async def test_an_unknown_run_with_a_partial_write_is_reverted_before_the_round(
     captured = {}
 
     async def _capturing_round(*args, **kwargs):
-        captured["doc_at_round_start"] = (repo.path / "docs" / "cite.md").read_text()
+        captured["doc_at_round_start"] = (repo.path / "docs" / "cite.md").read_text(
+            encoding="utf-8"
+        )
         monkeypatch.delenv("FIXTURE_CRASH_AFTER_PARTIAL_WRITE", raising=False)
         return None
 
