@@ -1,10 +1,6 @@
 # Assumptions
 
-_Harness-captured record for task `4135165f`, commit `61c21852e90bfdc51e15c105fc8fec1f7c1f221f` — not model-authored: no_human wrote this file from the intake step's recorded questions and assumptions. It records what the gate produced; it is not a verdict of the model that wrote the code._
-
-> ⚠️ **Unresolved:** Two consecutive attempts ended in the SAME state — identical failure signature and an identical diff against base — so the retry (with its corrective preamble) changed nothing observable. A third attempt would re-prove it at the highest cost tier.
-
-> ⚠️ **Open question:** The approach reaches the same failing state every time. Is there a missing constraint or piece of context the spec should name, or should a different approach be directed?
+_Harness-captured record for task `4135165f`, commit `42698a12c369eb5f66a90989fb3e7a70b6e0f3fc` — not model-authored: no_human wrote this file from the intake step's recorded questions and assumptions. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 <details><summary>⚠️ 4 assumptions made on your behalf — verify at review</summary>
 
