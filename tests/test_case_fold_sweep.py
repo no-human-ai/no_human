@@ -362,7 +362,15 @@ def test_the_sweep_does_not_regress_the_uvx_active_flag_placement(
     lowercase spelling stayed ALLOWED -- while the reverse shape (a leading
     `--active`, uvx's own flag) must stay denied regardless of case."""
     monkeypatch.setattr(exec_names, "host_folds_case", lambda *a, **k: True)
-    _, primary_venv = _mkvenv(tmp_path / "primary")
+    # `extra_names` creates the literal `UVX`/`Uvx` files on disk -- mocking
+    # `host_folds_case` only changes the CLASSIFICATION decision; on a
+    # genuinely case-sensitive test-runner filesystem (Linux/ext4 CI)
+    # `_resolve_installer`'s real PATH walk still needs the literal spelling
+    # to exist to resolve it the way a real folding host's shell would for
+    # free (see `_mkvenv`'s own docstring, and the identical pattern already
+    # used above for `PIP`/`Pip`/`PIP3`).
+    _, primary_venv = _mkvenv(
+        tmp_path / "primary", extra_names=("UVX", "Uvx"))
     wt, _ = _mkvenv(tmp_path / "wt")
     prod_env = {"PATH": f"{primary_venv}/bin:/usr/bin:/bin",
                 "VIRTUAL_ENV": primary_venv}

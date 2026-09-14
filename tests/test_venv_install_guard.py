@@ -348,7 +348,15 @@ def test_a_capitalised_uvx_program_flag_is_not_denied_like_pip(tmp_path, monkeyp
     uv's. Pins the `.lower()` fix mirroring the already-correct sibling
     exclusion above (`_basename(exe).lower() in ("uv", "uvx")`)."""
     monkeypatch.setattr(exec_names, "host_folds_case", lambda *a, **k: True)
-    _primary, _primary_venv, wt, _wt_venv, prod_env, _wt_env = _session(tmp_path)
+    # `primary_extra_names` creates the literal `UVX`/`Uvx` files in the
+    # shared venv's `bin/` -- mocking `host_folds_case` only changes the
+    # CLASSIFICATION decision; on a genuinely case-sensitive test-runner
+    # filesystem (Linux/ext4 CI) `_resolve_installer`'s real PATH walk still
+    # needs the literal spelling to exist on disk to resolve it the way a
+    # real folding host's shell would for free (same pattern as
+    # `test_a_capitalised_installer_is_refused_on_a_folding_cwd` above).
+    _primary, _primary_venv, wt, _wt_venv, prod_env, _wt_env = _session(
+        tmp_path, primary_extra_names=("UVX", "Uvx"))
     cmds = ["uvx ruff check --active", "UVX ruff check --active",
             "Uvx ruff check --active"]
     for cmd in cmds:
