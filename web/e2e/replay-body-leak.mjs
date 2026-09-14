@@ -375,10 +375,16 @@ function makeServer({ variant, rawTexts, expandedTexts, capturedEvents, unmatche
     }
     // ALLOWLIST-tier (REPLAY_BODY_ALLOWLIST) — the marker carries no path or
     // name, so the assertion below is purely "does tier-2 body passthrough
-    // actually work", not accidentally also a path leak. Fetched once by
-    // Settings.jsx's fetchVersion() when the Settings panel opens, which
-    // happens well after the 5s recorder head start below.
-    if (p === "/api/version") return json({ version: "e2e-test", distName: "e2e", published: null, marker: ALLOWLIST_MARKER });
+    // actually work", not accidentally also a path leak. `fetchVersion()`
+    // actually fires from two call sites: telemetry.js's `initTelemetry()`
+    // calls it once, unconditionally, on app mount to stamp `app_version` —
+    // that hit lands before the 5s recorder head start below and is
+    // invisible to this harness for the same reason as queue/health's first
+    // poll (see below). Settings.jsx's `UpdatesPanel` calls it again once the
+    // "Updates" section is selected (Settings opens on "Projects" by
+    // default) — that is the hit this harness drives and waits on, well
+    // after the head start, so it is the one the tier-2 assertion is about.
+    if (p === "/api/version") return json({ version: "e2e-test", dist_name: "e2e", published: null, marker: ALLOWLIST_MARKER });
     if (p === "/api/onboarding/status") return json({ completed: true });
     if (p === "/api/onboarding/deferred") return json({ deferred: [] });
     if (p === "/api/tasks") return json([]);
@@ -529,10 +535,14 @@ async function runPass(browser, variant) {
   // occurrence to fall back on, so this one has to land after the patch). ──
   await page.getByRole("button", { name: /^Settings$/ }).click();
   await page.waitForTimeout(300);
-  // fetchVersion() (the tier-2 allow-list proof, check 4) only fires from
-  // UpdatesPanel, which only mounts once the "Updates" section is selected
-  // (Settings.jsx: `{section === "updates" && <UpdatesPanel />}`) — Settings
-  // opens on "Projects" by default and never calls it on its own.
+  // fetchVersion() (the tier-2 allow-list proof, check 4) also fires once,
+  // unconditionally, from telemetry.js's initTelemetry() on app mount — but
+  // that hit predates the 5s head start above and is invisible to this
+  // harness, the same way queue/health's first poll is (see the head-start
+  // comment above). The hit this harness can observe and wait on is
+  // Settings.jsx's UpdatesPanel, which only mounts once the "Updates"
+  // section is selected (`{section === "updates" && <UpdatesPanel />}`) —
+  // Settings opens on "Projects" by default and does not call it on its own.
   const versionResp = page.waitForResponse((r) => r.url().includes("/api/version"), { timeout: 5000 });
   await page.getByRole("button", { name: /^Updates$/ }).click();
   await versionResp.catch(() => {});

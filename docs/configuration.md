@@ -846,10 +846,13 @@ content (task titles, specs, diffs, repo paths) out of the network-capture
 channel.
 
 **Historical recordings (open).** The default-deny classifier above is a
-forward fix, effective from the release it ships in (0.2.2) onward — it does
-not retroactively touch recordings PostHog already stored under the previous,
-fail-open behavior, where every `/api/*` body not on a three-entry exclusion
-list was captured unmasked. Whether any already-stored recording actually
+forward fix, effective from the release that ships the `[Unreleased]` entry
+in `CHANGELOG.md` titled "Session replay network body capture is now
+default-deny" onward — it does not retroactively touch recordings PostHog
+already stored under the previous, fail-open behavior, where every `/api/*`
+body not on a three-entry exclusion list was captured unmasked. (The
+0.2.2 release predates this fix and does not contain it — the version this
+lands in has not shipped yet.) Whether any already-stored recording actually
 contains a repo name or absolute filesystem path (e.g. from `/api/profiles`,
 `/api/tasks`, or `/api/config`) has not been measured — doing so requires
 PostHog project credentials this fix was not given. The query a closure of

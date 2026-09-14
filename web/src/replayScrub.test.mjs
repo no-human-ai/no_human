@@ -88,6 +88,16 @@ test("every allowlisted endpoint passes through completely unchanged", () => {
   }
 });
 
+test("allowlist matching is exact-pathname only — a longer path sharing the prefix is still redacted", () => {
+  // Pins the invariant documented at replayScrub.js:34-36: matching /api/version
+  // is exact, never startsWith/prefix/substring, so a future /api/version/history
+  // does not silently ride along on /api/version's allow-tier entry.
+  const data = { name: "/api/version/history", responseBody: "some-repo-path-maybe" };
+  const out = maskCapturedNetworkRequest(data);
+  assert.notEqual(out, data);
+  assert.notEqual(out.responseBody, "some-repo-path-maybe");
+});
+
 test("default-deny: an endpoint nobody has classified yet is redacted, not passed through", () => {
   const data = { name: "/api/zzqq-future-endpoint-nobody-has-seen", responseBody: "some-repo-path-maybe" };
   const out = maskCapturedNetworkRequest(data);
@@ -223,13 +233,16 @@ function findTemplateBody(src, start) {
   return src.slice(start);
 }
 
-// Normalizes a raw literal body (already stripped of a leading `${BASE}`) to
-// a stable pathname key: interpolated path segments become `:param`, and a
-// trailing interpolation that only ever builds a query string (contains a
-// literal "?" and has nothing static after it) is dropped along with any
-// literal "?..." suffix, matching how the server sees the path.
+// Normalizes a raw literal body (already stripped of a leading `${<ident>}`
+// base-url interpolation, e.g. `${BASE}`) to a stable pathname key:
+// interpolated path segments become `:param`, and a trailing interpolation
+// that only ever builds a query string (contains a literal "?" and has
+// nothing static after it) is dropped along with any literal "?..." suffix,
+// matching how the server sees the path. The strip is on the *identifier*
+// shape, not the literal name "BASE", so a call site built off a
+// differently-named base-url constant is still swept correctly.
 function normalizeApiPath(raw) {
-  const body = raw.replace(/^\$\{BASE\}/, "");
+  const body = raw.replace(/^\$\{\w+\}/, "");
   let out = "";
   let i = 0;
   while (i < body.length) {
@@ -265,10 +278,9 @@ function normalizeApiPath(raw) {
   return out;
 }
 
-function sweepApiEndpoints() {
-  const src = fs.readFileSync(path.join(REPO_ROOT, "web", "src", "api.js"), "utf8");
+function sweepApiEndpoints(src = fs.readFileSync(path.join(REPO_ROOT, "web", "src", "api.js"), "utf8")) {
   const found = new Set();
-  const openRe = /`(\$\{BASE\})?\/api\//g;
+  const openRe = /`(\$\{\w+\})?\/api\//g;
   let m;
   while ((m = openRe.exec(src))) {
     const contentStart = m.index + 1; // right after the opening backtick
@@ -291,6 +303,16 @@ test("every /api/* endpoint api.js calls has a classification entry", () => {
   assert.ok(endpoints.size > 0, "sweep found nothing — regex is broken, not that api.js has no endpoints");
   const missing = [...endpoints].filter((p) => !(p in API_BODY_CLASSIFICATION));
   assert.deepEqual(missing, [], `unclassified endpoint(s) found in api.js — add each to API_BODY_CLASSIFICATION in replayScrub.js: ${missing.join(", ")}`);
+});
+
+test("sweep catches a template literal built off a differently-named base-url constant, not just ${BASE}", () => {
+  // Regression for a reviewed gap: the sweep regex used to be hard-coded to
+  // the literal identifier `${BASE}`, so a call site prefixed with any other
+  // base-url constant (e.g. a future `${ALT_BASE}`) would silently escape
+  // the sweep — under-classification, not a leak, since the runtime posture
+  // is default-deny, but the "every /api/* call site" claim would be false.
+  const endpoints = sweepApiEndpoints("fetch(`${ALT_BASE}/api/zzqq-sweep-blind-spot`)");
+  assert.ok(endpoints.has("/api/zzqq-sweep-blind-spot"), "sweep must match a differently-named base-url constant, not just ${BASE}");
 });
 
 test("no stale classification entries for endpoints api.js no longer calls (drop-tier entries exempt: defence-in-depth)", () => {
