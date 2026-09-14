@@ -1924,7 +1924,93 @@ FROZEN_FILE_LINES = {
     # module recognizes" and cross-references `pushed_tip_guard`'s own
     # disclosed gaps (shell/interpreter indirection, brace groups, command
     # substitution). Measured on this tree with the scanner below.
-    "agent/guard.py": 2959,
+    # 2925 -> 2954 (+29): runner-recursion case fold (#328's remaining half).
+    # `_forge_invocations`/`_git_invocations` resolved a wrapped runner's
+    # nested command name via `PurePosixPath(tok).name`, case-blind, while
+    # the top-level `argv[0]` path already folded through
+    # `exec_names.command_name`; `timeout 30 GH pr merge 7` and
+    # `sh -c "GIT push origin main"` recursed past their capitalised name
+    # instead of finding it. Both `PurePosixPath(tok).name` comparisons now
+    # go through `command_name` too, and the two mention-gates
+    # (`_FORGE_MENTION`, new `_GIT_MENTION`) are precompiled with
+    # `exec_names.case_flags()` so the recursion into a quoted payload stays
+    # host-gated and linear. `_FORGE_MERGE` gained the same `case_flags()`
+    # it was missing relative to `_RM_RF`/`_GIT_DESTRUCTIVE`, so a
+    # capitalised merge spelling denies lexically even where no structural
+    # path reaches it (`GH api .../pulls/7/merge`). `_forge_subcommand`
+    # folds its returned noun/verb unconditionally (a CLI subcommand word,
+    # not a filesystem name) so `gh pr MERGE 7` pairs against
+    # `_FORGE_MERGE_PAIRS` lowercase. Measured on this tree.
+    # 2954 -> 2958 (+4): the runner-recursion fix above left one sibling gate
+    # unfolded — `evaluate`'s whole-string `git ... push` lexical fallback
+    # (the one catching a push spelled where argv analysis can't reach: a
+    # heredoc, an alias, OR a capitalised `GIT` behind a trailing-argv runner
+    # like `timeout`/`xargs` with no quoting, which `_git_push_invocations`'s
+    # per-token recursion can't resolve either). It now carries
+    # `exec_names.case_flags()` like its siblings, so `timeout 30 GIT push
+    # origin main` denies in the default (non-readonly) session too, not
+    # only the read-only write-block path the earlier `_git_invocations` fix
+    # covers. Measured on this tree.
+    # 2958 -> 2969 (+11): post-review send-back on #328. Rewrote the
+    # `_FORGE_MENTION` comment, which falsely claimed `sh -c "GH pr merge 7"`
+    # "recurses into the quoted payload either way" -- measured false, this
+    # gate is what decides whether the recursion happens at all (without
+    # `case_flags()` here, `_forge_invocations` returns `[]`, never reaching
+    # the later `command_name` fold). Also amended the `nh merge-stack run`
+    # comment's parity claim ("denied in EVERY mode, exactly like
+    # `_FORGE_MERGE` above"): `_FORGE_MERGE`/`_forge_subcommand` fold case via
+    # #328, but `_LEXICAL_MERGE_STACK`/`_APPROVE_VERBS`/`_MERGE_VERB_PAIRS` do
+    # not, so `nh MERGE-STACK run`/`nh merge-stack RUN` are not denied by
+    # either gate -- a disclosed, pre-existing, out-of-scope gap, not a
+    # parity claim. Measured on this tree.
+    # 2969 -> 2985 (+16): Blocker 3 follow-up on the same send-back -- the
+    # amended comment above was amended AGAIN, back to an actual parity claim,
+    # by folding the gap it disclosed instead of just naming it:
+    # `_is_approve_verb` and the `_MERGE_VERB_PAIRS` argv comparison now fold
+    # case unconditionally (same rationale as `_forge_subcommand`'s fold -- a
+    # CLI subcommand spelling is not a filesystem name), and
+    # `_LEXICAL_MERGE_STACK` now carries `re.IGNORECASE`. Measured before:
+    # `nh APPROVE 7`, `nh Approve 7`, `nh MERGE-STACK run`, `nh merge-stack
+    # RUN` all reached ALLOW while `nh approve 7`/`nh merge-stack run` were
+    # DENY. Measured after: all six rows DENY.
+    # `_LIVE_VERBS`/`_LIVE_VERB_PAIRS` left untouched -- out of #328's scope,
+    # which is the merge door specifically (approve, merge-stack), not the
+    # live-server verbs. Measured on this tree.
+    # 2985 -> 3019 (+34): merge of main 0b8c2dc4 into this branch -- main's own
+    # growth in this file over the same window, no change to it from this
+    # branch. Measured on this tree with the scanner below, not by arithmetic:
+    # base 680d6889 actual 2925 (frozen was stale-high at 2926), main
+    # 0b8c2dc4 actual 2959, this branch's own tip before the merge (a185a275)
+    # actual 2985, and after the merge (this tree) actual 3019 -- matching the
+    # frozen value below exactly.
+    # 3019 -> 3022 (+3): send-back N2 fix on #328 -- guard.py:1131's comment
+    # falsely claimed `_FORGE_MERGE` "was the one lexical gate WITHOUT"
+    # `case_flags()`; `_FORGE_WRITE`, `_GIT_WRITE` and `_LEXICAL_LIVE_SERVER`
+    # were exact-case too (and `_LEXICAL_MERGE_STACK` was, until #328 folded
+    # it below), so the sentence was self-refuting within this same diff.
+    # Reworded to name the actual exact-case set. Measured on this tree with
+    # the scanner below.
+    # 3022 -> 3031 (+9): send-back N2-adjacent precision fix on #328 --
+    # guard.py:1621's comment claimed "only once this gate fires does the
+    # later fold in `command_name` ... get a chance to run", implying a
+    # two-stage pipeline where `_FORGE_MENTION` gates the `elif`'s
+    # `command_name` fold. It doesn't: the two are alternatives tried per
+    # token (`if`/`elif`) over disjoint token shapes -- quoted-payload vs
+    # trailing-argv -- so one never waits on the other. Reworded to say so.
+    # Measured on this tree with the scanner below.
+    # 3031 -> 3036 (+5): third-round send-back on #328, blocker N2 -- the
+    # `_FORGE_MERGE` comment still ranked it as "the one whose miss opens the
+    # merge door specifically" one clause after naming `_LEXICAL_MERGE_STACK`
+    # in the same sentence, and a companion send-back (NB1) measured
+    # `_LEXICAL_MERGE_STACK`'s own `IGNORECASE` miss reopening a merge door
+    # too (`nh MERGE-STACK run` inside a heredoc body, which never reaches
+    # `_approve_denial`'s argv path). Deleted the ranking clause and replaced
+    # it with the two rows the revert actually reopens (`GH api
+    # .../pulls/7/merge --method PUT` and the unbalanced-quote `sh -c "GH pr
+    # merge 7`), both pinned by
+    # `test_every_capitalised_merge_spelling_is_denied_on_a_folding_host`.
+    # Measured on this tree with the scanner below.
+    "agent/guard.py": 3036,
     # +44: idle-path recover_quota_cooldown gate in tick() and the
     # never-shorten-a-live-wall guard in _run — the quota-wall storm cost fix.
     # +129: `HarvestJob` — the cadence job (`due()`/`maybe_run()`) that runs
