@@ -88,6 +88,10 @@ def _merge_base(repo_path: Path, a: str, b: str) -> str | None:
 
 def _diff(repo_path: Path, before: str, after: str) -> str:
     proc = _git(repo_path, "diff", "--no-color", f"{before}..{after}")
+    if proc.returncode != 0:
+        raise GateUnavailable(
+            f"could not diff {before}..{after}: {proc.stderr.strip()}"
+        )
     return proc.stdout
 
 
