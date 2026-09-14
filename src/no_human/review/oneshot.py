@@ -8,18 +8,30 @@ calls :func:`run_gate` here rather than constructing `AdversarialReviewer`
 itself. Keeping exactly one construction site means the model/timeout config,
 the diff-cap, and the single-turn/no-tools safety property stay in one place.
 
-Reads and reports only: every git call here is read-only (`rev-parse`,
-`merge-base`, `diff`, `status --porcelain`, and — in PR mode — a single
-additive `fetch` of the PR's refs, which writes objects and `FETCH_HEAD` but
-creates no branch and moves no ref the user owns). It never commits, pushes,
-merges, or edits a file, and the reviewer's own backend is constructed
-read-only via `AdversarialReviewer`/`ClaudeBackend(readonly=True)`.
+Reads and reports only: every git call against the user's own checkout is
+read-only (`rev-parse`, `merge-base`, `diff`, `status --porcelain`, and — in
+PR mode — a single additive `fetch` of the PR's refs, which writes objects
+and `FETCH_HEAD` but creates no branch and moves no ref the user owns). It
+never commits, pushes, merges, or edits a file in the user's checkout.
+
+PR mode additionally materializes the fetched PR head into a throwaway local
+clone (`git clone --local --shared`, in a temp directory, deleted before
+`run_gate` returns) so the reviewer's citation check reads the PR's actual
+file content instead of the user's currently checked-out branch. That clone
+is read-only against the user's repo — `--local --shared` only ever reads
+objects there — and every write it makes (the clone itself, the detached
+checkout inside it) lands solely in the temp directory. The reviewer's own
+backend is constructed read-only via `AdversarialReviewer`/
+`ClaudeBackend(readonly=True)`.
 """
 
 from __future__ import annotations
 
 import re
+import shutil
 import subprocess
+import tempfile
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -182,6 +194,48 @@ def _resolve_pr_mode(
     return merge_base, head, base_ref, comparison, []
 
 
+@contextmanager
+def _materialized_pr_head(repo_path: Path, sha: str):
+    """Check out ``sha`` into a throwaway local clone and yield its path.
+
+    The reviewer's citation check reads files straight off disk at whatever
+    ``repo_path`` it is given (see ``reviewer._citation_fails``). In branch
+    mode ``repo_path`` IS the working tree at ``after_ref``, so that read is
+    already correct. In PR mode the PR head only ever lands in ``FETCH_HEAD``
+    of the user's checkout — the user's actual working tree stays on
+    whatever branch they had checked out — so handing the reviewer the raw
+    ``repo_path`` would verify citations against the wrong tree. This clones
+    ``repo_path`` locally (``--local --shared``: read-only against the
+    source, objects are shared rather than copied) into a temp directory and
+    checks out ``sha`` there, so the reviewer reads the PR's real content.
+    The clone is removed on the way out, success or failure.
+    """
+    tmp_dir = Path(tempfile.mkdtemp(prefix="no_human_gate_pr_"))
+    try:
+        clone = subprocess.run(
+            ["git", "clone", "--local", "--shared", "--no-checkout", "-q",
+             str(repo_path), str(tmp_dir)],
+            capture_output=True, text=True,
+        )
+        if clone.returncode != 0:
+            raise GateUnavailable(
+                "could not materialize the pull request head for review: "
+                f"{clone.stderr.strip()}"
+            )
+        checkout = subprocess.run(
+            ["git", "checkout", "--detach", "-q", sha],
+            cwd=tmp_dir, capture_output=True, text=True,
+        )
+        if checkout.returncode != 0:
+            raise GateUnavailable(
+                f"could not check out pull request head {sha} for review: "
+                f"{checkout.stderr.strip()}"
+            )
+        yield tmp_dir
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 async def run_gate(
     repo_path: Path,
     *,
@@ -242,9 +296,22 @@ async def run_gate(
         description=description or None,
     )
     reviewer = AdversarialReviewer.from_config(config.data)
-    decision = await reviewer.review(
-        task, repo_path=repo_path, diff_override=diff, before_ref=before_ref,
-    )
+
+    if mode == "pr":
+        # The reviewer's citation check reads `review_repo_path` straight off
+        # disk (`reviewer._citation_fails`). The user's own checkout never
+        # holds the PR head's content — only `FETCH_HEAD` does — so review
+        # against a throwaway clone checked out at `after_ref` instead of
+        # `repo_path` itself. See `_materialized_pr_head`.
+        with _materialized_pr_head(repo_path, after_ref) as review_repo_path:
+            decision = await reviewer.review(
+                task, repo_path=review_repo_path, diff_override=diff,
+                before_ref=before_ref,
+            )
+    else:
+        decision = await reviewer.review(
+            task, repo_path=repo_path, diff_override=diff, before_ref=before_ref,
+        )
 
     passed = decision.passed and not tamper.tampered
 

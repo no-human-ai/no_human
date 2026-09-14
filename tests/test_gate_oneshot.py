@@ -381,3 +381,121 @@ def test_pr_fetch_failure_refuses_by_name(tmp_path, monkeypatch):
         asyncio.run(run_gate(
             repo, pr_url="https://github.com/acme/widgets/pull/7",
         ))
+
+
+# --------------------------------------------------------------------------- #
+# 8. PR mode reviews the PR head's actual tree, not the user's checkout       #
+# --------------------------------------------------------------------------- #
+
+def _push_pr_ref(bare, from_repo_commit_path, number):
+    """Build a PR branch in a throwaway clone of `bare` and push it to
+    `refs/pull/<number>/head` — exactly the ref shape a real GitHub PR fetch
+    resolves, and exactly what `_resolve_pr_mode`'s
+    `git fetch origin refs/pull/<n>/head` reads."""
+    pr_src = from_repo_commit_path
+    subprocess.run(["git", "clone", "-q", str(bare), str(pr_src)],
+                    check=True, capture_output=True)
+    _git(pr_src, "config", "user.email", "t@example.com")
+    _git(pr_src, "config", "user.name", "t")
+    return pr_src
+
+
+def test_pr_mode_reviews_the_pr_heads_tree_not_the_users_checkout(tmp_path, monkeypatch):
+    """Regression for: PR mode used to hand the reviewer `repo_path` itself —
+    the user's own checkout, still on `main` — so a citation naming a file
+    that only exists at the PR head was checked against the wrong tree. The
+    reviewer must instead see a tree that really is the PR head's content."""
+    repo, bare = _make_repo_with_origin(tmp_path)
+
+    pr_src = _push_pr_ref(bare, tmp_path / "pr_src", 9)
+    (pr_src / "only_in_pr.py").write_text("x = 1\n")
+    _git(pr_src, "add", "only_in_pr.py")
+    _git(pr_src, "commit", "-m", "pr adds only_in_pr.py")
+    _git(pr_src, "push", "origin", "HEAD:refs/pull/9/head")
+
+    _ok_credential(monkeypatch)
+
+    seen = {}
+
+    class _Spy:
+        @classmethod
+        def from_config(cls, data, **kw):
+            return cls()
+
+        async def review(self, task, *, repo_path, diff_override, before_ref, **kw):
+            seen["repo_path"] = Path(repo_path)
+            seen["has_pr_file"] = (Path(repo_path) / "only_in_pr.py").exists()
+            return _PASSING_DECISION
+
+    monkeypatch.setattr(oneshot, "AdversarialReviewer", _Spy)
+
+    import asyncio
+    asyncio.run(run_gate(repo, pr_url="https://github.com/acme/widgets/pull/9"))
+
+    assert seen["has_pr_file"] is True, (
+        "the reviewer must see the PR head's real files, not the user's checkout"
+    )
+    assert seen["repo_path"] != repo, (
+        "PR mode must not hand the reviewer the user's own checkout as repo_path"
+    )
+    assert not (repo / "only_in_pr.py").exists(), (
+        "the user's own checkout must remain untouched by PR-mode review"
+    )
+    assert not seen["repo_path"].exists(), (
+        "the throwaway PR-head clone must be removed once the gate finishes"
+    )
+
+
+def test_pr_mode_makes_no_writes_to_the_users_checkout(tmp_path, monkeypatch):
+    repo, bare = _make_repo_with_origin(tmp_path)
+    pr_src = _push_pr_ref(bare, tmp_path / "pr_src2", 11)
+    (pr_src / "c.txt").write_text("pr change\n")
+    _git(pr_src, "add", "c.txt")
+    _git(pr_src, "commit", "-m", "pr change")
+    _git(pr_src, "push", "origin", "HEAD:refs/pull/11/head")
+
+    _ok_credential(monkeypatch)
+    monkeypatch.setattr(oneshot, "AdversarialReviewer", _stub_reviewer(_PASSING_DECISION))
+
+    before = _repo_fingerprint(repo)
+    import asyncio
+    asyncio.run(run_gate(repo, pr_url="https://github.com/acme/widgets/pull/11"))
+    after = _repo_fingerprint(repo)
+    assert before == after
+
+
+def test_pr_mode_never_shells_out_to_a_write_command_against_the_users_checkout(
+    tmp_path, monkeypatch,
+):
+    repo, bare = _make_repo_with_origin(tmp_path)
+    pr_src = _push_pr_ref(bare, tmp_path / "pr_src3", 13)
+    (pr_src / "d.txt").write_text("pr change\n")
+    _git(pr_src, "add", "d.txt")
+    _git(pr_src, "commit", "-m", "pr change")
+    _git(pr_src, "push", "origin", "HEAD:refs/pull/13/head")
+
+    _ok_credential(monkeypatch)
+    monkeypatch.setattr(oneshot, "AdversarialReviewer", _stub_reviewer(_PASSING_DECISION))
+
+    real_run = subprocess.run
+    write_verbs = {"commit", "push", "merge", "checkout", "reset", "rebase"}
+    real_repo = str(repo.resolve())
+
+    def _spy(argv, *a, **kw):
+        if argv and argv[0] == "git":
+            cwd = kw.get("cwd")
+            targets_real_repo = (
+                (cwd is not None and str(Path(cwd).resolve()) == real_repo)
+                or real_repo in argv
+            )
+            if targets_real_repo:
+                bad = write_verbs & set(argv)
+                assert not bad, (
+                    f"gate ran a write command against the user's own "
+                    f"checkout: {argv}"
+                )
+        return real_run(argv, *a, **kw)
+
+    monkeypatch.setattr(subprocess, "run", _spy)
+    import asyncio
+    asyncio.run(run_gate(repo, pr_url="https://github.com/acme/widgets/pull/13"))
