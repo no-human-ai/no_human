@@ -354,7 +354,8 @@ def test_evidence_gathered_once_backs_every_section(store, tmp_path):
     ]}
     evidence = orch._gather_evidence(task, head_sha="a" * 40)
     assert evidence.review_verdict == {
-        "rounds": 1, "verdict": "PASSED", "addressed": [], "advisory_count": 0}
+        "rounds": 1, "verdict": "PASSED", "addressed": [], "advisory_count": 0,
+        "angles_skipped": [], "angles_skipped_required": []}
 
     task.context = {"review_history": [
         {"round": 1, "sha": "a" * 40, "passed": True, "blocking": []},

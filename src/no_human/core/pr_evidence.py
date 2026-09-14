@@ -175,6 +175,14 @@ class PrEvidence:
                 parts.append(f"**Tests {'passed' if te['ok'] else 'failed'}**{counts}")
             elif counts:
                 parts.append(f"**Tests**{counts}")
+        if rv:
+            skipped = rv.get("angles_skipped") or []
+            if skipped:
+                n = len(skipped)
+                parts.append(
+                    f"**Review gate incomplete** ({n} angle{'s' if n != 1 else ''} "
+                    "did not run)"
+                )
         mp = self.merge_policy
         if mp:
             if mp.get("problems") or mp.get("policy_changed_in_diff"):
@@ -220,6 +228,30 @@ class PrEvidence:
             f"(advisory) — {', '.join(unavailable)}"
         )
 
+    def review_angles_pin(self) -> str | None:
+        """Which extra review angles never produced a verdict this round.
+
+        `None` when every angle that ran reported one — a clean gate gains
+        no row. Reads `review_verdict["angles_skipped"]` /
+        `["angles_skipped_required"]` (populated by
+        `reviewer.skipped_angles_from_checklist`) — never re-derived from the
+        checklist here, same "read the fact, don't recompute it" discipline
+        as every other pin on this object.
+        """
+        rv = self.review_verdict
+        if not rv:
+            return None
+        skipped = rv.get("angles_skipped") or []
+        if not skipped:
+            return None
+        required = set(rv.get("angles_skipped_required") or ())
+        names = ", ".join(
+            f"{name} (REQUIRED)" if name in required else name
+            for name in sorted(skipped)
+        )
+        n = len(skipped)
+        return f"{n} angle{'s' if n != 1 else ''} did not run — {names}"
+
     def merge_policy_pin(self) -> str | None:
         """The merge-ready policy's own summary sentence — re-derived nowhere
         else; this returns exactly `PolicyVerdict.summary` as it was computed
@@ -240,6 +272,7 @@ class PrEvidence:
         pins: dict[str, str] = {}
         for field, pin in (
             ("review_verdict", self.review_verdict_pin()),
+            ("review_angles", self.review_angles_pin()),
             ("verifiers", self.verifiers_pin()),
             ("repro", self.repro_count_pin()),
             ("tests", self.tests_summary_pin()),

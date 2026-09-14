@@ -81,6 +81,7 @@ def test_default_policy_is_the_six_documented_rules():
         "repro_gate",
         "verifiers_all_satisfied",
         "ci",
+        "required_angles_ran",
     ]
     by_name = {r.name: r.arg for r in DEFAULT_POLICY}
     assert by_name["repro_gate"] == "pass_or_not_required"
@@ -101,6 +102,7 @@ rules:
   - ci: success_or_unknown
   - paths_within: ["docs/**", "tests/**", "src/no_human/cli/**"]
   - max_changed_lines: 400
+  - required_angles_ran
 """,
     )
     load = load_policy(tmp_path)
@@ -619,7 +621,7 @@ def test_summary_ready_shape():
     )
     verdict = evaluate(list(DEFAULT_POLICY), facts)
     assert verdict.ready
-    assert verdict.summary == "ready — 6 of 6 rules satisfied"
+    assert verdict.summary == "ready — 7 of 7 rules satisfied"
 
 
 def test_summary_not_ready_names_failed_rules_in_order():
@@ -632,7 +634,7 @@ def test_summary_not_ready_names_failed_rules_in_order():
     verdict = evaluate(list(DEFAULT_POLICY), facts)
     assert not verdict.ready
     assert verdict.summary == (
-        "not ready — 2 of 6 rules failed: tests_ran_and_passed, ci"
+        "not ready — 2 of 7 rules failed: tests_ran_and_passed, ci"
     )
 
 
@@ -685,8 +687,8 @@ def test_import_surface():
 
 def test_rule_names_has_nine_entries_no_duplicates_is_a_tuple():
     assert isinstance(RULE_NAMES, tuple)
-    assert len(RULE_NAMES) == 9
-    assert len(set(RULE_NAMES)) == 9
+    assert len(RULE_NAMES) == 10
+    assert len(set(RULE_NAMES)) == 10
     assert isinstance(DEFAULT_POLICY, tuple)
     for r in DEFAULT_POLICY:
         assert r.name in RULE_NAMES
@@ -1082,7 +1084,7 @@ def test_policy_changed_in_diff_forces_ready_false_even_if_every_rule_passes():
     assert all(v.passed for v in verdict.rules)
     assert verdict.ready is False
     assert verdict.summary == (
-        "ready — 6 of 6 rules — POLICY FILE CHANGED IN THIS PR"
+        "ready — 7 of 7 rules — POLICY FILE CHANGED IN THIS PR"
     )
 
 
@@ -1090,7 +1092,7 @@ def test_policy_changed_in_diff_false_renders_the_ordinary_summary():
     facts = _ready_facts(policy_changed_in_diff=False)
     verdict = evaluate(list(DEFAULT_POLICY), facts)
     assert verdict.ready is True
-    assert verdict.summary == "ready — 6 of 6 rules satisfied"
+    assert verdict.summary == "ready — 7 of 7 rules satisfied"
 
 
 def test_policy_changed_in_diff_with_a_failed_rule_appends_the_suffix():
@@ -1098,7 +1100,7 @@ def test_policy_changed_in_diff_with_a_failed_rule_appends_the_suffix():
     verdict = evaluate(list(DEFAULT_POLICY), facts)
     assert verdict.ready is False
     assert verdict.summary == (
-        "not ready — 1 of 6 rules failed: tests_ran_and_passed"
+        "not ready — 1 of 7 rules failed: tests_ran_and_passed"
         " — POLICY FILE CHANGED IN THIS PR"
     )
 

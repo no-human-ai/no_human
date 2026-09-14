@@ -1625,6 +1625,55 @@ REVIEW_ANGLES: tuple[tuple[str, str], ...] = (
      "and test coverage — other passes own those."),
 )
 
+#: Angles whose absence is a gate that did not fully run. `tests` is the pass
+#: whose entire job is judging whether the tests prove what they claim — the
+#: b2e6f96c incident (an inert acceptance test shipped with a green gate) is
+#: exactly what a silently skipped `tests` angle costs.
+REQUIRED_ANGLES: frozenset[str] = frozenset({"tests"})
+#: Wording preserved byte-for-byte from before this fix, so the historical
+#: rows (`review_checklist LIKE '%angle did not run%'`) and the new ones read
+#: identically to any string-matching query.
+ANGLE_SKIP_LABEL = "{name} angle did not run ({reason})"
+_ANGLE_SKIP_RE = re.compile(r"^(?P<name>[A-Za-z0-9_-]+) angle did not run\b")
+#: Mirrors `tamper_adjudication.RETRY_TURNS` — one bounded retry before an
+#: angle that never produced a verdict is recorded as skipped.
+ANGLE_RETRY_TURNS = 2
+
+
+def skipped_angles_from_checklist(
+    checklist: "str | dict[str, Any] | None",
+) -> tuple[list[str], list[str]]:
+    """(all skipped angle names, required-skipped names) from a STORED
+    `attempts.review_checklist`.
+
+    Reads the item LABEL against `_ANGLE_SKIP_RE`, regardless of `passed` —
+    the 77 historical rows this fix inherits were written with
+    `passed=True` (the bug this task fixes), and a display/policy reader
+    that only looked at `not passed` rows would silently stop seeing them.
+    Tolerant of str/dict/None/malformed rows, mirroring
+    `findings_from_checklist`: a display+policy path must never raise.
+    """
+    if isinstance(checklist, str):
+        try:
+            checklist = json.loads(checklist)
+        except (ValueError, TypeError):
+            return [], []
+    if not isinstance(checklist, dict):
+        return [], []
+    skipped: list[str] = []
+    required_skipped: list[str] = []
+    for raw in checklist.get("items") or []:
+        if not isinstance(raw, dict):
+            continue
+        m = _ANGLE_SKIP_RE.match(str(raw.get("label") or ""))
+        if not m:
+            continue
+        name = m.group("name")
+        skipped.append(name)
+        if name in REQUIRED_ANGLES:
+            required_skipped.append(name)
+    return skipped, required_skipped
+
 
 def _title_tokens(s: str) -> set[str]:
     return {t for t in re.split(r"[^a-z0-9]+", (s or "").lower()) if len(t) > 2}
@@ -2676,66 +2725,138 @@ class AdversarialReviewer:
                             decision.checklist, {"passed": False},
                             decision.stages, goal=decision.goal)
 
-        # C3-G1: complex-tier tasks get parallel single-turn angle passes.
-        # Angles are ADDITIVE and best-effort: one that times out or crashes
-        # is dropped with a visible note — it must never fail the gate by
-        # itself (the fail-closed rule belongs to the MAIN review only).
-        # B2 #11: angles can only ADD findings / keep a fail failed — they can
-        # never flip fail→pass — so running them after a decided FAIL is pure
-        # Opus cost. Short-circuit on the main verdict. Gated on
-        # `gate_originally_passed` (captured above, BEFORE the refute pass),
-        # not a fresh read of `decision.passed` — see that comment for why a
-        # refute-induced flip must not open this block.
+        # C3-G1: complex-tier tasks get parallel single-turn angle passes,
+        # extracted to `_run_review_angles` (below) to keep THIS method under
+        # its own frozen line budget — same reason `_review_tamper_adjudication`
+        # and `_failing_test_attribution_sentence` were extracted before it.
+        # Pure structural move, behavior unchanged: see that method's
+        # docstring for the angle contract itself. B2 #11: angles can only ADD
+        # findings / keep a fail failed — they can never flip fail→pass — so
+        # running them after a decided FAIL is pure Opus cost. Short-circuit
+        # on the main verdict. Gated on `gate_originally_passed` (captured
+        # above, BEFORE the refute pass), not a fresh read of
+        # `decision.passed` — see that comment for why a refute-induced flip
+        # must not open this block.
         if gate_originally_passed and self._tier_wants_angles(task):
-            angle_prompts = [
-                (name, _build_angle_prompt(task, diff, focus,
-                                           diff_total_len=diff_total_len))
-                for name, focus in REVIEW_ANGLES
-            ]
-            results = await asyncio.gather(
-                *(self._fast_review(pr, repo_path, before_ref=before_ref)
-                  for _, pr in angle_prompts),
-                return_exceptions=True,
+            decision = await self._run_review_angles(
+                task, decision, diff, diff_total_len,
+                repo_path=repo_path, before_ref=before_ref,
             )
-            angle_decisions: list[tuple[str, ReviewDecision]] = []
-            for i, r in enumerate(results):
-                name = angle_prompts[i][0]
-                skipped = None
-                if not isinstance(r, ReviewDecision):
-                    skipped = str(r)[:120]
-                elif any(i2.label == "timeout" for i2 in r.checklist):
-                    skipped = "timed out"
-                elif _reached_no_verdict(r):
-                    # R17, finding 3 — the path that produced the live
-                    # attempt-FAILs. An angle's fail-closed sentinel has no
-                    # severity, so `merge_angle_findings` read it as BLOCKING
-                    # and flipped a passing gate to FAIL with the reviewer's own
-                    # failure ("<angle>: structured output present: reviewer
-                    # produced no parseable REVIEW_JSON block") as the finding
-                    # the coder was told to fix. An angle that reached no
-                    # verdict is an angle that did not run — same advisory note
-                    # as a timeout, since by contract an angle can never fail
-                    # the gate by itself.
-                    skipped = "reached no verdict"
-                if skipped is not None:
-                    # A skipped angle STILL SPENT. `continue` walks past
-                    # `merge_angle_findings`, which is the only place an angle's
-                    # usage is folded in, and `_fast_review` stamps the real
-                    # figures on the decision it returns — so a skip billed
-                    # three Opus sessions and reported none of them (R5's
-                    # accounting rule, `_carry_usage`). No-op for the two older
-                    # branches: an exception carries no usage, and a timeout
-                    # returns before the stamp.
-                    _carry_usage(decision, [r])
-                    log.warning("review angle %r skipped: %s", name, skipped)
-                    decision.checklist.append(ChecklistItem(
-                        f"{name} angle did not run ({skipped})", True,
-                        "advisory — the extra angle pass was skipped; the main "
-                        "review still gates"))
-                    continue
-                angle_decisions.append((name, r))
-            if angle_decisions:
-                decision = merge_angle_findings(decision, angle_decisions)
+        return decision
+
+    async def _run_review_angles(
+        self,
+        task: Task,
+        decision: ReviewDecision,
+        diff: str,
+        diff_total_len: int,
+        *,
+        repo_path: Path,
+        before_ref: str,
+    ) -> ReviewDecision:
+        """Complex-tier parallel single-turn angle passes (C3-G1), extracted
+        verbatim out of `review()` — see the call site's comment for why.
+
+        Angles are ADDITIVE and best-effort: one that times out, crashes, or
+        never reaches a verdict (even after one bounded retry) is dropped
+        with a visible checklist note and must never fail the gate by itself
+        — the fail-closed rule belongs to the MAIN review only.
+        """
+        angle_prompts = [
+            (name, _build_angle_prompt(task, diff, focus,
+                                       diff_total_len=diff_total_len))
+            for name, focus in REVIEW_ANGLES
+        ]
+        results = await asyncio.gather(
+            *(self._fast_review(pr, repo_path, before_ref=before_ref)
+              for _, pr in angle_prompts),
+            return_exceptions=True,
+        )
+        angle_decisions: list[tuple[str, ReviewDecision]] = []
+        for i, r in enumerate(results):
+            name = angle_prompts[i][0]
+            skipped = None
+            if not isinstance(r, ReviewDecision):
+                skipped = str(r)[:120]
+            elif any(i2.label == "timeout" for i2 in r.checklist):
+                skipped = "timed out"
+            elif _reached_no_verdict(r):
+                # R17, finding 3 — the path that produced the live
+                # attempt-FAILs. An angle's fail-closed sentinel has no
+                # severity, so `merge_angle_findings` read it as BLOCKING
+                # and flipped a passing gate to FAIL with the reviewer's own
+                # failure ("<angle>: structured output present: reviewer
+                # produced no parseable REVIEW_JSON block") as the finding
+                # the coder was told to fix. That regression is fixed by
+                # never appending a blocking-shaped item for this case (see
+                # below) — it must never come back.
+                #
+                # ONE bounded retry before giving up — the same contract
+                # `tamper_adjudication`'s adjudicator and `verifiers.
+                # run_verifiers` already use for "the judge never spoke":
+                # the root cause is an infrastructure parse failure, and a
+                # retry is the only remedy that can make the check
+                # actually happen instead of merely reporting that it
+                # didn't. `_carry_usage` folds the discarded first call's
+                # PAID usage onto `decision` either way (R5's accounting
+                # rule) — a retry billed a session too.
+                _carry_usage(decision, [r])
+                try:
+                    retry = await self._fast_review(
+                        angle_prompts[i][1], repo_path,
+                        before_ref=before_ref, max_turns=ANGLE_RETRY_TURNS)
+                except Exception as exc:  # noqa: BLE001 — a retry NEVER fails the gate
+                    skipped = f"reached no verdict after one retry ({str(exc)[:80]})"
+                else:
+                    if _reached_no_verdict(retry):
+                        _carry_usage(decision, [retry])
+                        skipped = "reached no verdict after one retry"
+                    else:
+                        # The retry produced a real verdict — the check
+                        # actually ran. It joins the merge normally, below,
+                        # with NO "did not run" item; its own usage is
+                        # folded in by `merge_angle_findings`.
+                        r = retry
+            if skipped is not None:
+                # A skipped angle STILL SPENT. `continue` walks past
+                # `merge_angle_findings`, which is the only place an angle's
+                # usage is folded in, and `_fast_review` stamps the real
+                # figures on the decision it returns — so a skip billed
+                # three Opus sessions and reported none of them (R5's
+                # accounting rule, `_carry_usage`). No-op for the two older
+                # branches: an exception carries no usage, and a timeout
+                # returns before the stamp; the no-verdict branch above
+                # already carried usage for both calls it made.
+                log.warning("review angle %r skipped: %s", name, skipped)
+                # UNFINISHED, not green: `passed=False` so the checklist
+                # and every downstream reader (PR body, merge policy) can
+                # tell a skip from a pass at a glance. `severity="low"` is
+                # in `ADVISORY_SEVERITIES`, so `_is_blocking` is False and
+                # this item can never flip the gate to FAIL by itself —
+                # the contract that a fail-closed sentinel with no
+                # severity once broke (see the comment above) stays intact
+                # because this item is never blocking-shaped, in ANY of
+                # the three skip reasons (exception / timeout /
+                # no-verdict-after-retry): one mechanism, and "did not
+                # run" is equally untrue as a pass in all three.
+                decision.checklist.append(ChecklistItem(
+                    label=f"{name} angle did not run ({skipped})",
+                    passed=False,
+                    severity="low",
+                    evidence=(
+                        "the reviewer's own extra pass did not produce a "
+                        "verdict. This is NOT a finding against the diff "
+                        "and there is nothing for the coder to fix — see "
+                        "R17: a fail-closed sentinel once flipped a "
+                        "passing gate to FAIL and the coder was told to "
+                        "fix the reviewer's output. The main review still "
+                        "gates; this row records that one lens never ran."
+                    ),
+                ))
+                continue
+            angle_decisions.append((name, r))
+        if angle_decisions:
+            decision = merge_angle_findings(decision, angle_decisions)
         return decision
 
     @staticmethod

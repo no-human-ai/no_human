@@ -228,17 +228,17 @@ async def test_merge_policy_event_and_pr_body_row_default_policy(store, tmp_path
 
     mp_events = [e for e in events if e.get("kind") == "merge_policy"]
     assert mp_events, f"no merge_policy event: {events}"
-    # DEFAULT_POLICY (no `.no_human/merge_policy.yaml`) has 6 rules; no test
+    # DEFAULT_POLICY (no `.no_human/merge_policy.yaml`) has 7 rules; no test
     # evidence was seeded, so `tests_ran_and_passed` is the one failure and
     # `review_passed` is satisfied by the `_stamp` round matching this head.
     assert mp_events[0]["ready"] is False, mp_events[0]
-    assert mp_events[0]["text"] == "not ready — 1 of 6 rules failed: tests_ran_and_passed"
+    assert mp_events[0]["text"] == "not ready — 1 of 7 rules failed: tests_ran_and_passed"
 
     assert bodies, "open_pr was never called"
     body = bodies[0]
-    assert ("| Merge policy | ❌ not ready — 1 of 6 rules failed: "
+    assert ("| Merge policy | ❌ not ready — 1 of 7 rules failed: "
             "tests_ran_and_passed |") in body, body
-    assert "<details><summary>Merge-ready policy (6 rules, source: default)" in body
+    assert "<details><summary>Merge-ready policy (7 rules, source: default)" in body
     assert "review_passed" in body and "tamper_guard_clear" in body
 
     mp = (task.context or {}).get("merge_policy") or {}
@@ -720,7 +720,7 @@ async def test_a_failing_rollup_on_the_delivered_head_is_not_ready_and_names_the
     """THE PLANT: a faked rollup FAILURE on the delivered head must persist a
     NOT-ready verdict for that head, with the failing check's name in the
     `ci` rule's detail string — the exact incident (PR #122, File-inventory
-    red on GitHub, merge policy showed "ready — 6 of 6")."""
+    red on GitHub, merge policy showed "ready — 7 of 7")."""
     work, reviewed_sha, ctx = _six_of_six_setup(tmp_path)
 
     async def fake_fetch(pr_url):
@@ -753,7 +753,7 @@ async def test_a_failing_rollup_on_the_delivered_head_is_not_ready_and_names_the
 
 
 async def test_a_green_rollup_is_ready_six_of_six(store, tmp_path, monkeypatch):
-    """THE CONTROL: same setup, a green rollup ⇒ ready 6 of 6, and the
+    """THE CONTROL: same setup, a green rollup ⇒ ready 7 of 7, and the
     written `ci_status` reflects the polled "success"."""
     work, reviewed_sha, ctx = _six_of_six_setup(tmp_path)
 
@@ -775,7 +775,7 @@ async def test_a_green_rollup_is_ready_six_of_six(store, tmp_path, monkeypatch):
     mp = (task.context or {}).get("merge_policy") or {}
     verdict = mp.get(reviewed_sha) or {}
     assert verdict.get("ready") is True, verdict
-    assert verdict.get("summary", "").startswith("ready — 6 of 6"), verdict
+    assert verdict.get("summary", "").startswith("ready — 7 of 7"), verdict
 
 
 async def test_a_repo_with_no_checks_stays_tolerated(store, tmp_path, monkeypatch):

@@ -302,9 +302,13 @@ def test_verdict_and_rounds_match_review_verdict_data_for_the_same_head():
     # `advisory_count` joined this contract with the merge-ready work: the PR
     # body needs the UNCAPPED advisory count, which the 5-item review_history
     # trail cannot give. Pinned by exact equality like the three fields before
-    # it, so a fifth key cannot appear unnoticed either.
+    # it, so a fifth key cannot appear unnoticed either. `angles_skipped` /
+    # `angles_skipped_required` joined the same contract for the
+    # skipped-angle-visibility fix: this task has no `review_checklist`, so
+    # both are empty.
     assert rv == {"rounds": 2, "verdict": "PASSED", "addressed": [],
-                  "advisory_count": 0}
+                  "advisory_count": 0, "angles_skipped": [],
+                  "angles_skipped_required": []}
 
     body = Orchestrator._review_checklist_comment(
         task, _decision(passed=True, items=[]), head_sha=head_sha,
