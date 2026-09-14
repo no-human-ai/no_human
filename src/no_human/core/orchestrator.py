@@ -117,6 +117,7 @@ from .prompt_blocks import (
     EXPORT_CLASSIFICATION_FILE,
     DistillationError,
     _export_gate_rule,
+    base_merge_conflict_instruction,
     build_distilled_state,
     build_intake_qa_block,
     build_memories_block,
@@ -3711,6 +3712,7 @@ class Orchestrator:
 
     async def _refresh_stale_base(
         self, task: Task, repo: GitRepo, branch: str, base: str | None,
+        *, base_pin: str | None = None,
     ) -> None:
         """Measure this retry's branch against the current base; act past
         `BASE_STALENESS_REBASE_THRESHOLD`, or below it when the two sides
@@ -3751,6 +3753,13 @@ class Orchestrator:
         Never fails the attempt: a measurement, fetch, rebase, or merge
         failure degrades to an advisory and the attempt proceeds with
         whatever could be measured (possibly nothing).
+
+        `base_pin` is the base branch's sha the caller already pinned before
+        the coder session started (`ls_remote_exact`, resolved once at the
+        top of the attempt — this method never re-reads the ref). It is
+        threaded into the conflict-path record/event/message so the coder is
+        told the exact sha to `git merge`, not just the branch name, which
+        could have moved again by the time they read the prompt.
         """
         if not base:
             return
@@ -3844,7 +3853,7 @@ class Orchestrator:
         ctx = task.context or {}
         ctx["base_staleness"] = staleness_record(
             behind, rebased, overlap, mode=mode, merged=merged,
-            diverged=diverged)
+            diverged=diverged, base_pin=base_pin)
         task.context = ctx
         await self.store.update_task(task)
         succeeded = merged if mode == "merge" else rebased if mode == "rebase" else False
@@ -3852,8 +3861,19 @@ class Orchestrator:
             suffix = ""
         elif succeeded:
             suffix = f" — merged {base} into it" if mode == "merge" else " — rebased onto it"
+        elif mode == "merge":
+            # Conflict on the merge path: tell the coder to finish the merge
+            # themselves, never to rebase — a rebase here rewrites the
+            # pushed tip out of HEAD's ancestry and delivery can never
+            # fast-forward it again (see the class docstring above). The
+            # literal substring "merge skipped (conflict)" is pinned by
+            # existing tests — keep it verbatim.
+            suffix = (
+                " — merge skipped (conflict); "
+                + base_merge_conflict_instruction(base_pin or base)
+            )
         else:
-            suffix = " — merge skipped (conflict)" if mode == "merge" else " — rebase skipped (conflict)"
+            suffix = " — rebase skipped (conflict)"
         self.emit(
             "base_staleness",
             f"branch {branch} is {behind} commit(s) behind {base}" + suffix,
@@ -5684,7 +5704,7 @@ class Orchestrator:
                 "exclusion window this attempt"
             )
 
-        await self._refresh_stale_base(task, repo, branch, base)
+        await self._refresh_stale_base(task, repo, branch, base, base_pin=base_pin)
 
         # PR-F Gate 2: create matching branches in linked repos so changes
         # there land on their own deterministic branch (never_push_to honoured).
@@ -7969,12 +7989,16 @@ class Orchestrator:
             #
             # The cause is not a race. `git reflog` on a stranded branch reads
             # `rebase (finish): refs/heads/no-human/<id> onto <new main>` — the
-            # AGENT rebased its own already-pushed branch, which `agent/guard.py`
-            # deliberately permits as the legitimate "rebase base into my branch"
-            # workflow. A rebased branch cannot fast-forward; force is the only
-            # correct push. Scoped to THIS branch (never protected — `push`
-            # refuses those first) and to THIS rejection, so no other path can
-            # acquire it.
+            # AGENT rebased its own already-pushed branch. `agent/pushed_tip_guard`
+            # now DENIES that on a pushed branch and tells the coder to merge
+            # instead, so this specific reflog shape should no longer arise for a
+            # rebase this module's own guard had a chance to catch; the retry stays
+            # as a defense for any branch that reaches a diverged state another way
+            # (pre-dating this guard, a manual/human-gated intervention, or a git
+            # invocation outside the guarded Bash path). A rebased branch cannot
+            # fast-forward; force is the only correct push. Scoped to THIS branch
+            # (never protected — `push` refuses those first) and to THIS rejection,
+            # so no other path can acquire it.
             forced = _is_non_fast_forward(exc)
             self.emit("pr_open_retry",
                       f"PR open failed ({exc}); retrying in "
@@ -13896,18 +13920,25 @@ class Orchestrator:
             # the next call IS the retry.
             #
             # ONE NAMED EXCEPTION to "no retry loop of its own", scoped exactly as
-            # narrowly as `_finalize`'s own `forced` decision (~5510) is scoped: a
-            # `pr_conflict` round (`self._mechanical_round`) rebases the already-
-            # pushed task branch BY CONSTRUCTION, so the plain push above is rejected
-            # non-fast-forward on EVERY such round, not transiently — degrading to "no
-            # draft" here would review that round with no PR, the exact state 0a /
-            # PR-021 exists to prevent (see the docstring). `_finalize`'s force
-            # decision is the single source of truth for when a force-push is safe;
-            # this reuses its module-level predicate verbatim (~195) rather than
-            # inventing a second heuristic — the only extra conjunct is the round
-            # marker, because this call retries *before* a review verdict exists for
-            # `_finalize`'s own predicate to read. `PushBehindRemote` is re-raised
-            # above and the predicate itself returns False for it (belt and braces).
+            # narrowly as `_finalize`'s own `forced` decision (~7981) is scoped: a
+            # `pr_conflict` round used to rebase the already-pushed task branch BY
+            # CONSTRUCTION, making the plain push above non-fast-forward on EVERY
+            # such round. `agent/pushed_tip_guard` now DENIES that rebase and
+            # `blockers/wake.py`'s pr_conflict instruction sends a MERGE instead, so
+            # a compliant round's push should fast-forward and never reach this
+            # branch at all — this stays as defense-in-depth for a branch that
+            # reaches a non-fast-forward state some other way (a coder that
+            # disobeys the instruction, a git invocation outside the guarded Bash
+            # path, or a branch that entered this round before the guard existed),
+            # not as the expected path. Degrading to "no draft" here would still
+            # review that round with no PR, the exact state 0a / PR-021 exists to
+            # prevent (see the docstring). `_finalize`'s force decision is the
+            # single source of truth for when a force-push is safe; this reuses its
+            # module-level predicate verbatim (~247) rather than inventing a second
+            # heuristic — the only extra conjunct is the round marker, because this
+            # call retries *before* a review verdict exists for `_finalize`'s own
+            # predicate to read. `PushBehindRemote` is re-raised above and the
+            # predicate itself returns False for it (belt and braces).
             # Unlike `_finalize`'s transient-forge retry, this rejection is
             # deterministic, not a race, so no `asyncio.sleep` before it. A forced
             # retry that fails again falls through to the ordinary skip below, exactly
@@ -13918,8 +13949,8 @@ class Orchestrator:
                 self.emit(
                     "pr_open_retry",
                     f"draft PR open failed ({err}); retrying with --force-with-lease: "
-                    f"the branch was rebased in this pr_conflict round, so a "
-                    f"fast-forward is impossible")
+                    f"the branch is non-fast-forward in this pr_conflict round, so a "
+                    f"fast-forward push is impossible")
                 try:
                     pr = await asyncio.to_thread(
                         open_pr, repo, branch, title, body,
@@ -18689,12 +18720,21 @@ class Orchestrator:
             test_cmd_str = self.config["tests"]["command"]
         integration_cmd_str = getattr(prof, "integration_test_cmd", "") if prof else ""
 
+        # Read `base_staleness` locally here — `ctx = task.context or {}` is
+        # not assigned until later in this function (do not reorder that
+        # assignment) — so a merge-conflict this attempt can still be named
+        # in the "Rules:" block: `base_merge_conflict_instruction` overrides
+        # the generic "Do NOT run any git command" rule for this one case.
+        _stale_for_rules = (task.context or {}).get("base_staleness") or {}
         rules = build_rules_block(
             test_cmd_str, integration_cmd_str,
             self.ci_runner.name if self.ci_runner is not None else None,
             routing_rules=list(getattr(prof, "test_commands", None) or []),
             repro_mode=self.config.get("repro_gate", {}).get("mode", "advisory"),
             repo_path=work_dir or task.repo_path,
+            base_merge_conflict=(
+                _stale_for_rules.get("base_pin") or None
+            ) if _stale_for_rules.get("merge_conflict") else None,
         )
         # Append confirmed rules + skills from the learning queue (Phase G).
         extra = self._format_active_memories()
@@ -18961,6 +19001,34 @@ class Orchestrator:
                 "or re-fix something the base already resolved; check current "
                 "behavior before assuming a symptom is still present.\n\n"
             )
+        elif stale.get("merge_conflict"):
+            # The merge path (pushed branch) was left for the coder — this is
+            # the ONE case where the coder must run git themselves, and it
+            # must be a MERGE, never a rebase: this branch has a pushed tip,
+            # and delivery only ever fast-forwards against it (see
+            # `base_merge_conflict_instruction`). `merge_conflict` is set by
+            # `staleness_record()` for `mode == "merge" and not merged`,
+            # which covers a real conflict AND any other exception
+            # `_refresh_stale_base` caught from `merge_base_into_branch` —
+            # we cannot claim "CONFLICT" specifically. What IS guaranteed
+            # regardless of cause (see `merge_base_into_branch`, git.py): it
+            # never leaves a partial merge in progress — either the merge
+            # never started, or a caught `GitError` triggered `git merge
+            # --abort` before returning, so the tree is always restored.
+            overlap = stale.get("overlapping_files") or []
+            staleness_preamble = (
+                f"YOUR BRANCH IS {stale['commits_behind']} COMMIT(S) BEHIND the current "
+                "base. The harness tried to merge the base in for you and did not "
+                "finish — no partial merge was left in progress. "
+                + base_merge_conflict_instruction(
+                    stale.get("base_pin") or "the current base")
+                + "\n\n"
+            )
+            if overlap:
+                staleness_preamble += (
+                    "Merge did not complete; both sides changed: "
+                    f"{', '.join(overlap)}\n\n"
+                )
         elif should_rebase(
             stale.get("was_behind", stale.get("commits_behind", 0)),
             BASE_STALENESS_REBASE_THRESHOLD,

@@ -16,7 +16,7 @@ had FAILED. A fix keyed on the checkpoint subject would cover only the 9
 (21%); the delivery-time question covers all 42, because the subject is
 never what makes (or doesn't make) the claim false.
 
-Nine revisions since the first version landed:
+Ten revisions since the first version landed:
 
 * (Send-back, sha extraction) a bare ``[0-9a-f]{7,40}`` token also matches
   ordinary English words ("defaced") and unrelated hex-shaped tokens
@@ -225,6 +225,27 @@ Nine revisions since the first version landed:
      the branch is not actually refused, message truthful when it is), in
      `tests/test_landed_claim_guard.py::
      test_non_claim_shapes_that_still_fire_the_actionability_gate_never_lie`.
+     (Superseded below by the Tenth review: the "unwarranted framing" this
+     finding accepted as a residual cost was itself fixable without
+     narrowing the detector, and has since been fixed.)
+* (Tenth review) the Ninth review's finding 2 stopped at documenting the
+  injected message's "you said the work already exists" opening as
+  truthful-but-unwarranted on these seven non-claim shapes, rather than
+  fixing it — but that framing described the CODER's intent, which the
+  guard never actually knows, when it could instead describe the one thing
+  the guard does know: that text matching the claim shape was detected.
+  Reworded the opening clause to "text matching an already-landed claim was
+  detected" and the closing instruction from "Do NOT end the attempt on
+  this claim" to "If this was meant as an already-landed claim, do NOT end
+  the attempt on it" — both now hold regardless of whether the detected
+  text is a genuine claim, a quoted excerpt, a question, a hypothetical, a
+  quoted marker, a reference to a sibling branch, a manifest hash, or a
+  self-correction. `detail` — delivery's own real, current answer — and the
+  "does not accept it as it stands" clause the Fifth review pinned (see
+  `test_the_refusal_message_does_not_predict_delivery_will_refuse`) are both
+  unchanged. See `tests/test_landed_claim_guard.py::
+  test_non_claim_shapes_that_still_fire_the_actionability_gate_never_lie`,
+  which now also asserts the message never claims the coder said anything.
 """
 
 from __future__ import annotations
@@ -399,9 +420,12 @@ def _is_actionable_claim(text: str) -> ClaimAssertion | None:
     looser bar. When it does and the branch is genuinely in the live
     refusal shape, `hook` DOES still inject a message over it — the message
     is never false (`detail` always names delivery's own real, current
-    answer), only its "you said the work already exists" framing is
-    unwarranted on such prose. See the ninth-review bullet in the module
-    docstring, and
+    answer), and (Tenth review) its opening clause no longer claims the
+    coder said anything either: it names what the guard actually knows
+    ("text matching an already-landed claim was detected"), which holds
+    regardless of whether the detected text is a genuine claim or one of
+    these non-claim shapes. See the ninth- and tenth-review bullets in the
+    module docstring, and
     `tests/test_landed_claim_guard.py::
     test_non_claim_shapes_that_still_fire_the_actionability_gate_never_lie`
     for both halves proven directly.
@@ -521,16 +545,17 @@ class LandedClaimGuard:
         resolved_sha = resolved_sha or head
         tag = supervisor_channel_tag()
         message = (
-            f"{tag} LANDED-CLAIM REFUSED: you said the work already exists "
-            f"(\"{snippet}…\"), but delivery does not accept it as it "
-            f"stands — {detail} (checked the same way "
+            f"{tag} LANDED-CLAIM REFUSED: text matching an already-landed "
+            f"claim was detected (\"{snippet}…\"), but delivery does not "
+            f"accept it as it stands — {detail} (checked the same way "
             "`_already_satisfied_subject` verifies it at delivery time: git "
             "merge-base --is-ancestor, plus the pushed-branch and sibling-"
             "branch checks). This is independent of the commit's subject "
             "line: a [WIP-PARTIAL]/[WIP-BLOCKED] checkpoint and an ordinary "
             "commit from a previous round are refused for the same reason. "
-            "Do NOT end the attempt on this claim — keep working and "
-            "deliver the change on this branch."
+            "If this was meant as an already-landed claim, do NOT end the "
+            "attempt on it — keep working and deliver the change on this "
+            "branch."
         )
         if self._on_event is not None:
             try:

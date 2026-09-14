@@ -504,9 +504,12 @@ def test_non_claim_shapes_that_still_fire_the_actionability_gate_never_lie(text)
        `origin/main`), `hook` DOES still inject a message over this
        non-claim prose — but that message is never a lie: `detail` is
        always delivery's own real, current answer, named verbatim in the
-       injected text. The only thing wrong with the message is its "you
-       said the work already exists" framing being unwarranted here — not
-       any fact it asserts about the repo.
+       injected text. (Tenth review) the message's opening clause no
+       longer frames this as the coder having SAID anything either — it
+       now names only what the guard actually knows, that text matching
+       an already-landed claim was detected, which holds regardless of
+       whether the detected text is a genuine claim or one of these seven
+       non-claim shapes.
     """
     assert _is_actionable_claim(text) is not None, (
         "this shape must fire the actionability gate — that's Finding 2's "
@@ -539,6 +542,12 @@ def test_non_claim_shapes_that_still_fire_the_actionability_gate_never_lie(text)
         "whatever the message says, it must be delivery's own real, "
         "current answer about the branch — never fabricated from the "
         "non-claim prose that happened to trigger the probe")
+    assert "you said" not in message.lower(), (
+        "(Tenth review) the message must never frame this as the coder "
+        "having SAID an already-landed claim — a question, a hypothetical, "
+        "a quotation, a reference to a sibling branch, or a self-correction "
+        "never said any such thing; the message must instead name only "
+        "what the guard actually knows, that matching text was detected")
 
 
 def test_latch_injects_once_per_sha():

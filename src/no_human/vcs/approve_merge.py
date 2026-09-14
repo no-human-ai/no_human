@@ -18,18 +18,28 @@ The eight-step procedure, proven by hand before this module existed:
   2. fetch + worktree — fetch the remote, resolve the CURRENT default-branch
                         tip, and create a detached temp worktree there.
   3. squash           — `git merge --squash <branch>` into the worktree. A
-                        conflict confined to RELEASE_MANIFEST.txt in an
-                        export-gated repo takes the tip's copy and continues
-                        (step 4 re-derives that file anyway); any other
-                        conflict, or that file in a repo without the guard,
-                        refuses here.
-  4. manifest         — the merge-result ledger rule: reset ONLY
+                        conflict confined to RELEASE_MANIFEST.txt takes the
+                        tip's copy and continues — step 4 re-derives that
+                        file wholesale anyway, on EITHER backend (see below)
+                        — because RELEASE_MANIFEST.txt moves under every
+                        landing, so it conflicts against every PR cut before
+                        the previous one regardless of what that PR touches
+                        (the O(N) landing-conflicts-every-open-PR pattern).
+                        Any other conflict refuses here — a coder round is
+                        the only safe resolver for a hand-authored path.
+  4. manifest         — the merge-result ledger rule, on whichever backend
+                        this repo carries: an export-gated repo resets ONLY
                         RELEASE_MANIFEST.txt to the tip's version (the
                         branch's EXPORT_CLASSIFICATION.txt, with its own
                         count bumps, is left exactly as the squash produced
                         it), then `export_guard.py approve` the branch's
                         changed ship-classified files so the manifest is
-                        re-derived from tip + those pins, and stage it.
+                        re-derived from tip + those pins, and stages it. A
+                        repo without the guard (this one's own shape) instead
+                        runs `check_release_manifest.py --write`, which
+                        rebuilds every pin from the squashed tree wholesale
+                        — no per-path approve/prune machinery needed — and
+                        stages it the same way.
   5. commit           — one commit, `-c user.name=<identity> -c
                         user.email=<identity>`, message = task title + task
                         id + review-evidence line. The identity is
@@ -37,7 +47,10 @@ The eight-step procedure, proven by hand before this module existed:
                         resolved `user.name`/`user.email` for the repo
                         (repo-local overriding global); if neither resolves,
                         the run refuses at the `preconditions` step.
-  6. verify + tests   — `export_guard.py verify`, then the merge-time test
+  6. verify + tests   — `export_guard.py verify` (or, on the guard-less
+                        backend, `check_release_manifest.py --strict` — the
+                        same check the `inventory` CI job runs), then the
+                        merge-time test
                         gate, both run IN the worktree. The gate is
                         FOCUSED (the task's change-scoped tests) when the
                         squash result's tree matches the tree the attempt's
@@ -58,6 +71,56 @@ The eight-step procedure, proven by hand before this module existed:
                         already-closed/merged PR; a failure here is a
                         non-fatal warning — the code is already on the
                         default branch.
+
+WHY ONLY RELEASE_MANIFEST.txt GETS THIS TREATMENT
+--------------------------------------------------
+The 2026-09-14 incident (task 4135165f, PR #356) also showed conflicts in
+docs/security.md and tests/test_readme_claims.py on the SAME landing. Those
+two are deliberately NOT given the "take tip's copy, then re-derive" step-3
+tolerance RELEASE_MANIFEST.txt gets here:
+
+  * RELEASE_MANIFEST.txt is a pure PROJECTION of the tree — every line is a
+    `<sha256> <path>` pair a tool (`export_guard.py` / `check_release_
+    manifest.py --write`) recomputes from the tree's actual bytes. A branch's
+    copy of it carries no information that is not ALSO recoverable from that
+    branch's real file changes, so discarding the branch's copy of the ledger
+    and rebuilding it from tip + the branch's other changes loses nothing.
+  * docs/security.md and tests/test_readme_claims.py are HAND-AUTHORED. Their
+    content on a branch IS the information — a security-policy edit or a new
+    README-claims check has no other representation to re-derive it from.
+    Auto-resolving a conflict there by taking the tip's copy would silently
+    drop the branch's own edit forever, which is exactly the kind of quiet
+    data loss constraint #2 and this module's whole "never weaken a check to
+    make merging easier" rule forbid. Those two conflicts are correctly left
+    for a coder round to resolve by hand, same as any other hand-authored
+    path (step 3, above) — the O(N) manifest problem does not generalize to
+    them because their conflicts are REAL (two branches' prose disagreeing),
+    not an artifact of a generated ledger moving under every landing.
+
+WHAT THIS DOES NOT CLOSE
+-------------------------
+Two narrowing notes, so this fix is not read as broader than it is:
+
+  * The step-3 tolerance only fires when RELEASE_MANIFEST.txt is the ONLY
+    unmerged path (`unmerged == {"RELEASE_MANIFEST.txt"}`, above) — a
+    conflict that touches the ledger AND a hand-authored file still refuses
+    here, same as before, and still needs a coder round for the
+    hand-authored side. Of the three PRs open against this incident's own
+    tree when this was written (#319, #313, #302), NONE is manifest-only —
+    each also conflicts on other files — so this change does not, by
+    itself, make any of the three land without a coder round; it only
+    removes RELEASE_MANIFEST.txt from what that round has to resolve, and it
+    fully closes the case where the ledger is the SOLE collision (proven by
+    `test_two_independent_prs_from_the_same_base_both_land_without_manual_
+    conflict_resolution`, tests/test_approve_merge.py).
+  * This tolerance lives in `land_task`, the `nh approve` code path, only. A
+    human running `git merge --squash` by hand, or GitHub's own "Squash and
+    merge" button on a PR, still hits the raw multi-way conflict in
+    RELEASE_MANIFEST.txt with no help from this module — neither of those
+    paths calls into `_land_in_worktree`. Landing through `nh approve` is
+    how this repo's own PRs land (see this module's own opening line), so
+    that is the path this fix targets; it was not widened to cover the
+    other two.
 
 Every step failure removes the temp worktree and returns a
 :class:`LandResult` naming the failing `step` and the captured `stderr` —
@@ -829,56 +892,28 @@ def _cleanup_worktree(repo: "GitRepo", path: Path) -> None:
     shutil.rmtree(path, ignore_errors=True)
 
 
-def _land_in_worktree(
-    *, repo: GitRepo, worktree_path: Path, remote: str, branch: str,
-    resolved_branch: str, default: str, tip_sha: str, task_id: str,
-    task_title: str, review_evidence: str, op_name: str, op_email: str,
-    test_timeout: float, full_test_timeout: float, pr_url: str,
-    changed_test_paths: list[str] | None, tested_commit_sha: str = "",
-    _before_push: Callable[[], None] | None = None,
-    on_step: Callable[[str], None] | None = None,
-) -> LandResult:
-    # -- step 3: squash --------------------------------------------------- #
-    _step(on_step, "squash")
-    merge_proc = _sh(["git", "merge", "--squash", resolved_branch], cwd=worktree_path)
-    if merge_proc.returncode != 0:
-        # RELEASE_MANIFEST.txt moves under every landing, so a branch cut
-        # before the previous landing conflicts on it here — and step 4
-        # discards the squash's copy of that file anyway (tip's copy wins,
-        # the branch's pins are re-derived on top). Refusing at this step
-        # made every PR older than the last landing unlandable by `nh
-        # approve` (#582, 2026-08-22). So a conflict confined to the ledger
-        # file is resolved exactly as step 4 would: take the tip's copy and
-        # carry on. Anything else unmerged is a real conflict and refuses.
-        # Only where step 4 will actually re-derive it: a repo without the
-        # export guard skips step 4, and there the tip's copy would simply
-        # replace the branch's — a real conflict silently decided, which is
-        # exactly what this tolerance must never do.
-        unmerged = _unmerged_paths(worktree_path)
-        guard_present = (worktree_path / "scripts" / "export_guard.py").exists()
-        if unmerged == {"RELEASE_MANIFEST.txt"} and guard_present:
-            co = _sh(["git", "checkout", tip_sha, "--", "RELEASE_MANIFEST.txt"],
-                      cwd=worktree_path)
-            if co.returncode != 0:
-                _sh(["git", "merge", "--abort"], cwd=worktree_path)
-                return LandResult(ok=False, step="squash", branch=branch, pr_url=pr_url,
-                                   stderr=_cap(merge_proc.stdout + "\n" + co.stderr))
-        else:
-            _sh(["git", "merge", "--abort"], cwd=worktree_path)
-            return LandResult(ok=False, step="squash", branch=branch, pr_url=pr_url,
-                               stderr=_cap(merge_proc.stdout + "\n" + merge_proc.stderr))
-
-    # -- step 4: manifest merge-result ledger rule ------------------------ #
-    _step(on_step, "manifest")
+def _land_regenerate_manifest(
+    *, worktree_path: Path, guard: Path, inventory: Path, manifest: Path,
+    tip_sha: str, resolved_branch: str, branch: str, pr_url: str,
+) -> tuple["LandResult | None", str]:
+    """`_land_in_worktree` step 4: regenerate RELEASE_MANIFEST.txt for the
+    squashed tree, on whichever of the two backends this repo shape carries
+    — `export_guard.py approve` (per-path pins, when `EXPORT_CLASSIFICATION.
+    txt` is in play) or `check_release_manifest.py --write` (wholesale
+    rebuild, this repo's own guard-less shape). Split out of
+    `_land_in_worktree` purely to keep that function under the structural
+    line-budget ratchet (`tests/test_structural_budget.py`); behavior is
+    unchanged from when this lived inline. Returns `(None, reconciled_note)`
+    on success, `(failure_result, "")` on failure — the caller returns the
+    failure result as-is.
+    """
     reconciled_note = ""
-    guard = worktree_path / "scripts" / "export_guard.py"
-    manifest = worktree_path / "RELEASE_MANIFEST.txt"
     if guard.exists() and manifest.exists():
         co = _sh(["git", "checkout", tip_sha, "--", "RELEASE_MANIFEST.txt"],
                   cwd=worktree_path)
         if co.returncode != 0:
             return LandResult(ok=False, step="manifest", branch=branch, pr_url=pr_url,
-                               stderr=_cap(co.stderr))
+                               stderr=_cap(co.stderr)), ""
 
         diff_proc = _sh(
             ["git", "diff", "--name-only", "--diff-filter=d",
@@ -899,7 +934,7 @@ def _land_in_worktree(
             except subprocess.TimeoutExpired:
                 return LandResult(
                     ok=False, step="manifest", branch=branch, pr_url=pr_url,
-                    stderr=f"export_guard approve timed out after {_APPROVE_TIMEOUT_S}s")
+                    stderr=f"export_guard approve timed out after {_APPROVE_TIMEOUT_S}s"), ""
             if approve_proc.returncode == 2 and COUNT_DRIFT_RE.search(
                     approve_proc.stdout + approve_proc.stderr):
                 # Same refusal the derived-conflict resolver meets, same
@@ -912,7 +947,7 @@ def _land_in_worktree(
                         ok=False, step="manifest", branch=branch, pr_url=pr_url,
                         stderr=_cap(f"{CLASSIFICATION_NAME} count drift is not merge "
                                     f"arithmetic ({note}):\n"
-                                    + approve_proc.stdout + approve_proc.stderr))
+                                    + approve_proc.stdout + approve_proc.stderr)), ""
                 reconciled_note = note
                 # Wherever a repo SHIPS its classification file it is pinned,
                 # and the rewrite stales that pin — re-pin it or step-7 verify
@@ -931,7 +966,7 @@ def _land_in_worktree(
                     return LandResult(
                         ok=False, step="manifest", branch=branch, pr_url=pr_url,
                         stderr=f"export_guard approve timed out after {_APPROVE_TIMEOUT_S}s "
-                               f"(after count reconcile: {note})")
+                               f"(after count reconcile: {note})"), ""
             if approve_proc.returncode != 0:
                 why = ("scan-hit refusal" if approve_proc.returncode == 1
                        else "refused before writing pins")
@@ -939,12 +974,108 @@ def _land_in_worktree(
                     ok=False, step="manifest", branch=branch, pr_url=pr_url,
                     stderr=_cap(f"export_guard approve {why} "
                                 f"({approve_proc.returncode}):\n"
-                                + approve_proc.stdout + approve_proc.stderr))
+                                + approve_proc.stdout + approve_proc.stderr)), ""
 
         add_manifest = _sh(["git", "add", "--", "RELEASE_MANIFEST.txt"], cwd=worktree_path)
         if add_manifest.returncode != 0:
             return LandResult(ok=False, step="manifest", branch=branch, pr_url=pr_url,
-                               stderr=_cap(add_manifest.stderr))
+                               stderr=_cap(add_manifest.stderr)), ""
+    elif inventory.exists() and manifest.exists():
+        # No export guard on this repo shape (this repo's own shape: public
+        # working tree, no EXPORT_CLASSIFICATION.txt) — the ledger has no
+        # per-path approval step, so the whole file is regenerated wholesale
+        # from the landed tree, exactly as `derived_conflict._inventory_
+        # resolve_tail` already does for the mechanical-conflict path this
+        # one mirrors.
+        try:
+            write_proc = _sh(
+                [sys.executable, "scripts/check_release_manifest.py", "--write"],
+                cwd=worktree_path, timeout=_APPROVE_TIMEOUT_S,
+            )
+        except subprocess.TimeoutExpired:
+            return LandResult(
+                ok=False, step="manifest", branch=branch, pr_url=pr_url,
+                stderr=f"check_release_manifest.py --write timed out after "
+                       f"{_APPROVE_TIMEOUT_S}s"), ""
+        if write_proc.returncode != 0:
+            return LandResult(
+                ok=False, step="manifest", branch=branch, pr_url=pr_url,
+                stderr=_cap(f"check_release_manifest.py --write failed "
+                            f"({write_proc.returncode}):\n"
+                            + write_proc.stdout + write_proc.stderr)), ""
+        add_manifest = _sh(["git", "add", "--", "RELEASE_MANIFEST.txt"], cwd=worktree_path)
+        if add_manifest.returncode != 0:
+            return LandResult(ok=False, step="manifest", branch=branch, pr_url=pr_url,
+                               stderr=_cap(add_manifest.stderr)), ""
+    return None, reconciled_note
+
+
+def _land_in_worktree(
+    *, repo: GitRepo, worktree_path: Path, remote: str, branch: str,
+    resolved_branch: str, default: str, tip_sha: str, task_id: str,
+    task_title: str, review_evidence: str, op_name: str, op_email: str,
+    test_timeout: float, full_test_timeout: float, pr_url: str,
+    changed_test_paths: list[str] | None, tested_commit_sha: str = "",
+    _before_push: Callable[[], None] | None = None,
+    on_step: Callable[[str], None] | None = None,
+) -> LandResult:
+    guard = worktree_path / "scripts" / "export_guard.py"
+    inventory = worktree_path / "scripts" / "check_release_manifest.py"
+    manifest = worktree_path / "RELEASE_MANIFEST.txt"
+
+    # -- step 3: squash --------------------------------------------------- #
+    _step(on_step, "squash")
+    merge_proc = _sh(["git", "merge", "--squash", resolved_branch], cwd=worktree_path)
+    if merge_proc.returncode != 0:
+        # RELEASE_MANIFEST.txt moves under every landing, so a branch cut
+        # before the previous landing conflicts on it here — and step 4
+        # discards the squash's copy of that file anyway (tip's copy wins,
+        # the branch's pins are re-derived on top, on EITHER backend — see
+        # step 4). Refusing at this step made every PR older than the last
+        # landing unlandable by `nh approve` (#582, 2026-08-22). So a
+        # conflict confined to the ledger file is resolved exactly as step 4
+        # would: take the tip's copy and carry on. Anything else unmerged is
+        # a real conflict (a hand-authored path collided) and refuses.
+        #
+        # This tolerance used to require `scripts/export_guard.py` to be
+        # present, because step 4 used to re-derive the manifest only on
+        # that backend — a repo without it (this repo's own shape: no
+        # export guard, `scripts/check_release_manifest.py` instead) fell
+        # through to the `else` below and refused, meaning EVERY
+        # manifest-only conflict on the public working repo needed a full,
+        # costly coder round or a manual `nh approve` retry (the incident
+        # this fix closes: task 4135165f, PR #356, 2026-09-14 — 11 attempts
+        # / 484k tokens / ~$69 spent resolving a conflict that was, in the
+        # end, one regenerated file). Step 4 (`_land_regenerate_manifest`)
+        # now re-derives the manifest on BOTH backends, so this still gates
+        # on a backend being present (`guard` or `inventory`) — never
+        # tolerate a manifest-only conflict that step 4 has no way to
+        # reconcile, or the landed manifest would silently keep the tip's
+        # stale copy with nothing to re-derive it and no verify step to
+        # catch the drift — but no longer needs to pick between the two —
+        # see `derived_conflict.py`'s identical, already-fixed
+        # `resolve_derived_conflict` (2026-09-04) for the sibling repair
+        # this one completes.
+        unmerged = _unmerged_paths(worktree_path)
+        if unmerged == {"RELEASE_MANIFEST.txt"} and (guard.exists() or inventory.exists()):
+            co = _sh(["git", "checkout", tip_sha, "--", "RELEASE_MANIFEST.txt"],
+                      cwd=worktree_path)
+            if co.returncode != 0:
+                _sh(["git", "merge", "--abort"], cwd=worktree_path)
+                return LandResult(ok=False, step="squash", branch=branch, pr_url=pr_url,
+                                   stderr=_cap(merge_proc.stdout + "\n" + co.stderr))
+        else:
+            _sh(["git", "merge", "--abort"], cwd=worktree_path)
+            return LandResult(ok=False, step="squash", branch=branch, pr_url=pr_url,
+                               stderr=_cap(merge_proc.stdout + "\n" + merge_proc.stderr))
+
+    # -- step 4: manifest merge-result ledger rule ------------------------ #
+    _step(on_step, "manifest")
+    manifest_err, reconciled_note = _land_regenerate_manifest(
+        worktree_path=worktree_path, guard=guard, inventory=inventory, manifest=manifest,
+        tip_sha=tip_sha, resolved_branch=resolved_branch, branch=branch, pr_url=pr_url)
+    if manifest_err is not None:
+        return manifest_err
 
     # -- step 5: operator-identity commit ---------------------------------- #
     # `GIT_AUTHOR_NAME`/`_EMAIL`/`GIT_COMMITTER_NAME`/`_EMAIL` env vars, when
@@ -990,6 +1121,25 @@ def _land_in_worktree(
                                landed_sha=landed_sha,
                                stderr=f"export_guard verify timed out after "
                                       f"{_VERIFY_TIMEOUT_S}s")
+        if verify_proc.returncode != 0:
+            return LandResult(ok=False, step="verify", branch=branch, pr_url=pr_url,
+                               landed_sha=landed_sha,
+                               stderr=_cap(verify_proc.stdout + "\n" + verify_proc.stderr))
+    elif inventory.exists():
+        # Matches the `inventory` CI job (`.github/workflows/ci.yml`):
+        # `python scripts/check_release_manifest.py --strict`. This is a new
+        # check for this repo shape — previously no manifest verification
+        # ran during `nh approve` here at all, since step 4's regeneration
+        # (above) used to be guard-only too.
+        try:
+            verify_proc = _sh(
+                [sys.executable, "scripts/check_release_manifest.py", "--strict"],
+                cwd=worktree_path, timeout=_VERIFY_TIMEOUT_S)
+        except subprocess.TimeoutExpired:
+            return LandResult(ok=False, step="verify", branch=branch, pr_url=pr_url,
+                               landed_sha=landed_sha,
+                               stderr=f"check_release_manifest.py --strict timed out "
+                                      f"after {_VERIFY_TIMEOUT_S}s")
         if verify_proc.returncode != 0:
             return LandResult(ok=False, step="verify", branch=branch, pr_url=pr_url,
                                landed_sha=landed_sha,
