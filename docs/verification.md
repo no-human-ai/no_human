@@ -580,8 +580,12 @@ MERGE` any more than a folding one is). `_FORGE_MERGE` itself gained the
 `exec_names.case_flags()` its siblings `_RM_RF`/`_GIT_DESTRUCTIVE` already
 carried, so a capitalised name denies lexically too wherever no structural
 path reaches it (`GH api .../pulls/7/merge`). `tests/test_exec_names.py`'s
-`_CASE_MATRIX_ROWS` pins the full binary/noun/verb × forge × runner matrix
-through `evaluate`.
+`_CASE_MATRIX_ROWS` pins the binary/noun/verb × forge matrix across 5 of the
+18 real recursed runners (the bare form, one quoted-payload runner, one
+quoted-payload runner needing wrapper-stripping, and two trailing-argv
+runners) through `evaluate` — the recursion is name-driven rather than
+per-runner special-cased, so the other 14 runners reach the same code path,
+but the matrix does not measure them directly.
 
 A capitalised binary walked past the protected-branch push check the same
 way, but through a different door: `_git_push_invocations` (the extractor

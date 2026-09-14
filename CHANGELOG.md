@@ -29,8 +29,12 @@ All notable changes to no_human. The format follows
   `_FORGE_MERGE_PAIRS`, and the lexical `_FORGE_MERGE` pattern lacked the
   `exec_names.case_flags()` its siblings already carried. All three are
   fixed; a matrix test in `tests/test_exec_names.py` pins every
-  binary/noun/verb capitalisation across both forges and every recursed
-  runner through the real guard entry point.
+  binary/noun/verb capitalisation across both forges for 5 of the 18
+  recursed runners (the bare form, one quoted-payload runner, one
+  quoted-payload runner needing wrapper-stripping, and two trailing-argv
+  runners), through the real guard entry point. The recursion itself is
+  name-driven rather than per-runner special-cased, so the other 14 runners
+  reach the same code path, but the matrix does not measure them directly.
 - **A capitalised `git push` behind an unquoted trailing-argv runner
   (`timeout 30 GIT push origin main`, `xargs GIT push origin main`) still
   reached a protected branch in a normal, non-read-only session.**

@@ -196,6 +196,41 @@ def test_blocks_nh_approve_and_the_approve_api_in_every_mode():
             assert "approv" in d.reason.lower(), d.reason
 
 
+def test_a_capitalised_nh_approve_or_merge_stack_is_denied_in_every_mode():
+    """#328 review send-back, Blocker 3: the two tests above pin the
+    documented-case spelling of `nh approve`/`nh merge-stack run`, but a
+    capitalised spelling of either reached allow=True in BOTH modes until
+    this fix — `_is_approve_verb` and the `_MERGE_VERB_PAIRS` argv
+    comparison in `guard._approve_denial` were exact-case, and the
+    `_LEXICAL_MERGE_STACK` backup regex had no `IGNORECASE`. Measured before
+    this fix (reverting the three folds together): `nh APPROVE 7`, `nh
+    Approve 7`, `nh MERGE-STACK run`, and `nh merge-stack RUN` all reached
+    allow=True while `nh approve 7`/`nh merge-stack run` (documented case)
+    stayed denied — the product's own merge door was open to a one-letter
+    case change on either the verb or the noun. Reverting the fold makes
+    this test fail; it does not ride on the two tests above, which never
+    exercise a capitalised verb/noun.
+
+    Binary capitalisation (`NH approve 7`) is a pre-existing, separately
+    pinned case (the `name.lower() in _APPROVE_BINARIES` fold, 2026-08-22)
+    and is not what this test is about — every row below keeps the binary
+    lowercase and varies only the verb or the noun+verb pair."""
+    for readonly in (False, True):
+        for cmd in (
+            "nh APPROVE 7",
+            "nh Approve 7",
+            "nh APPROVE-landed 7",
+            "nh MERGE-STACK run",
+            "nh merge-stack RUN",
+            "nh Merge-Stack Run --yes",
+            'sh -c "nh MERGE-STACK run --yes"',
+        ):
+            d = guard.evaluate("Bash", {"command": cmd},
+                               forbidden_paths=FORBIDDEN,
+                               never_push_to=PROTECTED, readonly=readonly)
+            assert not d.allow, f"readonly={readonly} must deny: {cmd}"
+
+
 def test_peel_runners_consumes_envs_own_flags():
     """`_peel_runners` (session_mark.py's companion fix, 2026-08-26): `env`
     peels its OWN flags — `-u NAME`, `-uNAME`, `--unset=NAME`, `-i` /

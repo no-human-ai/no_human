@@ -1857,7 +1857,7 @@ FROZEN_FILE_LINES = {
     # a bare `Path.is_file()`, so an unreadable ancestor directory (e.g. a
     # chmod'd `<checkout>/src`) can't raise `PermissionError` out of this
     # unguarded helper and abort the guard instead of denying.
-    # 2926 -> 2954 (+28): runner-recursion case fold (#328's remaining half).
+    # 2925 -> 2954 (+29): runner-recursion case fold (#328's remaining half).
     # `_forge_invocations`/`_git_invocations` resolved a wrapped runner's
     # nested command name via `PurePosixPath(tok).name`, case-blind, while
     # the top-level `argv[0]` path already folded through
@@ -1884,7 +1884,32 @@ FROZEN_FILE_LINES = {
     # origin main` denies in the default (non-readonly) session too, not
     # only the read-only write-block path the earlier `_git_invocations` fix
     # covers. Measured on this tree.
-    "agent/guard.py": 2958,
+    # 2958 -> 2969 (+11): post-review send-back on #328. Rewrote the
+    # `_FORGE_MENTION` comment, which falsely claimed `sh -c "GH pr merge 7"`
+    # "recurses into the quoted payload either way" -- measured false, this
+    # gate is what decides whether the recursion happens at all (without
+    # `case_flags()` here, `_forge_invocations` returns `[]`, never reaching
+    # the later `command_name` fold). Also amended the `nh merge-stack run`
+    # comment's parity claim ("denied in EVERY mode, exactly like
+    # `_FORGE_MERGE` above"): `_FORGE_MERGE`/`_forge_subcommand` fold case via
+    # #328, but `_LEXICAL_MERGE_STACK`/`_APPROVE_VERBS`/`_MERGE_VERB_PAIRS` do
+    # not, so `nh MERGE-STACK run`/`nh merge-stack RUN` are not denied by
+    # either gate -- a disclosed, pre-existing, out-of-scope gap, not a
+    # parity claim. Measured on this tree.
+    # 2969 -> 2985 (+16): Blocker 3 follow-up on the same send-back -- the
+    # amended comment above was amended AGAIN, back to an actual parity claim,
+    # by folding the gap it disclosed instead of just naming it:
+    # `_is_approve_verb` and the `_MERGE_VERB_PAIRS` argv comparison now fold
+    # case unconditionally (same rationale as `_forge_subcommand`'s fold -- a
+    # CLI subcommand spelling is not a filesystem name), and
+    # `_LEXICAL_MERGE_STACK` now carries `re.IGNORECASE`. Measured before:
+    # `nh APPROVE 7`, `nh Approve 7`, `nh MERGE-STACK run`, `nh merge-stack
+    # RUN` all reached ALLOW while `nh approve 7`/`nh merge-stack run` were
+    # DENY. Measured after: all six rows DENY.
+    # `_LIVE_VERBS`/`_LIVE_VERB_PAIRS` left untouched -- out of #328's scope,
+    # which is the merge door specifically (approve, merge-stack), not the
+    # live-server verbs. Measured on this tree.
+    "agent/guard.py": 2985,
     # +44: idle-path recover_quota_cooldown gate in tick() and the
     # never-shorten-a-live-wall guard in _run — the quota-wall storm cost fix.
     # +129: `HarvestJob` — the cadence job (`due()`/`maybe_run()`) that runs

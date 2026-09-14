@@ -1126,10 +1126,18 @@ _FORGE_MERGE = re.compile(
 # The product's OWN spelling of the same act: `nh merge-stack run` shells
 # `gh pr merge` for every READY PR in the stack (cli/commands.py,
 # `merge_stack_run`). It is the OPERATOR's command — a human drives the stack —
-# so in an agent session it is denied in EVERY mode, exactly like
-# `_FORGE_MERGE` above. Proven live 2026-08-08 (P3 gap G6): the guard returned
-# allow=True for `nh merge-stack run --yes` while denying every direct
-# spelling. Unlike `_LIVE_SERVER`, this is NOT anchored to a command position:
+# so in an agent session it is denied in EVERY mode, exactly like `_FORGE_MERGE`
+# above: `_is_approve_verb` and the `_MERGE_VERB_PAIRS` argv comparison fold
+# case the same unconditional way `_forge_subcommand` does (a CLI subcommand
+# spelling is not a filesystem name, so a case-sensitive host is not entitled
+# to run `nh APPROVE`/`nh MERGE-STACK run` any more than a folding one is),
+# and `_LEXICAL_MERGE_STACK` below now carries `re.IGNORECASE` for the same
+# reason (#328 follow-up: this parity sentence used to be false — measured,
+# `nh APPROVE 7`/`nh MERGE-STACK run` reached ALLOW while every direct
+# spelling below was DENY — until these three were folded). Proven live
+# 2026-08-08 (P3 gap G6): the guard returned allow=True for
+# `nh merge-stack run --yes` while denying every direct spelling.
+# Unlike `_LIVE_SERVER`, this is NOT anchored to a command position:
 # `uv run nh merge-stack run` and `sh -c "nh merge-stack run"` are the same
 # merge one wrapper deeper, and for the merge family a prose false positive
 # (an echo or a commit message quoting the full literal command) costs one
@@ -1199,8 +1207,13 @@ _FORGE_MERGE = re.compile(
 #: (options between binary and verb, redirections, wrappers, encodings).
 #: The regex's prose false positives are the cost this file already argues for
 #: on the merge family.
+#: `re.IGNORECASE`, unconditional (not host-gated `case_flags()`): matches the
+#: `.lower()` fold on `_is_approve_verb`/`_MERGE_VERB_PAIRS` below, for the
+#: same reason `_forge_subcommand`'s fold is unconditional — a CLI subcommand
+#: spelling is not a filesystem name, so `nh MERGE-STACK RUN` is not entitled
+#: to run on a case-sensitive host any more than on a folding one (#328).
 _LEXICAL_MERGE_STACK = re.compile(
-    r"(?<![\w.-])(?:nh|no-human)\s+merge-stack\s+run\b")
+    r"(?<![\w.-])(?:nh|no-human)\s+merge-stack\s+run\b", re.IGNORECASE)
 
 _LEXICAL_LIVE_SERVER = re.compile(
     r"(?:^|[|;&]\s*|`|\$\(|^\s*|/|\bsudo\s+|\benv\s+[^|;&]*?\s)"
@@ -1584,9 +1597,13 @@ _ASSIGN_DECLARATORS = frozenset({"export", "local", "readonly", "declare", "type
 #: A `gh`/`glab` mention inside a shell-runner argument — precompiled once so
 #: the depth-bounded recursion in `_forge_invocations` stays linear even on
 #: the 50k-char / 1000-wrapper adversarial case. Host-gated `case_flags()`,
-#: not unconditional `IGNORECASE`: `sh -c "GH pr merge 7"` recurses into the
-#: quoted payload either way, and the deciding fold happens after recursion
-#: in `command_name` (also host-gated) — this gate only needs to widen where
+#: not unconditional `IGNORECASE`: this gate is what DECIDES whether
+#: `sh -c "GH pr merge 7"` recurses into the quoted payload at all — measured
+#: without `case_flags()` here, `_forge_invocations("sh -c \"GH pr merge
+#: 7\"")` returns `[]`, not the resolved argv, because the search never
+#: matches and the recursive call is never made. Only once this gate fires
+#: does the later fold in `command_name` (also host-gated) get a chance to
+#: run, so the two folds must agree — this gate only needs to widen where
 #: that later fold would anyway (#328's runner-recursion half).
 _FORGE_MENTION = re.compile(r"\b(?:gh|glab)\s+\S", exec_names.case_flags())
 
@@ -1623,7 +1640,13 @@ def _is_approve_verb(word: str) -> bool:
     default and let a human notice, rather than shipping unguarded until
     somebody re-audits. This file argues that polarity for the whole merge
     family — a false denial costs one message with a stated alternative, a miss
-    lands a PR."""
+    lands a PR. Folded unconditionally (`#328`, Blocker 3 follow-up): a CLI
+    subcommand spelling is not a filesystem name, so `nh APPROVE <id>` is not
+    entitled to run on a case-sensitive host any more than a folding one --
+    the same rationale `_forge_subcommand`'s fold already uses. Measured
+    before this fold: `nh APPROVE 7`/`nh Approve 7` reached ALLOW while
+    `nh approve 7` was DENY."""
+    word = word.lower()
     return word == "approve" or word.startswith("approve-")
 
 
@@ -1873,7 +1896,11 @@ def _approve_denial(cmd: str, _depth: int = 0) -> str | None:
             words = _nh_subcommand(argv, table)
             if words and _is_approve_verb(words[0]):
                 return _APPROVE_REASON
-            if tuple(words[:2]) in _MERGE_VERB_PAIRS:
+            # Folded (`#328`, Blocker 3 follow-up): `nh MERGE-STACK run` and
+            # `nh merge-stack RUN` reached ALLOW while `nh merge-stack run`
+            # was DENY -- same unconditional-fold rationale as
+            # `_is_approve_verb` above.
+            if tuple(w.lower() for w in words[:2]) in _MERGE_VERB_PAIRS:
                 return _MERGE_STACK_REASON
             if words and (words[0] in _LIVE_VERBS
                           or tuple(words[:2]) in _LIVE_VERB_PAIRS):
@@ -1912,7 +1939,7 @@ def _approve_denial(cmd: str, _depth: int = 0) -> str | None:
                     words = _nh_subcommand(argv[i + 1:], table)
                     if words and _is_approve_verb(words[0]):
                         return _APPROVE_REASON
-                    if tuple(words[:2]) in _MERGE_VERB_PAIRS:
+                    if tuple(w.lower() for w in words[:2]) in _MERGE_VERB_PAIRS:
                         return _MERGE_STACK_REASON
                     if words and (words[0] in _LIVE_VERBS
                                   or tuple(words[:2]) in _LIVE_VERB_PAIRS):

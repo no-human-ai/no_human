@@ -351,8 +351,16 @@ def test_a_case_sensitive_host_is_not_punished():
 #: `(noun, verb)` for the two forges' merge subcommand, per `_FORGE_MERGE_PAIRS`.
 _CASE_FORGE_SUBCOMMANDS = {"gh": ("pr", "merge"), "glab": ("mr", "merge")}
 
-#: Every runner the guard recurses into for a forge command, `{cmd}` standing
-#: in for the (possibly capitalised, possibly `-R`-flagged) invocation.
+#: 5 of the 18 runners in `guard._FORGE_RUNNER_NAMES` -- the bare form plus
+#: one quoted-payload runner (`sh`), one quoted-payload runner needing
+#: `_strip_wrappers` (`bash`), and two trailing-argv runners (`timeout`,
+#: `xargs`) -- not the full runtime set. The recursion is name-driven, not
+#: per-runner special-cased (every member of `_FORGE_RUNNER_NAMES` reaches the
+#: same `_FORGE_MENTION`/`command_name` code path this matrix already pins for
+#: `sh`/`bash`/`timeout`/`xargs`), but this matrix does not itself measure the
+#: other 14 (`chrt`, `dash`, `eval`, `flock`, `ionice`, `ksh`, `nice`, `script`,
+#: `setsid`, `stdbuf`, `taskset`, `unbuffer`, `watch`, `zsh`). `{cmd}` stands in
+#: for the (possibly capitalised, possibly `-R`-flagged) invocation.
 _CASE_MATRIX_RUNNERS = (
     "{cmd}",
     'sh -c "{cmd}"',
@@ -452,8 +460,20 @@ def test_the_runner_recursion_folds_a_wrapped_name_for_git_too():
     on the trailing-argv branch; a precompiled `_GIT_MENTION` gated by
     `case_flags()` on the quoted-mention branch). The `-C .` row is the one no
     lexical git pattern reaches at all, so it pins the git half specifically
-    rather than riding on some other gate. Asserted through `evaluate`, never
-    `_git_invocations` directly.
+    rather than riding on some other gate -- but `push` rows ride on
+    `_looks_like_git_push`, a DIFFERENT gate this test does not touch: reverting
+    BOTH `_GIT_MENTION`'s `case_flags()` (guard.py's `_GIT_MENTION` constant)
+    and `_git_invocations`'s trailing-argv `command_name` fold, together, still
+    leaves every `push` row here DENIED (measured), so they do not pin this
+    fix at all. The two `commit` rows below are the ones that actually do:
+    `bash -c "GIT -C . commit -m x"` requires ONLY the `_GIT_MENTION` fold (it
+    is the quoted-payload branch; reverting the trailing-argv `command_name`
+    fold alone leaves it denied), and `timeout 30 GIT -C . commit -m x`
+    requires ONLY the trailing-argv `command_name` fold (reverting `_GIT_MENTION`
+    alone leaves it denied) -- each measured individually by reverting one
+    change at a time. Together the pair pins both halves of the git-side fix
+    independently, not just their conjunction. Asserted through `evaluate`,
+    never `_git_invocations` directly.
 
     `readonly=True`: `_git_invocations` (the function this test's fix touches)
     is consulted only by the read-only session's write-block. At the default
@@ -469,6 +489,8 @@ def test_the_runner_recursion_folds_a_wrapped_name_for_git_too():
         'bash -c "GIT -C . push origin main"',
         "timeout 30 GIT push origin main",
         "xargs GIT push origin main",
+        'bash -c "GIT -C . commit -m x"',
+        "timeout 30 GIT -C . commit -m x",
     )
 
     denied_folding = _verdicts_with_fold(True, rows, readonly=True)
@@ -493,9 +515,15 @@ def test_a_capitalised_git_push_is_denied_in_the_default_session_too():
     change gates with `exec_names.case_flags()` the same way `_FORGE_MERGE`
     and `_GIT_MENTION` already are. `_push_targets_protected` itself matches
     `push`/branch tokens verbatim (lowercase), which is host-independent, so
-    only the binary (`GIT`) is capitalised here -- verb/noun capitalisation
-    of `push`/`main` is a separate, undisclosed gap this row does not claim
-    to close.
+    only the binary (`GIT`) is capitalised here. Verb capitalisation of
+    `push` is NOT a gap -- measured, `git PUSH origin main` is denied in
+    every mode, but by an unrelated gate: `_git_worktree_denial`'s
+    default-deny-unknown-subcommand path (`git PUSH` is not a recognised
+    subcommand, so it is refused rather than allowed by omission), not by
+    push-specific logic. Branch-name capitalisation IS a real, disclosed gap:
+    `_push_targets_protected` compares `tok` to `never_push_to` verbatim, so
+    `git push origin MAIN` is allowed on every host, host-fold or not -- this
+    row does not claim to close it.
 
     NOT closed by this fix, and not claimed to be: a runner-recursion form
     that interposes a flag between the capitalised binary and `push` (`timeout
