@@ -1,6 +1,6 @@
 # Test-change guard
 
-_Harness-captured record for task `9c59b93c`, commit `e07006c96db544a35fac52f0f981cb87f61468c8` — not model-authored: no_human wrote this file from the tamper adjudicator's waivers. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `9c59b93c`, commit `4bf55ce955dfa7e137693aaa79b1937629a1f2cf` — not model-authored: no_human wrote this file from the tamper adjudicator's waivers. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ```json
 [
@@ -57,6 +57,38 @@ _Harness-captured record for task `9c59b93c`, commit `e07006c96db544a35fac52f0f9
       "test_case_fold_sweep.py autouse fixture is a cache_clear-only isolator for AC4: 'A before/after sweep through the real guard entry point shows no command moving from denied to allowed' \u2014 it cannot force a test green",
       "test_exec_names.py skip #1 (skip when 'this volume folds case') guards a NEW case-sensitive test supporting AC1's no-false-DENY requirement; skip #2 (skip when running as root) guards a NEW test for AC3 'a probe that cannot complete results in folding, never in the more permissive answer' \u2014 neither neuters existing coverage",
       "test_exec_names.py and test_venv_install_guard.py autouse fixtures are cache_clear-only, required by the logic change making host_folds_case an lru_cache'd probe keyed on (cwd, path_env) \u2014 visible in the signature change to 'lambda *a, **k' and .cache_clear() calls \u2014 for test isolation, not behavior faking"
+    ],
+    "reasons": [
+      "tests/test_case_fold_sweep.py: autouse monkeypatch fixture 0->1 (forces green without fixing product code)",
+      "tests/test_exec_names.py: skip/xfail markers 0->2 (test neutered)",
+      "tests/test_exec_names.py: autouse monkeypatch fixture 0->1 (forces green without fixing product code)",
+      "tests/test_venv_install_guard.py: autouse monkeypatch fixture 0->1 (forces green without fixing product code)"
+    ],
+    "verdict": "LEGITIMATE",
+    "where": ""
+  },
+  {
+    "justification": [
+      "test_case_fold_sweep.py autouse fixture only calls host_folds_case.cache_clear() (no product monkeypatch); it is cache hygiene for the lru_cached probe and the file implements AC4 'a before/after sweep through the real guard entry point shows no command moving from denied to allowed'",
+      "test_exec_names.py skips 0->2 are conditional env guards inside two NEW tests (skip only when the runner volume folds / can read 0o000 dirs), supporting AC3/AC5; no existing test was neutered",
+      "test_exec_names.py autouse fixture is _clear_fold_cache=cache_clear() only, required by the AC2 logic change making host_folds_case lru_cached with signature (cwd, path_env)",
+      "test_venv_install_guard.py autouse fixture is the same cache_clear() hygiene; the removed assertion 'is (os.name == \"nt\")' is exactly what AC3 mandates deleting: 'no test asserts the permissive fallback as correct'"
+    ],
+    "reasons": [
+      "tests/test_case_fold_sweep.py: autouse monkeypatch fixture 0->1 (forces green without fixing product code)",
+      "tests/test_exec_names.py: skip/xfail markers 0->2 (test neutered)",
+      "tests/test_exec_names.py: autouse monkeypatch fixture 0->1 (forces green without fixing product code)",
+      "tests/test_venv_install_guard.py: autouse monkeypatch fixture 0->1 (forces green without fixing product code)"
+    ],
+    "verdict": "LEGITIMATE",
+    "where": ""
+  },
+  {
+    "justification": [
+      "test_case_fold_sweep.py autouse fixture: only calls host_folds_case.cache_clear(); required because AC3 tests pin the now-lru_cached probe and a stale cache would corrupt the 'a probe that cannot complete results in folding' verification",
+      "test_exec_names.py autouse fixture: same cache_clear-only fixture, required to deterministically test AC3's fold-on-unmeasurable behaviour across tests that monkeypatch _folds_case_at",
+      "test_venv_install_guard.py autouse fixture: same cache_clear-only fixture, required so folding-host simulations for AC1 ('a capitalised spelling ... refused wherever the lowercase spelling is refused') do not read stale cached probe answers",
+      "test_exec_names.py two skips: conditional environment guards on NEW probe-correctness tests (skip when the runner volume folds / when running as root), supporting AC3 that a probe 'never [answers] the more permissive answer'; no existing assertion neutered \u2014 assertions rose 37696->37739 and the permissive-fallback assertion was removed exactly as AC3 requires"
     ],
     "reasons": [
       "tests/test_case_fold_sweep.py: autouse monkeypatch fixture 0->1 (forces green without fixing product code)",

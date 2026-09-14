@@ -1,160 +1,165 @@
 # How I verified this — full log
 
-_Harness-captured record for task `9c59b93c`, commit `e07006c96db544a35fac52f0f981cb87f61468c8` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `9c59b93c`, commit `4bf55ce955dfa7e137693aaa79b1937629a1f2cf` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ## How I verified this
 11 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
 
 ### test
-- `uv run pytest -q tests/test_text_reads_declare_encoding.py 2>&1 | tail -20`
+- `uv run pytest tests/test_text_reads_declare_encoding.py -q 2>&1 | tail -40`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
 ...............                                                          [100%]
-15 passed in 2.87s
+15 passed in 4.02s
 ```
 
-- `uv run pytest -q tests/test_exec_names.py tests/test_venv_install_guard.py tests/test_case_fold_sweep.py 2>&1 | tail -60`
+- `uv run pytest tests/test_case_fold_sweep.py -q 2>&1 | tail -60`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-...........................................s............................ [ 48%]
-........................................................................ [ 96%]
 .....                                                                    [100%]
-148 passed, 1 skipped in 26.50s
+5 passed in 2.92s
 ```
 
-- `uv run pytest -q "tests/test_venv_install_guard.py::test_the_cwd_argument_is_actually_threaded_to_the_probe" 2>&1 | tail -30`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-.                                                                        [100%]
-1 passed in 0.92s
-```
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/9c59b93c9aeb49bb9bb36d0c3a7385c4.52752.633972aa cp /tmp/venv_install_guard.base.py src/<redacted>/agent/venv_install_guard.py uv run pytest -q "tests/test_venv_ins [... 153 of 496 characters omitted from the middle ...] edacted>/agent/venv_install_guard.py diff /tmp/venv_install_guard.fixed.py src/<redacted>/agent/venv_install_guard.py && echo "restore OK"`
+- `uv run pytest tests/test_exec_names.py tests/test_venv_install_guard.py tests/test_text_reads_declare_encoding.py -q 2>&1 | tail -40`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-.                                                                        [100%]
-1 passed in 0.64s
----restoring---
-restore OK
+...........................................s............................ [ 44%]
+........................................................................ [ 88%]
+...................                                                      [100%]
+162 passed, 1 skipped in 5.17s
 ```
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/9c59b93c9aeb49bb9bb36d0c3a7385c4.52752.633972aa uv run pytest -q "tests/test_venv_install_guard.py::test_mutating_subcommand_threads_cwd_to_the_inner_installer_skip" "tests/test_venv_install_guard.py::test_the_cwd_argument_is_actually_threaded_to_the_probe" 2>&1 | tail -20`
+- `set -e mkdir -p /tmp/repro_backup cp src/<redacted>/agent/exec_names.py /tmp/repro_backup/exec_names.py.fixed cp src/<redacted>/agent/venv_install_guard.py /tmp/repro_backup/venv_install_guard.py.fixed git [... 159 of 502 characters omitted from the middle ...] cted>/agent/venv_install_guard.py echo "--- swapped to pre-fix sources ---" uv run pytest tests/test_case_fold_sweep.py -q 2>&1 | tail -60`
+
+```
+--- swapped to pre-fix sources ---
+        }
+    
+        for cmd in cases:
+>           assert now_denied[cmd], (
+                f"must be denied now (foreign shared venv, folding host): {cmd}")
+E           AssertionError: must be denied now (foreign shared venv, folding host): PIP install somepkg
+E           assert False
+
+tests/test_case_fold_sweep.py:313: AssertionError
+________ test_the_sweep_does_not_regress_the_uvx_active_flag_placement _________
+
+tmp_path = PosixPath('/private/var/folders/1r/3r0rt1jd4j1456rsg_fh4d380000gn/T/pytest-of-eyalgolan/pytest-69271/test_the_sweep_does_not_regres0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x10d9d2720>
+
+    def 
+[... 2,401 of 3,540 characters omitted from the middle ...]
+     assert not True
+E            +  where True = GuardDecision(allow=True, reason='', severity=None).allow
+
+tests/test_case_fold_sweep.py:383: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_case_fold_sweep.py::test_the_sweep_moved_rows_in_the_closing_direction
+FAILED tests/test_case_fold_sweep.py::test_the_sweep_does_not_regress_the_uvx_active_flag_placement
+2 failed, 3 passed in 1.20s
+```  
+  _excerpt - 3,526 characters of output in total_
+
+- `set -e cp /tmp/repro_backup/exec_names.py.fixed src/<redacted>/agent/exec_names.py cp /tmp/repro_backup/venv_install_guard.py.fixed src/<redacted>/agent/venv_install_guard.py echo "--- restored fixed sources ---" git status --porcelain src/<redacted>/agent/exec_names.py src/<redacted>/agent/venv_install_guard.py uv run pytest tests/test_case_fold_sweep.py -q 2>&1 | tail -20`
+
+```
+--- restored fixed sources ---
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+.....                                                                    [100%]
+5 passed in 0.90s
+```
+
+- `set -e cp src/<redacted>/agent/exec_names.py /tmp/repro_backup/exec_names.py.fixed2 cp src/<redacted>/agent/venv_install_guard.py /tmp/repro_backup/venv_install_guard.py.fixed2 git show 0b8c2dc4:src/<redac [... 162 of 505 characters omitted from the middle ...] rd.py echo "--- swapped to pre-fix sources ---" uv run pytest tests/test_exec_names.py tests/test_venv_install_guard.py -q 2>&1 | tail -30`
+
+```
+--- swapped to pre-fix sources ---
+            "PIP install evilpkg", cwd=wt, env=prod_env)
+    
+        if folds_here:
+>           assert upper is not None, (
+                "this volume folds case, so PIP resolves to the same program as "
+                "pip, and the install must be denied"
+            )
+E           AssertionError: this volume folds case, so PIP resolves to the same program as pip, and the install must be denied
+E           assert None is not None
+
+tests/test_venv_install_guard.py:2065: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_exec_names.py::test_the_probe_measures_the_volume_it_is_
+[... 1,028 of 2,167 characters omitted from the middle ...]
+d_to_the_probe
+FAILED tests/test_venv_install_guard.py::test_mutating_subcommand_threads_cwd_to_the_inner_installer_skip
+FAILED tests/test_venv_install_guard.py::test_spaced_path_candidates_threads_cwd_to_the_installer_check
+FAILED tests/test_venv_install_guard.py::test_a_capitalised_installer_is_refused_on_a_folding_cwd
+FAILED tests/test_venv_install_guard.py::test_this_hosts_real_filesystem_answer_is_honoured
+17 failed, 130 passed, 1 skipped in 5.01s
+```  
+  _excerpt - 2,167 characters of output in total_
+
+- `set -e cp /tmp/repro_backup/exec_names.py.fixed2 src/<redacted>/agent/exec_names.py cp /tmp/repro_backup/venv_install_guard.py.fixed2 src/<redacted>/agent/venv_install_guard.py git status --porcelain src/< [... 288 of 631 characters omitted from the middle ...] installer_is_refused_on_a_folding_cwd tests/test_case_fold_sweep.py::test_the_sweep_moved_rows_in_the_closing_direction -q 2>&1 | tail -20`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-..                                                                       [100%]
-2 passed in 1.76s
+....                                                                     [100%]
+4 passed in 0.78s
 ```
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/9c59b93c9aeb49bb9bb36d0c3a7385c4.52752.633972aa cp src/<redacted>/agent/venv_install_guard.py /tmp/venv_install_guard.fixed2.py cp /tmp/venv_install_guard.base.py  [... 244 of 587 characters omitted from the middle ...] dacted>/agent/venv_install_guard.py diff /tmp/venv_install_guard.fixed2.py src/<redacted>/agent/venv_install_guard.py && echo "restore OK"`
+- `set -e git show 0b8c2dc4:src/<redacted>/agent/exec_names.py > src/<redacted>/agent/exec_names.py git show 0b8c2dc4:src/<redacted>/agent/venv_install_guard.py > src/<redacted>/agent/venv_install_guard.py  [... 857 of 1,196 characters omitted from the middle ...] ::test_an_unmeasurable_probe_folds" \   "tests/test_exec_names.py::test_the_probe_survives_a_removed_process_cwd" \   -q 2>&1 | tail -20`
 
 ```
-folds (`True`) and every other real anchor (this test process's own
-        real `os.getcwd()`, every real `PATH` entry) determinately does NOT
-        (`False`, never `None` — no fail-closed default available to hide a
-        dropped `cwd` behind). With `cwd` correctly threaded into that skip's
-        `_is_installer_name` call, `PIP` folds to `pip` on `wt`, is recognised
-        as the inner installer name, gets skipped, and the walk lands on
-        `install`. A call that silently dropped `cwd` (or accepted it and
-        never wired it through) measures the real anchors instead, lands on
-        the determinate `False`, never recognises `PIP` as an installer nam
-[... 563 of 1,702 characters omitted from the middle ...]
-ens, 0, wt)
-                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-E       TypeError: _mutating_subcommand() takes 2 positional arguments but 3 were given
+--- swapped to pre-fix sources ---
+            assert not os.path.exists(doomed)
+    
+            exec_names.host_folds_case.cache_clear()
+            # Must not raise (FileNotFoundError/OSError) -- must return a verdict.
+>           result = exec_names.host_folds_case(cwd=None, path_env=<redacted>
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E           TypeError: host_folds_case() got an unexpected keyword argument 'cwd'
 
-tests/test_venv_install_guard.py:407: TypeError
+tests/test_exec_names.py:453: TypeError
 =========================== short test summary info ============================
 FAILED tests/test_venv_install_guard.py::test_mutating_subcommand_threads_cwd_to_the_inner_installer_skip
-1 failed in 1.26s
----restoring---
-restore OK
+FA
+[... 317 of 1,456 characters omitted from the middle ...]
+nstall_guard.py::test_spaced_path_candidates_threads_cwd_to_the_installer_check
+FAILED tests/test_case_fold_sweep.py::test_the_sweep_moved_rows_in_the_closing_direction
+FAILED tests/test_case_fold_sweep.py::test_the_sweep_does_not_regress_the_uvx_active_flag_placement
+FAILED tests/test_exec_names.py::test_an_unmeasurable_probe_folds - Attribute...
+FAILED tests/test_exec_names.py::test_the_probe_survives_a_removed_process_cwd
+9 failed, 1 passed in 2.10s
 ```  
-  _excerpt - 1,702 characters of output in total_
+  _excerpt - 1,449 characters of output in total_
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/9c59b93c9aeb49bb9bb36d0c3a7385c4.52752.633972aa cp src/<redacted>/agent/venv_install_guard.py /tmp/venv_install_guard.fixed3.py git show 99e7e031:tests/test_venv [... 851 of 1,190 characters omitted from the middle ...] e_final_fold" \   2>&1 | tail -20 echo "---restoring---" cp /tmp/venv_install_guard.fixed3.py src/<redacted>/agent/venv_install_guard.py`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-.......                                                                  [100%]
-7 passed in 1.03s
----restoring---
-```
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/9c59b93c9aeb49bb9bb36d0c3a7385c4.52752.633972aa git diff --stat git diff tests/test_venv_install_guard.py | head -5 uv run pytest -q tests/test_exec_names.py tests/test_venv_install_guard.py tests/test_case_fold_sweep.py 2>&1 | tail -15`
-
-```
-src/<redacted>/agent/venv_install_guard.py | 64 +++++++++++++++-----------------
- tests/test_venv_install_guard.py         | 49 ++++++++++++++++++++++++
- 2 files changed, 78 insertions(+), 35 deletions(-)
-diff --git a/tests/test_venv_install_guard.py b/tests/test_venv_install_guard.py
-index 959510c5..2d3eabdb 100644
---- a/tests/test_venv_install_guard.py
-+++ b/tests/test_venv_install_guard.py
-@@ -363,6 +363,55 @@ def test_the_cwd_argument_is_actually_threaded_to_the_probe(tmp_path, monkeypatc
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-...........................................s............................ [ 48%]
-........................................................................ [ 96%]
-......                                                                   [100%]
-149 passed, 1 skipped in 2.13s
-```
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/9c59b93c9aeb49bb9bb36d0c3a7385c4.52752.633972aa ls testdata/case_fold_corpus.json 2>&1 echo "---sweep test---" uv run pytest -q tests/test_case_fold_sweep.py -v 2>&1 | tail -40`
-
-```
-testdata/case_fold_corpus.json
----sweep test---
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-============================= test session starts ==============================
-platform darwin -- Python 3.12.13, pytest-9.1.1, pluggy-1.6.0
-<redacted> isolated HOME: /var/folders/1r/3r0rt1jd4j1456rsg_fh4d380000gn/T/nh-test-home-qny4us_v
-rootdir: /Users/eyalgolan/.<redacted>/worktrees/9c59b93c9aeb49bb9bb36d0c3a7385c4.52752.633972aa
-configfile: pyproject.toml
-plugins: anyio-4.14.0, no-human-0.2.2, cov-7.1.0, xdist-3.8.0, asyncio-1.4.0
-asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
-collected 4 items
-
-tests/test_case_fold_sweep.py ....                                       [100%]
-
-============================== 4 passed in 0.59s ===============================
-```
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/9c59b93c9aeb49bb9bb36d0c3a7385c4.52752.633972aa uv run pytest -q tests/test_guard.py tests/test_windows_command_readings.py tests/test_structural_budget.py 2>&1 | tail -30`
+- `uv run pytest \   "tests/test_venv_install_guard.py::test_mutating_subcommand_threads_cwd_to_the_inner_installer_skip" \   "tests/test_venv_install_guard.py::test_a_capitalised_uvx_program_flag_is_not_de [... 687 of 1,026 characters omitted from the middle ...] never_reads_its_own_source_path" \   "tests/test_exec_names.py::test_a_frozen_layout_still_denies_the_forge_rows" \   -q 2>&1 | tail -20`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-........................................................................ [ 18%]
-........................................................................ [ 37%]
-........................................................................ [ 56%]
-........................................................................ [ 75%]
-..........................xx............................................ [ 94%]
-....................                                                     [100%]
-378 passed, 2 xfailed in 33.91s
+...........                                                              [100%]
+11 passed in 51.12s
 ```
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/9c59b93c9aeb49bb9bb36d0c3a7385c4.52752.633972aa uv run pytest -q tests/test_exec_names.py tests/test_venv_install_guard.py tests/test_case_fold_sweep.py tests/test [... 138 of 481 characters omitted from the middle ...]  echo "=== manifest check ===" python3 scripts/check_release_manifest.py 2>&1 | tail -5 echo "=== final git status ===" git status --short`
+- `uv run pytest tests/test_structural_budget.py tests/test_check_release_manifest.py -q 2>&1 | tail -20`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-...........................................s............................ [ 13%]
-........................................................................ [ 26%]
-........................................................................ [ 39%]
-........................................................................ [ 52%]
-........................................................................ [ 66%]
-........................................................................ [ 79%]
-................................xx...................................... [ 92%]
-.........................................                                [100%]
-542 passed, 1 skipped, 2 xfailed in 39.10s
-=== manifest check ===
-OK: 1611 file(s) match RELEASE_MANIFEST.txt
-=== final git status ===
- M RELEASE_MANIFEST.txt
- M src/<redacted>/agent/venv_install_guard.py
- M tests/test_venv_install_guard.py
+...........................sss.ssss.......                               [100%]
+35 passed, 7 skipped in 25.71s
+```
+
+- `uv run pytest -q -n 4 \   tests/test_case_fold_sweep.py \   tests/test_exec_names.py \   tests/test_venv_install_guard.py \   tests/test_text_reads_declare_encoding.py \   tests/test_structural_budget.py \   tests/test_check_release_manifest.py \   2>&1 | tail -30`
+
+```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+bringing up nodes...
+bringing up nodes...
+
+.....................................s.................................. [ 34%]
+........................................................................ [ 68%]
+..............................................s.ssss..s.s.........       [100%]
+202 passed, 8 skipped in 3.22s
 ```
 
 
