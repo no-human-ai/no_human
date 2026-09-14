@@ -53,9 +53,14 @@
 //
 // A second, "control" pass of the SAME dist bundle string-patches
 // `maskCapturedNetworkRequestFn:` out of the one chunk that wires it, so
-// posthog-js's own init() never calls it. That pass must leak the sentinel —
+// posthog-js's own init() never calls it. That pass must leak the sentinels —
 // proof this harness has discriminating power (mirrors dead-click-race.mjs's
-// before_send/beforeSendOff A/B).
+// before_send/beforeSendOff A/B). Every masked-pass ABSENCE check (2, 3, 5)
+// has a matching control-pass PRESENCE check on the same sentinel, so a
+// clean masked result can never be explained by "this harness never
+// observed the request at all" — including check 3, the default-deny check,
+// whose sentinel (SENTINEL_UNLISTED) must be shown leaking in the unmasked
+// pass or the absence in the masked pass proves nothing.
 //
 //   node e2e/replay-body-leak.mjs   # needs `npm run build` first (drives web/dist)
 import http from "node:http";
@@ -559,6 +564,18 @@ try {
   check(
     "control (masking removed): paused_profile DOES leak — proves the queue/health check above is not vacuous",
     uHay.includes(SENTINEL_QUOTA_PROFILE),
+  );
+  // Without this, check 3 (masked: default-deny for UNLISTED_PATH) could
+  // pass for the wrong reason — the fetch never fired before the recorder
+  // patch landed, the response never got captured, or the sentinel never
+  // made it onto the wire — and "absent from mHay" would be true regardless
+  // of whether the mask function ever ran. This proves the sentinel DOES
+  // reach the captured bytes when masking is off, so check 3's absence in
+  // the masked pass is evidence the redact-tier default actually fired, not
+  // an artifact of the harness never observing this request at all.
+  check(
+    "control (masking removed): default-deny sentinel for the UNLISTED endpoint DOES leak — proves check 3 is not vacuous",
+    uHay.includes(SENTINEL_UNLISTED),
   );
 
   const failed = checks.filter((c) => !c.ok);
