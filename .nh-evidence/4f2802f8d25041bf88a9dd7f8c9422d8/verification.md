@@ -1,42 +1,123 @@
 # How I verified this — full log
 
-_Harness-captured record for task `4f2802f8`, commit `a185a27511ba40873e854e957c5a095a913f7429` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `4f2802f8`, commit `3503c8319b2e49781a4fcb84968ac1890fc4302a` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ## How I verified this
-7 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
+11 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
 
 ### test
-- `uv run pytest -q tests/test_exec_names.py tests/test_guard.py tests/test_structural_budget.py 2>&1 | tail -60`
+- `uv run pytest -q tests/test_exec_names.py -k "case_matrix or matrix or every_capitalised or documented_table or widened_mention" 2>&1 | tail -60`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-........................................................................ [ 20%]
-........................................................................ [ 40%]
-........................................................................ [ 60%]
-........................................................................ [ 80%]
-.......................................................................  [100%]
-359 passed in 27.35s
+....                                                                     [100%]
+4 passed, 69 deselected in 2.85s
 ```
 
-- `uv run pytest -q tests/test_exec_names.py::test_the_runner_recursion_folds_a_wrapped_name_for_git_too -v 2>&1 | tail -15`
+- `uv run pytest -q tests/test_exec_names.py 2>&1 | tail -30`
+
+```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+........................................................................ [ 98%]
+.                                                                        [100%]
+73 passed in 1.51s
+```
+
+- `wc -l src/<redacted>/agent/guard.py uv run pytest -q tests/test_structural_budget.py 2>&1 | tail -40`
+
+```
+3022 src/<redacted>/agent/guard.py
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+..................                                                       [100%]
+18 passed in 2.23s
+```
+
+- `uv run pytest -q tests/test_exec_names.py -k "widened_mention" -v 2>&1 | tail -30`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
 ============================= test session starts ==============================
 platform darwin -- Python 3.12.13, pytest-9.1.1, pluggy-1.6.0
-<redacted> isolated HOME: /var/folders/1r/3r0rt1jd4j1456rsg_fh4d380000gn/T/nh-test-home-5vi6whvt
-rootdir: /Users/eyalgolan/.<redacted>/worktrees/4f2802f8d25041bf88a9dd7f8c9422d8.52752.7ff58938
+<redacted> isolated HOME: /var/folders/1r/3r0rt1jd4j1456rsg_fh4d380000gn/T/nh-test-home-hsc7kszo
+rootdir: /Users/eyalgolan/.<redacted>/worktrees/4f2802f8d25041bf88a9dd7f8c9422d8.52752.db4a1384
 configfile: pyproject.toml
 plugins: anyio-4.14.0, no-human-0.2.2, cov-7.1.0, xdist-3.8.0, asyncio-1.4.0
 asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
-collected 1 item
+collected 73 items / 72 deselected / 1 selected
 
 tests/test_exec_names.py .                                               [100%]
 
-============================== 1 passed in 0.77s ===============================
+======================= 1 passed, 72 deselected in 0.65s =======================
 ```
 
-- `uv run pytest -q tests/test_exec_names.py tests/test_guard.py tests/test_structural_budget.py 2>&1 | tail -40`
+- `uv run pytest -q tests/test_exec_names.py -k "widened_mention" 2>&1 | tail -30`
+
+```
+compile_calls += 1
+            return real_compile(*args, **kwargs)
+    
+        started = time.monotonic()
+        re.compile = counting_compile
+        try:
+            decision = evaluate(
+                "Bash", {"command": nested},
+                forbidden_paths=<redacted> never_push_to=["main"], cwd=".",
+                env={"PATH": ""})
+        finally:
+            re.compile = real_compile
+        elapsed = time.monotonic() - started
+    
+        assert isinstance(decision.allow, bool)  # completed at all, didn't hang
+        assert elapsed < 30, f"linearity bound appears lost: {elapsed}s"
+>       assert compile_calls < 50, (
+            f"{compile_calls
+[... 404 of 1,543 characters omitted from the middle ...]
+s -- _FORGE_MENTION/_GIT_MENTION are being recompiled per call instead of reused from module scope (this is the mutation the docstring above describes; a wall-clock bound alone does not catch it)
+E       assert 3010 < 50
+
+tests/test_exec_names.py:603: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_exec_names.py::test_the_widened_mention_gate_stays_linear
+1 failed, 72 deselected in 1.02s
+```  
+  _excerpt - 1,536 characters of output in total_
+
+- `uv run pytest -q tests/test_exec_names.py 2>&1 | tail -15`
+
+```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+........................................................................ [ 98%]
+.                                                                        [100%]
+73 passed in 1.02s
+```
+
+- `wc -l src/<redacted>/agent/guard.py uv run pytest -q tests/test_exec_names.py tests/test_structural_budget.py 2>&1 | tail -20`
+
+```
+3031 src/<redacted>/agent/guard.py
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+........................................................................ [ 79%]
+...................                                                      [100%]
+91 passed in 2.72s
+```
+
+- `uv run pytest -q tests/test_check_release_manifest.py tests/test_precommit_manifest_gate.py tests/test_readme_claims.py tests/test_reanchor_citations.py tests/test_verification_receipts.py 2>&1 | tail -30`
+
+```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+.........sss.ssss..............................................s.s.s.s.s [ 12%]
+.s.s.s.s.s...............................................s.............. [ 24%]
+............s........................................................... [ 37%]
+........................................................................ [ 49%]
+........................................................................ [ 62%]
+........................................................................ [ 74%]
+........................................................................ [ 87%]
+........................................................................ [ 99%]
+...                                                                      [100%]
+560 passed, 19 skipped in 10.20s
+```
+
+- `uv run pytest -q tests/test_guard.py tests/test_exec_names.py tests/test_structural_budget.py 2>&1 | tail -20`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
@@ -44,75 +125,59 @@ warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not mat
 ........................................................................ [ 40%]
 ........................................................................ [ 60%]
 ........................................................................ [ 80%]
-..........................................................F............  [100%]
-=================================== FAILURES ===================================
-_____
-[... 1,038 of 2,177 characters omitted from the middle ...]
-'agent/guard...atchets down'] == []
-E             
-E             Left contains one more item: 'agent/guard.py: frozen 2969, now 2985 (+16); this budget only ratchets down'
-E             Use -v to get more diff
+........................................................................ [100%]
+360 passed in 28.23s
+```
 
-tests/test_structural_budget.py:2130: AssertionError
-=========================== short test summary info ============================
-FAILED tests/test_structural_budget.py::test_no_frozen_entry_has_grown - Asse...
-1 failed, 358 passed in 25.39s
-```  
-  _excerpt - 2,175 characters of output in total_
-
-- `uv run pytest -q tests/test_guard.py::test_a_capitalised_nh_approve_or_merge_stack_is_denied_in_every_mode -v 2>&1 | tail -20`
+- `uv run pytest -q "tests/test_exec_names.py::test_the_runner_recursion_folds_a_wrapped_name_for_git_too" "tests/test_guard.py::test_a_capitalised_nh_approve_or_merge_stack_is_denied_in_every_mode" -v 2>&1 | tail -15`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
 ============================= test session starts ==============================
 platform darwin -- Python 3.12.13, pytest-9.1.1, pluggy-1.6.0
-<redacted> isolated HOME: /var/folders/1r/3r0rt1jd4j1456rsg_fh4d380000gn/T/nh-test-home-v1j5vdtg
-rootdir: /Users/eyalgolan/.<redacted>/worktrees/4f2802f8d25041bf88a9dd7f8c9422d8.52752.7ff58938
+<redacted> isolated HOME: /var/folders/1r/3r0rt1jd4j1456rsg_fh4d380000gn/T/nh-test-home-2690qioc
+rootdir: /Users/eyalgolan/.<redacted>/worktrees/4f2802f8d25041bf88a9dd7f8c9422d8.52752.db4a1384
 configfile: pyproject.toml
 plugins: anyio-4.14.0, no-human-0.2.2, cov-7.1.0, xdist-3.8.0, asyncio-1.4.0
 asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
-collected 1 item
+collected 2 items
 
+tests/test_exec_names.py .                                               [ 50%]
 tests/test_guard.py .                                                    [100%]
 
-============================== 1 passed in 0.67s ===============================
+============================== 2 passed in 1.03s ===============================
 ```
 
-- `uv run pytest -q tests/test_exec_names.py tests/test_guard.py tests/test_structural_budget.py 2>&1 | tail -20`
+- `git status --short echo "---diff stat---" git diff --stat echo "---final scoped gate---" uv run pytest -q tests/test_guard.py tests/test_exec_names.py tests/test_structural_budget.py tests/test_check_release_manifest.py tests/test_precommit_manifest_gate.py tests/test_readme_claims.py tests/test_reanchor_citations.py tests/test_verification_receipts.py 2>&1 | tail -15`
 
 ```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-........................................................................ [ 20%]
-........................................................................ [ 40%]
-........................................................................ [ 60%]
-........................................................................ [ 80%]
-........................................................................ [100%]
-360 passed in 28.03s
-```
-
-- `uv run pytest -q tests/test_exec_names.py tests/test_guard.py tests/test_structural_budget.py 2>&1 | tail -15`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-........................................................................ [ 20%]
-........................................................................ [ 40%]
-........................................................................ [ 60%]
-........................................................................ [ 80%]
-........................................................................ [100%]
-360 passed in 30.83s
-```
-
-- `uv run pytest -q tests/test_exec_names.py tests/test_guard.py tests/test_structural_budget.py -p no:randomly 2>&1 | tail -15`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-........................................................................ [ 20%]
-........................................................................ [ 40%]
-........................................................................ [ 60%]
-........................................................................ [ 80%]
-........................................................................ [100%]
-360 passed in 30.92s
-```
+M CHANGELOG.md
+ M RELEASE_MANIFEST.txt
+ M docs/verification.md
+ M src/<redacted>/agent/guard.py
+ M tests/test_exec_names.py
+ M tests/test_structural_budget.py
+---diff stat---
+ CHANGELOG.md                    |  14 +++---
+ RELEASE_MANIFEST.txt            |  10 ++--
+ docs/verification.md            |  14 +++---
+ src/<redacted>/agent/guard.py     |  24 +++++++---
+ tests/test_exec_names.py        | 100 ++++++++++++++++++++++++++++++----------
+ tests/test_structural_budget.py |  24 +++++++++-
+ 6 files changed, 138 insertions(+), 48 deletions(-)
+---final scoped gate---
+........................................................................ [  7%]
+................................
+[... 584 of 1,723 characters omitted from the middle ...]
+................ [ 69%]
+........................................................................ [ 76%]
+........................................................................ [ 84%]
+........................................................................ [ 92%]
+........................................................................ [ 99%]
+...                                                                      [100%]
+920 passed, 19 skipped in 38.10s
+```  
+  _excerpt - 1,719 characters of output in total_
 
 
 **Not verified:** everything below is a limit of this section, listed whether or not it bit this attempt.
