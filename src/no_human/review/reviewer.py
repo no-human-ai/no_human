@@ -1670,6 +1670,71 @@ def merge_angle_findings(
     return main
 
 
+def merge_mutation_findings(
+    decision: ReviewDecision,
+    result: mutation_probe.MutationProbeResult,
+    *,
+    mode: str,
+) -> ReviewDecision:
+    """Fold mutation-probe findings into the main decision.
+
+    Additive only, mirroring `merge_angle_findings`: a SURVIVED probe is
+    always a blocking (`high`) finding — a test that stays green under
+    mutation pins nothing, regardless of what the review's own severity
+    grading would otherwise say. A KILLED probe is recorded as evidence the
+    test does pin its target. A probe (or the whole run) that COULD NOT run
+    is recorded too — `required` mode blocks on it, the default `advisory`
+    mode does not — so the review always states what it could or could not
+    check, never silently. The decision can only get STRICTER here: it can
+    flip pass to fail, never fail back to pass.
+    """
+    appended: list[ChecklistItem] = []
+    for probe in result.probes:
+        if probe.verdict == "killed":
+            appended.append(ChecklistItem(
+                label=f"mutation probe: {probe.node_id} pins {probe.target}",
+                passed=True,
+                # Explicit advisory severity: `_is_blocking` grades by
+                # severity alone, not `passed` — a "good news" item left
+                # unclassified would otherwise read as blocking below.
+                severity="low",
+                evidence=f"{probe.mutation} — the test then FAILED: {probe.reason}",
+                file=probe.target.split(":", 1)[0] if probe.target else "",
+            ))
+        elif probe.verdict == "survived":
+            appended.append(ChecklistItem(
+                label=(f"mutation probe: {probe.node_id} survives mutation "
+                       f"of {probe.target}"),
+                passed=False,
+                severity="high",
+                file=probe.target.split(":", 1)[0] if probe.target else "",
+                evidence=(f"{probe.mutation} — {probe.reason}" if probe.mutation
+                          else probe.reason),
+            ))
+        else:  # undetermined
+            appended.append(ChecklistItem(
+                label=f"mutation probe could not run for {probe.node_id} ({probe.reason})",
+                passed=(mode != "required"),
+                severity="medium",
+            ))
+    if result.verdict == "error":
+        appended.append(ChecklistItem(
+            label=(f"mutation probe could not run "
+                   f"({'; '.join(result.reasons) or 'unknown error'})"),
+            passed=(mode != "required"),
+            severity="medium",
+        ))
+    decision.checklist.extend(appended)
+    # Unlike `merge_angle_findings` (which only ever appends already-failing
+    # items), this list also holds PASSED items (`killed`, and `undetermined`/
+    # `error` in advisory mode) — `_is_blocking` grades by severity alone, so
+    # the flip must additionally require the item to be failing, or a
+    # passed-but-unclassified/medium item would wrongly fail the gate.
+    if any(not i.passed and _is_blocking(i) for i in appended):
+        decision.passed = False
+    return decision
+
+
 def _reached_no_verdict(decision: ReviewDecision) -> bool:
     """True when the reviewer emitted no REVIEW_JSON block at all.
 
@@ -2293,6 +2358,7 @@ class AdversarialReviewer:
         on_event: Callable | None = None,
         timeout: int | None = None,
         code_review_timeout: int | None = None,
+        mutation_probe: dict[str, Any] | None = None,
     ):
         if backend is not None:
             self._backend = backend
@@ -2322,6 +2388,11 @@ class AdversarialReviewer:
         self._code_review_timeout = (
             _CODE_REVIEW_TIMEOUT if code_review_timeout is None
             else int(code_review_timeout))
+        # The mutation probe (see `testing/mutation_probe.py`): None means
+        # OFF, so every existing direct construction (tests, ad-hoc callers)
+        # behaves exactly as before this feature existed. Only `from_config`
+        # supplies a live config, via `config.mutation_probe_config`.
+        self._mutation_probe = mutation_probe
 
     @classmethod
     def from_config(
@@ -2352,7 +2423,11 @@ class AdversarialReviewer:
         `llm.role_backends.reviewer` says, per `resolve_backend_name`.
         """
         from ..agent.backend import make_backend, resolve_backend_name
-        from ..config import code_review_timeout_seconds, review_timeout_seconds
+        from ..config import (
+            code_review_timeout_seconds,
+            mutation_probe_config,
+            review_timeout_seconds,
+        )
 
         llm = data.get("llm") or {}
         review_model = llm.get("review_model") or "claude-opus-4-8"
@@ -2369,6 +2444,7 @@ class AdversarialReviewer:
             on_event=on_event,
             timeout=review_timeout_seconds(data),
             code_review_timeout=code_review_timeout_seconds(data),
+            mutation_probe=mutation_probe_config(data),
         )
 
     async def _review_tamper_adjudication(
@@ -2736,6 +2812,53 @@ class AdversarialReviewer:
                 angle_decisions.append((name, r))
             if angle_decisions:
                 decision = merge_angle_findings(decision, angle_decisions)
+
+        # Mutation probe: for every test this diff adds or changes, mutate
+        # the behaviour it names and require it to fail (see
+        # `testing/mutation_probe.py`). Additive, like the angle pass above,
+        # and never fails the gate BY ITSELF on a crash — a survived probe
+        # or a "could not run" is a finding the merge folds in; an unhandled
+        # exception here becomes the same "could not run" finding instead of
+        # an escalation. `diff_override` has no before/after refs to build a
+        # probe worktree from, so that path reports "could not run" rather
+        # than silently skipping.
+        probe_mode = (self._mutation_probe or {}).get("mode", "off")
+        if self._mutation_probe is not None and probe_mode != "off":
+            if diff_override:
+                decision.checklist.append(ChecklistItem(
+                    "mutation probe could not run (no before/after refs "
+                    "available for a diff-override review)",
+                    probe_mode != "required",
+                    severity="medium",
+                ))
+                if probe_mode == "required":
+                    decision.passed = False
+            else:
+                try:
+                    from ..testing import mutation_probe
+                    probe_result = await asyncio.to_thread(
+                        mutation_probe.run_mutation_probe,
+                        repo_path, before_ref, after_ref,
+                        max_tests=self._mutation_probe.get(
+                            "max_tests", mutation_probe.DEFAULT_MAX_TESTS),
+                        max_mutations=self._mutation_probe.get(
+                            "max_mutations_per_test",
+                            mutation_probe.DEFAULT_MAX_MUTATIONS_PER_TEST),
+                        timeout=self._mutation_probe.get(
+                            "timeout_seconds", mutation_probe.DEFAULT_TIMEOUT_SECONDS),
+                    )
+                except Exception as exc:  # noqa: BLE001 — must never fail the gate by itself
+                    log.warning("mutation probe crashed", exc_info=True)
+                    decision.checklist.append(ChecklistItem(
+                        f"mutation probe could not run (crashed: {exc})",
+                        probe_mode != "required",
+                        severity="medium",
+                    ))
+                    if probe_mode == "required":
+                        decision.passed = False
+                else:
+                    decision = merge_mutation_findings(
+                        decision, probe_result, mode=probe_mode)
         return decision
 
     @staticmethod

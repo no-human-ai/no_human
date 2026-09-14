@@ -1850,6 +1850,34 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # enforcing, and this comment still claimed otherwise until 2026-07-22.
         "mode": "advisory",
     },
+    "mutation_probe": {
+        # The reviewer's mutation probe (testing/mutation_probe.py): "off" |
+        # "advisory" | "required".
+        #   off      — never runs.
+        #   advisory — runs, and a SURVIVED test (one that stays green under
+        #              a mutation of the behaviour it is named for) is a
+        #              blocking finding regardless of this mode — a test
+        #              proven to assert nothing is not an advisory-severity
+        #              fact. What "advisory" controls is a probe that
+        #              COULD NOT run (non-Python test, unmappable test,
+        #              missing interpreter, budget exhausted, crash): it is
+        #              recorded but does not block.
+        #   required — a probe that could not run also blocks.
+        # Scope: only tests a diff adds or changes, Python/pytest only —
+        # never a repo-wide mutation score.
+        "mode": "advisory",
+        # Cap on how many changed/added tests get probed per review — a
+        # probe run is one pytest launch per test per mutation, so this
+        # bounds the wall-clock/interpreter cost of a large diff.
+        "max_tests": 12,
+        # Cap on how many mutation candidates are tried per test before
+        # giving up and reporting "survived".
+        "max_mutations_per_test": 3,
+        # Wall-clock budget, in seconds, for the whole probe run (all tests,
+        # all mutations) — exceeding it reports the remaining tests as
+        # "undetermined", never as a silent pass.
+        "timeout_seconds": 300,
+    },
     # UI evidence (testing/ui_evidence.py): the harness drives a real browser
     # at the attempt's own dev server from a coder-written walk manifest,
     # after this attempt's tests pass (D1.2, 2026-08-31). `enabled` is a
@@ -2486,6 +2514,48 @@ def ui_evidence_should_run(
     return any(
         fnmatch.fnmatch(p, g) for p in (changed_paths or []) for g in globs
     )
+
+
+_MUTATION_PROBE_MODES = ("off", "advisory", "required")
+
+
+def mutation_probe_config(data: dict[str, Any]) -> dict[str, Any]:
+    """Tolerant reader for ``mutation_probe.*`` (see ``DEFAULT_CONFIG``).
+
+    Mirrors ``reviewer_worktree.guard_config``'s tolerance of the deep-merge
+    shape (a user config's ``mutation_probe: None`` REPLACES the whole
+    nested dict — see ``_deep_merge`` — rather than merging into it, so this
+    has to treat a missing OR ``None`` OR non-dict section identically to an
+    empty one) and of malformed scalar values: a bad ``mode`` must fall back
+    to the documented default ``"advisory"``, never to ``"off"`` — silently
+    disabling a safety check on a typo would be exactly the kind of "widen
+    the check into doing nothing" bug this function exists to prevent.
+    """
+    defaults = DEFAULT_CONFIG["mutation_probe"]
+    section = data.get("mutation_probe")
+    if not isinstance(section, dict):
+        section = {}
+
+    mode = section.get("mode", defaults["mode"])
+    if mode not in _MUTATION_PROBE_MODES:
+        mode = defaults["mode"]
+
+    def _positive_int(key: str) -> int:
+        raw = section.get(key, defaults[key])
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            return defaults[key]
+        if isinstance(raw, bool) or value <= 0:
+            return defaults[key]
+        return value
+
+    return {
+        "mode": mode,
+        "max_tests": _positive_int("max_tests"),
+        "max_mutations_per_test": _positive_int("max_mutations_per_test"),
+        "timeout_seconds": _positive_int("timeout_seconds"),
+    }
 
 
 def worktree_root(config: dict[str, Any]) -> Path:
