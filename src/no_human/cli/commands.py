@@ -15,6 +15,7 @@ import signal
 import sys
 import time
 from pathlib import Path
+from typing import NamedTuple
 
 import click
 from rich.console import Console
@@ -5115,14 +5116,37 @@ def _verifiers_advisory_note(rules) -> str:
     return ""
 
 
+class _ReadyTask(NamedTuple):
+    """One `--ready` listing row: the quality-rule half (`rules_passed`/
+    `rules_total`, stamped per head sha by `core/merge_policy.py`) plus the
+    live mergeability half (`landability`, asked fresh against the CURRENT
+    base every time `--ready` renders, never cached) — the two questions
+    "is this head quality-ready" and "will this branch land right now" are
+    answered independently and shown independently, because a head can pass
+    every quality rule while its base has moved out from under it since the
+    verdict was stamped (see `vcs/landability.py`'s module docstring)."""
+    task: Task
+    pr_url: str
+    rules_passed: int
+    rules_total: int
+    advisory: str
+    landability: Landability
+
+
 async def _approve_find_ready(store, config):
     """Discover every AWAITING_APPROVAL task whose merge-policy verdict is
     ready for its CURRENT head sha — re-resolving the head so a verdict
     stamped for an older commit, or one whose policy file changed in the
-    diff, is excluded. Returns [(task, pr_url, rules_passed, rules_total,
-    verifiers_advisory_note)] in the order `store.list_tasks()` returned
-    them (discovery order)."""
+    diff, is excluded — AND compute its live mergeability against its
+    current base (`vcs.landability.check_landability`), asked fresh on
+    every call rather than cached: the quality verdict is correctly keyed
+    by head sha and invalidates when the BRANCH moves, but nothing about it
+    invalidates when the BASE moves (e.g. a sibling PR landed and rewrote
+    the generated RELEASE_MANIFEST.txt) — that is the live half this
+    function adds. Returns [_ReadyTask(...)] in the order
+    `store.list_tasks()` returned them (discovery order)."""
     from ..vcs.git import GitError, GitRepo
+    from ..vcs.landability import check_landability
     from ..vcs.task_pr import resolve_task_pr
 
     tasks = await store.list_tasks()
@@ -5158,15 +5182,59 @@ async def _approve_find_ready(store, config):
         rules = mp.get("rules") or []
         total = len(rules)
         passed = sum(1 for r in rules if isinstance(r, dict) and r.get("passed"))
-        ready.append((t, resolved.url, passed, total, _verifiers_advisory_note(rules)))
+        base_hint = (t.context or {}).get("base_branch") or ""
+        landability = await check_landability(t.repo_path, branch, base_hint=base_hint)
+        ready.append(_ReadyTask(t, resolved.url, passed, total,
+                                _verifiers_advisory_note(rules), landability))
     return ready
 
 
+def _format_conflict_paths(paths: tuple[str, ...]) -> str:
+    """Render conflicting paths as a comma-joined, 3-capped list, e.g.
+    ``"a.txt, b.txt +2 more"`` — same capping style as
+    `merge_policy._format_failed_checks` (precedent only; no cross-module
+    import, this is a local two-line formatter over a different shape)."""
+    if not paths:
+        return ""
+    shown = paths[:3]
+    suffix = f" +{len(paths) - 3} more" if len(paths) > 3 else ""
+    return f"{', '.join(shown)}{suffix}"
+
+
+def _format_merge_status(landability) -> str:
+    """The `merge: ...` half of a `--ready` row — the LIVE mergeability
+    verdict against the CURRENT base, kept visually and textually separate
+    from the `rules P/T` half so an operator can tell "quality-ready" from
+    "landable right now" apart at a glance. `state="conflict"` is the one
+    case this bug report is about: quality passed, but the base moved and
+    the branch no longer merges."""
+    base = landability.base_ref or "its base"
+    if landability.state == "clean":
+        return "merge: clean"
+    if landability.state == "derived":
+        paths = _format_conflict_paths(landability.conflicts)
+        return (f"merge: clean (derived-only conflict, regenerated at "
+                f"land: {paths})")
+    if landability.state == "conflict":
+        paths = _format_conflict_paths(landability.conflicts)
+        return f"[red]merge: CONFLICT[/] with {base} ({paths})"
+    return f"merge: unknown (could not check against {base})"
+
+
 async def _approve_go_ready(config, assume_yes, land_one):
-    """`nh approve --ready [--yes]` — list every merge-ready
-    awaiting_approval task; with `--yes`, land them one at a time through
-    `land_one` (the same procedure a plain `nh approve <task_id>` uses),
-    stopping at the first hard failure. `land_one` is the caller's
+    """`nh approve --ready [--yes]` — list every AWAITING_APPROVAL task
+    whose quality-rule verdict is ready for its current head sha, each
+    annotated with its LIVE mergeability against its current base
+    (`merge: clean|clean (derived)|CONFLICT|unknown`, evaluated fresh on
+    every call — see `_approve_find_ready`/`vcs/landability.py`); with
+    `--yes`, land the non-conflicting ones one at a time through `land_one`
+    (the same procedure a plain `nh approve <task_id>` uses), stopping at
+    the first hard failure. A task whose branch currently CONFLICTS with
+    its base is listed (never hidden) but is NOT handed to `land_one` —
+    nothing is rebased or auto-resolved on its behalf; it is printed as
+    skipped so the operator sees it needs a rebase before re-running,
+    instead of burning an approve attempt on a squash known to fail at the
+    conflict this same check just found. `land_one` is the caller's
     `_land_one` closure — kept nested in `approve` itself so the one
     `land_task` call site in this command stays attributed to `approve`
     for `test_land_task_is_referenced_only_by_cli_and_api`."""
@@ -5177,17 +5245,35 @@ async def _approve_go_ready(config, assume_yes, land_one):
             console.print("[dim]no awaiting_approval task is merge-ready for its current head.[/]")
             return
 
-        for t, pr_url, passed, total, advisory in ready:
-            note = f" · {advisory}" if advisory else ""
+        conflicted = [r for r in ready if r.landability.state == "conflict"]
+        landable = [r for r in ready if r.landability.state != "conflict"]
+
+        for r in ready:
+            note = f" · {r.advisory}" if r.advisory else ""
             console.print(
-                f"{t.id[:8]} · {t.title} · rules {passed}/{total}{note} · {pr_url}"
+                f"{r.task.id[:8]} · {r.task.title} · rules "
+                f"{r.rules_passed}/{r.rules_total}{note} · "
+                f"{_format_merge_status(r.landability)} · {r.pr_url}"
             )
 
         if not assume_yes:
-            console.print(
-                f"\n{len(ready)} task(s) merge-ready — re-run with "
-                "--yes to land them one at a time."
-            )
+            if conflicted:
+                console.print(
+                    f"\n{len(landable)} task(s) ready to land; "
+                    f"{len(conflicted)} task(s) pass the quality rules but "
+                    "do NOT merge into their current base right now — "
+                    "rebase before approving."
+                )
+                if landable:
+                    console.print(
+                        "re-run with --yes to land the ready one(s) one at "
+                        "a time."
+                    )
+            else:
+                console.print(
+                    f"\n{len(ready)} task(s) merge-ready — re-run with "
+                    "--yes to land them one at a time."
+                )
             return
 
         console.print("")
@@ -5201,7 +5287,17 @@ async def _approve_go_ready(config, assume_yes, land_one):
         # unavailable) — the batch must keep walking, not stop, or
         # `--ready --yes` would abort at task 1 on any host without
         # `gh` installed even though nothing actually failed.
-        for t, pr_url, passed, total, advisory in ready:
+        for r in ready:
+            t, pr_url, passed, total, advisory = (
+                r.task, r.pr_url, r.rules_passed, r.rules_total, r.advisory)
+            if r.landability.state == "conflict":
+                console.print(
+                    f"[yellow]not landed[/] {t.id[:8]} — conflicts with "
+                    f"{r.landability.base_ref or 'its base'} in "
+                    f"{_format_conflict_paths(r.landability.conflicts)}; "
+                    "rebase and re-run"
+                )
+                continue
             outcome = await land_one(store, t)
             tag = outcome["tag"]
             result = outcome["result"]
@@ -5212,7 +5308,7 @@ async def _approve_go_ready(config, assume_yes, land_one):
                     f"[bold red]stopped at[/] {t.id[:8]} — step {step!r}"
                     + (f":\n{detail}" if detail else "")
                 )
-                console.print(f"landed {landed}/{len(ready)} before stopping.")
+                console.print(f"landed {landed}/{len(landable)} before stopping.")
                 sys.exit(1)
             if tag == "done":
                 landed += 1
@@ -5394,14 +5490,23 @@ async def _approve_go_single(config, task_id, land_one):
               help="List every awaiting_approval task whose merge-ready "
                    "policy verdict is ready for its CURRENT head sha (a "
                    "verdict stamped for an older commit, or one whose "
-                   "policy file changed in the PR, does not count), instead "
-                   "of approving a single TASK_ID. Combine with --yes to "
-                   "land them.")
+                   "policy file changed in the PR, does not count), each "
+                   "annotated with its LIVE mergeability against its "
+                   "CURRENT base checked fresh right now (clean / "
+                   "clean-derived / CONFLICT / unknown) — passing the "
+                   "quality rules does not by itself mean the branch still "
+                   "merges, since a sibling PR landing can move the base "
+                   "out from under it. Instead of approving a single "
+                   "TASK_ID. Combine with --yes to land the ones that are "
+                   "both quality-ready and currently mergeable.")
 @click.option("--yes", "assume_yes", is_flag=True, default=False,
-              help="With --ready, land the listed tasks sequentially "
-                   "through the same approve path as a plain `nh approve "
-                   "<task_id>`, stopping at the first failure. Without it, "
-                   "--ready only lists — nothing lands.")
+              help="With --ready, land the non-conflicting listed tasks "
+                   "sequentially through the same approve path as a plain "
+                   "`nh approve <task_id>`, stopping at the first failure. "
+                   "A task whose branch currently conflicts with its base "
+                   "is listed but skipped — never auto-resolved or "
+                   "auto-rebased. Without --yes, --ready only lists — "
+                   "nothing lands.")
 @click.option("--landed", "landed_sha", default=None,
               help="Human landed-override: assert this task's content landed "
                    "at this commit (an ancestor of its base branch), when "
