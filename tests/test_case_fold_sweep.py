@@ -79,7 +79,7 @@ _ALLOW_CONTROLS = (
     "pytest -q",
     "nh learnings",
     "PIPELINE_STATUS=1 echo ok",
-    'echo "GH pr merge"',
+    'echo "PIP install this"',
 )
 
 

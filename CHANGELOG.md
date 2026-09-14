@@ -16,6 +16,40 @@ All notable changes to no_human. The format follows
   `--criteria` are declared only to refuse and explain why. Every correction
   is recorded as a `human_retitle` event carrying the prior title.
 
+### Fixed
+- **A capitalised binary, noun or verb in a wrapped git/forge command no
+  longer opens a merge or a read-only-mode write the bare spelling correctly
+  denies.** `_forge_invocations`/`_git_invocations` resolved a shell runner's
+  (`sh -c`, `bash -c`, `timeout`, `xargs`, …) nested command name with a raw,
+  case-blind comparison instead of the host-gated `exec_names.command_name`
+  the top-level `argv[0]` path already used, so `timeout 30 GH pr merge 7` and
+  `sh -c "GIT push origin main"` recursed past their capitalised name
+  entirely; separately, `_forge_subcommand` compared and returned raw-case
+  tokens, so even a structurally-found `("pr", "MERGE")` never matched
+  `_FORGE_MERGE_PAIRS`, and the lexical `_FORGE_MERGE` pattern lacked the
+  `exec_names.case_flags()` its siblings already carried. All three are
+  fixed; a matrix test in `tests/test_exec_names.py` pins every
+  binary/noun/verb capitalisation across both forges for the bare form plus
+  all 18 runners in `guard._FORGE_RUNNER_NAMES`, through the real guard
+  entry point. The recursion itself is name-driven rather than per-runner
+  special-cased — every runner reaches the identical `_FORGE_MENTION`/
+  `command_name` code path in `_forge_invocations` regardless of which shape
+  wraps it — which is why one template per runner, generated from that set
+  rather than hand-picked, is enough to pin all 18 without the matrix
+  needing to be rewritten as the runner set grows.
+- **A capitalised `git push` behind an unquoted trailing-argv runner
+  (`timeout 30 GIT push origin main`, `xargs GIT push origin main`) still
+  reached a protected branch in a normal, non-read-only session.**
+  `_git_push_invocations` is a separate extractor from `_git_invocations`
+  above and has its own structural gap for these unquoted runners (each word
+  is its own token, so no single token holds both `git` and `push`); that
+  gap is closed instead by `evaluate`'s pre-existing whole-string `git ...
+  push` lexical fallback, which now also carries `exec_names.case_flags()`
+  like `_FORGE_MERGE`/`_GIT_MENTION`, so it folds on a case-folding host and
+  leaves a genuinely case-sensitive host's differently-named `GIT` binary
+  alone. Pinned by
+  `test_a_capitalised_git_push_is_denied_in_the_default_session_too`.
+
 ### Changed
 - Second brain is now called Memories.
 - The Claude Code plugin manifest carries the release version (it had stayed at

@@ -22,6 +22,6 @@
     {"cmd": "pytest -q", "cwd": ".", "env": {"PATH": ""}},
     {"cmd": "nh learnings", "cwd": ".", "env": {"PATH": ""}},
     {"cmd": "PIPELINE_STATUS=1 echo ok", "cwd": ".", "env": {"PATH": ""}},
-    {"cmd": "echo \"GH pr merge\"", "cwd": ".", "env": {"PATH": ""}}
+    {"cmd": "echo \"PIP install this\"", "cwd": ".", "env": {"PATH": ""}}
   ]
 }
