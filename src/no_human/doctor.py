@@ -119,7 +119,15 @@ MECHANISMS: list[tuple[str, tuple[str, ...], str]] = [
      ("merged", "pr_closed", "pr_feedback", "pr_feedback_skipped",
       "pr_feedback_deferred", "pr_ci_red",
       "pr_ci_infra", "pr_ci_advisory",
-      "escalated_ci", "escalated_revisions", "escalated_timeout", "resumed"),
+      "escalated_ci", "escalated_revisions", "escalated_timeout", "resumed",
+      # Added alongside `blockers.wake._check_base_stale` (task 22c4ddf6
+      # finding #3): a still-MERGEABLE PR whose recorded base fell behind
+      # trunk emits one of these instead of matching any of the kinds
+      # above. This list is hardcoded and events land here by nothing but a
+      # human adding them (see the 2026-08-07 comment further below for the
+      # same trap), so these two are added at the same time the events were
+      # introduced rather than left to be discovered dead later.
+      "pr_base_remeasured", "pr_base_undetermined"),
      "zero = the watcher never had to act (fine if pr_watch_heartbeat is alive)"),
     ("pr_watch_heartbeat", ("wake_tick",),
      "zero while tasks sit parked = the watcher is silent or dead "

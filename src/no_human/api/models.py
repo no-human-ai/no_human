@@ -196,6 +196,15 @@ def merge_ready_for(task: Task, attempts: list[dict] | None) -> bool | None:
     can never disagree about which tasks are ready. ADVISORY ONLY: nothing
     reads this to merge anything — `nh approve`, the only merge path, decides
     from its own independent-reviewer PASS check, not this field.
+
+    STALE BASE WITHHOLDS A TRUE VERDICT (never produces one). The `ready`
+    verdict was computed against the base trunk had at delivery time; once
+    `blockers.wake.WakeWatcher._check_base_stale` records that trunk has
+    since moved past it (`vcs/delivered_base.py`), a stored `ready=True` is
+    stale evidence — it says nothing about mergeability against the CURRENT
+    trunk. Withholding it to `None` keeps this function's contract intact
+    (nothing here ever gates or approves a merge; it only ever advises), and
+    `nh approve`'s own independent check is unaffected either way.
     """
     merge_ready = None
     if attempts:
@@ -206,6 +215,8 @@ def merge_ready_for(task: Task, attempts: list[dict] | None) -> bool | None:
                 if isinstance(mp, dict) and "ready" in mp:
                     merge_ready = bool(mp.get("ready"))
                 break
+    if merge_ready and ((task.context or {}).get("pr_base_freshness") or {}).get("state") == "stale":
+        merge_ready = None
     return merge_ready
 
 

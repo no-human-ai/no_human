@@ -1736,6 +1736,44 @@ def task_show(task_id):
                 for c in t.acceptance_criteria:
                     console.print(f"  - {c}", markup=False, emoji=False)
             console.print(f"repo: {t.repo_path}", markup=False, emoji=False)
+            # A delivered PR's recorded base can go stale when trunk moves
+            # past it (`blockers.wake.WakeWatcher._check_base_stale`,
+            # bugfix split from task 22c4ddf6 finding #3). `pr_base_freshness`
+            # is written there and otherwise read only inside that rung
+            # itself — surface it here so a human deciding whether a parked
+            # PR is still good sees the answer instead of it being invisible
+            # outside the watcher. FRESH deletes `pr_base_freshness` from
+            # context (nothing left to report) UNLESS the record's source is
+            # a backfilled/merge-base sha, in which case FRESH overwrites it
+            # with the fresh verdict instead of deleting it, to keep that
+            # provenance visible — see `_check_base_stale`'s FRESH branch —
+            # so a provenance note can still be worth showing even with no
+            # freshness record at all.
+            tctx = t.context or {}
+            freshness = tctx.get("pr_base_freshness")
+            sha_source = tctx.get("pr_base_sha_source")
+            if freshness or sha_source:
+                remeasures = tctx.get("pr_base_remeasures") or 0
+                source_note = (
+                    " (base sha was backfilled, not recorded at delivery)"
+                    if sha_source in ("backfilled", "merge_base") else "")
+                recorded = (tctx.get("pr_base_sha") or "")[:8] or "(none)"
+                base_ref = tctx.get("pr_base_ref") or tctx.get("base_branch") or "?"
+                if freshness:
+                    observed = (freshness.get("observed_sha") or "")[:8] or "(none)"
+                    console.print(
+                        f"PR base {freshness.get('state')} against "
+                        f"{base_ref}: recorded {recorded} "
+                        f"vs trunk {observed}{source_note} "
+                        f"({remeasures} remeasure(s)) — {freshness.get('reason', '')}",
+                        markup=False,
+                    )
+                else:
+                    console.print(
+                        f"PR base: recorded {recorded} against "
+                        f"{base_ref}{source_note}",
+                        markup=False,
+                    )
             if t.blocker:
                 # A single Text with a styled label span, not two console.print
                 # calls: printing the "[red]blocker:[/]" label and the
