@@ -11896,17 +11896,22 @@ class Orchestrator:
         HEAD, a raised `is_ancestor`, an unresolvable delivery branch, an
         unresolvable origin remote, or a `remote_branch_relation` call that
         itself raised), or no ship-ref candidate resolved at all (there is
-        no branch to even compare against), or `remote_branch_relation`
-        reported a value in its own `TRANSIENT_RELATIONS` set — currently
+        no branch to even compare against), or the sibling-branch lookup
+        below (see that call site's own comment for the `GitRepo` method
+        name) reporting the remote itself was unreachable while the local
+        `branch` pointer lags `head` (so `remote_branch_relation` above was
+        never even asked), or `remote_branch_relation` reported a
+        value in its own `TRANSIENT_RELATIONS` set — currently
         `"unreachable"` (the `ls-remote` call itself failed to reach the
         remote at all) or `"fetch_failed"` (`ls-remote` succeeded but the
         follow-up fetch of the advertised object itself errored) — both
         conditions that can clear up on their own, unlike plain "unknown"
-        above. The indeterminate/transient values are derived from
-        `GitRepo.TRANSIENT_RELATIONS` rather than hand-enumerated here — see
-        that set's docstring. Any relation value NOT in that set, including
-        one this method does not otherwise recognize, is treated as
-        determinate by default (see the call site's comment for why).
+        above. The `remote_branch_relation` indeterminate/transient values
+        are derived from `GitRepo.TRANSIENT_RELATIONS` rather than
+        hand-enumerated here — see that set's docstring. Any relation value
+        NOT in that set, including one this method does not otherwise
+        recognize, is treated as determinate by default (see the call
+        site's comment for why).
 
         (Sixth review, HIGH) a caller must NEVER recover this distinction by
         pattern-matching `subject_reason`'s prose — several of the "cannot
@@ -12047,10 +12052,10 @@ class Orchestrator:
         prefix_cfg = (self.config.get("git") or {}).get("branch_prefix") or "no-human/"
         stem = f"{prefix_cfg}{task.id[:8]}"
         try:
-            task_branches = await asyncio.to_thread(
-                repo.remote_branches_containing, head, [stem, f"{stem}-*"])
+            task_branches, siblings_reachable = await asyncio.to_thread(
+                repo.remote_branches_containing_status, head, [stem, f"{stem}-*"])
         except Exception:  # noqa: BLE001 — sibling check is best-effort proof only
-            task_branches = []
+            task_branches, siblings_reachable = [], False
         task_branches = [
             name for name in task_branches
             if re.fullmatch(rf"{re.escape(stem)}(-\d+)?", name)
@@ -12100,10 +12105,25 @@ class Orchestrator:
             return False, head, "", (
                 f"{prefix}; delivery branch {branch!r} points at {branch_sha}, "
                 "not the reviewed sha"), False, ship_ref, True
+        if not siblings_reachable:
+            # The sibling-branch check itself could not be completed — its
+            # `ls-remote` call failed (network, auth, a bad URL), not "no
+            # siblings exist". Folding that into the "never pushed" refusal
+            # below made an unreadable `origin` produce a DEFINITE refusal
+            # (send-back: the same fail-open shape `_remote_commit_status`
+            # was already fixed for, one call further out — reached only
+            # when the local `branch` pointer itself lags `head`, so
+            # `remote_branch_relation` above was never even asked). A retry
+            # once origin is reachable again could answer this; the current
+            # attempt cannot, so it is indeterminate, not refused.
+            return False, head, "", (
+                f"{prefix}; this task's other pushed branches could not be "
+                f"checked for {head} ({remote_url!r} was unreachable)"), \
+                False, ship_ref, False
         return False, head, "", (
             f"{prefix}; the reviewed commit {head} is on no pushed branch of "
-            f"this task ({stem}, {stem}-N) — it was never pushed, or origin "
-            "was unreadable"), False, ship_ref, True
+            f"this task ({stem}, {stem}-N) — it was never pushed"), \
+            False, ship_ref, True
 
     def _already_satisfied_eligible(
         self, task: Task, repo, base: str | None,
@@ -17255,7 +17275,7 @@ class Orchestrator:
 
         Send-back (third review): `_already_satisfied_subject` is not the
         FIRST thing delivery asks. `_run_attempt` hoists `_route_unjudged_
-        head`/`_already_satisfied_eligible` (~12241/~12108) BEFORE the claim
+        head`/`_already_satisfied_eligible` (~12261/~12128) BEFORE the claim
         is even parsed — a `[WIP-BLOCKED]`/`[WIP-PARTIAL]` head, or an
         ordinary head resumed from `blockers.MACHINE_REQUEUE_PROVENANCE`,
         with no completed review verdict recorded against it, is routed
@@ -17271,7 +17291,7 @@ class Orchestrator:
 
         Fourth review, same class a third time: `_already_satisfied_subject`
         is not reached merely because the head is eligible. Delivery parses
-        the claim at all only when `resumed_commit` is None (~6501) — that
+        the claim at all only when `resumed_commit` is None (~6513) — that
         is, when there is no base, or the branch is not ahead of it, or the
         attempt resumed from its OWN `[WIP-PARTIAL]` checkpoint. An attempt
         that made an ordinary in-session commit off `base` leaves
@@ -17284,18 +17304,19 @@ class Orchestrator:
 
         Sixth review (HIGH): `refuted` used to be recovered from
         `subject_reason` — delivery's human-readable prose — via
-        ``subject_reason.startswith(f"{head} is not on {ship_ref}")``. Four
+        ``subject_reason.startswith(f"{head} is not on {ship_ref}")``. Five
         of `_already_satisfied_subject`'s "cannot tell" reasons (an
         unresolvable delivery branch, an unresolvable origin remote, a
-        `remote_branch_relation` call that itself raised, and a
+        `remote_branch_relation` call that itself raised, a
         `remote_branch_relation` call that returned a value in
         `GitRepo.TRANSIENT_RELATIONS` — "unreachable" or "fetch_failed",
-        never plain "unknown", which delivery treats as a final refusal)
-        are built from that exact same prefix, so the prefix match could
-        not tell a transient condition from a genuine refusal — a one-off
-        network blip resolving the remote could make the guard tell the
-        coder delivery refuses the claim, even though the branch might in
-        fact be pushed and up to date. Fixed by
+        never plain "unknown", which delivery treats as a final refusal —
+        and, added by a later review, the sibling-branch check itself
+        failing to reach the remote) are built from that exact same prefix,
+        so the prefix match could not tell a transient condition from a
+        genuine refusal — a one-off network blip resolving the remote could
+        make the guard tell the coder delivery refuses the claim, even
+        though the branch might in fact be pushed and up to date. Fixed by
         having `_already_satisfied_subject` return `determinate` — an
         explicit status code, not prose — and deriving `refuted` from that
         code instead of from any wording in `subject_reason`. A reworded
@@ -17313,7 +17334,7 @@ class Orchestrator:
                 # must not say it is.
                 return False, "", ""
             # Delivery parses the claim at all only when `resumed_commit` is
-            # None (~6501): no base, or nothing ahead of it, or a resume from
+            # None (~6513): no base, or nothing ahead of it, or a resume from
             # this attempt's own [WIP-PARTIAL]. With ordinary in-session
             # commits ahead of `base`, delivery commits and reviews the diff
             # instead of refusing — so the guard must stay silent. Evaluated

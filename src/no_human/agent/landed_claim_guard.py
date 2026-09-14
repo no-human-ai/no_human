@@ -82,7 +82,7 @@ Ten revisions since the first version landed:
   existing test).
 * (Fifth review) same class a third time, one predicate further out:
   `_already_satisfied_subject` is only ever reached at delivery when
-  `resumed_commit` is `None` (`_run_attempt`, ~6501) — an ordinary
+  `resumed_commit` is `None` (`_run_attempt`, ~6513) — an ordinary
   in-session commit ahead of `base` leaves `resumed_commit` set, so
   delivery commits, reviews and opens a PR instead of parsing the claim at
   all. The probe was refusing that shape too. Fixed by evaluating that same
@@ -157,9 +157,10 @@ Ten revisions since the first version landed:
   Also: an earlier revision of this module docstring said "42" while
   `tests/test_landed_claim_early_refusal.py` said "43" for the same
   population (the live delivery-time refusals `diverged_repo` models) —
-  a copy/paste drift, not two different measurements. The docstring's "42"
-  is the one with a matching detailed breakdown (9 + 33 below) so it is the
-  number kept; the test file was corrected to match.
+  a copy/paste drift, not two different measurements. Neither figure could
+  later be re-derived from the same query (see the Eleventh review below),
+  so both were dropped rather than reconciled to one; the test file now
+  describes the shape without a count.
 * (Seventh review, WITHDRAWN by the Eighth review below) a round claimed the
   Sixth review's clause-bounding fix (finding 2 above) was itself over-broad
   in the other direction — that bounding the sha-cue search to ONLY the
@@ -170,10 +171,12 @@ Ten revisions since the first version landed:
   matched `_CLAIM` and was not itself negated.
 * (Eighth review) the Seventh review's premise was fabricated: its "3 of 5"
   measurement was five hand-written sentences, not a real corpus, and its
-  own author withdrew the finding. Measured against 74,709 real agent
-  utterances, the widening recovered ZERO real claims — the same 580
-  firings, byte-identical, with or without it — while adding false-positive
-  firings on 10 of 10 hand-constructed two-clause non-claim prose shapes,
+  own author withdrew the finding. Measured against a large corpus of real
+  agent utterances (no re-derivable query for that corpus ships with this
+  change, so no precise counts are asserted here), the widening recovered
+  ZERO real claims — the same set of firings, byte-identical, with or
+  without it — while adding false-positive firings on 10 of 10
+  hand-constructed two-clause non-claim prose shapes,
   four of which inject a full LANDED-CLAIM REFUSED correction through the
   real probe, and letting a second, unrelated clause's `_CLAIM` match
   short-circuit the composite PostToolUse hook and swallow other tool-call
@@ -288,14 +291,59 @@ Ten revisions since the first version landed:
      bullet above) miscounted the prefix-sharing "cannot tell" reasons as
      five while listing four and wrongly including plain `"unknown"`
      (which delivery treats as a final refusal, not cannot-tell) instead of
-     the actual `TRANSIENT_RELATIONS` members; and the opening MEASURED
-     figures (42 attempts / 1,969 turns / 34,662,551 weighted tokens) could
-     not be reproduced from the same query on a later pass. Corrected the
+     the actual `TRANSIENT_RELATIONS` members; and the opening paragraph's
+     MEASURED attempt/turn/token figures could not be reproduced from the
+     same query on a later pass. Corrected the
      enumeration in `Orchestrator._build_landed_claim_guard`'s docstring
      and `_already_satisfied_subject`'s docstring to match the code exactly
      (`TRANSIENT_RELATIONS`, not a hand-recount), and dropped the
      unreproducible figures from this module's opening paragraph rather
      than re-assert them without a re-derivable query.
+* (Twelfth review, DO-NOT-LAND) three findings, one BLOCKER carried over
+  from a still-unfixed copy of the Eleventh review's retracted measurement,
+  one new BLOCKER, one SHOULD-FIX:
+
+  1. (BLOCKER) The Eleventh review's finding 3 dropped the unreproducible
+     "42 attempts / 1,969 turns / 34,662,551 weighted tokens" figure from
+     this module's opening paragraph, but a second copy of the same
+     retracted measurement still shipped in
+     `tests/test_landed_claim_early_refusal.py`'s `diverged_repo` fixture
+     docstring. Dropped there too, in favor of describing the fixture's
+     shape (HEAD at the local base tip, `origin/main` not containing it)
+     without a count. Verified clean by a full-tree grep for the retracted
+     figures with a positive control (`TRANSIENT_RELATIONS`, present in
+     both `orchestrator.py` and `git.py`) to confirm the grep methodology
+     itself finds real matches before trusting an empty result on the
+     retracted figures.
+  2. (BLOCKER) `_already_satisfied_subject`'s sibling-branch check
+     (`GitRepo.remote_branches_containing`, reached only when the local
+     `branch` pointer lags `head` so `remote_branch_relation` above is
+     skipped) silently folded an `ls-remote` failure into the same bare
+     `[]` a genuine "no siblings" answer produces, indistinguishable from
+     it — an unreachable `origin` there fell through to the final "was
+     never pushed" return with `determinate=True`, a DEFINITE refusal
+     for what is really a transient "cannot tell". The same fail-open
+     shape the Eleventh review's finding 1 fixed one remote call closer
+     in. Fixed the same way: gave `GitRepo` a tri-state
+     `remote_branches_containing_status` (returning `(matches,
+     remote_reachable)`) with `remote_branches_containing` now a thin
+     wrapper over it for existing callers, and had
+     `_already_satisfied_subject` return `determinate=False` when
+     `remote_reachable` is `False` instead of falling through to the
+     definite refusal. Pinned by mutation in
+     `tests/test_landed_claim_early_refusal.py::
+     test_an_unreachable_remote_during_the_sibling_check_is_not_a_refusal`
+     (reverting the `determinate=False` branch for an unreachable sibling
+     check makes that test fail; restoring it passes) — a mutation pin,
+     not a fails-before-base-ref test, because this defect was introduced
+     by this task's own diff and no base-ref repro is possible.
+  3. Several source-comment `~NNNN` line citations this task's own diff
+     had introduced had drifted from later edits in the same diff (not
+     from the reviewer's original staleness finding alone) and pointed at
+     the wrong line. Re-verified each against the actual code with
+     `grep -n`/`Read` (not trusted from the stale review text) and
+     corrected all of them across `landed_claim_guard.py`,
+     `orchestrator.py`, and `tests/test_landed_claim_early_refusal.py`.
 """
 
 from __future__ import annotations
@@ -430,9 +478,11 @@ def detect_claim_assertion(text: str) -> ClaimAssertion | None:
     # clause, still inside the snippet window, that independently matched
     # `_CLAIM` — reasoning that a natural claim can split the phrase and the
     # cued sha across two clauses of the same utterance. That widening has
-    # been reverted. Measured against 74,709 real agent utterances, it
-    # recovered zero real claims (580 firings, byte-identical before and
-    # after the widening) while adding false-positive firings on 10 of 10
+    # been reverted. Measured against a large corpus of real agent
+    # utterances (no re-derivable query for that corpus ships with this
+    # change, so no precise counts are asserted here), it recovered zero
+    # real claims (byte-identical firings before and after the widening)
+    # while adding false-positive firings on 10 of 10
     # hand-constructed two-clause non-claim prose shapes, four of which
     # inject a full LANDED-CLAIM REFUSED correction through the real probe —
     # and it let a second, unrelated clause's `_CLAIM` match short-circuit

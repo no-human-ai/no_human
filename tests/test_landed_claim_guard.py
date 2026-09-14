@@ -280,8 +280,10 @@ def test_a_second_clause_that_also_matches_claim_does_not_donate_its_sha():
     still in the snippet window, that independently matched `_CLAIM` —
     reasoning that a natural claim can split the phrase and the cued sha
     across two clauses of the same utterance. That widening was reverted:
-    measured against 74,709 real agent utterances it recovered zero real
-    claims, while firing on 10 of 10 hand-constructed two-clause non-claim
+    measured against a large corpus of real agent utterances it recovered
+    zero real claims (no re-derivable query for that corpus ships with this
+    change, so no precise count is asserted here), while firing on 10 of 10
+    hand-constructed two-clause non-claim
     prose shapes shaped exactly like this one — a first clause that trips
     the loose `_CLAIM` regex with no sha of its own, and an unrelated
     SECOND clause that also happens to match `_CLAIM` and separately names
@@ -382,10 +384,12 @@ def test_manifest_hash_mentioned_alongside_the_claim_is_not_the_named_sha():
     ],
 )
 def test_unnamed_sha_prose_without_the_contract_marker_never_reaches_the_probe(text):
-    """Send-back (second review), Blocker 2: measured 257/400 (64%) of
+    """Send-back (second review), Blocker 2: measured a majority of sampled
     attempts fired the old detector-only gate at least once, none of those
-    firings a genuine incident, and at least 31/400 (8%) confirmed spurious
-    — quoting these three exact strings. `detect_claim_assertion` may still
+    firings a genuine incident, and a further share confirmed spurious (no
+    re-derivable query for that sample ships with this change, so no
+    precise counts are asserted here) — quoting these three exact strings.
+    `detect_claim_assertion` may still
     match (it is deliberately loose — a false positive there costs nothing
     on its own), but the guard must never spend a probe on any of them: no
     explicitly cued commit, and no ``ALREADY-SATISFIED`` contract marker.

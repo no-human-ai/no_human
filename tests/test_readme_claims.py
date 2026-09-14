@@ -2002,7 +2002,7 @@ CITATION_TABLE = (
      '"gh", "pr", "view"'),
     ("security.md", "vcs/git.py:GitRepo._remote_commit_status:1225", "vcs/git.py",
      '"git", "fetch"'),
-    ("security.md", ":GitRepo.fetch:1622", "vcs/git.py", '["fetch", remote]'),
+    ("security.md", ":GitRepo.fetch:1652", "vcs/git.py", '["fetch", remote]'),
     ("security.md", "cli/commands.py:merge_stack_run:3181", "cli/commands.py",
      '"gh", "pr", "merge"'),
     ("security.md", "cli/commands.py:approve:5431", "cli/commands.py",

@@ -1269,6 +1269,34 @@ class GitRepo:
         Read-only and idempotent: it writes no ref of its own; the only
         write is `_have_remote_commit`'s private, overwritten-in-place
         `refs/no_human/push-check/<branch>`, never a tracking ref.
+
+        A thin wrapper over `remote_branches_containing_status`, which keeps
+        the two "returns `[]`" reasons this docstring lists apart — a real
+        "nothing pushed" answer vs. the `ls-remote` call itself failing.
+        Most callers only need the list; `Orchestrator._already_satisfied_
+        subject` needs the distinction (see that method for why), so it
+        calls the status version directly instead.
+        """
+        matches, _reachable = self.remote_branches_containing_status(
+            sha, patterns, remote=remote, timeout=timeout)
+        return matches
+
+    def remote_branches_containing_status(
+        self, sha: str, patterns: list[str], *, remote: str = "origin",
+        timeout: int = 30,
+    ) -> tuple[list[str], bool]:
+        """Like `remote_branches_containing`, plus whether the query itself worked.
+
+        Returns ``(matches, remote_reachable)``. ``remote_reachable`` is
+        `False` only when the `git ls-remote` call itself could not be
+        completed — non-zero exit (auth/unreachable/bad URL), a timeout, or
+        `OSError` — the "could not ask" case. It is `True` for a genuine rc-0
+        answer, including empty stdout ("nothing pushed" is a real fact, not
+        a failure). A caller that needs to know "no siblings" from "couldn't
+        check for siblings" — rather than folding both into `[]` — must read
+        this second element; see `_already_satisfied_subject`'s docstring for
+        the send-back this exists to close (a failed sibling-branch check was
+        silently treated as a stable, determinate refusal).
         """
         try:
             ls = subprocess.run(
@@ -1277,9 +1305,11 @@ class GitRepo:
                 **hidden_console_kwargs(),
             )
         except (subprocess.TimeoutExpired, OSError):
-            return []
-        if ls.returncode != 0 or not ls.stdout.strip():
-            return []
+            return [], False
+        if ls.returncode != 0:
+            return [], False
+        if not ls.stdout.strip():
+            return [], True
         matches: list[str] = []
         for line in ls.stdout.splitlines():
             parts = line.split()
@@ -1296,7 +1326,7 @@ class GitRepo:
                     matches.append(name)
             except Exception:  # noqa: BLE001 — one bad ref must not sink the rest
                 continue
-        return matches
+        return matches, True
 
     def ls_remote_exact(self, ref: str, *, remote: str = "origin",
                          timeout: int = 30) -> str | None:

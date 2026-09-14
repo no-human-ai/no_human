@@ -1375,7 +1375,7 @@ FROZEN_FILE_LINES = {
     #   _,_,files,_,_ = scan_tree(SRC);
     #   print(files['core/orchestrator.py'])"
     # -> 24375.
-    "core/orchestrator.py": 24375,
+    "core/orchestrator.py": 24396,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.
