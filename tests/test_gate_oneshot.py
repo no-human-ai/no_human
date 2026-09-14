@@ -996,7 +996,7 @@ def test_branch_mode_reviews_the_committed_head_not_the_dirty_working_tree(
 
         async def review(self, task, *, repo_path, diff_override, before_ref, **kw):
             seen["repo_path"] = Path(repo_path)
-            seen["b_txt_content"] = (Path(repo_path) / "b.txt").read_text()
+            seen["b_txt_content"] = (Path(repo_path) / "b.txt").read_text(encoding="utf-8")
             return _PASSING_DECISION
 
     monkeypatch.setattr(oneshot, "AdversarialReviewer", _Spy)
