@@ -211,7 +211,7 @@ INERT_IMPORTS: frozenset[str] = frozenset({
     "queue", "random", "re", "readline", "secrets", "select", "shlex", "shutil",
     "signal", "site", "sqlite3", "stat", "statistics", "string", "struct",
     "subprocess", "sys", "sysconfig", "tarfile", "tempfile", "termios",
-    "textwrap", "threading", "time", "tomllib", "traceback", "types", "typing",
+    "textwrap", "threading", "time", "tokenize", "tomllib", "traceback", "types", "typing",
     "unicodedata", "unittest", "uuid", "warnings", "weakref", "zipfile",
     "zlib",
     # reads bundled/system tzdata off disk to resolve IANA zone names; opens

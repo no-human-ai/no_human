@@ -403,13 +403,13 @@ def test_the_budget_cap_reports_the_unprobed_tests(tmp_path):
 
 def test_one_mutation_at_a_time(repo, monkeypatch):
     repo_path, before_ref, after_ref = repo
-    pristine = (repo_path / "calc.py").read_text()
+    pristine = (repo_path / "calc.py").read_text(encoding="utf-8")
     real = mutation_probe._run_pytest_proc
     seen: list[str] = []
 
     def fake(tests, cwd, env, python):
         target = Path(cwd) / "calc.py"
-        seen.append(target.read_text())
+        seen.append(target.read_text(encoding="utf-8"))
         return real(tests, cwd, env, python)
 
     monkeypatch.setattr(mutation_probe, "_run_pytest_proc", fake)

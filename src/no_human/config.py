@@ -1852,30 +1852,21 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "mutation_probe": {
         # The reviewer's mutation probe (testing/mutation_probe.py): "off" |
-        # "advisory" | "required".
-        #   off      — never runs.
-        #   advisory — runs, and a SURVIVED test (one that stays green under
-        #              a mutation of the behaviour it is named for) is a
-        #              blocking finding regardless of this mode — a test
-        #              proven to assert nothing is not an advisory-severity
-        #              fact. What "advisory" controls is a probe that
-        #              COULD NOT run (non-Python test, unmappable test,
-        #              missing interpreter, budget exhausted, crash): it is
-        #              recorded but does not block.
-        #   required — a probe that could not run also blocks.
-        # Scope: only tests a diff adds or changes, Python/pytest only —
-        # never a repo-wide mutation score.
+        # "advisory" | "required". A SURVIVED test (green under a mutation
+        # of its own named behaviour) always blocks, in either mode — that
+        # is not an advisory-severity fact. This knob only controls a probe
+        # that COULD NOT run (non-Python test, unmappable, missing
+        # interpreter, budget exhausted, crash): recorded either way, but
+        # only blocks in "required". Scope: only tests a diff adds or
+        # changes, Python/pytest only — never a repo-wide mutation score.
         "mode": "advisory",
-        # Cap on how many changed/added tests get probed per review — a
-        # probe run is one pytest launch per test per mutation, so this
-        # bounds the wall-clock/interpreter cost of a large diff.
+        # Cap on changed/added tests probed per review (one pytest launch
+        # per test per mutation) and mutation candidates tried per test
+        # before giving up and reporting "survived".
         "max_tests": 12,
-        # Cap on how many mutation candidates are tried per test before
-        # giving up and reporting "survived".
         "max_mutations_per_test": 3,
-        # Wall-clock budget, in seconds, for the whole probe run (all tests,
-        # all mutations) — exceeding it reports the remaining tests as
-        # "undetermined", never as a silent pass.
+        # Wall-clock budget in seconds for the whole run; exceeding it
+        # reports the remainder "undetermined", never a silent pass.
         "timeout_seconds": 300,
     },
     # UI evidence (testing/ui_evidence.py): the harness drives a real browser
@@ -2523,13 +2514,10 @@ def mutation_probe_config(data: dict[str, Any]) -> dict[str, Any]:
     """Tolerant reader for ``mutation_probe.*`` (see ``DEFAULT_CONFIG``).
 
     Mirrors ``reviewer_worktree.guard_config``'s tolerance of the deep-merge
-    shape (a user config's ``mutation_probe: None`` REPLACES the whole
-    nested dict — see ``_deep_merge`` — rather than merging into it, so this
-    has to treat a missing OR ``None`` OR non-dict section identically to an
-    empty one) and of malformed scalar values: a bad ``mode`` must fall back
-    to the documented default ``"advisory"``, never to ``"off"`` — silently
-    disabling a safety check on a typo would be exactly the kind of "widen
-    the check into doing nothing" bug this function exists to prevent.
+    shape (``mutation_probe: None`` REPLACES the nested dict, so a missing,
+    ``None`` or non-dict section is treated as empty) and of malformed
+    scalars: a bad ``mode`` falls back to ``"advisory"``, never ``"off"`` —
+    silently disabling a safety check on a typo is the bug this prevents.
     """
     defaults = DEFAULT_CONFIG["mutation_probe"]
     section = data.get("mutation_probe")

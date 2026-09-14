@@ -1732,7 +1732,13 @@ FROZEN_FILE_LINES = {
     # 3646 -> 3657 (+11): the `hooks.per_edit_type` default (#114 phase 2)
     # and the comment recording why it ships off while `per_edit_lint`
     # ships on. Re-measured on the merge result.
-    "config.py": 3657,
+    # 3657 -> 3715 (+58): the `mutation_probe` DEFAULT_CONFIG section (mode/
+    # max_tests/max_mutations_per_test/timeout_seconds, each with a
+    # WHY comment) plus the tolerant `mutation_probe_config` reader —
+    # "The reviewer mutates each new test before trusting it". No existing
+    # section shrank to offset it; comments were already trimmed to the
+    # minimum this repo's own style bar allows. Measured on this tree.
+    "config.py": 3715,
     # +61: the tamper-adjudication one-bounded-retry contract (mechanical-
     # failure classification + the extracted `_review_tamper_adjudication`
     # helper that keeps `AdversarialReviewer.review` itself under the
@@ -1817,7 +1823,15 @@ FROZEN_FILE_LINES = {
     # render). Added a branch (plus docstring) giving that case its own
     # honest lead-in instead of reusing the "determined" one. Measured on
     # this merge.
-    "review/reviewer.py": 3134,
+    # 3134 -> 3255 (+121): the mutation probe wiring — "The reviewer mutates
+    # each new test before trusting it" — `merge_mutation_findings` (folds
+    # killed/survived/could-not-run probes into the checklist),
+    # `AdversarialReviewer._apply_mutation_probe` (kept as its own method,
+    # not inlined into `review`, precisely so `review` itself stays under
+    # its own function-line threshold below), and the `mutation_probe`
+    # constructor/`from_config` plumbing. Comments were trimmed to this
+    # file's minimum before bumping. Measured on this tree.
+    "review/reviewer.py": 3255,
     # 2706 -> 2711 (+5): pre-existing red on main at 03b262d23 (e922e9b4's
     # landing, change-scoped tests missed the ratchet) — repaired, measured,
     # on this merge; same cause as the two function-level wake.py bumps above.

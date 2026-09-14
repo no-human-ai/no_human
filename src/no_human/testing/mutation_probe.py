@@ -238,6 +238,10 @@ def _called_symbols(
     """``{(module_dotted, symbol): call_count}`` for first-party calls made
     in the test's body."""
     counts: dict[tuple[str, str], int] = {}
+
+    def bump(key: tuple[str, str]) -> None:
+        counts[key] = counts.get(key, 0) + 1
+
     for node in ast.walk(test_fn):
         if not isinstance(node, ast.Call):
             continue
@@ -246,16 +250,22 @@ def _called_symbols(
             if func.id not in imports:
                 continue
             mod_dotted, orig_name = imports[func.id]
-            key = (mod_dotted, orig_name)
+            bump((mod_dotted, orig_name))
         elif isinstance(func, ast.Attribute):
             root = _root_name(func)
             if root is None or root not in imports:
                 continue
-            mod_dotted, _ = imports[root]
-            key = (mod_dotted, func.attr)
+            mod_dotted, orig_name = imports[root]
+            # `root` may be a plain symbol (``ClassName.attr(...)``) or a
+            # submodule pulled in via ``from pkg import submodule`` and then
+            # called as ``submodule.fn(...)`` — the latter's real defining
+            # module is ``pkg.submodule``, not ``pkg``. Offer both readings;
+            # `_infer_target` drops whichever dotted path doesn't resolve to
+            # a tracked file.
+            bump((f"{mod_dotted}.{orig_name}", func.attr))
+            bump((mod_dotted, func.attr))
         else:
             continue
-        counts[key] = counts.get(key, 0) + 1
     return counts
 
 
@@ -273,13 +283,17 @@ def _resolve_module_path(mod_dotted: str, tree_files: set[str]) -> str | None:
 
 def _rank_candidates(
     test_name: str, candidates: list[tuple[str, str, int]],
-) -> tuple[str, str]:
-    """Pick one ``(target_path, symbol)`` from resolved candidates.
+) -> list[tuple[str, str]]:
+    """Rank resolved ``(target_path, symbol)`` candidates, best first.
 
     Ranked by: (1) the symbol's tokens are a prefix of the test name's
     tokens (``test_volumetric_rounds_up`` names ``volumetric`` before
     ``rounds``/``up``) — longest such symbol wins; (2) highest call count;
-    (3) lexicographic, for determinism."""
+    (3) lexicographic, for determinism. A static import/call resolves to a
+    path structurally (e.g. ``from pkg import name`` is ambiguous between
+    "name" being a symbol defined in ``pkg`` and "name" being ``pkg``'s
+    submodule), so more than one candidate can look equally plausible;
+    the caller tries each in ranked order rather than trusting the first."""
     stripped = test_name.removeprefix("test_")
     test_tokens = stripped.split("_")
 
@@ -288,26 +302,32 @@ def _rank_candidates(
         return test_tokens[:len(sym_tokens)] == sym_tokens
 
     naming_matches = [c for c in candidates if is_prefix_match(c[1])]
-    if naming_matches:
-        naming_matches.sort(key=lambda c: (-len(c[1].split("_")), c[0], c[1]))
-        best = naming_matches[0]
-        return best[0], best[1]
-    ranked = sorted(candidates, key=lambda c: (-c[2], c[0], c[1]))
-    best = ranked[0]
-    return best[0], best[1]
+    others = [c for c in candidates if not is_prefix_match(c[1])]
+    naming_matches.sort(key=lambda c: (-len(c[1].split("_")), c[0], c[1]))
+    others.sort(key=lambda c: (-c[2], c[0], c[1]))
+    seen: set[tuple[str, str]] = set()
+    ordered: list[tuple[str, str]] = []
+    for path, symbol, _count in naming_matches + others:
+        key = (path, symbol)
+        if key in seen:
+            continue
+        seen.add(key)
+        ordered.append(key)
+    return ordered
 
 
 def _infer_target(
     test_fn: ast.stmt, module_ast: ast.Module, tree_files: set[str],
-) -> tuple[str, str] | None:
-    """``(target_path, symbol)`` this test statically appears to exercise,
-    or None when no first-party symbol imported and called resolves."""
+) -> list[tuple[str, str]]:
+    """Ranked ``(target_path, symbol)`` candidates this test statically
+    appears to exercise, best guess first — empty when no first-party
+    symbol imported and called resolves to a tracked file."""
     imports = _first_party_imports(module_ast)
     if not imports:
-        return None
+        return []
     counts = _called_symbols(test_fn, imports)
     if not counts:
-        return None
+        return []
     candidates = []
     for (mod_dotted, symbol), count in counts.items():
         path = _resolve_module_path(mod_dotted, tree_files)
@@ -315,7 +335,7 @@ def _infer_target(
             continue
         candidates.append((path, symbol, count))
     if not candidates:
-        return None
+        return []
     name = getattr(test_fn, "name", "")
     return _rank_candidates(name, candidates)
 
@@ -513,83 +533,94 @@ def _probe_one(
     max_mutations: int,
 ) -> TestProbe:
     node_id = item["node_id"]
-    target = _infer_target(item["test_fn"], item["module_ast"], tree_files)
-    if target is None:
+    targets = _infer_target(item["test_fn"], item["module_ast"], tree_files)
+    if not targets:
         return TestProbe(
             node_id=node_id, verdict="undetermined",
             reason=("could not determine the code under test statically "
                     "(no first-party symbol imported and called)"),
         )
-    target_rel, symbol = target
-    target_label = f"{target_rel}:{symbol}"
-    target_path = worktree / target_rel
+    best_label = f"{targets[0][0]}:{targets[0][1]}"
 
     rc, out = _run_pytest_proc([node_id], worktree, env, python)
     if rc is None:
         return TestProbe(
-            node_id=node_id, verdict="undetermined", target=target_label,
+            node_id=node_id, verdict="undetermined", target=best_label,
             reason=f"the test could not be run in the probe copy: {out[-500:]}",
         )
     why = _nothing_executed(rc, out)
     if why is not None:
         return TestProbe(
-            node_id=node_id, verdict="undetermined", target=target_label,
+            node_id=node_id, verdict="undetermined", target=best_label,
             reason=f"the test does not run cleanly unmutated in the probe copy — {why}",
         )
     if rc != 0:
         return TestProbe(
-            node_id=node_id, verdict="undetermined", target=target_label,
+            node_id=node_id, verdict="undetermined", target=best_label,
             reason=f"the test does not pass unmutated in the probe copy:\n{out[-500:]}",
         )
 
-    try:
-        original_text = target_path.read_text()
-    except OSError as exc:
-        return TestProbe(
-            node_id=node_id, verdict="undetermined", target=target_label,
-            reason=f"could not read {target_rel} in the probe copy: {exc}",
-        )
-    original_hash = hashlib.sha256(original_text.encode()).hexdigest()
-
-    tried = 0
-    tried_descriptions: list[str] = []
-    for mutation in _mutations_for(original_text, symbol):
-        if tried >= max_mutations:
-            break
-        mutated_text = _apply_one(original_text, mutation)
-        if mutated_text is None:
-            continue
-        tried += 1
-        tried_descriptions.append(mutation.description)
+    # A statically-resolved candidate is a guess: `from pkg import name` is
+    # structurally ambiguous between "name" being a symbol defined in
+    # `pkg` and "name" being `pkg`'s submodule (see `_rank_candidates`).
+    # Try each ranked candidate in turn; a candidate whose symbol is not
+    # actually defined in its resolved file yields zero mutations, and we
+    # move on rather than reporting "no mutation" on a wrong guess when a
+    # later candidate would have worked.
+    for target_rel, symbol in targets:
+        target_label = f"{target_rel}:{symbol}"
+        target_path = worktree / target_rel
         try:
-            target_path.write_text(mutated_text)
-            mrc, mout = _run_pytest_proc([node_id], worktree, env, python)
-        finally:
-            target_path.write_text(original_text)
-            restored_hash = hashlib.sha256(target_path.read_text().encode()).hexdigest()
-            if restored_hash != original_hash:
-                raise RuntimeError(
-                    f"failed to restore {target_rel} after mutation in the probe copy"
+            original_text = target_path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        mutations = list(_mutations_for(original_text, symbol))
+        if not mutations:
+            continue
+        original_hash = hashlib.sha256(original_text.encode()).hexdigest()
+
+        tried = 0
+        tried_descriptions: list[str] = []
+        for mutation in mutations:
+            if tried >= max_mutations:
+                break
+            mutated_text = _apply_one(original_text, mutation)
+            if mutated_text is None:
+                continue
+            tried += 1
+            tried_descriptions.append(mutation.description)
+            try:
+                target_path.write_text(mutated_text)
+                mrc, mout = _run_pytest_proc([node_id], worktree, env, python)
+            finally:
+                target_path.write_text(original_text)
+                restored_hash = hashlib.sha256(
+                    target_path.read_text(encoding="utf-8").encode()
+                ).hexdigest()
+                if restored_hash != original_hash:
+                    raise RuntimeError(
+                        f"failed to restore {target_rel} after mutation in the probe copy"
+                    )
+            if mrc is None:
+                continue  # environment failure on this candidate — try the next
+            if _nothing_executed(mrc, mout) is not None:
+                continue  # broken collection under mutation is not a kill
+            if mrc != 0:
+                return TestProbe(
+                    node_id=node_id, verdict="killed", target=target_label,
+                    mutation=mutation.description, reason=mout[-1000:],
                 )
-        if mrc is None:
-            continue  # environment failure on this candidate — try the next
-        if _nothing_executed(mrc, mout) is not None:
-            continue  # broken collection under mutation is not a kill
-        if mrc != 0:
+
+        if tried:
             return TestProbe(
-                node_id=node_id, verdict="killed", target=target_label,
-                mutation=mutation.description, reason=mout[-1000:],
+                node_id=node_id, verdict="survived", target=target_label,
+                mutation="; ".join(tried_descriptions),
+                reason="the test stayed green under every generated mutation",
             )
 
-    if tried == 0:
-        return TestProbe(
-            node_id=node_id, verdict="undetermined", target=target_label,
-            reason=f"no executable mutation could be generated for {target_label}",
-        )
     return TestProbe(
-        node_id=node_id, verdict="survived", target=target_label,
-        mutation="; ".join(tried_descriptions),
-        reason="the test stayed green under every generated mutation",
+        node_id=node_id, verdict="undetermined", target=best_label,
+        reason=f"no executable mutation could be generated for {best_label}",
     )
 
 
