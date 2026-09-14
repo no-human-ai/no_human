@@ -367,7 +367,11 @@ FROZEN_FUNCTION_LINES = {
     # landed by hand, gated like failed_pre_pr/pending_never_ran. Reviewed
     # on its merits; re-anchored here as its landing baseline.
     "blockers/landed_override.py:approve_landed_override": 322,
-    "core/metrics.py:compute_metrics": 346,  # +12: tokens_total (SCRUM re-home) sibling of cost_usd_total
+    # +43: folds the whole unattributed_usage ledger (owned + ownerless) into
+    # cost_usd_total/tokens_total and exposes ledger_owned_tokens/
+    # ledger_ownerless_tokens, so per-task pre-attempt spend agrees with
+    # `nh status` and the board (see TEST PLAN AC1).
+    "core/metrics.py:compute_metrics": 389,
     # NEW (324, > 300): mechanical resolution extended to cover
     # `tests/test_structural_budget.py` FROZEN_* numeric-only conflicts --
     # the new budget-hunk branch in the worktree merge-step loop, the
@@ -1568,7 +1572,10 @@ FROZEN_FILE_LINES = {
     # 6330 -> 6332 (+2): #227 (PR #308) routes the onboarding docs-generate
     # backend through `make_backend`, so that path honours
     # `llm.permission_mode` like every other. Measured on the merge result.
-    "api/app.py": 6332,
+    # 6332 -> 6340 (+8): board/detail/subtask/post-approve sites now pass
+    # `ledger=` through to TaskOut/TaskSummaryOut.from_task so owned
+    # unattributed_usage spend folds into a task's displayed cost.
+    "api/app.py": 6340,
     # +51: W5 active-time phase writer (phase instrumentation).
     # +84: `list_escalations`/`list_review_fails`/`list_tamper_trips` — the
     # three new failure-signal sources the recurring learning harvest mines.
@@ -1681,7 +1688,10 @@ FROZEN_FILE_LINES = {
     # winning marker forward into the new context blob the same way
     # `cancel_reason` already is, plus the expanded docstrings explaining why.
     # Measured via `wc -l src/no_human/core/db.py` on this merge result.
-    "core/db.py": 5193,
+    # 5193 -> 5285 (+92): OWNED_LEDGER_SQL, the `owned=` split on
+    # unattributed_usage_totals, and usage_ledger_rows_by_task/
+    # task_usage_ledger_rows — the per-task ledger fold's query layer.
+    "core/db.py": 5285,
     # +71: set_local_backend_fields — the config-write helper for the Settings
     # pane's local coder-backend fields (llm.local_model / llm.local_base_url).
     # +75: Codex account config helpers.
