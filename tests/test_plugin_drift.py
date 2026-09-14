@@ -129,6 +129,17 @@ def test_the_gate_skill_names_the_verb_and_the_credential():
     assert "merge base" in text, "SKILL.md must name the comparison it uses"
 
 
+def test_the_gate_skill_pins_the_exit_code_contract():
+    """The exit-code table is the skill's whole safety contract — nothing
+    else stops an agent from relaying a pass on exit 1 or 2. Pin the two
+    load-bearing sentences verbatim so an edit that quietly loosens them
+    (e.g. "exit code 2 also means ... report a pass") goes red here instead
+    of shipping silently."""
+    text = GATE_SKILL_MD.read_text(encoding="utf-8")
+    assert "On exit `2`, never report a pass." in text
+    assert "Only exit `0` is a pass" in text
+
+
 def test_the_gate_skill_is_documented_in_the_plugin_readme():
     text = PLUGIN_README.read_text(encoding="utf-8")
     assert "review-this-branch" in text, (

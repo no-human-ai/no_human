@@ -179,10 +179,13 @@ def test_the_gate_renders_file_and_line_citations(tmp_path, monkeypatch):
 # --------------------------------------------------------------------------- #
 
 def test_only_one_module_constructs_the_oneshot_reviewer_call():
-    """`diff_override=` marks the one-shot/no-tools review path. The
-    orchestrator's existing PR-review call site and the reviewer's own
-    definition are pre-existing; `oneshot.py` must be the only new one under
-    `src/`."""
+    """`diff_override=` marks the one-shot construction site this module
+    exists to be the only one of — not the only way `AdversarialReviewer`
+    ever ends up on its no-tools/single-turn path: `route_single_turn`
+    (reviewer.py:2562) reaches the same fast path without a `diff_override`.
+    The orchestrator's existing PR-review call site and the reviewer's own
+    definition are pre-existing; `oneshot.py` must be the only new
+    `diff_override=` call site under `src/`."""
     allowed = {"orchestrator.py", "reviewer.py", "oneshot.py"}
     hits = []
     for path in (REPO_ROOT / "src").rglob("*.py"):
