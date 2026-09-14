@@ -1802,7 +1802,9 @@ FROZEN_FILE_LINES = {
     # 3646 -> 3657 (+11): the `hooks.per_edit_type` default (#114 phase 2)
     # and the comment recording why it ships off while `per_edit_lint`
     # ships on. Re-measured on the merge result.
-    "config.py": 3657,
+    # 3657 -> 3730 (+73): DEFAULT_CONFIG["mutation_probe"] plus the tolerant
+    # reader mutation_probe_config() for the new mutation-probe review gate.
+    "config.py": 3730,
     # +61: the tamper-adjudication one-bounded-retry contract (mechanical-
     # failure classification + the extracted `_review_tamper_adjudication`
     # helper that keeps `AdversarialReviewer.review` itself under the
@@ -1887,7 +1889,10 @@ FROZEN_FILE_LINES = {
     # render). Added a branch (plus docstring) giving that case its own
     # honest lead-in instead of reusing the "determined" one. Measured on
     # this merge.
-    "review/reviewer.py": 3134,
+    # 3134 -> 3287 (+153): merge_mutation_findings() plus
+    # AdversarialReviewer._apply_mutation_probe() wiring the new mutation
+    # probe into the gate. Measured on this merge.
+    "review/reviewer.py": 3287,
     # 2706 -> 2711 (+5): pre-existing red on main at 03b262d23 (e922e9b4's
     # landing, change-scoped tests missed the ratchet) — repaired, measured,
     # on this merge; same cause as the two function-level wake.py bumps above.
