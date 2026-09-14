@@ -360,7 +360,11 @@ def test_the_sweep_does_not_regress_the_uvx_active_flag_placement(
     folding host `UVX ruff check --active` (trailing `--active`, belongs to
     the invoked program `ruff`) was wrongly DENIED while the identical
     lowercase spelling stayed ALLOWED -- while the reverse shape (a leading
-    `--active`, uvx's own flag) must stay denied regardless of case."""
+    `--active`, which `uvx` has no such flag for: `uvx --active ruff
+    --version` errors with "unexpected argument '--active' found" before
+    running anything, per `uv 0.12.5`, and `uvx --help` lists no `--active`
+    at all) must stay denied regardless of case -- denying a command uvx
+    itself refuses to run costs nothing anyone is entitled to."""
     monkeypatch.setattr(exec_names, "host_folds_case", lambda *a, **k: True)
     # `extra_names` creates the literal `UVX`/`Uvx` files on disk -- mocking
     # `host_folds_case` only changes the CLASSIFICATION decision; on a
@@ -388,4 +392,7 @@ def test_the_sweep_does_not_regress_the_uvx_active_flag_placement(
         d = guard.evaluate(
             "Bash", {"command": cmd}, forbidden_paths=[],
             never_push_to=["main"], cwd=str(wt), env=prod_env)
-        assert not d.allow, f"a leading --active is uvx's own flag: {cmd!r}"
+        assert not d.allow, (
+            f"uvx has no --active flag and errors before running anything, "
+            f"so denying refuses nothing anyone is entitled to run: {cmd!r}"
+        )

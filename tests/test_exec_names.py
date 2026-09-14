@@ -468,12 +468,44 @@ def test_a_directory_holding_both_spellings_is_not_mistaken_for_a_fold(tmp_path)
     case-SENSITIVE volume, and denying accordingly would be wrong."""
     import os
 
-    (tmp_path / "Foo").write_text("upper")
+    # `"foo".swapcase()` is `"FOO"` (every letter swaps, not just the
+    # first) -- the fixture must create exactly that spelling, or
+    # `_swap_probe` never gets past its own-exists/swapped-exists check and
+    # the `samefile` line below it is never reached.
+    (tmp_path / "FOO").write_text("upper")
     (tmp_path / "foo").write_text("lower")
-    if os.path.samefile(tmp_path / "Foo", tmp_path / "foo"):
+    if os.path.samefile(tmp_path / "FOO", tmp_path / "foo"):
         pytest.skip("this volume folds case; both names collide onto one file")
 
     assert exec_names._swap_probe(str(tmp_path / "foo")) is False
+
+
+def test_an_unanswerable_swap_probe_does_not_manufacture_a_verdict(tmp_path, monkeypatch):
+    """`_swap_probe`'s `except (OSError, ValueError)` arm is the tri-state
+    contract's one remaining permissive-direction return with no coverage: if
+    it ever regressed from `None` (unmeasured) to `False` (a measured "does
+    not fold" verdict), that would be indistinguishable to every caller from
+    a real case-sensitive answer -- the exact shape of bug this guard exists
+    to kill, just relocated to `_swap_probe`'s own error path instead of
+    `host_folds_case`'s.
+
+    Reaches the except arm for real rather than mocking it away entirely:
+    both spellings genuinely exist (so the earlier `not os.path.exists`
+    guards do not short-circuit first), and `os.path.samefile` -- the one
+    call in `_swap_probe` that is not itself exception-swallowing -- is made
+    to raise `OSError`, simulating the dead-mount/permission-denied-
+    ancestor/symlink-loop cases the docstring names.
+    """
+    (tmp_path / "FOO").write_text("upper")
+    (tmp_path / "foo").write_text("lower")
+    if os.path.samefile(tmp_path / "FOO", tmp_path / "foo"):
+        pytest.skip("this volume folds case; both names collide onto one file")
+
+    def _raise_os_error(*_args, **_kwargs):
+        raise OSError("simulated dead mount / symlink loop")
+
+    monkeypatch.setattr(os.path, "samefile", _raise_os_error)
+    assert exec_names._swap_probe(str(tmp_path / "foo")) is None
 
 
 def test_an_unreadable_candidate_does_not_answer_false(tmp_path):

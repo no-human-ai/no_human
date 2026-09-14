@@ -316,7 +316,15 @@ def test_a_capitalised_uv_commands_are_not_denied_like_pip(tmp_path, monkeypatch
     surfaced through a second `_MUTATING_SUBCOMMANDS` entry.
     """
     monkeypatch.setattr(exec_names, "host_folds_case", lambda *a, **k: True)
-    _primary, _primary_venv, wt, _wt_venv, prod_env, _wt_env = _session(tmp_path)
+    # `primary_extra_names` -- without it, on a case-sensitive test-runner
+    # filesystem (Linux/ext4 CI) no file literally named `UV`/`Uv`/`uV`
+    # exists in `primary_venv/bin/`, so `_resolve_installer`'s PATH walk
+    # fails to resolve those spellings at all and falls open (allows with
+    # a "could not be resolved" log) regardless of whether the fix under
+    # test does anything -- the assertion below would pass for the wrong
+    # reason and the fold logic would go unexercised on that host.
+    _primary, _primary_venv, wt, _wt_venv, prod_env, _wt_env = _session(
+        tmp_path, primary_extra_names=("UV", "Uv", "uV"))
     cmds = [
         "uv sync", "UV sync", "Uv sync", "uV sync",
         "uv add somepkg", "UV add somepkg", "Uv add somepkg",
@@ -371,7 +379,11 @@ def test_a_capitalised_uvx_program_flag_is_not_denied_like_pip(tmp_path, monkeyp
     # pinned in test_the_full_bypass_set_stays_denied.
     for cmd in ["uvx --active ruff", "UVX --active ruff", "Uvx --active ruff"]:
         r = venv_install_guard.denial_reason(cmd, cwd=wt, env=prod_env)
-        assert r is not None, f"a leading --active is uvx's own flag: {cmd!r}"
+        assert r is not None, (
+            f"uvx has no --active flag at all -- `uvx --active ruff "
+            f"--version` errors with \"unexpected argument '--active' "
+            f"found\" before running anything (measured, uv 0.12.5) -- so "
+            f"denying refuses nothing anyone is entitled to run: {cmd!r}")
 
 
 def test_the_cwd_argument_is_actually_threaded_to_the_probe(tmp_path, monkeypatch):
@@ -429,7 +441,16 @@ def test_the_cwd_argument_is_actually_threaded_to_the_probe(tmp_path, monkeypatc
     (fold), and then denies because `PIP` resolves as `pip` pointing
     outside the worktree.
     """
-    _primary, _primary_venv, wt, _wt_venv, prod_env, _wt_env = _session(tmp_path)
+    # `primary_extra_names=("PIP",)` -- without a literal `PIP` file in
+    # `primary_venv/bin/` on a case-sensitive test-runner filesystem, the
+    # PATH hand-walk (`os.path.join(directory, token)`, no fold-aware
+    # scan) can never resolve `PIP` to `primary_venv`'s real `pip` even in
+    # the BUGGY (cwd-not-threaded) branch, so both branches fall through to
+    # the same allow-and-log outcome and the assertion below would pass
+    # for the wrong reason (same class as the `UV`/`Uv` omission this
+    # review flagged in `test_a_capitalised_uv_commands_are_not_denied_like_pip`).
+    _primary, _primary_venv, wt, _wt_venv, prod_env, _wt_env = _session(
+        tmp_path, primary_extra_names=("PIP",))
 
     def _pinned(directory):
         return False if os.path.realpath(directory) == wt else None
