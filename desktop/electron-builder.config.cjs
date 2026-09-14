@@ -23,18 +23,23 @@
 
 const fs = require("fs");
 const path = require("path");
-const { signingBanner, signingPlan } = require("./signing.cjs");
+const {
+  signingBanner, signingPlan, windowsSigningBanner, windowsSigningPlan,
+} = require("./signing.cjs");
 // The Electron/Chromium licence-notice guard lives in its own module: this
 // file must export the config object and NOTHING else, or electron-builder's
 // schema validation (additionalProperties: false) refuses to build at all.
 const { assertElectronNoticesPresent } = require("./electronNotices.cjs");
 
 const plan = signingPlan(process.env);
+// The Windows verdict is its own: see windowsSigningPlan (#330).
+const winPlan = windowsSigningPlan(process.env);
 
 // Printed on EVERY build, signed or not. The failure mode the operator named is
 // a green build that silently produced something Gatekeeper rejects; this is
 // the line that makes that impossible to miss.
 console.log(signingBanner(plan));
+console.log(windowsSigningBanner(winPlan));
 
 if (plan.fatal) {
   // A release build that cannot be a release must not produce an artifact at
@@ -131,7 +136,7 @@ const win = {
   // "An operator cannot upload no_human-0.1.0-UNSIGNED.dmg to a release page
   // believing it is shippable." The same must be true of the .exe, or Windows
   // becomes the soft spot in a rule macOS enforces.
-  artifactName: "${productName}-${version}" + plan.artifactTag + ".${ext}",
+  artifactName: "${productName}-${version}" + winPlan.artifactTag + ".${ext}",
 };
 
 // The Linux half. Same shape rule as `win`: as close to `mac` as the OS

@@ -154,6 +154,64 @@ function signingPlan(env = {}) {
   return plan;
 }
 
+//: The Windows certificate. `CSC_LINK`/`CSC_NAME` are deliberately NOT read
+//: here. `CSC_NAME` is an Apple identity NAME — there is no Windows
+//: certificate for it to point at — and `CSC_LINK` is whatever .p12 the macOS
+//: lane was given, which cannot sign an exe either. Letting either one decide
+//: the Windows filename is the defect: the variable that flips the name would
+//: have nothing to do with the thing the name is claiming (#330).
+const WINDOWS_CERTIFICATE_VAR = "WIN_CSC_LINK";
+
+/** The Windows half of the plan: does the .exe name claim a signature?
+ *
+ *  Separate from {@link signingPlan} rather than a branch inside it, because
+ *  the two answer different questions from different inputs and only share a
+ *  filename convention. The macOS plan additionally decides notarization,
+ *  auto-update permission and the electron-builder `identity` value, none of
+ *  which exist on the Windows side.
+ *
+ *  Fail-safe direction: a Windows build signed through electron-builder's
+ *  generic `CSC_LINK` fallback is tagged `-UNSIGNED` here, which UNDER-claims.
+ *  A name that under-claims can be corrected by setting `WIN_CSC_LINK`; a name
+ *  that over-claims is uploaded to a release page.
+ */
+function windowsSigningPlan(env = {}) {
+  if (present(env, WINDOWS_CERTIFICATE_VAR)) {
+    return {
+      signed: true,
+      artifactTag: "",
+      reason: `a Windows certificate is set in ${WINDOWS_CERTIFICATE_VAR}`,
+    };
+  }
+  return {
+    signed: false,
+    artifactTag: "-UNSIGNED",
+    reason: `no ${WINDOWS_CERTIFICATE_VAR} — this Windows build is UNSIGNED.`
+      + " SmartScreen will warn on it and auto-update is not offered.",
+  };
+}
+
+/** The Windows block of build output. Same contract as {@link signingBanner}. */
+function windowsSigningBanner(winPlan) {
+  const rule = "─".repeat(72);
+  const head = winPlan.signed
+    ? "WINDOWS SIGNING: certificate present"
+    : "WINDOWS SIGNING: UNSIGNED — NOT SHIPPABLE";
+  const lines = [rule, head, winPlan.reason];
+  if (winPlan.artifactTag) {
+    lines.push(`The .exe will be tagged "${winPlan.artifactTag}" so it cannot`
+      + " be mistaken for a release.");
+  }
+  // electron-builder prints "signing with signtool.exe path=..." for every exe
+  // even when nothing is signed: that is its step name, not a result. A reader
+  // grepping the log for "signing" gets the wrong answer, so say where the
+  // real answer is.
+  lines.push("The build log's \"signing with signtool.exe\" line is a step name,"
+    + " not a signature — check the artifact with Get-AuthenticodeSignature.");
+  lines.push(rule);
+  return lines.join("\n");
+}
+
 /** The block of build output a human actually reads. Never silent. */
 function signingBanner(plan) {
   const rule = "─".repeat(72);
@@ -182,4 +240,7 @@ module.exports = {
   notarizeCredentials,
   signingPlan,
   signingBanner,
+  WINDOWS_CERTIFICATE_VAR,
+  windowsSigningPlan,
+  windowsSigningBanner,
 };

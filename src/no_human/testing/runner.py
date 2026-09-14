@@ -897,6 +897,23 @@ def _is_invocation_error(
     return False
 
 
+# A shell reporting that `pytest` is not on PATH — in whichever words its shell
+# uses. bash and zsh say "command not found"; dash, the `/bin/sh` on Debian and
+# Ubuntu and therefore on most Linux CI runners and containers, says
+# "sh: 1: pytest: not found", and busybox says "sh: pytest: not found". Matching
+# only bash's phrasing meant the class-3 rewrite never fired on those hosts, so
+# a project whose detected command is a bare `pytest` got "no test evidence"
+# there and a working retry here (#353).
+#
+# Anchored on the `<name>: [command ]not found` shape at end of line, so
+# pytest's own `file or directory not found: tests/x.py` — no colon before the
+# phrase — is not read as a missing interpreter.
+_SHELL_NOT_FOUND = re.compile(
+    r"^.*\bpytest\b.*?:\s*(?:command\s+)?not found\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
 def _fix_invocation(cmd: str, output: str, repo_path: Path) -> str | None:
     """Try to produce a corrected command for a known invocation failure."""
     # python not found → try python3
@@ -922,7 +939,7 @@ def _fix_invocation(cmd: str, output: str, repo_path: Path) -> str | None:
         if (
             "no module named pytest" in out_lower
             or "no module named 'pytest'" in out_lower
-            or ("pytest" in out_lower and "command not found" in out_lower)
+            or _SHELL_NOT_FOUND.search(output) is not None
         ):
             rest = stripped[len("pytest"):]
             return f"{sys.executable} -m pytest{rest}"
