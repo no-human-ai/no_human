@@ -2102,9 +2102,10 @@ def _seed_unattributed(db_path: Path, *, site: str, tokens_used: int = 100,
 
 def test_status_splits_owned_and_ownerless_intake_spend(tmp_path, monkeypatch):
     """AC1/AC2: the printed line separates the genuinely ownerless spend
-    (`cli.*`/`api.*`, no task_id) from spend already recorded against a task
-    (`orphaned_*`) — "no task owns it" attaches only to the former, and the
-    latter is named as recorded-but-not-yet-in-attempt-rows, not as lost."""
+    (`cli.*`/`api.*`, no task_id) from spend already folded into a task's
+    displayed cost (`task_id` set, not yet rolled up) — "no task owns it"
+    attaches only to the former, and the latter is named as already
+    included in that task's cost, not as lost."""
     db = tmp_path / "test.db"
     _seed_unattributed(db, site="cli.task_add.grill", tokens_used=1000)
     task_id = _seed_task(db, TaskStatus.DONE)
@@ -2115,8 +2116,8 @@ def test_status_splits_owned_and_ownerless_intake_spend(tmp_path, monkeypatch):
     out = runner.invoke(cli, ["status"]).output
 
     assert "1,000 tokens over 1 call(s) — no task owns it" in out, out
-    assert "5,000 tokens over 1 call(s) recorded to tasks but not in " \
-           "their attempt rows" in out, out
+    assert "5,000 tokens over 1 call(s) already included in those tasks' " \
+           "cost" in out, out
 
 
 def test_status_does_not_say_no_task_owns_it_when_every_row_is_attributed(
@@ -2132,7 +2133,7 @@ def test_status_does_not_say_no_task_owns_it_when_every_row_is_attributed(
 
     out = runner.invoke(cli, ["status"]).output
 
-    assert "recorded to tasks but not in their attempt rows" in out, out
+    assert "already included in those tasks' cost" in out, out
     assert "no task owns it" not in out, out
 
 
@@ -2150,8 +2151,8 @@ def test_a_new_orphaned_site_classifies_as_attributed(tmp_path, monkeypatch):
     out = runner.invoke(cli, ["status"]).output
 
     assert "no task owns it" not in out, out
-    assert "777 tokens over 1 call(s) recorded to tasks but not in their " \
-           "attempt rows" in out, out
+    assert "777 tokens over 1 call(s) already included in those tasks' " \
+           "cost" in out, out
 
 
 def test_status_json_keys_unchanged_with_both_classes_present(tmp_path, monkeypatch):
@@ -2176,8 +2177,15 @@ def test_status_json_keys_unchanged_with_both_classes_present(tmp_path, monkeypa
 
 def test_status_split_counts_a_rolled_up_row_as_its_original_calls(
         tmp_path, monkeypatch):
-    """AC5: retention compaction must not shrink the attributed clause's call
-    count — a roll-up row still counts as the calls it replaced.
+    """AC5: retention compaction must not shrink a clause's call count — a
+    roll-up row still counts as the calls it replaced.
+
+    These rows start OWNED (`task_id` set) but `compact_unattributed_usage`
+    NULLs `task_id` when it rolls a group up (see `OWNED_LEDGER_SQL`), so
+    compaction also moves them from the owned clause to the ownerless one —
+    the honest degradation this bugfix accepts (a rolled-up row can no
+    longer prove which task it belonged to, and must say so rather than stay
+    silently attached). The call count must still read 4, not 1, either way.
 
     Seed, backdate and compact all inside ONE Store connection: `connect()`
     itself runs a best-effort `compact_unattributed_usage()` (db.py:518), so
@@ -2207,8 +2215,8 @@ def test_status_split_counts_a_rolled_up_row_as_its_original_calls(
 
     out = runner.invoke(cli, ["status"]).output
 
-    assert "400 tokens over 4 call(s) recorded to tasks but not in their " \
-           "attempt rows" in out, out
+    assert "unattributed intake spend: 400 tokens over 4 call(s) — no task " \
+           "owns it" in out, out
 
 
 def test_status_prints_no_residual_line_on_an_empty_ledger(tmp_path, monkeypatch):

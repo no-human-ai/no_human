@@ -725,6 +725,10 @@ async def _board_tasks(
     tasks = await store.list_tasks(limit=limit, offset=offset)
     # B2 #16: ONE grouped query instead of an N+1 per board tick per socket.
     by_task = await store.attempts_by_task()
+    # Same B2 #16 shape for this task's OWNED unattributed_usage rows (the
+    # pre-attempt plan/intake/decompose spend already attributed to it — see
+    # TaskSummaryOut.cost_usd) — one grouped query, not one per card.
+    ledger_by_task = await store.usage_ledger_rows_by_task()
     # SCRUM-15: `scheduler.inflight` returns a fresh set() copy per call — snapshot
     # once so every card in this response is judged against the same instant.
     inflight = scheduler.inflight if scheduler is not None else set()
@@ -734,6 +738,7 @@ async def _board_tasks(
         summary = TaskSummaryOut.from_task(
             task, _latest_pr_url(attempts), attempts=attempts,
             max_pr_conflict_rounds=_max_pr_conflict_rounds(),
+            ledger=ledger_by_task.get(task.id),
         )
         if scheduler is not None:
             summary.claimed = task.id in inflight
@@ -1429,7 +1434,8 @@ async def get_task(task_id: str, request: Request) -> TaskOut:
     store = _store(request)
     task = await _require_task(store, task_id)
     attempts = await store.list_attempts(task.id)
-    out = TaskOut.from_task(task, attempts)
+    ledger = await store.task_usage_ledger_rows(task.id)
+    out = TaskOut.from_task(task, attempts, ledger=ledger)
     # D1.3: the phase timeline (D1.1 rows) + ran-time. Empty until the
     # orchestrator writes rows (D1.2) — phases stays [] and active_seconds
     # stays null, which the drawer reads as "no ran chip" rather than "0s".
@@ -1489,9 +1495,10 @@ async def list_subtasks(task_id: str, request: Request) -> list[TaskSummaryOut]:
     out = []
     for t in subs:
         attempts = await store.list_attempts(t.id)
+        ledger = await store.task_usage_ledger_rows(t.id)
         out.append(TaskSummaryOut.from_task(
             t, _latest_pr_url(attempts), attempts=attempts,
-            max_pr_conflict_rounds=_max_pr_conflict_rounds()))
+            max_pr_conflict_rounds=_max_pr_conflict_rounds(), ledger=ledger))
     return out
 
 
@@ -2471,13 +2478,14 @@ async def mark_shipped(
                "actor": process_actor()},
     )
     attempts = await store.list_attempts(task.id)
+    ledger = await store.task_usage_ledger_rows(task.id)
     tasks = await _board_tasks(store, scheduler=_sched(request))
     await _mgr.broadcast({
         "type": "task_updated", "task_id": task.id,
         "status": TaskStatus.DONE.value,
         "tasks": [t.model_dump() for t in tasks],
     })
-    return TaskOut.from_task(task, attempts)
+    return TaskOut.from_task(task, attempts, ledger=ledger)
 
 
 class PostReviewCommentsRequest(BaseModel):

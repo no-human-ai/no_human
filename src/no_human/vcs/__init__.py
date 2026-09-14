@@ -58,10 +58,18 @@ def open_pr(
 ) -> PrResult:
     """Push the branch and open a PR/MR against the detected remote.
 
-    ``force_with_lease`` is passed straight to ``GitRepo.push`` and is set by
-    exactly one caller — the delivery retry after a non-fast-forward rejection.
-    See ``GitRepo.push`` for why a rebased agent branch cannot be delivered any
-    other way, and why the protected-branch refusal is unaffected.
+    ``force_with_lease`` is passed straight to ``GitRepo.push`` and is set
+    True by TWO callers, both in ``orchestrator.py`` and both a delivery
+    retry after a non-fast-forward rejection: ``_finalize``'s PR-open retry
+    (``open_pr(..., force_with_lease=forced)``, only when the rejection is
+    actually non-fast-forward) and the draft-PR ``pr_conflict`` round's
+    retry (``open_pr(..., force_with_lease=True)``, unconditional once that
+    round is reached). ``GitRepo.push`` itself has a THIRD caller —
+    ``evidence_ledger.py``'s unconditional force-push of its own nh-evidence
+    side branch — that goes through ``repo.push`` directly, never through
+    this function. See ``GitRepo.push`` for why a rebased agent branch
+    cannot be delivered any other way, and why the protected-branch refusal
+    is unaffected.
 
     A non-fast-forward rejection caused by the local branch being BEHIND its
     own remote tip (not diverged from it) raises ``PushBehindRemote`` out of

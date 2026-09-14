@@ -4515,14 +4515,14 @@ def status(as_json):
             # Printed only when there IS a residual (whole-ledger total, same
             # gate as before), so the line appears exactly when it has
             # something to say. Within it, "no task owns it" is scoped to the
-            # genuinely ownerless half only — the attributed half (site
-            # prefix `orphaned_*`) is recorded against a task, just not yet
-            # folded into that task's attempt rows, so it gets its own
-            # clause instead of being called ownerless.
+            # genuinely ownerless half only — the owned half (task_id still
+            # set, not yet rolled up) is now folded into that task's
+            # displayed cost_usd/tokens (TaskOut.from_task), so it gets its
+            # own clause instead of being called ownerless.
             if resid["total"]:
-                owned = await store.unattributed_usage_totals(attributed=True)
+                owned = await store.unattributed_usage_totals(owned=True)
                 # Derived by subtraction from the single whole-ledger query
-                # above, rather than a second `attributed=False` query, so
+                # above, rather than a second `owned=False` query, so
                 # the two halves are guaranteed to sum to `resid` instead of
                 # being able to disagree if the ledger changes between calls.
                 ownerless_total = resid["total"] - owned["total"]
@@ -4535,8 +4535,7 @@ def status(as_json):
                 if owned["total"]:
                     clause = (
                         f"{owned['total']:,} tokens over {owned['calls']} "
-                        f"call(s) recorded to tasks but not in their attempt "
-                        f"rows")
+                        f"call(s) already included in those tasks' cost")
                     parts.append(f"plus {clause}" if parts else clause)
                 console.print(f"[dim]{'; '.join(parts)}[/]")
 

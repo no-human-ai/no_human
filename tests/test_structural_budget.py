@@ -212,7 +212,12 @@ FROZEN_FUNCTION_LINES = {
     # `result.detail` (capped, whitespace-collapsed) in the event text and
     # `question`, and prefixes `step=` onto the stored `evidence` -- step
     # alone was not root-causeable. Measured on this tree.
-    "blockers/wake.py:WakeWatcher._check_pr_conflict": 458,
+    # 458 -> 464 (+6): pushed-tip rewrite fix (2026-09-13) — the pr_conflict
+    # send-back message now calls `base_merge_conflict_instruction` instead
+    # of a hardcoded rebase string, so the coder is told to merge the pinned
+    # base and never rewrite the already-pushed branch. Measured on this
+    # tree with the scanner below.
+    "blockers/wake.py:WakeWatcher._check_pr_conflict": 464,
     # 418 -> 424 (+6): D1.1 fix round — attempt-scoped verification-artifact
     # write wired into `_finalize` (review findings #1/#7). Measured on the
     # D1.1 squash-merge result.
@@ -220,7 +225,13 @@ FROZEN_FUNCTION_LINES = {
     # best-effort call that runs the UI-evidence browser walk after tests
     # pass and threads its rendered media section into `_pr_body`.
     # Re-anchored on merge.
-    "core/orchestrator.py:Orchestrator._finalize": 437,
+    # 437 -> 441 (+4): pushed-tip rewrite fix (2026-09-13) — the PR-open
+    # retry's comment explaining `force_with_lease`'s scope was expanded to
+    # describe `agent/pushed_tip_guard.py` now denying the rebase that used
+    # to make this retry's non-fast-forward path the expected outcome
+    # (comment-only; `forced = _is_non_fast_forward(exc)` itself is
+    # unchanged). Measured on this tree with the scanner below.
+    "core/orchestrator.py:Orchestrator._finalize": 441,
     # Pre-existing on main (measured red at d3d7d3a82a, this session's start):
     # an earlier fleet land grew stream() +6 without re-freezing it on its
     # merge result — the same "landed without measuring the ratchet" failure
@@ -348,7 +359,19 @@ FROZEN_FUNCTION_LINES = {
     # it forever). `base_staleness` now merges instead of rebasing a pushed
     # branch, and this preamble gained an `elif stale.get("merged")` branch
     # narrating that case to the coder. Measured with the scanner below.
-    "core/orchestrator.py:Orchestrator._build_implement_prompt": 394,
+    # 394 -> 423 (+29): pushed-tip rewrite fix (2026-09-13) — a new branch
+    # for the `merge_conflict` case (base-refresh skipped a merge on a
+    # conflict) tells the coder to run `git merge <base_pin>` themselves via
+    # `base_merge_conflict_instruction`, instead of the old rebase-oriented
+    # preamble text. Measured on this tree with the scanner below.
+    # 423 -> 431 (+8): B2 fix (pushed-tip guard review round) — the
+    # `merge_conflict` branch's comment now explains why the preamble can't
+    # claim "CONFLICT" specifically (the flag also covers any other
+    # exception `_refresh_stale_base` caught), and the preamble text itself
+    # changed to the provable-in-every-case "did not finish — no partial
+    # merge was left in progress." Measured on this tree with the scanner
+    # below.
+    "core/orchestrator.py:Orchestrator._build_implement_prompt": 431,
     # 332 -> 333 (+1): pin-rederivation follow-up adds one
     # `pin_rederivation_note(card),` line to the markdown body list so the
     # published report carries the same recorded-branch/HEAD-fallback
@@ -367,7 +390,11 @@ FROZEN_FUNCTION_LINES = {
     # landed by hand, gated like failed_pre_pr/pending_never_ran. Reviewed
     # on its merits; re-anchored here as its landing baseline.
     "blockers/landed_override.py:approve_landed_override": 322,
-    "core/metrics.py:compute_metrics": 346,  # +12: tokens_total (SCRUM re-home) sibling of cost_usd_total
+    # +43: folds the whole unattributed_usage ledger (owned + ownerless) into
+    # cost_usd_total/tokens_total and exposes ledger_owned_tokens/
+    # ledger_ownerless_tokens, so per-task pre-attempt spend agrees with
+    # `nh status` and the board (see TEST PLAN AC1).
+    "core/metrics.py:compute_metrics": 389,
     # NEW (324, > 300): mechanical resolution extended to cover
     # `tests/test_structural_budget.py` FROZEN_* numeric-only conflicts --
     # the new budget-hunk branch in the worktree merge-step loop, the
@@ -519,7 +546,12 @@ FROZEN_FUNCTION_CC = {
     # FROZEN_FUNCTION_LINES entry above for the incident) -- one new `elif
     # stale.get("merged"):` branch narrates the merged case to the coder.
     # Measured with the scanner below.
-    "core/orchestrator.py:Orchestrator._build_implement_prompt": 71,
+    # 71 -> 79 (+8): pushed-tip rewrite fix (2026-09-13) -- the new
+    # `merge_conflict` branch (see the FROZEN_FUNCTION_LINES entry above)
+    # adds an `if merge_conflict:` / `if overlap:` pair and an `or []` and
+    # an `or "the current base"` BoolOp-style fallback for the base_pin
+    # lookup. Measured on this tree with the scanner below.
+    "core/orchestrator.py:Orchestrator._build_implement_prompt": 79,
 }
 
 # 9 files > 2,500 lines.
@@ -1215,7 +1247,22 @@ FROZEN_FILE_LINES = {
     # frozen ceiling, so that function's own entry did not have to grow).
     # Measured after extracting/trimming as far as possible without cutting
     # the fail-closed guards' rationale comments.
-    "core/orchestrator.py": 24073,
+    # 24073 -> 24133 (+60): pushed-tip rewrite fix (2026-09-13) -- sum of
+    # this file's own FROZEN_FUNCTION_LINES/CC deltas above
+    # (`_finalize` +4, `_build_implement_prompt` +29) plus the PR-open
+    # retry's comment expansion and the new `base_merge_conflict_instruction`
+    # import/threading, applied on top of current main (24073, this file's
+    # scanner count on main `dded20a5`) and re-measured AFTER the base-refresh
+    # merge into this tip (`c15b1145`) landed the same +60 net — not the
+    # pre-merge parent's own 24139, which this comment previously (and
+    # wrongly) cited. Measured on THIS tree with the scanner below
+    # (`scan_source`'s `len(text.splitlines())`, not `wc -l` — they disagree
+    # by a constant 3 lines on this file, see the note two entries above).
+    # 24133 -> 24141 (+8): B2 fix (pushed-tip guard review round), same +8
+    # as `Orchestrator._build_implement_prompt`'s own entry above — no other
+    # function in this file changed line count this round. Measured on THIS
+    # tree with the scanner below.
+    "core/orchestrator.py": 24141,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.
@@ -1568,7 +1615,10 @@ FROZEN_FILE_LINES = {
     # 6330 -> 6332 (+2): #227 (PR #308) routes the onboarding docs-generate
     # backend through `make_backend`, so that path honours
     # `llm.permission_mode` like every other. Measured on the merge result.
-    "api/app.py": 6332,
+    # 6332 -> 6340 (+8): board/detail/subtask/post-approve sites now pass
+    # `ledger=` through to TaskOut/TaskSummaryOut.from_task so owned
+    # unattributed_usage spend folds into a task's displayed cost.
+    "api/app.py": 6340,
     # +51: W5 active-time phase writer (phase instrumentation).
     # +84: `list_escalations`/`list_review_fails`/`list_tamper_trips` — the
     # three new failure-signal sources the recurring learning harvest mines.
@@ -1681,7 +1731,10 @@ FROZEN_FILE_LINES = {
     # winning marker forward into the new context blob the same way
     # `cancel_reason` already is, plus the expanded docstrings explaining why.
     # Measured via `wc -l src/no_human/core/db.py` on this merge result.
-    "core/db.py": 5193,
+    # 5193 -> 5285 (+92): OWNED_LEDGER_SQL, the `owned=` split on
+    # unattributed_usage_totals, and usage_ledger_rows_by_task/
+    # task_usage_ledger_rows — the per-task ledger fold's query layer.
+    "core/db.py": 5285,
     # +71: set_local_backend_fields — the config-write helper for the Settings
     # pane's local coder-backend fields (llm.local_model / llm.local_base_url).
     # +75: Codex account config helpers.
@@ -1831,7 +1884,11 @@ FROZEN_FILE_LINES = {
     # 2752 -> 2757 (+5): same cause as the FROZEN_FUNCTION_LINES entry above
     # -- the whole-file delta equals the function's delta. Measured on this
     # tree.
-    "blockers/wake.py": 2757,
+    # 2757 -> 2763 (+6): pushed-tip rewrite fix (2026-09-13) -- same cause as
+    # the FROZEN_FUNCTION_LINES `_check_pr_conflict` entry above (the
+    # whole-file delta equals that function's delta). Measured on this tree
+    # with the scanner below.
+    "blockers/wake.py": 2763,
     # +91: `_SCAN_WRAPPER_NAMES` + `_peel_scan_wrappers` — peels
     # timeout/xargs/nice/stdbuf (and siblings) for the scan-severity check
     # only, so a wrapped `find … -delete` in a denied compound classifies
@@ -1847,7 +1904,27 @@ FROZEN_FILE_LINES = {
     # a bare `Path.is_file()`, so an unreadable ancestor directory (e.g. a
     # chmod'd `<checkout>/src`) can't raise `PermissionError` out of this
     # unguarded helper and abort the guard instead of denying.
-    "agent/guard.py": 2925,
+    # 2926 -> 2945 (+19): pushed-tip rewrite fix (2026-09-13) -- the module
+    # docstring gains a bullet naming the new pushed-tip-rewrite denial
+    # (+10), the `pushed_tip_guard` import is added, and `evaluate` gains
+    # the `pushed_reason = pushed_tip_guard.denial_reason(...)` dispatch
+    # plus its rationale comment (+9). No change to any pre-existing
+    # function's own frozen entry -- this is new code, not growth of an
+    # existing offender.
+    # 2945 -> 2947 (+2): corrected the pre-existing `_FORGE_RUNNER_NAMES`
+    # comment above `_forge_invocations`, which wrongly claimed
+    # `_git_invocations` kept matching on `_SHELL_RUNNERS` alone,
+    # "byte-identical" to before that name existed -- the function actually
+    # reads `_FORGE_RUNNER_NAMES` (verified by
+    # `tests/test_pushed_tip_rewrite_guard.py::test_the_pushed_tip_path_sees_every_runner_the_guard_knows`).
+    # Measured on this tree with the scanner below.
+    # 2954 -> 2959 (+5): N5 fix (pushed-tip guard review round) — the module
+    # docstring's pushed-tip-rewrite bullet no longer overclaims "any
+    # spelling" for `git rebase`; it now says "every lexical spelling this
+    # module recognizes" and cross-references `pushed_tip_guard`'s own
+    # disclosed gaps (shell/interpreter indirection, brace groups, command
+    # substitution). Measured on this tree with the scanner below.
+    "agent/guard.py": 2959,
     # +44: idle-path recover_quota_cooldown gate in tick() and the
     # never-shorten-a-live-wall guard in _run — the quota-wall storm cost fix.
     # +129: `HarvestJob` — the cadence job (`due()`/`maybe_run()`) that runs
