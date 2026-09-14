@@ -149,7 +149,7 @@ async def test_a_wip_partial_checkpoint_is_not_blocked_because_delivery_would_re
     bare_repo, tmp_path, store,
 ):
     """Send-back (third review), Blocker: `_run_attempt` hoists `_route_
-    unjudged_head`/`_already_satisfied_eligible` (~12034/~11901) BEFORE the
+    unjudged_head`/`_already_satisfied_eligible` (~12241/~12108) BEFORE the
     claim is even parsed. A `[WIP-PARTIAL]` (or `[WIP-BLOCKED]`) head one
     commit ahead of `main`, with no completed review verdict recorded
     against it, is routed straight to a full independent review —
@@ -392,8 +392,8 @@ async def test_branched_from_own_partial_true_skips_the_outer_ahead_check(
 class _AheadRaisesRepo:
     """A repo double whose `head_sha`/`_run` (subject) read normally but whose
     `commits_ahead` always raises — isolates the new outer predicate's OWN
-    `except Exception` (~17024) from `_already_satisfied_eligible`'s
-    unrelated, pre-existing `commits_ahead` try/except (~11985), which
+    `except Exception` (~17326) from `_already_satisfied_eligible`'s
+    unrelated, pre-existing `commits_ahead` try/except (~12185), which
     already treats a raise as "assume a diff exists" and is not what this
     test pins."""
 
@@ -411,7 +411,7 @@ async def test_the_new_outer_predicate_stays_silent_on_its_own_commits_ahead_exc
     tmp_path, store,
 ):
     """Mutant pin (STEP 3, mutation ladder #7): the new outer block's
-    `except Exception: return False, "", ""` (~17024) must return a
+    `except Exception: return False, "", ""` (~17326) must return a
     cannot-tell tuple, not propagate. Calling `guard.hook(...)` cannot
     distinguish a mutant that changes this to `raise` from the real code,
     because `hook()` (`landed_claim_guard.py` ~290) has its OWN outer
@@ -443,7 +443,7 @@ async def test_the_new_outer_predicate_stays_silent_on_its_own_commits_ahead_exc
 
 async def test_an_unresolvable_ship_ref_is_not_a_refusal(tmp_path, store):
     """Mutant pin (STEP 3a): the `refuted = (...)` filter in
-    `_build_landed_claim_guard`'s probe (~17318) must require a negative
+    `_build_landed_claim_guard`'s probe (~17360) must require a negative
     `shippable` AND a non-empty `head` AND a non-empty `ship_ref` AND
     `determinate` — not merely `shippable is False`. (An earlier revision
     expressed this as "a reason that actually names an unreachable branch";
@@ -451,10 +451,19 @@ async def test_an_unresolvable_ship_ref_is_not_a_refusal(tmp_path, store):
     `determinate` status code plus the `bool(ship_ref)` check — see
     `_already_satisfied_subject`'s docstring.) When the ship ref itself
     cannot be resolved (no base, no remote, no local `main`),
-    `_already_satisfied_subject` returns `shippable=False` with `ship_ref=""`;
-    a mutant that dropped the `bool(ship_ref)` check from `refuted` would
-    refuse here too. It must not: refusing a claim by naming a branch that
-    was never determined would be worse than silence."""
+    `_already_satisfied_subject` returns `shippable=False`, `ship_ref=""`,
+    AND `determinate=False` together — in every currently reachable return
+    path an empty `ship_ref` (or `head`) co-occurs with `determinate=False`,
+    so this test alone does NOT independently pin the `bool(ship_ref)` term:
+    a mutant that dropped only that term from `refuted` still passes here,
+    because `determinate` already forces `refuted=False` on its own
+    (verified by hand-mutation). What this test DOES pin is the bare
+    `refuted = not shippable` mutant (dropping all three guard terms at
+    once) — see `test_build_landed_claim_guard_fires_on_a_refutable_claim_
+    via_the_real_probe` for the corresponding positive case that mutant
+    would also break. Kept as a regression test in its own right regardless:
+    refusing a claim by naming a branch that was never determined would be
+    worse than silence, whichever term of `refuted` is doing the work."""
     work = tmp_path / "solo"
     work.mkdir()
     _git(work, "init", "-b", "work")

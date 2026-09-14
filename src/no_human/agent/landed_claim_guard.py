@@ -1,20 +1,23 @@
 """Refuse an already-satisfied claim at the moment it is made, not at delivery.
 
-MEASURED 2026-09-10 over the whole attempts table: 42 attempts ended in
-'already-satisfied claim refused' — burning 1,969 turns (avg 46.9) and
-34,662,551 weighted tokens (avg 825,298 each) — because the claim's subject
-tree was only ever classified at delivery time. The refusal itself is
-CORRECT and stays exactly as it is. Only the *timing* changes here — this
-module asks delivery's own question the moment the agent asserts the claim,
-mid-attempt, so a doomed claim cannot spend a full turn budget before being
-told it is refutable.
+Over the attempts table, a recurring pattern: an attempt ends in
+'already-satisfied claim refused', burning a full turn budget, because the
+claim's subject tree was only ever classified at delivery time. (The exact
+attempt/turn/token counts previously cited here as a single MEASURED
+snapshot could not be reproduced from the same query on a later pass — no
+re-derivable query for them ships with this change, so no precise figures
+are asserted; the pattern itself, and the fix below, do not depend on the
+count.) The refusal itself is CORRECT and stays exactly as it is. Only the
+*timing* changes here — this module asks delivery's own question the moment
+the agent asserts the claim, mid-attempt, so a doomed claim cannot spend a
+full turn budget before being told it is refutable.
 
-The check is never keyed on the claimed commit's subject line: of the 42
-attempts, only 9 claimed a [WIP-PARTIAL]/[WIP-BLOCKED] checkpoint — the
-other 33 claimed an ordinary commit left by a previous round whose review
-had FAILED. A fix keyed on the checkpoint subject would cover only the 9
-(21%); the delivery-time question covers all 42, because the subject is
-never what makes (or doesn't make) the claim false.
+The check is never keyed on the claimed commit's subject line: many claims
+in that pattern name an ordinary commit left by a previous round whose
+review had FAILED, not a [WIP-PARTIAL]/[WIP-BLOCKED] checkpoint. A fix keyed
+on the checkpoint subject would miss most of those; the delivery-time
+question covers both shapes, because the subject is never what makes (or
+doesn't make) the claim false.
 
 Ten revisions since the first version landed:
 
@@ -246,6 +249,53 @@ Ten revisions since the first version landed:
   unchanged. See `tests/test_landed_claim_guard.py::
   test_non_claim_shapes_that_still_fire_the_actionability_gate_never_lie`,
   which now also asserts the message never claims the coder said anything.
+* (Eleventh review, DO-NOT-LAND) three blockers on the Ninth review's fix
+  itself:
+
+  1. (BLOCKER) The Ninth review's fix only covered `ls-remote` itself
+     failing. `_have_remote_commit` (in `GitRepo`) still collapsed a
+     SECOND, distinct failure — the follow-up `git fetch` of the
+     advertised object into the private push-check namespace itself
+     erroring (network, auth, a ref conflict) — into a bare `False`, which
+     `remote_branch_relation` folded into the same STABLE `"unknown"` as a
+     branch that was simply never pushed. Reproduced directly (no network
+     needed): pre-create `refs/no_human/push-check/<branch>` as a plain
+     file so the internal fetch collides with it while `ls-remote` still
+     succeeds normally. Fixed by giving `GitRepo` a tri-state
+     `_remote_commit_status` (`"have"`/`"fetch_failed"`/`"missing"`),
+     having `remote_branch_relation` return a new, distinct
+     `"fetch_failed"` member of `TRANSIENT_RELATIONS` for that case, and
+     updating both `_already_satisfied_subject`'s docstring/comments and
+     this module's own (the Ninth review bullet above) to name it. Pinned
+     in `tests/test_vcs.py::
+     test_remote_branch_relation_is_fetch_failed_when_the_object_fetch_itself_errors`
+     by mutation (reverting the `status == "fetch_failed"` branch in
+     `remote_branch_relation` makes that test fail; restoring it passes).
+  2. `tests/test_landed_claim_early_refusal.py::
+     test_an_unresolvable_ship_ref_is_not_a_refusal`'s docstring claimed a
+     mutant dropping only the `bool(ship_ref)` term from the `refuted`
+     filter would be caught by that test specifically. It would not: in
+     every reachable `_already_satisfied_subject` return path, an empty
+     `ship_ref` (or `head`) currently co-occurs with `determinate=False`,
+     so `determinate` alone already forces `refuted=False` there — the
+     `bool(ship_ref)`/`bool(head)` terms are redundant with `determinate`
+     given the current implementation and are not independently pinned by
+     any single test. Corrected the docstring to say so rather than claim
+     an isolated pin that does not exist; the FULL `refuted = not
+     shippable` mutant (dropping all three guard terms at once) remains
+     pinned, which is what the acceptance criteria require.
+  3. Two more inaccuracies: this method's own docstring (the "Sixth review"
+     bullet above) miscounted the prefix-sharing "cannot tell" reasons as
+     five while listing four and wrongly including plain `"unknown"`
+     (which delivery treats as a final refusal, not cannot-tell) instead of
+     the actual `TRANSIENT_RELATIONS` members; and the opening MEASURED
+     figures (42 attempts / 1,969 turns / 34,662,551 weighted tokens) could
+     not be reproduced from the same query on a later pass. Corrected the
+     enumeration in `Orchestrator._build_landed_claim_guard`'s docstring
+     and `_already_satisfied_subject`'s docstring to match the code exactly
+     (`TRANSIENT_RELATIONS`, not a hand-recount), and dropped the
+     unreproducible figures from this module's opening paragraph rather
+     than re-assert them without a re-derivable query.
 """
 
 from __future__ import annotations

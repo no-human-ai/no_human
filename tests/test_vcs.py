@@ -850,6 +850,41 @@ def test_remote_branch_relation_is_unreachable_when_ls_remote_itself_fails(
     assert "unknown" not in GitRepo.TRANSIENT_RELATIONS
 
 
+def test_remote_branch_relation_is_fetch_failed_when_the_object_fetch_itself_errors(
+        repo_with_bare_remote, tmp_path):
+    """A THIRD distinct failure shape, one level past the `ls-remote`-itself-
+    fails case above: `ls-remote` succeeds (the remote is reachable and
+    advertises a real, different sha for the branch — `_behind_pushed_branch`
+    below gives exactly that shape), but the follow-up `git fetch` of that
+    sha into the private `refs/no_human/push-check/<branch>` namespace
+    itself errors. Forced here by pre-creating that path as a plain FILE, so
+    git's ref machinery collides with it on write — no network involved, but
+    the same failure MODE (the fetch subprocess itself exits non-zero, so
+    the object's presence is never actually determined) as a real network
+    blip mid-fetch. Before this fix, `_have_remote_commit` collapsed this
+    into a bare `False`, and `remote_branch_relation` reported the SAME
+    stable `"unknown"` as a never-pushed branch — letting a transient fetch
+    failure produce a DEFINITE refusal (`_already_satisfied_subject`'s
+    `determinate=True`) for a condition that might no longer hold moments
+    later. Must be `"fetch_failed"`, not `"unknown"` — and must be in
+    `TRANSIENT_RELATIONS`, exactly like `"unreachable"`."""
+    repo = _behind_pushed_branch(repo_with_bare_remote, tmp_path)
+
+    priv_dir = repo_with_bare_remote / ".git" / "refs" / "no_human"
+    priv_dir.mkdir(parents=True, exist_ok=True)
+    conflict = priv_dir / "push-check"
+    assert not conflict.exists(), (
+        "test bug: the private namespace must not already exist, or "
+        "creating it as a plain file below would not force a fetch failure")
+    conflict.write_text("bogus")  # a FILE, not a dir: any
+    # `git fetch ... refs/no_human/push-check/<branch>` underneath this now
+    # fails with a ref directory/file conflict, while `ls-remote` — which
+    # never touches this path — is completely unaffected.
+
+    assert repo.remote_branch_relation("no-human/t1") == "fetch_failed"
+    assert "fetch_failed" in GitRepo.TRANSIENT_RELATIONS
+
+
 def test_a_behind_branch_never_reaches_a_force_push(
         repo_with_bare_remote, tmp_path, monkeypatch):
     """The real guarantee, asserted on the push ARGUMENTS rather than the

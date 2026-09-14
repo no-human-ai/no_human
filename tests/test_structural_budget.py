@@ -1356,7 +1356,26 @@ FROZEN_FILE_LINES = {
     #   _,_,files,_,_ = scan_tree(SRC);
     #   print(files['core/orchestrator.py'])"
     # -> 24364.
-    "core/orchestrator.py": 24364,
+    # 24364 -> 24375 (+11): send-back (remaining-work items 1-3) —
+    # `remote_branch_relation`'s new `"fetch_failed"` tri-state (git.py) and
+    # the docstring/comment corrections in `_already_satisfied_subject` and
+    # `_build_landed_claim_guard` (naming `"fetch_failed"` alongside
+    # `"unreachable"`, correcting the "Five... reasons" miscount to "Four",
+    # and removing the false "currently unreachable" claim). Note this
+    # number is `len(text.splitlines())` (the scanner's own metric, per
+    # `scan_source` above) — it is 3 higher than `wc -l`/`text.count("\n")`
+    # (24372) on this same file, because `str.splitlines()` recognizes a
+    # handful of additional Unicode line-boundary characters that a bare
+    # newline count does not; this gap predates this change and is not a
+    # bug, so the frozen value here always tracks the scanner's own count,
+    # never a shell line count. Re-measured on this tree by the scanner's
+    # own metric:
+    #   uv run python -c "import sys; sys.path.insert(0,'tests');
+    #   from test_structural_budget import scan_tree, SRC;
+    #   _,_,files,_,_ = scan_tree(SRC);
+    #   print(files['core/orchestrator.py'])"
+    # -> 24375.
+    "core/orchestrator.py": 24375,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.

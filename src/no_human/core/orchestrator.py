@@ -11897,14 +11897,16 @@ class Orchestrator:
         unresolvable origin remote, or a `remote_branch_relation` call that
         itself raised), or no ship-ref candidate resolved at all (there is
         no branch to even compare against), or `remote_branch_relation`
-        reported a value in its own `TRANSIENT_RELATIONS` set (currently
-        just `"unreachable"` — the `ls-remote` call itself failed to reach
-        the remote at all, a condition that can clear up on its own, unlike
-        plain "unknown" above), or (defensively, currently unreachable)
-        `remote_branch_relation` returned a value outside the ones it can
-        ever actually produce. The indeterminate/transient values are
-        derived from `GitRepo.TRANSIENT_RELATIONS` rather than hand-
-        enumerated here — see that set's docstring.
+        reported a value in its own `TRANSIENT_RELATIONS` set — currently
+        `"unreachable"` (the `ls-remote` call itself failed to reach the
+        remote at all) or `"fetch_failed"` (`ls-remote` succeeded but the
+        follow-up fetch of the advertised object itself errored) — both
+        conditions that can clear up on their own, unlike plain "unknown"
+        above. The indeterminate/transient values are derived from
+        `GitRepo.TRANSIENT_RELATIONS` rather than hand-enumerated here — see
+        that set's docstring. Any relation value NOT in that set, including
+        one this method does not otherwise recognize, is treated as
+        determinate by default (see the call site's comment for why).
 
         (Sixth review, HIGH) a caller must NEVER recover this distinction by
         pattern-matching `subject_reason`'s prose — several of the "cannot
@@ -12064,11 +12066,14 @@ class Orchestrator:
             # `_gate_already_satisfied` treats it as a fully final refusal,
             # not a retry-later state (see
             # `test_an_unknown_pushed_branch_relation_is_refused`), so it is
-            # determinate here too. `"unreachable"` is DIFFERENT: it means
-            # `remote_branch_relation` never got an answer from the remote at
-            # all (the `ls-remote` call itself failed — network, auth, a bad
-            # URL) — a transient condition that can clear up on its own, so
-            # it must NOT be treated as a stable refusal (send-back: an
+            # determinate here too. `"unreachable"` and `"fetch_failed"` are
+            # DIFFERENT: they mean `remote_branch_relation` never actually
+            # determined the object's presence — `"unreachable"` because the
+            # `ls-remote` call itself failed (network, auth, a bad URL),
+            # `"fetch_failed"` because `ls-remote` succeeded but the
+            # follow-up fetch of the advertised object itself errored — both
+            # transient conditions that can clear up on their own, so
+            # neither must be treated as a stable refusal (send-back: an
             # unreachable remote was folded into "unknown" and classified
             # determinate here, letting a transient network blip produce a
             # DEFINITE refusal message). Derived directly from
@@ -12087,6 +12092,7 @@ class Orchestrator:
                 "diverged": "the remote branch diverged from the reviewed commit",
                 "unknown": "the pushed branch could not be verified",
                 "unreachable": "the remote could not be reached to verify the pushed branch",
+                "fetch_failed": "the pushed branch's object could not be fetched to verify it",
             }.get(relation, f"the pushed branch relation is unrecognized ({relation!r})")
             return False, head, "", (
                 f"{prefix}; {relation_reason}"), False, ship_ref, determinate_relation
@@ -17249,7 +17255,7 @@ class Orchestrator:
 
         Send-back (third review): `_already_satisfied_subject` is not the
         FIRST thing delivery asks. `_run_attempt` hoists `_route_unjudged_
-        head`/`_already_satisfied_eligible` (~12034/~11901) BEFORE the claim
+        head`/`_already_satisfied_eligible` (~12241/~12108) BEFORE the claim
         is even parsed — a `[WIP-BLOCKED]`/`[WIP-PARTIAL]` head, or an
         ordinary head resumed from `blockers.MACHINE_REQUEUE_PROVENANCE`,
         with no completed review verdict recorded against it, is routed
@@ -17278,15 +17284,18 @@ class Orchestrator:
 
         Sixth review (HIGH): `refuted` used to be recovered from
         `subject_reason` — delivery's human-readable prose — via
-        ``subject_reason.startswith(f"{head} is not on {ship_ref}")``. Five
+        ``subject_reason.startswith(f"{head} is not on {ship_ref}")``. Four
         of `_already_satisfied_subject`'s "cannot tell" reasons (an
-        unresolvable delivery branch, an unresolvable origin remote, an
-        unverifiable pushed branch, and an "unknown" or otherwise
-        unrecognized remote relation) are built from that exact same prefix,
-        so the prefix match could not tell a transient condition from a
-        genuine refusal — a one-off network blip resolving the remote could
-        make the guard tell the coder delivery refuses the claim, even
-        though the branch might in fact be pushed and up to date. Fixed by
+        unresolvable delivery branch, an unresolvable origin remote, a
+        `remote_branch_relation` call that itself raised, and a
+        `remote_branch_relation` call that returned a value in
+        `GitRepo.TRANSIENT_RELATIONS` — "unreachable" or "fetch_failed",
+        never plain "unknown", which delivery treats as a final refusal)
+        are built from that exact same prefix, so the prefix match could
+        not tell a transient condition from a genuine refusal — a one-off
+        network blip resolving the remote could make the guard tell the
+        coder delivery refuses the claim, even though the branch might in
+        fact be pushed and up to date. Fixed by
         having `_already_satisfied_subject` return `determinate` — an
         explicit status code, not prose — and deriving `refuted` from that
         code instead of from any wording in `subject_reason`. A reworded
@@ -17329,9 +17338,11 @@ class Orchestrator:
             # `remote_branch_relation` call that itself raised, or —
             # send-back — a `remote_branch_relation` call that returned
             # cleanly but with a value in its own `TRANSIENT_RELATIONS`
-            # set, currently just "unreachable": the `ls-remote` call itself
-            # could not reach the remote at all, a transient condition, not
-            # a raised exception) — those also report `shippable=False` but
+            # set: "unreachable" (the `ls-remote` call itself could not
+            # reach the remote at all) or "fetch_failed" (`ls-remote`
+            # succeeded but the follow-up fetch of the advertised object
+            # itself errored) — neither is a raised exception, both are
+            # transient) — those also report `shippable=False` but
             # must never look refuted here, matching the guard's own
             # "unverifiable must never look refuted" rule. Note a plain
             # "unknown" relation (e.g. simply never pushed) is NOT one of

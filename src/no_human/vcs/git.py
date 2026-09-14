@@ -1197,6 +1197,45 @@ class GitRepo:
         )
         return proc.returncode == 0
 
+    def _remote_commit_status(self, remote: str, branch: str, remote_sha: str,
+                               timeout: int) -> str:
+        """Tri-state probe for whether *remote_sha* is available locally.
+
+        Returns ``"have"`` (the object is present, whether it already was or
+        became so after a successful fetch), ``"fetch_failed"`` (the `git
+        fetch` subprocess itself errored — network, auth, a ref lock, a
+        directory/file conflict under the private namespace — a condition
+        that can clear up on its own), or ``"missing"`` (the fetch exited 0
+        but the object is still absent — a stable fact, not a failed
+        attempt). `_have_remote_commit` collapses `"fetch_failed"` and
+        `"missing"` to the same `False` for callers that don't need the
+        distinction; `remote_branch_relation` does need it, so it calls this
+        directly to avoid folding a transient fetch failure into a stable
+        `"unknown"`.
+        """
+        have_obj = subprocess.run(
+            ["git", "cat-file", "-e", f"{remote_sha}^{{commit}}"],
+            cwd=self.path, capture_output=True, text=True,
+            **hidden_console_kwargs(),
+        )
+        if have_obj.returncode == 0:
+            return "have"
+        private_ref = f"refs/no_human/push-check/{branch}"
+        fetched = subprocess.run(
+            ["git", "fetch", "--refmap=", remote,
+             f"+refs/heads/{branch}:{private_ref}"],
+            cwd=self.path, capture_output=True, text=True, timeout=timeout,
+            **hidden_console_kwargs(),
+        )
+        if fetched.returncode != 0:
+            return "fetch_failed"
+        have_obj = subprocess.run(
+            ["git", "cat-file", "-e", f"{remote_sha}^{{commit}}"],
+            cwd=self.path, capture_output=True, text=True,
+            **hidden_console_kwargs(),
+        )
+        return "have" if have_obj.returncode == 0 else "missing"
+
     def _have_remote_commit(self, remote: str, branch: str, remote_sha: str,
                              timeout: int) -> bool:
         """Is *remote_sha* available in this local object store?
@@ -1206,30 +1245,12 @@ class GitRepo:
         prove a remote-advertised sha is actually fetchable, not merely
         named by `ls-remote`. See that method's docstring for why the
         fetch-on-miss uses `--refmap=` into a private namespace rather than
-        the tracking ref.
+        the tracking ref. A thin boolean reduction of `_remote_commit_status`
+        — `remote_branches_containing` fails closed on any non-`"have"`
+        outcome alike, so it does not need the fetch-failed/missing split.
         """
-        have_obj = subprocess.run(
-            ["git", "cat-file", "-e", f"{remote_sha}^{{commit}}"],
-            cwd=self.path, capture_output=True, text=True,
-            **hidden_console_kwargs(),
-        )
-        if have_obj.returncode == 0:
-            return True
-        private_ref = f"refs/no_human/push-check/{branch}"
-        fetched = subprocess.run(
-            ["git", "fetch", "--refmap=", remote,
-             f"+refs/heads/{branch}:{private_ref}"],
-            cwd=self.path, capture_output=True, text=True, timeout=timeout,
-            **hidden_console_kwargs(),
-        )
-        if fetched.returncode != 0:
-            return False
-        have_obj = subprocess.run(
-            ["git", "cat-file", "-e", f"{remote_sha}^{{commit}}"],
-            cwd=self.path, capture_output=True, text=True,
-            **hidden_console_kwargs(),
-        )
-        return have_obj.returncode == 0
+        return self._remote_commit_status(
+            remote, branch, remote_sha, timeout) == "have"
 
     def remote_branches_containing(self, sha: str, patterns: list[str], *,
                                     remote: str = "origin",
@@ -1493,15 +1514,19 @@ class GitRepo:
 
     #: Values `remote_branch_relation` can return whose cause is a
     #: transient, retry-later condition rather than a stable fact about the
-    #: branch itself — currently just `"unreachable"` (the `ls-remote`
-    #: command itself failed: network/auth/bad remote URL). Callers that
-    #: need to decide whether a relation is safe to treat as a FINAL answer
-    #: (e.g. `Orchestrator._already_satisfied_subject`'s `determinate`
-    #: status) should derive that decision from this set instead of
-    #: hand-enumerating `remote_branch_relation`'s return values themselves
-    #: — see that method's docstring for why a hand-enumerated closed set
-    #: has repeatedly gone stale here.
-    TRANSIENT_RELATIONS = frozenset({"unreachable"})
+    #: branch itself: `"unreachable"` (the `ls-remote` command itself
+    #: failed: network/auth/bad remote URL — the remote was never actually
+    #: asked) and `"fetch_failed"` (`ls-remote` succeeded but the follow-up
+    #: `git fetch` of the advertised sha into the private push-check
+    #: namespace itself errored — network, auth, or a ref conflict; the
+    #: object's actual presence was never determined). Callers that need to
+    #: decide whether a relation is safe to treat as a FINAL answer (e.g.
+    #: `Orchestrator._already_satisfied_subject`'s `determinate` status)
+    #: should derive that decision from this set instead of hand-enumerating
+    #: `remote_branch_relation`'s return values themselves — see that
+    #: method's docstring for why a hand-enumerated closed set has
+    #: repeatedly gone stale here.
+    TRANSIENT_RELATIONS = frozenset({"unreachable", "fetch_failed"})
 
     def remote_branch_relation(self, branch: str, *, remote: str = "origin",
                                 timeout: int = 30) -> str:
@@ -1513,15 +1538,21 @@ class GitRepo:
         local rebase of an already-pushed branch), ``"up_to_date"``,
         ``"unknown"`` when the relation is STABLY undetermined (branch never
         pushed — the remote was reachable and answered, it simply has no
-        such ref — or the remote object isn't available locally even after
-        a fetch attempt), or ``"unreachable"`` when the remote could not be
-        asked at all (``ls-remote`` itself failed: network, auth, or a bad
-        remote URL — a condition that can clear up on its own and is
-        genuinely TRANSIENT, unlike the other three). All are fail-open for
-        `push`'s purposes: nothing here BLOCKS a force, only a *proven*
-        ancestry does. `TRANSIENT_RELATIONS` names exactly the subset of
-        this method's return values a caller should treat as retry-later
-        rather than a final answer.
+        such ref — or the follow-up `fetch` succeeded but the advertised
+        object is still absent locally, which is itself a stable fact once
+        the fetch actually ran), ``"unreachable"`` when the remote could not
+        be asked at all (``ls-remote`` itself failed: network, auth, or a
+        bad remote URL — the remote was never actually asked), or
+        ``"fetch_failed"`` when `ls-remote` succeeded but the follow-up
+        `git fetch` of the advertised sha itself errored (network, auth, a
+        ref conflict in the private push-check namespace — the object's
+        presence was never determined). ``"unreachable"`` and
+        ``"fetch_failed"`` are both conditions that can clear up on their
+        own and are genuinely TRANSIENT, unlike the other three. All are
+        fail-open for `push`'s purposes: nothing here BLOCKS a force, only a
+        *proven* ancestry does. `TRANSIENT_RELATIONS` names exactly the
+        subset of this method's return values a caller should treat as
+        retry-later rather than a final answer.
 
         Deliberately does NOT touch ``refs/remotes/<remote>/<branch>`` — that
         is the ref `push`'s ``--force-with-lease`` is judged against, and
@@ -1558,7 +1589,15 @@ class GitRepo:
         remote_sha = ls.stdout.split()[0]
         if remote_sha == local:
             return "up_to_date"
-        if not self._have_remote_commit(remote, branch, remote_sha, timeout):
+        status = self._remote_commit_status(remote, branch, remote_sha, timeout)
+        if status == "fetch_failed":
+            # The fetch subprocess itself errored — the object's presence
+            # was never determined, so this is transient, not a stable
+            # "unknown" (see `TRANSIENT_RELATIONS`).
+            return "fetch_failed"
+        if status == "missing":
+            # The fetch ran successfully and the object is still absent — a
+            # stable fact, not a failed attempt to find out.
             return "unknown"
         return "behind" if self.is_ancestor(local, remote_sha) else "diverged"
 
@@ -1684,8 +1723,8 @@ class GitRepo:
                 relation = "unknown"
             if relation == "behind":
                 raise PushBehindRemote(_behind_message(branch, remote, sha))
-            # "unknown" / "diverged" / "up_to_date" / "unreachable" all fall
-            # through and force, exactly as today.
+            # "unknown" / "diverged" / "up_to_date" / "unreachable" /
+            # "fetch_failed" all fall through and force, exactly as today.
             # NO fetch here — see the docstring: refreshing the tracking ref
             # is what would make the lease vacuous.
             args += ["--force-with-lease"]
