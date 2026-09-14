@@ -1,12 +1,12 @@
 # Merge-ready policy
 
-_Harness-captured record for task `d210ba56`, commit `5d1512d329959a20e4fb61e807816fed3f18c305` — not model-authored: no_human wrote this file from the repo's merge policy evaluated against this commit — advisory to the human, nothing merges on it. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `d210ba56`, commit `61f7246a8273c59f9d21fd880a886549438ba05f` — not model-authored: no_human wrote this file from the repo's merge policy evaluated against this commit — advisory to the human, nothing merges on it. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ```json
 {
   "policy_changed_in_diff": false,
   "problems": [],
-  "ready": true,
+  "ready": false,
   "rules": [
     {
       "detail": "review PASSED on head",
@@ -14,7 +14,7 @@ _Harness-captured record for task `d210ba56`, commit `5d1512d329959a20e4fb61e807
       "passed": true
     },
     {
-      "detail": "tests: 0 failed of 12912 run",
+      "detail": "tests: 0 failed of 12993 run",
       "name": "tests_ran_and_passed",
       "passed": true
     },
@@ -24,9 +24,9 @@ _Harness-captured record for task `d210ba56`, commit `5d1512d329959a20e4fb61e807
       "passed": true
     },
     {
-      "detail": "repro gate pass",
+      "detail": "repro gate fail",
       "name": "repro_gate",
-      "passed": true
+      "passed": false
     },
     {
       "detail": "1 verifiers, none failed (1 no verdict (advisory): tests-assert-something)",
@@ -40,6 +40,6 @@ _Harness-captured record for task `d210ba56`, commit `5d1512d329959a20e4fb61e807
     }
   ],
   "source": "default",
-  "summary": "ready \u2014 6 of 6 rules satisfied"
+  "summary": "not ready \u2014 1 of 6 rules failed: repro_gate"
 }
 ```
