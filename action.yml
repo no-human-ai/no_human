@@ -1,0 +1,65 @@
+name: no_human review gate
+description: >-
+  Runs the no_human adversarial reviewer and tamper guard against a pull
+  request's diff, one-shot with no daemon and no database, and posts a single
+  pass/fail checklist comment with file:line citations.
+author: no_human
+
+inputs:
+  credential:
+    description: >-
+      Your own Anthropic credential: either an ANTHROPIC_API_KEY
+      (sk-ant-api...) or a Claude subscription OAuth token minted with
+      `claude setup-token` (sk-ant-oat...). Required. Pass it from a
+      repository secret, e.g. secrets.ANTHROPIC_API_KEY. Never a credential
+      of ours, and never baked into the image.
+    required: true
+  credential_mode:
+    description: >-
+      How to interpret `credential`: "auto" (detect from its prefix), "oauth",
+      or "api_key". Whichever mode is active, the other credential path is
+      scrubbed from the job's environment before the reviewer runs.
+    required: false
+    default: "auto"
+  model:
+    description: The model the reviewer runs as.
+    required: false
+    default: "claude-opus-5"
+  max_files:
+    description: >-
+      Cost bound: the maximum number of changed files (sorted by path) sent
+      to the reviewer. The comment discloses how many of the total were
+      actually reviewed.
+    required: false
+    default: "15"
+  fail_on_findings:
+    description: >-
+      Whether a FAIL verdict (blocking findings or a tamper catch) fails the
+      job. Set to "false" to post the comment without failing the check.
+    required: false
+    default: "true"
+  dry_run:
+    description: >-
+      When "true", print the verdict to the job log and step summary and make
+      no GitHub API calls at all — no comment is posted or updated.
+    required: false
+    default: "false"
+  github_token:
+    description: >-
+      Token used only to read/create/update this Action's own pull-request
+      comment. Pass github.token explicitly (this input has no default —
+      the value is not available at this action's start-up).
+    required: false
+
+outputs:
+  verdict:
+    description: One of PASS, FAIL, or SKIPPED (fork pull request).
+  comment_url:
+    description: >-
+      URL of the posted/updated comment, or empty on a dry run or a skip.
+  skipped:
+    description: "\"true\" when the run was a fork-PR skip, else \"false\"."
+
+runs:
+  using: docker
+  image: Dockerfile.action

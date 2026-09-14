@@ -1,0 +1,46 @@
+# syntax=docker/dockerfile:1
+#
+# Image for the `no_human review gate` GitHub Action (action.yml).
+#
+# For a `using: docker` action, the runner builds this image with the
+# REPOSITORY ROOT as the build context (not this file's directory) — verified
+# against a real Actions run, where a `Dockerfile` living in a subdirectory
+# with only itself in it built against an empty context ("transferring
+# context: 2B done") and every `COPY src/ ...` failed "not found". That is why
+# this file lives at the repo root even though the product's own `Dockerfile`
+# and `Dockerfile.mcp` also do — the build context requirement, not
+# convention, puts it here.
+#
+# NO CREDENTIAL IS BAKED IN. `credential` arrives only at `docker run` time as
+# an environment variable the Action's entrypoint script sets
+# (`no_human.ci_action.run`); nothing in this file references
+# ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN by value.
+
+FROM python:3.12-slim
+
+# git: the gate diffs and tamper-checks the checked-out workspace directly,
+# never through the GitHub API. ca-certificates: TLS to api.github.com and
+# the model backend. curl: fetches the Node.js setup script below.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git ca-certificates curl gnupg \
+    && rm -rf /var/lib/apt/lists/*
+
+# Node.js, for the `claude` CLI the reviewer's backend shells out to.
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/* \
+    && npm install -g @anthropic-ai/claude-code \
+    && npm cache clean --force
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
+
+WORKDIR /app
+# hatch_build.py is BUILD CONFIGURATION (a custom hatchling hook resolved
+# before dependencies) — see Dockerfile / Dockerfile.mcp for the same note.
+COPY pyproject.toml uv.lock README.md hatch_build.py ./
+COPY src/ ./src/
+COPY migrations/ ./migrations/
+
+RUN uv sync --frozen --no-dev
+
+ENTRYPOINT ["uv", "run", "--no-sync", "python", "-m", "no_human.ci_action.run"]
