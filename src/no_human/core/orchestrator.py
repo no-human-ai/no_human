@@ -17965,7 +17965,9 @@ class Orchestrator:
             # which silently mis-classified several distinct "cannot tell"
             # reasons as refusals because they happen to share that same
             # prefix. See `_already_satisfied_subject`'s docstring.
-            refuted = not shippable
+            refuted = (
+                not shippable and bool(head) and bool(ship_ref) and determinate
+            )
             return (refuted, head, subject_reason)
 
         def head_sha() -> str:

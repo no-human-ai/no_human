@@ -140,7 +140,7 @@ async def test_build_landed_claim_guard_fires_on_a_refutable_claim_via_the_real_
     assert orch._route_unjudged_head(
         task, GitRepo(diverged_repo), "main") is None
     # And the shape itself: HEAD is on the local base, not ahead of it —
-    # this is what makes delivery's `resumed_commit` at ~6626 be None, i.e.
+    # this is what makes delivery's `resumed_commit` at ~6805 be None, i.e.
     # the reachable-claim-gate state, unlike the over-refusal fixture below.
     assert GitRepo(diverged_repo).commits_ahead("main") == 0
 
@@ -149,7 +149,7 @@ async def test_a_wip_partial_checkpoint_is_not_blocked_because_delivery_would_re
     bare_repo, tmp_path, store,
 ):
     """Send-back (third review), Blocker: `_run_attempt` hoists `_route_
-    unjudged_head`/`_already_satisfied_eligible` (~12261/~12128) BEFORE the
+    unjudged_head`/`_already_satisfied_eligible` (~12848/~12715) BEFORE the
     claim is even parsed. A `[WIP-PARTIAL]` (or `[WIP-BLOCKED]`) head one
     commit ahead of `main`, with no completed review verdict recorded
     against it, is routed straight to a full independent review —
@@ -286,7 +286,7 @@ async def test_a_branch_ahead_of_its_base_is_not_refused_because_delivery_never_
 ):
     """The actual defect this task fixes: delivery only ever parses an
     already-satisfied claim when `resumed_commit` is `None` (`_run_attempt`,
-    ~6626) — i.e. no base, or nothing ahead of it, or a resume from this
+    ~6805) — i.e. no base, or nothing ahead of it, or a resume from this
     attempt's own `[WIP-PARTIAL]`. An ORDINARY commit ahead of `base` (no
     `[WIP-*]` subject, so eligible; not a checkpoint resume) is exactly the
     shape delivery commits, reviews, and opens a PR for — it never reaches
@@ -331,7 +331,7 @@ async def test_a_branch_ahead_of_its_base_is_not_refused_because_delivery_never_
 async def test_branched_from_own_partial_true_skips_the_outer_ahead_check(
     bare_repo, tmp_path, store,
 ):
-    """Mutant pin: `if base and not branched_from_own_partial:` (~17344)
+    """Mutant pin: `if base and not branched_from_own_partial:` (~17931)
     mutated to `if base:` ignores the flag entirely and silences the guard
     on `commits_ahead(base) > 0` alone, regardless of `branched_from_own_
     partial`. Neither confounded-test fix above (the [WIP-PARTIAL] and
@@ -392,8 +392,8 @@ async def test_branched_from_own_partial_true_skips_the_outer_ahead_check(
 class _AheadRaisesRepo:
     """A repo double whose `head_sha`/`_run` (subject) read normally but whose
     `commits_ahead` always raises — isolates the new outer predicate's OWN
-    `except Exception` (~17347) from `_already_satisfied_eligible`'s
-    unrelated, pre-existing `commits_ahead` try/except (~12203), which
+    `except Exception` (~17934) from `_already_satisfied_eligible`'s
+    unrelated, pre-existing `commits_ahead` try/except (~12792), which
     already treats a raise as "assume a diff exists" and is not what this
     test pins."""
 
@@ -411,7 +411,7 @@ async def test_the_new_outer_predicate_stays_silent_on_its_own_commits_ahead_exc
     tmp_path, store,
 ):
     """Mutant pin (STEP 3, mutation ladder #7): the new outer block's
-    `except Exception: return False, "", ""` (~17347) must return a
+    `except Exception: return False, "", ""` (~17934) must return a
     cannot-tell tuple, not propagate. Calling `guard.hook(...)` cannot
     distinguish a mutant that changes this to `raise` from the real code,
     because `hook()` (`landed_claim_guard.py` ~641) has its OWN outer
@@ -443,7 +443,7 @@ async def test_the_new_outer_predicate_stays_silent_on_its_own_commits_ahead_exc
 
 async def test_an_unresolvable_ship_ref_is_not_a_refusal(tmp_path, store):
     """Mutant pin (STEP 3a): the `refuted = (...)` filter in
-    `_build_landed_claim_guard`'s probe (~17381) must require a negative
+    `_build_landed_claim_guard`'s probe (~17968) must require a negative
     `shippable` AND a non-empty `head` AND a non-empty `ship_ref` AND
     `determinate` — not merely `shippable is False`. (An earlier revision
     expressed this as "a reason that actually names an unreachable branch";
@@ -923,9 +923,9 @@ async def test_guard_is_wired_into_the_real_run_attempt_and_fires_on_a_refutable
 class _ResumeThenClaimBackend:
     """Attempt 1 leaves the loop's OWN `[WIP-PARTIAL]` via a stuck-abort, with
     no human gate anywhere in `ctx` — the real `_is_own_partial` shape
-    (~20157). Attempt 2 therefore has `_run_attempt` compute
+    (~20744). Attempt 2 therefore has `_run_attempt` compute
     `branched_from_own_partial=True` itself, through the real call-site
-    wiring (~5808-5810), not passed in by the test. Every existing
+    wiring (~5971-5973), not passed in by the test. Every existing
     own-partial test in this file instead calls `_build_landed_claim_guard`
     directly with `branched_from_own_partial=True` BY HAND (to isolate the
     probe's behaviour once the flag is true) or uses a shape where
