@@ -24,10 +24,13 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 
 import pytest
 
+from no_human.agent.claude_backend import AgentResult
+from no_human.core.task import Task
 from no_human.review.reviewer import (
     AdversarialReviewer,
     ChecklistItem,
@@ -281,5 +284,86 @@ async def test_the_probe_never_touches_the_reviewed_worktree(repo, monkeypatch):
         assert str(repo) != target and not target.startswith(str(repo) + "/"), (
             f"git worktree add targeted the reviewed tree itself: {call}")
 
-    # the real probe actually ran and produced a finding — not a silent no-op
-    assert any("mutation probe" in i.label for i in result.checklist)
+    # the real probe actually ran and correctly classified this test: it
+    # asserts `double(2) == 4` AND `double(3) == 6` against unmodified code,
+    # so a real mutation of `double`'s single `return` statement must kill
+    # it. A vague "some checklist item mentions mutation probe" substring
+    # match would also pass for a silent "could not run" no-op — asserting
+    # the SPECIFIC killed ("pins") outcome, and that nothing says it
+    # couldn't run, is what actually proves the probe exercised anything.
+    mutation_items = [i for i in result.checklist if i.label.startswith("mutation probe")]
+    assert mutation_items, "the probe must record at least one finding"
+    assert any("pins" in i.label for i in mutation_items), (
+        f"expected a killed ('pins') finding, got: {[i.label for i in mutation_items]}")
+    assert not any("could not run" in i.label for i in mutation_items)
+
+
+# --------------------------------------------------------------------------
+# B3 — the gate-mode `review()` pipeline actually wires the probe in, not
+# merely `_apply_mutation_probe`/`merge_mutation_findings` called directly
+# (which is all every test above this one does). This is the exact seam a
+# prior human review found completely untested: deleting the
+# `return await self._apply_mutation_probe(...)` tail call inside
+# `AdversarialReviewer.review()` would not have failed any test in this
+# file before this one was added.
+# --------------------------------------------------------------------------
+
+
+def _fake_review_block(passed: bool, items: list[dict]) -> str:
+    data = {"passed": passed, "items": items}
+    return f"REVIEW_JSON_START\n{json.dumps(data)}\nREVIEW_JSON_END\n"
+
+
+class _FakeReviewBackend:
+    """Returns a scripted `final_text` without touching the LLM — same
+    shape as `tests/test_reviewer.py`'s `FakeBackend`, redefined locally so
+    this wiring test does not depend on that file's internals."""
+
+    def __init__(self, final_text: str):
+        self._final_text = final_text
+
+    async def run(self, prompt, *, cwd, max_turns, effort=None, resume=None,
+                   on_event=None, supervisor_hook=None):
+        return AgentResult(
+            final_text=self._final_text,
+            num_turns=1, is_error=False,
+            tokens_used=10, session_id="fake", stop_reason="end_turn",
+        )
+
+
+async def test_review_gate_mode_actually_runs_the_mutation_probe(repo):
+    """Calls the FULL `AdversarialReviewer.review()` (gate mode, the
+    default) against a real git repo with a genuinely killable test — not
+    `_apply_mutation_probe`/`merge_mutation_findings` directly. If the tail
+    call inside `review()` that dispatches to `_apply_mutation_probe` were
+    deleted, this is the one test in this file that would actually go red."""
+    (repo / "pkg" / "calc.py").write_text("def double(x):\n    return x * 2\n")
+    (repo / "tests" / "test_calc.py").write_text(
+        "from pkg.calc import double\n\ndef test_double():\n"
+        "    assert double(2) == 4\n"
+    )
+    _commit(repo)
+    (repo / "tests" / "test_calc.py").write_text(
+        "from pkg.calc import double\n\ndef test_double():\n"
+        "    assert double(2) == 4\n    assert double(3) == 6\n"
+    )
+    _commit(repo, "change the test")
+
+    output = _fake_review_block(True, [
+        {"label": "double(x) implemented", "passed": True, "evidence": "pkg/calc.py:1"},
+    ])
+    reviewer = AdversarialReviewer(
+        backend=_FakeReviewBackend(output), mutation_probe={"mode": "advisory"})
+    t = Task.new("add double()")
+    t.acceptance_criteria = ["double(x) returns 2x"]
+
+    decision = await reviewer.review(t, repo_path=repo)
+
+    mutation_items = [i for i in decision.checklist if i.label.startswith("mutation probe")]
+    assert mutation_items, (
+        "review() must fold mutation-probe findings into the checklist — "
+        "none were found, so the gate-mode wiring to _apply_mutation_probe "
+        "did not run"
+    )
+    assert any("pins" in i.label for i in mutation_items), (
+        f"expected a killed ('pins') finding, got: {[i.label for i in mutation_items]}")

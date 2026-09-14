@@ -26,6 +26,7 @@ claims:
 """
 
 import ast
+import io
 import subprocess
 import tokenize
 
@@ -150,7 +151,7 @@ def test_string_overlap_guard_fails_closed_on_a_real_unterminated_token_stream()
     # `tokenize` module) — this is the exact exception class regression.
     bad = 'x = """unterminated\n'
     with pytest.raises(tokenize.TokenError):
-        list(tokenize.generate_tokens(__import__("io").StringIO(bad).readline))
+        list(tokenize.generate_tokens(io.StringIO(bad).readline))
     assert mutation_probe._edit_inside_string_or_comment(bad, 0, 1) is True
 
 
@@ -355,16 +356,19 @@ def test_blocker1_exhausts_the_decoy_and_kills_at_the_real_target(decoy_and_real
 
 
 def test_blocker1_reports_a_budget_limited_reason_not_an_overclaim(decoy_and_real_target_repo):
-    # Only enough budget to exhaust the decoy target's own mutations —
-    # the real target is never reached. The "survived" reason must say
-    # this is a budget limit, not claim every target was tried.
+    # Only enough budget to exhaust the decoy target's own mutations — the
+    # real target is never reached. A budget cutoff is NOT proof the test
+    # survives mutation of its actual target, so this must report
+    # "undetermined" (a non-blocking "could not fully check"), never the
+    # blocking "survived" verdict — and the reason must say this is a
+    # budget limit, not claim every target was tried.
     result = mutation_probe.run_mutation_probe(
         decoy_and_real_target_repo, "HEAD~1", "HEAD",
         max_tests=30, max_mutations=1, timeout=120,
     )
     assert result.tree_intact is True
     probe = result.probes[0]
-    assert probe.verdict == "survived"
+    assert probe.verdict == "undetermined"
     assert probe.target == "pkg/calc.py:volumetric"
     assert "budget" in probe.reason.lower()
     assert "1 of" in probe.reason
@@ -422,3 +426,157 @@ def test_no_test_file_changed_is_reported_skipped(repo):
     result = mutation_probe.run_mutation_probe(repo, "HEAD~1", "HEAD")
     assert result.verdict == "skipped"
     assert result.tree_intact is True
+
+
+# --------------------------------------------------------------------------
+# SEND-BACK B2 — `_edit_inside_string_or_comment` must convert `tokenize`
+# STRING/COMMENT positions with `_char_pos_to_offset` (character offsets,
+# `tokenize`'s own units), never `_pos_to_offset` (UTF-8 BYTE offsets,
+# `ast`'s units). Feeding a tokenize position into the byte-oriented
+# function used to raise `UnicodeDecodeError` — or silently misidentify the
+# token's span — whenever a non-ASCII character appeared earlier on the
+# same line.
+# --------------------------------------------------------------------------
+
+
+def test_char_pos_to_offset_matches_tokenizes_own_character_columns():
+    line = 'x = "café—longer"  # a trailing comment'
+    text = line + "\n"
+    tokens = list(tokenize.generate_tokens(io.StringIO(text).readline))
+    comment_tok = next(t for t in tokens if t.type == tokenize.COMMENT)
+    # tokenize's column IS already a character offset — no byte decoding
+    # step is correct or needed here, unlike `_pos_to_offset` for `ast`.
+    offset = mutation_probe._char_pos_to_offset(text, *comment_tok.start)
+    assert offset == text.index("# a trailing comment")
+
+
+def test_string_overlap_guard_handles_a_comment_after_non_ascii_text_on_the_line():
+    """Regression: before the fix, this raised `UnicodeDecodeError` (or
+    silently misjudged the range) because the COMMENT token's `tokenize`
+    (character) column was decoded as if it were an `ast` (byte) column."""
+    text = 'x = "café—longer"  # a trailing comment\ny = 2\n'
+    start = text.index("a trailing comment")
+    end = start + len("a trailing comment")
+    assert mutation_probe._edit_inside_string_or_comment(text, start, end) is True
+    # A range on the SAME non-ASCII-prefixed line that is NOT inside the
+    # string/comment must still be correctly allowed, not just always True.
+    call_text = 'x = "café—longer"  # note\nresult = compute(x)\n'
+    idx = call_text.index("compute(x)")
+    assert mutation_probe._edit_inside_string_or_comment(
+        call_text, idx, idx + len("compute(x)")) is False
+
+
+def test_string_overlap_guard_handles_a_string_literal_after_non_ascii_text():
+    text = 'label = "café—prefix"\nvalue = "note—here"\n'
+    start = text.index("note—here")
+    end = start + len("note—here")
+    assert mutation_probe._edit_inside_string_or_comment(text, start, end) is True
+
+
+# --------------------------------------------------------------------------
+# SEND-BACK B1 — two same-size `not(...)` mutations of one target, tried in
+# sequence inside the SAME worktree copy (mutate/run/restore/mutate-again,
+# all well under a second apart), must never let CPython's `.pyc` cache
+# (validated by (source mtime truncated to whole seconds, source size) — NOT
+# a content hash) make the second mutation's pytest run silently execute
+# against the first mutation's stale bytecode instead of what is actually
+# on disk. `run_mutation_probe` must set `PYTHONDONTWRITEBYTECODE=1` for its
+# own subprocesses so no `.pyc` is ever written or reused at all.
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture
+def same_size_mutation_repo(tmp_path):
+    _git(tmp_path, "init", "-b", "main")
+    _git(tmp_path, "config", "user.email", "u@e.com")
+    _git(tmp_path, "config", "user.name", "u")
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "__init__.py").write_text("")
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "__init__.py").write_text("")
+    # `x > 9` and `x > 0` are both 5 characters, so both generated
+    # `not (...)` mutations (`not (x > 9)`, `not (x > 0)`) are the same
+    # length — same total file size once applied — reproducing the exact
+    # (mtime-second, size) collision the stale-bytecode bug needs.
+    (tmp_path / "pkg" / "calc.py").write_text(
+        "def classify(x):\n"
+        "    if x > 9:\n"
+        "        flag = True\n"
+        "    if x > 0:\n"
+        '        return "small"\n'
+        '    return "zero"\n'
+    )
+    (tmp_path / "tests" / "test_calc.py").write_text(
+        "from pkg.calc import classify\n\ndef test_classify():\n"
+        '    assert classify(5) == "small"\n'
+    )
+    _commit(tmp_path)
+    (tmp_path / "tests" / "test_calc.py").write_text(
+        "from pkg.calc import classify\n\ndef test_classify():\n"
+        '    assert classify(5) == "small"\n    assert classify(5) != "zero"\n'
+    )
+    _commit(tmp_path, "change the test")
+    return tmp_path
+
+
+def test_b1_stable_verdict_across_same_size_sequential_mutations(same_size_mutation_repo):
+    """The first candidate mutation (`x > 9` -> `not (x > 9)`) only flips
+    whether the unobserved `flag = True` assignment runs — it must SURVIVE.
+    The second (`x > 0` -> `not (x > 0)`, the SAME length as the first)
+    changes the actual returned value — it must KILL. Run 8 times: the true
+    verdict is deterministically "killed" every time; a stale-bytecode
+    collision would non-deterministically report "survived" instead on some
+    runs (the second mutation's test silently executing against the first
+    mutation's cached, harmless behaviour)."""
+    verdicts = []
+    for _ in range(8):
+        result = mutation_probe.run_mutation_probe(
+            same_size_mutation_repo, "HEAD~1", "HEAD", max_tests=5, max_mutations=5,
+        )
+        assert result.tree_intact is True
+        assert len(result.probes) == 1
+        verdicts.append(result.probes[0].verdict)
+    assert verdicts == ["killed"] * 8, verdicts
+
+
+# --------------------------------------------------------------------------
+# SEND-BACK B4 — a "killed" verdict from a statement-REMOVAL mutation is
+# weaker evidence than one from a condition-flip/return-negation: it only
+# proves the test breaks when some code stops running at all (often a raw
+# crash), not that the test's own assertions noticed a behaviour change.
+# `TestProbe.mutation_kind` must be set from the mutation that actually
+# killed the test.
+# --------------------------------------------------------------------------
+
+
+def test_probe_one_tags_a_removal_kill_with_its_mutation_kind(repo):
+    # `helper(x)` has no return value the test could assert on; the only way
+    # a mutation can kill `test_calls_helper` is by removing the call
+    # statement entirely, which breaks a side effect (`seen.append`) the
+    # test does observe — a "remove" kill, not a "flip"/"negate" kill.
+    (repo / "pkg" / "calc.py").write_text(
+        "seen = []\n\n"
+        "def helper(x):\n"
+        "    y = x + 1\n"
+        "    seen.append(y)\n"
+        "    return None\n"
+    )
+    (repo / "tests" / "test_calc.py").write_text(
+        "from pkg.calc import helper, seen\n\ndef test_calls_helper():\n"
+        "    helper(1)\n"
+    )
+    _commit(repo)
+    (repo / "tests" / "test_calc.py").write_text(
+        "from pkg.calc import helper, seen\n\ndef test_calls_helper():\n"
+        "    seen.clear()\n    helper(1)\n    assert seen == [2]\n"
+    )
+    _commit(repo, "change the test")
+
+    result = mutation_probe.run_mutation_probe(repo, "HEAD~1", "HEAD", max_tests=5, max_mutations=10)
+    assert result.tree_intact is True
+    assert len(result.probes) == 1
+    probe = result.probes[0]
+    assert probe.verdict == "killed", probe.reason
+    assert probe.mutation_kind == "remove", (
+        f"expected a statement-removal kill, got kind={probe.mutation_kind!r} "
+        f"via {probe.mutation!r}")

@@ -79,6 +79,7 @@ class TestProbe:
     target: str = ""  # "src/pkg/rates.py:volumetric"
     mutation: str = ""  # "line 41: `if x:` -> `if not (x):`"
     reason: str = ""  # why undetermined, or the failure tail proving the kill
+    mutation_kind: str = ""  # "flip" | "negate" | "remove" — only set when killed
 
 
 @dataclass
@@ -374,6 +375,7 @@ class _Mutation:
     end_col_offset: int
     new_text: str
     description: str
+    kind: str = ""  # "flip" | "negate" | "remove"
 
 
 def _find_symbol(tree: ast.Module, symbol: str) -> ast.AST | None:
@@ -446,6 +448,7 @@ def _mutations_for(source_text: str, symbol: str) -> list[_Mutation]:
                 node.test.end_lineno, node.test.end_col_offset,
                 f"not ({seg})",
                 f"line {node.test.lineno}: flip `{seg}` -> `not ({seg})`",
+                kind="flip",
             ))
     for node in ast.walk(target):
         if isinstance(node, ast.Return) and node.value is not None:
@@ -461,6 +464,7 @@ def _mutations_for(source_text: str, symbol: str) -> list[_Mutation]:
                 node.value.end_lineno, node.value.end_col_offset,
                 f"not ({seg})",
                 f"line {node.value.lineno}: negate return `{seg}` -> `not ({seg})`",
+                kind="negate",
             ))
     for body in _statement_bodies(target):
         if len(body) <= 1:
@@ -479,6 +483,7 @@ def _mutations_for(source_text: str, symbol: str) -> list[_Mutation]:
                 stmt.lineno, stmt.col_offset, stmt.end_lineno, stmt.end_col_offset,
                 "pass",
                 f"line {stmt.lineno}: remove statement `{seg.splitlines()[0]}` -> `pass`",
+                kind="remove",
             ))
     return candidates
 
@@ -501,6 +506,23 @@ def _pos_to_offset(text: str, lineno: int, col: int) -> int:
     return preceding + char_col
 
 
+def _char_pos_to_offset(text: str, lineno: int, col: int) -> int:
+    """Character offset into ``text`` for a ``tokenize`` position.
+
+    ``lineno`` is 1-indexed. Unlike ``ast`` (see :func:`_pos_to_offset`),
+    Python's ``tokenize`` module already reports column offsets as CHARACTER
+    counts into the line, not UTF-8 byte counts — so no byte/character
+    conversion is needed or correct here. Applying the ``ast`` byte-decoding
+    logic to a ``tokenize`` position would slice the line's UTF-8 encoding at
+    a byte boundary that does not correspond to the token's actual character
+    column on any line with a non-ASCII character before it, raising
+    ``UnicodeDecodeError`` on a mid-character split.
+    """
+    lines = text.splitlines(keepends=True)
+    preceding = sum(len(ln) for ln in lines[:lineno - 1])
+    return preceding + col
+
+
 def _edit_inside_string_or_comment(text: str, start: int, end: int) -> bool:
     """True when ``[start, end)`` is CONTAINED IN a single STRING/COMMENT
     token — not merely overlapping one.
@@ -516,16 +538,24 @@ def _edit_inside_string_or_comment(text: str, start: int, end: int) -> bool:
     """
     try:
         tokens = list(tokenize.generate_tokens(io.StringIO(text).readline))
-    except (tokenize.TokenError, SyntaxError, IndentationError, ValueError):
+        for tok in tokens:
+            if tok.type not in (tokenize.STRING, tokenize.COMMENT):
+                continue
+            # `tokenize` positions are CHARACTER offsets, not the UTF-8 BYTE
+            # offsets `ast` reports — using `_pos_to_offset` (byte-aware) here
+            # would misconvert (and can raise `UnicodeDecodeError` on a line
+            # with non-ASCII text) since it would decode a byte slice at a
+            # boundary that was never a byte offset to begin with.
+            tok_start = _char_pos_to_offset(text, *tok.start)
+            tok_end = _char_pos_to_offset(text, *tok.end)
+            if tok_start <= start and end <= tok_end:
+                return True
+        return False
+    except (tokenize.TokenError, SyntaxError, IndentationError, ValueError, IndexError):
+        # Fail CLOSED: if the token stream can't be built, or a position
+        # can't be resolved against it, reject the mutation rather than risk
+        # an edit this function could not actually verify is safe.
         return True
-    for tok in tokens:
-        if tok.type not in (tokenize.STRING, tokenize.COMMENT):
-            continue
-        tok_start = _pos_to_offset(text, *tok.start)
-        tok_end = _pos_to_offset(text, *tok.end)
-        if tok_start <= start and end <= tok_end:
-            return True
-    return False
 
 
 def _apply_one(original_text: str, mutation: _Mutation) -> str | None:
@@ -604,9 +634,12 @@ def _probe_one(
     most `max_mutations` mutation attempts in total across all of them —
     never stopping at the first target merely because a mutation was tried
     against it. Only once every ranked target has been exhausted (or the
-    budget is spent) without a kill is the test reported `"survived"`;
-    `"undetermined"` is reported only when NO mutation was ever tried
-    against ANY target (no target resolved, or every resolved target
+    budget is spent) without a kill is the test reported `"survived"` —
+    and only if every ranked target was actually reached; if the mutation
+    budget runs out before the last ranked target is tried, that is a
+    budget limit, not proof of survival, so it is reported `"undetermined"`
+    instead. `"undetermined"` is also reported when NO mutation was ever
+    tried against ANY target (no target resolved, or every resolved target
     generated zero applicable mutations).
     """
     node_id = item["node_id"]
@@ -697,6 +730,7 @@ def _probe_one(
                 return TestProbe(
                     node_id=node_id, verdict="killed", target=target_label,
                     mutation=mutation.description, reason=mout[-1000:],
+                    mutation_kind=mutation.kind,
                 )
         # This target's mutations all left the test green (or none applied)
         # — move on to the next ranked target instead of giving up.
@@ -706,20 +740,33 @@ def _probe_one(
             tried_total >= max_mutations and last_index_seen < len(targets) - 1
         )
         if budget_exhausted_early:
+            # The mutation budget ran out before every ranked target was
+            # tried — this is NOT the same claim as "survived every mutation
+            # tried against every candidate": there is a real possibility an
+            # untried ranked target would have killed the test. Reporting
+            # this as `"survived"` (a blocking, high-severity finding per
+            # `merge_mutation_findings`) would contradict the very reason
+            # text explaining it is a budget limit, not proof of anything —
+            # so it is `"undetermined"` instead, same as any other
+            # could-not-establish outcome.
             coverage = (
                 f"the mutation budget ({max_mutations}) ran out after "
                 f"{len(targets_tried)} of {len(targets)} statically-inferred "
                 "target(s) produced an applicable mutation — the remaining "
                 "ranked target(s) were never tried, so this is a budget limit, "
-                "not proof the untried target(s) are also pinned"
+                "not proof the test survives mutation of its actual target"
             )
-        else:
-            coverage = (
-                "the test stayed green under every generated mutation tried "
-                f"across all {len(targets_tried)} of {len(targets)} "
-                "statically-inferred target(s) that produced an applicable "
-                "mutation"
+            return TestProbe(
+                node_id=node_id, verdict="undetermined", target=last_target_label,
+                mutation="; ".join(tried_descriptions),
+                reason=coverage,
             )
+        coverage = (
+            "the test stayed green under every generated mutation tried "
+            f"across all {len(targets_tried)} of {len(targets)} "
+            "statically-inferred target(s) that produced an applicable "
+            "mutation"
+        )
         return TestProbe(
             node_id=node_id, verdict="survived", target=last_target_label,
             mutation="; ".join(tried_descriptions),
@@ -749,9 +796,15 @@ def run_mutation_probe(
     reason. ``repo_path``'s working tree is never written to; see the
     module docstring for the isolation and integrity-proof discipline this
     follows. ``timeout`` bounds the probe's own between-test scheduling
-    loop — it is checked once per test, not inside any single pytest
-    invocation, so a slow test can still push the wall-clock past it by as
-    much as `repro_gate._RUN_TIMEOUT`; it is not a hard per-process cap.
+    loop — it is checked once per test, BEFORE that test's own
+    ``_probe_one`` call starts, not inside any single pytest invocation and
+    not between the several pytest launches ``_probe_one`` itself makes for
+    one test (one unmutated baseline run, plus up to ``max_mutations``
+    mutated re-runs). So a single test already in flight can push the
+    wall-clock past ``timeout`` by as much as
+    ``(1 + max_mutations) * repro_gate._RUN_TIMEOUT`` (with the defaults,
+    4 * 600s = 2400s) before the next check is even reached; it is a soft
+    budget on the whole run, not a hard per-process cap.
     """
     repo_path = Path(repo_path)
     deadline = time.monotonic() + timeout
@@ -829,6 +882,17 @@ def run_mutation_probe(
         env = _env_for(repo_path)
         env["PYTHONPATH"] = os.pathsep.join(
             [str(worktree), str(worktree / "src"), env.get("PYTHONPATH", "")])
+        # Without this, CPython validates a `.pyc` cache by (source mtime
+        # truncated to whole seconds, source size) — NOT a content hash — so
+        # two same-size mutations applied to the same file within one
+        # wall-clock second (routine here: mutate/run/restore/mutate/run all
+        # happen well under a second apart) can make CPython reuse a stale
+        # bytecode cache from a PRIOR mutation (or the unmutated original),
+        # producing a non-deterministic verdict. `_env_for` (runner.py) does
+        # not set this — it is not this module's call to make there, since
+        # other callers of `_env_for` legitimately want bytecode caching —
+        # so it is set locally, only for the probe's own subprocesses.
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
 
         try:
             for item in to_probe:

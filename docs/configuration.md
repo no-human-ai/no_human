@@ -890,9 +890,14 @@ target could be resolved at all, or a candidate resolved but generated zero
 applicable mutations for every target tried.
 
 `timeout_seconds` is checked once between tests in the probe's own scheduling
-loop, not inside any single pytest invocation — a single slow test can still
-push the wall-clock past it before the next check is reached, so it is a
-soft budget on the whole run, not a hard per-process cap. Scope is narrow on
+loop, not inside any single pytest invocation, and not between the several
+pytest launches a single test's own probe makes (one unmutated baseline run,
+plus up to `max_mutations_per_test` mutated re-runs) — so a test already in
+flight can push the wall-clock past `timeout_seconds` by as much as
+`(1 + max_mutations_per_test) * repro_gate._RUN_TIMEOUT` (600s per launch;
+~2400s past budget with the defaults above) before the next check is even
+reached. It is a soft budget on the whole run, not a hard per-process cap.
+Scope is narrow on
 purpose: Python/pytest tests only (a non-Python changed test file is recorded
 as could-not-run, never silently skipped), only tests the diff itself adds or
 changes, and the probe copy is a bare `git worktree add` of the reviewed

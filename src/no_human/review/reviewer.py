@@ -1690,7 +1690,7 @@ def merge_mutation_findings(
     Additive only, mirroring `merge_angle_findings`: a SURVIVED test is a
     blocking (`high`-severity) finding — a test green under a mutation of
     the behaviour it names pins nothing. KILLED is recorded (`low`-severity,
-    non-blocking) as evidence the test does pin its target. A probe that
+    non-blocking) as evidence the test does pin its target, EXCEPT a REMOVAL-mutation kill (weaker: may just be a crash, not real assertion evidence), labeled accordingly. A probe that
     COULD NOT RUN is recorded either way and blocks only in `required` mode
     (it is built with `passed=(mode != "required")`, so its severity is
     irrelevant to mode). Can only get STRICTER: pass -> fail, never fail ->
@@ -1708,7 +1708,7 @@ def merge_mutation_findings(
     for probe in result.probes:
         if probe.verdict == "killed":
             appended.append(ChecklistItem(
-                label=f"mutation probe: {probe.node_id} pins {probe.target}",
+                label=(f"mutation probe: {probe.node_id} pins {probe.target}" if probe.mutation_kind != "remove" else f"mutation probe: {probe.node_id} failed when a statement in {probe.target} was removed (weaker than a condition/return kill)"),
                 passed=True,
                 severity="low",
                 evidence=f"{probe.mutation} — the test then FAILED: {probe.reason}",
