@@ -425,18 +425,33 @@ by head sha precisely because nothing re-evaluates it: a verdict stamped for
 an older commit is shown as absent (`merge_ready: null`) for the commit
 sitting in the PR now, rather than carried forward as if it still applied.
 
-`nh approve --ready` is a convenience LISTING over that same base path — it
-prints every `awaiting_approval` task whose verdict is `ready: true` for its
-*current* branch head (a stale-sha verdict, or one with
-`policy_changed_in_diff: true`, is excluded, same rule as above) alongside
-its `rules passed/total` and PR URL, and does nothing else. Add `--yes` and
-it walks that list through `nh approve <task_id>`'s own procedure — one task
-at a time, in listed order, stopping at the first failure — so every
-precondition `nh approve <task_id>` already enforces (the reviewer PASS
-above included) still applies per task; the verdict only decides what gets
-offered to a human to land, never whether a task is *allowed* to land. The
-board shows the same verdict as a `MERGE-READY` chip on a task's card. This
-does not change who merges: `--yes` still runs the identical git-identity
+`nh approve --ready` is a convenience LISTING over that same base path, but
+it answers two independent questions, not one: it prints every
+`awaiting_approval` task whose verdict is `ready: true` for its *current*
+branch head (a stale-sha verdict, or one with `policy_changed_in_diff: true`,
+is excluded, same rule as above) alongside its `rules passed/total` — that
+half is the quality-rule verdict above, unchanged. Separately, and checked
+fresh on every invocation rather than cached, it asks whether the branch
+*still merges into its current base right now* (`vcs/landability.py`): the
+six-rule verdict is keyed by head sha and correctly invalidates when the
+branch moves, but nothing about it invalidates when the base moves — and
+every landing rewrites the generated `RELEASE_MANIFEST.txt`, so every
+landing conflicts every other open PR's branch against that file. A task can
+therefore pass every quality rule and still not be landable right now; the
+line for it shows `merge: CONFLICT` (never hidden, never auto-resolved) and
+it is excluded from the "ready to land" count and from what `--yes` lands.
+A task whose branch merges cleanly (or whose only conflict is confined to a
+derived artefact `land_task` regenerates at land time) shows `merge: clean`
+and counts as ready. Add `--yes` and it walks the ready (non-conflicted)
+tasks through `nh approve <task_id>`'s own procedure — one task at a time,
+in listed order, stopping at the first failure — so every precondition
+`nh approve <task_id>` already enforces (the reviewer PASS above included)
+still applies per task; the two verdicts only decide what gets offered to a
+human to land, never whether a task is *allowed* to land. The board shows
+the same quality-rule verdict as a `MERGE-READY` chip on a task's card
+(that chip is unchanged — it is the DB-only, quality-rules-only signal;
+live base mergeability is a `--ready`-only, git-backed check). This does
+not change who merges: `--yes` still runs the identical git-identity
 squash-land as a single `nh approve <task_id>`, and a human still has to
 type it.
 
