@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -45,6 +46,14 @@ pytestmark = pytest.mark.usefixtures("isolated_env_file")
 # --------------------------------------------------------------------------- #
 # git / fixture plumbing                                                      #
 # --------------------------------------------------------------------------- #
+
+
+# The REAL inventory tool (not a double, unlike the export_guard stub below —
+# it is stdlib-only by its own contract and roots itself via `git rev-parse
+# --show-toplevel` from its own location, so it runs unmodified once copied
+# into a scratch repo). Same pattern as tests/test_derived_conflict_inventory.py.
+_REAL_INVENTORY_TOOL = (
+    Path(__file__).resolve().parents[1] / "scripts" / "check_release_manifest.py")
 
 
 def _git(cwd, *args, check=True):
@@ -405,6 +414,21 @@ def _push_conflicting_change(land_env, path: str, content: str) -> str:
     _git(race, "commit", "-qm", f"conflict: {path}")
     _git(race, "push", "-q", "origin", "HEAD:main")
     return _git(race, "rev-parse", "HEAD").stdout.strip()
+
+
+def _cut_branch_no_classification(land_env, name: str) -> tuple[str, str]:
+    """Like `LandEnv.cut_branch`, but for a clone whose origin/main has
+    already dropped EXPORT_CLASSIFICATION.txt — `cut_branch` unconditionally
+    edits that file's ship-count, which no longer exists on this shape."""
+    _git(land_env.clone, "fetch", "-q", "origin", "main")
+    _git(land_env.clone, "checkout", "-q", "-B", name, "origin/main")
+    (land_env.clone / "src" / "feature.py").write_text(
+        "def feature():\n    return 3\n")
+    _git(land_env.clone, "add", "-A")
+    _git(land_env.clone, "commit", "-qm", f"feature: add feature.py ({name})")
+    _git(land_env.clone, "push", "-q", "-u", "origin", name)
+    head_sha = _git(land_env.clone, "rev-parse", "HEAD").stdout.strip()
+    return name, head_sha
 
 
 @pytest.fixture
@@ -1320,20 +1344,41 @@ def test_squash_conflict_beyond_the_manifest_still_refuses(land_env):
     assert repo.list_worktrees() == before
 
 
-def test_manifest_conflict_without_the_export_guard_still_refuses(land_env):
-    """The tolerance exists because step 4 re-derives the manifest — and
-    step 4 runs only where scripts/export_guard.py exists. In a repo without
-    it a manifest conflict is a real conflict: taking the tip's copy would
-    silently discard the branch's edit and push that. Refuse at `squash`."""
-    # Remove the guard on origin/main from a third clone, the way the
-    # conflicting-change helper does, so the landing worktree has no guard.
+def test_manifest_conflict_without_the_export_guard_now_lands(land_env):
+    """This repo's OWN shape (the tree `nh approve` actually runs in on this
+    working copy) has no `scripts/export_guard.py` and no
+    `EXPORT_CLASSIFICATION.txt` — it carries `scripts/check_release_
+    manifest.py` instead. Step 4 used to re-derive the manifest only where
+    the export guard existed, so a manifest-only conflict on THIS shape fell
+    through to a real refusal at `squash` — every manifest-only PR conflict
+    on the public working repo needed a full coder round or a manual `nh
+    approve` retry. Live incident this closes: task 4135165f / PR #356,
+    2026-09-14 — 11 attempts / 484k tokens / ~$69 spent resolving a conflict
+    that was, in the end, one regenerated file. The sibling resolver in
+    `derived_conflict.py` had this exact bug class and was already fixed
+    there (2026-09-04, see tests/test_derived_conflict_inventory.py) before
+    this landing path's own copy of it was found.
+
+    Fixture note: the seed repo's `EXPORT_CLASSIFICATION.txt` marks
+    README.md/tests/*.py `drop`, and `check_release_manifest.py --write`
+    refuses to regenerate over a tree that still carries a classification
+    it cannot ship dropped paths into (see the tool's own docstring) — so
+    reaching the shape this fix targets means dropping the classification
+    file too, not just the guard, matching the public source tree exactly.
+    """
+    # Remove the guard AND the classification on origin/main from a third
+    # clone, the way the conflicting-change helper does, so the landing
+    # worktree matches the guard-less, classification-less public shape —
+    # and drop in the REAL inventory tool in place of the stub guard.
     race = land_env.tmp_path / "noguard"
     _git(land_env.tmp_path, "clone", "-q", str(land_env.origin), str(race))
-    _git(race, "rm", "-q", "scripts/export_guard.py")
-    _git(race, "commit", "-qm", "drop the export guard")
+    _git(race, "rm", "-q", "scripts/export_guard.py", "EXPORT_CLASSIFICATION.txt")
+    shutil.copy(_REAL_INVENTORY_TOOL, race / "scripts" / "check_release_manifest.py")
+    _git(race, "add", "scripts/check_release_manifest.py")
+    _git(race, "commit", "-qm", "drop the export guard; adopt the inventory tool")
     _git(race, "push", "-q", "origin", "HEAD:main")
     _git(land_env.clone, "pull", "-q", "--ff-only", "origin", "main")
-    branch, _ = land_env.cut_branch("no-human/t-noguard")
+    branch, _ = _cut_branch_no_classification(land_env, "no-human/t-noguard")
     tip_manifest = _git(land_env.origin, "show", "main:RELEASE_MANIFEST.txt").stdout
     _push_conflicting_change(land_env, "RELEASE_MANIFEST.txt",
                              tip_manifest + "# re-pinned by a concurrent landing\n")
@@ -1342,9 +1387,156 @@ def test_manifest_conflict_without_the_export_guard_still_refuses(land_env):
         task_id="deadbeef", task_title="Add feature", review_evidence="review PASS",
         config=land_env.config,
     )
+    assert result.ok, f"step={result.step}: {result.stderr}"
+    landed = _git(land_env.origin, "show",
+                  f"{result.landed_sha}:RELEASE_MANIFEST.txt").stdout
+    assert "src/feature.py" in landed                          # branch pin re-derived
+    assert "<<<<<<<" not in landed and "=======" not in landed
+    assert "# re-pinned by a concurrent landing" not in landed  # wholesale regenerate
+    # The new step 6a check for this shape (`--strict`) actually ran and
+    # passed against the landed tree — not a no-op. `land_task` lands in its
+    # own ephemeral worktree and never updates `land_env.clone`'s checkout,
+    # so verify against a fresh checkout of what was actually pushed.
+    check = land_env.tmp_path / "check-landed"
+    _git(land_env.tmp_path, "clone", "-q", str(land_env.origin), str(check))
+    _git(check, "checkout", "-q", result.landed_sha)
+    verify = subprocess.run(
+        [sys.executable, "scripts/check_release_manifest.py", "--strict"],
+        cwd=check, capture_output=True, text=True)
+    assert verify.returncode == 0, verify.stdout + verify.stderr
+
+
+def test_manifest_conflict_without_the_export_guard_verify_fails_closed(
+        land_env, monkeypatch):
+    """Step 6a's new `--strict` check for the guard-less shape is a REAL
+    gate, not a no-op: `land_task` refuses at `verify` (not `manifest`, not
+    a silent push) when it fails. Step 4's `--write` regenerates the ledger
+    wholesale from the tree immediately beforehand, so the two cannot
+    legitimately disagree in this fixture — the disagreement is injected by
+    wrapping `approve_merge._sh` so only the `--strict` invocation is faked
+    as a failure; every other `git`/tool call (including step 4's own
+    `--write`) runs for real. This proves the wiring — that `nh approve`
+    actually calls `check_release_manifest.py --strict` at step 6a and
+    treats a nonzero exit as a landing failure — not just that the tool
+    itself can fail (covered separately in
+    tests/test_derived_conflict_inventory.py and scripts' own tests)."""
+    race = land_env.tmp_path / "noguard-verify"
+    _git(land_env.tmp_path, "clone", "-q", str(land_env.origin), str(race))
+    _git(race, "rm", "-q", "scripts/export_guard.py", "EXPORT_CLASSIFICATION.txt")
+    shutil.copy(_REAL_INVENTORY_TOOL, race / "scripts" / "check_release_manifest.py")
+    _git(race, "add", "scripts/check_release_manifest.py")
+    _git(race, "commit", "-qm", "drop the export guard; adopt the inventory tool")
+    _git(race, "push", "-q", "origin", "HEAD:main")
+    _git(land_env.clone, "pull", "-q", "--ff-only", "origin", "main")
+    branch, _ = _cut_branch_no_classification(land_env, "no-human/t-noguard-verify")
+
+    from no_human.vcs import approve_merge as am
+    real_sh = am._sh
+
+    def _fake_sh(args, **kw):
+        if (any("check_release_manifest.py" in a for a in args)
+                and "--strict" in args):
+            return subprocess.CompletedProcess(
+                args, returncode=1, stdout="", stderr="FAKED --strict failure")
+        return real_sh(args, **kw)
+
+    monkeypatch.setattr(am, "_sh", _fake_sh)
+
+    result = land_task(
+        repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
+        task_id="deadbeef", task_title="Add feature", review_evidence="review PASS",
+        config=land_env.config,
+    )
     assert not result.ok
-    assert result.step == "squash"
-    assert "RELEASE_MANIFEST.txt" in result.stderr
+    assert result.step == "verify"
+    assert "FAKED --strict failure" in result.stderr
+    # The commit landed locally (step 5 ran before verify) but nothing of
+    # this failed attempt reached the remote.
+    assert result.landed_sha
+    remote_main = _git(land_env.origin, "rev-parse", "main").stdout.strip()
+    assert remote_main != result.landed_sha
+
+
+def test_two_independent_prs_from_the_same_base_both_land_without_manual_conflict_resolution(
+        land_env):
+    """The acceptance evidence for the O(N^2) manifest-conflict incident
+    (task 4135165f / PR #356, 2026-09-14): two PRs cut from the SAME base
+    commit, in two SEPARATE clones (so neither sees the other's branch),
+    both land through `nh approve` (`land_task`) with zero manual manifest
+    conflict resolution -- exactly the shape that used to force a full,
+    costly coder round for the second PR every time (this repo's actual
+    shape: no `scripts/export_guard.py`, `scripts/check_release_manifest.py`
+    instead)."""
+    # Adopt the guard-less shape first (this repo's own shape), same as the
+    # sibling tests above.
+    race = land_env.tmp_path / "noguard-two-prs"
+    _git(land_env.tmp_path, "clone", "-q", str(land_env.origin), str(race))
+    _git(race, "rm", "-q", "scripts/export_guard.py", "EXPORT_CLASSIFICATION.txt")
+    shutil.copy(_REAL_INVENTORY_TOOL, race / "scripts" / "check_release_manifest.py")
+    _git(race, "add", "scripts/check_release_manifest.py")
+    _git(race, "commit", "-qm", "drop the export guard; adopt the inventory tool")
+    _git(race, "push", "-q", "origin", "HEAD:main")
+
+    base_sha = _git(land_env.origin, "rev-parse", "main").stdout.strip()
+    print(f"$ git rev-parse main  # shared base\n{base_sha}")
+
+    def _cut(clone_dir, branch_name, filename, body):
+        _git(land_env.tmp_path, "clone", "-q", str(land_env.origin), str(clone_dir))
+        _git(clone_dir, "checkout", "-q", "-B", branch_name, "origin/main")
+        (clone_dir / "src" / filename).write_text(body)
+        _git(clone_dir, "add", "-A")
+        _git(clone_dir, "commit", "-qm", f"feature: add {filename} ({branch_name})")
+        _git(clone_dir, "push", "-q", "-u", "origin", branch_name)
+        return _git(clone_dir, "rev-parse", "HEAD").stdout.strip()
+
+    # Two clones, two branches, both cut from `base_sha` -- neither has seen
+    # the other's commit, exactly like two PRs opened independently against
+    # the same main tip.
+    clone_a = land_env.tmp_path / "clone-pr-a"
+    clone_b = land_env.tmp_path / "clone-pr-b"
+    head_a = _cut(clone_a, "no-human/t-pr-a", "feature_a.py", "def a():\n    return 1\n")
+    head_b = _cut(clone_b, "no-human/t-pr-b", "feature_b.py", "def b():\n    return 2\n")
+    assert (_git(land_env.origin, "merge-base", "no-human/t-pr-a", "no-human/t-pr-b")
+            .stdout.strip() == base_sha), "both branches must share the same base commit"
+    print(f"$ git push origin no-human/t-pr-a  # {head_a}")
+    print(f"$ git push origin no-human/t-pr-b  # {head_b}")
+
+    result_a = land_task(
+        repo_path=str(clone_a), branch="no-human/t-pr-a", pr_url=land_env.pr_url,
+        task_id="pr-a", task_title="Add feature A", review_evidence="review PASS",
+        config=land_env.config,
+    )
+    print(f"$ nh approve pr-a  # step={result_a.step} ok={result_a.ok}")
+    assert result_a.ok, f"PR A: step={result_a.step}: {result_a.stderr}"
+
+    # PR B's branch was cut BEFORE PR A landed -- landing it now is exactly
+    # the incident shape: main has moved (PR A's file + its regenerated
+    # manifest), so B's squash will find RELEASE_MANIFEST.txt has diverged
+    # underneath it. `land_task` must resolve this itself, with no coder
+    # round and no manual intervention.
+    result_b = land_task(
+        repo_path=str(clone_b), branch="no-human/t-pr-b", pr_url=land_env.pr_url,
+        task_id="pr-b", task_title="Add feature B", review_evidence="review PASS",
+        config=land_env.config,
+    )
+    print(f"$ nh approve pr-b  # step={result_b.step} ok={result_b.ok}")
+    assert result_b.ok, f"PR B: step={result_b.step}: {result_b.stderr}"
+
+    landed = _git(land_env.origin, "show",
+                  f"{result_b.landed_sha}:RELEASE_MANIFEST.txt").stdout
+    assert "src/feature_a.py" in landed   # PR A's pin survived PR B's landing
+    assert "src/feature_b.py" in landed   # PR B's pin was added
+    assert "<<<<<<<" not in landed and "=======" not in landed
+
+    check = land_env.tmp_path / "check-landed-two-prs"
+    _git(land_env.tmp_path, "clone", "-q", str(land_env.origin), str(check))
+    _git(check, "checkout", "-q", result_b.landed_sha)
+    verify = subprocess.run(
+        [sys.executable, "scripts/check_release_manifest.py", "--strict"],
+        cwd=check, capture_output=True, text=True)
+    print(f"$ python scripts/check_release_manifest.py --strict\n"
+          f"{verify.stdout}{verify.stderr}(exit {verify.returncode})")
+    assert verify.returncode == 0, verify.stdout + verify.stderr
 
 
 def test_worktree_add_failure_leaves_no_worktree(land_env, monkeypatch):
