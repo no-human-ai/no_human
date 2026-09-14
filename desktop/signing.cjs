@@ -19,6 +19,33 @@
 // electron-builder config (.cjs) and the DMG script — and require() of an
 // ES module is an error on the Node this repo runs (v20). ESM consumers
 // can import a CJS module either way.
+//
+// signingPlan() alone is NOT enough to decide `nhCanAutoUpdate`: it only
+// reads the macOS signing environment, but a single electron-builder
+// invocation can emit a signed mac target and an unsigned win/linux target
+// side by side (`--mac --win`, or a future consolidated release job). The
+// TARGET PLATFORM SET this invocation actually emits — not just whether
+// Apple credentials happen to be exported — decides whether the macOS
+// verdict applies. `buildPlatforms`/`autoUpdateStamp` below compute that;
+// `assertStampMatchesPlatform` is the runtime backstop for any invocation
+// shape `buildPlatforms` cannot see (the electron-builder Node API, a future
+// flag alias) — it throws rather than let a wrong stamp reach a real target.
+//
+// Why a wrong stamp here is not merely "unverified" but actively unsafe,
+// measured from source (electron-updater 6.x, node_modules/electron-updater/
+// out/): NsisUpdater.verifySignature() (NsisUpdater.js:84-99) reads
+// `publisherName` from the generated app-update.yml and returns null —
+// meaning verification is SKIPPED, not failed — when that field is absent;
+// our `win` target sets no certificateFile, so an unsigned Windows build's
+// app-update.yml has no publisherName. A wrongly-true stamp there would
+// therefore make electron-updater run a downloaded, unsigned installer with
+// NO Authenticode check at all (not "unverified", literally none). Linux is
+// safer only by accident: AppImageUpdater.js:18 refuses outright unless
+// `process.env.APPIMAGE` is set, but DebUpdater (DebUpdater.js) has no
+// signature check either — it just downloads the `.deb` and hands it to a
+// privileged installer. Neither platform's electron-updater path performs
+// the equivalent of Squirrel.Mac's code-signing gate, which is the actual
+// reason this stamp must never be computed from the macOS plan alone.
 
 /** Fully signed AND notarized — the only artifact a stranger can run. */
 const SIGNED = "signed";
@@ -231,6 +258,118 @@ function signingBanner(plan) {
   return lines.join("\n");
 }
 
+/**
+ * Which platforms (`"darwin"` | `"win32"` | `"linux"`) this electron-builder
+ * invocation actually targets, read from the CLI argv it was started with —
+ * transcribed from electron-builder's own option table
+ * (node_modules/electron-builder/out/builder.js), not guessed:
+ *   --mac  aliases: -m, -o, --macos   (also accepts --mac=<target>)
+ *   --win  aliases: -w, --windows
+ *   --linux aliases: -l
+ * All three are yargs `type: "array"` options, so a bare value following one
+ * ("--mac dmg zip", "--win nsis") is a TARGET, not a flag, and is ignored
+ * here because it does not start with "-". A single-dash letter CLUSTER
+ * ("-mwl") is yargs' own shorthand for passing several of these boolean-ish
+ * short flags at once, so it is treated the same as listing them separately.
+ *
+ * No platform flag at all means electron-builder falls back to
+ * `Platform.current()` (builder.js) — the host this process runs on. An
+ * unrecognised host (anything but darwin/win32/linux) yields an EMPTY set,
+ * which downstream makes `autoUpdateStamp` stamp false: fail closed rather
+ * than guess.
+ */
+function buildPlatforms(argv, hostPlatform) {
+  const LETTER_TO_PLATFORM = { m: "darwin", o: "darwin", w: "win32", l: "linux" };
+  const LONG_TO_PLATFORM = {
+    mac: "darwin", macos: "darwin",
+    win: "win32", windows: "win32",
+    linux: "linux",
+  };
+  const platforms = new Set();
+  for (const raw of argv) {
+    if (typeof raw !== "string" || !raw.startsWith("-")) continue;
+    if (raw.startsWith("--")) {
+      const body = raw.slice(2);
+      const eq = body.indexOf("=");
+      const name = eq === -1 ? body : body.slice(0, eq);
+      const platform = LONG_TO_PLATFORM[name];
+      if (platform) platforms.add(platform);
+      continue;
+    }
+    // Single dash: either one short alias ("-m") or a letter cluster
+    // ("-mwl"). Only treat it as a platform flag when EVERY letter in it is
+    // one of the platform aliases — "-c", "-p", "-x64" etc. must never be
+    // misread as a platform selector.
+    const letters = raw.slice(1);
+    if (letters.length > 0 && [...letters].every((c) => c in LETTER_TO_PLATFORM)) {
+      for (const c of letters) platforms.add(LETTER_TO_PLATFORM[c]);
+    }
+  }
+  if (platforms.size === 0
+      && (hostPlatform === "darwin" || hostPlatform === "win32" || hostPlatform === "linux")) {
+    platforms.add(hostPlatform);
+  }
+  return platforms;
+}
+
+/**
+ * The ONE `nhCanAutoUpdate` value stamped into the packaged app, derived from
+ * the macOS signing plan AND the platform set this invocation emits.
+ *
+ *   canAutoUpdate — true only when the plan says signed+notarized AND every
+ *                   targeted platform is macOS. A non-mac target's update
+ *                   path is unverified regardless of Apple credentials.
+ *   fatal         — a credentialed macOS build mixed with a non-mac target
+ *                   in the SAME invocation: no single stamp is correct for
+ *                   both artifacts (true would be wrong for the .exe/.deb,
+ *                   false would be wrong for the .app), so this refuses
+ *                   rather than silently picking one. A mixed invocation
+ *                   WITHOUT credentials is not fatal — false is correct
+ *                   everywhere in that set.
+ *   reason        — one line for the build banner naming the parsed
+ *                   platform set and why the value came out as it did.
+ */
+function autoUpdateStamp({ plan, platforms }) {
+  const names = platforms.size > 0
+    ? [...platforms].sort().join(", ")
+    : "(none — unrecognised host platform)";
+  const macOnly = platforms.size > 0 && [...platforms].every((p) => p === "darwin");
+  const canAutoUpdate = plan.canAutoUpdate && macOnly;
+  const fatal = plan.canAutoUpdate && platforms.has("darwin") && !macOnly;
+
+  let reason;
+  if (fatal) {
+    reason = `nhCanAutoUpdate: REFUSING — this build is signed+notarized for macOS `
+      + `and this invocation ALSO targets non-mac platforms (${names}); no single stamp `
+      + "is correct for both. Run `--mac` and the other platform(s) as separate invocations.";
+  } else if (canAutoUpdate) {
+    reason = `nhCanAutoUpdate=true: signed+notarized, targeting only {${names}}`;
+  } else if (plan.canAutoUpdate) {
+    reason = `nhCanAutoUpdate=false: this invocation targets {${names}}, not macOS-only — `
+      + "the update path there is unverified regardless of the Apple signing credentials present";
+  } else {
+    reason = `nhCanAutoUpdate=false: targeting {${names}}; ${plan.reason}`;
+  }
+  return { canAutoUpdate, fatal, reason };
+}
+
+/**
+ * Fail-closed runtime backstop for any invocation shape {@link buildPlatforms}
+ * could not see (the electron-builder Node API, a future flag alias):
+ * `beforePack` is called per platform with the REAL `electronPlatformName`
+ * before `extraMetadata` is stamped, so this is a genuine gate, not a
+ * best-effort warning. Throws rather than let a wrong stamp reach a
+ * non-macOS artifact.
+ */
+function assertStampMatchesPlatform(electronPlatformName, canAutoUpdate) {
+  if (electronPlatformName !== "darwin" && canAutoUpdate === true) {
+    throw new Error(
+      `assertStampMatchesPlatform: refusing to pack ${electronPlatformName} with `
+      + "nhCanAutoUpdate=true — that update path is unverified outside macOS.",
+    );
+  }
+}
+
 module.exports = {
   SIGNED,
   SIGNED_NOT_NOTARIZED,
@@ -243,4 +382,7 @@ module.exports = {
   WINDOWS_CERTIFICATE_VAR,
   windowsSigningPlan,
   windowsSigningBanner,
+  buildPlatforms,
+  autoUpdateStamp,
+  assertStampMatchesPlatform,
 };

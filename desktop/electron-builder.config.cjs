@@ -15,6 +15,20 @@
 // ONE `extraResources` payload and ONE `extraMetadata`; the parity tests in
 // packagedFiles.test.mjs fail if any block grows its own copy.
 //
+// That single extraMetadata is FORCED, not a style choice: `extraMetadata` is
+// a root-level key in electron-builder's own app-builder-lib/scheme.json, and
+// MacConfiguration/WindowsConfiguration/LinuxConfiguration each declare
+// `extraMetadata: false` — platformPackager.js reads only the top-level
+// `config.extraMetadata` when building the file transformer, so a per-platform
+// block would be silently ignored there and rejected outright by the schema's
+// `additionalProperties: false` (packagedFiles.test.mjs pins both facts). So
+// `nhCanAutoUpdate` cannot become three values by growing three extraMetadata
+// blocks; it stays ONE value, computed once. What changes below is what that
+// one value is computed FROM: `autoUpdateStamp` (signing.cjs) takes the macOS
+// signing plan AND the platform(s) THIS invocation actually targets — a
+// credentialed environment does not make a Windows or Linux artifact's update
+// path any less unverified. See signing.cjs's header for the full argument.
+//
 // The `mac.target` list is not cosmetic: Squirrel.Mac updates from a ZIP, and
 // electron-builder only emits `latest-mac.yml` — the file electron-updater
 // fetches — when a zip target is present. With `["dmg"]` alone the updater
@@ -25,6 +39,7 @@ const fs = require("fs");
 const path = require("path");
 const {
   signingBanner, signingPlan, windowsSigningBanner, windowsSigningPlan,
+  buildPlatforms, autoUpdateStamp, assertStampMatchesPlatform,
 } = require("./signing.cjs");
 // The Electron/Chromium licence-notice guard lives in its own module: this
 // file must export the config object and NOTHING else, or electron-builder's
@@ -34,12 +49,18 @@ const { assertElectronNoticesPresent } = require("./electronNotices.cjs");
 const plan = signingPlan(process.env);
 // The Windows verdict is its own: see windowsSigningPlan (#330).
 const winPlan = windowsSigningPlan(process.env);
+// The macOS plan alone cannot answer whether THIS invocation's packaged
+// app(s) may auto-update — see the header and signing.cjs for why the target
+// platform set, read from argv, is also required.
+const platforms = buildPlatforms(process.argv, process.platform);
+const stamp = autoUpdateStamp({ plan, platforms });
 
 // Printed on EVERY build, signed or not. The failure mode the operator named is
 // a green build that silently produced something Gatekeeper rejects; this is
 // the line that makes that impossible to miss.
 console.log(signingBanner(plan));
 console.log(windowsSigningBanner(winPlan));
+console.log(stamp.reason);
 
 if (plan.fatal) {
   // A release build that cannot be a release must not produce an artifact at
@@ -47,6 +68,13 @@ if (plan.fatal) {
   // succeed and leave the check to a human reading scrollback.
   console.error("Refusing to build: NH_REQUIRE_SIGNED is set but this "
     + "environment cannot produce a signed, notarized app.");
+  process.exit(1);
+}
+
+if (stamp.fatal) {
+  // Same shape as the plan.fatal refusal above: a state where no correct
+  // single artifact can be produced must not produce one at all.
+  console.error(`Refusing to build: ${stamp.reason}`);
   process.exit(1);
 }
 
@@ -124,6 +152,13 @@ const mac = {
 // differs from Squirrel.Mac in that it CAN install an unsigned update, but that
 // path is unverified on this machine, and shipping an update path nobody has
 // watched work is exactly the "guessing wrong" this file's header rejects.
+// That `false` is now enforced by construction rather than inherited from an
+// uncredentialed environment: `stamp` (autoUpdateStamp) forces it false for
+// any non-mac-only target set regardless of Apple credentials, and the
+// `beforePack` guard (assertStampMatchesPlatform) refuses the win32 pack
+// outright if it were ever true. `grep -c "APPLE_\|CSC_" .github/workflows/ci.yml`
+// is 0 — CI never held Apple credentials, so no wrong value has ever shipped;
+// this closes the case where an operator's own credentialed shell also builds win/linux.
 const win = {
   target: ["nsis", "zip"],
   // Same art as desktop/build/icon.icns and icon.png, so every platform wears the same
@@ -163,6 +198,9 @@ const win = {
 // is emitted for the AppImage target; nhCanAutoUpdate stays false on Linux
 // exactly as on the shipped unsigned Windows app (no update path nobody has
 // watched work) — the signed and notarized Mac app stamps it true instead.
+// As on Windows, that `false` is enforced by construction: `autoUpdateStamp`
+// forces it false for any non-mac-only target set regardless of Apple
+// credentials, backstopped by the `beforePack` guard on the linux pack.
 //
 // NOT signed, and the filename does NOT say so. "Signed" is not a property of
 // a .deb or an AppImage (apt REPOSITORIES are signed, packages are not), and a
@@ -229,8 +267,8 @@ const linux = {
 // hard "damaged" failure back into the ordinary "unidentified developer"
 // prompt a tester can accept, and it restores the real bundle identifier.
 // It does NOT notarize and does NOT enable auto-update — `nhCanAutoUpdate`
-// still comes from the signing plan, so this cannot make the updater offer an
-// install macOS would refuse.
+// still comes from the signing plan AND the requested target (see `stamp`
+// above), so this cannot make the updater offer an install macOS would refuse.
 async function adhocSeal(context) {
   if (context.electronPlatformName !== "darwin") return;
   // `plan.identity !== null`, NOT `mode === "signed"`. An independent reviewer
@@ -327,9 +365,12 @@ module.exports = {
   ],
   // Read at runtime by main.mjs (packagedSigning) and never from the live
   // environment, so a user cannot enable the update path by exporting a var.
+  // nhCanAutoUpdate comes from `stamp`, not `plan.canAutoUpdate` directly —
+  // see the header and signing.cjs: the macOS verdict alone is not enough,
+  // because a single invocation can also emit a non-mac target.
   extraMetadata: {
     nhSigning: plan.mode,
-    nhCanAutoUpdate: plan.canAutoUpdate,
+    nhCanAutoUpdate: stamp.canAutoUpdate,
   },
   mac,
   win,
@@ -363,7 +404,16 @@ module.exports = {
   // the macOS hook exists to repair a signature electron-builder INVALIDATES by
   // injecting into Contents/, and Windows has no equivalent seal to break. An
   // unsigned .exe here is simply unsigned, not "damaged".
-  beforePack: async () => assertElectronNoticesPresent(),
+  //
+  // assertStampMatchesPlatform runs FIRST and against the REAL
+  // electronPlatformName electron-builder hands beforePack per platform: it is
+  // the fail-closed backstop for any invocation shape buildPlatforms could not
+  // see from argv (the Node API, a future flag alias) — cheaper than the
+  // notices check, and it is the actual gate this ticket is about.
+  beforePack: async (context) => {
+    assertStampMatchesPlatform(context.electronPlatformName, stamp.canAutoUpdate);
+    await assertElectronNoticesPresent();
+  },
   afterPack: adhocSeal,
   // Generates latest-mac.yml locally. `--publish never` on every script means
   // nothing is ever uploaded; this block only tells the updater where to LOOK

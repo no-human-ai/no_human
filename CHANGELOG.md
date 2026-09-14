@@ -6,6 +6,23 @@ All notable changes to no_human. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- `nhCanAutoUpdate` was computed only from the macOS signing plan, then
+  stamped into the single `extraMetadata` block shared by every
+  electron-builder platform target — so a credentialed Apple environment
+  that also emitted a Windows or Linux artifact (an operator's own signed
+  release shell, `--mac --win`, etc.) stamped `true` into that artifact too,
+  even though the Windows/Linux update path is unverified and, per
+  electron-updater's own NSIS signature check, would run an unsigned
+  installer with no Authenticode verification at all. `nhCanAutoUpdate` is
+  now computed from the macOS plan AND the platform(s) this invocation
+  actually targets (`autoUpdateStamp` in `desktop/signing.cjs`): `true` only
+  when every targeted platform is macOS, `false` otherwise, and a hard
+  refusal (nonzero exit) if a single invocation mixes a signed mac target
+  with any other platform, since no single stamp is correct for both. A
+  `beforePack` guard (`assertStampMatchesPlatform`) backstops any invocation
+  shape argv parsing can't see.
+
 ## [0.2.3] — 2026-09-14
 
 ### Added
