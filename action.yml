@@ -22,9 +22,12 @@ inputs:
     required: false
     default: "auto"
   model:
-    description: The model the reviewer runs as.
+    description: >-
+      The model the reviewer runs as. Defaults to this project's own
+      reviewer default (config.DEFAULT_CONFIG["llm"]["review_model"]) — the
+      model the published catch-rate was actually measured on.
     required: false
-    default: "claude-opus-5"
+    default: "claude-opus-4-8"
   max_files:
     description: >-
       Cost bound: the maximum number of changed files (sorted by path) sent

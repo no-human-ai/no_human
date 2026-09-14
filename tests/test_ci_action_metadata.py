@@ -16,8 +16,23 @@ import pytest
 import yaml
 
 from no_human.ci_action import run
+from no_human.config import DEFAULT_CONFIG
 
 pytestmark = pytest.mark.repoguard
+
+#: The reviewer model this project actually measures its catch-rate on
+#: (config.py's own default), read directly rather than through
+#: `run.DEFAULT_MODEL` — so a hard-coded literal in run.py that happens to
+#: match action.yml but has drifted from config.py still fails here.
+REPO_REVIEW_MODEL = DEFAULT_CONFIG["llm"]["review_model"]
+
+
+def test_run_default_model_matches_the_repos_own_reviewer_default():
+    assert run.DEFAULT_MODEL == REPO_REVIEW_MODEL, (
+        "ci_action.run.DEFAULT_MODEL must derive from (not merely equal) "
+        "config.DEFAULT_CONFIG['llm']['review_model'], so the Action never "
+        "ships a model the project has not measured as its reviewer"
+    )
 
 REPO = Path(__file__).resolve().parents[1]
 ACTION_YML = REPO / "action.yml"
@@ -71,7 +86,7 @@ def test_action_yml_has_no_double_brace_expression_anywhere():
     "input_name, expected_default",
     [
         ("credential_mode", run.DEFAULT_CREDENTIAL_MODE),
-        ("model", run.DEFAULT_MODEL),
+        ("model", REPO_REVIEW_MODEL),
         ("max_files", str(run.DEFAULT_MAX_FILES)),
         ("fail_on_findings", run.DEFAULT_FAIL_ON_FINDINGS),
         ("dry_run", run.DEFAULT_DRY_RUN),

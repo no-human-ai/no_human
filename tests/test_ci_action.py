@@ -610,6 +610,16 @@ def test_write_surface_violation_blocks_disallowed_paths():
         client._send("PATCH", "/repos/o/r/pulls/1")
     with pytest.raises(github.WriteSurfaceViolation):
         client._send("POST", "/repos/o/r/pulls/1/reviews")
+    # PUT /.../pulls/{n}/merge is the actual merge endpoint, and DELETE would
+    # remove a comment or a ref — both must be refused exactly like the
+    # POST/PATCH cases above. A one-change-at-a-time ablation (an early
+    # `return` for either verb in `_assert_write_allowed`) must turn these red.
+    with pytest.raises(github.WriteSurfaceViolation):
+        client._send("PUT", "/repos/o/r/pulls/1/merge")
+    with pytest.raises(github.WriteSurfaceViolation):
+        client._send("DELETE", "/repos/o/r/issues/comments/9")
+    with pytest.raises(github.WriteSurfaceViolation):
+        client._send("DELETE", "/repos/o/r/git/refs/heads/main")
     assert calls == [], "a refused write must never reach the transport"
 
 

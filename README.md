@@ -215,11 +215,18 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: no-human-ai/no_human@v1
+      - uses: no-human-ai/no_human@main # no versioned tag yet — see below
         with:
           credential: ${{ secrets.ANTHROPIC_API_KEY }}
           github_token: ${{ github.token }}
 ```
+
+This Action has no versioned release yet — `no-human-ai/no_human`'s tags
+today run `v0.1.0` through `v0.2.3`, none of which contain `action.yml`. A
+`v1` tag will be cut at the first release that ships it. Until then, pin to
+`@main` for the latest revision, or better, pin to the exact commit SHA
+you've reviewed (`no-human-ai/no_human@<sha>`) so a later change to `main`
+can't alter what your workflow runs.
 
 `credential` takes either shape of your own Anthropic credential — an
 `ANTHROPIC_API_KEY` (`sk-ant-api...`) or a Claude subscription OAuth token
@@ -236,8 +243,12 @@ the run fails loudly at exit code `2` — naming the `credential` input and
 the secret it expects — before the reviewer, or any GitHub API call, ever
 runs. The same fail-closed rule applies if the reviewer itself errors out or
 the model call is rejected: those runs exit `2` too. The Action never posts
-a PASS, and never exits `0`, for a run where the review did not actually
-happen — a green check always means the gate ran.
+a PASS, and never exits `0`, for a credential or reviewer failure — but a
+green check does **not** always mean the gate reviewed code: a fork pull
+request skips with exit `0` and no reviewer call (see below), and a pull
+request with an empty diff (nothing to review) posts a synthetic PASS with
+no reviewer or tamper-guard call. If you make this a required check, treat
+both of those as "did not review," not as an approval.
 
 **Forks are skipped, not reviewed.** A pull request whose head is not this
 repository — including one from an already-deleted fork — never reaches the
@@ -250,10 +261,13 @@ fork's head into a secret-bearing job.
 **Cost is bounded by files, not tokens or time.** `max_files` (default `15`)
 caps how many changed files are sent to the reviewer, sorted by path,
 first-N; the comment reports how many of the total were actually reviewed.
-In rough terms, a single run against a typically-sized pull request is a
-handful of model calls over a capped diff — usually a few cents to a few
-tens of cents of your own Anthropic usage, similar in shape to one local `nh
-review`. Lower `max_files` (or split large pull requests) to spend less.
+The reviewer runs `single_turn`, so each run is exactly one model call over
+the capped diff — in rough terms, a few cents to a few tens of cents of your
+own Anthropic usage depending on diff size, similar in shape to one local `nh
+review`. That is separate from the one-time cost of the runner building the
+Docker image itself (a few tens of seconds, GitHub-hosted-runner compute,
+not model spend) on each run unless your workflow caches the image. Lower
+`max_files` (or split large pull requests) to spend less.
 
 The Action never merges, pushes, approves, or edits anything about the pull
 request beyond its own single comment — enforced in code, not just by

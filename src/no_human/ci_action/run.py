@@ -61,7 +61,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from ..config import API_KEY_VAR, SUBSCRIPTION_TOKEN_VAR, scrub_metered_auth
+from ..config import API_KEY_VAR, DEFAULT_CONFIG, SUBSCRIPTION_TOKEN_VAR, scrub_metered_auth
 from ..core.task import Task
 from ..review.reviewer import AdversarialReviewer, ReviewerUnavailable
 from ..review.selfcheck import ChecklistItem
@@ -72,7 +72,11 @@ from . import github
 # Constants action.yml's input defaults must mirror EXACTLY.                  #
 # --------------------------------------------------------------------------- #
 
-DEFAULT_MODEL = "claude-opus-5"
+#: Mirrors the repo's own reviewer default (config.DEFAULT_CONFIG["llm"]
+#: ["review_model"]) rather than repeating the literal, so the Action can
+#: never silently drift onto a model the project has not measured and does
+#: not ship as its reviewer.
+DEFAULT_MODEL = DEFAULT_CONFIG["llm"]["review_model"]
 DEFAULT_MAX_FILES = 15
 DEFAULT_CREDENTIAL_MODE = "auto"
 DEFAULT_FAIL_ON_FINDINGS = "true"
