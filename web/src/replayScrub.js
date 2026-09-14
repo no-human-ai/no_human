@@ -30,10 +30,15 @@
 //      included. Reserved for endpoints whose response bodies were read
 //      end-to-end (see `API_BODY_CLASSIFICATION`'s `why` for each) and
 //      contain no filesystem paths, no repo/user-chosen names, no operator
-//      text and nothing credential-shaped: `/api/version`, `/api/worker/status`,
-//      `/api/queue/health`. Matching is exact-pathname only — never a prefix
-//      or substring check — so `/api/version` does not accidentally cover
-//      some future `/api/version/history`.
+//      text and nothing credential-shaped: `/api/version`, `/api/queue/health`.
+//      Matching is exact-pathname only — never a prefix or substring check —
+//      so `/api/version` does not accidentally cover some future
+//      `/api/version/history`. `/api/worker/status` was originally on this
+//      list but is NOT: its `watcher_error`/`worker_error`/`health_error`
+//      fields embed raw exception text (`str(exc)`, `f"{type(exc).__name__}:
+//      {exc}"`), and an exception raised while touching a repo's filesystem
+//      path routinely puts that path inside the exception's own message —
+//      see app.py's `worker_status()`.
 //   3. REDACT (everything else, the default): the request LINE (method,
 //      pathname with its query string stripped, status, timing) is kept —
 //      losing that would make replay useless for debugging network activity
@@ -81,7 +86,6 @@ export const REPLAY_EXCLUDED_PATHS = [
 // filesystem- or identity-shaped.
 export const REPLAY_BODY_ALLOWLIST = [
   "/api/version", // {version, distName, published} — no paths, no names
-  "/api/worker/status", // running/inflight/max_workers/idle_reason/crash-rate counters/timestamps
   "/api/queue/health", // pure timestamps via core.health.queue_health
 ];
 
@@ -101,10 +105,10 @@ export const API_BODY_CLASSIFICATION = {
 
   // --- Tier 2: allowlisted, body passed through unchanged ---
   "/api/version": { tier: "allow", why: "response is {version, distName, published} only — verified against app.py, no paths or names" },
-  "/api/worker/status": { tier: "allow", why: "response is worker counters/timestamps only — verified against app.py, no paths or names" },
   "/api/queue/health": { tier: "allow", why: "response is queue timestamps only, via core.health.queue_health — verified against app.py" },
 
   // --- Tier 3: redacted. Filesystem paths / repo identity ---
+  "/api/worker/status": { tier: "redact", why: "watcher_error/worker_error/health_error embed raw exception text (str(exc), f\"{type(exc).__name__}: {exc}\") which routinely contains absolute filesystem paths — see app.py worker_status()" },
   "/api/profiles": { tier: "redact", why: "returns name + absolute repo_path for every configured repo — the original leak this fix addresses" },
   "/api/repos": { tier: "redact", why: "repo listing carries repo paths/names" },
   "/api/repos/discover": { tier: "redact", why: "discovery results carry filesystem paths" },
