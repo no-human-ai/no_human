@@ -228,6 +228,25 @@ def test_git_helper_refuses_non_allowlisted_subcommand(repo):
         run._git(repo.path, "push", "origin", "main")
 
 
+def test_first_changed_line_finds_the_real_hunk_line_not_always_zero(repo):
+    """`_first_changed_line` must return the REAL first-hunk line number for
+    an ordinary modified file, not just its documented 0 fallback — an
+    ablation that made this function always return 0 (degrading every
+    citation to a bare path) would still pass every OTHER existing test,
+    since none of them assert a nonzero line for a plain single-hunk
+    modification."""
+    line = run._first_changed_line(repo.path, repo.base_sha, repo.head_sha, "src/app.py")
+    # `src/app.py` is modified (not newly added) in the head commit (see the
+    # `repo` fixture): its one hunk is `@@ -1,2 +1,2 @@`, so the real
+    # before-side start line is 1 — nonzero, and not a coincidence of the
+    # 0-fallback.
+    assert line == 1
+
+
+def test_first_changed_line_returns_zero_for_unknown_path(repo):
+    assert run._first_changed_line(repo.path, repo.base_sha, repo.head_sha, "no/such/file.py") == 0
+
+
 # --------------------------------------------------------------------------- #
 # Trust gate                                                                   #
 # --------------------------------------------------------------------------- #
@@ -239,6 +258,45 @@ def test_pull_request_target_refused_even_with_valid_credential(env, monkeypatch
     out = capsys.readouterr().out
     assert "pull_request_target" in out
     assert "::error::" in out
+    # The refusal must name WHY, not just cite the trigger name — a
+    # maintainer reading this in a job log needs the security reasoning,
+    # not just "this event is unsupported".
+    assert "privilege-escalation" in out
+
+
+def test_workspace_head_must_match_pr_head_sha(env, monkeypatch, repo, capsys):
+    """`actions/checkout` defaults to an ephemeral MERGE commit on
+    `pull_request` events, not the PR's actual head. If the on-disk
+    workspace's HEAD silently diverges from `pull_request.head.sha`, this
+    Action would review/cite line numbers against the wrong tree. Pin that
+    `main()` refuses to run rather than let that happen, and that a
+    correctly-checked-out workspace (HEAD == head_sha, the common case in
+    this test suite's own `env` fixture) is untouched by this check."""
+    # A third commit moves HEAD without updating the event payload's
+    # `head.sha` — simulating actions/checkout leaving an ephemeral merge
+    # commit checked out.
+    (repo.path / "src" / "app.py").write_text("def f():\n    return 3\n")
+    _git(repo.path, "add", ".")
+    _git(repo.path, "commit", "-q", "-m", "ephemeral merge commit")
+    actual_head = _git(repo.path, "rev-parse", "HEAD").strip()
+    assert actual_head != repo.head_sha
+
+    monkeypatch.setattr(run, "AdversarialReviewer", _fake_reviewer(exc=AssertionError("must not run")))
+    assert run.main() == run.EXIT_DID_NOT_RUN
+    out = capsys.readouterr().out
+    assert actual_head in out
+    assert repo.head_sha in out
+    assert "ref: ${{ github.event.pull_request.head.sha }}" in out
+
+
+def test_workspace_head_matching_pr_head_sha_is_not_blocked(env, monkeypatch):
+    """Control for the check above: when the checkout's HEAD already equals
+    `pull_request.head.sha` (the `env` fixture's normal state), the new
+    HEAD-vs-head_sha guard must not fire a false positive."""
+    monkeypatch.setattr(run, "AdversarialReviewer", _fake_reviewer(_pass_decision()))
+    calls: list[tuple[str, str]] = []
+    _mock_client(monkeypatch, _no_comments_then_create_handler(calls))
+    assert run.main() == run.EXIT_OK
 
 
 def test_unsupported_event_refused(env, monkeypatch):
@@ -285,11 +343,19 @@ def test_missing_credential_fails_loudly_naming_it(env, monkeypatch, capsys):
     assert "credential" in out.lower()
 
 
-def test_missing_github_token_fails_loudly(env, monkeypatch):
+def test_missing_github_token_fails_loudly(env, monkeypatch, capsys):
     monkeypatch.setenv("INPUT_GITHUB_TOKEN", "")
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
     monkeypatch.setattr(run, "AdversarialReviewer", _fake_reviewer(_pass_decision()))
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("a missing github_token must make zero GitHub API calls")
+
+    _mock_client(monkeypatch, handler)
     assert run.main() == run.EXIT_DID_NOT_RUN
+    out = capsys.readouterr().out
+    assert "::error::" in out
+    assert "github_token" in out.lower() or "token" in out.lower()
 
 
 @pytest.mark.parametrize(
@@ -335,6 +401,22 @@ def test_oauth_mode_scrubs_api_key(monkeypatch):
     assert cred.mode == "oauth"
     assert os.environ[run.SUBSCRIPTION_TOKEN_VAR] == "sk-ant-oat-new"
     assert run.API_KEY_VAR not in os.environ
+
+
+def test_oauth_mode_scrubs_profile_suffixed_oauth_vars(monkeypatch):
+    """`api_key` mode scrubs `CLAUDE_CODE_OAUTH_TOKEN_<PROFILE>` vars via
+    `_pop_oauth_bare_and_profiles` (see test_api_key_mode_scrubs_...). The
+    OAUTH branch must scrub the SAME profile-suffixed leftovers too — a
+    stale `CLAUDE_CODE_OAUTH_TOKEN_WORK` from a previous run/profile must
+    not coexist with the new bare token this run is about to set, since
+    some SDK paths prefer a profile-suffixed var over the bare one."""
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN_WORK", "stale-oauth-work")
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN_PERSONAL", "stale-oauth-personal")
+    cred = run._configure_credential("sk-ant-oat-new", "oauth")
+    assert cred.mode == "oauth"
+    assert os.environ[run.SUBSCRIPTION_TOKEN_VAR] == "sk-ant-oat-new"
+    assert "CLAUDE_CODE_OAUTH_TOKEN_WORK" not in os.environ
+    assert "CLAUDE_CODE_OAUTH_TOKEN_PERSONAL" not in os.environ
 
 
 def test_credential_value_never_appears_unmasked(env, monkeypatch, capsys):
@@ -542,9 +624,132 @@ def test_reviewer_unexpected_exception_means_did_not_run(env, monkeypatch):
 
 
 def test_transport_error_decision_means_did_not_run(env, monkeypatch):
+    """`transport_error=True` means the reviewer session errored or never
+    returned a result — the SAME "did not run" outcome as a raised
+    `ReviewerUnavailable`, even though this decision otherwise looks
+    checklist-shaped (`passed=False`, empty checklist). Assert zero GitHub
+    API calls too: a transport-errored decision must never reach the
+    upsert path and post a comment, which would look like a real verdict."""
     decision = ReviewDecision(passed=False, checklist=[], transport_error=True)
     monkeypatch.setattr(run, "AdversarialReviewer", _fake_reviewer(decision))
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("a transport-errored decision must make zero GitHub API calls")
+
+    _mock_client(monkeypatch, handler)
     assert run.main() == run.EXIT_DID_NOT_RUN
+
+
+def test_reviewer_veto_isolates_blocking_or_from_tampered_and_passed(env, monkeypatch):
+    """Isolate the FIRST disjunct of `verdict = "FAIL" if (blocking or
+    tampered or not decision.passed) else "PASS"`: a checklist item graded
+    blocking must fail the gate even when `decision.passed=True` (the
+    reviewer's own top-level verdict disagrees with its checklist) and the
+    tamper guard is clean — so an ablation that deleted the `blocking or`
+    term specifically (leaving only `tampered or not decision.passed`)
+    would still show green here without this test."""
+    item = ChecklistItem(label="bug", passed=False, file="src/app.py", line=2,
+                          comment="off-by-one", severity="high")
+    decision = ReviewDecision(passed=True, checklist=[item])
+    monkeypatch.setattr(run, "AdversarialReviewer", _fake_reviewer(decision))
+    bodies = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(200, json=[])
+        bodies.append(json.loads(request.content))
+        return httpx.Response(201, json={"id": 1, "body": ""})
+
+    _mock_client(monkeypatch, handler)
+    assert run.main() == run.EXIT_FINDINGS
+    assert "❌ FAIL" in bodies[0]["body"]
+    assert "src/app.py:2" in bodies[0]["body"]
+
+
+def test_tampered_true_with_no_reasons_still_fails_via_or_tampered(env, monkeypatch):
+    """Isolate the SECOND disjunct: an aggregate-tampered report with an
+    EMPTY `reasons` list produces zero `tamper_items`, so `blocking` stays
+    exactly `decision.blocking_items` (empty here) and only `tampered`
+    itself carries the fail signal. An ablation that dropped the bare
+    `tampered or` term would still show green here without this test."""
+    report = TamperReport(
+        tampered=True, tests_before=2, tests_after=1,
+        assertions_before=2, assertions_after=1, reasons=[],
+    )
+    monkeypatch.setattr(run, "tamper_check_between", lambda *a, **kw: report)
+    monkeypatch.setattr(run, "AdversarialReviewer", _fake_reviewer(_pass_decision()))
+    bodies = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(200, json=[])
+        bodies.append(json.loads(request.content))
+        return httpx.Response(201, json={"id": 1, "body": ""})
+
+    _mock_client(monkeypatch, handler)
+    assert run.main() == run.EXIT_FINDINGS
+    assert "❌ FAIL" in bodies[0]["body"]
+    assert "TAMPERED" in bodies[0]["body"]
+
+
+def test_net_zero_cross_file_tamper_reasons_are_advisory_not_blocking(env, monkeypatch):
+    """`tamper_report.tampered=False` (the guard's own AGGREGATE verdict)
+    with a non-empty `reasons` list (e.g. a net-zero move of an assertion
+    from one file to another during an ordinary refactor) must render those
+    reasons as ADVISORY context, never as a blocking failure — the
+    aggregate, not the per-file free text, is the fail signal. This pins
+    the caller-side half of that routing (the `if tampered: ... else: ...`
+    branch in `main`), independent of `_tamper_checklist_items`'s own
+    severity-mirroring."""
+    report = TamperReport(
+        tampered=False, tests_before=2, tests_after=2,
+        assertions_before=4, assertions_after=4,
+        reasons=["tests/bar.py: assertions 3->2 (moved to tests/other.py)"],
+    )
+    monkeypatch.setattr(run, "tamper_check_between", lambda *a, **kw: report)
+    monkeypatch.setattr(run, "AdversarialReviewer", _fake_reviewer(_pass_decision()))
+    bodies = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(200, json=[])
+        bodies.append(json.loads(request.content))
+        return httpx.Response(201, json={"id": 1, "body": ""})
+
+    _mock_client(monkeypatch, handler)
+    assert run.main() == run.EXIT_OK
+    body = bodies[0]["body"]
+    assert "✅ PASS" in body
+    # The blocking table is empty ("None.") ...
+    blocking_idx = body.find("### Blocking findings")
+    advisory_idx = body.find("Advisory findings")
+    assert blocking_idx != -1 and advisory_idx != -1
+    assert "None." in body[blocking_idx:advisory_idx]
+    # ... and the reason string landed in the advisory section instead.
+    assert "moved to tests/other.py" in body[advisory_idx:]
+
+
+def test_github_api_url_env_var_is_honored_for_ghes(env, monkeypatch):
+    """On GitHub Enterprise Server, `GITHUB_API_URL` is set by the runner to
+    the GHES host's own REST API (not api.github.com). Pin that `main`
+    reads it and threads it into `github.GitHubClient(api_url=...)` — an
+    Action that hard-codes `github.DEFAULT_API_URL` would silently call the
+    wrong host (and, for a GHES instance behind a firewall, simply fail to
+    connect) on every GHES-hosted run."""
+    monkeypatch.setenv("GITHUB_API_URL", "https://ghes.example.com/api/v3")
+    monkeypatch.setattr(run, "AdversarialReviewer", _fake_reviewer(_pass_decision()))
+    seen_urls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_urls.append(str(request.url))
+        if request.method == "GET":
+            return httpx.Response(200, json=[])
+        return httpx.Response(201, json={"id": 1, "body": ""})
+
+    _mock_client(monkeypatch, handler)
+    assert run.main() == run.EXIT_OK
+    assert seen_urls, "expected at least one GitHub API call"
+    assert all(url.startswith("https://ghes.example.com/api/v3") for url in seen_urls)
 
 
 def test_dry_run_makes_no_http_calls(env, monkeypatch, capsys):

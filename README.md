@@ -206,6 +206,7 @@ on:
   pull_request:
 
 permissions:
+  contents: read
   pull-requests: write
 
 jobs:
@@ -215,11 +216,22 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
       - uses: no-human-ai/no_human@main # no versioned tag yet — see below
         with:
           credential: ${{ secrets.ANTHROPIC_API_KEY }}
           github_token: ${{ github.token }}
 ```
+
+`permissions.contents: read` lets `actions/checkout` read this repository;
+`pull-requests: write` is what lets the Action post/update its own comment.
+Neither grants anything broader. The checkout step's explicit
+`ref: ${{ github.event.pull_request.head.sha }}` matters too: on a
+`pull_request` event, `actions/checkout` otherwise checks out an ephemeral
+merge commit rather than the PR's actual head, and the Action reviews and
+cites line numbers against whatever tree is on disk — it refuses to run
+rather than review the wrong one, so omitting `ref:` here turns into a red,
+actionable exit `2`, not a silent misreview.
 
 This Action has no versioned release yet — `no-human-ai/no_human`'s tags
 today run `v0.1.0` through `v0.2.3`, none of which contain `action.yml`. A
@@ -257,6 +269,20 @@ instead of running review code against an unvetted head in a job that can see
 your secrets. `pull_request_target` is refused outright (exit 2), even with a
 valid credential, because that trigger is the one shape that can carry a
 fork's head into a secret-bearing job.
+
+**Dependabot pull requests fail closed with exit `2`, and that is GitHub's
+restriction, not this Action's.** A Dependabot-opened pull request has the
+same repository as its head — it is not a fork, so the check above does not
+skip it — but GitHub itself withholds repository secrets (and downgrades
+`GITHUB_TOKEN` to read-only) from workflow runs it triggers on the
+`pull_request` event, as a platform-level guard against a lockfile update
+carrying a malicious install script into a secret-bearing job. `credential`
+therefore arrives empty on those runs, and this Action's own fail-closed rule
+(above) makes that a red, actionable exit `2` naming the missing secret, not
+a silent skip or a false PASS. If you require this check and want Dependabot
+PRs to go green, either exempt them in your branch protection rules or accept
+that they need a maintainer's manual re-run/approval like any other check
+that needs a secret GitHub won't hand to a bot-triggered job.
 
 **Cost is bounded by files, not tokens or time.** `max_files` (default `15`)
 caps how many changed files are sent to the reviewer, sorted by path,

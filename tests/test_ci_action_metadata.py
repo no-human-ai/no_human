@@ -138,8 +138,15 @@ def test_dockerfile_never_bakes_in_a_credential_literal():
 
 def test_dockerfile_entrypoint_is_the_one_shot_module():
     text = DOCKERFILE.read_text(encoding="utf-8")
-    assert "no_human.ci_action.run" in text
-    assert re.search(r"ENTRYPOINT\s*\[.*no_human\.ci_action\.run.*\]", text)
+    entrypoint_match = re.search(r"ENTRYPOINT\s*\[([^\]]*)\]", text)
+    assert entrypoint_match, "Dockerfile.action must declare an ENTRYPOINT"
+    if "no_human.ci_action.run" in entrypoint_match.group(0):
+        return  # entrypoint invokes the module directly
+    # Otherwise the entrypoint must point at a script this same Dockerfile
+    # writes, and that script's own content must invoke the module via
+    # `-m no_human.ci_action.run` (never a bare `uv run ...` with no `-m`,
+    # which would silently no-op the review gate while still exiting 0).
+    assert re.search(r"-m\s+no_human\.ci_action\.run", text)
 
 
 def _readme_workflow_snippets() -> list[str]:
@@ -163,6 +170,29 @@ def test_readme_workflow_snippet_parses_and_uses_this_action():
     assert any(u.startswith("no-human-ai/no_human") for u in uses)
     credential_step = next(s for s in steps if s.get("uses", "").startswith("no-human-ai/no_human"))
     assert "credential" in credential_step.get("with", {})
+
+
+def test_readme_workflow_snippet_declares_contents_read_permission():
+    # `actions/checkout` needs `contents: read` to read the repository at
+    # all; a snippet a user copies verbatim that omits it relies on a
+    # workflow-level default permission the org/repo may have locked down,
+    # which is exactly the kind of silent failure this snippet must not ship.
+    snippets = [s for s in _readme_workflow_snippets() if "no-human-ai/no_human" in s]
+    parsed = yaml.safe_load(snippets[0])
+    assert parsed.get("permissions", {}).get("contents") == "read"
+
+
+def test_readme_workflow_snippet_checkout_pins_pr_head_sha():
+    # `actions/checkout` defaults to the ephemeral MERGE commit on
+    # `pull_request` events, not the PR's actual head — see
+    # `run.py::main`'s HEAD-vs-head_sha check, which refuses to run rather
+    # than review the wrong tree. The README's own example must not teach a
+    # user to hit that refusal on their very first run.
+    snippets = [s for s in _readme_workflow_snippets() if "no-human-ai/no_human" in s]
+    parsed = yaml.safe_load(snippets[0])
+    steps = next(iter(parsed["jobs"].values()))["steps"]
+    checkout_step = next(s for s in steps if s.get("uses", "").startswith("actions/checkout"))
+    assert checkout_step.get("with", {}).get("ref") == "${{ github.event.pull_request.head.sha }}"
 
 
 def test_readme_workflow_snippet_passes_github_token_explicitly(action_yml):

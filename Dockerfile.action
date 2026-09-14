@@ -3,13 +3,16 @@
 # Image for the `no_human review gate` GitHub Action (action.yml).
 #
 # For a `using: docker` action, the runner builds this image with the
-# REPOSITORY ROOT as the build context (not this file's directory) — verified
-# against a real Actions run, where a `Dockerfile` living in a subdirectory
-# with only itself in it built against an empty context ("transferring
-# context: 2B done") and every `COPY src/ ...` failed "not found". That is why
-# this file lives at the repo root even though the product's own `Dockerfile`
-# and `Dockerfile.mcp` also do — the build context requirement, not
-# convention, puts it here.
+# DIRECTORY CONTAINING action.yml as the build context — verified against a
+# real Actions run, where a `Dockerfile` living in a subdirectory (with
+# `action.yml` pointing at it by relative path, and only the Dockerfile
+# itself in that subdirectory) built against an empty context ("transferring
+# context: 2B done") and every `COPY src/ ...` failed "not found". Since
+# `action.yml` lives at the repository root, this file must too — putting it
+# anywhere else makes its own build context a subdirectory that does not
+# contain `src/`, `pyproject.toml`, etc. That is why this file lives at the
+# repo root even though the product's own `Dockerfile` and `Dockerfile.mcp`
+# also do — the build context requirement, not convention, puts it here.
 #
 # NO CREDENTIAL IS BAKED IN. `credential` arrives only at `docker run` time as
 # an environment variable the Action's entrypoint script sets
@@ -38,7 +41,7 @@ RUN mkdir -p /etc/apt/keyrings \
     && apt-get update \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/* \
-    && npm install -g @anthropic-ai/claude-code \
+    && npm install -g @anthropic-ai/claude-code@2.1.270 \
     && npm cache clean --force
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
@@ -52,4 +55,42 @@ COPY migrations/ ./migrations/
 
 RUN uv sync --frozen --no-dev
 
-ENTRYPOINT ["uv", "run", "--no-sync", "python", "-m", "no_human.ci_action.run"]
+# Run as a non-root user. This is not defense-in-depth here — it is load-
+# bearing: verified against a real `docker run`, the `claude` CLI this image
+# shells out to hard-refuses its own permission-skip flag with
+# "--dangerously-skip-permissions cannot be used with root/sudo privileges
+# for security reasons" when the process is UID 0, which every job on this
+# image would otherwise be (no Dockerfile in this repo sets `USER`, so the
+# default is root). Without this, the Action would fail every single run,
+# on every checkout, regardless of credential validity.
+RUN useradd --create-home --uid 1000 --shell /bin/sh nhaction \
+    && chown -R nhaction:nhaction /app
+USER nhaction
+
+# The runner mounts the checked-out PR workspace at a path this image does not
+# control (`/github/workspace`, owned by the RUNNER's UID, not this
+# container's UID 1000), and `uv run`'s project resolution is otherwise
+# relative to the CURRENT DIRECTORY — a plain `ENTRYPOINT ["uv", "run", ...]`
+# would resolve against `/github/workspace` instead of `/app`, and fail to
+# find no_human's own project entirely. `--project /app` below makes that
+# resolution cwd-independent, whatever directory the runner sets as the job's
+# workdir.
+#
+# Git separately refuses to operate on a repository it does not consider
+# "owned" by the current user ("detected dubious ownership") — exactly the
+# runner-owned `/github/workspace` case above, now doubly true since this
+# container no longer runs as root either — so the entrypoint marks it (and
+# any path) as a safe.directory before invoking the module. This has to live
+# here, not in `no_human.ci_action.run`, which only ever runs the `git`
+# subcommands read-only diffing/inspecting a checkout (see
+# `_ALLOWED_GIT_SUBCOMMANDS` in run.py) and must not grow a second
+# subprocess call site to fix a container-setup concern.
+RUN printf '%s\n' \
+        '#!/bin/sh' \
+        'set -eu' \
+        "git config --global --add safe.directory '*'" \
+        'exec uv run --no-sync --project /app python -m no_human.ci_action.run "$@"' \
+        > /home/nhaction/entrypoint.sh \
+    && chmod +x /home/nhaction/entrypoint.sh
+
+ENTRYPOINT ["/home/nhaction/entrypoint.sh"]

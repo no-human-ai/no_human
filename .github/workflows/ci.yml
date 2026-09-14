@@ -539,6 +539,26 @@ jobs:
       - name: Build the product image
         run: docker build -t no-human:ci .
 
+      # The review-gate Action (action.yml / Dockerfile.action) ships as its
+      # own image; nothing else in this workflow builds it, so a broken
+      # `COPY`/`uv sync`/entrypoint here would only be caught by a user's own
+      # PR. No credential is used or needed for this: the smoke test below
+      # runs the built image with NO GitHub Actions env vars set at all, which
+      # must fail closed (exit 2, naming the unsupported/missing event) before
+      # the container ever tries to reach a model or the GitHub API — that is
+      # the one behavior a container smoke test can pin without a secret.
+      - name: Build the review-gate action image
+        run: docker build -f Dockerfile.action -t no-human-action:ci .
+
+      - name: Smoke test — action image fails closed with no event context
+        run: |
+          set +e
+          docker run --rm no-human-action:ci
+          status=$?
+          set -e
+          echo "exit status: $status"
+          test "$status" -eq 2
+
   # GitHub has no per-job `paths:` filter, so a job that only some PRs should
   # pay for can either be labelled by hand or ask what the PR touched. PR #279
   # is why this job exists: its entire content was `desktop/package-lock.json`
