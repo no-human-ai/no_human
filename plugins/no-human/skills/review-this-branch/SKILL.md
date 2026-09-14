@@ -1,0 +1,80 @@
+---
+name: review-this-branch
+description: Run the no_human review gate (fresh-session adversarial reviewer + tamper guard) over the current branch or a GitHub pull request, with no server, no database, and no onboarding, and relay the pass/fail checklist.
+---
+
+# Review this branch
+
+Run `nh gate` to get a fresh-session, adversarial code review and a
+test-tampering check over a diff, right now, with nothing installed or
+running beyond the `nh` CLI itself.
+
+## When to use
+
+- Someone asks "review this branch" / "check this PR" / "is this safe to
+  merge" and wants a real second-model review with file:line citations, not
+  a summary you write yourself.
+- There is **no** no_human server running and **no** `~/.no_human` database
+  set up — unlike `file-a-task`, this skill needs neither. It runs once and
+  exits.
+
+## Prerequisite: your own Claude credential
+
+`nh gate` uses **your own** Claude credential — the same one every other
+`nh` command uses — never one belonging to no_human itself. If none is on
+file, create it with:
+
+```bash
+claude setup-token
+```
+
+`nh gate` also needs the `nh` CLI and the `claude` CLI on `PATH`. If either
+precondition is missing, the command refuses and names exactly what is
+missing — it never prints a pass when it could not actually run.
+
+## Running it
+
+Two invocations, both read-only:
+
+```bash
+nh gate                        # current branch vs. its merge base with origin's default branch
+nh gate --pr <github-pr-url>   # a GitHub pull request's head vs. its merge base
+```
+
+Optional flags: `--repo <path>` to point at a checkout other than the
+current directory, `--base <ref>` to override the comparison base.
+
+The comparison actually used — `working tree branch ... against merge base
+with origin/<default>` or `pull request #N head ... against merge base with
+origin/<default>` — is always printed at the top of the output. If the
+working tree has uncommitted changes, the output says so explicitly and
+those files are **not** reviewed; commit them first if they should be.
+
+## Reading the result: the exit-code contract
+
+| Exit code | Meaning |
+|---|---|
+| `0` | Gate passed: reviewer found no blocking findings **and** the tamper guard found no test-weakening. |
+| `1` | Gate failed: a blocking review finding or a tamper-guard finding (deleted/weakened tests). |
+| `2` | Gate **refused to run** — a named precondition failed (no credential, no upstream, not a git repo, PR fetch failed). |
+
+**On exit `2`, never report a pass.** Relay the exact refusal message back to
+the human (it names the missing credential, missing upstream, or fetch
+failure) instead of guessing at a verdict. Only exit `0` is a pass; treat
+exit `1` and exit `2` identically as "cannot say this is fine" until the
+human has read the printed detail.
+
+Relay the full Markdown checklist `nh gate` prints, including every
+`file:line` citation, back to the human verbatim — do not summarize away the
+citations or the tamper guard's before/after counts.
+
+## Product boundary — read and report only, never write
+
+**This skill only reads and reports. It never commits, pushes, merges, or
+edits a file, and it must never be followed by a commit, a push, an
+approval, or a merge of the pull request on the agent's behalf.** `nh gate`
+itself only runs read-only git plumbing (`rev-parse`, `merge-base`, `diff`,
+`status --porcelain`, and, in PR mode, one additive `git fetch` of the PR's
+ref) plus a read-only reviewer backend. Merge is always the human's
+action — after running this skill, your job is to relay the checklist, not
+to act on it.
