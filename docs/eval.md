@@ -149,9 +149,10 @@ over time; it is the trust signal that matters most.
 ## Reading a bench run: pass^k, escalation latency, and what must not lead
 
 **pass^k: SUPPORTED (yes, not partial).** The bench runner already reruns each
-spec — `nh bench run --trials N` (`src/no_human/cli/commands.py:bench_run:7998`), with a
-spec-major fan-out (`:bench_run:8149`) and `(task_id, trial)` as the checkpoint
-identity (`:bench_run:8027`) so a resumed multi-trial run cannot double-count a spec.Each trial is its own `BenchScore` (`BenchScore.trial`,
+spec — `nh bench run --trials N` (`src/no_human/cli/commands.py:bench_run:8035`), with a
+spec-major fan-out (`:bench_run:8186`) and `(task_id, trial)` as the checkpoint
+identity (`:bench_run:8064`) so a resumed multi-trial run cannot double-count a spec.
+Each trial is its own `BenchScore` (`BenchScore.trial`,
 `src/no_human/eval/northstar.py`). The reliability figure this produces is
 `NorthStarCard.pass_k_rate` — the fraction of specs that passed **every**
 trial, not the mean success rate (`src/no_human/eval/northstar_card.py:NorthStarCard.pass_k_rate:456`) —
