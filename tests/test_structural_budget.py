@@ -1396,14 +1396,16 @@ FROZEN_FILE_LINES = {
     # 6-line `permission_mode` validation to `doctor`, so an invalid
     # `llm.permission_mode` is reported as a contradiction instead of dying at
     # the first task. Measured on the merge result with the scanner below.
-    # 8935 -> 8959 (+24): 2026-09-13 fix — `task_config` and `nh reply
-    # --choose` now persist a `set_task_config` change through the new
-    # `Store.update_task_config` single-column writer (stamping
-    # `context.config_updated_at`) before the existing `update_task_columns`
-    # call, so a concurrent stale handle (e.g. a watcher tick) cannot
-    # silently revert a human's raised cap. Re-anchored onto the #227 rebase
-    # result. Measured via `wc -l src/no_human/cli/commands.py`.
-    "cli/commands.py": 8959,
+    # 8934 -> 8958 (+24, the baseline is the MEASURED line count on the
+    # per-task-cost rebase result, 8934, not the frozen 8935 entry above —
+    # same one-line-stale-baseline gap called out earlier in this file):
+    # 2026-09-13 fix — `task_config` and `nh reply --choose` now persist a
+    # `set_task_config` change through the new `Store.update_task_config`
+    # single-column writer (stamping `context.config_updated_at`) before the
+    # existing `update_task_columns` call, so a concurrent stale handle (e.g.
+    # a watcher tick) cannot silently revert a human's raised cap. Measured
+    # via `wc -l src/no_human/cli/commands.py`.
+    "cli/commands.py": 8958,
     # api/app.py 5338 -> 5346 (+8): same budget-floor warning surfaced by
     # `send-back`/`reply` as `budget_warning` in the JSON response. Net cost
     # was trimmed from a naive +14 to +8 by computing `Bounds.from_config(...)`
