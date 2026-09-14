@@ -1439,7 +1439,11 @@ FROZEN_FILE_LINES = {
     # 6-line `permission_mode` validation to `doctor`, so an invalid
     # `llm.permission_mode` is reported as a contradiction instead of dying at
     # the first task. Measured on the merge result with the scanner below.
-    "cli/commands.py": 8935,
+    # 8935 -> 8972 (+37): new `nh gate` verb, a thin click wrapper over
+    # `review.oneshot.run_gate` that runs the fresh-session reviewer and the
+    # tamper guard over the current branch or a GitHub PR with no daemon, no
+    # server, and no Store. Measured on this tree with the scanner below.
+    "cli/commands.py": 8972,
     # api/app.py 5338 -> 5346 (+8): same budget-floor warning surfaced by
     # `send-back`/`reply` as `budget_warning` in the JSON response. Net cost
     # was trimmed from a naive +14 to +8 by computing `Bounds.from_config(...)`
