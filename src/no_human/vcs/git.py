@@ -183,16 +183,14 @@ log = logging.getLogger("no_human.vcs")
 
 
 def _within(path: Path, root: Path) -> bool:
-    """Is *path* inside *root*? String containment on already-resolved paths.
+    """Is *path* inside *root*? Compares path COMPONENTS, not strings — a
+    sibling whose name merely starts with *root* (`/repo-backup` against
+    `/repo`) is correctly OUTSIDE, where a string prefix test would admit it.
 
-    `Path.is_relative_to` is 3.9+, and this is the same test `relative_to`
-    performs above without the exception round trip.
+    Both arguments must already be resolved: this answers a containment
+    question about the paths as given and follows no links itself.
     """
-    try:
-        path.relative_to(root)
-    except ValueError:
-        return False
-    return True
+    return path.is_relative_to(root)
 
 
 def _branch_protected(branch: str, never_push_to: list[str]) -> bool:
