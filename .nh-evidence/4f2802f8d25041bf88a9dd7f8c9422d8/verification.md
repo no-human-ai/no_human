@@ -1,182 +1,117 @@
 # How I verified this — full log
 
-_Harness-captured record for task `4f2802f8`, commit `cd65d61e5099f5b255e1984cb058e321584dd4ec` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `4f2802f8`, commit `a185a27511ba40873e854e957c5a095a913f7429` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ## How I verified this
-11 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
+7 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
 
 ### test
-- `uv run pytest -q tests/test_exec_names.py -k "capitalised_git_push_is_denied_in_the_default" 2>&1 | tail -40`
+- `uv run pytest -q tests/test_exec_names.py tests/test_guard.py tests/test_structural_budget.py 2>&1 | tail -60`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-.                                                                        [100%]
-=============================== warnings summary ===============================
-tests/test_exec_names.py:297
-  /Users/eyalgolan/.<redacted>/worktrees/4f2802f8d25041bf88a9dd7f8c9422d8.52752.4d76b4bc/tests/test_exec_names.py:297: SyntaxWarning: invalid escape sequence '\s'
-    lexical fallback at `evaluate`'s `\bgit\s+push\b` check, which now also
-
--- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-1 passed, 72 deselected, 1 warning in 0.56s
+........................................................................ [ 20%]
+........................................................................ [ 40%]
+........................................................................ [ 60%]
+........................................................................ [ 80%]
+.......................................................................  [100%]
+359 passed in 27.35s
 ```
 
-- `uv run pytest -q tests/test_exec_names.py 2>&1 | tail -40`
+- `uv run pytest -q tests/test_exec_names.py::test_the_runner_recursion_folds_a_wrapped_name_for_git_too -v 2>&1 | tail -15`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-........................................................................ [ 98%]
-.                                                                        [100%]
-73 passed in 10.59s
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.1.1, pluggy-1.6.0
+<redacted> isolated HOME: /var/folders/1r/3r0rt1jd4j1456rsg_fh4d380000gn/T/nh-test-home-5vi6whvt
+rootdir: /Users/eyalgolan/.<redacted>/worktrees/4f2802f8d25041bf88a9dd7f8c9422d8.52752.7ff58938
+configfile: pyproject.toml
+plugins: anyio-4.14.0, no-human-0.2.2, cov-7.1.0, xdist-3.8.0, asyncio-1.4.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 1 item
+
+tests/test_exec_names.py .                                               [100%]
+
+============================== 1 passed in 0.77s ===============================
 ```
 
-- `uv run pytest -q tests/test_guard.py tests/test_scheduling_wrappers.py tests/test_readme_claims.py 2>&1 | tail -60`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-........................................................................ [ 16%]
-........................................................................ [ 33%]
-........................................................................ [ 49%]
-........................................................................ [ 66%]
-...........................s.s.s.s.s.s.s.s.s.s.......................... [ 82%]
-.....................s..........................s....................... [ 99%]
-..                                                                       [100%]
-422 passed, 12 skipped in 24.74s
-```
-
-- `uv run pytest -q tests/test_structural_budget.py tests/test_frozen_snapshot_guard.py tests/test_scope_guard.py 2>&1 | tail -60`
+- `uv run pytest -q tests/test_exec_names.py tests/test_guard.py tests/test_structural_budget.py 2>&1 | tail -40`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-........................................................................ [ 75%]
-........................                                                 [100%]
-96 passed in 33.47s
-```
+........................................................................ [ 20%]
+........................................................................ [ 40%]
+........................................................................ [ 60%]
+........................................................................ [ 80%]
+..........................................................F............  [100%]
+=================================== FAILURES ===================================
+_____
+[... 1,038 of 2,177 characters omitted from the middle ...]
+'agent/guard...atchets down'] == []
+E             
+E             Left contains one more item: 'agent/guard.py: frozen 2969, now 2985 (+16); this budget only ratchets down'
+E             Use -v to get more diff
 
-- `uv run pytest -q tests/test_exec_names.py tests/test_guard.py tests/test_scheduling_wrappers.py tests/test_readme_claims.py tests/test_structural_budget.py tests/test_frozen_snapshot_guard.py tests/test_scope_guard.py 2>&1 | tail -30`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-........................................................................ [ 11%]
-........................................................................ [ 23%]
-........................................................................ [ 35%]
-........................................................................ [ 47%]
-........................................................................ [ 59%]
-............................s.s.s.s.s.s.s.s.s.s......................... [ 71%]
-......................s..........................s...................... [ 83%]
-........................................................................ [ 95%]
-...........................                                              [100%]
-591 passed, 12 skipped in 57.22s
-```
-
-- `uv run pytest -q tests/test_exec_names.py -k "test_a_capitalised_git_push_is_denied_in_the_default_session_too" 2>&1 | tail -30`
-
-```
-to close.
-    
-        NOT closed by this fix, and not claimed to be: a runner-recursion form
-        that interposes a flag between the capitalised binary and `push` (`timeout
-        30 GIT -C . push origin main`) defeats this contiguous lexical pattern
-        too. `test_the_runner_recursion_folds_a_wrapped_name_for_git_too` above
-        already covers that shape, but only in the `readonly=True` (write-block)
-        path -- see its docstring."""
-        rows = (
-            'sh -c "GIT push origin main"',
-            'bash -c "GIT push origin main"',
-            "timeout 30 GIT push origin main",
-            "xargs GIT push origin main",
-        )
-    
-        d
-[... 516 of 1,655 characters omitted from the middle ...]
-0 GIT push origin main': False} != {'timeout 30 GIT push origin main': True}
-E         {'xargs GIT push origin main': False} != {'xargs GIT push origin main': True}
-E         Use -v to get more diff
-
-tests/test_exec_names.py:514: AssertionError
+tests/test_structural_budget.py:2130: AssertionError
 =========================== short test summary info ============================
-FAILED tests/test_exec_names.py::test_a_capitalised_git_push_is_denied_in_the_default_session_too
-1 failed, 72 deselected in 0.45s
+FAILED tests/test_structural_budget.py::test_no_frozen_entry_has_grown - Asse...
+1 failed, 358 passed in 25.39s
 ```  
-  _excerpt - 1,655 characters of output in total_
+  _excerpt - 2,175 characters of output in total_
 
-- `cp /tmp/guard_fixed_backup.py src/<redacted>/agent/guard.py uv run pytest -q tests/test_exec_names.py -k "test_a_capitalised_git_push_is_denied_in_the_default_session_too" 2>&1 | tail -10`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-.                                                                        [100%]
-1 passed, 72 deselected in 0.49s
-```
-
-- `uv run pytest -q tests/test_exec_names.py tests/test_guard.py tests/test_scheduling_wrappers.py tests/test_readme_claims.py tests/test_structural_budget.py tests/test_frozen_snapshot_guard.py tests/test_scope_guard.py 2>&1 | tail -30`
+- `uv run pytest -q tests/test_guard.py::test_a_capitalised_nh_approve_or_merge_stack_is_denied_in_every_mode -v 2>&1 | tail -20`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-........................................................................ [ 11%]
-........................................................................ [ 23%]
-........................................................................ [ 35%]
-........................................................................ [ 47%]
-........................................................................ [ 59%]
-............................s.s.s.s.s.s.s.s.s.s......................... [ 71%]
-......................s..........................s...................... [ 83%]
-........................................................................ [ 95%]
-...........................                                              [100%]
-591 passed, 12 skipped in 59.58s
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.1.1, pluggy-1.6.0
+<redacted> isolated HOME: /var/folders/1r/3r0rt1jd4j1456rsg_fh4d380000gn/T/nh-test-home-v1j5vdtg
+rootdir: /Users/eyalgolan/.<redacted>/worktrees/4f2802f8d25041bf88a9dd7f8c9422d8.52752.7ff58938
+configfile: pyproject.toml
+plugins: anyio-4.14.0, no-human-0.2.2, cov-7.1.0, xdist-3.8.0, asyncio-1.4.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 1 item
+
+tests/test_guard.py .                                                    [100%]
+
+============================== 1 passed in 0.67s ===============================
 ```
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/4f2802f8d25041bf88a9dd7f8c9422d8.52752.4d76b4bc uv run pytest -q tests/test_exec_names.py::test_a_capitalised_git_push_is_denied_in_the_default_session_too 2>&1 | tail -30`
-
-```
-to close.
-    
-        NOT closed by this fix, and not claimed to be: a runner-recursion form
-        that interposes a flag between the capitalised binary and `push` (`timeout
-        30 GIT -C . push origin main`) defeats this contiguous lexical pattern
-        too. `test_the_runner_recursion_folds_a_wrapped_name_for_git_too` above
-        already covers that shape, but only in the `readonly=True` (write-block)
-        path -- see its docstring."""
-        rows = (
-            'sh -c "GIT push origin main"',
-            'bash -c "GIT push origin main"',
-            "timeout 30 GIT push origin main",
-            "xargs GIT push origin main",
-        )
-    
-        d
-[... 501 of 1,640 characters omitted from the middle ...]
-    {'timeout 30 GIT push origin main': False} != {'timeout 30 GIT push origin main': True}
-E         {'xargs GIT push origin main': False} != {'xargs GIT push origin main': True}
-E         Use -v to get more diff
-
-tests/test_exec_names.py:514: AssertionError
-=========================== short test summary info ============================
-FAILED tests/test_exec_names.py::test_a_capitalised_git_push_is_denied_in_the_default_session_too
-1 failed in 0.73s
-```  
-  _excerpt - 1,640 characters of output in total_
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/4f2802f8d25041bf88a9dd7f8c9422d8.52752.4d76b4bc cp /tmp/guard_fixed_final.py src/<redacted>/agent/guard.py diff /tmp/guard_fixed_final.py src/<redacted>/agent/guard.py && echo IDENTICAL uv run pytest -q tests/test_exec_names.py::test_a_capitalised_git_push_is_denied_in_the_default_session_too 2>&1 | tail -10`
-
-```
-IDENTICAL
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-.                                                                        [100%]
-1 passed in 0.58s
-```
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/4f2802f8d25041bf88a9dd7f8c9422d8.52752.4d76b4bc uv run pytest -q tests/test_exec_names.py tests/test_guard.py tests/test_scheduling_wrappers.py tests/test_readme_claims.py tests/test_structural_budget.py tests/test_frozen_snapshot_guard.py tests/test_scope_guard.py 2>&1 | tail -15`
+- `uv run pytest -q tests/test_exec_names.py tests/test_guard.py tests/test_structural_budget.py 2>&1 | tail -20`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-........................................................................ [ 11%]
-........................................................................ [ 23%]
-........................................................................ [ 35%]
-........................................................................ [ 47%]
-........................................................................ [ 59%]
-............................s.s.s.s.s.s.s.s.s.s......................... [ 71%]
-......................s..........................s...................... [ 83%]
-........................................................................ [ 95%]
-...........................                                              [100%]
-591 passed, 12 skipped in 61.09s (0:01:01)
+........................................................................ [ 20%]
+........................................................................ [ 40%]
+........................................................................ [ 60%]
+........................................................................ [ 80%]
+........................................................................ [100%]
+360 passed in 28.03s
+```
+
+- `uv run pytest -q tests/test_exec_names.py tests/test_guard.py tests/test_structural_budget.py 2>&1 | tail -15`
+
+```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+........................................................................ [ 20%]
+........................................................................ [ 40%]
+........................................................................ [ 60%]
+........................................................................ [ 80%]
+........................................................................ [100%]
+360 passed in 30.83s
+```
+
+- `uv run pytest -q tests/test_exec_names.py tests/test_guard.py tests/test_structural_budget.py -p no:randomly 2>&1 | tail -15`
+
+```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+........................................................................ [ 20%]
+........................................................................ [ 40%]
+........................................................................ [ 60%]
+........................................................................ [ 80%]
+........................................................................ [100%]
+360 passed in 30.92s
 ```
 
 
