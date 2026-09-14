@@ -383,6 +383,45 @@ def test_pr_fetch_failure_refuses_by_name(tmp_path, monkeypatch):
         ))
 
 
+def test_diff_failure_raises_instead_of_returning_an_empty_string(tmp_path):
+    """Regression: `_diff` used to return `proc.stdout` unconditionally, so a
+    failing `git diff` (bad refs, corrupted objects, ...) silently became an
+    empty diff — which the reviewer would then pass as "no changes found"."""
+    repo, _bare = _make_repo_with_origin(tmp_path)
+    with pytest.raises(GateUnavailable, match="could not diff"):
+        oneshot._diff(repo, "not-a-real-ref", "HEAD")
+
+
+def test_a_diff_failure_refuses_the_gate_instead_of_a_false_pass(tmp_path, monkeypatch):
+    """End-to-end regression for the same bug: a failing `git diff` must
+    surface as a `GateUnavailable` refusal, never as a passing `GateResult`
+    built from an empty diff the reviewer never actually saw."""
+    repo, _bare = _make_repo_with_origin(tmp_path)
+    _git(repo, "checkout", "-b", "feature")
+    (repo / "b.txt").write_text("change\n")
+    _git(repo, "add", "b.txt")
+    _git(repo, "commit", "-m", "feature commit")
+
+    _ok_credential(monkeypatch)
+    monkeypatch.setattr(oneshot, "AdversarialReviewer", _stub_reviewer(_PASSING_DECISION))
+
+    real_git = oneshot._git
+
+    def _fake_git(repo_path, *args):
+        if args and args[0] == "diff":
+            return subprocess.CompletedProcess(
+                args=["git", *args], returncode=128,
+                stdout="", stderr="fatal: bad revision",
+            )
+        return real_git(repo_path, *args)
+
+    monkeypatch.setattr(oneshot, "_git", _fake_git)
+
+    import asyncio
+    with pytest.raises(GateUnavailable, match="could not diff"):
+        asyncio.run(run_gate(repo))
+
+
 # --------------------------------------------------------------------------- #
 # 8. PR mode reviews the PR head's actual tree, not the user's checkout       #
 # --------------------------------------------------------------------------- #
