@@ -34,7 +34,7 @@
 //                            is) is ALSO absent. This is the live proof of
 //                            "an API path nobody considered must not be
 //                            captured by default" — allowlist, not denylist.
-//   4. allow-tier passthrough — a marker planted in /api/worker/status's
+//   4. allow-tier passthrough — a marker planted in /api/queue/health's
 //                            response (on REPLAY_BODY_ALLOWLIST) IS present.
 //                            Without this, checks 2/3 passing could just
 //                            mean the harness never captures ANY body.
@@ -262,13 +262,16 @@ function makeServer({ variant, rawTexts, capturedEvents, unmatched }) {
     if (p === "/api/tasks") return json([]);
     if (p === "/api/projects") return json([]);
     if (p === "/api/auth/status") return json({ auth_mode: "api_key" });
+    // REDACT-tier (moved off the allowlist: watcher_error/worker_error/
+    // health_error can embed raw exception text, which can contain
+    // filesystem paths — see replayScrub.js's classification comment).
+    if (p === "/api/worker/status") {
+      return json({ running: true, inflight: 0, max_workers: 1 });
+    }
     // ALLOWLIST-tier (REPLAY_BODY_ALLOWLIST) — carries a marker with no path
     // or name in it, so the assertion below is purely "does tier-2 body
     // passthrough actually work", not accidentally also a path leak.
-    if (p === "/api/worker/status") {
-      return json({ running: true, inflight: 0, max_workers: 1, marker: ALLOWLIST_MARKER });
-    }
-    if (p === "/api/queue/health") return json({});
+    if (p === "/api/queue/health") return json({ marker: ALLOWLIST_MARKER });
     if (p.startsWith("/api/metrics/")) return json({});
     if (p === "/api/fs/suggest") return json({ suggestions: [], prefix: "" });
     // REDACT-tier — the original bug's own endpoint family: filesystem paths
@@ -369,14 +372,15 @@ async function runPass(browser, variant) {
   // config round-trip decides to record). Any fetch that fires before that
   // patch lands can never be captured — retroactively, no matter how long
   // we wait afterward, because the request already completed unwrapped.
-  // The app's own /api/worker/status poll (App.jsx, setInterval 10000ms)
-  // fires once immediately on mount — almost certainly before the patch is
-  // installed — so the harness must not treat "a" worker/status response as
-  // proof of readiness; it needs the *second* one. Give the async recorder
-  // chunk a generous head start before touching anything else.
-  const workerStatusHits = [];
+  // The app's own /api/queue/health poll (App.jsx, setInterval 10000ms,
+  // same poll() as /api/worker/status) fires once immediately on mount —
+  // almost certainly before the patch is installed — so the harness must
+  // not treat "a" queue/health response as proof of readiness; it needs the
+  // *second* one. Give the async recorder chunk a generous head start
+  // before touching anything else.
+  const queueHealthHits = [];
   page.on("response", (r) => {
-    if (r.url().includes("/api/worker/status")) workerStatusHits.push(Date.now());
+    if (r.url().includes("/api/queue/health")) queueHealthHits.push(Date.now());
   });
   await page.waitForTimeout(5000);
 
@@ -385,7 +389,7 @@ async function runPass(browser, variant) {
   // shape of the original bug: a repo path chosen on the user's machine,
   // typed into the real UI, sent to a real `tier: "redact"` endpoint. Fired
   // only after the 5s head start above, so the fetch wrapper is installed
-  // by the time this one-shot request goes out (unlike worker/status, a
+  // by the time this one-shot request goes out (unlike queue/health, a
   // user-triggered Scan click never repeats on its own — there is no later
   // occurrence to fall back on, so this one has to land after the patch). ──
   await page.getByRole("button", { name: /^Settings$/ }).click();
@@ -415,11 +419,11 @@ async function runPass(browser, variant) {
     { p: UNLISTED_PATH, sentinel: SENTINEL_UNLISTED },
   );
 
-  // Worker-status polls every 10s (App.jsx). Wait for the SECOND hit
+  // queue/health polls every 10s (App.jsx). Wait for the SECOND hit
   // specifically — the first predates the fetch wrapper (see above) and is
   // not evidence that allow-tier passthrough capture is actually wired up.
   const deadline = Date.now() + 16000;
-  while (workerStatusHits.length < 2 && Date.now() < deadline) {
+  while (queueHealthHits.length < 2 && Date.now() < deadline) {
     await page.waitForTimeout(250);
   }
 
@@ -492,7 +496,7 @@ try {
   // 4. allow-tier passthrough actually captures real bytes (rules out "1-3
   // pass because nothing is ever captured")
   check(
-    "masked: allowlisted /api/worker/status marker IS present (tier-2 passthrough proven live, not just by omission)",
+    "masked: allowlisted /api/queue/health marker IS present (tier-2 passthrough proven live, not just by omission)",
     mHay.includes(ALLOWLIST_MARKER),
   );
 

@@ -81,7 +81,7 @@ test("unrelated endpoints keep their request line but lose their bodies", () => 
   }
 });
 
-test("the three allowlisted endpoints pass through completely unchanged", () => {
+test("every allowlisted endpoint passes through completely unchanged", () => {
   for (const raw of REPLAY_BODY_ALLOWLIST) {
     const data = { name: raw, requestBody: "in", responseBody: "out", requestHeaders: { a: 1 }, responseHeaders: { b: 2 } };
     assert.equal(maskCapturedNetworkRequest(data), data, raw);
@@ -105,6 +105,24 @@ test("regression: /api/profiles (name + absolute repo_path for every repo) is re
   assert.notEqual(out, data);
   assert.ok(!String(out.responseBody).includes("my-secret-repo"));
   assert.ok(!String(out.responseBody).includes("/Users/eyal"));
+});
+
+test("regression: /api/worker/status is redacted, not allowlisted (its watcher_error/worker_error/health_error fields embed raw exception text that can carry filesystem paths)", () => {
+  const data = {
+    name: "http://127.0.0.1:8420/api/worker/status",
+    responseBody: JSON.stringify({
+      running: true,
+      inflight: 0,
+      max_workers: 4,
+      watcher_error: "FileNotFoundError: [Errno 2] No such file or directory: '/Users/eyal/code/my-secret-repo'",
+    }),
+  };
+  const out = maskCapturedNetworkRequest(data);
+  assert.notEqual(out, data);
+  assert.ok(!String(out.responseBody).includes("my-secret-repo"));
+  assert.ok(!String(out.responseBody).includes("/Users/eyal"));
+  assert.equal(API_BODY_CLASSIFICATION["/api/worker/status"].tier, "redact");
+  assert.ok(!REPLAY_BODY_ALLOWLIST.includes("/api/worker/status"));
 });
 
 test("query strings carrying paths are stripped from the request line, not just the body", () => {
