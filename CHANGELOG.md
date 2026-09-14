@@ -6,6 +6,8 @@ All notable changes to no_human. The format follows
 
 ## [Unreleased]
 
+## [0.2.3] — 2026-09-14
+
 ### Added
 - `nh task retitle` corrects a filed task's title after the fact — the board
   and `nh task show` read it back immediately. Refused while an attempt is

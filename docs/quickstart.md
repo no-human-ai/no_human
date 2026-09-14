@@ -303,14 +303,32 @@ uv run nh approve <task-id>  # your approval squash-lands the PR (as git.approve
 
 With several tasks awaiting approval, `nh approve --ready` lists every one
 whose merge-ready policy verdict is `ready` for its current branch head (the
-board shows the same verdict as a `MERGE-READY` chip); add `--yes` to land
-that list one task at a time through the exact same approve path, stopping
-at the first failure. It is still advisory and still your approval —
-`--ready`/`--yes` never merges anything `nh approve <task-id>` wouldn't:
+board shows the same verdict as a `MERGE-READY` chip), and — checked fresh
+every time, never cached — whether that branch still merges into its
+*current* base right now. Passing the quality rules does not by itself mean
+a branch is landable: a sibling PR landing can rewrite generated files
+(e.g. `RELEASE_MANIFEST.txt`) and put the branch in conflict with the base
+it will actually land onto, without touching its own rules verdict. Both
+halves show up on the same line, independently:
+
+```
+a1b2c3d4 · Add retry backoff · rules 6/6 · merge: clean · https://github.com/…/pull/12
+e5f6a7b8 · Fix flaky timeout · rules 6/6 · merge: CONFLICT with main (RELEASE_MANIFEST.txt) · https://github.com/…/pull/13
+
+1 task(s) ready to land; 1 task(s) pass the quality rules but do NOT merge
+into their current base right now — rebase before approving.
+```
+
+The conflicted task is never hidden and never auto-resolved; add `--yes` to
+land only the ready (non-conflicted) tasks, one at a time through the exact
+same approve path, stopping at the first failure — a conflicted task is
+skipped with a visible "not landed" message instead. It is still advisory
+and still your approval — `--ready`/`--yes` never merges anything
+`nh approve <task-id>` wouldn't:
 
 ```bash
 uv run nh approve --ready        # list what's merge-ready; lands nothing
-uv run nh approve --ready --yes  # land the listed tasks, one at a time
+uv run nh approve --ready --yes  # land the ready (non-conflicted) tasks
 ```
 
 If you want changes:
