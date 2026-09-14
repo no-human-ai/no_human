@@ -477,6 +477,86 @@ def test_max_files_caps_reviewed_file_count(env, monkeypatch):
     assert "capped by `max_files`" in bodies[0]["body"]
 
 
+def test_non_ascii_filename_is_not_silently_dropped_from_the_diff(env, monkeypatch, repo):
+    """`git diff --name-only` C-quotes any path with non-ASCII bytes by
+    default (e.g. `régression.py` comes back as the STRING
+    `"r\\303\\251gression.py"`), and a quoted string does not match anything
+    as a pathspec. Without `-z` (NUL-terminated, unquoted output), such a
+    file silently vanishes from `diff_override` while the rendered comment
+    still claims every changed file was reviewed — exactly the defect class
+    this Action exists to catch, now happening to itself. In the degenerate
+    case where EVERY changed path is quoted, `diff_override` becomes ""
+    (falsy), which would send `AdversarialReviewer.review` down its
+    no-override branch — recomputing the diff itself over every file and
+    silently ignoring `max_files`."""
+    evil = repo.path / "régression.py"
+    evil.write_text("def backdoor(cmd):\n    import os\n    os.system(cmd)\n")
+    _git(repo.path, "add", ".")
+    _git(repo.path, "commit", "-q", "-m", "add a non-ascii filename")
+    new_head = _git(repo.path, "rev-parse", "HEAD").strip()
+
+    event = _event(repo)
+    event["pull_request"]["head"]["sha"] = new_head
+    env["event_path"].write_text(json.dumps(event))
+
+    seen = {}
+
+    class _Fake:
+        def __init__(self, *, model, **kw):
+            pass
+
+        async def review(self, task, **kwargs):
+            seen["diff"] = kwargs["diff_override"]
+            return _pass_decision()
+
+    monkeypatch.setattr(run, "AdversarialReviewer", _Fake)
+    bodies = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(200, json=[])
+        bodies.append(json.loads(request.content))
+        return httpx.Response(201, json={"id": 1, "body": ""})
+
+    _mock_client(monkeypatch, handler)
+    assert run.main() == run.EXIT_OK
+    assert "diff" in seen and seen["diff"], "diff_override must not be empty/falsy"
+    assert "backdoor" in seen["diff"], "the non-ASCII-named file must not be dropped from the reviewed diff"
+    assert "Files reviewed: 3 of 3" in bodies[0]["body"]
+
+
+def test_changed_paths_survive_git_c_quoting(repo):
+    """Unit-level pin on the `-z`/NUL-split fix directly: a path with a byte
+    git would otherwise C-quote in `--name-only` output must come back
+    identical to the on-disk filename, not the quoted representation."""
+    evil = repo.path / "quöted name.py"
+    evil.write_text("x = 1\n")
+    _git(repo.path, "add", ".")
+    _git(repo.path, "commit", "-q", "-m", "quoted path")
+    new_head = _git(repo.path, "rev-parse", "HEAD").strip()
+
+    raw = run._git(repo.path, "diff", "-z", "--name-only", f"{repo.head_sha}..{new_head}")
+    changed = [p for p in raw.split("\0") if p]
+    assert "quöted name.py" in changed
+    assert not any(p.startswith('"') for p in changed)
+
+
+def test_set_output_write_failure_does_not_raise(tmp_path, monkeypatch):
+    """A GITHUB_OUTPUT write failure (e.g. the runner-owned-file/permission
+    shape reproduced against the real Docker image, where this process
+    cannot write the path GitHub handed it) must never propagate as an
+    uncaught exception. `sys.exit(main())` would let that fall through to
+    Python's default unhandled-exception exit code, 1 — the SAME code this
+    module uses for EXIT_FINDINGS ("ran and found blocking findings") — so a
+    pure infrastructure failure would be indistinguishable, by exit code
+    alone, from a real review verdict. `_append_step_summary` already
+    swallows this class of failure for GITHUB_STEP_SUMMARY; `_set_output`
+    must match."""
+    unwritable = tmp_path / "not-a-real-directory" / "output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(unwritable))
+    run._set_output("verdict", "PASS")  # must not raise
+
+
 def test_no_changed_files_is_a_synthetic_pass_without_reviewer_or_tamper(env, monkeypatch, repo):
     # A PR whose base == head has an empty diff.
     event = _event(repo)
@@ -750,6 +830,29 @@ def test_github_api_url_env_var_is_honored_for_ghes(env, monkeypatch):
     assert run.main() == run.EXIT_OK
     assert seen_urls, "expected at least one GitHub API call"
     assert all(url.startswith("https://ghes.example.com/api/v3") for url in seen_urls)
+
+
+def test_comment_url_output_honors_github_server_url_for_ghes(env, monkeypatch):
+    """`comment_url` is a human-facing link, built from `repo_full`/`pr_number`
+    and the posted comment's id rather than returned by the API. On GitHub
+    Enterprise Server, hardcoding `https://github.com` here would produce a
+    dead link — the runner sets `GITHUB_SERVER_URL` to the GHES host's own web
+    origin (distinct from `GITHUB_API_URL`, its REST API origin, already
+    covered by test_github_api_url_env_var_is_honored_for_ghes above), and
+    `_post_and_exit` must build the URL from that instead of a literal."""
+    monkeypatch.setenv("GITHUB_SERVER_URL", "https://ghes.example.com")
+    monkeypatch.setattr(run, "AdversarialReviewer", _fake_reviewer(_pass_decision()))
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(200, json=[])
+        return httpx.Response(201, json={"id": 42, "body": ""})
+
+    _mock_client(monkeypatch, handler)
+    assert run.main() == run.EXIT_OK
+    outputs = env["out_path"].read_text()
+    assert "comment_url=https://ghes.example.com/" in outputs
+    assert "#issuecomment-42" in outputs
 
 
 def test_dry_run_makes_no_http_calls(env, monkeypatch, capsys):

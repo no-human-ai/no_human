@@ -29,14 +29,22 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends git ca-certificates curl gnupg \
     && rm -rf /var/lib/apt/lists/*
 
-# Node.js 20.x, for the `claude` CLI the reviewer's backend shells out to.
+# Node.js 22.x, for the `claude` CLI the reviewer's backend shells out to.
+# @anthropic-ai/claude-code declares `"engines": {"node": ">=22.0.0"}` in its
+# own package.json — verified by extracting it from this image when this was
+# still pinned to Node 20.x, where `npm install` silently accepted the
+# mismatch (a bare EBADENGINE warning, not a failure) rather than refusing
+# it. Node 20 could work today and stop working on any future CLI release
+# that starts relying on a Node-22-only runtime feature, with no signal from
+# this Dockerfile that anything changed. Matches Dockerfile's own `node:22-
+# slim` stage for the same reason: one supported Node line across the repo.
 # Uses NodeSource's documented apt-keyring flow (a signed, pinned repo entry)
 # instead of piping its setup script into `bash`, so the install doesn't run
 # an arbitrary remote script as root.
 RUN mkdir -p /etc/apt/keyrings \
     && curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
         | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg \
-    && echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_20.x nodistro main" \
+    && echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main" \
         > /etc/apt/sources.list.d/nodesource.list \
     && apt-get update \
     && apt-get install -y --no-install-recommends nodejs \
@@ -55,42 +63,80 @@ COPY migrations/ ./migrations/
 
 RUN uv sync --frozen --no-dev
 
-# Run as a non-root user. This is not defense-in-depth here — it is load-
-# bearing: verified against a real `docker run`, the `claude` CLI this image
-# shells out to hard-refuses its own permission-skip flag with
-# "--dangerously-skip-permissions cannot be used with root/sudo privileges
-# for security reasons" when the process is UID 0, which every job on this
-# image would otherwise be (no Dockerfile in this repo sets `USER`, so the
-# default is root). Without this, the Action would fail every single run,
-# on every checkout, regardless of credential validity.
+# Create the unprivileged user the CLI subprocess will run as (see the
+# entrypoint script below for why), but do NOT `USER nhaction` here. GitHub
+# requires `using: docker` actions to start as root — verified against a real
+# Actions run, a container with a non-root `USER` directive cannot read
+# `/github/workspace` (owned by the RUNNER's UID, unknown at build time) nor
+# write the runner-owned `GITHUB_OUTPUT`/`GITHUB_STEP_SUMMARY` files handed in
+# at `docker run` time. Two concrete failures reproduced on the runner's exact
+# shape: `git config --global` erroring out (exit 255, HOME not writable by
+# UID 1000) and a `PermissionError` writing `GITHUB_OUTPUT` (misreported by a
+# naive wrapper as "exit 1 blocking findings" instead of the true
+# infrastructure failure it is). So this image stays root by default and the
+# entrypoint below does root-level setup, then drops privilege itself — see
+# that script for the other half of this story (the `claude` CLI's own
+# root-refusal, which is why UID 1000 still has to exist and still has to be
+# who actually runs the review).
 RUN useradd --create-home --uid 1000 --shell /bin/sh nhaction \
     && chown -R nhaction:nhaction /app
-USER nhaction
 
 # The runner mounts the checked-out PR workspace at a path this image does not
-# control (`/github/workspace`, owned by the RUNNER's UID, not this
-# container's UID 1000), and `uv run`'s project resolution is otherwise
-# relative to the CURRENT DIRECTORY — a plain `ENTRYPOINT ["uv", "run", ...]`
-# would resolve against `/github/workspace` instead of `/app`, and fail to
-# find no_human's own project entirely. `--project /app` below makes that
-# resolution cwd-independent, whatever directory the runner sets as the job's
-# workdir.
+# control (`/github/workspace`, owned by the RUNNER's UID), and `uv run`'s
+# project resolution is otherwise relative to the CURRENT DIRECTORY — a plain
+# `ENTRYPOINT ["uv", "run", ...]` would resolve against `/github/workspace`
+# instead of `/app`, and fail to find no_human's own project entirely.
+# `--project /app` below makes that resolution cwd-independent, whatever
+# directory the runner sets as the job's workdir.
 #
-# Git separately refuses to operate on a repository it does not consider
-# "owned" by the current user ("detected dubious ownership") — exactly the
-# runner-owned `/github/workspace` case above, now doubly true since this
-# container no longer runs as root either — so the entrypoint marks it (and
-# any path) as a safe.directory before invoking the module. This has to live
-# here, not in `no_human.ci_action.run`, which only ever runs the `git`
-# subcommands read-only diffing/inspecting a checkout (see
-# `_ALLOWED_GIT_SUBCOMMANDS` in run.py) and must not grow a second
-# subprocess call site to fix a container-setup concern.
+# Entrypoint runs as root (the container's default user, per above) and does
+# three things before dropping privilege:
+#   1. Take ownership of HOME (`/github/home` for Docker actions, per GitHub's
+#      own env contract — never assume `/home/nhaction`) so `git config
+#      --global` and the `claude` CLI's own config/cache writes succeed as
+#      UID 1000. `mkdir -p` first: on a fresh runner, `/github/home` may not
+#      exist yet at all.
+#   2. Take ownership of GITHUB_OUTPUT and GITHUB_STEP_SUMMARY themselves
+#      (files, not directories, and each may be absent — e.g. GITHUB_OUTPUT is
+#      unset entirely in `dry_run` local testing) so `no_human.ci_action.run`
+#      can append to them as UID 1000 instead of root.
+#   3. Mark the workspace as `safe.directory`, since git separately refuses to
+#      operate on a repository it does not consider "owned" by the current
+#      UID ("detected dubious ownership"). This has to live here, not in
+#      `no_human.ci_action.run`, which only ever runs `git` subcommands
+#      read-only diffing/inspecting a checkout (see `_ALLOWED_GIT_SUBCOMMANDS`
+#      in run.py) and must not grow a second subprocess call site to fix a
+#      container-setup concern. Scoped to `$GITHUB_WORKSPACE` specifically
+#      (the runner always sets it for a `pull_request` trigger, per GitHub's
+#      own env contract) rather than the wildcard `safe.directory '*'`, which
+#      would tell git to trust dubious ownership on ANY path this process
+#      ever looks at — unnecessary here since `_ALLOWED_GIT_SUBCOMMANDS`
+#      already restricts every `git` call this Action makes to that one
+#      checkout. Falls back to `*` only if `GITHUB_WORKSPACE` is somehow
+#      unset, so a local/manual `docker run` without it still works.
+#
+# Then it drops to UID 1000 via `setpriv` (present in the `python:3.12-slim`
+# base already — no extra package, no extra image layer — and unlike `su`,
+# does not reset the environment, which matters: GITHUB_*/INPUT_*/the
+# just-masked credential all have to survive the switch) for the actual
+# review run. This is load-bearing, not defense-in-depth: verified against a
+# real `docker run`, the `claude` CLI the reviewer shells out to hard-refuses
+# its own permission-skip flag with "--dangerously-skip-permissions cannot be
+# used with root/sudo privileges for security reasons" when the process is
+# UID 0 — which root-by-default would otherwise make every job on this image.
 RUN printf '%s\n' \
         '#!/bin/sh' \
         'set -eu' \
-        "git config --global --add safe.directory '*'" \
-        'exec uv run --no-sync --project /app python -m no_human.ci_action.run "$@"' \
-        > /home/nhaction/entrypoint.sh \
-    && chmod +x /home/nhaction/entrypoint.sh
+        'HOME_DIR="${HOME:-/github/home}"' \
+        'export HOME="$HOME_DIR"' \
+        'mkdir -p "$HOME_DIR"' \
+        'git config --global --add safe.directory "${GITHUB_WORKSPACE:-*}"' \
+        'chown -R nhaction:nhaction "$HOME_DIR"' \
+        'for f in "${GITHUB_OUTPUT:-}" "${GITHUB_STEP_SUMMARY:-}"; do' \
+        '    if [ -n "${f:-}" ] && [ -f "$f" ]; then chown nhaction:nhaction "$f"; fi' \
+        'done' \
+        'exec setpriv --reuid=nhaction --regid=nhaction --init-groups uv run --no-sync --project /app python -m no_human.ci_action.run "$@"' \
+        > /entrypoint.sh \
+    && chmod +x /entrypoint.sh
 
-ENTRYPOINT ["/home/nhaction/entrypoint.sh"]
+ENTRYPOINT ["/entrypoint.sh"]

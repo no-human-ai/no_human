@@ -160,8 +160,20 @@ def _set_output(name: str, value: str) -> None:
     path = os.environ.get("GITHUB_OUTPUT")
     if not path:
         return
-    with open(path, "a", encoding="utf-8") as fh:
-        fh.write(f"{name}={value}\n")
+    try:
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(f"{name}={value}\n")
+    except OSError:
+        # A write failure here (e.g. a runner-owned GITHUB_OUTPUT this
+        # process cannot write to) must never propagate as an uncaught
+        # exception: `sys.exit(main())` would let it fall through to
+        # Python's default unhandled-exception exit code (1) — the SAME
+        # code this module uses for "ran and found blocking findings"
+        # (EXIT_FINDINGS). A CI consumer reading only the exit code would
+        # then misread an infrastructure failure as a real review verdict.
+        # Swallowing it here matches `_append_step_summary`'s handling of
+        # the same class of failure for GITHUB_STEP_SUMMARY.
+        pass
 
 
 def _fail(message: str) -> int:
@@ -501,7 +513,22 @@ def main(argv: list[str] | None = None) -> int:  # noqa: ARG001 - argv unused, k
     try:
         actual_head = _git(workspace, "rev-parse", "HEAD").strip()
     except ActionError as exc:
-        return _fail(f"could not read the checkout's HEAD commit: {exc}")
+        message = str(exc)
+        # This is the FIRST `git` call against the checkout, so a dubious-
+        # ownership refusal (the workspace's UID not matching the process
+        # that owns it, per git's "detected dubious ownership" check) always
+        # surfaces here first, not at any later `_git()` call site below —
+        # this message must stay in sync with wherever that first call is.
+        if "dubious ownership" in message:
+            return _fail(
+                "git refused to read the checkout because of a workspace "
+                f"ownership mismatch ({message}). The Action's own container "
+                "marks the workspace as a safe.directory on startup, so "
+                "seeing this means the container is not running the shipped "
+                "entrypoint — this is not a shallow-clone problem, and "
+                "`fetch-depth: 0` will not fix it."
+            )
+        return _fail(f"could not read the checkout's HEAD commit: {message}")
     if actual_head != head_sha:
         return _fail(
             f"the checked-out workspace's HEAD ({actual_head}) does not match "
@@ -515,22 +542,17 @@ def main(argv: list[str] | None = None) -> int:  # noqa: ARG001 - argv unused, k
         )
 
     try:
+        # A dubious-ownership refusal cannot reach this point: the
+        # `rev-parse HEAD` call above is the first `git` invocation against
+        # this checkout and already returns exit 2 on that failure, with its
+        # own explanation of what it means. Anything raised here is a
+        # different problem — almost always a shallow clone.
         _git(workspace, "rev-parse", "--verify", f"{base_sha}^{{commit}}")
         _git(workspace, "rev-parse", "--verify", f"{head_sha}^{{commit}}")
         merge_base = _git(workspace, "merge-base", base_sha, head_sha).strip()
     except ActionError as exc:
-        message = str(exc)
-        if "dubious ownership" in message:
-            return _fail(
-                "git refused to read the checkout because of a workspace "
-                f"ownership mismatch ({message}). The Action's own container "
-                "marks the workspace as a safe.directory on startup, so "
-                "seeing this means the container is not running the shipped "
-                "entrypoint — this is not a shallow-clone problem, and "
-                "`fetch-depth: 0` will not fix it."
-            )
         return _fail(
-            f"could not resolve the PR's commits in the checkout ({message}) — "
+            f"could not resolve the PR's commits in the checkout ({exc}) — "
             "make sure the `actions/checkout` step uses `fetch-depth: 0`"
         )
 
@@ -542,9 +564,30 @@ def main(argv: list[str] | None = None) -> int:  # noqa: ARG001 - argv unused, k
         return _fail(f"`max_files` must be a positive integer, got {_input('max_files')!r}")
 
     try:
-        changed = [p for p in _git(workspace, "diff", "--name-only", f"{merge_base}..{head_sha}").splitlines() if p]
+        # `-z` NUL-terminates each path and disables git's default C-quoting
+        # of non-ASCII/special bytes in `--name-only` output. Without it, a
+        # path like `régression.py` comes back as the quoted STRING
+        # `"r\303\251gression.py"`, which then fails to match anything as a
+        # pathspec below — the file silently drops out of `diff_override`
+        # while the rendered comment still claims it was reviewed, and in
+        # the degenerate case where every changed path is quoted,
+        # `diff_override` ends up "" (falsy), sending
+        # `AdversarialReviewer.review` down its no-override branch, which
+        # recomputes the diff itself over EVERY file and ignores `max_files`.
+        # `-z` NUL-terminates each path and disables git's default C-quoting
+        # of non-ASCII/special bytes in `--name-only` output. Without it, a
+        # path like `régression.py` comes back as the quoted STRING
+        # `"r\303\251gression.py"`, which then fails to match anything as a
+        # pathspec below — the file silently drops out of `diff_override`
+        # while the rendered comment still claims it was reviewed, and in
+        # the degenerate case where every changed path is quoted,
+        # `diff_override` ends up "" (falsy), sending
+        # `AdversarialReviewer.review` down its no-override branch, which
+        # recomputes the diff itself over EVERY file and ignores `max_files`.
+        raw_changed = _git(workspace, "diff", "-z", "--name-only", f"{merge_base}..{head_sha}")
     except ActionError as exc:
         return _fail(f"could not compute the diff: {exc}")
+    changed = [p for p in raw_changed.split("\0") if p]
     changed.sort()
     files_total = len(changed)
     kept = changed[:max_files]
@@ -657,9 +700,16 @@ def _post_and_exit(
         except (github.GitHubAPIError, github.WriteSurfaceViolation) as exc:
             return _fail(f"could not post the review comment: {exc}")
         _set_output("verdict", verdict)
+        # GITHUB_SERVER_URL is GitHub's own documented way to get the correct
+        # web host: `https://github.com` on github.com, but a customer-specific
+        # hostname on GitHub Enterprise Server — same reasoning as this
+        # module's existing GITHUB_API_URL handling above, just for the
+        # human-facing URL instead of the API host. Hardcoding github.com here
+        # would silently produce a dead link on any GHES install.
+        server_url = os.environ.get("GITHUB_SERVER_URL", "https://github.com")
         _set_output(
             "comment_url",
-            f"https://github.com/{repo_full}/pull/{pr_number}#issuecomment-{comment.id}",
+            f"{server_url}/{repo_full}/pull/{pr_number}#issuecomment-{comment.id}",
         )
         _append_step_summary(body)
 
