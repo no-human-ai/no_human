@@ -166,7 +166,14 @@ FROZEN_FUNCTION_LINES = {
     # and its anchored comment, `type_hook` reaching
     # `_compose_post_tool_hooks`, and the widened `backend_degraded`
     # condition. Re-measured on the merge result.
-    "core/orchestrator.py:Orchestrator._run_attempt": 2261,
+    # 2261 -> 2280 (+19): citation-drift preflight call site — the
+    # `_citation_drift_preflight` invocation immediately after the
+    # structural-budget preflight block, wrapped in the same
+    # `try/except CancelRequested` / `except (BudgetAbort, StuckAbort,
+    # ConvergenceAbort)` pattern the two sibling preflight call sites
+    # already use. The preflight body itself lives in its own method, not
+    # here. Re-measured on the MERGED tree with the scanner's own metric.
+    "core/orchestrator.py:Orchestrator._run_attempt": 2280,
     # 760 -> 778 (+18): dispatch-time intake-eval hoisted path — the `elif
     # ctx.get("eval_result")` branch that acts on a grill/wizard-stored
     # verdict (idempotency marker, cost/residual-gap comments) added inside
@@ -382,6 +389,29 @@ FROZEN_FUNCTION_LINES = {
     "core/orchestrator.py:Orchestrator._generate_plan": 322,
     "core/orchestrator.py:Orchestrator._scan_leaf_blocks": 319,
     "core/orchestrator.py:Orchestrator._escalate_reviewer_unavailable": 317,
+    # First frozen at 314 (> 300): `_citation_drift_preflight` is new to
+    # this task (the whole "citation drift gets a preflight round" feature),
+    # never previously in this table. Its length is not padding — two
+    # send-back findings from one review round both
+    # landed inside this one method: (1) the docstring's closing paragraph
+    # was rewritten from a one-sentence "changes nothing about the BAR"
+    # claim into an explicit, honest disclosure that this preflight's
+    # notion of "a citation" is narrower than TESTING's own checker run
+    # (`docs/WINDOWS.md` citations are outside `CITATION_TABLE` and so
+    # outside this preflight's view — a correctness claim that was simply
+    # false before the fix), and (2) both `_revert_worktree_writes` call
+    # sites in this method gained a `reason=` argument so the advisory they
+    # emit stops blaming this preflight for "writing despite being told not
+    # to" when writing mechanically is its entire job. Reviewed on its
+    # merits; frozen here as its landing baseline, measured on this tree
+    # with the scanner below.
+    # 314 -> 322 (+8): the send-back round that corrected the docstring's
+    # "Honest limit" paragraph (closed-set `_CITATION_DOC_PATHS` list spelled
+    # out, "strictly wider" replaced with the true "incomparable" claim about
+    # TESTING's scope) and the leading "never costs a whole attempt" summary
+    # sentence gained its own qualifying clause. Re-measured directly with
+    # the scanner below on this tree, not carried over as a stale delta.
+    "core/orchestrator.py:Orchestrator._citation_drift_preflight": 322,
     # Grew to 314 (> 300) when the done_no_evidence repair shape landed
     # (task bf413cc6): two new refusal guards + the DONE branch. The growth
     # was reviewed on its merits; frozen here as its landing baseline.
@@ -492,7 +522,12 @@ FROZEN_FUNCTION_CC = {
     # 250 -> 251 (+1): #114 phase 2 adds `or type_hook is not None` to the
     # `backend_degraded` condition, so that BoolOp carries one more value.
     # Re-measured on the merge result.
-    "core/orchestrator.py:Orchestrator._run_attempt": 251,
+    # 251 -> 254 (+3): citation-drift preflight call site — the
+    # `try/except CancelRequested` / `except (BudgetAbort, StuckAbort,
+    # ConvergenceAbort)` wrapper around the `_citation_drift_preflight`
+    # call adds one `try` handler branch each. Re-measured on the merge
+    # result with the scanner below.
+    "core/orchestrator.py:Orchestrator._run_attempt": 254,
     # Landing of 4e0299ad: unchanged at 115 — the harness row is dropped by
     # the comprehension filter inside `_reviewer_items`, which the scanner
     # counts the same as the `if` it replaced (the first landing pass had a
@@ -1262,7 +1297,178 @@ FROZEN_FILE_LINES = {
     # as `Orchestrator._build_implement_prompt`'s own entry above — no other
     # function in this file changed line count this round. Measured on THIS
     # tree with the scanner below.
-    "core/orchestrator.py": 24141,
+    # CORRECTION (Finding G, this task's send-back): the 24079 anchor below
+    # was never independently re-measured against the actual merge base —
+    # it was carried forward by hand from the prior comment's own arithmetic.
+    # Directly measuring `git merge-base HEAD main`
+    # (`dded20a5a92347b7e57f5851cbf515b18437d5fe`) with THIS module's own
+    # `scan_tree`, via a non-destructive `git archive <sha> -- src/no_human`
+    # extraction (never a hand diff, never a working-tree checkout), gives
+    # 24073, not 24079 — an unreconciled 6-line gap that predates the
+    # citation-drift preflight entirely (something else on `main` between
+    # the REFILE bugfix step above and this merge base; not this feature's
+    # doing) and does not implicate any of the per-step deltas below, each
+    # of which was independently re-measured with `scan_tree` against its
+    # own actual commit (24294, 24318, 24341, 24335, 24396 in step order —
+    # the dip from 24341 to 24335 is that step's merge of `main` back in,
+    # not a regression). Branch commit ids are omitted deliberately: they do
+    # not survive the squash, so they would not resolve for any reader.
+    # 24073 -> 24294 (+221): citation-drift preflight, added on top of the
+    # above — the `citation_drift_send_back_message` helper, the
+    # `_CITATION_DRIFT_ROUND_TURNS` constant, the `_citation_drift_preflight`
+    # method (reads the target repo's own `scripts/reanchor_citations.py`
+    # via `no_human.testing.citation_drift`, auto-reanchors or buys one
+    # `_repro_corrective_round` before review, latched once per attempt),
+    # its call site in `_run_attempt`, and the additive `allow_paths`
+    # parameter threaded through `_repro_corrective_round` ->
+    # `_repro_round_out_of_scope(changed, extra_ok=allow_paths)`.
+    # Re-measured at that step's own commit with the scanner's own metric
+    # (`tests/test_structural_budget.py::scan_tree`).
+    # 24294 -> 24318 (+24): a `GitError` from `commit_with_manifest_repair`
+    # after a mechanical re-anchor must not be silently reported as
+    # "auto-re-anchored" success — the write is now reverted and the run is
+    # re-labelled UNKNOWN so it falls through to the same bounded corrective
+    # round an UNFIXABLE/UNKNOWN run gets, plus the post-round verification
+    # re-check now passes `apply=False` so it can never itself mutate the
+    # worktree. Re-measured on the merged tree with the scanner's own metric.
+    # 24318 -> 24335 (+17): two send-back fixes to the same preflight. (1)
+    # `_citation_drift_preflight`'s own mechanical-fix commit no longer
+    # calls `commit_with_manifest_repair(repo, None, ...)` (which sweeps
+    # EVERY current worktree change, including anything unrelated already
+    # sitting uncommitted, into a commit that claims to be the re-anchor
+    # script's own output) — it now diffs `_worktree_state` before/after and
+    # commits exactly that delta. (2) the UNFIXABLE/UNKNOWN branch's
+    # `_repro_corrective_round` call no longer passes `allow_paths=
+    # outcome.docs` unconditionally — a raw `Status.UNKNOWN` (crash,
+    # timeout, self-contradictory verdict) always carries `docs=()`, which
+    # silently discarded the bought round's own hand fix as "out of scope";
+    # when `outcome.docs` is empty, `allow_paths` now falls back to every
+    # `docs/*.md` file that concretely exists on disk. Re-measured on this
+    # tree with the scanner's own metric.
+    # 24335 -> 24396 (+61): code-review send-back on the same preflight,
+    # three more fixes plus their rationale comments. (1) BLOCKER: the
+    # mechanical-fix commit branch was gated on `repo.has_changes()` (true
+    # for ANY dirty path in the whole worktree) instead of `changed` (this
+    # run's own before/after delta) — an UNFIXABLE run that writes nothing
+    # (`changed` empty) with an unrelated dirty stray file elsewhere in the
+    # tree could still enter the commit branch and fall through to
+    # `commit_with_manifest_repair`'s `commit_all` (empty list is as falsy
+    # as `None`), sweeping the stray file into a commit that falsely
+    # credits the re-anchor script. Both `if outcome.status is UNKNOWN and
+    # repo.has_changes():` and `elif repo.has_changes():` now read `changed`
+    # instead, with a rationale comment explaining the distinction and a
+    # second comment documenting the accepted, narrower status-code-only
+    # limit this still carries. (2) `_revert_worktree_writes`'s exception-
+    # fallback advisory hardcoded "the reformat nudge" as the blamed
+    # component even when called from this preflight (whose actual writer
+    # is `scripts/reanchor_citations.py`) — it now takes a `component`
+    # keyword-only parameter (default preserves the existing text at every
+    # other call site), and this preflight's two call sites pass "the
+    # citation drift preflight". (3) a documentation-only comment
+    # explaining why an absent `docs/` directory's resulting empty
+    # `allow_paths` is an accepted limitation rather than a widened,
+    # directory-prefix `_repro_round_out_of_scope` allowlist shared by every
+    # other corrective-round caller. Re-measured on this tree with the
+    # scanner's own metric.
+    # 24396 -> 24441 (+45): this task's send-back-fix round, three more
+    # blockers on the same preflight. (1) BLOCKER: `_revert_worktree_writes`
+    # /`_revert_worktree_writes_unguarded`'s success-path advisory hardcoded
+    # "the reformat nudge" as the writer it reverted, even when the actual
+    # caller was the citation-drift preflight's own mechanical re-anchor or
+    # its commit-failure fallback — `component` is now threaded into (and,
+    # on `_unguarded`, required by) the success-path advisory too, not just
+    # the pre-existing exception-fallback one. (2) BLOCKER:
+    # `citation_drift.classify`'s `VERDICT=OK` branch trusted the "OK" half
+    # of a self-contradictory `OK`-with-`FAIL:`-lines (or `OK`-with-
+    # `applied`-plus-`FAIL:`-lines) shape from the target repo's script,
+    # silently dropping a named unfixable citation as CLEAN or REANCHORED —
+    # both now block as `Status.UNKNOWN`. (3) a corrected, no-longer-
+    # misleading comment on the `elif changed:` branch explaining why an
+    # UNFIXABLE run can still legitimately have written and earned a commit
+    # (the script's own `_apply_all` batch is all-or-nothing for itself, but
+    # is a different, narrower set than the plan-level `unfixable` findings
+    # that force `VERDICT=FAIL` regardless of whether that batch wrote), and
+    # bounded `failures`/`detail` in `citation_drift_send_back_message`
+    # (`_CITATION_DRIFT_FAILURES_NAMED`, `_CITATION_DRIFT_DETAIL_CHARS`) so a
+    # whole-repo scan with many drifted citations cannot hand the coder an
+    # unbounded prompt. Re-measured on this tree with the scanner's own
+    # metric.
+    # 24441 -> 24481 (+40): documentation only, no behaviour change — a new
+    # docstring paragraph on `_citation_drift_preflight` (Finding D) stating,
+    # with reasons, that the preflight is deliberately whole-repo-scoped
+    # rather than diff-scoped (the target repo's own script has no scoping
+    # argument, and TESTING's own backstop covers a different scope anyway —
+    # more docs, via `test_windows_md_code_line_citations_resolve`, but a
+    # narrower in-window drift tolerance on the table's three — so diff-
+    # scoping this preflight would not even line up with what TESTING
+    # checks);
+    # and a comment on the REANCHORED branch recording that a mechanical
+    # re-anchor commit cannot spend an LLM tamper-adjudication turn —
+    # `_handle_tamper_fire`'s first line is `if not report.tampered: return
+    # None`, gating both the fail-attempt path and the one call to
+    # `_adjudicate_tamper` on the same bool, and `tamper_guard.check`
+    # (verified directly, not read) returns `tampered=False` for a
+    # before/after pair differing by exactly one re-anchored line number.
+    # Re-measured on this tree with the scanner's own metric.
+    # 24481 -> 24606 (+125): send-back round N1-N8 on the same preflight.
+    # (N5) a new backend/test pins the once-per-attempt latch's OTHER case —
+    # it must hold even when the corrective round's own fix does not
+    # actually resolve the drift, not just the already-covered case where it
+    # does. (N6/N7) `citation_drift_send_back_message` gained no new
+    # branches, but its two shapes (named failures vs. an indeterminate
+    # crash/timeout run naming none) are now exercised directly by four
+    # tests calling the function itself. (N1/N7) the citation-drift
+    # corrective round's own SCOPE prompt text (`_REPRO_ROUND_SCOPE_NOTE`)
+    # was appended unconditionally to every `_repro_corrective_round` caller
+    # and unconditionally said "nothing else... discarded uncommitted",
+    # directly contradicting this preflight's own instruction to fix a doc
+    # citation — `_repro_round_out_of_scope`'s `extra_ok`/`allow_paths`
+    # already admitted the doc path at the enforcement layer, but the coder
+    # reading only the prompt had no way to know that. New module-level pure
+    # function `_repro_round_scope_note(allow_paths=())` returns the
+    # existing constant byte-for-byte when `allow_paths` is empty (the three
+    # pre-existing callers), else appends a sentence naming the admitted doc
+    # path(s); the one call site now uses it. (N8) the citation-drift
+    # auto-reanchor commit was the one `commit_with_manifest_repair` call
+    # site in this file that never passed `on_repair`, unlike
+    # `_checkpoint_commit` and the main pipeline commit — a repair made
+    # while re-anchoring a doc citation (e.g. re-approving a stale export
+    # pin the same doc also happens to be watching) was dropped silently
+    # instead of surfacing as the `manifest_repaired` event every sibling
+    # call site already reports; it now threads `on_repair` and drains it
+    # via `self._emit_manifest_repairs` in a `finally`. Re-measured on this
+    # tree with the scanner's own metric (`tests/test_structural_budget.py`'s
+    # `scan_tree`, not carried-over arithmetic).
+    # 24606 -> 24674 (+68): no behaviour change in this file — main was
+    # merged back in (three unrelated main-branch features landed on top of
+    # this task's own last content-bearing commit) and the merge conflicted
+    # in this file's own frozen table, resolved by re-measuring THIS tree
+    # (post-merge, `git merge-tree`'s actual write-tree result) with the
+    # scanner's own metric rather than carrying either parent's number
+    # forward by hand.
+    # 24674 -> 24713 (+39): a DO-NOT-LAND round with four numbered
+    # blockers. Two of them landed in this file: the
+    # `_citation_drift_preflight` docstring's closing paragraph was rewritten
+    # from a one-sentence "changes nothing about the BAR" claim into an
+    # honest disclosure that this preflight's notion of "a citation" is
+    # narrower than TESTING's own checker run (+18 net), and
+    # `_revert_worktree_writes`/`_revert_worktree_writes_unguarded` gained an
+    # optional `reason=` parameter (plus docstring) so the citation-drift
+    # preflight's two revert call sites stop blaming themselves for "writing
+    # despite being told not to" when writing mechanically re-anchored
+    # content IS the job (+21 net, including the two call sites' own
+    # `reason=` arguments). Re-measured on this tree with the scanner's own
+    # metric, not carried-over arithmetic.
+    # 24713 -> 24728 (+15): the send-back round correcting five evidence
+    # gaps named in review — the "Honest limit" paragraph's
+    # closed-set `_CITATION_DOC_PATHS` list and "strictly wider" ->
+    # "incomparable" rewrite, the leading summary sentence's qualifying
+    # clause, the `_repro_corrective_round` docstring's caller enumeration,
+    # and the `reason if reason is not None else ...` fix replacing `reason
+    # or ...` in `_revert_worktree_writes_unguarded`. Re-measured on this
+    # tree with `scan_tree`, not carried over as a stale delta.
+    "core/orchestrator.py": 24728,
+
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.
