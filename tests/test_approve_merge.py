@@ -1344,6 +1344,54 @@ def test_squash_conflict_beyond_the_manifest_still_refuses(land_env):
     assert repo.list_worktrees() == before
 
 
+def test_manifest_conflict_with_neither_backend_still_refuses(land_env):
+    """The step-3 tolerance for a manifest-only conflict is gated on a
+    backend being present to regenerate it at step 4 (`guard.exists() or
+    inventory.exists()`) — a repo shape that tracks RELEASE_MANIFEST.txt but
+    ships NEITHER `scripts/export_guard.py` NOR
+    `scripts/check_release_manifest.py` has no way to re-derive the ledger,
+    so tolerating the conflict would silently keep the tip's stale copy with
+    no step-6a verify able to catch the drift either. This still refuses at
+    `squash`, exactly as every manifest-only conflict did before this task's
+    fix broadened the tolerance from export-guard-only to either backend."""
+    race = land_env.tmp_path / "nobackend"
+    _git(land_env.tmp_path, "clone", "-q", str(land_env.origin), str(race))
+    _git(race, "rm", "-q", "scripts/export_guard.py", "EXPORT_CLASSIFICATION.txt")
+    _git(race, "commit", "-qm", "drop the export guard; adopt no inventory tool either")
+    _git(race, "push", "-q", "origin", "HEAD:main")
+    _git(land_env.clone, "pull", "-q", "--ff-only", "origin", "main")
+
+    # Cut the branch by hand (rather than `_cut_branch_no_classification`) so
+    # it ALSO edits RELEASE_MANIFEST.txt — with no guard/inventory tool to
+    # regenerate it, a branch that leaves the ledger untouched would squash
+    # cleanly onto a concurrently-changed tip (only one side edited it) and
+    # never even reach the tolerance this test is pinning.
+    branch = "no-human/t-nobackend"
+    base_manifest = (land_env.clone / "RELEASE_MANIFEST.txt").read_text()
+    _git(land_env.clone, "checkout", "-q", "-B", branch, "origin/main")
+    (land_env.clone / "src" / "feature.py").write_text(
+        "def feature():\n    return 3\n")
+    (land_env.clone / "RELEASE_MANIFEST.txt").write_text(
+        base_manifest + "# branch's own pin\n")
+    _git(land_env.clone, "add", "-A")
+    _git(land_env.clone, "commit", "-qm", f"feature: add feature.py ({branch})")
+    _git(land_env.clone, "push", "-q", "-u", "origin", branch)
+
+    _push_conflicting_change(land_env, "RELEASE_MANIFEST.txt",
+                             base_manifest + "# re-pinned by a concurrent landing\n")
+    repo = GitRepo(land_env.clone, never_push_to=["main", "master", "release/*"])
+    before = repo.list_worktrees()
+    result = land_task(
+        repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
+        task_id="deadbeef", task_title="Add feature", review_evidence="review PASS",
+        config=land_env.config,
+    )
+    assert not result.ok
+    assert result.step == "squash"
+    assert "RELEASE_MANIFEST.txt" in result.stderr
+    assert repo.list_worktrees() == before
+
+
 def test_manifest_conflict_without_the_export_guard_now_lands(land_env):
     """This repo's OWN shape (the tree `nh approve` actually runs in on this
     working copy) has no `scripts/export_guard.py` and no
