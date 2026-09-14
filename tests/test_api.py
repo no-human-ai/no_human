@@ -2037,9 +2037,18 @@ async def test_metrics_cost_usd_total_equals_the_sum_of_task_costs(tmp_path):
     uses per task — summing every task's own cost_usd must equal the
     lifetime figure the North Star lifetime tile renders, or the board card
     and the lifetime tile disagree (the exact class of bug this rebuild
-    exists to prevent)."""
+    exists to prevent).
+
+    Extended (bugfix: per-task cost omits pre-attempt ledger spend) with one
+    OWNED `unattributed_usage` row (task_id=t1.id, folded into s1.cost_usd
+    and into cost_usd_total) and one ownerless row (task_id=None, folded
+    into cost_usd_total only, via no task's cost_usd) — proving
+    cost_usd_total is still exactly the sum of every task's displayed cost
+    PLUS the ownerless half, never double-counted and never dropped.
+    """
     from no_human.api.models import TaskSummaryOut
     from no_human.core.db import Store
+    from no_human.core.cost import attempt_cost
     from no_human.core.metrics import compute_metrics
     from no_human.core.task import Task
 
@@ -2050,6 +2059,9 @@ async def test_metrics_cost_usd_total_equals_the_sum_of_task_costs(tmp_path):
         a1 = await store.create_attempt(t1.id, attempt_number=1)
         await store.update_attempt(
             a1, tokens_used=1_000_000, models={"coder": "claude-sonnet-5"})
+        await store.record_unattributed_usage(
+            site="orphaned_plan_usage", model="claude-sonnet-5",
+            tokens_used=100_000, task_id=t1.id)
 
         t2 = Task.new("b", repo_path="/tmp/b")
         await store.create_task(t2)
@@ -2057,13 +2069,27 @@ async def test_metrics_cost_usd_total_equals_the_sum_of_task_costs(tmp_path):
         await store.update_attempt(
             a2, tokens_used=1_000_000, models={"coder": "gpt-5.3-codex"})
 
+        ownerless_id = await store.record_unattributed_usage(
+            site="cli.task_add.grill", model="claude-sonnet-5",
+            tokens_used=40_000, task_id=None)
+        assert ownerless_id
+
         m = await compute_metrics(store)
 
-        s1 = TaskSummaryOut.from_task(t1, attempts=await store.list_attempts(t1.id))
+        s1 = TaskSummaryOut.from_task(
+            t1, attempts=await store.list_attempts(t1.id),
+            ledger=await store.task_usage_ledger_rows(t1.id))
         s2 = TaskSummaryOut.from_task(t2, attempts=await store.list_attempts(t2.id))
 
-        assert m["cost_usd_total"] == pytest.approx(s1.cost_usd + s2.cost_usd)
-        assert m["cost_usd_total"] == pytest.approx(3.0 + 1.75)
+        # 40_000 tokens booked as a "cli.task_add.grill" ledger row — that
+        # site name is not `orphaned_<tier>usage`, so `ledger_rows_as_attempts`
+        # prices it at the fallback tier ("utility_"); price it the same way
+        # here so this test cannot silently disagree with production.
+        ownerless_cost, _ = attempt_cost({
+            "models": {"utility": "claude-sonnet-5"}, "utility_tokens_used": 40_000})
+
+        assert m["cost_usd_total"] == pytest.approx(
+            s1.cost_usd + s2.cost_usd + ownerless_cost)
         assert m["cost_model_total"] == "mixed"
     finally:
         await store.close()
