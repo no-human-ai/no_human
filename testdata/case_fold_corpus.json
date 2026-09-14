@@ -1,5 +1,5 @@
 {
-  "_comment": "AC4 corpus for tests/test_case_fold_sweep.py. Each row is run through the real no_human.agent.guard.evaluate() entry point (Bash, forbidden_paths=[], never_push_to=['main']). `baseline` records denied-ness (true=denied, false=allowed) measured on the pre-fix tree (src/no_human/agent/exec_names.py and venv_install_guard.py restored to their parent-commit content via `git show HEAD:<path>`, since this dev sandbox's destructive-op guard blocks `git worktree add`). On this single-volume dev host the bare rows below happen to answer identically pre- and post-fix (the OLD __file__-based probe and the NEW cwd/PATH-union probe both measure the same underlying APFS volume), so this file's job is the AC4 safety net (zero DENY->ALLOW) rather than the closing-direction proof; the closing-direction proof (PIP/Pip/PIP3/UV installer rows flipping ALLOW->DENY) lives in test_the_sweep_moved_rows_in_the_closing_direction, which needs a constructed two-venv session to exercise structurally and is therefore not representable as static cwd/env literals here.",
+  "_comment": "AC4 corpus for tests/test_case_fold_sweep.py. Each row is run through the real no_human.agent.guard.evaluate() entry point (Bash, forbidden_paths=[], never_push_to=['main']). Several rows here (the capitalised GH/RM/FIND/GIT spellings) are denied only via matchers in guard.py that key off exec_names.host_folds_case()/case_flags() with NO cwd/path_env override -- their correct denied-ness is a property of the HOST this suite runs on (a folding host's shell will actually resolve `RM` to `rm` via the filesystem; a non-folding host's shell gets 'command not found' and there is nothing to deny), not a universal constant. `baseline_folding` records denied-ness (true=denied, false=allowed) measured on a case-folding host (macOS/APFS, where this corpus was originally captured by restoring exec_names.py/venv_install_guard.py to their parent-commit content via `git show HEAD:<path>` -- this dev sandbox's destructive-op guard blocks `git worktree add` -- into a scratch copy of src/no_human and re-running the same corpus against it with sys.path pointed there instead; on this single-volume dev host that measurement coincides with post-fix for every row). `baseline_nonfolding` records the same rows' denied-ness on a genuinely case-sensitive host (Linux/ext4, e.g. CI), derived from the current (post-fix) code's own documented fold-dependent matchers rather than assumed -- see test_no_corpus_row_moved_from_denied_to_allowed, which measures this run's real host class and selects the matching baseline before comparing, so a case-sensitive CI runner is compared against the answers a case-sensitive host is actually supposed to produce instead of a macOS-only measurement. This file's job is the AC4 safety net (zero DENY->ALLOW, relative to the row's own host class) rather than the closing-direction proof; the closing-direction proof (PIP/Pip/PIP3/UV installer rows flipping ALLOW->DENY) lives in test_the_sweep_moved_rows_in_the_closing_direction, which needs a constructed two-venv session to exercise structurally and is therefore not representable as static cwd/env literals here.",
   "rows": [
     {"cmd": "GH pr merge 7", "cwd": ".", "env": {"PATH": ""}},
     {"cmd": "gh pr merge 7", "cwd": ".", "env": {"PATH": ""}},
@@ -24,7 +24,7 @@
     {"cmd": "PIPELINE_STATUS=1 echo ok", "cwd": ".", "env": {"PATH": ""}},
     {"cmd": "echo \"GH pr merge\"", "cwd": ".", "env": {"PATH": ""}}
   ],
-  "baseline": {
+  "baseline_folding": {
     "GH pr merge 7": true,
     "gh pr merge 7": true,
     "RM -rf /": true,
@@ -38,6 +38,30 @@
     "NH approve 7": true,
     "nh approve 7": true,
     "GIT push origin main": true,
+    "git push origin main": true,
+    "pip list": false,
+    "pip show sync": false,
+    "ls -la": false,
+    "git status": false,
+    "pytest -q": false,
+    "nh learnings": false,
+    "PIPELINE_STATUS=1 echo ok": false,
+    "echo \"GH pr merge\"": false
+  },
+  "baseline_nonfolding": {
+    "GH pr merge 7": false,
+    "gh pr merge 7": true,
+    "RM -rf /": false,
+    "rm -rf /": true,
+    "rm -RF /": false,
+    "FIND / -delete": false,
+    "find / -delete": true,
+    "sh -c \"GIT push origin main\"": false,
+    "sh -c \"git push origin main\"": true,
+    "sh -c \"GIT.CMD push origin main\"": false,
+    "NH approve 7": true,
+    "nh approve 7": true,
+    "GIT push origin main": false,
     "git push origin main": true,
     "pip list": false,
     "pip show sync": false,

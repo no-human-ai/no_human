@@ -89,20 +89,35 @@ def _now_denied(rows):
 
 def test_no_corpus_row_moved_from_denied_to_allowed():
     """AC4's safety net: nothing this change touches may move a command from
-    denied to allowed. This is checked against the corpus's own `baseline`,
-    not against `now` in the other direction — a row absent from `baseline`
-    simply was not measured pre-fix and cannot regress."""
+    denied to allowed. This is checked against the corpus's own baseline for
+    THIS run's measured host class, not against `now` in the other direction
+    -- a row absent from the selected baseline simply was not measured
+    pre-fix and cannot regress.
+
+    Several corpus rows (the capitalised GH/RM/FIND/GIT spellings) are only
+    denied via guard.py matchers that key off `exec_names.host_folds_case()`
+    with no cwd/path_env override -- their correct denied-ness is a genuine
+    property of the host running this suite (a folding host's shell really
+    does resolve `RM` to `rm`; a non-folding host's shell cannot run it at
+    all, so there is nothing to deny). A single macOS-captured baseline
+    fails on a case-sensitive CI runner for reasons that are not
+    regressions, so the corpus carries one baseline per host class and this
+    test measures the REAL host (no monkeypatching) to pick the matching
+    one -- see the corpus's own `_comment` for how each `baseline_nonfolding`
+    entry was derived."""
     corpus = _load_corpus()
     now = _now_denied(corpus["rows"])
-    baseline = corpus["baseline"]
+    folds = exec_names.host_folds_case()
+    baseline = corpus["baseline_folding"] if folds else corpus["baseline_nonfolding"]
 
     was_denied = {cmd for cmd, denied in baseline.items() if denied}
     still_denied = {cmd for cmd, denied in now.items() if denied}
     regressed = was_denied - still_denied
 
     assert not regressed, (
-        "these commands were DENIED pre-fix and are now ALLOWED -- a "
-        f"regression this change must not introduce: {sorted(regressed)}")
+        f"host_folds_case()={folds} baseline -- these commands were DENIED "
+        "pre-fix and are now ALLOWED -- a regression this change must not "
+        f"introduce: {sorted(regressed)}")
 
 
 def test_the_allow_side_controls_still_run():
@@ -127,15 +142,23 @@ def test_the_allow_side_controls_still_run():
 # docstring for why this cannot be a static row in the JSON corpus.
 # ---------------------------------------------------------------------------
 
-def _mkvenv(root):
+def _mkvenv(root, extra_names=()):
     """A minimal, real venv shape: `<root>/.venv/bin/{pip,pip3,uv}` (each an
     existing, executable file so `_resolve_installer` can actually resolve
     them -- an installer name that CANNOT be resolved via PATH is, by
     design, allowed-and-logged rather than denied, so a fixture missing
-    these would test nothing) plus a `pyvenv.cfg` marker."""
+    these would test nothing) plus a `pyvenv.cfg` marker.
+
+    `extra_names`: additional literal file spellings to also create (e.g.
+    `("PIP", "Pip", "PIP3")`) -- mocking `host_folds_case` only changes the
+    CLASSIFICATION decision, it cannot make a genuinely case-sensitive
+    test-runner filesystem (Linux/ext4 CI) resolve a literal `"PIP"` PATH
+    lookup against a file that is really named `pip`; a test that simulates
+    "what a real folding host would see" on a case-sensitive runner needs
+    the literal spelling to actually exist on disk."""
     venv = root / ".venv"
     (venv / "bin").mkdir(parents=True)
-    for name in ("pip", "pip3", "uv"):
+    for name in ("pip", "pip3", "uv", "uvx", *extra_names):
         f = venv / "bin" / name
         f.write_text("#!/bin/sh\n")
         f.chmod(0o755)
@@ -166,7 +189,8 @@ def test_the_sweep_moved_rows_in_the_closing_direction(tmp_path, monkeypatch):
     `test_venv_install_guard.test_a_capitalised_uv_commands_are_not_denied_like_pip`.
     """
     monkeypatch.setattr(exec_names, "host_folds_case", lambda *a, **k: True)
-    _, primary_venv = _mkvenv(tmp_path / "primary")
+    _, primary_venv = _mkvenv(
+        tmp_path / "primary", extra_names=("PIP", "Pip", "PIP3"))
     wt, _ = _mkvenv(tmp_path / "wt")
     # Exactly what a coder's Bash inherits in production: PATH/VIRTUAL_ENV
     # pointing at the shared dev venv, regardless of which worktree `cwd`
@@ -225,3 +249,42 @@ def test_installing_into_ones_own_worktree_venv_stays_allowed(
         "Bash", {"command": f"{wt_venv}/bin/pip install ."},
         forbidden_paths=[], never_push_to=["main"], cwd=str(wt), env=wt_env)
     assert d.allow, f"own-worktree install must stay allowed: {d.reason}"
+
+
+def test_the_sweep_does_not_regress_the_uvx_active_flag_placement(
+    tmp_path, monkeypatch
+):
+    """AC4 visibility for BLOCKER A's bug class: a plain corpus row (empty
+    `PATH`, `cwd="."`) cannot exercise this at all -- `uvx` never resolves
+    via PATH there, so `_resolve_installer` fails open (allows-and-logs)
+    for every case, fix or no fix (see the module docstring on why the
+    closing-direction proof needs a real two-venv session instead of static
+    corpus rows; this is the same structural reason `_ALLOW_CONTROLS` cannot
+    host this row either). This test builds that session so the sweep file
+    -- not just `test_venv_install_guard.py`'s targeted unit test -- would
+    have caught BLOCKER A: `_uses_active_env`'s `expects_program` check
+    compared `_basename(tokens[start]).startswith("uvx")` un-folded, so on a
+    folding host `UVX ruff check --active` (trailing `--active`, belongs to
+    the invoked program `ruff`) was wrongly DENIED while the identical
+    lowercase spelling stayed ALLOWED -- while the reverse shape (a leading
+    `--active`, uvx's own flag) must stay denied regardless of case."""
+    monkeypatch.setattr(exec_names, "host_folds_case", lambda *a, **k: True)
+    _, primary_venv = _mkvenv(tmp_path / "primary")
+    wt, _ = _mkvenv(tmp_path / "wt")
+    prod_env = {"PATH": f"{primary_venv}/bin:/usr/bin:/bin",
+                "VIRTUAL_ENV": primary_venv}
+
+    for cmd in ("uvx ruff check --active", "UVX ruff check --active",
+                "Uvx ruff check --active"):
+        d = guard.evaluate(
+            "Bash", {"command": cmd}, forbidden_paths=[],
+            never_push_to=["main"], cwd=str(wt), env=prod_env)
+        assert d.allow, (
+            f"a trailing --active belongs to the invoked program, not to "
+            f"uvx, regardless of uvx's own case: {cmd!r} -- {d.reason}")
+
+    for cmd in ("uvx --active ruff", "UVX --active ruff", "Uvx --active ruff"):
+        d = guard.evaluate(
+            "Bash", {"command": cmd}, forbidden_paths=[],
+            never_push_to=["main"], cwd=str(wt), env=prod_env)
+        assert not d.allow, f"a leading --active is uvx's own flag: {cmd!r}"

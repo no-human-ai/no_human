@@ -360,6 +360,24 @@ def _is_installer_name(name: str, cwd: str | None = None) -> bool:
     # evilpkg` -> DENY, same fixture, same PATH. Round 3 of #105 found
     # `…\Scripts\PIP.EXE install requests` allowed while the lowercase
     # spelling was refused; #328 is the same shape on a different host class.
+    #
+    # `host_folds_case(cwd)` — `cwd` only, deliberately no `path_env` — is
+    # the other half of this decision (case-fold review, ALSO-FIX): the
+    # probe's second argument would add the SESSION's own `PATH` entries as
+    # extra fold-measurement anchors, which this call site does not have on
+    # hand without threading `env` through all 8 of its callers (a much
+    # wider change than this fix needs). This is judged sufficient because
+    # `cwd` is the anchor that matters for what this function decides: the
+    # question is never "does the volume the INSTALLER BINARY lives on fold
+    # case" (that volume can be a shared system path, irrelevant to this
+    # guard's target check) but "does the volume the WRITE would land on
+    # fold case" -- and every existing call site passes the SESSION's own
+    # worktree as `cwd` for exactly that reason. A `PATH` entry on a
+    # different volume with different fold behaviour from `cwd` is an
+    # unmeasured edge this function does not claim to cover; `cwd` plus the
+    # process-wide anchors `host_folds_case` already falls back to
+    # (`sys.executable`'s dir, `tempfile.gettempdir()`) is the documented,
+    # deliberately narrower contract this module relies on.
     if _IS_WINDOWS or exec_names.host_folds_case(cwd):
         name = name.lower()
     if name in _EXACT_INSTALLERS:
@@ -1003,9 +1021,15 @@ def _uses_active_env(
 
     n = len(tokens)
     subcommand = _mutating_subcommand(tokens, start, cwd)
+    # `.lower()`, not a bare `.startswith("uvx")`: `_is_installer_name`
+    # (the check whose folding this walker is supposed to mirror) already
+    # folds case where the host folds it, so an un-folded comparison here
+    # disagreed with its own upstream classifier — `UVX ruff check --active`
+    # measured as an installer invocation but `expects_program` stayed
+    # False, so the tool's own `--active` flag was read as uv's.
     expects_program = (
         subcommand in _PROGRAM_INVOKING_SUBCOMMANDS
-        or _basename(tokens[start]).startswith("uvx")
+        or _basename(tokens[start]).lower().startswith("uvx")
     )
     seen_subcommand = subcommand is None
     active = False

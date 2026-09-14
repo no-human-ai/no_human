@@ -68,15 +68,25 @@ def _unreadable(path):
         os.chmod(path, mode)
 
 
-def _mkvenv(root):
+def _mkvenv(root, extra_names=()):
     """A real, executable-bit venv layout: <root>/pyproject.toml +
-    <root>/.venv/{pyvenv.cfg,bin/{python,pip,uv}}."""
+    <root>/.venv/{pyvenv.cfg,bin/{python,pip,uv,uvx,...}}.
+
+    `extra_names`: additional literal file spellings to also create in
+    `bin/` (e.g. `("PIP", "Pip")`) — for a test that mocks `host_folds_case`
+    to simulate a folding host, the mock only changes the CLASSIFICATION
+    decision; it cannot make a genuinely case-sensitive test-runner
+    filesystem (Linux/ext4 CI) resolve a literal `"PIP"` PATH lookup against
+    a file that is really named `pip`. On a REAL folding host the OS itself
+    resolves that lookup for free; simulating "what a real folding host
+    would see" on a case-sensitive runner requires the literal spelling to
+    actually exist on disk."""
     venv = os.path.join(root, ".venv")
     bindir = os.path.join(venv, "bin")
     os.makedirs(bindir, exist_ok=True)
     with open(os.path.join(venv, "pyvenv.cfg"), "w") as f:
         f.write("home = /usr/bin\n")
-    for name in ("python", "python3", "pip", "pip3", "uv"):
+    for name in ("python", "python3", "pip", "pip3", "uv", "uvx", *extra_names):
         path = os.path.join(bindir, name)
         with open(path, "w") as f:
             f.write("#!/bin/sh\nexit 0\n")
@@ -92,10 +102,13 @@ def _mkvenv(root):
     return os.path.realpath(root), os.path.realpath(venv)
 
 
-def _session(tmp_path):
+def _session(tmp_path, primary_extra_names=()):
     """Real two-tree layout: `primary/` (the shared dev checkout a coder
-    session must never write into) and `wt/` (the session's own worktree)."""
-    primary, primary_venv = _mkvenv(tmp_path / "primary")
+    session must never write into) and `wt/` (the session's own worktree).
+    `primary_extra_names` forwards to `_mkvenv` for `primary/` only — the
+    tree resolution actually walks via `PATH` in the production shape below
+    (see `prod_env`)."""
+    primary, primary_venv = _mkvenv(tmp_path / "primary", extra_names=primary_extra_names)
     wt, wt_venv = _mkvenv(tmp_path / "wt")
     # Exactly what a coder's Bash inherits in production today: PATH/
     # VIRTUAL_ENV pointing at the shared dev venv, regardless of which
@@ -317,15 +330,78 @@ def test_a_capitalised_uv_commands_are_not_denied_like_pip(tmp_path, monkeypatch
         assert d.allow, f"must stay allowed via evaluate(): {cmd!r} — {d.reason}"
 
 
+def test_a_capitalised_uvx_program_flag_is_not_denied_like_pip(tmp_path, monkeypatch):
+    """Regression (case-fold review, BLOCKER A): `_uses_active_env`'s
+    `expects_program` test — whether a trailing flag belongs to the invoked
+    PROGRAM rather than to `uv`/`uvx` itself — compared
+    `_basename(tokens[start]).startswith("uvx")` verbatim, un-folded, even
+    though the classifier that puts this command on the installer path at
+    all (`_is_installer_name`) already folds case wherever the host folds
+    it. That disagreed with its own upstream classifier exactly like
+    BLOCKER 2's `uv`/`uvx` exclusion did: on a folding host, `UVX ruff check
+    --active` was recognised as an installer invocation but `expects_program`
+    stayed `False` (the bare `.startswith("uvx")` does not match `"UVX"`),
+    so `--active` was read as uv's OWN flag and the command was DENIED —
+    while the identical `uvx ruff check --active` (lowercase) stayed
+    ALLOWED, because for it `expects_program` correctly saw `ruff` as the
+    invoked program and treated the trailing `--active` as ruff's, not
+    uv's. Pins the `.lower()` fix mirroring the already-correct sibling
+    exclusion above (`_basename(exe).lower() in ("uv", "uvx")`)."""
+    monkeypatch.setattr(exec_names, "host_folds_case", lambda *a, **k: True)
+    _primary, _primary_venv, wt, _wt_venv, prod_env, _wt_env = _session(tmp_path)
+    cmds = ["uvx ruff check --active", "UVX ruff check --active",
+            "Uvx ruff check --active"]
+    for cmd in cmds:
+        r = venv_install_guard.denial_reason(cmd, cwd=wt, env=prod_env)
+        assert r is None, (
+            f"a trailing --active after the invoked program belongs to that "
+            f"program, not to uvx, regardless of uvx's own case: {cmd!r} — {r}")
+        d = _ev("Bash", {"command": cmd}, cwd=wt, env=prod_env)
+        assert d.allow, f"must stay allowed via evaluate(): {cmd!r} — {d.reason}"
+    # And the sibling shape (--active BEFORE the program) stays denied
+    # regardless of case, exactly like the all-lowercase spelling already
+    # pinned in test_the_full_bypass_set_stays_denied.
+    for cmd in ["uvx --active ruff", "UVX --active ruff", "Uvx --active ruff"]:
+        r = venv_install_guard.denial_reason(cmd, cwd=wt, env=prod_env)
+        assert r is not None, f"a leading --active is uvx's own flag: {cmd!r}"
+
+
 def test_the_cwd_argument_is_actually_threaded_to_the_probe(tmp_path, monkeypatch):
-    """Mutation-pinning (case-fold review, M3): `_is_installer_name` is
-    called with an explicit `cwd=` at each of its call sites specifically so
-    the fold probe answers from the SESSION's own working directory, not
-    from wherever the orchestrator process itself happens to be sitting. If
-    any of those call sites silently dropped its `cwd` argument, the probe
-    would instead measure the orchestrator's real `os.getcwd()`/`PATH` —
-    unrelated to the session under test — and this test's pinned answers
-    would never be consulted, changing the verdict.
+    """Mutation-pinning (case-fold review, M3), entry-point level.
+
+    `_is_installer_name` takes an explicit `cwd=` at every one of its 8
+    call sites in this module so the fold probe answers from the SESSION's
+    own working directory, not from wherever the orchestrator process
+    itself happens to be sitting. This test pins ONE of those sites — the
+    literal-token gate in `_resolve_installer` (`venv_install_guard.py:683`,
+    reached here because `"PIP"` has no `/`) — via the real, public
+    `denial_reason` entry point. Narrowed from an earlier claim that this
+    single test pinned "each" call site: it does not, and cannot, because
+    several other call sites are only reached *after* this same gate
+    already returned a verdict — e.g. the PATH-walk's own re-checks at
+    lines 832/857 sit inside the same `_resolve_installer` call and this
+    test's own control flow never reaches them (a correctly-threaded
+    `cwd=wt` returns at line 683, before the PATH walk even starts); a
+    dropped `cwd` at 832/857 would therefore be masked by 683 answering
+    correctly, exactly the redundant-enumeration trap
+    `test_mutating_subcommand_threads_cwd_to_the_inner_installer_skip`
+    calls out for `denial_reason`'s own outer loop. That test independently
+    pins a second, walker-level site (`_mutating_subcommand`'s inner skip
+    at line 943) by calling the private helper directly, bypassing this
+    gate entirely so it cannot be masked the same way; the test below this
+    one pins a third, similarly isolated site
+    (`_spaced_path_candidates`, line 435). The remaining sites (652, 670,
+    832, 857) share `_is_installer_name`'s single implementation and the
+    same `(name, cwd)` call shape as the three sites pinned here — reviewed
+    by inspection to thread `cwd` correctly — but are not each
+    independently mutation-tested by this round: 670 gates only a WARNING
+    log, not the allow/deny verdict, and 1042 (`_uses_active_env`'s own
+    installer skip) is unreachable in a way a test could observe at all —
+    its condition is `_is_installer_name(tok, cwd) and not expects_program`,
+    and every branch of that `and` converges on the identical `i += 1` the
+    surrounding walk already does on the other side of the check, so no
+    input can make `_is_installer_name`'s answer at that specific site
+    change the function's return value, dropped `cwd` or not.
 
     Isolates `cwd` as the only anchor whose fold answer is real: every
     directory except the session's own worktree measures `None`
@@ -409,6 +485,50 @@ def test_mutating_subcommand_threads_cwd_to_the_inner_installer_skip(
         "cwd=wt must be threaded through the inner-installer-name skip so "
         "`PIP` folds to `pip` (recognised, skipped) and the walk lands on "
         f"`install`; got {subcommand!r}"
+    )
+
+
+def test_spaced_path_candidates_threads_cwd_to_the_installer_check(
+    tmp_path, monkeypatch
+):
+    """Mutation-pinning (case-fold review, M3), a third independently-isolated
+    site: `_spaced_path_candidates` (line 435) is a standalone function
+    callable directly, so — like
+    `test_mutating_subcommand_threads_cwd_to_the_inner_installer_skip` above
+    — nothing upstream can mask a dropped `cwd` here the way the
+    `_resolve_installer` PATH-walk's own re-checks are masked by its
+    earlier literal-token gate (see the docstring of
+    `test_the_cwd_argument_is_actually_threaded_to_the_probe`).
+
+    `_spaced_path_candidates` rebuilds the leading prefixes a nested
+    `cmd /c "..."` payload's re-lex could have destroyed (issue #105 round
+    3) and keeps only the ones that name an installer. The payload here is
+    already in the `/`-normalised spelling `win_readings.readings` would
+    have produced from a real backslashed Windows path; its installer
+    token is spelled `PIP`. Pinned exactly like the sibling test: `wt`
+    folds (`True`), every other real anchor determinately does not
+    (`False`, never `None`, so a dropped `cwd` cannot hide behind the
+    fail-closed default). With `cwd` correctly threaded, `PIP` folds to
+    `pip`, is recognised as the installer, and the joined prefix is kept;
+    a dropped `cwd` measures the real anchors, `PIP` is never recognised,
+    and the payload is dropped, producing an empty candidate list.
+    """
+    wt = str(tmp_path / "wt")
+    os.makedirs(wt)
+
+    def _pinned(directory):
+        return os.path.realpath(directory) == os.path.realpath(wt)
+
+    monkeypatch.setattr(exec_names, "_folds_case_at", _pinned)
+    exec_names.host_folds_case.cache_clear()
+
+    payload = "C:/Program Files/proj/.venv/Scripts/PIP install requests"
+    candidates = venv_install_guard._spaced_path_candidates(payload, wt)
+    assert candidates == [
+        "C:/Program Files/proj/.venv/Scripts/PIP", "install", "requests",
+    ], (
+        "cwd=wt must be threaded through so `PIP` folds to `pip` "
+        f"(recognised as the installer); got {candidates!r}"
     )
 
 
@@ -1870,7 +1990,14 @@ def test_a_capitalised_installer_is_refused_on_a_folding_cwd(tmp_path, monkeypat
     spelling of an installer must be refused exactly where the lowercase
     spelling is — the measured `PIP install evilpkg -> ALLOW` bug closed."""
     monkeypatch.setattr(exec_names, "host_folds_case", lambda *a, **k: True)
-    primary, primary_venv, wt, wt_venv, prod_env, wt_env = _session(tmp_path)
+    # `primary_extra_names` creates the literal `PIP`/`Pip`/`PIP3` files in
+    # the shared venv's `bin/` -- mocking `host_folds_case` only changes the
+    # CLASSIFICATION decision; on a genuinely case-sensitive test-runner
+    # filesystem (Linux/ext4 CI) `_resolve_installer`'s real PATH walk still
+    # needs a literal `"PIP"` file to exist on disk to resolve it the way a
+    # real folding host's shell would for free.
+    primary, primary_venv, wt, wt_venv, prod_env, wt_env = _session(
+        tmp_path, primary_extra_names=("PIP", "Pip", "PIP3"))
     cases = [
         "pip install evilpkg",
         "PIP install evilpkg",

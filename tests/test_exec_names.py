@@ -335,16 +335,45 @@ def test_the_union_folds_if_any_anchor_folds(monkeypatch, tmp_path):
         cwd=str(tmp_path), path_env=str(other)) is True
 
 
-def test_an_unmeasurable_probe_folds():
+def test_an_unmeasurable_probe_folds(monkeypatch):
     """The bug this whole change closes: an unmeasurable path/volume must
     fold (the DENY-more direction), never answer the permissive class-based
     guess this test replaces (the host's OS family name, which reads
     permissive/`False` on every POSIX host, i.e. the shipped bug).
+
+    Fixed (case-fold review, BLOCKER B item 3): the original version of this
+    test relied on a nonexistent `cwd` and empty `PATH` alone to mean
+    "nothing is measurable" -- but `host_folds_case`'s own tier-2 fallback
+    anchors (`dirname(sys.executable)`, `tempfile.gettempdir()`) are REAL
+    directories that exist on every host, checkout or frozen bundle alike.
+    On a folding host (macOS/APFS, where this test was first written) that
+    tier-2 probe happens to answer `True`, so the test passed by accident --
+    but on a genuinely case-sensitive host (Linux/ext4, e.g. CI) those same
+    real directories correctly, determinately answer `False`, which is the
+    ACCURATE measured answer for that host, not a bug to mask (confirmed by
+    simulating an ext4-like `_folds_case_at` -- real dirs answer `False`,
+    nonexistent ones answer `None` -- against the original assertions:
+    `host_folds_case` returned `False`, not `True`, failing the old,
+    host-dependent version of this test). Asserting `is True`
+    unconditionally therefore made this test pass or fail depending on which
+    real host ran the suite, for a reason that has nothing to do with the
+    "unmeasurable probe" contract it claims to pin.
+
+    Mocks `_folds_case_at` to answer `None` for every candidate (cwd, PATH,
+    AND the tier-2 fallback) so the probe is genuinely, totally unmeasurable
+    regardless of which real host runs this suite -- the only way to observe
+    the fail-closed default deterministically.
+    `test_a_totally_unmeasurable_probe_still_reaches_the_final_fold` pins the
+    same fallback through `host_folds_case` directly; this test additionally
+    pins it through the `case_flags` wrapper, and keeps the host-independent
+    `_swap_probe` assertions this test always had.
     """
     assert exec_names._swap_probe("/no_human-nonexistent/AbC") is None
     # No case-swappable character in the basename: this is `None` (nothing
     # measured), not `False` (measured and does not fold).
     assert exec_names._swap_probe("/123") is None
+
+    monkeypatch.setattr(exec_names, "_folds_case_at", lambda directory: None)
 
     exec_names.host_folds_case.cache_clear()
     assert exec_names.host_folds_case(
@@ -383,9 +412,28 @@ def test_the_probe_survives_a_removed_process_cwd(tmp_path, monkeypatch):
     `OSError`) when the orchestrator's own working directory has been
     removed out from under it (a real, observed shape: a worktree cleaned up
     mid-session while the agent process is still chdir'd into it). That
-    exception was unguarded, so EVERY `Bash` command evaluated with no
-    explicit `cwd` crashed `guard.evaluate` outright -- denial-of-availability
+    exception was unguarded, so a `Bash` command whose evaluation reached
+    ANY unguarded `host_folds_case`/`_candidate_anchors(cwd, ...)` call with
+    a falsy `cwd` crashed `guard.evaluate` outright -- denial-of-availability
     for the whole guard, not a wrong verdict.
+
+    Narrowed from an earlier claim that this required no explicit `cwd` on
+    the *`guard.evaluate` call itself*: that overstates the trigger. Some
+    fold decisions this module makes -- `command_name`'s own `fold_case=None`
+    default calls the zero-argument `host_folds_case()`, which reads the
+    process's OWN `os.getcwd()`/`PATH` regardless of what `cwd`/`env` a
+    caller passed to `guard.evaluate` -- so a caller supplying a perfectly
+    valid, existing `cwd=` would not have been insulated from this crash
+    either, as long as the PROCESS's real working directory was the one
+    removed (confirmed directly: `guard.evaluate(..., cwd=<a real, valid
+    directory>, ...)` still reaches the same unguarded `os.getcwd()` through
+    that path). The precise trigger is "the process's own real working
+    directory no longer exists", independent of whether the immediate
+    caller happened to pass an explicit `cwd`; both this test's `cwd=None`
+    call and a hypothetical explicit-`cwd` call share the identical root
+    cause and the identical fix (`_candidate_anchors` catching `OSError`),
+    which is why one repro of the process-level precondition below is
+    enough to pin it for every call path.
 
     Reproduces the precondition directly: chdir into a scratch directory,
     delete it while it is still the process cwd, then confirm both the probe
