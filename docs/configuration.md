@@ -849,6 +849,40 @@ set it `false` to skip straight to the agentic reviewer even when
 section is not written into the defaults file; set it yourself to change the
 behaviour, the same as `lint.command` and `tests.command` above.
 
+## Mutation probe
+
+```yaml
+mutation_probe:
+  # "off" | "advisory" | "required". For every test a diff adds or changes,
+  # the probe mutates the behaviour that test is named for (one executable
+  # AST node at a time, in a disposable worktree) and requires the test to
+  # FAIL. off: never runs. advisory (default): a SURVIVED test (stays green
+  # under mutation) is always a blocking finding regardless of this mode —
+  # only a probe that COULD NOT run (non-Python test, unmappable test,
+  # missing interpreter, budget exhausted, crash) is advisory-only here.
+  # required: a probe that could not run also blocks.
+  mode: advisory
+  # Cap on how many changed/added tests get probed per review — one pytest
+  # launch per test per mutation, so this bounds a large diff's wall-clock.
+  max_tests: 12
+  # Cap on how many mutation candidates are tried per test before giving up
+  # and reporting "survived".
+  max_mutations_per_test: 3
+  # Wall-clock budget, in seconds, for the whole probe run (all tests, all
+  # mutations) — exceeding it reports the remaining tests as "undetermined",
+  # never as a silent pass.
+  timeout_seconds: 300
+```
+
+Python/pytest only: a changed test file in any other language is reported
+`undetermined`, never silently skipped. The code under test is inferred
+statically (imports + first-party calls in the test body, with a
+naming-pattern tiebreak) — never executed to find out, and never guessed at
+when it cannot be determined. The reviewed tree is never written to directly:
+every mutation happens inside a disposable `git worktree add --detach` copy,
+and the final proof it was left byte-identical is a content-hash comparison,
+never a revert command. See `src/no_human/testing/mutation_probe.py`.
+
 ## UI evidence
 
 ```yaml
