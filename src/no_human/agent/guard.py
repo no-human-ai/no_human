@@ -16,6 +16,20 @@ Blocks, before execution:
   - git that overwrites or discards WORKING-TREE content the agent did not
     create (`git stash`, `git restore`, `git checkout -- <path>`, `git clean
     -fd`, `git checkout-index -f`, ...) — in every session, coder included
+  - rewriting a branch that is already PUSHED below its pushed tip: `git
+    rebase` (every lexical spelling this module recognizes, incl. `pull
+    --rebase`/`-c pull.rebase=true pull`), `git reset` in any mode
+    (`--soft`/`--mixed`/default/`--hard`/`--merge`/`--keep`) to a target the
+    tip isn't an ancestor of, `git commit --amend` of the tip, `git checkout
+    -B`/`switch -C`/`branch -f`/`git update-ref` that moves the current
+    branch, and `git filter-branch` — delivery only ever fast-forwards a
+    branch's remote ref, so a rewrite there can never be delivered; the
+    denial names the pushed tip and tells the coder to `git merge` the base
+    instead (2026-09-13, pushed_tip_guard). Argv-lexical, not a shell: a
+    script run via `sh script.sh`/`python3 -c ...`, or the same verb reached
+    through a brace group or a command substitution ahead of it, is not
+    guaranteed to present a recognizable `git <verb>` argv — see
+    `pushed_tip_guard`'s own module docstring for the disclosed gaps.
   - interactive prompts (`AskUserQuestion`) — nobody is at the keyboard (§22)
   - background polling (`Monitor`, `TaskStop`, `ToolSearch`) in a read-only
     session — a planner does not need to busy-wait on its own subagents
@@ -49,7 +63,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Mapping
 
-from . import exec_names, fs_roots, venv_install_guard
+from . import exec_names, fs_roots, pushed_tip_guard, venv_install_guard
 
 # Read the platform through a constant, never an inline `os.name` test, so the
 # Windows branch below is reachable from a test on any host.
@@ -2498,15 +2512,19 @@ def _git_subcommand(argv: list[str]) -> tuple[str, list[str]]:
     return "", []
 
 
-#: Runner names `_forge_invocations` recurses into. A union of the shell
-#: runners `_git_invocations` also uses and the trailing-argv runners the
+#: Runner names both `_forge_invocations` and `_git_invocations` recurse
+#: into: the union of `_SHELL_RUNNERS` and the trailing-argv runners the
 #: package-install guard already recognises (`setsid`, `unbuffer`, `nice`,
-#: `ionice`, `chrt`, ... — see `_TRAILING_ARGV_RUNNERS`): `setsid gh -R o/r pr
-#: merge 7` read as ALLOW because `setsid` was consulted by `_approve_denial`
-#: elsewhere but never by this recursion. New name so the widening is scoped
-#: to `_forge_invocations` alone — `_git_invocations`, `_git_push_invocations`
-#: and the install guard keep matching on `_SHELL_RUNNERS`/
-#: `_TRAILING_ARGV_RUNNERS` exactly as before, byte-identical. Found
+#: `ionice`, `chrt`, ... — see `_TRAILING_ARGV_RUNNERS`). Correction 2026-09
+#: (this comment previously, and wrongly, claimed `_git_invocations` kept
+#: matching on `_SHELL_RUNNERS` alone, "byte-identical" to before this name
+#: existed — `_git_invocations` already read `_FORGE_RUNNER_NAMES` before
+#: the pushed-tip rewrite guard landed; that guard did not widen it, this
+#: comment was simply wrong. Read the function: it checks `name in
+#: _FORGE_RUNNER_NAMES`, the full 18-name union, exactly
+#: like `_forge_invocations` does. Verified by
+#: `tests/test_pushed_tip_rewrite_guard.py::test_the_pushed_tip_path_sees_every_runner_the_guard_knows`,
+#: which denies a rewrite wrapped in each of the 18 for real. Found
 #: 2026-08-23.
 _FORGE_RUNNER_NAMES = _SHELL_RUNNERS | _TRAILING_ARGV_RUNNERS
 
@@ -2521,9 +2539,11 @@ def _forge_invocations(cmd: str, _depth: int = 0) -> list[list[str]]:
     Recurses up to two levels into nested shell runners — `bash -c "gh -R o/r
     pr merge 7"`, `sh -c "glab -R o/r mr merge 12"`, `timeout 30 gh …`,
     `xargs gh …`, `setsid gh …`, `chrt -f 1 gh …` (`_FORGE_RUNNER_NAMES`) —
-    the same bound `_git_invocations` uses over its own (narrower)
-    `_SHELL_RUNNERS`, mirrored rather than shared (no helper refactor across
-    the two paths). `$(...)`, `` `...` `` and `{ ...; }` are stripped per
+    the same `_FORGE_RUNNER_NAMES` bound `_git_invocations` recurses into
+    (see the correction on `_FORGE_RUNNER_NAMES` above — the two sets are
+    identical, not narrower/wider). The two recursions are mirrored rather
+    than shared (no helper refactor across the two paths). `$(...)`,
+    `` `...` `` and `{ ...; }` are stripped per
     segment with `_SUBST_HEAD` (a `_GROUPING` sibling — `_GROUPING` itself is
     untouched); `_ASSIGN_SUBST_HEAD` runs first so the same substitution
     heads are also stripped when glued onto an assignment (`x=$(gh …)`); and
@@ -2894,6 +2914,20 @@ def evaluate(
                 "the agent never edits it.", severity=GUARD_DESTRUCTIVE)
         if _RM_RF.search(cmd):
             return GuardDecision(False, f"destructive command blocked (rm -rf): {cmd}", severity=GUARD_DESTRUCTIVE)
+        # Must run BEFORE `_GIT_DESTRUCTIVE` (which already matches `reset
+        # --hard <ref>` lexically, with a generic message) and before
+        # `_git_worktree_denial` (which matches a rebase/merge/pull
+        # wind-back — `--abort`/`--skip`/`--autostash`, via
+        # `_sequencer_clobbers` — and a hard reset/clean/checkout, also with
+        # a generic message; it does NOT match a plain `rebase`, `commit
+        # --amend`, `update-ref`, `checkout -B` or `branch -f` at all — see
+        # `pushed_tip_guard`'s module docstring for the measurement): this
+        # is the only one of the three that names the pushed tip and the
+        # merge alternative, so it has to get first refusal or its message
+        # can never surface.
+        pushed_reason = pushed_tip_guard.denial_reason(_git_invocations(cmd), cwd)
+        if pushed_reason:
+            return GuardDecision(False, pushed_reason, severity=GUARD_DESTRUCTIVE)
         if _GIT_DESTRUCTIVE.search(cmd):
             return GuardDecision(False, f"destructive git command blocked: {cmd}", severity=GUARD_DESTRUCTIVE)
         # Applies to EVERY session, coder included — see the block comment on
