@@ -1894,7 +1894,15 @@ FROZEN_FILE_LINES = {
     # `_failing_test_attribution_sentence` above; a new method
     # signature/docstring is net file growth even though the moved code
     # itself is unchanged. Measured on this tree with the scanner below.
-    "review/reviewer.py": 3255,
+    # 3255 -> 3293 (+38): send-back fix on the same task. Blocker 1: the
+    # retry branch checked only `_reached_no_verdict(retry)`, so a RETRY
+    # that itself timed out (`_fast_review` returns a TIMEOUT-shaped
+    # decision, not a NO-VERDICT-shaped one) fell through as a real verdict
+    # and was merged as a blocking-shaped finding — the R17 regression,
+    # reintroduced on the retry path. Fixed with a shared classifier,
+    # `_angle_gave_no_verdict`, applied identically to the first attempt
+    # and the retry. Measured on this tree with the scanner below.
+    "review/reviewer.py": 3293,
     # 2706 -> 2711 (+5): pre-existing red on main at 03b262d23 (e922e9b4's
     # landing, change-scoped tests missed the ratchet) — repaired, measured,
     # on this merge; same cause as the two function-level wake.py bumps above.

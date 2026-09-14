@@ -32,6 +32,7 @@ from no_human.core.pr_evidence import PrEvidence
 from no_human.core.task import Task
 from no_human.review.reviewer import (
     AdversarialReviewer,
+    ANGLE_RETRY_TURNS,
     REQUIRED_ANGLES,
     REVIEW_ANGLES,
     skipped_angles_from_checklist,
@@ -161,6 +162,49 @@ async def test_an_angle_that_runs_and_passes_leaves_a_clean_gate(tmp_path):
     assert backend.calls == 1 + len(REVIEW_ANGLES)
 
 
+async def test_a_timing_out_retry_never_produces_a_blocking_item(tmp_path):
+    """A RETRY can itself time out. `_fast_review` returns a TIMEOUT-shaped
+    decision on a timeout (`checklist=[ChecklistItem("timeout", ...)]`), not
+    a NO-VERDICT-shaped one — before this fix, the retry branch checked only
+    `_reached_no_verdict(retry)`, which does not match a timeout, so a
+    timing-out retry fell through as `r = retry` and was merged by
+    `merge_angle_findings` as a real, blocking-shaped finding (its item has
+    `passed=False` and NO severity, so `_is_blocking` is True). That is
+    exactly the R17 regression this task exists to prevent, reintroduced on
+    the retry path. Reproduced by stubbing only `_run_bounded`, exactly as
+    the send-back's own repro did, forcing every retry call
+    (`max_turns == ANGLE_RETRY_TURNS`) to time out while first attempts
+    reach no verdict normally."""
+    backend = _StubBackend({})  # every angle's FIRST attempt: no verdict
+    r = AdversarialReviewer(backend=backend)
+    t = _complex_task(tmp_path)
+
+    real_run_bounded = r._run_bounded
+
+    async def timing_out_retry(prompt, repo_path, *, max_turns, timeout, on_event):
+        if max_turns == ANGLE_RETRY_TURNS:
+            return None, "180s"
+        return await real_run_bounded(
+            prompt, repo_path, max_turns=max_turns, timeout=timeout,
+            on_event=on_event)
+
+    r._run_bounded = timing_out_retry
+    d = await r.review(t, repo_path=tmp_path, diff_override="+ x = 1\n")
+
+    assert d.passed is True, "a timing-out retry must never fail the gate"
+    assert d.blocking_items == [], (
+        "a timing-out RETRY must never produce a blocking-shaped finding "
+        "that reaches the coder"
+    )
+    notes = [i for i in d.checklist if "did not run" in i.label]
+    assert len(notes) == len(REVIEW_ANGLES)
+    assert all(i.passed is False and i.severity == "low" for i in notes), (
+        "every skip note — including one caused by a timing-out retry — "
+        "must be recorded not-passed and non-blocking, never green"
+    )
+    assert any("timed out on retry" in i.label for i in notes)
+
+
 async def test_the_checklist_comment_renders_the_skip_as_unfinished(tmp_path):
     """The PR's checklist comment (`_review_checklist_comment`) must render a
     skipped angle's row with the FAIL glyph, never the PASS glyph — a human
@@ -266,6 +310,40 @@ def test_skipped_angles_from_checklist_reads_historical_passed_true_rows():
     assert skipped_angles_from_checklist(None) == ([], [])
     assert skipped_angles_from_checklist("not json") == ([], [])
     assert skipped_angles_from_checklist({"items": "not a list"}) == ([], [])
+
+
+def test_review_verdict_data_derives_angles_skipped_from_the_real_checklist():
+    """Ablation guard: every other test in this file builds the
+    `review_verdict` dict BY HAND, so none of them notices if the
+    `skipped_angles_from_checklist(review_checklist)` call inside
+    `Orchestrator._review_verdict_data` (orchestrator.py) is deleted —
+    replacing it with `pass` leaves `angles_skipped`/`angles_skipped_required`
+    at their initialized `[]` and every hand-built-dict test stays green.
+    This test drives the REAL method so that ablation fails here."""
+    t = Task.new("big task", repo_path="/r")
+    t.context = {"review_history": [{"passed": True, "blocking": []}]}
+    checklist = {
+        "passed": True,
+        "items": [
+            {"label": "tests angle did not run (reached no verdict)",
+             "passed": False, "severity": "low"},
+            {"label": "ok", "passed": True, "severity": "low"},
+        ],
+    }
+    rv = Orchestrator._review_verdict_data(t, review_checklist=checklist)
+    assert rv is not None
+    assert rv["angles_skipped"] == ["tests"]
+    assert rv["angles_skipped_required"] == ["tests"]
+
+    # And the negative: no skip in the checklist -> both empty, not just
+    # "truthy" — pins the field shape the PR body and merge policy read.
+    clean_checklist = {
+        "passed": True,
+        "items": [{"label": "ok", "passed": True, "severity": "low"}],
+    }
+    rv_clean = Orchestrator._review_verdict_data(t, review_checklist=clean_checklist)
+    assert rv_clean["angles_skipped"] == []
+    assert rv_clean["angles_skipped_required"] == []
 
 
 def test_merge_policy_is_not_ready_when_a_required_angle_never_ran():

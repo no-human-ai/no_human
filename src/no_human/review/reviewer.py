@@ -1731,6 +1731,24 @@ def _reached_no_verdict(decision: ReviewDecision) -> bool:
     )
 
 
+def _angle_gave_no_verdict(decision: ReviewDecision) -> str | None:
+    """``None`` when `decision` is a real, mergeable angle verdict.
+
+    Otherwise the reason it is not one. Shared between an angle's first
+    attempt and its one retry so a retry that itself times out (or hits a
+    transport error) is recognized the same way the first attempt is,
+    instead of falling through `_reached_no_verdict` alone and being
+    merged as if it were a real, blocking-shaped finding — a `_fast_review`
+    timeout is TIMEOUT-shaped (`checklist=[ChecklistItem("timeout", ...)]`),
+    not NO-VERDICT-shaped, so `_reached_no_verdict` alone never catches it.
+    """
+    if any(i2.label == "timeout" for i2 in decision.checklist):
+        return "timed out"
+    if _reached_no_verdict(decision):
+        return "reached no verdict"
+    return None
+
+
 def _citation_fails(
     item: ChecklistItem, repo_path: Path, before_ref: str
 ) -> str | None:
@@ -2778,9 +2796,12 @@ class AdversarialReviewer:
             skipped = None
             if not isinstance(r, ReviewDecision):
                 skipped = str(r)[:120]
-            elif any(i2.label == "timeout" for i2 in r.checklist):
+                first_attempt_reason = None
+            else:
+                first_attempt_reason = _angle_gave_no_verdict(r)
+            if first_attempt_reason == "timed out":
                 skipped = "timed out"
-            elif _reached_no_verdict(r):
+            elif first_attempt_reason == "reached no verdict":
                 # R17, finding 3 — the path that produced the live
                 # attempt-FAILs. An angle's fail-closed sentinel has no
                 # severity, so `merge_angle_findings` read it as BLOCKING
@@ -2808,9 +2829,26 @@ class AdversarialReviewer:
                 except Exception as exc:  # noqa: BLE001 — a retry NEVER fails the gate
                     skipped = f"reached no verdict after one retry ({str(exc)[:80]})"
                 else:
-                    if _reached_no_verdict(retry):
+                    # The retry gets the SAME classification as the first
+                    # attempt (`_angle_gave_no_verdict`), not just the
+                    # narrower `_reached_no_verdict`. A retry that itself
+                    # times out is TIMEOUT-shaped
+                    # (`checklist=[ChecklistItem("timeout", ...)]`), which
+                    # `_reached_no_verdict` does not match — checking only
+                    # that here let a timing-out retry fall through as `r
+                    # = retry` and be merged as a real, blocking-shaped
+                    # finding ("security: timeout" reaching the coder),
+                    # exactly the R17 regression this fix exists to
+                    # prevent. `ANGLE_RETRY_TURNS` retries against the
+                    # SAME 180s budget the first attempt just burned, so a
+                    # timing-out retry is not a corner case.
+                    retry_reason = _angle_gave_no_verdict(retry)
+                    if retry_reason is not None:
                         _carry_usage(decision, [retry])
-                        skipped = "reached no verdict after one retry"
+                        skipped = (
+                            "timed out on retry" if retry_reason == "timed out"
+                            else "reached no verdict after one retry"
+                        )
                     else:
                         # The retry produced a real verdict — the check
                         # actually ran. It joins the merge normally, below,
