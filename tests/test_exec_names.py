@@ -288,11 +288,15 @@ def _verdicts_with_fold(fold: bool, rows=_FOLD_SENSITIVE_ROWS, readonly=False) -
     the two callers below (#305/#320's original regression) are unchanged;
     the #328 runner-recursion matrix below passes its own. `readonly` defaults
     to `False`, matching every existing caller; the git-recursion test below
-    passes `True` because `_git_invocations` (the function #328 fixes) is
-    consulted ONLY by the read-only write-block -- the default-mode
-    protected-branch check is a wholly separate extractor
-    (`_git_push_invocations`) with its own, out-of-scope, gap for a
-    trailing-argv runner (`timeout`/`xargs` without `-c`).
+    passes `True` because `_git_invocations` (the function #328's runner-
+    recursion fix touches) is consulted ONLY by the read-only write-block.
+    The default-mode (`readonly=False`) protected-branch check goes through
+    the separate `_git_push_invocations`/`_push_targets_protected` pair,
+    which still misses a trailing-argv runner (`timeout`/`xargs` without
+    `-c`) structurally -- that gap is closed instead by the whole-string
+    lexical fallback at `evaluate`'s `git ... push` check, which now also
+    carries `case_flags()` (see
+    `test_a_capitalised_git_push_is_denied_in_the_default_session_too`).
     """
     code = dedent(f"""
         import json
@@ -453,10 +457,13 @@ def test_the_runner_recursion_folds_a_wrapped_name_for_git_too():
 
     `readonly=True`: `_git_invocations` (the function this test's fix touches)
     is consulted only by the read-only session's write-block. At the default
-    `readonly=False` the protected-branch check goes through the separate,
-    out-of-scope `_git_push_invocations`, which has its own pre-existing gap
-    for a trailing-argv runner -- a different bug this task does not fix, and
-    asserting this row there would either mask that gap or misattribute it."""
+    `readonly=False` the protected-branch check goes through the separate
+    `_git_push_invocations`/`_push_targets_protected` pair, which still misses
+    a trailing-argv runner (`timeout`/`xargs` without `-c`) structurally --
+    see `test_a_capitalised_git_push_is_denied_in_the_default_session_too`,
+    which pins that the whole-string lexical fallback in `evaluate` closes it
+    instead, so asserting THIS structural row at `readonly=False` would
+    either mask that gap or misattribute which gate closed it."""
     rows = (
         'sh -c "GIT push origin main"',
         'bash -c "GIT -C . push origin main"',
@@ -468,6 +475,45 @@ def test_the_runner_recursion_folds_a_wrapped_name_for_git_too():
     assert denied_folding == {cmd: True for cmd in rows}, denied_folding
 
     denied_sensitive = _verdicts_with_fold(False, rows, readonly=True)
+    assert denied_sensitive == {cmd: False for cmd in rows}, denied_sensitive
+
+
+def test_a_capitalised_git_push_is_denied_in_the_default_session_too():
+    """The default (`readonly=False`) session's protected-branch check is
+    `_git_push_invocations`/`_push_targets_protected`, a wholly separate
+    extractor from `_git_invocations` above. It has its own structural gap
+    for a trailing-argv runner: `timeout 30 GIT push origin main` splits into
+    separate tokens `('30', 'GIT', 'push', 'origin', 'main')`, and no single
+    token contains both `git` and `push` for `_looks_like_git_push` to match,
+    so the recursion never fires -- unlike a quoted `sh -c "GIT push ..."`,
+    where the whole quoted script is one token. That structural gap is left
+    untouched (out of scope, `_git_push_invocations` is not edited by this
+    change); what closes it is `evaluate`'s pre-existing whole-string lexical
+    fallback (`\\bgit\\s+push\\b` + `_push_targets_protected`), which this
+    change gates with `exec_names.case_flags()` the same way `_FORGE_MERGE`
+    and `_GIT_MENTION` already are. `_push_targets_protected` itself matches
+    `push`/branch tokens verbatim (lowercase), which is host-independent, so
+    only the binary (`GIT`) is capitalised here -- verb/noun capitalisation
+    of `push`/`main` is a separate, undisclosed gap this row does not claim
+    to close.
+
+    NOT closed by this fix, and not claimed to be: a runner-recursion form
+    that interposes a flag between the capitalised binary and `push` (`timeout
+    30 GIT -C . push origin main`) defeats this contiguous lexical pattern
+    too. `test_the_runner_recursion_folds_a_wrapped_name_for_git_too` above
+    already covers that shape, but only in the `readonly=True` (write-block)
+    path -- see its docstring."""
+    rows = (
+        'sh -c "GIT push origin main"',
+        'bash -c "GIT push origin main"',
+        "timeout 30 GIT push origin main",
+        "xargs GIT push origin main",
+    )
+
+    denied_folding = _verdicts_with_fold(True, rows, readonly=False)
+    assert denied_folding == {cmd: True for cmd in rows}, denied_folding
+
+    denied_sensitive = _verdicts_with_fold(False, rows, readonly=False)
     assert denied_sensitive == {cmd: False for cmd in rows}, denied_sensitive
 
 

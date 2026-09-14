@@ -2925,12 +2925,16 @@ def evaluate(
             # backend (codex), which fails the one tool result instead of
             # killing the attempt for it.
             return GuardDecision(False, venv_reason, severity=GUARD_HYGIENE)
-        # Kept as-is: catches `git push` spelled in ways argv analysis does not
-        # reach (inside a heredoc, an alias, a quoted fragment of a larger
-        # script). The argv analysis below is additive, never a replacement.
-        if re.search(r"\bgit\s+push\b", cmd) and _push_targets_protected(
-            cmd, never_push_to
-        ):
+        # Catches `git push` spelled in ways argv analysis does not reach
+        # (inside a heredoc, an alias, a quoted fragment of a larger script,
+        # OR — #328 — a capitalised `GIT` behind a trailing-argv runner like
+        # `timeout`/`xargs` that `_git_push_invocations`'s per-token
+        # `_looks_like_git_push` recursion does not resolve). `case_flags()`
+        # added so this whole-string fallback folds the same way its sibling
+        # gates (`_FORGE_MERGE`, `_GIT_MENTION`) now do. The argv analysis
+        # below is additive, never a replacement.
+        if (re.search(r"\bgit\s+push\b", cmd, exec_names.case_flags())
+                and _push_targets_protected(cmd, never_push_to)):
             return GuardDecision(
                 False, f"push to protected branch blocked: {cmd}. Push to your own "
                 "branch and open a PR instead — pushing to the base branch is "

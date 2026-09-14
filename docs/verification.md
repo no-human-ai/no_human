@@ -583,6 +583,23 @@ path reaches it (`GH api .../pulls/7/merge`). `tests/test_exec_names.py`'s
 `_CASE_MATRIX_ROWS` pins the full binary/noun/verb × forge × runner matrix
 through `evaluate`.
 
+A capitalised binary walked past the protected-branch push check the same
+way, but through a different door: `_git_push_invocations` (the extractor
+behind the default, non-read-only session's push check) is a separate
+argv walker from `_git_invocations` above, and has its own structural gap
+for an *unquoted* trailing-argv runner — `timeout 30 GIT push origin main`
+and `xargs GIT push origin main` split into separate tokens, so no single
+token holds both `git` and `push` for the recursion to match, unlike a
+quoted `sh -c "GIT push origin main"`, where the whole script is one token.
+That structural gap is left as-is; what closes the capitalised case is
+`evaluate`'s own whole-string `git ... push` lexical fallback — the one
+that already catches a push spelled inside a heredoc, an alias, or a quoted
+fragment a shlex walk does not reach — which now also carries
+`exec_names.case_flags()`, the same way `_FORGE_MERGE` and `_GIT_MENTION`
+do. `tests/test_exec_names.py::test_a_capitalised_git_push_is_denied_in_the_default_session_too`
+pins it through `evaluate`, in the default session, on both a folding and a
+case-sensitive host.
+
 Pushes to `main`, `master` and `release/*` are refused too, and that rule has
 a second enforcement point, which is the part worth knowing. The first is
 `_push_targets_protected` in `agent/guard.py`: it looks for a protected branch

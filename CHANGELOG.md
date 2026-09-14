@@ -31,6 +31,18 @@ All notable changes to no_human. The format follows
   fixed; a matrix test in `tests/test_exec_names.py` pins every
   binary/noun/verb capitalisation across both forges and every recursed
   runner through the real guard entry point.
+- **A capitalised `git push` behind an unquoted trailing-argv runner
+  (`timeout 30 GIT push origin main`, `xargs GIT push origin main`) still
+  reached a protected branch in a normal, non-read-only session.**
+  `_git_push_invocations` is a separate extractor from `_git_invocations`
+  above and has its own structural gap for these unquoted runners (each word
+  is its own token, so no single token holds both `git` and `push`); that
+  gap is closed instead by `evaluate`'s pre-existing whole-string `git ...
+  push` lexical fallback, which now also carries `exec_names.case_flags()`
+  like `_FORGE_MERGE`/`_GIT_MENTION`, so it folds on a case-folding host and
+  leaves a genuinely case-sensitive host's differently-named `GIT` binary
+  alone. Pinned by
+  `test_a_capitalised_git_push_is_denied_in_the_default_session_too`.
 
 ### Changed
 - Second brain is now called Memories.

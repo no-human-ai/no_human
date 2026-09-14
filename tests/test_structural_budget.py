@@ -1864,7 +1864,17 @@ FROZEN_FILE_LINES = {
     # folds its returned noun/verb unconditionally (a CLI subcommand word,
     # not a filesystem name) so `gh pr MERGE 7` pairs against
     # `_FORGE_MERGE_PAIRS` lowercase. Measured on this tree.
-    "agent/guard.py": 2954,
+    # 2954 -> 2958 (+4): the runner-recursion fix above left one sibling gate
+    # unfolded — `evaluate`'s whole-string `git ... push` lexical fallback
+    # (the one catching a push spelled where argv analysis can't reach: a
+    # heredoc, an alias, OR a capitalised `GIT` behind a trailing-argv runner
+    # like `timeout`/`xargs` with no quoting, which `_git_push_invocations`'s
+    # per-token recursion can't resolve either). It now carries
+    # `exec_names.case_flags()` like its siblings, so `timeout 30 GIT push
+    # origin main` denies in the default (non-readonly) session too, not
+    # only the read-only write-block path the earlier `_git_invocations` fix
+    # covers. Measured on this tree.
+    "agent/guard.py": 2958,
     # +44: idle-path recover_quota_cooldown gate in tick() and the
     # never-shorten-a-live-wall guard in _run — the quota-wall storm cost fix.
     # +129: `HarvestJob` — the cadence job (`due()`/`maybe_run()`) that runs
