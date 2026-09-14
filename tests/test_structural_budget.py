@@ -1618,7 +1618,11 @@ FROZEN_FILE_LINES = {
     # 6332 -> 6340 (+8): board/detail/subtask/post-approve sites now pass
     # `ledger=` through to TaskOut/TaskSummaryOut.from_task so owned
     # unattributed_usage spend folds into a task's displayed cost.
-    "api/app.py": 6340,
+    # 6340 -> 6349 (+9): `onboarding_status` gains `email_registered`, a
+    # boolean-only echo of whether an email was captured, so a reload can
+    # restore the Email step's UI state without ever re-exposing the
+    # address itself. Measured on this tree with the scanner below.
+    "api/app.py": 6349,
     # +51: W5 active-time phase writer (phase instrumentation).
     # +84: `list_escalations`/`list_review_fails`/`list_tamper_trips` — the
     # three new failure-signal sources the recurring learning harvest mines.
