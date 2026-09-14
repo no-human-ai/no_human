@@ -34,6 +34,14 @@ number:
     ``(None, None)``, matching every sibling ``total_*`` aggregate in
     ``api/models.py`` (``_aux_totals``): "no attempts" and "attempts that
     spent nothing" are different facts and must not both render as 0.
+  * ``ledger_rows_as_attempts``: a row's ``model`` is ``None``, or an id
+    ``pricing`` does not recognise — prices at ``FALLBACK_PRICE_NAME``, same
+    as an attempt row would. A row's ``site`` does not match any registered
+    ``AUX_USAGE_TIERS`` prefix (no such row exists today) — priced as
+    ``"utility_"`` rather than dropped or raised, because a wrong-but-priced
+    dollar is a smaller error than a silently missing one. ``rows`` is
+    ``None``/empty — returns ``[]``, so ``attempts_cost(attempts + [])``
+    behaves exactly as it does today with no ledger rows at all.
 """
 
 from __future__ import annotations
@@ -41,7 +49,7 @@ from __future__ import annotations
 import json
 from typing import Any, Mapping
 
-from .db import USAGE_ROLES, usage_columns_for
+from .db import AUX_USAGE_TIERS, ORPHANED_SITE_PREFIX, USAGE_ROLES, usage_columns_for
 from .pricing import FALLBACK_PRICE_NAME, input_price_usd_per_mtok, usd_cost
 
 
@@ -134,3 +142,52 @@ def attempts_cost(rows: list[Mapping[str, Any]] | None) -> tuple[float | None, s
     if len(labels) == 1:
         return total, next(iter(labels))
     return total, "mixed"
+
+
+def ledger_rows_as_attempts(rows: list[Mapping[str, Any]] | None) -> list[dict[str, Any]]:
+    """Reshape OWNED ``unattributed_usage`` rows (``Store.
+    usage_ledger_rows_by_task`` / ``task_usage_ledger_rows``, or a
+    whole-ledger grouping) into attempt-shaped dicts, so ``attempt_cost`` /
+    ``attempts_cost`` price them at their own recorded model instead of a
+    second, drifting pricer being written for the ledger.
+
+    Each input row is one ``(site, model)`` group carrying
+    ``tokens_used``/``cache_read_tokens``/``cache_creation_tokens``. The role
+    is derived from ``site``: ``orphaned_<tier>usage`` strips
+    ``ORPHANED_SITE_PREFIX`` and the trailing ``"usage"`` to recover
+    ``<tier>`` (e.g. ``"orphaned_plan_usage"`` -> ``"plan_"``), validated
+    against ``AUX_USAGE_TIERS`` — the ledger writer today writes nothing
+    else. An unrecognised ``site`` falls back to ``"utility_"`` (see the
+    module docstring's DEGENERATE INPUT list).
+
+    No ``{tier}output_tokens`` key is emitted: ``unattributed_usage`` has no
+    such column (it is a coder/reviewer SDK-only split), so the output
+    premium is legitimately absent here, not a bug — same note
+    ``orchestrator.py``'s aux-flush carries — and ``attempt_cost`` already
+    treats a missing output column as zero extra, exactly as it does for any
+    attempt row recorded before that column existed.
+
+    The output is ordinary attempt-shaped mappings with only one role's
+    columns populated, so ``attempts_cost`` prices each row at its own model
+    and applies the identical "shared model, else mixed" label rule used for
+    real attempts — one pricer, one mixed rule, for both tables.
+    """
+    out: list[dict[str, Any]] = []
+    for row in rows or []:
+        site = str(row.get("site") or "")
+        tier: str | None = None
+        if site.startswith(ORPHANED_SITE_PREFIX) and site.endswith("usage"):
+            candidate = site[len(ORPHANED_SITE_PREFIX):-len("usage")]
+            if candidate in AUX_USAGE_TIERS:
+                tier = candidate
+        if tier is None:
+            tier = "utility_"
+        role = USAGE_ROLES[tier]
+        tokens_col, read_col, creation_col = usage_columns_for(tier)
+        out.append({
+            "models": {role: row.get("model")},
+            tokens_col: row.get("tokens_used") or 0,
+            read_col: row.get("cache_read_tokens") or 0,
+            creation_col: row.get("cache_creation_tokens") or 0,
+        })
+    return out

@@ -128,6 +128,7 @@ def staleness_mode(
 def staleness_record(
     behind: int, rebased: bool, overlap: Iterable[str],
     *, mode: str | None = None, merged: bool = False, diverged: bool = False,
+    base_pin: str | None = None,
 ) -> dict:
     """The `task.context['base_staleness']` payload.
 
@@ -157,6 +158,19 @@ def staleness_record(
     present whenever true regardless of whether the merge above it
     succeeded. Absent (not `False`) when the branch is not diverged, same
     shape convention as ``mode``/``merged``.
+
+    ``merge_conflict`` (and, alongside it, ``base_pin`` when known) is added
+    ONLY when ``mode == "merge"`` and the merge did NOT succeed
+    (``not merged``) — the one failed/no-op case that still needs to be told
+    apart from every other one, so `_build_implement_prompt` can point the
+    coder at a `git merge`, never a rebase. It is scoped to `mode == "merge"`
+    specifically (not `mode == "rebase"`) so the pre-existing rebase-conflict
+    record — pinned byte-for-byte by
+    `tests/test_retry_base_staleness.py:test_a_conflicting_overlap_rebase_still_tells_the_coder`
+    — is untouched: that case never sets `mode` at all (the top `if rebased
+    or merged` guard above is `False` there), so it can never satisfy `mode
+    == "merge"` either. This is a narrow, deliberate carve-out, not a change
+    to the general "unchanged shape for failed/no-op cases" rule above.
     """
     shared = sorted(overlap)
     record = {
@@ -170,4 +184,8 @@ def staleness_record(
         record["merged"] = merged
     if diverged:
         record["diverged"] = True
+    if mode == "merge" and not merged:
+        record["merge_conflict"] = True
+        if base_pin:
+            record["base_pin"] = base_pin
     return record
