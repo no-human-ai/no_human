@@ -34,10 +34,22 @@
 //                            is) is ALSO absent. This is the live proof of
 //                            "an API path nobody considered must not be
 //                            captured by default" — allowlist, not denylist.
-//   4. allow-tier passthrough — a marker planted in /api/queue/health's
-//                            response (on REPLAY_BODY_ALLOWLIST) IS present.
-//                            Without this, checks 2/3 passing could just
-//                            mean the harness never captures ANY body.
+//   4. allow-tier passthrough — a marker planted in /api/version's response
+//                            (on REPLAY_BODY_ALLOWLIST) IS present. Without
+//                            this, checks 2/3 passing could just mean the
+//                            harness never captures ANY body.
+//   5. redact-tier leak (quota profile) — /api/queue/health is polled every
+//                            10s and was ONCE on REPLAY_BODY_ALLOWLIST on the
+//                            mistaken belief its body was "pure timestamps".
+//                            Its real response (core/health.py
+//                            QueueHealth.as_dict) carries `paused_profile`, a
+//                            user-chosen auth-profile name, whenever
+//                            `paused_reason == "quota"` — a routine state.
+//                            This plants that exact field and asserts it is
+//                            ABSENT from the masked pass and PRESENT in the
+//                            control pass, closing that specific finding
+//                            with live bytes rather than a re-read of the
+//                            classification table.
 //
 // A second, "control" pass of the SAME dist bundle string-patches
 // `maskCapturedNetworkRequestFn:` out of the one chunk that wires it, so
@@ -109,6 +121,9 @@ const SENTINEL_PATH = "/Users/e2e-sentinel-user/local-repos/zzqq-leak-canary-7f2
 const SENTINEL_NAME = "zzqq-leak-canary-reponame-7f2a";
 const SENTINEL_UNLISTED = "zzqq-unlisted-endpoint-canary-9f3c1b";
 const ALLOWLIST_MARKER = "zzqq-allowlist-passthrough-marker-7a1d";
+// The exact field (core/health.py QueueHealth.as_dict's paused_profile) that
+// got /api/queue/health moved OFF REPLAY_BODY_ALLOWLIST — see comment #5 above.
+const SENTINEL_QUOTA_PROFILE = "zzqq-quota-profile-canary-4e8b";
 // Never a real api.js call site (the drift test in replayScrub.test.mjs
 // guarantees every real one IS classified) — this is the "endpoint nobody
 // considered" default-deny proof.
@@ -256,7 +271,12 @@ function makeServer({ variant, rawTexts, capturedEvents, unmatched }) {
         },
       });
     }
-    if (p === "/api/version") return json({ version: "e2e-test", distName: "e2e", published: null });
+    // ALLOWLIST-tier (REPLAY_BODY_ALLOWLIST) — the marker carries no path or
+    // name, so the assertion below is purely "does tier-2 body passthrough
+    // actually work", not accidentally also a path leak. Fetched once by
+    // Settings.jsx's fetchVersion() when the Settings panel opens, which
+    // happens well after the 5s recorder head start below.
+    if (p === "/api/version") return json({ version: "e2e-test", distName: "e2e", published: null, marker: ALLOWLIST_MARKER });
     if (p === "/api/onboarding/status") return json({ completed: true });
     if (p === "/api/onboarding/deferred") return json({ deferred: [] });
     if (p === "/api/tasks") return json([]);
@@ -268,10 +288,19 @@ function makeServer({ variant, rawTexts, capturedEvents, unmatched }) {
     if (p === "/api/worker/status") {
       return json({ running: true, inflight: 0, max_workers: 1 });
     }
-    // ALLOWLIST-tier (REPLAY_BODY_ALLOWLIST) — carries a marker with no path
-    // or name in it, so the assertion below is purely "does tier-2 body
-    // passthrough actually work", not accidentally also a path leak.
-    if (p === "/api/queue/health") return json({ marker: ALLOWLIST_MARKER });
+    // REDACT-tier — moved off REPLAY_BODY_ALLOWLIST: `paused_profile` (real
+    // shape from core/health.py QueueHealth.as_dict) is a user-chosen
+    // auth-profile name that survives whenever `paused_reason === "quota"`,
+    // a routine pause state, not an edge case.
+    if (p === "/api/queue/health") {
+      return json({
+        open_tasks: 0, at_gate: 0, completed_in_window: 0, window_minutes: 30,
+        stuck: false, stuck_reason: "", eta_minutes: null,
+        workers_busy: 0, max_workers: 1, queue_depth: 0, est_drain_seconds: null,
+        paused: true, paused_reason: "quota", paused_until: "2026-01-01T00:00:00Z",
+        paused_profile: SENTINEL_QUOTA_PROFILE,
+      });
+    }
     if (p.startsWith("/api/metrics/")) return json({});
     if (p === "/api/fs/suggest") return json({ suggestions: [], prefix: "" });
     // REDACT-tier — the original bug's own endpoint family: filesystem paths
@@ -374,10 +403,13 @@ async function runPass(browser, variant) {
   // we wait afterward, because the request already completed unwrapped.
   // The app's own /api/queue/health poll (App.jsx, setInterval 10000ms,
   // same poll() as /api/worker/status) fires once immediately on mount —
-  // almost certainly before the patch is installed — so the harness must
-  // not treat "a" queue/health response as proof of readiness; it needs the
-  // *second* one. Give the async recorder chunk a generous head start
-  // before touching anything else.
+  // almost certainly before the patch is installed, so a request that fires
+  // that early is never wrapped/captured at all (not "captured then
+  // redacted" — just invisible to this harness, which would make a later
+  // absence check for SENTINEL_QUOTA_PROFILE vacuous rather than meaningful).
+  // The harness must not treat "a" queue/health response as proof of
+  // readiness; it needs the *second* one. Give the async recorder chunk a
+  // generous head start before touching anything else.
   const queueHealthHits = [];
   page.on("response", (r) => {
     if (r.url().includes("/api/queue/health")) queueHealthHits.push(Date.now());
@@ -394,6 +426,16 @@ async function runPass(browser, variant) {
   // occurrence to fall back on, so this one has to land after the patch). ──
   await page.getByRole("button", { name: /^Settings$/ }).click();
   await page.waitForTimeout(300);
+  // fetchVersion() (the tier-2 allow-list proof, check 4) only fires from
+  // UpdatesPanel, which only mounts once the "Updates" section is selected
+  // (Settings.jsx: `{section === "updates" && <UpdatesPanel />}`) — Settings
+  // opens on "Projects" by default and never calls it on its own.
+  const versionResp = page.waitForResponse((r) => r.url().includes("/api/version"), { timeout: 5000 });
+  await page.getByRole("button", { name: /^Updates$/ }).click();
+  await versionResp.catch(() => {});
+  await page.waitForTimeout(300);
+  await page.getByRole("button", { name: /^Projects$/ }).click();
+  await page.waitForTimeout(200);
   await page.getByRole("button", { name: /New Project/ }).click();
   await page.waitForTimeout(200);
   const scanInput = page.getByPlaceholder("Scan root, e.g. ~/git");
@@ -420,8 +462,9 @@ async function runPass(browser, variant) {
   );
 
   // queue/health polls every 10s (App.jsx). Wait for the SECOND hit
-  // specifically — the first predates the fetch wrapper (see above) and is
-  // not evidence that allow-tier passthrough capture is actually wired up.
+  // specifically — the first predates the fetch wrapper (see above), so it
+  // proves nothing about whether the redact-tier check on paused_profile
+  // below is meaningful.
   const deadline = Date.now() + 16000;
   while (queueHealthHits.length < 2 && Date.now() < deadline) {
     await page.waitForTimeout(250);
@@ -496,14 +539,26 @@ try {
   // 4. allow-tier passthrough actually captures real bytes (rules out "1-3
   // pass because nothing is ever captured")
   check(
-    "masked: allowlisted /api/queue/health marker IS present (tier-2 passthrough proven live, not just by omission)",
+    "masked: allowlisted /api/version marker IS present (tier-2 passthrough proven live, not just by omission)",
     mHay.includes(ALLOWLIST_MARKER),
+  );
+
+  // 5. redact-tier leak (quota profile) — the finding this attempt fixes:
+  // /api/queue/health was allowlisted on the mistaken belief its body was
+  // "pure timestamps"; its real paused_profile field is a user-chosen name.
+  check(
+    "masked: queue/health's paused_profile (quota-wall auth-profile name) is absent from every captured byte",
+    !mHay.includes(SENTINEL_QUOTA_PROFILE),
   );
 
   // Control: same bundle, masking mechanism string-patched away — must leak.
   check(
     "control (masking removed): sentinel repo PATH DOES leak — proves this harness has discriminating power",
     uHay.includes(SENTINEL_PATH),
+  );
+  check(
+    "control (masking removed): paused_profile DOES leak — proves the queue/health check above is not vacuous",
+    uHay.includes(SENTINEL_QUOTA_PROFILE),
   );
 
   const failed = checks.filter((c) => !c.ok);
