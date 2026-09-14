@@ -1847,7 +1847,7 @@ FROZEN_FILE_LINES = {
     # a bare `Path.is_file()`, so an unreadable ancestor directory (e.g. a
     # chmod'd `<checkout>/src`) can't raise `PermissionError` out of this
     # unguarded helper and abort the guard instead of denying.
-    "agent/guard.py": 2926,
+    "agent/guard.py": 2925,
     # +44: idle-path recover_quota_cooldown gate in tick() and the
     # never-shorten-a-live-wall guard in _run — the quota-wall storm cost fix.
     # +129: `HarvestJob` — the cadence job (`due()`/`maybe_run()`) that runs

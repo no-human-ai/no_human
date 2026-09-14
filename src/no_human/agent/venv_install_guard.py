@@ -435,9 +435,13 @@ def _spaced_path_candidates(payload: str) -> list[str]:
         # `cwd` is not lexically available here (this helper only sees the
         # raw payload text). Left at the default, `_is_installer_name` falls
         # back to `exec_names.host_folds_case(None)`, which unions the
-        # process cwd with PATH — a superset of what a call-site cwd would
-        # cover, so this can only fold MORE aggressively than a cwd-scoped
-        # answer, never less. Monotonically conservative, not a hole.
+        # PROCESS's own cwd with PATH -- NOT a superset of a call-site-scoped
+        # answer: measured, `host_folds_case()` (no cwd) can be `False` while
+        # `host_folds_case(<call-site cwd>)` is `True` for a specific cwd
+        # whose volume folds even though the process cwd's does not. This is
+        # a real, accepted narrowing (not a hole reachable by any corpus row
+        # measured so far) rather than the "can only fold more" guarantee
+        # this comment used to claim.
         if _is_installer_name(_basename(joined)):
             out.append(joined)
             out.extend(toks[k:])
@@ -935,10 +939,12 @@ def _mutating_subcommand(tokens: list[str], start: int) -> str | None:
             i += 2 if tok in _VALUE_FLAGS else 1
             continue
         # No `cwd` in scope here either (this walks an already-tokenised
-        # list with no path context) — same monotonic-conservativeness
-        # argument as `_spaced_path_candidates` above: the default folds
-        # using the process cwd + PATH union, a superset of any narrower
-        # cwd-scoped answer, so this can only deny more, never less.
+        # list with no path context) — same accepted narrowing as
+        # `_spaced_path_candidates` above: the default folds using the
+        # process cwd + PATH union, which is NOT guaranteed a superset of a
+        # narrower cwd-scoped answer (measured: `host_folds_case()` can be
+        # `False` where `host_folds_case(<a specific cwd>)` is `True`), so
+        # this can in principle deny less on that one cwd, not strictly more.
         if _is_installer_name(tok):
             i += 1
             continue
@@ -1032,8 +1038,9 @@ def _uses_active_env(tokens: list[str], start: int) -> bool:
             continue
         # Same reasoning as the other token-list walkers above: no `cwd`
         # is threaded through this call chain, so the default falls back
-        # to the process cwd + PATH union — a superset that can only fold
-        # (deny) more than a cwd-scoped answer would, never less.
+        # to the process cwd + PATH union — NOT guaranteed to fold (deny)
+        # at least as much as a cwd-scoped answer would; see the note in
+        # `_spaced_path_candidates` for the measured counter-example.
         if _is_installer_name(tok) and not expects_program:
             i += 1
             continue
@@ -1179,7 +1186,14 @@ def _effective_prefixes(
     # venv's `bin/` (it is installed there like any other tool) even though
     # `uv sync`/`uv run pytest -q` correctly target the worktree via `cwd`.
     for exe in installers:
-        if _basename(exe) in ("uv", "uvx"):
+        # `.lower()`, not a bare comparison: `_is_installer_name` (the check
+        # that populated `installers` in the first place) already folds case
+        # where the host folds it, so a bare `_basename(exe) in (...)` here
+        # disagreed with its own upstream classifier -- `UV sync` measured as
+        # an installer invocation but not as `uv` for this exclusion, so it
+        # fell through to being treated like `pip`/`python` and got denied
+        # even though `uv sync` (lowercase) is allowed on the identical host.
+        if _basename(exe).lower() in ("uv", "uvx"):
             continue
         owning = _venv_root_of(exe)
         if owning:

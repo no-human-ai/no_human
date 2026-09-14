@@ -274,6 +274,95 @@ def test_control_production_env_uv_commands_stay_allowed(tmp_path):
         assert d.allow, f"must stay allowed via evaluate(): {cmd} — {d.reason}"
 
 
+def test_a_capitalised_uv_commands_are_not_denied_like_pip(tmp_path, monkeypatch):
+    """Regression (case-fold review, BLOCKER 2): the exclusion that keeps
+    `uv`/`uvx`'s own resolved binary from being mistaken for an install
+    TARGET (they resolve targets via cwd/`pyproject.toml`, not their own
+    location) used to compare `_basename(exe) in ("uv", "uvx")` verbatim
+    against the SAME `installers` list that `_is_installer_name` populates
+    by folding case wherever the host folds it. That disagreed with its own
+    upstream classifier: on a folding host, `UV sync` was recognised as an
+    installer invocation but not matched by this bare membership test, so it
+    fell through to the pip/python "owning venv" path and was DENIED even
+    though `uv sync` (lowercase) — doing the identical thing — was ALLOWED.
+    Pins the ablation-confirmed one-line fix (`.lower()` on both sides of
+    the membership test) by exercising every case variant, for both `sync`
+    and `add` (`add` is in `_MUTATING_SUBCOMMANDS` too and hits the exact
+    same exclusion), on a host pinned to fold, where the bug was actually
+    observable.
+
+    Measured directly against this repo's history: `uv add somepkg`
+    (lowercase) is allowed at every commit checked, including the pre-task
+    baseline (680d6889) and the pre-BLOCKER-2-fix commit (0762ac0e) —
+    `uv`/`uvx` never resolve an install target via their OWN binary
+    location (see the long comment above the exclusion this test pins), so
+    a foreign shared `VIRTUAL_ENV` never makes `uv add`/`uv sync` resolve
+    outside a worktree that owns its own `pyproject.toml`, by design and
+    regardless of case. `UV add somepkg` diverging from that (denied, where
+    lowercase was not) at 0762ac0e was this same BLOCKER-2 shape, just
+    surfaced through a second `_MUTATING_SUBCOMMANDS` entry.
+    """
+    monkeypatch.setattr(exec_names, "host_folds_case", lambda *a, **k: True)
+    _primary, _primary_venv, wt, _wt_venv, prod_env, _wt_env = _session(tmp_path)
+    cmds = [
+        "uv sync", "UV sync", "Uv sync", "uV sync",
+        "uv add somepkg", "UV add somepkg", "Uv add somepkg",
+    ]
+    for cmd in cmds:
+        r = venv_install_guard.denial_reason(cmd, cwd=wt, env=prod_env)
+        assert r is None, (
+            f"a capitalised `uv` command must be allowed exactly like the "
+            f"lowercase spelling on a folding host: {cmd!r} — {r}")
+        d = _ev("Bash", {"command": cmd}, cwd=wt, env=prod_env)
+        assert d.allow, f"must stay allowed via evaluate(): {cmd!r} — {d.reason}"
+
+
+def test_the_cwd_argument_is_actually_threaded_to_the_probe(tmp_path, monkeypatch):
+    """Mutation-pinning (case-fold review, M3): `_is_installer_name` is
+    called with an explicit `cwd=` at each of its call sites specifically so
+    the fold probe answers from the SESSION's own working directory, not
+    from wherever the orchestrator process itself happens to be sitting. If
+    any of those call sites silently dropped its `cwd` argument, the probe
+    would instead measure the orchestrator's real `os.getcwd()`/`PATH` —
+    unrelated to the session under test — and this test's pinned answers
+    would never be consulted, changing the verdict.
+
+    Isolates `cwd` as the only anchor whose fold answer is real: every
+    directory except the session's own worktree measures `None`
+    (unmeasurable, including every real `PATH` entry and the test process's
+    own real `os.getcwd()`), only `wt` is pinned to a determinate `False`
+    (non-folding). `env["PATH"]` is left as `prod_env`'s real value
+    (pointing at `primary_venv`) so command *resolution* still works
+    end-to-end -- only the fold *measurement* is faked. Because the
+    union-of-anchors probe returns `False` (rather than falling through to
+    the fail-closed default) the instant ANY anchor determinately answers
+    `False`, a correctly cwd-threaded call sees the non-folding answer and
+    treats `PIP` as a distinct program from `pip` (allowed, `pip` is not
+    even considered an installer name so `PIP install evilpkg` is never
+    compared against `primary_venv` at all); a call that dropped `cwd`
+    never reaches that anchor, sees only `None` answers from the real
+    anchors it falls back to, lands on the fail-closed default `True`
+    (fold), and then denies because `PIP` resolves as `pip` pointing
+    outside the worktree.
+    """
+    _primary, _primary_venv, wt, _wt_venv, prod_env, _wt_env = _session(tmp_path)
+
+    def _pinned(directory):
+        return False if os.path.realpath(directory) == wt else None
+
+    monkeypatch.setattr(exec_names, "_folds_case_at", _pinned)
+    exec_names.host_folds_case.cache_clear()
+
+    denied = venv_install_guard.denial_reason(
+        "PIP install evilpkg", cwd=wt, env=prod_env
+    )
+    assert denied is None, (
+        "cwd=wt must be threaded into the probe and measure False "
+        "(non-folding), so `PIP` is a distinct program from `pip` and stays "
+        f"allowed; got denial: {denied!r}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # `~/.cache/uv` false positive (the defect this task fixes). `--python`/`-p`
 # names an interpreter FILE, and a worktree's own `.venv/bin/python3` is
@@ -1738,8 +1827,16 @@ def test_a_capitalised_installer_is_refused_on_a_folding_cwd(tmp_path, monkeypat
         "PIP install evilpkg",
         "Pip install evilpkg",
         "PIP3 install evilpkg",
-        "UV add evilpkg",
     ]
+    # `UV add evilpkg` is deliberately NOT in this list: `uv` resolves its
+    # target via `cwd`/`pyproject.toml`, never by matching its own basename
+    # against an "owning venv" the way `pip`/`python` are checked here (see
+    # the long comment above the `uv`/`uvx` exclusion in
+    # `venv_install_guard.py`), so even the lowercase control (`uv add
+    # evilpkg`) is not denied by this mechanism -- confirmed unchanged at
+    # the pre-task baseline (680d6889). Case-consistency coverage for that
+    # command lives in `test_a_capitalised_uv_commands_are_not_denied_like_pip`
+    # instead, which asserts `uv add`/`UV add` match (both allowed).
     for cmd in cases:
         r = venv_install_guard.denial_reason(cmd, cwd=wt, env=prod_env)
         assert r is not None, f"must be denied on a folding host: {cmd}"

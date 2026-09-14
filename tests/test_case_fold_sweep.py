@@ -145,14 +145,25 @@ def _mkvenv(root):
 
 def test_the_sweep_moved_rows_in_the_closing_direction(tmp_path, monkeypatch):
     """Proves the fix actually closes the bypass rather than merely not
-    regressing: on a folding host, `PIP`/`Pip`/`PIP3 install .../UV add ...`
-    into a foreign (shared) venv must now be denied exactly like the
-    lowercase spelling always was -- pre-fix, `_is_installer_name` folded
-    case only on `_IS_WINDOWS` (`os.name == "nt"`), so on ANY POSIX test
-    runner every capitalised spelling below was unconditionally allowed.
-    That pre-fix answer does not depend on measuring this host's real
-    filesystem at all -- it is a pure `os.name` check -- which is why it is
-    asserted directly here rather than captured by re-running old code.
+    regressing: on a folding host, `PIP`/`Pip`/`PIP3 install ...` into a
+    foreign (shared) venv must now be denied exactly like the lowercase
+    spelling always was -- pre-fix, `_is_installer_name` folded case only on
+    `_IS_WINDOWS` (`os.name == "nt"`), so on ANY POSIX test runner every
+    capitalised spelling below was unconditionally allowed. That pre-fix
+    answer does not depend on measuring this host's real filesystem at all
+    -- it is a pure `os.name` check -- which is why it is asserted directly
+    here rather than captured by re-running old code.
+
+    `UV add somepkg` is intentionally NOT one of these rows: `uv` resolves
+    its install target via `cwd`/`pyproject.toml`, never via its own
+    resolved binary's location the way `pip`/`python` are (see the long
+    comment above the `uv`/`uvx` exclusion in `venv_install_guard.py`), so
+    a foreign shared `VIRTUAL_ENV` was never a hole for it -- measured
+    unchanged (allowed) for the lowercase spelling at every commit checked,
+    including the pre-task baseline. `uv`/`UV`'s own case-consistency (the
+    actual BLOCKER-2 regression, `UV sync` denied while `uv sync` allowed)
+    is pinned separately by
+    `test_venv_install_guard.test_a_capitalised_uv_commands_are_not_denied_like_pip`.
     """
     monkeypatch.setattr(exec_names, "host_folds_case", lambda *a, **k: True)
     _, primary_venv = _mkvenv(tmp_path / "primary")
@@ -165,7 +176,7 @@ def test_the_sweep_moved_rows_in_the_closing_direction(tmp_path, monkeypatch):
 
     cases = [
         "pip install somepkg", "PIP install somepkg", "Pip install somepkg",
-        "PIP3 install somepkg", "UV add somepkg",
+        "PIP3 install somepkg",
     ]
     now_denied = {}
     for cmd in cases:
@@ -179,7 +190,6 @@ def test_the_sweep_moved_rows_in_the_closing_direction(tmp_path, monkeypatch):
         "PIP install somepkg": False,
         "Pip install somepkg": False,
         "PIP3 install somepkg": False,
-        "UV add somepkg": False,
     }
 
     for cmd in cases:
@@ -193,7 +203,7 @@ def test_the_sweep_moved_rows_in_the_closing_direction(tmp_path, monkeypatch):
         "non-empty")
     assert closing == {
         "PIP install somepkg", "Pip install somepkg",
-        "PIP3 install somepkg", "UV add somepkg",
+        "PIP3 install somepkg",
     }, f"unexpected closing set: {sorted(closing)}"
 
     regressed = {c for c in cases if baseline_denied[c] and not now_denied[c]}

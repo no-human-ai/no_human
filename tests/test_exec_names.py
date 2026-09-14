@@ -27,6 +27,7 @@ splits the token, which is issue #312.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -252,9 +253,17 @@ def test_the_host_probe_is_measured_once_not_once_per_token(monkeypatch):
 def test_the_probe_matches_this_host():
     """The question `host_folds_case()` actually answers: does the process
     cwd, or anything on `PATH`, live on a case-folding volume? Not: does the
-    module's OWN source file. Derived independently via the exposed
-    `_folds_case_at` helper rather than reimplementing the swap/scandir logic
-    here, so this test cannot pass by construction alongside a broken probe.
+    module's OWN source file.
+
+    This pins the UNION logic (probe cwd, then PATH, first `True` wins, else
+    fold only if nothing was determinate) by reimplementing that orchestration
+    here and comparing against the real entry point -- it does NOT re-derive
+    the low-level per-path measurement independently, since both this test
+    and `host_folds_case` route through the same `_folds_case_at`/
+    `_swap_probe` helpers. A bug inside `_swap_probe` itself (e.g. the
+    `samefile` check) would not be caught by this test; that class of bug is
+    covered separately by `test_a_directory_holding_both_spellings_is_not_mistaken_for_a_fold`
+    and the other direct `_swap_probe`/`_folds_case_at` tests below.
     """
     import os
 
@@ -343,6 +352,65 @@ def test_an_unmeasurable_probe_folds():
     exec_names.host_folds_case.cache_clear()
     assert bool(exec_names.case_flags(
         cwd="/no_human-nonexistent-probe-dir", path_env="")) is True
+
+
+def test_a_totally_unmeasurable_probe_still_reaches_the_final_fold(monkeypatch):
+    """Coverage gap (case-fold review, BLOCKER 3): the fail-closed default
+    `return True` at the very end of `host_folds_case` -- the line reached
+    only when EVERY anchor, including the tier-2 last-resort candidates
+    (`dirname(sys.executable)`, `tempfile.gettempdir()`), answers `None` --
+    had zero test coverage. `test_an_unmeasurable_probe_folds` above looks
+    like it exercises this, but its nonexistent `cwd` and empty `PATH` just
+    mean the union loop's own candidates answer `None`; the tier-2 fallback
+    then measures the REAL `sys.executable`/tempdir, which exist and answer
+    determinately on this host, and coincidentally matches the expected
+    `True` -- mutating this final line's `True` to `False` (the shipped
+    bug's own polarity) left the full suite green.
+
+    Forces true unmeasurability by making `_folds_case_at` answer `None` for
+    every candidate, tier-2 included, so only the final `return True` can
+    produce the result.
+    """
+    monkeypatch.setattr(exec_names, "_folds_case_at", lambda directory: None)
+    exec_names.host_folds_case.cache_clear()
+    assert exec_names.host_folds_case(cwd="/no_human-nonexistent-probe-dir", path_env="") is True
+
+
+def test_the_probe_survives_a_removed_process_cwd(tmp_path, monkeypatch):
+    """Crash repro (case-fold review, BLOCKER 1): `_candidate_anchors` fell
+    back to a bare `os.getcwd()` whenever its own `cwd` argument was falsy --
+    and `os.getcwd()` itself raises `FileNotFoundError` (a subclass of
+    `OSError`) when the orchestrator's own working directory has been
+    removed out from under it (a real, observed shape: a worktree cleaned up
+    mid-session while the agent process is still chdir'd into it). That
+    exception was unguarded, so EVERY `Bash` command evaluated with no
+    explicit `cwd` crashed `guard.evaluate` outright -- denial-of-availability
+    for the whole guard, not a wrong verdict.
+
+    Reproduces the precondition directly: chdir into a scratch directory,
+    delete it while it is still the process cwd, then confirm both the probe
+    and the full `guard.evaluate` entry point still return an answer instead
+    of raising.
+    """
+    doomed = tmp_path / "doomed"
+    doomed.mkdir()
+    original_cwd = os.getcwd()
+    os.chdir(doomed)
+    try:
+        os.rmdir(doomed)
+        assert not os.path.exists(doomed)
+
+        exec_names.host_folds_case.cache_clear()
+        # Must not raise (FileNotFoundError/OSError) -- must return a verdict.
+        result = exec_names.host_folds_case(cwd=None, path_env="")
+        assert result in (True, False)
+
+        decision = guard.evaluate(
+            "Bash", {"command": "pip install evilpkg"}, forbidden_paths=[],
+            never_push_to=["main"], cwd=None, env={"PATH": ""})
+        assert decision is not None
+    finally:
+        os.chdir(original_cwd)
 
 
 def test_a_directory_holding_both_spellings_is_not_mistaken_for_a_fold(tmp_path):

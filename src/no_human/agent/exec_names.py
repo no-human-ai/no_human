@@ -181,17 +181,24 @@ def _swap_probe(path: str | None) -> bool | None:
 
 
 def _folds_case_at(directory: str) -> bool | None:
-    """Whether `directory`'s own filesystem folds case, measured without
+    """Whether resolving `directory` observes case-folding, measured without
     assuming its name (or any child's name) is case-swappable.
 
-    (a) Swap `directory`'s own basename against its parent — answers for
-    `/Users/x/repo` with zero listing. (b) If that is `None` (e.g. the
-    directory's name has no case-bearing character, like `/` or `/123`),
-    `os.scandir` up to `_MAX_ENTRY_PROBES` entries and swap each in turn,
-    first non-`None` wins. `scandir`, not `listdir`, so a directory with many
-    thousands of entries is never fully materialised. A per-entry `OSError`
-    (an entry that vanishes mid-scan) is skipped, never turned into a
-    verdict. (c) Otherwise `None`: this anchor answered nothing.
+    (a) Swap `directory`'s own basename against its PARENT and compare — that
+    answers for `/Users/x/repo` with zero listing, but it is the parent's
+    directory-entry resolution being measured, not necessarily the volume
+    mounted AT `directory` itself: for a `directory` that is itself a mount
+    point (e.g. `/Volumes/NHCS`), this can disagree with `_swap_probe` run
+    against a path one level inside it (e.g. `/Volumes/NHCS/work`), because
+    the parent's listing and the mounted volume's own listing can fold
+    differently. (b) If (a) is `None` (e.g. the directory's name has no
+    case-bearing character, like `/` or `/123`), `os.scandir` up to
+    `_MAX_ENTRY_PROBES` entries and swap each in turn, first non-`None` wins
+    — this DOES measure `directory`'s own mounted filesystem, since the
+    entries scanned live on it. `scandir`, not `listdir`, so a directory with
+    many thousands of entries is never fully materialised. A per-entry
+    `OSError` (an entry that vanishes mid-scan) is skipped, never turned into
+    a verdict. (c) Otherwise `None`: this anchor answered nothing.
     """
     verdict = _swap_probe(directory)
     if verdict is not None:
@@ -219,9 +226,28 @@ def _candidate_anchors(cwd: str | None, path_env: str | None):
     """The paths `host_folds_case` probes, in order: the `cwd` the command
     will actually run in, then each `PATH` entry (command resolution is a
     `PATH` question, not a cwd-only one — `/usr/bin` may fold while
-    `/Volumes/dev` does not), capped and de-duplicated in-order.
+    `/Volumes/dev` does not), capped at `_MAX_PATH_PROBES`. NOT
+    de-duplicated: a repeated `PATH` entry is re-probed each time it recurs
+    within one call, which only costs an extra `stat`, never a wrong answer
+    -- `host_folds_case` itself is what is cached, per `(cwd, path_env)`, so
+    a given argument pair only pays this cost once per process.
+
+    `os.getcwd()` itself can raise `OSError` (`FileNotFoundError`) when the
+    orchestrator's own working directory has been removed out from under it
+    -- a long-lived process outliving a deleted worktree is not contrived,
+    it is the exact shape this guard runs under. That must not crash command
+    resolution: skip this anchor (the `PATH` anchors below are still probed,
+    and the union still folds -- never the permissive answer -- if nothing
+    else settles it), the same "a guard that crashes instead of denying" trap
+    the rest of this module is built to avoid.
     """
-    yield cwd or os.getcwd()
+    if cwd:
+        yield cwd
+    else:
+        try:
+            yield os.getcwd()
+        except OSError:
+            pass
     raw = os.environ.get("PATH", "") if path_env is None else path_env
     probed = 0
     for entry in raw.split(os.pathsep):
