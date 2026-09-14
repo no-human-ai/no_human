@@ -94,6 +94,59 @@ def test_manifest_only_conflict_is_derived_not_conflict(tmp_path):
     assert "RELEASE_MANIFEST.txt" in result.conflicts
 
 
+def test_classification_count_only_conflict_is_conflict_not_derived(tmp_path):
+    """Review finding on the prior attempt: `land_task`'s squash step
+    (approve_merge.py ~1060) only tolerates `unmerged == {"RELEASE_MANIFEST.
+    txt"}` — nothing else. `derived_conflict.mechanically_resolvable` judges
+    an `EXPORT_CLASSIFICATION.txt`-only, count-drift conflict resolvable
+    too, but that machinery backs a DIFFERENT resolver
+    (`resolve_derived_conflict`), never `land_task`. If `check_landability`
+    reused that wider eligible set, `--ready` would render `merge: clean`
+    for a task `nh approve` still refuses at `squash` — the exact
+    overclaim this test pins against a regression."""
+    repo = _make_repo(tmp_path)
+    (repo / "EXPORT_CLASSIFICATION.txt").write_text("ship: 1 files\n")
+    _git(repo, "add", "EXPORT_CLASSIFICATION.txt")
+    _git(repo, "commit", "-m", "add classification ledger")
+    _git(repo, "checkout", "-b", "feature")
+    (repo / "EXPORT_CLASSIFICATION.txt").write_text("ship: 2 files\n")
+    _git(repo, "commit", "-am", "feature bumps the ledger count")
+    _git(repo, "checkout", "main")
+    (repo / "EXPORT_CLASSIFICATION.txt").write_text("ship: 3 files\n")
+    _git(repo, "commit", "-am", "main bumps the ledger count (another landing)")
+
+    result = _check(repo, "feature")
+
+    assert result.state == "conflict"
+    assert "EXPORT_CLASSIFICATION.txt" in result.conflicts
+
+
+def test_manifest_plus_hand_authored_conflict_is_conflict_not_derived(tmp_path):
+    """The mixed shape the 2026-09-14 incident actually hit (PR #356):
+    RELEASE_MANIFEST.txt conflicts ALONGSIDE a hand-authored file.
+    `land_task` refuses this at `squash` because `unmerged != {"RELEASE_
+    MANIFEST.txt"}` — the ledger conflict alone is not the WHOLE unmerged
+    set. `check_landability` must not call this "derived"."""
+    repo = _make_repo(tmp_path)
+    (repo / "RELEASE_MANIFEST.txt").write_text("pin one\n")
+    _git(repo, "add", "RELEASE_MANIFEST.txt")
+    _git(repo, "commit", "-m", "add manifest")
+    _git(repo, "checkout", "-b", "feature")
+    (repo / "RELEASE_MANIFEST.txt").write_text("feature pin\n")
+    (repo / "a.txt").write_text("feature edit\n")
+    _git(repo, "commit", "-am", "feature edits manifest and a.txt")
+    _git(repo, "checkout", "main")
+    (repo / "RELEASE_MANIFEST.txt").write_text("main pin\n")
+    (repo / "a.txt").write_text("main edit\n")
+    _git(repo, "commit", "-am", "main edits manifest and a.txt (another landing)")
+
+    result = _check(repo, "feature")
+
+    assert result.state == "conflict"
+    assert "RELEASE_MANIFEST.txt" in result.conflicts
+    assert "a.txt" in result.conflicts
+
+
 def test_unresolvable_base_is_unknown_never_conflict(tmp_path):
     repo = _make_repo(tmp_path)
     _git(repo, "checkout", "-b", "feature")

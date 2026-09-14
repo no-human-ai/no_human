@@ -22,9 +22,23 @@ sibling PR go unnoticed. Landability must be asked fresh on every
 `--ready`, so it lives beside the rules, not inside them.
 
 Built entirely by reusing `vcs.derived_conflict` (`resolve_base_tip`,
-`conflicting_paths`, `mechanically_resolvable`) — no new `merge-tree`
-wrapper, no signature changes there. This module owns only the base-ladder
-choice and the four-state classification.
+`conflicting_paths`, `DERIVED_ARTEFACTS`) — no new `merge-tree` wrapper, no
+signature changes there. This module owns only the base-ladder choice and
+the four-state classification.
+
+`DERIVED_ARTEFACTS` (`{"RELEASE_MANIFEST.txt"}`), not `derived_conflict.
+mechanically_resolvable`'s wider eligible set, is what decides "derived":
+`mechanically_resolvable` also accepts `EXPORT_CLASSIFICATION.txt`- and
+`tests/test_structural_budget.py`-shaped conflicts, because that function
+backs a DIFFERENT resolver (`resolve_derived_conflict`) that can actually
+fix those up. `approve_merge.land_task`'s squash step (approve_merge.py
+~1060) tolerates exactly one shape: `unmerged == {"RELEASE_MANIFEST.txt"}`
+and nothing else — any other unmerged set, including a conflict that ALSO
+touches `RELEASE_MANIFEST.txt`, refuses at `squash`. Classifying anything
+wider than that singleton as "derived" here would make `--ready` render
+`merge: clean` for a task `nh approve` still fails, which is the exact bug
+this module exists to close — so "derived" must mirror `land_task`'s
+narrower tolerance, not `mechanically_resolvable`'s broader one.
 """
 
 from __future__ import annotations
@@ -33,8 +47,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .derived_conflict import (
+    DERIVED_ARTEFACTS,
     conflicting_paths,
-    mechanically_resolvable,
     resolve_base_tip,
 )
 from .git import GitError, GitRepo
@@ -47,10 +61,17 @@ class Landability:
 
     state:
       "clean"    — merges into base with no conflicting paths.
-      "derived"  — conflicts, but confined to artefact(s) `land_task`
-                   regenerates at land time (see
+      "derived"  — conflicts confined to exactly `DERIVED_ARTEFACTS`
+                   (`{"RELEASE_MANIFEST.txt"}`), the ONLY shape
+                   `land_task`'s squash step tolerates and regenerates at
+                   land time (see
                    `docs/design/manifest-generated-file-conflicts.md`);
-                   landable exactly like "clean".
+                   landable exactly like "clean". A conflict that also
+                   touches any other path — including
+                   `EXPORT_CLASSIFICATION.txt` or
+                   `tests/test_structural_budget.py`, which a different
+                   resolver can fix up but `land_task` cannot — is
+                   "conflict", not "derived".
       "conflict" — conflicts a human must resolve (rebase) before landing.
       "unknown"  — the question could not be asked (no resolvable base, git
                    missing, timeout, unparseable output, or any unexpected
@@ -141,10 +162,8 @@ async def check_landability(repo_path: str, branch: str, *,
             return Landability("clean", base_ref, base_sha, (),
                                 f"merges cleanly into {base_ref}")
 
-        resolvable = await mechanically_resolvable(
-            repo_path, paths, base_sha, branch)
         sorted_paths = tuple(sorted(paths))
-        if resolvable is not None and paths <= resolvable:
+        if paths <= DERIVED_ARTEFACTS:
             return Landability(
                 "derived", base_ref, base_sha, sorted_paths,
                 "conflict confined to derived artefact(s), regenerated at "
