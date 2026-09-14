@@ -850,7 +850,7 @@ def test_comment_url_output_honors_github_server_url_for_ghes(env, monkeypatch):
 
     _mock_client(monkeypatch, handler)
     assert run.main() == run.EXIT_OK
-    outputs = env["out_path"].read_text()
+    outputs = env["out_path"].read_text(encoding="utf-8")
     assert "comment_url=https://ghes.example.com/" in outputs
     assert "#issuecomment-42" in outputs
 
