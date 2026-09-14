@@ -1,12 +1,12 @@
 # Verifiers
 
-_Harness-captured record for task `0c7cc4b2`, commit `cb672d012a4c9d8fd9d894d9c88efbca424852fa` — not model-authored: no_human wrote this file from the deterministic verifier rules selected for this commit's files. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `0c7cc4b2`, commit `a2b631e59b8024dce049f49e755deb7176e239b5` — not model-authored: no_human wrote this file from the deterministic verifier rules selected for this commit's files. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ```json
 [
   {
-    "comment": "No color values (hex/rgb/hsl) or style/className changes appear anywhere in this change; it is entirely non-visual telemetry code, so the color-token constraint holds vacuously.",
-    "evidence": "The diff only touches replayScrub.js, replayScrub.test.mjs, telemetry.js, and telemetry.test.mjs \u2014 pure telemetry/network-redaction logic and tests. No JSX className, inline style, or CSS is changed, and the only string literal introduced is REDACTED = \"[redacted: not on replay body allowlist]\", which is not a color.",
+    "comment": "The statement holds vacuously: this change introduces no new or modified colors of any kind, so no hard-coded color literal is added and theme rendering is unaffected.",
+    "evidence": "The diff touches only replayScrub.js, replayScrub.test.mjs, telemetry.js, and telemetry.test.mjs \u2014 pure network-capture/telemetry logic, comments, and tests. No JSX className, inline style, or CSS color is added or modified, and no hex/rgb/hsl literal appears anywhere (the only string literal introduced is REDACTED = \"[redacted: not on replay body allowlist]\").",
     "file": "",
     "files_checked": [
       "web/src/replayScrub.js",
@@ -18,7 +18,7 @@ _Harness-captured record for task `0c7cc4b2`, commit `cb672d012a4c9d8fd9d894d9c8
     "no_verdict": false,
     "passed": true,
     "severity": "medium",
-    "tokens_used": 450,
+    "tokens_used": 524,
     "unavailable": false,
     "verifier_id": "board-uses-theme-tokens"
   }
