@@ -2023,7 +2023,7 @@ CITATION_TABLE = (
     ("security.md", "desktop/updater.mjs:116", "desktop/updater.mjs",
      "autoUpdater.checkForUpdates()"),
     ("security.md", "desktop/main.mjs:1113", "desktop/main.mjs", "checkForUpdates()"),
-    ("security.md", "desktop/electron-builder.config.cjs:366",
+    ("security.md", "desktop/electron-builder.config.cjs:371",
      "desktop/electron-builder.config.cjs", '"github"'),
     ("security.md", "desktop/updater.mjs:68", "desktop/updater.mjs",
      "autoDownload = false"),
