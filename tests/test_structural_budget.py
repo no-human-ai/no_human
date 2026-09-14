@@ -1271,7 +1271,22 @@ FROZEN_FILE_LINES = {
     # the new "Review angles" PR-body row via `evidence.review_angles_pin()`
     # when any angle didn't run. Measured on this tree with the scanner
     # below.
-    "core/orchestrator.py": 24169,
+    # 24169 -> 24189 (+20): send-back fix on the same task — the resume path
+    # (`_resume_human_gated`'s fresh attempt row, no `review_checklist`
+    # threaded through) hardcoded `angles_skipped = []` in
+    # `_review_verdict_data`, falsely claiming every angle produced a
+    # verdict when the round's advisory trail actually recorded a skip.
+    # Now derives the skipped names from `last.get("advisory")` via
+    # `skipped_angles_from_checklist`, documented as a capped (5-label),
+    # under-report-never-invent fallback; docstring grew to list all six
+    # return keys. Measured on this tree with the scanner below.
+    # 24189 -> 24204 (+15): same send-back, the checklist-comment ALSO-FIX
+    # item — a skipped angle is `severity="low"`, so it landed only inside
+    # the collapsed "N advisory findings" `<details>` fold, under a heading
+    # that can read "PASSED". `_review_checklist_comment` now says so once,
+    # above the fold, whenever `skipped_angles_from_checklist` finds one.
+    # Measured on this tree with the scanner below.
+    "core/orchestrator.py": 24204,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.
@@ -1909,8 +1924,10 @@ FROZEN_FILE_LINES = {
     # "extract to keep `review()` under its own ceiling" move already
     # used for `_review_tamper_adjudication` and
     # `_failing_test_attribution_sentence` above; a new method
-    # signature/docstring is net file growth even though the moved code
-    # itself is unchanged. Measured on this tree with the scanner below.
+    # signature/docstring is net file growth on top of the extracted
+    # body itself gaining the retry/skip-encoding behavior described
+    # above — this is not a verbatim move. Measured on this tree with
+    # the scanner below.
     # 3255 -> 3293 (+38): send-back fix on the same task. Blocker 1: the
     # retry branch checked only `_reached_no_verdict(retry)`, so a RETRY
     # that itself timed out (`_fast_review` returns a TIMEOUT-shaped
@@ -1919,7 +1936,23 @@ FROZEN_FILE_LINES = {
     # reintroduced on the retry path. Fixed with a shared classifier,
     # `_angle_gave_no_verdict`, applied identically to the first attempt
     # and the retry. Measured on this tree with the scanner below.
-    "review/reviewer.py": 3293,
+    # 3293 -> 3306 (+13): send-back fix on the same task, prose/wiring only —
+    # corrected the call-site and `_run_review_angles` docstring comments
+    # that claimed the extraction was "verbatim"/"unchanged" (it added the
+    # retry and skip encoding in the same commit), switched the skip
+    # checklist item to build its label via `ANGLE_SKIP_LABEL.format(...)`
+    # instead of a duplicate raw f-string, and replaced the uncited "77
+    # historical rows" docstring claim with a cited, dated query result
+    # against ~/.no_human/no_human.db. Measured on this tree with the
+    # scanner below.
+    # 3306 -> 3332 (+26): same send-back, the remaining SMALLER items —
+    # documented (did not change behavior) why first-attempt retries stay
+    # serial rather than gathered, why a TIMEOUT first attempt is never
+    # retried (asymmetric with "reached no verdict" on purpose), and made
+    # `ANGLE_RETRY_TURNS` explicitly a deliberate non-import of
+    # `tamper_adjudication.RETRY_TURNS` rather than an unexplained duplicate
+    # literal. Measured on this tree with the scanner below.
+    "review/reviewer.py": 3332,
     # 2706 -> 2711 (+5): pre-existing red on main at 03b262d23 (e922e9b4's
     # landing, change-scoped tests missed the ratchet) — repaired, measured,
     # on this merge; same cause as the two function-level wake.py bumps above.

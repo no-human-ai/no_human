@@ -277,9 +277,15 @@ def test_review_angles_pin_is_none_when_nothing_skipped():
 
 
 def test_skipped_angles_from_checklist_reads_historical_passed_true_rows():
-    """The 77 historical rows this fix inherits were written with the bug:
-    `passed=True` on a 'did not run' item. The reader must still recognize
-    them as skipped, regardless of the stored `passed` value."""
+    """Historical rows written before this fix carry the bug: `passed=True`
+    on a 'did not run' item. The reader must still recognize them as
+    skipped, regardless of the stored `passed` value. (Measured 2026-09-14
+    via `select count(*) from attempts where review_passed=1 and
+    review_checklist like '%angle did not run%'` against
+    ~/.no_human/no_human.db: 86 such rows, 57 of them matching
+    `%tests angle did not run%` — see `skipped_angles_from_checklist`'s
+    docstring; the count keeps growing so re-run the query rather than
+    trusting a hardcoded number.)"""
     checklist = {
         "passed": True,
         "items": [
@@ -342,6 +348,56 @@ def test_review_verdict_data_derives_angles_skipped_from_the_real_checklist():
         "items": [{"label": "ok", "passed": True, "severity": "low"}],
     }
     rv_clean = Orchestrator._review_verdict_data(t, review_checklist=clean_checklist)
+    assert rv_clean["angles_skipped"] == []
+    assert rv_clean["angles_skipped_required"] == []
+
+
+def test_review_verdict_data_reads_skip_from_advisory_trail_on_the_resume_path():
+    """The resume-path blocker: `_resume_human_gated` creates a FRESH attempt
+    row carrying only `branch_name`/`commit_sha` (never a `review_checklist`),
+    so `_finalize` on that path calls `_review_verdict_data(review_checklist=
+    None)`. Before this fix that branch unconditionally returned
+    `angles_skipped=[]` / `angles_skipped_required=[]`, even though the
+    reviewed round's own advisory trail already names the skip —
+    `_append_review_history` writes `[i.label for i in
+    decision.advisory_items[:5]]`, and a skip item IS an advisory item
+    (`severity="low"` is in `ADVISORY_SEVERITIES`), so its label
+    ("tests angle did not run (reached no verdict)") sits in
+    `last["advisory"]` right there. This must be read, not asserted away."""
+    t = Task.new("big task", repo_path="/r")
+    t.context = {"review_history": [{
+        "passed": True,
+        "blocking": [],
+        "advisory": ["tests angle did not run (reached no verdict)"],
+    }]}
+    rv = Orchestrator._review_verdict_data(t, review_checklist=None)
+    assert rv is not None
+    assert rv["angles_skipped"] == ["tests"], (
+        "a skip recorded in the advisory trail must surface even when no "
+        "checklist was threaded through this call"
+    )
+    assert rv["angles_skipped_required"] == ["tests"]
+
+    facts = GateFacts(
+        review_passed=True,
+        angles_skipped=tuple(rv["angles_skipped"]),
+        angles_skipped_required=tuple(rv["angles_skipped_required"]),
+    )
+    ok, detail = _check_required_angles_ran(facts, None)
+    assert ok is False, (
+        "a required angle skip read off the resume-path advisory trail must "
+        "still make required_angles_ran non-ready, not silently pass"
+    )
+    assert "all review angles produced a verdict" not in detail
+
+    # Negative: a clean trail (no skip label in the advisory strings) must
+    # still report nothing skipped — the fallback reads real evidence, it
+    # does not invent a skip that was never recorded.
+    t_clean = Task.new("big task", repo_path="/r")
+    t_clean.context = {"review_history": [{
+        "passed": True, "blocking": [], "advisory": ["some other note"],
+    }]}
+    rv_clean = Orchestrator._review_verdict_data(t_clean, review_checklist=None)
     assert rv_clean["angles_skipped"] == []
     assert rv_clean["angles_skipped_required"] == []
 

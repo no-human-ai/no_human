@@ -72,7 +72,7 @@ def test_absent_no_human_dir_does_not_raise(tmp_path):
     assert load.problems == []
 
 
-def test_default_policy_is_the_six_documented_rules():
+def test_default_policy_is_the_seven_documented_rules():
     names = [r.name for r in DEFAULT_POLICY]
     assert names == [
         "review_passed",
@@ -88,7 +88,7 @@ def test_default_policy_is_the_six_documented_rules():
     assert by_name["ci"] == "success_or_unknown"
 
 
-def test_valid_file_parses_all_nine_rules_source_file(tmp_path):
+def test_valid_file_parses_all_ten_rules_source_file(tmp_path):
     _policy(
         tmp_path,
         """
@@ -685,7 +685,7 @@ def test_import_surface():
         assert hasattr(mp, name), name
 
 
-def test_rule_names_has_nine_entries_no_duplicates_is_a_tuple():
+def test_rule_names_has_ten_entries_no_duplicates_is_a_tuple():
     assert isinstance(RULE_NAMES, tuple)
     assert len(RULE_NAMES) == 10
     assert len(set(RULE_NAMES)) == 10

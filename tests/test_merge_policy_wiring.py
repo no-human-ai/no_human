@@ -703,10 +703,10 @@ async def test_the_success_path_body_is_unchanged_by_the_single_gather(
 # the delivered head.
 # ---------------------------------------------------------------------------
 
-def _six_of_six_setup(tmp_path):
-    """Seed a run that satisfies all 6 DEFAULT_POLICY rules EXCEPT `ci` —
+def _seven_of_seven_setup(tmp_path):
+    """Seed a run that satisfies all 7 DEFAULT_POLICY rules EXCEPT `ci` —
     the same seeding `test_policy_file_changed_in_this_diff_forces_the_warning_glyph`
-    uses for `tests_ran_and_passed` (no custom policy file, default 6
+    uses for `tests_ran_and_passed` (no custom policy file, default 7
     rules)."""
     work = _repo_with_a_commit(tmp_path)
     reviewed_sha = _git(work, "rev-parse", "HEAD")
@@ -721,7 +721,7 @@ async def test_a_failing_rollup_on_the_delivered_head_is_not_ready_and_names_the
     NOT-ready verdict for that head, with the failing check's name in the
     `ci` rule's detail string — the exact incident (PR #122, File-inventory
     red on GitHub, merge policy showed "ready — 7 of 7")."""
-    work, reviewed_sha, ctx = _six_of_six_setup(tmp_path)
+    work, reviewed_sha, ctx = _seven_of_seven_setup(tmp_path)
 
     async def fake_fetch(pr_url):
         return "failure", ("File inventory",)
@@ -752,10 +752,10 @@ async def test_a_failing_rollup_on_the_delivered_head_is_not_ready_and_names_the
     assert mp_events[-1]["ready"] is False, mp_events
 
 
-async def test_a_green_rollup_is_ready_six_of_six(store, tmp_path, monkeypatch):
+async def test_a_green_rollup_is_ready_seven_of_seven(store, tmp_path, monkeypatch):
     """THE CONTROL: same setup, a green rollup ⇒ ready 7 of 7, and the
     written `ci_status` reflects the polled "success"."""
-    work, reviewed_sha, ctx = _six_of_six_setup(tmp_path)
+    work, reviewed_sha, ctx = _seven_of_seven_setup(tmp_path)
 
     async def fake_fetch(pr_url):
         return "success", ()
@@ -782,7 +782,7 @@ async def test_a_repo_with_no_checks_stays_tolerated(store, tmp_path, monkeypatc
     """A task with no delivered PR's rollup data (repo genuinely runs no CI)
     keeps today's behaviour unchanged: `ci_status` is None, and the `ci`
     rule detail is exactly the pre-existing tolerated string."""
-    work, reviewed_sha, ctx = _six_of_six_setup(tmp_path)
+    work, reviewed_sha, ctx = _seven_of_seven_setup(tmp_path)
 
     async def fake_fetch(pr_url):
         return None, ()
@@ -810,7 +810,7 @@ async def test_no_delivered_github_pr_never_polls(store, tmp_path, monkeypatch):
     """A non-GitHub (e.g. GitLab) delivered PR never triggers the poll — the
     delivery path is GitHub-only per `_stamp_delivered_ci_status`'s
     `pr_watcher.parse_pr_url` gate."""
-    work, reviewed_sha, ctx = _six_of_six_setup(tmp_path)
+    work, reviewed_sha, ctx = _seven_of_seven_setup(tmp_path)
 
     calls = {"n": 0}
 
@@ -836,7 +836,7 @@ async def test_a_rollup_fetch_failure_is_advisory_only(store, tmp_path, monkeypa
     """A raising rollup fetch degrades to advisory: the task still reaches
     AWAITING_APPROVAL, and the pre-CI verdict computed in `_finalize`
     survives (never overwritten by a half-failed re-stamp)."""
-    work, reviewed_sha, ctx = _six_of_six_setup(tmp_path)
+    work, reviewed_sha, ctx = _seven_of_seven_setup(tmp_path)
 
     async def fake_fetch(pr_url):
         raise RuntimeError("gh: rate limited")

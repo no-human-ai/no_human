@@ -341,6 +341,15 @@ def _check_review_passed(facts: GateFacts, _arg: Any) -> tuple[bool, str]:
 
 
 def _check_no_advisory_findings(facts: GateFacts, _arg: Any) -> tuple[bool, str]:
+    # Opt-in rule, not in DEFAULT_POLICY: a skipped review angle is encoded
+    # as a checklist item with `severity="low"` (`ADVISORY_SEVERITIES`), so
+    # it counts toward `review_advisory_count` here the same as any other
+    # advisory finding. That is intentional, not an inflation bug — a repo
+    # that opts into this strict rule is choosing "zero advisory noise,
+    # including an angle that didn't run" as its bar. Use
+    # `required_angles_ran` (in DEFAULT_POLICY) instead if only a skipped
+    # required angle, not ordinary advisory findings, should gate
+    # readiness.
     n = facts.review_advisory_count
     ok = n == 0
     return ok, f"{n} advisory finding{'s' if n != 1 else ''}"

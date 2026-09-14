@@ -1636,7 +1636,12 @@ REQUIRED_ANGLES: frozenset[str] = frozenset({"tests"})
 ANGLE_SKIP_LABEL = "{name} angle did not run ({reason})"
 _ANGLE_SKIP_RE = re.compile(r"^(?P<name>[A-Za-z0-9_-]+) angle did not run\b")
 #: Mirrors `tamper_adjudication.RETRY_TURNS` — one bounded retry before an
-#: angle that never produced a verdict is recorded as skipped.
+#: angle that never produced a verdict is recorded as skipped. Deliberately
+#: a separate literal, not an import of that constant: angle retries and
+#: tamper-adjudication retries are different concerns that happen to agree
+#: on "2" today, and importing would silently couple their tuning. If this
+#: value needs to change, change it here — do not wire it to
+#: `tamper_adjudication.RETRY_TURNS`.
 ANGLE_RETRY_TURNS = 2
 
 
@@ -1647,9 +1652,16 @@ def skipped_angles_from_checklist(
     `attempts.review_checklist`.
 
     Reads the item LABEL against `_ANGLE_SKIP_RE`, regardless of `passed` —
-    the 77 historical rows this fix inherits were written with
+    historical rows written before this fix recorded a skipped angle with
     `passed=True` (the bug this task fixes), and a display/policy reader
     that only looked at `not passed` rows would silently stop seeing them.
+    The row count is a moving target (the table keeps growing); measured
+    2026-09-14 via
+    `select count(*) from attempts where review_passed=1 and
+    review_checklist like '%angle did not run%'` against
+    ~/.no_human/no_human.db: 86 rows, 57 of them matching
+    `%tests angle did not run%`. Re-run that query for a current count
+    rather than trusting a hardcoded number here.
     Tolerant of str/dict/None/malformed rows, mirroring
     `findings_from_checklist`: a display+policy path must never raise.
     """
@@ -2747,8 +2759,11 @@ class AdversarialReviewer:
         # extracted to `_run_review_angles` (below) to keep THIS method under
         # its own frozen line budget — same reason `_review_tamper_adjudication`
         # and `_failing_test_attribution_sentence` were extracted before it.
-        # Pure structural move, behavior unchanged: see that method's
-        # docstring for the angle contract itself. B2 #11: angles can only ADD
+        # The extraction is a structural move (the call site here is
+        # unchanged); the extracted body itself is NOT byte-for-byte —
+        # this same commit added the bounded retry and the
+        # passed=False/severity="low" skip encoding described in that
+        # method's docstring. B2 #11: angles can only ADD
         # findings / keep a fail failed — they can never flip fail→pass — so
         # running them after a decided FAIL is pure Opus cost. Short-circuit
         # on the main verdict. Gated on `gate_originally_passed` (captured
@@ -2773,7 +2788,10 @@ class AdversarialReviewer:
         before_ref: str,
     ) -> ReviewDecision:
         """Complex-tier parallel single-turn angle passes (C3-G1), extracted
-        verbatim out of `review()` — see the call site's comment for why.
+        out of `review()` — see the call site's comment for why. The
+        extraction is structural, but the extracted body itself gained a
+        bounded retry and the passed=False/severity="low" skip encoding in
+        this same commit; it is not a verbatim copy of the pre-fix code.
 
         Angles are ADDITIVE and best-effort: one that times out, crashes, or
         never reaches a verdict (even after one bounded retry) is dropped
@@ -2791,6 +2809,18 @@ class AdversarialReviewer:
             return_exceptions=True,
         )
         angle_decisions: list[tuple[str, ReviewDecision]] = []
+        # First attempts run in parallel (the `asyncio.gather` above); any
+        # retry below is awaited one angle at a time in this loop, not
+        # gathered. That is a real latency cost when more than one angle
+        # needs a retry (their ~180s budgets stack instead of overlapping),
+        # left serial deliberately: this fix's scope is correctness
+        # (a no-verdict angle must never read as passing) and visibility,
+        # not the angle loop's wall-clock time, and collecting retries into
+        # a second `asyncio.gather` would mean re-deriving per-angle state
+        # (which ones need a retry, folding usage, exception handling) across
+        # two passes instead of one straight-line loop — a larger, riskier
+        # change than this task calls for. Revisit if angle latency becomes
+        # the bottleneck.
         for i, r in enumerate(results):
             name = angle_prompts[i][0]
             skipped = None
@@ -2800,6 +2830,15 @@ class AdversarialReviewer:
             else:
                 first_attempt_reason = _angle_gave_no_verdict(r)
             if first_attempt_reason == "timed out":
+                # Deliberately NOT retried, unlike "reached no verdict"
+                # below: a timeout means the first attempt already spent
+                # its full turn budget without finishing, so an immediate
+                # retry on the same budget is the likely-to-repeat case,
+                # not the exception — spending a second full budget on a
+                # probable second timeout is a worse trade than the
+                # no-verdict case, where the failure mode is a parse miss
+                # that a fresh attempt can plausibly avoid. Asymmetric on
+                # purpose; not an oversight.
                 skipped = "timed out"
             elif first_attempt_reason == "reached no verdict":
                 # R17, finding 3 — the path that produced the live
@@ -2878,7 +2917,7 @@ class AdversarialReviewer:
                 # no-verdict-after-retry): one mechanism, and "did not
                 # run" is equally untrue as a pass in all three.
                 decision.checklist.append(ChecklistItem(
-                    label=f"{name} angle did not run ({skipped})",
+                    label=ANGLE_SKIP_LABEL.format(name=name, reason=skipped),
                     passed=False,
                     severity="low",
                     evidence=(

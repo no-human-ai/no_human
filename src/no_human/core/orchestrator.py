@@ -8369,6 +8369,21 @@ class Orchestrator:
         )
         lines = [Orchestrator.REVIEW_CHECKLIST_MARKER, heading, subtitle, ""]
 
+        # A skipped angle is `severity="low"` (never blocking, by design —
+        # see `_run_review_angles`), so it lands in `advisory` below and,
+        # without this line, would sit only inside the collapsed
+        # "N advisory findings" `<details>` fold under a heading that can
+        # read "PASSED" — exactly the shape a human skimming the comment
+        # would miss. Say it once, above the fold, whether or not the round
+        # passed; the fold below still carries the row itself.
+        skipped_names, _required = skipped_angles_from_checklist(decoded)
+        if skipped_names:
+            plural = "s" if len(skipped_names) != 1 else ""
+            lines.append(
+                f"⚠️ {len(skipped_names)} review angle{plural} recorded as "
+                f"skipped this round — {', '.join(skipped_names)}. See below.")
+            lines.append("")
+
         main = blocking + passed_items
         if unreadable:
             lines.append("_the stored review checklist could not be decoded "
@@ -22696,7 +22711,8 @@ SIX of them read a checkpoint and TWO do not — but do
         section must still SAY out loud rather than silently vanish, since
         "no review evidence" and "no section" look identical to a reader.
         Otherwise returns `{"rounds": int, "verdict": "PASSED"|"not passed",
-        "addressed": [str, ...], "advisory_count": int}` — `addressed`
+        "addressed": [str, ...], "advisory_count": int, "angles_skipped":
+        [str, ...], "angles_skipped_required": [str, ...]}` — `addressed`
         already `_inline_cell`-safe and capped at 8, matching what the
         section has always shown. `advisory_count` counts the REAL,
         uncapped advisory findings via `review.reviewer.findings_from_checklist`
@@ -22710,6 +22726,12 @@ SIX of them read a checkpoint and TWO do not — but do
         true number. Falls back to that capped trail count only when no
         usable checklist is available (older attempts, or a caller that never
         threaded one through) so this never regresses for those.
+        `angles_skipped` / `angles_skipped_required` (`review.reviewer.
+        skipped_angles_from_checklist`) name any review angle that reached
+        no verdict this round; when no checklist was threaded through they
+        fall back to the same capped 5-label advisory trail (never to a
+        hardcoded empty list) — see the branch below for the honest limit
+        that fallback carries.
 
         Data flows review -> evidence -> body here, and only here. Nothing in
         this method may ever flow the other way: the body carries
@@ -22756,13 +22778,6 @@ SIX of them read a checkpoint and TWO do not — but do
         # "", {}) means no checklist was threaded through, so keep the old
         # capped-trail number rather than claim a false zero.
         advisory_count = len(last.get("advisory") or [])
-        # Angles that reached no verdict this round — `[]` (not the "no
-        # checklist threaded through" fallback the advisory count above
-        # uses) when `review_checklist` is falsy. A resumed-delivery caller
-        # that never threads a checklist through has no way to know whether
-        # an angle ran; reporting "no angle skipped" there is a deliberate
-        # fail-open (the alternative is blocking a PR body render on data
-        # the delivering row never had), not a claim that every angle ran.
         angles_skipped: list[str] = []
         angles_skipped_required: list[str] = []
         if review_checklist:
@@ -22770,6 +22785,26 @@ SIX of them read a checkpoint and TWO do not — but do
             advisory_count = len(advisory_items)
             angles_skipped, angles_skipped_required = skipped_angles_from_checklist(
                 review_checklist)
+        else:
+            # No checklist threaded through (e.g. `_resume_human_gated`'s
+            # fresh attempt row carries only `branch_name`/`commit_sha`,
+            # never a `review_checklist`). That does NOT mean "no angle
+            # skipped" is knowable to say — `_append_review_history` already
+            # writes a skip's label (`"<name> angle did not run (...)"`)
+            # into `last["advisory"]` (an angle's skip item IS an advisory
+            # item), so the capped trail this method already reads for
+            # `advisory_count` above is real evidence, not a guess.
+            # `skipped_angles_from_checklist` matches on LABEL alone, so
+            # wrapping the trail's plain label strings in the same
+            # `{"items": [{"label": ...}]}` shape it already parses reads
+            # any skip that trail carries, instead of asserting none exist.
+            # HONEST LIMIT: `_append_review_history` caps that trail at 5
+            # labels, so a skip beyond the cap stays invisible here — this
+            # can UNDER-report a skip but can never INVENT one, which is the
+            # safe direction for a merge-ready check to fail open toward.
+            angles_skipped, angles_skipped_required = skipped_angles_from_checklist(
+                {"items": [{"label": lbl} for lbl in (last.get("advisory") or [])]}
+            )
         return {
             "rounds": rounds, "verdict": verdict, "addressed": addressed[:8],
             "advisory_count": advisory_count,
