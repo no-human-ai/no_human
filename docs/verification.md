@@ -360,8 +360,9 @@ attempt on a defect the coder could not have known about while the code was
 otherwise correct. [`src/no_human/testing/citation_drift.py`](../src/no_human/testing/citation_drift.py)
 runs before review instead: when the target repo ships its own
 `scripts/reanchor_citations.py` and `tests/test_readme_claims.py`, the
-preflight shells out to that script directly — no CI workflow runs it; the
-only other documented invocation is a human running `--check` by hand — and
+preflight shells out to that script directly — no CI workflow runs it (the
+only other documented invocations are `CONTRIBUTING.md`'s two `uv run`
+commands for a human running `--check` or `--apply` by hand) — and
 mechanically re-anchors and commits fixable drift on the same branch and
 attempt, and — only when a citation is unfixable or the script's own verdict
 is indeterminate — buys exactly one bounded corrective round before falling

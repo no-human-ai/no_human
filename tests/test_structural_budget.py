@@ -405,7 +405,13 @@ FROZEN_FUNCTION_LINES = {
     # to" when writing mechanically is its entire job. Reviewed on its
     # merits; frozen here as its landing baseline, measured on this tree
     # with the scanner below.
-    "core/orchestrator.py:Orchestrator._citation_drift_preflight": 314,
+    # 314 -> 322 (+8): the send-back round that corrected the docstring's
+    # "Honest limit" paragraph (closed-set `_CITATION_DOC_PATHS` list spelled
+    # out, "strictly wider" replaced with the true "incomparable" claim about
+    # TESTING's scope) and the leading "never costs a whole attempt" summary
+    # sentence gained its own qualifying clause. Re-measured directly with
+    # the scanner below on this tree, not carried over as a stale delta.
+    "core/orchestrator.py:Orchestrator._citation_drift_preflight": 322,
     # Grew to 314 (> 300) when the done_no_evidence repair shape landed
     # (task bf413cc6): two new refusal guards + the DONE branch. The growth
     # was reviewed on its merits; frozen here as its landing baseline.
@@ -1390,7 +1396,11 @@ FROZEN_FILE_LINES = {
     # docstring paragraph on `_citation_drift_preflight` (Finding D) stating,
     # with reasons, that the preflight is deliberately whole-repo-scoped
     # rather than diff-scoped (the target repo's own script has no scoping
-    # argument, and TESTING's own backstop already checks the same scope);
+    # argument, and TESTING's own backstop covers a different scope anyway —
+    # more docs, via `test_windows_md_code_line_citations_resolve`, but a
+    # narrower in-window drift tolerance on the table's three — so diff-
+    # scoping this preflight would not even line up with what TESTING
+    # checks);
     # and a comment on the REANCHORED branch recording that a mechanical
     # re-anchor commit cannot spend an LLM tamper-adjudication turn —
     # `_handle_tamper_fire`'s first line is `if not report.tampered: return
@@ -1448,7 +1458,15 @@ FROZEN_FILE_LINES = {
     # content IS the job (+21 net, including the two call sites' own
     # `reason=` arguments). Re-measured on this tree with the scanner's own
     # metric, not carried-over arithmetic.
-    "core/orchestrator.py": 24713,
+    # 24713 -> 24728 (+15): the send-back round correcting five evidence
+    # gaps named against head a07b942d — the "Honest limit" paragraph's
+    # closed-set `_CITATION_DOC_PATHS` list and "strictly wider" ->
+    # "incomparable" rewrite, the leading summary sentence's qualifying
+    # clause, the `_repro_corrective_round` docstring's caller enumeration,
+    # and the `reason if reason is not None else ...` fix replacing `reason
+    # or ...` in `_revert_worktree_writes_unguarded`. Re-measured on this
+    # tree with `scan_tree`, not carried over as a stale delta.
+    "core/orchestrator.py": 24728,
 
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo

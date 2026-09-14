@@ -208,7 +208,9 @@ def _doc_path(doc_key: str) -> str:
 
 def classify(returncode: int, stdout: str, stderr: str) -> CitationOutcome:
     """Pure, exhaustive, FAIL-CLOSED translation of one
-    `reanchor_citations.py --apply` invocation into a `CitationOutcome`.
+    `reanchor_citations.py` invocation — `--check` or `--apply`, both
+    produce the same `VERDICT=`/`DRIFT:`/`FAIL:`/`applied N` vocabulary this
+    parses — into a `CitationOutcome`.
 
     See the module docstring for why this keys off the `VERDICT=` marker
     rather than `returncode` alone. Every branch below that is not a
@@ -241,15 +243,25 @@ def classify(returncode: int, stdout: str, stderr: str) -> CitationOutcome:
         if fails:
             # Self-contradictory shape: the script claims `VERDICT=OK` (rc 0
             # already checked above) yet also printed `FAIL:` lines. In the
-            # real script's own `main()`, `VERDICT=OK` is printed whenever
-            # the plan-level `unfixable` list is empty — REGARDLESS of
-            # whether `drifts` is empty: a non-empty `drifts` that was fully
-            # applied is exactly the REANCHORED shape the branch below
-            # handles, and it too prints `VERDICT=OK`. A `FAIL:` line, in
-            # contrast, can ONLY come from that same `unfixable` list
-            # (`main()` prints one per entry, then gates the verdict on
-            # whether the list is empty), so "OK" and "FAIL:" never
-            # legitimately coexist even though "OK" and `DRIFT:` can.
+            # real script's own `main()` (read directly, not re-derived):
+            # `VERDICT=OK` prints in exactly two places — (1) `plan()`
+            # returned no drifts AND no unfixable at all, before the mode is
+            # even considered, or (2) `--apply` was given, `drifts` was
+            # non-empty, `_apply_all` resolved every one of them (its
+            # `unresolved` list came back empty), AND `plan()`'s `unfixable`
+            # list was empty (the trailing `"FAIL" if unfixable else "OK"`).
+            # In `--check` mode there is no path (2): `if not args.apply:
+            # print("VERDICT=FAIL"); return 1` fires on ANY drift or
+            # unfixable finding, so `--check` prints OK only on a fully
+            # clean run. Either way, both routes to OK require `unfixable`
+            # empty — so a `FAIL:` line has nowhere legitimate to come from:
+            # `main()` has exactly two sources of `FAIL:` output, `plan()`'s
+            # `unfixable` list (printed unconditionally up front, whenever
+            # non-empty) and `_apply_all`'s own `unresolved` list (printed
+            # only in the branch that immediately follows with
+            # `VERDICT=FAIL`) — and both of those sources being non-empty is
+            # exactly what rules out VERDICT=OK above. "OK" and "FAIL:"
+            # never legitimately coexist even though "OK" and `DRIFT:` can.
             # Trusting the "OK" half here would silently drop the finding —
             # CLEAN if there were also no drifts/applied marker, or
             # REANCHORED with an empty `failures` tuple if there were —

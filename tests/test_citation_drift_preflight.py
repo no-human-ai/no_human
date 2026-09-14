@@ -1261,6 +1261,13 @@ async def test_a_commit_failure_after_mechanical_reanchor_buys_a_round_not_false
     kinds = [e["kind"] for e in events]
     assert "citation_drift_corrective_round" in kinds, events
 
+    # The advisory naming WHY the write was reverted must say so accurately
+    # — a commit failure is not "despite being told not to write" (that's
+    # the generic default clause; this caller's own `reason=` must win).
+    advisories = [e["text"] for e in events if e["kind"] == "advisory"]
+    assert any("could not be committed" in text for text in advisories), advisories
+    assert not any("despite being told not to" in text for text in advisories), advisories
+
     # The reverted, never-committed mechanical rewrite must never be what
     # ships on the branch — only the round's OWN, successfully committed
     # hand fix may land at HEAD.
@@ -1272,6 +1279,93 @@ async def test_a_commit_failure_after_mechanical_reanchor_buys_a_round_not_false
 
     attempts = await store.list_attempts(task.id)
     assert len(attempts) == 1
+
+
+class _AmbiguousDriftThenRoundTampersBackend:
+    """Turn 1: same ambiguous-citation setup as
+    `_AmbiguousDriftThenFixesItBackend` — unfixable, so a bounded corrective
+    round is bought. Turn 2 (the round): fixes the doc citation by hand
+    (in scope) AND, in the same turn, adds a skip marker to
+    `tests/test_readme_claims.py` (also in scope — `tests/` is always
+    admitted) — a real, in-scope write the tamper guard itself still flags
+    as neutering a test, so the round's OWN commit is what tampers, not the
+    coder's initial one."""
+
+    def __init__(self):
+        self.calls = 0
+
+    async def run(self, prompt, *, cwd, max_turns, effort=None, resume=None,
+                  on_event=None, supervisor_hook=None, **kwargs):
+        self.calls += 1
+        cwd = Path(cwd)
+        if self.calls == 1:
+            if on_event is not None:
+                on_event(AgentEvent("tool_use", tool_name="Edit",
+                                    tool_input={"file_path": "pkg/mod.py"}))
+                on_event(AgentEvent("tool_use", tool_name="Edit",
+                                    tool_input={"file_path": "docs/cite.md"}))
+            cwd.joinpath("pkg", "mod.py").write_text(_MOD_DRIFTED)
+            cwd.joinpath("docs", "cite.md").write_text(_DOC_DUPLICATE)
+            return AgentResult(final_text="added helper(), touched doc", num_turns=2,
+                               is_error=False, tokens_used=100, session_id="s1",
+                               stop_reason="end_turn")
+        if on_event is not None:
+            on_event(AgentEvent("tool_use", tool_name="Edit",
+                                tool_input={"file_path": "docs/cite.md"}))
+            on_event(AgentEvent("tool_use", tool_name="Edit",
+                                tool_input={"file_path": "tests/test_readme_claims.py"}))
+        cwd.joinpath("docs", "cite.md").write_text("See mod.py:5 for foo().\n")
+        cwd.joinpath("tests", "test_readme_claims.py").write_text(
+            "import pytest\n\n\n@pytest.mark.skip(reason='not now')\n"
+            "def test_placeholder():\n    pass\n"
+        )
+        return AgentResult(final_text="fixed the citation, tidied the checker",
+                           num_turns=1, is_error=False, tokens_used=10,
+                           session_id="s2", stop_reason="end_turn")
+
+
+async def test_a_tamper_fire_on_the_rounds_own_commit_ends_the_attempt_right_there(
+        bare_repo, tmp_path, store):
+    """Pins the return path `_citation_drift_preflight` hands straight back
+    to `_run_attempt`: when `_repro_corrective_round` itself ends the
+    attempt (here, a tamper fire on the ROUND's own commit, adjudication
+    switched off so the fire routes straight to `_escalate` with no LLM
+    call needed), that `TaskOutcome` must be what `_run_attempt` returns —
+    never silently dropped in favour of falling through to review. Forced
+    entirely behaviourally: the round backend's own in-scope write (a skip
+    marker added to `tests/test_readme_claims.py`, same file the ordinary
+    doc fix backends in this module never touch) is exactly the shape
+    `tamper_guard.check` already flags real callers for elsewhere in this
+    suite (`tests/test_tamper_guard.py`) — never read from
+    `orchestrator.py`'s or `tamper_guard.py`'s own source text."""
+    backend = _AmbiguousDriftThenRoundTampersBackend()
+    orch, task, repo, events = await _run_one_task_attempt(store, bare_repo, tmp_path, backend)
+    orch.config["tamper_adjudication"] = {"enabled": False}
+
+    outcome = await orch._run_attempt(task, repo, 1, "main")
+
+    assert backend.calls == 2, (
+        "the round must run exactly once — a tamper fire on its own commit "
+        "ends the attempt, it does not buy a further dispatch"
+    )
+
+    tamper_events = [e for e in events if e["kind"] == "tamper"]
+    round_tamper = [e for e in tamper_events if e.get("tampered") is True
+                     and "repro corrective round" in e.get("text", "")]
+    assert round_tamper, tamper_events
+
+    # The fire must end the attempt right there: no review boundary was
+    # ever reached, and the outcome is not a passed-review success — both
+    # would be true if the preflight's non-None return were dropped and
+    # `_run_attempt` fell through into `_run_review` instead.
+    assert not any(_is_review_boundary(e) for e in events), events
+    assert outcome.status is not TaskStatus.AWAITING_APPROVAL, outcome.detail
+
+    attempts = await store.list_attempts(task.id)
+    assert len(attempts) == 1, (
+        "a tamper fire on the corrective round's own commit must still "
+        "never spend a second attempt-budget slot"
+    )
 
 
 async def test_an_indeterminate_run_lets_the_corrective_round_land_a_doc_fix(

@@ -9660,8 +9660,9 @@ class Orchestrator:
         attempt 1, 2026-09-09: exactly this). This buys the target repo's
         own `scripts/reanchor_citations.py` a shot at fixing it BEFORE
         review, on the SAME branch — mechanically where it can, one bounded
-        corrective round where it cannot — so drift never costs a whole
-        attempt when it could have cost neither.
+        corrective round where it cannot — so a citation this script covers
+        never costs a whole attempt when it could have cost neither (see the
+        "Honest limit" paragraph below for the citations it does not cover).
 
         Placement note (deviates from the task's own "after review, after
         tests" framing — recorded in the PR body): that slot cannot work.
@@ -9697,20 +9698,27 @@ class Orchestrator:
         Honest limit, stated rather than papered over: this preflight's
         notion of "a citation" is exactly `mod.CITATION_TABLE`
         (`scripts/reanchor_citations.py`'s own `plan()` walks nothing else),
-        which covers only `_CITATION_DOC_PATHS`
-        (`docs/security.md`, `docs/eval.md`, `docs/KNOWN_ISSUES.md`,
-        `tests/test_readme_claims.py`). TESTING's run of that same checker
-        module is STRICTLY WIDER: it also runs
+        which covers only the three keys of `_CITATION_DOC_PATHS`
+        (`docs/security.md`, `docs/eval.md`, `docs/KNOWN_ISSUES.md` — read
+        directly off that dict literal, not `tests/test_readme_claims.py`
+        itself, which is the checker module, not a doc it checks). TESTING's
+        run of that same checker module is not simply wider: it also runs
         `test_windows_md_code_line_citations_resolve`, which reads
         `docs/WINDOWS.md` directly and — by that test's own docstring — a
         `CITATION_TABLE` row cannot catch a drifted bare `file.py:LINE`
-        citation there. A `docs/WINDOWS.md` citation (or any citation this
-        checker validates outside `CITATION_TABLE`) can still drift, pass
-        this preflight silently, and cost TESTING's own run of the checker
-        an attempt — the class this preflight exists to prevent, just not
-        for that one doc. TESTING's full run of
-        `tests/test_readme_claims.py` remains the backstop of record for
-        anything this preflight's narrower, table-only view cannot see.
+        citation there, so TESTING sees a doc this preflight cannot; but
+        `plan()` also flags any IN-WINDOW drift (`_locate_line_citation`
+        status `"drifted"`) as unfixed unless re-anchored, while TESTING's
+        own assertion only fails BEYOND `_CITATION_DRIFT_WINDOW` lines — so
+        this preflight is stricter within the table's three docs than
+        TESTING is. The two are incomparable, not one strictly inside the
+        other. A `docs/WINDOWS.md` citation (or any citation this checker
+        validates outside `CITATION_TABLE`) can still drift, pass this
+        preflight silently, and cost TESTING's own run of the checker an
+        attempt — the class this preflight exists to prevent, just not for
+        that one doc. TESTING's full run of `tests/test_readme_claims.py`
+        remains the backstop of record for anything this preflight's
+        narrower, table-only view cannot see.
 
         FAIL CLOSED throughout: `citation_drift.run_reanchor` reports
         `Status.UNKNOWN` — treated exactly like `Status.UNFIXABLE` below,
@@ -10260,8 +10268,10 @@ class Orchestrator:
         misattributed every OTHER caller's writes too, including this
         method's own, to a nudge that never ran). Defaults to the generic
         `"the corrective round"`, accurate for every existing caller
-        (repro-waived, declared-files, structural-budget); a caller that
-        wants a more specific name (none currently do) may override it.
+        (repro-waived, declared-files, structural-budget, and
+        `_citation_drift_preflight` — none of the four pass `component=` at
+        their call site); a caller that wants a more specific name (none
+        currently do) may override it.
 
         Returns None to let the caller re-run the gate, or the `TaskOutcome`
         that ends the attempt (a commit refusal, or a tamper fire on the
@@ -10671,8 +10681,13 @@ class Orchestrator:
         # seeing accumulate — whichever component it was, and whether the
         # write itself was a policy violation (the default clause) or a
         # legitimate write this caller cannot trust (its own `reason`).
+        # `is not None`, not `or`: an empty string is a legitimate (if odd)
+        # caller-supplied reason, not "no reason given" — `or` would silently
+        # swap it for the accusatory default. No caller passes "" today, but
+        # nothing should have to rely on that remaining true.
         self._advisory(
-            f"{component} {reason or 'wrote to the worktree despite being told not to'}"
+            f"{component} "
+            f"{reason if reason is not None else 'wrote to the worktree despite being told not to'}"
             f"; reverted {len(changed)} path(s): {', '.join(changed[:5])}"
             + (" …" if len(changed) > 5 else ""))
         return changed
