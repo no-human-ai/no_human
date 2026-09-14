@@ -791,13 +791,18 @@ classifies every `/api/*` endpoint the app calls and redacts
 request/response bodies and headers (replacing them with a `[redacted: not
 on replay body allowlist]` placeholder and stripping any query string off the
 request line) unless that exact endpoint is on a short, individually
-justified allowlist (`/api/version`, `/api/queue/health` — neither of which
-carries a path, name or operator text). `/api/worker/status` was considered
-for that allowlist and rejected: its response can include `watcher_error` /
+justified allowlist (`/api/version` only — it carries no path, name or
+operator text). Two endpoints were considered for that allowlist and
+rejected. `/api/worker/status`: its response can include `watcher_error` /
 `worker_error` / `health_error` fields built from a raw caught exception's
 own message, and an exception raised while touching a repo's filesystem path
-routinely contains that path — so it is redacted like every other endpoint
-that was not individually verified clean. An endpoint nobody has classified
+routinely contains that path. `/api/queue/health`: it looked like pure
+timestamps/counters at a glance, but its real response
+(`core/health.py`'s `QueueHealth.as_dict`) includes `paused_profile`, a
+user-chosen auth-profile name that survives unredacted whenever
+`paused_reason == "quota"` — a routine pause state, not an edge case, and
+this endpoint is polled every 10 seconds. Both are redacted like every other
+endpoint that was not individually verified clean. An endpoint nobody has classified
 yet is redacted, not captured — a source-level
 sweep (`web/src/replayScrub.test.mjs`) re-derives the full endpoint list from
 `web/src/api.js` on every test run and fails if a new one ships unclassified.
