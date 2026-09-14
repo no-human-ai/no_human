@@ -85,6 +85,11 @@ equal the 1-based line number of `def foo():` inside pkg/mod.py.
 Failure-injection knob, fixture-only: FIXTURE_CRASH=1 in the environment
 raises before any output is printed, simulating a crash with no VERDICT
 marker -- exactly the shape `citation_drift.classify` cannot name.
+
+A second knob, FIXTURE_CRASH_AFTER_PARTIAL_WRITE=1, writes garbage to
+docs/cite.md and THEN raises -- simulating a re-anchor run that left an
+unverified partial write on disk before dying, distinct from FIXTURE_CRASH
+(which never touches the worktree at all).
 """
 from __future__ import annotations
 
@@ -130,6 +135,10 @@ def main() -> int:
             print(f"FAIL: could not load tests/test_readme_claims.py: {exc}")
             print("VERDICT=FAIL")
             return 2
+
+    if os.environ.get("FIXTURE_CRASH_AFTER_PARTIAL_WRITE"):
+        DOC.write_text("GARBAGE-PARTIAL-WRITE -- never trust this\n")
+        raise RuntimeError("fixture-injected crash after a partial write")
 
     doc_text = DOC.read_text()
     actual = _foo_line()
@@ -344,6 +353,24 @@ def test_self_contradictory_ok_verdict_with_applied_and_fail_line_is_unknown():
     assert outcome.blocking is True
     assert outcome.docs == ("docs/cite.md",)
     assert outcome.failures == ("cite.md:mod.py:9",)
+
+
+def test_ok_verdict_with_nonzero_returncode_is_unknown_not_clean():
+    """A FOURTH self-contradictory shape, distinct from the three above: the
+    script prints `VERDICT=OK` with no `DRIFT:`/`FAIL:` lines at all, but the
+    process itself exited non-zero. `classify` checks `returncode` before
+    ever looking at `fails`/`applied`/`drifts`, so this shape must block on
+    the rc mismatch alone — trusting the happier half (the printed verdict)
+    over the exit code would report `Status.CLEAN` for a run the process
+    itself flagged as having failed some other way. Pins that check
+    specifically: a mutant that dropped or inverted the `returncode != 0`
+    guard would still pass every test above, since none of them pairs
+    `VERDICT=OK` with a non-zero `returncode`."""
+    outcome = citation_drift.classify(1, "VERDICT=OK\n", "")
+    assert outcome.status is citation_drift.Status.UNKNOWN
+    assert outcome.blocking is True
+    assert outcome.status is not citation_drift.Status.CLEAN
+    assert "rc=1" in outcome.detail
 
 
 def test_interpreter_prefers_target_repos_own_venv_over_sys_executable(
@@ -620,6 +647,31 @@ def test_subprocess_that_cannot_even_start_fails_closed(tmp_path, monkeypatch):
     assert outcome.detail
 
 
+def test_subprocess_timeout_fails_closed_and_is_distinguishable_from_clean(
+        tmp_path, monkeypatch):
+    """A THIRD, distinct external-process failure mode from the two above:
+    the process starts fine but never finishes — `run_reanchor`'s own
+    `except subprocess.TimeoutExpired` branch. Forced behaviourally, by
+    monkeypatching `reanchor_command` to a real subprocess that sleeps
+    longer than the timeout this call passes, never by reading or asserting
+    on `run_reanchor`'s source. Pins the exact outcome: a mutant that turned
+    this branch's `Status.UNKNOWN` into `Status.CLEAN` (a timeout silently
+    reported as "nothing to do") would pass every other test in this file,
+    since none of them ever force a real timeout."""
+    _write_fixture_layout(tmp_path, mod_text=_MOD_BASELINE, doc_text=_DOC_BASELINE)
+    monkeypatch.setattr(
+        citation_drift, "reanchor_command",
+        lambda repo_path, *, apply: [
+            sys.executable, "-c", "import time; time.sleep(30)",
+        ],
+    )
+    outcome = citation_drift.run_reanchor(tmp_path, timeout=0.2)
+    assert outcome.status is citation_drift.Status.UNKNOWN
+    assert outcome.blocking is True
+    assert outcome.status is not citation_drift.Status.CLEAN
+    assert "timed out" in outcome.detail
+
+
 # --------------------------------------------------------------------------- #
 # Layer 2 — integration: `orch._run_attempt` against a real bare-repo        #
 # checkout, driven by a scripted backend, mirroring                          #
@@ -669,8 +721,10 @@ async def _run_one_task_attempt(store, bare_repo, tmp_path, backend, *, kind="fe
 
 
 def _is_review_boundary(event: dict) -> bool:
-    kind = event.get("kind", "")
-    return kind == "review_advisory" or kind.startswith("review_")
+    # `"review_advisory".startswith("review_")` is already True, so the
+    # first disjunct was redundant — one prefix check names every review
+    # boundary kind this file cares about, `review_advisory` included.
+    return event.get("kind", "").startswith("review_")
 
 
 class _DriftsThenLeavesItBackend:
@@ -1262,6 +1316,76 @@ async def test_an_indeterminate_run_lets_the_corrective_round_land_a_doc_fix(
     assert "mod.py:5" in committed, (
         "the corrective round's own doc fix for an indeterminate run must "
         f"land at HEAD, not be discarded as out of scope: {events}"
+    )
+
+    attempts = await store.list_attempts(task.id)
+    assert len(attempts) == 1
+
+
+async def test_an_unknown_run_with_a_partial_write_is_reverted_before_the_round(
+        bare_repo, tmp_path, store, monkeypatch):
+    """Pins the `if outcome.status is citation_drift.Status.UNKNOWN and
+    changed:` revert branch in `_citation_drift_preflight`: an indeterminate
+    (crashed) run that ALSO left a partial write on disk must have that
+    write discarded before the bounded corrective round starts, never
+    carried forward as if it were a trustworthy fix. The
+    `FIXTURE_CRASH_AFTER_PARTIAL_WRITE` knob makes the fixture script write
+    garbage to `docs/cite.md` and then crash with no VERDICT marker at
+    all — a genuine `Status.UNKNOWN` with a non-empty worktree diff, a shape
+    no other test in this file produces (every existing `FIXTURE_CRASH` test
+    crashes before writing anything, so `changed` is always empty there).
+
+    `orch._repro_corrective_round` is replaced with a capturing stub
+    (a plain instance-attribute assignment shadowing the class method,
+    never touching `Orchestrator`'s own source) that reads
+    `docs/cite.md` the instant the round would begin and unsets the crash
+    knob so the preflight's own post-round `--check` re-verification runs
+    cleanly. If the revert branch were neutered — or the round were started
+    before the discard — the round would see the garbage string instead of
+    the original, clean doc content; a round backend was deliberately NOT
+    used to land its own overwrite here, since a backend write would mask
+    that distinction regardless of whether the revert actually ran.
+
+    Also pins the advisory's wording (send-back finding, review of head
+    `37fe3b46`): the citation drift preflight's revert is its OWN mechanical
+    re-anchor write being discarded as unverified, never a policy violation
+    — so the emitted `advisory` event must say so honestly (`reason=`) and
+    must NOT reuse `_revert_worktree_writes`'s generic default clause
+    ("wrote to the worktree despite being told not to"), which was factually
+    backwards here and would falsely read as a policy violation in
+    `nh doctor`."""
+    monkeypatch.setenv("FIXTURE_CRASH_AFTER_PARTIAL_WRITE", "1")
+    backend = _TouchesNothingCitedBackend()
+    orch, task, repo, events = await _run_one_task_attempt(store, bare_repo, tmp_path, backend)
+
+    captured = {}
+
+    async def _capturing_round(*args, **kwargs):
+        captured["doc_at_round_start"] = (repo.path / "docs" / "cite.md").read_text()
+        monkeypatch.delenv("FIXTURE_CRASH_AFTER_PARTIAL_WRITE", raising=False)
+        return None
+
+    orch._repro_corrective_round = _capturing_round
+
+    outcome = await orch._run_attempt(task, repo, 1, "main")
+
+    assert outcome.status is TaskStatus.AWAITING_APPROVAL, outcome.detail
+    assert "doc_at_round_start" in captured, "the corrective round was never entered"
+    assert captured["doc_at_round_start"] == _DOC_BASELINE, (
+        "the preflight's partial garbage write must be reverted BEFORE the "
+        f"round starts, not carried into it: {captured['doc_at_round_start']!r}"
+    )
+
+    kinds = [e["kind"] for e in events]
+    assert "citation_drift" in kinds, events
+
+    advisories = [e["text"] for e in events if e["kind"] == "advisory"]
+    assert any("left an unverified partial write" in text for text in advisories), (
+        f"expected the honest, non-accusatory advisory wording: {advisories}"
+    )
+    assert not any("despite being told not to" in text for text in advisories), (
+        "the citation drift preflight's own mechanical write is not a "
+        f"policy violation and must not be reported as one: {advisories}"
     )
 
     attempts = await store.list_attempts(task.id)

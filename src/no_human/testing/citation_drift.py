@@ -241,10 +241,15 @@ def classify(returncode: int, stdout: str, stderr: str) -> CitationOutcome:
         if fails:
             # Self-contradictory shape: the script claims `VERDICT=OK` (rc 0
             # already checked above) yet also printed `FAIL:` lines. In the
-            # real script's own `main()`, `VERDICT=OK` is only ever printed
-            # when BOTH `drifts` and the plan-level `unfixable` list are
-            # empty — a `FAIL:` line can only come from that `unfixable`
-            # list, so this contract never lets "OK" and "FAIL:" coexist.
+            # real script's own `main()`, `VERDICT=OK` is printed whenever
+            # the plan-level `unfixable` list is empty — REGARDLESS of
+            # whether `drifts` is empty: a non-empty `drifts` that was fully
+            # applied is exactly the REANCHORED shape the branch below
+            # handles, and it too prints `VERDICT=OK`. A `FAIL:` line, in
+            # contrast, can ONLY come from that same `unfixable` list
+            # (`main()` prints one per entry, then gates the verdict on
+            # whether the list is empty), so "OK" and "FAIL:" never
+            # legitimately coexist even though "OK" and `DRIFT:` can.
             # Trusting the "OK" half here would silently drop the finding —
             # CLEAN if there were also no drifts/applied marker, or
             # REANCHORED with an empty `failures` tuple if there were —

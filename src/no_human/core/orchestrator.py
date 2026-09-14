@@ -9692,13 +9692,25 @@ class Orchestrator:
         post-filter by "which attempt caused this." Diff-scoping here would
         mean re-deriving that attribution outside the script's own contract —
         exactly the kind of re-implementation this preflight otherwise
-        refuses to do (see the previous paragraph). And it changes nothing
-        about the BAR an attempt is held to: TESTING's own run of
-        `tests/test_readme_claims.py` already checks the same whole repo at
-        the same scope as this preflight's backstop — this method only
-        decides whether that drift gets fixed (or bought one bounded round to
-        fix) BEFORE it turns into a whole spent attempt, never how much of
-        the repo counts.
+        refuses to do (see the previous paragraph).
+
+        Honest limit, stated rather than papered over: this preflight's
+        notion of "a citation" is exactly `mod.CITATION_TABLE`
+        (`scripts/reanchor_citations.py`'s own `plan()` walks nothing else),
+        which covers only `_CITATION_DOC_PATHS`
+        (`docs/security.md`, `docs/eval.md`, `docs/KNOWN_ISSUES.md`,
+        `tests/test_readme_claims.py`). TESTING's run of that same checker
+        module is STRICTLY WIDER: it also runs
+        `test_windows_md_code_line_citations_resolve`, which reads
+        `docs/WINDOWS.md` directly and — by that test's own docstring — a
+        `CITATION_TABLE` row cannot catch a drifted bare `file.py:LINE`
+        citation there. A `docs/WINDOWS.md` citation (or any citation this
+        checker validates outside `CITATION_TABLE`) can still drift, pass
+        this preflight silently, and cost TESTING's own run of the checker
+        an attempt — the class this preflight exists to prevent, just not
+        for that one doc. TESTING's full run of
+        `tests/test_readme_claims.py` remains the backstop of record for
+        anything this preflight's narrower, table-only view cannot see.
 
         FAIL CLOSED throughout: `citation_drift.run_reanchor` reports
         `Status.UNKNOWN` — treated exactly like `Status.UNFIXABLE` below,
@@ -9773,7 +9785,9 @@ class Orchestrator:
             # corrective round below starts from the clean tree the attempt
             # already committed, not a half-rewritten doc.
             self._revert_worktree_writes(
-                repo, before, component="the citation drift preflight")
+                repo, before, component="the citation drift preflight",
+                reason="left an unverified partial write on disk after an "
+                       "indeterminate re-anchor run")
         elif changed:
             # REANCHORED, or an UNFIXABLE run whose fixable subset still got
             # written. The script's `_apply_all` batch (the citations it can
@@ -9831,7 +9845,9 @@ class Orchestrator:
                 # below falls through to the same bounded round rather than
                 # reporting a fix that never landed on the branch.
                 self._revert_worktree_writes(
-                    repo, before, component="the citation drift preflight")
+                    repo, before, component="the citation drift preflight",
+                    reason="produced a mechanical re-anchor fix that could "
+                           "not be committed")
                 self.emit(
                     "citation_drift",
                     f"citation drift auto-fix could not be committed: {exc}",
@@ -10507,6 +10523,7 @@ class Orchestrator:
 
     def _revert_worktree_writes(
         self, repo: GitRepo, before: dict[str, str], *, component: str,
+        reason: str | None = None,
     ) -> list[str]:
         """Undo whatever *component* wrote, and SAY so. Returns the paths.
 
@@ -10525,6 +10542,20 @@ class Orchestrator:
         default: every caller now names itself, and a caller that forgets
         gets a loud `TypeError` at the call site, not a wrong component
         silently credited (or blamed) for writes it did not make.
+
+        *reason*, when given, REPLACES the success-path advisory's default
+        clause "wrote to the worktree despite being told not to" with the
+        caller's own account of why this write is being undone. The default
+        clause is accurate for `_reformat_nudge`/`_report_nudge`/the repro
+        corrective round's out-of-scope discard — each of those genuinely
+        WAS told not to write, or to stay in scope, and didn't. It is
+        factually backwards for the citation drift preflight, whose entire
+        job on the REANCHORED/UNFIXABLE-with-a-fixable-subset path is to
+        write via `--apply` — reverting there is never a policy violation,
+        it is discarding an indeterminate run's unverified partial write or
+        a fix that could not be committed. Send-back finding (review of head
+        `37fe3b46`): reusing the "despite being told not to" wording for
+        that component made a factually wrong claim reach `nh doctor`.
 
         Scoped to exactly the paths whose status changed since *before* — never
         a whole-tree `reset --hard`, `checkout -- .` or `clean -fd`, whose blast
@@ -10569,7 +10600,7 @@ class Orchestrator:
         """
         try:
             return self._revert_worktree_writes_unguarded(
-                repo, before, component=component)
+                repo, before, component=component, reason=reason)
         except Exception as exc:  # noqa: BLE001 — see TOTAL, above
             self._advisory(
                 f"could not restore the worktree after {component} "
@@ -10595,6 +10626,7 @@ class Orchestrator:
 
     def _revert_worktree_writes_unguarded(
         self, repo: GitRepo, before: dict[str, str], *, component: str,
+        reason: str | None = None,
     ) -> list[str]:
         """*component* is REQUIRED, not defaulted: this is the method that
         actually emits the success-path advisory below, so there is no safe
@@ -10604,6 +10636,11 @@ class Orchestrator:
         forgets to pass its own name here should get a `TypeError` at the
         call site, not a wrong component silently credited (or blamed) for
         writes it did not make.
+
+        *reason* overrides the advisory's default "wrote to the worktree
+        despite being told not to" clause — see `_revert_worktree_writes`'s
+        docstring for why the default is wrong for the citation drift
+        preflight specifically.
         """
         after = self._worktree_state(repo)
         changed = sorted(p for p, code in after.items() if before.get(p) != code)
@@ -10630,11 +10667,13 @@ class Orchestrator:
             # index and the worktree together.
             repo._run("checkout", "HEAD", "--", *at_head, check=False)
         # An advisory, not a log line: `nh doctor` counts these, and a
-        # component that writes files it was told not to is worth someone
-        # seeing accumulate — whichever component it was.
+        # component whose worktree write is being undone is worth someone
+        # seeing accumulate — whichever component it was, and whether the
+        # write itself was a policy violation (the default clause) or a
+        # legitimate write this caller cannot trust (its own `reason`).
         self._advisory(
-            f"{component} wrote to the worktree despite being told not "
-            f"to; reverted {len(changed)} path(s): {', '.join(changed[:5])}"
+            f"{component} {reason or 'wrote to the worktree despite being told not to'}"
+            f"; reverted {len(changed)} path(s): {', '.join(changed[:5])}"
             + (" …" if len(changed) > 5 else ""))
         return changed
 

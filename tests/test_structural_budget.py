@@ -389,6 +389,23 @@ FROZEN_FUNCTION_LINES = {
     "core/orchestrator.py:Orchestrator._generate_plan": 322,
     "core/orchestrator.py:Orchestrator._scan_leaf_blocks": 319,
     "core/orchestrator.py:Orchestrator._escalate_reviewer_unavailable": 317,
+    # First frozen at 314 (> 300): `_citation_drift_preflight` is new to
+    # this task (the whole "citation drift gets a preflight round" feature),
+    # never previously in this table. Its length is not padding — two
+    # send-back findings from independent review of head 37fe3b46 both
+    # landed inside this one method: (1) the docstring's closing paragraph
+    # was rewritten from a one-sentence "changes nothing about the BAR"
+    # claim into an explicit, honest disclosure that this preflight's
+    # notion of "a citation" is narrower than TESTING's own checker run
+    # (`docs/WINDOWS.md` citations are outside `CITATION_TABLE` and so
+    # outside this preflight's view — a correctness claim that was simply
+    # false before the fix), and (2) both `_revert_worktree_writes` call
+    # sites in this method gained a `reason=` argument so the advisory they
+    # emit stops blaming this preflight for "writing despite being told not
+    # to" when writing mechanically is its entire job. Reviewed on its
+    # merits; frozen here as its landing baseline, measured on this tree
+    # with the scanner below.
+    "core/orchestrator.py:Orchestrator._citation_drift_preflight": 314,
     # Grew to 314 (> 300) when the done_no_evidence repair shape landed
     # (task bf413cc6): two new refusal guards + the DONE branch. The growth
     # was reviewed on its merits; frozen here as its landing baseline.
@@ -1411,7 +1428,27 @@ FROZEN_FILE_LINES = {
     # via `self._emit_manifest_repairs` in a `finally`. Re-measured on this
     # tree with the scanner's own metric (`tests/test_structural_budget.py`'s
     # `scan_tree`, not carried-over arithmetic).
-    "core/orchestrator.py": 24674,
+    # 24606 -> 24674 (+68): no behaviour change in this file — main was
+    # merged back in (three unrelated main-branch features landed on top of
+    # this task's own last content-bearing commit) and the merge conflicted
+    # in this file's own frozen table, resolved by re-measuring THIS tree
+    # (post-merge, `git merge-tree`'s actual write-tree result) with the
+    # scanner's own metric rather than carrying either parent's number
+    # forward by hand.
+    # 24674 -> 24713 (+39): independent review of head 37fe3b46 (DO-NOT-LAND,
+    # four numbered blockers). Two of them landed in this file: the
+    # `_citation_drift_preflight` docstring's closing paragraph was rewritten
+    # from a one-sentence "changes nothing about the BAR" claim into an
+    # honest disclosure that this preflight's notion of "a citation" is
+    # narrower than TESTING's own checker run (+18 net), and
+    # `_revert_worktree_writes`/`_revert_worktree_writes_unguarded` gained an
+    # optional `reason=` parameter (plus docstring) so the citation-drift
+    # preflight's two revert call sites stop blaming themselves for "writing
+    # despite being told not to" when writing mechanically re-anchored
+    # content IS the job (+21 net, including the two call sites' own
+    # `reason=` arguments). Re-measured on this tree with the scanner's own
+    # metric, not carried-over arithmetic.
+    "core/orchestrator.py": 24713,
 
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
