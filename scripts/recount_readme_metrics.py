@@ -66,7 +66,13 @@ DEFINITIONS (the whole reason a loose text match gets this wrong):
     never silently dropped.
   - `attempts_reviewed`: in scope and in window, `kind != 'code_review'`,
     `review_passed IS NOT NULL` -- the attempt reached a review verdict at
-    all. This is the README's "of 1,709" denominator.
+    all. This is the figure recorded as `attempts_reviewed` in the pinned
+    snapshot. It does NOT reconcile to the README's printed "of 1,709" on a
+    live database: the snapshot is a dated count frozen at the
+    metrics-2026-09 release's own cut instant, and this script's whole
+    purpose is regenerating a NEW snapshot going forward, never reproducing
+    the old one after the fact -- do not treat a mismatch against 1,709 as a
+    bug in either number.
   - `reviewer_rejections`: the above, plus `review_passed = 0`, plus
     `failure_reason` does NOT start with `"review failed: reviewer"` or
     `"review failed: Reviewer"` (both cases are reviewer INFRASTRUCTURE
