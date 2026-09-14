@@ -1,80 +1,61 @@
 # How I verified this — full log
 
-_Harness-captured record for task `4135165f`, commit `c8f77d57003edf0e8b35253e9d4637c55aa42344` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `4135165f`, commit `93688d1b4decac6a50300521de908765cc8fc47e` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ## How I verified this
-16 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
+14 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
 
-**Not everything recorded is shown:** the 12 most recent of those listed are shown with their captured output, and the other 4 commands are shown as a command line only.
+**Not everything recorded is shown:** the 12 most recent of those listed are shown with their captured output, and the other 2 commands are shown as a command line only.
 
 ### test
-- `cd /Users/eyalgolan/.<redacted>/worktrees/4135165ffb634024be34bfe55f5b9427.52752.17822ea2 uv run pytest -q -n 4 tests/test_readme_claims.py tests/test_reanchor_citations.py tests/test_structural_budget.py tests/test_structural_budget_preflight.py 2>&1 | tail -60`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/4135165ffb634024be34bfe55f5b9427.52752.54ec4231 grep -n "_have_remote_commit" src/<redacted>/vcs/git.py | head -5 uv run pytest tests/test_readme_claims.py -q -k "security.md" 2>&1 | tail -40`
   _output not shown - see the note above._
-- `cd /Users/eyalgolan/.<redacted>/worktrees/4135165ffb634024be34bfe55f5b9427.52752.17822ea2 uv run pytest -q -n 4 tests/test_landed_claim_guard.py tests/test_landed_claim_early_refusal.py 2>&1 | tail -80`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/4135165ffb634024be34bfe55f5b9427.52752.54ec4231 uv run pytest tests/test_readme_claims.py tests/test_reanchor_citations.py -q 2>&1 | tail -20`
   _output not shown - see the note above._
-- `cd /Users/eyalgolan/.<redacted>/worktrees/4135165ffb634024be34bfe55f5b9427.52752.17822ea2 uv run pytest -q -n 4 -k "landed or already_satisfied or route_unjudged or run_attempt or claim or type_hook or verification_receipts" 2>&1 | tail -40`
-  _output not shown - see the note above._
-- `cd /Users/eyalgolan/.<redacted>/worktrees/4135165ffb634024be34bfe55f5b9427.52752.17822ea2 uv run pytest -q -n 4 tests/test_vcs.py tests/test_git_commit_paths.py 2>&1 | tail -20`
-  _output not shown - see the note above._
-- `cd /Users/eyalgolan/.<redacted>/worktrees/4135165ffb634024be34bfe55f5b9427.52752.17822ea2 uv run pytest -q tests/test_landed_claim_early_refusal.py::test_an_unreachable_remote_is_not_a_refusal "tests/test_landed_claim_guard.py::test_non_claim_shapes_that_still_fire_the_actionability_gate_never_lie" -v 2>&1 | tail -40`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/4135165ffb634024be34bfe55f5b9427.52752.54ec4231 uv run pytest tests/test_landed_claim_early_refusal.py tests/test_landed_claim_guard.py tests/test_structural_budget.py tests/test_vcs.py tests/test_git_commit_paths.py -q 2>&1 | tail -60`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-============================= test session starts ==============================
-platform darwin -- Python 3.12.13, pytest-9.1.1, pluggy-1.6.0
-<redacted> isolated HOME: /var/folders/1r/3r0rt1jd4j1456rsg_fh4d380000gn/T/nh-test-home-wqmtmi9b
-rootdir: /Users/eyalgolan/.<redacted>/worktrees/4135165ffb634024be34bfe55f5b9427.52752.17822ea2
-configfile: pyproject.toml
-plugins: anyio-4.14.0, no-human-0.2.2, cov-7.1.0, xdist-3.8.0, asyncio-1.4.0
-asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
-collected 8 items
-
-tests/test_landed_claim_early_refusal.py .                               [ 12%]
-tests/test_landed_claim_guard.py .......                                 [100%]
-
-============================== 8 passed in 1.09s ===============================
+........................................................................ [ 35%]
+........................................................................ [ 71%]
+..........................................................               [100%]
+202 passed in 53.79s
 ```
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/4135165ffb634024be34bfe55f5b9427.52752.17822ea2 cp src/<redacted>/core/orchestrator.py /tmp/orchestrator.py.bak cp src/<redacted>/agent/landed_claim_guard.py /tmp/ [... 349 of 692 characters omitted from the middle ...] w, 1) open(p, "w").write(s) EOF uv run pytest -q tests/test_landed_claim_early_refusal.py tests/test_landed_claim_guard.py 2>&1 | tail -20`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/4135165ffb634024be34bfe55f5b9427.52752.54ec4231 uv run pytest tests/test_structural_budget.py -q 2>&1 | tail -20`
 
 ```
-"that could clear up on its own moments later"
-        )
-E       AssertionError: an unreachable remote must never be reported by the guard as a refusal — that would assert a definite outcome about a condition that could clear up on its own moments later
-E       assert {'hookSpecifi...his branch.'}} == {}
-E         
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+..................                                                       [100%]
+18 passed in 1.89s
+```
+
+- `cd /Users/eyalgolan/.<redacted>/worktrees/4135165ffb634024be34bfe55f5b9427.52752.54ec4231 cp src/<redacted>/core/orchestrator.py /tmp/orchestrator.py.bak cp src/<redacted>/agent/landed_claim_guard.py /tmp/ [... 487 of 830 characters omitted from the middle ...] ests/test_landed_claim_guard.py -q 2>&1 | tail -15 cp /tmp/orchestrator.py.bak src/<redacted>/core/orchestrator.py echo "--- reverted ---"`
+
+```
+--- Mutant A applied, running tests ---
 E         Left contains 1 more item:
-E         {'hookSpecificOutput': {'additionalContext': '[SUPERVISOR:64a3aef7] '
+E         {'hookSpecificOutput': {'additionalContext': '[SUPERVISOR:59de440f] '
 E                                                      'LANDED-CLAIM REFUSED: you said '
 E                                                      'the work already exists ("This '
-E                                                      'is 
-[... 226 of 1,365 characters omitted from the middle ...]
-refusal.py:623: AssertionError
+E                                                      'is already implemented — the '
+E                                                      'work already exists at '...
+E         
+E         ...Full output truncated (24 lines hidden), use '-vv' to show
+
+tests/test_landed_claim_early_refusal.py:623: AssertionError
 =========================== short test summary info ============================
 FAILED tests/test_landed_claim_early_refusal.py::test_an_unresolvable_ship_ref_is_not_a_refusal
 FAILED tests/test_landed_claim_early_refusal.py::test_already_satisfied_subject_reports_indeterminate_for_transient_conditions
 FAILED tests/test_landed_claim_early_refusal.py::test_an_unreachable_remote_is_not_a_refusal
-3 failed, 56 passed in 8.11s
-```  
-  _excerpt - 1,365 characters of output in total_
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/4135165ffb634024be34bfe55f5b9427.52752.17822ea2 cp /tmp/orchestrator.py.bak src/<redacted>/core/orchestrator.py git diff --stat src/<redacted>/core/orchestrator.py uv run pytest -q tests/test_landed_claim_early_refusal.py tests/test_landed_claim_guard.py 2>&1 | tail -5`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-...........................................................              [100%]
-59 passed in 26.26s
+3 failed, 56 passed in 7.60s
+--- reverted ---
 ```
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/4135165ffb634024be34bfe55f5b9427.52752.17822ea2 grep -n "not head or head in self._seen" src/<redacted>/agent/landed_claim_guard.py python3 - <<'EOF' p = "src/<red [... 189 of 532 characters omitted from the middle ...] w, 1) open(p, "w").write(s) EOF uv run pytest -q tests/test_landed_claim_early_refusal.py tests/test_landed_claim_guard.py 2>&1 | tail -20`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/4135165ffb634024be34bfe55f5b9427.52752.54ec4231 python3 - <<'EOF' import pathlib p = pathlib.Path('src/<redacted>/agent/landed_claim_guard.py'); s = p.read_text()  [... 243 of 586 characters omitted from the middle ...] ded_claim_guard.py -q 2>&1 | tail -15 cp /tmp/landed_claim_guard.py.bak src/<redacted>/agent/landed_claim_guard.py echo "--- reverted ---"`
 
 ```
-486:        if not head or head in self._seen:
-        distinct case from `test_note_text_never_raises`'s raising `head_sha`)
-        through to a probe call and a bogus refusal."""
-        probe_calls: list[str] = []
-    
-        async def probe() -> tuple[bool, str, str]:
+--- Mutant B applied ---
             probe_calls.append("probed")
             return (True, "deadbeef", "deadbeef is not an ancestor of main")
     
@@ -84,121 +65,179 @@ warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not mat
             "an empty head_sha must never leave a pending injection latched")
 E       AssertionError: an empty head_sha must never leave a pending injection latched
 E       assert '' is None
-E        +  where '' = <<redacted>.agent.landed_claim_guard.LandedClaimGuard object at 0x109de66f0>._pending_head
+E        +  where '' = <<redacted>.agent.landed_claim_guard.LandedClaimGuard object at 0x1094eb950>._pending_head
 
 tests/test_landed_claim_guard.py:634: AssertionError
 =========================== short test summary info ============================
 FAILED tests/test_landed_claim_guard.py::test_an_empty_head_sha_never_reaches_the_probe
-1 failed, 58 passed in 6.39s
+1 failed, 58 passed in 8.45s
+--- reverted ---
 ```
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/4135165ffb634024be34bfe55f5b9427.52752.17822ea2 cp /tmp/landed_claim_guard.py.bak src/<redacted>/agent/landed_claim_guard.py git diff --stat uv run pytest -q tests/test_landed_claim_early_refusal.py tests/test_landed_claim_guard.py 2>&1 | tail -5`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/4135165ffb634024be34bfe55f5b9427.52752.54ec4231 python3 - <<'EOF' import pathlib p = pathlib.Path('src/<redacted>/core/orchestrator.py'); s = p.read_text() old = " [... 498 of 841 characters omitted from the middle ...] ests/test_landed_claim_guard.py -q 2>&1 | tail -20 cp /tmp/orchestrator.py.bak src/<redacted>/core/orchestrator.py echo "--- reverted ---"`
 
 ```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-...........................................................              [100%]
-59 passed in 8.21s
-```
+--- Mutant C applied ---
+        # provenance, so `_already_satisfied_eligible`'s OWN (unrelated)
+        # `commits_ahead` exception handling resolves to eligible — so the probe
+        # actually reaches the new outer block's `commits_ahead` call.
+        assert orch._already_satisfied_eligible(task, repo, "main")[0] is True
+    
+        result = await guard._probe()
+>       assert result == (False, "", ""), (
+            "an unreadable `commits_ahead` inside the new outer predicate must "
+            "be a cannot-tell (silent) result, not a raised exception")
+E       AssertionError: an unreadable `commits_ahead` inside the new outer predicate must be a cannot-tell (silent
+[... 219 of 1,358 characters omitted from the middle ...]
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/4135165ffb634024be34bfe55f5b9427.52752.17822ea2 uv run pytest tests/test_readme_claims.py -k "test_doc_citations_resolve_to_the_code_they_describe and merge_stack_run and 3181" --collect-only -q 2>&1 | tail -10`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-tests/test_readme_claims.py::test_doc_citations_resolve_to_the_code_they_describe[security.md:cli/commands.py:merge_stack_run:3181]
-
-1/147 tests collected (146 deselected) in 0.05s
-```
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/4135165ffb634024be34bfe55f5b9427.52752.17822ea2 NODE='tests/test_readme_claims.py::test_doc_citations_resolve_to_the_code_they_describe[security.md:cli/commands.py [... 340 of 683 characters omitted from the middle ...] 1 | tail -15 echo "=== restore ===" cp /tmp/commands.py.head src/<redacted>/cli/commands.py git diff --stat src/<redacted>/cli/commands.py`
-
-```
-=== on HEAD (post-merge) ===
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-.                                                                        [100%]
-1 passed in 0.52s
-=== simulate base: swap in 262e128c's commands.py temporarily ===
-            f"out. Run `uv run python scripts/reanchor_citations.py --apply` to "
-            f"re-anchor it; the symbol resolves, so the rewrite is exact"
-        )
-        # The same verdict a bare row gets: inside the window it is drift and warns,
-        # beyond it the number is simply w
-[... 555 of 1,694 characters omitted from the middle ...]
-s.py, not 3181 — 69 line(s) out. Run `uv run python scripts/reanchor_citations.py --apply` to re-anchor it; the symbol resolves, so the rewrite is exact
-
-tests/test_readme_claims.py:2322: AssertionError
+tests/test_landed_claim_early_refusal.py:439: AssertionError
 =========================== short test summary info ============================
-FAILED tests/test_readme_claims.py::test_doc_citations_resolve_to_the_code_they_describe[security.md:cli/commands.py:merge_stack_run:3181]
-1 failed in 0.60s
-=== restore ===
+FAILED tests/test_landed_claim_early_refusal.py::test_a_branch_ahead_of_its_base_is_not_refused_because_delivery_never_reaches_the_claim_gate
+FAILED tests/test_landed_claim_early_refusal.py::test_the_new_outer_predicate_stays_silent_on_its_own_commits_ahead_exception
+2 failed, 57 passed in 7.26s
+--- reverted ---
 ```  
-  _excerpt - 1,688 characters of output in total_
+  _excerpt - 1,358 characters of output in total_
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/4135165ffb634024be34bfe55f5b9427.52752.17822ea2 git status --short uv run pytest -q "tests/test_readme_claims.py::test_doc_citations_resolve_to_the_code_they_describe[security.md:cli/commands.py:merge_stack_run:3181]" 2>&1 | tail -5 ls .<redacted>/ 2>/dev/null`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-.                                                                        [100%]
-1 passed in 0.56s
-PLAN.md
-repro_tests.json
-scratch
-```
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/4135165ffb634024be34bfe55f5b9427.52752.17822ea2 uv run pytest -q \   "tests/test_landed_claim_guard.py::test_a_second_clause_that_also_matches_claim_does_not_donat [... 316 of 659 characters omitted from the middle ...] tests/test_landed_claim_early_refusal.py::test_branched_from_own_partial_is_wired_from_the_real_call_site_not_assumed" \   2>&1 | tail -10`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/4135165ffb634024be34bfe55f5b9427.52752.54ec4231 uv run pytest tests/test_landed_claim_early_refusal.py tests/test_landed_claim_guard.py tests/test_verification_rec [... 85 of 428 characters omitted from the middle ...] s.py tests/test_readme_claims.py tests/test_reanchor_citations.py tests/test_type_hook.py tests/test_landed_override.py -q 2>&1 | tail -30`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-.....                                                                    [100%]
-5 passed in 2.55s
-```
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/4135165ffb634024be34bfe55f5b9427.52752.17822ea2 git status --short echo "--- determinate_relation derivation ---" grep -n "determinate_relation\|TRANSIENT_RELATION [... 102 of 445 characters omitted from the middle ...] uv run pytest -q "tests/test_landed_claim_guard.py::test_non_claim_shapes_that_still_fire_the_actionability_gate_never_lie" 2>&1 | tail -5`
-
-```
---- determinate_relation derivation ---
-src/<redacted>/core/orchestrator.py:11876:        reported a value in its own `TRANSIENT_RELATIONS` set (currently
-src/<redacted>/core/orchestrator.py:11882:        derived from `GitRepo.TRANSIENT_RELATIONS` rather than hand-
-src/<redacted>/core/orchestrator.py:12051:            # `GitRepo.TRANSIENT_RELATIONS` — the callee's own declared set
-src/<redacted>/core/orchestrator.py:12055:            # second time; see the send-back that added `TRANSIENT_RELATIONS`
-src/<redacted>/core/orchestrator.py:12060:            determinate_relation = relation not in GitRepo.TRANSIENT_RELATIONS
-src/<redacted>/core/orchestrator.py:12068:                
-[... 451 of 1,590 characters omitted from the middle ...]
-ATIONS` names exactly the subset of
-src/<redacted>/vcs/git.py:1517:            # fact about the branch (see `TRANSIENT_RELATIONS`).
---- non-claim-shapes test ---
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-.......                                                                  [100%]
-7 passed in 0.37s
+........................................................................ [  7%]
+........................................................................ [ 15%]
+........................................................................ [ 23%]
+........................................................................ [ 31%]
+........................................................................ [ 39%]
+........................................................................ [ 47%]
+......
+[... 141 of 1,280 characters omitted from the middle ...]
+..... [ 63%]
+.................................................s.s.s.s.s.s.s.s.s.s.... [ 71%]
+...........................................s..........................s. [ 79%]
+........................................................................ [ 87%]
+........................................................................ [ 95%]
+.........................................                                [100%]
+893 passed, 12 skipped in 110.34s (0:01:50)
 ```  
-  _excerpt - 1,566 characters of output in total_
+  _excerpt - 1,278 characters of output in total_
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/4135165ffb634024be34bfe55f5b9427.52752.17822ea2 echo "=== full change-scoped suite ===" uv run pytest -q tests/test_landed_claim_early_refusal.py tests/test_landed [... 549 of 892 characters omitted from the middle ...] pt cc:", fn_cc.get("core/orchestrator.py::_run_attempt")) print("orchestrator.py file lines:", file_lines.get("core/orchestrator.py")) EOF`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/4135165ffb634024be34bfe55f5b9427.52752.54ec4231 uv run pytest -q -n 4 tests/test_already_satisfied_subject_tree.py tests/test_already_satisfied_landing.py tests/test_already_satisfied_wip_correction.py tests/test_wip_checkpoint_routed_to_review.py tests/test_already_satisfied.py tests/test_already_satisfied_evidence.py 2>&1 | tail -40`
 
 ```
-=== full change-scoped suite ===
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-........................................................................ [ 20%]
-...............s.s.s.s.s.s.s.s.s.s...................................... [ 41%]
-.........s..........................s................................... [ 61%]
-........................................................................ [ 82%]
-.............................................................            [100%]
-337 passed, 12 skipped in 55.77s
-=== manifest check ===
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-OK: 1611 file(s) match RELEASE_MANIFEST.txt
-=== structural budget scanner spot-check ===
-run_attempt lines: None
-run_attempt cc: None
-orchestrator.py file lines: 24296
+bringing up nodes...
+bringing up nodes...
+
+........................................................................ [ 97%]
+..                                                                       [100%]
+74 passed in 29.08s
 ```
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/4135165ffb634024be34bfe55f5b9427.52752.17822ea2 uv run pytest -q tests/test_structural_budget.py -v 2>&1 | grep -i "run_attempt\|orchestrator" | head -20`
-  _nothing was captured on stdout or stderr for this command._
+- `cd /Users/eyalgolan/.<redacted>/worktrees/4135165ffb634024be34bfe55f5b9427.52752.54ec4231 cp src/<redacted>/core/orchestrator.py /tmp/orch.bak python3 - <<'EOF' import pathlib p = pathlib.Path("src/<redact [... 370 of 713 characters omitted from the middle ...] _not_a_refusal 2>&1 | tail -15 cp /tmp/orch.bak src/<redacted>/core/orchestrator.py git diff --stat -- src/<redacted>/core/orchestrator.py`
+
+```
+E       assert {'hookSpecifi...his branch.'}} == {}
+E         
+E         Left contains 1 more item:
+E         {'hookSpecificOutput': {'additionalContext': '[SUPERVISOR:9c059857] '
+E                                                      'LANDED-CLAIM REFUSED: you said '
+E                                                      'the work already exists ("This '
+E                                                      'is already implemented — the '
+E                                                      'work already exists at '...
+E         
+E         ...Full output truncated (22 lines hidden), use '-vv' to show
+
+tests/test_landed_claim_early_refusal.py:495: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_landed_claim_early_refusal.py::test_an_unresolvable_ship_ref_is_not_a_refusal
+1 failed in 1.85s
+```
+
+- `cd /Users/eyalgolan/.<redacted>/worktrees/4135165ffb634024be34bfe55f5b9427.52752.54ec4231 python3 - <<'EOF' import pathlib p = pathlib.Path("src/<redacted>/agent/landed_claim_guard.py") s = p.read_text() o [... 235 of 578 characters omitted from the middle ...] e 2>&1 | tail -15 cp /tmp/lcg.bak src/<redacted>/agent/landed_claim_guard.py git diff --stat -- src/<redacted>/agent/landed_claim_guard.py`
+
+```
+probe_calls.append("probed")
+            return (True, "deadbeef", "deadbeef is not an ancestor of main")
+    
+        guard = LandedClaimGuard(probe=probe, head_sha=lambda: "")
+        guard.note_text("this is already implemented in abc1234def")
+>       assert guard._pending_head is None, (
+            "an empty head_sha must never leave a pending injection latched")
+E       AssertionError: an empty head_sha must never leave a pending injection latched
+E       assert '' is None
+E        +  where '' = <<redacted>.agent.landed_claim_guard.LandedClaimGuard object at 0x10b718f50>._pending_head
+
+tests/test_landed_claim_guard.py:634: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_landed_claim_guard.py::test_an_empty_head_sha_never_reaches_the_probe
+1 failed in 1.40s
+```
+
+- `cd /Users/eyalgolan/.<redacted>/worktrees/4135165ffb634024be34bfe55f5b9427.52752.54ec4231 python3 - <<'EOF' import pathlib p = pathlib.Path("src/<redacted>/core/orchestrator.py") s = p.read_text() old = "" [... 528 of 871 characters omitted from the middle ...] he_claim_gate 2>&1 | tail -15 cp /tmp/orch2.bak src/<redacted>/core/orchestrator.py git diff --stat -- src/<redacted>/core/orchestrator.py`
+
+```
+E       assert {'hookSpecifi...his branch.'}} == {}
+E         
+E         Left contains 1 more item:
+E         {'hookSpecificOutput': {'additionalContext': '[SUPERVISOR:5305ee77] '
+E                                                      'LANDED-CLAIM REFUSED: you said '
+E                                                      'the work already exists ("This '
+E                                                      'is already implemented — the '
+E                                                      'work already exists at '...
+E         
+E         ...Full output truncated (23 lines hidden), use '-vv' to show
+
+tests/test_landed_claim_early_refusal.py:319: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_landed_claim_early_refusal.py::test_a_branch_ahead_of_its_base_is_not_refused_because_delivery_never_reaches_the_claim_gate
+1 failed in 2.18s
+```
+
+- `cd /Users/eyalgolan/.<redacted>/worktrees/4135165ffb634024be34bfe55f5b9427.52752.54ec4231 cp src/<redacted>/vcs/git.py /tmp/git.bak python3 - <<'EOF' import pathlib p = pathlib.Path("src/<redacted>/vcs/g [... 722 of 1,061 characters omitted from the middle ...] erminate_for_transient_conditions 2>&1 | tail -25 cp /tmp/git.bak src/<redacted>/vcs/git.py git diff --stat -- src/<redacted>/vcs/git.py`
+
+```
+# it via the lagging-local-pointer path.
+        _git(diverged_repo, "branch", attempt_branch, head)
+        bogus_remote = str(tmp_path / "no-such-remote.git")
+        _git(diverged_repo, "remote", "set-url", "origin", bogus_remote)
+    
+        orch = _orch(store, tmp_path)
+        task = Task.new("existing", repo_path=<redacted> kind="feature")
+        await store.create_task(task)
+    
+        shippable, probed_head, _subject, subject_reason, _on_main, _ship_ref, \
+            determinate = (
+            await orch._already_satisfied_subject(
+                task, GitRepo(diverged_repo), base="main", branch=attempt_branch,
+            )
+        )
+        assert s
+[... 172 of 1,311 characters omitted from the middle ...]
+ssertionError: assert 'the remote could not be reached to verify the pushed branch' in '610f8ba64bae949a0a0bced78da0baff55c94bbb is not on origin/main; the pushed branch could not be verified'
+
+tests/test_landed_claim_early_refusal.py:609: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_landed_claim_early_refusal.py::test_an_unreachable_remote_is_not_a_refusal
+1 failed, 1 passed in 3.53s
+```  
+  _excerpt - 1,320 characters of output in total_
+
+- `cd /Users/eyalgolan/.<redacted>/worktrees/4135165ffb634024be34bfe55f5b9427.52752.54ec4231 uv run pytest -q -n 4 tests/test_structural_budget.py 2>&1 | tail -15`
+
+```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+bringing up nodes...
+bringing up nodes...
+
+..................                                                       [100%]
+18 passed in 6.33s
+```
+
 
 **Not verified:** everything below is a limit of this section, listed whether or not it bit this attempt.
 
 - no command recognised as e2e, http, typecheck, lint, build was recorded - and a recorded command is shown with its middle omitted, so a check inside the omitted part cannot be ruled out
-- 4 commands listed above are shown without their captured output: only the 12 most recent carry it
+- 2 commands listed above are shown without their captured output: only the 12 most recent carry it
 - an entry shows that a command LINE was submitted to the shell and what came back - never that the check recognised inside it RAN, and never that it was the RIGHT command: `pytest -k test_nothing` prints a clean run, and a recorded command line may name a check the shell never reached yet is still counted - TEN SHAPES WERE DRIVEN against bash 3.2.57 with the check replaced by a marker-printing stub and the marker was absent in every one: a failed `&&`, a taken `||`, an `exit`, an `exec`, an `exit` inside a `source`d script, a syntax error that aborts the REST of the line, a multi-line `if false`, a `case` that matches nothing, `set -e` aborting an earlier command, and `set -u` on an unset variable; that list is MEASURED, NOT EXHAUSTIVE, because this module is not bash, so a kind this section does NOT list as missing is a kind some recorded line named, which is not the same as a kind that ran
 - the text is the coder's: the session chose the command string and, through `echo`/`printf`, can choose the output too. Both are shown as inert text, and no entry ASSERTS a pass, a fail, or an exit status - `pytest -q | tail -3` exits with `tail`'s status, `Error: Exit code 1` is a line IN THE OUTPUT, and where the harness reported a timeout or an interruption instead of output that report is appended to the captured text in square brackets. Read the output
 - recognition reads the command line ONLY - it never looks inside what a command runs, so `bash -c 'uv run pytest -q'` leaves no receipt at all while `make test` leaves one that names `make` and not the recipe it ran; and the other way, a check merely NAMED in a heredoc body, or in a quoted string that happens to spell a shell separator, can be recorded as though it ran
