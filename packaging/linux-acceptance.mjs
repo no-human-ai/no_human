@@ -10,10 +10,15 @@
 //      class the operator hit on 2026-08-16 is impossible here by construction;
 //   2. saving a shape-valid DUMMY token writes ~/.no_human/.env at mode 0600
 //      into that throwaway HOME (the POSIX branch of tokenStore.mjs);
-//   3. the board attaches on loopback and the BUNDLED frozen server answers
-//      GET /api/tasks with 200 — i.e. bundledNhPath() resolved `nh` inside
-//      resources/nh-server and the spawned process is alive;
-//   4. quitting the app reaps the server: no `no_human` and no `nh` process
+//   3. the onboarding wizard opens on its Welcome step (step 1 of 7) and is
+//      driven to completion — this is the screen the reported defect used to
+//      screenshot and call the board;
+//   4. the board attaches on loopback, past onboarding, and the BUNDLED frozen
+//      server answers GET /api/tasks with 200 — i.e. bundledNhPath() resolved
+//      `nh` inside resources/nh-server and the spawned process is alive;
+//   5. Settings and Stats are each reached and proven on screen before being
+//      screenshotted;
+//   6. quitting the app reaps the server: no `no_human` and no `nh` process
 //      remains after quitPolicy's grace + escalation.
 //
 // This is docs/WINDOWS.md §5.4 ("Install → launch → board → quit") made
@@ -23,12 +28,19 @@
 //
 // The dummy token is not, and can never be, a credential: it satisfies the
 // setup screen's SHAPE check (validateToken: not an sk-ant-api key, no
-// whitespace) and nothing else. No task is ever started in this run.
+// whitespace) and nothing else. No task is ever started in this run — task
+// execution is out of scope for this driver.
+//
+// Every screenshot below is written by walkSurfaces() (linuxAcceptanceSurfaces.mjs),
+// which asserts a DOM proof for what a surface claims to show BEFORE writing its
+// file — a filename can therefore never again outrun what is actually on screen.
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { SURFACES, walkSurfaces, advanceThroughWizard } from "./linuxAcceptanceSurfaces.mjs";
+export { EMAIL, SURFACES } from "./linuxAcceptanceSurfaces.mjs";
 
 // Assembled rather than one literal so this file — the one that would be
 // copied into a `.env` — never contains a full credential-SHAPED line that a
@@ -118,7 +130,8 @@ async function main() {
   try {
     const win = await app.firstWindow({ timeout: 30000 });
     await win.waitForLoadState("domcontentloaded");
-    await win.screenshot({ path: path.join(a.out, "01-first-run.png") });
+    const shot = (file) => win.screenshot({ path: path.join(a.out, file) });
+    const screenshots = [];
 
     if (a.mode === "setup") {
       if (!/token\.html/.test(win.url())) {
@@ -129,6 +142,9 @@ async function main() {
         throw new Error(`first run did not open the credential screen; window url: ${win.url()}\n`
           + `page text:\n${(body || "").trim().slice(0, 2000)}`);
       }
+      // 01-credential-screen.png — proof-then-shot, same guard as every other
+      // surface below (SURFACES[0] is "credential-screen").
+      screenshots.push(...await walkSurfaces(win, [SURFACES[0]], { shot, timeout: 15000 }));
       await win.fill("#token", DUMMY_TOKEN);
       await win.click("#save");
     }
@@ -136,8 +152,16 @@ async function main() {
     // The board attaches on the configured port (8420 on a fresh HOME).
     await win.waitForURL(/^http:\/\/127\.0\.0\.1:\d+\/?$/, { timeout: 90000 });
     await win.waitForTimeout(2000);
-    await win.screenshot({ path: path.join(a.out, "02-board.png") });
     const port = Number(new URL(win.url()).port);
+
+    // The URL landing on loopback does NOT mean the board is up: the
+    // onboarding wizard renders behind the same URL. This is the reported
+    // defect's exact spot — the driver used to screenshot right here and call
+    // it "02-board.png" while the wizard's Welcome step (step 1 of 7) was all
+    // that had actually rendered. Name it honestly instead, prove it, then
+    // drive past it.
+    screenshots.push(...await walkSurfaces(win, [SURFACES[1]], { shot, timeout: 15000 }));
+    await advanceThroughWizard(win, { timeout: 15000 });
 
     const tasks = await get(`${expectedBoardUrl(port)}api/tasks`);
     if (tasks.status !== 200) throw new Error(`GET /api/tasks -> ${tasks.status}`);
@@ -161,6 +185,15 @@ async function main() {
     const dbFile = path.join(a.home, ".no_human", "no_human.db");
     if (!fs.existsSync(dbFile)) throw new Error("the bundled server did not create ~/.no_human/no_human.db in the throwaway HOME");
 
+    // Board (past onboarding), Settings and Stats — each captured only after
+    // its own DOM proof passes. The board surface additionally requires the
+    // wizard's step-1 stepper to be GONE (SURFACES[2].absent), so this can
+    // never again be a screenshot of the wizard mislabeled as the board —
+    // the exact class of defect this driver used to produce. This runs
+    // before app.close() so the process-reaping assertion below still
+    // observes a shell that has actually been driven through the whole UI.
+    screenshots.push(...await walkSurfaces(win, SURFACES.slice(2), { shot, timeout: 15000 }));
+
     await app.close();
     // quitPolicy: SIGTERM, a 10 s grace, SIGKILL escalation, and main.mjs
     // holds the quit up to a 20 s hard ceiling — so POLL to a 30 s deadline
@@ -176,8 +209,9 @@ async function main() {
     if (left.no_human.length || left.nh.length) {
       throw new Error(`processes left 30 s after quit: ${JSON.stringify(left)}`);
     }
-    console.log(`OK: first-run -> board (port ${port}) -> quit; ${nhPids.length} nh process reaped; `
-      + `credential 0600 in throwaway HOME; screenshots in ${a.out}`);
+    console.log(`OK: credential-screen -> wizard -> board (port ${port}) -> Settings -> Stats -> quit; `
+      + `${nhPids.length} nh process reaped; credential 0600 in throwaway HOME; `
+      + `screenshots written: ${screenshots.join(", ")} in ${a.out}`);
   } catch (e) {
     try { await app.close(); } catch { /* already gone */ }
     throw e;

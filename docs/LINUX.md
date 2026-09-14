@@ -335,6 +335,47 @@ empty until billing is fixed and the job runs.
 | Wall time / billed minutes | clone→artefacts ≈ 3 min, whole lane ≈ 6 min on this box (no CI minutes billed) | not run |
 | **Finding on a REAL desktop only** | Playwright's launch failed once with *"Authorization required… Missing X server or $DISPLAY"*: the driver overrides `HOME`, so `XAUTHORITY` defaulted into the throwaway home. Under `xvfb-run` (CI) `XAUTHORITY` is set explicitly, so the class never appears there. Remedy on a real display: `export XAUTHORITY=$HOME/.Xauthority` before the driver (done in `lane-a.sh`; the driver itself is unchanged — a real user never runs it) | n/a |
 
+### 6.1 This branch's fix — the "02-board.png" row above was never the board
+
+The **"onboarding wizard's Welcome step rendered"** finding in the "Board
+attached" row above is not a footnote — it is the bug this branch fixes.
+`packaging/linux-acceptance.mjs` wrote `02-board.png` immediately after the
+credential save and URL redirect, and every downstream consumer of that
+screenshot (this doc included) treated it as board evidence. It never was:
+the onboarding wizard renders behind the same loopback URL, and that
+screenshot is the wizard's step 1 of 7, not the board.
+
+The driver (`packaging/linux-acceptance.mjs`, step table in the new
+`packaging/linuxAcceptanceSurfaces.mjs`) now drives the wizard to completion
+and walks five surfaces, each with its own DOM proof asserted **before** the
+corresponding screenshot is taken — a filename can no longer outrun what is
+actually on screen (`desktop/linuxAcceptanceSurfaces.test.mjs`,
+`desktop/linuxAcceptance.test.mjs` pin the mapping and the ordering). The
+evidence file list, in the order written:
+
+| File | What it proves before capture |
+| --- | --- |
+| `01-credential-screen.png` | the credential screen (`token.html`) on first run — `#token` and `#save` visible |
+| `02-onboarding-welcome.png` | the onboarding wizard's Welcome step (step 1 of 7) — the step-1 stepper's accessible name is visible. This is the screen the row above mislabeled `02-board.png` |
+| `03-board-first-run.png` | the task board itself, reached past onboarding — the primary sidebar and the first-run heading are visible, **and** the wizard's step-1 stepper is asserted gone (the regression guard for the defect above) |
+| `04-settings.png` | the Settings overlay, opened and proven visible by its dialog role |
+| `05-stats.png` | the Stats page, opened and proven visible by its page container and the Stats nav row's `aria-current` |
+
+Two new surfaces this branch adds beyond what §6's table above ever checked:
+Settings and Stats are now each opened, proven on screen, and screenshotted —
+previously neither was reached or asserted at all.
+
+**Not yet run in CI on this branch** — the `linux` job has not executed
+against this fix (§6's table above still reflects the pre-fix driver and the
+CI-runner column's pending state); the file list and the mapping it encodes
+are pinned by the unit tests cited above, not yet by a fresh CI screenshot.
+**[unverified by a live run — pending the `linux` CI job]**
+
+What Lane A still does **not** cover, unchanged by this fix: it never starts
+or runs a task. The wizard is driven only to its own completion (`finish()`),
+and the board it screenshots is the empty, zero-task first-run board — task
+creation/execution stays out of scope for this driver, as it was before.
+
 ## 7. Lane B — acceptance as a real user, Ubuntu 24.04 desktop
 
 Walked 2026-08-18 on a REAL Ubuntu 24.04 desktop (EC2 `m7i-flex.large`,
