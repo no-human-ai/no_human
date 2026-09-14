@@ -856,8 +856,11 @@ PostHog project credentials this fix was not given. The query a closure of
 this item would run: a session-replay / event search across the account's
 retention window for the literal string `repo_path`, or for an absolute-path
 prefix specific to an install (e.g. `/Users/` or `/home/`), scoped to
-`$session_recording_event` payloads with `$request_path` matching a redacted
-endpoint. A positive result would need a separate, larger purge/deletion
+`$snapshot` events whose `rrweb/network@1` plugin payloads carry a
+`requestBody`/`responseBody` for a redacted endpoint (these are the property
+names `posthog-js` itself emits for network capture — verified in
+`posthog-js/dist/lazy-recorder.js` — not invented ones). A positive result
+would need a separate, larger purge/deletion
 effort (PostHog's recording-deletion API, or a retention-window wait) — that
 work is out of scope here and is **not** silently closed by this fix; it is
 tracked as explicit follow-up.

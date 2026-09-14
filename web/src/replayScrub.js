@@ -91,7 +91,7 @@ export const REPLAY_EXCLUDED_PATHS = [
 // body read end-to-end (see API_BODY_CLASSIFICATION) and contains nothing
 // filesystem- or identity-shaped.
 export const REPLAY_BODY_ALLOWLIST = [
-  "/api/version", // {version, distName, published} — no paths, no names
+  "/api/version", // {version, dist_name, published} — no paths, no names
 ];
 
 // One entry per normalized `/api/*` pathname that api.js actually calls
@@ -109,7 +109,7 @@ export const API_BODY_CLASSIFICATION = {
   "/api/onboarding/reset": { tier: "drop", why: "defence-in-depth alongside server-side _onboarding_public() redaction; not currently called from the UI" },
 
   // --- Tier 2: allowlisted, body passed through unchanged ---
-  "/api/version": { tier: "allow", why: "response is {version, distName, published} only — verified against app.py, no paths or names" },
+  "/api/version": { tier: "allow", why: "response is {version, dist_name, published} only — verified against app.py show_version(), no paths or names" },
 
   // --- Tier 3: redacted. Filesystem paths / repo identity ---
   "/api/worker/status": { tier: "redact", why: "watcher_error/worker_error/health_error embed raw exception text (str(exc), f\"{type(exc).__name__}: {exc}\") which routinely contains absolute filesystem paths — see app.py worker_status()" },
