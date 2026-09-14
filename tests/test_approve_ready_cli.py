@@ -95,6 +95,49 @@ def _repo_with_conflicting_feature_branch(tmp_path, name="repo"):
     return repo, head_sha
 
 
+def _repo_with_remote_only_conflicting_branch(tmp_path, name="repo"):
+    """Like `_repo_with_conflicting_feature_branch`, except `feature` is
+    pushed to a real `origin` remote and then deleted LOCALLY, so the only
+    ref naming it afterwards is `refs/remotes/origin/feature` — the norm for
+    this repo's squash-from-worktree landing checkout, where a PR branch
+    routinely has no local ref at all (`git.py:389-401`'s
+    `resolve_commitish` docstring; `pr_watcher._base_tips`'s docstring lines
+    991-1001). Reproduces the exact failure mode this fixture exists to
+    catch: `check_landability` called with the BARE branch name would ask
+    `refs_resolvable(repo_path, "feature")` — a plain `rev-parse --verify
+    feature^{commit}` with no `origin/` fallback — which fails for this
+    fixture and silently degrades the verdict to `state="unknown"`, masking
+    a real conflict as fail-open-landable instead of reporting `state=
+    "conflict"`. Returns (repo_path, head_sha) for `feature`, exactly as its
+    sibling fixtures do."""
+    upstream = tmp_path / f"{name}-upstream.git"
+    subprocess.run(["git", "init", "--bare", "-b", "main", str(upstream)],
+                    check=True, capture_output=True)
+
+    repo = _make_repo(tmp_path, name)
+    _git(repo, "remote", "add", "origin", str(upstream))
+    _git(repo, "push", "origin", "main")
+
+    _git(repo, "checkout", "-b", "feature")
+    (repo / "a.txt").write_text("feature edit\n")
+    _git(repo, "commit", "-am", "feature edits a.txt")
+    head_sha = _git_out(repo, "rev-parse", "feature")
+    _git(repo, "push", "origin", "feature")
+
+    _git(repo, "checkout", "main")
+    (repo / "a.txt").write_text("main edit\n")
+    _git(repo, "commit", "-am", "main edits a.txt after branching")
+
+    _git(repo, "branch", "-D", "feature")
+    # Confirm the fixture actually built the "no local ref" shape it claims.
+    assert subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "--verify", "--quiet",
+         "feature^{commit}"],
+        capture_output=True).returncode != 0
+    assert _git_out(repo, "rev-parse", "origin/feature") == head_sha
+    return repo, head_sha
+
+
 # --------------------------------------------------------------------------- #
 # CLI harness (copied from tests/test_approve.py)                             #
 # --------------------------------------------------------------------------- #
@@ -483,6 +526,44 @@ def test_conflicted_task_is_visible_and_not_auto_resolved(tmp_path, monkeypatch)
 
     t, _ = _task_state(db, task_id)
     assert t.status is TaskStatus.AWAITING_APPROVAL
+
+
+def test_remote_only_pr_branch_is_probed_and_reported_as_conflict(
+        tmp_path, monkeypatch):
+    """The PR branch exists ONLY as `origin/feature` (no local ref) — the
+    routine shape for this repo's squash-from-worktree landing checkout.
+    `_approve_find_ready` must probe landability using the resolved HEAD
+    SHA, not the bare `pr_branch` name: passing the bare name makes
+    `check_landability` -> `conflicting_paths` -> `refs_resolvable` fail to
+    resolve `feature` at all (no `origin/` fallback there) and silently
+    degrade to `state="unknown"` — which this command's fail-open contract
+    then treats as landable, exactly reproducing the incident (a real
+    conflict slips through `--ready` and `--yes` hands it to `land_task`,
+    which fails at squash). With the fix, the CONFLICT is detected and
+    reported instead of masked."""
+    db = tmp_path / "nh.db"
+    monkeypatch.setattr(approve_merge_mod, "land_task", _never_called_land_task)
+
+    task_id, _, _ = _ready_task(
+        db, tmp_path, title="Remote Only", repo_name="repo",
+        repo_factory=_repo_with_remote_only_conflicting_branch)
+
+    result = _invoke(approve, db, ["--ready"])
+
+    assert result.exit_code == 0, result.output
+    assert task_id[:8] in result.output
+    line = next(ln for ln in result.output.splitlines() if task_id[:8] in ln)
+    # Must be reported as an actual CONFLICT, never degrade to "unknown"
+    # just because the branch has no local ref.
+    assert "CONFLICT" in line, line
+    assert "unknown" not in line, line
+    assert "0 task(s) ready to land" in result.output
+    assert "1 task(s) pass the quality rules but do NOT merge" in result.output
+
+    # --yes must never hand this conflicted, remote-only branch to land_task.
+    result_yes = _invoke(approve, db, ["--ready", "--yes"])
+    assert result_yes.exit_code == 0, result_yes.output
+    assert "not landed" in result_yes.output
 
 
 def test_unknown_base_degrades_open_and_still_lands(tmp_path, monkeypatch):

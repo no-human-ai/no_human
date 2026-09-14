@@ -1450,7 +1450,13 @@ FROZEN_FILE_LINES = {
     # tasks under `--yes` (never auto-resolved, never hidden) via two new
     # helpers, `_format_conflict_paths`/`_format_merge_status`. Measured via
     # `wc -l src/no_human/cli/commands.py`.
-    "cli/commands.py": 9039,
+    # 9039 -> 9048 (+9): `_approve_find_ready` probes `check_landability`
+    # with the resolved HEAD SHA instead of the bare PR branch name — a
+    # remote-only branch (the norm for this repo's squash-from-worktree
+    # landing checkout) has no local ref, so the bare name silently
+    # degraded the verdict to `state="unknown"` and masked a real conflict
+    # as fail-open-landable.
+    "cli/commands.py": 9048,
     # api/app.py 5338 -> 5346 (+8): same budget-floor warning surfaced by
     # `send-back`/`reply` as `budget_warning` in the JSON response. Net cost
     # was trimmed from a naive +14 to +8 by computing `Bounds.from_config(...)`
