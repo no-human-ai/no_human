@@ -22,11 +22,18 @@ architecture-tree tests assert that something true is actually there.
 from __future__ import annotations
 
 import ast
+import hashlib
+import importlib.util
 import inspect
+import json
+import os
 import re
+import sqlite3
+import subprocess
 import sys
 import warnings
 from collections import namedtuple
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -2003,11 +2010,11 @@ CITATION_TABLE = (
     ("security.md", "vcs/git.py:GitRepo._remote_commit_status:1225", "vcs/git.py",
      '"git", "fetch"'),
     ("security.md", ":GitRepo.fetch:1652", "vcs/git.py", '["fetch", remote]'),
-    ("security.md", "cli/commands.py:merge_stack_run:3181", "cli/commands.py",
+    ("security.md", "cli/commands.py:merge_stack_run:3182", "cli/commands.py",
      '"gh", "pr", "merge"'),
-    ("security.md", "cli/commands.py:approve:5431", "cli/commands.py",
+    ("security.md", "cli/commands.py:approve:5545", "cli/commands.py",
      '_refuse_agent_gate_act("approve")'),
-    ("security.md", ":merge_stack_run:3151", "cli/commands.py",
+    ("security.md", ":merge_stack_run:3152", "cli/commands.py",
      '_refuse_agent_gate_act("merge_stack_run")'),
     ("security.md", "updates.py:44", "updates.py", "PYPI_JSON_URL"),
     ("security.md", "updates.py:57", "updates.py", "DISABLE_ENV_VAR"),
@@ -2050,15 +2057,15 @@ CITATION_TABLE = (
      "posthog_host"),
     ("security.md", "intake/mcp_bridge.py:40", "intake/mcp_bridge.py",
      "127.0.0.1:8420"),
-    ("security.md", "cli/commands.py:print_no_task_matching:85", "cli/commands.py",
+    ("security.md", "cli/commands.py:print_no_task_matching:86", "cli/commands.py",
      "no task matching"),
     ("security.md", "history/extractor.py:65-72", "history/extractor.py",
      "csrf_token"),
     # docs/eval.md
-    ("eval.md", "src/no_human/cli/commands.py:bench_run:7998",
+    ("eval.md", "src/no_human/cli/commands.py:bench_run:8112",
      "src/no_human/cli/commands.py", "different --trials are not resumed"),
-    ("eval.md", ":bench_run:8149", "src/no_human/cli/commands.py", "asyncio.gather"),
-    ("eval.md", ":bench_run:8027", "src/no_human/cli/commands.py",
+    ("eval.md", ":bench_run:8263", "src/no_human/cli/commands.py", "asyncio.gather"),
+    ("eval.md", ":bench_run:8141", "src/no_human/cli/commands.py",
      "(sc.task_id, sc.trial)"),
     ("eval.md", "src/no_human/eval/northstar_card.py:NorthStarCard.pass_k_rate:456",
      "src/no_human/eval/northstar_card.py", "def pass_k_rate("),
@@ -3094,3 +3101,683 @@ def test_windows_md_code_line_citations_resolve():
         "no checkable .py line citation found in WINDOWS.md -- the instrument "
         "would pass vacuously"
     )
+
+
+# --------------------------------------------------------------------------- #
+# "What the gate caught" -- the supplied copy is pinned verbatim, and its
+# three figures are pinned to `scripts/readme_metrics.json`, a dated snapshot
+# regenerated on demand by `scripts/recount_readme_metrics.py`. Neither side
+# may move alone: the recount script never rewrites the snapshot, and no test
+# here recomputes the figures from a database -- the snapshot is the
+# README's only source of truth.
+# --------------------------------------------------------------------------- #
+
+RECOUNT_SCRIPT = REPO / "scripts" / "recount_readme_metrics.py"
+METRICS_SNAPSHOT = REPO / "scripts" / "readme_metrics.json"
+
+# The supplied copy, character for character. Do not reformat this literal --
+# any drift here would silently defeat every test below that anchors on it.
+_GATE_CAUGHT_BLOCK = (
+    "**What the gate caught**\n"
+    "\n"
+    "no_human builds no_human. Over 65 days on its own board, none of this "
+    "reached a pull request:\n"
+    "\n"
+    "- **505 of 1,709 attempts** the coder called done were sent back by "
+    "the second model, each with a pass/fail checklist citing file and "
+    "line.\n"
+    "- **44 attempts** were stopped before the review even ran, for deleting "
+    "or weakening a test.\n"
+    "- **46 bug-fix proofs** were refused because the test offered as "
+    "evidence passed on the old code too.\n"
+    "\n"
+    "[How these were counted]"
+    "(https://github.com/no-human-ai/no_human/releases/tag/metrics-2026-09)"
+)
+
+
+def _load_recount_script():
+    spec = importlib.util.spec_from_file_location(
+        "_nh_recount_readme_metrics", RECOUNT_SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+recount_mod = _load_recount_script()
+
+
+def _snapshot() -> dict:
+    return json.loads(METRICS_SNAPSHOT.read_text(encoding="utf-8"))
+
+
+def _snapshot_int_leaves(obj) -> set[int]:
+    """Every integer value anywhere in the snapshot JSON, recursively --
+    used to prove the README states no figure the snapshot does not carry."""
+    values: set[int] = set()
+    if isinstance(obj, dict):
+        for v in obj.values():
+            values |= _snapshot_int_leaves(v)
+    elif isinstance(obj, list):
+        for v in obj:
+            values |= _snapshot_int_leaves(v)
+    elif isinstance(obj, bool):
+        pass
+    elif isinstance(obj, int):
+        values.add(obj)
+    return values
+
+
+def _build_fixture_db(tmp_path: Path, *, tasks: list[dict],
+                       attempts: list[dict], with_kind: bool = True) -> Path:
+    """A DB built from the repo's own `migrations/0001_init.sql`, so column
+    names are the real ones, then (optionally) `ALTER TABLE tasks ADD COLUMN
+    kind` exactly as `Store._ensure_task_columns` does for pre-existing
+    databases. Rows are hand-inserted with correct-by-construction answers.
+    """
+    db_path = tmp_path / "fixture.db"
+    con = sqlite3.connect(db_path)
+    try:
+        con.executescript(
+            (REPO / "migrations" / "0001_init.sql").read_text(encoding="utf-8"))
+        if with_kind:
+            con.execute(
+                "ALTER TABLE tasks ADD COLUMN kind TEXT DEFAULT 'feature'")
+        for i, task in enumerate(tasks):
+            cols = ["id", "source", "title", "repo_path"]
+            vals = [task["id"], "test", "T", task.get("repo_path")]
+            if with_kind and "kind" in task:
+                cols.append("kind")
+                vals.append(task["kind"])
+            placeholders = ", ".join("?" for _ in cols)
+            con.execute(
+                f"INSERT INTO tasks ({', '.join(cols)}) VALUES ({placeholders})",
+                vals)
+        for i, attempt in enumerate(attempts, start=1):
+            cols = ["id", "task_id", "attempt_number"]
+            vals = [attempt["id"], attempt["task_id"], i]
+            for extra in ("review_passed", "failure_reason", "test_results",
+                          "started_at"):
+                if extra in attempt:
+                    cols.append(extra)
+                    vals.append(attempt[extra])
+            placeholders = ", ".join("?" for _ in cols)
+            con.execute(
+                f"INSERT INTO attempts ({', '.join(cols)}) "
+                f"VALUES ({placeholders})",
+                vals)
+        con.commit()
+    finally:
+        con.close()
+    return db_path
+
+
+WINDOW_START = "2026-07-10"
+WINDOW_END = "2026-09-13"
+IN_WINDOW_TS = "2026-08-01 10:00:00"
+OUT_OF_WINDOW_TS = "2026-01-01 10:00:00"
+IN_SCOPE_REPO = "/home/op/repos/no_human"
+OUT_OF_SCOPE_REPO = "/home/op/repos/foo-no_human"
+
+
+# --- README block: presence, position, copy fidelity -------------------- #
+
+def test_the_gate_caught_block_is_present_verbatim():
+    readme = README.read_text(encoding="utf-8")
+    assert readme.count(_GATE_CAUGHT_BLOCK) == 1, (
+        "the supplied \"What the gate caught\" copy must appear in "
+        "README.md exactly once, character for character"
+    )
+
+
+def test_the_gate_caught_block_sits_between_the_bullets_and_install():
+    readme = README.read_text(encoding="utf-8")
+    bullets_idx = readme.index("Proof the fix fixed the bug")
+    block_idx = readme.index(_GATE_CAUGHT_BLOCK)
+    install_idx = readme.index("\n## Install")
+    assert bullets_idx < block_idx < install_idx, (
+        "the gate-caught block must sit after the feature bullets and "
+        "before the install block"
+    )
+
+
+def test_no_em_dash_in_the_gate_caught_block():
+    assert "—" not in _GATE_CAUGHT_BLOCK
+    assert "–" not in _GATE_CAUGHT_BLOCK
+    readme = README.read_text(encoding="utf-8")
+    start = readme.index(_GATE_CAUGHT_BLOCK)
+    slice_ = readme[start:start + len(_GATE_CAUGHT_BLOCK)]
+    assert "—" not in slice_, "an em dash was added to the supplied copy"
+    assert "–" not in slice_, "an en dash was added to the supplied copy"
+
+
+_FORBIDDEN_HEDGE = re.compile(
+    r"caveat|disclaimer|limitation|however|not yet|does not mean|"
+    r"only measures",
+    re.IGNORECASE,
+)
+
+
+def test_the_gate_caught_block_gained_no_extra_sentence():
+    readme = README.read_text(encoding="utf-8")
+    start = readme.index(_GATE_CAUGHT_BLOCK)
+    install_idx = readme.index("\n## Install")
+    between = readme[start:install_idx].rstrip("\n")
+    assert between == _GATE_CAUGHT_BLOCK, (
+        "the text between the block's start and '## Install' must be "
+        "exactly the supplied copy -- nothing appended, nothing reworded"
+    )
+    assert between.count("- **") == 3, (
+        "exactly three bullets are supplied; a fourth bullet or a missing "
+        "one changed the copy"
+    )
+    for line in between.splitlines():
+        assert not _FORBIDDEN_HEDGE.search(line), (
+            f"a hedge/caveat/disclaimer word was found in the supplied "
+            f"copy: {line!r}"
+        )
+
+
+# --- Snapshot: well-formed, and the README pinned to it in both directions #
+
+def test_the_snapshot_file_is_well_formed():
+    data = _snapshot()
+    assert data["source_release_tag"] == "metrics-2026-09"
+    window = data["window"]
+    assert window["start"] == "2026-07-10"
+    assert window["end"] == "2026-09-13"
+    start = date.fromisoformat(window["start"])
+    end = date.fromisoformat(window["end"])
+    assert (end - start).days == window["days"] == 65
+    figures = data["figures"]
+    assert set(figures.keys()) == {
+        "attempts_reviewed", "reviewer_rejections", "tamper_stops",
+        "refused_proofs",
+    }
+    for value in figures.values():
+        assert isinstance(value, int) and not isinstance(value, bool)
+
+
+def _gate_caught_slice() -> str:
+    readme = README.read_text(encoding="utf-8")
+    start = readme.index(_GATE_CAUGHT_BLOCK)
+    install_idx = readme.index("\n## Install")
+    return readme[start:install_idx]
+
+
+_RE_REJECTIONS = re.compile(r"(\d[\d,]*) of (\d[\d,]*) attempts")
+_RE_TAMPER = re.compile(r"(\d+) attempts.*stopped")
+_RE_REFUSED = re.compile(r"(\d+) bug-fix proofs")
+
+
+def _de_comma(text: str) -> int:
+    return int(text.replace(",", ""))
+
+
+def test_each_readme_figure_matches_the_snapshot():
+    block = _gate_caught_slice()
+    figures = _snapshot()["figures"]
+
+    m_rejections = _RE_REJECTIONS.search(block)
+    m_tamper = _RE_TAMPER.search(block)
+    m_refused = _RE_REFUSED.search(block)
+    assert m_rejections and m_tamper and m_refused
+
+    assert _de_comma(m_rejections.group(1)) == figures["reviewer_rejections"]
+    assert _de_comma(m_rejections.group(2)) == figures["attempts_reviewed"]
+    assert _de_comma(m_tamper.group(1)) == figures["tamper_stops"]
+    assert _de_comma(m_refused.group(1)) == figures["refused_proofs"]
+
+
+def test_the_pin_is_not_vacuous():
+    block = _gate_caught_slice()
+    figures = _snapshot()["figures"]
+
+    m_rejections = _RE_REJECTIONS.search(block)
+    m_tamper = _RE_TAMPER.search(block)
+    m_refused = _RE_REFUSED.search(block)
+    assert m_rejections is not None, "the rejections regex must match a real README"
+    assert m_tamper is not None, "the tamper regex must match a real README"
+    assert m_refused is not None, "the refused-proofs regex must match a real README"
+
+    perturbed = block.replace("505", "506", 1)
+    m_perturbed = _RE_REJECTIONS.search(perturbed)
+    assert m_perturbed is not None
+    assert _de_comma(m_perturbed.group(1)) != figures["reviewer_rejections"], (
+        "a perturbed README figure must disagree with the snapshot -- the "
+        "pin cannot be satisfied by an empty or unrelated README"
+    )
+
+
+def test_the_readme_block_states_no_other_figures():
+    block = _gate_caught_slice()
+    allowed = _snapshot_int_leaves(_snapshot())
+    found = {_de_comma(m) for m in re.findall(r"\d[\d,]*", block)}
+    # The release tag ("metrics-2026-09") contributes 2026 and 09/9, which
+    # carry no figure meaning and are not part of the snapshot.
+    found -= {2026, 9}
+    assert found, "no numbers were found in the block -- the scrape is broken"
+    assert found <= allowed, (
+        f"the README states figures {found - allowed} that are not in the "
+        f"snapshot {allowed}"
+    )
+
+
+def test_the_readme_link_points_at_the_snapshot_release():
+    block = _gate_caught_slice()
+    tag = _snapshot()["source_release_tag"]
+    assert f"releases/tag/{tag}" in block
+
+
+# --- Recount script: reproduces the figures under the exact definitions -- #
+
+def test_recount_counts_a_fixture_with_hand_derived_answers(tmp_path):
+    tasks = [
+        {"id": "t-scope", "repo_path": IN_SCOPE_REPO, "kind": "feature"},
+    ]
+    attempts = [
+        # A genuine reviewer rejection.
+        {"id": "a-rejected", "task_id": "t-scope", "review_passed": 0,
+         "failure_reason": "checklist item: missing null check",
+         "started_at": IN_WINDOW_TS},
+        # A tamper stop.
+        {"id": "a-tamper", "task_id": "t-scope",
+         "test_results": json.dumps({"tamper_flag": True}),
+         "started_at": IN_WINDOW_TS},
+        # A refused proof.
+        {"id": "a-refused", "task_id": "t-scope",
+         "failure_reason": "repro gate fail: passes-after failed",
+         "started_at": IN_WINDOW_TS},
+    ]
+    db_path = _build_fixture_db(tmp_path, tasks=tasks, attempts=attempts)
+
+    proc = subprocess.run(
+        [sys.executable, str(RECOUNT_SCRIPT), str(db_path),
+         "--start", WINDOW_START, "--end", WINDOW_END, "--json"],
+        capture_output=True, text=True, check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    result = json.loads(proc.stdout)
+    figures = result["figures"]
+    assert figures["attempts_reviewed"] == 1
+    assert figures["reviewer_rejections"] == 1
+    assert figures["tamper_stops"] == 1
+    assert figures["refused_proofs"] == 1
+
+
+def test_reviewer_infra_failure_is_not_a_rejection(tmp_path):
+    tasks = [{"id": "t1", "repo_path": IN_SCOPE_REPO, "kind": "feature"}]
+    attempts = [
+        {"id": "a-lower", "task_id": "t1", "review_passed": 0,
+         "failure_reason": "review failed: reviewer session error (timeout)",
+         "started_at": IN_WINDOW_TS},
+        {"id": "a-upper", "task_id": "t1", "review_passed": 0,
+         "failure_reason": "review failed: Reviewer session error (timeout)",
+         "started_at": IN_WINDOW_TS},
+        # Mirror image: a genuine rejection must still be counted.
+        {"id": "a-real", "task_id": "t1", "review_passed": 0,
+         "failure_reason": "checklist item: actual defect",
+         "started_at": IN_WINDOW_TS},
+    ]
+    db_path = _build_fixture_db(tmp_path, tasks=tasks, attempts=attempts)
+    result = recount_mod.recount(db_path, start=WINDOW_START, end=WINDOW_END)
+    assert result["figures"]["reviewer_rejections"] == 1
+    assert result["figures"]["attempts_reviewed"] == 3
+
+
+def test_a_code_review_task_is_not_a_rejection(tmp_path):
+    tasks = [
+        {"id": "t-cr", "repo_path": IN_SCOPE_REPO, "kind": "code_review"},
+        {"id": "t-normal", "repo_path": IN_SCOPE_REPO, "kind": "feature"},
+    ]
+    attempts = [
+        {"id": "a-cr", "task_id": "t-cr", "review_passed": 0,
+         "failure_reason": "checklist item: x", "started_at": IN_WINDOW_TS},
+        # Mirror image: a non-code_review rejection is still counted.
+        {"id": "a-normal", "task_id": "t-normal", "review_passed": 0,
+         "failure_reason": "checklist item: y", "started_at": IN_WINDOW_TS},
+    ]
+    db_path = _build_fixture_db(tmp_path, tasks=tasks, attempts=attempts)
+    result = recount_mod.recount(db_path, start=WINDOW_START, end=WINDOW_END)
+    assert result["figures"]["reviewer_rejections"] == 1
+    assert result["figures"]["attempts_reviewed"] == 1
+
+
+def test_resume_shape_repro_failure_is_not_a_refused_proof(tmp_path):
+    tasks = [{"id": "t1", "repo_path": IN_SCOPE_REPO, "kind": "feature"}]
+    attempts = [
+        {"id": "a-resume", "task_id": "t1",
+         "failure_reason": "repro gate fail: resume-shape: pass-on-tip failed",
+         "started_at": IN_WINDOW_TS},
+        # Mirror image: a plain refusal that merely mentions the phrase must
+        # still be counted -- the exclusion is a prefix, never a substring.
+        {"id": "a-real", "task_id": "t1",
+         "failure_reason": (
+             "repro gate fail: passes-after failed (mentions "
+             "resume-shape in passing)"),
+         "started_at": IN_WINDOW_TS},
+    ]
+    db_path = _build_fixture_db(tmp_path, tasks=tasks, attempts=attempts)
+    result = recount_mod.recount(db_path, start=WINDOW_START, end=WINDOW_END)
+    assert result["figures"]["refused_proofs"] == 1
+
+
+def test_refused_proofs_are_broken_down_by_cause(tmp_path):
+    # The README's refused-proofs sentence names one cause for a total that
+    # can cover three; the recount script must report all three so a future
+    # edit can be checked against which one actually dominates.
+    tasks = [{"id": "t1", "repo_path": IN_SCOPE_REPO, "kind": "feature"}]
+    attempts = [
+        {"id": "a-fails-before", "task_id": "t1",
+         "failure_reason": (
+             "repro gate fail: fails-before failed -- the declared repro "
+             "tests already pass at base ref deadbeef"),
+         "started_at": IN_WINDOW_TS},
+        {"id": "a-fails-before-2", "task_id": "t1",
+         "failure_reason": (
+             "repro gate fail: fails-before failed -- the declared repro "
+             "tests already pass at base ref cafef00d"),
+         "started_at": IN_WINDOW_TS},
+        {"id": "a-passes-after", "task_id": "t1",
+         "failure_reason": (
+             "repro gate fail: passes-after failed -- the declared repro "
+             "tests do not pass on the attempt's own tree"),
+         "started_at": IN_WINDOW_TS},
+        {"id": "a-declared-missing", "task_id": "t1",
+         "failure_reason": (
+             "repro gate fail: declared test file(s) missing from the "
+             "attempt tree: ['tests/test_x.py']"),
+         "started_at": IN_WINDOW_TS},
+        # A resume-shape variant is excluded from the total, so it must not
+        # appear in the breakdown either.
+        {"id": "a-resume", "task_id": "t1",
+         "failure_reason": "repro gate fail: resume-shape: fails-before failed",
+         "started_at": IN_WINDOW_TS},
+        # A refusal this script does not recognise as one of the three named
+        # causes still counts toward the total, filed under "other" rather
+        # than silently folded into one of the three.
+        {"id": "a-other", "task_id": "t1",
+         "failure_reason": "repro gate fail: could not execute the repro tests",
+         "started_at": IN_WINDOW_TS},
+    ]
+    db_path = _build_fixture_db(tmp_path, tasks=tasks, attempts=attempts)
+    result = recount_mod.recount(db_path, start=WINDOW_START, end=WINDOW_END)
+    breakdown = result["refused_proofs_by_cause"]
+    assert breakdown["fails_before"] == 2
+    assert breakdown["passes_after"] == 1
+    assert breakdown["declared_missing"] == 1
+    assert breakdown["other"] == 1
+    assert result["figures"]["refused_proofs"] == 5
+    assert sum(breakdown.values()) == result["figures"]["refused_proofs"]
+
+
+def test_tamper_flag_false_and_unparseable_are_not_tamper_stops(tmp_path):
+    tasks = [{"id": "t1", "repo_path": IN_SCOPE_REPO, "kind": "feature"}]
+    attempts = [
+        {"id": "a-false", "task_id": "t1",
+         "test_results": json.dumps({"tamper_flag": False}),
+         "started_at": IN_WINDOW_TS},
+        # The substring trap: this text contains the literal characters
+        # `tamper_flag: true` but is not valid JSON at all.
+        {"id": "a-substring", "task_id": "t1",
+         "test_results": "tamper_flag: true", "started_at": IN_WINDOW_TS},
+        {"id": "a-garbage", "task_id": "t1",
+         "test_results": "{not json", "started_at": IN_WINDOW_TS},
+        {"id": "a-null", "task_id": "t1", "started_at": IN_WINDOW_TS},
+        # Mirror image: a real tamper stop must still be counted.
+        {"id": "a-real", "task_id": "t1",
+         "test_results": json.dumps({"tamper_flag": True}),
+         "started_at": IN_WINDOW_TS},
+    ]
+    db_path = _build_fixture_db(tmp_path, tasks=tasks, attempts=attempts)
+    result = recount_mod.recount(db_path, start=WINDOW_START, end=WINDOW_END)
+    assert result["figures"]["tamper_stops"] == 1
+    assert result["unparseable_test_results"] == 2
+
+
+def test_a_repo_outside_the_two_basenames_is_out_of_scope(tmp_path):
+    tasks = [
+        {"id": "t-out", "repo_path": OUT_OF_SCOPE_REPO, "kind": "feature"},
+        {"id": "t-in", "repo_path": IN_SCOPE_REPO, "kind": "feature"},
+        {"id": "t-public", "repo_path": "/srv/no_human-public", "kind": "feature"},
+        {"id": "t-null", "repo_path": None, "kind": "feature"},
+    ]
+    attempts = [
+        {"id": "a-out", "task_id": "t-out", "review_passed": 0,
+         "failure_reason": "checklist item: x", "started_at": IN_WINDOW_TS},
+        {"id": "a-in", "task_id": "t-in", "review_passed": 0,
+         "failure_reason": "checklist item: y", "started_at": IN_WINDOW_TS},
+        {"id": "a-public", "task_id": "t-public", "review_passed": 0,
+         "failure_reason": "checklist item: z", "started_at": IN_WINDOW_TS},
+        {"id": "a-null", "task_id": "t-null", "review_passed": 0,
+         "failure_reason": "checklist item: n", "started_at": IN_WINDOW_TS},
+    ]
+    db_path = _build_fixture_db(tmp_path, tasks=tasks, attempts=attempts)
+    result = recount_mod.recount(db_path, start=WINDOW_START, end=WINDOW_END)
+    assert result["figures"]["reviewer_rejections"] == 2
+    assert result["figures"]["attempts_reviewed"] == 2
+
+
+def test_an_attempt_outside_the_window_is_excluded(tmp_path):
+    tasks = [{"id": "t1", "repo_path": IN_SCOPE_REPO, "kind": "feature"}]
+    attempts = [
+        {"id": "a-before", "task_id": "t1", "review_passed": 0,
+         "failure_reason": "checklist item: x",
+         "started_at": OUT_OF_WINDOW_TS},
+        {"id": "a-inside", "task_id": "t1", "review_passed": 0,
+         "failure_reason": "checklist item: y", "started_at": IN_WINDOW_TS},
+    ]
+    db_path = _build_fixture_db(tmp_path, tasks=tasks, attempts=attempts)
+    result = recount_mod.recount(db_path, start=WINDOW_START, end=WINDOW_END)
+    assert result["figures"]["reviewer_rejections"] == 1
+    assert result["figures"]["attempts_reviewed"] == 1
+
+
+def test_recount_survives_a_tasks_table_without_kind(tmp_path):
+    tasks = [{"id": "t1", "repo_path": IN_SCOPE_REPO}]
+    attempts = [
+        {"id": "a1", "task_id": "t1", "review_passed": 0,
+         "failure_reason": "checklist item: x", "started_at": IN_WINDOW_TS},
+    ]
+    db_path = _build_fixture_db(
+        tmp_path, tasks=tasks, attempts=attempts, with_kind=False)
+    result = recount_mod.recount(db_path, start=WINDOW_START, end=WINDOW_END)
+    assert result["kind_column_present"] is False
+    assert result["figures"]["attempts_reviewed"] == 1
+    assert result["figures"]["reviewer_rejections"] == 1
+
+
+def test_recount_requires_a_db_path_argument():
+    proc = subprocess.run(
+        [sys.executable, str(RECOUNT_SCRIPT)],
+        capture_output=True, text=True, check=False,
+    )
+    assert proc.returncode != 0
+
+
+# --- Live DB never opened; suite passes with no ~/.no_human ------------- #
+
+def test_recount_refuses_a_path_inside_the_live_home(tmp_path, monkeypatch):
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    db_path = fake_home / "no_human.db"
+    db_path.write_bytes(b"not touched")
+    before_mtime = db_path.stat().st_mtime
+    monkeypatch.setenv("NO_HUMAN_HOME", str(fake_home))
+
+    with pytest.raises(recount_mod.DbRefusal) as excinfo:
+        recount_mod.validate_db_path(str(db_path))
+    assert str(db_path.resolve()) in str(excinfo.value)
+    assert db_path.stat().st_mtime == before_mtime
+    assert not (fake_home / "no_human.db-wal").exists()
+    assert not (fake_home / "no_human.db-shm").exists()
+
+
+def test_recount_refuses_a_symlink_into_the_live_home(tmp_path, monkeypatch):
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    real_db = fake_home / "no_human.db"
+    real_db.write_bytes(b"not touched")
+    monkeypatch.setenv("NO_HUMAN_HOME", str(fake_home))
+
+    link = tmp_path / "elsewhere.db"
+    link.symlink_to(real_db)
+    with pytest.raises(recount_mod.DbRefusal):
+        recount_mod.validate_db_path(str(link))
+
+
+def test_recount_never_stats_a_missing_live_home(tmp_path):
+    empty_home = tmp_path / "home_that_does_not_exist_yet"
+    tasks = [{"id": "t1", "repo_path": IN_SCOPE_REPO, "kind": "feature"}]
+    attempts = [
+        {"id": "a1", "task_id": "t1", "review_passed": 0,
+         "failure_reason": "checklist item: x", "started_at": IN_WINDOW_TS},
+    ]
+    db_dir = tmp_path / "db"
+    db_dir.mkdir()
+    db_path = _build_fixture_db(db_dir, tasks=tasks, attempts=attempts)
+
+    env = {"PATH": os.environ.get("PATH", ""), "HOME": str(empty_home)}
+    proc = subprocess.run(
+        [sys.executable, str(RECOUNT_SCRIPT), str(db_path),
+         "--start", WINDOW_START, "--end", WINDOW_END, "--json"],
+        capture_output=True, text=True, check=False, env=env,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert not (empty_home / ".no_human").exists()
+
+
+def test_the_recount_script_names_no_default_db_path():
+    source = RECOUNT_SCRIPT.read_text(encoding="utf-8")
+    assert "import no_human.config" not in source
+    assert "no_human.config" not in source
+    assert "DB_PATH" not in source
+
+
+# --- Reads only the copy -------------------------------------------------- #
+
+def test_recount_leaves_no_sidecar_beside_the_source(tmp_path):
+    tasks = [{"id": "t1", "repo_path": IN_SCOPE_REPO, "kind": "feature"}]
+    attempts = [
+        {"id": "a1", "task_id": "t1", "review_passed": 0,
+         "failure_reason": "checklist item: x", "started_at": IN_WINDOW_TS},
+    ]
+    db_path = _build_fixture_db(tmp_path, tasks=tasks, attempts=attempts)
+    before_hash = hashlib.sha256(db_path.read_bytes()).hexdigest()
+    before_listing = sorted(p.name for p in tmp_path.iterdir())
+
+    exit_code = recount_mod.main(
+        [str(db_path), "--start", WINDOW_START, "--end", WINDOW_END, "--json"])
+    assert exit_code == 0
+
+    after_hash = hashlib.sha256(db_path.read_bytes()).hexdigest()
+    after_listing = sorted(p.name for p in tmp_path.iterdir())
+    assert before_hash == after_hash
+    assert before_listing == after_listing
+
+
+def test_recount_reads_a_copy_not_the_source(tmp_path, monkeypatch):
+    tasks = [{"id": "t1", "repo_path": IN_SCOPE_REPO, "kind": "feature"}]
+    attempts = [
+        {"id": "a1", "task_id": "t1", "review_passed": 0,
+         "failure_reason": "checklist item: x", "started_at": IN_WINDOW_TS},
+    ]
+    db_path = _build_fixture_db(tmp_path, tasks=tasks, attempts=attempts)
+
+    recorded = {}
+    orig_backup = recount_mod._backup_to_temp_copy
+    orig_recount = recount_mod.recount
+
+    def spy_backup(source, dest):
+        recorded["dest"] = dest
+        orig_backup(source, dest)
+
+    def spy_recount(queried_path, **kwargs):
+        recorded.setdefault("queried_paths", []).append(queried_path)
+        return orig_recount(queried_path, **kwargs)
+
+    monkeypatch.setattr(recount_mod, "_backup_to_temp_copy", spy_backup)
+    monkeypatch.setattr(recount_mod, "recount", spy_recount)
+
+    exit_code = recount_mod.main(
+        [str(db_path), "--start", WINDOW_START, "--end", WINDOW_END, "--json"])
+    assert exit_code == 0
+    assert recorded["queried_paths"] == [recorded["dest"]]
+    assert recorded["dest"] != db_path
+
+
+# --- Refusals ------------------------------------------------------------- #
+
+def test_recount_refuses_a_missing_path(tmp_path):
+    with pytest.raises(recount_mod.DbRefusal):
+        recount_mod.validate_db_path(str(tmp_path / "does-not-exist.db"))
+
+
+def test_recount_refuses_a_non_sqlite_file(tmp_path):
+    bad = tmp_path / "not_a_db.txt"
+    bad.write_text("hello, this is not a sqlite file", encoding="utf-8")
+    with pytest.raises(recount_mod.DbRefusal):
+        recount_mod.validate_db_path(str(bad))
+
+
+def test_recount_refuses_a_db_with_no_attempts_table(tmp_path):
+    db_path = tmp_path / "no_attempts.db"
+    con = sqlite3.connect(db_path)
+    try:
+        con.execute("CREATE TABLE something_else (id INTEGER)")
+        con.commit()
+    finally:
+        con.close()
+    with pytest.raises(recount_mod.DbRefusal):
+        recount_mod.validate_db_path(str(db_path))
+
+
+def test_recount_exits_non_zero_on_an_empty_population(tmp_path):
+    tasks = [{"id": "t1", "repo_path": IN_SCOPE_REPO, "kind": "feature"}]
+    attempts = [
+        {"id": "a1", "task_id": "t1", "review_passed": 0,
+         "failure_reason": "checklist item: x",
+         "started_at": OUT_OF_WINDOW_TS},
+    ]
+    db_path = _build_fixture_db(tmp_path, tasks=tasks, attempts=attempts)
+    proc = subprocess.run(
+        [sys.executable, str(RECOUNT_SCRIPT), str(db_path),
+         "--start", WINDOW_START, "--end", WINDOW_END, "--json"],
+        capture_output=True, text=True, check=False,
+    )
+    assert proc.returncode != 0
+
+
+# --- The no-hedge guard must hold on both sides of the block -------------- #
+#
+# `test_the_gate_caught_block_gained_no_extra_sentence` only scans from the
+# block's own start down to `## Install`, so a caveat/disclaimer/limitation
+# sentence inserted immediately *above* the block -- still on the README's
+# first screen, still between the feature bullets and the block -- would
+# pass every existing guard. This test closes that side too.
+
+def test_no_hedge_immediately_above_the_gate_caught_block():
+    readme = README.read_text(encoding="utf-8")
+    bullets_idx = readme.index("Proof the fix fixed the bug")
+    block_idx = readme.index(_GATE_CAUGHT_BLOCK)
+    above = readme[bullets_idx:block_idx]
+    for line in above.splitlines():
+        assert not _FORBIDDEN_HEDGE.search(line), (
+            f"a hedge/caveat/disclaimer word was found between the feature "
+            f"bullets and the gate-caught block: {line!r}"
+        )
+
+
+def test_no_hedge_guard_above_the_block_is_not_vacuous():
+    readme = README.read_text(encoding="utf-8")
+    bullets_idx = readme.index("Proof the fix fixed the bug")
+    block_idx = readme.index(_GATE_CAUGHT_BLOCK)
+    above = readme[bullets_idx:block_idx]
+    poisoned = above + (
+        "\nCaveat: these numbers are a limitation of one window and do not "
+        "mean much.\n"
+    )
+    assert any(
+        _FORBIDDEN_HEDGE.search(line) for line in poisoned.splitlines()
+    ), "the hedge regex must actually catch a caveat inserted above the block"
