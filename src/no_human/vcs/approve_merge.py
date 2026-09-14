@@ -72,6 +72,31 @@ The eight-step procedure, proven by hand before this module existed:
                         non-fatal warning — the code is already on the
                         default branch.
 
+WHY ONLY RELEASE_MANIFEST.txt GETS THIS TREATMENT
+--------------------------------------------------
+The 2026-09-14 incident (task 4135165f, PR #356) also showed conflicts in
+docs/security.md and tests/test_readme_claims.py on the SAME landing. Those
+two are deliberately NOT given the "take tip's copy, then re-derive" step-3
+tolerance RELEASE_MANIFEST.txt gets here:
+
+  * RELEASE_MANIFEST.txt is a pure PROJECTION of the tree — every line is a
+    `<sha256> <path>` pair a tool (`export_guard.py` / `check_release_
+    manifest.py --write`) recomputes from the tree's actual bytes. A branch's
+    copy of it carries no information that is not ALSO recoverable from that
+    branch's real file changes, so discarding the branch's copy of the ledger
+    and rebuilding it from tip + the branch's other changes loses nothing.
+  * docs/security.md and tests/test_readme_claims.py are HAND-AUTHORED. Their
+    content on a branch IS the information — a security-policy edit or a new
+    README-claims check has no other representation to re-derive it from.
+    Auto-resolving a conflict there by taking the tip's copy would silently
+    drop the branch's own edit forever, which is exactly the kind of quiet
+    data loss constraint #2 and this module's whole "never weaken a check to
+    make merging easier" rule forbid. Those two conflicts are correctly left
+    for a coder round to resolve by hand, same as any other hand-authored
+    path (step 3, above) — the O(N) manifest problem does not generalize to
+    them because their conflicts are REAL (two branches' prose disagreeing),
+    not an artifact of a generated ledger moving under every landing.
+
 Every step failure removes the temp worktree and returns a
 :class:`LandResult` naming the failing `step` and the captured `stderr` —
 the caller leaves the task `awaiting_approval` and surfaces both verbatim.

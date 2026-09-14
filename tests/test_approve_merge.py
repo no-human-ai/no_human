@@ -1367,7 +1367,8 @@ def test_manifest_conflict_with_neither_backend_still_refuses(land_env):
     # cleanly onto a concurrently-changed tip (only one side edited it) and
     # never even reach the tolerance this test is pinning.
     branch = "no-human/t-nobackend"
-    base_manifest = (land_env.clone / "RELEASE_MANIFEST.txt").read_text()
+    base_manifest = (land_env.clone / "RELEASE_MANIFEST.txt").read_text(
+        encoding="utf-8")
     _git(land_env.clone, "checkout", "-q", "-B", branch, "origin/main")
     (land_env.clone / "src" / "feature.py").write_text(
         "def feature():\n    return 3\n")
