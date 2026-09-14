@@ -1976,7 +1976,29 @@ FROZEN_FILE_LINES = {
     # `_LIVE_VERBS`/`_LIVE_VERB_PAIRS` left untouched -- out of #328's scope,
     # which is the merge door specifically (approve, merge-stack), not the
     # live-server verbs. Measured on this tree.
-    "agent/guard.py": 3019,
+    # 2985 -> 3019 (+34): merge of main 0b8c2dc4 into this branch -- main's own
+    # growth in this file over the same window, no change to it from this
+    # branch. Measured on this tree with the scanner below, not by arithmetic:
+    # base 680d6889 actual 2925 (frozen was stale-high at 2926), main
+    # 0b8c2dc4 actual 2959, this branch's own tip before the merge (a185a275)
+    # actual 2985, and after the merge (this tree) actual 3019 -- matching the
+    # frozen value below exactly.
+    # 3019 -> 3022 (+3): send-back N2 fix on #328 -- guard.py:1131's comment
+    # falsely claimed `_FORGE_MERGE` "was the one lexical gate WITHOUT"
+    # `case_flags()`; `_FORGE_WRITE`, `_GIT_WRITE` and `_LEXICAL_LIVE_SERVER`
+    # were exact-case too (and `_LEXICAL_MERGE_STACK` was, until #328 folded
+    # it below), so the sentence was self-refuting within this same diff.
+    # Reworded to name the actual exact-case set. Measured on this tree with
+    # the scanner below.
+    # 3022 -> 3031 (+9): send-back N2-adjacent precision fix on #328 --
+    # guard.py:1621's comment claimed "only once this gate fires does the
+    # later fold in `command_name` ... get a chance to run", implying a
+    # two-stage pipeline where `_FORGE_MENTION` gates the `elif`'s
+    # `command_name` fold. It doesn't: the two are alternatives tried per
+    # token (`if`/`elif`) over disjoint token shapes -- quoted-payload vs
+    # trailing-argv -- so one never waits on the other. Reworded to say so.
+    # Measured on this tree with the scanner below.
+    "agent/guard.py": 3031,
     # +44: idle-path recover_quota_cooldown gate in tick() and the
     # never-shorten-a-live-wall guard in _run — the quota-wall storm cost fix.
     # +129: `HarvestJob` — the cadence job (`due()`/`maybe_run()`) that runs

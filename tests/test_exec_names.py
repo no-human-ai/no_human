@@ -27,6 +27,7 @@ splits the token, which is issue #312.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 import time
@@ -351,22 +352,33 @@ def test_a_case_sensitive_host_is_not_punished():
 #: `(noun, verb)` for the two forges' merge subcommand, per `_FORGE_MERGE_PAIRS`.
 _CASE_FORGE_SUBCOMMANDS = {"gh": ("pr", "merge"), "glab": ("mr", "merge")}
 
-#: 5 of the 18 runners in `guard._FORGE_RUNNER_NAMES` -- the bare form plus
-#: one quoted-payload runner (`sh`), one quoted-payload runner needing
-#: `_strip_wrappers` (`bash`), and two trailing-argv runners (`timeout`,
-#: `xargs`) -- not the full runtime set. The recursion is name-driven, not
-#: per-runner special-cased (every member of `_FORGE_RUNNER_NAMES` reaches the
-#: same `_FORGE_MENTION`/`command_name` code path this matrix already pins for
-#: `sh`/`bash`/`timeout`/`xargs`), but this matrix does not itself measure the
-#: other 14 (`chrt`, `dash`, `eval`, `flock`, `ionice`, `ksh`, `nice`, `script`,
-#: `setsid`, `stdbuf`, `taskset`, `unbuffer`, `watch`, `zsh`). `{cmd}` stands in
+#: The bare (no-runner) form plus ALL 18 runners in `guard._FORGE_RUNNER_NAMES`
+#: -- computed from that set, not a hand-picked sample, so this cannot go
+#: stale the way the previous 5-of-18 comment did. The recursion is
+#: name-driven, not per-runner special-cased: every member of
+#: `_FORGE_RUNNER_NAMES` reaches the identical `_FORGE_MENTION`/`command_name`
+#: code path in `_forge_invocations`, regardless of which shape wraps it, so
+#: one template per runner is enough to pin all 18. The shell-language
+#: interpreters (`sh`, `bash`, `zsh`, `dash`, `ksh`) get the quoted-payload
+#: shape they actually take (`{runner} -c "..."`); `eval` gets its own
+#: quoted shape (no `-c`); everything else gets the trailing-argv shape
+#: (`{runner} ...`) already pinned for `timeout`/`xargs`. `{cmd}` stands in
 #: for the (possibly capitalised, possibly `-R`-flagged) invocation.
-_CASE_MATRIX_RUNNERS = (
-    "{cmd}",
-    'sh -c "{cmd}"',
-    'bash -c "{cmd}"',
-    "timeout 30 {cmd}",
-    "xargs {cmd}",
+_QUOTED_PAYLOAD_RUNNERS = frozenset({"sh", "bash", "zsh", "dash", "ksh"})
+
+
+def _runner_template(runner: str) -> str:
+    if runner in _QUOTED_PAYLOAD_RUNNERS:
+        return f'{runner} -c "{{cmd}}"'
+    if runner == "eval":
+        return 'eval "{cmd}"'
+    if runner == "timeout":
+        return "timeout 30 {cmd}"
+    return f"{runner} {{cmd}}"
+
+
+_CASE_MATRIX_RUNNERS = ("{cmd}",) + tuple(
+    _runner_template(runner) for runner in sorted(guard._FORGE_RUNNER_NAMES)
 )
 
 
@@ -393,7 +405,8 @@ _CASE_MATRIX_CELLS = [
     for position in ("binary", "noun", "verb")
     for flagged in (False, True)
     for runner_tmpl in _CASE_MATRIX_RUNNERS
-]  # 2 forges x 3 positions x 2 flag flavours x 5 runners = 60 cells.
+]  # 2 forges x 3 positions x 2 flag flavours x 19 templates (bare form plus
+   # all 18 `_FORGE_RUNNER_NAMES` runners) = 228 cells.
 
 _CASE_MATRIX_EXTRA_ROWS = (
     # `glab mr accept 12` is `_FORGE_MERGE_PAIRS`'s third pair, `accept` an
@@ -433,8 +446,13 @@ def test_a_case_sensitive_host_keeps_the_documented_table():
     host, so denying it refuses nothing anyone is entitled to run).
 
     The expected table is built from the generating metadata (`position`),
-    not from a second run of the guard -- a regression in either half of the
-    fix shows up as a documented-table mismatch, not a tautology."""
+    not from a second run of the guard -- so a regression in the noun/verb
+    half (unconditionally folded, host-independent) shows up here as a
+    documented-table mismatch, not a tautology. The binary half is
+    deliberately gated OFF on this host by design, so its expected value is
+    "not denied" either way and a regression there stays green on THIS test;
+    `test_every_capitalised_merge_spelling_is_denied_on_a_folding_host`
+    above, run with `host_folds_case() == True`, is what pins that half."""
     expected = {
         cell: position != "binary"
         for _binary, position, _flagged, _runner, cell in _CASE_MATRIX_CELLS
@@ -546,20 +564,54 @@ def test_a_capitalised_git_push_is_denied_in_the_default_session_too():
 
 
 def test_the_widened_mention_gate_stays_linear():
-    """`_FORGE_MENTION`/`_GIT_MENTION` must stay precompiled -- a per-call
-    `re.compile` here would turn the documented linear recursion bound into
-    quadratic-or-worse well before 1000 wrappers. Wall-clock ceiling is
-    generous on purpose; this is a linearity smoke test, not a benchmark."""
+    """`_FORGE_MENTION`/`_GIT_MENTION` must stay precompiled and be searched
+    via the module-level pattern objects, not rebuilt with a per-call
+    `re.compile`. A wall-clock bound alone does NOT catch that regression:
+    CPython's `re` module memoizes identical pattern strings, so mutating
+    `PATTERN.search(tok)` into `re.compile(PATTERN.pattern,
+    PATTERN.flags).search(tok)` measured only ~1% slower over 1000 nested
+    `sh -c` wrappers in practice -- nowhere near enough to trip any
+    reasonable timing bound, so a timing-only version of this test asserts a
+    pin it does not actually hold. Count `re.compile` calls instead: the
+    real code makes effectively none while evaluating this command (the
+    patterns were already compiled at import time, long before this test
+    runs), while the per-call-recompile mutation calls it once per
+    mention-gate hit, which scales with the number of wrappers. That gap is
+    what a per-call `re.compile` regression actually looks like, and it is
+    what this test pins; the wall-clock assertion is kept only as a
+    secondary didn't-hang smoke test."""
     nested = "GIT push origin main"
     for _ in range(1000):
         nested = f'sh -c "{nested}"'
 
+    compile_calls = 0
+    real_compile = re.compile
+
+    def counting_compile(*args, **kwargs):
+        nonlocal compile_calls
+        compile_calls += 1
+        return real_compile(*args, **kwargs)
+
     started = time.monotonic()
-    denied = _verdicts_with_fold(True, (nested,))
+    re.compile = counting_compile
+    try:
+        decision = evaluate(
+            "Bash", {"command": nested},
+            forbidden_paths=[], never_push_to=["main"], cwd=".",
+            env={"PATH": ""})
+    finally:
+        re.compile = real_compile
     elapsed = time.monotonic() - started
 
-    assert isinstance(denied[nested], bool)  # completed at all, didn't hang
+    assert isinstance(decision.allow, bool)  # completed at all, didn't hang
     assert elapsed < 30, f"linearity bound appears lost: {elapsed}s"
+    assert compile_calls < 50, (
+        f"{compile_calls} re.compile calls while evaluating 1000 nested "
+        "wrappers -- _FORGE_MENTION/_GIT_MENTION are being recompiled per "
+        "call instead of reused from module scope (this is the mutation "
+        "the docstring above describes; a wall-clock bound alone does not "
+        "catch it)"
+    )
 
 
 # ------------------------------------------------------------- the real gates

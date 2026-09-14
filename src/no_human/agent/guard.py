@@ -1127,8 +1127,11 @@ _FORGE_MERGE = re.compile(
     # the project's standing rules forbid in as many words: there is no
     # auto-merge anywhere, and "as soon as checks pass" is auto-merge.
     # Missed by the first sweep, found by review 2026-08-22.
-    # `exec_names.case_flags()`, matching `_RM_RF`/`_GIT_DESTRUCTIVE`: this
-    # pattern was the one lexical gate WITHOUT it (#328), the reason a
+    # `exec_names.case_flags()`, matching `_RM_RF`/`_GIT_DESTRUCTIVE`: before
+    # #328 this pattern was exact-case, like most of the module's other
+    # lexical gates (`_FORGE_WRITE`, `_GIT_WRITE`, `_LEXICAL_LIVE_SERVER`, and
+    # -- until #328 also folded it below -- `_LEXICAL_MERGE_STACK`), but it is
+    # the one whose miss opens the merge door specifically, the reason a
     # capitalised `gh`/`glab` merge command reached ALLOW on a folding host
     # even before the runner-recursion fix above. Folding also widens the
     # GraphQL mutation names, which the API itself treats case-sensitively —
@@ -1615,10 +1618,19 @@ _ASSIGN_DECLARATORS = frozenset({"export", "local", "readonly", "declare", "type
 #: `sh -c "GH pr merge 7"` recurses into the quoted payload at all — measured
 #: without `case_flags()` here, `_forge_invocations("sh -c \"GH pr merge
 #: 7\"")` returns `[]`, not the resolved argv, because the search never
-#: matches and the recursive call is never made. Only once this gate fires
-#: does the later fold in `command_name` (also host-gated) get a chance to
-#: run, so the two folds must agree — this gate only needs to widen where
-#: that later fold would anyway (#328's runner-recursion half).
+#: matches and the recursive call is never made. This gate and the later
+#: `command_name` fold (also host-gated) are two alternatives tried per
+#: token below (`if`/`elif`), not a two-stage pipeline where one gates the
+#: other: a quoted-payload token (`sh -c "GH pr merge 7"`, the whole nested
+#: command as one argv element) can only be caught here — the `elif`'s
+#: `command_name(tok)` resolves a single bare token, and a multi-word quoted
+#: string never resolves to `gh`/`glab` that way. A trailing-argv token
+#: (`timeout 30 GH pr merge 7`, the forge command spelled out as its own
+#: argv elements) can only be caught by that `elif` — this gate's `\S` after
+#: the forge name requires more non-space text in the SAME token, which a
+#: bare `GH` token does not have. So the two folds cover disjoint token
+#: shapes and must agree on case-folding for the same reason, not because
+#: either one waits on the other (#328's runner-recursion half).
 _FORGE_MENTION = re.compile(r"\b(?:gh|glab)\s+\S", exec_names.case_flags())
 
 #: `git` mention inside a shell-runner argument, `_FORGE_MENTION`'s sibling
