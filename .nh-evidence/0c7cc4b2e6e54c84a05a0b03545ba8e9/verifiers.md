@@ -1,12 +1,12 @@
 # Verifiers
 
-_Harness-captured record for task `0c7cc4b2`, commit `1e2c83a261453936fb991015bf25878813c7032f` — not model-authored: no_human wrote this file from the deterministic verifier rules selected for this commit's files. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `0c7cc4b2`, commit `cb672d012a4c9d8fd9d894d9c88efbca424852fa` — not model-authored: no_human wrote this file from the deterministic verifier rules selected for this commit's files. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ```json
 [
   {
-    "comment": "The change is entirely about PostHog replay network-body redaction logic; it introduces no color values of any kind, so the theme-token constraint is vacuously satisfied.",
-    "evidence": "The diff touches only web/src/replayScrub.js, replayScrub.test.mjs, telemetry.js, and telemetry.test.mjs \u2014 all JS/telemetry logic. No JSX className color, inline style, or CSS is added or modified; the only string literal introduced is REDACTED = \"[redacted: not on replay body allowlist]\".",
+    "comment": "No color values (hex/rgb/hsl) or style/className changes appear anywhere in this change; it is entirely non-visual telemetry code, so the color-token constraint holds vacuously.",
+    "evidence": "The diff only touches replayScrub.js, replayScrub.test.mjs, telemetry.js, and telemetry.test.mjs \u2014 pure telemetry/network-redaction logic and tests. No JSX className, inline style, or CSS is changed, and the only string literal introduced is REDACTED = \"[redacted: not on replay body allowlist]\", which is not a color.",
     "file": "",
     "files_checked": [
       "web/src/replayScrub.js",
@@ -18,7 +18,7 @@ _Harness-captured record for task `0c7cc4b2`, commit `1e2c83a261453936fb991015bf
     "no_verdict": false,
     "passed": true,
     "severity": "medium",
-    "tokens_used": 373,
+    "tokens_used": 450,
     "unavailable": false,
     "verifier_id": "board-uses-theme-tokens"
   }

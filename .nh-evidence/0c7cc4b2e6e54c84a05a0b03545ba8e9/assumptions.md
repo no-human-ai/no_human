@@ -1,10 +1,6 @@
 # Assumptions
 
-_Harness-captured record for task `0c7cc4b2`, commit `1e2c83a261453936fb991015bf25878813c7032f` — not model-authored: no_human wrote this file from the intake step's recorded questions and assumptions. It records what the gate produced; it is not a verdict of the model that wrote the code._
-
-> ⚠️ **Unresolved:** max_attempts (3) reached without a passing, untampered change. The attempt trail is in this blocker's evidence and 'what I tried'.
-
-> ⚠️ **Open question:** The agent could not complete this within bounds. Refine the task, split it, or advise an approach.
+_Harness-captured record for task `0c7cc4b2`, commit `cb672d012a4c9d8fd9d894d9c88efbca424852fa` — not model-authored: no_human wrote this file from the intake step's recorded questions and assumptions. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 <details><summary>⚠️ 3 assumptions made on your behalf — verify at review</summary>
 
