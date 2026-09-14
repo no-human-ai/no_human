@@ -1360,6 +1360,10 @@ def task_config(task_id, assignments):
             # column write fails, no event claims a change that didn't
             # happen (the evidence-gap class `nh doctor` is built to catch).
             await store.update_task_columns(t)
+            # `config` has its own writer since #343: a concurrent watcher
+            # tick used to write its pre-raise copy back over this.
+            if settings:
+                await store.update_task_config(t.id, t.config)
 
             if priority_note is not None:
                 await store.save_events(t.id, [{
@@ -3837,6 +3841,13 @@ def reply(task_id, answer, choose, run):
             )
             record["applied"] = applied
             await store.append_context_list(t.id, "human_replies", record)
+            # An option's `set_task_config` (a budget raise, usually) mutated
+            # `t.config` above, and config has its own writer since #343.
+            # Written beside the `apply_action` that produced it rather than
+            # inside one of the branches below, so a branch added later cannot
+            # silently drop the raise.
+            if applied:
+                await store.update_task_config(t.id, t.config)
 
             # 2.3 (CodeRabbit learnings): if the reply states a reusable
             # preference/rule, propose it to the HUMAN-CONFIRMED learning queue

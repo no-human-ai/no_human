@@ -8,6 +8,8 @@ the installed package, so it can simply say which one it is.
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
@@ -74,7 +76,7 @@ async def test_version_needs_no_config_or_store(tmp_path):
     assert r.json()["version"] == no_human.__version__
 
 
-def test_the_declared_version_and_the_installed_metadata_agree():
+def test_the_two_declared_version_literals_agree():
     """`no_human.__version__` and the distribution's own metadata are two
     independent literals — `src/no_human/__init__.py` and `pyproject.toml`'s
     `version` — and a release that bumps one and forgets the other is silent.
@@ -87,20 +89,27 @@ def test_the_declared_version_and_the_installed_metadata_agree():
     clear. `core/build_info._dist_version()` reads the metadata, so the two
     disagreed inside one process.
 
-    Skipped when the distribution is not installed (a bare source checkout
-    running pytest without `uv sync`), because there is no metadata to compare
-    against and asserting would fail for a reason that is not this defect.
+    Reads `pyproject.toml` from THIS tree, not `importlib.metadata`. It used
+    to read the installed distribution, which is the same thing only when the
+    environment was installed from this exact tree — and this repo is worked
+    in worktrees against one shared venv, so the moment a release lands every
+    branch cut before it reported a failure that was nothing to do with its
+    own change. It reddened two contributor PRs as their only failure in
+    ~12,800 tests and was nearly reported to both authors as theirs (#398).
+
+    Comparing the two literals in the tree keeps the defect this test exists
+    for — a release that bumps one and forgets the other, both of which live
+    here — and cannot be broken by a stale or shared environment. Nothing
+    needs skipping either: both files are always present in a checkout.
     """
-    from importlib.metadata import PackageNotFoundError, version
+    import tomllib
 
-    try:
-        installed = version("no-human")
-    except PackageNotFoundError:  # pragma: no cover - only in a bare checkout
-        import pytest as _pytest
+    pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
+    with pyproject.open("rb") as fh:
+        declared = tomllib.load(fh)["project"]["version"]
 
-        _pytest.skip("no-human is not installed in this environment")
-    assert installed == no_human.__version__, (
-        f"pyproject/dist metadata says {installed!r} but no_human.__version__ is "
+    assert declared == no_human.__version__, (
+        f"pyproject.toml declares {declared!r} but no_human.__version__ is "
         f"{no_human.__version__!r} — bump both, or `nh --version` and the update "
         f"check will disagree with the wheel"
     )
