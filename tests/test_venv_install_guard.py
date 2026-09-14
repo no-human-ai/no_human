@@ -2262,6 +2262,86 @@ def test_a_trailing_separator_does_not_flip_the_candidate_order(
         "resolving the session's OWN venv must not be denied")
 
 
+@requires_chmod
+def test_a_denial_resting_on_an_unreadable_entry_does_not_claim_it_resolves_there(
+    tmp_path,
+):
+    """#338: the verdict was right through a sentence that was not.
+
+    When the determinate winner owns no venv, this module prefers the
+    earlier entry it could not stat -- fail-closed on a tri-state read, and
+    correct. But a POSIX shell SKIPS an EACCES entry and keeps walking, so
+    the binary that denial named is one the shell would never execute, and
+    the message told the user the install "resolves to" it. That is a false
+    fact to act on, in a module whose thesis is "resolve what actually
+    executes and where it writes".
+
+    The verdict does not move -- both readings DENY -- so the control here
+    is the READABLE one: it must still say "resolves to", because there the
+    claim is established.
+    """
+    primary, primary_venv, wt, wt_venv, prod_env, wt_env = _session(tmp_path)
+    sysbin = tmp_path / "sysbin"
+    sysbin.mkdir()
+    system_pip = sysbin / "pip"
+    system_pip.write_text("#!/bin/sh\nexit 0\n")
+    os.chmod(system_pip, 0o755)
+    assert venv_install_guard._venv_root_of(str(system_pip)) is None
+
+    env = {
+        "PATH": f"{primary_venv}/bin{os.pathsep}{sysbin}",
+        "VIRTUAL_ENV": primary_venv,
+    }
+    cmd = "pip install evilpkg"
+
+    readable = venv_install_guard.denial_reason(cmd, cwd=wt, env=env)
+    assert readable is not None
+    assert "resolves to" in readable, (
+        "CONTROL: a determinate read established the target, so the wording "
+        f"that states it must survive; got {readable!r}"
+    )
+
+    with _unreadable(primary_venv):
+        blocked = venv_install_guard.denial_reason(cmd, cwd=wt, env=env)
+        assert blocked is not None, "the verdict must not move: still DENY"
+        assert "resolves to" not in blocked, (
+            "a denial resting on an entry that could not be stat'd must not "
+            f"assert a resolution the shell would not make; got {blocked!r}"
+        )
+        assert "could not be read" in blocked
+        # Still names the path, so the user can act on it -- as the thing
+        # that could not be read, which is what is true.
+        assert primary_venv in blocked
+        assert wt in blocked, "the worktree it should have targeted instead"
+
+
+@requires_chmod
+def test_the_honest_wording_does_not_leak_into_a_fully_readable_denial(tmp_path):
+    """The mirror of the control above, one layer in: an unreadable entry
+    somewhere on PATH must not re-word a denial that does not rest on it.
+
+    Here the unreadable entry is a determinate NON-venv, so the resolver
+    keeps the determinate foreign-venv winner and the target IS established.
+    """
+    primary, primary_venv, wt, wt_venv, prod_env, wt_env = _session(tmp_path)
+    opaque = tmp_path / "opaque"
+    opaque.mkdir()
+    (opaque / "unrelated").write_text("#!/bin/sh\nexit 0\n")
+    os.chmod(opaque / "unrelated", 0o755)
+
+    env = {
+        "PATH": f"{opaque}{os.pathsep}{primary_venv}/bin",
+        "VIRTUAL_ENV": primary_venv,
+    }
+    with _unreadable(opaque):
+        blocked = venv_install_guard.denial_reason(
+            "pip install evilpkg", cwd=wt, env=env)
+        assert blocked is not None
+        assert "resolves to" in blocked, (
+            f"nothing this denial rests on was unreadable; got {blocked!r}"
+        )
+
+
 # ---------------------------------------------------------------------------
 # AC1 — a capitalised installer spelling is refused wherever the lowercase
 # spelling is refused. Issue: `_is_installer_name` only folded case when

@@ -104,6 +104,32 @@ pre-execution. It cannot see:
     process this guard evaluated once before it started;
   - ``sudo -u other-user`` — a real UID change this process cannot see
     ahead of time;
+  - an installer invoked under a name that is not an installer's
+    (#341). ``_resolve_installer`` decides what a token IS from the
+    resolved basename (``_basename`` → ``_is_installer_name``), so a copy
+    keeps its shebang, runs the same interpreter, writes into the same
+    shared venv, and is invisible to every check here. The same holds for
+    a symlink in a venv's ``bin/`` whose REALPATH basename is not an
+    installer name, because the discard happens on the realpath's
+    basename rather than on the name the command typed. Measured, with
+    the control that makes it meaningful — the identical operation under
+    its own name is refused::
+
+        control    DENY   <shared venv>/bin/pip install evilpkg
+        renamed    ALLOW   cp <shared venv>/bin/pip /tmp/notpip
+                           && /tmp/notpip install evilpkg
+        symlink    ALLOW   <shared venv>/bin/pip-link -> /tmp/notpip
+
+    Not closed by a smarter name rule: matching on command TEXT is the
+    class this module exists to escape (*a lexical guard cannot enforce a
+    capability*), and a text rule would be evadable in its own right.
+    Closing it structurally — deciding "is this an installer" from the
+    shebang's interpreter plus the argv shape, or from the resolved
+    target's inode matching a known installer in a venv's ``bin/`` —
+    is real work with its own false-positive analysis, and is worth it
+    only if the threat model ever includes a coder deliberately evading
+    the guard. Today's failures are accidental (a shared venv on
+    ``PATH``, an inherited ``VIRTUAL_ENV``), not adversarial renames;
   - a command that relies SOLELY on an inherited ``VIRTUAL_ENV``/
     ``UV_PROJECT_ENVIRONMENT`` (e.g. bare ``uv pip install foo`` with no
     project context, no explicit flags, and a ``PATH`` that does not
@@ -1360,6 +1386,32 @@ def _denial_reason_for_reading(
     outside = sorted(c for c in candidates if not _is_within(c, cwd_real))
     if outside:
         alt = os.path.join(cwd_real, ".venv", "bin", "python")
+        # The VERDICT is the same either way -- fail-closed on an
+        # indeterminate read is this module's standing rule -- but the
+        # SENTENCE must not be. When the installer this denial rests on is
+        # one whose own file type could not be determined, "resolves to X"
+        # is a claim resolution did not establish: a POSIX shell skips an
+        # EACCES entry and keeps walking, so the binary named here is one
+        # the shell would not execute, and the user is handed a false fact
+        # to act on (#338). Say the true thing instead, in the wording the
+        # `_UNRESOLVABLE_CHARS` branch above already uses for the analogous
+        # case -- the target could not be established.
+        #
+        # Derived here rather than threaded out of `_resolve_installer`,
+        # whose contract (a path, or None) is what a dozen tests pin and
+        # what `_effective_prefixes` consumes. This asks the same probe the
+        # resolver asked, about the same file, and nothing else moves.
+        if any(_probe_is_file(i) is None for i in installers):
+            unreadable = sorted(i for i in installers if _probe_is_file(i) is None)
+            return (
+                f"cannot verify this install's target: {unreadable[0]} "
+                f"could not be read (permission denied?), so the effective "
+                f"install location cannot be resolved before the command "
+                f"runs — and what could be read points outside this "
+                f"session's worktree ({cwd_real}). Spell the literal path "
+                f"instead (your worktree's own .venv), e.g. "
+                f"`{alt} -m pip install ...`."
+            )
         return (
             f"install blocked: resolves to {outside[0]}, outside this "
             f"session's worktree ({cwd_real}) — not the worktree's own "
