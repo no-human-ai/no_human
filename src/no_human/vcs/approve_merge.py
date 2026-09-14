@@ -97,6 +97,31 @@ tolerance RELEASE_MANIFEST.txt gets here:
     them because their conflicts are REAL (two branches' prose disagreeing),
     not an artifact of a generated ledger moving under every landing.
 
+WHAT THIS DOES NOT CLOSE
+-------------------------
+Two narrowing notes, so this fix is not read as broader than it is:
+
+  * The step-3 tolerance only fires when RELEASE_MANIFEST.txt is the ONLY
+    unmerged path (`unmerged == {"RELEASE_MANIFEST.txt"}`, above) — a
+    conflict that touches the ledger AND a hand-authored file still refuses
+    here, same as before, and still needs a coder round for the
+    hand-authored side. Of the three PRs open against this incident's own
+    tree when this was written (#319, #313, #302), NONE is manifest-only —
+    each also conflicts on other files — so this change does not, by
+    itself, make any of the three land without a coder round; it only
+    removes RELEASE_MANIFEST.txt from what that round has to resolve, and it
+    fully closes the case where the ledger is the SOLE collision (proven by
+    `test_two_independent_prs_from_the_same_base_both_land_without_manual_
+    conflict_resolution`, tests/test_approve_merge.py).
+  * This tolerance lives in `land_task`, the `nh approve` code path, only. A
+    human running `git merge --squash` by hand, or GitHub's own "Squash and
+    merge" button on a PR, still hits the raw multi-way conflict in
+    RELEASE_MANIFEST.txt with no help from this module — neither of those
+    paths calls into `_land_in_worktree`. Landing through `nh approve` is
+    how this repo's own PRs land (see this module's own opening line), so
+    that is the path this fix targets; it was not widened to cover the
+    other two.
+
 Every step failure removes the temp worktree and returns a
 :class:`LandResult` naming the failing `step` and the captured `stderr` —
 the caller leaves the task `awaiting_approval` and surfaces both verbatim.

@@ -1533,6 +1533,24 @@ def test_two_independent_prs_from_the_same_base_both_land_without_manual_conflic
         _git(land_env.tmp_path, "clone", "-q", str(land_env.origin), str(clone_dir))
         _git(clone_dir, "checkout", "-q", "-B", branch_name, "origin/main")
         (clone_dir / "src" / filename).write_text(body)
+        # Stage the new file FIRST: check_release_manifest.py resolves the
+        # file set with `git ls-files`, so an unstaged addition is invisible
+        # to it and `--write` would be a silent no-op, leaving this branch's
+        # RELEASE_MANIFEST.txt identical to base -- exactly the defect that
+        # let this fixture pass without ever reaching a real manifest
+        # conflict. Regenerating the ledger here, per branch, is what makes
+        # PR B's later squash actually collide with PR A's landed pin.
+        _git(clone_dir, "add", "-A")
+        before_manifest = (clone_dir / "RELEASE_MANIFEST.txt").read_text(encoding="utf-8")
+        subprocess.run(
+            [sys.executable, "scripts/check_release_manifest.py", "--write"],
+            cwd=clone_dir, check=True, capture_output=True, text=True)
+        after_manifest = (clone_dir / "RELEASE_MANIFEST.txt").read_text(encoding="utf-8")
+        assert after_manifest != before_manifest, (
+            f"{branch_name}: --write did not re-pin the ledger; "
+            f"'src/{filename}' must appear as a NEW row for this test to "
+            f"exercise a real manifest conflict on the second landing")
+        assert f"src/{filename}" in after_manifest
         _git(clone_dir, "add", "-A")
         _git(clone_dir, "commit", "-qm", f"feature: add {filename} ({branch_name})")
         _git(clone_dir, "push", "-q", "-u", "origin", branch_name)
