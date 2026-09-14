@@ -1182,7 +1182,14 @@ async def test_angle_timeout_never_fails_the_gate(tmp_path):
     assert d.passed is True, "an angle timeout must not fail the gate"
     notes = [i for i in d.checklist if "did not run" in i.label]
     # D2 #6 added a fourth angle (silent-failure lens).
-    assert len(notes) == 4 and all(i.passed for i in notes)
+    # A no-verdict angle is NEVER recorded as passing (that is the whole bug
+    # this guards against — it must not silently read as green), but it must
+    # also never be blocking (that would be the R17 regression: a fail-closed
+    # sentinel with no severity read as BLOCKING by `merge_angle_findings`,
+    # flipping a passing gate to FAIL over the reviewer's own missing output).
+    assert len(notes) == 4
+    assert all(not i.passed and i.severity == "low" for i in notes)
+    assert d.blocking_items == []
 
 
 def test_angle_prompt_warns_when_the_diff_is_truncated():

@@ -97,6 +97,7 @@ from ..review.reviewer import (
     ReviewerUnavailable,
     _carry_usage,
     findings_from_checklist,
+    skipped_angles_from_checklist,
 )
 from ..review.selfcheck import ChecklistItem
 from ..review.verifiers import (
@@ -22755,12 +22756,25 @@ SIX of them read a checkpoint and TWO do not — but do
         # "", {}) means no checklist was threaded through, so keep the old
         # capped-trail number rather than claim a false zero.
         advisory_count = len(last.get("advisory") or [])
+        # Angles that reached no verdict this round — `[]` (not the "no
+        # checklist threaded through" fallback the advisory count above
+        # uses) when `review_checklist` is falsy. A resumed-delivery caller
+        # that never threads a checklist through has no way to know whether
+        # an angle ran; reporting "no angle skipped" there is a deliberate
+        # fail-open (the alternative is blocking a PR body render on data
+        # the delivering row never had), not a claim that every angle ran.
+        angles_skipped: list[str] = []
+        angles_skipped_required: list[str] = []
         if review_checklist:
             _blocking, advisory_items = findings_from_checklist(review_checklist)
             advisory_count = len(advisory_items)
+            angles_skipped, angles_skipped_required = skipped_angles_from_checklist(
+                review_checklist)
         return {
             "rounds": rounds, "verdict": verdict, "addressed": addressed[:8],
             "advisory_count": advisory_count,
+            "angles_skipped": angles_skipped,
+            "angles_skipped_required": angles_skipped_required,
         }
 
     @staticmethod
@@ -22805,6 +22819,20 @@ SIX of them read a checkpoint and TWO do not — but do
                 f"| Reviewer model | {evidence.reviewer_attribution} — "
                 "non-default, chosen in Settings |\n"
             )
+        # Visible where a human looks (2 of 3): a required or advisory angle
+        # that reached no verdict this round gets its own ⚠️ row, never
+        # folded into the verdict row above so `review_verdict_pin` stays an
+        # exact substring of it. Rendered EXCLUSIVELY from
+        # `evidence.review_angles_pin()` — never re-derived here, same
+        # discipline as `_verifiers_evidence_section`. "" (no row) when every
+        # angle that ran reported a verdict, or when called without an
+        # `evidence` object (no pin to render without re-deriving one).
+        if evidence is not None and rv.get("angles_skipped"):
+            angles_pin = evidence.review_angles_pin()
+            if angles_pin:
+                row += (
+                    f"| Review angles | ⚠️ {Orchestrator._table_cell(angles_pin, None)} |\n"
+                )
         addressed = rv.get("addressed") or []
         if not addressed:
             return row

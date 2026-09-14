@@ -1262,7 +1262,16 @@ FROZEN_FILE_LINES = {
     # as `Orchestrator._build_implement_prompt`'s own entry above — no other
     # function in this file changed line count this round. Measured on THIS
     # tree with the scanner below.
-    "core/orchestrator.py": 24141,
+    # 24141 -> 24169 (+28): skipped-angle-visibility fix — a no-verdict
+    # complex-tier review angle was silently recorded as a PASSING checklist
+    # item (task b2e6f96c shipped with an inert acceptance test this way).
+    # `_review_verdict_data` now always returns `angles_skipped` /
+    # `angles_skipped_required` (via `review.reviewer.
+    # skipped_angles_from_checklist`), and `_review_evidence_section` renders
+    # the new "Review angles" PR-body row via `evidence.review_angles_pin()`
+    # when any angle didn't run. Measured on this tree with the scanner
+    # below.
+    "core/orchestrator.py": 24169,
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
     # scoping filter in _gather_history.
@@ -1887,7 +1896,30 @@ FROZEN_FILE_LINES = {
     # render). Added a branch (plus docstring) giving that case its own
     # honest lead-in instead of reusing the "determined" one. Measured on
     # this merge.
-    "review/reviewer.py": 3134,
+    # 3134 -> 3255 (+121): skipped-angle-visibility fix. Module-level
+    # additions (`REQUIRED_ANGLES`, `ANGLE_SKIP_LABEL` / `_ANGLE_SKIP_RE`,
+    # `ANGLE_RETRY_TURNS`, `skipped_angles_from_checklist`) plus one bounded
+    # retry before a no-verdict angle is recorded as skipped instead of
+    # silently marked passing (the b2e6f96c incident: a `tests` angle that
+    # never ran shipped an inert acceptance test under a green checklist
+    # item). The angle loop itself was also extracted out of
+    # `AdversarialReviewer.review` into a new method, `_run_review_angles`,
+    # before `review()` itself crossed the function-line threshold (so
+    # neither function needed a FROZEN_FUNCTION_LINES entry) — the same
+    # "extract to keep `review()` under its own ceiling" move already
+    # used for `_review_tamper_adjudication` and
+    # `_failing_test_attribution_sentence` above; a new method
+    # signature/docstring is net file growth even though the moved code
+    # itself is unchanged. Measured on this tree with the scanner below.
+    # 3255 -> 3293 (+38): send-back fix on the same task. Blocker 1: the
+    # retry branch checked only `_reached_no_verdict(retry)`, so a RETRY
+    # that itself timed out (`_fast_review` returns a TIMEOUT-shaped
+    # decision, not a NO-VERDICT-shaped one) fell through as a real verdict
+    # and was merged as a blocking-shaped finding — the R17 regression,
+    # reintroduced on the retry path. Fixed with a shared classifier,
+    # `_angle_gave_no_verdict`, applied identically to the first attempt
+    # and the retry. Measured on this tree with the scanner below.
+    "review/reviewer.py": 3293,
     # 2706 -> 2711 (+5): pre-existing red on main at 03b262d23 (e922e9b4's
     # landing, change-scoped tests missed the ratchet) — repaired, measured,
     # on this merge; same cause as the two function-level wake.py bumps above.

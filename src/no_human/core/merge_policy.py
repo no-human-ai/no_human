@@ -53,6 +53,7 @@ RULE_NAMES: tuple[str, ...] = (
     "ci",
     "paths_within",
     "max_changed_lines",
+    "required_angles_ran",
 )
 
 # Which rules take an argument, and what shape it must be. Loader validation
@@ -64,6 +65,7 @@ _NO_ARG_RULES = frozenset(
         "tests_ran_and_passed",
         "tamper_guard_clear",
         "verifiers_all_satisfied",
+        "required_angles_ran",
     }
 )
 _ENUM_RULES: dict[str, frozenset[str]] = {
@@ -95,6 +97,7 @@ DEFAULT_POLICY: tuple[Rule, ...] = (
     Rule("repro_gate", "pass_or_not_required"),
     Rule("verifiers_all_satisfied"),
     Rule("ci", "success_or_unknown"),
+    Rule("required_angles_ran"),
 )
 
 
@@ -128,6 +131,14 @@ class GateFacts:
     # human-legible detail string can name them without being conflated with
     # a genuine FAIL, per `verifiers_failed` above.
     verifiers_unavailable: tuple[str, ...] = ()
+    # Review angles (`review.reviewer.REVIEW_ANGLES`) that reached no verdict
+    # this round — mirrors `verifiers_unavailable` above, same third state
+    # (neither pass nor genuine failure). `angles_skipped_required` is the
+    # subset in `review.reviewer.REQUIRED_ANGLES`: a skipped REQUIRED angle
+    # is the one case that fails `_check_required_angles_ran` outright — see
+    # that function's docstring for why (the b2e6f96c incident).
+    angles_skipped: tuple[str, ...] = ()
+    angles_skipped_required: tuple[str, ...] = ()
     ci_state: str | None = None  # success/failure/pending/unknown/None
     # Advisory detail only — names failing checks in `_check_ci`'s detail
     # string. The pass/fail decision is still made from `ci_state` alone, so
@@ -384,6 +395,29 @@ def _check_verifiers_all_satisfied(facts: GateFacts, _arg: Any) -> tuple[bool, s
     return True, f"{facts.verifiers_ran} verifiers, none failed"
 
 
+def _check_required_angles_ran(facts: GateFacts, _arg: Any) -> tuple[bool, str]:
+    """A required angle (`review.reviewer.REQUIRED_ANGLES`, currently just
+    `tests`) that never produced a verdict is a gate that did not fully run —
+    the b2e6f96c incident (an inert acceptance test shipped with a green
+    gate) is exactly what a silently skipped `tests` angle costs, so this is
+    the one place a skip is actually binding. A non-required angle skip is
+    still surfaced (in the detail string, the PR body, and the checklist)
+    but stays advisory here: it does not flip `ready`."""
+    if facts.angles_skipped_required:
+        n = len(facts.angles_skipped_required)
+        return False, (
+            f"{n} required review angle{'s' if n != 1 else ''} never ran: "
+            + ", ".join(facts.angles_skipped_required)
+        )
+    if facts.angles_skipped:
+        n = len(facts.angles_skipped)
+        return True, (
+            f"{n} non-required angle{'s' if n != 1 else ''} did not run: "
+            + ", ".join(facts.angles_skipped)
+        )
+    return True, "all review angles produced a verdict"
+
+
 def _format_failed_checks(names: tuple[str, ...]) -> str:
     """Render failing check names as a detail suffix, e.g. ``" (File
     inventory)"`` or ``" (a, b, c +2 more)"``. Empty ``names`` -> ``""`` (the
@@ -446,6 +480,7 @@ _CHECKS: dict[str, Callable[[GateFacts, Any], tuple[bool, str]]] = {
     "ci": _check_ci,
     "paths_within": _check_paths_within,
     "max_changed_lines": _check_max_changed_lines,
+    "required_angles_ran": _check_required_angles_ran,
 }
 
 
@@ -551,6 +586,12 @@ def facts_from_evidence(
         if verdict:
             review_passed = str(verdict).upper() == "PASSED"
     review_advisory_count = int(review_verdict.get("advisory_count", 0) or 0)
+    angles_skipped = tuple(
+        str(n) for n in (review_verdict.get("angles_skipped") or ())
+    )
+    angles_skipped_required = tuple(
+        str(n) for n in (review_verdict.get("angles_skipped_required") or ())
+    )
 
     tests = getattr(evidence, "tests", None) or {}
     tests_ran = bool(tests.get("ran")) if isinstance(tests, dict) else False
@@ -614,6 +655,8 @@ def facts_from_evidence(
         verifiers_ran=verifiers_ran,
         verifiers_failed=verifiers_failed,
         verifiers_unavailable=verifiers_unavailable,
+        angles_skipped=angles_skipped,
+        angles_skipped_required=angles_skipped_required,
         ci_state=ci_state,
         ci_failed_checks=ci_failed_checks,
         changed_paths=tuple(changed_paths),
