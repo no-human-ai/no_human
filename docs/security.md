@@ -354,7 +354,11 @@ named here.
   diff or token. On by default (`telemetry.enabled: true`), off with
   `telemetry.enabled: false` in `~/.no_human/config.yaml`. The browser board
   sends its own PostHog analytics and session replay on the same id (same doc
-  section) — that channel is independent of this one.
+  section) — that channel is independent of this one, and its replay network
+  capture is default-deny (`web/src/replayScrub.js`): request/response bodies
+  are redacted unless the endpoint is on a short, verified-safe allowlist, so
+  the "never a task title, repo name, path, prompt, diff or token" guarantee
+  above extends to it too.
 
 ### Only if you configure it
 
