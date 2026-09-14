@@ -27,6 +27,7 @@ splits the token, which is issue #312.
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -69,7 +70,31 @@ def on_posix(monkeypatch):
 @pytest.fixture
 def on_case_sensitive_host(monkeypatch):
     """A host where two spellings are two files, whatever this machine is."""
-    monkeypatch.setattr(exec_names, "host_folds_case", lambda: False)
+    # `*a, **k`, not a no-arg lambda: `host_folds_case` now takes `(cwd,
+    # path_env)`, and a bare `lambda: False` raises `TypeError` the moment any
+    # call site passes either.
+    monkeypatch.setattr(exec_names, "host_folds_case", lambda *a, **k: False)
+
+
+def _clear_cache_if_present():
+    # Some tests/fixtures in this file temporarily replace `host_folds_case`
+    # with a plain lambda (a monkeypatch, or the subprocess harness's own
+    # reassignment); by the time this runs that replacement may or may not
+    # have been undone yet, so `cache_clear` is optional, not assumed.
+    clear = getattr(exec_names.host_folds_case, "cache_clear", None)
+    if clear is not None:
+        clear()
+
+
+@pytest.fixture(autouse=True)
+def _clear_fold_cache():
+    """`host_folds_case` is `lru_cache`d per-process; without this a test that
+    measures a real `tmp_path` volume, or pins the probe, can read another
+    test's cached answer instead of its own.
+    """
+    _clear_cache_if_present()
+    yield
+    _clear_cache_if_present()
 
 
 # ----------------------------------------------------------------- the reader
@@ -187,82 +212,342 @@ def test_the_probe_measures_the_volume_it_is_asked_about(tmp_path):
     other_spelling = tmp_path / "PROBE"
     folds_here = other_spelling.exists() and os.path.samefile(other_spelling, written)
 
-    assert exec_names._folds_case(str(written)) is folds_here
+    assert exec_names._swap_probe(str(written)) is folds_here
 
 
 def test_the_host_probe_is_measured_once_not_once_per_token(monkeypatch):
-    """`host_folds_case` must do its filesystem work ONCE per process.
+    """`host_folds_case` must do its filesystem work ONCE per process, per
+    argument set.
 
     It is read on every guarded command, and `guard._looks_like_git_push`
-    reads it per TOKEN -- so a command of 4000 quoted arguments read it 4000
-    times. The inner `_folds_case` memo did not help: `os.path.realpath`
-    runs BEFORE it and lstats every path component, so the cache was only
-    reached after paying the syscalls it exists to avoid.
+    reads it per TOKEN -- so a command of 4000 quoted arguments could read it
+    4000 times without a cache in front of the real probing work
+    (`_folds_case_at`, which itself may `scandir`).
 
-    Measured: the realpath was within noise of the entire `case_flags()` cost,
-    and `guard.evaluate` on that shape ran 0.132s unfixed against 0.036s with
-    the probe cached. That was enough to push
-    `test_unmask_is_one_pass_not_one_per_table_entry` past its 0.4s bound on a
-    shared CI runner and turn trunk red.
-
-    This counts realpath CALLS rather than timing them. The wall-clock bound that
-    caught the regression is deliberately loose -- it asserts a shape, not a
-    machine -- so it detected this once and should not be relied on to do it
-    again.
-
-    It asserts the PROPERTY ("probed once"), not the mechanism: the
-    `cache_clear` calls below are optional, so an implementation that hoists
-    the realpath to a module constant, or memoizes some other way, passes on
-    its merits. An earlier version called `cache_clear()` unguarded, which
-    made this fail with AttributeError under any non-`lru_cache` fix -- it
-    would have rejected a correct alternative without ever reaching the
-    assertion.
+    This counts probe CALLS rather than timing them, and asserts the PROPERTY
+    ("probed once per distinct argument tuple"), not the mechanism: an
+    implementation that memoizes some other way than `lru_cache` still passes,
+    as long as repeated calls with the SAME arguments do not re-touch the
+    filesystem.
     """
-    import os as _os
     calls = []
-    real_realpath = _os.path.realpath
+    real_folds_case_at = exec_names._folds_case_at
     monkeypatch.setattr(
-        _os.path, "realpath",
-        lambda p, *a, **k: (calls.append(p), real_realpath(p, *a, **k))[1])
+        exec_names, "_folds_case_at",
+        lambda d: (calls.append(d), real_folds_case_at(d))[1])
 
-    # Optional by design -- see the docstring. Clearing the OUTER cache does
-    # not restore freshness anyway, because `_folds_case`'s memo survives it.
-    clear = getattr(exec_names.host_folds_case, "cache_clear", lambda: None)
-    clear()
-    try:
-        for _ in range(50):
-            exec_names.host_folds_case()
-    finally:
-        clear()
+    exec_names.host_folds_case.cache_clear()
+    exec_names.host_folds_case()
+    # The first call may legitimately probe several anchors (cwd, then PATH
+    # entries, in union order) before it can answer -- that is the union
+    # algorithm doing its job, not a caching failure. What must NOT happen is
+    # that count growing on repeat calls with the SAME arguments.
+    after_first = len(calls)
+    for _ in range(49):
+        exec_names.host_folds_case()
 
-    mine = [c for c in calls if str(c).endswith("exec_names.py")]
-    assert len(mine) <= 1, (
-        "host_folds_case re-probed the filesystem instead of answering from "
-        f"its cache: {len(mine)} realpath calls for 50 invocations")
+    assert len(calls) == after_first, (
+        "host_folds_case re-probed the filesystem on a repeat call instead "
+        f"of answering from its cache: {after_first} probe calls after the "
+        f"first invocation, {len(calls)} after 50")
 
 
 def test_the_probe_matches_this_host():
-    """The same question about the volume the module itself lives on, which is
-    the one `host_folds_case` answers."""
+    """The question `host_folds_case()` actually answers: does the process
+    cwd, or anything on `PATH`, live on a case-folding volume? Not: does the
+    module's OWN source file.
+
+    This pins the UNION logic (probe cwd, then PATH, first `True` wins, else
+    fold only if nothing was determinate) by reimplementing that orchestration
+    here and comparing against the real entry point -- it does NOT re-derive
+    the low-level per-path measurement independently, since both this test
+    and `host_folds_case` route through the same `_folds_case_at`/
+    `_swap_probe` helpers. A bug inside `_swap_probe` itself (e.g. the
+    `samefile` check) would not be caught by this test; that class of bug is
+    covered separately by `test_a_directory_holding_both_spellings_is_not_mistaken_for_a_fold`
+    and the other direct `_swap_probe`/`_folds_case_at` tests below.
+    """
     import os
 
-    module = Path(exec_names.__file__).resolve()
-    swapped = module.with_name(module.name.swapcase())
-    really_folds = swapped.exists() and os.path.samefile(str(swapped), str(module))
+    candidates = [os.getcwd()]
+    candidates.extend(
+        p for p in os.environ.get("PATH", "").split(os.pathsep) if p)
+
+    really_folds = None
+    for candidate in candidates:
+        verdict = exec_names._folds_case_at(candidate)
+        if verdict is True:
+            really_folds = True
+            break
+        if verdict is False:
+            really_folds = False
+    if really_folds is None:
+        really_folds = True  # unmeasurable anywhere on the union: folds
 
     assert exec_names.host_folds_case() is really_folds
     assert bool(exec_names.case_flags()) is really_folds
 
 
-def test_an_unmeasurable_path_falls_back_to_the_host_class():
-    """A path that cannot be stat'ed proves nothing about the volume, so the
-    probe returns the `os.name` answer rather than guessing the permissive one.
+def test_the_probe_never_reads_its_own_source_path(monkeypatch):
+    """The shipped defect in one assertion: in a PyInstaller onedir bundle no
+    `.py` files ship, so `__file__` names a path that does not exist at
+    runtime. The fix must not depend on it at all, so clobbering it to a dead
+    path and marking the process 'frozen' must not change the answer.
+    """
+    import sys as _sys
+
+    exec_names.host_folds_case.cache_clear()
+    before = exec_names.host_folds_case()
+
+    monkeypatch.setattr(
+        exec_names, "__file__",
+        "/nonexistent/_internal/no_human/agent/exec_names.py")
+    monkeypatch.setattr(_sys, "frozen", True, raising=False)
+    exec_names.host_folds_case.cache_clear()
+    after = exec_names.host_folds_case()
+
+    assert after is before
+
+
+def test_the_probe_measures_the_cwd_volume(tmp_path):
+    """`cwd` is not decoration -- it is an anchor the union actually probes."""
+    import os
+
+    expected = exec_names._folds_case_at(str(tmp_path))
+    if expected is None:
+        expected = True  # unmeasurable at this anchor alone folds too
+
+    exec_names.host_folds_case.cache_clear()
+    assert exec_names.host_folds_case(cwd=str(tmp_path), path_env="") is expected
+
+
+def test_the_union_folds_if_any_anchor_folds(monkeypatch, tmp_path):
+    """One folding anchor on the union is enough: a capitalised spelling only
+    needs to resolve on SOME `PATH` entry to reach the guarded program."""
+    import os
+
+    other = tmp_path / "other"
+    other.mkdir()
+    answers = {str(tmp_path): False, str(other): True}
+    monkeypatch.setattr(
+        exec_names, "_folds_case_at", lambda d: answers.get(d, None))
+
+    exec_names.host_folds_case.cache_clear()
+    assert exec_names.host_folds_case(
+        cwd=str(tmp_path), path_env=str(other)) is True
+
+
+def test_an_unmeasurable_probe_folds(monkeypatch):
+    """The bug this whole change closes: an unmeasurable path/volume must
+    fold (the DENY-more direction), never answer the permissive class-based
+    guess this test replaces (the host's OS family name, which reads
+    permissive/`False` on every POSIX host, i.e. the shipped bug).
+
+    Fixed (case-fold review, BLOCKER B item 3): the original version of this
+    test relied on a nonexistent `cwd` and empty `PATH` alone to mean
+    "nothing is measurable" -- but `host_folds_case`'s own tier-2 fallback
+    anchors (`dirname(sys.executable)`, `tempfile.gettempdir()`) are REAL
+    directories that exist on every host, checkout or frozen bundle alike.
+    On a folding host (macOS/APFS, where this test was first written) that
+    tier-2 probe happens to answer `True`, so the test passed by accident --
+    but on a genuinely case-sensitive host (Linux/ext4, e.g. CI) those same
+    real directories correctly, determinately answer `False`, which is the
+    ACCURATE measured answer for that host, not a bug to mask (confirmed by
+    simulating an ext4-like `_folds_case_at` -- real dirs answer `False`,
+    nonexistent ones answer `None` -- against the original assertions:
+    `host_folds_case` returned `False`, not `True`, failing the old,
+    host-dependent version of this test). Asserting `is True`
+    unconditionally therefore made this test pass or fail depending on which
+    real host ran the suite, for a reason that has nothing to do with the
+    "unmeasurable probe" contract it claims to pin.
+
+    Mocks `_folds_case_at` to answer `None` for every candidate (cwd, PATH,
+    AND the tier-2 fallback) so the probe is genuinely, totally unmeasurable
+    regardless of which real host runs this suite -- the only way to observe
+    the fail-closed default deterministically.
+    `test_a_totally_unmeasurable_probe_still_reaches_the_final_fold` pins the
+    same fallback through `host_folds_case` directly; this test additionally
+    pins it through the `case_flags` wrapper, and keeps the host-independent
+    `_swap_probe` assertions this test always had.
+    """
+    assert exec_names._swap_probe("/no_human-nonexistent/AbC") is None
+    # No case-swappable character in the basename: this is `None` (nothing
+    # measured), not `False` (measured and does not fold).
+    assert exec_names._swap_probe("/123") is None
+
+    monkeypatch.setattr(exec_names, "_folds_case_at", lambda directory: None)
+
+    exec_names.host_folds_case.cache_clear()
+    assert exec_names.host_folds_case(
+        cwd="/no_human-nonexistent-probe-dir", path_env="") is True
+    exec_names.host_folds_case.cache_clear()
+    assert bool(exec_names.case_flags(
+        cwd="/no_human-nonexistent-probe-dir", path_env="")) is True
+
+
+def test_a_totally_unmeasurable_probe_still_reaches_the_final_fold(monkeypatch):
+    """Coverage gap (case-fold review, BLOCKER 3): the fail-closed default
+    `return True` at the very end of `host_folds_case` -- the line reached
+    only when EVERY anchor, including the tier-2 last-resort candidates
+    (`dirname(sys.executable)`, `tempfile.gettempdir()`), answers `None` --
+    had zero test coverage. `test_an_unmeasurable_probe_folds` above looks
+    like it exercises this, but its nonexistent `cwd` and empty `PATH` just
+    mean the union loop's own candidates answer `None`; the tier-2 fallback
+    then measures the REAL `sys.executable`/tempdir, which exist and answer
+    determinately on this host, and coincidentally matches the expected
+    `True` -- mutating this final line's `True` to `False` (the shipped
+    bug's own polarity) left the full suite green.
+
+    Forces true unmeasurability by making `_folds_case_at` answer `None` for
+    every candidate, tier-2 included, so only the final `return True` can
+    produce the result.
+    """
+    monkeypatch.setattr(exec_names, "_folds_case_at", lambda directory: None)
+    exec_names.host_folds_case.cache_clear()
+    assert exec_names.host_folds_case(cwd="/no_human-nonexistent-probe-dir", path_env="") is True
+
+
+def test_the_probe_survives_a_removed_process_cwd(tmp_path, monkeypatch):
+    """Crash repro (case-fold review, BLOCKER 1): `_candidate_anchors` fell
+    back to a bare `os.getcwd()` whenever its own `cwd` argument was falsy --
+    and `os.getcwd()` itself raises `FileNotFoundError` (a subclass of
+    `OSError`) when the orchestrator's own working directory has been
+    removed out from under it (a real, observed shape: a worktree cleaned up
+    mid-session while the agent process is still chdir'd into it). That
+    exception was unguarded, so a `Bash` command whose evaluation reached
+    ANY unguarded `host_folds_case`/`_candidate_anchors(cwd, ...)` call with
+    a falsy `cwd` crashed `guard.evaluate` outright -- denial-of-availability
+    for the whole guard, not a wrong verdict.
+
+    Narrowed from an earlier claim that this required no explicit `cwd` on
+    the *`guard.evaluate` call itself*: that overstates the trigger. Some
+    fold decisions this module makes -- `command_name`'s own `fold_case=None`
+    default calls the zero-argument `host_folds_case()`, which reads the
+    process's OWN `os.getcwd()`/`PATH` regardless of what `cwd`/`env` a
+    caller passed to `guard.evaluate` -- so a caller supplying a perfectly
+    valid, existing `cwd=` would not have been insulated from this crash
+    either, as long as the PROCESS's real working directory was the one
+    removed (confirmed directly: `guard.evaluate(..., cwd=<a real, valid
+    directory>, ...)` still reaches the same unguarded `os.getcwd()` through
+    that path). The precise trigger is "the process's own real working
+    directory no longer exists", independent of whether the immediate
+    caller happened to pass an explicit `cwd`; both this test's `cwd=None`
+    call and a hypothetical explicit-`cwd` call share the identical root
+    cause and the identical fix (`_candidate_anchors` catching `OSError`),
+    which is why one repro of the process-level precondition below is
+    enough to pin it for every call path.
+
+    Reproduces the precondition directly: chdir into a scratch directory,
+    delete it while it is still the process cwd, then confirm both the probe
+    and the full `guard.evaluate` entry point still return an answer instead
+    of raising.
+    """
+    doomed = tmp_path / "doomed"
+    doomed.mkdir()
+    original_cwd = os.getcwd()
+    os.chdir(doomed)
+    try:
+        os.rmdir(doomed)
+        assert not os.path.exists(doomed)
+
+        exec_names.host_folds_case.cache_clear()
+        # Must not raise (FileNotFoundError/OSError) -- must return a verdict.
+        result = exec_names.host_folds_case(cwd=None, path_env="")
+        assert result in (True, False)
+
+        decision = guard.evaluate(
+            "Bash", {"command": "pip install evilpkg"}, forbidden_paths=[],
+            never_push_to=["main"], cwd=None, env={"PATH": ""})
+        assert decision is not None
+    finally:
+        os.chdir(original_cwd)
+
+
+def test_a_directory_holding_both_spellings_is_not_mistaken_for_a_fold(tmp_path):
+    """`exists`-only would call this a fold; it is two distinct files on a
+    case-SENSITIVE volume, and denying accordingly would be wrong."""
+    import os
+
+    # `"foo".swapcase()` is `"FOO"` (every letter swaps, not just the
+    # first) -- the fixture must create exactly that spelling, or
+    # `_swap_probe` never gets past its own-exists/swapped-exists check and
+    # the `samefile` line below it is never reached.
+    (tmp_path / "FOO").write_text("upper")
+    (tmp_path / "foo").write_text("lower")
+    if os.path.samefile(tmp_path / "FOO", tmp_path / "foo"):
+        pytest.skip("this volume folds case; both names collide onto one file")
+
+    assert exec_names._swap_probe(str(tmp_path / "foo")) is False
+
+
+def test_an_unanswerable_swap_probe_does_not_manufacture_a_verdict(tmp_path, monkeypatch):
+    """`_swap_probe`'s `except (OSError, ValueError)` arm is the tri-state
+    contract's one remaining permissive-direction return with no coverage: if
+    it ever regressed from `None` (unmeasured) to `False` (a measured "does
+    not fold" verdict), that would be indistinguishable to every caller from
+    a real case-sensitive answer -- the exact shape of bug this guard exists
+    to kill, just relocated to `_swap_probe`'s own error path instead of
+    `host_folds_case`'s.
+
+    Reaches the except arm for real rather than mocking it away entirely:
+    both spellings genuinely exist (so the earlier `not os.path.exists`
+    guards do not short-circuit first), and `os.path.samefile` -- the one
+    call in `_swap_probe` that is not itself exception-swallowing -- is made
+    to raise `OSError`, simulating the dead-mount/permission-denied-
+    ancestor/symlink-loop cases the docstring names.
+    """
+    (tmp_path / "FOO").write_text("upper")
+    (tmp_path / "foo").write_text("lower")
+    if os.path.samefile(tmp_path / "FOO", tmp_path / "foo"):
+        pytest.skip("this volume folds case; both names collide onto one file")
+
+    def _raise_os_error(*_args, **_kwargs):
+        raise OSError("simulated dead mount / symlink loop")
+
+    monkeypatch.setattr(os.path, "samefile", _raise_os_error)
+    assert exec_names._swap_probe(str(tmp_path / "foo")) is None
+
+
+def test_an_unreadable_candidate_does_not_answer_false(tmp_path):
+    """A candidate this process cannot even list must not manufacture a
+    `False` (case-sensitive) verdict -- that would be as wrong a guess as the
+    permissive fallback this change removes, just from a different input.
+
+    The directory is named without a case-swappable character (`123`, not
+    `blocked`/`BLOCKED`) so `_swap_probe` on its own name is `None` and
+    `_folds_case_at` is forced into the `scandir` fallback this test means to
+    exercise, rather than answering from the directory's own swapped name --
+    which, on a folding host, would resolve before ever touching permissions.
     """
     import os
 
-    missing = "/no_human-nonexistent-probe-dir/AbC"
+    blocked = tmp_path / "123"
+    blocked.mkdir()
+    blocked.chmod(0o000)
+    try:
+        if os.access(blocked, os.R_OK):
+            pytest.skip("this process can read 0o000 directories (e.g. root)")
+        assert exec_names._folds_case_at(str(blocked)) is None
+    finally:
+        blocked.chmod(0o755)
 
-    assert exec_names._folds_case(missing) is (os.name == "nt")
+
+def test_no_test_asserts_the_permissive_fallback():
+    """Self-guard: the permissive `os.name`-vs-`"nt"` fallback this change
+    deletes must never again be asserted as the correct answer anywhere in
+    this file -- that assertion IS the bug (issue title: 'the case-fold
+    probe answers from a path that exists at runtime').
+
+    The needle is assembled from parts rather than written as one literal, so
+    this test's own source does not trip its own check.
+    """
+    source = Path(__file__).read_text(encoding="utf-8")
+    quote = chr(34)
+    apostrophe = chr(39)
+    needle_double = "os" + ".name" + " == " + quote + "nt" + quote
+    needle_single = "os" + ".name" + " == " + apostrophe + "nt" + apostrophe
+    assert needle_double not in source
+    assert needle_single not in source
 
 
 #: The four rows #328 measured as open on main, plus the flag spelling of the
@@ -302,7 +587,7 @@ def _verdicts_with_fold(fold: bool, rows=_FOLD_SENSITIVE_ROWS, readonly=False) -
     code = dedent(f"""
         import json
         from no_human.agent import exec_names
-        exec_names.host_folds_case = lambda: {fold!r}
+        exec_names.host_folds_case = lambda *a, **k: {fold!r}
         from no_human.agent.guard import evaluate
         out = {{}}
         for cmd in {list(rows)!r}:
@@ -335,6 +620,42 @@ def test_a_case_sensitive_host_is_not_punished():
     denied = _verdicts_with_fold(False)
 
     assert denied == {cmd: False for cmd in _FOLD_SENSITIVE_ROWS}, denied
+
+
+def test_a_frozen_layout_still_denies_the_forge_rows():
+    """AC5: the shipped PyInstaller onedir bundle ships no `.py` files, so
+    `exec_names.__file__` names a path absent at runtime. This reuses the
+    `_verdicts_with_fold` subprocess shape but leaves the probe REAL --
+    unlike the tests above, nothing here is pinned -- and clobbers `__file__`
+    plus `sys.frozen` before `guard` (and therefore its import-time compiled
+    patterns) is even imported. If the fix still secretly depended on
+    `__file__`, this dead path would make it answer differently from the
+    unfrozen case measured by `_decide` below; the two must agree.
+    """
+    code = dedent(f"""
+        import json, sys
+        from no_human.agent import exec_names
+        exec_names.__file__ = "/nonexistent/_internal/no_human/agent/exec_names.py"
+        sys.frozen = True
+        from no_human.agent.guard import evaluate
+        out = {{}}
+        for cmd in {list(_FOLD_SENSITIVE_ROWS)!r}:
+            decision = evaluate(
+                "Bash", {{"command": cmd}}, forbidden_paths=[],
+                never_push_to=["main"], cwd=".", env={{"PATH": ""}})
+            out[cmd] = not decision.allow
+        print(json.dumps(out))
+    """)
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=300)
+    assert result.returncode == 0, result.stderr
+    frozen_denied = json.loads(result.stdout)
+
+    unfrozen_denied = {cmd: _decide(cmd) for cmd in _FOLD_SENSITIVE_ROWS}
+
+    assert frozen_denied == unfrozen_denied, (
+        "a dead __file__ under a simulated frozen layout changed the "
+        f"verdict: frozen={frozen_denied} unfrozen={unfrozen_denied}")
 
 
 # ------------------------------------------------ #328's runner-recursion half

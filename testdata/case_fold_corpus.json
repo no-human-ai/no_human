@@ -1,0 +1,28 @@
+{
+  "_comment": "AC4 corpus for tests/test_case_fold_sweep.py. Each row is run through the real no_human.agent.guard.evaluate() entry point (Bash, forbidden_paths=[], never_push_to=['main'], cwd/env as given). Several rows here (the capitalised GH/RM/FIND/GIT spellings) are denied only via matchers in guard.py that key off exec_names.host_folds_case()/case_flags() with NO cwd/path_env override -- their correct denied-ness is a property of the HOST this suite runs on (a folding host's shell will actually resolve `RM` to `rm` via the filesystem; a non-folding host's shell gets 'command not found' and there is nothing to deny), not a universal constant. This file intentionally carries NO baseline table: a hand-typed 'what the old code would have denied' dict cannot be trusted to reflect the old code's actual behaviour on whatever host runs the suite (CI's case-sensitive runner vs a folding dev host), which is exactly the defect a prior version of this corpus shipped -- see test_no_corpus_row_moved_from_denied_to_allowed, which computes the pre-fix baseline by literally forcing the CURRENT guard's host_folds_case() to the value the OLD probe formula measures on THIS host, in a fresh interpreter, rather than reading a constant. This file's job is the AC4 safety net (zero DENY->ALLOW) rather than the closing-direction proof; the closing-direction proof (PIP/Pip/PIP3/UV installer rows flipping ALLOW->DENY) lives in test_the_sweep_moved_rows_in_the_closing_direction, which needs a constructed two-venv session to exercise structurally and is therefore not representable as static cwd/env literals here.",
+  "rows": [
+    {"cmd": "GH pr merge 7", "cwd": ".", "env": {"PATH": ""}},
+    {"cmd": "gh pr merge 7", "cwd": ".", "env": {"PATH": ""}},
+    {"cmd": "RM -rf /", "cwd": ".", "env": {"PATH": ""}},
+    {"cmd": "rm -rf /", "cwd": ".", "env": {"PATH": ""}},
+    {"cmd": "rm -RF /", "cwd": ".", "env": {"PATH": ""}},
+    {"cmd": "FIND / -delete", "cwd": ".", "env": {"PATH": ""}},
+    {"cmd": "find / -delete", "cwd": ".", "env": {"PATH": ""}},
+    {"cmd": "sh -c \"GIT push origin main\"", "cwd": ".", "env": {"PATH": ""}},
+    {"cmd": "sh -c \"git push origin main\"", "cwd": ".", "env": {"PATH": ""}},
+    {"cmd": "sh -c \"GIT.CMD push origin main\"", "cwd": ".", "env": {"PATH": ""}},
+    {"cmd": "NH approve 7", "cwd": ".", "env": {"PATH": ""}},
+    {"cmd": "nh approve 7", "cwd": ".", "env": {"PATH": ""}},
+    {"cmd": "GIT push origin main", "cwd": ".", "env": {"PATH": ""}},
+    {"cmd": "git push origin main", "cwd": ".", "env": {"PATH": ""}},
+    {"cmd": "pip list", "cwd": ".", "env": {"PATH": ""}},
+    {"cmd": "pip show sync", "cwd": ".", "env": {"PATH": ""}},
+    {"cmd": "ls -la", "cwd": ".", "env": {"PATH": ""}},
+    {"cmd": "git status", "cwd": ".", "env": {"PATH": ""}},
+    {"cmd": "pytest -q", "cwd": ".", "env": {"PATH": ""}},
+    {"cmd": "nh learnings", "cwd": ".", "env": {"PATH": ""}},
+    {"cmd": "PIPELINE_STATUS=1 echo ok", "cwd": ".", "env": {"PATH": ""}},
+    {"cmd": "echo \"PIP install this\"", "cwd": ".", "env": {"PATH": ""}},
+    {"cmd": "echo \"GH pr merge\"", "cwd": ".", "env": {"PATH": ""}}
+  ]
+}

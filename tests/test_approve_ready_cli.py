@@ -77,6 +77,67 @@ def _repo_with_feature_branch(tmp_path, name="repo"):
     return repo, head_sha
 
 
+def _repo_with_conflicting_feature_branch(tmp_path, name="repo"):
+    """Like `_repo_with_feature_branch`, except `main` moves AFTER `feature`
+    branches off, and both edit the same file (`a.txt`) — the shape of the
+    real incident this bug report is about: the six merge_policy rules were
+    stamped for `feature`'s head and still say ready, but `feature` no
+    longer merges into `main`'s current tip. Returns (repo_path, head_sha)
+    for `feature`."""
+    repo = _make_repo(tmp_path, name)
+    _git(repo, "checkout", "-b", "feature")
+    (repo / "a.txt").write_text("feature edit\n")
+    _git(repo, "commit", "-am", "feature edits a.txt")
+    head_sha = _git_out(repo, "rev-parse", "feature")
+    _git(repo, "checkout", "main")
+    (repo / "a.txt").write_text("main edit\n")
+    _git(repo, "commit", "-am", "main edits a.txt after branching")
+    return repo, head_sha
+
+
+def _repo_with_remote_only_conflicting_branch(tmp_path, name="repo"):
+    """Like `_repo_with_conflicting_feature_branch`, except `feature` is
+    pushed to a real `origin` remote and then deleted LOCALLY, so the only
+    ref naming it afterwards is `refs/remotes/origin/feature` — the norm for
+    this repo's squash-from-worktree landing checkout, where a PR branch
+    routinely has no local ref at all (`git.py:389-401`'s
+    `resolve_commitish` docstring; `pr_watcher._base_tips`'s docstring lines
+    991-1001). Reproduces the exact failure mode this fixture exists to
+    catch: `check_landability` called with the BARE branch name would ask
+    `refs_resolvable(repo_path, "feature")` — a plain `rev-parse --verify
+    feature^{commit}` with no `origin/` fallback — which fails for this
+    fixture and silently degrades the verdict to `state="unknown"`, masking
+    a real conflict as fail-open-landable instead of reporting `state=
+    "conflict"`. Returns (repo_path, head_sha) for `feature`, exactly as its
+    sibling fixtures do."""
+    upstream = tmp_path / f"{name}-upstream.git"
+    subprocess.run(["git", "init", "--bare", "-b", "main", str(upstream)],
+                    check=True, capture_output=True)
+
+    repo = _make_repo(tmp_path, name)
+    _git(repo, "remote", "add", "origin", str(upstream))
+    _git(repo, "push", "origin", "main")
+
+    _git(repo, "checkout", "-b", "feature")
+    (repo / "a.txt").write_text("feature edit\n")
+    _git(repo, "commit", "-am", "feature edits a.txt")
+    head_sha = _git_out(repo, "rev-parse", "feature")
+    _git(repo, "push", "origin", "feature")
+
+    _git(repo, "checkout", "main")
+    (repo / "a.txt").write_text("main edit\n")
+    _git(repo, "commit", "-am", "main edits a.txt after branching")
+
+    _git(repo, "branch", "-D", "feature")
+    # Confirm the fixture actually built the "no local ref" shape it claims.
+    assert subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "--verify", "--quiet",
+         "feature^{commit}"],
+        capture_output=True).returncode != 0
+    assert _git_out(repo, "rev-parse", "origin/feature") == head_sha
+    return repo, head_sha
+
+
 # --------------------------------------------------------------------------- #
 # CLI harness (copied from tests/test_approve.py)                             #
 # --------------------------------------------------------------------------- #
@@ -132,13 +193,16 @@ _RULES = [
 
 def _ready_task(db, tmp_path, *, title, repo_name, review_passed=True,
                  mp_ready=True, mp_policy_changed=False, mp_sha=None,
-                 rules=None):
+                 rules=None, repo_factory=_repo_with_feature_branch):
     """An AWAITING_APPROVAL task with a real local feature branch, a
     `pr_watch`/`pr_branch` pair (all `resolve_task_pr` needs — no PR event
     log required), a `merge_policy` verdict, and a `review_history` round
     stamped on the branch head (all `_review_pass_evidence` needs). Returns
-    (task_id, repo_path, head_sha)."""
-    repo, head_sha = _repo_with_feature_branch(tmp_path, repo_name)
+    (task_id, repo_path, head_sha). `repo_factory` defaults to a clean
+    feature branch; pass `_repo_with_conflicting_feature_branch` to build a
+    task whose rules verdict is ready but whose branch currently conflicts
+    with its base."""
+    repo, head_sha = repo_factory(tmp_path, repo_name)
     verdict_sha = mp_sha if mp_sha is not None else head_sha
 
     async def _go():
@@ -352,6 +416,190 @@ def test_ready_yes_respects_review_pass_precondition(tmp_path, monkeypatch):
 
     t, _ = _task_state(db, task_id)
     assert t.status is TaskStatus.AWAITING_APPROVAL
+
+
+# --------------------------------------------------------------------------- #
+# live base mergeability — quality rules passing is not the whole story: the  #
+# base can move (a sibling PR landing rewrites RELEASE_MANIFEST.txt) and      #
+# leave a rules-passing verdict pointing at a branch that no longer merges    #
+# --------------------------------------------------------------------------- #
+
+def test_quality_ready_but_conflicting_task_is_not_presented_as_ready_to_land(
+        tmp_path, monkeypatch):
+    """The exact bug this module fixes: rules 2/2, but the branch conflicts
+    with its CURRENT base. It must still be printed (never hidden), but must
+    NOT be folded back into "ready to land" — no CONFLICT verdict is allowed
+    to disappear from the summary or the --yes landing set."""
+    db = tmp_path / "nh.db"
+    monkeypatch.setattr(approve_merge_mod, "land_task", _never_called_land_task)
+
+    task_id, _, _ = _ready_task(
+        db, tmp_path, title="Conflicted", repo_name="repo",
+        repo_factory=_repo_with_conflicting_feature_branch)
+
+    result = _invoke(approve, db, ["--ready"])
+
+    assert result.exit_code == 0, result.output
+    # Not hidden: it is still listed, with its rules verdict.
+    assert task_id[:8] in result.output
+    assert "rules 2/2" in result.output
+    # But visibly not landable: a CONFLICT marker on its line...
+    line = next(ln for ln in result.output.splitlines() if task_id[:8] in ln)
+    assert "CONFLICT" in line, line
+    # ...and it must not be counted among the ready-to-land tasks.
+    assert "0 task(s) ready to land" in result.output
+    assert "1 task(s) pass the quality rules but do NOT merge" in result.output
+    assert "re-run with --yes to land the ready one(s)" not in result.output
+
+
+def test_clean_task_that_passes_rules_is_still_listed_as_ready(tmp_path, monkeypatch):
+    """Counter-case: rules 2/2 AND the branch merges cleanly into its
+    current base — must still show up as ready, with a clean merge marker,
+    not swept up by the new conflict-detection code path."""
+    db = tmp_path / "nh.db"
+    monkeypatch.setattr(approve_merge_mod, "land_task", _never_called_land_task)
+
+    task_id, _, _ = _ready_task(db, tmp_path, title="Clean", repo_name="repo")
+
+    result = _invoke(approve, db, ["--ready"])
+
+    assert result.exit_code == 0, result.output
+    assert task_id[:8] in result.output
+    line = next(ln for ln in result.output.splitlines() if task_id[:8] in ln)
+    assert "rules 2/2" in line, line
+    assert "merge: clean" in line, line
+    assert "CONFLICT" not in line, line
+    assert "1 task(s) merge-ready" in result.output
+    assert "--yes to land them" in result.output
+
+
+def test_ready_output_separates_rules_verdict_from_merge_verdict(tmp_path, monkeypatch):
+    """A single --ready run with one clean task and one conflicting task
+    must show both halves independently on each line, not fold conflicted
+    tasks' merge status into their rules status or vice versa."""
+    db = tmp_path / "nh.db"
+    monkeypatch.setattr(approve_merge_mod, "land_task", _never_called_land_task)
+
+    clean_id, _, _ = _ready_task(db, tmp_path, title="Clean", repo_name="repo-clean")
+    conflicted_id, _, _ = _ready_task(
+        db, tmp_path, title="Conflicted", repo_name="repo-conflicted",
+        repo_factory=_repo_with_conflicting_feature_branch)
+
+    result = _invoke(approve, db, ["--ready"])
+
+    assert result.exit_code == 0, result.output
+    clean_line = next(ln for ln in result.output.splitlines() if clean_id[:8] in ln)
+    conflicted_line = next(
+        ln for ln in result.output.splitlines() if conflicted_id[:8] in ln)
+
+    assert "rules 2/2" in clean_line and "merge: clean" in clean_line
+    assert "rules 2/2" in conflicted_line and "CONFLICT" in conflicted_line
+    # Both pass the same quality rules — only the merge half differs.
+    assert "1 task(s) ready to land" in result.output
+    assert "1 task(s) pass the quality rules but do NOT merge" in result.output
+
+
+def test_conflicted_task_is_visible_and_not_auto_resolved(tmp_path, monkeypatch):
+    """`--ready --yes` must never call `land_task` for a conflicted task —
+    no auto-rebase, no auto-resolve — and must print it as not landed
+    rather than silently dropping it from the run."""
+    db = tmp_path / "nh.db"
+    calls = []
+
+    def _fake(*, task_id, **kwargs):
+        calls.append(task_id)
+        return LandResult(ok=True, step="close_pr",
+                           landed_sha="ab" * 20, message="landed by fake")
+
+    monkeypatch.setattr(approve_merge_mod, "land_task", _fake)
+
+    task_id, _, _ = _ready_task(
+        db, tmp_path, title="Conflicted", repo_name="repo",
+        repo_factory=_repo_with_conflicting_feature_branch)
+
+    result = _invoke(approve, db, ["--ready", "--yes"])
+
+    assert result.exit_code == 0, result.output
+    assert calls == []  # land_task never invoked for the conflicted task
+    assert "not landed" in result.output
+    assert task_id[:8] in result.output
+
+    t, _ = _task_state(db, task_id)
+    assert t.status is TaskStatus.AWAITING_APPROVAL
+
+
+def test_remote_only_pr_branch_is_probed_and_reported_as_conflict(
+        tmp_path, monkeypatch):
+    """The PR branch exists ONLY as `origin/feature` (no local ref) — the
+    routine shape for this repo's squash-from-worktree landing checkout.
+    `_approve_find_ready` must probe landability using the resolved HEAD
+    SHA, not the bare `pr_branch` name: passing the bare name makes
+    `check_landability` -> `conflicting_paths` -> `refs_resolvable` fail to
+    resolve `feature` at all (no `origin/` fallback there) and silently
+    degrade to `state="unknown"` — which this command's fail-open contract
+    then treats as landable, exactly reproducing the incident (a real
+    conflict slips through `--ready` and `--yes` hands it to `land_task`,
+    which fails at squash). With the fix, the CONFLICT is detected and
+    reported instead of masked."""
+    db = tmp_path / "nh.db"
+    monkeypatch.setattr(approve_merge_mod, "land_task", _never_called_land_task)
+
+    task_id, _, _ = _ready_task(
+        db, tmp_path, title="Remote Only", repo_name="repo",
+        repo_factory=_repo_with_remote_only_conflicting_branch)
+
+    result = _invoke(approve, db, ["--ready"])
+
+    assert result.exit_code == 0, result.output
+    assert task_id[:8] in result.output
+    line = next(ln for ln in result.output.splitlines() if task_id[:8] in ln)
+    # Must be reported as an actual CONFLICT, never degrade to "unknown"
+    # just because the branch has no local ref.
+    assert "CONFLICT" in line, line
+    assert "unknown" not in line, line
+    assert "0 task(s) ready to land" in result.output
+    assert "1 task(s) pass the quality rules but do NOT merge" in result.output
+
+    # --yes must never hand this conflicted, remote-only branch to land_task.
+    result_yes = _invoke(approve, db, ["--ready", "--yes"])
+    assert result_yes.exit_code == 0, result_yes.output
+    assert "not landed" in result_yes.output
+
+
+def test_unknown_base_degrades_open_and_still_lands(tmp_path, monkeypatch):
+    """When the base cannot be resolved at all (fail-open contract), the
+    task is listed with an "unknown" merge marker, is NOT treated as a
+    conflict, and --yes still lands it — a git failure must never turn a
+    genuinely landable task into a refusal."""
+    db = tmp_path / "nh.db"
+
+    def _repo_with_no_base(tmp_path, name="repo"):
+        repo, head_sha = _repo_with_feature_branch(tmp_path, name)
+        _git(repo, "checkout", "feature")
+        _git(repo, "branch", "-D", "main")
+        return repo, head_sha
+
+    calls = []
+
+    def _fake(*, task_id, **kwargs):
+        calls.append(task_id)
+        return LandResult(ok=True, step="close_pr",
+                           landed_sha="cd" * 20, message="landed by fake")
+
+    monkeypatch.setattr(approve_merge_mod, "land_task", _fake)
+
+    task_id, _, _ = _ready_task(
+        db, tmp_path, title="No Base", repo_name="repo",
+        repo_factory=_repo_with_no_base)
+
+    result = _invoke(approve, db, ["--ready", "--yes"])
+
+    assert result.exit_code == 0, result.output
+    assert calls == [task_id]
+    assert "merged" in result.output
+
+    t, _ = _task_state(db, task_id)
+    assert t.status is TaskStatus.DONE
 
 
 # --------------------------------------------------------------------------- #
