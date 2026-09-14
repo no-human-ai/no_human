@@ -12,7 +12,7 @@ from __future__ import annotations
 import math
 from typing import Any
 
-from .cost import attempts_cost
+from .cost import attempts_cost, ledger_rows_as_attempts
 from .db import USAGE_ROLES, Store, usage_columns_for
 
 
@@ -333,8 +333,35 @@ async def compute_metrics(store: Store) -> dict[str, Any]:
         output_col = "output_tokens" if prefix == "" else f"{prefix}output_tokens"
         cost_cols += [tokens_col, read_col, creation_col, output_col]
     rows = await store.query(f"SELECT {', '.join(cost_cols)} FROM attempts")
+    attempt_dicts = [dict(zip(cost_cols, r)) for r in rows]
+    # The WHOLE unattributed_usage ledger — both the OWNED half (already
+    # folded into a per-task cost_usd, see TaskOut.from_task) and the
+    # ownerless half (no task claims it, `nh status`'s residual line) — so
+    # this lifetime figure is the honest total: `cost_usd_total == Σ(every
+    # task's cost_usd) + ownerless`. Grouped by (site, model), same shape
+    # `usage_ledger_rows_by_task` returns, so `ledger_rows_as_attempts` prices
+    # it identically whichever caller built the rows.
+    ledger_cols = ["site", "model", "tokens_used", "cache_read_tokens",
+                   "cache_creation_tokens"]
+    ledger_rows = await store.query(
+        "SELECT site, model, "
+        "COALESCE(SUM(tokens_used), 0), "
+        "COALESCE(SUM(cache_read_tokens), 0), "
+        "COALESCE(SUM(cache_creation_tokens), 0) "
+        "FROM unattributed_usage GROUP BY site, model")
+    ledger_dicts = [dict(zip(ledger_cols, r)) for r in ledger_rows]
     cost_usd_total, cost_model_total = attempts_cost(
-        [dict(zip(cost_cols, r)) for r in rows])
+        attempt_dicts + ledger_rows_as_attempts(ledger_dicts))
+    ledger_tokens_total = sum(
+        (d.get("tokens_used") or 0) + (d.get("cache_read_tokens") or 0)
+        + (d.get("cache_creation_tokens") or 0)
+        for d in ledger_dicts)
+    # The two halves of the SAME ledger, separately visible — `nh status`'s
+    # split (`Store.unattributed_usage_totals(owned=...)`) surfaced here too,
+    # so a caller of /api/metrics does not have to re-derive "how much of the
+    # ledger already counts toward a task" from the raw table itself.
+    ledger_owned_tokens = (await store.unattributed_usage_totals(owned=True))["total"]
+    ledger_ownerless_tokens = (await store.unattributed_usage_totals(owned=False))["total"]
 
     return {
         "prs_opened": prs_opened or 0,
@@ -356,22 +383,38 @@ async def compute_metrics(store: Store) -> dict[str, Any]:
         "aux_cache_creation_total": aux_creation or 0,
         # web/src/cost.js's lifetimeCost used to compute this itself at one
         # flat Anthropic rate; the board now only formats what this key sends.
-        # None (not 0.0) when the install has no attempts yet — same "no
-        # attempts" vs "attempts spent $0" distinction as TaskOut.cost_usd.
+        # None (not 0.0) when the install has no attempts AND no ledger rows
+        # yet — same "nothing recorded" vs "recorded, spent $0" distinction as
+        # TaskOut.cost_usd. Includes BOTH ledger halves (owned + ownerless),
+        # so `cost_usd_total == Σ(every task's cost_usd) + ledger_ownerless
+        # cost` — the per-task figure only ever sees the owned half.
         "cost_usd_total": cost_usd_total,
         "cost_model_total": cost_model_total,
-        # The token-basis sibling of cost_usd_total: the SAME nine buckets
-        # (coder/reviewer/aux x used+cache_creation+cache_read) attempts_cost
-        # prices, summed instead of priced. Subscription-mode surfaces read
-        # this instead of a dollar estimate (a flat-fee plan pays nothing per
-        # token, so a $ figure there is a rate estimate, not real spend). An
-        # int, always — 0 (not None) for an install with no attempts, unlike
-        # cost_usd_total: a token COUNT of zero is honest, a $0 estimate is not.
+        # The token-basis sibling of cost_usd_total: the SAME nine attempt
+        # buckets (coder/reviewer/aux x used+cache_creation+cache_read)
+        # attempts_cost prices, PLUS the whole unattributed_usage ledger
+        # (both halves, see cost_usd_total), summed instead of priced.
+        # Subscription-mode surfaces read this instead of a dollar estimate
+        # (a flat-fee plan pays nothing per token, so a $ figure there is a
+        # rate estimate, not real spend). An int, always — 0 (not None) for
+        # an install with nothing recorded, unlike cost_usd_total: a token
+        # COUNT of zero is honest, a $0 estimate is not.
         "tokens_total": (
             total_tokens + total_cache_read + sum_creation
             + rev_used + rev_creation + rev_read
             + aux_used + aux_creation + aux_read
+            + ledger_tokens_total
         ),
+        # The unattributed_usage ledger's own split, mirroring `nh status`'s
+        # residual line: `owned` rows are pre-attempt spend already folded
+        # into some task's cost_usd (see TaskOut.from_task); `ownerless` rows
+        # (task_id IS NULL, or rolled up by compact_unattributed_usage) are
+        # not — and never will be — attached to any task. Additive keys: a
+        # consumer that does not know them still reads every existing key
+        # unchanged. `ledger_owned_tokens + ledger_ownerless_tokens ==
+        # ledger_tokens_total` folded into `tokens_total` above.
+        "ledger_owned_tokens": ledger_owned_tokens,
+        "ledger_ownerless_tokens": ledger_ownerless_tokens,
         # Per-role burn across the whole install. `by_tier` beside it answers
         # a different question (which MODEL ran, from `attempts.models`); this
         # one answers which ROLE spent, which is what a cost target is set
