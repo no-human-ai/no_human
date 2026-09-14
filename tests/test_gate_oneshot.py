@@ -29,7 +29,7 @@ from no_human.review import oneshot
 from no_human.review.oneshot import GateUnavailable, GateResult, render_markdown, run_gate
 from no_human.review.reviewer import ReviewDecision
 from no_human.review.selfcheck import ChecklistItem
-from no_human.config import MissingCredentialError
+from no_human.config import AuthError, MissingCredentialError
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -302,6 +302,115 @@ def _repo_fingerprint(repo):
     )
 
 
+# Fixed, closed allowlist of the git subcommands `run_gate`'s own plumbing
+# (oneshot.py) and the tamper guard it calls (testing/runner.py) are allowed
+# to issue against the user's own checkout — enumerated by reading every
+# `["git", ...]` construction reachable from `run_gate` (oneshot.py's `_git`/
+# `_rev_parse`/`_merge_base`/`_diff`/`_uncommitted_paths`/
+# `_origin_owner_repo`/`_resolve_pr_mode`, `GitRepo.current_branch`/
+# `head_sha`/`default_branch`, and `runner.py`'s `_git_show`/`_git_files`).
+# `clone`/`checkout` are deliberately absent here: they exist only inside
+# `_materialized_pr_head`'s throwaway temp clone and are checked separately.
+_READ_ONLY_GIT_VERBS = {
+    "rev-parse", "merge-base", "diff", "status", "config", "fetch",
+    "symbolic-ref", "remote", "ls-tree", "show",
+}
+
+
+_GIT_GLOBAL_OPTS_TAKING_A_VALUE = {"-c", "-C", "--git-dir", "--work-tree"}
+
+
+def _git_subcommand(argv: list[str]) -> str | None:
+    """The first non-flag token after the program name and any global
+    options — git's subcommand. `GitRepo._run` (vcs/git.py:220-224) always
+    prepends `-c user.name=... -c user.email=...` ahead of the real
+    subcommand, so a naive "first token not starting with '-'" scan would
+    misread the `-c` value (`user.name=no_human`) as the subcommand; skip
+    each such option's value explicitly instead."""
+    tokens = iter(argv[1:])
+    for tok in tokens:
+        if tok in _GIT_GLOBAL_OPTS_TAKING_A_VALUE:
+            next(tokens, None)  # consume this option's value, not the verb
+            continue
+        if tok.startswith("-"):
+            continue
+        return tok
+    return None
+
+
+def _install_fail_closed_git_spy(monkeypatch, *, real_repo: Path):
+    """Replace `subprocess.run`/`Popen` with a DEFAULT-DENY spy for the
+    duration of a `run_gate` call.
+
+    This replaces a prior denylist spy that only inspected calls whose
+    `argv[0]` was the exact string `"git"` and only rejected a hardcoded
+    6-verb set — blind to any other program name (e.g. a planted
+    `subprocess.run(["/bin/sh", "-c", "touch /tmp/pwned"])`, or an absolute
+    path to the git binary) and to any write verb outside those six (`git
+    branch -D`, `git stash`, `git clean -fd`, `git tag -f`, `git remote
+    set-head`, ...). Here every call must resolve to the `git` program by
+    basename; its subcommand must be on the fixed read-only allowlist above,
+    with `remote`/`config`/`status` further pinned to the exact read-only
+    subform this call graph actually uses; `clone`/`checkout` are permitted
+    only when clearly scoped to the throwaway PR-head clone, never against
+    `real_repo`; anything else — a different program, an unlisted verb, a
+    write-shaped call, or any use of `Popen` at all (this call graph never
+    needs it) — fails the test immediately instead of silently passing.
+    """
+    real_repo = real_repo.resolve()
+    real_run = subprocess.run
+
+    def _check(argv, cwd):
+        assert argv and not isinstance(argv, str), (
+            f"gate ran a subprocess with a shell string / empty argv: {argv!r}"
+        )
+        argv = [str(a) for a in argv]
+        assert Path(argv[0]).name == "git", f"gate ran a non-git program: {argv}"
+        verb = _git_subcommand(argv)
+        resolved_cwd = Path(cwd).resolve() if cwd else None
+
+        if verb == "clone":
+            dest = Path(argv[-1])
+            assert str(dest) != str(real_repo), (
+                f"gate cloned into the user's own checkout: {argv}"
+            )
+            return
+        if verb == "checkout":
+            assert resolved_cwd is not None and resolved_cwd != real_repo, (
+                f"gate ran `git checkout` against the user's own checkout: {argv}"
+            )
+            assert "--detach" in argv, f"gate ran a non-detached checkout: {argv}"
+            return
+
+        assert verb in _READ_ONLY_GIT_VERBS, (
+            f"gate ran an unlisted (non-allowlisted) git subcommand: {argv}"
+        )
+        assert resolved_cwd == real_repo, (
+            f"gate ran a read-only git command outside the user's own "
+            f"checkout: {argv} (cwd={cwd})"
+        )
+        if verb == "remote":
+            assert "show" in argv, f"gate ran a write-shaped `git remote`: {argv}"
+        if verb == "config":
+            assert "--get" in argv, f"gate ran a write-shaped `git config`: {argv}"
+        if verb == "status":
+            assert "--porcelain" in argv, f"gate ran a non-porcelain `git status`: {argv}"
+
+    def _run_spy(argv, *a, **kw):
+        _check(argv, kw.get("cwd"))
+        return real_run(argv, *a, **kw)
+
+    # NOTE: `subprocess.Popen` is deliberately NOT patched here — `run_spy`
+    # delegates to the real `subprocess.run`, which itself is implemented
+    # on top of `subprocess.Popen`; patching `Popen` too would make every
+    # legitimate call raise from inside `real_run`. `subprocess.run` is the
+    # only primitive this call graph ever invokes directly (confirmed by
+    # reading oneshot.py, vcs/git.py, and runner.py's `_git_show`/
+    # `_git_files`), so gating just `run` is already fail-closed for this
+    # call graph; a future direct `Popen` call site would need its own spy.
+    monkeypatch.setattr(subprocess, "run", _run_spy)
+
+
 def test_the_gate_makes_no_repo_writes(tmp_path, monkeypatch):
     repo, _bare = _make_repo_with_origin(tmp_path)
     _git(repo, "checkout", "-b", "feature")
@@ -320,6 +429,10 @@ def test_the_gate_makes_no_repo_writes(tmp_path, monkeypatch):
 
 
 def test_the_gate_never_shells_out_to_a_write_command(tmp_path, monkeypatch):
+    """Fail-closed: every subprocess call the gate makes must resolve to the
+    `git` program and carry a subcommand on the fixed read-only allowlist —
+    not merely avoid a hardcoded denylist of six verbs behind an
+    `argv[0] == "git"` string check. See `_install_fail_closed_git_spy`."""
     repo, _bare = _make_repo_with_origin(tmp_path)
     _git(repo, "checkout", "-b", "feature")
     (repo / "b.txt").write_text("change\n")
@@ -329,16 +442,7 @@ def test_the_gate_never_shells_out_to_a_write_command(tmp_path, monkeypatch):
     _ok_credential(monkeypatch)
     monkeypatch.setattr(oneshot, "AdversarialReviewer", _stub_reviewer(_PASSING_DECISION))
 
-    real_run = subprocess.run
-    write_verbs = {"commit", "push", "merge", "checkout", "reset", "rebase"}
-
-    def _spy(argv, *a, **kw):
-        if argv and argv[0] == "git":
-            bad = write_verbs & set(argv)
-            assert not bad, f"gate ran a write command: {argv}"
-        return real_run(argv, *a, **kw)
-
-    monkeypatch.setattr(subprocess, "run", _spy)
+    _install_fail_closed_git_spy(monkeypatch, real_repo=repo)
     import asyncio
     asyncio.run(run_gate(repo))
 
@@ -360,6 +464,34 @@ def test_no_credential_refuses_and_names_what_is_missing(tmp_path, monkeypatch):
     import asyncio
     with pytest.raises(GateUnavailable, match="no subscription token on file"):
         asyncio.run(run_gate(repo))
+
+
+def test_a_credential_problem_that_is_not_a_missing_credential_is_named_as_such(
+    tmp_path, monkeypatch,
+):
+    """`_check_credential` (oneshot.py:142-160) splits `MissingCredentialError`
+    ("nothing on file") from `AuthError` ("something on file, but it's
+    wrong" — e.g. a stray `ANTHROPIC_API_KEY` set while `llm.auth_mode` is
+    `subscription`, config.py:1280). Calling the latter "no credential"
+    would be false — the problem is an extra, disallowed credential, not a
+    missing one — so the refusal message must say "credential problem",
+    never "no credential"."""
+    repo, _bare = _make_repo_with_origin(tmp_path)
+    monkeypatch.setattr(oneshot, "find_claude_cli", lambda: "/usr/bin/claude")
+    monkeypatch.setattr(oneshot, "load_config", lambda: _FakeConfig())
+
+    def _raise(**kw):
+        raise AuthError("ANTHROPIC_API_KEY is set but auth_mode is subscription")
+
+    monkeypatch.setattr(oneshot, "assert_subscription_mode", _raise)
+
+    import asyncio
+    with pytest.raises(GateUnavailable, match="credential problem") as exc_info:
+        asyncio.run(run_gate(repo))
+    assert "no credential" not in str(exc_info.value), (
+        "an AuthError (extra/disallowed credential) must not be misreported "
+        "as a missing one"
+    )
 
 
 def test_the_verb_exits_2_and_prints_no_pass(tmp_path, monkeypatch):
@@ -537,6 +669,9 @@ def test_pr_mode_makes_no_writes_to_the_users_checkout(tmp_path, monkeypatch):
 def test_pr_mode_never_shells_out_to_a_write_command_against_the_users_checkout(
     tmp_path, monkeypatch,
 ):
+    """Same fail-closed allowlist as the branch-mode version above, applied
+    to PR mode: `clone`/`checkout` are only permitted against the throwaway
+    PR-head clone (see `_materialized_pr_head`), never against `real_repo`."""
     repo, bare = _make_repo_with_github_origin(tmp_path)
     pr_src = _push_pr_ref(bare, tmp_path / "pr_src3", 13)
     (pr_src / "d.txt").write_text("pr change\n")
@@ -547,26 +682,7 @@ def test_pr_mode_never_shells_out_to_a_write_command_against_the_users_checkout(
     _ok_credential(monkeypatch)
     monkeypatch.setattr(oneshot, "AdversarialReviewer", _stub_reviewer(_PASSING_DECISION))
 
-    real_run = subprocess.run
-    write_verbs = {"commit", "push", "merge", "checkout", "reset", "rebase"}
-    real_repo = str(repo.resolve())
-
-    def _spy(argv, *a, **kw):
-        if argv and argv[0] == "git":
-            cwd = kw.get("cwd")
-            targets_real_repo = (
-                (cwd is not None and str(Path(cwd).resolve()) == real_repo)
-                or real_repo in argv
-            )
-            if targets_real_repo:
-                bad = write_verbs & set(argv)
-                assert not bad, (
-                    f"gate ran a write command against the user's own "
-                    f"checkout: {argv}"
-                )
-        return real_run(argv, *a, **kw)
-
-    monkeypatch.setattr(subprocess, "run", _spy)
+    _install_fail_closed_git_spy(monkeypatch, real_repo=repo)
     import asyncio
     asyncio.run(run_gate(repo, pr_url="https://github.com/acme/widgets/pull/13"))
 
@@ -782,6 +898,39 @@ def test_rendered_markdown_discloses_truncation_and_it_implies_not_passed():
     text = render_markdown(_result(passed=False, truncated=True))
     assert "truncated" in text.lower()
     assert "## no_human gate — FAIL" in text
+
+
+def test_run_gate_actually_discovers_real_uncommitted_files(tmp_path, monkeypatch):
+    """Integration test for `_uncommitted_paths`' real wiring through
+    `run_gate` — the render-layer tests above only check `render_markdown`
+    against a hand-built `comparison` string, which would not catch a
+    mutation that made `_uncommitted_paths` always return `[]` (its own
+    `GateResult.uncommitted` field would stay empty and the comparison
+    string would never mention the file, even though the working tree
+    genuinely has an uncommitted change). This creates a real uncommitted
+    file in a real temp repo and checks the actual `GateResult`."""
+    repo, _bare = _make_repo_with_origin(tmp_path)
+    _git(repo, "checkout", "-b", "feature")
+    (repo / "b.txt").write_text("change\n")
+    _git(repo, "add", "b.txt")
+    _git(repo, "commit", "-m", "feature commit")
+
+    # A second, genuinely uncommitted change on top of the committed one.
+    (repo / "uncommitted.txt").write_text("not committed\n")
+    _git(repo, "add", "uncommitted.txt")  # staged, not committed
+
+    _ok_credential(monkeypatch)
+    monkeypatch.setattr(oneshot, "AdversarialReviewer", _stub_reviewer(_PASSING_DECISION))
+
+    import asyncio
+    result = asyncio.run(run_gate(repo))
+    assert result.uncommitted == ["uncommitted.txt"], (
+        f"expected the real uncommitted file to be reported, got {result.uncommitted!r}"
+    )
+    assert "1 uncommitted file(s) are NOT reviewed" in result.comparison
+    text = render_markdown(result)
+    assert "uncommitted" in text
+    assert "NOT reviewed" in text
 
 
 # --------------------------------------------------------------------------- #
