@@ -71,10 +71,14 @@ citations or the tamper guard's before/after counts.
 ## Product boundary — read and report only, never write
 
 **This skill only reads and reports. It never commits, pushes, merges, or
-edits a file, and it must never be followed by a commit, a push, an
-approval, or a merge of the pull request on the agent's behalf.** `nh gate`
-itself only runs read-only git plumbing (`rev-parse`, `merge-base`, `diff`,
-`status --porcelain`, and, in PR mode, one additive `git fetch` of the PR's
-ref) plus a read-only reviewer backend. Merge is always the human's
+edits a file in your checkout, and it must never be followed by a commit, a
+push, an approval, or a merge of the pull request on the agent's behalf.**
+`nh gate` itself only runs read-only git plumbing against your checkout
+(`rev-parse`, `merge-base`, `diff`, `status --porcelain`, and, in PR mode,
+one additive `git fetch` of the PR's ref) plus a read-only reviewer backend.
+In PR mode it also makes a throwaway local clone of your checkout in a temp
+directory — read-only against your checkout, deleted before the command
+exits — so the review reads the pull request's actual content instead of
+whatever branch you happen to have checked out. Merge is always the human's
 action — after running this skill, your job is to relay the checklist, not
 to act on it.
