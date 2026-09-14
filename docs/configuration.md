@@ -784,27 +784,86 @@ unmasked silently. This is a masked-surface guarantee, not a claim that replay
 "cannot capture content" — it can capture pixels of anything not on the masked
 list, which is why the list is enforced by tests rather than left to review.
 Replay also records network request/response **headers and bodies**
-(`session_recording: { recordHeaders: true, recordBody: true }`) — these are
-**not** masked, with one exception: `session_recording.maskCapturedNetworkRequestFn`
-(`web/src/replayScrub.js`) excludes `POST /api/onboarding/email`,
-`GET /api/onboarding/status` and `POST /api/onboarding/reset` from replay
-capture entirely, because the first's request body carries the onboarding
-email address the user just typed and the other two's responses are built
-from the same onboarding block. `.ph-no-capture` (used
+(`session_recording: { recordHeaders: true, recordBody: true }` — the
+posthog-js option values), but capture of those bodies is **default-deny**:
+`session_recording.maskCapturedNetworkRequestFn` (`web/src/replayScrub.js`)
+classifies every `/api/*` endpoint the app calls and redacts
+request/response bodies and headers (replacing them with a `[redacted: not
+on replay body allowlist]` placeholder and stripping any query string off the
+request line) unless that exact endpoint is on a short, individually
+justified allowlist (`/api/version` only — it carries no path, name or
+operator text). Two endpoints were considered for that allowlist and
+rejected. `/api/worker/status`: its response can include `watcher_error` /
+`worker_error` / `health_error` fields built from a raw caught exception's
+own message, and an exception raised while touching a repo's filesystem path
+routinely contains that path. `/api/queue/health`: it looked like pure
+timestamps/counters at a glance, but its real response
+(`core/health.py`'s `QueueHealth.as_dict`) includes `paused_profile`, a
+user-chosen auth-profile name that survives unredacted whenever
+`paused_reason == "quota"` — a routine pause state, not an edge case, and
+this endpoint is polled every 10 seconds. Both are redacted like every other
+endpoint that was not individually verified clean. An endpoint nobody has classified
+yet is redacted, not captured — a source-level
+sweep (`web/src/replayScrub.test.mjs`) re-derives the full endpoint list from
+`web/src/api.js` on every test run and fails if a new one ships unclassified.
+Three onboarding paths (`POST /api/onboarding/email`, `GET
+/api/onboarding/status`, `POST /api/onboarding/reset`) go further and are
+excluded from replay capture entirely, because the first's request body
+carries the onboarding email address the user just typed and there is no
+server-side redaction possible for an inbound request. `.ph-no-capture` (used
 elsewhere in this document) only ever masks DOM pixels, not network bodies,
 which is why this is a separate mechanism.
+
+**A second, independent safety net for the single most common deployment
+mode.** `posthog-js` itself hard-disables network body/header capture
+whenever the *page's own* navigated-to hostname is literally `localhost` or
+`127.0.0.1` (its bundled `rrweb/network@1` plugin is never even registered in
+that case, regardless of `recordBody`/`recordHeaders`; the only override is
+an internal runtime property, not an `init()` option, and this app does not
+set it). This board "ALWAYS serves on 127.0.0.1" for the common local-only
+case (see `web/src/telemetry.js`'s header comment), so for that specific,
+common deployment mode the leak this fix addresses was already suppressed by
+the SDK's own dev-safety default, independently of `replayScrub.js`. That
+guard does **not** apply when the board is reached over a LAN IP, a custom
+hostname, or a tunnel — those are the deployment modes where, absent this
+fix, network bodies really were captured and really did carry repo paths/
+names. The `replayScrub.js` fix is therefore still necessary and is the only
+protection for those non-localhost modes; the SDK guard is a helpful,
+previously-undocumented mitigating factor for one case, not a substitute for
+it.
 
 **Never sent via the server channel:** the closed event allowlist in the table
 above carries only the columns listed there — no task titles, repo names, file
 paths, prompts/specs, diffs, or credential/token ever appears in a server
 event. The browser's autocapture and session-replay **pixels** are bounded the
 same way, by `ph-no-capture` and `maskAllInputs`. Session-replay **network**
-capture is the one channel that is not scoped like this: with `recordBody:
-true`, request/response bodies from calls such as `/api/tasks` and
-`/api/config` are recorded as sent, unmasked — so they DO carry task titles,
-specs, diffs and repo paths into PostHog. `posthog-js` only redacts
-credential-shaped headers/keys automatically; it does not redact application
-content.
+capture is scoped the same way too, by the default-deny classifier described
+above: request/response bodies from calls such as `/api/tasks` and
+`/api/config` are redacted before they reach PostHog, not recorded as sent.
+`posthog-js` itself only redacts credential-shaped headers/keys automatically
+— it is `web/src/replayScrub.js`, not `posthog-js`, that keeps application
+content (task titles, specs, diffs, repo paths) out of the network-capture
+channel.
+
+**Historical recordings (open).** The default-deny classifier above is a
+forward fix, effective from 0.2.3 onward — it does not retroactively touch
+recordings PostHog already stored under the previous, fail-open behavior,
+where every `/api/*` body not on a three-entry exclusion list was captured
+unmasked. (0.2.2 and earlier predate this fix and do not contain it.) Whether any already-stored recording actually
+contains a repo name or absolute filesystem path (e.g. from `/api/profiles`,
+`/api/tasks`, or `/api/config`) has not been measured — doing so requires
+PostHog project credentials this fix was not given. The query a closure of
+this item would run: a session-replay / event search across the account's
+retention window for the literal string `repo_path`, or for an absolute-path
+prefix specific to an install (e.g. `/Users/` or `/home/`), scoped to
+`$snapshot` events whose `rrweb/network@1` plugin payloads carry a
+`requestBody`/`responseBody` for a redacted endpoint (these are the property
+names `posthog-js` itself emits for network capture — verified in
+`posthog-js/dist/lazy-recorder.js` — not invented ones). A positive result
+would need a separate, larger purge/deletion
+effort (PostHog's recording-deletion API, or a retention-window wait) — that
+work is out of scope here and is **not** silently closed by this fix; it is
+tracked as explicit follow-up.
 
 Telemetry defaults to **on** (`telemetry.enabled: true` in
 `config.DEFAULT_CONFIG`); everything above is sent unless it is opted out in
