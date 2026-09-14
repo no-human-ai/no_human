@@ -568,7 +568,9 @@ async def test_raising_the_budget_after_a_refusal_clears_the_stamped_marker(
     # own CAS-guard docstring, so this is the same bypass a human's `nh task
     # retry` uses, done directly for the test.
     fresh.config = {"lifetime_tokens": 10_000_000, "budget_unit": "weighted"}
-    await store.update_task(fresh)
+    # `config` has one writer since #343 — `update_task`/`update_task_columns`
+    # no longer carry the column, so a stale handle cannot revert a raise.
+    await store.update_task_config(fresh.id, fresh.config)
     await store.set_status(fresh, TaskStatus.PENDING, validate=False)
     fresh = await store.find_task(t.id)
 

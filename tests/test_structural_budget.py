@@ -1456,7 +1456,12 @@ FROZEN_FILE_LINES = {
     # landing checkout) has no local ref, so the bare name silently
     # degraded the verdict to `state="unknown"` and masked a real conflict
     # as fail-open-landable.
-    "cli/commands.py": 9048,
+    # 9048 -> 9059 (+11): #343 (PR #379) gives task `config` its own writer, so
+    # the three `apply_action` call sites in this file each persist the raise
+    # through `update_task_config` beside the action that produced it, instead
+    # of letting a generic save write a stale blob back.
+    # Measured on the squashed tree with the scanner below.
+    "cli/commands.py": 9059,
     # api/app.py 5338 -> 5346 (+8): same budget-floor warning surfaced by
     # `send-back`/`reply` as `budget_warning` in the JSON response. Net cost
     # was trimmed from a naive +14 to +8 by computing `Bounds.from_config(...)`
@@ -1635,7 +1640,11 @@ FROZEN_FILE_LINES = {
     # 6332 -> 6340 (+8): board/detail/subtask/post-approve sites now pass
     # `ledger=` through to TaskOut/TaskSummaryOut.from_task so owned
     # unattributed_usage spend folds into a task's displayed cost.
-    "api/app.py": 6340,
+    # 6340 -> 6346 (+6): #343 (PR #379) persists a blocker-action config change
+    # through `update_task_config` at the API call site, same reason as
+    # `cli/commands.py` above.
+    # Measured on the squashed tree with the scanner below.
+    "api/app.py": 6346,
     # +51: W5 active-time phase writer (phase instrumentation).
     # +84: `list_escalations`/`list_review_fails`/`list_tamper_trips` — the
     # three new failure-signal sources the recurring learning harvest mines.
@@ -1751,7 +1760,14 @@ FROZEN_FILE_LINES = {
     # 5193 -> 5285 (+92): OWNED_LEDGER_SQL, the `owned=` split on
     # unattributed_usage_totals, and usage_ledger_rows_by_task/
     # task_usage_ledger_rows — the per-task ledger fold's query layer.
-    "core/db.py": 5285,
+    # 5285 -> 5322 (+37): #343 (PR #379) adds `update_task_config`, the single
+    # writer for the human-only per-task override blob, and documents on both
+    # `update_task` and `update_task_columns` why `config` is now excluded — the
+    # shape `set_status` already has for `status`. Most of the +37 is that
+    # reasoning: the next person adding a column to those writers needs to know
+    # `config` is deliberately absent rather than forgotten.
+    # Measured on the squashed tree with the scanner below.
+    "core/db.py": 5322,
     # +71: set_local_backend_fields — the config-write helper for the Settings
     # pane's local coder-backend fields (llm.local_model / llm.local_base_url).
     # +75: Codex account config helpers.

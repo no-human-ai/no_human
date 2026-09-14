@@ -4077,6 +4077,12 @@ async def reply_task(
     )
     record["applied"] = applied
     await store.append_context_list(task.id, "human_replies", record)
+    # An option's `set_task_config` (a budget raise, usually) mutated
+    # `task.config` above, and config has its own writer since #343. Written
+    # beside the `apply_action` that produced it rather than inside one of the
+    # branches below, so a branch added later cannot silently drop the raise.
+    if applied:
+        await store.update_task_config(task.id, task.config)
     # Terminal option (SCRUM-22): the human chose "stop — keep parked". Record
     # the answer and leave the parked status untouched; resuming here is what
     # silently inverted the stop.
