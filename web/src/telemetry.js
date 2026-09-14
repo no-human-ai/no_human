@@ -49,13 +49,15 @@
 //    backlog ticket titles. Never your code. (No blanket text-mask selector
 //    is configured: `maskTextSelector` would match zero elements in this UI,
 //    so it is deliberately unset — pinned by web/src/telemetry.test.mjs.)
-//    Replay network request/response headers and bodies ARE recorded and are
-//    NOT masked in general — see docs/configuration.md — EXCEPT the specific
-//    requests listed in ./replayScrub.js (onboarding's email registration and
-//    status endpoints), which are excluded from replay capture entirely via
-//    `maskCapturedNetworkRequestFn` below. `.ph-no-capture` above protects the
-//    DOM only; it has no effect on network body capture, so an address-
-//    carrying request needs this separate mechanism.
+//    Replay network request/response headers and bodies are DEFAULT-DENY:
+//    ./replayScrub.js classifies every `/api/*` endpoint the app calls and
+//    redacts request/response bodies and headers unless the endpoint is
+//    individually allowlisted (an endpoint nobody has classified yet is
+//    redacted, not captured — see docs/configuration.md). A small handful of
+//    onboarding paths are excluded from replay capture entirely via
+//    `maskCapturedNetworkRequestFn` below. `.ph-no-capture` above protects
+//    the DOM only; it has no effect on network body capture, which is why
+//    replayScrub.js is a separate mechanism.
 //  - ONE IDENTIFIER: events are tagged with the same anonymous `instance_id`
 //    as the server channel (registered below), not PostHog's own generated
 //    device id. `person_profiles: "always"` keys one person per install id;
@@ -105,9 +107,10 @@ export async function initTelemetry(cfg, { importer } = {}) {
       // content is still kept out of autocapture and replay pixels by the
       // hand-applied `ph-no-capture` blocks (posthog-js skips any element
       // with a ph-no-capture ancestor) and by maskAllInputs. Replay network
-      // bodies are NOT masked in general — docs/configuration.md says so —
-      // except the specific requests `maskCapturedNetworkRequestFn` below
-      // excludes entirely.
+      // bodies are default-deny: `maskCapturedNetworkRequestFn` below
+      // redacts every `/api/*` request/response body unless it is on
+      // replayScrub.js's small allowlist, and drops a few onboarding
+      // requests from capture entirely — see docs/configuration.md.
       autocapture: true,
       capture_pageview: true,
       capture_pageleave: true,
@@ -123,10 +126,13 @@ export async function initTelemetry(cfg, { importer } = {}) {
         maskAllInputs: true,
         recordHeaders: true,
         recordBody: true,
-        // Excludes the onboarding email request/status response from replay
-        // body capture entirely (see replayScrub.js) — `.ph-no-capture`
-        // protects the DOM only, not network bodies, which is why this is a
-        // separate mechanism rather than another CSS class.
+        // Default-deny for network body capture (see replayScrub.js):
+        // redacts request/response bodies and headers for every `/api/*`
+        // endpoint except a short, individually-justified allowlist, and
+        // drops the onboarding email/status/reset requests from replay
+        // capture entirely. `.ph-no-capture` protects the DOM only, not
+        // network bodies, which is why this is a separate mechanism rather
+        // than another CSS class.
         maskCapturedNetworkRequestFn: maskCapturedNetworkRequest,
       },
       person_profiles: "always",

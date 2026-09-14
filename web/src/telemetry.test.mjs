@@ -119,10 +119,12 @@ test("consent → posthog-js imported once, init gets the exact masking options"
   assert.equal(options.session_recording.maskAllInputs, true, "typed input is always masked");
   assert.equal(options.session_recording.maskTextSelector, undefined,
     "maskTextSelector matches zero elements in this UI and must not be configured");
-  // AC3: the onboarding email request/status response are excluded from
-  // replay body capture entirely (not merely DOM-masked) via posthog-js's
-  // own maskCapturedNetworkRequestFn seam — a test that fails if this wiring
-  // is ever removed.
+  // AC3: replayScrub.js's maskCapturedNetworkRequestFn is wired in — a test
+  // that fails if this wiring is ever removed. It is default-deny (every
+  // `/api/*` body is redacted unless individually allowlisted; see
+  // replayScrub.js/replayScrub.test.mjs for the full classification), and
+  // the onboarding email/status/reset requests are excluded from replay
+  // capture entirely (not merely DOM-masked) on top of that.
   assert.equal(
     options.session_recording.maskCapturedNetworkRequestFn,
     maskCapturedNetworkRequest,
@@ -135,7 +137,8 @@ test("consent → posthog-js imported once, init gets the exact masking options"
   assert.equal(options.maskNetworkRequestFn, undefined,
     "the deprecated field-redaction seam must not be used instead");
   assert.equal(options.session_recording.recordBody, true,
-    "recordBody stays true for every other request — only excluded requests are dropped");
+    "recordBody stays true at the posthog-js option level — replayScrub.js's default-deny " +
+    "maskCapturedNetworkRequestFn is what actually keeps unclassified/non-allowlisted bodies out");
   assert.equal(options.session_recording.recordHeaders, true);
   assert.equal(options.person_profiles, "always", "one person per install id");
   assert.equal(options.internal_or_test_user_hostname, null,
