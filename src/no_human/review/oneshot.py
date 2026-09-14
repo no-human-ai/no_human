@@ -10,32 +10,44 @@ no-tools safety property stay in one place.
 
 Reads and reports only: every git call this module makes against the user's
 own checkout is read-only plumbing — `rev-parse`, `merge-base`, `diff`,
-`status --porcelain`, `config --get remote.origin.url` (to verify a `--pr`
-URL names this checkout's own repository — deliberately not `remote
-get-url`, which would apply any `insteadOf` rewrite instead of reporting the
-repo's actual declared origin; see `_origin_owner_repo`), and, in PR mode,
-a single additive `fetch` of the
-PR's refs (which writes objects and `FETCH_HEAD` but creates no branch and
-moves no ref the user owns). The tamper guard this module calls
+`status --porcelain`, `symbolic-ref` (the local-only half of
+`default_branch()`; see below), `config --get remote.origin.url` (to verify
+a `--pr` URL names this checkout's own repository — deliberately not
+`remote get-url`, which would apply any `insteadOf` rewrite instead of
+reporting the repo's actual declared origin; see `_origin_owner_repo`), and,
+in PR mode, a single additive `fetch` of the PR's refs (which writes objects
+and `FETCH_HEAD` but creates no branch and moves no ref the user owns). No
+network call is made by default: `default_branch(local_only=True)` reads
+only the local `refs/remotes/origin/HEAD`, never `git remote show origin`
+(that fallback does real network I/O and, offline, hangs instead of
+answering) — a checkout where that local ref was never recorded refuses by
+name and points at `--base` rather than guessing over the network. Every git
+call that touches the network (PR mode's `fetch`) runs with
+`GIT_TERMINAL_PROMPT=0` and a no-op askpass so a private repo the caller
+lacks credentials for fails fast instead of blocking on a credential prompt
+forever (see `_no_prompt_env`). The tamper guard this module calls
 (`testing.runner.tamper_check_between`) also runs its own read-only git
 plumbing, including `ls-tree` and `show`, against the same checkout — that
 module's calls are not enumerated here since they are not this module's to
 promise. Taken together, `run_gate` never commits, pushes, merges, or edits a
 file in the user's checkout.
 
-PR mode additionally materializes the fetched PR head into a throwaway local
-clone (`git clone --local --shared`, in a temp directory, deleted before
-`run_gate` returns) so the reviewer's citation check reads the PR's actual
-file content instead of the user's currently checked-out branch. That clone
-is read-only against the user's repo — `--local --shared` only ever reads
-objects there — and every write it makes (the clone itself, the detached
-checkout inside it) lands solely in the temp directory. The reviewer's own
-backend is constructed read-only via `AdversarialReviewer`/
+Both modes materialize the reviewed head (`after_ref`) into a throwaway
+local clone (`git clone --local --shared`, in a temp directory, deleted
+before `run_gate` returns) before handing it to the reviewer, so the
+reviewer's citation check (`reviewer._citation_fails`, which reads files
+straight off disk at whatever path it is given) always reads the exact tree
+that was diffed — never the user's live, possibly-dirty working tree. That
+clone is read-only against the user's repo — `--local --shared` only ever
+reads objects there — and every write it makes (the clone itself, the
+detached checkout inside it) lands solely in the temp directory. The
+reviewer's own backend is constructed read-only via `AdversarialReviewer`/
 `ClaudeBackend(readonly=True)`.
 """
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -44,13 +56,18 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
+from ..agent.backend import BackendUnavailable
 from ..agent.backend_check import find_claude_cli
 from ..config import AuthError, MissingCredentialError, load_config, assert_subscription_mode
+from ..core.role_backend_settings import effective_role_backend
+from ..core.runtime import assert_task_backend_usable
 from ..core.task import Task
 from ..review.reviewer import _DIFF_CAP, AdversarialReviewer, ReviewDecision, ReviewerUnavailable
 from ..testing import tamper_guard
 from ..testing.runner import TamperCheckUnavailable, tamper_check_between
 from ..vcs.git import GitError, GitRepo
+
+_IS_WINDOWS = os.name == "nt"
 
 # Strict GitHub pull request URL: host must be exactly github.com, and both
 # owner and repo are captured so the caller can be checked against this
@@ -91,12 +108,74 @@ class GateResult:
     decision: ReviewDecision
     uncommitted: list[str]
     truncated: bool = False
+    # §6d: the reviewer's own backend/model, and whether that is an operator
+    # override of the Claude default pin for the reviewer role. Populated
+    # from the same `effective_role_backend` resolver `_check_credential`
+    # previews and `AdversarialReviewer.from_config` itself consults — never
+    # re-derived a second way. `render_markdown` discloses this only when
+    # `reviewer_backend_is_default` is False, since the default case is
+    # already implied and doesn't need calling out.
+    reviewer_backend: str = "claude"
+    reviewer_model: str = ""
+    reviewer_backend_is_default: bool = True
+
+
+def _no_prompt_env() -> dict[str, str]:
+    """Env for every git call this module makes: refuse to prompt, ever.
+
+    Mirrors `integrations/__init__.py`'s `_git_credential_present` exactly —
+    `GIT_TERMINAL_PROMPT=0` plus a no-op askpass/GCM setting means `git
+    fetch` (PR mode) against a repo the caller lacks credentials for fails
+    fast instead of blocking on an interactive credential prompt forever.
+    Applied to every call here, not just `fetch`, so no future call site can
+    reintroduce the hang by accident.
+    """
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+    if _IS_WINDOWS:
+        env["GCM_INTERACTIVE"] = "never"
+    else:
+        env["GIT_ASKPASS"] = "/usr/bin/true"
+    return env
 
 
 def _git(repo_path: Path, *args: str) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["git", *args], cwd=repo_path, capture_output=True, text=True,
+        env=_no_prompt_env(),
     )
+
+
+def _resolve_repo_root(path: Path) -> Path:
+    """The real repo root for `path`, so the gate works from any subdirectory.
+
+    `GitRepo.__init__` requires `.git` to exist directly under the given
+    path (`vcs/git.py`), which is only true at the exact repo root — so
+    without this, invoking the gate from a subdirectory of a perfectly
+    normal checkout (a very common shape: `cd src && nh gate`) fails with a
+    misleading "not a git repository" message. `git rev-parse
+    --show-toplevel` finds the real root regardless of where inside the
+    checkout it is run. On failure this returns `path` unchanged, so
+    `GitRepo`'s own accurate refusal still fires for a directory that
+    genuinely is not a git checkout at all.
+    """
+    proc = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"], cwd=path,
+        capture_output=True, text=True, env=_no_prompt_env(),
+    )
+    if proc.returncode != 0:
+        return path
+    top = proc.stdout.strip()
+    return Path(top) if top else path
+
+
+def _is_shallow_repo(repo_path: Path) -> bool:
+    proc = _git(repo_path, "rev-parse", "--is-shallow-repository")
+    return proc.returncode == 0 and proc.stdout.strip() == "true"
+
+
+def _is_detached_head(repo_path: Path) -> bool:
+    proc = _git(repo_path, "symbolic-ref", "-q", "HEAD")
+    return proc.returncode != 0
 
 
 def _rev_parse(repo_path: Path, ref: str) -> str | None:
@@ -140,7 +219,30 @@ def _uncommitted_paths(repo_path: Path) -> list[str]:
 
 
 def _check_credential(config) -> None:
-    """Reuse the product's own auth check; never invent a second one."""
+    """Reuse the product's own auth check; never invent a second one.
+
+    §6d: an operator's explicit `llm.role_backends.reviewer` Settings choice
+    overrides the Claude default pin for the reviewer role, and credential
+    checks apply PER backend, not just Claude's. `effective_role_backend` is
+    the same resolver `AdversarialReviewer.from_config` itself would consult
+    (via `make_backend(..., role="reviewer")`), so this stays a read-only
+    preview of what construction will actually build, never a second
+    opinion of "what backend does the reviewer run on". A reviewer pinned to
+    codex or local is checked with `assert_task_backend_usable` — the same
+    per-task preflight the orchestrator runs before its own first coder
+    turn — instead of the claude-CLI-on-PATH/subscription check below, which
+    only applies when the reviewer really is running on claude.
+    """
+    backend_name = effective_role_backend(config.data, "reviewer")["backend"]
+    if backend_name != "claude":
+        try:
+            assert_task_backend_usable(backend_name, config.data)
+        except (AuthError, BackendUnavailable) as exc:
+            raise GateUnavailable(
+                f"the reviewer backend {backend_name!r} is not usable: {exc}"
+            ) from exc
+        return
+
     if find_claude_cli() is None:
         raise GateUnavailable("the claude CLI is not on PATH")
     llm = config.get("llm") or {}
@@ -168,28 +270,56 @@ def _resolve_branch_mode(
     if base:
         base_ref = base
     else:
-        default_name = repo.default_branch(local_only=False)
+        # local_only=True: the non-local fallback (`git remote show origin`)
+        # does real network I/O and, offline, hangs instead of answering
+        # (vcs/git.py's own docstring on `default_branch`) — the default,
+        # no-flags `nh gate` invocation must never reach the network, so a
+        # checkout that never recorded a local origin/HEAD refuses by name
+        # here instead of guessing over the wire.
+        default_name = repo.default_branch(local_only=True)
         if not default_name:
             raise GateUnavailable(
                 "no upstream to compare against: could not resolve "
-                "origin/HEAD; pass --base"
+                "origin/HEAD locally (this checkout may never have run "
+                "`git remote set-head origin -a`); pass --base"
             )
         base_ref = f"origin/{default_name}"
 
     merge_base = _merge_base(repo_path, base_ref, "HEAD")
+    shallow = _is_shallow_repo(repo_path)
     if not merge_base:
+        if shallow:
+            raise GateUnavailable(
+                f"this checkout is a shallow clone: no merge base between "
+                f"HEAD and {base_ref} exists within the fetched history — "
+                "run `git fetch --unshallow` and retry"
+            )
         raise GateUnavailable(f"no merge base between HEAD and {base_ref}")
     if merge_base == head:
+        if shallow:
+            raise GateUnavailable(
+                f"this checkout is a shallow clone: HEAD and {base_ref} "
+                "resolve to the same commit within the fetched history, "
+                "which may only be because the shallow history doesn't "
+                "reach the true merge base — run `git fetch --unshallow` "
+                "and retry"
+            )
         raise GateUnavailable(
             f"the current branch has no commits beyond {base_ref}"
         )
 
-    branch_name = repo.current_branch()
     uncommitted = _uncommitted_paths(repo_path)
-    comparison = (
-        f"working tree branch `{branch_name}` @ `{head[:7]}` against merge "
-        f"base with `{base_ref}` @ `{merge_base[:7]}`"
-    )
+    if _is_detached_head(repo_path):
+        comparison = (
+            f"working tree in detached HEAD @ `{head[:7]}` against merge "
+            f"base with `{base_ref}` @ `{merge_base[:7]}`"
+        )
+    else:
+        branch_name = repo.current_branch()
+        comparison = (
+            f"working tree branch `{branch_name}` @ `{head[:7]}` against merge "
+            f"base with `{base_ref}` @ `{merge_base[:7]}`"
+        )
     return merge_base, head, base_ref, comparison, uncommitted
 
 
@@ -256,20 +386,41 @@ def _resolve_pr_mode(
     if base:
         base_ref = base
     else:
-        default_name = repo.default_branch(local_only=False)
+        # local_only=True here too: PR mode already made its one, expected
+        # network call above (fetching the PR ref) — resolving the default
+        # branch has no reason to risk a second, unbounded one via `git
+        # remote show origin` when the cheap local ref read already covers
+        # every normally-configured checkout.
+        default_name = repo.default_branch(local_only=True)
         if not default_name:
             raise GateUnavailable(
                 "no upstream to compare against: could not resolve "
-                "origin/HEAD; pass --base"
+                "origin/HEAD locally (this checkout may never have run "
+                "`git remote set-head origin -a`); pass --base"
             )
         base_ref = f"origin/{default_name}"
 
     merge_base = _merge_base(repo_path, base_ref, head)
+    shallow = _is_shallow_repo(repo_path)
     if not merge_base:
+        if shallow:
+            raise GateUnavailable(
+                f"this checkout is a shallow clone: no merge base between "
+                f"pull request #{number} and {base_ref} exists within the "
+                "fetched history — run `git fetch --unshallow` and retry"
+            )
         raise GateUnavailable(
             f"no merge base between pull request #{number} and {base_ref}"
         )
     if merge_base == head:
+        if shallow:
+            raise GateUnavailable(
+                f"this checkout is a shallow clone: pull request #{number} "
+                f"and {base_ref} resolve to the same commit within the "
+                "fetched history, which may only be because the shallow "
+                "history doesn't reach the true merge base — run `git "
+                "fetch --unshallow` and retry"
+            )
         raise GateUnavailable(
             f"pull request #{number} has no commits beyond {base_ref}"
         )
@@ -282,22 +433,26 @@ def _resolve_pr_mode(
 
 
 @contextmanager
-def _materialized_pr_head(repo_path: Path, sha: str):
+def _materialized_head(repo_path: Path, sha: str):
     """Check out ``sha`` into a throwaway local clone and yield its path.
 
     The reviewer's citation check reads files straight off disk at whatever
-    ``repo_path`` it is given (see ``reviewer._citation_fails``). In branch
-    mode ``repo_path`` IS the working tree at ``after_ref``, so that read is
-    already correct. In PR mode the PR head only ever lands in ``FETCH_HEAD``
-    of the user's checkout — the user's actual working tree stays on
-    whatever branch they had checked out — so handing the reviewer the raw
-    ``repo_path`` would verify citations against the wrong tree. This clones
-    ``repo_path`` locally (``--local --shared``: read-only against the
-    source, objects are shared rather than copied) into a temp directory and
-    checks out ``sha`` there, so the reviewer reads the PR's real content.
-    The clone is removed on the way out, success or failure.
+    ``repo_path`` it is given (see ``reviewer._citation_fails``), comparing a
+    cited line number against that file's CURRENT on-disk line count. Handing
+    it the user's raw, live checkout is wrong in both modes: in PR mode the
+    PR head only ever lands in ``FETCH_HEAD`` — the user's actual working
+    tree stays on whatever branch they had checked out — and in branch mode
+    the working tree can be dirty, so an uncommitted edit that merely
+    shortens a file could silently demote a real, correctly-cited finding to
+    a pass even though the reviewed diff never touched that edit. Reviewing
+    against a clone detached at the exact reviewed ``sha`` closes both holes
+    the same way. This clones ``repo_path`` locally (``--local --shared``:
+    read-only against the source, objects are shared rather than copied)
+    into a temp directory and checks out ``sha`` there, so the reviewer
+    always reads the exact tree that was diffed. The clone is removed on the
+    way out, success or failure.
     """
-    tmp_dir = Path(tempfile.mkdtemp(prefix="no_human_gate_pr_"))
+    tmp_dir = Path(tempfile.mkdtemp(prefix="no_human_gate_"))
     try:
         clone = subprocess.run(
             ["git", "clone", "--local", "--shared", "--no-checkout", "-q",
@@ -306,7 +461,7 @@ def _materialized_pr_head(repo_path: Path, sha: str):
         )
         if clone.returncode != 0:
             raise GateUnavailable(
-                "could not materialize the pull request head for review: "
+                "could not materialize the reviewed commit for review: "
                 f"{clone.stderr.strip()}"
             )
         checkout = subprocess.run(
@@ -315,7 +470,7 @@ def _materialized_pr_head(repo_path: Path, sha: str):
         )
         if checkout.returncode != 0:
             raise GateUnavailable(
-                f"could not check out pull request head {sha} for review: "
+                f"could not check out {sha} for review: "
                 f"{checkout.stderr.strip()}"
             )
         yield tmp_dir
@@ -339,16 +494,15 @@ async def run_gate(
     this function never returns a passing :class:`GateResult` for a
     condition it could not check.
     """
-    repo_path = Path(repo_path)
+    repo_path = _resolve_repo_root(Path(repo_path))
 
     config = load_config()
     _check_credential(config)
 
-    try:
+    try:  # ABLATION: Blocker 2 — narrowed back to only GitRepo() construction
         repo = GitRepo(repo_path)
     except GitError as exc:
         raise GateUnavailable(str(exc)) from exc
-
     if pr_url:
         mode = "pr"
         before_ref, after_ref, _base_label, comparison, uncommitted = (
@@ -382,7 +536,7 @@ async def run_gate(
         )
 
     # `AdversarialReviewer.review` silently truncates `diff_override` to
-    # `_DIFF_CAP` chars (reviewer.py:2534) with no signal back to the
+    # `_DIFF_CAP` chars (reviewer.py:2537) with no signal back to the
     # caller — a diff bigger than the cap would otherwise get a fraction of
     # itself reviewed and could still print a bare PASS on that partial
     # view. Detect it here and make sure a truncated review can never pass.
@@ -400,23 +554,28 @@ async def run_gate(
         repo_path=str(repo_path),
         description=description or None,
     )
-    reviewer = AdversarialReviewer.from_config(config.data)
+    try:
+        reviewer = AdversarialReviewer.from_config(config.data)
+    except (AuthError, BackendUnavailable) as exc:
+        # Construction itself can fail preflight (e.g. a reviewer pinned to
+        # a backend whose credential vanished between `_check_credential`'s
+        # preview and now) — that is still "cannot run", not a crash.
+        raise GateUnavailable(f"could not construct the reviewer: {exc}") from exc
 
     try:
-        if mode == "pr":
-            # The reviewer's citation check reads `review_repo_path` straight
-            # off disk (`reviewer._citation_fails`). The user's own checkout
-            # never holds the PR head's content — only `FETCH_HEAD` does — so
-            # review against a throwaway clone checked out at `after_ref`
-            # instead of `repo_path` itself. See `_materialized_pr_head`.
-            with _materialized_pr_head(repo_path, after_ref) as review_repo_path:
-                decision = await reviewer.review(
-                    task, repo_path=review_repo_path, diff_override=diff,
-                    before_ref=before_ref,
-                )
-        else:
+        # The reviewer's citation check reads `review_repo_path` straight off
+        # disk (`reviewer._citation_fails`), comparing cited line numbers
+        # against whatever is on disk right now. Materialize `after_ref`
+        # into a throwaway clone in BOTH modes rather than handing the
+        # reviewer `repo_path` directly: in PR mode the user's checkout never
+        # holds the PR head's content at all (only `FETCH_HEAD` does), and in
+        # branch mode `repo_path` is the user's live working tree, which can
+        # be dirty — an uncommitted edit could otherwise silently demote a
+        # real citation-backed finding to a pass. See `_materialized_head`.
+        with _materialized_head(repo_path, after_ref) as review_repo_path:
             decision = await reviewer.review(
-                task, repo_path=repo_path, diff_override=diff, before_ref=before_ref,
+                task, repo_path=review_repo_path, diff_override=diff,
+                before_ref=before_ref,
             )
     except ReviewerUnavailable as exc:
         # The reviewer itself reaches "no verdict" and escalates rather than
@@ -425,6 +584,8 @@ async def run_gate(
         raise GateUnavailable(f"the reviewer could not reach a verdict: {exc}") from exc
 
     passed = decision.passed and not tamper.tampered and not truncated
+
+    role_backend = effective_role_backend(config.data, "reviewer")
 
     return GateResult(
         passed=passed,
@@ -436,6 +597,9 @@ async def run_gate(
         decision=decision,
         uncommitted=uncommitted,
         truncated=truncated,
+        reviewer_backend=role_backend["backend"],
+        reviewer_model=role_backend["model"],
+        reviewer_backend_is_default=role_backend["is_default"],
     )
 
 
@@ -445,6 +609,12 @@ def render_markdown(result: GateResult) -> str:
     verdict = "PASS" if result.passed else "FAIL"
     lines.append(f"## no_human gate — {verdict}")
     lines.append(f"**Compared:** {result.comparison}")
+    if not result.reviewer_backend_is_default:
+        model_suffix = f" ({result.reviewer_model})" if result.reviewer_model else ""
+        lines.append(
+            f"**Reviewer backend:** `{result.reviewer_backend}`{model_suffix} "
+            "— overridden from the Claude default via `llm.role_backends.reviewer`"
+        )
     if result.truncated:
         lines.append(
             f"**⚠ diff exceeded the {_DIFF_CAP:,}-char single-turn review "

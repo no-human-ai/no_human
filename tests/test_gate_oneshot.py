@@ -27,9 +27,10 @@ from click.testing import CliRunner
 from no_human.cli.commands import gate
 from no_human.review import oneshot
 from no_human.review.oneshot import GateUnavailable, GateResult, render_markdown, run_gate
-from no_human.review.reviewer import ReviewDecision
+from no_human.review.reviewer import ReviewDecision, ReviewerUnavailable
 from no_human.review.selfcheck import ChecklistItem
 from no_human.config import AuthError, MissingCredentialError
+from no_human.agent.backend import BackendUnavailable
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -956,3 +957,571 @@ def test_a_diff_over_the_review_cap_never_passes(tmp_path, monkeypatch):
     result = asyncio.run(run_gate(repo))
     assert result.truncated is True
     assert result.passed is False, "a truncated review must never be a bare pass"
+
+
+# --------------------------------------------------------------------------- #
+# 14. Blocker 1 — a dirty working tree must never turn a real FAIL into PASS  #
+# --------------------------------------------------------------------------- #
+
+def test_branch_mode_reviews_the_committed_head_not_the_dirty_working_tree(
+    tmp_path, monkeypatch,
+):
+    """Regression for Blocker 1: branch mode used to hand the reviewer the
+    raw, possibly-dirty `repo_path` directly as `repo_path=` — and
+    `reviewer._citation_fails` reads cited files straight off disk at
+    whatever path it is given, comparing a cited line number against that
+    file's CURRENT on-disk line count. An uncommitted edit that shortens a
+    file could therefore silently demote a real, correctly-cited blocking
+    finding to a pass. The reviewer must instead see a materialized clone
+    checked out at the committed `after_ref`, with the dirty working tree's
+    edit invisible."""
+    repo, _bare = _make_repo_with_origin(tmp_path)
+    _git(repo, "checkout", "-b", "feature")
+    (repo / "b.txt").write_text("line1\nline2\nline3\n")
+    _git(repo, "add", "b.txt")
+    _git(repo, "commit", "-m", "feature commit")
+
+    # Dirty the working tree AFTER the commit the gate will review — this
+    # uncommitted edit must never reach the reviewer.
+    (repo / "b.txt").write_text("shortened\n")
+
+    _ok_credential(monkeypatch)
+
+    seen = {}
+
+    class _Spy:
+        @classmethod
+        def from_config(cls, data, **kw):
+            return cls()
+
+        async def review(self, task, *, repo_path, diff_override, before_ref, **kw):
+            seen["repo_path"] = Path(repo_path)
+            seen["b_txt_content"] = (Path(repo_path) / "b.txt").read_text()
+            return _PASSING_DECISION
+
+    monkeypatch.setattr(oneshot, "AdversarialReviewer", _Spy)
+
+    import asyncio
+    asyncio.run(run_gate(repo))
+
+    assert seen["repo_path"] != repo, (
+        "branch mode must not hand the reviewer the user's live, possibly "
+        "dirty checkout as repo_path"
+    )
+    assert seen["b_txt_content"] == "line1\nline2\nline3\n", (
+        "the reviewer must see the committed content, never the dirty "
+        "working tree's uncommitted edit"
+    )
+    assert not seen["repo_path"].exists(), (
+        "the throwaway clone must be removed once the gate finishes"
+    )
+
+
+def test_branch_mode_makes_no_writes_to_the_users_checkout(tmp_path, monkeypatch):
+    """Same write-safety property PR mode already had, now pinned for branch
+    mode too, now that branch mode also clones/checks out into a temp dir."""
+    repo, _bare = _make_repo_with_origin(tmp_path)
+    _git(repo, "checkout", "-b", "feature")
+    (repo / "b.txt").write_text("change\n")
+    _git(repo, "add", "b.txt")
+    _git(repo, "commit", "-m", "feature commit")
+
+    _ok_credential(monkeypatch)
+    monkeypatch.setattr(oneshot, "AdversarialReviewer", _stub_reviewer(_PASSING_DECISION))
+
+    before = _repo_fingerprint(repo)
+    import asyncio
+    asyncio.run(run_gate(repo))
+    after = _repo_fingerprint(repo)
+    assert before == after
+
+
+# --------------------------------------------------------------------------- #
+# 15. Blocker 2 — "cannot run" must exit 2, never escape as an unhandled     #
+#     exception (which the CLI reports as a bare exit 1)                     #
+# --------------------------------------------------------------------------- #
+
+def test_a_repo_with_no_commits_refuses_instead_of_raising_giterror(tmp_path, monkeypatch):
+    """Regression for Blocker 2a: `repo.head_sha()` inside
+    `_resolve_branch_mode` raises an unguarded `GitError` on a repo with no
+    commits yet — that used to escape `run_gate` as an unhandled exception
+    (the CLI would report a generic exit 1, indistinguishable from a real
+    review FAIL) instead of refusing by name (exit 2)."""
+    repo = tmp_path / "empty"
+    repo.mkdir()
+    _git(repo, "init", "-b", "main")
+
+    _ok_credential(monkeypatch)
+    import asyncio
+    with pytest.raises(GateUnavailable, match="rev-parse HEAD"):
+        asyncio.run(run_gate(repo))
+
+
+def test_reviewer_construction_failure_refuses_instead_of_crashing(tmp_path, monkeypatch):
+    """Regression for Blocker 2b: `AdversarialReviewer.from_config` can raise
+    an unguarded `AuthError` (e.g. a reviewer pinned to a backend whose
+    credential vanished between `_check_credential`'s preview and
+    construction) — that used to escape `run_gate` as an unhandled
+    exception instead of refusing by name (exit 2)."""
+    repo, _bare = _make_repo_with_origin(tmp_path)
+    _git(repo, "checkout", "-b", "feature")
+    (repo / "b.txt").write_text("change\n")
+    _git(repo, "add", "b.txt")
+    _git(repo, "commit", "-m", "feature commit")
+
+    _ok_credential(monkeypatch)
+
+    class _ExplodingConstruction:
+        @classmethod
+        def from_config(cls, data, **kw):
+            raise AuthError("credential vanished between preview and construction")
+
+    monkeypatch.setattr(oneshot, "AdversarialReviewer", _ExplodingConstruction)
+
+    import asyncio
+    with pytest.raises(GateUnavailable, match="could not construct the reviewer"):
+        asyncio.run(run_gate(repo))
+
+
+# --------------------------------------------------------------------------- #
+# 16. Blocker 3 — `--pr` must never hang on a credential prompt              #
+# --------------------------------------------------------------------------- #
+
+def test_pr_mode_fetch_runs_with_no_prompt_env(tmp_path, monkeypatch):
+    """Regression for Blocker 3: `git fetch` (PR mode's one network call)
+    used to run with the inherited environment, unprotected against
+    blocking forever on a credential prompt for a private repo the caller
+    lacks credentials for. Every git call this module makes — especially
+    `fetch` — must set `GIT_TERMINAL_PROMPT=0` (and a no-op askpass) so a
+    missing credential fails fast instead of hanging."""
+    repo, bare = _make_repo_with_github_origin(tmp_path)
+    pr_src = _push_pr_ref(bare, tmp_path / "pr_src5", 21)
+    (pr_src / "e.txt").write_text("pr change\n")
+    _git(pr_src, "add", "e.txt")
+    _git(pr_src, "commit", "-m", "pr change")
+    _git(pr_src, "push", "origin", "HEAD:refs/pull/21/head")
+
+    _ok_credential(monkeypatch)
+    monkeypatch.setattr(oneshot, "AdversarialReviewer", _stub_reviewer(_PASSING_DECISION))
+
+    seen_envs = []
+    real_run = subprocess.run
+
+    def _spy(argv, *a, **kw):
+        argv_list = list(argv)
+        if argv_list and Path(argv_list[0]).name == "git" and "fetch" in argv_list:
+            seen_envs.append(kw.get("env"))
+        return real_run(argv, *a, **kw)
+
+    monkeypatch.setattr(subprocess, "run", _spy)
+
+    import asyncio
+    asyncio.run(run_gate(repo, pr_url="https://github.com/acme/widgets/pull/21"))
+
+    assert seen_envs, "expected at least one `git fetch` call to be observed"
+    for env in seen_envs:
+        assert env is not None and env.get("GIT_TERMINAL_PROMPT") == "0", (
+            "git fetch must run with GIT_TERMINAL_PROMPT=0 so a missing "
+            "credential fails fast instead of hanging on a prompt"
+        )
+
+
+# --------------------------------------------------------------------------- #
+# 17. Blocker 4 — the DEFAULT `nh gate` must never touch the network         #
+# --------------------------------------------------------------------------- #
+
+def test_branch_mode_resolves_default_branch_without_network(tmp_path, monkeypatch):
+    """Regression for Blocker 4: `_resolve_branch_mode` used to call
+    `repo.default_branch(local_only=False)`, whose non-local fallback (`git
+    remote show origin`) does real network I/O and hangs offline — the
+    DEFAULT, no-flags `nh gate` invocation must never reach the network.
+    Pins the exact keyword `default_branch` is invoked with."""
+    repo, _bare = _make_repo_with_origin(tmp_path)
+    _git(repo, "checkout", "-b", "feature")
+    (repo / "b.txt").write_text("change\n")
+    _git(repo, "add", "b.txt")
+    _git(repo, "commit", "-m", "feature commit")
+
+    _ok_credential(monkeypatch)
+    monkeypatch.setattr(oneshot, "AdversarialReviewer", _stub_reviewer(_PASSING_DECISION))
+
+    from no_human.vcs.git import GitRepo
+    seen_kwargs = {}
+    real_default_branch = GitRepo.default_branch
+
+    def _spy(self, **kw):
+        seen_kwargs.update(kw)
+        return real_default_branch(self, **kw)
+
+    monkeypatch.setattr(GitRepo, "default_branch", _spy)
+
+    import asyncio
+    asyncio.run(run_gate(repo))
+
+    assert seen_kwargs == {"local_only": True}, (
+        f"default_branch must be resolved with local_only=True, got {seen_kwargs!r}"
+    )
+
+
+def test_pr_mode_resolves_default_branch_without_network(tmp_path, monkeypatch):
+    """Same as above, PR mode: PR mode's one expected network call is the
+    `fetch` of the PR ref — resolving the default branch on top of that must
+    still stay local-only rather than risking a second, unbounded network
+    call."""
+    repo, bare = _make_repo_with_github_origin(tmp_path)
+    pr_src = _push_pr_ref(bare, tmp_path / "pr_src6", 23)
+    (pr_src / "f.txt").write_text("pr change\n")
+    _git(pr_src, "add", "f.txt")
+    _git(pr_src, "commit", "-m", "pr change")
+    _git(pr_src, "push", "origin", "HEAD:refs/pull/23/head")
+
+    _ok_credential(monkeypatch)
+    monkeypatch.setattr(oneshot, "AdversarialReviewer", _stub_reviewer(_PASSING_DECISION))
+
+    from no_human.vcs.git import GitRepo
+    seen_kwargs = {}
+    real_default_branch = GitRepo.default_branch
+
+    def _spy(self, **kw):
+        seen_kwargs.update(kw)
+        return real_default_branch(self, **kw)
+
+    monkeypatch.setattr(GitRepo, "default_branch", _spy)
+
+    import asyncio
+    asyncio.run(run_gate(repo, pr_url="https://github.com/acme/widgets/pull/23"))
+
+    assert seen_kwargs == {"local_only": True}, (
+        f"default_branch must be resolved with local_only=True, got {seen_kwargs!r}"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# 18. Blocker 5 — the gate must work from any subdirectory of the repo       #
+# --------------------------------------------------------------------------- #
+
+def test_gate_runs_from_a_subdirectory_of_the_repo(tmp_path, monkeypatch):
+    """Regression for Blocker 5: `GitRepo.__init__` requires `.git` to exist
+    directly under the given path, so invoking the gate from any
+    subdirectory of a perfectly normal checkout used to refuse with a
+    misleading "not a git repository" message. `_resolve_repo_root` must
+    resolve the real root first."""
+    repo, _bare = _make_repo_with_origin(tmp_path)
+    _git(repo, "checkout", "-b", "feature")
+    subdir = repo / "src" / "pkg"
+    subdir.mkdir(parents=True)
+    (subdir / "b.py").write_text("x = 1\n")
+    _git(repo, "add", "src/pkg/b.py")
+    _git(repo, "commit", "-m", "feature commit")
+
+    _ok_credential(monkeypatch)
+    monkeypatch.setattr(oneshot, "AdversarialReviewer", _stub_reviewer(_PASSING_DECISION))
+
+    import asyncio
+    result = asyncio.run(run_gate(subdir))
+    assert result.passed is True
+
+
+# --------------------------------------------------------------------------- #
+# 19. §6d — credential check and disclosure follow the reviewer's actual     #
+#     configured backend, not a hardcoded claude-only assumption             #
+# --------------------------------------------------------------------------- #
+
+def test_check_credential_consults_the_reviewers_role_backend(tmp_path, monkeypatch):
+    """Regression: `_check_credential` used to hardcode the claude-CLI/
+    subscription check regardless of the actually-configured reviewer
+    backend (§6d). A reviewer pinned to `codex` must be checked via
+    `assert_task_backend_usable("codex", ...)`, never the claude-only path —
+    and must refuse (never silently pass as claude) when codex is
+    unavailable."""
+    repo, _bare = _make_repo_with_origin(tmp_path)
+
+    class _CodexConfig:
+        data = {
+            "llm": {"role_backends": {
+                "reviewer": {"backend": "codex", "model": "gpt-5-codex"},
+            }},
+        }
+
+        def get(self, key, default=None):
+            return self.data.get(key, default)
+
+    monkeypatch.setattr(oneshot, "load_config", lambda: _CodexConfig())
+    # Poison the claude-only path: if `_check_credential` still hardcodes
+    # it, this raises "the claude CLI is not on PATH" instead of the
+    # codex-specific refusal below, proving the wrong check ran.
+    monkeypatch.setattr(oneshot, "find_claude_cli", lambda: None)
+
+    import asyncio
+    with pytest.raises(GateUnavailable, match="codex") as exc_info:
+        asyncio.run(run_gate(repo))
+    assert "claude CLI" not in str(exc_info.value), (
+        "a codex-pinned reviewer must not be checked via the claude-only path"
+    )
+
+
+def test_run_gate_populates_and_discloses_a_non_default_reviewer_backend(
+    tmp_path, monkeypatch,
+):
+    """§6d disclosure: a non-default `llm.role_backends.reviewer` Settings
+    choice must be disclosed wherever the run's models are shown — here, the
+    rendered Markdown checklist."""
+    repo, _bare = _make_repo_with_origin(tmp_path)
+    _git(repo, "checkout", "-b", "feature")
+    (repo / "b.txt").write_text("change\n")
+    _git(repo, "add", "b.txt")
+    _git(repo, "commit", "-m", "feature commit")
+
+    class _CodexConfig:
+        data = {
+            "llm": {"role_backends": {
+                "reviewer": {"backend": "codex", "model": "gpt-5-codex"},
+            }},
+        }
+
+        def get(self, key, default=None):
+            return self.data.get(key, default)
+
+    monkeypatch.setattr(oneshot, "load_config", lambda: _CodexConfig())
+    monkeypatch.setattr(oneshot, "assert_task_backend_usable", lambda *a, **kw: None)
+    monkeypatch.setattr(oneshot, "AdversarialReviewer", _stub_reviewer(_PASSING_DECISION))
+
+    import asyncio
+    result = asyncio.run(run_gate(repo))
+    assert result.reviewer_backend == "codex"
+    assert result.reviewer_model == "gpt-5-codex"
+    assert result.reviewer_backend_is_default is False
+    text = render_markdown(result)
+    assert "codex" in text
+    assert "gpt-5-codex" in text
+
+
+def test_rendered_markdown_discloses_a_non_default_reviewer_backend():
+    text = render_markdown(_result(
+        reviewer_backend="codex", reviewer_model="gpt-5-codex",
+        reviewer_backend_is_default=False,
+    ))
+    assert "codex" in text
+    assert "gpt-5-codex" in text
+
+
+def test_rendered_markdown_does_not_disclose_the_default_reviewer_backend():
+    text = render_markdown(_result())
+    assert "Reviewer backend" not in text
+
+
+# --------------------------------------------------------------------------- #
+# 20. previously-untested named behaviors                                    #
+# --------------------------------------------------------------------------- #
+
+def test_claude_cli_not_on_path_refuses_by_name(tmp_path, monkeypatch):
+    repo, _bare = _make_repo_with_origin(tmp_path)
+    monkeypatch.setattr(oneshot, "load_config", lambda: _FakeConfig())
+    monkeypatch.setattr(oneshot, "find_claude_cli", lambda: None)
+
+    import asyncio
+    with pytest.raises(GateUnavailable, match="claude CLI is not on PATH"):
+        asyncio.run(run_gate(repo))
+
+
+def test_branch_with_no_commits_beyond_base_refuses_by_name(tmp_path, monkeypatch):
+    repo, _bare = _make_repo_with_origin(tmp_path)
+    # HEAD is still exactly origin/main's HEAD: no feature commits at all.
+    _ok_credential(monkeypatch)
+    import asyncio
+    with pytest.raises(GateUnavailable, match="no commits beyond"):
+        asyncio.run(run_gate(repo))
+
+
+def test_reviewer_unavailable_is_reported_as_gate_unavailable(tmp_path, monkeypatch):
+    repo, _bare = _make_repo_with_origin(tmp_path)
+    _git(repo, "checkout", "-b", "feature")
+    (repo / "b.txt").write_text("change\n")
+    _git(repo, "add", "b.txt")
+    _git(repo, "commit", "-m", "feature commit")
+
+    _ok_credential(monkeypatch)
+
+    class _UnavailableReviewer:
+        @classmethod
+        def from_config(cls, data, **kw):
+            return cls()
+
+        async def review(self, *a, **kw):
+            raise ReviewerUnavailable("no verdict reached")
+
+    monkeypatch.setattr(oneshot, "AdversarialReviewer", _UnavailableReviewer)
+
+    import asyncio
+    with pytest.raises(GateUnavailable, match="could not reach a verdict"):
+        asyncio.run(run_gate(repo))
+
+
+# --------------------------------------------------------------------------- #
+# 21. shallow-clone-aware refusal messaging (both modes)                     #
+# --------------------------------------------------------------------------- #
+#
+# A shallow clone's fetch boundary can exclude the true merge-base ancestor,
+# making `git merge-base` fail for a reason that has nothing to do with the
+# branch/PR actually lacking shared history with base — the refusal must
+# name the shallow clone, not the generic (and here actively misleading) "no
+# merge base" wording. `--depth` is silently ignored for local-path clones
+# ("--depth is ignored in local clones; use file:// instead" — git's own
+# warning), so both helpers below deliberately clone via a `file://` URL to
+# force a real shallow clone rather than accidentally getting full history.
+
+def _make_shallow_branch_checkout(tmp_path):
+    """A shallow clone, checked out on `feature`, whose shallow fetch
+    boundary excludes `c1` — the commit `feature` and `origin/main` actually
+    share."""
+    bare = tmp_path / "origin.git"
+    subprocess.run(["git", "init", "--bare", "-b", "main", str(bare)],
+                    check=True, capture_output=True)
+
+    seed = tmp_path / "seed"
+    seed.mkdir()
+    _git(seed, "init", "-b", "main")
+    _git(seed, "config", "user.email", "t@example.com")
+    _git(seed, "config", "user.name", "t")
+    (seed / "a.txt").write_text("one\n")
+    _git(seed, "add", "a.txt")
+    _git(seed, "commit", "-m", "c1")
+    _git(seed, "remote", "add", "origin", str(bare))
+    _git(seed, "push", "origin", "main")
+
+    _git(seed, "checkout", "-b", "feature")
+    (seed / "b.txt").write_text("feature\n")
+    _git(seed, "add", "b.txt")
+    _git(seed, "commit", "-m", "feature commit")
+    _git(seed, "push", "origin", "feature")
+
+    _git(seed, "checkout", "main")
+    (seed / "a.txt").write_text("two\n")
+    _git(seed, "add", "a.txt")
+    _git(seed, "commit", "-m", "c2")
+    _git(seed, "push", "origin", "main")
+
+    shallow = tmp_path / "shallow"
+    subprocess.run(
+        ["git", "clone", "--depth", "1", "--branch", "feature", "-q",
+         f"file://{bare}", str(shallow)],
+        check=True, capture_output=True,
+    )
+    _git(shallow, "config", "user.email", "t@example.com")
+    _git(shallow, "config", "user.name", "t")
+    _git(shallow, "fetch", "--depth", "1", "origin", "main", "-q")
+    fetch_head = _git_out(shallow, "rev-parse", "FETCH_HEAD")
+    _git(shallow, "update-ref", "refs/remotes/origin/main", fetch_head)
+    _git(shallow, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+    return shallow
+
+
+def test_branch_mode_names_a_shallow_clone_instead_of_a_generic_no_merge_base(
+    tmp_path, monkeypatch,
+):
+    repo = _make_shallow_branch_checkout(tmp_path)
+    assert _git_out(repo, "rev-parse", "--is-shallow-repository") == "true"
+    proc = subprocess.run(
+        ["git", "-C", str(repo), "merge-base", "origin/main", "HEAD"],
+        capture_output=True,
+    )
+    assert proc.returncode != 0, (
+        "test premise: the shallow fetch boundary must make merge-base "
+        "genuinely fail, or this test proves nothing"
+    )
+
+    _ok_credential(monkeypatch)
+    import asyncio
+    with pytest.raises(GateUnavailable, match="shallow clone") as exc_info:
+        asyncio.run(run_gate(repo))
+    assert str(exc_info.value) != "no merge base between HEAD and origin/main", (
+        "must name the shallow clone, not fall back to the generic message"
+    )
+
+
+def _make_shallow_repo_with_github_origin(tmp_path, owner="acme", repo_name="widgets"):
+    """Like `_make_repo_with_github_origin`, but `repo_path` itself is a
+    shallow clone of `main`'s tip only, one commit past the true merge-base
+    ancestor (`c1`) the PR head fetched below actually branches from."""
+    bare = tmp_path / "origin.git"
+    subprocess.run(["git", "init", "--bare", "-b", "main", str(bare)],
+                    check=True, capture_output=True)
+
+    seed = tmp_path / "seed"
+    seed.mkdir()
+    _git(seed, "init", "-b", "main")
+    _git(seed, "config", "user.email", "t@example.com")
+    _git(seed, "config", "user.name", "t")
+    (seed / "a.txt").write_text("one\n")
+    _git(seed, "add", "a.txt")
+    _git(seed, "commit", "-m", "c1")
+    _git(seed, "remote", "add", "origin", str(bare))
+    _git(seed, "push", "origin", "main")
+
+    # Cloned from `bare` while it is still exactly at c1, so the PR commit's
+    # parent really is the ancestor `main`'s shallow view below is cut off
+    # from.
+    pr_src = _push_pr_ref(bare, tmp_path / "pr_src_shallow", 31)
+    (pr_src / "pr.txt").write_text("pr change\n")
+    _git(pr_src, "add", "pr.txt")
+    _git(pr_src, "commit", "-m", "pr change")
+    _git(pr_src, "push", "origin", "HEAD:refs/pull/31/head")
+
+    (seed / "a.txt").write_text("two\n")
+    _git(seed, "add", "a.txt")
+    _git(seed, "commit", "-m", "c2")
+    _git(seed, "push", "origin", "main")
+
+    github_url = f"https://github.com/{owner}/{repo_name}.git"
+    repo = tmp_path / "repo"
+    subprocess.run(
+        ["git", "clone", "--depth", "1", "--branch", "main", "-q",
+         f"file://{bare}", str(repo)],
+        check=True, capture_output=True,
+    )
+    _git(repo, "config", "user.email", "t@example.com")
+    _git(repo, "config", "user.name", "t")
+    _git(repo, "config", f"url.{bare}.insteadOf", github_url)
+    _git(repo, "remote", "set-url", "origin", github_url)
+    _git(repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+    return repo, bare
+
+
+def test_pr_mode_names_a_shallow_clone_instead_of_a_generic_no_merge_base(
+    tmp_path, monkeypatch,
+):
+    repo, _bare = _make_shallow_repo_with_github_origin(tmp_path)
+    assert _git_out(repo, "rev-parse", "--is-shallow-repository") == "true"
+
+    _ok_credential(monkeypatch)
+    import asyncio
+    with pytest.raises(GateUnavailable, match="shallow clone") as exc_info:
+        asyncio.run(run_gate(repo, pr_url="https://github.com/acme/widgets/pull/31"))
+    assert str(exc_info.value) != (
+        "no merge base between pull request #31 and origin/main"
+    ), "must name the shallow clone, not fall back to the generic message"
+
+
+# --------------------------------------------------------------------------- #
+# 22. detached HEAD must be named accurately, not as a branch called `HEAD`  #
+# --------------------------------------------------------------------------- #
+
+def test_branch_mode_names_a_detached_head_accurately(tmp_path, monkeypatch):
+    """Regression: a detached HEAD used to render as `working tree branch
+    \\`HEAD\\`` — untrue, since there is no branch named `HEAD`. Must be
+    named as detached instead."""
+    repo, _bare = _make_repo_with_origin(tmp_path)
+    _git(repo, "checkout", "-b", "feature")
+    (repo / "b.txt").write_text("change\n")
+    _git(repo, "add", "b.txt")
+    _git(repo, "commit", "-m", "feature commit")
+    head_sha = _git_out(repo, "rev-parse", "HEAD")
+    _git(repo, "checkout", "--detach", head_sha)
+
+    _ok_credential(monkeypatch)
+    monkeypatch.setattr(oneshot, "AdversarialReviewer", _stub_reviewer(_PASSING_DECISION))
+
+    import asyncio
+    result = asyncio.run(run_gate(repo))
+    assert "working tree in detached HEAD @" in result.comparison
+    assert "working tree branch `HEAD`" not in result.comparison
