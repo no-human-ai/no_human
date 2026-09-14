@@ -1448,7 +1448,24 @@ FROZEN_FILE_LINES = {
     # 6-line `permission_mode` validation to `doctor`, so an invalid
     # `llm.permission_mode` is reported as a contradiction instead of dying at
     # the first task. Measured on the merge result with the scanner below.
-    "cli/commands.py": 8935,
+    # 8935 -> 9039 (+104): `--ready` gains a live mergeability check against
+    # the CURRENT base (never cached), fixing the bug where a stale-base
+    # branch stayed listed as merge-ready after a sibling PR landed and
+    # rewrote `RELEASE_MANIFEST.txt`. `_approve_find_ready` now returns a
+    # `_ReadyTask` NamedTuple carrying a `vcs.landability.check_landability`
+    # verdict per task instead of a plain tuple; `_approve_go_ready` renders
+    # the two-part `rules P/T · merge: ...` status, splits the listing into
+    # ready-to-land vs. quality-passing-but-conflicted, and skips conflicted
+    # tasks under `--yes` (never auto-resolved, never hidden) via two new
+    # helpers, `_format_conflict_paths`/`_format_merge_status`. Measured via
+    # `wc -l src/no_human/cli/commands.py`.
+    # 9039 -> 9048 (+9): `_approve_find_ready` probes `check_landability`
+    # with the resolved HEAD SHA instead of the bare PR branch name — a
+    # remote-only branch (the norm for this repo's squash-from-worktree
+    # landing checkout) has no local ref, so the bare name silently
+    # degraded the verdict to `state="unknown"` and masked a real conflict
+    # as fail-open-landable.
+    "cli/commands.py": 9048,
     # api/app.py 5338 -> 5346 (+8): same budget-floor warning surfaced by
     # `send-back`/`reply` as `budget_warning` in the JSON response. Net cost
     # was trimmed from a naive +14 to +8 by computing `Bounds.from_config(...)`

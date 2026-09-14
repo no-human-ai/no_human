@@ -6,6 +6,8 @@ All notable changes to no_human. The format follows
 
 ## [Unreleased]
 
+## [0.2.3] — 2026-09-14
+
 ### Added
 - `nh task retitle` corrects a filed task's title after the fact — the board
   and `nh task show` read it back immediately. Refused while an attempt is
@@ -49,6 +51,17 @@ All notable changes to no_human. The format follows
   leaves a genuinely case-sensitive host's differently-named `GIT` binary
   alone. Pinned by
   `test_a_capitalised_git_push_is_denied_in_the_default_session_too`.
+- Session replay network body capture is now default-deny: `web/src/replayScrub.js`
+  classifies every `/api/*` endpoint the board calls and redacts
+  request/response bodies and headers (and strips path-carrying query
+  strings from the request line) unless the endpoint is individually
+  allowlisted as verified-safe. Previously only three onboarding paths were
+  excluded and everything else — including `/api/profiles`, which returns
+  every configured repo's name and absolute filesystem path — was captured
+  unmasked by default. A source-level sweep keeps the classification honest
+  as new endpoints are added. Recordings already stored under the old
+  behavior are unaffected by this fix; see docs/configuration.md's "Historical
+  recordings" note.
 
 ### Changed
 - Second brain is now called Memories.

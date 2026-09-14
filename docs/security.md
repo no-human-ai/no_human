@@ -166,7 +166,7 @@ named here.
   while a task waits on CI or review.
   These read; they send only the identifiers of a PR you just created.
 - **`nh merge-stack run` calls `gh pr merge`** against your git host
-  (`cli/commands.py:merge_stack_run:3181`). This is *your* command, not the agent's — an agent
+  (`cli/commands.py:merge_stack_run:3182`). This is *your* command, not the agent's — an agent
   session's Bash is denied it for the spellings the rule models
   (`_LEXICAL_MERGE_STACK` in `agent/guard.py`, plus the argv check beside it),
   in both session modes; see §2 for the bound.
@@ -258,7 +258,7 @@ named here.
   and `CodexBackend._child_env()` — with an
   env-var mark that is inherited by every descendant of that session, no
   matter how it is invoked. `nh approve` and `nh merge-stack run`
-  (`_refuse_agent_gate_act`, `cli/commands.py:approve:5431`, `:merge_stack_run:3151`) refuse before
+  (`_refuse_agent_gate_act`, `cli/commands.py:approve:5545`, `:merge_stack_run:3152`) refuse before
   `_bootstrap` runs when the calling process carries that mark, and an HTTP
   middleware in `api/app.py` (`_refuse_marked_gate_acts`, by `_csp_header`)
   refuses
@@ -354,7 +354,16 @@ named here.
   diff or token. On by default (`telemetry.enabled: true`), off with
   `telemetry.enabled: false` in `~/.no_human/config.yaml`. The browser board
   sends its own PostHog analytics and session replay on the same id (same doc
-  section) — that channel is independent of this one.
+  section) — that channel is independent of this one. Its replay *network*
+  capture sub-channel is default-deny (`web/src/replayScrub.js`):
+  request/response bodies are redacted unless the endpoint is on a short,
+  verified-safe allowlist. That default-deny guarantee covers network bodies
+  only — session replay also records the page's DOM/rendering (rrweb), which
+  is a separate capture mechanism this allowlist does not govern, so the
+  "never a task title, repo name, path, prompt, diff or token" guarantee
+  above does **not** extend to session replay as a whole (see
+  `docs/configuration.md`'s "can capture pixels of anything not on the masked
+  list" note).
 
 ### Only if you configure it
 
@@ -440,7 +449,7 @@ config key that turns it on and the default that keeps it off.
 The CLI, the desktop app and the MCP bridge talk to no_human's **own** API on
 `server.host`:`server.port`, which is `127.0.0.1:8420` by default
 (`cli/api_client.py`, `intake/mcp_bridge.py:40`,
-`cli/commands.py:print_no_task_matching:85`), and the transcript-research reader probes a language
+`cli/commands.py:print_no_task_matching:86`), and the transcript-research reader probes a language
 server on localhost (`history/extractor.py:65-72`). These never leave the
 machine, and `server.host` defaults to `127.0.0.1`.
 
