@@ -75,6 +75,32 @@ test("the driver contains exactly one win.screenshot call site — every filenam
     + "Every screenshot the driver writes must go through walkSurfaces()/SURFACES so a filename can never outrun its DOM proof.");
 });
 
+// The gap this closes: the walker and the SURFACES table are both pinned
+// above, but nothing previously pinned what the DRIVER actually hands the
+// walker — `walkSurfaces(win, SURFACES.slice(2), …)` is the one call site
+// that decides whether Settings and Stats get captured at all. A regression
+// that narrowed it (e.g. `SURFACES.slice(2, 3)`, dropping Settings and
+// Stats, or `SURFACES.slice(2, 4)`, dropping just Stats) would leave every
+// other test in this file and in linuxAcceptanceSurfaces.test.mjs green,
+// because those only exercise the walker/table in isolation. This test
+// extracts the literal second argument of each `walkSurfaces(win, …)` call
+// straight from the driver's source and evaluates it against the REAL
+// SURFACES array, so it fails the moment the driver stops feeding the
+// walker the full board→Settings→Stats tail.
+test("the driver's walkSurfaces calls together cover every SURFACES entry exactly once, in order", () => {
+  // Lazy match up to the shared third-argument marker (`{ shot`), not the
+  // first comma — the surfaces expression itself can contain a comma (e.g. a
+  // mutated `SURFACES.slice(2, 3)`), and stopping at the first comma would
+  // truncate that expression instead of evaluating it.
+  const calls = [...driverSource.matchAll(/walkSurfaces\(\s*win\s*,\s*([\s\S]*?),\s*\{\s*shot/g)].map((m) => m[1].trim());
+  assert.equal(calls.length, 3, `expected exactly 3 walkSurfaces(win, …) call sites in the driver; found ${calls.length}`);
+  const resolveArg = (expr) => new Function("SURFACES", `return (${expr});`)(SURFACES);
+  const combined = calls.map(resolveArg).flat();
+  assert.deepEqual(combined, SURFACES,
+    `the driver's walkSurfaces() calls must together cover every SURFACES entry exactly once, in order; `
+    + `got file list ${JSON.stringify(combined.map((s) => s.file))}`);
+});
+
 // ── AC-4: every pre-existing assertion is still present and enforced ───────
 // Executable guard, not prose: this goes RED if a future edit deletes one of
 // the seven load-bearing assertions carried over from before this fix, or
