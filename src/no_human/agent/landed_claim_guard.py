@@ -82,7 +82,7 @@ Ten revisions since the first version landed:
   existing test).
 * (Fifth review) same class a third time, one predicate further out:
   `_already_satisfied_subject` is only ever reached at delivery when
-  `resumed_commit` is `None` (`_run_attempt`, ~6626) — an ordinary
+  `resumed_commit` is `None` (`_run_attempt`, ~6805) — an ordinary
   in-session commit ahead of `base` leaves `resumed_commit` set, so
   delivery commits, reviews and opens a PR instead of parsing the claim at
   all. The probe was refusing that shape too. Fixed by evaluating that same

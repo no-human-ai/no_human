@@ -1972,7 +1972,8 @@ class Store:
 
     @serialized_write
     async def update_task(self, task: Task) -> Task:
-        """Persist the full mutable surface of a task row — EXCEPT status.
+        """Persist the full mutable surface of a task row — EXCEPT status
+        and config.
 
         Status has exactly one writer: ``set_status`` (which validates
         transitions and CAS-guards terminal rows, SCRUM-73). This method
@@ -1988,6 +1989,13 @@ class Store:
         callers keep reasoning about reality. Every other column still
         writes normally, so e.g. the Jira poller can keep updating context
         write-back markers on an already-DONE row.
+
+        ``config`` is excluded for the same reason, and for the same column
+        as in ``update_task_columns`` (#343): it is the human-only override
+        blob (the budget cap among its keys), nothing here mutates it, and an
+        orchestrator handle lives for a whole attempt — so a cap raise made
+        mid-run was written back to its pre-raise value. ``update_task_config``
+        is its one writer.
 
         A human's terminal cancel marker (``context.cancel_reason``) gets the
         same stale-handle protection as status: the CASE below carries the
@@ -2063,7 +2071,7 @@ class Store:
                                   json_extract(COALESCE(context, '{}'),
                                                '$.title_updated_at'))
                               ELSE '{}' END)),
-                 plan=:plan, config=:config,
+                 plan=:plan,
                  updated_at=:updated_at
                WHERE id=:id""",
             row,
@@ -2203,10 +2211,17 @@ class Store:
 
     @serialized_write
     async def update_task_columns(self, task: Task) -> Task:
-        """Persist the task's mutable columns EXCEPT context and status.
+        """Persist the task's mutable columns EXCEPT context, status and config.
         Multi-writer zones (watcher, CLI, gate) must write context only via
         merge_context/append_context_list — this companion writes the rest
         without clobbering concurrent context merges with a stale blob.
+        ``config`` joins that list (#343): it was written wholesale from
+        whatever the handle loaded, so a watcher tick that had nothing to do
+        could still write a pre-raise budget back over an
+        ``nh task config lifetime_tokens=N`` that landed while the tick was in
+        flight — silently reverting the one setting the design reserves to a
+        human. ``update_task_config`` is now its only writer, as ``set_status``
+        is for status.
         Status is excluded for the same reason as in ``update_task`` (R15):
         ``set_status`` is the only status writer; a stale handle here had
         no terminal guard at all. ``title`` gets the same `context.
@@ -2233,7 +2248,7 @@ class Store:
                  acceptance_criteria=:acceptance_criteria, repo_path=:repo_path,
                  kind=:kind, parent_id=:parent_id, follows_id=:follows_id,
                  blocker=:blocker, wake_check_at=:wake_check_at,
-                 priority=:priority, plan=:plan, config=:config,
+                 priority=:priority, plan=:plan,
                  updated_at=:updated_at
                WHERE id=:id""",
             row,
@@ -2261,6 +2276,28 @@ class Store:
                  updated_at = ?
                WHERE id = ?""",
             (title, now, now, task_id),
+        )
+        await self.db.commit()
+
+    @serialized_write
+    async def update_task_config(self, task_id: str, config: dict[str, Any]) -> None:
+        """Write ONE task's `config`, the human-only per-task overrides.
+
+        A targeted single-column UPDATE, like ``update_task_title``: it must
+        not read-modify-write the row, because every other column belongs to
+        whoever is holding a handle at the time.
+
+        Config is the budget cap among other things, and a cap raise is the
+        documented human escape from a ``BUDGET_EXHAUSTED`` park. Writing it
+        through ``update_task_columns`` meant any zone that saved a task -- a
+        watcher tick concluding "nothing to do" included -- wrote its own
+        loaded copy back, so a raise made mid-tick disappeared with no event,
+        no error, and a CLI that had already reported success (#343).
+        """
+        now = _now()
+        await self.db.execute(
+            """UPDATE tasks SET config = ?, updated_at = ? WHERE id = ?""",
+            (json.dumps(config), now, task_id),
         )
         await self.db.commit()
 

@@ -10,8 +10,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   NOTARY_CREDENTIAL_SETS, SIGNED, SIGNED_NOT_NOTARIZED, UNSIGNED,
+  WINDOWS_CERTIFICATE_VAR,
   notaryCredentialSet, notarizeCredentials, signingBanner, signingPlan,
+  windowsSigningBanner, windowsSigningPlan,
 } from "./signing.cjs";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 
 const NOTARY = { APPLE_API_KEY: "k", APPLE_API_KEY_ID: "id", APPLE_API_ISSUER: "iss" };
 const CERT = { CSC_LINK: "file:///cert.p12" };
@@ -175,4 +180,70 @@ test("the banner names the mode and never renders empty", () => {
     /release build \(signed \+ notarized\)/);
   assert.match(signingBanner(signingPlan({ NH_REQUIRE_SIGNED: "1" })),
     /refusing to continue/);
+});
+
+
+// ---------------------------------------------------------------------------
+// The Windows half (#330): the .exe name must claim only what Windows inputs
+// support. The macOS identity variables decided it before, so an exe could be
+// named as a release while unsigned — no Windows certificate exists for
+// CSC_NAME to point at.
+// ---------------------------------------------------------------------------
+
+test("no Windows certificate: the exe is tagged", () => {
+  const p = windowsSigningPlan({});
+  assert.equal(p.signed, false);
+  assert.equal(p.artifactTag, "-UNSIGNED");
+});
+
+test("an Apple identity cannot make the exe name claim a signature", () => {
+  // The exact shape the issue names: a shared org secret, or a matrix that
+  // exports the Apple variables once for every platform.
+  const p = windowsSigningPlan({
+    CSC_LINK: "file:///apple.p12",
+    CSC_NAME: "Developer ID Application: Someone (TEAMID)",
+    CSC_KEY_PASSWORD: "pw",
+    ...NOTARY,
+  });
+  assert.equal(p.signed, false, "an Apple .p12 cannot sign an exe");
+  assert.equal(p.artifactTag, "-UNSIGNED");
+});
+
+test("a Windows certificate clears the tag", () => {
+  const p = windowsSigningPlan({ [WINDOWS_CERTIFICATE_VAR]: "file:///win.pfx" });
+  assert.equal(p.signed, true);
+  assert.equal(p.artifactTag, "");
+});
+
+test("the two plans are independent in both directions", () => {
+  // macOS signed, Windows not: the DMG loses its tag, the exe keeps one.
+  const env = { ...CERT, ...NOTARY };
+  assert.equal(signingPlan(env).artifactTag, "");
+  assert.equal(windowsSigningPlan(env).artifactTag, "-UNSIGNED");
+  // ...and the other way round.
+  const winEnv = { [WINDOWS_CERTIFICATE_VAR]: "file:///win.pfx" };
+  assert.equal(signingPlan(winEnv).artifactTag, "-UNSIGNED");
+  assert.equal(windowsSigningPlan(winEnv).artifactTag, "");
+});
+
+test("the Windows banner sends the reader to the artifact, not the log", () => {
+  // electron-builder prints "signing with signtool.exe path=..." for every exe
+  // even when nothing is signed. A reader grepping the log for "signing" gets
+  // the wrong answer, so the banner has to name the real check.
+  const banner = windowsSigningBanner(windowsSigningPlan({}));
+  assert.match(banner, /UNSIGNED/);
+  assert.match(banner, /Get-AuthenticodeSignature/);
+  assert.match(banner, /step name/);
+});
+
+test("the Windows artifact name is wired to the Windows plan", () => {
+  // The one line that makes the fix live. Nothing else in this file can see
+  // it: the plan can be perfect and the config can still interpolate the
+  // macOS tag into the exe name, which is the state this issue reports.
+  const here = dirname(fileURLToPath(import.meta.url));
+  const config = readFileSync(join(here, "electron-builder.config.cjs"), "utf8");
+  const win = config.slice(config.indexOf("const win = {"));
+  const artifactName = win.slice(0, win.indexOf("};"));
+  assert.match(artifactName, /winPlan\.artifactTag/);
+  assert.doesNotMatch(artifactName, /[^n]plan\.artifactTag/);
 });
