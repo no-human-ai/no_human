@@ -111,6 +111,16 @@ AUX_USAGE_TIERS: tuple[str, ...] = tuple(
 # docstring for why.
 ORPHANED_SITE_PREFIX = "orphaned_"
 
+# The ONE read-side definition of "a task owns this ledger row for cost
+# purposes". `task_id IS NOT NULL` is the whole rule; `rolled_up = 0` is
+# belt-and-braces — `compact_unattributed_usage` nulls `task_id` when it
+# rolls a (site, model) group up, so a rolled-up row cannot carry one, and if
+# one ever did it would span tasks. See `usage_ledger_rows_by_task` /
+# `task_usage_ledger_rows`, the two readers that fold owned rows into a
+# task's cost, and `unattributed_usage_totals`'s `owned=` split, which
+# answers the same question as a whole-ledger total.
+OWNED_LEDGER_SQL = "task_id IS NOT NULL AND COALESCE(rolled_up, 0) = 0"
+
 
 def usage_columns_for(tier: str) -> tuple[str, ...]:
     """The three ADDEND token columns for one role prefix.
@@ -2819,6 +2829,68 @@ class Store:
             grouped.setdefault(row["task_id"], []).append(row)
         return grouped
 
+    async def usage_ledger_rows_by_task(self) -> dict[str, list[dict[str, Any]]]:
+        """Every OWNED ``unattributed_usage`` row, grouped by task — ONE query.
+
+        "Owned" is ``OWNED_LEDGER_SQL``: pre-attempt spend
+        (``Orchestrator._flush_orphaned_aux_usage``) booked with a task's id
+        before any attempt row existed for it. Mirrors ``attempts_by_task``
+        for the same reason (B2 #16): the board must not issue this query
+        once per task per tick.
+
+        Rows are summed per ``(task_id, site, model)`` rather than returned
+        raw — a task can accumulate many flush events at the same site (e.g.
+        several ``orphaned_plan_usage`` writes across replans), and
+        ``core.cost.ledger_rows_as_attempts`` prices one row per
+        ``(site, model)`` pair, not per flush.
+
+        Two honest-degradation modes this deliberately does NOT paper over:
+        (a) a row that ages past retention is rolled up by
+        ``compact_unattributed_usage``, which NULLs its ``task_id`` — from
+        that moment the spend is ownerless here forever, never silently
+        reattached; (b) a ``task_id`` pointing at a deleted task simply never
+        matches any caller's lookup — the spend stays in the whole-ledger
+        total (``unattributed_usage_totals``) but claims no task's figure.
+
+        Returns TOKENS only (``tokens_used``/``cache_read_tokens``/
+        ``cache_creation_tokens``), which compaction preserves exactly.
+        ``rolled_up`` (the compaction call-count multiplier) is deliberately
+        not summed here — a rolled-up row is by construction excluded by
+        ``OWNED_LEDGER_SQL``, and the call count question belongs to
+        ``unattributed_usage_totals``, not to a per-task cost join.
+        """
+        rows = await self._fetchall(
+            "SELECT task_id, site, model, "
+            "COALESCE(SUM(tokens_used), 0) AS tokens_used, "
+            "COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens, "
+            "COALESCE(SUM(cache_creation_tokens), 0) AS cache_creation_tokens "
+            f"FROM unattributed_usage WHERE {OWNED_LEDGER_SQL} "
+            "GROUP BY task_id, site, model"
+        )
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for r in rows:
+            row = dict(r)
+            grouped.setdefault(row["task_id"], []).append(row)
+        return grouped
+
+    async def task_usage_ledger_rows(self, task_id: str) -> list[dict[str, Any]]:
+        """The single-task slice of ``usage_ledger_rows_by_task`` — same
+        grouping, same two degradation modes, scoped with ``task_id = ?``
+        instead of a fleet-wide GROUP BY, for the single-task read endpoints
+        (``get_task``, ``list_subtasks``, post-approve) that would otherwise
+        hydrate and discard every other task's rows.
+        """
+        rows = await self._fetchall(
+            "SELECT task_id, site, model, "
+            "COALESCE(SUM(tokens_used), 0) AS tokens_used, "
+            "COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens, "
+            "COALESCE(SUM(cache_creation_tokens), 0) AS cache_creation_tokens "
+            f"FROM unattributed_usage WHERE {OWNED_LEDGER_SQL} AND task_id = ? "
+            "GROUP BY site, model",
+            (task_id,),
+        )
+        return [dict(r) for r in rows]
+
     async def count_attempts(self, task_id: str) -> int:
         """Raw row count — how many attempt rows exist for this task,
         INCLUDING infra-classified ones (`infra_failure = 1`), mechanical
@@ -3337,7 +3409,8 @@ class Store:
         return row_id
 
     async def unattributed_usage_totals(
-        self, task_id: str | None = None, *, attributed: bool | None = None
+        self, task_id: str | None = None, *, attributed: bool | None = None,
+        owned: bool | None = None,
     ) -> dict[str, int]:
         """Totals over the unattributed ledger: ``{calls, tokens_used,
         cache_read_tokens, cache_creation_tokens, total}``.
@@ -3356,7 +3429,22 @@ class Store:
         reclassify aged spend as ownerless; (b) the prefix is generated from
         ``AUX_USAGE_TIERS`` by ``_flush_orphaned_aux_usage``, so a newly
         registered aux role lands in the attributed class automatically —
-        no hardcoded site list to fall outside of.
+        no hardcoded site list to fall outside of. This split still answers
+        ``Orchestrator._orphaned_ledger_residual``'s question (the budget
+        gate's fail-open accounting) and stays untouched by ``owned=``.
+
+        ``owned`` is a SECOND, independent split — the one a per-task cost
+        join needs, and a different question from ``attributed``: "does a
+        live task's figure currently include this row" (``OWNED_LEDGER_SQL``:
+        ``task_id IS NOT NULL AND rolled_up = 0``), not "was this row
+        recorded by the orphan-flush path" (``site LIKE 'orphaned_%'``). The
+        two agree on every row today because the orphan-flush path is the
+        only ``task_id``-bearing writer, but they diverge exactly at
+        compaction: a rolled-up row keeps its ``orphaned_%`` site (still
+        ``attributed=True``) yet has lost its ``task_id`` (now ``owned=
+        False``) — the honest degradation ``usage_ledger_rows_by_task`` and
+        ``nh status``'s owned clause both need. ``None`` (default) is
+        unfiltered, exactly like ``attributed=None``.
 
         ``calls`` is not a plain ``COUNT(*)``: retention compaction
         (``compact_unattributed_usage``) collapses aged rows into one
@@ -3365,10 +3453,10 @@ class Store:
         count as the calls it replaced, or "how many LLM calls landed here"
         would silently shrink the moment a row ages past the retention
         window — so this sums ``rolled_up`` where set, and 1 per ordinary
-        (non-rolled-up) row. The ``attributed`` split preserves this: each
-        class sums ``rolled_up`` within its own filtered rows, so a rolled-up
-        group still counts as the calls it replaced inside whichever class
-        its ``site`` belongs to.
+        (non-rolled-up) row. The ``attributed``/``owned`` splits preserve
+        this: each class sums ``rolled_up`` within its own filtered rows, so
+        a rolled-up group still counts as the calls it replaced inside
+        whichever class it falls in.
         """
         sql = ("SELECT COALESCE(SUM(CASE WHEN rolled_up > 0 THEN rolled_up "
                "ELSE 1 END), 0) AS calls, "
@@ -3387,6 +3475,10 @@ class Store:
         elif attributed is False:
             predicates.append("(site NOT LIKE ? OR site IS NULL)")
             args.append(f"{ORPHANED_SITE_PREFIX}%")
+        if owned is True:
+            predicates.append(f"({OWNED_LEDGER_SQL})")
+        elif owned is False:
+            predicates.append(f"NOT ({OWNED_LEDGER_SQL})")
         if predicates:
             sql += " WHERE " + " AND ".join(predicates)
         row = await self._fetchone(sql, tuple(args))
