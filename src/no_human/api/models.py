@@ -8,7 +8,7 @@ from typing import Any
 from pydantic import BaseModel, model_validator
 
 from ..blockers.taxonomy import Blocker
-from ..core.cost import attempt_cost, attempts_cost
+from ..core.cost import attempt_cost, attempts_cost, ledger_rows_as_attempts
 from ..core.db import USAGE_ROLES, usage_columns_for
 from ..core.metrics import cache_read_share
 from ..core.pricing import FALLBACK_PRICE_NAME
@@ -351,13 +351,18 @@ class TaskOut(BaseModel):
     budget: BudgetOut | None = None
     # USD, summed across every attempt by core.cost.attempts_cost — the same
     # per-model pricing AttemptOut.cost_usd uses, never a local computation.
-    # `None` means "no attempts yet" (distinct from "attempts spent $0"), the
-    # same distinction every total_* field above already makes.
+    # Since this task's `unattributed_usage` ledger rows (pre-attempt intake/
+    # plan/decompose spend booked with this task's id, see
+    # `Store.task_usage_ledger_rows`) fold in too — `None` now means "no
+    # attempts AND no ledger rows yet" (distinct from "spent $0"), the same
+    # distinction every total_* field above already makes.
     cost_usd: float | None = None
     cost_model: str | None = None
 
     @classmethod
-    def from_task(cls, task: Task, attempts: list[dict]) -> "TaskOut":
+    def from_task(
+        cls, task: Task, attempts: list[dict], ledger: list[dict] | None = None,
+    ) -> "TaskOut":
         toks = [a.get("tokens_used") or 0 for a in (attempts or [])]
         total_tokens = sum(toks) if any(t > 0 for t in toks) else None
         cread = [a.get("cache_read_tokens") or 0 for a in (attempts or [])]
@@ -370,8 +375,16 @@ class TaskOut(BaseModel):
         total_review_tokens = _sum("review_tokens_used")
         total_review_cache_creation = _sum("review_cache_creation_tokens")
         total_review_cache_read = _sum("review_cache_read_tokens")
-        total_aux_tokens, total_aux_cache_read, total_aux_cache_creation = _aux_totals(attempts)
-        cost_usd, cost_model = attempts_cost(attempts)
+        # `priced` folds this task's OWNED ledger rows in for cost/aux-burn
+        # purposes only — never into `attempts`/`attempt_count`/the total_*
+        # coder/review columns above, which stay attempt-shaped. The ledger
+        # and the attempts table are disjoint by construction (a token is
+        # either drained onto an attempt row at exit or flushed to the
+        # ledger when none claims it, never both), so this sum cannot double
+        # count.
+        priced = list(attempts or []) + ledger_rows_as_attempts(ledger)
+        total_aux_tokens, total_aux_cache_read, total_aux_cache_creation = _aux_totals(priced)
+        cost_usd, cost_model = attempts_cost(priced)
         escalation_attempts = None
         escalation_tokens = None
         if task.blocker and isinstance(task.blocker, dict):
@@ -619,7 +632,8 @@ class TaskSummaryOut(BaseModel):
     # ADVISORY ONLY: nothing reads this field to merge anything.
     merge_ready: bool | None = None
     # USD, summed across every attempt by core.cost.attempts_cost — same
-    # source and same "None means no attempts yet" contract as TaskOut.cost_usd.
+    # source and same "None means no attempts/ledger rows yet" contract as
+    # TaskOut.cost_usd (which documents the ledger fold).
     cost_usd: float | None = None
     cost_model: str | None = None
     # Feature #1's pre-flight hint (core/feasibility.py), same dict the create
@@ -638,6 +652,7 @@ class TaskSummaryOut(BaseModel):
         pr_url: str | None = None,
         attempts: list[dict] | None = None,
         max_pr_conflict_rounds: int = 0,
+        ledger: list[dict] | None = None,
     ) -> "TaskSummaryOut":
         repo_name = task.repo_path.rstrip("/").rsplit("/", 1)[-1] if task.repo_path else None
         desc_short = (task.description or "")[:120] or None
@@ -695,9 +710,12 @@ class TaskSummaryOut(BaseModel):
             total_review_tokens = _rsum("review_tokens_used")
             total_review_cache_read = _rsum("review_cache_read_tokens")
             total_review_cache_creation = _rsum("review_cache_creation_tokens")
-        total_aux_tokens, total_aux_cache_read, total_aux_cache_creation = _aux_totals(attempts)
+        # See TaskOut.from_task: `priced` folds this task's OWNED ledger rows
+        # in for cost/aux-burn only, never into attempt-shaped fields above.
+        priced = list(attempts or []) + ledger_rows_as_attempts(ledger)
+        total_aux_tokens, total_aux_cache_read, total_aux_cache_creation = _aux_totals(priced)
         merge_ready = merge_ready_for(task, attempts)
-        cost_usd, cost_model = attempts_cost(attempts)
+        cost_usd, cost_model = attempts_cost(priced)
         return cls(
             id=task.id,
             external_id=task.external_id,
