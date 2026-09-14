@@ -200,9 +200,14 @@ def changed_test_functions(
         for key in sorted(after_fns):
             node = after_fns[key]
             if key in before_fns:
+                # `before_fns` is only ever non-empty when `before_tree` was
+                # parsed, which only happens when `before_text is not None`
+                # (see the `if before_text is not None:` guard above) — so
+                # this is a true invariant, not a defensive guess.
+                assert before_text is not None
                 seg_after = ast.get_source_segment(after_text, node)
                 seg_before = ast.get_source_segment(before_text, before_fns[key])
-                if False:  # TEMP: simulate M6 bug (never exclude unchanged siblings)
+                if seg_after == seg_before:
                     continue
             changed.append({
                 "node_id": f"{rel}::{key}",
@@ -430,6 +435,12 @@ def _mutations_for(source_text: str, symbol: str) -> list[_Mutation]:
             seg = ast.get_source_segment(source_text, node.test)
             if not seg:
                 continue
+            # `node.test` came from a tree that `ast.parse` built successfully
+            # (no SyntaxError was raised above), so CPython always populates
+            # `end_lineno`/`end_col_offset` here — the `int | None` in the
+            # stubs covers manually-constructed nodes, not this case.
+            assert node.test.end_lineno is not None
+            assert node.test.end_col_offset is not None
             candidates.append(_Mutation(
                 node.test.lineno, node.test.col_offset,
                 node.test.end_lineno, node.test.end_col_offset,
@@ -441,6 +452,10 @@ def _mutations_for(source_text: str, symbol: str) -> list[_Mutation]:
             seg = ast.get_source_segment(source_text, node.value)
             if not seg:
                 continue
+            # Same invariant as above: `node.value` is from a successfully
+            # parsed tree, so these are always populated.
+            assert node.value.end_lineno is not None
+            assert node.value.end_col_offset is not None
             candidates.append(_Mutation(
                 node.value.lineno, node.value.col_offset,
                 node.value.end_lineno, node.value.end_col_offset,
@@ -456,6 +471,10 @@ def _mutations_for(source_text: str, symbol: str) -> list[_Mutation]:
             seg = ast.get_source_segment(source_text, stmt)
             if not seg:
                 continue
+            # Same invariant as above: `stmt` is from a successfully parsed
+            # tree, so these are always populated.
+            assert stmt.end_lineno is not None
+            assert stmt.end_col_offset is not None
             candidates.append(_Mutation(
                 stmt.lineno, stmt.col_offset, stmt.end_lineno, stmt.end_col_offset,
                 "pass",

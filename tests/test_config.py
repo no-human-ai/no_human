@@ -14,6 +14,7 @@ from no_human.config import (
     assert_subscription_mode,
     load_config,
     load_env_token,
+    mutation_probe_config,
     scrub_metered_auth,
 )
 
@@ -1095,3 +1096,67 @@ def test_assert_codex_mode_dispatches_api_key_by_default(tmp_path, monkeypatch):
     assert isinstance(report, config.ScrubReport)
     assert os.environ["OPENAI_API_KEY"] == "placeholder-not-a-real-key"
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+
+# --------------------------------------------------------------------------
+# mutation_probe_config — tolerant reader for `mutation_probe.*`
+# --------------------------------------------------------------------------
+
+
+def test_mutation_probe_config_defaults_on_empty_data():
+    assert mutation_probe_config({}) == DEFAULT_CONFIG["mutation_probe"]
+
+
+def test_mutation_probe_config_none_section_is_treated_as_empty():
+    """`mutation_probe: None` (the deep-merge "replace with nothing" shape,
+    e.g. from a config file that sets the key to null) must not crash and
+    must fall back to the full default block, same as a missing key."""
+    assert mutation_probe_config({"mutation_probe": None}) == (
+        DEFAULT_CONFIG["mutation_probe"])
+
+
+def test_mutation_probe_config_non_dict_section_is_treated_as_empty():
+    assert mutation_probe_config({"mutation_probe": "advisory"}) == (
+        DEFAULT_CONFIG["mutation_probe"])
+
+
+def test_mutation_probe_config_bad_mode_falls_back_to_advisory_never_off():
+    """A typo'd mode must never silently fall back to `"off"` — that would
+    disable the safety check on a typo. It falls back to the *default*
+    mode, which is `"advisory"`."""
+    result = mutation_probe_config({"mutation_probe": {"mode": "banana"}})
+    assert result["mode"] == "advisory"
+    assert DEFAULT_CONFIG["mutation_probe"]["mode"] == "advisory"
+
+
+def test_mutation_probe_config_accepts_every_real_mode():
+    for mode in ("off", "advisory", "required"):
+        result = mutation_probe_config({"mutation_probe": {"mode": mode}})
+        assert result["mode"] == mode
+
+
+@pytest.mark.parametrize("key", ["max_tests", "max_mutations_per_test", "timeout_seconds"])
+def test_mutation_probe_config_valid_positive_int_overrides_the_default(key):
+    result = mutation_probe_config({"mutation_probe": {key: 7}})
+    assert result[key] == 7
+
+
+@pytest.mark.parametrize("key", ["max_tests", "max_mutations_per_test", "timeout_seconds"])
+@pytest.mark.parametrize("bad", [0, -5, "not-a-number", None, [], {}])
+def test_mutation_probe_config_invalid_int_falls_back_to_default(key, bad):
+    result = mutation_probe_config({"mutation_probe": {key: bad}})
+    assert result[key] == DEFAULT_CONFIG["mutation_probe"][key]
+
+
+@pytest.mark.parametrize("key", ["max_tests", "max_mutations_per_test", "timeout_seconds"])
+def test_mutation_probe_config_bool_int_falls_back_to_default(key):
+    """`True`/`False` pass `isinstance(x, int)` in Python, so a naive
+    ``int(raw)`` cast alone would accept a bool as a byte-for-byte number —
+    this must still fall back to the default instead."""
+    result = mutation_probe_config({"mutation_probe": {key: True}})
+    assert result[key] == DEFAULT_CONFIG["mutation_probe"][key]
+
+
+def test_mutation_probe_config_numeric_string_is_coerced():
+    result = mutation_probe_config({"mutation_probe": {"max_tests": "9"}})
+    assert result["max_tests"] == 9
