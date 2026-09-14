@@ -229,6 +229,16 @@ prefix, or pinned explicitly with `credential_mode: oauth` /
 path is scrubbed from the job's environment before the reviewer runs, and the
 value itself is masked in the log the moment it is read.
 
+**A credential is required, and there is no silent fallback.** If
+`secrets.ANTHROPIC_API_KEY` (or whatever secret you wire into `credential`)
+is empty, unset, or a shape the Action can't recognize even in `auto` mode,
+the run fails loudly at exit code `2` — naming the `credential` input and
+the secret it expects — before the reviewer, or any GitHub API call, ever
+runs. The same fail-closed rule applies if the reviewer itself errors out or
+the model call is rejected: those runs exit `2` too. The Action never posts
+a PASS, and never exits `0`, for a run where the review did not actually
+happen — a green check always means the gate ran.
+
 **Forks are skipped, not reviewed.** A pull request whose head is not this
 repository — including one from an already-deleted fork — never reaches the
 reviewer or the model; the Action exits 0 with a comment-free explanation
