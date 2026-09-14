@@ -797,28 +797,85 @@ def test_running_the_tests_for_the_landing_code_is_not_landing():
         'python -c "import os; os.system(\'nh approve abc\')"'}).allow
 
 
+class _CountingTable(dict):
+    """A mask table that records HOW it was read, not how long reading took.
+
+    One pass reaches for a key once per mask occurrence in the text and never
+    walks the table; a per-entry loop walks the whole table for every token,
+    whatever the machine is doing at the time.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.reads = 0
+        self.walks = 0
+
+    def get(self, key, default=None):
+        self.reads += 1
+        return super().get(key, default)
+
+    def __getitem__(self, key):
+        self.reads += 1
+        return super().__getitem__(key)
+
+    def __iter__(self):
+        self.walks += 1
+        return super().__iter__()
+
+    def items(self):
+        self.walks += 1
+        return super().items()
+
+    def keys(self):
+        self.walks += 1
+        return super().keys()
+
+    def values(self):
+        self.walks += 1
+        return super().values()
+
+
 def test_unmask_is_one_pass_not_one_per_table_entry():
     """A regression guard for the quadratic review round 4 found: `_unmask`
     looped the whole table per token, so `nh "a" x16000` cost 14.6 SECONDS
     inside a PreToolUse hook (192M str.replace calls) against 34 ms without the
-    rule. Generous bound — this asserts the SHAPE, not a machine speed."""
-    table = {f"\x00m{i}\x00": f"value-{i}" for i in range(5000)}
+    rule.
+
+    Graded on the SHAPE directly rather than on a wall clock (#349). The old
+    bound was `elapsed < 0.4`, which a loaded CI runner failed at 0.40029s —
+    a red build caused by the machine, on a branch that touched nothing here.
+    Counting table accesses says the same thing and says it identically on
+    every machine under every load.
+    """
+    table = _CountingTable({f"\x00m{i}\x00": f"value-{i}" for i in range(5000)})
     assert guard._unmask("\x00m4999\x00 and \x00m0\x00", table) == \
         "value-4999 and value-0"
+    # Two masks in the text, so two lookups and no walk of the other 4998.
+    assert (table.walks, table.reads) == (0, 2), (table.walks, table.reads)
 
     # The shape that actually regressed: MANY tokens against a big table, which
     # is what a command full of quoted arguments produces. A table loop is
-    # O(tokens x table) and took 14.6s at n=16000; one pass is linear. The
-    # bound is deliberately loose — this asserts the shape, not a machine.
-    cmd = "nh " + '"a" ' * 4000
-    start = time.monotonic()
-    guard.evaluate("Bash", {"command": cmd}, forbidden_paths=FORBIDDEN,
-                   never_push_to=PROTECTED, readonly=False)
-    elapsed = time.monotonic() - start
-    assert elapsed < 0.4, (
-        f"guard.evaluate took {elapsed:.3f}s on 4000 quoted tokens — _unmask "
-        "is looping the table per token again instead of substituting in one "
-        "pass")
+    # O(tokens x table); one pass is O(occurrences).
+    many = _CountingTable({f"\x00m{i}\x00": f"value-{i}" for i in range(5000)})
+    text = " ".join(f"\x00m{i}\x00" for i in range(4000))
+    assert guard._unmask(text, many) == " ".join(f"value-{i}" for i in range(4000))
+    assert many.walks == 0, (
+        f"_unmask walked the table {many.walks} time(s) — it is looping the "
+        "table per token again instead of substituting in one pass")
+    assert many.reads == 4000, many.reads
+
+
+def test_unmask_cost_does_not_grow_with_the_table():
+    """The same claim from the other side, and the one a stopwatch was trying
+    to make: the work is flat in TABLE size. A per-entry loop is linear in it,
+    so a table 100x bigger costs 100x more — measurable without a clock."""
+    text = " ".join(f"\x00m{i}\x00" for i in range(50))
+    counts = []
+    for size in (100, 10_000):
+        table = _CountingTable({f"\x00m{i}\x00": f"value-{i}" for i in range(size)})
+        assert guard._unmask(text, table) == " ".join(f"value-{i}" for i in range(50))
+        counts.append((table.walks, table.reads))
+    assert counts[0] == counts[1] == (0, 50), counts
 
 
 def test_an_interpreter_flag_before_the_code_does_not_hide_it():

@@ -347,11 +347,13 @@ async def test_pre_existing_red_test_excused_when_runner_rewrites_the_command(
     _git(bare_repo, "add", "-A")
     _git(bare_repo, "commit", "-m", "pre-existing red test on base")
 
-    pytest_bin = shutil.which("pytest")
-    assert pytest_bin, "pytest must be resolvable via PATH to strip it out"
     # More than one PATH entry may carry a `pytest` binary (e.g. this
     # worktree's own .venv AND an inherited parent-repo .venv) — strip every
-    # directory that resolves one, not just the first `which` hit.
+    # directory that resolves one, not just the first `which` hit. None at all
+    # is also a valid starting point: `.venv/bin/python -m pytest` leaves the
+    # bare binary unresolvable, and the scenario this test builds is then
+    # already in place, so there is nothing to require here (#344). What the
+    # rewrite actually needs is asserted after the strip, not before it.
     stripped = [
         p
         for p in os.environ.get("PATH", "").split(os.pathsep)

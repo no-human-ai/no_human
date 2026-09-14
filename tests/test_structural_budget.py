@@ -344,7 +344,13 @@ FROZEN_FUNCTION_LINES = {
     # in the terminal, not just the markdown report. Already present on this
     # branch before the quota-halt bump above; never previously reflected in
     # the ratchet. Measured on the merge result with the scanner below.
-    "cli/commands.py:bench_run": 400,
+    # 400 -> 402 (+2): #227 (PR #308) routes this function's `backend_factory`
+    # through `make_backend`, which needs `backend="claude"` and
+    # `config=config.data` where the direct `ClaudeBackend(...)` needed neither.
+    # Both load-bearing: without `config` the factory cannot read
+    # `llm.permission_mode`, the key that PR exists to honour.
+    # Measured on the merge result with the scanner below.
+    "cli/commands.py:bench_run": 402,
     # Grew to 304 (> 300) when D3.1 (2026-08-31, auto-activation pipeline)
     # threaded `learning.auto_manage`/`learning.auto_activate_daily_cap`
     # through `nh serve`'s `HarvestJob` construction — the kill switch's own
@@ -1479,7 +1485,12 @@ FROZEN_FILE_LINES = {
     # `core/orchestrator.py`, 24073 vs 24070. An earlier version of this
     # comment, and the commit message, claimed they disagreed here. They do
     # not.)
-    "cli/commands.py": 8920,
+    # 8920 -> 8935 (+15): #227 (PR #308) routes five bare `ClaudeBackend(...)`
+    # constructions in this file through `make_backend` (+2 each) and adds a
+    # 6-line `permission_mode` validation to `doctor`, so an invalid
+    # `llm.permission_mode` is reported as a contradiction instead of dying at
+    # the first task. Measured on the merge result with the scanner below.
+    "cli/commands.py": 8935,
     # api/app.py 5338 -> 5346 (+8): same budget-floor warning surfaced by
     # `send-back`/`reply` as `budget_warning` in the JSON response. Net cost
     # was trimmed from a naive +14 to +8 by computing `Bounds.from_config(...)`
@@ -1652,7 +1663,10 @@ FROZEN_FILE_LINES = {
     # `sched.lease_lost` and threads it into `queue_health(...)` alongside
     # the existing cooldown kwargs. Measured on this tree with the scanner
     # below.
-    "api/app.py": 6330,
+    # 6330 -> 6332 (+2): #227 (PR #308) routes the onboarding docs-generate
+    # backend through `make_backend`, so that path honours
+    # `llm.permission_mode` like every other. Measured on the merge result.
+    "api/app.py": 6332,
     # +51: W5 active-time phase writer (phase instrumentation).
     # +84: `list_escalations`/`list_review_fails`/`list_tamper_trips` — the
     # three new failure-signal sources the recurring learning harvest mines.

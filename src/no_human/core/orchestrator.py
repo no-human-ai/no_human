@@ -79,7 +79,7 @@ from ..blockers import (
     user_pause_blocker,
 )
 from ..ci.base import CIResult, HumanGatedCI
-from ..config import NO_HUMAN_HOME, active_auth_profile, ui_evidence_should_run
+from ..config import NO_HUMAN_HOME, active_auth_profile, ui_evidence_should_run, permission_mode
 from ..history.skills import discover_skills
 from ..intake.classify import kind_criteria_mismatch
 from ..intake.split_proposal import generate_split_proposal
@@ -2462,7 +2462,7 @@ class Orchestrator:
         self._sink({"source": REVIEWER_ROLE, "kind": kind, "text": text, **meta})
 
     @staticmethod
-    def _subagent_definitions() -> dict[str, "AgentDefinition"]:
+    def _subagent_definitions(config_data: dict | None = None) -> dict[str, "AgentDefinition"]:
         """The Agent-tool subagents offered to the implementer.
 
         Extracted out of the attempt body so the Claude-SDK-only
@@ -2483,10 +2483,10 @@ class Orchestrator:
           future edit widens the allow-list.
         * There is no read-only ``PermissionMode`` in this SDK — the literal is
           ``default | acceptEdits | plan | bypassPermissions | dontAsk | auto``
-          (``claude_agent_sdk/types.py``). ``bypassPermissions`` stays because
-          every no_human session is headless: any prompting mode hangs, and
-          ``plan`` would change what the subagent *does*, not just what it may
-          touch. The restriction therefore lives in ``disallowedTools``.
+          (``claude_agent_sdk/types.py``). The mode comes from config, which
+          admits only ``bypassPermissions``/``acceptEdits`` — both headless-safe;
+          a prompting mode hangs, and ``plan`` would change what the subagent
+          *does*. Writes stay barred by ``disallowedTools``, not by the mode.
         * ``model``/``effort`` were unset, so the researcher silently inherited
           whatever the calling session ran on. Pinned now: a grep-and-report job
           does not need the implementer's reasoning budget, and pinning means a
@@ -2552,7 +2552,7 @@ class Orchestrator:
                 ),
                 tools=["Read", "Grep", "Glob", "Bash"],
                 disallowedTools=["Write", "Edit", "MultiEdit", "NotebookEdit"],
-                permissionMode="bypassPermissions",
+                permissionMode=permission_mode(config_data),
                 maxTurns=10,
                 model="sonnet",
                 effort="low",
@@ -5900,7 +5900,7 @@ class Orchestrator:
         # the import succeeding.
         if _can_subagents:
             self._materialize_subagents(repo.path, task)
-            extra["agents"] = self._subagent_definitions()
+            extra["agents"] = self._subagent_definitions(self.config)
         # Materialize the verify skill with the repo's proven test command
         # so the agent can re-read it after context compaction.
         self._materialize_verify_skill(repo.path)
@@ -23532,8 +23532,9 @@ SIX of them read a checkpoint and TWO do not — but do
         for shot in result.shots:
             rel = shot.get("path") if isinstance(shot, dict) else None
             if rel and (out_dir / rel).is_file():
-                files[rel] = (out_dir / rel).read_bytes()
-                delivered_names.append({"name": shot.get("name", rel), "path": rel})
+                files[rel] = data = (out_dir / rel).read_bytes()
+                delivered_names.append(ui_evidence.shot_record(
+                    shot.get("name", rel), rel, data, shot.get("sha256")))
         if result.video and (out_dir / result.video).is_file():
             files[result.video] = (out_dir / result.video).read_bytes()
             video_name = result.video
@@ -23600,15 +23601,14 @@ SIX of them read a checkpoint and TWO do not — but do
                 "the harness did not start it, did not verify which "
                 "checkout it serves, and could not bind it to this walk's "
                 "hermetic backend — this walk was not hermetic.\n")
-        shown = delivered_names[: self._UI_EVIDENCE_MAX_EMBEDDED_SHOTS]
         alt_prefix = "default walk (no coder manifest): " if default_walk else ""
-        for shot in shown:
-            lines.append(f"![{alt_prefix}{shot['name']}]({_raw_url(shot['path'])})")
-        omitted = len(delivered_names) - len(shown)
+        embeds, omitted = ui_evidence.frame_lines(
+            delivered_names, alt_prefix, _raw_url, self._UI_EVIDENCE_MAX_EMBEDDED_SHOTS)
+        lines.extend(embeds)
         if omitted > 0:
             lines.append(f"_(+{omitted} more shot(s) on `{evidence_branch}`)_")
         if video_name:
-            lines.append(f"[walk video]({_raw_url(video_name)})")
+            lines.append(ui_evidence.video_line(_raw_url(video_name)))
         return "\n".join(lines) + "\n\n"
 
     #: Directory name every task's written artifacts (this section's full
