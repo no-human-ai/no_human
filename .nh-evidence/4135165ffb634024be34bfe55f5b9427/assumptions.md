@@ -1,6 +1,6 @@
 # Assumptions
 
-_Harness-captured record for task `4135165f`, commit `93688d1b4decac6a50300521de908765cc8fc47e` — not model-authored: no_human wrote this file from the intake step's recorded questions and assumptions. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `4135165f`, commit `2b4d1e77d4356d90b275b0e6d81d6f445d78eeaf` — not model-authored: no_human wrote this file from the intake step's recorded questions and assumptions. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 > ⚠️ **Unresolved:** Two consecutive attempts ended in the SAME state — identical failure signature and an identical diff against base — so the retry (with its corrective preamble) changed nothing observable. A third attempt would re-prove it at the highest cost tier.
 
