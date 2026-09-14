@@ -886,6 +886,15 @@ ALLOWLIST: dict[str, dict[str, Allowed]] = {
             "user-invoked: only when `nh gate --pr <url>` is given a pull "
             "request URL; the default `nh gate` (current branch) never "
             "reaches this path"),
+        "exec:git clone": Allowed(
+            "no remote at all — `git clone --local --shared --no-checkout` "
+            "at :216 clones the user's own already-fetched objects into a "
+            "throwaway temp directory so the PR head can be checked out for "
+            "citation verification; `--local` reads the source repo's "
+            "object store directly and never dials a network URL",
+            "user-invoked: only when `nh gate --pr <url>` is given a pull "
+            "request URL; the default `nh gate` (current branch) never "
+            "reaches this path"),
     },
     "integrations/__init__.py": {
         "http:httpx": Allowed(
