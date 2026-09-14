@@ -190,6 +190,10 @@ def _resolve_pr_mode(
         raise GateUnavailable(
             f"no merge base between pull request #{number} and {base_ref}"
         )
+    if merge_base == head:
+        raise GateUnavailable(
+            f"pull request #{number} has no commits beyond {base_ref}"
+        )
 
     comparison = (
         f"pull request #{number} head `{head[:7]}` against merge base with "
@@ -286,6 +290,17 @@ async def run_gate(
         )
 
     diff = _diff(repo_path, before_ref, after_ref)
+    if not diff.strip():
+        # `AdversarialReviewer.review` treats `diff_override=""` as falsy —
+        # identical to "no diff override" — and falls through to the
+        # multi-turn, tool-enabled gate path (reviewer.py:2566,2588,2601).
+        # That defeats the single-turn/no-tools property this module exists
+        # to guarantee, so refuse outright rather than hand the reviewer an
+        # empty string it would silently reinterpret.
+        raise GateUnavailable(
+            f"no changes to review between {before_ref[:7]} and "
+            f"{after_ref[:7]}: the diff is empty"
+        )
 
     try:
         tamper = tamper_check_between(
