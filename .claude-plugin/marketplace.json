@@ -11,7 +11,7 @@
       "name": "no-human",
       "source": "./plugins/no-human",
       "displayName": "no_human",
-      "description": "File a task with no_human and check on it without leaving Claude Code: task_add and task_status over your local no_human server (127.0.0.1:8420). no_human plans, codes, tests and has the work reviewed by a second model, then opens the pull request and stops.",
+      "description": "File a task with no_human and check on it without leaving Claude Code: task_add and task_status over your local no_human server (127.0.0.1:8420). no_human plans, codes, tests and has the work reviewed by a second model, then opens the pull request and stops. Also ships nh gate: run the fresh-session reviewer and tamper guard over your current branch or a GitHub pull request, no server required.",
       "homepage": "https://getnohuman.com",
       "repository": "https://github.com/no-human-ai/no_human",
       "license": "MIT",
@@ -23,7 +23,9 @@
         "code-review",
         "jira",
         "linear",
-        "sdlc"
+        "sdlc",
+        "review-gate",
+        "tamper-guard"
       ],
       "author": {
         "name": "eyalgolan",

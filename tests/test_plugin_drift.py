@@ -30,6 +30,9 @@ SKILL_MD = REPO_ROOT / "plugins" / "no-human" / "skills" / "file-a-task" / "SKIL
 PLUGIN_README = REPO_ROOT / "plugins" / "no-human" / "README.md"
 MCP_JSON = REPO_ROOT / "plugins" / "no-human" / ".mcp.json"
 PLUGIN_MANIFEST = REPO_ROOT / "plugins" / "no-human" / ".claude-plugin" / "plugin.json"
+GATE_SKILL_MD = (
+    REPO_ROOT / "plugins" / "no-human" / "skills" / "review-this-branch" / "SKILL.md"
+)
 
 
 async def _bridge_tools():
@@ -103,3 +106,39 @@ def test_mcp_json_launches_exactly_nh_mcp_serve():
 def test_plugin_manifest_parses_with_name_no_human():
     data = json.loads(PLUGIN_MANIFEST.read_text(encoding="utf-8"))
     assert data["name"] == "no-human"
+
+
+def test_the_gate_skill_has_frontmatter_with_a_name():
+    text = GATE_SKILL_MD.read_text(encoding="utf-8")
+    assert text.startswith("---"), "SKILL.md must open with YAML frontmatter"
+    frontmatter, _, _ = text[3:].partition("---")
+    assert "name:" in frontmatter, "SKILL.md frontmatter must declare name"
+    assert "description:" in frontmatter, "SKILL.md frontmatter must declare description"
+
+
+def test_the_gate_skill_names_the_verb_and_the_credential():
+    text = GATE_SKILL_MD.read_text(encoding="utf-8")
+    assert "nh gate" in text, "SKILL.md must name the CLI verb it runs"
+    assert "claude setup-token" in text, (
+        "SKILL.md must tell the agent to use the user's own Claude credential"
+    )
+    assert "merge base" in text, "SKILL.md must name the comparison it uses"
+
+
+def test_the_gate_skill_is_documented_in_the_plugin_readme():
+    text = PLUGIN_README.read_text(encoding="utf-8")
+    assert "review-this-branch" in text, (
+        "the plugin README must document the review-this-branch skill"
+    )
+    assert "nh gate" in text
+
+
+def test_the_gate_skill_promises_no_writes():
+    text = GATE_SKILL_MD.read_text(encoding="utf-8")
+    assert "merge is always the human" in text.lower(), (
+        "SKILL.md must state the product boundary: read and report only"
+    )
+    for line in text.splitlines():
+        assert "git commit" not in line, f"SKILL.md must never instruct a commit; found: {line!r}"
+        assert "git push" not in line, f"SKILL.md must never instruct a push; found: {line!r}"
+        assert "gh pr merge" not in line, f"SKILL.md must never instruct merging; found: {line!r}"
