@@ -1,6 +1,6 @@
 # Test-change guard
 
-_Harness-captured record for task `9c59b93c`, commit `d9acad71e658db759e0366c3192e9f00baa66eb3` — not model-authored: no_human wrote this file from the tamper adjudicator's waivers. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `9c59b93c`, commit `263ef53302306b7fd97d9080ef5bc2f91232bc69` — not model-authored: no_human wrote this file from the tamper adjudicator's waivers. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ```json
 [
@@ -105,6 +105,22 @@ _Harness-captured record for task `9c59b93c`, commit `d9acad71e658db759e0366c319
       "test_exec_names.py two skips are conditional preconditions on NEW tests (folding-volume / root), not neutered existing assertions; they support AC2 (samefile correctness) and AC3 ('A probe that cannot complete results in folding, never in the more permissive answer' \u2014 the unreadable-candidate\u2192None case)",
       "test_exec_names.py autouse `_clear_fold_cache` only clears the lru_cache; required by the AC2 rework that makes host_folds_case cached+parameterized so per-test volume/pin measurements are not contaminated",
       "test_venv_install_guard.py autouse `_clear_fold_cache` only clears the lru_cache; same AC2-driven cache-isolation consequence, and cannot force green (clearing a cache surfaces more failures, not fewer)"
+    ],
+    "reasons": [
+      "tests/test_case_fold_sweep.py: autouse monkeypatch fixture 0->1 (forces green without fixing product code)",
+      "tests/test_exec_names.py: skip/xfail markers 0->2 (test neutered)",
+      "tests/test_exec_names.py: autouse monkeypatch fixture 0->1 (forces green without fixing product code)",
+      "tests/test_venv_install_guard.py: autouse monkeypatch fixture 0->1 (forces green without fixing product code)"
+    ],
+    "verdict": "LEGITIMATE",
+    "where": ""
+  },
+  {
+    "justification": [
+      "test_exec_names.py skips (+2): AC3 requires exercising the 'a probe that cannot complete results in folding' and case-distinction paths; the two `pytest.skip` guards are conditional on the runner's own volume folding / running as root, and the real assertions (`_swap_probe(...) is False`, `_folds_case_at(...) is None`) still run on the host class where the property is expressible \u2014 these are new tests, not neutered ones",
+      "test_exec_names.py autouse fixture (+1): the change memoizes `host_folds_case` (lru_cache \u2014 the probe-measured-once property); the fixture only calls `cache_clear()`, required so AC2/AC3 per-test probe pinning ('The fold decision is derived from a path that exists\u2026') is not corrupted by a stale cached answer \u2014 it does not patch product code",
+      "test_venv_install_guard.py autouse fixture (+1): same `cache_clear()` hygiene enabling AC1 folding-host tests ('a capitalised spelling of an installer \u2026 is refused wherever the lowercase spelling is refused') to be deterministic across tests in one process",
+      "test_case_fold_sweep.py autouse fixture (+1): `cache_clear()` supporting AC4 ('a before/after sweep through the real guard entry point shows no command moving from denied to allowed'), which replays a corpus through the real `guard.evaluate`; the fixture fakes no behaviour"
     ],
     "reasons": [
       "tests/test_case_fold_sweep.py: autouse monkeypatch fixture 0->1 (forces green without fixing product code)",

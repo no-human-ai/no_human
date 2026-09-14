@@ -1,114 +1,148 @@
 # How I verified this — full log
 
-_Harness-captured record for task `9c59b93c`, commit `d9acad71e658db759e0366c3192e9f00baa66eb3` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `9c59b93c`, commit `263ef53302306b7fd97d9080ef5bc2f91232bc69` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ## How I verified this
-7 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
+8 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
 
 ### test
-- `uv run pytest -q tests/test_venv_install_guard.py::test_a_capitalised_uvx_program_flag_is_not_denied_like_pip tests/test_case_fold_sweep.py::test_the_sweep_does_not_regress_the_uvx_active_flag_placement 2>&1 | tail -60`
+- `uv run pytest tests/test_case_fold_sweep.py::test_the_sweep_does_not_regress_the_uvx_active_flag_placement tests/test_venv_install_guard.py::test_a_capitalised_uvx_program_flag_is_not_denied_like_pip -q 2>&1 | tail -40`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-   Building no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/9c59b93c9aeb49bb9bb36d0c3a7385c4.52752.165034f5
-      Built no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/9c59b93c9aeb49bb9bb36d0c3a7385c4.52752.165034f5
-Installed 73 packages in 146ms
+   Building no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/9c59b93c9aeb49bb9bb36d0c3a7385c4.52752.cc94b862
+      Built no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/9c59b93c9aeb49bb9bb36d0c3a7385c4.52752.cc94b862
+Installed 73 packages in 921ms
 ..                                                                       [100%]
-2 passed in 4.02s
+2 passed in 5.04s
 ```
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/9c59b93c9aeb49bb9bb36d0c3a7385c4.52752.165034f5 mkdir -p /Volumes/CFTestCS/pytest_base uv run pytest -q -p no:cacheprovider --basetemp=/Volumes/CFTestCS/pytest_bas [... 77 of 420 characters omitted from the middle ...] s_not_denied_like_pip \   tests/test_case_fold_sweep.py::test_the_sweep_does_not_regress_the_uvx_active_flag_placement \   2>&1 | tail -40`
+- `uv run pytest tests/test_exec_names.py tests/test_venv_install_guard.py tests/test_case_fold_sweep.py tests/test_guard.py -q -n 4 2>&1 | tail -60`
 
 ```
-it. That disagreed with its own upstream classifier exactly like
-        BLOCKER 2's `uv`/`uvx` exclusion did: on a folding host, `UVX ruff check
-        --active` was recognised as an installer invocation but `expects_program`
-        stayed `False` (the bare `.startswith("uvx")` does not match `"UVX"`),
-        so `--active` was read as uv's OWN flag and the command was DENIED —
-        while the identical `uvx ruff check --active` (lowercase) stayed
-        ALLOWED, because for it `expects_program` correctly saw `ruff` as the
-        invoked program and treated the trailing `--active` as ruff's, not
-        uv's. Pins the `.lower()` fix mirroring the already-corre
-[... 2,046 of 3,185 characters omitted from the middle ...]
-guard.py:898 venv guard: 'Uvx' names an installer but could not be resolved via PATH; allowing
-WARNING  <redacted>.agent.venv_install_guard:venv_install_guard.py:898 venv guard: 'UVX' names an installer but could not be resolved via PATH; allowing
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+bringing up nodes...
+bringing up nodes...
+
+...............................................s........................ [ 16%]
+........................................................................ [ 33%]
+...............................................................F........ [ 50%]
+........................................................................ [ 67%]
+........................................................................ [ 84%]
+...........................................
+[... 1,379 of 2,518 characters omitted from the middle ...]
+_install_guard.py:898 venv guard: 'pip' names an installer but could not be resolved via PATH; allowing
+WARNING  <redacted>.agent.venv_install_guard:venv_install_guard.py:898 venv guard: 'pip' names an installer but could not be resolved via PATH; allowing
 =========================== short test summary info ============================
-FAILED tests/test_venv_install_guard.py::test_a_capitalised_uvx_program_flag_is_not_denied_like_pip
-1 failed, 1 passed in 1.64s
+FAILED tests/test_case_fold_sweep.py::test_the_allow_side_controls_still_run
+1 failed, 425 passed, 1 skipped in 36.66s
 ```  
-  _excerpt - 3,175 characters of output in total_
+  _excerpt - 2,510 characters of output in total_
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/9c59b93c9aeb49bb9bb36d0c3a7385c4.52752.165034f5 mkdir -p /Volumes/CFTestCS/pytest_base2 uv run pytest -q -p no:cacheprovider --basetemp=/Volumes/CFTestCS/pytest_ba [... 79 of 422 characters omitted from the middle ...] s_not_denied_like_pip \   tests/test_case_fold_sweep.py::test_the_sweep_does_not_regress_the_uvx_active_flag_placement \   2>&1 | tail -20`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-..                                                                       [100%]
-2 passed in 0.92s
-```
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/9c59b93c9aeb49bb9bb36d0c3a7385c4.52752.165034f5 mkdir -p /Volumes/CFTestCS/pytest_full uv run pytest -q -p no:cacheprovider --basetemp=/Volumes/CFTestCS/pytest_full -n 4 \   tests/test_venv_install_guard.py tests/test_case_fold_sweep.py tests/test_exec_names.py \   2>&1 | tail -60`
+- `uv run pytest tests/test_exec_names.py tests/test_venv_install_guard.py tests/test_case_fold_sweep.py tests/test_guard.py -q -n 4 2>&1 | tail -60`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
 bringing up nodes...
 bringing up nodes...
 
-........................................................................ [ 47%]
-........................................................................ [ 94%]
-.........                                                                [100%]
-153 passed in 1.96s
+.................................................s...................... [ 16%]
+........................................................................ [ 33%]
+........................................................................ [ 50%]
+........................................................................ [ 67%]
+........................................................................ [ 84%]
+...................................................................      [100%]
+426 passed, 1 skipped in 33.93s
 ```
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/9c59b93c9aeb49bb9bb36d0c3a7385c4.52752.165034f5 uv run pytest -q -n 4 tests/test_venv_install_guard.py tests/test_case_fold_sweep.py tests/test_exec_names.py tests/test_guard.py tests/test_structural_budget.py tests/test_text_reads_declare_encoding.py 2>&1 | tail -40`
+- `uv run pytest tests/test_exec_names.py tests/test_venv_install_guard.py tests/test_case_fold_sweep.py tests/test_guard.py tests/test_structural_budget.py -q -n 4 2>&1 | tail -20`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
 bringing up nodes...
 bringing up nodes...
 
-...........................................s............................ [ 15%]
-........................................................................ [ 31%]
-........................................................................ [ 47%]
-........................................................................ [ 63%]
-........................................................................ [ 79%]
-........................................................................ [ 95%]
-.....................                                                    [100%]
-452 passed, 1 skipped in 31.47s
+....................................................s................... [ 16%]
+........................................................................ [ 32%]
+........................................................................ [ 48%]
+........................................................................ [ 64%]
+........................................................................ [ 80%]
+........................................................................ [ 97%]
+.............                                                            [100%]
+444 passed, 1 skipped in 45.19s
 ```
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/9c59b93c9aeb49bb9bb36d0c3a7385c4.52752.165034f5 uv run python -c " import json d = json.load(open('.<redacted>/repro_tests.json')) print(len(d['tests'])) " uv ru [... 874 of 1,213 characters omitted from the middle ...] the_probe_never_reads_its_own_source_path \   tests/test_exec_names.py::test_a_frozen_layout_still_denies_the_forge_rows 2>&1 | tail -20`
+- `cp tests/test_exec_names.py tests/test_venv_install_guard.py tests/test_case_fold_sweep.py /tmp/repro_base_check/tests/ cp testdata/case_fold_corpus.json /tmp/repro_base_check/testdata/ cd /tmp/repro_bas [... 901 of 1,240 characters omitted from the middle ...] never_reads_its_own_source_path" \   "tests/test_exec_names.py::test_a_frozen_layout_still_denies_the_forge_rows" \   -q 2>&1 | tail -80`
 
 ```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-11
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-tests/test_venv_install_guard.py::test_mutating_subcommand_threads_cwd_to_the_inner_installer_skip
-tests/test_venv_install_guard.py::test_a_capitalised_uvx_program_flag_is_not_denied_like_pip
-tests/test_venv_install_guard.py::test_a_capitalised_installer_is_refused_on_a_folding_cwd
-tes
-[... 210 of 1,349 characters omitted from the middle ...]
-.py::test_the_sweep_moved_rows_in_the_closing_direction
-tests/test_case_fold_sweep.py::test_the_sweep_does_not_regress_the_uvx_active_flag_placement
-tests/test_exec_names.py::test_an_unmeasurable_probe_folds
-tests/test_exec_names.py::test_the_probe_survives_a_removed_process_cwd
-tests/test_exec_names.py::test_the_probe_never_reads_its_own_source_path
-tests/test_exec_names.py::test_a_frozen_layout_still_denies_the_forge_rows
+path and marking the process 'frozen' must not change the answer.
+        """
+        import sys as _sys
+    
+        exec_names.host_folds_case.cache_clear()
+        before = exec_names.host_folds_case()
+    
+        monkeypatch.setattr(
+            exec_names, "__file__",
+            "/nonexistent/_internal/<redacted>/agent/exec_names.py")
+        monkeypatch.setattr(_sys, "frozen", True, raising=False)
+        exec_names.host_folds_case.cache_clear()
+        after = exec_names.host_folds_case()
+    
+>       assert after is before
+E       assert False is True
 
-11 tests collected in 0.09s
+tests/test_exec_names.py:309: AssertionError
+_______________ test_a_frozen_layout_still_denies_the_forge_r
+[... 3,696 of 4,835 characters omitted from the middle ...]
+ement
+FAILED tests/test_exec_names.py::test_an_unmeasurable_probe_folds - Attribute...
+FAILED tests/test_exec_names.py::test_the_probe_survives_a_removed_process_cwd
+FAILED tests/test_exec_names.py::test_the_probe_never_reads_its_own_source_path
+FAILED tests/test_exec_names.py::test_a_frozen_layout_still_denies_the_forge_rows
+11 failed in 3.40s
+Shell cwd was reset to /Users/eyalgolan/.<redacted>/worktrees/9c59b93c9aeb49bb9bb36d0c3a7385c4.52752.cc94b862
 ```  
-  _excerpt - 1,345 characters of output in total_
+  _excerpt - 4,818 characters of output in total_
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/9c59b93c9aeb49bb9bb36d0c3a7385c4.52752.165034f5 uv run pytest -q -n 4 tests/test_venv_install_guard.py tests/test_case_fold_sweep.py tests/test_exec_names.py 2>&1 | tail -10`
+- `uv run pytest \   "tests/test_venv_install_guard.py::test_mutating_subcommand_threads_cwd_to_the_inner_installer_skip" \   "tests/test_venv_install_guard.py::test_a_capitalised_uvx_program_flag_is_not_de [... 687 of 1,026 characters omitted from the middle ...] never_reads_its_own_source_path" \   "tests/test_exec_names.py::test_a_frozen_layout_still_denies_the_forge_rows" \   -q 2>&1 | tail -20`
+
+```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+...........                                                              [100%]
+11 passed in 0.76s
+```
+
+- `cd /Users/eyalgolan/.<redacted>/worktrees/9c59b93c9aeb49bb9bb36d0c3a7385c4.52752.cc94b862 uv run pytest -q -n 4 tests/test_exec_names.py tests/test_venv_install_guard.py tests/test_case_fold_sweep.py tests [... 418 of 761 characters omitted from the middle ...] how origin/main:src/<redacted>/agent/guard.py) src/<redacted>/agent/guard.py && echo "guard.py IDENTICAL to origin/main (untouched by me)"`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
 bringing up nodes...
 bringing up nodes...
 
-........................................................................ [ 47%]
-..........................................s............................. [ 94%]
-.........                                                                [100%]
-152 passed, 1 skipped in 2.04s
+.............................................................s.......... [ 16%]
+........................................................................ [ 32%]
+........................................................................ [ 48%]
+........................................................................ [ 64%]
+........................................................................ [ 80%]
+........................................................................ [ 97%]
+.............                                                            [100%]
+444 passed, 1 skipped in 26.90s
+=== manifest ===
+OK: 1616 file(s) match RELEASE_MANIFEST.txt
+=== git status ===
+## no-human/9c59b93c-3...origin/no-human/9c59b93c-3
+=== structural budget out-of-scope check ===
+IDENTICAL to origin/main (untouched by me)
+guard.py IDENTICAL to origin/main (untouched by me)
+```
+
+- `uv run pytest tests/test_case_fold_sweep.py::test_no_corpus_row_moved_from_denied_to_allowed -q 2>&1 | tail -10`
+
+```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+.                                                                        [100%]
+1 passed in 0.65s
 ```
 
 
