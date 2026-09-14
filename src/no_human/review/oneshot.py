@@ -2,17 +2,26 @@
 
 This is the SINGLE entry point for running the fresh-session reviewer without
 the orchestrator's daemon/Store machinery. Anything that wants "run the gate
-once, right now, over a diff" — the `nh gate` CLI verb, the
-`review-this-branch` plugin skill, and (per its own task) the GitHub Action —
-calls :func:`run_gate` here rather than constructing `AdversarialReviewer`
-itself. Keeping exactly one construction site means the model/timeout config,
-the diff-cap, and the single-turn/no-tools safety property stay in one place.
+once, right now, over a diff" — today that is the `nh gate` CLI verb and the
+`review-this-branch` plugin skill — calls :func:`run_gate` here rather than
+constructing `AdversarialReviewer` itself. Keeping exactly one construction
+site means the model/timeout config, the diff-cap, and the single-turn/
+no-tools safety property stay in one place.
 
-Reads and reports only: every git call against the user's own checkout is
-read-only (`rev-parse`, `merge-base`, `diff`, `status --porcelain`, and — in
-PR mode — a single additive `fetch` of the PR's refs, which writes objects
-and `FETCH_HEAD` but creates no branch and moves no ref the user owns). It
-never commits, pushes, merges, or edits a file in the user's checkout.
+Reads and reports only: every git call this module makes against the user's
+own checkout is read-only plumbing — `rev-parse`, `merge-base`, `diff`,
+`status --porcelain`, `config --get remote.origin.url` (to verify a `--pr`
+URL names this checkout's own repository — deliberately not `remote
+get-url`, which would apply any `insteadOf` rewrite instead of reporting the
+repo's actual declared origin; see `_origin_owner_repo`), and, in PR mode,
+a single additive `fetch` of the
+PR's refs (which writes objects and `FETCH_HEAD` but creates no branch and
+moves no ref the user owns). The tamper guard this module calls
+(`testing.runner.tamper_check_between`) also runs its own read-only git
+plumbing, including `ls-tree` and `show`, against the same checkout — that
+module's calls are not enumerated here since they are not this module's to
+promise. Taken together, `run_gate` never commits, pushes, merges, or edits a
+file in the user's checkout.
 
 PR mode additionally materializes the fetched PR head into a throwaway local
 clone (`git clone --local --shared`, in a temp directory, deleted before
@@ -36,14 +45,29 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..agent.backend_check import find_claude_cli
-from ..config import AuthError, load_config, assert_subscription_mode
+from ..config import AuthError, MissingCredentialError, load_config, assert_subscription_mode
 from ..core.task import Task
-from ..review.reviewer import AdversarialReviewer, ReviewDecision
+from ..review.reviewer import _DIFF_CAP, AdversarialReviewer, ReviewDecision, ReviewerUnavailable
 from ..testing import tamper_guard
 from ..testing.runner import TamperCheckUnavailable, tamper_check_between
 from ..vcs.git import GitError, GitRepo
 
-_PR_URL_RE = re.compile(r"/pull/(\d+)(?:/|$)")
+# Strict GitHub pull request URL: host must be exactly github.com, and both
+# owner and repo are captured so the caller can be checked against this
+# checkout's own `origin` remote (see `_origin_owner_repo`). Anything looser
+# than this — a bare "owner/repo/pull/N", a non-GitHub host, a scheme other
+# than https — used to match and get reviewed as if it were the request URL,
+# which is how a same-numbered PR on the wrong repo could get reviewed and
+# reported as a pass for this one. See `_resolve_pr_mode`.
+_PR_URL_RE = re.compile(
+    r"^https://github\.com/(?P<owner>[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?)"
+    r"/(?P<repo>[A-Za-z0-9._-]+?)(?:\.git)?/pull/(?P<number>\d+)(?:/\S*)?/?$"
+)
+
+# `origin`'s remote URL, in either the https or the ssh form git accepts.
+_ORIGIN_URL_RE = re.compile(
+    r"github\.com[:/](?P<owner>[^/]+)/(?P<repo>[^/]+?)(?:\.git)?/?$"
+)
 
 
 class GateUnavailable(RuntimeError):
@@ -66,6 +90,7 @@ class GateResult:
     tamper: tamper_guard.TamperReport
     decision: ReviewDecision
     uncommitted: list[str]
+    truncated: bool = False
 
 
 def _git(repo_path: Path, *args: str) -> subprocess.CompletedProcess:
@@ -97,6 +122,10 @@ def _diff(repo_path: Path, before: str, after: str) -> str:
 
 def _uncommitted_paths(repo_path: Path) -> list[str]:
     proc = _git(repo_path, "status", "--porcelain")
+    if proc.returncode != 0:
+        raise GateUnavailable(
+            f"could not check for uncommitted changes: {proc.stderr.strip()}"
+        )
     paths: list[str] = []
     for line in proc.stdout.splitlines():
         if not line.strip():
@@ -120,8 +149,15 @@ def _check_credential(config) -> None:
             profile=llm.get("auth_profile"),
             auth_mode=llm.get("auth_mode", "subscription"),
         )
-    except AuthError as exc:
+    except MissingCredentialError as exc:
+        # No credential on file at all.
         raise GateUnavailable(f"no credential: {exc}") from exc
+    except AuthError as exc:
+        # A credential problem that is NOT "nothing on file" — e.g. a stray
+        # ANTHROPIC_API_KEY set while llm.auth_mode is "subscription"
+        # (config.py:1280). Calling that "no credential" would be false; the
+        # problem is an extra, disallowed one.
+        raise GateUnavailable(f"credential problem: {exc}") from exc
 
 
 def _resolve_branch_mode(
@@ -157,14 +193,53 @@ def _resolve_branch_mode(
     return merge_base, head, base_ref, comparison, uncommitted
 
 
+def _origin_owner_repo(repo_path: Path) -> tuple[str, str] | None:
+    """This checkout's ``origin`` remote, as a GitHub ``(owner, repo)`` pair.
+
+    Returns ``None`` if ``origin`` has no URL or the URL is not a
+    ``github.com`` remote (https or ssh form) — callers must treat that as
+    "cannot verify", not as a pass.
+
+    Reads ``remote.origin.url`` via ``git config --get`` rather than
+    ``git remote get-url origin`` on purpose: the latter applies any
+    ``url.<base>.insteadOf`` rewrite configured for fetches/pushes, which
+    would report the rewritten fetch target instead of the repository's own
+    declared identity — exactly the wrong thing to compare a `--pr` URL
+    against.
+    """
+    proc = _git(repo_path, "config", "--get", "remote.origin.url")
+    if proc.returncode != 0:
+        return None
+    match = _ORIGIN_URL_RE.search(proc.stdout.strip())
+    if not match:
+        return None
+    return match.group("owner"), match.group("repo")
+
+
 def _resolve_pr_mode(
-    repo: GitRepo, repo_path: Path, pr_url: str,
+    repo: GitRepo, repo_path: Path, pr_url: str, base: str | None,
 ) -> tuple[str, str, str, str, list[str]]:
     """Returns (before_ref, after_ref, base_label, comparison, uncommitted)."""
-    match = _PR_URL_RE.search(pr_url)
+    match = _PR_URL_RE.match(pr_url.strip())
     if not match:
-        raise GateUnavailable("only GitHub pull request URLs are supported")
-    number = match.group(1)
+        raise GateUnavailable(
+            f"not a GitHub pull request URL: {pr_url!r} — expected "
+            "https://github.com/<owner>/<repo>/pull/<number>"
+        )
+    owner, name, number = match.group("owner"), match.group("repo"), match.group("number")
+
+    origin = _origin_owner_repo(repo_path)
+    if origin is None:
+        raise GateUnavailable(
+            "origin is not a github.com remote: cannot verify that "
+            f"{pr_url!r} belongs to this checkout"
+        )
+    if (owner.lower(), name.lower()) != (origin[0].lower(), origin[1].lower()):
+        raise GateUnavailable(
+            f"pull request URL names {owner}/{name}, but this checkout's "
+            f"origin is {origin[0]}/{origin[1]} — refusing to review a "
+            "different repository than the one checked out"
+        )
 
     proc = _git(repo_path, "fetch", "origin", f"refs/pull/{number}/head")
     if proc.returncode != 0:
@@ -178,12 +253,16 @@ def _resolve_pr_mode(
             f"could not resolve FETCH_HEAD after fetching pull request #{number}"
         )
 
-    default_name = repo.default_branch(local_only=False)
-    if not default_name:
-        raise GateUnavailable(
-            "no upstream to compare against: could not resolve origin/HEAD"
-        )
-    base_ref = f"origin/{default_name}"
+    if base:
+        base_ref = base
+    else:
+        default_name = repo.default_branch(local_only=False)
+        if not default_name:
+            raise GateUnavailable(
+                "no upstream to compare against: could not resolve "
+                "origin/HEAD; pass --base"
+            )
+        base_ref = f"origin/{default_name}"
 
     merge_base = _merge_base(repo_path, base_ref, head)
     if not merge_base:
@@ -196,8 +275,8 @@ def _resolve_pr_mode(
         )
 
     comparison = (
-        f"pull request #{number} head `{head[:7]}` against merge base with "
-        f"`{base_ref}` @ `{merge_base[:7]}`"
+        f"pull request {owner}/{name}#{number} head `{head[:7]}` against "
+        f"merge base with `{base_ref}` @ `{merge_base[:7]}`"
     )
     return merge_base, head, base_ref, comparison, []
 
@@ -273,7 +352,7 @@ async def run_gate(
     if pr_url:
         mode = "pr"
         before_ref, after_ref, _base_label, comparison, uncommitted = (
-            _resolve_pr_mode(repo, repo_path, pr_url)
+            _resolve_pr_mode(repo, repo_path, pr_url, base)
         )
         label = f"pull request {pr_url}"
     else:
@@ -302,6 +381,13 @@ async def run_gate(
             f"{after_ref[:7]}: the diff is empty"
         )
 
+    # `AdversarialReviewer.review` silently truncates `diff_override` to
+    # `_DIFF_CAP` chars (reviewer.py:2534) with no signal back to the
+    # caller — a diff bigger than the cap would otherwise get a fraction of
+    # itself reviewed and could still print a bare PASS on that partial
+    # view. Detect it here and make sure a truncated review can never pass.
+    truncated = len(diff) > _DIFF_CAP
+
     try:
         tamper = tamper_check_between(
             repo_path, before_ref=before_ref, after_ref=after_ref,
@@ -316,23 +402,29 @@ async def run_gate(
     )
     reviewer = AdversarialReviewer.from_config(config.data)
 
-    if mode == "pr":
-        # The reviewer's citation check reads `review_repo_path` straight off
-        # disk (`reviewer._citation_fails`). The user's own checkout never
-        # holds the PR head's content — only `FETCH_HEAD` does — so review
-        # against a throwaway clone checked out at `after_ref` instead of
-        # `repo_path` itself. See `_materialized_pr_head`.
-        with _materialized_pr_head(repo_path, after_ref) as review_repo_path:
+    try:
+        if mode == "pr":
+            # The reviewer's citation check reads `review_repo_path` straight
+            # off disk (`reviewer._citation_fails`). The user's own checkout
+            # never holds the PR head's content — only `FETCH_HEAD` does — so
+            # review against a throwaway clone checked out at `after_ref`
+            # instead of `repo_path` itself. See `_materialized_pr_head`.
+            with _materialized_pr_head(repo_path, after_ref) as review_repo_path:
+                decision = await reviewer.review(
+                    task, repo_path=review_repo_path, diff_override=diff,
+                    before_ref=before_ref,
+                )
+        else:
             decision = await reviewer.review(
-                task, repo_path=review_repo_path, diff_override=diff,
-                before_ref=before_ref,
+                task, repo_path=repo_path, diff_override=diff, before_ref=before_ref,
             )
-    else:
-        decision = await reviewer.review(
-            task, repo_path=repo_path, diff_override=diff, before_ref=before_ref,
-        )
+    except ReviewerUnavailable as exc:
+        # The reviewer itself reaches "no verdict" and escalates rather than
+        # guessing (reviewer.py:2601) — that means the gate did not run, the
+        # same shape as every other unmet precondition here.
+        raise GateUnavailable(f"the reviewer could not reach a verdict: {exc}") from exc
 
-    passed = decision.passed and not tamper.tampered
+    passed = decision.passed and not tamper.tampered and not truncated
 
     return GateResult(
         passed=passed,
@@ -343,6 +435,7 @@ async def run_gate(
         tamper=tamper,
         decision=decision,
         uncommitted=uncommitted,
+        truncated=truncated,
     )
 
 
@@ -352,6 +445,12 @@ def render_markdown(result: GateResult) -> str:
     verdict = "PASS" if result.passed else "FAIL"
     lines.append(f"## no_human gate — {verdict}")
     lines.append(f"**Compared:** {result.comparison}")
+    if result.truncated:
+        lines.append(
+            f"**⚠ diff exceeded the {_DIFF_CAP:,}-char single-turn review "
+            "cap and was truncated — this review only covers a prefix of "
+            "the change, and the gate cannot pass on it.**"
+        )
     lines.append("")
 
     tamper = result.tamper

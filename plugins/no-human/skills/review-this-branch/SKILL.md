@@ -73,9 +73,13 @@ citations or the tamper guard's before/after counts.
 **This skill only reads and reports. It never commits, pushes, merges, or
 edits a file in your checkout, and it must never be followed by a commit, a
 push, an approval, or a merge of the pull request on the agent's behalf.**
-`nh gate` itself only runs read-only git plumbing against your checkout
-(`rev-parse`, `merge-base`, `diff`, `status --porcelain`, and, in PR mode,
-one additive `git fetch` of the PR's ref) plus a read-only reviewer backend.
+`nh gate` itself only runs read-only git plumbing against your checkout —
+`rev-parse`, `merge-base`, `diff`, `status --porcelain`, `config --get
+remote.origin.url` (to check a `--pr` URL names your own repo), and, in PR
+mode, one additive `git fetch` of the PR's ref — plus the tamper guard's own
+read-only calls (`ls-tree`, `show`) and a read-only reviewer backend. This
+list describes what the current implementation does, not a promise that it
+will never grow; it never becomes a write.
 In PR mode it also makes a throwaway local clone of your checkout in a temp
 directory — read-only against your checkout, deleted before the command
 exits — so the review reads the pull request's actual content instead of

@@ -5888,7 +5888,7 @@ def gate(repo, pr_url, base, title, description):
         except GateUnavailable as exc:
             console.print(f"[bold red]cannot run the gate:[/] {escape(str(exc))}")
             sys.exit(2)
-        console.print(escape(render_markdown(result)))
+        console.print(escape(render_markdown(result)), soft_wrap=True)
         sys.exit(0 if result.passed else 1)
 
     asyncio.run(_go())

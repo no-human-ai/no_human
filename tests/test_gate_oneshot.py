@@ -69,6 +69,34 @@ def _make_repo_with_origin(tmp_path, name="repo"):
     return repo, bare
 
 
+def _make_repo_with_github_origin(tmp_path, owner="acme", repo_name="widgets", name="repo"):
+    """Like `_make_repo_with_origin`, but `origin`'s configured remote URL is
+    a genuine `https://github.com/<owner>/<repo>.git` — the identity
+    `oneshot._origin_owner_repo` reads and PR mode checks a `--pr` URL
+    against. It is rewritten, purely locally, via git's own
+    `url.<x>.insteadOf` to the real local bare repo, so every git operation
+    still resolves on disk and no network is touched — `git remote get-url
+    origin` reports the GitHub URL, `git fetch origin ...` actually reads
+    from `bare`."""
+    bare = tmp_path / "origin.git"
+    subprocess.run(["git", "init", "--bare", "-b", "main", str(bare)],
+                    check=True, capture_output=True)
+    github_url = f"https://github.com/{owner}/{repo_name}.git"
+    repo = tmp_path / name
+    repo.mkdir()
+    _git(repo, "init", "-b", "main")
+    _git(repo, "config", "user.email", "t@example.com")
+    _git(repo, "config", "user.name", "t")
+    _git(repo, "config", f"url.{bare}.insteadOf", github_url)
+    (repo / "a.txt").write_text("orig\n")
+    _git(repo, "add", "a.txt")
+    _git(repo, "commit", "-m", "initial")
+    _git(repo, "remote", "add", "origin", github_url)
+    _git(repo, "push", "origin", "main")
+    _git(repo, "remote", "set-head", "origin", "-a")
+    return repo, bare
+
+
 def _add_test_file(repo, tests=3):
     body = "\n".join(
         f"def test_{i}():\n    assert {i} == {i}\n" for i in range(tests)
@@ -374,7 +402,7 @@ def test_not_a_git_repo_refuses_by_name(tmp_path, monkeypatch):
 
 
 def test_pr_fetch_failure_refuses_by_name(tmp_path, monkeypatch):
-    repo, _bare = _make_repo_with_origin(tmp_path)
+    repo, _bare = _make_repo_with_github_origin(tmp_path)
     _ok_credential(monkeypatch)
     import asyncio
     with pytest.raises(GateUnavailable, match="could not fetch pull request #7"):
@@ -444,7 +472,7 @@ def test_pr_mode_reviews_the_pr_heads_tree_not_the_users_checkout(tmp_path, monk
     the user's own checkout, still on `main` — so a citation naming a file
     that only exists at the PR head was checked against the wrong tree. The
     reviewer must instead see a tree that really is the PR head's content."""
-    repo, bare = _make_repo_with_origin(tmp_path)
+    repo, bare = _make_repo_with_github_origin(tmp_path)
 
     pr_src = _push_pr_ref(bare, tmp_path / "pr_src", 9)
     (pr_src / "only_in_pr.py").write_text("x = 1\n")
@@ -486,7 +514,7 @@ def test_pr_mode_reviews_the_pr_heads_tree_not_the_users_checkout(tmp_path, monk
 
 
 def test_pr_mode_makes_no_writes_to_the_users_checkout(tmp_path, monkeypatch):
-    repo, bare = _make_repo_with_origin(tmp_path)
+    repo, bare = _make_repo_with_github_origin(tmp_path)
     pr_src = _push_pr_ref(bare, tmp_path / "pr_src2", 11)
     (pr_src / "c.txt").write_text("pr change\n")
     _git(pr_src, "add", "c.txt")
@@ -506,7 +534,7 @@ def test_pr_mode_makes_no_writes_to_the_users_checkout(tmp_path, monkeypatch):
 def test_pr_mode_never_shells_out_to_a_write_command_against_the_users_checkout(
     tmp_path, monkeypatch,
 ):
-    repo, bare = _make_repo_with_origin(tmp_path)
+    repo, bare = _make_repo_with_github_origin(tmp_path)
     pr_src = _push_pr_ref(bare, tmp_path / "pr_src3", 13)
     (pr_src / "d.txt").write_text("pr change\n")
     _git(pr_src, "add", "d.txt")
@@ -582,7 +610,7 @@ def test_pr_mode_refuses_when_pr_head_has_no_commits_beyond_base(tmp_path, monke
     """Same empty-diff hazard, PR mode: a PR ref pushed straight at the same
     commit as `origin/main` has `merge_base == head`, which branch mode
     already guards (`_resolve_branch_mode`) but PR mode did not."""
-    repo, bare = _make_repo_with_origin(tmp_path)
+    repo, bare = _make_repo_with_github_origin(tmp_path)
     pr_src = _push_pr_ref(bare, tmp_path / "pr_src4", 17)
     _git(pr_src, "push", "origin", "HEAD:refs/pull/17/head")
 
@@ -606,3 +634,173 @@ def test_pr_mode_refuses_when_pr_head_has_no_commits_beyond_base(tmp_path, monke
         asyncio.run(run_gate(
             repo, pr_url="https://github.com/acme/widgets/pull/17",
         ))
+
+
+# --------------------------------------------------------------------------- #
+# 10. PR URL must be a real GitHub URL naming this checkout's own repo        #
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.parametrize("bad_url", [
+    "literally/pull/4242",
+    "ftp://evil.example/x/pull/4242",
+    "https://gitlab.com/acme/widgets/pull/4242",
+    "https://github.com.evil.example/acme/widgets/pull/4242",
+])
+def test_pr_url_must_be_a_real_github_pull_request_url(tmp_path, monkeypatch, bad_url):
+    """Regression: the old `/pull/(\\d+)` regex matched ANY string containing
+    `/pull/<digits>` — including non-GitHub hosts and bare paths — discarding
+    owner/repo entirely, so a URL naming the wrong repository (or no
+    repository at all) would still get "reviewed" and could print PASS."""
+    repo, _bare = _make_repo_with_github_origin(tmp_path)
+    _ok_credential(monkeypatch)
+
+    import asyncio
+    with pytest.raises(GateUnavailable, match="not a GitHub pull request URL"):
+        asyncio.run(run_gate(repo, pr_url=bad_url))
+
+
+def test_pr_mode_refuses_when_the_url_names_a_different_repo_than_origin(
+    tmp_path, monkeypatch,
+):
+    """Regression for the same bug from the other side: a syntactically valid
+    GitHub PR URL that names a DIFFERENT repository than this checkout's own
+    `origin` must refuse, not silently review the wrong repository's PR."""
+    repo, _bare = _make_repo_with_github_origin(tmp_path, owner="acme", repo_name="widgets")
+    _ok_credential(monkeypatch)
+
+    class _ExplodingReviewer:
+        @classmethod
+        def from_config(cls, data, **kw):
+            return cls()
+
+        async def review(self, *a, **kw):
+            raise AssertionError(
+                "the reviewer must never be invoked for a PR on a "
+                "different repository than this checkout's origin"
+            )
+
+    monkeypatch.setattr(oneshot, "AdversarialReviewer", _ExplodingReviewer)
+
+    import asyncio
+    with pytest.raises(GateUnavailable, match="acme/widgets"):
+        asyncio.run(run_gate(
+            repo, pr_url="https://github.com/other-org/other-repo/pull/4242",
+        ))
+
+
+def test_pr_mode_refuses_when_origin_is_not_a_github_remote(tmp_path, monkeypatch):
+    """A `--pr` URL cannot be verified against an `origin` that is not itself
+    a `github.com` remote (e.g. a plain local path, as most of this suite's
+    fixtures use) — refuse rather than reviewing on faith."""
+    repo, _bare = _make_repo_with_origin(tmp_path)
+    _ok_credential(monkeypatch)
+
+    import asyncio
+    with pytest.raises(GateUnavailable, match="not a github.com remote"):
+        asyncio.run(run_gate(
+            repo, pr_url="https://github.com/acme/widgets/pull/9",
+        ))
+
+
+# --------------------------------------------------------------------------- #
+# 11. exit code 1 on a genuine FAIL, distinct from exit code 2's refusal      #
+# --------------------------------------------------------------------------- #
+
+def test_the_verb_exits_1_on_a_genuine_fail(tmp_path, monkeypatch):
+    """`test_the_verb_exits_2_and_prints_no_pass` covers refusal (exit 2);
+    this covers the other non-zero exit — a gate that actually ran and
+    failed must exit 1, not 0 and not 2."""
+    repo, _bare = _make_repo_with_origin(tmp_path)
+
+    async def _fake_run_gate(repo_path, **kw):
+        return GateResult(
+            passed=False, comparison="x", before_ref="a", after_ref="b",
+            mode="branch", tamper=_clean_tamper(), decision=ReviewDecision(
+                passed=False,
+                checklist=[ChecklistItem(label="blocking finding", passed=False)],
+            ),
+            uncommitted=[],
+        )
+
+    monkeypatch.setattr(oneshot, "run_gate", _fake_run_gate)
+    result = CliRunner().invoke(gate, ["--repo", str(repo)])
+    assert result.exit_code == 1
+    assert "FAIL" in result.output
+
+
+# --------------------------------------------------------------------------- #
+# 12. rendered markdown carries the verdict, disclosures and tamper counts    #
+# --------------------------------------------------------------------------- #
+
+def _result(**overrides):
+    base = dict(
+        passed=True, comparison="working tree branch `feature` @ `abc1234`",
+        before_ref="base", after_ref="head", mode="branch",
+        tamper=_clean_tamper(), decision=_PASSING_DECISION, uncommitted=[],
+    )
+    base.update(overrides)
+    return GateResult(**base)
+
+
+def test_rendered_markdown_says_fail_on_a_failing_result():
+    text = render_markdown(_result(passed=False))
+    assert "## no_human gate — FAIL" in text
+    assert "## no_human gate — PASS" not in text
+
+
+def test_rendered_markdown_says_pass_on_a_passing_result():
+    text = render_markdown(_result(passed=True))
+    assert "## no_human gate — PASS" in text
+
+
+def test_rendered_markdown_discloses_uncommitted_files():
+    text = render_markdown(_result(
+        comparison="working tree branch `feature`; 2 uncommitted file(s) "
+                    "are NOT reviewed — commit them to include them",
+    ))
+    assert "uncommitted" in text
+    assert "NOT reviewed" in text
+
+
+def test_rendered_markdown_shows_tamper_before_after_counts():
+    from no_human.testing.tamper_guard import TamperReport
+    tamper = TamperReport(
+        tampered=True, tests_before=12, tests_after=9,
+        assertions_before=40, assertions_after=31,
+        reasons=["deleted test_x.py::test_slow_path"],
+    )
+    text = render_markdown(_result(passed=False, tamper=tamper))
+    assert "12->9" in text
+    assert "40->31" in text
+    assert "deleted test_x.py::test_slow_path" in text
+
+
+def test_rendered_markdown_discloses_truncation_and_it_implies_not_passed():
+    text = render_markdown(_result(passed=False, truncated=True))
+    assert "truncated" in text.lower()
+    assert "## no_human gate — FAIL" in text
+
+
+# --------------------------------------------------------------------------- #
+# 13. a diff bigger than the reviewer's single-turn cap can never pass        #
+# --------------------------------------------------------------------------- #
+
+def test_a_diff_over_the_review_cap_never_passes(tmp_path, monkeypatch):
+    """`AdversarialReviewer.review` silently truncates `diff_override` past
+    `_DIFF_CAP` chars with no signal back to the caller (reviewer.py:2537) —
+    so without this guard, a diff bigger than the cap would get a fraction
+    of itself reviewed and could still come back as a bare PASS."""
+    repo, _bare = _make_repo_with_origin(tmp_path)
+    _git(repo, "checkout", "-b", "feature")
+    # One line per byte-ish, comfortably over `_DIFF_CAP` (60_000 chars).
+    (repo / "big.txt").write_text("\n".join(f"line {i}" for i in range(20_000)))
+    _git(repo, "add", "big.txt")
+    _git(repo, "commit", "-m", "huge change")
+
+    _ok_credential(monkeypatch)
+    monkeypatch.setattr(oneshot, "AdversarialReviewer", _stub_reviewer(_PASSING_DECISION))
+
+    import asyncio
+    result = asyncio.run(run_gate(repo))
+    assert result.truncated is True
+    assert result.passed is False, "a truncated review must never be a bare pass"
