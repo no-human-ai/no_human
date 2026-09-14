@@ -396,7 +396,7 @@ def _lex(text: str) -> list[str]:
 _MAX_PREFIX_JOIN = 8
 
 
-def _spaced_path_candidates(payload: str) -> list[str]:
+def _spaced_path_candidates(payload: str, cwd: str | None = None) -> list[str]:
     """The installer path a nested payload's own quoting would have kept whole.
 
     Round 3 of #105. `cmd /c "C:\\Program Files\\proj\\.venv\\Scripts\\pip.exe
@@ -432,28 +432,23 @@ def _spaced_path_candidates(payload: str) -> list[str]:
     out: list[str] = []
     for k in range(2, min(len(toks), _MAX_PREFIX_JOIN) + 1):
         joined = " ".join(toks[:k])
-        # `cwd` is not lexically available here (this helper only sees the
-        # raw payload text). Left at the default, `_is_installer_name` falls
-        # back to `exec_names.host_folds_case(None)`, which unions the
-        # PROCESS's own cwd with PATH -- NOT a superset of a call-site-scoped
-        # answer: measured, `host_folds_case()` (no cwd) can be `False` while
-        # `host_folds_case(<call-site cwd>)` is `True` for a specific cwd
-        # whose volume folds even though the process cwd's does not. This is
-        # a real, accepted narrowing (not a hole reachable by any corpus row
-        # measured so far) rather than the "can only fold more" guarantee
-        # this comment used to claim.
-        if _is_installer_name(_basename(joined)):
+        if _is_installer_name(_basename(joined), cwd):
             out.append(joined)
             out.extend(toks[k:])
     return out
 
 
-def _flatten(text: str, _depth: int = 0) -> list[str]:
+def _flatten(text: str, cwd: str | None = None, _depth: int = 0) -> list[str]:
     """The full token stream for `text`, with shell-runner script arguments
     recursively expanded in place. Positionless by construction: the
     resulting list is one flat multiset in which no caller ever asks "what
     is argv[0]" — `(`, `\\n\\n`, `&`, `;` and a quoted payload are all
     structurally irrelevant to what gets resolved next.
+
+    `cwd` is threaded through to `_spaced_path_candidates` (the only helper
+    called from here that classifies an installer name) so its fold decision
+    matches the command's own working directory rather than falling back to
+    the process-wide union.
     """
     tokens = _lex(text)
     if _depth >= _MAX_RECURSE_DEPTH:
@@ -473,8 +468,8 @@ def _flatten(text: str, _depth: int = 0) -> list[str]:
         if name.lower() in _SHELL_RUNNERS:
             seen_runner = True
         if seen_runner and _is_script_flag(tok) and i + 1 < n:
-            out.extend(_flatten(tokens[i + 1], _depth + 1))
-            out.extend(_spaced_path_candidates(tokens[i + 1]))
+            out.extend(_flatten(tokens[i + 1], cwd, _depth + 1))
+            out.extend(_spaced_path_candidates(tokens[i + 1], cwd))
             seen_runner = False
             out.append(tok)
             i += 2
@@ -901,7 +896,9 @@ def _flag_value(tok: str, nxt: str | None, flags: frozenset[str]) -> str | None:
     return None
 
 
-def _mutating_subcommand(tokens: list[str], start: int) -> str | None:
+def _mutating_subcommand(
+    tokens: list[str], start: int, cwd: str | None = None
+) -> str | None:
     """The subcommand `tokens[start]` (a RESOLVED installer) would invoke,
     or None.
 
@@ -918,6 +915,11 @@ def _mutating_subcommand(tokens: list[str], start: int) -> str | None:
     own flag scan; it still starts from a specific resolved-installer
     position because "the subcommand of installer X" is inherently about
     that occurrence, not the whole flat token multiset.
+
+    `cwd` is threaded through to `_is_installer_name` below so the inner
+    installer-name check (d) folds case on the command's own working
+    directory, matching the outer resolution that put `start` here in the
+    first place, rather than falling back to the process-wide union.
     """
     n = len(tokens)
     i = start + 1
@@ -938,21 +940,16 @@ def _mutating_subcommand(tokens: list[str], start: int) -> str | None:
             # below, its value already inside this one token.
             i += 2 if tok in _VALUE_FLAGS else 1
             continue
-        # No `cwd` in scope here either (this walks an already-tokenised
-        # list with no path context) — same accepted narrowing as
-        # `_spaced_path_candidates` above: the default folds using the
-        # process cwd + PATH union, which is NOT guaranteed a superset of a
-        # narrower cwd-scoped answer (measured: `host_folds_case()` can be
-        # `False` where `host_folds_case(<a specific cwd>)` is `True`), so
-        # this can in principle deny less on that one cwd, not strictly more.
-        if _is_installer_name(tok):
+        if _is_installer_name(tok, cwd):
             i += 1
             continue
         return tok
     return None
 
 
-def _uses_active_env(tokens: list[str], start: int) -> bool:
+def _uses_active_env(
+    tokens: list[str], start: int, cwd: str | None = None
+) -> bool:
     """True when the installer at `tokens[start]` is itself given `--active`.
 
     Scoped to that installer's OWN segment, exactly like
@@ -1005,7 +1002,7 @@ def _uses_active_env(tokens: list[str], start: int) -> bool:
         return False
 
     n = len(tokens)
-    subcommand = _mutating_subcommand(tokens, start)
+    subcommand = _mutating_subcommand(tokens, start, cwd)
     expects_program = (
         subcommand in _PROGRAM_INVOKING_SUBCOMMANDS
         or _basename(tokens[start]).startswith("uvx")
@@ -1036,12 +1033,7 @@ def _uses_active_env(tokens: list[str], start: int) -> bool:
             seen_subcommand = True
             i += 1
             continue
-        # Same reasoning as the other token-list walkers above: no `cwd`
-        # is threaded through this call chain, so the default falls back
-        # to the process cwd + PATH union — NOT guaranteed to fold (deny)
-        # at least as much as a cwd-scoped answer would; see the note in
-        # `_spaced_path_candidates` for the measured counter-example.
-        if _is_installer_name(tok) and not expects_program:
+        if _is_installer_name(tok, cwd) and not expects_program:
             i += 1
             continue
         # A bare positional once a program is expected: this is the program,
@@ -1249,7 +1241,7 @@ def _denial_reason_for_reading(
     if not cmd or not cmd.strip():
         return None
 
-    tokens = _flatten(cmd)
+    tokens = _flatten(cmd, cwd)
     if not tokens:
         return None
 
@@ -1275,9 +1267,11 @@ def _denial_reason_for_reading(
     # is the broad reading this module's residual register warns about. This
     # is the narrow half: `--active` is rare, explicit, and always names an
     # environment.
-    uses_active = any(_uses_active_env(tokens, i) for i, _ in resolved_positions)
+    uses_active = any(
+        _uses_active_env(tokens, i, cwd) for i, _ in resolved_positions
+    )
     intent = uses_active or any(
-        _mutating_subcommand(tokens, i) in _MUTATING_SUBCOMMANDS
+        _mutating_subcommand(tokens, i, cwd) in _MUTATING_SUBCOMMANDS
         for i, _ in resolved_positions
     )
     if not intent:

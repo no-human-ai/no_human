@@ -363,6 +363,55 @@ def test_the_cwd_argument_is_actually_threaded_to_the_probe(tmp_path, monkeypatc
     )
 
 
+def test_mutating_subcommand_threads_cwd_to_the_inner_installer_skip(
+    tmp_path, monkeypatch
+):
+    """Mutation-pinning (case-fold review, M3), the token-walker level.
+
+    `denial_reason`'s own `resolved_positions` enumeration independently
+    re-checks every token against `_resolve_installer(tok, cwd, env)` with
+    the correct `cwd` already threaded (that call site was never the
+    problem), so a command whose inner installer-name token is ALSO
+    followed by a literal mutating word (`uv PIP install foo`) is denied
+    either way and cannot tell the two code paths apart — the redundant,
+    already-correct enumeration masks a broken inner-skip. This test goes
+    straight at the walker instead of through `denial_reason`, so nothing
+    can mask it.
+
+    `_mutating_subcommand` skips right past a token it recognises as an
+    installer name — that's how `uv pip install foo` finds `install` and
+    not `pip` as uv's own adjacent subcommand (`uv pip install` is a
+    sub-invocation prefix, not the subcommand itself). Pinned so `wt`
+    folds (`True`) and every other real anchor (this test process's own
+    real `os.getcwd()`, every real `PATH` entry) determinately does NOT
+    (`False`, never `None` — no fail-closed default available to hide a
+    dropped `cwd` behind). With `cwd` correctly threaded into that skip's
+    `_is_installer_name` call, `PIP` folds to `pip` on `wt`, is recognised
+    as the inner installer name, gets skipped, and the walk lands on
+    `install`. A call that silently dropped `cwd` (or accepted it and
+    never wired it through) measures the real anchors instead, lands on
+    the determinate `False`, never recognises `PIP` as an installer name,
+    stops the scan there, and returns the literal token `"PIP"` — not a
+    member of `_MUTATING_SUBCOMMANDS`, silently losing intent.
+    """
+    wt = str(tmp_path / "wt")
+    os.makedirs(wt)
+
+    def _pinned(directory):
+        return os.path.realpath(directory) == os.path.realpath(wt)
+
+    monkeypatch.setattr(exec_names, "_folds_case_at", _pinned)
+    exec_names.host_folds_case.cache_clear()
+
+    tokens = ["uv", "PIP", "install", "foo"]
+    subcommand = venv_install_guard._mutating_subcommand(tokens, 0, wt)
+    assert subcommand == "install", (
+        "cwd=wt must be threaded through the inner-installer-name skip so "
+        "`PIP` folds to `pip` (recognised, skipped) and the walk lands on "
+        f"`install`; got {subcommand!r}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # `~/.cache/uv` false positive (the defect this task fixes). `--python`/`-p`
 # names an interpreter FILE, and a worktree's own `.venv/bin/python3` is
