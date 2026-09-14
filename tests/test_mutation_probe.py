@@ -440,6 +440,72 @@ def test_blocker1_reports_a_budget_limited_reason_not_an_overclaim(decoy_and_rea
     assert "never tried" in probe.reason
 
 
+@pytest.fixture
+def single_target_decoy_then_kill_repo(repo):
+    """A test with exactly ONE statically-ranked target, but that target's
+    OWN generated mutation list has a decoy ahead of the mutation that
+    actually kills: `_mutations_for` emits condition/while flips before
+    return-value negations (see its docstring), and `if x == x: pass` is a
+    tautology whose flip changes which branch of a no-op `pass` runs —
+    invisible to any test, however the test negates `compute`'s `return`
+    value, which DOES kill. A probe that spends its whole budget on the
+    first (decoy) candidate and never reaches the second (killing) one
+    within this SAME target must report "undetermined", not "survived" —
+    the send-back's repro for the fix in `_probe_one`.
+    """
+    (repo / "pkg" / "calc.py").write_text(
+        "def compute(x):\n"
+        "    if x == x:\n"
+        "        pass\n"
+        "    return x * 2\n"
+    )
+    (repo / "tests" / "test_calc.py").write_text(
+        "from pkg.calc import compute\n\n"
+        "def test_compute_doubles():\n"
+        "    assert compute(3) == 5\n"
+    )
+    _commit(repo)
+    (repo / "tests" / "test_calc.py").write_text(
+        "from pkg.calc import compute\n\n"
+        "def test_compute_doubles():\n"
+        "    assert compute(3) == 6\n"
+    )
+    _commit(repo, "touch the test so it is a probe candidate")
+    return repo
+
+
+def test_budget_exhausted_mid_target_is_undetermined_not_survived(
+    single_target_decoy_then_kill_repo,
+):
+    # Sanity control: with enough budget to reach the return-negation
+    # candidate, the single target IS killed — proves the fixture's second
+    # candidate really does kill and this isn't a fixture problem.
+    killed = mutation_probe.run_mutation_probe(
+        single_target_decoy_then_kill_repo, "HEAD~1", "HEAD",
+        max_tests=30, max_mutations=8, timeout=120,
+    )
+    assert killed.probes[0].verdict == "killed", killed.probes[0].reason
+
+    # With a budget of exactly 1, only the decoy condition-flip candidate
+    # (ranked/generated first) is tried, and it leaves the test green. There
+    # is only ONE ranked target here, so the old `budget_exhausted_early`
+    # check (`last_index_seen < len(targets) - 1`) was vacuously False and
+    # this used to be misreported as the blocking "survived" verdict even
+    # though the killing candidate for this exact target was never tried.
+    result = mutation_probe.run_mutation_probe(
+        single_target_decoy_then_kill_repo, "HEAD~1", "HEAD",
+        max_tests=30, max_mutations=1, timeout=120,
+    )
+    assert result.tree_intact is True
+    assert len(result.probes) == 1
+    probe = result.probes[0]
+    assert probe.verdict == "undetermined", probe.reason
+    assert probe.target == "pkg/calc.py:compute"
+    assert "budget" in probe.reason.lower()
+    assert "not fully tried" in probe.reason or "never tried" in probe.reason
+    assert result.verdict != "fail"
+
+
 # --------------------------------------------------------------------------
 # AC3: the reviewed tree is byte-identical after a real probe run.
 # --------------------------------------------------------------------------

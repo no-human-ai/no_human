@@ -680,14 +680,16 @@ def _probe_one(
     Tries every ranked target in turn (see `_rank_candidates`), spending at
     most `max_mutations` mutation attempts in total across all of them —
     never stopping at the first target merely because a mutation was tried
-    against it. Only once every ranked target has been exhausted (or the
-    budget is spent) without a kill is the test reported `"survived"` —
-    and only if every ranked target was actually reached; if the mutation
-    budget runs out before the last ranked target is tried, that is a
-    budget limit, not proof of survival, so it is reported `"undetermined"`
-    instead. `"undetermined"` is also reported when NO mutation was ever
-    tried against ANY target (no target resolved, or every resolved target
-    generated zero applicable mutations).
+    against it. Only once every ranked target's ENTIRE generated mutation
+    list has been exhausted (or the budget is spent) without a kill is the
+    test reported `"survived"`. Two distinct ways the budget can cut this
+    short both report `"undetermined"`, never `"survived"`: (1) a later
+    ranked target is never reached at all, and (2) the budget runs out
+    partway through the CURRENT target's own mutation list — e.g. a target
+    with several decoy condition-flip candidates ahead of the mutation that
+    would actually kill the test. `"undetermined"` is also reported when NO
+    mutation was ever tried against ANY target (no target resolved, or
+    every resolved target generated zero applicable mutations).
     """
     node_id = item["node_id"]
     targets = _infer_target(item["test_fn"], item["module_ast"], tree_files)
@@ -728,12 +730,19 @@ def _probe_one(
     tried_descriptions: list[str] = []
     targets_tried: list[str] = []
     last_target_label = best_label
-    last_index_seen = -1
+    # Set the moment ANY mutation list — the current target's own, or a
+    # later ranked target's — goes untried because the budget ran out. This
+    # must NOT be conflated with "every ranked target was reached": a
+    # single target whose own generated mutation list is longer than
+    # `max_mutations` can exhaust the whole budget on decoys (e.g. a dead
+    # condition flip) before ever reaching that same target's killing
+    # return-negation or removal candidate — see the send-back repro.
+    budget_cut_short = False
 
     for index, (target_rel, symbol) in enumerate(targets):
         if tried_total >= max_mutations:
+            budget_cut_short = True
             break
-        last_index_seen = index
         target_label = f"{target_rel}:{symbol}"
         target_path = worktree / target_rel
         try:
@@ -745,8 +754,14 @@ def _probe_one(
             continue
         original_hash = hashlib.sha256(original_text.encode()).hexdigest()
 
+        target_exhausted = True
         for mutation in mutations:
             if tried_total >= max_mutations:
+                # This target's own mutation list was not exhausted — a
+                # later candidate here (possibly the one that would kill)
+                # was never tried. That is a budget limit on THIS target,
+                # not proof it survives every mutation.
+                target_exhausted = False
                 break
             mutated_text = _apply_one(original_text, mutation)
             if mutated_text is None:
@@ -779,19 +794,22 @@ def _probe_one(
                     mutation=mutation.description, reason=mout[-1000:],
                     mutation_kind=mutation.kind,
                 )
+        if not target_exhausted:
+            budget_cut_short = True
+            break
         # This target's mutations all left the test green (or none applied)
         # — move on to the next ranked target instead of giving up.
 
     if tried_any:
-        budget_exhausted_early = (
-            tried_total >= max_mutations and last_index_seen < len(targets) - 1
-        )
-        if budget_exhausted_early:
-            # The mutation budget ran out before every ranked target was
-            # tried — this is NOT the same claim as "survived every mutation
-            # tried against every candidate": there is a real possibility an
-            # untried ranked target would have killed the test. Reporting
-            # this as `"survived"` (a blocking, high-severity finding per
+        if budget_cut_short:
+            # The mutation budget ran out before every generated mutation of
+            # every reached target was tried — either a later ranked target
+            # was never reached, or the last-reached target's own mutation
+            # list was cut short. Either way this is NOT the same claim as
+            # "survived every mutation tried against every candidate": there
+            # is a real possibility an untried mutation (on this target or a
+            # later one) would have killed the test. Reporting this as
+            # `"survived"` (a blocking, high-severity finding per
             # `merge_mutation_findings`) would contradict the very reason
             # text explaining it is a budget limit, not proof of anything —
             # so it is `"undetermined"` instead, same as any other
@@ -799,9 +817,11 @@ def _probe_one(
             coverage = (
                 f"the mutation budget ({max_mutations}) ran out after "
                 f"{len(targets_tried)} of {len(targets)} statically-inferred "
-                "target(s) produced an applicable mutation — the remaining "
-                "ranked target(s) were never tried, so this is a budget limit, "
-                "not proof the test survives mutation of its actual target"
+                "target(s) produced an applicable mutation — either a "
+                "remaining ranked target was never tried, or the "
+                "last-reached target's own mutation list was not fully "
+                "tried, so this is a budget limit, not proof the test "
+                "survives mutation of its actual target"
             )
             return TestProbe(
                 node_id=node_id, verdict="undetermined", target=last_target_label,
