@@ -7,6 +7,15 @@ All notable changes to no_human. The format follows
 ## [Unreleased]
 
 ### Added
+- The reviewer can now mutate each test a diff adds or changes and require it
+  to fail: a statically-inferred mutation probe (`testing/mutation_probe.py`,
+  `mutation_probe.mode` — `off`/`advisory`/`required`, default `advisory`)
+  edits one piece of the code a changed test appears to exercise (a flipped
+  condition, a negated return, a removed statement) in a disposable probe
+  worktree and reruns just that test. A test that stays green under every
+  mutation tried is a blocking finding — it pins nothing it claims to. The
+  reviewed tree's integrity is verified by content hash after every probe run,
+  never a revert command.
 - `nh task retitle` corrects a filed task's title after the fact — the board
   and `nh task show` read it back immediately. Refused while an attempt is
   running (the title feeds live prompts and the commit subject) and, when the

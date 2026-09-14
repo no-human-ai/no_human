@@ -197,6 +197,8 @@ NET_IMPORTS: dict[str, str] = {
 INERT_IMPORTS: frozenset[str] = frozenset({
     # stdlib: pure computation, filesystem, process, or text
     "__future__", "abc", "argparse", "ast",
+    # lexes Python source into tokens in-process; opens and accepts nothing.
+    "tokenize",
     # registers callables to run at interpreter shutdown; opens and accepts
     # nothing, and the callable it registers here (shutil.rmtree) is itself
     # classified.

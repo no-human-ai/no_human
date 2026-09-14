@@ -26,7 +26,7 @@ import re
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from ..agent.claude_backend import (
     TRANSPORT_DIAGNOSIS_MARKER,
@@ -47,6 +47,15 @@ from ..review.wiring_evidence import (
 )
 from ..core.jsonparse import loads_lenient
 from ..core.task import Task
+
+if TYPE_CHECKING:
+    # Only for the `merge_mutation_findings` type annotation below — the real
+    # import is deferred into `_apply_mutation_probe` (mirrors how the other
+    # evidence collectors are imported lazily elsewhere in this module), so a
+    # plain top-level `from ..testing import mutation_probe` here would be
+    # unused at runtime; without this guard mypy reports `mutation_probe` as
+    # undefined in the annotation instead.
+    from ..testing import mutation_probe
 
 log = logging.getLogger(__name__)
 
@@ -1670,6 +1679,70 @@ def merge_angle_findings(
     return main
 
 
+def merge_mutation_findings(
+    decision: ReviewDecision,
+    result: "mutation_probe.MutationProbeResult",
+    *,
+    mode: str,
+) -> ReviewDecision:
+    """Fold mutation-probe findings into the main decision.
+
+    Additive only, mirroring `merge_angle_findings`: a SURVIVED test is a
+    blocking (`high`-severity) finding — a test green under a mutation of
+    the behaviour it names pins nothing. KILLED is recorded (`low`-severity,
+    non-blocking) as evidence the test does pin its target. A probe that
+    COULD NOT RUN is recorded either way and blocks only in `required` mode
+    (it is built with `passed=(mode != "required")`, so its severity is
+    irrelevant to mode). Can only get STRICTER: pass -> fail, never fail ->
+    pass.
+
+    The merge condition below is `any(_is_blocking(i) for i in appended)`,
+    not `any(not i.passed and _is_blocking(i) for i in appended)`: this file's
+    `_is_blocking` (defined above) already returns `False` whenever
+    `item.passed` is `True`, so the extra `not i.passed` term can never
+    change the result — it is checked here against the `killed`/`survived`/
+    `undetermined` items actually built above, not assumed. This is the
+    same form `merge_angle_findings` uses.
+    """
+    appended: list[ChecklistItem] = []
+    for probe in result.probes:
+        if probe.verdict == "killed":
+            appended.append(ChecklistItem(
+                label=f"mutation probe: {probe.node_id} pins {probe.target}",
+                passed=True,
+                severity="low",
+                evidence=f"{probe.mutation} — the test then FAILED: {probe.reason}",
+                file=probe.target.split(":", 1)[0] if probe.target else "",
+            ))
+        elif probe.verdict == "survived":
+            appended.append(ChecklistItem(
+                label=(f"mutation probe: {probe.node_id} survives mutation "
+                       f"of {probe.target}"),
+                passed=False,
+                severity="high",
+                file=probe.target.split(":", 1)[0] if probe.target else "",
+                evidence=(f"{probe.mutation} — {probe.reason}" if probe.mutation
+                          else probe.reason),
+            ))
+        else:  # undetermined
+            appended.append(ChecklistItem(
+                label=f"mutation probe could not run for {probe.node_id} ({probe.reason})",
+                passed=(mode != "required"),
+                severity="medium",
+            ))
+    if result.verdict == "error":
+        appended.append(ChecklistItem(
+            label=(f"mutation probe could not run "
+                   f"({'; '.join(result.reasons) or 'unknown error'})"),
+            passed=(mode != "required"),
+            severity="medium",
+        ))
+    decision.checklist.extend(appended)
+    if any(_is_blocking(i) for i in appended):
+        decision.passed = False
+    return decision
+
+
 def _reached_no_verdict(decision: ReviewDecision) -> bool:
     """True when the reviewer emitted no REVIEW_JSON block at all.
 
@@ -2293,6 +2366,7 @@ class AdversarialReviewer:
         on_event: Callable | None = None,
         timeout: int | None = None,
         code_review_timeout: int | None = None,
+        mutation_probe: dict[str, Any] | None = None,
     ):
         if backend is not None:
             self._backend = backend
@@ -2322,6 +2396,10 @@ class AdversarialReviewer:
         self._code_review_timeout = (
             _CODE_REVIEW_TIMEOUT if code_review_timeout is None
             else int(code_review_timeout))
+        # None means OFF (see `testing/mutation_probe.py`), so every existing
+        # direct construction (tests, ad-hoc callers) is unaffected; only
+        # `from_config` supplies one, via `config.mutation_probe_config`.
+        self._mutation_probe = mutation_probe
 
     @classmethod
     def from_config(
@@ -2352,7 +2430,11 @@ class AdversarialReviewer:
         `llm.role_backends.reviewer` says, per `resolve_backend_name`.
         """
         from ..agent.backend import make_backend, resolve_backend_name
-        from ..config import code_review_timeout_seconds, review_timeout_seconds
+        from ..config import (
+            code_review_timeout_seconds,
+            mutation_probe_config,
+            review_timeout_seconds,
+        )
 
         llm = data.get("llm") or {}
         review_model = llm.get("review_model") or "claude-opus-4-8"
@@ -2369,6 +2451,7 @@ class AdversarialReviewer:
             on_event=on_event,
             timeout=review_timeout_seconds(data),
             code_review_timeout=code_review_timeout_seconds(data),
+            mutation_probe=mutation_probe_config(data),
         )
 
     async def _review_tamper_adjudication(
@@ -2736,7 +2819,77 @@ class AdversarialReviewer:
                 angle_decisions.append((name, r))
             if angle_decisions:
                 decision = merge_angle_findings(decision, angle_decisions)
-        return decision
+
+        # Mutation probe (see `testing/mutation_probe.py`): additive, never
+        # fails the gate by itself on a crash. Logic lives in
+        # `_apply_mutation_probe` to keep this function under budget.
+        return await self._apply_mutation_probe(
+            decision, repo_path, before_ref, after_ref, diff_override)
+
+    async def _apply_mutation_probe(
+        self,
+        decision: ReviewDecision,
+        repo_path: Path,
+        before_ref: str,
+        after_ref: str,
+        diff_override: str | None,
+    ) -> ReviewDecision:
+        """Mutate each changed/added test's behaviour and require it to fail
+        (see `testing/mutation_probe.py`); a survived or unrunnable probe
+        becomes a finding `merge_mutation_findings` folds in, never a direct
+        escalation — a crash in the probe itself is caught below and turned
+        into a visible "could not run" finding instead of an exception that
+        would propagate out of `review()`.
+
+        `diff_override` is NOT dead code here even though neither current
+        production caller of it (`tamper_adjudication`, `code_review` —
+        both return earlier in `review()`, before this gate-mode tail) sets
+        it: gate mode's OWN `diff_override` path (reviewing a caller-supplied
+        diff string with no tool calls) reaches this exact tail too — see
+        `tests/test_gate_severity.py`'s direct `review(..., diff_override=...)`
+        call with no `mode` kwarg. In that path `before_ref`/`after_ref` are
+        not guaranteed to bound the diff actually being reviewed, so the
+        probe cannot trust them to compute "which tests changed" — it
+        reports unable-to-run instead of silently probing against a range
+        that may not match what was reviewed.
+        """
+        probe_mode = (self._mutation_probe or {}).get("mode", "off")
+        if self._mutation_probe is None or probe_mode == "off":
+            return decision
+        if diff_override:
+            decision.checklist.append(ChecklistItem(
+                "mutation probe could not run (no before/after refs "
+                "available for a diff-override review)",
+                probe_mode != "required",
+                severity="medium",
+            ))
+            if probe_mode == "required":
+                decision.passed = False
+            return decision
+        try:
+            from ..testing import mutation_probe
+            probe_result = await asyncio.to_thread(
+                mutation_probe.run_mutation_probe,
+                repo_path, before_ref, after_ref,
+                max_tests=self._mutation_probe.get(
+                    "max_tests", mutation_probe.DEFAULT_MAX_TESTS),
+                max_mutations=self._mutation_probe.get(
+                    "max_mutations_per_test",
+                    mutation_probe.DEFAULT_MAX_MUTATIONS_PER_TEST),
+                timeout=self._mutation_probe.get(
+                    "timeout_seconds", mutation_probe.DEFAULT_TIMEOUT_SECONDS),
+            )
+        except Exception as exc:  # noqa: BLE001 — must never fail the gate by itself
+            log.warning("mutation probe crashed", exc_info=True)
+            decision.checklist.append(ChecklistItem(
+                f"mutation probe could not run (crashed: {exc})",
+                probe_mode != "required",
+                severity="medium",
+            ))
+            if probe_mode == "required":
+                decision.passed = False
+            return decision
+        return merge_mutation_findings(decision, probe_result, mode=probe_mode)
 
     @staticmethod
     def _tier_review_turns(task: Task) -> int:

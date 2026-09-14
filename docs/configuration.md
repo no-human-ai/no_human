@@ -849,6 +849,59 @@ set it `false` to skip straight to the agentic reviewer even when
 section is not written into the defaults file; set it yourself to change the
 behaviour, the same as `lint.command` and `tests.command` above.
 
+## Mutation probe
+
+```yaml
+mutation_probe:
+  mode: advisory          # off | advisory | required
+  max_tests: 12           # changed/added tests probed per review (one pytest
+                          # launch per test per mutation tried)
+  max_mutations_per_test: 3   # TOTAL mutation attempts per test, shared across
+                          # every statically-ranked target tried for it — not
+                          # a per-target budget (see below)
+  timeout_seconds: 300    # wall-clock budget for the whole run
+```
+
+The reviewer's mutation probe (`src/no_human/testing/mutation_probe.py`) takes
+every pytest test function the diff adds or changes, statically infers which
+first-party function/method it calls, mutates that code in a disposable git
+worktree (one AST-level edit at a time: flip a boolean condition, negate a
+`return` value, or collapse a removable statement to `pass`), and reruns the
+one test. A test that **fails** under at least one such mutation is recorded
+as killed — evidence it actually pins the behaviour it is named for. A test
+that stays **green** under every mutation tried is recorded as `survived`,
+which is always a blocking (`high`-severity) finding once the probe runs at
+all — `mode` does not soften that. `mode` instead controls only what happens
+when the probe itself **could not run** for a test (non-Python test file, no
+first-party symbol statically resolvable, missing interpreter, the test
+doesn't pass unmutated in the probe copy, or a crash): `off` never runs the
+probe at all (so nothing is ever reported `survived` either); `advisory`
+(the default) records a could-not-run finding but does not block on it;
+`required` blocks on it too.
+
+Static inference is inherently a guess — `from pkg import name` is
+structurally ambiguous between `name` being a symbol `pkg` defines and `name`
+being `pkg`'s own submodule — so the probe ranks every plausible target and
+tries each in turn, spending the `max_mutations_per_test` budget across all
+of them combined, not resetting it per target. A test is only ever reported
+`survived` after every ranked target has been tried (or the budget runs out)
+without a kill; it is reported "could not run" (never `survived`) when no
+target could be resolved at all, or a candidate resolved but generated zero
+applicable mutations for every target tried.
+
+`timeout_seconds` is checked once between tests in the probe's own scheduling
+loop, not inside any single pytest invocation — a single slow test can still
+push the wall-clock past it before the next check is reached, so it is a
+soft budget on the whole run, not a hard per-process cap. Scope is narrow on
+purpose: Python/pytest tests only (a non-Python changed test file is recorded
+as could-not-run, never silently skipped), only tests the diff itself adds or
+changes, and the probe copy is a bare `git worktree add` of the reviewed
+tree — a project whose tests need a gitignored virtualenv or build step the
+reviewed tree doesn't already carry can see every test "could not run" rather
+than mutation-tested. The tree the gate was given is verified byte-identical
+after every probe run via a content hash (never a revert command); a probe
+that cannot establish that fails closed too.
+
 ## UI evidence
 
 ```yaml

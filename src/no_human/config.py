@@ -1850,6 +1850,36 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # enforcing, and this comment still claimed otherwise until 2026-07-22.
         "mode": "advisory",
     },
+    "mutation_probe": {
+        # The reviewer's mutation probe (testing/mutation_probe.py): "off" |
+        # "advisory" | "required". Only controls whether/how a probe that
+        # COULD NOT run (non-Python test, unmappable, missing interpreter,
+        # budget exhausted, crash) affects the gate — recorded either way,
+        # but only blocks in "required". A SURVIVED test (green under a
+        # mutation of the behaviour it names) is always a blocking ("high")
+        # finding regardless of mode; "off" is the only mode in which a
+        # survived test is never even probed for. Scope: only tests a diff
+        # adds or changes, Python/pytest only — never a repo-wide mutation
+        # score.
+        "mode": "advisory",
+        # Cap on changed/added tests probed per review (one pytest launch
+        # per test per mutation), and a TOTAL mutation-attempt budget per
+        # test shared across every statically-ranked target tried for it —
+        # not a per-target budget: a static guess at "what code does this
+        # test exercise" is ambiguous (see `_rank_candidates`), so a test is
+        # only reported "survived" after every ranked target has been tried
+        # (or the budget above runs out first) without a kill, never after
+        # just the first one.
+        "max_tests": 12,
+        "max_mutations_per_test": 3,
+        # Wall-clock budget in seconds for the whole run, checked only
+        # BETWEEN tests (not a hard per-process cap): exceeding it reports
+        # the remainder "undetermined", never a silent pass. A single
+        # pytest invocation inside the loop can still run up to
+        # `repro_gate._RUN_TIMEOUT` past this budget before that next check
+        # is reached.
+        "timeout_seconds": 300,
+    },
     # UI evidence (testing/ui_evidence.py): the harness drives a real browser
     # at the attempt's own dev server from a coder-written walk manifest,
     # after this attempt's tests pass (D1.2, 2026-08-31). `enabled` is a
@@ -2486,6 +2516,49 @@ def ui_evidence_should_run(
     return any(
         fnmatch.fnmatch(p, g) for p in (changed_paths or []) for g in globs
     )
+
+
+_MUTATION_PROBE_MODES = ("off", "advisory", "required")
+
+
+def mutation_probe_config(data: dict[str, Any]) -> dict[str, Any]:
+    """Tolerant reader for ``mutation_probe.*`` (see ``DEFAULT_CONFIG``).
+
+    Mirrors ``reviewer_worktree.guard_config``'s tolerance of the deep-merge
+    shape (``mutation_probe: None`` REPLACES the nested dict, so a missing,
+    ``None`` or non-dict section is treated as empty) and of malformed
+    scalars: a bad ``mode`` falls back to ``"advisory"``, never ``"off"`` —
+    silently disabling a safety check on a typo is the bug this prevents.
+    """
+    defaults = DEFAULT_CONFIG["mutation_probe"]
+    section = data.get("mutation_probe")
+    if not isinstance(section, dict):
+        section = {}
+
+    mode = section.get("mode", defaults["mode"])
+    if mode not in _MUTATION_PROBE_MODES:
+        log.warning(
+            "mutation_probe.mode=%r is not one of %s — falling back to %r",
+            mode, _MUTATION_PROBE_MODES, defaults["mode"],
+        )
+        mode = defaults["mode"]
+
+    def _positive_int(key: str) -> int:
+        raw = section.get(key, defaults[key])
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            return defaults[key]
+        if isinstance(raw, bool) or value <= 0:
+            return defaults[key]
+        return value
+
+    return {
+        "mode": mode,
+        "max_tests": _positive_int("max_tests"),
+        "max_mutations_per_test": _positive_int("max_mutations_per_test"),
+        "timeout_seconds": _positive_int("timeout_seconds"),
+    }
 
 
 def worktree_root(config: dict[str, Any]) -> Path:
