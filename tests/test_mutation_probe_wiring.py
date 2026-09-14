@@ -225,6 +225,70 @@ async def test_a_crashing_probe_never_fails_the_gate_by_itself(monkeypatch, tmp_
     assert result2.passed is False  # "required" means unrunnable blocks
 
 
+async def test_diff_override_reports_could_not_run_and_blocks_only_in_required(
+    monkeypatch, tmp_path,
+):
+    """`review()`'s gate-mode `diff_override` path (a caller-supplied diff
+    string, no `before_ref`/`after_ref` guaranteed to bound it — see
+    `tests/test_gate_severity.py`'s direct `review(..., diff_override=...)`
+    call) reaches `_apply_mutation_probe` too. Since the probe cannot trust
+    `before_ref`/`after_ref` to compute "which tests changed" against a
+    diff it was not told matches that range, it must report "could not
+    run" — the same AC5 contract as a crash or a missing interpreter —
+    rather than silently skip reporting anything, or silently probe
+    against an untrustworthy range.
+
+    `calls` is recorded rather than raised: an earlier version of this test
+    made the mock *raise* on call, but `_apply_mutation_probe`'s own
+    `except Exception` handler (its crash-containment path, tested
+    separately below) silently swallows that raise into a checklist item
+    that *also* contains the substring "could not run" — so a mutant that
+    deletes the `diff_override` short-circuit entirely (falls through and
+    calls the real probe path) still produced a matching, non-blocking
+    checklist item and this test stayed green. Recording the call and
+    asserting on it directly, plus asserting the *exact* diff-override
+    label (distinct from the crash path's "crashed: ..." wording), closes
+    that gap: verified by hand-mutating `if diff_override:` to
+    `if not diff_override:` in `_apply_mutation_probe` and confirming this
+    test goes red, then restoring the original source.
+    """
+    calls = []
+
+    def record_call(*a, **k):
+        calls.append((a, k))
+        raise AssertionError("should never be reached")
+
+    monkeypatch.setattr(mutation_probe, "run_mutation_probe", record_call)
+
+    expected_label = (
+        "mutation probe could not run (no before/after refs "
+        "available for a diff-override review)"
+    )
+
+    r_advisory = AdversarialReviewer(
+        model="claude-opus-5", mutation_probe={"mode": "advisory"})
+    decision = ReviewDecision(passed=True, checklist=[ChecklistItem("ok", True)])
+    result = await r_advisory._apply_mutation_probe(
+        decision, tmp_path, "HEAD~1", "HEAD", "--- a\n+++ b\n")
+    assert calls == []  # the probe itself must never be invoked here
+    assert result.passed is True  # advisory: could-not-run never blocks
+    could_not_run = [i for i in result.checklist if i.label == expected_label]
+    assert len(could_not_run) == 1
+    assert could_not_run[0].passed is True
+    assert could_not_run[0] not in result.blocking_items
+
+    r_required = AdversarialReviewer(
+        model="claude-opus-5", mutation_probe={"mode": "required"})
+    decision2 = ReviewDecision(passed=True, checklist=[ChecklistItem("ok", True)])
+    result2 = await r_required._apply_mutation_probe(
+        decision2, tmp_path, "HEAD~1", "HEAD", "--- a\n+++ b\n")
+    assert calls == []  # still never invoked, in required mode either
+    assert result2.passed is False  # required: could-not-run blocks
+    could_not_run_req = [i for i in result2.checklist if i.label == expected_label]
+    assert len(could_not_run_req) == 1
+    assert could_not_run_req[0] in result2.blocking_items
+
+
 # --------------------------------------------------------------------------
 # AC3 — the reviewed working tree is never the one that gets mutated
 # --------------------------------------------------------------------------
