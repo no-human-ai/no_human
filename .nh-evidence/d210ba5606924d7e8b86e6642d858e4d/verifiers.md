@@ -1,6 +1,6 @@
 # Verifiers
 
-_Harness-captured record for task `d210ba56`, commit `d0387106a07fcc5d26c863cc60eac13992614fd2` — not model-authored: no_human wrote this file from the deterministic verifier rules selected for this commit's files. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `d210ba56`, commit `5d1512d329959a20e4fb61e807816fed3f18c305` — not model-authored: no_human wrote this file from the deterministic verifier rules selected for this commit's files. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ```json
 [
@@ -17,7 +17,7 @@ _Harness-captured record for task `d210ba56`, commit `d0387106a07fcc5d26c863cc60
     "no_verdict": true,
     "passed": false,
     "severity": "medium",
-    "tokens_used": 2872,
+    "tokens_used": 1758,
     "unavailable": true,
     "verifier_id": "tests-assert-something"
   }
