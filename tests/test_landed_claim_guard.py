@@ -628,7 +628,7 @@ def test_note_text_never_raises():
 
 def test_an_empty_head_sha_never_reaches_the_probe():
     """Mutant pin (STEP 3b): `_note_text`'s `if not head or head in self._seen:
-    return` (~259) has two independently-testable halves; the `head in
+    return` (~610) has two independently-testable halves; the `head in
     self._seen` half is already pinned by `test_latch_injects_once_per_sha`.
     This pins the OTHER half — `not head` — with a probe that refutes
     unconditionally and records every call, so a mutant that dropped `not

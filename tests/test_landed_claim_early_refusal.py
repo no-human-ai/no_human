@@ -140,7 +140,7 @@ async def test_build_landed_claim_guard_fires_on_a_refutable_claim_via_the_real_
     assert orch._route_unjudged_head(
         task, GitRepo(diverged_repo), "main") is None
     # And the shape itself: HEAD is on the local base, not ahead of it —
-    # this is what makes delivery's `resumed_commit` at ~6513 be None, i.e.
+    # this is what makes delivery's `resumed_commit` at ~6626 be None, i.e.
     # the reachable-claim-gate state, unlike the over-refusal fixture below.
     assert GitRepo(diverged_repo).commits_ahead("main") == 0
 
@@ -286,7 +286,7 @@ async def test_a_branch_ahead_of_its_base_is_not_refused_because_delivery_never_
 ):
     """The actual defect this task fixes: delivery only ever parses an
     already-satisfied claim when `resumed_commit` is `None` (`_run_attempt`,
-    ~6513) — i.e. no base, or nothing ahead of it, or a resume from this
+    ~6626) — i.e. no base, or nothing ahead of it, or a resume from this
     attempt's own `[WIP-PARTIAL]`. An ORDINARY commit ahead of `base` (no
     `[WIP-*]` subject, so eligible; not a checkpoint resume) is exactly the
     shape delivery commits, reviews, and opens a PR for — it never reaches

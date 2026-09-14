@@ -17291,7 +17291,7 @@ class Orchestrator:
 
         Fourth review, same class a third time: `_already_satisfied_subject`
         is not reached merely because the head is eligible. Delivery parses
-        the claim at all only when `resumed_commit` is None (~6513) — that
+        the claim at all only when `resumed_commit` is None (~6626) — that
         is, when there is no base, or the branch is not ahead of it, or the
         attempt resumed from its OWN `[WIP-PARTIAL]` checkpoint. An attempt
         that made an ordinary in-session commit off `base` leaves
@@ -17334,7 +17334,7 @@ class Orchestrator:
                 # must not say it is.
                 return False, "", ""
             # Delivery parses the claim at all only when `resumed_commit` is
-            # None (~6513): no base, or nothing ahead of it, or a resume from
+            # None (~6626): no base, or nothing ahead of it, or a resume from
             # this attempt's own [WIP-PARTIAL]. With ordinary in-session
             # commits ahead of `base`, delivery commits and reviews the diff
             # instead of refusing — so the guard must stay silent. Evaluated
