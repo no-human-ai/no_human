@@ -1,85 +1,121 @@
 # How I verified this — full log
 
-_Harness-captured record for task `1cbc1c65`, commit `07f17f5e0c697421b130346a634e6d35658c3b31` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `1cbc1c65`, commit `e32c1d8b6e8fd0f3940a842169c13f69249df640` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ## How I verified this
-5 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
+8 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
 
 ### test
-- `uv run pytest tests/test_gate_oneshot.py -q 2>&1 | tail -60`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/1cbc1c65cf274309825a0341a89c0dd9.52752.bb761dcf uv run --no-sync pytest -q tests/test_readme_claims.py -k "bench_run or windows_md or every_line_citation" 2>&1 | tail -40`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-....................                                                     [100%]
-20 passed in 4.97s
+......                                                                   [100%]
+6 passed, 141 deselected in 2.94s
 ```
 
-- `uv run pytest tests/test_plugin_drift.py tests/test_plugin_marketplace.py tests/test_readme_claims.py tests/test_structural_budget.py tests/test_egress_allowlist.py -q 2>&1 | tail -40`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-.............................................s.s.s.s.s.s.s.s.s.s........ [ 35%]
-.......................................s..........................s..... [ 70%]
-............................................................             [100%]
-192 passed, 12 skipped in 18.91s
-```
-
-- `uv run pytest tests/test_gate_oneshot.py tests/test_plugin_drift.py tests/test_plugin_marketplace.py tests/test_readme_claims.py tests/test_structural_budget.py tests/test_egress_allowlist.py -q -n 4 2>&1 | tail -20`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/1cbc1c65cf274309825a0341a89c0dd9.52752.bb761dcf uv run --no-sync pytest -q tests/test_readme_claims.py 2>&1 | tail -40`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+............................s.s.s.s.s.s.s.s.s.s......................... [ 48%]
+......................s..........................s...................... [ 97%]
+...                                                                      [100%]
+135 passed, 12 skipped in 8.43s
+```
+
+- `cd /Users/eyalgolan/.<redacted>/worktrees/1cbc1c65cf274309825a0341a89c0dd9.52752.bb761dcf uv run --no-sync pytest -q tests/test_structural_budget.py tests/test_egress_allowlist.py 2>&1 | tail -40`
+
+```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+........................................                                 [100%]
+40 passed in 42.93s
+```
+
+- `cd /Users/eyalgolan/.<redacted>/worktrees/1cbc1c65cf274309825a0341a89c0dd9.52752.bb761dcf uv run pytest -q -n 4 tests/test_gate_oneshot.py tests/test_plugin_drift.py tests/test_plugin_marketplace.py tests/test_readme_claims.py tests/test_structural_budget.py tests/test_egress_allowlist.py 2>&1 | tail -60`
+
+```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+   Building no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/1cbc1c65cf274309825a0341a89c0dd9.52752.bb761dcf
+      Built no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/1cbc1c65cf274309825a0341a89c0dd9.52752.bb761dcf
+Installed 73 packages in 591ms
 bringing up nodes...
 bringing up nodes...
 
-.......................s.s.s.s.s.s.s.s.s.s.............................. [ 32%]
-...................s....................................s............... [ 64%]
+.......................s.s..............s.s..ss.s..s.s.................s [ 32%]
+.........................s.............................s................ [ 64%]
 ........................................................................ [ 96%]
 ........                                                                 [100%]
-212 passed, 12 skipped in 9.62s
+212 passed, 12 skipped in 33.12s
 ```
 
-- `uv run pytest tests/test_gate_oneshot.py::test_empty_diff_refuses_without_invoking_the_reviewer tests/test_gate_oneshot.py::test_pr_mode_refuses_when_pr_head_has_no_commits_beyond_base -q 2>&1 | tail -40`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/1cbc1c65cf274309825a0341a89c0dd9.52752.bb761dcf uv run --no-sync pytest -q --collect-only 2>&1 | tail -15 echo "---" uv run --no-sync nh gate --help 2>&1 | tail -20`
 
 ```
-monkeypatch.setattr(oneshot, "AdversarialReviewer", _ExplodingReviewer)
-    
-        import asyncio
-        with pytest.raises(GateUnavailable, match="no commits beyond"):
->           asyncio.run(run_gate(
-                repo, pr_url="https://github.com/acme/widgets/pull/17",
-            ))
+tests/test_worktree_teardown.py::test_the_janitor_runs_at_boot_before_orphan_recovery
+tests/test_worktree_teardown.py::test_a_sweep_that_throws_never_blocks_boot
+tests/test_ws_reconnect_repro.py::test_ws_reconnect_and_stale_banner_js_suite_passes
 
-tests/test_gate_oneshot.py:606: 
-_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
-../../../.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/asyncio/runners.py:195: in run
-    return runner.run(main)
-           ^^^^^^^^^^^^^^^^
-../../../.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/asyncio/runners.
-[... 1,206 of 2,345 characters omitted from the middle ...]
-nd the base"
-        )
-E       AssertionError: the reviewer must never be invoked when the PR has no commits beyond the base
+=============================== warnings summary ===============================
+src/<redacted>/testing/test_layers.py:35
+  /Users/eyalgolan/.<redacted>/worktrees/1cbc1c65cf274309825a0341a89c0dd9.52752.bb761dcf/src/<redacted>/testing/test_layers.py:35: PytestCollectionWarning: cannot collect test class 'TestLayer' because it has a __init__ constructor (from: tests/test_test_layers.py)
+    @dataclass
 
-tests/test_gate_oneshot.py:597: AssertionError
-=========================== short test summary info ============================
-FAILED tests/test_gate_oneshot.py::test_empty_diff_refuses_without_invoking_the_reviewer
-FAILED tests/test_gate_oneshot.py::test_pr_mode_refuses_when_pr_head_has_no_commits_beyond_base
-2 failed in 0.95s
+src/<redacted>/testing/test_lay
+[... 956 of 2,095 characters omitted from the middle ...]
+ checkout to run the gate over (default: cwd).
+  --pr TEXT           GitHub pull request URL to review instead of the current
+                      branch.
+  --base TEXT         Override the comparison base ref (default:
+                      origin/<default branch>).
+  --title TEXT        Task title recorded for the review session.
+  --description TEXT  Task description recorded for the review session.
+  --help              Show this message and exit.
 ```  
-  _excerpt - 2,341 characters of output in total_
+  _excerpt - 2,083 characters of output in total_
 
-- `uv run pytest tests/test_gate_oneshot.py tests/test_plugin_drift.py tests/test_plugin_marketplace.py tests/test_readme_claims.py tests/test_structural_budget.py tests/test_egress_allowlist.py -q -n 4 2>&1 | tail -20`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/1cbc1c65cf274309825a0341a89c0dd9.52752.bb761dcf uv run --no-sync pytest -q tests/test_gate_oneshot.py -k "no_credential or verb_exits_2 or deletes_a_test_reports_the_tamper_finding or clean_branch_reports_a_pass or no_store_and_no_server or no_repo_writes or never_shells_out_to_a_write" -v 2>&1 | tail -40`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-bringing up nodes...
-bringing up nodes...
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.1.1, pluggy-1.6.0
+<redacted> isolated HOME: /var/folders/1r/3r0rt1jd4j1456rsg_fh4d380000gn/T/nh-test-home-pp_rx14q
+rootdir: /Users/eyalgolan/.<redacted>/worktrees/1cbc1c65cf274309825a0341a89c0dd9.52752.bb761dcf
+configfile: pyproject.toml
+plugins: anyio-4.14.0, no-human-0.2.2, cov-7.1.0, xdist-3.8.0, asyncio-1.4.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 20 items / 12 deselected / 8 selected
 
-.......................s.s.s.s.s.s.s.s.s.s.............................. [ 32%]
-...................s....................................s............... [ 64%]
-........................................................................ [ 96%]
+tests/test_gate_oneshot.py ........                                      [100%]
+
+======================= 8 passed, 12 deselected in 8.53s =======================
+```
+
+- `cd /Users/eyalgolan/.<redacted>/worktrees/1cbc1c65cf274309825a0341a89c0dd9.52752.bb761dcf uv run --no-sync pytest -q tests/test_gate_oneshot.py::test_only_one_module_constructs_the_oneshot_reviewer_call -v 2>&1 | tail -10`
+
+```
+<redacted> isolated HOME: /var/folders/1r/3r0rt1jd4j1456rsg_fh4d380000gn/T/nh-test-home-5ydn63k1
+rootdir: /Users/eyalgolan/.<redacted>/worktrees/1cbc1c65cf274309825a0341a89c0dd9.52752.bb761dcf
+configfile: pyproject.toml
+plugins: anyio-4.14.0, no-human-0.2.2, cov-7.1.0, xdist-3.8.0, asyncio-1.4.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 1 item
+
+tests/test_gate_oneshot.py .                                             [100%]
+
+============================== 1 passed in 1.81s ===============================
+```
+
+- `cd /Users/eyalgolan/.<redacted>/worktrees/1cbc1c65cf274309825a0341a89c0dd9.52752.bb761dcf uv run --no-sync pytest -q tests/test_gate_oneshot.py tests/test_plugin_drift.py tests/test_plugin_marketplace.py tests/test_readme_claims.py tests/test_structural_budget.py tests/test_egress_allowlist.py 2>&1 | tail -15`
+
+```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+.................................................................s.s.s.s [ 32%]
+.s.s.s.s.s.s...............................................s............ [ 64%]
+..............s......................................................... [ 96%]
 ........                                                                 [100%]
-212 passed, 12 skipped in 9.66s
+212 passed, 12 skipped in 82.30s (0:01:22)
 ```
 
 
