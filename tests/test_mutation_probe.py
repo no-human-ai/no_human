@@ -258,6 +258,71 @@ def test_non_python_test_file_is_reported_undetermined_not_skipped(repo):
 
 
 # --------------------------------------------------------------------------
+# SEND-BACK — a `git show` failure that is NOT "the path is genuinely
+# absent at that ref" must never be folded into the same `None` `_show`
+# returns for a deleted/binary file: doing so silently dropped the changed
+# test from the candidate list, with no `undetermined` probe ever recorded
+# for it, so even `required` mode passed with the test never checked.
+# --------------------------------------------------------------------------
+
+
+def test_show_raises_for_a_real_git_failure_but_returns_none_for_an_absent_path(repo):
+    (repo / "pkg" / "calc.py").write_text("def double(x):\n    return x * 2\n")
+    (repo / "tests" / "test_calc.py").write_text(
+        "from pkg.calc import double\n\ndef test_double():\n"
+        "    assert double(2) == 4\n"
+    )
+    _commit(repo)
+
+    # Positive control: a path genuinely absent at a ref is the expected,
+    # non-error `None` — this must keep working.
+    assert mutation_probe._show(repo, "HEAD", "tests/nope.py", 30.0) is None
+
+    # A real git failure (bad ref) must raise, not return `None`.
+    with pytest.raises(mutation_probe._GitShowError):
+        mutation_probe._show(repo, "not-a-real-ref", "tests/test_calc.py", 30.0)
+
+
+def test_a_git_show_failure_on_a_changed_test_is_reported_undetermined_not_dropped(
+    repo, monkeypatch,
+):
+    _write_single_changed_test(repo)
+
+    real_run = subprocess.run
+
+    def flaky_run(cmd, *args, **kwargs):
+        if cmd[:2] == ["git", "show"] and cmd[2] == "HEAD:tests/test_calc.py":
+            return subprocess.CompletedProcess(
+                cmd, 128, stdout=b"",
+                stderr=b"fatal: unable to read sha1 file of tests/test_calc.py",
+            )
+        return real_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(mutation_probe.subprocess, "run", flaky_run)
+
+    changed, pre_probes = mutation_probe.changed_test_functions(repo, "HEAD~1", "HEAD")
+    assert changed == [], (
+        "a test the diff changed must never be silently dropped as a "
+        "candidate just because git show failed transiently"
+    )
+    assert len(pre_probes) == 1
+    assert pre_probes[0].verdict == "undetermined"
+    assert pre_probes[0].node_id == "tests/test_calc.py"
+    assert "could not read" in pre_probes[0].reason
+
+    # The same fault must surface through `run_mutation_probe`, not silently
+    # pass because the file never became a candidate: the undetermined probe
+    # must be present in `result.probes` — that list is exactly what
+    # `merge_mutation_findings` folds into the review record, so an entry
+    # missing here is a finding that was never recorded at all.
+    result = mutation_probe.run_mutation_probe(repo, "HEAD~1", "HEAD")
+    assert len(result.probes) == 1
+    assert result.probes[0].verdict == "undetermined"
+    assert result.probes[0].node_id == "tests/test_calc.py"
+    assert result.tree_intact is True
+
+
+# --------------------------------------------------------------------------
 # M8: no pytest interpreter -> named "error" verdict, never a crash, never
 # a pytest launch attempt.
 # --------------------------------------------------------------------------

@@ -97,14 +97,42 @@ class MutationProbeResult:
 # --------------------------------------------------------------------------
 
 
+class _GitShowError(Exception):
+    """``git show`` failed for a reason OTHER than the path being genuinely
+    absent at that ref — a bad/unreadable ref, a corrupt object, a timeout,
+    or any other environmental failure. Kept distinct from the "absent"
+    case (represented by :func:`_show` returning ``None``) so a caller can
+    tell "nothing to probe" apart from "could not find out" and report the
+    latter instead of silently dropping the test."""
+
+
 def _show(repo_path: Path, ref: str, rel: str, timeout: float) -> str | None:
-    """Text of ``rel`` at ``ref``, or None (absent, binary, unreadable)."""
-    proc = subprocess.run(
-        ["git", "show", f"{ref}:{rel}"],
-        cwd=repo_path, capture_output=True, timeout=timeout,
-    )
-    if proc.returncode != 0 or b"\x00" in proc.stdout:
-        return None
+    """Text of ``rel`` at ``ref``, or None when ``rel`` is genuinely absent
+    at ``ref`` (deleted, or not yet created) or binary.
+
+    Raises :class:`_GitShowError` for any other failure — git's own stderr
+    for a missing path is a stable, distinct message
+    (``"does not exist in"`` / ``"exists on disk, but not"``); anything
+    else (bad ref, corrupt object, timeout) is a real failure, not a
+    "nothing to probe" fact, and must not be folded into the same ``None``
+    the caller reads as "absent".
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "show", f"{ref}:{rel}"],
+            cwd=repo_path, capture_output=True, timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise _GitShowError(f"git show {ref}:{rel} timed out after {timeout}s") from exc
+    if proc.returncode != 0:
+        stderr = proc.stderr.decode("utf-8", errors="replace")
+        if "does not exist in" in stderr or "exists on disk, but not" in stderr:
+            return None
+        raise _GitShowError(
+            f"git show {ref}:{rel} failed (exit {proc.returncode}): {stderr.strip()[:300]}"
+        )
+    if b"\x00" in proc.stdout:
+        return None  # binary — nothing to statically probe
     return proc.stdout.decode("utf-8", errors="replace")
 
 
@@ -156,9 +184,14 @@ def changed_test_functions(
     ones whose source is byte-for-byte unchanged are correctly excluded even
     though the file around them changed.
 
-    Raises on a git failure — the caller turns that into a result-level
-    ``error``, since "the diff could not even be read" is not a per-test
-    fact.
+    Raises on a ``git diff`` failure — the caller turns that into a
+    result-level ``error``, since "the diff could not even be read" is not
+    a per-test fact. A ``git show`` failure for one changed file (as
+    opposed to the file being genuinely absent at a ref) is narrower than
+    that and is NOT raised: it is recorded as an ``undetermined``
+    ``pre_probes`` entry for that file so the affected test is never
+    silently dropped from the candidate list, and the rest of the diff's
+    files are still processed.
     """
     proc = subprocess.run(
         ["git", "diff", "--name-status", "-M", f"{before_ref}..{after_ref}"],
@@ -182,10 +215,24 @@ def changed_test_functions(
                 reason="non-Python test file — this probe is pytest-only",
             ))
             continue
-        after_text = _show(repo_path, after_ref, rel, timeout)
+        try:
+            after_text = _show(repo_path, after_ref, rel, timeout)
+        except _GitShowError as exc:
+            pre_probes.append(TestProbe(
+                node_id=rel, verdict="undetermined",
+                reason=f"could not read {rel} at {after_ref}: {exc}",
+            ))
+            continue
         if after_text is None:
             continue  # deleted or binary at after-ref — nothing to probe
-        before_text = _show(repo_path, before_ref, rel, timeout)
+        try:
+            before_text = _show(repo_path, before_ref, rel, timeout)
+        except _GitShowError as exc:
+            pre_probes.append(TestProbe(
+                node_id=rel, verdict="undetermined",
+                reason=f"could not read {rel} at {before_ref}: {exc}",
+            ))
+            continue
         try:
             after_tree = ast.parse(after_text)
         except SyntaxError:
