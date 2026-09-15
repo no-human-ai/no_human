@@ -1,40 +1,52 @@
 """Deterministic wiring evidence for the reviewer's goal-reachability check.
 
-Lists top-level Python symbols a diff ADDS that have no reference anywhere in
-the after-state tree outside their own defining file and test paths. That is
-the raw material of the "implemented but never called by the production path"
-defect class — surfaced as labeled evidence next to the lint section, never as
-a verdict: an unreferenced symbol may be wired through dynamic dispatch this
-module cannot see, or be exactly the uncalled artifact the request asks for.
+Lists symbols a diff ADDS that have no reference anywhere in the after-state
+tree outside their own defining file and test paths. That is the raw material
+of the "implemented but never called by the production path" defect class —
+surfaced as labeled evidence next to the lint section, never as a verdict: an
+unreferenced symbol may be wired through dynamic dispatch this module cannot
+see, or be exactly the uncalled artifact the request asks for.
 
 Named ceilings, stated because the prompt block repeats them:
 
-* PYTHON-ONLY: symbols come from ``ast.parse`` over changed ``.py`` files, so
-  a diff in any other language contributes nothing and the section is absent.
+* LANGUAGES: Python and the JS/TS family, via `review.symbols`. A diff in any
+  other language contributes nothing and the section is absent.
+* DEPTH: module level and class bodies. A `def` inside a function and an
+  unexported JS binding are file-private by construction and are skipped —
+  `review.symbols` carries the argument.
 * STATIC: references are found by ``git grep -w`` over the after-state tree.
   Dynamic dispatch, registries, ``getattr``, string-built names and console
   entry points are invisible to it.
-* TOP-LEVEL ONLY: functions and classes at module top level. Methods,
-  nested defs and assignments are not inspected.
+* BY BARE NAME: a method is searched for as ``close``, not ``Store.close``,
+  so an unrelated ``other.close()`` elsewhere in the tree reads as a
+  reference. That direction is deliberate — the rule below is to fail toward
+  silence — but it means a listed method is stronger evidence than an
+  unlisted one is.
 
 Advisory only, like lint_evidence: any failure — a bad ref, unparseable
-Python, a timeout — returns an empty result and must never block or slow the
-review gate.
+source, a timeout — returns an empty or partial result and must never block
+or slow the review gate.
 """
 
 from __future__ import annotations
 
-import ast
 import logging
 import subprocess
+import time
+
+from .symbols import declared_symbols, language_of
 
 log = logging.getLogger(__name__)
 
 # Hard cap on the whole collection pass, same rationale as
 # lint_evidence.LINT_TIMEOUT: advisory evidence must never stall the gate.
+# Enforced as ONE deadline across every subprocess, not per subprocess — with
+# a `git grep` per symbol, a per-call timeout bounds nothing in aggregate.
 WIRING_TIMEOUT = 30
-# One `git grep` per symbol, so bound the symbol count.
-MAX_WIRING_SYMBOLS = 30
+# One `git grep` per distinct name, so bound the symbol count. Reading class
+# bodies and a second language family raised the count a diff can produce;
+# the deadline above is what actually bounds the cost.
+MAX_WIRING_SYMBOLS = 50
 MAX_WIRING_BYTES = 4096
 
 
@@ -45,8 +57,12 @@ def _is_test_path(path: str) -> bool:
     return (
         "tests" in parts
         or "test" in parts
+        or "__tests__" in parts
+        or "__mocks__" in parts
         or name.startswith("test_")
         or name.endswith("_test.py")
+        or ".test." in name
+        or ".spec." in name
         or name == "conftest.py"
     )
 
@@ -62,70 +78,90 @@ def _show(repo_path, ref: str, rel: str, timeout: float) -> str | None:
     return proc.stdout.decode("utf-8", errors="replace")
 
 
-def _top_level_symbols(text: str) -> set[str]:
-    """Names of module-top-level function and class definitions."""
-    try:
-        tree = ast.parse(text)
-    except SyntaxError:
-        return set()
-    return {
-        node.name for node in tree.body
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
-    }
+def _referencing_paths(
+    repo_path, after_ref: str, name: str, timeout: float,
+) -> list[str] | None:
+    """Paths in ``after_ref`` holding ``name`` as a word, or None when the
+    search could not be trusted."""
+    grep = subprocess.run(
+        ["git", "grep", "-l", "-w", "--fixed-strings", "-e", name, after_ref],
+        cwd=repo_path, capture_output=True, text=True, errors="replace",
+        timeout=timeout,
+    )
+    if grep.returncode not in (0, 1):
+        return None
+    # `git grep -l <ref>` lines are "<ref>:<path>".
+    return [
+        hit.split(":", 1)[1] if ":" in hit else hit
+        for hit in (grep.stdout or "").splitlines()
+    ]
 
 
 def collect_wiring_evidence(
     repo_path, before_ref: str, after_ref: str, *, timeout: int = WIRING_TIMEOUT,
 ) -> list[tuple[str, str]]:
-    """``(defining_path, symbol)`` pairs the diff adds with no reference found
-    outside the defining file and test paths, sorted. ``[]`` on ANY failure.
+    """``(defining_path, qualified_name)`` pairs the diff adds with no
+    reference found outside the defining file and test paths, sorted. ``[]``
+    on ANY failure.
 
     A symbol whose reference search fails (git error, timeout) is treated as
     referenced — this evidence fails toward silence, never toward accusation.
+    The same rule governs the deadline: when it runs out mid-search the
+    symbols already decided are returned and the rest are simply not asked
+    about, so a slow repo under-reports rather than mis-reports.
     """
+    deadline = time.monotonic() + timeout
+
+    def remaining() -> float:
+        return deadline - time.monotonic()
+
     try:
         proc = subprocess.run(
             ["git", "diff", "--name-status", "-M", f"{before_ref}..{after_ref}"],
             cwd=repo_path, capture_output=True, text=True, errors="replace",
-            timeout=timeout,
+            timeout=remaining(),
         )
         if proc.returncode != 0:
             return []
-        added: list[tuple[str, str]] = []
+        added: list[tuple[str, str, str]] = []
         for line in (proc.stdout or "").splitlines():
             parts = line.split("\t")
             if len(parts) < 2 or parts[0].startswith("D"):
                 continue
             rel = parts[-1]
-            if not rel.endswith(".py") or _is_test_path(rel):
+            if language_of(rel) is None or _is_test_path(rel):
                 continue
-            after_text = _show(repo_path, after_ref, rel, timeout)
+            after_text = _show(repo_path, after_ref, rel, remaining())
             if after_text is None:
                 continue
-            before_text = _show(repo_path, before_ref, rel, timeout) or ""
-            new = _top_level_symbols(after_text) - _top_level_symbols(before_text)
-            added.extend((rel, name) for name in sorted(new))
-        added = added[:MAX_WIRING_SYMBOLS]
+            before_text = _show(repo_path, before_ref, rel, remaining()) or ""
+            before_symbols = declared_symbols(before_text, rel)
+            added.extend(
+                (rel, qualified, name)
+                for qualified, name in declared_symbols(after_text, rel).items()
+                if qualified not in before_symbols
+            )
+        added = sorted(added)[:MAX_WIRING_SYMBOLS]
 
         unreferenced: list[tuple[str, str]] = []
-        for rel, name in added:
-            grep = subprocess.run(
-                ["git", "grep", "-l", "-w", "--fixed-strings", "-e", name,
-                 after_ref],
-                cwd=repo_path, capture_output=True, text=True, errors="replace",
-                timeout=timeout,
-            )
-            if grep.returncode not in (0, 1):
+        searched: dict[str, list[str] | None] = {}
+        for rel, qualified, name in added:
+            if remaining() <= 0:
+                log.warning(
+                    "wiring evidence ran out of budget after %ds", timeout)
+                break
+            if name not in searched:
+                searched[name] = _referencing_paths(
+                    repo_path, after_ref, name, remaining(),
+                )
+            paths = searched[name]
+            if paths is None:
                 continue  # untrusted search — treat as referenced
-            outside = False
-            for hit in (grep.stdout or "").splitlines():
-                # `git grep -l <ref>` lines are "<ref>:<path>".
-                path = hit.split(":", 1)[1] if ":" in hit else hit
-                if path != rel and not _is_test_path(path):
-                    outside = True
-                    break
+            outside = any(
+                path != rel and not _is_test_path(path) for path in paths
+            )
             if not outside:
-                unreferenced.append((rel, name))
+                unreferenced.append((rel, qualified))
         return sorted(unreferenced)
     except subprocess.TimeoutExpired:
         log.warning("wiring evidence timed out after %ds", timeout)
@@ -143,9 +179,10 @@ def format_wiring_evidence(unreferenced: list[tuple[str, str]]) -> str:
     if not unreferenced:
         return ""
     header = (
-        "WIRING EVIDENCE (deterministic, static, Python-only — dynamic "
-        "dispatch/registries not visible): top-level symbols this diff adds "
-        "with no reference found outside their defining file and test paths:"
+        "WIRING EVIDENCE (deterministic, static — Python and JS/TS, module "
+        "level and class bodies; dynamic dispatch/registries not visible): "
+        "symbols this diff adds with no reference found outside their "
+        "defining file and test paths:"
     )
     lines = [header]
     size = len(header)
