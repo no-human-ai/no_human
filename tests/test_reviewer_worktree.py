@@ -358,12 +358,16 @@ def test_gc_bookkeeping_in_the_admin_dir_is_still_watched(worktree_env):
 
 def test_non_gc_git_dir_writes_still_discard(worktree_env):
     """Everything else in the common dir must still discard: a real
-    execution-surface config key, a newly planted hook, and — the concrete
-    proof no `*.lock` glob crept into this change — `config.lock` itself."""
+    execution-surface config key, a newly planted hook, `config.lock` itself
+    — the concrete proof no `*.lock` glob crept into this change — and a
+    rewrite of `objects/info/alternates`, the one named exception to the
+    `objects/` prune (see `Snapshot.alternates`)."""
     wt = worktree_env["wt"]
     admin = worktree_env["admin_dir"]
     common = worktree_env["common_dir"]
     cfg = common / "config"
+    alternates = common / "objects" / "info" / "alternates"
+    alternates.parent.mkdir(parents=True, exist_ok=True)
 
     before = rw.snapshot(wt, timeout=_TIMEOUT)
 
@@ -373,6 +377,7 @@ def test_non_gc_git_dir_writes_still_discard(worktree_env):
     hook.write_text("#!/bin/sh\ntrue\n")
     hook.chmod(0o755)
     (common / "config.lock").write_text("[core]\n")
+    alternates.write_text("/tmp/some-foreign-object-store/objects\n")
 
     delta = rw.compare(wt, before, timeout=_TIMEOUT)
     assert not delta.is_empty()
@@ -383,31 +388,49 @@ def test_non_gc_git_dir_writes_still_discard(worktree_env):
     assert any(p.endswith("common/config.lock") for p in delta.added), (
         "config.lock was excused, implying a *.lock glob crept into this "
         f"change: added={delta.added}")
+    assert any("objects/info/alternates" in p for p in delta.added), (
+        "objects/info/alternates was excused: "
+        f"added={delta.added} modified={delta.modified}")
 
 
-def test_objects_info_alternates_is_unchanged_by_this_exclusion(worktree_env):
-    """`objects/info/alternates` is a live, PRE-EXISTING hole (see
-    `_SKIPPED_GIT_DIR_PREFIXES`'s `objects/` comment and
-    `_is_volatile_git_path`'s docstring): the whole `objects/` subtree is
-    walk-pruned before this change and stays walk-pruned after it — this
-    task does not touch `_SKIPPED_GIT_DIR_PREFIXES`, and does not close this
-    hole. This pins the MEASURED status quo rather than silently reproducing
-    it: a rewrite of `objects/info/alternates` is invisible to `compare()`,
-    unchanged by this commit."""
+@pytest.mark.parametrize("shape", ["created", "rewritten", "deleted"])
+def test_objects_info_alternates_change_still_discards_the_verdict(
+    worktree_env, shape,
+):
+    """`objects/` as a whole stays walk-pruned by the pre-existing
+    `_SKIPPED_GIT_DIR_PREFIXES` (unchanged by this task), but
+    `objects/info/alternates` is a NAMED exception to that prune: rewriting
+    it makes a foreign object store resolvable through this repo, so
+    `Snapshot.alternates`/`compare()` read and diff it directly, outside the
+    walk (see the `alternates` field's docstring on `Snapshot`). All three
+    shapes — created, rewritten, deleted — must still discard the verdict;
+    this is a targeted watch, not a reopening of `_SKIPPED_GIT_DIR_PREFIXES`
+    (see `test_the_gc_exclusions_are_exact_label_scoped_names` for that
+    constant staying unchanged)."""
     wt = worktree_env["wt"]
     common = worktree_env["common_dir"]
     alternates = common / "objects" / "info" / "alternates"
     alternates.parent.mkdir(parents=True, exist_ok=True)
 
+    if shape in ("rewritten", "deleted"):
+        alternates.write_text("/tmp/some-preexisting-foreign-store/objects\n")
+
     before = rw.snapshot(wt, timeout=_TIMEOUT)
-    alternates.write_text("/tmp/some-foreign-object-store/objects\n")
+
+    if shape == "created":
+        alternates.write_text("/tmp/some-foreign-object-store/objects\n")
+    elif shape == "rewritten":
+        alternates.write_text("/tmp/a-different-foreign-object-store/objects\n")
+    else:
+        alternates.unlink()
 
     delta = rw.compare(wt, before, timeout=_TIMEOUT)
-    assert delta.is_empty(), (
-        "objects/info/alternates is documented as a pre-existing, unchanged "
-        "residual, not something this task closes: "
+    assert not delta.is_empty(), (
+        f"objects/info/alternates {shape!r} in the common dir was excused: "
         f"added={delta.added} modified={delta.modified} deleted={delta.deleted}"
     )
+    offending = [*delta.added, *delta.modified, *delta.deleted]
+    assert any("objects/info/alternates" in p for p in offending), offending
 
 
 def test_a_real_write_alongside_gc_pid_churn_still_discards(worktree_env):

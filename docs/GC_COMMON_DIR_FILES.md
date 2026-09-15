@@ -66,7 +66,8 @@ Apple Git-155) rather than by reading git's C source, plus `man git-gc`/
 | `config`, `config.worktree`, `config.lock` | `git maintenance register/start` writes `maintenance.*` keys into `config` | `config` is the exec-on-checkout surface (`include.path`, `alias.*`, `core.hooksPath`); `config.lock`'s bytes *become* `config` on rename | **kept watched** — `config` is already key-adjudicated (and `maintenance.*`/`gc.*` keys are already on `_BENIGN_CONFIG_KEY_PATTERNS`, a separate, pre-existing mechanism); `config.lock` has no measured incident and sits on the exec surface. This is the concrete argument against any `*.lock` glob: excusing `*.lock` blanket-wide would silently excuse `config.lock` too. |
 | `shallow`, `shallow.lock` | gc/repack on shallow clones | read as the graft/depth boundary — changes what git considers reachable | **kept watched** — no measured incident; these worktrees are not shallow clones |
 | `hooks/**`, `info/attributes`, `commondir`, `HEAD` | not written by gc | execute / filter-exec / pointer surfaces | **kept watched** — unrelated to this task, per `_is_volatile_git_path`'s docstring |
-| `objects/**` (packs, idx, commit-graph, multi-pack-index and their locks, `info/alternates`), `refs/**` incl. `*.lock`, `worktrees/**` | gc/maintenance | — | **already walk-pruned** by the pre-existing `_SKIPPED_GIT_DIR_PREFIXES`; recorded as pre-existing, not re-decided by this task — see the `objects/info/alternates` conflict below |
+| `objects/**` (packs, idx, commit-graph, multi-pack-index and their locks), `refs/**` incl. `*.lock`, `worktrees/**` | gc/maintenance | — | **already walk-pruned** by the pre-existing `_SKIPPED_GIT_DIR_PREFIXES`, unchanged by this task |
+| `objects/info/alternates` | not written by gc/maintenance itself, but lives inside the pruned `objects/` subtree | read to resolve a foreign object store through this repo | **kept watched, via a targeted, non-walk read** — see below |
 | `logs/**` (reflog expiry) | gc | — | already excused via the pre-existing `_VOLATILE_GIT_PREFIX` |
 | `info/refs`, `COMMIT_EDITMSG`, `index`, `index.lock`, `FETCH_HEAD`, `ORIG_HEAD`, `packed-refs` | — | — | already excused, unchanged by this task |
 
@@ -112,24 +113,47 @@ filename (a different git version, a different maintenance task
 combination), it can be added the same way `gc.pid` was: with its own
 comment and its own test.
 
-## The `objects/info/alternates` criterion conflict
+## `objects/info/alternates` — closed via a targeted, non-walk watch
 
 One of this task's acceptance criteria states that a change to
-`objects/info/alternates` "still discards". **Against current `main` that is
-false**, and this task does not make it true: `objects/` is pruned in its
-entirety by the pre-existing `_SKIPPED_GIT_DIR_PREFIXES` (present on `main`,
-untouched by this change — see the OUT OF SCOPE list in `.no_human/PLAN.md`
-and `_is_volatile_git_path`'s docstring, which already records this exact
-residual). A rewrite of `objects/info/alternates` is invisible to
-`compare()` both before and after this commit.
+`objects/info/alternates` must still discard the verdict. Against `main`,
+before this change, that was false: `objects/` is pruned in its entirety by
+the pre-existing `_SKIPPED_GIT_DIR_PREFIXES`, and `objects/info/alternates`
+— an ordinary mutable file git READS to resolve a foreign object store
+through this repo (measured: `git cat-file` on a foreign blob goes from
+exit 128 to exit 0 once it is rewritten) — was invisible to `compare()`
+along with the rest of that pruned subtree.
 
-`test_objects_info_alternates_is_unchanged_by_this_exclusion` in
-`tests/test_reviewer_worktree.py` pins the actually-true property this task
-owns: the delta for that path is identical before and after this commit
-(empty in both cases) — a measured status quo, not a claim that the hole is
-closed. Closing it is out of scope here (it would require resolving
-`objects/`'s prune, which the OUT OF SCOPE list explicitly forbids touching
-in this change) and remains a known, pre-existing gap.
+This task closes that one instance WITHOUT touching
+`_SKIPPED_GIT_DIR_PREFIXES` and without introducing any prefix or glob:
+`Snapshot` gained an `alternates` field (`{label: content_hash}` for
+`<root>/objects/info/alternates` under each of `admin`/`common`), populated
+in `snapshot()` by a direct read — outside `_git_dir_inventory`'s walk
+entirely, so the `objects/` prune stays exactly as it was for every other
+path underneath it — and `compare()` diffs the two snapshots' `alternates`
+maps on their own, reporting a created/rewritten/deleted file as
+`.git/<label>/objects/info/alternates` in `added`/`modified`/`deleted`
+respectively. This mirrors the pre-existing pattern used for `common/HEAD`
+(content-shape adjudication performed outside the simple walk-diff for one
+specific named file), not a new mechanism.
+
+`test_objects_info_alternates_change_still_discards_the_verdict` in
+`tests/test_reviewer_worktree.py`, parametrized over created/rewritten/
+deleted, pins that all three shapes still discard the verdict.
+`test_non_gc_git_dir_writes_still_discard` additionally exercises an
+alternates rewrite in the SAME `compare()` call as a non-benign
+`core.hooksPath` config change and a newly planted hook, so the acceptance
+criterion's "every OTHER git-dir name keeps being watched" is shown as one
+grouped result, not three isolated ones.
+
+What remains open, and is NOT claimed as closed by this change: the
+general property that anything written outside the watched set during a
+review is invisible to this guard, including other pointer-following
+surfaces (`core.hooksPath`, `include.path`, and any future kin) whose
+TARGETS live outside `.git` or outside the watched part of it. Closing
+those would require resolving each pointer and watching wherever it
+lands — a materially different, larger change this task does not make.
+See `_is_volatile_git_path`'s docstring for the precise, current boundary.
 
 ## Mutation-check transcript
 
@@ -165,4 +189,28 @@ $ uv run pytest tests/test_reviewer_worktree.py tests/test_reviewer_worktree_ide
 ........................................................................ [ 91%]
 .......                                                                  [100%]
 79 passed in 48.49s
+```
+
+### `objects/info/alternates` mutation-check transcript
+
+Separately, for the `objects/info/alternates` targeted watch: with `compare()`'s
+`alternates`-diffing loop disabled (`for label in ... if False else []:`,
+leaving `_SKIPPED_GIT_DIR_PREFIXES` and everything else untouched), the new
+test goes red on all three shapes:
+
+```
+$ uv run pytest tests/test_reviewer_worktree.py -q -k "alternates"
+...
+FAILED tests/test_reviewer_worktree.py::test_objects_info_alternates_change_still_discards_the_verdict[created]
+FAILED tests/test_reviewer_worktree.py::test_objects_info_alternates_change_still_discards_the_verdict[rewritten]
+FAILED tests/test_reviewer_worktree.py::test_objects_info_alternates_change_still_discards_the_verdict[deleted]
+3 failed, 42 deselected in 3.04s
+```
+
+Restoring the loop turns it green again:
+
+```
+$ uv run pytest tests/test_reviewer_worktree.py -q -k "alternates"
+...
+3 passed, 42 deselected in 2.51s
 ```
