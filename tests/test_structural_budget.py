@@ -1856,7 +1856,11 @@ FROZEN_FILE_LINES = {
     # through `update_task_config` at the API call site, same reason as
     # `cli/commands.py` above.
     # Measured on the squashed tree with the scanner below.
-    "api/app.py": 6346,
+    # 6346 -> 6355 (+9): `onboarding_status` gains `email_registered`, a
+    # boolean-only echo of whether an email was captured, so a reload can
+    # restore the Email step's UI state without ever re-exposing the
+    # address itself. Measured on this tree with the scanner below.
+    "api/app.py": 6355,
     # +51: W5 active-time phase writer (phase instrumentation).
     # +84: `list_escalations`/`list_review_fails`/`list_tamper_trips` — the
     # three new failure-signal sources the recurring learning harvest mines.
