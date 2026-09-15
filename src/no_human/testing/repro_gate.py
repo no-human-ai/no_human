@@ -726,9 +726,16 @@ def run_repro_gate(
     tmp = Path(tempfile.mkdtemp(prefix="nh-repro-"))
     worktree = tmp / "base"
     try:
+        # A checkout runs the tree's smudge filters; a coder-planted
+        # `filter.<x>.smudge` in the shared config would run inside this process.
+        # No `-c` flag neutralises arbitrary filters, so the scrubbed env is the
+        # boundary — same as `review/type_evidence.py` and `GitRepo.add_worktree`.
+        from ..vcs.git import _git_subprocess_env
+
         added = subprocess.run(
             ["git", "worktree", "add", "--detach", str(worktree), base_ref],
             cwd=repo_path, capture_output=True, text=True,
+            env=_git_subprocess_env("worktree"),
         )
         if added.returncode != 0:
             return ReproResult("error", tests=tests, reasons=[

@@ -48,7 +48,15 @@ export function formatPausedUntil(iso) {
 // failure rendered as a cooldown that would reset itself. Every reason this
 // module does not explicitly recognise gets the same honest "unknown" —
 // nothing here infers a specific cause from silence.
-export function pausedPresentation(reason, { paused_until = null, paused_profile = null } = {}) {
+// `paused_profile` (core/health.py QueueHealth.as_dict) is a user-chosen
+// auth-profile name (`nh auth use <profile>`) and is deliberately NOT
+// accepted here: rendering it into this `title` attribute put it in the DOM,
+// where session replay's rrweb DOM/mutation channel recorded it verbatim —
+// confirmed in a real captured PostHog payload — regardless of the separate
+// network-body masking (web/src/replayScrub.js), which does not and cannot
+// govern DOM content. The operator does not need the profile name to act on
+// a quota pause; the fixed title below says everything actionable.
+export function pausedPresentation(reason, { paused_until = null } = {}) {
   const at = formatPausedUntil(paused_until);
   if (reason === "infra") {
     return {
@@ -60,7 +68,7 @@ export function pausedPresentation(reason, { paused_until = null, paused_profile
   if (reason === "quota") {
     return {
       text: `Paused — quota resets ${at}`,
-      title: paused_profile ? `${paused_profile} profile hit its quota` : "Pool-wide quota cooldown",
+      title: "Pool-wide quota cooldown",
       tone: "warn",
     };
   }
@@ -87,8 +95,8 @@ export function pausedPresentation(reason, { paused_until = null, paused_profile
 // JSX so this stays a plain .js module: no build-time transform is needed to
 // import and render it from a `node --test` file, and App.jsx still renders
 // it exactly as any other component (`<PausedIndicator .../>`).
-export function PausedIndicator({ paused_reason = null, paused_until = null, paused_profile = null } = {}) {
-  const p = pausedPresentation(paused_reason, { paused_until, paused_profile });
+export function PausedIndicator({ paused_reason = null, paused_until = null } = {}) {
+  const p = pausedPresentation(paused_reason, { paused_until });
   return React.createElement(
     "div",
     { className: "nh-status-indicator", role: "status", title: p.title },
@@ -114,11 +122,10 @@ export function drainChip({
   paused = false,
   paused_until = null,
   paused_reason = null,
-  paused_profile = null,
 } = {}) {
   if (error) return { text: "server unreachable", tone: "error" };
   if (paused) {
-    const { text, tone } = pausedPresentation(paused_reason, { paused_until, paused_profile });
+    const { text, tone } = pausedPresentation(paused_reason, { paused_until });
     return { text, tone };
   }
 

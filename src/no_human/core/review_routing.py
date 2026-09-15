@@ -186,9 +186,19 @@ def diff_line_count(repo_path: Path, before: str, after: str) -> int | None:
 
 
 def _diff_text(repo_path: Path, before: str, after: str) -> str | None:
+    # `--no-ext-diff --no-textconv` + a secret-scrubbed env are a SECURITY
+    # boundary: this produces a FULL PATCH on the default round-1 review path,
+    # so a coder-planted `diff.external`/`diff.<x>.textconv` in the reviewed
+    # repo's shared .git/config would otherwise run a program here — inside the
+    # orchestrator process, no OS sandbox — with the launcher's secrets in
+    # reach. Same hardening as `reviewer._git_diff` and `vcs/git.GitRepo`.
+    from ..vcs.git import _git_subprocess_env
+
     proc = subprocess.run(
-        ["git", "diff", "-M", f"{before}..{after}"],
+        ["git", "-c", "core.fsmonitor=false", "diff", "-M",
+         "--no-ext-diff", "--no-textconv", f"{before}..{after}"],
         cwd=repo_path, capture_output=True, text=True, errors="replace",
+        env=_git_subprocess_env("diff"),
     )
     if proc.returncode != 0:
         return None

@@ -1593,9 +1593,19 @@ def test_file_diff(
                  if p and tamper_guard.is_test_file(p)]
         if not paths:
             return ""
+        # `--no-ext-diff --no-textconv` + a secret-scrubbed env: this is a FULL
+        # PATCH, so a coder-planted `diff.external`/`diff.<x>.textconv` in the
+        # shared .git/config would otherwise run a program here during tamper
+        # adjudication, inside the harness process, with the launcher's secrets
+        # reachable. Same hardening as `reviewer._git_diff`.
+        from ..vcs.git import _git_subprocess_env
+
         proc = subprocess.run(
-            ["git", "diff", "--no-color", f"{before_ref}..{after_ref}", "--", *paths],
+            ["git", "-c", "core.fsmonitor=false", "diff", "--no-color",
+             "--no-ext-diff", "--no-textconv", f"{before_ref}..{after_ref}",
+             "--", *paths],
             cwd=repo_path, capture_output=True, text=True,
+            env=_git_subprocess_env("diff"),
         )
         return proc.stdout if proc.returncode == 0 else ""
     except Exception:  # noqa: BLE001 — no diff is a CANNOT_DECIDE, not a crash

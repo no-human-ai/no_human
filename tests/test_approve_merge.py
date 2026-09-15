@@ -2402,3 +2402,96 @@ def test_the_merge_gate_never_shells_out_to_the_frozen_nh_binary(
         "desktop-app landing bug")
     assert calls[0]["argv"][1:3] == ["-m", "pytest"]
     assert os.path.basename(argv0).startswith("python")
+
+
+# --------------------------------------------------------------------------- #
+# `_sh` decodes as UTF-8 explicitly, not as whatever codec the host's locale
+# happens to name. Both tests below are PLATFORM-INDEPENDENT on purpose: this
+# suite runs on hosts whose preferred encoding is already UTF-8, so a test that
+# merely reads correct text back would pass with or without the fix and prove
+# nothing. The first pins the contract at the seam; the second proves the bytes
+# actually survive.
+# --------------------------------------------------------------------------- #
+
+def test_sh_names_its_codec_rather_than_inheriting_the_locale(monkeypatch):
+    """Fails before the fix on EVERY platform, including UTF-8 ones.
+
+    Observes the kwargs `_sh` hands `subprocess.run` — the seam, not the
+    source text — so it cannot be satisfied by a comment. `errors` alone is
+    not enough: without `encoding` the platform still chooses the codec, so
+    both are asserted.
+    """
+    seen = {}
+
+    def fake_run(args, **kw):
+        seen.update(kw)
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(approve_merge.subprocess, "run", fake_run)
+    approve_merge._sh(["git", "log", "-1"], cwd=".")
+
+    assert seen.get("encoding") == "utf-8", (
+        "_sh must name its codec; with text=True alone the decode uses the "
+        f"locale codec, which is cp1255 on a Hebrew Windows host. got: {seen.get('encoding')!r}")
+    assert seen.get("errors") == "replace", (
+        "an undecodable byte must degrade to a replacement character, never "
+        f"kill the reader thread. got: {seen.get('errors')!r}")
+
+
+def test_sh_round_trips_a_non_ascii_commit_subject(tmp_path):
+    """The bytes that actually broke a land: a Hebrew commit subject echoed
+    back by git. 0x9c — the second byte of the letter lamed in UTF-8 — has no
+    cp1255 mapping, which is what killed the reader thread on Windows."""
+    subject = "Add a walk note to README שלום café"
+    def run(a):
+        return subprocess.run(a, cwd=tmp_path, capture_output=True, text=True)
+    run(["git", "init", "-q", "."])
+    run(["git", "config", "user.email", "t@example.com"])
+    run(["git", "config", "user.name", "t"])
+    (tmp_path / "f.txt").write_text("x\n", encoding="utf-8")
+    run(["git", "add", "-A"])
+    run(["git", "commit", "-q", "-m", subject])
+
+    out = approve_merge._sh(["git", "log", "-1", "--format=%s"], cwd=tmp_path)
+
+    assert out.stdout is not None, (
+        "a dead reader thread reduces stdout to None, which is how this "
+        "surfaced: AttributeError on the next .strip()")
+    assert out.stdout.strip() == subject, repr(out.stdout)
+    # POSITIVE CONTROL: the same bytes through a codec that cannot represent
+    # them must NOT come back intact, or this test would pass on any encoding.
+    bad = subprocess.run(
+        ["git", "log", "-1", "--format=%s"], cwd=tmp_path, capture_output=True,
+        text=True, encoding="cp1255", errors="replace")
+    assert bad.stdout.strip() != subject, (
+        "control failed: cp1255 returned the Hebrew subject intact, so this "
+        "test cannot distinguish a working codec from a broken one")
+
+
+def test_run_pytest_forces_utf8_on_the_child_without_touching_the_caller_env():
+    """git and gh emit UTF-8 whatever the console codepage; a captured PYTHON
+    child does not — it follows the locale. `_sh` decodes as UTF-8, so the
+    gate's own child has to be told to write it, or a cp1255/cp932 host
+    renders a refused land's report as mojibake. The verdict is the
+    returncode and stays correct either way; the text a human reads to
+    understand the refusal does not."""
+    seen = {}
+    caller_env = {"PYTHONPATH": "/somewhere/src"}
+
+    def fake_sh(argv, *, cwd, timeout, env):
+        seen["env"] = env
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    original = approve_merge._sh
+    approve_merge._sh = fake_sh
+    try:
+        approve_merge._run_pytest(["py", "-m", "pytest"], cwd=Path("."),
+                                  timeout=1.0, env=caller_env)
+    finally:
+        approve_merge._sh = original
+
+    assert seen["env"]["PYTHONIOENCODING"] == "utf-8"
+    assert seen["env"]["PYTHONPATH"] == "/somewhere/src", "caller's keys must survive"
+    assert "PYTHONIOENCODING" not in caller_env, (
+        "the caller's dict must not be mutated — it belongs to the call site, "
+        "which reuses it")
