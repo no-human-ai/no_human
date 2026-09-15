@@ -7,6 +7,24 @@ All notable changes to no_human. The format follows
 ## [Unreleased]
 
 ### Fixed
+- **Approximate line anchors (`"the check is at ~12034"`) in `src/` comments
+  and docstrings rotted on every landing and nothing validated them.**
+  Resolving the 16 anchors this repo had shipped (15 in
+  `core/orchestrator.py`, 1 in `vcs/landability.py`) against the symbol each
+  actually described found 15 of 16 already pointing at the wrong function,
+  some by hundreds of lines — `tests/test_readme_claims.py`'s citation
+  machinery only ever covered a different syntax (`file.py:LINE`) in three
+  docs. All 16 are now named by symbol instead (or the number was dropped
+  where no real callsite could be confirmed), and a new gate,
+  `tests/test_no_approximate_line_anchors.py`, fails the build on any new
+  `~NNN`-shaped anchor found in a comment or string literal under `src/` —
+  a convention, not a drift-tolerant checker, since the anchors were already
+  wrong rather than merely destined to rot. The scanner looks only at
+  `tokenize` comments and `ast.Constant` string literals so an approximate
+  *quantity* that names its unit (`~120MB`, `~1078s`, `~500 LOC`) is left
+  untouched; a bare `grep -oE '~[0-9]{3,5}'` over `src/` over-counts the true
+  anchor population by roughly double for exactly that reason.
+
 - **The venv install guard's resolver never resolved a Windows candidate
   path.** `_safe_realpath` returns a native-separator (backslash) path on a
   real Windows host by construction, never through `win_readings.readings`

@@ -1467,7 +1467,15 @@ FROZEN_FILE_LINES = {
     # and the `reason if reason is not None else ...` fix replacing `reason
     # or ...` in `_revert_worktree_writes_unguarded`. Re-measured on this
     # tree with `scan_tree`, not carried over as a stale delta.
-    "core/orchestrator.py": 24728,
+    # 24728 -> 24733 (+5): tests/test_no_approximate_line_anchors.py removed
+    # 15 `~NNN`-shaped approximate line anchors from comments/docstrings in
+    # this file and replaced them with symbol names (e.g. `_run_attempt`'s
+    # `branch_prefix` usage instead of `~4407`) or dropped the parenthetical
+    # where no symbol could be confirmed — prose-only, no behaviour change.
+    # A symbol name is longer than a bare number, so several of the
+    # rewritten sentences wrap onto one more physical line than before.
+    # Re-measured on this tree with `scan_tree`, not carried over.
+    "core/orchestrator.py": 24733,
 
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
