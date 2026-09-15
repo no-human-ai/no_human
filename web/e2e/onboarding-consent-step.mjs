@@ -27,6 +27,7 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { TELEMETRY_CONSENT_QUESTION } from "../src/onboardingConsent.js";
+import { STEP_TITLES } from "./wizardSteps.mjs";
 
 const DIST = new URL("../dist", import.meta.url).pathname;
 
@@ -52,7 +53,10 @@ const check = (n, ok, d = "") => {
   if (!ok) failures.push(n);
 };
 
-const BASE_STEPS_COUNT = 8; // welcome/repos/projects/docs/integrations/history/rules/summary — Onboarding.jsx BASE_STEPS.
+// Derived from Onboarding.jsx's own BASE_STEPS (parsed, not re-typed — see
+// wizardSteps.mjs) so this walk cannot drift from the wizard the way the old
+// hardcoded step-count literal here did across four step additions/removals.
+const EXPECTED = STEP_TITLES.map((t) => t.trim().toLowerCase());
 const allErrors = [];
 
 // Every route a full welcome->Launch walk touches (see web/src/api.js), so a
@@ -111,8 +115,9 @@ const browser = await chromium.launch();
 
 // The usage-insights CONSENT step was REMOVED (operator, 2026-08-26): telemetry
 // is on by default and never asked about. So NO onboarding-status payload may
-// ever produce a "usage insights" rail entry, and the rail is always the fixed
-// 8 base steps — this suite proves the step is gone in the real built bundle.
+// ever produce a "usage insights" rail entry, and the rail is always exactly
+// the wizard's own base steps, derived from Onboarding.jsx at run time — this
+// suite proves the step is gone in the real built bundle.
 const STATUSES = [
   ["never asked",              { completed: false, telemetry_asked: false }],
   ["telemetry_asked absent",   { completed: false }],
@@ -124,8 +129,10 @@ for (const [name, status] of STATUSES) {
   const labels = await railLabels(page);
   check(`[${name}] no "usage insights" step in the rail`, !labels.includes("usage insights"),
     `rail labels: ${JSON.stringify(labels)}`);
-  check(`[${name}] rail entry count = BASE_STEPS (8)`, labels.length === BASE_STEPS_COUNT,
-    `got ${labels.length}`);
+  check(`[${name}] rail labels = Onboarding.jsx BASE_STEPS titles, in order (${EXPECTED.length} steps)`,
+    JSON.stringify(labels) === JSON.stringify(EXPECTED),
+    `expected ${JSON.stringify(EXPECTED)}, got ${JSON.stringify(labels)}` +
+      " (if you just edited Onboarding.jsx, re-run npm run build — this walk drives web/dist)");
   await ctx.close();
 }
 
