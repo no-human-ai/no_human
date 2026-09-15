@@ -945,6 +945,11 @@ export const completeOnboarding = (payload) => _post("/api/onboarding/complete",
 // address back; see replayScrub.js for why this exact request's body is
 // excluded from session-replay capture on top of that.
 export const registerOnboardingEmail = (email) => _post("/api/onboarding/email", { email });
+// Reports which wizard step is currently shown, so the funnel between "app
+// started" and "task created" is no longer a blind spot. See
+// onboardingFunnel.js's makeStepReporter for the once-per-step dedup that
+// wraps this call.
+export const recordOnboardingStep = (step) => _post("/api/onboarding/step", { step });
 // Minimal path (spec §3 B1): the deferred steps carried on the board's Finish-setup card.
 export const fetchDeferred     = ()        => _get("/api/onboarding/deferred");
 export const markDeferredDone  = (step)    => _post(`/api/onboarding/deferred/${encodeURIComponent(step)}/done`, {});
