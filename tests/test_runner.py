@@ -1,5 +1,6 @@
 """Tests for local test-command detection (testing/runner.py)."""
 
+import sys
 from pathlib import Path
 
 from no_human.testing.runner import (
@@ -412,6 +413,44 @@ def test_fix_invocation_rewrites_python_to_python3():
     # the exact command shape from a confirmed real profile
     assert _fix_invocation("python run_tests.py", out, Path("/tmp")) == "python3 run_tests.py"
     assert _fix_invocation("python -m pytest -q", out, Path("/tmp")) == "python3 -m pytest -q"
+
+
+def test_bare_pytest_is_rewritten_whatever_the_shell_calls_it():
+    """The class-3 rewrite reads the SHELL's words, and shells differ.
+
+    bash and zsh say "command not found"; dash — the `/bin/sh` on Debian and
+    Ubuntu, so on most Linux CI runners and containers — says
+    "sh: 1: pytest: not found", and busybox says "sh: pytest: not found".
+    Matching only bash's phrasing meant the rewrite never fired on those
+    hosts: a project whose detected command is a bare `pytest` got "no test
+    evidence" there and a working retry on a developer's mac (#353).
+    """
+    from no_human.testing.runner import _fix_invocation
+
+    for shell, out in (
+        ("bash", "sh: pytest: command not found"),
+        ("bash, numbered", "/bin/sh: line 1: pytest: command not found"),
+        ("dash", "sh: 1: pytest: not found"),
+        ("busybox", "sh: pytest: not found"),
+    ):
+        rewritten = _fix_invocation("pytest -q", out, Path("/tmp"))
+        assert rewritten == f"{sys.executable} -m pytest -q", (shell, rewritten)
+
+
+def test_the_not_found_rule_does_not_fire_on_pytest_saying_it_itself():
+    """`not found` appears in pytest's own output for a missing test path, and
+    a rewrite there would re-run a command that was never broken. The rule is
+    anchored on the shell's `<name>: [command ]not found` shape, so a phrase
+    with no colon before it — and a different tool's failure — are both left
+    alone."""
+    from no_human.testing.runner import _fix_invocation
+
+    for out in (
+        "ERROR: file or directory not found: tests/x.py",
+        "1 failed, 2 passed",
+        "sh: 1: vitest: not found",
+    ):
+        assert _fix_invocation("pytest -q", out, Path("/tmp")) is None, out
 
 
 def test_fix_invocation_leaves_non_python_and_found_python_alone():

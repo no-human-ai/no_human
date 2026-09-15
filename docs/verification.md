@@ -351,6 +351,26 @@ shrinks below its threshold (or its symbol disappears) without being deleted
 from the allow-list — the budget can only move down. It is a size ratchet,
 not a design review or a lint config, and adds no dependency.
 
+## A preflight that catches citation drift before review, not after
+
+A citation is a `file.py:LINE` reference a doc makes into code; any edit
+above that line drifts it. Left alone, drift only surfaces in the post-review
+TESTING step, on a coder change that review already passed — burning a full
+attempt on a defect the coder could not have known about while the code was
+otherwise correct. [`src/no_human/testing/citation_drift.py`](../src/no_human/testing/citation_drift.py)
+runs before review instead: when the target repo ships its own
+`scripts/reanchor_citations.py` and `tests/test_readme_claims.py`, the
+preflight shells out to that script directly — no CI workflow runs it (the
+only other documented invocations are `CONTRIBUTING.md`'s two `uv run`
+commands for a human running `--check` or `--apply` by hand) — and
+mechanically re-anchors and commits fixable drift on the same branch and
+attempt, and — only when a citation is unfixable or the script's own verdict
+is indeterminate — buys exactly one bounded corrective round before falling
+through to review. It never consumes one of the task's attempts, and it
+fails closed: an unreadable file, an erroring subprocess, or a citation the
+script will not guess at all block, never silently read as clean. A repo
+that does not ship the convention pays nothing for it.
+
 ## A reproduction gate that proves the fix fixed the bug
 
 [`src/no_human/testing/repro_gate.py`](../src/no_human/testing/repro_gate.py)
@@ -405,18 +425,33 @@ by head sha precisely because nothing re-evaluates it: a verdict stamped for
 an older commit is shown as absent (`merge_ready: null`) for the commit
 sitting in the PR now, rather than carried forward as if it still applied.
 
-`nh approve --ready` is a convenience LISTING over that same base path — it
-prints every `awaiting_approval` task whose verdict is `ready: true` for its
-*current* branch head (a stale-sha verdict, or one with
-`policy_changed_in_diff: true`, is excluded, same rule as above) alongside
-its `rules passed/total` and PR URL, and does nothing else. Add `--yes` and
-it walks that list through `nh approve <task_id>`'s own procedure — one task
-at a time, in listed order, stopping at the first failure — so every
-precondition `nh approve <task_id>` already enforces (the reviewer PASS
-above included) still applies per task; the verdict only decides what gets
-offered to a human to land, never whether a task is *allowed* to land. The
-board shows the same verdict as a `MERGE-READY` chip on a task's card. This
-does not change who merges: `--yes` still runs the identical git-identity
+`nh approve --ready` is a convenience LISTING over that same base path, but
+it answers two independent questions, not one: it prints every
+`awaiting_approval` task whose verdict is `ready: true` for its *current*
+branch head (a stale-sha verdict, or one with `policy_changed_in_diff: true`,
+is excluded, same rule as above) alongside its `rules passed/total` — that
+half is the quality-rule verdict above, unchanged. Separately, and checked
+fresh on every invocation rather than cached, it asks whether the branch
+*still merges into its current base right now* (`vcs/landability.py`): the
+six-rule verdict is keyed by head sha and correctly invalidates when the
+branch moves, but nothing about it invalidates when the base moves — and
+every landing rewrites the generated `RELEASE_MANIFEST.txt`, so every
+landing conflicts every other open PR's branch against that file. A task can
+therefore pass every quality rule and still not be landable right now; the
+line for it shows `merge: CONFLICT` (never hidden, never auto-resolved) and
+it is excluded from the "ready to land" count and from what `--yes` lands.
+A task whose branch merges cleanly (or whose only conflict is confined to a
+derived artefact `land_task` regenerates at land time) shows `merge: clean`
+and counts as ready. Add `--yes` and it walks the ready (non-conflicted)
+tasks through `nh approve <task_id>`'s own procedure — one task at a time,
+in listed order, stopping at the first failure — so every precondition
+`nh approve <task_id>` already enforces (the reviewer PASS above included)
+still applies per task; the two verdicts only decide what gets offered to a
+human to land, never whether a task is *allowed* to land. The board shows
+the same quality-rule verdict as a `MERGE-READY` chip on a task's card
+(that chip is unchanged — it is the DB-only, quality-rules-only signal;
+live base mergeability is a `--ready`-only, git-backed check). This does
+not change who merges: `--yes` still runs the identical git-identity
 squash-land as a single `nh approve <task_id>`, and a human still has to
 type it.
 

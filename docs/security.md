@@ -166,7 +166,7 @@ named here.
   while a task waits on CI or review.
   These read; they send only the identifiers of a PR you just created.
 - **`nh merge-stack run` calls `gh pr merge`** against your git host
-  (`cli/commands.py:merge_stack_run:3181`). This is *your* command, not the agent's — an agent
+  (`cli/commands.py:merge_stack_run:3186`). This is *your* command, not the agent's — an agent
   session's Bash is denied it for the spellings the rule models
   (`_LEXICAL_MERGE_STACK` in `agent/guard.py`, plus the argv check beside it),
   in both session modes; see §2 for the bound.
@@ -258,7 +258,7 @@ named here.
   and `CodexBackend._child_env()` — with an
   env-var mark that is inherited by every descendant of that session, no
   matter how it is invoked. `nh approve` and `nh merge-stack run`
-  (`_refuse_agent_gate_act`, `cli/commands.py:approve:5431`, `:merge_stack_run:3151`) refuse before
+  (`_refuse_agent_gate_act`, `cli/commands.py:approve:5556`, `:merge_stack_run:3156`) refuse before
   `_bootstrap` runs when the calling process carries that mark, and an HTTP
   middleware in `api/app.py` (`_refuse_marked_gate_acts`, by `_csp_header`)
   refuses
@@ -336,7 +336,7 @@ named here.
 - **The desktop app checks GitHub Releases at startup**, once a day
   (`desktop/main.mjs:251` → `desktop/updater.mjs:116`, called at startup from
   `desktop/main.mjs:1113`, feed `provider: github, owner: no-human-ai, repo:
-  no_human` — `desktop/electron-builder.config.cjs:366`). It never downloads on its own
+  no_human` — `desktop/electron-builder.config.cjs:371`). It never downloads on its own
   (`autoDownload` is off, `desktop/updater.mjs:68`). **This is a separate code
   path from the PyPI check above and neither `NH_NO_UPDATE_CHECK` nor
   `updates.enabled` exists in `desktop/` — those switches do not reach it.**
@@ -449,7 +449,7 @@ config key that turns it on and the default that keeps it off.
 The CLI, the desktop app and the MCP bridge talk to no_human's **own** API on
 `server.host`:`server.port`, which is `127.0.0.1:8420` by default
 (`cli/api_client.py`, `intake/mcp_bridge.py:40`,
-`cli/commands.py:print_no_task_matching:85`), and the transcript-research reader probes a language
+`cli/commands.py:print_no_task_matching:86`), and the transcript-research reader probes a language
 server on localhost (`history/extractor.py:65-72`). These never leave the
 machine, and `server.host` defaults to `127.0.0.1`.
 

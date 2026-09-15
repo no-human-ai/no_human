@@ -606,6 +606,45 @@ def _map_change_scoped_tests(root: Path, changed_files: list[str]) -> list[str]:
     return sorted(dict.fromkeys(tests))
 
 
+def _real_python(repo_path: Path | None = None) -> str | None:
+    """A real Python interpreter, or ``None`` if none is usable.
+
+    Normally ``sys.executable``. But in a PyInstaller-frozen build — the
+    shipped desktop app — ``sys.executable`` IS the frozen ``nh`` binary, not
+    a Python. Every ``[sys.executable, "-m", "pytest", ...]`` and
+    ``[sys.executable, "<script>.py", ...]`` below then re-enters the click
+    CLI, which exits in its own argument parser without running anything
+    (measured 2026-09-14 against the shipped bundle: ``nh -m pytest -q`` ->
+    ``Error: No such option '-m'``; ``nh scripts/check_release_manifest.py``
+    -> ``Error: No such command``). So `nh approve` and the board's Approve
+    button failed at step "tests" for EVERY repo, and at step "manifest" for
+    this repo's shape, on every land made from the app.
+
+    Third instance of this exact scar, and the reason this one is shared
+    rather than written inline again: ``testing/repro_gate.py::_pytest_python``
+    carries it for the repro gate (where it produced a confident but FALSE
+    verdict) and ``core/worktree.py::_builder_python`` carries it for venv
+    creation.
+
+    The target repo's own venv is tried first — it has the repo's
+    dependencies and pytest — then ``python3``/``python`` on PATH. ``None``
+    means the caller must fail closed and say so, never shell out to the CLI
+    by accident.
+    """
+    if not getattr(sys, "frozen", False):
+        return sys.executable
+    if repo_path is not None:
+        for sub, name in ((("Scripts",), "python.exe"), (("bin",), "python")):
+            candidate = Path(repo_path).joinpath(".venv", *sub, name)
+            if candidate.is_file():
+                return str(candidate)
+    for name in ("python3", "python"):
+        found = shutil.which(name)
+        if found:
+            return found
+    return None
+
+
 def _run_pytest(argv: list[str], *, cwd: Path, timeout: float,
                  env: dict) -> subprocess.CompletedProcess:
     """The one place `nh approve`'s merge-time gate shells out to pytest —
@@ -908,6 +947,16 @@ def _land_regenerate_manifest(
     failure result as-is.
     """
     reconciled_note = ""
+    # Same resolution as `land_task`'s: `sys.executable` is the frozen `nh`
+    # binary in the desktop build, not a Python — see `_real_python`.
+    py = _real_python(worktree_path)
+    if py is None:
+        return LandResult(
+            ok=False, step="manifest", branch=branch, pr_url=pr_url,
+            stderr="no Python interpreter available to regenerate the "
+                   "manifest: this build's sys.executable is the frozen `nh` "
+                   "binary and no python3/python was found on PATH, nor a "
+                   ".venv in the worktree"), ""
     if guard.exists() and manifest.exists():
         co = _sh(["git", "checkout", tip_sha, "--", "RELEASE_MANIFEST.txt"],
                   cwd=worktree_path)
@@ -927,7 +976,7 @@ def _land_regenerate_manifest(
             _sh(["git", "add", "-A", "--", *shipped_changed], cwd=worktree_path)
             try:
                 approve_proc = _sh(
-                    [sys.executable, "scripts/export_guard.py", "approve",
+                    [py, "scripts/export_guard.py", "approve",
                      *shipped_changed],
                     cwd=worktree_path, timeout=_APPROVE_TIMEOUT_S,
                 )
@@ -958,7 +1007,7 @@ def _land_regenerate_manifest(
                      *_ship_classified_paths(worktree_path, [CLASSIFICATION_NAME])]))
                 try:
                     approve_proc = _sh(
-                        [sys.executable, "scripts/export_guard.py", "approve",
+                        [py, "scripts/export_guard.py", "approve",
                          *retry_targets],
                         cwd=worktree_path, timeout=_APPROVE_TIMEOUT_S,
                     )
@@ -989,7 +1038,7 @@ def _land_regenerate_manifest(
         # one mirrors.
         try:
             write_proc = _sh(
-                [sys.executable, "scripts/check_release_manifest.py", "--write"],
+                [py, "scripts/check_release_manifest.py", "--write"],
                 cwd=worktree_path, timeout=_APPROVE_TIMEOUT_S,
             )
         except subprocess.TimeoutExpired:
@@ -1022,6 +1071,20 @@ def _land_in_worktree(
     guard = worktree_path / "scripts" / "export_guard.py"
     inventory = worktree_path / "scripts" / "check_release_manifest.py"
     manifest = worktree_path / "RELEASE_MANIFEST.txt"
+
+    # Every interpreter shell-out below goes through this, resolved once.
+    # `sys.executable` is the frozen `nh` binary in the desktop build, not a
+    # Python — see `_real_python`. Fail closed with the condition named
+    # rather than re-entering the click CLI and reporting its own
+    # argument-parser error as a test or manifest failure.
+    py = _real_python(worktree_path)
+    if py is None:
+        return LandResult(
+            ok=False, step="preconditions", branch=branch, pr_url=pr_url,
+            stderr="no Python interpreter available to run the merge-time "
+                   "gate: this build's sys.executable is the frozen `nh` "
+                   "binary and no python3/python was found on PATH, nor a "
+                   ".venv in the worktree")
 
     # -- step 3: squash --------------------------------------------------- #
     _step(on_step, "squash")
@@ -1114,7 +1177,7 @@ def _land_in_worktree(
     _step(on_step, "verify")
     if guard.exists():
         try:
-            verify_proc = _sh([sys.executable, "scripts/export_guard.py", "verify"],
+            verify_proc = _sh([py, "scripts/export_guard.py", "verify"],
                                cwd=worktree_path, timeout=_VERIFY_TIMEOUT_S)
         except subprocess.TimeoutExpired:
             return LandResult(ok=False, step="verify", branch=branch, pr_url=pr_url,
@@ -1133,7 +1196,7 @@ def _land_in_worktree(
         # (above) used to be guard-only too.
         try:
             verify_proc = _sh(
-                [sys.executable, "scripts/check_release_manifest.py", "--strict"],
+                [py, "scripts/check_release_manifest.py", "--strict"],
                 cwd=worktree_path, timeout=_VERIFY_TIMEOUT_S)
         except subprocess.TimeoutExpired:
             return LandResult(ok=False, step="verify", branch=branch, pr_url=pr_url,
@@ -1164,7 +1227,7 @@ def _land_in_worktree(
         if test_paths:
             env = dict(os.environ)
             env["PYTHONPATH"] = str(worktree_path / "src")
-            argv = [sys.executable, "-m", "pytest", "-q", *test_paths]
+            argv = [py, "-m", "pytest", "-q", *test_paths]
             try:
                 test_proc = _run_pytest(argv, cwd=worktree_path, timeout=test_timeout, env=env)
             except subprocess.TimeoutExpired:
@@ -1180,7 +1243,7 @@ def _land_in_worktree(
     else:
         env = dict(os.environ)
         env["PYTHONPATH"] = str(worktree_path / "src")
-        argv = [sys.executable, "-m", "pytest", "-q"]
+        argv = [py, "-m", "pytest", "-q"]
         if importlib.util.find_spec("xdist") is not None:
             argv += ["-n", "4"]
         try:
