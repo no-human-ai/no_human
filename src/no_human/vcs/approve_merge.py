@@ -136,6 +136,7 @@ import importlib.util
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -662,9 +663,20 @@ def _real_python(repo_path: Path | None = None) -> str | None:
 
 def _run_pytest(argv: list[str], *, cwd: Path, timeout: float,
                  env: dict) -> subprocess.CompletedProcess:
-    """The one place `nh approve`'s merge-time gate shells out to pytest —
-    a seam so tests can pin WHICH set was invoked (focused vs. full)
-    without ever running it for real."""
+    """The one place `nh approve`'s merge-time gate shells out to a test
+    runner — a seam so tests can pin WHICH set was invoked (focused vs.
+    full, pytest or the repo profile's own command) without ever running it
+    for real.
+
+    Despite the name, *argv* is not always `[py, "-m", "pytest", ...]`: when
+    the repo profile's proven test command is not pytest-based (`npm test`,
+    `make test`, ...), step 6b of `_land_in_worktree` builds *argv* from that
+    command instead (see `_gate_argv`). The name stays `_run_pytest` on
+    purpose — it is pinned by `tests/test_approve_merge.py`'s
+    `_patch_run_pytest` helper and the frozen-build comment there; renaming
+    it or adding a second seam would let a shell-out bypass the one place
+    tests can observe and forbid a real execution.
+    """
     # A captured Python child writes in the LOCALE encoding, unlike git and
     # gh which emit UTF-8 regardless. `_sh` now decodes as UTF-8, so without
     # this a cp1255/cp932 host would render this gate's failure report as
@@ -674,6 +686,113 @@ def _run_pytest(argv: list[str], *, cwd: Path, timeout: float,
     # ask for.
     env = {**env, "PYTHONIOENCODING": "utf-8"}
     return _sh(argv, cwd=cwd, timeout=timeout, env=env)
+
+
+def _is_pytest_command(cmd: str | None) -> bool:
+    """Whether *cmd* is a pytest invocation. Blank/absent counts as
+    pytest-based — that is today's `python -m pytest` fallback path, and the
+    only path that existed before ``profile_test_cmd`` did. A pytest-based
+    command (`pytest -q`, `uv run pytest -q -n 4`, `poetry run pytest`,
+    `python -m pytest -q`, ...) only certifies that the merge gate's
+    change-scoped test-path mapping is meaningful; it does not change what
+    argv step 6b execs — see the Branch A comment in `_land_in_worktree`."""
+    if not (cmd or "").strip():
+        return True
+    try:
+        tokens = shlex.split(cmd)
+    except ValueError:
+        # Cannot safely tokenize (e.g. an unbalanced quote) — a substring
+        # match is the best this function can do without guessing further.
+        return "pytest" in cmd
+    for i, tok in enumerate(tokens):
+        if os.path.basename(tok) in ("pytest", "pytest.exe"):
+            return True
+        if tok == "-m" and i + 1 < len(tokens) and tokens[i + 1] == "pytest":
+            return True
+    return False
+
+
+_SHELL_OPERATOR_RE = re.compile(r"&&|\|\||[|;<>]")
+
+
+def _gate_argv(cmd: str) -> tuple[list[str], str]:
+    """argv to exec the repo profile's own (non-pytest) test command, and
+    the human-readable "runner" name used in a fail-closed message.
+
+    Plain `shlex.split` when *cmd* is a straight argv (`"npm test"` ->
+    `["npm", "test"]`). Falls back to a shell wrapper (`["/bin/sh", "-c",
+    cmd]`, or `["cmd", "/c", cmd]` on Windows) — mirroring
+    `testing/runner.py::_run_shell`, which always shells out — when the
+    string cannot be split, still contains an un-interpolated `{}`
+    placeholder, or uses a shell operator (`&&`, `||`, `|`, `;`, `<`, `>`),
+    so a profile command proven under a real shell still runs the same way
+    here instead of being fed to `execve` as literal argv tokens."""
+    try:
+        tokens = shlex.split(cmd)
+    except ValueError:
+        tokens = None
+    needs_shell = (
+        tokens is None
+        or "{}" in cmd
+        or _SHELL_OPERATOR_RE.search(cmd) is not None
+    )
+    if needs_shell:
+        runner = tokens[0] if tokens else (cmd.strip().split(maxsplit=1) or [""])[0]
+        if os.name == "nt":
+            return ["cmd", "/c", cmd], runner
+        return ["/bin/sh", "-c", cmd], runner
+    if not tokens:
+        return [], ""
+    return tokens, tokens[0]
+
+
+def _pytest_importable(py: str) -> bool:
+    """Whether *py* can `import pytest`.
+
+    Checked without spending a real subprocess when *py* IS this process's
+    own interpreter in a non-frozen build (the overwhelmingly common case —
+    every existing merge-gate test runs this way): `importlib.util.find_spec`
+    already answers it, the same idiom the xdist check two lines below step
+    6b's full-gate argv uses. Any other interpreter (a frozen build's
+    resolved `.venv`/PATH python, or a different repo's venv) is checked for
+    real, since this process cannot see its site-packages. Any failure to
+    even run the check (missing binary, timeout) answers False — fail
+    closed, never read as "tests passed"."""
+    if py == sys.executable and not getattr(sys, "frozen", False):
+        return importlib.util.find_spec("pytest") is not None
+    try:
+        proc = _sh([py, "-c", "import pytest"],
+                   cwd=Path(tempfile.gettempdir()), timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return proc.returncode == 0
+
+
+def _run_gate_argv(
+    argv: list[str], *, worktree_path: Path, timeout: float, env: dict,
+    branch: str, pr_url: str, landed_sha: str, gate: str, gate_reason: str,
+    runner_desc: str, timeout_label: str,
+) -> tuple["subprocess.CompletedProcess | None", "LandResult | None"]:
+    """Run *argv* through the `_run_pytest` seam, turning a runner that never
+    got to report a returncode (`TimeoutExpired`, or `OSError` from a binary
+    that vanished between a PATH check and exec — belt and braces) into the
+    same fail-closed :class:`LandResult` shape step 6b already uses for
+    every other "could not start" condition. Returns ``(test_proc, None)``
+    on success (whatever its returncode — the caller still classifies rc 0 /
+    5 / other) or ``(None, LandResult)`` on failure. Never raises."""
+    try:
+        return _run_pytest(argv, cwd=worktree_path, timeout=timeout, env=env), None
+    except subprocess.TimeoutExpired:
+        return None, LandResult(
+            ok=False, step="tests", branch=branch, pr_url=pr_url,
+            landed_sha=landed_sha, gate=gate, gate_reason=gate_reason,
+            stderr=f"{gate_reason}\n{timeout_label} timed out after {timeout}s")
+    except OSError as exc:
+        return None, LandResult(
+            ok=False, step="tests", branch=branch, pr_url=pr_url,
+            landed_sha=landed_sha, gate=gate, gate_reason=gate_reason,
+            stderr=f"{gate_reason}\nmerge-time test gate could not start: "
+                   f"{runner_desc}: {exc}")
 
 
 def _tree_of(worktree_path: Path, commitish: str) -> str:
@@ -706,6 +825,145 @@ def _decide_gate(landed_tree: str, tested_commit_sha: str,
         return "focused", f"focused (tree matches tested attempt {tested_commit_sha[:12]})"
     return "full", (f"full (tree diverged from tested attempt "
                      f"{tested_commit_sha[:12]}: conflict rounds or a moved base)")
+
+
+def _run_test_gate(
+    *, worktree_path: Path, py: str, branch: str, pr_url: str, landed_sha: str,
+    tip_sha: str, tested_commit_sha: str, changed_test_paths: list[str] | None,
+    profile_test_cmd: str | None, test_timeout: float, full_test_timeout: float,
+) -> "LandResult | tuple[str, str]":
+    """Step 6b, pulled out of `_land_in_worktree` so that function stays under
+    the structural-budget line cap: FOCUSED (change-scoped) when the squash
+    result's tree matches the tree the attempt's recorded full suite ran on;
+    FULL otherwise (conflict rounds / a moved base / an unknown tested tree)
+    — see `_decide_gate`.
+
+    `profile_test_cmd` (the repo profile's proven test command) decides
+    WHICH runner executes. Pytest-based, or absent (`_is_pytest_command`
+    returns True for both), keeps Branch A: the argv this gate has always
+    built, byte-identical — a pytest-based profile command only certifies
+    that the change-scoped test-path mapping below is meaningful, it does
+    not change what argv gets exec'd. Anything else (`npm test`, `make
+    test`, ...) is Branch B: there is no reliable way to scope an arbitrary
+    shell command to just the changed files, so correctness beats speed —
+    the FULL profile command always runs, even when `_decide_gate` said
+    "focused".
+
+    Returns `(gate, gate_reason)` on success, or a failed `LandResult`
+    (step="tests") when the gate itself fails or its runner cannot start.
+    """
+    landed_tree = _tree_of(worktree_path, "HEAD")
+    tested_tree = _tree_of(worktree_path, tested_commit_sha)
+    gate, gate_reason = _decide_gate(landed_tree, tested_commit_sha, tested_tree)
+    cmd = (profile_test_cmd or "").strip()
+    pytest_based = _is_pytest_command(cmd)
+
+    if pytest_based and gate == "focused":
+        # -- Branch A, focused ------------------------------------------- #
+        test_paths = changed_test_paths
+        if test_paths is None:
+            squash_diff = _sh(["git", "diff", "--name-only", f"{tip_sha}..HEAD"],
+                               cwd=worktree_path)
+            changed_files = [p.strip() for p in squash_diff.stdout.splitlines() if p.strip()]
+            test_paths = _map_change_scoped_tests(worktree_path, changed_files)
+        if test_paths:
+            if not _pytest_importable(py):
+                return LandResult(
+                    ok=False, step="tests", branch=branch, pr_url=pr_url,
+                    landed_sha=landed_sha, gate=gate, gate_reason=gate_reason,
+                    stderr=f"{gate_reason}\nmerge-time test gate could not "
+                           f"start: the resolved interpreter {py!r} has no "
+                           "`pytest` module — no tests were run; install "
+                           "pytest there or onboard the repo so its own "
+                           "test command is used")
+            env = dict(os.environ)
+            env["PYTHONPATH"] = str(worktree_path / "src")
+            argv = [py, "-m", "pytest", "-q", *test_paths]
+            test_proc, err = _run_gate_argv(
+                argv, worktree_path=worktree_path, timeout=test_timeout, env=env,
+                branch=branch, pr_url=pr_url, landed_sha=landed_sha,
+                gate=gate, gate_reason=gate_reason,
+                runner_desc=f"the resolved interpreter {py!r}",
+                timeout_label="change-scoped tests")
+            if err is not None:
+                return err
+            if test_proc.returncode != 0:
+                return LandResult(ok=False, step="tests", branch=branch, pr_url=pr_url,
+                                   landed_sha=landed_sha, gate=gate, gate_reason=gate_reason,
+                                   stderr=_cap(f"{gate_reason}\n"
+                                               + test_proc.stdout + "\n" + test_proc.stderr))
+    elif pytest_based:
+        # -- Branch A, full ------------------------------------------------#
+        if not _pytest_importable(py):
+            return LandResult(
+                ok=False, step="tests", branch=branch, pr_url=pr_url,
+                landed_sha=landed_sha, gate=gate, gate_reason=gate_reason,
+                stderr=f"{gate_reason}\nmerge-time test gate could not "
+                       f"start: the resolved interpreter {py!r} has no "
+                       "`pytest` module — no tests were run; install "
+                       "pytest there or onboard the repo so its own test "
+                       "command is used")
+        env = dict(os.environ)
+        env["PYTHONPATH"] = str(worktree_path / "src")
+        argv = [py, "-m", "pytest", "-q"]
+        if importlib.util.find_spec("xdist") is not None:
+            argv += ["-n", "4"]
+        test_proc, err = _run_gate_argv(
+            argv, worktree_path=worktree_path, timeout=full_test_timeout, env=env,
+            branch=branch, pr_url=pr_url, landed_sha=landed_sha,
+            gate=gate, gate_reason=gate_reason,
+            runner_desc=f"the resolved interpreter {py!r}",
+            timeout_label="full suite")
+        if err is not None:
+            return err
+        if test_proc.returncode == 5:
+            # No tests collected — a repo with no suite must not be blocked
+            # from landing; annotate rather than fail.
+            gate_reason = f"{gate_reason} (no tests collected)"
+        elif test_proc.returncode != 0:
+            return LandResult(ok=False, step="tests", branch=branch, pr_url=pr_url,
+                               landed_sha=landed_sha, gate=gate, gate_reason=gate_reason,
+                               stderr=_cap(f"{gate_reason}\n"
+                                           + test_proc.stdout + "\n" + test_proc.stderr))
+    else:
+        # -- Branch B: the repo profile's own test command is not
+        # pytest-based — the change-scoped pytest-path mapping above does
+        # not apply, so the FULL command always runs.
+        if gate == "focused":
+            gate = "full"
+            gate_reason = (f"full (profile test command {cmd!r} is not "
+                            "pytest-based — cannot scope it to changed files)")
+        else:
+            gate_reason = f"{gate_reason} — running the repo's test command {cmd!r}"
+        argv, runner = _gate_argv(cmd)
+        if not runner or shutil.which(runner) is None:
+            return LandResult(
+                ok=False, step="tests", branch=branch, pr_url=pr_url,
+                landed_sha=landed_sha, gate=gate, gate_reason=gate_reason,
+                stderr=f"{gate_reason}\nmerge-time test gate could not "
+                       f"start: {runner!r} (from the repo profile's test "
+                       f"command {cmd!r}) is not on PATH — no tests were run")
+        env = dict(os.environ)
+        env["PYTHONPATH"] = str(worktree_path / "src")
+        test_proc, err = _run_gate_argv(
+            argv, worktree_path=worktree_path, timeout=full_test_timeout, env=env,
+            branch=branch, pr_url=pr_url, landed_sha=landed_sha,
+            gate=gate, gate_reason=gate_reason,
+            runner_desc=f"{runner!r} (from the repo profile's test command {cmd!r})",
+            timeout_label="full suite")
+        if err is not None:
+            return err
+        if test_proc.returncode == 5:
+            # No tests collected — kept for this branch too: a repo with no
+            # suite must not be blocked from landing.
+            gate_reason = f"{gate_reason} (no tests collected)"
+        elif test_proc.returncode != 0:
+            return LandResult(ok=False, step="tests", branch=branch, pr_url=pr_url,
+                               landed_sha=landed_sha, gate=gate, gate_reason=gate_reason,
+                               stderr=_cap(f"{gate_reason}\n"
+                                           + test_proc.stdout + "\n" + test_proc.stderr))
+
+    return gate, gate_reason
 
 
 def _close_pr(pr_url: str, cwd: Path) -> str:
@@ -784,6 +1042,7 @@ def land_task(
     changed_test_paths: list[str] | None = None,
     tested_commit_sha: str = "",
     remote: str = "origin",
+    profile_test_cmd: str | None = None,
     _before_push: Callable[[], None] | None = None,
     on_step: Callable[[str], None] | None = None,
 ) -> LandResult:
@@ -803,6 +1062,15 @@ def land_task(
     base moved since) — or *tested_commit_sha* is empty or does not resolve
     — the gate runs the FULL suite instead, since the full-suite evidence
     attached to the PR is only ever valid for the tree it actually ran on.
+
+    ``profile_test_cmd`` is the repo PROFILE's proven test command, as
+    resolved by ``core.profile_resolve.resolve_repo_test_cmd`` — the same
+    resolution the attempt's own test runner used (callers reuse it rather
+    than re-deriving the precedence). ``None``/blank keeps today's
+    ``python -m pytest`` gate exactly as before. When it names a
+    non-pytest command (``npm test``, ``make test``, ...) the merge-time
+    gate runs THAT command, in full, through the same ``_run_pytest`` seam
+    — see step 6b of ``_land_in_worktree`` for the pytest-vs-not branch.
 
     ``_before_push`` is a test-only seam: a callable invoked immediately
     before the push-time tip re-check, so a test can simulate a concurrent
@@ -923,6 +1191,7 @@ def land_task(
             full_test_timeout=full_test_timeout,
             pr_url=pr_url, changed_test_paths=changed_test_paths,
             tested_commit_sha=tested_commit_sha,
+            profile_test_cmd=profile_test_cmd,
             _before_push=_before_push, on_step=on_step,
         )
     finally:
@@ -1088,6 +1357,7 @@ def _land_in_worktree(
     task_title: str, review_evidence: str, op_name: str, op_email: str,
     test_timeout: float, full_test_timeout: float, pr_url: str,
     changed_test_paths: list[str] | None, tested_commit_sha: str = "",
+    profile_test_cmd: str | None = None,
     _before_push: Callable[[], None] | None = None,
     on_step: Callable[[str], None] | None = None,
 ) -> LandResult:
@@ -1232,59 +1502,18 @@ def _land_in_worktree(
                                stderr=_cap(verify_proc.stdout + "\n" + verify_proc.stderr))
 
     # -- step 6b: merge-time test gate --------------------------------------#
-    # FOCUSED (change-scoped) when the squash result's tree matches the tree
-    # the attempt's recorded full suite ran on; FULL otherwise (conflict
-    # rounds / a moved base / an unknown tested tree) — see `_decide_gate`.
+    # Pulled out into `_run_test_gate` (see its docstring for the
+    # focused/full and Branch A/B rules) so this function stays under the
+    # structural-budget line cap.
     _step(on_step, "tests")
-    landed_tree = _tree_of(worktree_path, "HEAD")
-    tested_tree = _tree_of(worktree_path, tested_commit_sha)
-    gate, gate_reason = _decide_gate(landed_tree, tested_commit_sha, tested_tree)
-
-    if gate == "focused":
-        test_paths = changed_test_paths
-        if test_paths is None:
-            squash_diff = _sh(["git", "diff", "--name-only", f"{tip_sha}..HEAD"],
-                               cwd=worktree_path)
-            changed_files = [p.strip() for p in squash_diff.stdout.splitlines() if p.strip()]
-            test_paths = _map_change_scoped_tests(worktree_path, changed_files)
-        if test_paths:
-            env = dict(os.environ)
-            env["PYTHONPATH"] = str(worktree_path / "src")
-            argv = [py, "-m", "pytest", "-q", *test_paths]
-            try:
-                test_proc = _run_pytest(argv, cwd=worktree_path, timeout=test_timeout, env=env)
-            except subprocess.TimeoutExpired:
-                return LandResult(ok=False, step="tests", branch=branch, pr_url=pr_url,
-                                   landed_sha=landed_sha, gate=gate, gate_reason=gate_reason,
-                                   stderr=f"{gate_reason}\nchange-scoped tests timed out "
-                                          f"after {test_timeout}s")
-            if test_proc.returncode != 0:
-                return LandResult(ok=False, step="tests", branch=branch, pr_url=pr_url,
-                                   landed_sha=landed_sha, gate=gate, gate_reason=gate_reason,
-                                   stderr=_cap(f"{gate_reason}\n"
-                                               + test_proc.stdout + "\n" + test_proc.stderr))
-    else:
-        env = dict(os.environ)
-        env["PYTHONPATH"] = str(worktree_path / "src")
-        argv = [py, "-m", "pytest", "-q"]
-        if importlib.util.find_spec("xdist") is not None:
-            argv += ["-n", "4"]
-        try:
-            test_proc = _run_pytest(argv, cwd=worktree_path, timeout=full_test_timeout, env=env)
-        except subprocess.TimeoutExpired:
-            return LandResult(ok=False, step="tests", branch=branch, pr_url=pr_url,
-                               landed_sha=landed_sha, gate=gate, gate_reason=gate_reason,
-                               stderr=f"{gate_reason}\nfull suite timed out after "
-                                      f"{full_test_timeout}s")
-        if test_proc.returncode == 5:
-            # No tests collected — a repo with no suite must not be blocked
-            # from landing; annotate rather than fail.
-            gate_reason = f"{gate_reason} (no tests collected)"
-        elif test_proc.returncode != 0:
-            return LandResult(ok=False, step="tests", branch=branch, pr_url=pr_url,
-                               landed_sha=landed_sha, gate=gate, gate_reason=gate_reason,
-                               stderr=_cap(f"{gate_reason}\n"
-                                           + test_proc.stdout + "\n" + test_proc.stderr))
+    gate_result = _run_test_gate(
+        worktree_path=worktree_path, py=py, branch=branch, pr_url=pr_url,
+        landed_sha=landed_sha, tip_sha=tip_sha, tested_commit_sha=tested_commit_sha,
+        changed_test_paths=changed_test_paths, profile_test_cmd=profile_test_cmd,
+        test_timeout=test_timeout, full_test_timeout=full_test_timeout)
+    if isinstance(gate_result, LandResult):
+        return gate_result
+    gate, gate_reason = gate_result
 
     # -- step 7: ff-merge + push, remote-ref verified ---------------------- #
     _step(on_step, "push")
