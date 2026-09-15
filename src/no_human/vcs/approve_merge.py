@@ -202,9 +202,36 @@ def _cap(text: str) -> str:
 
 def _sh(args: list[str], *, cwd: Path | str, timeout: float | None = None,
         env: dict | None = None) -> subprocess.CompletedProcess:
+    # `encoding` AND `errors`, not one or the other. With `text=True` alone
+    # the decode uses the LOCALE codec, and `git commit` echoes the subject
+    # back through this helper. Concretely: the Hebrew letter lamed is UTF-8
+    # `D7 9C`, and `0x9C` is undefined in cp1255, so it raises. (Not every
+    # non-Latin script does — `"привет"` survives cp1251 as mojibake; `"Иван"`
+    # raises on `0x98`. The failure is per-character, which is why it looks
+    # intermittent.)
+    #
+    # On Windows `Popen._readerthread` reads each pipe in a THREAD, so that
+    # UnicodeDecodeError kills the THREAD rather than reaching the caller:
+    # `_communicate` joins an already-dead thread without raising, the buffer
+    # stays empty, and its tail — `stdout[0] if stdout else None` — yields
+    # None. The caller then gets None where it expects a string.
+    #
+    # `errors="replace"` over strict is deliberate and safe HERE specifically:
+    # every decision this file makes on `_sh` output either compares a sha, a
+    # tree hash or a returncode (`_git_config_value`, `_tree_of`, `land_task`,
+    # `_land_in_worktree`), parses diagnostic text that is already tolerant of
+    # a malformed body (`_declared_counts`, `reconcile_merge_count_drift`,
+    # `reconcile_commit_count_drift`, `_close_pr`'s `json.loads` under
+    # `try/except`), or splits PATHS that are handed straight back to git
+    # (`_ship_classified_paths`, `_unmerged_paths`, `_land_regenerate_manifest`'s
+    # `git add -- <path>`) — where a replacement character can only make the
+    # `git add` FAIL and the land refuse. So a replacement character can only
+    # push the decision toward the conservative branch — run the full suite,
+    # or refuse to land. It is never the difference between refusing and
+    # wrongly accepting.
     return subprocess.run(
         args, cwd=str(cwd), capture_output=True, text=True, timeout=timeout,
-        env=env,
+        env=env, encoding="utf-8", errors="replace",
     )
 
 
@@ -650,6 +677,14 @@ def _run_pytest(argv: list[str], *, cwd: Path, timeout: float,
     """The one place `nh approve`'s merge-time gate shells out to pytest —
     a seam so tests can pin WHICH set was invoked (focused vs. full)
     without ever running it for real."""
+    # A captured Python child writes in the LOCALE encoding, unlike git and
+    # gh which emit UTF-8 regardless. `_sh` now decodes as UTF-8, so without
+    # this a cp1255/cp932 host would render this gate's failure report as
+    # mojibake — the verdict is the returncode and stays correct, but the
+    # text a human reads to understand a refused land would not be. Set on a
+    # COPY: the caller's dict is its own and must not gain a key it did not
+    # ask for.
+    env = {**env, "PYTHONIOENCODING": "utf-8"}
     return _sh(argv, cwd=cwd, timeout=timeout, env=env)
 
 
