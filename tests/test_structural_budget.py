@@ -2127,7 +2127,11 @@ FROZEN_FILE_LINES = {
     # render). Added a branch (plus docstring) giving that case its own
     # honest lead-in instead of reusing the "determined" one. Measured on
     # this merge.
-    "review/reviewer.py": 3134,
+    # 3134 -> 3147 (+13): `_git_diff` gets `--no-ext-diff --no-textconv`, an
+    # env scrubbed of foreign secrets, and the docstring explaining why a
+    # coder-planted `diff.external`/`diff.<x>.textconv` must not run in the
+    # reviewer process. Security hardening; measured on this tree.
+    "review/reviewer.py": 3147,
     # 2706 -> 2711 (+5): pre-existing red on main at 03b262d23 (e922e9b4's
     # landing, change-scoped tests missed the ratchet) — repaired, measured,
     # on this merge; same cause as the two function-level wake.py bumps above.

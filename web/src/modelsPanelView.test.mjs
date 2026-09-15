@@ -598,7 +598,12 @@ test("the reviewer backend override option shows '(unavailable)', not the raw re
   assert.ok(!block.includes("${o.reason}"), "the raw multi-sentence reason must not be interpolated into the option text");
   assert.match(block, /\{o\.label\}\{o\.disabled \? " \(unavailable\)" : ""\}/);
   assert.match(block, /title=\{o\.reason \|\| undefined\}/);
-  assert.match(block, /className="ntm-hint"[\s\S]*\{o\.short\}/);
+  // `ph-no-capture` was added alongside "ntm-hint" (2026-09, see the DOM
+  // session-replay leak fix): this hint's text embeds `o.short`, which is
+  // derived from the same backend `reason` string that can carry the
+  // operator's configured llm.local_base_url — so it must stay out of
+  // PostHog's DOM/rrweb capture the same way the option list above does.
+  assert.match(block, /className="ntm-hint ph-no-capture"[\s\S]*\{o\.short\}/);
   assert.match(block, /\.filter\(\(o\) => o\.disabled && o\.short\)/);
 });
 

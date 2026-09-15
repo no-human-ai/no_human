@@ -46,6 +46,24 @@ All notable changes to no_human. The format follows
   untouched; a bare `grep -oE '~[0-9]{3,5}'` over `src/` over-counts the true
   anchor population by roughly double for exactly that reason.
 
+- `nhCanAutoUpdate` was computed only from the macOS signing plan, then
+  stamped into the single `extraMetadata` block shared by every
+  electron-builder platform target — so a credentialed Apple environment
+  that also emitted a Windows or Linux artifact (an operator's own signed
+  release shell, `--mac --win`, etc.) stamped `true` into that artifact too,
+  even though the Windows/Linux update path is unverified and, per
+  electron-updater's own NSIS signature check, would run an unsigned
+  installer with no Authenticode verification at all. `nhCanAutoUpdate` is
+  now computed from the macOS plan AND the platform(s) this invocation
+  actually targets (`autoUpdateStamp` in `desktop/signing.cjs`): `true` only
+  when every targeted platform is macOS, `false` otherwise, and a hard
+  refusal (nonzero exit) if a single invocation mixes a signed AND notarized
+  mac target with any other platform, since no single stamp is correct for
+  both — a signed-but-not-notarized mac target mixed with another platform
+  still exits 0 and stamps `false`, since `plan.canAutoUpdate` is already
+  false in that state and there is nothing to mis-stamp. A
+  `beforePack` guard (`assertStampMatchesPlatform`) backstops any invocation
+  shape argv parsing can't see.
 - **The venv install guard's resolver never resolved a Windows candidate
   path.** `_safe_realpath` returns a native-separator (backslash) path on a
   real Windows host by construction, never through `win_readings.readings`
