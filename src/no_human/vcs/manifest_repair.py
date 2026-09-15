@@ -81,14 +81,26 @@ from __future__ import annotations
 import logging
 import re
 import subprocess
-import sys
 from pathlib import Path
 from typing import Callable
 
+from ..proc import real_python
 from .approve_merge import COUNT_DRIFT_RE, reconcile_commit_count_drift
 from .git import CommitResult, GitError, GitRepo, _branch_protected
 
 _logger = logging.getLogger(__name__)
+
+# Every spawn below runs a Python SCRIPT, so it needs a real interpreter --
+# and `sys.executable` is not one in the frozen desktop build, where it is the
+# `nh` binary and re-enters the click CLI instead (issue #402; `proc.real_python`
+# carries the measurement). `real_python` returning None means the frozen build
+# found no interpreter at all; each caller below fails closed with this reason
+# rather than shelling out to the CLI by accident.
+_NO_PYTHON = (
+    "no Python interpreter available: this build's sys.executable is the "
+    "frozen `nh` binary and no python3/python was found on PATH, nor a "
+    ".venv in the repo"
+)
 
 # The manifest pre-commit gate's refusal header
 # (scripts/precommit_manifest_gate.py). Matching on this exact marker keeps
@@ -235,11 +247,18 @@ def approve_pending_pins(
 
     _stage_untracked_for_approve(repo, paths)
 
+    python = real_python(root / ".venv")
+
     def _run_approve_all() -> subprocess.CompletedProcess | None:
-        # None == timeout/OSError, already logged; caller must not raise.
+        # None == no interpreter/timeout/OSError, already logged; caller must
+        # not raise.
+        if python is None:
+            _logger.warning(
+                "manifest pin maintenance skipped: %s", _NO_PYTHON)
+            return None
         try:
             return subprocess.run(
-                [sys.executable, str(guard), "approve", "--all", "--prune"],
+                [python, str(guard), "approve", "--all", "--prune"],
                 cwd=repo.path, capture_output=True, text=True,
                 timeout=_PREAPPROVE_TIMEOUT_S,
             )
@@ -526,6 +545,11 @@ def write_pending_manifest(
         except (GitError, OSError) as exc:
             _logger.warning("proactive manifest staging failed: %s", exc)
 
+    python = real_python(root / ".venv")
+    if python is None:
+        _logger.warning("proactive manifest --write skipped: %s", _NO_PYTHON)
+        return paths
+
     manifest = root / "RELEASE_MANIFEST.txt"
     try:
         before = manifest.read_bytes()
@@ -534,7 +558,7 @@ def write_pending_manifest(
 
     try:
         proc = subprocess.run(
-            [sys.executable, str(script), "--write"],
+            [python, str(script), "--write"],
             cwd=repo.path, capture_output=True, text=True,
             timeout=_MANIFEST_WRITE_TIMEOUT_S,
         )
@@ -678,9 +702,12 @@ def commit_with_manifest_repair(
         if not guard.exists():
             return _repair_by_manifest_write(
                 repo, paths, message, pinned, exc, on_repair)
+        python = real_python(Path(repo.path) / ".venv")
+        if python is None:
+            raise GitError(f"manifest re-approve failed: {_NO_PYTHON}") from exc
         try:
             proc = subprocess.run(
-                [sys.executable, str(guard), "approve", *pinned],
+                [python, str(guard), "approve", *pinned],
                 cwd=repo.path, capture_output=True, text=True,
                 timeout=_APPROVE_TIMEOUT_S,
             )
@@ -693,7 +720,7 @@ def commit_with_manifest_repair(
             if reconciled:
                 try:
                     retry = subprocess.run(
-                        [sys.executable, str(guard), "approve", *pinned],
+                        [python, str(guard), "approve", *pinned],
                         cwd=repo.path, capture_output=True, text=True,
                         timeout=_APPROVE_TIMEOUT_S,
                     )
@@ -786,9 +813,12 @@ def _repair_by_manifest_write(
     script = root / "scripts" / "check_release_manifest.py"
     if not script.exists() or (root / "EXPORT_CLASSIFICATION.txt").exists():
         raise exc
+    python = real_python(root / ".venv")
+    if python is None:
+        raise GitError(f"manifest re-approve failed: {_NO_PYTHON}") from exc
     try:
         proc = subprocess.run(
-            [sys.executable, str(script), "--write"],
+            [python, str(script), "--write"],
             cwd=repo.path, capture_output=True, text=True,
             timeout=_MANIFEST_WRITE_TIMEOUT_S,
         )

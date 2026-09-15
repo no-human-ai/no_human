@@ -629,14 +629,14 @@ ALLOWLIST: dict[str, dict[str, Allowed]] = {
     "vcs/manifest_repair.py": {
         "exec:<dynamic>": Allowed(
             "the TARGET REPO's own `scripts/export_guard.py` (repo-controlled "
-            "content), run in two shapes: PROACTIVELY as `[sys.executable, "
+            "content), run in two shapes: PROACTIVELY as `[<interpreter>, "
             "<repo>/scripts/export_guard.py, 'approve', '--all', '--prune']` "
             "before every commit attempt (300s timeout), and REACTIVELY as "
-            "`[sys.executable, <repo>/scripts/export_guard.py, 'approve', "
+            "`[<interpreter>, <repo>/scripts/export_guard.py, 'approve', "
             "<refused paths>]` — the manifest gate's documented FIX, inside "
             "the task worktree (120s timeout); the committed guard rewrites "
             "RELEASE_MANIFEST.txt pins and dials nothing. On the PUBLIC repo "
-            "shape (no `export_guard.py`), REACTIVELY as `[sys.executable, "
+            "shape (no `export_guard.py`), REACTIVELY as `[<interpreter>, "
             "<repo>/scripts/check_release_manifest.py, '--write']` — the "
             "same gate's documented FIX for a tree with no classification "
             "ledger to consult, also inside the task worktree (120s "
@@ -653,7 +653,11 @@ ALLOWLIST: dict[str, dict[str, Allowed]] = {
             "paths at all (a Bash-only coder), it stages the whole tree "
             "instead before the same `--write`; a failing or hanging "
             "proactive run is log-only and falls through to the REACTIVE "
-            "route above as fallback",
+            "route above as fallback. `<interpreter>` is whatever "
+            "`proc.real_python` resolves: `sys.executable` in an ordinary "
+            "install, and in the frozen desktop build a venv/PATH Python "
+            "instead of the `nh` binary `sys.executable` is there (issue "
+            "#402). It changes WHAT RUNS the script, never what is run",
             _ON + "the pipeline commit path — proactively on every commit "
             "(both repo shapes now), reactively on exactly the manifest "
             "gate's changed-pinned-files refusal (commit_with_manifest_repair, "
