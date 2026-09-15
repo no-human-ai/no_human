@@ -431,10 +431,23 @@ class ReviewDecision:
 
 
 def _git_diff(repo_path: Path, before: str = "HEAD~1", after: str = "HEAD") -> tuple[str, int]:
-    """Return (truncated_diff, total_length)."""
+    """Return (truncated_diff, total_length).
+
+    `--no-ext-diff --no-textconv` are a SECURITY boundary, not formatting:
+    without them a `diff.external` or `diff.<driver>.textconv` git-config key —
+    which a coder can plant in the reviewed repo's shared `.git/config` — names
+    a program git spawns while building this diff, inside the reviewer process
+    (no OS sandbox). The env is additionally scrubbed of foreign secrets via
+    `_git_subprocess_env` so an executed program finds no credential; the two
+    flags mean it is not spawned in the first place. Mirrors the hardening on
+    `lint_evidence.py`/`testing/ownership.py` and `vcs/git.GitRepo`."""
+    from ..vcs.git import _git_subprocess_env
+
     proc = subprocess.run(
-        ["git", "diff", f"{before}..{after}", "--stat", "--patch", "--no-color"],
+        ["git", "-c", "core.fsmonitor=false", "diff", f"{before}..{after}",
+         "--stat", "--patch", "--no-color", "--no-ext-diff", "--no-textconv"],
         cwd=repo_path, capture_output=True, text=True,
+        env=_git_subprocess_env("diff"),
     )
     raw = proc.stdout or ""
     return raw[:_DIFF_CAP], len(raw)

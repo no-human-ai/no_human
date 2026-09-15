@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
 
+from ..agent.child_env import drop_foreign_secrets
 from ..proc import hidden_console_kwargs
 from .outbound_scrub import scrub_outbound
 from .push_hook import install_pre_push_guard
@@ -155,6 +156,47 @@ _COMMIT_WRITING_SUBCOMMANDS = frozenset((
     "commit", "merge", "cherry-pick", "revert", "rebase", "am",
 ))
 
+#: Spliced into EVERY git invocation this class makes. `core.fsmonitor` names a
+#: program git spawns on `git status` (and other worktree scans); a
+#: prompt-injected coder that writes `git config core.fsmonitor <script>` from
+#: its worktree lands it in the SHARED `.git/config`, and the harness's own
+#: `has_changes()` -> `git status` would then execute it. Forcing it off on our
+#: side removes that trigger regardless of what the shared config holds. `false`
+#: is git's documented "no fsmonitor" value and is inert when none is
+#: configured, so this is safe on every subcommand including commit and push
+#: (it changes NO existing behaviour of ours — it only refuses to run a
+#: hook-integration program). It does NOT touch `core.hooksPath`, which the
+#: per-worktree pre-push guard (`push_hook.py`) relies on.
+_FSMONITOR_OFF = ("-c", "core.fsmonitor=false")
+
+
+def _git_subprocess_env(subcommand: str | None) -> dict[str, str]:
+    """The environment for a `GitRepo` git subprocess.
+
+    Two independent scrubs, both a SECURITY boundary, not a nicety:
+
+    * Foreign secrets are dropped from EVERY git call. `core.fsmonitor`,
+      `filter.<x>.smudge`/`clean` and `diff.external` are all git-config keys
+      naming a program git will spawn, and a coder can plant any of them in the
+      shared config (the guard does not, and cannot lexically, stop it). If one
+      still executes, it runs inside THIS process — no OS sandbox — so it must
+      not find `CLAUDE_CODE_OAUTH_TOKEN`, `GITHUB_TOKEN` or any cloud key in its
+      environment. `drop_foreign_secrets` with an empty keep-list removes every
+      name that looks like a credential (see `child_env`) and keeps everything
+      git needs (`PATH`, `HOME`, `GIT_SSH`, locale, ...), so it cannot break a
+      git call while removing the reward for executing one.
+    * The identity env (`GIT_AUTHOR_*`/`GIT_COMMITTER_*`) is additionally
+      dropped for commit-writing subcommands, exactly as before, so
+      `-c user.name=`/`-c user.email=` stay authoritative for this class's own
+      commits.
+    """
+    env = dict(os.environ)
+    drop_foreign_secrets(env, keep=())
+    if subcommand in _COMMIT_WRITING_SUBCOMMANDS:
+        for name in _IDENTITY_ENV:
+            env.pop(name, None)
+    return env
+
 
 @dataclass
 class CommitResult:
@@ -219,24 +261,20 @@ class GitRepo:
         # the user's global git config.
         cmd = [
             "git",
+            "-c", "core.fsmonitor=false",
             "-c", f"user.name={self.identity_name}",
             "-c", f"user.email={self.identity_email}",
             *args,
         ]
-        # GIT_AUTHOR_*/GIT_COMMITTER_* env vars outrank `-c user.name=` in
-        # git's own precedence order. The orchestrator exports the AGENT's
-        # identity into os.environ for the coder's Bash tool
-        # (`Orchestrator._agent_git_identity`) — on that same process, a
-        # commit-writing call here would otherwise inherit that same env
-        # instead of `self.identity_name/email`. Scrubbing keeps `-c
-        # user.name=`/`-c user.email=` authoritative for every commit THIS
-        # CLASS makes, so the pipeline's own checkpoint/manifest-repair
-        # commits stay correctly attributed regardless of what the ambient
-        # env holds.
-        run_env = (
-            {k: v for k, v in os.environ.items() if k not in _IDENTITY_ENV}
-            if args and args[0] in _COMMIT_WRITING_SUBCOMMANDS else None
-        )
+        # The env is scrubbed of foreign secrets on EVERY call and, for
+        # commit-writing subcommands, of the identity vars too. See
+        # `_git_subprocess_env`: the secret scrub keeps `-c core.fsmonitor=false`
+        # honest (an executed git-config program finds no credential) and the
+        # identity scrub keeps `-c user.name=`/`-c user.email=` authoritative for
+        # this class's own commits regardless of what the ambient env holds
+        # (`Orchestrator._agent_git_identity` exports the agent identity into
+        # os.environ for the coder's Bash tool).
+        run_env = _git_subprocess_env(args[0] if args else None)
         # Lock-contention retry, INLINE in both runners rather than a shared
         # helper taking `cmd`: the egress-allowlist scanner resolves the git
         # subcommand from the literal ["git", ...] construction at the
@@ -274,12 +312,14 @@ class GitRepo:
         `.strip()`) keeps every line's prefix width intact."""
         cmd = [
             "git",
+            "-c", "core.fsmonitor=false",
             "-c", f"user.name={self.identity_name}",
             "-c", f"user.email={self.identity_email}",
             *args,
         ]
+        run_env = _git_subprocess_env(args[0] if args else None)
         proc = subprocess.run(
-            cmd, cwd=self.path, capture_output=True, text=True,
+            cmd, cwd=self.path, capture_output=True, text=True, env=run_env,
             **hidden_console_kwargs(),
         )
         if check:
@@ -289,7 +329,7 @@ class GitRepo:
                     break
                 time.sleep(backoff)
                 proc = subprocess.run(
-                    cmd, cwd=self.path, capture_output=True, text=True,
+                    cmd, cwd=self.path, capture_output=True, text=True, env=run_env,
                     **hidden_console_kwargs(),
                 )
         if check and proc.returncode != 0:
@@ -314,12 +354,14 @@ class GitRepo:
         `_null_paths`."""
         cmd = [
             "git",
+            "-c", "core.fsmonitor=false",
             "-c", f"user.name={self.identity_name}",
             "-c", f"user.email={self.identity_email}",
             *args,
         ]
+        run_env = _git_subprocess_env(args[0] if args else None)
         proc = subprocess.run(
-            cmd, cwd=self.path, capture_output=True, text=True,
+            cmd, cwd=self.path, capture_output=True, text=True, env=run_env,
             **hidden_console_kwargs(),
         )
         if check:
@@ -328,7 +370,7 @@ class GitRepo:
                     break
                 time.sleep(backoff)
                 proc = subprocess.run(
-                    cmd, cwd=self.path, capture_output=True, text=True,
+                    cmd, cwd=self.path, capture_output=True, text=True, env=run_env,
                     **hidden_console_kwargs(),
                 )
         if check and proc.returncode != 0:

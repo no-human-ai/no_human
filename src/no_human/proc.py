@@ -81,6 +81,11 @@ def real_python(*venvs: Path | str | None) -> str | None:
     Returns ``None`` only in a frozen build with no interpreter anywhere. Every
     caller must fail closed on it and say so, because the one thing worse than
     "no interpreter" is quietly handing the argv to the CLI instead.
+
+    NOT A CONSUMER: ``testing/ui_evidence.py::_hermetic_start_argv``
+    deliberately invokes the frozen ``nh`` binary itself when frozen — in a
+    freeze there is no separate Python to hand ``-m no_human.cli.commands``
+    to, `nh` IS what must be started. Do not "fix" it to call this helper.
     """
     if not getattr(sys, "frozen", False):
         return sys.executable
