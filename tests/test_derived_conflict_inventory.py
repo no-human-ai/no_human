@@ -152,6 +152,47 @@ def test_classification_eligibility_fails_closed_without_export_guard(tmp_path):
     assert "cannot reconcile classification counts" in res.detail
 
 
+# --- `_inventory_argv` delegates to the one shared interpreter resolver
+# --- (`proc.real_python`) instead of re-writing the PyInstaller-frozen
+# --- fallback inline a fifth time (issue #402). These pin the delegation
+# --- itself, not just the output, because before this fix the module-level
+# --- inline fallback already produced an identical-looking argv on the
+# --- happy path — only swapping the shared resolver proves it is actually
+# --- being called. ----------------------------------------------------------
+
+
+def test_inventory_argv_delegates_to_the_shared_real_python(monkeypatch):
+    monkeypatch.setattr(dc, "real_python", lambda *a: "/opt/marker/python")
+    assert dc._inventory_argv() == [
+        "/opt/marker/python", "scripts/check_release_manifest.py"]
+
+
+def test_inventory_argv_falls_back_to_the_python3_literal_when_unresolved(
+        monkeypatch):
+    """Unlike every other `real_python` call site, this one never fails
+    closed — `resolve_derived_conflict`'s caller has no `None` branch — so
+    an unresolved interpreter still produces a runnable argv."""
+    monkeypatch.setattr(dc, "real_python", lambda *a: None)
+    assert dc._inventory_argv() == [
+        "python3", "scripts/check_release_manifest.py"]
+
+
+def test_inventory_argv_never_returns_the_frozen_binary_when_frozen(
+        monkeypatch, tmp_path):
+    """End-to-end through the real resolver (not the delegation seam above):
+    frozen shape, `sys.executable` an `nh` stub, PATH holds a python3 — the
+    produced argv[0] must be that PATH python3, never the frozen binary."""
+    nh = tmp_path / "nh"
+    nh.write_text("", encoding="utf-8")
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(nh))
+    monkeypatch.setattr(shutil, "which",
+                         lambda n: f"/usr/bin/{n}" if n == "python3" else None)
+    argv = dc._inventory_argv()
+    assert argv[0] == "/usr/bin/python3"
+    assert argv[0] != str(nh)
+
+
 async def test_a_write_refusal_is_a_regenerate_failure_not_a_push(tmp_path):
     """Plant a classification file so the tool's own `--write` refuses with
     exit 2 (in this fixture, via its load_unpinnable Refused branch — no
