@@ -22,6 +22,20 @@ All notable changes to no_human. The format follows
   with any other platform, since no single stamp is correct for both. A
   `beforePack` guard (`assertStampMatchesPlatform`) backstops any invocation
   shape argv parsing can't see.
+- **The venv install guard's resolver never resolved a Windows candidate
+  path.** `_safe_realpath` returns a native-separator (backslash) path on a
+  real Windows host by construction, never through `win_readings.readings`
+  (which normalises a raw command TOKEN's spelling, not a `realpath` return
+  value). `_basename`, deliberately `PurePosixPath`-only, read a resolved
+  `C:\venv\Scripts\uv.EXE` as one opaque component and never recognised it
+  as `uv`, so `_resolve_installer` fell through to this module's one
+  allow-and-log fallback — a fail-OPEN — for an installer it had just
+  stat'd and confirmed exists. A new `_resolved_basename` helper re-splits
+  on `/` first, only when `_IS_WINDOWS`, and is now used at all four call
+  sites that inspect a resolved path (`_resolve_installer`'s explicit-path
+  and PATH-walk branches, and the `uv`/`uvx` exclusion in
+  `_effective_prefixes`); `_basename` itself is unchanged and still used at
+  every call site that reads a raw command token.
 
 ## [0.2.3] — 2026-09-14
 

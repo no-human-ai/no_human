@@ -365,9 +365,13 @@ def _basename(path: str) -> str:
     * Host independence. `os.path.basename` splits on `\` on Windows and not
       on POSIX, so the same string would reach different verdicts on
       different machines while CI runs POSIX only. `PurePosixPath` reads `/`
-      on every host, and that is the right reading here precisely because
-      `win_readings.readings` has already offered the `/`-normalised spelling
-      of any backslashed command by the time this is called.
+      on every host, and that is the right reading here for a COMMAND TOKEN,
+      because `win_readings.readings` has already offered the `/`-normalised
+      spelling of any backslashed command by the time this is called. That
+      does NOT hold for a `realpath`/`os.path.join` return value: it is
+      native-separator by construction and has never been through
+      `readings` and cannot be — callers with a resolved path use
+      `_resolved_basename` instead.
     """
     name = PurePosixPath(path).name
     if name.lower().endswith(".exe"):
@@ -540,6 +544,30 @@ def _safe_realpath(path: str) -> str | None:
         return None
 
 
+def _resolved_basename(path: str) -> str:
+    r"""`_basename` for a path THIS MODULE produced, read with the host's own
+    separators.
+
+    The argument is a `realpath`/`os.path.join` return value: NATIVE-separator
+    by construction, so it has not passed through `win_readings.readings` and
+    cannot. On Windows that turns a cleanly `/`-normalised token back into
+    `...\Scripts\uv.exe`, `_basename` reads the whole string as one component,
+    and `_resolve_installer` returns None for an installer it just stat'd.
+
+    `_basename` itself stays POSIX-only: both reasons in its docstring are
+    about COMMAND TOKENS and both remain true.
+
+    Gated on `_IS_WINDOWS` (the module constant the existing Windows tests
+    flip -- patch the consumer's copy, cf. `win_readings._IS_WINDOWS`) so a
+    POSIX host is byte-for-byte unchanged: `\` is a legal character in a POSIX
+    filename, and normalising it there would let a file genuinely named
+    `a\pip` start reading as `pip`.
+    """
+    if _IS_WINDOWS:
+        path = path.replace("\\", "/")
+    return _basename(path)
+
+
 def _probe_is_file(path: str) -> bool | None:
     """True = is a regular file; False = definitively NOT there (or not a
     file); None = COULD NOT BE DETERMINED (e.g. a `chmod` that blocks
@@ -693,7 +721,7 @@ def _resolve_installer(token: str, cwd: str | None, env: Mapping[str, str]) -> s
     try:
         if "/" in token:
             real = _safe_realpath(_join(cwd, token))
-            if real and _is_installer_name(_basename(real), cwd):
+            if real and _is_installer_name(_resolved_basename(real), cwd):
                 probe = _probe_is_file(real)
                 # `None` (undeterminable — e.g. a `chmod` on the venv
                 # directory two levels up makes even stat'ing this file
@@ -873,7 +901,7 @@ def _resolve_installer(token: str, cwd: str | None, env: Mapping[str, str]) -> s
                     continue
                 if probe is None:
                     real = _safe_realpath(candidate) or candidate
-                    if _is_installer_name(_basename(real), cwd):
+                    if _is_installer_name(_resolved_basename(real), cwd):
                         if fallback is None:
                             fallback = real
                         # Tracked SEPARATELY from `fallback`, and this is the
@@ -898,7 +926,7 @@ def _resolve_installer(token: str, cwd: str | None, env: Mapping[str, str]) -> s
                 if not os.access(candidate, os.X_OK):
                     continue
                 real = _safe_realpath(candidate)
-                if real and _is_installer_name(_basename(real), cwd):
+                if real and _is_installer_name(_resolved_basename(real), cwd):
                     displaced = _displaced_by_indeterminate_venv(
                         token, real, venv_fallback)
                     if displaced is not None:
@@ -1235,7 +1263,7 @@ def _effective_prefixes(
         # an installer invocation but not as `uv` for this exclusion, so it
         # fell through to being treated like `pip`/`python` and got denied
         # even though `uv sync` (lowercase) is allowed on the identical host.
-        if _basename(exe).lower() in ("uv", "uvx"):
+        if _resolved_basename(exe).lower() in ("uv", "uvx"):
             continue
         owning = _venv_root_of(exe)
         if owning:
