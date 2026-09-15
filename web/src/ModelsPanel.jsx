@@ -106,7 +106,7 @@ function CoderBackendRow() {
             const configurable = !!lf && o.id === lf.backend;
             const disabled = o.disabled && !configurable;
             return (
-              <option key={o.id} value={o.id} disabled={disabled} title={o.reason || undefined}>
+              <option key={o.id} className="ph-no-capture" value={o.id} disabled={disabled} title={o.reason || undefined}>
                 {o.label}{disabled ? " (unavailable)" : ""}
               </option>
             );
@@ -116,7 +116,7 @@ function CoderBackendRow() {
       {view.options
         .filter((o) => o.disabled && !(lf && o.id === lf.backend) && o.short)
         .map((o) => (
-          <div key={o.id} className="ntm-hint" title={o.reason}>
+          <div key={o.id} className="ntm-hint ph-no-capture" title={o.reason}>
             <span aria-hidden="true">ⓘ</span> {o.label}: {o.short}
           </div>
         ))}
@@ -375,8 +375,13 @@ export default function ModelsPanel() {
                       }}
                     >
                       <option value="">default</option>
+                      {/* `backendOptions` is the SAME backendPanelView(...).options
+                          list CoderBackendRow renders above (backend_settings.py's
+                          str(exc), which can interpolate the operator's configured
+                          llm.local_base_url) — this select is a second render site
+                          for that same data, so it needs the same ph-no-capture. */}
                       {backendOptions.map((o) => (
-                        <option key={o.id} value={o.id} disabled={o.disabled} title={o.reason || undefined}>
+                        <option key={o.id} className="ph-no-capture" value={o.id} disabled={o.disabled} title={o.reason || undefined}>
                           {o.label}{o.disabled ? " (unavailable)" : ""}
                         </option>
                       ))}
@@ -385,7 +390,7 @@ export default function ModelsPanel() {
                   {backendOptions
                     .filter((o) => o.disabled && o.short)
                     .map((o) => (
-                      <div key={o.id} className="ntm-hint" title={o.reason}>
+                      <div key={o.id} className="ntm-hint ph-no-capture" title={o.reason}>
                         <span aria-hidden="true">ⓘ</span> {o.label}: {o.short}
                       </div>
                     ))}

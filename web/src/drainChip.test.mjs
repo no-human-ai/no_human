@@ -239,3 +239,33 @@ test("PausedIndicator: a missing/null paused_reason renders unknown too, never q
   assert.ok(!html.toLowerCase().includes("resumes"), html);
   assert.ok(!html.toLowerCase().includes("quota"), html);
 });
+
+// --------------------------------------------------------------------------- #
+// A user-chosen auth-profile name in the DOM: `paused_profile` used to land  #
+// verbatim in this component's `title` attribute, which session replay's    #
+// DOM/rrweb capture channel records regardless of the separate network-body #
+// masking mechanism (replayScrub.js/telemetry.js's                         #
+// maskCapturedNetworkRequestFn, which governs request/response bodies, not  #
+// DOM content). A real captured PostHog payload confirmed it. The profile   #
+// name carries no operational information a quota pause needs — the        #
+// visible text already says what happened and when — so it is removed at   #
+// the source rather than masked.                                            #
+// --------------------------------------------------------------------------- #
+
+test("PausedIndicator: a quota pause never renders the auth-profile name anywhere in its markup", () => {
+  const html = renderPaused("quota", {
+    paused_until: "2026-08-20T17:20:00+00:00",
+    paused_profile: "zzqq-unit-profile-canary",
+  });
+  assert.ok(!html.includes("zzqq-unit-profile-canary"), html);
+  assert.ok(html.includes("Paused — quota resets"), html);
+  assert.match(html, /role="status"/);
+});
+
+test("pausedPresentation: the quota title is a fixed string regardless of any paused_profile passed", () => {
+  const p = pausedPresentation("quota", {
+    paused_until: "2026-08-20T17:20:00+00:00",
+    paused_profile: "zzqq-unit-profile-canary",
+  });
+  assert.equal(p.title, "Pool-wide quota cooldown");
+});
