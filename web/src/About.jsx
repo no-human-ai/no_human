@@ -7,6 +7,9 @@
 // CSP and this is the pattern already proven to work here. The contact address
 // is a mailto: — no JS needed, and it degrades to the OS mail client.
 
+import { AboutVersion } from "./runningVersion.js";
+import { useRunningVersion } from "./useRunningVersion.js";
+
 const DOCS_URL = "https://getnohuman.com/docs";
 const CONTACT_EMAIL = "hello@getnohuman.com";
 
@@ -15,6 +18,11 @@ function openDocs() {
 }
 
 export default function About({ onShowShortcuts }) {
+  // Same source as Settings > Updates. Reading the version was possible in
+  // exactly one place before this, and it was not the one a user or a bug
+  // reporter opens first.
+  const { version } = useRunningVersion();
+
   return (
     <div className="nh-about">
       <section className="nh-about-block">
@@ -34,6 +42,8 @@ export default function About({ onShowShortcuts }) {
           repositories.
         </p>
       </section>
+
+      <AboutVersion version={version} />
 
       <section className="nh-about-block">
         <h2>Documentation</h2>

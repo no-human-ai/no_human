@@ -725,3 +725,110 @@ def test_ready_line_carries_no_note_when_every_verifier_answered(tmp_path, monke
     line = next(ln for ln in result.output.splitlines() if task_id[:8] in ln)
     assert "no verdict" not in line, line
     assert "rules 2/2" in line, line
+
+
+# --------------------------------------------------------------------------- #
+# --ready — superseded tasks (issue #232)                                     #
+# --------------------------------------------------------------------------- #
+
+def test_ready_marks_a_superseded_task_and_excludes_it_from_ready_to_land(tmp_path, monkeypatch):
+    """A task another (later) task's `follows_id` names is still LISTED
+    (never hidden, same principle as a conflicted task) but must not be
+    folded into "ready to land": approving it risks landing work a
+    follow-up has already superseded (the near-miss issue #232 reports)."""
+    db = tmp_path / "nh.db"
+    monkeypatch.setattr(approve_merge_mod, "land_task", _never_called_land_task)
+
+    task_id, repo, _ = _ready_task(db, tmp_path, title="Superseded", repo_name="repo")
+
+    async def _follow_up():
+        async with Store(db) as store:
+            follow_up = Task.new("supersedes it", repo_path=str(repo), follows_id=task_id)
+            await store.create_task(follow_up)
+            return follow_up.id
+    follow_up_id = asyncio.run(_follow_up())
+
+    result = _invoke(approve, db, ["--ready"])
+
+    assert result.exit_code == 0, result.output
+    assert task_id[:8] in result.output
+    # Rich wraps this long a row at the console's default width, so the
+    # SUPERSEDED marker can land on the line after the task's own — check
+    # the row's whole rendered block, not one physical output line.
+    idx = result.output.index(task_id[:8])
+    row = result.output[idx:idx + 200]
+    assert "SUPERSEDED" in row, row
+    assert follow_up_id[:8] in row, row
+    assert "0 task(s) ready to land" in result.output
+    # This sentence is long enough that Rich's default console width wraps
+    # it mid-word — collapse the wrap before matching the whole phrase.
+    flattened = " ".join(result.output.split())
+    assert "1 task(s) are superseded by a later follow-up task" in flattened
+
+
+def test_ready_yes_never_lands_a_superseded_task(tmp_path, monkeypatch):
+    """`--ready --yes` must never call `land_task` for a superseded task —
+    it is printed as not landed, with a pointer to the single-task override,
+    instead of silently landing over a follow-up that already replaced it."""
+    db = tmp_path / "nh.db"
+    calls = []
+
+    def _fake(*, task_id, **kwargs):
+        calls.append(task_id)
+        return LandResult(ok=True, step="close_pr",
+                           landed_sha="ab" * 20, message="landed by fake")
+
+    monkeypatch.setattr(approve_merge_mod, "land_task", _fake)
+
+    task_id, repo, _ = _ready_task(db, tmp_path, title="Superseded", repo_name="repo")
+
+    async def _follow_up():
+        async with Store(db) as store:
+            follow_up = Task.new("supersedes it", repo_path=str(repo), follows_id=task_id)
+            await store.create_task(follow_up)
+    asyncio.run(_follow_up())
+
+    result = _invoke(approve, db, ["--ready", "--yes"])
+
+    assert result.exit_code == 0, result.output
+    assert calls == []
+    assert "not landed" in result.output
+    assert "--force-superseded" in result.output
+
+    t, _ = _task_state(db, task_id)
+    assert t.status is TaskStatus.AWAITING_APPROVAL
+
+
+def test_ready_yes_still_lands_an_unrelated_task_alongside_a_superseded_one(tmp_path, monkeypatch):
+    """A superseded task must not poison the rest of a `--ready --yes` batch —
+    an unrelated, non-superseded ready task in the same run still lands."""
+    db = tmp_path / "nh.db"
+    superseded_id, superseded_repo, _ = _ready_task(
+        db, tmp_path, title="Superseded", repo_name="repo-superseded")
+    clean_id, _, _ = _ready_task(db, tmp_path, title="Clean", repo_name="repo-clean")
+
+    async def _follow_up():
+        async with Store(db) as store:
+            follow_up = Task.new(
+                "supersedes it", repo_path=str(superseded_repo), follows_id=superseded_id)
+            await store.create_task(follow_up)
+    asyncio.run(_follow_up())
+
+    calls = []
+
+    def _fake(*, task_id, **kwargs):
+        calls.append(task_id)
+        return LandResult(ok=True, step="close_pr",
+                           landed_sha="ab" * 20, message="landed by fake")
+
+    monkeypatch.setattr(approve_merge_mod, "land_task", _fake)
+
+    result = _invoke(approve, db, ["--ready", "--yes"])
+
+    assert result.exit_code == 0, result.output
+    assert calls == [clean_id]
+
+    t_superseded, _ = _task_state(db, superseded_id)
+    t_clean, _ = _task_state(db, clean_id)
+    assert t_superseded.status is TaskStatus.AWAITING_APPROVAL
+    assert t_clean.status is TaskStatus.DONE

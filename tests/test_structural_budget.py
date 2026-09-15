@@ -1675,7 +1675,13 @@ FROZEN_FILE_LINES = {
     # through `update_task_config` beside the action that produced it, instead
     # of letting a generic save write a stale blob back.
     # Measured on the squashed tree with the scanner below.
-    "cli/commands.py": 9059,
+    # 9059 -> 9149 (+90): #232 wires `nh task add --follows` (resolves a
+    # predecessor by id/prefix and records `follows_id`) and makes `nh
+    # approve` refuse — with `--force-superseded` as the explicit override —
+    # a task a later task's `follows_id` already names as followed-up-on, in
+    # both the single-task and `--ready --yes` paths. Measured via
+    # `wc -l src/no_human/cli/commands.py`.
+    "cli/commands.py": 9149,
     # api/app.py 5338 -> 5346 (+8): same budget-floor warning surfaced by
     # `send-back`/`reply` as `budget_warning` in the JSON response. Net cost
     # was trimmed from a naive +14 to +8 by computing `Bounds.from_config(...)`
@@ -1981,7 +1987,11 @@ FROZEN_FILE_LINES = {
     # reasoning: the next person adding a column to those writers needs to know
     # `config` is deliberately absent rather than forgotten.
     # Measured on the squashed tree with the scanner below.
-    "core/db.py": 5322,
+    # 5322 -> 5331 (+9): #232 adds `list_tasks_following`, the query `nh
+    # approve` uses to find the task(s) that name a given task in
+    # `follows_id` — used to warn/refuse landing a task a later one already
+    # follows up on. Measured via `wc -l src/no_human/core/db.py`.
+    "core/db.py": 5331,
     # +71: set_local_backend_fields — the config-write helper for the Settings
     # pane's local coder-backend fields (llm.local_model / llm.local_base_url).
     # +75: Codex account config helpers.
