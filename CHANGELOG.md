@@ -39,8 +39,11 @@ All notable changes to no_human. The format follows
   now computed from the macOS plan AND the platform(s) this invocation
   actually targets (`autoUpdateStamp` in `desktop/signing.cjs`): `true` only
   when every targeted platform is macOS, `false` otherwise, and a hard
-  refusal (nonzero exit) if a single invocation mixes a signed mac target
-  with any other platform, since no single stamp is correct for both. A
+  refusal (nonzero exit) if a single invocation mixes a signed AND notarized
+  mac target with any other platform, since no single stamp is correct for
+  both — a signed-but-not-notarized mac target mixed with another platform
+  still exits 0 and stamps `false`, since `plan.canAutoUpdate` is already
+  false in that state and there is nothing to mis-stamp. A
   `beforePack` guard (`assertStampMatchesPlatform`) backstops any invocation
   shape argv parsing can't see.
 - **The venv install guard's resolver never resolved a Windows candidate

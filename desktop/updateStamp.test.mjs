@@ -11,9 +11,13 @@
 // These tests drive the REAL config, out-of-process, with fake-but-shaped
 // Apple credentials present, and assert what gets stamped for a Windows
 // target and a Linux target — not what the code is expected to compute in
-// prose. A revert of the fix (stamping `plan.canAutoUpdate` directly again)
-// must turn AC1 and the mixed-invocation test red; the mutation test at the
-// bottom demonstrates that directly rather than asserting it.
+// prose. A revert of the fix (stamping `plan.canAutoUpdate` directly again,
+// undoing the change at :379) turns the AC1-Windows, AC1-Linux and AC3
+// "code was fixed" tests red, and the mutation test at the bottom
+// demonstrates that directly rather than asserting it. Measured: the
+// mixed-invocation refusal test stays GREEN under that same revert — it does
+// not exercise this line at all, and only goes red if `stamp.fatal`'s exit(1)
+// is separately disabled.
 import assert from "node:assert/strict";
 import test from "node:test";
 import fs from "node:fs";
@@ -93,6 +97,44 @@ function stampFor({ argv, env = {}, cwd = here }) {
   const marker = r.stdout.indexOf("NHSTAMP");
   const meta = marker === -1 ? null : JSON.parse(r.stdout.slice(marker + "NHSTAMP".length));
   return { status: r.status, stdout: r.stdout, stderr: r.stderr, meta };
+}
+
+/**
+ * Loads electron-builder.config.cjs in a CHILD process (argv and env matter,
+ * same reason as stampFor) and actually CALLS `beforePack` with the given
+ * `electronPlatformName`, reporting whether the real hook resolved or
+ * rejected. This is the only way to genuinely exercise
+ * `assertStampMatchesPlatform`: calling it in-process against a stamp this
+ * suite's own (uncredentialed) load already computed as false can never
+ * reject, no matter what the hook body does — see the guard-wiring test
+ * above, which only pins that the two guard names appear in the source.
+ *
+ * @param {object} opts
+ * @param {string[]} opts.argv - flags to append after `--` (e.g. ["--mac"]).
+ * @param {object} opts.env - extra env vars layered onto a clean base env.
+ * @param {string} opts.electronPlatformName - the platform beforePack is
+ *   told it is packing, independent of argv (mirrors electron-builder
+ *   invoking beforePack once per platform in a multi-target build).
+ */
+function beforePackFor({ argv, env, electronPlatformName }) {
+  const script = "const c = require(process.env.NH_CFG); "
+    + "c.beforePack({ electronPlatformName: process.env.NH_PLATFORM }).then("
+    + "() => { process.stdout.write('NHRESULT:resolved'); }, "
+    + "(e) => { process.stdout.write('NHRESULT:rejected:' + e.message); process.exitCode = 1; });";
+  const r = spawnSync(process.execPath,
+    ["-e", script, "--", ...argv],
+    {
+      cwd: here,
+      encoding: "utf8",
+      env: {
+        ...baseEnv(), ...env,
+        NH_CFG: "./electron-builder.config.cjs",
+        NH_PLATFORM: electronPlatformName,
+      },
+    });
+  const marker = r.stdout.indexOf("NHRESULT:");
+  const result = marker === -1 ? null : r.stdout.slice(marker + "NHRESULT:".length);
+  return { status: r.status, stdout: r.stdout, stderr: r.stderr, result };
 }
 
 // ---------------------------------------------------------------------------
@@ -259,6 +301,38 @@ test("beforePack calls both assertStampMatchesPlatform and assertElectronNotices
   await assert.doesNotReject(
     builderConfig.beforePack({ electronPlatformName: "win32" }),
   );
+});
+
+// The test above only pins that beforePack's SOURCE mentions the guard's
+// name; it cannot exercise the guard actually firing, because this process's
+// own (uncredentialed) config load already computed stamp.canAutoUpdate as
+// false for every platform — assertStampMatchesPlatform("win32", false)
+// never throws by construction. Load the config in a CHILD process with real
+// Apple credentials and `--mac` in argv (so stamp.canAutoUpdate is TRUE),
+// then call the real beforePack for a win32/linux pack and confirm it
+// actually rejects — this is the real gate a Node-API or future-flag
+// invocation depends on, not merely its name appearing in the source.
+test("beforePack: the real backstop rejects packing win32/linux under a credentialed --mac stamp", () => {
+  for (const electronPlatformName of ["win32", "linux"]) {
+    const { result, status, stderr } = beforePackFor({
+      argv: ["--mac"], env: CREDS, electronPlatformName,
+    });
+    assert.ok(result && result.startsWith("rejected"),
+      `expected beforePack to reject packing ${electronPlatformName} while the `
+      + `--mac invocation's stamp is true; got result=${result} status=${status} stderr=${stderr}`);
+    assert.match(result, new RegExp(electronPlatformName),
+      "the rejection must name the platform it refused, not just say no");
+    assert.notEqual(status, 0, "a rejected beforePack must not exit 0");
+  }
+});
+
+test("beforePack: the real backstop resolves for darwin under that same credentialed --mac stamp", () => {
+  const { result, status, stderr } = beforePackFor({
+    argv: ["--mac"], env: CREDS, electronPlatformName: "darwin",
+  });
+  assert.equal(result, "resolved",
+    `expected beforePack to resolve for darwin: status=${status} stderr=${stderr}`);
+  assert.equal(status, 0);
 });
 
 // ---------------------------------------------------------------------------

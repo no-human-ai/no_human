@@ -16,18 +16,24 @@
 // packagedFiles.test.mjs fail if any block grows its own copy.
 //
 // That single extraMetadata is FORCED, not a style choice: `extraMetadata` is
-// a root-level key in electron-builder's own app-builder-lib/scheme.json, and
-// MacConfiguration/WindowsConfiguration/LinuxConfiguration each declare
-// `extraMetadata: false` — platformPackager.js reads only the top-level
-// `config.extraMetadata` when building the file transformer, so a per-platform
-// block would be silently ignored there and rejected outright by the schema's
-// `additionalProperties: false` (packagedFiles.test.mjs pins both facts). So
-// `nhCanAutoUpdate` cannot become three values by growing three extraMetadata
-// blocks; it stays ONE value, computed once. What changes below is what that
-// one value is computed FROM: `autoUpdateStamp` (signing.cjs) takes the macOS
-// signing plan AND the platform(s) THIS invocation actually targets — a
-// credentialed environment does not make a Windows or Linux artifact's update
-// path any less unverified. See signing.cjs's header for the full argument.
+// declared exactly once in electron-builder's own app-builder-lib/scheme.json
+// — as a root-level Configuration property. MacConfiguration/
+// WindowsConfiguration/LinuxConfiguration do not mention it at all; each
+// simply sets `additionalProperties: false`, so a `mac.extraMetadata` or
+// `win.extraMetadata` block would be rejected outright by schema validation
+// (that per-platform rejection is pinned by updateStamp.test.mjs's AC5 test,
+// which loads scheme.json and checks each platform definition; the top-level
+// "config exports only known keys" fact is pinned separately by
+// packagedFiles.test.mjs). platformPackager.js correspondingly reads only the
+// single top-level `config.extraMetadata` when building the file transformer
+// — that read site is not covered by a test in this repo, so treat it as a
+// measured-not-pinned fact. So `nhCanAutoUpdate` cannot become three values by
+// growing three extraMetadata blocks; it stays ONE value, computed once. What
+// changes below is what that one value is computed FROM: `autoUpdateStamp`
+// (signing.cjs) takes the macOS signing plan AND the platform(s) THIS
+// invocation actually targets — a credentialed environment does not make a
+// Windows or Linux artifact's update path any less unverified. See
+// signing.cjs's header for the full argument.
 //
 // The `mac.target` list is not cosmetic: Squirrel.Mac updates from a ZIP, and
 // electron-builder only emits `latest-mac.yml` — the file electron-updater
