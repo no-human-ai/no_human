@@ -313,7 +313,7 @@ def test_a_frozen_build_never_runs_the_nh_binary_as_python(
         seen.append(list(argv))
         return subprocess.CompletedProcess(argv, 0, "", "")
 
-    monkeypatch.setattr(worktree.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
     monkeypatch.setattr(worktree.subprocess, "run", capture)
     isolate_attempt_env(wt, {"VIRTUAL_ENV": str(displaced)})
 
@@ -334,7 +334,7 @@ def test_a_frozen_build_with_no_usable_interpreter_still_does_not_fall_back(
     (wt / "pyproject.toml").write_text(PYPROJECT, encoding="utf-8")
     shared = str(tmp_path / "primary" / ".venv")
 
-    monkeypatch.setattr(worktree.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
     monkeypatch.setattr(worktree.shutil, "which", lambda _n: None)
     out = isolate_attempt_env(wt, {"VIRTUAL_ENV": shared})
 

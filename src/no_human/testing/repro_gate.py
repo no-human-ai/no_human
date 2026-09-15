@@ -41,6 +41,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from ..proc import real_python
+
 if TYPE_CHECKING:
     from ..profile import ProjectProfile
 
@@ -348,24 +350,23 @@ def _pytest_python(repo_path: Path) -> str | None:
     confident but FALSE ``fail`` for every bugfix. In a frozen build fall back to
     a real interpreter: the target repo's own venv first (it has the repo's deps
     and pytest), then ``python3``/``python`` on PATH. None → the caller fails
-    closed to ``error`` (advisory), never a false pass/fail."""
+    closed to ``error`` (advisory), never a false pass/fail.
+
+    The frozen fast-path stays here rather than inside ``proc.real_python``
+    because ``_venv_bin`` globs the repo root, and this runs on every repro
+    gate in an ordinary (non-frozen) install where the answer is already
+    known."""
     if not getattr(sys, "frozen", False):
         return sys.executable
     from .runner import _venv_bin
 
-    from .runner import _IS_WINDOWS
-
+    # `_venv_bin` returns the interpreter's own directory (`<venv>/bin`, or
+    # `<venv>\Scripts` on Windows), so hand `real_python` the venv ROOT and
+    # let it pick the right filename for the host — an extensionless `python`
+    # in `Scripts` is not a file, and naming it returned a path that does not
+    # exist.
     bin_dir = _venv_bin(repo_path)
-    if bin_dir is not None:
-        # `_venv_bin` returns `<venv>\Scripts` on Windows, where the
-        # interpreter is `python.exe` — an extensionless `python` there is not
-        # a file, so this returned a path that does not exist.
-        return str(bin_dir / ("python.exe" if _IS_WINDOWS else "python"))
-    for name in ("python3", "python"):
-        found = shutil.which(name)
-        if found:
-            return found
-    return None
+    return real_python(bin_dir.parent if bin_dir is not None else None)
 
 
 def _run_pytest_proc(
