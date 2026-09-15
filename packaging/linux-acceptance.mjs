@@ -10,11 +10,21 @@
 //      class the operator hit on 2026-08-16 is impossible here by construction;
 //   2. saving a shape-valid DUMMY token writes ~/.no_human/.env at mode 0600
 //      into that throwaway HOME (the POSIX branch of tokenStore.mjs);
-//   3. the board attaches on loopback and the BUNDLED frozen server answers
+//   3. the onboarding wizard renders its Welcome step, and is then driven to
+//      completion (email + Continue, zero repos/projects, no other gate);
+//   4. the board attaches on loopback and the BUNDLED frozen server answers
 //      GET /api/tasks with 200 — i.e. bundledNhPath() resolved `nh` inside
-//      resources/nh-server and the spawned process is alive;
-//   4. quitting the app reaps the server: no `no_human` and no `nh` process
+//      resources/nh-server and the spawned process is alive — reached PAST
+//      the wizard, not the wizard's first step (the bug this fixes: a
+//      screenshot named "the board" that was, in fact, step 1 of 7);
+//   5. Settings and Stats each open and prove their own on-screen content;
+//   6. quitting the app reaps the server: no `no_human` and no `nh` process
 //      remains after quitPolicy's grace + escalation.
+//
+// No task is ever created or run here: the runner's dummy token is
+// shape-valid only and cannot authenticate a real API call, so the walk stops
+// at "surfaces are reachable post-onboarding" (intake decision) rather than
+// asserting a task outcome it cannot honestly produce.
 //
 // This is docs/WINDOWS.md §5.4 ("Install → launch → board → quit") made
 // automatic. Screenshots land in --out so a human can look at what the runner
@@ -29,6 +39,12 @@ import http from "node:http";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import {
+  EMAIL, WIZARD, SURFACES, POST_WIZARD_SURFACES,
+  verifySurface, walkSurfaces, advanceThroughWizard,
+} from "./linuxAcceptanceSurfaces.mjs";
+
+export { EMAIL, SURFACES, POST_WIZARD_SURFACES };
 
 // Assembled rather than one literal so this file — the one that would be
 // copied into a `.env` — never contains a full credential-SHAPED line that a
@@ -118,7 +134,7 @@ async function main() {
   try {
     const win = await app.firstWindow({ timeout: 30000 });
     await win.waitForLoadState("domcontentloaded");
-    await win.screenshot({ path: path.join(a.out, "01-first-run.png") });
+    const shot = (file) => win.screenshot({ path: path.join(a.out, file) });
 
     if (a.mode === "setup") {
       if (!/token\.html/.test(win.url())) {
@@ -129,6 +145,10 @@ async function main() {
         throw new Error(`first run did not open the credential screen; window url: ${win.url()}\n`
           + `page text:\n${(body || "").trim().slice(0, 2000)}`);
       }
+      // Prove, then screenshot — never the reverse. SURFACES[0] is the
+      // credential screen itself: #token and #save on screen.
+      await verifySurface(win, SURFACES[0], { timeout: 10000 });
+      await shot(SURFACES[0].file);
       await win.fill("#token", DUMMY_TOKEN);
       await win.click("#save");
     }
@@ -136,7 +156,18 @@ async function main() {
     // The board attaches on the configured port (8420 on a fresh HOME).
     await win.waitForURL(/^http:\/\/127\.0\.0\.1:\d+\/?$/, { timeout: 90000 });
     await win.waitForTimeout(2000);
-    await win.screenshot({ path: path.join(a.out, "02-board.png") });
+
+    if (a.mode === "setup") {
+      // This is the screenshot the reported defect mislabeled "the board":
+      // it is honestly the wizard's Welcome step (step 1 of 7), proven by the
+      // step group's own aria-label before the file is written.
+      await verifySurface(win, SURFACES[1], { timeout: 15000 });
+      await shot(SURFACES[1].file);
+      // Drive the wizard to completion — email + Continue, zero repos/projects
+      // means nothing else gates — landing on the board without a URL change.
+      await advanceThroughWizard(win, WIZARD, { timeout: 15000 });
+    }
+
     const port = Number(new URL(win.url()).port);
 
     const tasks = await get(`${expectedBoardUrl(port)}api/tasks`);
@@ -161,6 +192,13 @@ async function main() {
     const dbFile = path.join(a.home, ".no_human", "no_human.db");
     if (!fs.existsSync(dbFile)) throw new Error("the bundled server did not create ~/.no_human/no_human.db in the throwaway HOME");
 
+    // Walk board -> Settings -> Stats, proving each surface's own on-screen
+    // content before writing its screenshot. POST_WIZARD_SURFACES (not a
+    // re-derived slice) is the same array desktop/linuxAcceptance.test.mjs
+    // pins to ["board-first-run","settings","stats"] in order — a regression
+    // to either the table or this call site fails there.
+    const written = await walkSurfaces(win, POST_WIZARD_SURFACES, { timeout: 15000, shot });
+
     await app.close();
     // quitPolicy: SIGTERM, a 10 s grace, SIGKILL escalation, and main.mjs
     // holds the quit up to a 20 s hard ceiling — so POLL to a 30 s deadline
@@ -176,8 +214,9 @@ async function main() {
     if (left.no_human.length || left.nh.length) {
       throw new Error(`processes left 30 s after quit: ${JSON.stringify(left)}`);
     }
-    console.log(`OK: first-run -> board (port ${port}) -> quit; ${nhPids.length} nh process reaped; `
-      + `credential 0600 in throwaway HOME; screenshots in ${a.out}`);
+    console.log(`OK: credential-screen -> wizard -> board (port ${port}) -> Settings -> Stats -> quit; `
+      + `${nhPids.length} nh process reaped; credential 0600 in throwaway HOME; `
+      + `screenshots ${written.length ? [SURFACES[0].file, ...(a.mode === "setup" ? [SURFACES[1].file] : []), ...written].join(", ") : ""} in ${a.out}`);
   } catch (e) {
     try { await app.close(); } catch { /* already gone */ }
     throw e;
