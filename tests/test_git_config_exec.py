@@ -89,7 +89,7 @@ def test_has_changes_does_not_execute_a_planted_fsmonitor(tmp_path, monkeypatch)
     # POSITIVE CONTROL: a raw `git status` (no `-c core.fsmonitor=false`) DOES
     # run it, so the assertion above is meaningful and not vacuous.
     subprocess.run(["git", "status", "--porcelain"], cwd=wt, check=False)
-    assert marker.exists() and "fake-gh-token" in marker.read_text(), (
+    assert marker.exists() and "fake-gh-token" in marker.read_text(encoding="utf-8"), (
         "control failed: the planted fsmonitor did not run even for a raw "
         "git status, so this test cannot distinguish the fix from a no-op")
 
@@ -215,7 +215,7 @@ def test_type_evidence_worktree_checkout_smudge_gets_no_secret(tmp_path, monkeyp
     type_evidence._run_at_commit(noop, repo, sha, timeout=30)
 
     assert marker.exists(), "sanity: the smudge filter did run on checkout"
-    got = marker.read_text()
+    got = marker.read_text(encoding="utf-8")
     assert "fake-gh-token" not in got and "fake-oauth" not in got, (
         f"_run_at_commit's worktree checkout leaked a launcher secret to a "
         f"planted smudge filter: {got!r}")
@@ -224,7 +224,7 @@ def test_type_evidence_worktree_checkout_smudge_gets_no_secret(tmp_path, monkeyp
     marker.unlink()
     subprocess.run(["git", "worktree", "add", "--detach", str(tmp_path / "raw"), sha],
                    cwd=repo, capture_output=True, text=True)
-    assert marker.exists() and "fake-gh-token" in marker.read_text(), (
+    assert marker.exists() and "fake-gh-token" in marker.read_text(encoding="utf-8"), (
         "control failed: the raw worktree add did not run the smudge with the "
         "secret, so this test cannot distinguish the scrub from a no-op")
 
@@ -246,5 +246,5 @@ def test_reviewer_worktree_status_scan_does_not_execute_fsmonitor(tmp_path, monk
 
     # POSITIVE CONTROL: a raw git status in the same worktree runs it.
     subprocess.run(["git", "status", "--porcelain"], cwd=wt, check=False)
-    assert marker.exists() and "fake-gh-token" in marker.read_text(), (
+    assert marker.exists() and "fake-gh-token" in marker.read_text(encoding="utf-8"), (
         "control failed: the planted fsmonitor did not run for a raw git status")
