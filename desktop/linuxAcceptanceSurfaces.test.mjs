@@ -12,7 +12,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   SURFACES, POST_WIZARD_SURFACES, SCREENSHOT_FILES, WIZARD, EMAIL,
-  verifySurface, walkSurfaces, advanceThroughWizard,
+  verifySurface, walkSurfaces, advanceThroughWizard, runPostCredentialWalk,
 } from "../packaging/linuxAcceptanceSurfaces.mjs";
 
 // ── A minimal fake of the duck-typed Playwright `page` surface that
@@ -368,4 +368,140 @@ test("advanceThroughWizard fails, naming the step it stalled on, when the finish
       return true;
     },
   );
+});
+
+// ── runPostCredentialWalk: the composed, fail-closed sequence ──────────────
+//
+// packaging/linux-acceptance.mjs used to call walkSurfaces(win,
+// POST_WIZARD_SURFACES, ...) directly at its own call site, with nothing
+// exercising that specific composition — a reviewer found that truncating
+// POST_WIZARD_SURFACES to `.slice(0,1)`, replacing the result with `const
+// written = []`, or deleting the Welcome-step verify+shot each left the full
+// 32-test unit suite green, and (because the driver's OK line was a fixed
+// string) `written = []` would still print full success and exit 0. These
+// tests drive the whole composed sequence — Welcome walk, wizard, the
+// injected between-wizard callback, and the post-wizard walk — against one
+// fake page, so each of those three mutations, made inside
+// runPostCredentialWalk itself, makes the function throw (its own
+// fail-closed check) instead of returning the wrong list, and these
+// happy-path tests go RED. ────────────────────────────────────────────────
+
+function buildFullRunPage(steps) {
+  let idx = 0;
+  const sidenav = new Elem();
+  const firstRunTitle = new Elem({ text: "Your first task awaits" });
+  const dialog = new Elem({ visible: false });
+  const statsPage = new Elem({ visible: false });
+  const statsBtn = new Elem({ attrs: { "aria-current": "false" } });
+  statsBtn.onClick = () => { statsPage.visible = true; statsBtn.attrs["aria-current"] = "page"; };
+  const settingsBtn = new Elem({ onClick: () => { dialog.visible = true; } });
+  const closeBtn = new Elem({ onClick: () => { dialog.visible = false; } });
+  const byLocator = {
+    'nav.nh-sidenav[aria-label="Primary"]': sidenav,
+    "#first-run-title": firstRunTitle,
+    '[role="dialog"][aria-labelledby="settings-overlay-title"]': dialog,
+    '[aria-label="Close settings"]': closeBtn,
+    ".stats-page": statsPage,
+  };
+
+  const welcomeGroupLoc = {
+    async isVisible() { return idx === 0 && steps.length > 0; },
+    async waitFor({ state }) {
+      const vis = idx === 0 && steps.length > 0;
+      if (state === "visible" && !vis) throw new Error("timeout: welcome step group not visible");
+      if (state === "hidden" && vis) throw new Error("timeout: welcome step group still visible");
+    },
+    async textContent() { return null; },
+    async getAttribute() { return null; },
+  };
+
+  return {
+    locator(sel) {
+      if (sel === '[aria-label^="Step "]') {
+        return { async getAttribute() { return idx < steps.length ? `Step ${idx + 1} of ${steps.length}: ${steps[idx].name}` : null; } };
+      }
+      return makeLoc(() => byLocator[sel], sel);
+    },
+    getByPlaceholder(ph) {
+      assert.equal(ph, WIZARD.emailField.placeholder);
+      return {
+        async isVisible() { return idx < steps.length && !!steps[idx].hasEmail; },
+        async fill(v) { steps[idx].filled = v; },
+      };
+    },
+    getByRole(role, opts) {
+      if (role === "group") {
+        // Only the Welcome surface uses role="group" in this walk.
+        return welcomeGroupLoc;
+      }
+      const name = opts && opts.name;
+      if (role === "button" && name && name.test("Settings")) return makeLoc(() => settingsBtn, "Settings");
+      if (role === "button" && name && name.test("Stats")) return makeLoc(() => statsBtn, "Stats");
+      const wantsFinish = role === "button" && name && name.test("Enter no_human");
+      const wantsContinue = role === "button" && name && name.test("Continue");
+      if (wantsFinish || wantsContinue) {
+        return {
+          async isVisible() {
+            if (idx >= steps.length) return false;
+            if (wantsFinish) return !!steps[idx].isFinish;
+            return !steps[idx].isFinish;
+          },
+          async click() {
+            if (wantsFinish) return;
+            if (steps[idx].hasEmail && !steps[idx].filled) {
+              throw new Error(`Continue clicked before the email field was filled on step "${steps[idx].name}"`);
+            }
+            idx++;
+          },
+        };
+      }
+      return makeLoc(() => null, `role=${role} name=${name}`);
+    },
+    waitForTimeout: async () => {},
+  };
+}
+
+test("runPostCredentialWalk (mode 'setup') walks Welcome -> board -> Settings -> Stats in order, screenshotting each, and runs betweenWizardAndSurfaces exactly once after the wizard and before the post-wizard walk", async () => {
+  const page = buildFullRunPage([
+    { name: "Welcome" },
+    { name: "Email", hasEmail: true },
+    { name: "Launch", isFinish: true },
+  ]);
+  const shotOrder = [];
+  const shot = async (file) => { shotOrder.push(file); };
+  const calls = [];
+  const written = await runPostCredentialWalk(page, {
+    mode: "setup",
+    timeout: 50,
+    shot,
+    wizard: { ...WIZARD, maxHops: 12 },
+    betweenWizardAndSurfaces: async () => { calls.push("between"); },
+  });
+  assert.deepEqual(written, [
+    "02-onboarding-welcome.png", "03-board-first-run.png", "04-settings.png", "05-stats.png",
+  ]);
+  assert.deepEqual(shotOrder, written);
+  assert.deepEqual(calls, ["between"]);
+});
+
+test("runPostCredentialWalk (mode 'board') skips the Welcome walk and the wizard, still walking board -> Settings -> Stats after the between-callback", async () => {
+  const page = buildFullRunPage([]); // no wizard steps scripted — must never be touched in "board" mode
+  const shotOrder = [];
+  const shot = async (file) => { shotOrder.push(file); };
+  const calls = [];
+  const written = await runPostCredentialWalk(page, {
+    mode: "board",
+    timeout: 50,
+    shot,
+    betweenWizardAndSurfaces: async () => { calls.push("between"); },
+  });
+  assert.deepEqual(written, ["03-board-first-run.png", "04-settings.png", "05-stats.png"]);
+  assert.deepEqual(shotOrder, written);
+  assert.deepEqual(calls, ["between"]);
+});
+
+test("runPostCredentialWalk works with no betweenWizardAndSurfaces callback supplied", async () => {
+  const page = buildFullRunPage([]);
+  const written = await runPostCredentialWalk(page, { mode: "board", timeout: 50 });
+  assert.deepEqual(written, ["03-board-first-run.png", "04-settings.png", "05-stats.png"]);
 });

@@ -363,7 +363,7 @@ call, so the walk stops at "surfaces are reachable," not a task outcome it
 cannot honestly produce); and it asserts entry into the wizard plus arrival
 at the board, not every one of the wizard's 7 steps individually.
 
-
+## 7. Lane B — acceptance as a real user, Ubuntu 24.04 desktop
 
 Walked 2026-08-18 on a REAL Ubuntu 24.04 desktop (EC2 `m7i-flex.large`,
 XFCE 4 over TigerVNC/noVNC, user `tester` created fresh for the walk), driven

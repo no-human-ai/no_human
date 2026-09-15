@@ -79,10 +79,15 @@ export const SURFACES = [
     // Role + accessible name, not `button.nh-navrow:text-is("Settings")` — the
     // row's full text content is icon + "Settings" (App.jsx NavRow renders an
     // aria-hidden icon span alongside the label span), so a full-text-content
-    // selector can never match. The accessible name excludes the aria-hidden
-    // icon, which is why every other walk in this repo (web/e2e/live-flows.mjs,
-    // mobile-nav.mjs, models-pane.mjs, replay-body-leak.mjs) clicks it as
-    // getByRole("button", { name: /^Settings$/ }).
+    // (equality) selector can never match. The accessible name excludes the
+    // aria-hidden icon, which is why web/e2e/live-flows.mjs, mobile-nav.mjs,
+    // models-pane.mjs, and replay-body-leak.mjs click it as
+    // getByRole("button", { name: /^Settings$/ }). Two other walks
+    // (web/e2e/form-order.mjs:176, web/e2e/sweep.mjs:91) instead use
+    // Playwright's `text=Settings` engine, a substring/contains match rather
+    // than an equality match — it still finds the row despite the icon span
+    // for the same underlying reason (it isn't comparing full text content
+    // for equality), but it is not getByRole.
     open: { role: "button", name: /^Settings$/ },
     proof: [{ locator: '[role="dialog"][aria-labelledby="settings-overlay-title"]' }],
     absent: [],
@@ -194,6 +199,63 @@ export async function walkSurfaces(page, surfaces, opts = {}) {
       await closeLoc.click();
       await closeLoc.waitFor({ state: "hidden", timeout }).catch(() => {});
     }
+  }
+  return written;
+}
+
+/**
+ * The whole post-credential walk: (in "setup" mode only) prove and screenshot
+ * the wizard's Welcome step, then drive the wizard to completion; then, after
+ * `opts.betweenWizardAndSurfaces()` (the driver's non-page checks — GET
+ * /api/tasks, the nh-in-shell class, the reaped/live process list, the
+ * credential-file/db-file checks — which must run between "the wizard
+ * finished" and "walk Settings/Stats" to match the CI-green run this
+ * function was extracted from), walk POST_WIZARD_SURFACES (board, Settings,
+ * Stats).
+ *
+ * Extracted out of packaging/linux-acceptance.mjs so this composition — not
+ * just verifySurface/walkSurfaces/advanceThroughWizard individually — is
+ * exercised by a unit test against a fake page. Ends with a FAIL-CLOSED
+ * check: the list of files actually written is compared against a list
+ * derived independently from the untouched, module-level SURFACES /
+ * POST_WIZARD_SURFACES tables (never from whatever a mutated call above
+ * happened to produce). Any of the following — truncating the post-wizard
+ * walk, swapping its result for an empty/partial array, or skipping the
+ * Welcome-step walk — makes `written` disagree with `expected` and throws,
+ * rather than returning a short or empty list that a caller could still
+ * report as full success.
+ */
+export async function runPostCredentialWalk(page, opts = {}) {
+  const mode = opts.mode ?? "setup";
+  const timeout = opts.timeout ?? 15000;
+  const shot = opts.shot;
+  const wizard = opts.wizard ?? WIZARD;
+
+  const written = [];
+  if (mode === "setup") {
+    // This is the screenshot the reported defect mislabeled "the board": it
+    // is honestly the wizard's Welcome step (step 1 of 7), proven by the
+    // step group's own aria-label before the file is written.
+    written.push(...(await walkSurfaces(page, [SURFACES[1]], { timeout, shot })));
+    // Drive the wizard to completion — email + Continue, zero repos/projects
+    // means nothing else gates — landing on the board without a URL change.
+    await advanceThroughWizard(page, wizard, { timeout });
+  }
+
+  if (opts.betweenWizardAndSurfaces) await opts.betweenWizardAndSurfaces();
+
+  // Walk board -> Settings -> Stats, proving each surface's own on-screen
+  // content before writing its screenshot.
+  written.push(...(await walkSurfaces(page, POST_WIZARD_SURFACES, { timeout, shot })));
+
+  const expected = [
+    ...(mode === "setup" ? [SURFACES[1].file] : []),
+    ...POST_WIZARD_SURFACES.map((s) => s.file),
+  ];
+  if (JSON.stringify(written) !== JSON.stringify(expected)) {
+    throw new Error(`runPostCredentialWalk wrote ${JSON.stringify(written)}, `
+      + `expected ${JSON.stringify(expected)} (derived from SURFACES/POST_WIZARD_SURFACES) — `
+      + `refusing to report success for a walk that did not write what it claims to have written`);
   }
   return written;
 }

@@ -41,7 +41,7 @@ import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import {
   EMAIL, WIZARD, SURFACES, POST_WIZARD_SURFACES,
-  verifySurface, walkSurfaces, advanceThroughWizard,
+  verifySurface, runPostCredentialWalk,
 } from "./linuxAcceptanceSurfaces.mjs";
 
 export { EMAIL, SURFACES, POST_WIZARD_SURFACES };
@@ -157,47 +157,53 @@ async function main() {
     await win.waitForURL(/^http:\/\/127\.0\.0\.1:\d+\/?$/, { timeout: 90000 });
     await win.waitForTimeout(2000);
 
-    if (a.mode === "setup") {
-      // This is the screenshot the reported defect mislabeled "the board":
-      // it is honestly the wizard's Welcome step (step 1 of 7), proven by the
-      // step group's own aria-label before the file is written.
-      await verifySurface(win, SURFACES[1], { timeout: 15000 });
-      await shot(SURFACES[1].file);
-      // Drive the wizard to completion — email + Continue, zero repos/projects
-      // means nothing else gates — landing on the board without a URL change.
-      await advanceThroughWizard(win, WIZARD, { timeout: 15000 });
-    }
-
     const port = Number(new URL(win.url()).port);
 
-    const tasks = await get(`${expectedBoardUrl(port)}api/tasks`);
-    if (tasks.status !== 200) throw new Error(`GET /api/tasks -> ${tasks.status}`);
-    const inShell = await win.evaluate(() =>
-      document.documentElement.classList.contains("nh-in-shell"));
-    if (!inShell) throw new Error("nh-in-shell class missing — the board is not the packaged bundle, or the preload did not run");
+    // Populated inside betweenWizardAndSurfaces below; read again after
+    // runPostCredentialWalk resolves, for the OK line.
+    let nhPids = [];
 
-    const nhPids = running("nh");
-    if (nhPids.length === 0) throw new Error("no bundled `nh` process is running while the board is up");
+    // The Welcome-step walk, driving the wizard to completion, the
+    // non-page checks below (GET /api/tasks, nh-in-shell, live `nh`
+    // process, credential file, db file), and the board -> Settings ->
+    // Stats walk are ONE composed, unit-tested sequence
+    // (runPostCredentialWalk in linuxAcceptanceSurfaces.mjs) rather than
+    // separate calls at this call site — so truncating the post-wizard
+    // walk, swapping its result, or skipping the Welcome-step walk fails a
+    // unit test against a fake page instead of only being visible here,
+    // against a real installed build. The function itself fails closed:
+    // it throws unless the files it wrote exactly match what
+    // SURFACES/POST_WIZARD_SURFACES say this run must write.
+    const written = await runPostCredentialWalk(win, {
+      mode: a.mode,
+      timeout: 15000,
+      shot,
+      wizard: WIZARD,
+      betweenWizardAndSurfaces: async () => {
+        const tasks = await get(`${expectedBoardUrl(port)}api/tasks`);
+        if (tasks.status !== 200) throw new Error(`GET /api/tasks -> ${tasks.status}`);
+        const inShell = await win.evaluate(() =>
+          document.documentElement.classList.contains("nh-in-shell"));
+        if (!inShell) throw new Error("nh-in-shell class missing — the board is not the packaged bundle, or the preload did not run");
 
-    const envFile = path.join(a.home, ".no_human", ".env");
-    if (!fs.existsSync(envFile)) throw new Error("credential file was not written into the throwaway HOME");
-    const mode = fs.statSync(envFile).mode & 0o777;
-    if (mode !== 0o600) throw new Error(`credential file mode is ${mode.toString(8)}, expected 600`);
-    if (!fs.readFileSync(envFile, "utf8").includes(DUMMY_TOKEN)) {
-      throw new Error("credential file does not carry the value that was saved");
-    }
-    // The frozen server creates its SQLite store on first start (config.py
-    // derives it from HOME). Asserted HERE, where the diagnosis is written,
-    // rather than discovered three CI steps later as an opaque `test -f`.
-    const dbFile = path.join(a.home, ".no_human", "no_human.db");
-    if (!fs.existsSync(dbFile)) throw new Error("the bundled server did not create ~/.no_human/no_human.db in the throwaway HOME");
+        nhPids = running("nh");
+        if (nhPids.length === 0) throw new Error("no bundled `nh` process is running while the board is up");
 
-    // Walk board -> Settings -> Stats, proving each surface's own on-screen
-    // content before writing its screenshot. POST_WIZARD_SURFACES (not a
-    // re-derived slice) is the same array desktop/linuxAcceptance.test.mjs
-    // pins to ["board-first-run","settings","stats"] in order — a regression
-    // to either the table or this call site fails there.
-    const written = await walkSurfaces(win, POST_WIZARD_SURFACES, { timeout: 15000, shot });
+        const envFile = path.join(a.home, ".no_human", ".env");
+        if (!fs.existsSync(envFile)) throw new Error("credential file was not written into the throwaway HOME");
+        const mode = fs.statSync(envFile).mode & 0o777;
+        if (mode !== 0o600) throw new Error(`credential file mode is ${mode.toString(8)}, expected 600`);
+        if (!fs.readFileSync(envFile, "utf8").includes(DUMMY_TOKEN)) {
+          throw new Error("credential file does not carry the value that was saved");
+        }
+        // The frozen server creates its SQLite store on first start
+        // (config.py derives it from HOME). Asserted HERE, where the
+        // diagnosis is written, rather than discovered three CI steps
+        // later as an opaque `test -f`.
+        const dbFile = path.join(a.home, ".no_human", "no_human.db");
+        if (!fs.existsSync(dbFile)) throw new Error("the bundled server did not create ~/.no_human/no_human.db in the throwaway HOME");
+      },
+    });
 
     await app.close();
     // quitPolicy: SIGTERM, a 10 s grace, SIGKILL escalation, and main.mjs
@@ -214,9 +220,18 @@ async function main() {
     if (left.no_human.length || left.nh.length) {
       throw new Error(`processes left 30 s after quit: ${JSON.stringify(left)}`);
     }
-    console.log(`OK: credential-screen -> wizard -> board (port ${port}) -> Settings -> Stats -> quit; `
+    // Built from what this run actually verified and wrote — `written` (plus
+    // the credential-screen shot, in setup mode) — not a fixed success
+    // string, so a run that wrote fewer/other files than it claims cannot
+    // print a full-success line: runPostCredentialWalk above already throws
+    // before this point if `written` disagrees with what SURFACES /
+    // POST_WIZARD_SURFACES say the run must have written.
+    const surfaceByFile = new Map(SURFACES.map((s) => [s.file, s]));
+    const shotFiles = [...(a.mode === "setup" ? [SURFACES[0].file] : []), ...written];
+    const walked = shotFiles.map((f) => surfaceByFile.get(f)?.key ?? f);
+    console.log(`OK: ${walked.join(" -> ")} -> quit (port ${port}); `
       + `${nhPids.length} nh process reaped; credential 0600 in throwaway HOME; `
-      + `screenshots ${written.length ? [SURFACES[0].file, ...(a.mode === "setup" ? [SURFACES[1].file] : []), ...written].join(", ") : ""} in ${a.out}`);
+      + `screenshots ${shotFiles.join(", ")} in ${a.out}`);
   } catch (e) {
     try { await app.close(); } catch { /* already gone */ }
     throw e;
