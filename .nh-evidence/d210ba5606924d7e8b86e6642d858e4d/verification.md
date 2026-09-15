@@ -1,56 +1,46 @@
 # How I verified this — full log
 
-_Harness-captured record for task `d210ba56`, commit `61f7246a8273c59f9d21fd880a886549438ba05f` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `d210ba56`, commit `a7aea13342dff9d6f838fe98ea450e1c3eaa9db5` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ## How I verified this
 4 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
 
 ### test
-- `uv run pytest -q "tests/test_text_reads_declare_encoding.py::test_no_read_text_in_the_harness_omits_its_encoding" 2>&1 | tail -40`
+- `timeout 100 uv run pytest tests/test_text_reads_declare_encoding.py -q 2>&1 | tail -30`
+
+```
+(eval):1: command not found: timeout
+```
+
+- `uv run pytest tests/test_ci_action.py tests/test_ci_action_metadata.py -q -n 4 2>&1 | tail -60`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-....                                                                     [100%]
-4 passed in 2.18s
-```
-
-- `uv run pytest -q -n 4 tests/test_ci_action.py tests/test_ci_action_metadata.py tests/test_egress_allowlist.py tests/test_text_reads_declare_encoding.py 2>&1 | tail -60`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+   Building no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/d210ba5606924d7e8b86e6642d858e4d.51048.02d36ff2
+      Built no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/d210ba5606924d7e8b86e6642d858e4d.51048.02d36ff2
+Installed 73 packages in 158ms
 bringing up nodes...
 bringing up nodes...
 
-........................................................................ [ 59%]
-.................................................                        [100%]
-121 passed in 9.51s
+........................................................................ [ 80%]
+.................                                                        [100%]
+89 passed in 29.49s
 ```
 
-- `uv run pytest -q -n 4 tests/test_ci_action.py tests/test_ci_action_metadata.py tests/test_egress_allowlist.py tests/test_text_reads_declare_encoding.py 2>&1 | tail -20`
+- `uv run pytest tests/test_text_reads_declare_encoding.py -q 2>&1 | tail -20`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-bringing up nodes...
-bringing up nodes...
-
-........................................................................ [ 59%]
-.................................................                        [100%]
-121 passed in 9.87s
+...............                                                          [100%]
+15 passed in 4.55s
 ```
 
-- `git status --short && echo --- && uv run pytest -q -n 4 tests/test_ci_action.py tests/test_ci_action_metadata.py tests/test_egress_allowlist.py tests/test_text_reads_declare_encoding.py 2>&1 | tail -10`
+- `python3 -m pytest tests/test_ci_action.py tests/test_ci_action_metadata.py tests/test_text_reads_declare_encoding.py -q 2>&1 | tail -15`
 
 ```
-M RELEASE_MANIFEST.txt
- M tests/test_ci_action.py
----
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-bringing up nodes...
-bringing up nodes...
-
-........................................................................ [ 59%]
-.................................................                        [100%]
-121 passed in 9.62s
+........................................................................ [ 69%]
+................................                                         [100%]
+104 passed in 13.28s
 ```
 
 
