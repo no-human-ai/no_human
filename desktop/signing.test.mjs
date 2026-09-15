@@ -13,6 +13,7 @@ import {
   WINDOWS_CERTIFICATE_VAR,
   notaryCredentialSet, notarizeCredentials, signingBanner, signingPlan,
   windowsSigningBanner, windowsSigningPlan,
+  buildPlatforms, autoUpdateStamp, assertStampMatchesPlatform,
 } from "./signing.cjs";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -246,4 +247,164 @@ test("the Windows artifact name is wired to the Windows plan", () => {
   const artifactName = win.slice(0, win.indexOf("};"));
   assert.match(artifactName, /winPlan\.artifactTag/);
   assert.doesNotMatch(artifactName, /[^n]plan\.artifactTag/);
+});
+
+
+// ---------------------------------------------------------------------------
+// buildPlatforms: which platform(s) THIS invocation actually targets, parsed
+// from argv the same way electron-builder's own yargs config does
+// (node_modules/electron-builder/out/builder.js:189-210 — aliases m/o/macos,
+// w/windows, l — transcribed, not guessed).
+// ---------------------------------------------------------------------------
+
+test("buildPlatforms: long flags", () => {
+  assert.deepEqual(buildPlatforms(["--mac"], "linux"), new Set(["darwin"]));
+  assert.deepEqual(buildPlatforms(["--macos"], "linux"), new Set(["darwin"]));
+  assert.deepEqual(buildPlatforms(["--win"], "linux"), new Set(["win32"]));
+  assert.deepEqual(buildPlatforms(["--windows"], "linux"), new Set(["win32"]));
+  assert.deepEqual(buildPlatforms(["--linux"], "win32"), new Set(["linux"]));
+});
+
+test("buildPlatforms: short flags and clustered single-dash letters", () => {
+  assert.deepEqual(buildPlatforms(["-m"], "linux"), new Set(["darwin"]));
+  assert.deepEqual(buildPlatforms(["-o"], "linux"), new Set(["darwin"]));
+  assert.deepEqual(buildPlatforms(["-w"], "linux"), new Set(["win32"]));
+  assert.deepEqual(buildPlatforms(["-l"], "win32"), new Set(["linux"]));
+  assert.deepEqual(buildPlatforms(["-mwl"], "linux"),
+    new Set(["darwin", "win32", "linux"]));
+});
+
+test("buildPlatforms: a target list after the flag does not change the platform", () => {
+  assert.deepEqual(buildPlatforms(["--win", "nsis"], "linux"), new Set(["win32"]));
+  assert.deepEqual(buildPlatforms(["--mac", "dir"], "linux"), new Set(["darwin"]));
+  assert.deepEqual(buildPlatforms(["--linux", "deb", "AppImage"], "win32"),
+    new Set(["linux"]));
+});
+
+test("buildPlatforms: --flag=value form is still recognised by name", () => {
+  assert.deepEqual(buildPlatforms(["--mac=dir"], "linux"), new Set(["darwin"]));
+});
+
+test("buildPlatforms: mixed invocation targets more than one platform", () => {
+  assert.deepEqual(buildPlatforms(["--mac", "--win"], "linux"),
+    new Set(["darwin", "win32"]));
+});
+
+test("buildPlatforms: no flags at all falls back to the host platform", () => {
+  assert.deepEqual(buildPlatforms([], "darwin"), new Set(["darwin"]));
+  assert.deepEqual(buildPlatforms([], "win32"), new Set(["win32"]));
+  assert.deepEqual(buildPlatforms([], "linux"), new Set(["linux"]));
+  assert.deepEqual(buildPlatforms(["--publish", "never"], "darwin"),
+    new Set(["darwin"]), "unrelated flags must not be mistaken for a platform");
+});
+
+test("buildPlatforms: an exotic host with no flags yields an empty set", () => {
+  // Platform.current() would throw on a host electron-builder itself does not
+  // support; buildPlatforms must not invent a platform, so autoUpdateStamp
+  // below can treat it as "not mac-only" rather than crash.
+  assert.deepEqual(buildPlatforms([], "freebsd"), new Set());
+});
+
+test("buildPlatforms: unrecognised single-dash letters are not clustered", () => {
+  // "-c" is the config flag, not a platform letter; must not be swallowed.
+  assert.deepEqual(buildPlatforms(["-c", "config.json"], "linux"), new Set(["linux"]));
+});
+
+
+// ---------------------------------------------------------------------------
+// autoUpdateStamp: the macOS signing verdict only ever authorises an update
+// path when this invocation's platform set is mac-and-only-mac.
+// ---------------------------------------------------------------------------
+
+const SIGNED_PLAN = signingPlan({ ...CERT, ...NOTARY });
+const UNSIGNED_PLAN = signingPlan({});
+const SIGNED_NOT_NOTARIZED_PLAN = signingPlan({ ...CERT });
+
+test("autoUpdateStamp: signed+notarized, mac-only targets stamp true", () => {
+  for (const argv of [["--mac"], ["-m"], ["--macos"], ["--mac", "dir"]]) {
+    const platforms = buildPlatforms(argv, "darwin");
+    const stamp = autoUpdateStamp({ plan: SIGNED_PLAN, platforms });
+    assert.equal(stamp.canAutoUpdate, true, `argv=${argv}`);
+    assert.equal(stamp.fatal, false, `argv=${argv}`);
+  }
+});
+
+test("autoUpdateStamp: signed+notarized but a Windows-only target stamps false", () => {
+  for (const argv of [["--win"], ["-w"], ["--windows"], ["--win", "nsis"]]) {
+    const platforms = buildPlatforms(argv, "darwin");
+    const stamp = autoUpdateStamp({ plan: SIGNED_PLAN, platforms });
+    assert.equal(stamp.canAutoUpdate, false, `argv=${argv}`);
+    assert.equal(stamp.fatal, false, `argv=${argv}`);
+  }
+});
+
+test("autoUpdateStamp: signed+notarized but a Linux-only target stamps false", () => {
+  for (const argv of [["--linux"], ["-l"], ["--linux", "deb"]]) {
+    const platforms = buildPlatforms(argv, "darwin");
+    const stamp = autoUpdateStamp({ plan: SIGNED_PLAN, platforms });
+    assert.equal(stamp.canAutoUpdate, false, `argv=${argv}`);
+    assert.equal(stamp.fatal, false, `argv=${argv}`);
+  }
+});
+
+test("autoUpdateStamp: unsigned build stamps false regardless of target", () => {
+  for (const argv of [["--mac"], ["--win"], ["--linux"]]) {
+    const platforms = buildPlatforms(argv, "darwin");
+    const stamp = autoUpdateStamp({ plan: UNSIGNED_PLAN, platforms });
+    assert.equal(stamp.canAutoUpdate, false, `argv=${argv}`);
+    assert.equal(stamp.fatal, false, `argv=${argv}`);
+  }
+});
+
+test("autoUpdateStamp: signed-but-not-notarized mac target still stamps false", () => {
+  const platforms = buildPlatforms(["--mac"], "darwin");
+  const stamp = autoUpdateStamp({ plan: SIGNED_NOT_NOTARIZED_PLAN, platforms });
+  assert.equal(stamp.canAutoUpdate, false);
+  assert.equal(stamp.fatal, false);
+});
+
+test("autoUpdateStamp: a signed+notarized run that ALSO emits a non-mac target is fatal", () => {
+  // This is the exact shape the ticket reports: one credentialed invocation,
+  // multiple platform outputs. There is no single correct stamp, so refuse
+  // outright rather than guess.
+  const platforms = buildPlatforms(["--mac", "--win"], "darwin");
+  const stamp = autoUpdateStamp({ plan: SIGNED_PLAN, platforms });
+  assert.equal(stamp.canAutoUpdate, false);
+  assert.equal(stamp.fatal, true);
+  assert.match(stamp.reason, /REFUSING/);
+});
+
+test("autoUpdateStamp: an unsigned run with mac+other targets is not fatal", () => {
+  // Nothing shippable would auto-update either way, so there's no unsafe
+  // stamp to refuse — only a credentialed run needs the hard stop.
+  const platforms = buildPlatforms(["--mac", "--win"], "darwin");
+  const stamp = autoUpdateStamp({ plan: UNSIGNED_PLAN, platforms });
+  assert.equal(stamp.canAutoUpdate, false);
+  assert.equal(stamp.fatal, false);
+});
+
+test("autoUpdateStamp: an empty platform set (exotic host) is not mac-only", () => {
+  const stamp = autoUpdateStamp({ plan: SIGNED_PLAN, platforms: new Set() });
+  assert.equal(stamp.canAutoUpdate, false);
+  assert.equal(stamp.fatal, false);
+  assert.match(stamp.reason, /none/);
+});
+
+
+// ---------------------------------------------------------------------------
+// assertStampMatchesPlatform: the runtime backstop electron-builder's
+// beforePack hook calls with the REAL electronPlatformName per platform, for
+// any invocation shape buildPlatforms could not see from argv.
+// ---------------------------------------------------------------------------
+
+test("assertStampMatchesPlatform: throws for a non-mac platform stamped true", () => {
+  assert.throws(() => assertStampMatchesPlatform("win32", true), /win32/);
+  assert.throws(() => assertStampMatchesPlatform("linux", true), /linux/);
+});
+
+test("assertStampMatchesPlatform: passes for darwin true, and for false anywhere", () => {
+  assert.doesNotThrow(() => assertStampMatchesPlatform("darwin", true));
+  assert.doesNotThrow(() => assertStampMatchesPlatform("win32", false));
+  assert.doesNotThrow(() => assertStampMatchesPlatform("linux", false));
+  assert.doesNotThrow(() => assertStampMatchesPlatform("darwin", false));
 });
