@@ -1671,9 +1671,15 @@ FROZEN_FILE_LINES = {
     # file each persist the raise through `update_task_config` beside the
     # action that produced it, instead of letting a generic save write a
     # stale blob back.
-    # Measured on the merge result with the scanner below
-    # (`wc -l src/no_human/cli/commands.py` agrees: 9096).
-    "cli/commands.py": 9096,
+    # 9096 -> 9101 (+5): `gate`'s docstring now states the write surface in
+    # full (config.yaml is read, never created; --pr mode's `git fetch`
+    # writes only `FETCH_HEAD` and fetched objects) instead of the shorter
+    # "reads and reports only" claim a staff review found to be inaccurate,
+    # and the `GateUnavailable` refusal now prints with `soft_wrap=True` so a
+    # long credential path or PR URL cannot fold mid-token in a narrow
+    # terminal.
+    # Measured via `wc -l src/no_human/cli/commands.py` (agrees: 9101).
+    "cli/commands.py": 9101,
     # api/app.py 5338 -> 5346 (+8): same budget-floor warning surfaced by
     # `send-back`/`reply` as `budget_warning` in the JSON response. Net cost
     # was trimmed from a naive +14 to +8 by computing `Bounds.from_config(...)`
@@ -2030,7 +2036,12 @@ FROZEN_FILE_LINES = {
     # 3646 -> 3657 (+11): the `hooks.per_edit_type` default (#114 phase 2)
     # and the comment recording why it ships off while `per_edit_lint`
     # ships on. Re-measured on the merge result.
-    "config.py": 3657,
+    # 3657 -> 3668 (+11): `load_config`'s `ensure_private_dir` call is now
+    # gated on `create_if_missing or NO_HUMAN_HOME.exists()` instead of
+    # running unconditionally, so a `create_if_missing=False` read (`nh
+    # gate`'s config read among others) no longer materializes
+    # `~/.no_human` on a machine that has never run `nh init`.
+    "config.py": 3668,
     # +61: the tamper-adjudication one-bounded-retry contract (mechanical-
     # failure classification + the extracted `_review_tamper_adjudication`
     # helper that keeps `AdversarialReviewer.review` itself under the

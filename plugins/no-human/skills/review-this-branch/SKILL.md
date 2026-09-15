@@ -57,10 +57,10 @@ should be.
 |---|---|
 | `0` | Gate passed: reviewer found no blocking findings **and** the tamper guard found no test-weakening. |
 | `1` | Gate failed: a blocking review finding or a tamper-guard finding (deleted/weakened tests). |
-| `2` | Gate **refused to run** — no review verdict was reached at all. A named precondition failed: no credential, no upstream, not a git repo, PR fetch failed, the diff is over the single-turn review cap, or the reviewer timed out / hit a transport error. |
+| `2` | Gate **refused to run**: no review verdict was reached at all. A named precondition failed: no credential, no upstream, not a git repo, PR fetch failed, the diff is over the single-turn review cap, or the reviewer timed out / hit a transport error. |
 
-**On exit `2`, never report a pass — and never report the reviewer's
-checklist as a fail either, since the reviewer never actually finished.**
+**On exit `2`, never report a pass.** Also never report the reviewer's
+checklist as a fail, since the reviewer never actually finished.
 This includes a diff too large to review and a reviewer timeout or transport
 error: both refuse before or without a real verdict, not with a "no
 findings" pass or a "timeout" finding treated as a real blocking issue.
@@ -83,7 +83,7 @@ behalf.** The exact write surface, stated in full:
 
 - `~/.no_human/config.yaml` is **read if it already exists** (for reviewer
   backend/model settings); it is never created by this skill. On a machine
-  that has never run `nh init`, `nh gate` leaves `~/.no_human` untouched —
+  that has never run `nh init`, `nh gate` leaves `~/.no_human` untouched:
   there is no on-demand `~/.no_human` setup here, unlike other `nh` commands.
 - In `--pr` mode only, one additive `git fetch` of the pull request's ref
   writes `FETCH_HEAD` and the fetched objects **into your checkout**. It
@@ -91,7 +91,7 @@ behalf.** The exact write surface, stated in full:
 - Every invocation, default and `--pr` alike, also makes one local
   `git clone --local --shared` of your own checkout into a throwaway temp
   directory (see below) and a `git checkout` inside that temp directory
-  only — never against your own checkout.
+  only, never against your own checkout.
 
 Beyond that, `nh gate` only runs read-only git plumbing against your
 checkout: `rev-parse`, `merge-base`, `diff`, `status --porcelain`,
