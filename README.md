@@ -201,6 +201,132 @@ video with every step):
 
 <p align="center">▶️&nbsp;&nbsp;<strong><a href="https://getnohuman.com/assets/demo-jira.mp4">Play the full demo</a></strong> — 1:33, from Jira board to review-passed PR</p>
 
+## GitHub Action
+
+Run the same adversarial reviewer and tamper guard as a pull-request check —
+one shot, no daemon, no `~/.no_human` database, and not the queueing `nh
+review` CLI path. It posts a single pass/fail checklist comment with
+`file:line` citations, created once and then updated in place — never
+duplicated.
+
+```yaml
+# .github/workflows/review-gate.yml
+name: no_human review gate
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: no-human-ai/no_human@main # no versioned tag yet — see below
+        with:
+          credential: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ github.token }}
+```
+
+`permissions.contents: read` lets `actions/checkout` read this repository;
+`pull-requests: write` is what lets the Action post/update its own comment.
+Neither grants anything broader. The checkout step's explicit
+`ref: ${{ github.event.pull_request.head.sha }}` matters too: on a
+`pull_request` event, `actions/checkout` otherwise checks out an ephemeral
+merge commit rather than the PR's actual head, and the Action reviews and
+cites line numbers against whatever tree is on disk — it refuses to run
+rather than review the wrong one, so omitting `ref:` here turns into a red,
+actionable exit `2`, not a silent misreview.
+
+This Action has no versioned release yet — `no-human-ai/no_human`'s tags
+today run `v0.1.0` through `v0.2.3`, none of which contain `action.yml`. A
+`v1` tag will be cut at the first release that ships it. Until then, pin to
+`@main` for the latest revision, or better, pin to the exact commit SHA
+you've reviewed (`no-human-ai/no_human@<sha>`) so a later change to `main`
+can't alter what your workflow runs.
+
+`credential` takes either shape of your own Anthropic credential — an
+`ANTHROPIC_API_KEY` (`sk-ant-api...`) or a Claude subscription OAuth token
+minted with `claude setup-token` (`sk-ant-oat...`) — auto-detected from its
+prefix, or pinned explicitly with `credential_mode: oauth` /
+`credential_mode: api_key`. Whichever shape you pass, the other credential
+path is scrubbed from the job's environment before the reviewer runs, and the
+value itself is masked in the log the moment it is read.
+
+**A credential is required, and there is no silent fallback.** If
+`secrets.ANTHROPIC_API_KEY` (or whatever secret you wire into `credential`)
+is empty, unset, or a shape the Action can't recognize even in `auto` mode,
+the run fails loudly at exit code `2` — naming the `credential` input and
+the secret it expects — before the reviewer, or any GitHub API call, ever
+runs. The same fail-closed rule applies if the reviewer itself errors out or
+the model call is rejected: those runs exit `2` too. The Action never posts
+a PASS, and never exits `0`, for a credential or reviewer failure — but a
+green check does **not** always mean the gate reviewed code: a fork pull
+request skips with exit `0` and no reviewer call (see below), and a pull
+request with an empty diff (nothing to review) posts a synthetic PASS with
+no reviewer or tamper-guard call. If you make this a required check, treat
+both of those as "did not review," not as an approval.
+
+**Forks are skipped, not reviewed.** A pull request whose head is not this
+repository — including one from an already-deleted fork — never reaches the
+reviewer or the model; the Action exits 0 with a comment-free explanation
+instead of running review code against an unvetted head in a job that can see
+your secrets. `pull_request_target` is refused outright (exit 2), even with a
+valid credential, because that trigger is the one shape that can carry a
+fork's head into a secret-bearing job.
+
+**Dependabot pull requests fail closed with exit `2`, and that is GitHub's
+restriction, not this Action's.** A Dependabot-opened pull request has the
+same repository as its head — it is not a fork, so the check above does not
+skip it — but GitHub itself withholds repository secrets (and downgrades
+`GITHUB_TOKEN` to read-only) from workflow runs it triggers on the
+`pull_request` event, as a platform-level guard against a lockfile update
+carrying a malicious install script into a secret-bearing job. `credential`
+therefore arrives empty on those runs, and this Action's own fail-closed rule
+(above) makes that a red, actionable exit `2` naming the missing secret, not
+a silent skip or a false PASS. If you require this check and want Dependabot
+PRs to go green, either exempt them in your branch protection rules or accept
+that they need a maintainer's manual re-run/approval like any other check
+that needs a secret GitHub won't hand to a bot-triggered job.
+
+**Cost is bounded by files, not tokens or time.** `max_files` (default `15`)
+caps how many changed files are sent to the reviewer, sorted by path,
+first-N; the comment reports how many of the total were actually reviewed.
+The reviewer runs `single_turn`, so each run is exactly one model call over
+the capped diff — in rough terms, a few cents to a few tens of cents of your
+own Anthropic usage depending on diff size, similar in shape to one local `nh
+review`. That is separate from the one-time cost of the runner building the
+Docker image itself (a few tens of seconds, GitHub-hosted-runner compute,
+not model spend) on each run unless your workflow caches the image. Lower
+`max_files` (or split large pull requests) to spend less.
+
+The Action never merges, pushes, approves, or edits anything about the pull
+request beyond its own single comment — enforced in code, not just by
+convention: every GitHub API call is checked against a two-endpoint allowlist
+(list/create/update that one comment thread) before it is sent. Set
+`fail_on_findings: false` to keep the comment without failing the check, or
+`dry_run: true` to print the verdict to the job log/summary and make no
+GitHub API calls at all.
+
+**Known limitation: the tamper guard's "full test tree" claim holds for
+ASCII test filenames, not non-ASCII ones.** The tamper check walks every test
+file in the repository (not just the `max_files`-capped subset sent to the
+reviewer) via an unquoted `git ls-tree`, so a test file whose name contains
+non-ASCII bytes is listed in git's C-quoted string form (e.g.
+`"r\303\251gression_test.py"`) instead of its real path, and silently drops
+out of the guard's before/after comparison — deleting or weakening such a
+file will not currently be caught. This Action's own diffed/reviewed file
+list is not affected by the equivalent problem (it explicitly re-quotes and
+re-verifies every path it hands to the reviewer), but the underlying
+tamper-check module is out of scope for this Action to change. If your test
+suite has non-ASCII test filenames, treat the tamper guard as best-effort for
+those specific files until that's fixed upstream.
+
 ## MCP server — hand it work from the agent you are already in
 
 no_human ships an **MCP (Model Context Protocol) server**: a stdio bridge, built
