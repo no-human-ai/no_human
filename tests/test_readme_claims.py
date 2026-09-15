@@ -2010,11 +2010,11 @@ CITATION_TABLE = (
     ("security.md", "vcs/git.py:GitRepo._have_remote_commit:1220", "vcs/git.py",
      '"git", "fetch"'),
     ("security.md", ":GitRepo.fetch:1556", "vcs/git.py", '["fetch", remote]'),
-    ("security.md", "cli/commands.py:merge_stack_run:3224", "cli/commands.py",
+    ("security.md", "cli/commands.py:merge_stack_run:3244", "cli/commands.py",
      '"gh", "pr", "merge"'),
-    ("security.md", "cli/commands.py:approve:5594", "cli/commands.py",
+    ("security.md", "cli/commands.py:approve:5678", "cli/commands.py",
      '_refuse_agent_gate_act("approve")'),
-    ("security.md", ":merge_stack_run:3194", "cli/commands.py",
+    ("security.md", ":merge_stack_run:3214", "cli/commands.py",
      '_refuse_agent_gate_act("merge_stack_run")'),
     ("security.md", "updates.py:44", "updates.py", "PYPI_JSON_URL"),
     ("security.md", "updates.py:57", "updates.py", "DISABLE_ENV_VAR"),
@@ -2062,10 +2062,17 @@ CITATION_TABLE = (
     ("security.md", "history/extractor.py:65-72", "history/extractor.py",
      "csrf_token"),
     # docs/eval.md
+<<<<<<< HEAD
     ("eval.md", "src/no_human/cli/commands.py:bench_run:8161",
      "src/no_human/cli/commands.py", "different --trials are not resumed"),
     ("eval.md", ":bench_run:8312", "src/no_human/cli/commands.py", "asyncio.gather"),
     ("eval.md", ":bench_run:8190", "src/no_human/cli/commands.py",
+=======
+    ("eval.md", "src/no_human/cli/commands.py:bench_run:8213",
+     "src/no_human/cli/commands.py", "different --trials are not resumed"),
+    ("eval.md", ":bench_run:8364", "src/no_human/cli/commands.py", "asyncio.gather"),
+    ("eval.md", ":bench_run:8242", "src/no_human/cli/commands.py",
+>>>>>>> origin/main
      "(sc.task_id, sc.trial)"),
     ("eval.md", "src/no_human/eval/northstar_card.py:NorthStarCard.pass_k_rate:456",
      "src/no_human/eval/northstar_card.py", "def pass_k_rate("),

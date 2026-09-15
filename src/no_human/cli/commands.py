@@ -1051,7 +1051,13 @@ def task() -> None:
                    "the PENDING queue only, with no aging: a low task can wait "
                    "behind an unbounded medium/high stream, and is never preempted "
                    "once a task starts running.")
-def task_add(source, title, repo, description, criteria, external_id, kind, linked_repo, run, verbose, grill, backend, approve_plan, priority):
+@click.option("--follows", "follows_id", default=None,
+              help="Mark this task as a follow-up to an earlier task, by its "
+                   "full id or a unique id prefix — records the sibling link "
+                   "(follows_id) the board/API already show, and lets "
+                   "`nh approve` warn or refuse landing the earlier task once "
+                   "this one exists.")
+def task_add(source, title, repo, description, criteria, external_id, kind, linked_repo, run, verbose, grill, backend, approve_plan, priority, follows_id):
     """Add a task — from a GitHub/GitLab issue URL, a plain sentence, or --title.
 
     A positional SOURCE is either an issue URL or a plain sentence: an issue
@@ -1115,6 +1121,16 @@ def task_add(source, title, repo, description, criteria, external_id, kind, link
             else:
                 console.print("[red]provide a SOURCE url/id or --title[/]")
                 sys.exit(1)
+            # --follows (issue #232): resolve to a real task before filing —
+            # a follow-up link to a task that doesn't exist would just be a
+            # dangling id nothing could ever warn against.
+            predecessor = None
+            if follows_id:
+                predecessor = await store.find_task(follows_id)
+                if not predecessor:
+                    print_no_task_matching(follows_id)
+                    sys.exit(1)
+                t.follows_id = predecessor.id
             # WS-E: attach linked repos for multi-repo tasks.
             if linked_repo:
                 t.linked_repos = [str(Path(r).resolve()) for r in linked_repo]
@@ -1162,6 +1178,10 @@ def task_add(source, title, repo, description, criteria, external_id, kind, link
             await store.create_task(t)
             console.print(f"[green]created task[/] [bold]{t.id[:8]}[/] — {t.title}")
             console.print(f"  [magenta]kind:[/] {t.kind}  [dim]({verdict.reason})[/]")
+            if predecessor:
+                console.print(
+                    f"  [cyan]follows:[/] {predecessor.id[:8]} — {predecessor.title}"
+                )
             if backend:
                 console.print(f"  [cyan]backend:[/] {backend}")
             if t.linked_repos:
@@ -5247,6 +5267,19 @@ async def _approve_find_ready(store, config):
     return ready
 
 
+async def _superseding_successors(store, task_id: str) -> list[Task]:
+    """Tasks that name `task_id` as `follows_id` (issue #232) — i.e. later
+    tasks the operator already filed as a follow-up to this one. A successor
+    that was itself cancelled (FAILED with a cancel_reason recorded) no
+    longer supersedes anything, so it is excluded; any other status —
+    including DONE, which is the strongest signal the predecessor's work was
+    superseded — still counts."""
+    successors = await store.list_tasks_following(task_id)
+    return [s for s in successors
+            if not (s.status == TaskStatus.FAILED
+                    and (s.context or {}).get("cancel_reason"))]
+
+
 def _format_conflict_paths(paths: tuple[str, ...]) -> str:
     """Render conflicting paths as a comma-joined, 3-capped list, e.g.
     ``"a.txt, b.txt +2 more"`` — same capping style as
@@ -5303,24 +5336,41 @@ async def _approve_go_ready(config, assume_yes, land_one):
             console.print("[dim]no awaiting_approval task is merge-ready for its current head.[/]")
             return
 
+        # Issue #232: a later task can already name this one in `follows_id`
+        # (a follow-up/supersession), computed fresh here just like
+        # landability — never cached from when the verdict was stamped.
+        superseded_by: dict[str, list] = {}
+        for r in ready:
+            superseded_by[r.task.id] = await _superseding_successors(store, r.task.id)
+
         conflicted = [r for r in ready if r.landability.state == "conflict"]
-        landable = [r for r in ready if r.landability.state != "conflict"]
+        superseded = [r for r in ready
+                      if r.landability.state != "conflict" and superseded_by[r.task.id]]
+        landable = [r for r in ready
+                    if r.landability.state != "conflict" and not superseded_by[r.task.id]]
 
         for r in ready:
             note = f" · {r.advisory}" if r.advisory else ""
+            succ = superseded_by[r.task.id]
+            superseded_note = (
+                " · SUPERSEDED by " + ", ".join(s.id[:8] for s in succ) if succ else ""
+            )
             console.print(
                 f"{r.task.id[:8]} · {r.task.title} · rules "
                 f"{r.rules_passed}/{r.rules_total}{note} · "
-                f"{_format_merge_status(r.landability)} · {r.pr_url}"
+                f"{_format_merge_status(r.landability)} · {r.pr_url}{superseded_note}"
             )
 
         if not assume_yes:
-            if conflicted:
+            if conflicted or superseded:
                 console.print(
                     f"\n{len(landable)} task(s) ready to land; "
                     f"{len(conflicted)} task(s) pass the quality rules but "
                     "do NOT merge into their current base right now — "
-                    "rebase before approving."
+                    "rebase before approving; "
+                    f"{len(superseded)} task(s) are superseded by a later "
+                    "follow-up task — approve those individually with "
+                    "--force-superseded if they should still land."
                 )
                 if landable:
                     console.print(
@@ -5354,6 +5404,15 @@ async def _approve_go_ready(config, assume_yes, land_one):
                     f"{r.landability.base_ref or 'its base'} in "
                     f"{_format_conflict_paths(r.landability.conflicts)}; "
                     "rebase and re-run"
+                )
+                continue
+            if superseded_by[t.id]:
+                names = ", ".join(s.id[:8] for s in superseded_by[t.id])
+                console.print(
+                    f"[yellow]not landed[/] {t.id[:8]} — superseded by "
+                    f"{names}; approve it individually with "
+                    "`nh approve <id> --force-superseded` if it should "
+                    "still land."
                 )
                 continue
             outcome = await land_one(store, t)
@@ -5414,7 +5473,7 @@ async def _approve_go_landed(config, task_id, landed_sha, justification, base_br
         )
 
 
-async def _approve_go_single(config, task_id, land_one):
+async def _approve_go_single(config, task_id, land_one, force_superseded=False):
     """Plain `nh approve <task_id>` — the same procedure `--ready --yes`
     (`_approve_go_ready`) walks over several tasks, rendered as the
     single-task console output. `land_one` is the caller's `_land_one`
@@ -5427,6 +5486,24 @@ async def _approve_go_single(config, task_id, land_one):
         if t.status != TaskStatus.AWAITING_APPROVAL:
             console.print(
                 f"[yellow]task is {t.status.value!r}, not awaiting_approval — cannot approve[/]"
+            )
+            sys.exit(1)
+
+        # Issue #232: a task nearly landed once despite three later tasks
+        # already superseding it — refuse by default rather than trusting the
+        # operator noticed the sibling link in prose. --force-superseded is
+        # the explicit override for a real false positive (e.g. the follow-up
+        # only extends this task, doesn't replace it).
+        successors = await _superseding_successors(store, t.id)
+        if successors and not force_superseded:
+            names = ", ".join(
+                f"{s.id[:8]} ({s.status.value}) — {s.title}" for s in successors)
+            console.print(
+                f"[bold red]refused[/] {t.id[:8]} — superseded by {names}. "
+                "A later task already follows up on this one; approving it "
+                "risks landing work that has since been replaced. Re-run "
+                "with --force-superseded if this predecessor should still "
+                "land as-is."
             )
             sys.exit(1)
 
@@ -5588,11 +5665,24 @@ async def _approve_go_single(config, task_id, land_one):
                    "trivial ancestor, so passing the same value here as "
                    "--landed proves nothing; name a branch if you want the "
                    "check to mean something.")
-def approve(task_id, list_ready, assume_yes, landed_sha, justification, base_branch):
+@click.option("--force-superseded", is_flag=True, default=False,
+              help="Approve a task even though a later task's --follows "
+                   "names it as followed-up-on/superseded (issue #232). "
+                   "Without this, `nh approve <task_id>` refuses rather than "
+                   "risk landing work a later task has already replaced. "
+                   "Only applies to a single TASK_ID, not --ready --yes.")
+def approve(task_id, list_ready, assume_yes, landed_sha, justification, base_branch,
+            force_superseded):
     """Approve and merge — squash-lands the PR under the operator identity
     (the agent still never merges on its own)."""
     _refuse_agent_gate_act("approve")
 
+    if force_superseded and list_ready:
+        console.print(
+            "[bold red]error:[/] --force-superseded only applies to a "
+            "single TASK_ID, not --ready."
+        )
+        sys.exit(2)
     if list_ready and task_id:
         console.print(
             "[bold red]error:[/] --ready lists awaiting_approval tasks; it "
@@ -5772,7 +5862,7 @@ def approve(task_id, list_ready, assume_yes, landed_sha, justification, base_bra
         asyncio.run(_approve_go_landed(config, task_id, landed_sha, justification, base_branch))
         return
 
-    asyncio.run(_approve_go_single(config, task_id, _land_one))
+    asyncio.run(_approve_go_single(config, task_id, _land_one, force_superseded))
 
 
 @cli.command("review-comments")
