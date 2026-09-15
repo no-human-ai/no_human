@@ -2651,18 +2651,9 @@ class WakeWatcher:
 
         if result.state == delivered_base.UNDETERMINED:
             measure_freshness = result.as_dict()
-            if (ctx.get("pr_base_freshness") == measure_freshness
-                    and (recorded_sha or not result.observed_sha)):
-                # Already recorded exactly this undetermined answer on a
-                # previous tick and there is nothing left to backfill (either
-                # a base sha was already recorded, so the backfill branch
-                # below never fires, or this tick has no observed sha to
-                # backfill with either) — bound the noise instead of
-                # re-writing identical context and re-emitting an event on
-                # every single tick forever, same debounce as the other two
-                # UNDETERMINED branches below.
-                return None
-            patch: dict[str, Any] = {"pr_base_freshness": measure_freshness}
+            patch: dict[str, Any] = {}
+            if ctx.get("pr_base_freshness") != measure_freshness:
+                patch["pr_base_freshness"] = measure_freshness
             if not recorded_sha:
                 # Never recorded at delivery (predates this bugfix, or the
                 # tip could not be resolved then either). Backfill honestly
@@ -2675,15 +2666,20 @@ class WakeWatcher:
                 # then destroy the freshness record outright, leaving the
                 # task permanently indistinguishable from one that was
                 # actually just measured fresh — exactly the defect this
-                # bugfix closes. If the merge-base itself cannot be
-                # resolved, write NO sha at all so the record stays absent
-                # and re-measures UNDETERMINED next tick, never silently
-                # falling back to the tip.
+                # bugfix closes. Retried every tick (cheap: local-only, no
+                # extra fetch) in case the branch ref becomes resolvable
+                # later. Still unresolvable: write NO sha, never the tip.
                 mb = await delivered_base.merge_base_sha(
                     task.repo_path, measure_base, branch_name)
                 if mb:
                     patch["pr_base_sha"] = mb
                     patch["pr_base_sha_source"] = "merge_base"
+            if not patch:
+                # Same freshness already recorded and nothing new to
+                # backfill (a sha was already recorded, or it still can't be
+                # resolved) — bound the noise, same debounce as the other
+                # two UNDETERMINED branches below.
+                return None
             task.context = await self.store.merge_context(task.id, patch)
             await self._emit(
                 task, "pr_base_undetermined",

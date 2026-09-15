@@ -535,6 +535,40 @@ async def test_missing_recorded_base_sha_is_undetermined_and_backfilled(store, t
     assert ctx["pr_base_sha_source"] == "merge_base"
 
 
+async def test_undetermined_with_an_unresolvable_branch_does_not_repeat_forever(
+        store, tmp_path):
+    """A pre-existing PR (no recorded `pr_base_sha`) whose head branch is not
+    locally resolvable (the normal state of a watcher checkout that has only
+    ever fetched the base — see `_check_base_stale`'s own docstring) can
+    never have `merge_base_sha` succeed. Trunk still resolves fine, so
+    `measure()` answers UNDETERMINED with a real `observed_sha` on every
+    tick. A second, back-to-back tick with no trunk movement must not
+    re-write identical context or re-emit a second `pr_base_undetermined`
+    event -- the debounce must hold even though no `pr_base_sha` was ever
+    backfilled, exactly the population this bugfix targets."""
+    work = _repo(tmp_path)
+    # No landing at all: trunk stays put, so the *only* thing that could
+    # legitimately trigger a second write/emit is the buggy debounce itself.
+    t = await _pr_task(store, work, base_sha=None,
+                        pr_branch="ghost-branch-never-created")
+    events = []
+    w = _watcher(store, mergeable="MERGEABLE", merge_state="CLEAN", events=events)
+
+    first = await w._check_base_stale(t, "https://x/pull/9",
+                                       {"mergeable": "MERGEABLE"})
+    assert first == "pr_base_undetermined"
+    assert len(events) == 1
+    once = await store.get_task(t.id)
+    assert "pr_base_sha" not in once.context  # merge-base never resolved
+
+    second = await w._check_base_stale(once, "https://x/pull/9",
+                                        {"mergeable": "MERGEABLE"})
+    assert second is None, (
+        "the first UNDETERMINED branch's debounce leaked for a "
+        "no-recorded-sha PR whose branch merge-base cannot resolve")
+    assert len(events) == 1
+
+
 async def test_a_backfilled_record_survives_a_fresh_verdict(store, tmp_path):
     """BLOCKER 1's second defect, closed: once a pre-existing delivery's
     `pr_base_sha` has been backfilled via `merge_base_sha` (never via
