@@ -1,20 +1,18 @@
 # Independent review
 
-_Harness-captured record for task `beedca29`, commit `880c91ddd9fc041cb75f6d395929571fc32d0e4b` — not model-authored: no_human wrote this file from the fresh-context reviewer's checklist on this commit. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `beedca29`, commit `dc264a199aa8a85cea2bc9c6ff5ba69afcf2af11` — not model-authored: no_human wrote this file from the fresh-context reviewer's checklist on this commit. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 <!-- no_human:review-checklist -->
-## Independent review — PASSED (1 round) on `880c91d`
+## Independent review — PASSED (2 rounds) on `dc264a1`
 _A different model, fresh context, commit, push and merge refused at the tool call, told to refute "done". This is the checklist the gate decided on; no_human never merges — a human does._
 
-| Severity | Finding | Where | Note |
-|---|---|---|---|
-| ✅ | maintainability angle did not run (reached no verdict) | — | advisory — the extra angle pass was skipped; the main review still gates |
+_no blocking or passed findings recorded_
 
 <details><summary>2 advisory findings (low/nit — never blocking)</summary>
 
 | Severity | Finding | Where | Note |
 |---|---|---|---|
-| ❌ low | quantity range with a stopword false-flags | `tests/test_no_approximate_line_anchors.py:134` | worth noting that a range quantity spelled with a word connector, like `~500 to 600 lines`, trips this: `to` is in the stopword set, so the unit-exclusion branc |
-| ❌ nit | minor issues | `tests/test_no_approximate_line_anchors.py:100` | Couple of small gaps in coverage, both fine given the ticket scopes this to the `~NNN` form: an anchor glued to a word like `line~12034` won't match because ~ h |
+| ❌ low | unit-exclusion misses prose-continuation anchors | `tests/test_no_approximate_line_anchors.py:134` | The unit-exclusion at line 134 defaults `~NNN <word>` to "quantity" and only rescues anchors via the stopword denylist, which means a reworded new anchor slips |
+| ❌ nit | docstring encoding typo | `tests/test_no_approximate_line_anchors.py:76` | Tiny thing, the backtick literal here reads `encoding="utf-8""` with a stray extra quote. Harmless since it's docstring prose, but worth fixing so it doesn't lo |
 
 </details>
