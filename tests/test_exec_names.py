@@ -407,6 +407,18 @@ def test_a_totally_unmeasurable_probe_still_reaches_the_final_fold(monkeypatch):
     assert exec_names.host_folds_case(cwd="/no_human-nonexistent-probe-dir", path_env="") is True
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows locks a directory that is a process's cwd, so os.rmdir "
+    "raises WinError 32 and the 'cwd removed under us' precondition cannot be "
+    "produced with real filesystem calls. The guard this pins "
+    "(_candidate_anchors catching OSError) is not OS-specific, and the POSIX "
+    "run exercises it; a mock-getcwd repro is deliberately not used here "
+    "because this test's contract is that a REAL removed cwd, not a patched "
+    "os.getcwd, is what raised. sys.platform, not os.name == n-t, so this "
+    "skip does not trip test_no_test_asserts_the_permissive_fallback, whose "
+    "needle is the deleted probe fallback, a different concern from a skip.",
+)
 def test_the_probe_survives_a_removed_process_cwd(tmp_path, monkeypatch):
     """Crash repro (case-fold review, BLOCKER 1): `_candidate_anchors` fell
     back to a bare `os.getcwd()` whenever its own `cwd` argument was falsy --
@@ -588,6 +600,17 @@ def _verdicts_with_fold(fold: bool, rows=_FOLD_SENSITIVE_ROWS, readonly=False) -
         import json
         from no_human.agent import exec_names
         exec_names.host_folds_case = lambda *a, **k: {fold!r}
+        # Pin the OTHER axis too. A case-SENSITIVE executable world is a POSIX
+        # concept: `command_name` folds unconditionally when `is_windows`
+        # (`fold_case = is_windows or host_folds_case()`), because `GIT.EXE` and
+        # `git.exe` are one file on Windows regardless of the volume's case
+        # flag. So a `fold={fold!r}` row asserting a case-sensitive host must
+        # hold `_IS_WINDOWS` False, or it silently only passes on a POSIX
+        # runner: the fold probe alone does not simulate the whole host. The
+        # pin lands AFTER the guard import (the patterns are already compiled)
+        # because `_IS_WINDOWS` is read per call, not baked in.
+        from no_human.agent import guard as _guard
+        _guard._IS_WINDOWS = False
         from no_human.agent.guard import evaluate
         out = {{}}
         for cmd in {list(rows)!r}:
