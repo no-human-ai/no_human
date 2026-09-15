@@ -316,7 +316,7 @@ def test_gc_and_maintenance_bookkeeping_files_do_not_discard_the_verdict(
     (common / "packed-refs.lock").write_text("")
     existing_packed_refs = common / "packed-refs"
     (common / "packed-refs.new").write_text(
-        existing_packed_refs.read_text()
+        existing_packed_refs.read_text(encoding="utf-8")
         if existing_packed_refs.exists() else "")
     (common / "HEAD.lock").write_text("ref: refs/heads/no-human/task-1\n")
 
