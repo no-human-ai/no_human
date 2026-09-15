@@ -6,7 +6,7 @@
 the suite red — but a drifted citation should still get re-anchored, not left
 to rely on the tolerance forever. This script finds every drifted legacy
 `path:line[-line]` citation across docs/security.md, docs/eval.md,
-docs/KNOWN_ISSUES.md and rewrites both the doc text and the matching
+docs/KNOWN_ISSUES.md, docs/WINDOWS.md and rewrites both the doc text and the matching
 CITATION_TABLE row to the line the content now lives on.
 
 It imports the checker's own `_locate_line_citation`/`CITATION_TABLE` by path
@@ -227,7 +227,7 @@ def main(argv: list[str] | None = None) -> int:
         prog="reanchor_citations.py",
         description="Report or rewrite drifted file.py:LINE[-LINE] "
                      "citations in docs/security.md, docs/eval.md, "
-                     "docs/KNOWN_ISSUES.md and their CITATION_TABLE rows in "
+                     "docs/KNOWN_ISSUES.md, docs/WINDOWS.md and their CITATION_TABLE rows in "
                      "tests/test_readme_claims.py.")
     mode = ap.add_mutually_exclusive_group()
     mode.add_argument("--check", action="store_true",
