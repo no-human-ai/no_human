@@ -416,6 +416,37 @@ uv run python scripts/reanchor_citations.py --apply   # rewrite doc + table
 `CITATION_TABLE` together, or writes neither — it never guesses which
 occurrence to rewrite when a citation's raw text appears more than once.
 
+### Referring to code from source comments
+
+A comment or docstring in `src/` that points at "the thing I mean" names the
+**symbol**, never a line number. `tests/test_no_approximate_line_anchors.py`
+enforces this: it fails the build on any `~NNN`-shaped approximate line
+anchor (`"the check is at ~12034"`, `"(db.py ~2884-2892)"`) found in a
+comment or string literal anywhere under `src/`. Unlike the doc citations
+above, there is no tolerance window here — the convention is to forbid the
+anchor outright, not to resolve and re-tolerate it.
+
+This was a measured decision, not a guess: resolving every anchor this repo
+had shipped against the symbol it actually described found 15 of 16 already
+pointing at the wrong function, some by hundreds of lines. A drift-tolerant
+gate (mirroring the docs' `±5`-line tolerance) would therefore fail almost
+immediately against nearly the whole population and demand exactly the same
+fix — write the symbol name — plus a permanent resolver and an arguable
+tolerance window to maintain forever after. A symbol name (`` `_is_wip_partial` ``,
+`` `_already_satisfied_subject` ``) never goes stale and costs nothing to
+keep true, and the reader has to grep for it either way. This mirrors the
+"prefer symbol form for hot files" guidance directly above — `src/`'s hottest
+file, `core/orchestrator.py`, is exactly where 15 of the 16 anchors lived.
+
+This applies to `src/` only, per the shipped-source focus above; `tests/`,
+`docs/`, `scripts/`, `e2e/`, `eval/`, `examples/` and `web/` are unaffected
+and keep whatever citation policy they already had.
+
+An approximate **quantity** — a size, duration, token count or line-count
+estimate that names its own unit, like `~120MB`, `~1078s` or `~500 LOC` — is
+not an anchor and is untouched by this rule; the unit is exactly what tells
+a reader "this is a measurement", not "go look around this line".
+
 ## Proposing a change
 
 1. Open an issue describing the problem. For a bug, include the repro.

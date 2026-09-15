@@ -86,7 +86,7 @@ def verify_pr_receipt(
         relevant &= committed_files
     missing = sorted(relevant - pr_files)
     if missing:
-        # gh caps the files array (~100): in a big PR, absence from the
+        # gh caps the files array (~100 files): in a big PR, absence from the
         # first page proves nothing — never report a loss we can't verify.
         if len(pr_files) >= 100:
             return Receipt(
