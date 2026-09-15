@@ -2648,6 +2648,33 @@ def test_profile_command_binary_not_on_path_is_a_named_runner_failure(
     assert "npm" in result.stderr
 
 
+def test_env_prefixed_profile_command_is_not_mistaken_for_the_runner(
+        land_env, monkeypatch):
+    """A profile command that starts with a `VAR=value` assignment (`CI=true
+    npm test`, proven clean by `testing/runner.py::_run_shell`, which always
+    execs under a real shell) must not fail-close on `shutil.which("CI=true")`
+    — the gate must resolve `npm` as the runner and shell-wrap the whole
+    string so the assignment actually reaches the child's environment, the
+    same way the prover ran it."""
+    calls = _patch_run_pytest(monkeypatch, returncode=0)
+    real_which = shutil.which
+    monkeypatch.setattr(
+        "no_human.vcs.approve_merge.shutil.which",
+        lambda name: None if name == "CI=true" else real_which(name) or "/usr/bin/npm")
+    branch, _head_sha = land_env.cut_branch("no-human/t-envprefixed")
+    result = land_task(
+        repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
+        task_id="deadbeef", task_title="Add feature", review_evidence="review PASS",
+        config=land_env.config, tested_commit_sha="",
+        profile_test_cmd="CI=true npm test",
+    )
+    assert result.ok, result.stderr
+    assert len(calls) == 1
+    argv = calls[0]["argv"]
+    assert argv == (["cmd", "/c", "CI=true npm test"] if os.name == "nt"
+                     else ["/bin/sh", "-c", "CI=true npm test"])
+
+
 def test_profile_command_exit_5_still_annotates_and_lands(land_env, monkeypatch):
     """AC3c: exit code 5 ("no tests collected") from the repo's OWN test
     command must still be annotate-and-continue, exactly as it is today for
@@ -2706,4 +2733,18 @@ def test_gate_argv_shape():
     assert argv[-1] == "make test && echo done"
     argv, runner = gate_argv("pytest {} -q")
     assert runner == "pytest"
+    assert argv[:2] == (["cmd", "/c"] if os.name == "nt" else ["/bin/sh", "-c"])
+    # A leading `VAR=value` is shell syntax (only a shell assigns it into the
+    # child's env before exec), so it must be shell-wrapped and the reported
+    # runner must be the real binary, not the assignment token — otherwise
+    # `shutil.which("CI=true")` fails closed on a command `testing/runner.py`
+    # (which always uses `shell=True`) proved clean.
+    argv, runner = gate_argv("CI=true npm test")
+    assert runner == "npm"
+    assert argv == (["cmd", "/c", "CI=true npm test"] if os.name == "nt"
+                     else ["/bin/sh", "-c", "CI=true npm test"])
+    # Multiple assignments: the runner is still the first non-assignment
+    # token.
+    argv, runner = gate_argv("CI=true NODE_ENV=test jest --runInBand")
+    assert runner == "jest"
     assert argv[:2] == (["cmd", "/c"] if os.name == "nt" else ["/bin/sh", "-c"])

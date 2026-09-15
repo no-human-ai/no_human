@@ -714,6 +714,14 @@ def _is_pytest_command(cmd: str | None) -> bool:
 
 _SHELL_OPERATOR_RE = re.compile(r"&&|\|\||[|;<>]")
 
+# A leading `VAR=value` (or several) before the real runner — `CI=true npm
+# test`, `NODE_ENV=test jest` — is shell syntax: only a shell assigns it into
+# the child's environment and then execs the remainder. `shlex.split` does
+# not know that; it just returns `["CI=true", "npm", "test"]` as three plain
+# argv tokens, which would make `CI=true` itself the "runner" below. Matched
+# per-token, in order, so multiple assignments (and none) are both handled.
+_ENV_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+
 
 def _gate_argv(cmd: str) -> tuple[list[str], str]:
     """argv to exec the repo profile's own (non-pytest) test command, and
@@ -724,26 +732,39 @@ def _gate_argv(cmd: str) -> tuple[list[str], str]:
     cmd]`, or `["cmd", "/c", cmd]` on Windows) — mirroring
     `testing/runner.py::_run_shell`, which always shells out — when the
     string cannot be split, still contains an un-interpolated `{}`
-    placeholder, or uses a shell operator (`&&`, `||`, `|`, `;`, `<`, `>`),
-    so a profile command proven under a real shell still runs the same way
-    here instead of being fed to `execve` as literal argv tokens."""
+    placeholder, uses a shell operator (`&&`, `||`, `|`, `;`, `<`, `>`), or
+    starts with one or more `VAR=value` environment assignments, so a
+    profile command proven under a real shell (which `_run_shell` always
+    uses) still runs the same way here instead of being fed to `execve` as
+    literal argv tokens — `CI=true npm test` must find `npm`, not
+    `shutil.which("CI=true")`.
+
+    The reported *runner* always skips any leading env-assignment tokens,
+    whether or not the shell wrapper ends up being used, so the "not on
+    PATH" message names the actual binary the profile command runs."""
     try:
         tokens = shlex.split(cmd)
     except ValueError:
         tokens = None
+    has_env_prefix = bool(tokens) and _ENV_ASSIGNMENT_RE.match(tokens[0]) is not None
     needs_shell = (
         tokens is None
         or "{}" in cmd
         or _SHELL_OPERATOR_RE.search(cmd) is not None
+        or has_env_prefix
     )
+    if tokens:
+        runner = next((t for t in tokens if not _ENV_ASSIGNMENT_RE.match(t)),
+                       tokens[0])
+    else:
+        runner = (cmd.strip().split(maxsplit=1) or [""])[0]
     if needs_shell:
-        runner = tokens[0] if tokens else (cmd.strip().split(maxsplit=1) or [""])[0]
         if os.name == "nt":
             return ["cmd", "/c", cmd], runner
         return ["/bin/sh", "-c", cmd], runner
     if not tokens:
         return [], ""
-    return tokens, tokens[0]
+    return tokens, runner
 
 
 def _pytest_importable(py: str) -> bool:
