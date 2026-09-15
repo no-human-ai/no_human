@@ -4,12 +4,12 @@
 // step.mjs used to hardcode `BASE_STEPS_COUNT = 8` in a comment naming
 // welcome/repos/projects/docs/integrations/history/rules/summary — three of
 // which (docs, history, rules) left the wizard on 2026-09-04 / 2026-08-30,
-// while discord joined it on 2026-09-12 and email joined it on 2026-09-13,
-// updated. `Onboarding.jsx` is JSX (plain `node` cannot `import` it) and
-// `BASE_STEPS` is a module-private `const`, so the only way to derive the
-// expectation without editing `Onboarding.jsx` (out of scope for the walk
-// fix) is to parse its source text — the same idiom already used by
-// src/onboardingEmailStep.test.mjs, src/onboardingDiscord.test.mjs,
+// while discord joined it on 2026-09-12 and email on 2026-09-13, and the
+// literal was never updated. `Onboarding.jsx` is JSX (plain `node` cannot
+// `import` it) and `BASE_STEPS` is a module-private `const`, so the only way
+// to derive the expectation without editing `Onboarding.jsx` (out of scope
+// for the walk fix) is to parse its source text — the same idiom already
+// used by src/onboardingEmailStep.test.mjs, src/onboardingDiscord.test.mjs,
 // src/onboardingConsent.test.mjs and src/onboardingDocsKickoff.test.mjs.
 //
 // Fails CLOSED throughout: any shape this parser does not recognize throws,
@@ -36,7 +36,7 @@ export function parseBaseSteps(src) {
   }
 
   // Bracket-count from the opening `[` (not a lazy regex to the next `];`)
-  // so a nested array/object literal inside an entry cannot truncate the
+  // so a nested array/object literal inside the array cannot truncate the
   // slice early.
   const bodyStart = start + startMarker.length;
   let depth = 1;
