@@ -57,7 +57,11 @@ MSG = send.Message(to="probe@example.com", subject="subj", body="body")
 
 @pytest.mark.parametrize("status", [200, 201, 202])
 def test_a_status_the_provider_accepts_is_a_send(status):
-    send.ResendTransport("k", opener=_opener(status=status)).send(MSG)
+    seen = []
+    result = send.ResendTransport(
+        "k", opener=_opener(status=status, seen=seen)).send(MSG)
+    assert result is None
+    assert len(seen) == 1
 
 
 @pytest.mark.parametrize("status", [100, 199, 999])
