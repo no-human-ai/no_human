@@ -1,141 +1,163 @@
 # How I verified this — full log
 
-_Harness-captured record for task `9cd3ed94`, commit `9fa2505bf911bfac832c37d58c6725cfa71a9bda` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `9cd3ed94`, commit `83da2723bf8dd42236aa6308ff5008aa7d721dd0` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ## How I verified this
 7 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
 
 ### test
-- `uv run pytest tests/test_onboarding_email.py tests/test_onboarding_api.py -q 2>&1 | tail -60`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/9cd3ed94905e4de3bb15588d28979d66.51048.08ceea6a/web && node --version && npm test 2>&1 | tail -60`
 
 ```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-   Building no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/9cd3ed94905e4de3bb15588d28979d66.52752.9c4b5f28
-      Built no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/9cd3ed94905e4de3bb15588d28979d66.52752.9c4b5f28
-Installed 73 packages in 809ms
-........................................................................ [ 91%]
-.......                                                                  [100%]
-79 passed in 64.12s (0:01:04)
-```
-
-- `uv run pytest tests/test_onboarding_email.py::test_status_reports_whether_an_address_is_on_file_without_echoing_it -q 2>&1 | tail -30`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-F                                                                        [100%]
-=================================== FAILURES ===================================
-_____ test_status_reports_whether_an_address_is_on_file_without_echoing_it _____
-
-client = <httpx.AsyncClient object at 0x10a09ba40>
-tmp_path = PosixPath('/private/var/folders/1r/3r0rt1jd4j1456rsg_fh4d380000gn/T/pytest-of-eyalgolan/pytest-71641/test_status_reports_whether_an0')
-
-    @pytest.mark.asyncio
-    async def test_s
-[... 720 of 1,859 characters omitted from the middle ...]
-== 200
-        body = status.json()
->       assert body["email_registered"] is False, "a fresh install has no address on file"
-               ^^^^^^^^^^^^^^^^^^^^^^^^
-E       KeyError: 'email_registered'
-
-tests/test_onboarding_email.py:199: KeyError
-=========================== short test summary info ============================
-FAILED tests/test_onboarding_email.py::test_status_reports_whether_an_address_is_on_file_without_echoing_it
-1 failed in 1.50s
+v20.20.2
+  ...
+# Subtest: backoffDelay: 1s, 2s, 4s, 8s, 16s, then capped at 30s forever
+ok 1738 - backoffDelay: 1s, 2s, 4s, 8s, 16s, then capped at 30s forever
+  ---
+  duration_ms: 0.911417
+  ...
+# Subtest: reconnect delays are 1s, 2s, 4s, 8s, 16s, then capped at 30s forever
+ok 1739 - reconnect delays are 1s, 2s, 4s, 8s, 16s, then capped at 30s forever
+  ---
+  duration_ms: 1.019292
+  ...
+# Subtest: socket.onerror triggers a reconnect
+ok 1740 - socket.onerror triggers a reconnect
+  ---
+  duration_ms: 0.164208
+  ...
+# Subtest: a paired error+close counts as ONE disconnect, not two
+ok 1741 - a paired error+close counts as ONE disconnect, not two
+  ---
+  duration_ms: 0.088792
+  
+[... 797 of 1,936 characters omitted from the middle ...]
+ancels it and restarts backoff at 1s
+ok 1746 - a close during an in-flight snapshot cancels it and restarts backoff at 1s
+  ---
+  duration_ms: 0.214167
+  ...
+# Subtest: stop() is idempotent and leaves no pending timer or open socket
+ok 1747 - stop() is idempotent and leaves no pending timer or open socket
+  ---
+  duration_ms: 0.209667
+  ...
+1..1747
+# tests 1747
+# suites 0
+# pass 1747
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 1759.247917
 ```  
-  _excerpt - 1,857 characters of output in total_
+  _excerpt - 1,936 characters of output in total_
 
-- `uv run pytest tests/test_onboarding_email.py tests/test_onboarding_api.py -q 2>&1 | tail -15`
+- `uv run pytest tests/test_structural_budget.py -q 2>&1 | tail -30`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-........................................................................ [ 91%]
-.......                                                                  [100%]
-79 passed in 9.11s
+   Building no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/9cd3ed94905e4de3bb15588d28979d66.51048.08ceea6a
+      Built no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/9cd3ed94905e4de3bb15588d28979d66.51048.08ceea6a
+Installed 73 packages in 501ms
+..................                                                       [100%]
+18 passed in 7.80s
 ```
+
+- `uv run pytest tests/test_onboarding_email.py -q 2>&1 | tail -40`
+
+```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+..........................................                               [100%]
+42 passed in 7.84s
+```
+
+- `uv run pytest tests/ -m repoguard -q 2>&1 | tail -30`
+
+```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+.....................................s.s.s.s.s.s.s.s.s.s................ [ 38%]
+...............................s..........................s............. [ 77%]
+...........................................                              [100%]
+=============================== warnings summary ===============================
+src/<redacted>/testing/test_layers.py:35
+  /Users/eyalgolan/.<redacted>/worktrees/9cd3ed94905e4de3bb15588d28979d66.51048.08ceea6a/src/<redacted>/testing/test_layers.
+[... 158 of 1,297 characters omitted from the middle ...]
+src/<redacted>/testing/test_layers.py:89
+  /Users/eyalgolan/.<redacted>/worktrees/9cd3ed94905e4de3bb15588d28979d66.51048.08ceea6a/src/<redacted>/testing/test_layers.py:89: PytestCollectionWarning: cannot collect test class 'TestPlan' because it has a __init__ constructor (from: tests/test_test_layers.py)
+    @dataclass
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+175 passed, 13 skipped, 12987 deselected, 2 warnings in 31.20s
+```  
+  _excerpt - 1,283 characters of output in total_
 
 
 ### build
-- `npm run build 2>&1 | tail -40`
+- `npm run build 2>&1 | tail -30`
 
 ```
-vite v6.4.3 building for production...
-transforming...
-✓ 402 modules transformed.
-rendering chunks...
-computing gzip size...
-dist/index.html                                                                  0.66 kB │ gzip:   0.44 kB
-dist/assets/-F63fjptAgt5VM-kVkqdyU8n1iAq131nj-otFQ-DKn25-tQ.woff2                4.00 kB
-dist/assets/-F6qfjptAgt5VM-kVkqdyU8n3twJwl9FgsAXHNlYzg-B5e70VyC.woff2            4.04 kB
-dist/assets/-F6qfjptAgt5VM-kVkqdyU8n3vAOwl9FgsAXHNlYzg-Dky8cY56.woff2            4.12 kB
 dist/assets/-F6qfjptAgt5VM-kVkqdyU8n3vAOwl1FgsAXHNlYzg-hCF3fsXQ.woff2            4.32 kB
 dist/assets/-F6qfjptAgt5VM-kVkqdyU8n3twJwl1FgsAXHNlYzg-CU9Da17h.woff2            4.34 kB
-dist/a
-[... 1,898 of 3,037 characters omitted from the middle ...]
+dist/assets/-F63fjptAgt5VM-kVkqdyU8n1iIq131nj-otFQ-BKehAWor.woff2                4.35 kB
+dist/assets/-F6pfjptAgt5VM-kVkqdyU8n1ioa2ndgregdFOFh-D3ijpaJE.woff2              4.42 kB
+dist/assets/-F6pfjptAgt5VM-kVkqdyU8n1ioa2HdgregdFOFh-BgiqLiQn.woff2              5.13 kB
+dist/assets/-F63fjptAgt5VM-kVkqdyU8n1isq131nj-otFQ-DkeVBss5.woff2                5.48 kB
+dist/assets/-F6qfjptAgt5VM-kVkqdyU8n3twJwlRFgsAXHNlYzg-dnJBCtls.woff2            5.50 kB
+dist/assets/-F6qfjptAgt5VM-kVkqdyU8n3vAOwlRFgsAXHNlYzg-DiqaC
+[... 1,399 of 2,538 characters omitted from the middle ...]
 
-dist/assets/index-BRtur9WQ.js                                                  720.38 kB │ gzip: 220.67 kB
+dist/assets/index-CvHToknt.js                                                  720.39 kB │ gzip: 220.66 kB
 
 (!) Some chunks are larger than 500 kB after minification. Consider:
 - Using dynamic import() to code-split the application
 - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
 - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
-✓ built in 3.73s
+✓ built in 2.85s
 ```  
-  _excerpt - 3,037 characters of output in total_
+  _excerpt - 2,538 characters of output in total_
 
-- `cd .. && cp /tmp/Onboarding.jsx.bak src/Onboarding.jsx && npm run build 2>&1 | tail -3 && cd e2e && node onboarding-email-reload.mjs 2>&1 | tail -5`
-
-```
-npm error enoent This is related to npm not being able to find a file.
-npm error enoent
-npm error A complete log of this run can be found in: /Users/eyalgolan/.npm/_logs/2026-09-14T14_03_16_261Z-debug-0.log
-  code: 'MODULE_NOT_FOUND',
-  requireStack: []
-}
-
-Node.js v20.20.2
-```
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/9cd3ed94905e4de3bb15588d28979d66.52752.9c4b5f28/web && npm run build 2>&1 | tail -5 && node e2e/onboarding-email-reload.mjs 2>&1 | tail -30`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/9cd3ed94905e4de3bb15588d28979d66.51048.08ceea6a/web && npm run build 2>&1 | tail -5 && node e2e/onboarding-email-reload.mjs 2>&1 | tail -40`
 
 ```
 (!) Some chunks are larger than 500 kB after minification. Consider:
 - Using dynamic import() to code-split the application
 - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
 - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
-✓ built in 3.63s
+✓ built in 2.73s
 PASS  [AC1] the email registration request was sent before reload
+PASS  [AC1] Email step's Continue is enabled after reload with an empty field, because the server already has an address on file
 PASS  [AC1] reached the Launch step by jumping via the stepper
-FAIL  [AC1] POST /api/onboarding/complete was issued
-FAIL  [AC1] GET /api/onboarding/status now reports completed: true  — {"completed":false,"email_registered":true}
-FAIL  [AC1] no visible refusal was rais
-[... 880 of 2,019 characters omitted from the middle ...]
-
-PASS  [AC3] the server still reports nothing completed  — {"completed":false,"email_registered":false}
-PASS  [AC3] no page errors
-PASS  [AC4] Email's stepper dot is NOT 'completed' while completion would still refuse
-PASS  [AC4] Email's stepper dot instead reads 'not started'
-PASS  [AC4] the email registration request was sent
-PASS  [AC4] Email's stepper dot reads 'completed' once an address is actually on file
+PASS  [AC1] POST /api/onboarding/complete was issued
+PASS  [AC1] GET /api/onb
+[... 1,410 of 2,549 characters omitted from the middle ...]
+ally on file
 PASS  [AC4] no page errors
+PASS  [AC5] the email registration request was sent before reload
+FAIL  [AC5] the Email dot is NOT 'completed' while the typed field is malformed, even though the server has an address on file
+PASS  [AC5] completion was refused: no POST /api/onboarding/complete
+PASS  [AC5] the refusal is shown to the user via role="alert"
+PASS  [AC5] the wizard lands back on the Email step
+PASS  [AC5] no page errors
 
-6 FAILURE(S)
+1 FAILURE(S)
 ```  
-  _excerpt - 2,019 characters of output in total_
+  _excerpt - 2,549 characters of output in total_
 
-- `npm run build 2>&1 | tail -10`
+- `git diff --stat src/Onboarding.jsx && npm run build 2>&1 | tail -3 && node e2e/onboarding-email-reload.mjs 2>&1 | tail -5`
 
 ```
-dist/assets/rP2Hp2ywxg089UriCZOIHTWEBlw-BNY05QUC.woff2                          62.56 kB
-dist/assets/index-dP4pTLUZ.css                                                 161.97 kB │ gzip:  28.71 kB
-dist/assets/module-BBzDlm4e.js                                                 252.41 kB │ gzip:  83.36 kB
-dist/assets/index-BRtur9WQ.js                                                  720.38 kB │ gzip: 220.67 kB
-
-(!) Some chunks are larger than 500 kB after minification. Consider:
-- Using dynamic import() to code-split the application
+web/src/Onboarding.jsx | 13 ++++++++-----
+ 1 file changed, 8 insertions(+), 5 deletions(-)
 - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
 - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
-✓ built in 2.93s
+✓ built in 2.52s
+PASS  [AC5] the refusal is shown to the user via role="alert"
+PASS  [AC5] the wizard lands back on the Email step
+PASS  [AC5] no page errors
+
+ALL CHECKS PASSED
 ```
 
 
