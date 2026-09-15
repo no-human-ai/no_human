@@ -9,8 +9,8 @@ import { dirname, join } from "node:path";
 // carry user-chosen or machine-identifying text closed the same way the
 // drainChip.js leak was closed (this file's leak channel is session
 // replay's DOM/rrweb capture, not the network-body capture that
-// replayScrub.js/telemetry.js govern — `.ph-no-capture` is rrweb's own
-// block-selector, unrelated to network masking).
+// replayScrub.js/telemetry.js govern — `.ph-no-capture` is the block class
+// posthog-js passes to rrweb's recorder, unrelated to network masking).
 //
 // Two distinct `reason` sources feed `title={...}` in this file:
 //
@@ -105,13 +105,18 @@ test("the model-row disabled_reason is a fixed system string, so it is deliberat
     "model_settings.py's disabled_reason must still be the fixed CODER_BACKEND_REASON template, not free-form text",
   );
 
-  // And the model-row <option> itself must NOT have been given ph-no-capture
-  // — adding it there would be a false signal that this string is sensitive.
+  // The model-row <option> itself needs no ph-no-capture — its title is a
+  // fixed system string, never user-chosen or machine-identifying — but an
+  // extra, redundant className here would be harmless over-masking, not a
+  // defect, so this deliberately does NOT fail if one is later added (a
+  // stricter regex here would penalise someone erring toward masking more,
+  // not less). It only pins that the fixed-string <option> element itself
+  // still exists, with or without an optional className.
   const modelRowOption = panel.match(
-    /\{row\.options\.map\(\(o\) => \(\s*<option key=\{o\.id\} value=\{o\.id\} disabled=\{o\.disabled\} title=\{o\.reason \|\| undefined\}>/,
+    /\{row\.options\.map\(\(o\) => \(\s*<option key=\{o\.id\}(?: className="[^"]*")? value=\{o\.id\} disabled=\{o\.disabled\} title=\{o\.reason \|\| undefined\}>/,
   );
   assert.ok(
     modelRowOption,
-    "the model-row <option> (fixed disabled_reason string) must still exist without ph-no-capture",
+    "the model-row <option> (fixed disabled_reason string) must still exist",
   );
 });

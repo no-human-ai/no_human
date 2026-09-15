@@ -241,14 +241,15 @@ test("PausedIndicator: a missing/null paused_reason renders unknown too, never q
 });
 
 // --------------------------------------------------------------------------- #
-// A user-chosen auth-profile name in the DOM (found while reviewing task     #
-// 0c7cc4b2's replay-body fix): `paused_profile` used to land verbatim in     #
-// this component's `title` attribute, which session replay's DOM/rrweb      #
-// capture channel records regardless of the separate network-body masking   #
-// in replayScrub.js/telemetry.js. A real captured PostHog payload confirmed #
-// it. The profile name carries no operational information a quota pause     #
-// needs — the visible text already says what happened and when — so it is  #
-// removed at the source rather than masked.                                 #
+// A user-chosen auth-profile name in the DOM: `paused_profile` used to land  #
+// verbatim in this component's `title` attribute, which session replay's    #
+// DOM/rrweb capture channel records regardless of the separate network-body #
+// masking mechanism (replayScrub.js/telemetry.js's                         #
+// maskCapturedNetworkRequestFn, which governs request/response bodies, not  #
+// DOM content). A real captured PostHog payload confirmed it. The profile   #
+// name carries no operational information a quota pause needs — the        #
+// visible text already says what happened and when — so it is removed at   #
+// the source rather than masked.                                            #
 // --------------------------------------------------------------------------- #
 
 test("PausedIndicator: a quota pause never renders the auth-profile name anywhere in its markup", () => {

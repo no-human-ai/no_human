@@ -17,33 +17,46 @@
 // (web/src/replayScrub.js / web/src/telemetry.js's
 // maskCapturedNetworkRequestFn) — that mechanism governs HTTP request/
 // response bodies only and has zero effect on rendered DOM content.
-// `.ph-no-capture` (rrweb's own block-selector) is the mechanism that DOES
-// govern this channel; drainChip.js's fix instead removes the name at the
-// source, since the operator does not need it to act on a quota pause.
+// `.ph-no-capture` — the block class posthog-js passes to rrweb's recorder
+// (not rrweb's own default selector) — is the mechanism that DOES govern
+// this channel; drainChip.js's fix instead removes the name at the source,
+// since the operator does not need it to act on a quota pause. The other
+// leak sites this file also proves closed (Settings.jsx's Account pane,
+// ModelsPanel.jsx's backend-reason hints/options) are masked with
+// `.ph-no-capture` rather than having their data removed, since those
+// values (the configured/active profile, the token variable name, a raw
+// backend exception string) are ones the operator legitimately needs to see
+// on screen.
 //
 // This harness is deliberately scoped to the DOM/rrweb channel ONLY (see
 // `domHaystack` below, built from decompressed rrweb snapshot fields alone,
 // never the outer network-capture body text) — NOT "every captured byte
 // across both channels". The network-capture channel for this exact field
-// is a separate, already-in-flight concern (task 0c7cc4b2, replay-body-leak.mjs's
-// check 5); coupling this harness to that channel would make it pass or fail
-// for reasons that have nothing to do with the DOM fix this file verifies,
-// and web/e2e/replay-body-leak.mjs / web/src/replayScrub.js / web/src/telemetry.js
+// already shipped its own fix (commit a8a04496, replay-body-leak.mjs's
+// check 5) and is already in this change's merge-base; coupling this
+// harness to that channel would make it pass or fail for reasons that have
+// nothing to do with the DOM fix this file verifies, and
+// web/e2e/replay-body-leak.mjs / web/src/replayScrub.js / web/src/telemetry.js
 // are explicitly out of scope for this change.
 //
-// Three things are checked against the real captured, decompressed bytes:
+// Checked against the real captured, decompressed bytes:
 //   1. vacuity guard  — the harness actually captured $snapshot replay
 //                        events at all (a clean result on a harness that
 //                        captured nothing would be meaningless).
 //   2. DOM liveness   — the paused indicator's VISIBLE text (which tells the
-//                        operator work is paused and when it resumes) DOES
-//                        reach the decompressed DOM/rrweb channel. Without
-//                        this, check 3 passing could just mean the harness
+//                        operator work is paused and when it resumes), the
+//                        Account pane's "Configured profile" label, and the
+//                        Models pane's "Coder backend" label DO reach the
+//                        decompressed DOM/rrweb channel. Without this, the
+//                        leak checks passing could just mean the harness
 //                        never captured this part of the DOM at all.
-//   3. no profile leak — the user-chosen auth-profile name sentinel is
-//                        ABSENT from every decompressed DOM/rrweb snapshot
-//                        field, while check 2 proves the surrounding element
-//                        (and its informative text) was captured live.
+//   3. no leaks       — the user-chosen auth-profile name sentinel (paused
+//                        indicator), the Account pane's active/configured/
+//                        select-option profile-name sentinels and token-var
+//                        sentinel, and the Models pane's backend-reason
+//                        sentinel are each ABSENT from every decompressed
+//                        DOM/rrweb snapshot field, while check 2 proves the
+//                        surrounding elements were captured live.
 //
 // Served directly on 127.0.0.1 (no TEST_HOST / --host-resolver-rules trick):
 // posthog-js's built-in localhost network-capture guard (lazy-recorder.js:
@@ -78,6 +91,58 @@ const SENTINEL_PROFILE = "zzqq-dom-profile-canary-8c71";
 // here; the identifying part (the profile name) is what this fix removes,
 // not the "paused / resumes" information itself.
 const VISIBLE_TEXT = "Paused — quota resets";
+
+// BLOCKING 1 (send-back): Settings.jsx's Account pane renders four distinct
+// profile/token-identifying sites, none of which the original version of
+// this harness ever exercised (it stubbed auth_mode: "api_key", so the
+// subscription-only Account pane never rendered at all). Each gets its own
+// sentinel so a failure pins the exact site:
+//   - SENTINEL_ACTIVE_PROFILE     — the restart banner's "...still billing
+//                                    <active>..." AND the "Active (billing)
+//                                    profile" <dd>.
+//   - SENTINEL_CONFIGURED_PROFILE — the restart banner's "...<configured> is
+//                                    now configured" AND the "Configured
+//                                    profile" <dd> AND (because it is also
+//                                    one of the profiles the mock's
+//                                    `/api/auth/status` lists) one of the
+//                                    profile <select>'s <option>s.
+//   - SENTINEL_SELECT_ONLY_PROFILE — appears NOWHERE in the mock payload
+//                                    except as a second `profiles[]` entry,
+//                                    so its presence can only come from the
+//                                    <select>'s <option> render — isolating
+//                                    that site from the two <dd>s/banner
+//                                    above, which all also carry
+//                                    SENTINEL_ACTIVE_PROFILE/
+//                                    SENTINEL_CONFIGURED_PROFILE.
+//   - SENTINEL_TOKEN_VAR           — the "Token variable" <code>.
+const SENTINEL_ACTIVE_PROFILE = "zzqq-dom-active-canary-11";
+const SENTINEL_CONFIGURED_PROFILE = "zzqq-dom-configured-canary-22";
+const SENTINEL_SELECT_ONLY_PROFILE = "zzqq-dom-selectonly-canary-33";
+const SENTINEL_TOKEN_VAR = "ZZQQ_DOM_TOKENVAR_CANARY_44";
+// A static label the Account pane always renders regardless of any profile
+// data — the positive control proving the harness actually captured this
+// pane's DOM live, the same role VISIBLE_TEXT plays for the paused
+// indicator.
+const ACCOUNT_LIVENESS_TEXT = "Configured profile";
+
+// BLOCKING 2 (send-back): ModelsPanel.jsx's CoderBackendRow (its own
+// picker) and the Reviewer-backend-override section (nested in the model
+// role loop) render the SAME backendPanelView(...).options list at two
+// separate DOM locations (ModelsPanel.jsx ~109/119 and ~384/393) — both
+// carry the raw backend_settings.py `reason` string and both must
+// independently mask it. One sentinel embedded in the mock
+// `/api/coder-backend` payload's unavailable option `reason` reaches BOTH
+// sites (CoderBackendRow fetches /api/coder-backend directly; the outer
+// ModelsPanel fetches the same endpoint for the reviewer-override section
+// — see ModelsPanel.jsx's own fetchCoderBackend() calls), so its absence
+// from the captured DOM proves both sites are masked at once, and (per the
+// send-back's mutation-demonstration requirement) stripping ph-no-capture
+// from either ONE of the two sites alone is sufficient to turn this single
+// check red.
+const SENTINEL_BACKEND_REASON = "zzqq-dom-backend-reason-canary-55";
+// A static label the Models pane always renders (CoderBackendRow's own
+// <label>) — the positive control for that pane's liveness.
+const MODELS_LIVENESS_TEXT = "Coder backend";
 
 const MIME = {
   ".html": "text/html", ".js": "text/javascript", ".css": "text/css",
@@ -276,9 +341,77 @@ function makeServer({ domTexts, capturedEvents, unmatched }) {
     if (p === "/api/onboarding/deferred") return json({ deferred: [] });
     if (p === "/api/tasks") return json([]);
     if (p === "/api/projects") return json([]);
-    if (p === "/api/auth/status") return json({ auth_mode: "api_key" });
+    // Subscription mode (not "api_key") so the Account pane's OAuth
+    // profile/token controls actually render — an "api_key" stub here is
+    // exactly why the original version of this harness never saw BLOCKING
+    // 1's leak: the Account pane's identifying fields only exist in this
+    // mode. restart_required: true additionally renders the restart-banner
+    // paragraph (Settings.jsx ~305-312), which repeats the active/
+    // configured profile names a second time.
+    if (p === "/api/auth/status") {
+      return json({
+        restart_required: true,
+        active_profile: SENTINEL_ACTIVE_PROFILE,
+        configured_profile: SENTINEL_CONFIGURED_PROFILE,
+        token_var: SENTINEL_TOKEN_VAR,
+        token_present: true,
+        api_key_present: false,
+        metered_key_present: false,
+        profiles: [
+          { name: SENTINEL_CONFIGURED_PROFILE },
+          { name: SENTINEL_SELECT_ONLY_PROFILE },
+        ],
+      });
+    }
     if (p === "/api/worker/status") {
       return json({ running: true, inflight: 0, max_workers: 1 });
+    }
+    // Models pane: a non-empty `roles` array (an empty/missing one makes
+    // modelsPanelView(...) return `unavailable: true`, which short-circuits
+    // ModelsPanel.jsx before it renders ANYTHING, including the always-
+    // mounted CoderBackendRow) with a "reviewer" role carrying a `backend`
+    // block, so the Reviewer-backend-override section (ModelsPanel.jsx's
+    // second render site for backendOptions) actually mounts.
+    if (p === "/api/models") {
+      return json({
+        restart_required: false,
+        roles: [
+          {
+            role: "reviewer",
+            key: "reviewer",
+            current: "some-model",
+            saved: "some-model",
+            default: "some-model",
+            note: "",
+            cost_note: "",
+            backend: { backend: "primary-backend", model: "some-model", is_default: false },
+            options: [
+              { id: "some-model", price_class: { label: "$" }, is_default: true, requires_backend: false, disabled_reason: "" },
+            ],
+          },
+        ],
+      });
+    }
+    // Coder-backend row + reviewer-backend-override both fetch this same
+    // endpoint (see the SENTINEL_BACKEND_REASON comment above) — one
+    // unavailable option whose `reason` carries the sentinel, with no
+    // `local_fields`, so the hint-div filter (ModelsPanel.jsx:117/391 —
+    // `o.disabled && !(lf && o.id === lf.backend) && o.short`) does not
+    // exclude it.
+    if (p === "/api/coder-backend") {
+      return json({
+        current: "primary-backend",
+        default: "primary-backend",
+        restart_required: false,
+        options: [
+          { id: "primary-backend", available: true, reason: "" },
+          {
+            id: "broken-backend",
+            available: false,
+            reason: `Backend unavailable: contact the operator about profile ${SENTINEL_BACKEND_REASON}.`,
+          },
+        ],
+      });
     }
     // The finding this file exists to verify: real /api/queue/health shape
     // (core/health.py QueueHealth.as_dict) with paused_reason: "quota", which
@@ -388,15 +521,29 @@ async function runPass(browser) {
   // empirically: waiting 20s+ past load on a page that never mutates still
   // produces zero `$snapshot` events, while replay-body-leak.mjs's sibling
   // harness (which types into a field and clicks Scan, generating many DOM
-  // mutations) reliably gets its first snapshot POST out. Opening and
-  // closing the sidebar's Settings overlay (a real, already-wired
-  // interaction — App.jsx's `.nh-settings-row` → `openSettings()`, closed
-  // via Settings.jsx's own Escape handler) is a minimal, already-existing
-  // way to generate that mutation volume without adding new API surface:
-  // any request it fires that this mock server doesn't explicitly stub
-  // falls through to the `/api/*` catch-all's `json({})` above.
+  // mutations) reliably gets its first snapshot POST out. Opening the
+  // sidebar's Settings overlay (a real, already-wired interaction —
+  // App.jsx's `.nh-settings-row` → `openSettings()`) is a minimal,
+  // already-existing way to generate that mutation volume without adding
+  // new API surface: any request it fires that this mock server doesn't
+  // explicitly stub falls through to the `/api/*` catch-all's `json({})`
+  // above.
   await page.click(".nh-settings-row");
   await page.waitForTimeout(500);
+
+  // BLOCKING 1 + BLOCKING 2 (send-back): open the Account pane, then the
+  // Models pane — Settings.jsx's `SECTIONS` nav renders each as a plain
+  // <button>{label}</button> (`.settings-overlay-nav button`), clicking it
+  // sets `section` and swaps in `<AuthPanel />` / `<ModelsPanel />`. The
+  // original version of this harness only opened/closed the generic
+  // overlay and never visited either pane — which is exactly why it never
+  // saw either leak: the masked elements this file now checks for don't
+  // exist in the DOM until these panes are actually open.
+  await page.click('.settings-overlay-nav button:has-text("Account")');
+  await page.waitForTimeout(500);
+  await page.click('.settings-overlay-nav button:has-text("Models")');
+  await page.waitForTimeout(500);
+
   await page.keyboard.press("Escape");
 
   // Past posthog's flush_interval_ms (default 3000ms) so the FullSnapshot
@@ -467,6 +614,58 @@ try {
   check(
     "the user-chosen auth-profile name is absent from every decompressed DOM/rrweb snapshot field",
     !domHaystack.includes(SENTINEL_PROFILE),
+  );
+
+  // 4. Account-pane liveness (BLOCKING 1's positive control) — the static
+  // "Configured profile" <dt> label DOES reach the decompressed DOM/rrweb
+  // channel, so the leak checks below can't pass merely because the harness
+  // never actually opened the Account pane.
+  check(
+    "Account-pane liveness: the 'Configured profile' label reaches the decompressed DOM/rrweb snapshot data",
+    domHaystack.includes(ACCOUNT_LIVENESS_TEXT),
+  );
+
+  // 5-7. BLOCKING 1: none of the Account pane's profile/token sentinels may
+  // appear in the decompressed DOM/rrweb channel — Settings.jsx's restart
+  // banner, the two <dd> values, the token-var <code>, and the profile
+  // <select>'s <option>s all carry ph-no-capture.
+  check(
+    "the active-profile name is absent from every decompressed DOM/rrweb snapshot field (restart banner + 'Active (billing) profile' dd)",
+    !domHaystack.includes(SENTINEL_ACTIVE_PROFILE),
+  );
+  check(
+    "the configured-profile name is absent from every decompressed DOM/rrweb snapshot field (restart banner + 'Configured profile' dd + its <option>)",
+    !domHaystack.includes(SENTINEL_CONFIGURED_PROFILE),
+  );
+  check(
+    "a profile name that ONLY appears in the <select>'s <option> list is absent from every decompressed DOM/rrweb snapshot field",
+    !domHaystack.includes(SENTINEL_SELECT_ONLY_PROFILE),
+  );
+  check(
+    "the token-variable name is absent from every decompressed DOM/rrweb snapshot field ('Token variable' <code>)",
+    !domHaystack.includes(SENTINEL_TOKEN_VAR),
+  );
+
+  // 8. Models-pane liveness (BLOCKING 2's positive control) — the static
+  // "Coder backend" label DOES reach the decompressed DOM/rrweb channel, so
+  // check 9 can't pass merely because the harness never opened the Models
+  // pane or the reviewer-override section never rendered.
+  check(
+    "Models-pane liveness: the 'Coder backend' label reaches the decompressed DOM/rrweb snapshot data",
+    domHaystack.includes(MODELS_LIVENESS_TEXT),
+  );
+
+  // 9. BLOCKING 2: the raw backend-exception reason text — rendered at TWO
+  // independent sites (CoderBackendRow's own picker AND the reviewer-
+  // backend-override section's picker, ModelsPanel.jsx ~109/119 and
+  // ~384/393) — must be absent from the decompressed DOM/rrweb channel.
+  // Because both sites render the identical mock reason string, this one
+  // check only passes if BOTH sites mask it; stripping ph-no-capture from
+  // either site alone turns this check red (demonstrated by mutation, see
+  // the task's final report).
+  check(
+    "the backend-unavailable reason text is absent from every decompressed DOM/rrweb snapshot field (both CoderBackendRow and the reviewer-backend-override picker)",
+    !domHaystack.includes(SENTINEL_BACKEND_REASON),
   );
 
   const failed = checks.filter((c) => !c.ok);
