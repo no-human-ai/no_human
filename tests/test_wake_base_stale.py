@@ -569,6 +569,131 @@ async def test_a_backfilled_record_survives_a_fresh_verdict(store, tmp_path):
     assert ctx["pr_base_sha_source"] == "merge_base"
 
 
+async def test_a_pr_delivered_before_the_change_keeps_a_usable_state_after_three_ticks(
+        store, tmp_path):
+    """Every PR open today predates `pr_base_sha` — the exact case BLOCKER 1
+    closes. Three consecutive `_check_open_pr` ticks (no landing in between,
+    `pr_branch` defaulting to "main" so the merge-base equals trunk tip) must
+    settle on a determined, still-present `pr_base_freshness` — never get
+    backfilled to the current tip on tick 1 only to have tick 2 or 3's FRESH
+    verdict delete the record outright, which would make the task
+    indistinguishable from one still never measured at all."""
+    work = _repo(tmp_path)
+    t = await _pr_task(store, work, base_sha=None)
+    assert "pr_base_sha" not in t.context
+    w = _watcher(store, mergeable="MERGEABLE", merge_state="CLEAN")
+
+    for _ in range(3):
+        current = await store.get_task(t.id)
+        await w._check_open_pr(current)
+
+    fresh = await store.get_task(t.id)
+    ctx = fresh.context or {}
+    # A "usable staleness state": present, and a determined state (fresh or
+    # stale) -- not silently absent again as if never measured.
+    assert "pr_base_freshness" in ctx
+    assert ctx["pr_base_freshness"]["state"] in (
+        delivered_base.FRESH, delivered_base.STALE)
+    assert ctx.get("pr_base_sha_source") == "merge_base"
+
+
+async def test_the_watcher_acts_on_stale_but_mergeable_end_to_end(store, tmp_path):
+    """The ACT this bugfix adds, demonstrated end to end through the real
+    entry point (`tick()`, not `_check_base_stale` called directly) on a
+    task in exactly the stale-but-mergeable state -- and through the one
+    real consumer of that state, `api.models.merge_ready_for`, which must
+    withhold a `True` merge-ready verdict once the tick has recorded STALE."""
+    from no_human.api.models import merge_ready_for
+
+    work = _repo(tmp_path)
+    lander = _clone(tmp_path, work, "lander")
+    recorded = _trunk_sha(work)
+    branch = "feature-e2e"
+    _make_branch(work, branch)
+
+    t = await _pr_task(store, work, base_sha=recorded, pr_branch=branch)
+    sha = "c" * 40
+    await store.merge_context(t.id, {"merge_policy": {sha: {"ready": True}}})
+    attempts = [{"commit_sha": sha}]
+
+    before = await store.get_task(t.id)
+    assert merge_ready_for(before, attempts) is True
+
+    _land(lander, "e2e.py")
+    w = _watcher(store, mergeable="MERGEABLE", merge_state="CLEAN")
+    actions = await w.tick()
+    assert (t.id, "pr_base_remeasured") in actions
+
+    after = await store.get_task(t.id)
+    assert after.context["pr_base_freshness"]["state"] == delivered_base.STALE
+    assert merge_ready_for(after, attempts) is None
+    # Nothing else about the task moved: still parked, no coder round.
+    assert after.status is TaskStatus.AWAITING_APPROVAL
+    assert "pr_conflict_rounds" not in (after.context or {})
+
+
+async def test_remeasuring_never_consumes_an_attempt(store, tmp_path):
+    """The action this bugfix takes -- emitting `pr_base_remeasured` -- must
+    never itself be, or trigger, a coder attempt: no `send_back_feedback`,
+    no attempt-count bump, no status change away from AWAITING_APPROVAL."""
+    work = _repo(tmp_path)
+    lander = _clone(tmp_path, work, "lander")
+    recorded = _trunk_sha(work)
+    branch = "feature-no-attempt"
+    _make_branch(work, branch)
+    _land(lander, "no_attempt.py")
+
+    t = await _pr_task(store, work, base_sha=recorded, pr_branch=branch)
+    before_attempts = len(await store.list_attempts(t.id)) \
+        if hasattr(store, "list_attempts") else 0
+    w = _watcher(store, mergeable="MERGEABLE", merge_state="CLEAN")
+
+    out = await w._check_open_pr(t)
+    assert out == "pr_base_remeasured"
+
+    fresh = await store.get_task(t.id)
+    ctx = fresh.context or {}
+    assert fresh.status is TaskStatus.AWAITING_APPROVAL
+    assert not ctx.get("send_back_feedback")
+    assert "pr_conflict_rounds" not in ctx
+    if hasattr(store, "list_attempts"):
+        after_attempts = len(await store.list_attempts(t.id))
+        assert after_attempts == before_attempts
+
+
+async def test_the_stale_remeasure_is_not_re_emitted_on_a_quiet_tick(store, tmp_path):
+    """AC4's dedup-guard mutation-pin: once a STALE, textually-clean verdict
+    has been recorded, a second tick with NOTHING new on trunk must be
+    silent -- no repeated `pr_base_remeasured` event, no repeated
+    `pr_base_remeasures` bump. Deleting the dedup guard in
+    `_check_base_stale`'s STALE branch (the
+    ``if ctx.get("pr_base_freshness") == freshness: return None`` line) makes
+    this test fail: the second tick would re-emit the same event and double
+    the remeasure count."""
+    work = _repo(tmp_path)
+    lander = _clone(tmp_path, work, "lander")
+    recorded = _trunk_sha(work)
+    branch = "feature-quiet"
+    _make_branch(work, branch)
+    _land(lander, "quiet.py")
+
+    t = await _pr_task(store, work, base_sha=recorded, pr_branch=branch)
+    events = []
+    w = _watcher(store, mergeable="MERGEABLE", merge_state="CLEAN", events=events)
+
+    first = await w._check_open_pr(t)
+    assert first == "pr_base_remeasured"
+    once = await store.get_task(t.id)
+    assert once.context["pr_base_remeasures"] == 1
+
+    # A second tick, nothing new happened on trunk.
+    second = await w._check_open_pr(once)
+    assert second is None
+    twice = await store.get_task(t.id)
+    assert twice.context["pr_base_remeasures"] == 1
+    assert sum(1 for k, _ in events if k == "pr_base_remeasured") == 1
+
+
 async def test_measure_is_a_three_state_answer(tmp_path):
     work = _repo(tmp_path)
     lander = _clone(tmp_path, work, "lander")

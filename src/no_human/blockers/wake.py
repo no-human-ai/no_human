@@ -470,7 +470,9 @@ class WakeWatcher:
         active_ids: set[str] | None = None,
     ) -> list[tuple[str, str]]:
         """Re-evaluate all parked tasks once. Returns (task_id, action) tuples
-        where action is 'resumed' or 'escalated_timeout'.
+        for every task some rung acted on; ``action`` is whatever string that
+        rung returned (e.g. 'resumed', 'escalated_timeout', or one of the
+        open-PR ladder's own action strings) — not a fixed, enumerable set.
 
         ``active_ids`` is the caller's set of worker-CLAIMED task ids; the
         stuck-active sweep judges only those. A resumed task waiting in an
@@ -2031,17 +2033,7 @@ class WakeWatcher:
         time and refuses any unmerged path outside the tolerated ledger
         files, so a wrong "clean" verdict here would still be caught before
         anything reaches ``main``.
-
-        ``info``: the caller (`_check_open_pr`) polls once and passes its
-        answer here via this additive keyword, shared with `_check_base_stale`
-        so a tick pays for `gh pr view` once, not twice. The default,
-        `_INFO_UNSET`, means "not provided" — this rung then polls for itself
-        via `_poll_mergeable`, exactly as it always did, so every existing
-        direct caller (this file's own tests included) keeps working
-        unchanged. An explicit `info=None` means the caller DID share its
-        poll and that poll failed — this rung must not re-poll in that case
-        (a shared poll paid for twice, once per rung, would double the
-        network round-trip and the warning log on every error tick).
+        ``info``: shared poll result (see `_check_base_stale`); `_INFO_UNSET` means poll for yourself, an explicit `None` means the shared poll failed.
         """
         if info is _INFO_UNSET:
             info = await self._poll_mergeable(task, url)

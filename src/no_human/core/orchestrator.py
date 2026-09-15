@@ -8308,12 +8308,6 @@ class Orchestrator:
         # for context predating this field. See `_abandon_draft_pr`.
         ctx["pr_delivered_url"] = pr.url
         ctx.setdefault("pr_comment_since", _now())
-        # Record the trunk tip this PR was actually measured against, so
-        # `blockers.wake.WakeWatcher._check_base_stale` can later tell a
-        # fresh AWAITING_APPROVAL task from one trunk has moved past — see
-        # `vcs/delivered_base.py`'s module docstring for the defect this
-        # closes. Best-effort: `{}` on any failure, so a delivery never fails
-        # on this.
         ctx.update(await delivered_base.record_at_delivery(str(repo.path), base))
         if linked_pr_urls:
             ctx["linked_pr_urls"] = linked_pr_urls
