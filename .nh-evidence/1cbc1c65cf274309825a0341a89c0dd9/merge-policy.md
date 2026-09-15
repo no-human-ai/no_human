@@ -1,6 +1,6 @@
 # Merge-ready policy
 
-_Harness-captured record for task `1cbc1c65`, commit `e32c1d8b6e8fd0f3940a842169c13f69249df640` — not model-authored: no_human wrote this file from the repo's merge policy evaluated against this commit — advisory to the human, nothing merges on it. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `1cbc1c65`, commit `b759c8e7baac01acc786fbdb02e284886ebcda78` — not model-authored: no_human wrote this file from the repo's merge policy evaluated against this commit — advisory to the human, nothing merges on it. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ```json
 {
@@ -14,7 +14,7 @@ _Harness-captured record for task `1cbc1c65`, commit `e32c1d8b6e8fd0f3940a842169
       "passed": true
     },
     {
-      "detail": "tests: 0 failed of 12811 run",
+      "detail": "tests: 0 failed of 13062 run",
       "name": "tests_ran_and_passed",
       "passed": true
     },
@@ -24,9 +24,9 @@ _Harness-captured record for task `1cbc1c65`, commit `e32c1d8b6e8fd0f3940a842169
       "passed": true
     },
     {
-      "detail": "repro gate pass",
+      "detail": "repro gate error",
       "name": "repro_gate",
-      "passed": true
+      "passed": false
     },
     {
       "detail": "1 verifiers, none failed",
@@ -34,12 +34,12 @@ _Harness-captured record for task `1cbc1c65`, commit `e32c1d8b6e8fd0f3940a842169
       "passed": true
     },
     {
-      "detail": "ci: pending",
+      "detail": "ci: success",
       "name": "ci",
-      "passed": false
+      "passed": true
     }
   ],
   "source": "default",
-  "summary": "not ready \u2014 1 of 6 rules failed: ci"
+  "summary": "not ready \u2014 1 of 6 rules failed: repro_gate"
 }
 ```

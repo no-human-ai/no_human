@@ -1,127 +1,140 @@
 # How I verified this — full log
 
-_Harness-captured record for task `1cbc1c65`, commit `e32c1d8b6e8fd0f3940a842169c13f69249df640` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `1cbc1c65`, commit `b759c8e7baac01acc786fbdb02e284886ebcda78` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ## How I verified this
-8 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
+10 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
 
 ### test
-- `cd /Users/eyalgolan/.<redacted>/worktrees/1cbc1c65cf274309825a0341a89c0dd9.52752.bb761dcf uv run --no-sync pytest -q tests/test_readme_claims.py -k "bench_run or windows_md or every_line_citation" 2>&1 | tail -40`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/1cbc1c65cf274309825a0341a89c0dd9.51048.d007d51c timeout 60 uv run pytest tests/test_gate_oneshot.py -q -x -k "test_the_gate_renders_file_and_line_citations" 2>&1 | tail -30`
+
+```
+(eval):2: command not found: timeout
+```
+
+- `cd /Users/eyalgolan/.<redacted>/worktrees/1cbc1c65cf274309825a0341a89c0dd9.51048.d007d51c uv run pytest tests/test_gate_oneshot.py -q -k "test_the_gate_renders_file_and_line_citations" 2>&1 | tail -30`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-......                                                                   [100%]
-6 passed, 141 deselected in 2.94s
+   Building no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/1cbc1c65cf274309825a0341a89c0dd9.51048.d007d51c
+      Built no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/1cbc1c65cf274309825a0341a89c0dd9.51048.d007d51c
+Installed 73 packages in 206ms
+.                                                                        [100%]
+1 passed, 58 deselected in 8.36s
 ```
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/1cbc1c65cf274309825a0341a89c0dd9.52752.bb761dcf uv run --no-sync pytest -q tests/test_readme_claims.py 2>&1 | tail -40`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-............................s.s.s.s.s.s.s.s.s.s......................... [ 48%]
-......................s..........................s...................... [ 97%]
-...                                                                      [100%]
-135 passed, 12 skipped in 8.43s
-```
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/1cbc1c65cf274309825a0341a89c0dd9.52752.bb761dcf uv run --no-sync pytest -q tests/test_structural_budget.py tests/test_egress_allowlist.py 2>&1 | tail -40`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/1cbc1c65cf274309825a0341a89c0dd9.51048.d007d51c uv run pytest -q -n 4 tests/test_gate_oneshot.py tests/test_egress_allowlist.py tests/test_plugin_drift.py tests/test_plugin_marketplace.py 2>&1 | tail -60`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-........................................                                 [100%]
-40 passed in 42.93s
-```
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/1cbc1c65cf274309825a0341a89c0dd9.52752.bb761dcf uv run pytest -q -n 4 tests/test_gate_oneshot.py tests/test_plugin_drift.py tests/test_plugin_marketplace.py tests/test_readme_claims.py tests/test_structural_budget.py tests/test_egress_allowlist.py 2>&1 | tail -60`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-   Building no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/1cbc1c65cf274309825a0341a89c0dd9.52752.bb761dcf
-      Built no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/1cbc1c65cf274309825a0341a89c0dd9.52752.bb761dcf
-Installed 73 packages in 591ms
 bringing up nodes...
 bringing up nodes...
 
-.......................s.s..............s.s..ss.s..s.s.................s [ 32%]
-.........................s.............................s................ [ 64%]
-........................................................................ [ 96%]
-........                                                                 [100%]
-212 passed, 12 skipped in 33.12s
+........................................................................ [ 67%]
+...................................                                      [100%]
+107 passed in 17.64s
 ```
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/1cbc1c65cf274309825a0341a89c0dd9.52752.bb761dcf uv run --no-sync pytest -q --collect-only 2>&1 | tail -15 echo "---" uv run --no-sync nh gate --help 2>&1 | tail -20`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/1cbc1c65cf274309825a0341a89c0dd9.51048.d007d51c uv run pytest -q tests/test_readme_claims.py tests/test_reanchor_citations.py tests/test_structural_budget.py 2>&1 | tail -40`
 
 ```
-tests/test_worktree_teardown.py::test_the_janitor_runs_at_boot_before_orphan_recovery
-tests/test_worktree_teardown.py::test_a_sweep_that_throws_never_blocks_boot
-tests/test_ws_reconnect_repro.py::test_ws_reconnect_and_stale_banner_js_suite_passes
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+............................s.s.s.s.s.s.s.s.s.s......................... [ 35%]
+......................s..........................s...................... [ 71%]
+.........................................................                [100%]
+189 passed, 12 skipped in 6.46s
+```
 
+- `cd /Users/eyalgolan/.<redacted>/worktrees/1cbc1c65cf274309825a0341a89c0dd9.51048.d007d51c uv run pytest -q -k "read_text_in_the_harness_omits_its_encoding or windows_md_code_line_citations" tests/ 2>&1 | tail -40`
+
+```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+.....                                                                    [100%]
 =============================== warnings summary ===============================
 src/<redacted>/testing/test_layers.py:35
-  /Users/eyalgolan/.<redacted>/worktrees/1cbc1c65cf274309825a0341a89c0dd9.52752.bb761dcf/src/<redacted>/testing/test_layers.py:35: PytestCollectionWarning: cannot collect test class 'TestLayer' because it has a __init__ constructor (from: tests/test_test_layers.py)
+  /Users/eyalgolan/.<redacted>/worktrees/1cbc1c65cf274309825a0341a89c0dd9.51048.d007d51c/src/<redacted>/testing/test_layers.py:35: PytestCollectionWarning: cannot collect test class 'TestLayer' because it has a __init__ constructor (from: tests/test_test_layers.py)
     @dataclass
 
-src/<redacted>/testing/test_lay
-[... 956 of 2,095 characters omitted from the middle ...]
- checkout to run the gate over (default: cwd).
-  --pr TEXT           GitHub pull request URL to review instead of the current
-                      branch.
-  --base TEXT         Override the comparison base ref (default:
-                      origin/<default branch>).
-  --title TEXT        Task title recorded for the review session.
-  --description TEXT  Task description recorded for the review session.
-  --help              Show this message and exit.
-```  
-  _excerpt - 2,083 characters of output in total_
+src/<redacted>/testing/test_layers.py:89
+  /Users/eyalgolan/.<redacted>/worktrees/1cbc1c65cf274309825a0341a89c0dd9.51048.d007d51c/src/<redacted>/testing/test_layers.py:89: PytestCollectionWarning: cannot collect test class 'TestPlan' because it has a __init__ constructor (from: tests/test_test_layers.py)
+    @dataclass
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/1cbc1c65cf274309825a0341a89c0dd9.52752.bb761dcf uv run --no-sync pytest -q tests/test_gate_oneshot.py -k "no_credential or verb_exits_2 or deletes_a_test_reports_the_tamper_finding or clean_branch_reports_a_pass or no_store_and_no_server or no_repo_writes or never_shells_out_to_a_write" -v 2>&1 | tail -40`
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+5 passed, 1 skipped, 13282 deselected, 2 warnings in 18.60s
+```
+
+- `cd /Users/eyalgolan/.<redacted>/worktrees/1cbc1c65cf274309825a0341a89c0dd9.51048.d007d51c uv run pytest -q tests/test_gate_oneshot.py -k "test_only_one_module_constructs_the_oneshot_reviewer_call or test_the_gate_verb_delegates_to_run_gate" 2>&1 | tail -20 ls src/<redacted>/ci_action 2>&1 find . -maxdepth 2 -iname "*ci_action*" 2>&1`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-============================= test session starts ==============================
-platform darwin -- Python 3.12.13, pytest-9.1.1, pluggy-1.6.0
-<redacted> isolated HOME: /var/folders/1r/3r0rt1jd4j1456rsg_fh4d380000gn/T/nh-test-home-pp_rx14q
-rootdir: /Users/eyalgolan/.<redacted>/worktrees/1cbc1c65cf274309825a0341a89c0dd9.52752.bb761dcf
-configfile: pyproject.toml
-plugins: anyio-4.14.0, no-human-0.2.2, cov-7.1.0, xdist-3.8.0, asyncio-1.4.0
-asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
-collected 20 items / 12 deselected / 8 selected
-
-tests/test_gate_oneshot.py ........                                      [100%]
-
-======================= 8 passed, 12 deselected in 8.53s =======================
+..                                                                       [100%]
+2 passed, 57 deselected in 2.01s
+ls: src/<redacted>/ci_action: No such file or directory
 ```
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/1cbc1c65cf274309825a0341a89c0dd9.52752.bb761dcf uv run --no-sync pytest -q tests/test_gate_oneshot.py::test_only_one_module_constructs_the_oneshot_reviewer_call -v 2>&1 | tail -10`
-
-```
-<redacted> isolated HOME: /var/folders/1r/3r0rt1jd4j1456rsg_fh4d380000gn/T/nh-test-home-5ydn63k1
-rootdir: /Users/eyalgolan/.<redacted>/worktrees/1cbc1c65cf274309825a0341a89c0dd9.52752.bb761dcf
-configfile: pyproject.toml
-plugins: anyio-4.14.0, no-human-0.2.2, cov-7.1.0, xdist-3.8.0, asyncio-1.4.0
-asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
-collected 1 item
-
-tests/test_gate_oneshot.py .                                             [100%]
-
-============================== 1 passed in 1.81s ===============================
-```
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/1cbc1c65cf274309825a0341a89c0dd9.52752.bb761dcf uv run --no-sync pytest -q tests/test_gate_oneshot.py tests/test_plugin_drift.py tests/test_plugin_marketplace.py tests/test_readme_claims.py tests/test_structural_budget.py tests/test_egress_allowlist.py 2>&1 | tail -15`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/1cbc1c65cf274309825a0341a89c0dd9.51048.d007d51c uv run pytest -q -n 4 tests/test_gate_oneshot.py tests/test_egress_allowlist.py tests/test_plugin_drift.py tests/test_plugin_marketplace.py tests/test_readme_claims.py tests/test_reanchor_citations.py tests/test_structural_budget.py 2>&1 | tail -30`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-.................................................................s.s.s.s [ 32%]
-.s.s.s.s.s.s...............................................s............ [ 64%]
-..............s......................................................... [ 96%]
-........                                                                 [100%]
-212 passed, 12 skipped in 82.30s (0:01:22)
+bringing up nodes...
+bringing up nodes...
+
+........................................................................ [ 23%]
+...........s.s.s.s.s.s.s.s.s.s.......................................... [ 46%]
+.......s................................................................ [ 70%]
+..................s..................................................... [ 93%]
+....................                                                     [100%]
+296 passed, 12 skipped in 23.39s
+```
+
+- `cd /Users/eyalgolan/.<redacted>/worktrees/1cbc1c65cf274309825a0341a89c0dd9.51048.d007d51c uv run pytest -q -n 4 tests/test_gate_oneshot.py tests/test_egress_allowlist.py tests/test_plugin_drift.py tests/test_plugin_marketplace.py tests/test_readme_claims.py tests/test_reanchor_citations.py tests/test_structural_budget.py 2>&1 | tail -15`
+
+```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+bringing up nodes...
+bringing up nodes...
+
+........................................................................ [ 23%]
+...........s.s.s.s.s.s.s.s.s.s.......................................... [ 46%]
+.......s................................s............................... [ 70%]
+........................................................................ [ 93%]
+....................                                                     [100%]
+296 passed, 12 skipped in 23.22s
+```
+
+- `cd /Users/eyalgolan/.<redacted>/worktrees/1cbc1c65cf274309825a0341a89c0dd9.51048.d007d51c uv run pytest -q tests/test_text_reads_declare_encoding.py 2>&1 | tail -15`
+
+```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+...............                                                          [100%]
+15 passed in 4.95s
+```
+
+- `cd /Users/eyalgolan/.<redacted>/worktrees/1cbc1c65cf274309825a0341a89c0dd9.51048.d007d51c uv run pytest -q -n 4 tests/test_gate_oneshot.py tests/test_egress_allowlist.py tests/test_plugin_drift.py tests/te [... 221 of 564 characters omitted from the middle ...] /check_release_manifest.py 2>&1 | tail -5 echo "=== reanchor check ===" uv run python scripts/reanchor_citations.py --check 2>&1 | tail -5`
+
+```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+bringing up nodes...
+bringing up nodes...
+
+........................................................................ [ 22%]
+....s.s.s.s.s.s.s.s.s.s................................................. [ 44%]
+s.......................................s............................... [ 66%]
+........................................................................ [ 89%]
+...................................                                      [100%]
+311 passed, 12 skipped in 23.32s
+=== manifest ===
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+OK: 1629 file(s) match RELEASE_MANIFEST.txt
+=== reanchor check ===
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+VERDICT=OK
 ```
 
 
 **Not verified:** everything below is a limit of this section, listed whether or not it bit this attempt.
 
-- no command recognised as e2e, http, typecheck, lint, build was recorded
+- no command recognised as e2e, http, typecheck, lint, build was recorded - and a recorded command is shown with its middle omitted, so a check inside the omitted part cannot be ruled out
 - an entry shows that a command LINE was submitted to the shell and what came back - never that the check recognised inside it RAN, and never that it was the RIGHT command: `pytest -k test_nothing` prints a clean run, and a recorded command line may name a check the shell never reached yet is still counted - TEN SHAPES WERE DRIVEN against bash 3.2.57 with the check replaced by a marker-printing stub and the marker was absent in every one: a failed `&&`, a taken `||`, an `exit`, an `exec`, an `exit` inside a `source`d script, a syntax error that aborts the REST of the line, a multi-line `if false`, a `case` that matches nothing, `set -e` aborting an earlier command, and `set -u` on an unset variable; that list is MEASURED, NOT EXHAUSTIVE, because this module is not bash, so a kind this section does NOT list as missing is a kind some recorded line named, which is not the same as a kind that ran
 - the text is the coder's: the session chose the command string and, through `echo`/`printf`, can choose the output too. Both are shown as inert text, and no entry ASSERTS a pass, a fail, or an exit status - `pytest -q | tail -3` exits with `tail`'s status, `Error: Exit code 1` is a line IN THE OUTPUT, and where the harness reported a timeout or an interruption instead of output that report is appended to the captured text in square brackets. Read the output
 - recognition reads the command line ONLY - it never looks inside what a command runs, so `bash -c 'uv run pytest -q'` leaves no receipt at all while `make test` leaves one that names `make` and not the recipe it ran; and the other way, a check merely NAMED in a heredoc body, or in a quoted string that happens to spell a shell separator, can be recorded as though it ran
