@@ -429,6 +429,8 @@ fails closed: an unreadable file, an erroring subprocess, or a citation the
 script will not guess at all block, never silently read as clean. A repo
 that does not ship the convention pays nothing for it.
 
+A citation that moves with the code is documentation (a *live citation*); a citation that records a finding at a specific point in time is *evidence*. The test suite validates live citations to prevent rot. To prevent the checker from asserting that an evidence citation reflects the current code, wrap evidence sections in `<!-- citations: historical -->` and `<!-- /citations: historical -->`. The checker strips these marked regions before scanning for backticked references, so historical snapshots stay out of live validation without losing their backticks.
+
 ## A reproduction gate that proves the fix fixed the bug
 
 [`src/no_human/testing/repro_gate.py`](../src/no_human/testing/repro_gate.py)
