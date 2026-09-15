@@ -145,7 +145,7 @@ _NO_HUMAN_REASON = (
 # Denied at tool time instead; `git mv` renames stay allowed. Covers rm /
 # git rm on tests/ dirs and test_*/**.test.* file shapes.
 _RM_TESTS = re.compile(
-    r"\b(?:git\s+)?rm\b[^|;&]*?"
+    r"\b(?:git" + exec_names.EXE_SUFFIX_RE + r"\s+)?rm" + exec_names.EXE_SUFFIX_RE + r"\b[^|;&]*?"
     # a tests/ dir, or a source test file — but NOT build/coverage artifacts
     # (dist/coverage/*.map, test_results.xml). Require a source extension.
     r"(?:\btests?/|/tests?/|"
@@ -157,7 +157,7 @@ _RM_TESTS = re.compile(
 _NO_HUMAN_YML_WRITE = re.compile(
     r"(?:sed\s+-i|>\s*|>>\s*|tee\s+)[^|;&]*\.no_human\.ya?ml", re.IGNORECASE)
 
-_RM_RF = re.compile(r"\brm\s+(-[a-z]*r[a-z]*f|-[a-z]*f[a-z]*r|-rf|-fr)\b", exec_names.case_flags())
+_RM_RF = re.compile(r"\brm" + exec_names.EXE_SUFFIX_RE + r"\s+(-[a-z]*r[a-z]*f|-[a-z]*f[a-z]*r|-rf|-fr)\b", exec_names.case_flags())
 # `find` primaries that WRITE or RUN — none of them matched by `_RM_RF`.
 _SCAN_MUTATION_PRIMARIES = frozenset({
     "-delete", "-exec", "-execdir", "-ok", "-okdir",
@@ -166,7 +166,7 @@ _SCAN_MUTATION_PRIMARIES = frozenset({
 #: only of these; a quoted pattern token is not.
 _SHELL_PUNCT = frozenset("();<>|&")
 _GIT_DESTRUCTIVE = re.compile(
-    r"\bgit\s+(push\s+.*--force|push\s+.*-f\b|reset\s+--hard\s+\S|"
+    r"\bgit" + exec_names.EXE_SUFFIX_RE + r"\s+(push\s+.*--force|push\s+.*-f\b|reset\s+--hard\s+\S|"
     r"clean\s+-[a-z]*f|filter-branch|update-ref\s+-d)", exec_names.case_flags())
 
 # A live product server/runner launched from an agent session. `nh serve` /
@@ -1108,16 +1108,16 @@ def _venv_install_denial(cmd: str, cwd: "str | None") -> "str | None":
 # Merging the PR — the one action that is always a human's (§3.2). `git merge`
 # is NOT this: a PR is merged through the forge, and that is what must be denied.
 _FORGE_MERGE = re.compile(
-    r"\b(?:gh\s+pr\s+merge"           # gh pr merge 7004 --squash
-    r"|glab\s+mr\s+(?:merge|accept)"  # glab mr merge 12 / glab mr accept 12
+    r"\b(?:gh" + exec_names.EXE_SUFFIX_RE + r"\s+pr\s+merge"           # gh pr merge 7004 --squash
+    r"|glab" + exec_names.EXE_SUFFIX_RE + r"\s+mr\s+(?:merge|accept)"  # glab mr merge 12 / glab mr accept 12
     # `accept` is a documented alias of `merge`, not a distinct verb: run
     # `glab mr accept --help` (glab 1.113.0) and its USAGE line reads
     # "glab mr merge [<id | branch>] [--flags]", with EXAMPLES pairing
     # `glab mr merge 235` and `glab mr accept 235`. `gh pr accept --help`
     # and `gh alias list` (gh 2.97.0) show no such alias on the gh side —
     # confirmed by execution, not assumed. Found 2026-08-23, additive.
-    r"|gh\s+api\b[^|;&]*?/(?:pulls|merge_requests)/\d+/merge"  # the REST call
-    r"|glab\s+api\b[^|;&]*?/merge_requests/\d+/merge"
+    r"|gh" + exec_names.EXE_SUFFIX_RE + r"\s+api\b[^|;&]*?/(?:pulls|merge_requests)/\d+/merge"  # the REST call
+    r"|glab" + exec_names.EXE_SUFFIX_RE + r"\s+api\b[^|;&]*?/merge_requests/\d+/merge"
     # GraphQL merges a PR in one mutation and never touches the REST path
     # above. Found 2026-08-22 by the sweep that found the `nh approve` hole:
     # `gh api graphql -f query="mutation{mergePullRequest(input:{...}){...}}"
@@ -1235,11 +1235,11 @@ _FORGE_MERGE = re.compile(
 #: spelling is not a filesystem name, so `nh MERGE-STACK RUN` is not entitled
 #: to run on a case-sensitive host any more than on a folding one (#328).
 _LEXICAL_MERGE_STACK = re.compile(
-    r"(?<![\w.-])(?:nh|no-human)\s+merge-stack\s+run\b", re.IGNORECASE)
+    r"(?<![\w.-])(?:nh|no-human)" + exec_names.EXE_SUFFIX_RE + r"\s+merge-stack\s+run\b", re.IGNORECASE)
 
 _LEXICAL_LIVE_SERVER = re.compile(
     r"(?:^|[|;&]\s*|`|\$\(|^\s*|/|\bsudo\s+|\benv\s+[^|;&]*?\s)"
-    r"(?:nh|no-human)\s+(?:serve|start|watch|dashboard|bench\s+run)\b")
+    r"(?:nh|no-human)" + exec_names.EXE_SUFFIX_RE + r"\s+(?:serve|start|watch|dashboard|bench\s+run)\b")
 
 _APPROVE_BINARIES = frozenset({"nh", "no-human"})
 
@@ -1636,11 +1636,11 @@ _ASSIGN_DECLARATORS = frozenset({"export", "local", "readonly", "declare", "type
 #: bare `GH` token does not have. So the two folds cover disjoint token
 #: shapes and must agree on case-folding for the same reason, not because
 #: either one waits on the other (#328's runner-recursion half).
-_FORGE_MENTION = re.compile(r"\b(?:gh|glab)\s+\S", exec_names.case_flags())
+_FORGE_MENTION = re.compile(r"\b(?:gh|glab)" + exec_names.EXE_SUFFIX_RE + r"\s+\S", exec_names.case_flags())
 
 #: `git` mention inside a shell-runner argument, `_FORGE_MENTION`'s sibling
 #: for `_git_invocations` — same precompiled-for-linearity, same host gate.
-_GIT_MENTION = re.compile(r"\bgit\s+\S", exec_names.case_flags())
+_GIT_MENTION = re.compile(r"\bgit" + exec_names.EXE_SUFFIX_RE + r"\s+\S", exec_names.case_flags())
 
 _MASK_KEY = re.compile(r"\x00m\d+\x00")
 
@@ -2164,12 +2164,12 @@ def _forge_subcommand(argv: list[str]) -> tuple[str, str]:
 
 
 _GIT_WRITE = re.compile(
-    r"\bgit\s+(?:commit|push|merge|rebase|cherry-pick|revert|am|apply|tag"
+    r"\bgit" + exec_names.EXE_SUFFIX_RE + r"\s+(?:commit|push|merge|rebase|cherry-pick|revert|am|apply|tag"
     r"|reset|restore|stash|branch|checkout|switch)\b"
 )
 _FORGE_WRITE = re.compile(
-    r"\b(?:gh\s+pr\s+(?:create|merge|close|edit|ready|review)"
-    r"|glab\s+mr\s+(?:create|merge|accept|close|update))\b"
+    r"\b(?:gh" + exec_names.EXE_SUFFIX_RE + r"\s+pr\s+(?:create|merge|close|edit|ready|review)"
+    r"|glab" + exec_names.EXE_SUFFIX_RE + r"\s+mr\s+(?:create|merge|accept|close|update))\b"
 )
 
 
@@ -3011,7 +3011,7 @@ def evaluate(
         # added so this whole-string fallback folds the same way its sibling
         # gates (`_FORGE_MERGE`, `_GIT_MENTION`) now do. The argv analysis
         # below is additive, never a replacement.
-        if (re.search(r"\bgit\s+push\b", cmd, exec_names.case_flags())
+        if (re.search(r"\bgit" + exec_names.EXE_SUFFIX_RE + r"\s+push\b", cmd, exec_names.case_flags())
                 and _push_targets_protected(cmd, never_push_to)):
             return GuardDecision(
                 False, f"push to protected branch blocked: {cmd}. Push to your own "

@@ -37,6 +37,7 @@ from no_human.api.app import app
 from no_human.cli.commands import cli
 from no_human.core.db import Store
 from no_human.core.task import Task, TaskStatus
+from no_human.vcs import approve_merge
 from no_human.vcs.approve_merge import LandResult, land_task
 from no_human.vcs.git import GitError, GitRepo, ProtectedBranch
 from no_human.vcs.pr_watcher import default_branch_shipped
@@ -2321,3 +2322,83 @@ def test_land_refuses_a_count_drift_that_is_not_merge_arithmetic(land_env):
     assert not result.ok and result.step == "manifest"
     assert "not a mechanical merge" in result.stderr, result.stderr
     assert land_env.remote_main_sha() == tip
+
+
+# --------------------------------------------------------------------------- #
+# The frozen desktop build: `sys.executable` is the `nh` binary, not a Python  #
+# --------------------------------------------------------------------------- #
+#
+# Measured 2026-09-14 against the shipped bundle
+# (`/Applications/no_human.app/Contents/Resources/nh-server/nh`, a PyInstaller
+# onedir freeze): `nh -m pytest -q` answers `Error: No such option '-m'` and
+# `nh scripts/check_release_manifest.py --write` answers `Error: No such
+# command`. `land_task` built every shell-out as `[sys.executable, ...]`, so
+# on the desktop app the merge-time gate failed at step "tests" for EVERY
+# repo and at step "manifest" for this repo's shape — and the board's Approve
+# button runs the same `land_task` in the same frozen process
+# (`api/app.py` imports it there).
+#
+# Nothing caught this because every test runs under a real interpreter, where
+# `sys.executable` IS a Python, and because the suite asserts the ARGV LIST
+# through the `_run_pytest` seam without ever executing it — an argv
+# assertion cannot see that argv[0] is not an interpreter. These tests make
+# that class visible: they force the frozen shape and assert on argv[0].
+
+
+def test_real_python_is_sys_executable_when_not_frozen(monkeypatch):
+    monkeypatch.delattr(sys, "frozen", raising=False)
+    assert approve_merge._real_python(None) == sys.executable
+
+
+def test_real_python_prefers_the_repo_venv_in_a_frozen_build(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(tmp_path / "nh"), raising=False)
+    sub = "Scripts" if os.name == "nt" else "bin"
+    name = "python.exe" if os.name == "nt" else "python"
+    venv_py = tmp_path / ".venv" / sub / name
+    venv_py.parent.mkdir(parents=True)
+    venv_py.write_text("#!/bin/sh\n", encoding="utf-8")
+    assert approve_merge._real_python(tmp_path) == str(venv_py)
+
+
+def test_real_python_falls_back_to_a_path_interpreter_in_a_frozen_build(
+        tmp_path, monkeypatch):
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(tmp_path / "nh"), raising=False)
+    found = approve_merge._real_python(tmp_path)  # no .venv here
+    assert found is not None and found != str(tmp_path / "nh")
+    assert os.path.basename(found).startswith("python")
+
+
+def test_real_python_is_none_when_a_frozen_build_can_find_no_interpreter(
+        tmp_path, monkeypatch):
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(tmp_path / "nh"), raising=False)
+    monkeypatch.setattr("no_human.vcs.approve_merge.shutil.which", lambda _n: None)
+    assert approve_merge._real_python(tmp_path) is None
+
+
+def test_the_merge_gate_never_shells_out_to_the_frozen_nh_binary(
+        land_env, monkeypatch):
+    """The regression this whole section exists for: with `sys.executable`
+    pointing at a frozen `nh`, the pytest argv must NOT start with it."""
+    frozen_nh = land_env.clone / "nh"
+    frozen_nh.write_text("#!/bin/sh\nexit 2\n", encoding="utf-8")
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(frozen_nh), raising=False)
+    calls = _patch_run_pytest(monkeypatch, returncode=0)
+    base_sha = land_env.remote_main_sha()
+    branch, _head_sha = land_env.cut_branch("no-human/t-frozen")
+    result = land_task(
+        repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
+        task_id="deadbeef", task_title="Add feature", review_evidence="review PASS",
+        config=land_env.config, tested_commit_sha=base_sha,
+    )
+    assert result.ok, result.stderr
+    assert len(calls) == 1
+    argv0 = calls[0]["argv"][0]
+    assert argv0 != str(frozen_nh), (
+        "the merge gate shelled out to the frozen nh binary — this is the "
+        "desktop-app landing bug")
+    assert calls[0]["argv"][1:3] == ["-m", "pytest"]
+    assert os.path.basename(argv0).startswith("python")

@@ -38,11 +38,11 @@ import logging
 import os
 import shutil
 import subprocess
-import sys
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Callable
 
+from ..proc import real_python
 from ..testing import runner
 from .task import TERMINAL_STATES, TaskStatus
 
@@ -486,19 +486,13 @@ def _builder_python(displaced: Path | None) -> str | None:
     The venv being DISPLACED is tried first: the caller only pins when the
     inherited environment already names one, so it exists by construction and
     is a real interpreter. Then ``python3``/``python`` on PATH.
+
+    The resolution itself lives in ``proc.real_python`` since the same scar
+    turned up a fourth time in ``vcs/manifest_repair.py`` (issue #402); this
+    wrapper is venv creation's binding of it, and the name this module's
+    tests pin.
     """
-    if not getattr(sys, "frozen", False):
-        return sys.executable
-    if displaced is not None:
-        for sub, name in ((("Scripts",), "python.exe"), (("bin",), "python")):
-            candidate = displaced.joinpath(*sub, name)
-            if candidate.is_file():
-                return str(candidate)
-    for name in ("python3", "python"):
-        found = shutil.which(name)
-        if found:
-            return found
-    return None
+    return real_python(displaced)
 
 
 def _create_venv(target: Path, displaced: Path | None = None) -> None:
