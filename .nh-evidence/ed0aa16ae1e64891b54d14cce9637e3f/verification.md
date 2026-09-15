@@ -1,235 +1,86 @@
 # How I verified this — full log
 
-_Harness-captured record for task `ed0aa16a`, commit `6dc7ab5adefb3dd9496a385ee56b60a1dd219acb` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `ed0aa16a`, commit `36a382d1d755c87b66205f45ca1b57a19ebc8289` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ## How I verified this
-16 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
-
-**Not everything recorded is shown:** the 12 most recent of those listed are shown with their captured output, and the other 4 commands are shown as a command line only.
+5 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
 
 ### test
-- `cd /Users/eyalgolan/.<redacted>/worktrees/ed0aa16ae1e64891b54d14cce9637e3f.51048.7896d91f uv run pytest tests/test_wake_base_stale.py tests/test_wake_base_stale_followups.py tests/test_finalize_records_delivered_base.py -q -n 4 2>&1 | tail -80`
-  _output not shown - see the note above._
-- `cd /Users/eyalgolan/.<redacted>/worktrees/ed0aa16ae1e64891b54d14cce9637e3f.51048.7896d91f uv run pytest tests/test_wake_base_stale_followups.py::test_no_source_text_asserts_an_acceptance_criteria_amendment -q 2>&1 | tail -20`
-  _output not shown - see the note above._
-- `cd /Users/eyalgolan/.<redacted>/worktrees/ed0aa16ae1e64891b54d14cce9637e3f.51048.7896d91f uv run pytest tests/test_structural_budget.py -q -n 4 2>&1 | tail -60`
-  _output not shown - see the note above._
-- `cd /Users/eyalgolan/.<redacted>/worktrees/ed0aa16ae1e64891b54d14cce9637e3f.51048.7896d91f cp src/<redacted>/blockers/wake.py /tmp/wake_backup.py python3 - <<'EOF' import re path = "src/<redacted>/blockers/ [... 637 of 980 characters omitted from the middle ...] e.py::test_the_stale_remeasure_is_not_re_emitted_on_a_quiet_tick -q 2>&1 | tail -20 cp /tmp/wake_backup.py src/<redacted>/blockers/wake.py`
-  _output not shown - see the note above._
-- `cd /Users/eyalgolan/.<redacted>/worktrees/ed0aa16ae1e64891b54d14cce9637e3f.51048.7896d91f cp src/<redacted>/vcs/delivered_base.py /tmp/delivered_base_backup.py python3 - <<'EOF' path = "src/<redacted>/vcs/ [... 488 of 831 characters omitted from the middle ...] ckup.py src/<redacted>/vcs/delivered_base.py diff /tmp/delivered_base_backup.py src/<redacted>/vcs/delivered_base.py && echo "RESTORED OK"`
+- `uv run pytest -q tests/test_wake_base_stale.py tests/test_wake_base_stale_followups.py tests/test_finalize_records_delivered_base.py tests/test_structural_budget.py tests/test_readme_claims.py -n 4 2>&1 | tail -80`
 
 ```
-work = _repo(tmp_path)
-        lander = _clone(tmp_path, work, "lander")
-    
-        # A genuine trunk landing `work` has never fetched.
-        new_tip = _land(lander, "delivered.py")
-    
-        patch = await delivered_base.record_at_delivery(str(work), "main")
-    
->       assert patch == {"pr_base_sha": new_tip, "pr_base_ref": "main"}
-E       AssertionError: assert {'pr_base_sha..._ref': 'main'} == {'pr_base_sha..._ref': 'main'}
-E         
-E         Omitting 1 identical items, use -vv to show
-E         Differing items:
-E         {'pr_base_sha': 'c63ecafc021b22a0dc4376f30d543d58d3fd7d82'} != {'pr_base_sha': 'e13062efb6a5e551cd538f3f46e8b92bdb6de36b'}
-E         Use -v to get more diff
-
-tests/test_finalize_records_delivered_base.py:34: AssertionError
-=========================== short test summary info ============================
-FAILED tests/test_finalize_records_delivered_base.py::test_record_at_delivery_fetches_before_resolving_the_tip
-1 failed in 7.24s
-RESTORED OK
-```
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/ed0aa16ae1e64891b54d14cce9637e3f.51048.7896d91f uv run pytest tests/test_scheduler_terminal_landed_reconcile.py tests/test_pr_shipped.py tests/test_approve_ready_cli.py tests/test_derived_conflict_count_only.py -q -n 4 2>&1 | tail -20`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+Using CPython 3.12.13
+Creating virtual environment at: .venv
+   Building no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/ed0aa16ae1e64891b54d14cce9637e3f.62504.98b118f9
+      Built no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/ed0aa16ae1e64891b54d14cce9637e3f.62504.98b118f9
+Installed 73 packages in 134ms
 bringing up nodes...
 bringing up nodes...
 
-........................................................................ [ 60%]
-...............................................                          [100%]
-119 passed in 21.18s
+.......................................s.s.s.s.s.s.s.s.s.s.............. [ 32%]
+........................................s............................... [ 64%]
+...s.................................................................... [ 96%]
+.......                                                                  [100%]
+211 passed, 12 skipped in 25.86s
 ```
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/ed0aa16ae1e64891b54d14cce9637e3f.51048.7896d91f uv run pytest tests/test_doctor.py -q -n 4 -k "mechan or MECHANISM or event" 2>&1 | tail -30`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/ed0aa16ae1e64891b54d14cce9637e3f.62504.98b118f9 uv run pytest -q -n 4 \   tests/test_wake_base_stale.py \   tests/test_wake_base_stale_followups.py \   tests/test_finalize_records_delivered_base.py \   tests/test_structural_budget.py \   tests/test_readme_claims.py \   2>&1 | tail -20`
 
 ```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
 bringing up nodes...
 bringing up nodes...
 
-.....                                                                    [100%]
-5 passed in 8.90s
+.......................................s.s.s.s.s.s.s.s.s.s.............. [ 32%]
+.......................................s..............................s. [ 64%]
+........................................................................ [ 96%]
+.......                                                                  [100%]
+211 passed, 12 skipped in 6.63s
 ```
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/ed0aa16ae1e64891b54d14cce9637e3f.51048.7896d91f uv run pytest tests/test_doctor.py -q -n 4 2>&1 | tail -15`
+- `cd /tmp/nh_repro_check_ed0aa16a && git log --oneline -1 && uv run pytest -q tests/test_wake_base_stale_followups.py::test_the_stale_reverify_fetch_is_charged_against_the_shared_budget 2>&1 | tail -50`
 
 ```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+f17e20f3 Merge origin/main (e427e776) into the stale-but-mergeable-PR branch
+Using CPython 3.12.13
+Creating virtual environment at: .venv
+   Building no-human @ file:///private/tmp/nh_repro_check_ed0aa16a
+      Built no-human @ file:///private/tmp/nh_repro_check_ed0aa16a
+Installed 73 packages in 81ms
+ERROR: not found: /private/tmp/nh_repro_check_ed0aa16a/tests/test_wake_base_stale_followups.py::test_the_stale_reverify_fetch_is_charged_against_the_shared_budget
+(no match in any of [<Module test_wake_base_stale_followups.py>])
+
+
+no tests ran in 2.34s
+Shell cwd was reset to /Users/eyalgolan/.<redacted>/worktrees/ed0aa16ae1e64891b54d14cce9637e3f.62504.98b118f9
+```
+
+- `cd /Users/eyalgolan/.<redacted>/worktrees/ed0aa16ae1e64891b54d14cce9637e3f.62504.98b118f9 uv run pytest -q -n 4 \   tests/test_wake_base_stale.py \   tests/test_wake_base_stale_followups.py \   tests/test_finalize_records_delivered_base.py \   tests/test_structural_budget.py \   tests/test_readme_claims.py \   tests/test_wake.py 2>&1 | tail -30`
+
+```
 bringing up nodes...
 bringing up nodes...
 
-........................................................................ [ 92%]
-......                                                                   [100%]
-78 passed in 47.74s
+
+no tests ran in 0.41s
 ```
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/ed0aa16ae1e64891b54d14cce9637e3f.51048.7896d91f uv run pytest tests/test_wake_base_stale.py tests/test_wake_base_stale_followups.py tests/test_finalize_records_del [... 102 of 445 characters omitted from the middle ...] ed_reconcile.py tests/test_pr_shipped.py tests/test_approve_ready_cli.py tests/test_derived_conflict_count_only.py -q -n 4 2>&1 | tail -30`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/ed0aa16ae1e64891b54d14cce9637e3f.62504.98b118f9 uv run pytest -q -n 4 \   tests/test_wake_base_stale.py \   tests/test_wake_base_stale_followups.py \   tests/test_ [... 107 of 450 characters omitted from the middle ...] tests/test_wake_comment_conflict_precedence.py \   tests/test_wake_conflict.py \   tests/test_wake_pr_closed_repair.py \   2>&1 | tail -30`
 
 ```
-branch = f"feature-budget-{i}"
-            _make_branch(work, branch)
-            await _pr_task(
-                store, work, base_sha=_trunk_sha(work), pr_branch=branch,
-                url=f"https://x/pull/budget-{i}")
-    
-        w = _watcher(store, mergeable="MERGEABLE", merge_state="CLEAN")
-        # Enough allowance for one slow fetch plus a sliver, never three.
-        w.base_fetch_budget = timedelta(seconds=0.4)
-    
-        started = time.monotonic()
-        await w.tick()
-        elapsed = time.monotonic() - started
-    
-        assert call_count <= 2, (
-            f"expected the shared per-tick budget to skip at least one of "
-            f"three sl
-[... 384 of 1,523 characters omitted from the middle ...]
- it swept")
-E       AssertionError: tick took 1.227s — the budget did not bound total fetch time across the parked PRs it swept
-E       assert 1.2265156246721745 < 1.2
-
-tests/test_wake_base_stale_followups.py:89: AssertionError
-=========================== short test summary info ============================
-FAILED tests/test_wake_base_stale_followups.py::test_the_per_cycle_base_fetch_budget_bounds_a_slow_network
-1 failed, 239 passed in 69.09s (0:01:09)
-```  
-  _excerpt - 1,523 characters of output in total_
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/ed0aa16ae1e64891b54d14cce9637e3f.51048.7896d91f uv run pytest tests/test_wake_base_stale.py tests/test_wake_base_stale_followups.py tests/test_finalize_records_del [... 101 of 444 characters omitted from the middle ...] ded_reconcile.py tests/test_pr_shipped.py tests/test_approve_ready_cli.py tests/test_derived_conflict_count_only.py -q -n 4 2>&1 | tail -6`
-
-```
-........................................................................ [ 30%]
-........................................................................ [ 60%]
-........................................................................ [ 90%]
-........................                                                 [100%]
-240 passed in 77.87s (0:01:17)
-```
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/ed0aa16ae1e64891b54d14cce9637e3f.51048.7896d91f uv run pytest tests/test_wake_base_stale.py tests/test_wake_base_stale_followups.py tests/test_finalize_records_del [... 101 of 444 characters omitted from the middle ...] ded_reconcile.py tests/test_pr_shipped.py tests/test_approve_ready_cli.py tests/test_derived_conflict_count_only.py -q -n 4 2>&1 | tail -6`
-
-```
-........................................................................ [ 30%]
-........................................................................ [ 60%]
-........................................................................ [ 90%]
-........................                                                 [100%]
-240 passed in 74.91s (0:01:14)
-```
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/ed0aa16ae1e64891b54d14cce9637e3f.51048.7896d91f uv run pytest tests/test_readme_claims.py tests/test_reanchor_citations.py -q -n 4 2>&1 | tail -20`
-
-```
-target = src_root / rel
-            assert target.is_file(), f"WINDOWS.md cites {rel}, which does not exist"
-            lines = target.read_text(encoding="utf-8").splitlines()
-            n = int(lineno)
-            assert 1 <= n <= len(lines), (
-                f"WINDOWS.md cites {rel}:{n}, but that file has {len(lines)} lines"
-            )
-            token = EXPECTED[rel]
->           assert token in lines[n - 1], (
-                f"WINDOWS.md cites {rel}:{n} for `{token}`, but that line reads "
-                f"{lines[n - 1].strip()!r}. The citation has rotted -- this is the "
-                f"defect #110 reported."
-            )
-E           AssertionError: WINDOWS.md cites cli/commands.py:7484 for `signal.SIGKILL`, but that line reads ''. The citation has rotted -- this is the defect #110 reported.
-E           assert 'signal.SIGKILL' in ''
-
-tests/test_readme_claims.py:3093: AssertionError
-=========================== short test summary info ============================
-FAILED tests/test_readme_claims.py::test_windows_md_code_line_citations_resolve
-1 failed, 170 passed, 12 skipped in 4.13s
-```
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/ed0aa16ae1e64891b54d14cce9637e3f.51048.7896d91f uv run pytest tests/test_readme_claims.py::test_windows_md_code_line_citations_resolve -q 2>&1 | tail -20`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-.                                                                        [100%]
-1 passed in 0.66s
-```
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/ed0aa16ae1e64891b54d14cce9637e3f.51048.7896d91f uv run pytest -q -n 4 \   tests/test_wake_base_stale.py \   tests/test_wake_base_stale_followups.py \   tests/test_finalize_records_delivered_base.py \   tests/test_structural_budget.py \   tests/test_readme_claims.py \   2>&1 | tail -30`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
 bringing up nodes...
 bringing up nodes...
 
-...............................s.s.s.s.s.s.s.s.s.s...................... [ 32%]
-..................................s...........................s......... [ 65%]
-........................................................................ [ 97%]
-.....                                                                    [100%]
-209 passed, 12 skipped in 7.49s
+.........................s.s.s.s.s.s.s.s.s.s............................ [ 26%]
+.......................................................s................ [ 53%]
+............................................s........................... [ 80%]
+...................................................                      [100%]
+255 passed, 12 skipped in 7.36s
 ```
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/ed0aa16ae1e64891b54d14cce9637e3f.51048.7896d91f echo "== reanchor --check =="  python3 scripts/reanchor_citations.py --check 2>&1 | tail -10 echo echo "== pinned r [... 348 of 691 characters omitted from the middle ...] of-scope files touched" echo echo "== _git_rc positional signature check ==" grep -n "^async def _git_rc" src/<redacted>/vcs/pr_watcher.py`
-
-```
-== reanchor --check ==
-VERDICT=OK
-
-== pinned repro tests ==
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-bringing up nodes...
-bringing up nodes...
-
-.........                                                                [100%]
-9 passed in 2.22s
-
-== out-of-scope file check ==
-clean: no out-of-scope files touched
-
-== _git_rc positional signature check ==
-898:async def _git_rc(repo_path: str, *args: str,
-```
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/ed0aa16ae1e64891b54d14cce9637e3f.51048.7896d91f echo "== backfill via merge_base_sha in wake.py ==" grep -n "merge_base_sha\|pr_base_sha_source" src/<redacted>/blo [... 227 of 570 characters omitted from the middle ...] un pytest -q -n 4 $(python3 -c "import json;print(' '.join(json.load(open('.<redacted>/repro_tests.json'))['tests']))") -v 2>&1 | tail -15`
-
-```
-== backfill via merge_base_sha in wake.py ==
-2603:        sha_source = ctx.get("pr_base_sha_source")
-2669:                # via `merge_base_sha` — the actual commit the PR's branch
-2682:                mb = await delivered_base.merge_base_sha(
-2686:                    patch["pr_base_sha_source"] = "merge_base"
-
-== doctor.py event kinds ==
-130:      "pr_base_remeasured", "pr_base_undetermined"),
-
-== final full evidence run of the 9 pinned tests, verbose node ids ==
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-=================
-[... 289 of 1,428 characters omitted from the middle ...]
-4d14cce9637e3f.51048.7896d91f
-configfile: pyproject.toml
-plugins: anyio-4.14.0, cov-7.1.0, no-human-0.2.3, xdist-3.8.0, asyncio-1.4.0
-asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
-created: 4/4 workers
-4 workers [9 items]
-
-.........                                                                [100%]
-============================== 9 passed in 2.92s ===============================
-```  
-  _excerpt - 1,422 characters of output in total_
 
 
 **Not verified:** everything below is a limit of this section, listed whether or not it bit this attempt.
 
 - no command recognised as e2e, http, typecheck, lint, build was recorded - and a recorded command is shown with its middle omitted, so a check inside the omitted part cannot be ruled out
-- 4 commands listed above are shown without their captured output: only the 12 most recent carry it
 - an entry shows that a command LINE was submitted to the shell and what came back - never that the check recognised inside it RAN, and never that it was the RIGHT command: `pytest -k test_nothing` prints a clean run, and a recorded command line may name a check the shell never reached yet is still counted - TEN SHAPES WERE DRIVEN against bash 3.2.57 with the check replaced by a marker-printing stub and the marker was absent in every one: a failed `&&`, a taken `||`, an `exit`, an `exec`, an `exit` inside a `source`d script, a syntax error that aborts the REST of the line, a multi-line `if false`, a `case` that matches nothing, `set -e` aborting an earlier command, and `set -u` on an unset variable; that list is MEASURED, NOT EXHAUSTIVE, because this module is not bash, so a kind this section does NOT list as missing is a kind some recorded line named, which is not the same as a kind that ran
 - the text is the coder's: the session chose the command string and, through `echo`/`printf`, can choose the output too. Both are shown as inert text, and no entry ASSERTS a pass, a fail, or an exit status - `pytest -q | tail -3` exits with `tail`'s status, `Error: Exit code 1` is a line IN THE OUTPUT, and where the harness reported a timeout or an interruption instead of output that report is appended to the captured text in square brackets. Read the output
 - recognition reads the command line ONLY - it never looks inside what a command runs, so `bash -c 'uv run pytest -q'` leaves no receipt at all while `make test` leaves one that names `make` and not the recipe it ran; and the other way, a check merely NAMED in a heredoc body, or in a quoted string that happens to spell a shell separator, can be recorded as though it ran
