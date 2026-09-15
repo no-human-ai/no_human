@@ -2495,3 +2495,215 @@ def test_run_pytest_forces_utf8_on_the_child_without_touching_the_caller_env():
     assert "PYTHONIOENCODING" not in caller_env, (
         "the caller's dict must not be mutated — it belongs to the call site, "
         "which reuses it")
+
+
+# --------------------------------------------------------------------------- #
+# `profile_test_cmd`: the merge-time gate runs the REPO'S OWN proven test     #
+# command (resolved by the callers from `core.profile_resolve`) instead of   #
+# always shelling out to a bare `python -m pytest` — a non-Python repo (or a #
+# Python repo whose command isn't plain pytest) must not get a garbled       #
+# "No module named pytest" dump, or worse, a silent rc=5 pass that never ran #
+# its real suite at all. Every test below still goes through the ONE seam,  #
+# `_run_pytest` (patched via `_patch_run_pytest`) — no second seam exists.   #
+# --------------------------------------------------------------------------- #
+
+
+def test_full_gate_runs_the_profile_test_command(land_env, monkeypatch):
+    """AC1: a non-pytest profile command (`npm test`) is what actually runs
+    the full gate, not a bare `python -m pytest` that would blow up with
+    "No module named pytest" on a repo that never had it."""
+    calls = _patch_run_pytest(monkeypatch, returncode=0)
+    monkeypatch.setattr("no_human.vcs.approve_merge.shutil.which",
+                         lambda name: f"/usr/bin/{name}")
+    branch, _head_sha = land_env.cut_branch("no-human/t-profilecmd")
+    result = land_task(
+        repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
+        task_id="deadbeef", task_title="Add feature", review_evidence="review PASS",
+        config=land_env.config, tested_commit_sha="",
+        profile_test_cmd="npm test",
+    )
+    assert result.ok, result.stderr
+    assert len(calls) == 1
+    assert calls[0]["argv"] == ["npm", "test"], (
+        "the merge gate must exec the repo's OWN test command, not a bare "
+        "python -m pytest")
+
+
+def test_full_gate_without_a_profile_command_stays_python_m_pytest(land_env, monkeypatch):
+    """AC1 fallback: no `profile_test_cmd` (None, today's default from every
+    caller that hasn't been updated, or a repo with no proven command) keeps
+    today's `python -m pytest` behavior byte-identical."""
+    calls = _patch_run_pytest(monkeypatch, returncode=0)
+    branch, _head_sha = land_env.cut_branch("no-human/t-noprofilecmd")
+    result = land_task(
+        repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
+        task_id="deadbeef", task_title="Add feature", review_evidence="review PASS",
+        config=land_env.config, tested_commit_sha="",
+        profile_test_cmd=None,
+    )
+    assert result.ok, result.stderr
+    assert len(calls) == 1
+    assert calls[0]["argv"][:3] == [sys.executable, "-m", "pytest"]
+
+
+def test_pytest_profile_keeps_the_focused_gate(land_env, monkeypatch):
+    """AC2a: a pytest-BASED profile command (`pytest -q`, `uv run pytest -q
+    -n 4`, ...) does not change WHICH argv the focused gate execs — it only
+    certifies that the change-scoped pytest-path mapping is meaningful. The
+    argv stays byte-identical to the no-profile-command case (AC5)."""
+    calls = _patch_run_pytest(monkeypatch, returncode=0)
+    branch, _head_sha = land_env.cut_branch(
+        "no-human/t-pytestprofile",
+        extra_files={"tests/test_feature.py": "def test_x():\n    assert True\n"},
+    )
+    head_sha = _pin_branch_head(land_env)
+    result = land_task(
+        repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
+        task_id="deadbeef", task_title="Add feature", review_evidence="review PASS",
+        config=land_env.config, tested_commit_sha=head_sha,
+        profile_test_cmd="uv run pytest -q -n 4",
+    )
+    assert result.ok, result.stderr
+    assert result.gate == "focused"
+    assert len(calls) == 1
+    assert calls[0]["argv"] == [sys.executable, "-m", "pytest", "-q", "tests/test_feature.py"]
+
+
+def test_non_pytest_profile_forces_the_full_command_over_the_focused_gate(
+        land_env, monkeypatch):
+    """AC2b: `_decide_gate` says "focused" (the squash tree matches the
+    tested tree), but the repo profile's test command isn't pytest-based —
+    there is no reliable way to scope an arbitrary shell command to just the
+    changed files, so correctness beats speed: the FULL command runs."""
+    calls = _patch_run_pytest(monkeypatch, returncode=0)
+    monkeypatch.setattr("no_human.vcs.approve_merge.shutil.which",
+                         lambda name: f"/usr/bin/{name}")
+    branch, _head_sha = land_env.cut_branch(
+        "no-human/t-nonpytestprofile",
+        extra_files={"tests/test_feature.py": "def test_x():\n    assert True\n"},
+    )
+    head_sha = _pin_branch_head(land_env)
+    result = land_task(
+        repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
+        task_id="deadbeef", task_title="Add feature", review_evidence="review PASS",
+        config=land_env.config, tested_commit_sha=head_sha,
+        profile_test_cmd="npm test",
+    )
+    assert result.ok, result.stderr
+    assert result.gate == "full", (
+        "a non-pytest profile command must force the FULL gate even when "
+        "the tree comparison would otherwise pick focused")
+    assert "not pytest-based" in result.gate_reason
+    assert len(calls) == 1
+    assert calls[0]["argv"] == ["npm", "test"]
+
+
+def test_missing_pytest_module_is_a_named_runner_failure_not_a_test_dump(
+        land_env, monkeypatch):
+    """AC3a: a runner that cannot even start (no `pytest` module on the
+    resolved interpreter) must fail closed as a named "tests" step failure
+    with a clean message — never a raw stdout/stderr dump, and the seam must
+    never even be invoked (there is nothing to run)."""
+    calls = _patch_run_pytest(monkeypatch, returncode=0)
+    monkeypatch.setattr("no_human.vcs.approve_merge._pytest_importable",
+                         lambda py: False)
+    branch, _head_sha = land_env.cut_branch("no-human/t-nopytestmodule")
+    result = land_task(
+        repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
+        task_id="deadbeef", task_title="Add feature", review_evidence="review PASS",
+        config=land_env.config, tested_commit_sha="",
+        profile_test_cmd=None,
+    )
+    assert not result.ok
+    assert result.step == "tests"
+    assert calls == [], "a runner that cannot start must never reach the seam"
+    assert "no tests were run" in result.stderr
+    assert "pytest" in result.stderr
+    # Not a raw dump: no pytest/traceback noise, just the clean refusal.
+    assert "Traceback" not in result.stderr
+
+
+def test_profile_command_binary_not_on_path_is_a_named_runner_failure(
+        land_env, monkeypatch):
+    """AC3b: the repo profile's own test command names a binary that isn't
+    on PATH (e.g. `npm` on a host with no Node toolchain) — this must fail
+    closed as a named "tests" step failure, never a garbled attempt to exec
+    a binary that doesn't exist."""
+    calls = _patch_run_pytest(monkeypatch, returncode=0)
+    real_which = shutil.which
+    monkeypatch.setattr(
+        "no_human.vcs.approve_merge.shutil.which",
+        lambda name: None if name == "npm" else real_which(name))
+    branch, _head_sha = land_env.cut_branch("no-human/t-binarymissing")
+    result = land_task(
+        repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
+        task_id="deadbeef", task_title="Add feature", review_evidence="review PASS",
+        config=land_env.config, tested_commit_sha="",
+        profile_test_cmd="npm test",
+    )
+    assert not result.ok
+    assert result.step == "tests"
+    assert calls == [], "a runner that cannot start must never reach the seam"
+    assert "not on PATH" in result.stderr
+    assert "npm" in result.stderr
+
+
+def test_profile_command_exit_5_still_annotates_and_lands(land_env, monkeypatch):
+    """AC3c: exit code 5 ("no tests collected") from the repo's OWN test
+    command must still be annotate-and-continue, exactly as it is today for
+    a bare `python -m pytest` — a repo with no suite must not be blocked
+    from landing just because it now runs its own command."""
+    calls = _patch_run_pytest(monkeypatch, returncode=5)
+    monkeypatch.setattr("no_human.vcs.approve_merge.shutil.which",
+                         lambda name: f"/usr/bin/{name}")
+    branch, _head_sha = land_env.cut_branch("no-human/t-profilenocollect")
+    result = land_task(
+        repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
+        task_id="deadbeef", task_title="Add feature", review_evidence="review PASS",
+        config=land_env.config, tested_commit_sha="",
+        profile_test_cmd="npm test",
+    )
+    assert result.ok, result.stderr
+    assert result.gate == "full"
+    assert "no tests collected" in result.gate_reason
+    assert len(calls) == 1
+
+
+def test_is_pytest_command_classification():
+    """Classifier table for `_is_pytest_command`: blank/absent counts as
+    pytest-based (today's fallback path); anything naming `pytest` as a
+    binary or via `-m pytest` is pytest-based; everything else is not; an
+    unparseable string (an unbalanced quote, say) falls back to a plain
+    substring test rather than raising."""
+    is_pytest = approve_merge._is_pytest_command
+    assert is_pytest(None) is True
+    assert is_pytest("") is True
+    assert is_pytest("   ") is True
+    assert is_pytest("pytest") is True
+    assert is_pytest("pytest -q") is True
+    assert is_pytest("python -m pytest") is True
+    assert is_pytest("python3 -m pytest -q -n 4") is True
+    assert is_pytest("/usr/bin/pytest -q") is True
+    assert is_pytest("uv run pytest -q -n 4") is True
+    assert is_pytest("npm test") is False
+    assert is_pytest("make test") is False
+    assert is_pytest("go test ./...") is False
+    # Unparseable (unbalanced quote): falls back to a substring test.
+    assert is_pytest("pytest 'unclosed") is True
+    assert is_pytest("npm 'unclosed") is False
+
+
+def test_gate_argv_shape():
+    """`_gate_argv` returns a direct argv for a plain command, and falls
+    back to an explicit shell-wrapper argv (never `shell=True`, which
+    nothing else in this module uses) only when the command can't be
+    tokenized, or needs the shell to expand a placeholder/operator."""
+    gate_argv = approve_merge._gate_argv
+    assert gate_argv("npm test") == (["npm", "test"], "npm")
+    argv, runner = gate_argv("make test && echo done")
+    assert runner == "make"
+    assert argv[:2] == (["cmd", "/c"] if os.name == "nt" else ["/bin/sh", "-c"])
+    assert argv[-1] == "make test && echo done"
+    argv, runner = gate_argv("pytest {} -q")
+    assert runner == "pytest"
+    assert argv[:2] == (["cmd", "/c"] if os.name == "nt" else ["/bin/sh", "-c"])

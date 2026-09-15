@@ -5791,10 +5791,13 @@ def approve(task_id, list_ready, assume_yes, landed_sha, justification, base_bra
                     "evidence": evidence, "result": None}
 
         tested = (await store.latest_attempt_branch(t.id)).get("commit_sha") or ""
+        from ..core.profile_resolve import resolve_repo_test_cmd
+        profile_test_cmd = await resolve_repo_test_cmd(store, config, t.repo_path)
         result = land_task(
             repo_path=t.repo_path, branch=branch, pr_url=pr_url,
             task_id=t.id, task_title=t.title, review_evidence=evidence,
             config=config.data, tested_commit_sha=tested,
+            profile_test_cmd=profile_test_cmd,
         )
 
         if result.skipped:
