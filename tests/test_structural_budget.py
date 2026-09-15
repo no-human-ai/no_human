@@ -1678,8 +1678,14 @@ FROZEN_FILE_LINES = {
     # and the `GateUnavailable` refusal now prints with `soft_wrap=True` so a
     # long credential path or PR URL cannot fold mid-token in a narrow
     # terminal.
-    # Measured via `wc -l src/no_human/cli/commands.py` (agrees: 9101).
-    "cli/commands.py": 9101,
+    # 9101 -> 9191 (+90): merged with origin/main, which wires `nh task add
+    # --follows` (#232, resolves a predecessor by id/prefix and records
+    # `follows_id`) and makes `nh approve` refuse — with
+    # `--force-superseded` as the explicit override — a task a later task's
+    # `follows_id` already names as followed-up-on, in both the single-task
+    # and `--ready --yes` paths.
+    # Measured via `wc -l src/no_human/cli/commands.py` (agrees: 9191).
+    "cli/commands.py": 9191,
     # api/app.py 5338 -> 5346 (+8): same budget-floor warning surfaced by
     # `send-back`/`reply` as `budget_warning` in the JSON response. Net cost
     # was trimmed from a naive +14 to +8 by computing `Bounds.from_config(...)`
@@ -1985,7 +1991,11 @@ FROZEN_FILE_LINES = {
     # reasoning: the next person adding a column to those writers needs to know
     # `config` is deliberately absent rather than forgotten.
     # Measured on the squashed tree with the scanner below.
-    "core/db.py": 5322,
+    # 5322 -> 5331 (+9): #232 adds `list_tasks_following`, the query `nh
+    # approve` uses to find the task(s) that name a given task in
+    # `follows_id` — used to warn/refuse landing a task a later one already
+    # follows up on. Measured via `wc -l src/no_human/core/db.py`.
+    "core/db.py": 5331,
     # +71: set_local_backend_fields — the config-write helper for the Settings
     # pane's local coder-backend fields (llm.local_model / llm.local_base_url).
     # +75: Codex account config helpers.

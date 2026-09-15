@@ -7,7 +7,7 @@ import {
   fetchRules, fetchSkills, rejectLearning, removeRule, removeSkill,
   fetchProjects, createProject, updateProject, deleteProject,
   fetchProfiles, detectRepos, onboardRepo,
-  fetchAuthStatus, setAuthToken, setCodexMode, setCodexKey, fetchVersion,
+  fetchAuthStatus, setAuthToken, setCodexMode, setCodexKey,
   fetchRetireCandidates, retireLearning, restoreLearning,
   pauseLearning, deleteLearning, fetchConfig,
   fetchQuarantineCounts, fetchTelemetryConsent, saveTelemetryConsent,
@@ -31,6 +31,7 @@ import { retireCandidates } from "./learningRetire.js";
 import { useEscapeKey } from "./useEscapeKey.js";
 import { pluralize } from "./pluralize.js";
 import { updateNotice, subscribeUpdates } from "./updateNotice.js";
+import { useRunningVersion } from "./useRunningVersion.js";
 import IntegrationsPanel from "./Integrations.jsx";
 import ModelsPanel from "./ModelsPanel.jsx";
 import WorkersPanel from "./WorkersPanel.jsx";
@@ -72,30 +73,20 @@ function UpdatesPanel() {
   // browser". The server IS the installed package, so it can be asked - and
   // it also knows whether that package is actually published on the channel
   // the panel would tell the operator to `pip install` from.
-  const [versionInfo, setVersionInfo] = useState(null);
+  //
+  // That resolution moved into useRunningVersion (#332): About prints the
+  // version too now, and a second copy of the shell-then-server precedence
+  // could disagree with this one after an upgrade. `channel` is the rest of
+  // the same GET /api/version payload (dist_name/published).
+  const { version: current, inShell, channel } = useRunningVersion();
   const desktop = typeof window !== "undefined" ? window.nhDesktop : undefined;
-  const inShell = Boolean(desktop?.shell);
 
   // Pushes the live update AND pulls getLastUpdate() to seed from a fact
   // retained before this panel mounted (e.g. a startup check that finished
   // before the operator ever opened Settings) — see updateNotice.js.
   useEffect(() => subscribeUpdates({ desktop, setUpdate }), [desktop]);
 
-  useEffect(() => {
-    if (inShell) return undefined;
-    let live = true;
-    // Best-effort, exactly like the composer's greeting: a failed lookup leaves
-    // the version unknown, which is what it always was. Never fabricated.
-    fetchVersion().then((v) => { if (live) setVersionInfo(v); }).catch(() => {});
-    return () => { live = false; };
-  }, [inShell]);
-
-  const view = updateNotice({
-    inShell,
-    current: desktop?.version ?? versionInfo?.version,
-    update,
-    channel: versionInfo,
-  });
+  const view = updateNotice({ inShell, current, update, channel });
 
   const run = useCallback(async (fn) => {
     if (!fn) return;
@@ -305,8 +296,8 @@ function AuthPanel() {
       {view.mode === "subscription" && view.showRestartBanner && (
         <div className="nh-alarm auth-alarm" role="alert">
           Restart required — the running server is still billing
-          {" "}&ldquo;{capName(status.active_profile, PROFILE_CAP)}&rdquo;, but
-          {" "}&ldquo;{capName(status.configured_profile, PROFILE_CAP)}&rdquo; is now configured.
+          {" "}&ldquo;<span className="ph-no-capture">{capName(status.active_profile, PROFILE_CAP)}</span>&rdquo;, but
+          {" "}&ldquo;<span className="ph-no-capture">{capName(status.configured_profile, PROFILE_CAP)}</span>&rdquo; is now configured.
           Restart no_human to switch.
         </div>
       )}
@@ -327,9 +318,18 @@ function AuthPanel() {
       {view.showOAuthForm && (
         <>
           <dl className="auth-status">
-            <div><dt>Configured profile</dt><dd>{capName(status.configured_profile, PROFILE_CAP)}</dd></div>
-            <div><dt>Active (billing) profile</dt><dd>{capName(status.active_profile, PROFILE_CAP)}</dd></div>
-            <div><dt>Token variable</dt><dd><code>{capName(status.token_var, TOKENVAR_CAP)}</code></dd></div>
+            {/* Both `<dd>`s and the token-var `<code>` below carry a
+                user-chosen (profile) or machine-identifying (token env-var
+                name, itself derived from the profile —
+                CLAUDE_CODE_OAUTH_TOKEN_<PROFILE>) value: masked so session
+                replay's DOM/rrweb capture channel does not record them
+                (ph-no-capture is the block class posthog-js passes to
+                rrweb — unrelated to the separate network-body masking in
+                replayScrub.js/telemetry.js). The <dt> labels are fixed
+                system strings and stay unmasked. */}
+            <div><dt>Configured profile</dt><dd className="ph-no-capture">{capName(status.configured_profile, PROFILE_CAP)}</dd></div>
+            <div><dt>Active (billing) profile</dt><dd className="ph-no-capture">{capName(status.active_profile, PROFILE_CAP)}</dd></div>
+            <div><dt>Token variable</dt><dd><code className="ph-no-capture">{capName(status.token_var, TOKENVAR_CAP)}</code></dd></div>
             <div><dt>Token set</dt><dd>{status.token_present ? "yes" : "no"}</dd></div>
           </dl>
 
@@ -337,7 +337,12 @@ function AuthPanel() {
             <label className="auth-label">Profile
               <select className="new-task-select" value={profile} aria-label="Profile"
                       onChange={(e) => setProfile(e.target.value)}>
-                {profiles.map((p) => <option key={p.name} value={p.name}>{capName(p.name, PROFILE_CAP)}</option>)}
+                {/* maskAllInputs (telemetry.js's session_recording config)
+                    masks an <input>/<textarea> VALUE, but NOT an <option>'s
+                    text/value — each profile name needs its own
+                    ph-no-capture here for the same reason as the <dd>s
+                    above. */}
+                {profiles.map((p) => <option key={p.name} className="ph-no-capture" value={p.name}>{capName(p.name, PROFILE_CAP)}</option>)}
               </select>
             </label>
             <label className="auth-label">OAuth token
