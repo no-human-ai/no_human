@@ -1865,6 +1865,45 @@ def test_the_refusal_message_prints_unbroken_at_a_narrow_console_width(
     )
 
 
+def test_the_result_checklist_prints_unbroken_at_a_narrow_console_width(
+    tmp_path, monkeypatch,
+):
+    """The refusal path is not the only place a long unbroken token can
+    appear — a real (non-refusal) result's Markdown checklist carries
+    file:line citations, and a long file path there must survive a narrow
+    console the same way. Without `soft_wrap=True` on the RESULT print
+    (distinct from the refusal print covered above), this citation would
+    fold mid-path."""
+    import no_human.cli.commands as cmd_mod
+
+    monkeypatch.setattr(cmd_mod.console, "_width", 20)
+
+    long_path = "a" * 5 + "/" + "b" * 60 + ".py"
+    decision = ReviewDecision(
+        passed=True,
+        checklist=[ChecklistItem(label="ok", passed=True, file=long_path, line=41)],
+    )
+
+    async def _fake_run_gate(repo_path, **kw):
+        return GateResult(
+            passed=True, comparison="x", before_ref="a", after_ref="b",
+            mode="branch", tamper=_clean_tamper(), decision=decision,
+            uncommitted=[],
+        )
+
+    monkeypatch.setattr(oneshot, "run_gate", _fake_run_gate)
+
+    repo, _bare = _make_repo_with_origin(tmp_path)
+    result = CliRunner().invoke(gate, ["--repo", str(repo)])
+
+    assert result.exit_code == 0
+    assert long_path in result.output, (
+        "the long file-path citation folded across lines instead of "
+        f"printing unbroken (soft_wrap missing on the RESULT print?):\n"
+        f"{result.output!r}"
+    )
+
+
 # --------------------------------------------------------------------------- #
 # 26. non-blocking — origin URL host must be anchored, not substring-matched #
 # --------------------------------------------------------------------------- #
