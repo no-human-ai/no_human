@@ -1678,24 +1678,20 @@ FROZEN_FILE_LINES = {
     # through `update_task_config` beside the action that produced it, instead
     # of letting a generic save write a stale blob back.
     # Measured on the squashed tree with the scanner below.
-<<<<<<< HEAD
-    # 9059 -> 9097 (+38): stale-delivered-base watcher fix (2026-09-15) —
-    # `nh task show` now renders `pr_base_freshness`/`pr_base_sha_source`
-    # (previously only shown when a `pr_base_freshness` record existed,
-    # which silently hid a backfilled `pr_base_sha_source` with no
-    # freshness verdict yet) and falls back to `ctx["base_branch"]` when
-    # `pr_base_ref` was never recorded. Re-measured with `scan_tree` on
-    # this tree.
-    "cli/commands.py": 9097,
-=======
     # 9059 -> 9149 (+90): #232 wires `nh task add --follows` (resolves a
     # predecessor by id/prefix and records `follows_id`) and makes `nh
     # approve` refuse — with `--force-superseded` as the explicit override —
     # a task a later task's `follows_id` already names as followed-up-on, in
     # both the single-task and `--ready --yes` paths. Measured via
     # `wc -l src/no_human/cli/commands.py`.
-    "cli/commands.py": 9149,
->>>>>>> origin/main
+    # 9149 -> 9187 (+38): stale-delivered-base watcher fix (2026-09-15) —
+    # `nh task show` now renders `pr_base_freshness`/`pr_base_sha_source`
+    # (previously only shown when a `pr_base_freshness` record existed,
+    # which silently hid a backfilled `pr_base_sha_source` with no
+    # freshness verdict yet) and falls back to `ctx["base_branch"]` when
+    # `pr_base_ref` was never recorded. Re-measured with `scan_tree` on
+    # the merge result.
+    "cli/commands.py": 9187,
     # api/app.py 5338 -> 5346 (+8): same budget-floor warning surfaced by
     # `send-back`/`reply` as `budget_warning` in the JSON response. Net cost
     # was trimmed from a naive +14 to +8 by computing `Bounds.from_config(...)`

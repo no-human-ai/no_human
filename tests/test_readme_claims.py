@@ -2062,17 +2062,10 @@ CITATION_TABLE = (
     ("security.md", "history/extractor.py:65-72", "history/extractor.py",
      "csrf_token"),
     # docs/eval.md
-<<<<<<< HEAD
-    ("eval.md", "src/no_human/cli/commands.py:bench_run:8161",
+    ("eval.md", "src/no_human/cli/commands.py:bench_run:8251",
      "src/no_human/cli/commands.py", "different --trials are not resumed"),
-    ("eval.md", ":bench_run:8312", "src/no_human/cli/commands.py", "asyncio.gather"),
-    ("eval.md", ":bench_run:8190", "src/no_human/cli/commands.py",
-=======
-    ("eval.md", "src/no_human/cli/commands.py:bench_run:8213",
-     "src/no_human/cli/commands.py", "different --trials are not resumed"),
-    ("eval.md", ":bench_run:8364", "src/no_human/cli/commands.py", "asyncio.gather"),
-    ("eval.md", ":bench_run:8242", "src/no_human/cli/commands.py",
->>>>>>> origin/main
+    ("eval.md", ":bench_run:8402", "src/no_human/cli/commands.py", "asyncio.gather"),
+    ("eval.md", ":bench_run:8280", "src/no_human/cli/commands.py",
      "(sc.task_id, sc.trial)"),
     ("eval.md", "src/no_human/eval/northstar_card.py:NorthStarCard.pass_k_rate:456",
      "src/no_human/eval/northstar_card.py", "def pass_k_rate("),
