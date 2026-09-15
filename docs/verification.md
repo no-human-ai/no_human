@@ -175,6 +175,64 @@ diff cold. It uses the target repo's own ruff config and attaches nothing if the
 repo has none, so no_human never imposes its style on yours. It cannot block on
 its own: any failure returns empty rather than stalling the review.
 
+## Wiring evidence — is the symbol this diff added reachable at all?
+
+[`src/no_human/review/wiring_evidence.py`](../src/no_human/review/wiring_evidence.py)
+answers a different question from the other two: **does a symbol this diff adds
+have any reference outside its own file and the test paths?** That is the raw
+material of the "implemented but never called by the production path" class — a
+helper written, tested, and wired to nothing. Like lint, it is an input: the
+block is labeled, hedged in its own text, and changes no merge rule.
+
+References come from `git grep -w` over the after-state tree, which reads bytes
+and so never cared what language they were in. Until issue #114 phase 4 the
+declaration half did care: `ast.parse` over `.py` files, module top level only.
+Two ordinary things were therefore structurally invisible — a diff in any other
+language, and a method. Over the 300 most recent non-merge commits on `main`,
+25% of the commits that touch code touch something other than Python (`.mjs`,
+`.js`, `.jsx`), and 20% of the Python symbols those commits add are declared
+inside a class rather than at module level.
+
+Declarations now come from
+[`review/symbols.py`](../src/no_human/review/symbols.py), which reads more and
+still declines to guess. Each ceiling below is a decision, not a gap pending
+work:
+
+- **Python: module level and class bodies**, reported by qualified name
+  (`Store.recompute_totals`). A `def` inside a **function** is skipped — a
+  closure is file-private by construction, so "no reference outside this file"
+  is true of nearly every one and says nothing about wiring. **Dunder methods
+  are skipped** for the opposite reason: the language calls them, so no
+  reference search can find the call that does exist.
+- **The JS/TS family** (`.js`, `.jsx`, `.mjs`, `.cjs`, `.ts`, `.tsx`),
+  `export`ed module-level declarations only, read by a line scanner over source
+  whose comments and string literals have been blanked first. An unexported
+  binding is the JS analogue of the closure. A `.d.ts` stub declares names
+  defined elsewhere and is not read at all; a CommonJS `module.exports = {...}`
+  is not read either, so a `require`-style file still contributes nothing.
+- **The search is by bare name.** A method is looked up as
+  `recompute_totals`, never as `Store.recompute_totals`, so an unrelated
+  `other.recompute_totals()` anywhere in the tree reads as a reference. The
+  asymmetry is chosen: a listed symbol is stronger evidence than an unlisted one
+  is.
+
+Replayed over the 60 most recent non-merge commits on `main`, the widening is a
+strict superset: 79 findings across 20 commits before, 88 across 22 after, and
+**no finding lost**. The nine net-new ones are six methods
+(`Orchestrator._citation_drift_preflight`, `GitRepo._run_null` and kin) and
+three exported JS constants. All three of the JS ones are exported for a test
+and used nowhere else, which is the benign shape of that finding and the reason
+the block hedges in its own last line rather than claiming a defect.
+
+All of it fails toward silence, and that direction is the design rather than a
+convenience. A search that cannot be trusted — a git error, a timeout — counts
+its symbol as referenced. A file that does not parse declares nothing. The whole
+pass runs under **one deadline** instead of a per-subprocess timeout, because
+with a `git grep` per name a per-call timeout bounds nothing in aggregate; when
+it runs out, the symbols already decided are returned and the rest are simply
+not asked about. A missed symbol costs the reviewer one line of evidence, while
+an invented one would have the block accuse a symbol that does not exist.
+
 ## Net-new type diagnostics — also an input, not a gate
 
 [`src/no_human/review/type_evidence.py`](../src/no_human/review/type_evidence.py)

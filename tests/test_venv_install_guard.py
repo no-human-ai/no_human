@@ -393,7 +393,7 @@ def test_the_cwd_argument_is_actually_threaded_to_the_probe(tmp_path, monkeypatc
     call sites in this module so the fold probe answers from the SESSION's
     own working directory, not from wherever the orchestrator process
     itself happens to be sitting. This test pins ONE of those sites — the
-    literal-token gate in `_resolve_installer` (`venv_install_guard.py:683`,
+    literal-token gate in `_resolve_installer` (`venv_install_guard.py`,
     reached here because `"PIP"` has no `/`) — via the real, public
     `denial_reason` entry point. Narrowed from an earlier claim that this
     single test pinned "each" call site: it does not, and cannot, because
@@ -1816,6 +1816,263 @@ def test_pathext_negative_control_a_genuinely_absent_installer_is_not_invented(
     assert venv_install_guard._resolve_installer("pip", wt, env) is None
 
 
+# ---------------------------------------------------------------------------
+# The venv guard's resolver never resolves a Windows candidate path.
+#
+# `_safe_realpath` (`os.path.realpath`) returns a NATIVE-separator path on a
+# real Windows host by construction — backslash only, never through
+# `win_readings.readings` (that helper normalises a raw COMMAND TOKEN's
+# spelling; it neither sees nor can see a `realpath` RETURN value). `_basename`
+# is deliberately `PurePosixPath`-only (see its docstring), so handed a
+# `realpath` return of `C:\venv\Scripts\uv.EXE` it reads the whole string as
+# one opaque component and never recognises `uv`. Every one of the FOUR call
+# sites that inspects a resolved path used `_basename` for this — so a real
+# Windows install, having just been stat'd and confirmed to exist, fell
+# through to this module's one allow-and-log fallback (a fail-OPEN) instead of
+# being recognised and (correctly) denied. `_resolved_basename` fixes this by
+# re-reading `/`-normalised, but ONLY when `_IS_WINDOWS`; `_basename` itself,
+# and everywhere it is still called on a raw COMMAND TOKEN, is unchanged.
+#
+# The tests below simulate the Windows behaviour on a POSIX test host by
+# monkeypatching `_safe_realpath`'s return spelling (and, where the branch
+# under test reads that return value directly, `_probe_is_file`'s input
+# spelling) — nothing else. A POSIX host's own `os.path.realpath` cannot
+# itself produce a backslash path, so this is the only way to reproduce the
+# defect without a real Windows machine; see the task's own open question
+# about a real-Windows confirmatory run, which this suite cannot answer.
+#
+# `_venv_root_of` (out of scope for this fix) calls the plain, POSIX-flavoured
+# `os.path.dirname`/`os.path.join` unconditionally — correct on a real Windows
+# host, where `os.path` IS `ntpath` and splits on `\` natively, but NOT
+# reproducible by flipping a string's separators on a POSIX test host, where
+# `os.path` stays `posixpath` regardless of `_IS_WINDOWS`. `posixpath.dirname`
+# on a fully backslashed string (no `/` at all) returns `""` unconditionally —
+# confirmed directly (`os.path.dirname('/x'.replace('/', chr(92)))` is
+# `''`) — so `_venv_root_of` returns `None` for ANY native-separator path on
+# this test host, independent of whether this ticket's fix is applied. Tests
+# below therefore assert what IS mutation-provable on POSIX — that
+# `_resolve_installer` and `_effective_prefixes` themselves resolve/exclude
+# correctly — rather than a full `denial_reason` DENY that would silently
+# pass or fail by accident of `_venv_root_of`'s host-independent dirname use,
+# not by the fix under test.
+# ---------------------------------------------------------------------------
+
+
+def _native_sep_realpath(monkeypatch):
+    """Make `_safe_realpath` behave like a real Windows host's: the same
+    resolution, spelled with `\\` instead of `/`. Also carries `_probe_is_file`
+    through the matching translation, because a real Windows `os.stat`
+    accepts a backslash path natively where POSIX `os.stat` does not — a
+    branch that probes the (now backslashed) `real` value directly needs this
+    half of the simulation too, or the probe reports a path that was never
+    created as absent. Idempotent on an already-forward-slash path, so it is
+    safe to install even in a test whose PATH-walk probes an unshimmed,
+    forward-slash `candidate`."""
+    real_realpath = venv_install_guard._safe_realpath
+    real_probe = venv_install_guard._probe_is_file
+
+    def fake_realpath(path):
+        r = real_realpath(path)
+        return r.replace("/", "\\") if r else r
+
+    def fake_probe(path):
+        return real_probe(path.replace("\\", "/"))
+
+    monkeypatch.setattr(venv_install_guard, "_safe_realpath", fake_realpath)
+    monkeypatch.setattr(venv_install_guard, "_probe_is_file", fake_probe)
+
+
+def test_the_windows_fixture_denies_a_known_bad_row_first(tmp_path):
+    """AC5 fixture-validity control: before trusting any ALLOW this suite
+    measures under the fix, confirm the test corpus CAN still produce a DENY
+    at all. Plain POSIX `_session` fixture, no Windows simulation — this is
+    the same shape `test_control_production_env_uv_commands_stay_allowed`'s
+    neighbours use to prove a DENY fires for a real cross-venv install, so a
+    later ALLOW in this section is a genuine fix effect and not a fixture
+    that rubber-stamps everything."""
+    primary, primary_venv, wt, wt_venv, prod_env, wt_env = _session(tmp_path)
+    r = venv_install_guard.denial_reason("pip install evilpkg", cwd=wt, env=prod_env)
+    assert r is not None, "fixture-validity control: this corpus must be able to deny something"
+    assert primary_venv in r
+
+
+def test_a_native_separator_realpath_still_resolves_the_explicit_path(tmp_path, monkeypatch):
+    """AC1 / AC3, explicit-path branch (`venv_install_guard.py`): an
+    explicit-path command token (`token` contains `/` — already
+    `/`-normalised by `win_readings.readings` upstream, per `_basename`'s own
+    docstring) whose `realpath` comes back native-separator must still
+    resolve, not fall through to the allow-and-log fallback. This branch also
+    calls `_probe_is_file` directly on the (now backslashed) `real` value, so
+    the simulation needs `_probe_is_file`'s half of `_native_sep_realpath`,
+    not just `_safe_realpath`'s."""
+    monkeypatch.setattr(venv_install_guard, "_IS_WINDOWS", True)
+    _native_sep_realpath(monkeypatch)
+    primary, primary_venv = _mkwinvenv(str(tmp_path / "primary"))
+    wt, wt_venv = _mkwinvenv(str(tmp_path / "wt"))
+    real_pip = os.path.join(primary_venv, "bin", "pip.EXE")
+    token = os.path.relpath(real_pip, wt)
+    assert "/" in token  # sanity: must land in the explicit-path branch, not the PATH walk
+
+    resolved = venv_install_guard._resolve_installer(token, wt, {})
+    expected = real_pip.replace("/", "\\")
+    assert resolved == expected, (
+        f"a native-separator realpath must still resolve an explicit-path "
+        f"token to the installer it actually is; got {resolved!r}, expected {expected!r}"
+    )
+
+    # Negative control: a token that resolves nowhere real stays None, so the
+    # positive assertion above is not trivially true for any string.
+    missing_token = os.path.relpath(os.path.join(primary_venv, "bin", "ghost.EXE"), wt)
+    assert venv_install_guard._resolve_installer(missing_token, wt, {}) is None
+
+
+def test_a_native_separator_realpath_still_resolves_the_bare_token(tmp_path, monkeypatch):
+    """AC1 / AC3, PATH-walk branch (`venv_install_guard.py`, the
+    determinate-probe return): the same defect reached by a bare
+    `pip install ...` instead of an explicit path. `_probe_is_file`/
+    `os.access` in this branch run against the UNSHIMMED `candidate` built
+    from a `PATH` entry (never `realpath` output, so never backslashed) —
+    only `_safe_realpath`'s return needs the native-separator simulation
+    here, unlike the explicit-path branch above."""
+    monkeypatch.setattr(venv_install_guard, "_IS_WINDOWS", True)
+    _native_sep_realpath(monkeypatch)
+    primary, primary_venv = _mkwinvenv(str(tmp_path / "primary"))
+    wt, wt_venv = _mkwinvenv(str(tmp_path / "wt"))
+    env = {"PATH": os.path.join(primary_venv, "bin")}
+
+    resolved = venv_install_guard._resolve_installer("pip", wt, env)
+    expected = os.path.join(primary_venv, "bin", "pip.EXE").replace("/", "\\")
+    assert resolved == expected, (
+        f"a native-separator realpath must still resolve the bare-token PATH "
+        f"walk; got {resolved!r}, expected {expected!r}"
+    )
+
+    # Negative control: an empty PATH directory invents no resolution.
+    empty_bin = tmp_path / "empty-bin"
+    empty_bin.mkdir()
+    assert venv_install_guard._resolve_installer("pip", wt, {"PATH": str(empty_bin)}) is None
+
+
+@requires_chmod
+def test_an_undetermined_native_separator_candidate_is_still_remembered(
+    tmp_path, monkeypatch, caplog
+):
+    """AC1 / AC3, the fail-closed undetermined-probe path
+    (`venv_install_guard.py`): a candidate whose file type cannot be
+    verified (a `chmod` on an ancestor directory makes even `os.stat` raise
+    `PermissionError`) must still be RECOGNISED as an installer from its
+    native-separator `realpath` spelling and REMEMBERED as the resolved
+    candidate — not silently dropped, which would fail this branch open the
+    same way the determinate branches did, just reached via `probe is None`
+    instead of `probe is True`."""
+    monkeypatch.setattr(venv_install_guard, "_IS_WINDOWS", True)
+    _native_sep_realpath(monkeypatch)
+    primary, primary_venv = _mkwinvenv(str(tmp_path / "primary"))
+    wt, wt_venv = _mkwinvenv(str(tmp_path / "wt"))
+    env = {"PATH": os.path.join(primary_venv, "bin")}
+
+    expected = os.path.join(primary_venv, "bin", "pip.EXE").replace("/", "\\")
+    with _unreadable(primary_venv):
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger=venv_install_guard._LOG.name):
+            resolved = venv_install_guard._resolve_installer("pip", wt, env)
+        assert resolved == expected, (
+            f"an undetermined native-separator candidate must still be "
+            f"remembered and returned, not dropped; got {resolved!r}"
+        )
+        assert any("could not be verified" in r.getMessage() for r in caplog.records), (
+            "the fail-closed remembered-candidate path must log its WARNING"
+        )
+
+
+def test_a_native_separator_uv_is_still_excluded_from_prefixes(monkeypatch):
+    """AC1 / AC3, collateral correctness (`venv_install_guard.py`): `uv`/
+    `uvx` are deliberately excluded from `_effective_prefixes`'s
+    owning-venv candidates (a resolved `uv` commonly lives inside the shared
+    dev venv itself; treating its own directory as a candidate would DENY an
+    ordinary `uv sync`/`uv run`). That exclusion is also a `_basename` call on
+    a resolved path, so it shares this same bug: a native-separator `uv.exe`
+    must still be recognised as `uv` and excluded, or this fix reintroduces a
+    FALSE DENY on Windows for the exact commands the earlier
+    `test_control_production_env_uv_commands_stay_allowed`-style tests pin as
+    ALLOW on POSIX.
+
+    `_venv_root_of` is monkeypatched to a fixed sentinel here (see this
+    section's header comment: it cannot be driven by a native-separator path
+    on a POSIX test host regardless of this fix) purely so the exclusion's
+    effect is OBSERVABLE — mutation-sensitive — in the returned candidate
+    set: with the fix, the exclusion's `continue` fires and `_venv_root_of`
+    is never reached for this token; reverted, it is, and the sentinel leaks
+    into `candidates`."""
+    monkeypatch.setattr(venv_install_guard, "_IS_WINDOWS", True)
+    sentinel_root = "C:\\p\\.venv"
+    monkeypatch.setattr(venv_install_guard, "_venv_root_of", lambda exe: sentinel_root)
+    exe = "C:\\p\\.venv\\Scripts\\uv.exe"
+
+    candidates = venv_install_guard._effective_prefixes(
+        tokens=["uv", "sync"], cwd=None, installers=[exe], env=None, uses_active=False
+    )
+    assert sentinel_root not in candidates, (
+        "a native-separator uv/uvx installer must still be excluded from the "
+        "owning-venv candidate set, or an ordinary `uv sync`/`uv run` earns a "
+        "fresh false DENY on Windows"
+    )
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("pip", "pip"),
+        ("pip.exe", "pip"),
+        ("PIP.EXE", "PIP"),
+        ("/usr/bin/pip3", "pip3"),
+        ("/bin/sh/", "sh"),
+        ("C:\\venv\\Scripts\\uv.EXE", "C:\\venv\\Scripts\\uv"),
+    ],
+)
+def test_basename_posix_reading_is_unchanged(raw, expected):
+    """AC2 control: `_basename` itself is OUT OF SCOPE for this fix and its
+    body must be byte-for-byte unchanged — pinned directly against its own
+    documented cases (trailing separator, host independence) plus the exact
+    native-separator string this ticket is about, which `_basename` ALONE
+    still reads as one opaque component. Splitting it is `_resolved_basename`'s
+    job, exercised separately below and at the call sites above; this table
+    is the control proving `_basename`'s own reading did not move."""
+    assert venv_install_guard._basename(raw) == expected
+
+
+def test_resolved_basename_is_a_no_op_on_posix(tmp_path, monkeypatch):
+    """AC2: `_resolved_basename` is gated on `_IS_WINDOWS`, so on a POSIX host
+    it must be a structural no-op — identical to `_basename` for any input,
+    including a string that LOOKS like a native Windows path, because `\\` is
+    a legal POSIX filename character and normalising it unconditionally would
+    let a file genuinely named `a\\pip` start reading as `pip`.
+
+    The end-to-end row makes the same point through the resolver: a real file
+    on `PATH`, reached via a symlink, whose target is literally named
+    `foo\\uv` (legal on POSIX) must NOT be recognised as `uv` on a POSIX
+    host — `_resolved_basename` must not split off the `foo\\` prefix here,
+    unlike it would (correctly) on Windows."""
+    monkeypatch.setattr(venv_install_guard, "_IS_WINDOWS", False)
+    for raw in ("a\\pip", "C:\\venv\\Scripts\\uv.EXE", "/usr/bin/uv", "uv.exe", "pip3"):
+        assert venv_install_guard._resolved_basename(raw) == venv_install_guard._basename(raw)
+
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    target = bindir / "foo\\uv"
+    target.write_text("#!/bin/sh\nexit 0\n")
+    st = os.stat(target)
+    os.chmod(target, st.st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    link = bindir / "uv"
+    link.symlink_to(target)
+
+    resolved = venv_install_guard._resolve_installer("uv", str(tmp_path), {"PATH": str(bindir)})
+    assert resolved is None, (
+        "a POSIX file literally named foo\\uv, reached via a uv symlink, must "
+        "not be misread as a bare uv on a POSIX host"
+    )
+
+
 def test_an_empty_path_entry_is_the_current_directory(tmp_path):
     """An empty `PATH` entry means THE CURRENT DIRECTORY — POSIX ("a
     zero-length prefix ... indicates the current working directory") and
@@ -2180,3 +2437,247 @@ def test_this_hosts_real_filesystem_answer_is_honoured(tmp_path):
             "this volume does not fold case, so PIP is a distinct program "
             "from pip, and must not be refused"
         )
+
+
+# --------------------------------------------------------------------------- #
+# #341 — an installer invoked under a name that is not an installer's. The
+# resolved BASENAME is what the module used to decide "is this an installer",
+# so a copy kept its shebang, ran the same interpreter, wrote into the same
+# shared venv, and was invisible to every check. Each row below is one line of
+# the residual-risk register's own table, and the control is what makes the
+# other two mean anything: the identical operation under its own name is
+# refused with or without this fix.
+# --------------------------------------------------------------------------- #
+
+#: What pip's own generated console script looks like: an absolute shebang at
+#: the venv's interpreter, then the dispatch import. Copied verbatim by `cp`,
+#: which is the whole point.
+_CONSOLE_SCRIPT = (
+    "#!{python}\n"
+    "# -*- coding: utf-8 -*-\n"
+    "import re\n"
+    "import sys\n"
+    "from {module} import main\n"
+    "if __name__ == '__main__':\n"
+    "    sys.exit(main())\n"
+)
+
+
+def _console_script(path, python, module="pip._internal.cli.main"):
+    """Overwrite `path` with a real generated-console-script shape.
+
+    `_mkvenv` writes `#!/bin/sh` stubs, which are enough for a NAME-based
+    verdict and not enough for a content-based one — the thing under test
+    here is what the file is, so the fixture has to be the real shape.
+    """
+    with open(path, "w") as fh:
+        fh.write(_CONSOLE_SCRIPT.format(python=python, module=module))
+    os.chmod(path, os.stat(path).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    return path
+
+
+def _renamed(src, dst):
+    """A plain `cp` — same bytes, same mode, a name of the copier's choosing."""
+    shutil.copy2(src, dst)
+    return str(dst)
+
+
+def test_341_control_the_same_install_under_its_own_name_is_denied(tmp_path):
+    """Without this row the two below prove nothing: they would be consistent
+    with a guard that refuses everything, or with one that refuses nothing."""
+    _p, primary_venv, wt, _wv, prod_env, _we = _session(tmp_path)
+    pip = _console_script(os.path.join(primary_venv, "bin", "pip"),
+                          os.path.join(primary_venv, "bin", "python"))
+    reason = venv_install_guard.denial_reason(
+        f"{pip} install evilpkg", cwd=wt, env=prod_env)
+    assert reason is not None
+    assert primary_venv in reason
+
+
+def test_341_a_renamed_copy_of_the_shared_pip_is_denied(tmp_path):
+    """The bypass itself: `cp <shared venv>/bin/pip /tmp/notpip` keeps the
+    shebang, so it runs the same interpreter and writes into the same shared
+    venv — under a name no check in this module used to look through."""
+    _p, primary_venv, wt, _wv, prod_env, _we = _session(tmp_path)
+    pip = _console_script(os.path.join(primary_venv, "bin", "pip"),
+                          os.path.join(primary_venv, "bin", "python"))
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    notpip = _renamed(pip, elsewhere / "notpip")
+
+    reason = venv_install_guard.denial_reason(
+        f"{notpip} install evilpkg", cwd=wt, env=prod_env)
+
+    assert reason is not None, "a renamed copy of pip installs into the same venv"
+    assert primary_venv in reason, (
+        f"the reason must name the venv the write lands in, not the copy's "
+        f"own directory: {reason}")
+    assert not _ev("Bash", {"command": f"{notpip} install evilpkg"},
+                   cwd=wt, env=prod_env).allow
+
+
+def test_341_a_link_whose_realpath_is_not_an_installer_name_is_denied(tmp_path):
+    """The second row. The discard used to happen on the basename of the
+    REALPATH, so a link inside a venv's own `bin/` pointing at a differently
+    named copy resolved to None and was allowed."""
+    _p, primary_venv, wt, _wv, prod_env, _we = _session(tmp_path)
+    pip = _console_script(os.path.join(primary_venv, "bin", "pip"),
+                          os.path.join(primary_venv, "bin", "python"))
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    notpip = _renamed(pip, elsewhere / "notpip")
+    link = os.path.join(primary_venv, "bin", "pip-link")
+    os.symlink(notpip, link)
+
+    reason = venv_install_guard.denial_reason(
+        f"{link} install evilpkg", cwd=wt, env=prod_env)
+
+    assert reason is not None
+    assert primary_venv in reason
+
+
+def test_341_a_renamed_copy_of_the_worktrees_own_pip_stays_allowed(tmp_path):
+    """The false positive that would matter most. Identification is by what
+    the file IS, and the verdict still turns on WHERE it writes — a copy whose
+    shebang names the session's own venv is the session installing into its
+    own venv, which is the thing this guard exists to permit."""
+    _p, _pv, wt, wt_venv, _prod, wt_env = _session(tmp_path)
+    own_pip = _console_script(os.path.join(wt_venv, "bin", "pip"),
+                              os.path.join(wt_venv, "bin", "python"))
+    mine = _renamed(own_pip, tmp_path / "wt" / "mypip")
+
+    assert venv_install_guard.denial_reason(
+        f"{mine} install ok", cwd=wt, env=wt_env) is None
+
+
+def test_341_a_renamed_non_installer_console_script_stays_allowed(tmp_path):
+    """Every console script in a venv shares pip's shebang, so the shebang
+    alone cannot be the test — `<shared venv>/bin/pytest` is not an installer
+    and neither is a copy of it, even when its own arguments spell `install`
+    (`pre-commit install` is the real-world shape this protects)."""
+    _p, primary_venv, wt, _wv, prod_env, _we = _session(tmp_path)
+    pytest_script = _console_script(
+        os.path.join(primary_venv, "bin", "pytest"),
+        os.path.join(primary_venv, "bin", "python"),
+        module="_pytest.config")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    renamed = _renamed(pytest_script, elsewhere / "runtests")
+
+    assert venv_install_guard.denial_reason(
+        f"{renamed} install hooks", cwd=wt, env=prod_env) is None
+    assert venv_install_guard.denial_reason(
+        f"{pytest_script} install hooks", cwd=wt, env=prod_env) is None
+
+
+def test_341_a_renamed_installer_without_a_mutating_subcommand_stays_allowed(
+        tmp_path):
+    """Identification is only half the decision — intent is still the resolved
+    installer's own adjacent subcommand, exactly as it is for a named one."""
+    _p, primary_venv, wt, _wv, prod_env, _we = _session(tmp_path)
+    pip = _console_script(os.path.join(primary_venv, "bin", "pip"),
+                          os.path.join(primary_venv, "bin", "python"))
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    notpip = _renamed(pip, elsewhere / "notpip")
+
+    for cmd in (f"{notpip} --version", f"{notpip} list", f"{notpip} show pip"):
+        assert venv_install_guard.denial_reason(cmd, cwd=wt, env=prod_env) is None, cmd
+
+
+def test_341_a_file_that_only_mentions_an_installer_is_not_one(tmp_path):
+    """A source file is not a program. The gates are: a regular file, the
+    execute bit, a `#!` first line, and a dispatch import — a `.py` under the
+    worktree that imports pip satisfies only the last."""
+    _p, _pv, wt, _wv, prod_env, _we = _session(tmp_path)
+    notes = tmp_path / "notes.py"
+    notes.write_text("from pip._internal.cli.main import main\n")
+
+    assert venv_install_guard.denial_reason(
+        f"{notes} install evilpkg", cwd=wt, env=prod_env) is None
+
+
+def test_341_python_names_are_a_subset_of_the_installer_names():
+    """`_shebang_interpreter` needs "is this a Python", which is narrower than
+    `_is_installer_name`'s "is this an installer". Pinned as a subset so the
+    two sets cannot drift into disagreeing about what `python3` is."""
+    assert venv_install_guard._PYTHON_NAMES <= venv_install_guard._EXACT_INSTALLERS
+    assert venv_install_guard._PYTHON_VERSIONED_PREFIX in \
+        venv_install_guard._VERSIONED_PREFIXES
+
+
+@pytest.mark.parametrize("line,expected", [
+    ("#!/venv/bin/python\n", "/venv/bin/python"),
+    ("#!/venv/bin/python3.12\n", "/venv/bin/python3.12"),
+    ("#!  /venv/bin/python  \n", "/venv/bin/python"),
+    ("#!/usr/bin/env python3\n", None),          # names no path — see the register
+    ("#!/usr/bin/env -S FOO=1 python3\n", None),  # ditto, flags and assignments skipped
+    ("#!/bin/sh\n", None),                        # not a Python
+    ("#!python3\n", None),                        # relative: resolves via PATH at exec
+    ("#!\n", None),
+])
+def test_341_shebang_readings(line, expected):
+    assert venv_install_guard._shebang_interpreter(line, None) == expected
+
+
+# --------------------------------------------------------------------------- #
+# Still open, and pinned so the register cannot quietly become wrong. Each of
+# these asserts a gap the register NAMES. Closing one is welcome — delete the
+# test and its register bullet in the same change, never the test alone.
+# --------------------------------------------------------------------------- #
+
+def test_341_open_a_copied_compiled_installer_is_not_identified(tmp_path):
+    """`uv` from PyPI is an executable, not a script: no shebang, nothing to
+    read. Closing this wants content identity (inode, or a digest against a
+    known venv's `bin/`), which is the heavier of the two options."""
+    _p, primary_venv, wt, _wv, prod_env, _we = _session(tmp_path)
+    uv = os.path.join(primary_venv, "bin", "uv")
+    with open(uv, "wb") as fh:
+        fh.write(b"\x7fELF\x02\x01\x01" + b"\x00" * 256)
+    os.chmod(uv, os.stat(uv).st_mode | stat.S_IEXEC)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    notuv = _renamed(uv, elsewhere / "notuv")
+
+    assert venv_install_guard.denial_reason(
+        f"{notuv} sync", cwd=wt, env=prod_env) is None, (
+        "if this now denies, the fix is real — update the residual-risk "
+        "register and delete this test")
+
+
+def test_341_open_a_renamed_installer_found_bare_on_path_is_not_identified(
+        tmp_path):
+    """The bare-token spelling. `_resolve_installer` still gates on the name
+    before it walks PATH, because lifting that gate reads the header of every
+    executable on PATH for every token of every command."""
+    _p, primary_venv, wt, _wv, _prod, _we = _session(tmp_path)
+    pip = _console_script(os.path.join(primary_venv, "bin", "pip"),
+                          os.path.join(primary_venv, "bin", "python"))
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    _renamed(pip, elsewhere / "notpip")
+    env = {"PATH": f"{elsewhere}:/usr/bin:/bin"}
+
+    assert venv_install_guard.denial_reason(
+        "notpip install evilpkg", cwd=wt, env=env) is None, (
+        "if this now denies, update the residual-risk register and delete "
+        "this test")
+
+
+def test_341_open_an_env_shebang_names_no_path_and_is_not_identified(tmp_path):
+    """`#!/usr/bin/env python` names no interpreter path, and what PATH
+    resolves at exec time is already outside what this module can see."""
+    _p, primary_venv, wt, _wv, prod_env, _we = _session(tmp_path)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    notpip = elsewhere / "notpip"
+    notpip.write_text(
+        "#!/usr/bin/env python3\n"
+        "from pip._internal.cli.main import main\n"
+        "main()\n")
+    os.chmod(notpip, os.stat(notpip).st_mode | stat.S_IEXEC)
+
+    assert venv_install_guard.denial_reason(
+        f"{notpip} install evilpkg", cwd=wt, env=prod_env) is None, (
+        "if this now denies, update the residual-risk register and delete "
+        "this test")

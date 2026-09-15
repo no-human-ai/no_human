@@ -473,6 +473,66 @@ def _created_task_id(output: str) -> str:
     return match.group(1)
 
 
+# --------------------------------------------------------------------------- #
+# nh task add — --follows (issue #232)                                        #
+# --------------------------------------------------------------------------- #
+
+def test_task_add_follows_links_to_an_existing_task(tmp_path, monkeypatch):
+    """The gap issue #232 names directly: `nh task add --help` had no way to
+    set `follows_id`, even though the column, model, and API were all wired.
+    A unique id prefix (the same convenience every other TASK_ID argument
+    takes) must resolve, not just a full id."""
+    db = tmp_path / "test.db"
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    runner = _make_runner(db, monkeypatch)
+
+    predecessor = _seed_task(db, TaskStatus.AWAITING_APPROVAL, title="original task")
+
+    result = runner.invoke(cli, [
+        "task", "add", "--title", "Follow-up on the original",
+        "--repo", str(repo), "--follows", predecessor[:8],
+        "--no-grill", "--no-run",
+    ], catch_exceptions=False)
+
+    assert result.exit_code == 0, result.output
+    assert f"follows:[/] {predecessor[:8]}" in result.output or predecessor[:8] in result.output
+    task_id = _created_task_id(result.output)
+
+    t = _get_task(db, task_id)
+    assert t.follows_id == predecessor
+
+
+def test_task_add_follows_a_bogus_id_is_refused(tmp_path, monkeypatch):
+    """A dangling follows_id could never warn `nh approve` against anything —
+    refuse at intake, the same way an unresolvable TASK_ID refuses elsewhere,
+    and create no task at all."""
+    db = tmp_path / "test.db"
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    runner = _make_runner(db, monkeypatch)
+
+    result = runner.invoke(cli, [
+        "task", "add", "--title", "Follow-up on nothing",
+        "--repo", str(repo), "--follows", "deadbeef",
+        "--no-grill", "--no-run",
+    ], catch_exceptions=False)
+
+    assert result.exit_code == 1
+
+    async def _go():
+        async with Store(db) as s:
+            return await s.list_tasks()
+    assert asyncio.run(_go()) == []
+
+
+def test_task_add_help_documents_follows(tmp_path, monkeypatch):
+    runner = CliRunner()
+    result = runner.invoke(cli, ["task", "add", "--help"], catch_exceptions=False)
+    assert result.exit_code == 0
+    assert "--follows" in result.output
+
+
 def test_task_add_applies_repo_default_budgets(tmp_path, monkeypatch):
     """SCRUM-48: `nh task add` must merge repo default budgets in, same as
     the web create path (api/app.py) and the Jira poller already do."""

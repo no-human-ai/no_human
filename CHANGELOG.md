@@ -6,6 +6,43 @@ All notable changes to no_human. The format follows
 
 ## [Unreleased]
 
+### Changed
+- **Wiring evidence reads JS/TS and class bodies, not just Python module top
+  level** (issue #114 phase 4). The reference half of the check was always
+  language-agnostic — `git grep -w` reads bytes — but the declaration half was
+  `ast.parse` over `.py` files at module top level, so a diff in any other
+  language and any method added to a class were structurally invisible. Over
+  the 300 most recent non-merge commits on `main`, 25% of the commits that
+  touch code touch something other than Python and 20% of the Python symbols
+  added sit inside a class. Declarations now come from a new
+  `review/symbols.py`: Python at module level and in class bodies, reported by
+  qualified name (`Store.recompute_totals`), plus `export`ed module-level
+  declarations in `.js/.jsx/.mjs/.cjs/.ts/.tsx` read by a scanner that blanks
+  comments and string literals first. A `def` inside a function, an unexported
+  JS binding and a dunder method are deliberately not collected — the first two
+  are file-private by construction, and the language calls the third, so no
+  reference search could find the call that does exist. The whole pass now runs
+  under one deadline instead of a per-subprocess timeout (with a `git grep` per
+  name, a per-call timeout bounded nothing in aggregate) and returns the
+  symbols it had already decided when the budget runs out. Still advisory, and
+  every failure still resolves toward silence rather than toward an accusation.
+
+### Fixed
+- **The venv install guard's resolver never resolved a Windows candidate
+  path.** `_safe_realpath` returns a native-separator (backslash) path on a
+  real Windows host by construction, never through `win_readings.readings`
+  (which normalises a raw command TOKEN's spelling, not a `realpath` return
+  value). `_basename`, deliberately `PurePosixPath`-only, read a resolved
+  `C:\venv\Scripts\uv.EXE` as one opaque component and never recognised it
+  as `uv`, so `_resolve_installer` fell through to this module's one
+  allow-and-log fallback — a fail-OPEN — for an installer it had just
+  stat'd and confirmed exists. A new `_resolved_basename` helper re-splits
+  on `/` first, only when `_IS_WINDOWS`, and is now used at all four call
+  sites that inspect a resolved path (`_resolve_installer`'s explicit-path
+  and PATH-walk branches, and the `uv`/`uvx` exclusion in
+  `_effective_prefixes`); `_basename` itself is unchanged and still used at
+  every call site that reads a raw command token.
+
 ## [0.2.3] — 2026-09-14
 
 ### Added

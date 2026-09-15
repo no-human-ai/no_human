@@ -104,32 +104,61 @@ pre-execution. It cannot see:
     process this guard evaluated once before it started;
   - ``sudo -u other-user`` — a real UID change this process cannot see
     ahead of time;
-  - an installer invoked under a name that is not an installer's
-    (#341). ``_resolve_installer`` decides what a token IS from the
-    resolved basename (``_basename`` → ``_is_installer_name``), so a copy
-    keeps its shebang, runs the same interpreter, writes into the same
-    shared venv, and is invisible to every check here. The same holds for
-    a symlink in a venv's ``bin/`` whose REALPATH basename is not an
-    installer name, because the discard happens on the realpath's
-    basename rather than on the name the command typed. Measured, with
-    the control that makes it meaningful — the identical operation under
-    its own name is refused::
+  - **NARROWED 2026-09-15 (#341): an installer invoked under a name that
+    is not an installer's.** ``_resolve_installer`` used to decide what a
+    token IS from the resolved basename alone (``_basename`` →
+    ``_is_installer_name``), so a copy kept its shebang, ran the same
+    interpreter, wrote into the same shared venv, and was invisible to
+    every check here — as was a link in a venv's ``bin/`` whose REALPATH
+    basename is not an installer name, because the discard happened on
+    the realpath's basename rather than on the name the command typed.
+    Measured BEFORE this change, with the control that makes the other two
+    rows mean anything::
 
         control    DENY   <shared venv>/bin/pip install evilpkg
         renamed    ALLOW   cp <shared venv>/bin/pip /tmp/notpip
                            && /tmp/notpip install evilpkg
         symlink    ALLOW   <shared venv>/bin/pip-link -> /tmp/notpip
 
-    Not closed by a smarter name rule: matching on command TEXT is the
-    class this module exists to escape (*a lexical guard cannot enforce a
-    capability*), and a text rule would be evadable in its own right.
-    Closing it structurally — deciding "is this an installer" from the
-    shebang's interpreter plus the argv shape, or from the resolved
-    target's inode matching a known installer in a venv's ``bin/`` —
-    is real work with its own false-positive analysis, and is worth it
-    only if the threat model ever includes a coder deliberately evading
-    the guard. Today's failures are accidental (a shared venv on
-    ``PATH``, an inherited ``VIRTUAL_ENV``), not adversarial renames;
+    Both ALLOW rows are now DENY, and the control is unchanged. ``_installer_by_content`` asks what the
+    resolved file IS rather than what it is called: a generated console
+    script names its interpreter on line 1 and the package it dispatches
+    to a few lines below, and a rename or a link changes neither. Not by
+    a smarter NAME rule — matching on command text is the class this
+    module exists to escape, and a text rule would be evadable in its own
+    right; the text read here is the artefact that will execute, which
+    cannot be re-spelled without changing what runs. The interpreter is
+    what comes back, so the write target is decided by the environment
+    that interpreter belongs to, and a renamed installer pointed at the
+    session's OWN worktree venv stays allowed exactly as its
+    correctly-named spelling does.
+
+    **STILL OPEN.** The first three are measured against the same
+    fixture and pinned by ``test_341_open_*``; the fourth follows from
+    what the identification reads and has no fixture to measure:
+
+      * the BARE-token spelling — ``notpip install evilpkg`` with the
+        copy's directory on ``PATH``. The bare-token branch of
+        ``_resolve_installer`` still gates on the name before it walks
+        ``PATH``, deliberately: lifting that gate reads the header of
+        every executable on ``PATH`` for every token of every command,
+        which is a cost and a false-positive surface out of proportion to
+        a gap whose realistic spelling is the explicit path above;
+      * a copied COMPILED installer. ``uv`` from PyPI is an executable,
+        not a script: no shebang, nothing to read. Closing that one wants
+        content identity (inode, or a digest against the installers in a
+        known venv's ``bin/``), which is the heavier half of the two
+        options this entry used to list;
+      * a copy whose shebang is rewritten to ``#!/usr/bin/env python``.
+        That form names no path, and what ``PATH`` resolves at exec time
+        is already something this module says it cannot see (above);
+      * a program that installs without dispatching to ``pip``/``uv`` —
+        its own re-implementation, or a wrapper that ``exec``s one.
+
+    Today's failures remain accidental (a shared venv on ``PATH``, an
+    inherited ``VIRTUAL_ENV``) rather than adversarial renames, so the
+    four above stay documented rather than built; the capability-level
+    fix at the end of this register is what actually closes them;
   - a command that relies SOLELY on an inherited ``VIRTUAL_ENV``/
     ``UV_PROJECT_ENVIRONMENT`` (e.g. bare ``uv pip install foo`` with no
     project context, no explicit flags, and a ``PATH`` that does not
@@ -273,6 +302,29 @@ _MAX_RECURSE_DEPTH = 3
 _EXACT_INSTALLERS = frozenset({"pip", "pip3", "uv", "uvx", "python", "python3"})
 _VERSIONED_PREFIXES = ("pip3.", "python3.")
 
+#: The CPython interpreter names, a subset of `_EXACT_INSTALLERS` above
+#: (pinned as a subset by a test, so the two cannot drift). Used only by
+#: `_shebang_interpreter`, which needs "is this a Python" rather than the
+#: wider "is this an installer" — a `#!` line naming `pip` is not a thing
+#: that can run a console script.
+_PYTHON_NAMES = frozenset({"python", "python3"})
+_PYTHON_VERSIONED_PREFIX = "python3."
+
+#: The top-level package an installer's own console script dispatches to.
+#: A `pip`/`uv` console script generated by pip or setuptools is a Python
+#: file whose body is one `from <pkg>… import <entry>` and a
+#: `sys.exit(<entry>())`, and THAT package is what the file is, whatever the
+#: file happens to be called (#341). Deliberately in correspondence with
+#: `_EXACT_INSTALLERS`: the same installers, identified by what they dispatch
+#: to instead of by what they are named.
+_INSTALLER_ENTRY_PACKAGES = frozenset({"pip", "uv"})
+
+#: How much of a candidate file `_script_head` reads. A generated console
+#: script carries its shebang on line 1 and its dispatch import within the
+#: next few; a file that needs more than this to say what it is is not one.
+#: Bounded because this runs in a PreToolUse hook, on a path the coder chose.
+_SCRIPT_HEAD_BYTES = 4096
+
 #: Subcommands that mean "this RESOLVED installer will mutate an
 #: environment" — pip's {install, uninstall} and uv's {sync, add, remove,
 #: install, uninstall}. `run`/`venv`/`tool` were REMOVED (structural-guard
@@ -365,9 +417,13 @@ def _basename(path: str) -> str:
     * Host independence. `os.path.basename` splits on `\` on Windows and not
       on POSIX, so the same string would reach different verdicts on
       different machines while CI runs POSIX only. `PurePosixPath` reads `/`
-      on every host, and that is the right reading here precisely because
-      `win_readings.readings` has already offered the `/`-normalised spelling
-      of any backslashed command by the time this is called.
+      on every host, and that is the right reading here for a COMMAND TOKEN,
+      because `win_readings.readings` has already offered the `/`-normalised
+      spelling of any backslashed command by the time this is called. That
+      does NOT hold for a `realpath`/`os.path.join` return value: it is
+      native-separator by construction and has never been through
+      `readings` and cannot be — callers with a resolved path use
+      `_resolved_basename` instead.
     """
     name = PurePosixPath(path).name
     if name.lower().endswith(".exe"):
@@ -540,6 +596,30 @@ def _safe_realpath(path: str) -> str | None:
         return None
 
 
+def _resolved_basename(path: str) -> str:
+    r"""`_basename` for a path THIS MODULE produced, read with the host's own
+    separators.
+
+    The argument is a `realpath`/`os.path.join` return value: NATIVE-separator
+    by construction, so it has not passed through `win_readings.readings` and
+    cannot. On Windows that turns a cleanly `/`-normalised token back into
+    `...\Scripts\uv.exe`, `_basename` reads the whole string as one component,
+    and `_resolve_installer` returns None for an installer it just stat'd.
+
+    `_basename` itself stays POSIX-only: both reasons in its docstring are
+    about COMMAND TOKENS and both remain true.
+
+    Gated on `_IS_WINDOWS` (the module constant the existing Windows tests
+    flip -- patch the consumer's copy, cf. `win_readings._IS_WINDOWS`) so a
+    POSIX host is byte-for-byte unchanged: `\` is a legal character in a POSIX
+    filename, and normalising it there would let a file genuinely named
+    `a\pip` start reading as `pip`.
+    """
+    if _IS_WINDOWS:
+        path = path.replace("\\", "/")
+    return _basename(path)
+
+
 def _probe_is_file(path: str) -> bool | None:
     """True = is a regular file; False = definitively NOT there (or not a
     file); None = COULD NOT BE DETERMINED (e.g. a `chmod` that blocks
@@ -594,6 +674,150 @@ def _venv_root_of(exe_path: str) -> str | None:
     if _probe_is_file(os.path.join(root, "pyvenv.cfg")) is not False:
         return _safe_realpath(root) or root
     return None
+
+
+def _script_head(path: str) -> str | None:
+    """The first `_SCRIPT_HEAD_BYTES` of `path`, decoded, iff `path` is a
+    script — a regular, executable file beginning with `#!`. None otherwise.
+
+    The three gates before the read are what keep this off the hot path: an
+    ordinary command's path-like tokens are source files, directories and
+    data, and a stat plus an `X_OK` check discards nearly all of them without
+    opening anything. `probe is not True` (rather than `is not False`) is a
+    deliberate departure from this module's fail-closed rule and costs
+    nothing: a candidate whose type cannot be determined is already ALLOWED
+    today when its name is not an installer's, so declining to identify it
+    here leaves that verdict exactly where it was rather than loosening it.
+
+    Never raises. A candidate this cannot read must fall through to the
+    caller's existing verdict, not turn a Bash hook into a traceback.
+    """
+    if _probe_is_file(path) is not True:
+        return None
+    try:
+        if not os.access(path, os.X_OK):
+            return None
+        with open(path, "rb") as handle:
+            head = handle.read(_SCRIPT_HEAD_BYTES)
+    except OSError:
+        return None
+    if not head.startswith(b"#!"):
+        # A compiled binary, or a file that is not a script at all. `uv` from
+        # PyPI is exactly this, which is why a renamed `uv` is NOT closed by
+        # this route — see the residual-risk register.
+        return None
+    return head.decode("utf-8", errors="replace")
+
+
+def _shebang_interpreter(head: str, cwd: str | None) -> str | None:
+    """The absolute path of the Python a `#!` line names, or None.
+
+    `#!/usr/bin/env python3` is read one word further: `env` is the launcher,
+    the word after it (past its own flags and `VAR=value` arguments) is the
+    program. That form yields no path, though, and PATH at exec time is
+    something this module already says it cannot see, so it returns None
+    rather than guessing — recorded in the residual-risk register.
+
+    Whitespace-split, not `shlex`: a shebang line is not shell input, and no
+    shell ever quote-processes it.
+    """
+    first, _, _ = head.partition("\n")
+    parts = first[2:].strip().split()
+    if not parts:
+        return None
+    exe = parts[0]
+    if _basename(exe) == "env":
+        for part in parts[1:]:
+            if part.startswith("-") or "=" in part:
+                continue
+            exe = part
+            break
+        else:
+            return None
+    name = _basename(exe)
+    if _IS_WINDOWS or exec_names.host_folds_case(cwd):
+        name = name.lower()
+    is_python = name in _PYTHON_NAMES or (
+        name.startswith(_PYTHON_VERSIONED_PREFIX)
+        and name[len(_PYTHON_VERSIONED_PREFIX):].replace(".", "").isdigit()
+    )
+    if not is_python or not os.path.isabs(exe):
+        return None
+    return exe
+
+
+def _dispatch_package(head: str) -> str | None:
+    """The installer package this script imports its entry point from, or
+    None. Only the import lines are read; the shebang is line 1 and is
+    `_shebang_interpreter`'s.
+    """
+    for raw in head.splitlines()[1:]:
+        line = raw.strip()
+        if line.startswith("from "):
+            module = line[5:].split(None, 1)[0]
+        elif line.startswith("import "):
+            module = line[7:].split(",", 1)[0].strip().split(None, 1)[0]
+        else:
+            continue
+        root = module.split(".", 1)[0]
+        if root in _INSTALLER_ENTRY_PACKAGES:
+            return root
+    return None
+
+
+def _installer_by_content(real: str, cwd: str | None) -> str | None:
+    """The interpreter a renamed installer would run, or None (#341).
+
+    `_is_installer_name` asks what a file is CALLED, and a copy answers with
+    whatever name the copy was given: ``cp <venv>/bin/pip /tmp/notpip`` keeps
+    the shebang, runs the same interpreter, writes into the same shared venv,
+    and was invisible to every check in this module. The same held through a
+    symlink whose realpath basename is not an installer's. This asks what the
+    file IS instead — a generated console script names its interpreter on
+    line 1 and the package it dispatches to a few lines below, and neither
+    moves when the file is renamed or linked under another name.
+
+    What comes back is the INTERPRETER, not the script's own path, for two
+    reasons. It is the honest answer to the question the caller is really
+    asking: `pip` installs into the environment of the Python that runs it,
+    so the interpreter is where the write lands, and the script's own
+    location (``/tmp``) says nothing about it. And it needs no new machinery
+    downstream — `_effective_prefixes` already turns a resolved interpreter
+    into its owning venv. A renamed installer whose shebang names the
+    session's OWN worktree venv therefore stays allowed, exactly as the
+    correctly-named spelling is; the copy is only refused for the same reason
+    the original would be.
+
+    The returned path is deliberately NOT symlink-followed, unlike the rest
+    of `_resolve_installer`'s contract, for the reason `_effective_prefixes`
+    already records for `--python` values: a venv's ``bin/python`` is
+    routinely a symlink to a base interpreter living entirely elsewhere, and
+    following it answers "where does this binary physically live" instead of
+    "which venv did this invocation name".
+
+    Reading the file is not the lexical class this module exists to escape.
+    The text read here is the artefact that will execute, not the command the
+    coder typed: it cannot be re-spelled, re-quoted, wrapped in a shell or
+    laundered through a variable without changing what actually runs. What it
+    still cannot see is written down in the residual-risk register above.
+    """
+    head = _script_head(real)
+    if head is None:
+        return None
+    interpreter = _shebang_interpreter(head, cwd)
+    if interpreter is None:
+        return None
+    package = _dispatch_package(head)
+    if package is None:
+        return None
+    if _probe_is_file(interpreter) is False:
+        return None
+    _LOG.warning(
+        "venv guard: %r is not named like an installer but dispatches to "
+        "%r under interpreter %r; treating it as that installer",
+        real, package, interpreter,
+    )
+    return interpreter
 
 
 def _is_worth_remembering(real: str, cwd: str | None) -> bool:
@@ -693,7 +917,7 @@ def _resolve_installer(token: str, cwd: str | None, env: Mapping[str, str]) -> s
     try:
         if "/" in token:
             real = _safe_realpath(_join(cwd, token))
-            if real and _is_installer_name(_basename(real), cwd):
+            if real and _is_installer_name(_resolved_basename(real), cwd):
                 probe = _probe_is_file(real)
                 # `None` (undeterminable — e.g. a `chmod` on the venv
                 # directory two levels up makes even stat'ing this file
@@ -711,6 +935,16 @@ def _resolve_installer(token: str, cwd: str | None, env: Mapping[str, str]) -> s
                             "rather than assuming it is absent", token, real,
                         )
                     return real
+            # The name said no. Ask what the file IS before believing it
+            # (#341): a copy of an installer, or a link to one, carries
+            # whatever name it was given and none of the checks above can
+            # see through that. Only reached when the name check has
+            # already declined, so this can turn an ALLOW into a DENY and
+            # never the reverse.
+            if real:
+                by_content = _installer_by_content(real, cwd)
+                if by_content is not None:
+                    return by_content
             if _is_installer_name(_basename(token), cwd):
                 _LOG.warning(
                     "venv guard: %r names an installer but could not be "
@@ -873,7 +1107,7 @@ def _resolve_installer(token: str, cwd: str | None, env: Mapping[str, str]) -> s
                     continue
                 if probe is None:
                     real = _safe_realpath(candidate) or candidate
-                    if _is_installer_name(_basename(real), cwd):
+                    if _is_installer_name(_resolved_basename(real), cwd):
                         if fallback is None:
                             fallback = real
                         # Tracked SEPARATELY from `fallback`, and this is the
@@ -898,7 +1132,7 @@ def _resolve_installer(token: str, cwd: str | None, env: Mapping[str, str]) -> s
                 if not os.access(candidate, os.X_OK):
                     continue
                 real = _safe_realpath(candidate)
-                if real and _is_installer_name(_basename(real), cwd):
+                if real and _is_installer_name(_resolved_basename(real), cwd):
                     displaced = _displaced_by_indeterminate_venv(
                         token, real, venv_fallback)
                     if displaced is not None:
@@ -1235,7 +1469,7 @@ def _effective_prefixes(
         # an installer invocation but not as `uv` for this exclusion, so it
         # fell through to being treated like `pip`/`python` and got denied
         # even though `uv sync` (lowercase) is allowed on the identical host.
-        if _basename(exe).lower() in ("uv", "uvx"):
+        if _resolved_basename(exe).lower() in ("uv", "uvx"):
             continue
         owning = _venv_root_of(exe)
         if owning:

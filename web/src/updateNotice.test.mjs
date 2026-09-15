@@ -29,13 +29,19 @@ test("every branch returns a known tone and a non-empty title", () => {
 });
 
 test("Settings actually sources the version for the browser path", () => {
-  // No React renderer in this harness (settingsOverlay.test.mjs), so the wiring
-  // is read from the source: without this fetch the pure function above is
-  // correct and the panel still says nothing useful.
+  // Without a source for `current` the pure function above is correct and the
+  // panel still says nothing useful. The resolution itself moved into
+  // useRunningVersion (#332) so About can print the same number, so the chain
+  // to assert is Settings -> the hook -> GET /api/version. The precedence the
+  // old regex pinned here is now asserted as behaviour, not source text, in
+  // runningVersion.test.mjs ("inside the shell the shell's own version wins").
   const src = readFileSync(fileURLToPath(new URL("./Settings.jsx", import.meta.url)), "utf8");
-  assert.match(src, /fetchVersion/, "Settings must import and call fetchVersion");
-  assert.match(src, /current:\s*desktop\?\.version\s*\?\?\s*versionInfo\?\.version/,
-    "the shell's own version must still win; the server is the fallback");
+  assert.match(src, /useRunningVersion/, "Settings must resolve the version through the hook");
+  assert.match(src, /updateNotice\(\{\s*inShell,\s*current,\s*update,\s*channel\s*\}\)/,
+    "the resolved version and the channel it came with must both reach the notice");
+  const hook = readFileSync(fileURLToPath(new URL("./useRunningVersion.js", import.meta.url)), "utf8");
+  assert.match(hook, /fetchVersion/, "the hook must import and call fetchVersion");
+  assert.match(hook, /runningVersion/, "the shell-then-server precedence must come from the one module");
   const api = readFileSync(fileURLToPath(new URL("./api.js", import.meta.url)), "utf8");
   assert.match(api, /\/api\/version/, "fetchVersion must call the endpoint that serves it");
 });
