@@ -143,6 +143,21 @@ const SENTINEL_BACKEND_REASON = "zzqq-dom-backend-reason-canary-55";
 // A static label the Models pane always renders (CoderBackendRow's own
 // <label>) — the positive control for that pane's liveness.
 const MODELS_LIVENESS_TEXT = "Coder backend";
+// Locality-matched positive control for check 10, the backend-reason no-leak
+// check (send-back review on the prior attempt: "Check 9 [the leak check, at
+// the time] ... liveness control doesn't match the leak's locality" —
+// MODELS_LIVENESS_TEXT only proves a <label>'s TEXT CONTENT reaches the
+// channel, a different capture path than a `title` ATTRIBUTE). This string
+// is planted as the `disabled_reason` of a SECOND, intentionally-unmasked
+// model-row option (ModelsPanel.jsx ~316, `<option ... title={o.reason ||
+// undefined}>` with no ph-no-capture — the "fixed system string" site the
+// plan leaves open) so it renders into the exact same element/attribute
+// shape — an <option>'s `title` — as SENTINEL_BACKEND_REASON does at the
+// masked sites. Its PRESENCE in the decompressed channel (asserted by check
+// 9 below) is what makes check 10's ABSENCE assertion meaningful: without
+// it, check 10 could pass vacuously if rrweb simply never captures `title`
+// attribute mutations in this build.
+const MODELS_TITLE_ATTR_LIVENESS = "zzqq-dom-modelrow-title-liveness-66";
 
 const MIME = {
   ".html": "text/html", ".js": "text/javascript", ".css": "text/css",
@@ -387,6 +402,11 @@ function makeServer({ domTexts, capturedEvents, unmatched }) {
             backend: { backend: "primary-backend", model: "some-model", is_default: false },
             options: [
               { id: "some-model", price_class: { label: "$" }, is_default: true, requires_backend: false, disabled_reason: "" },
+              // Deliberately unmasked (ModelsPanel.jsx ~316 carries no
+              // ph-no-capture) — see MODELS_TITLE_ATTR_LIVENESS's doc
+              // comment: this is check 9's locality-matched positive
+              // control, not a second leak site.
+              { id: "control-model", price_class: { label: "$" }, is_default: false, requires_backend: true, disabled_reason: MODELS_TITLE_ATTR_LIVENESS },
             ],
           },
         ],
@@ -655,7 +675,19 @@ try {
     domHaystack.includes(MODELS_LIVENESS_TEXT),
   );
 
-  // 9. BLOCKING 2: the raw backend-exception reason text — rendered at TWO
+  // 9. Attribute-liveness (locality-matched positive control for check 10 —
+  // see MODELS_TITLE_ATTR_LIVENESS's doc comment). This proves a `title`
+  // ATTRIBUTE on an <option> — the exact element/attribute shape check 10's
+  // SENTINEL_BACKEND_REASON is rendered into — reaches the decompressed
+  // DOM/rrweb channel, closing the gap check 8 (a <label>'s TEXT CONTENT)
+  // leaves open. Without this, check 10 could pass vacuously if rrweb never
+  // captures `title` attribute mutations at all.
+  check(
+    "Models-pane attribute liveness: an unmasked model-row option's `title` attribute reaches the decompressed DOM/rrweb snapshot data",
+    domHaystack.includes(MODELS_TITLE_ATTR_LIVENESS),
+  );
+
+  // 10. BLOCKING 2: the raw backend-exception reason text — rendered at TWO
   // independent sites (CoderBackendRow's own picker AND the reviewer-
   // backend-override section's picker, ModelsPanel.jsx ~109/119 and
   // ~384/393) — must be absent from the decompressed DOM/rrweb channel.
