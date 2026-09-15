@@ -256,11 +256,14 @@ export default function Onboarding({ onComplete }) {
   // mechanism, not two.
   const emailBlockMsg = step.key === "email" ? emailStepBlocks({ email, onFile: emailOnFile }) : null;
   const continueBlocked = projectsBlockMsg !== null || emailBlockMsg !== null;
-  // Feeds the Email step's stepper dot (stepDone): "done" means completion
-  // would actually succeed for want of an address, not merely "you scrolled
-  // past this step". True either because this mount has a well-formed
-  // address typed, or the server already has one on file.
-  const emailSatisfied = emailBlocksContinue(email) === null || emailOnFile === true;
+  // Feeds the Email step's stepper dot (stepDone), via the same requireEmail
+  // predicate the Launch/Skip-setup click uses, so the dot cannot claim "done"
+  // for a state completion would refuse. The dot reads the status cached when
+  // the wizard loaded; the click re-asks the server when the field is empty
+  // (ensureEmailRegistered), so the two can still diverge if the server loses
+  // the address after load — that gap belongs to the click's fresh check, not
+  // to this render-time read.
+  const emailSatisfied = requireEmail({ email, onFile: emailOnFile }) === null;
 
   // Advancing a step swaps the whole card underneath the user, and nothing moved focus
   // with it. Measured on the pre-change build, not assumed: the Continue button lives in

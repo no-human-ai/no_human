@@ -17,6 +17,11 @@
 //         VISIBLY (role="alert"), and lands the user back on the Email step.
 //   AC4 — the stepper never marks Email "done" while completion would refuse,
 //         and does mark it done once an address is actually on file.
+//   AC5 — send-back regression: after a reload, revisiting Email and typing a
+//         MALFORMED address over a real one already on file must keep the
+//         dot un-"completed" and the Launch click must still refuse — the
+//         dot and the click must use the same predicate (requireEmail), not
+//         one that treats "server has an address" as sufficient on its own.
 import { chromium } from "playwright";
 import http from "node:http";
 import fs from "node:fs";
@@ -126,6 +131,17 @@ async function ac1() {
   // untouched by remounting the page).
   await page.reload({ waitUntil: "networkidle" });
   await page.waitForTimeout(400);
+
+  // Visit the Email step itself first: the field is empty (fresh mount) but
+  // Continue must NOT be disabled, because the mount-time status fetch
+  // hydrated `emailOnFile` from the server. This is what actually exercises
+  // that effect in a browser — a source-regex pin alone would stay green
+  // even if the effect were deleted, while Continue would silently stay
+  // disabled here.
+  await jumpTo(page, "Email");
+  const emailContinue = page.getByRole("button", { name: /^Continue$/ });
+  check("[AC1] Email step's Continue is enabled after reload with an empty field, because the server already has an address on file",
+    !(await emailContinue.isDisabled().catch(() => true)));
 
   // Jump straight to Launch — the stepper lets any step reach any other,
   // exactly the bypass the bug report's "reload then jump" scenario needs
@@ -264,10 +280,64 @@ async function ac4() {
   await ctx.close();
 }
 
+// ── AC5: reload, revisit Email, type a MALFORMED address over one already on
+// file — the dot and the click must agree, both refusing ─────────────────
+// Send-back regression: the dot used to read
+// `emailBlocksContinue(email) === null || emailOnFile === true`, so once the
+// server held a real address, the dot stayed "completed" even after the
+// field was overwritten with garbage, while the Launch click's requireEmail()
+// refused that exact state. This pins the dot and the click to one predicate.
+async function ac5() {
+  const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  const page = await ctx.newPage();
+  const errors = [];
+  page.on("pageerror", (e) => errors.push(e.message));
+  const state = { emailRegistered: false, completed: false, hits: new Set() };
+  await installRoutes(page, state);
+
+  await page.goto("http://127.0.0.1:4646/", { waitUntil: "networkidle" });
+  await page.waitForTimeout(300);
+
+  await cont(page); // Welcome -> Email
+  await cont(page); // registers EMAIL, Email -> Repos
+  await page.waitForTimeout(200);
+  check("[AC5] the email registration request was sent before reload", state.hits.has("email"));
+
+  // Reload: the server keeps the address, this mount's `email` state resets.
+  await page.reload({ waitUntil: "networkidle" });
+  await page.waitForTimeout(400);
+
+  // Revisit Email and overwrite the field with something malformed, WITHOUT
+  // submitting it (Continue stays disabled for a malformed address, so the
+  // only way off this step is the stepper jump).
+  await jumpTo(page, "Email");
+  await page.getByPlaceholder("you@example.com").fill("nope");
+  await page.waitForTimeout(100);
+
+  await jumpTo(page, "Launch");
+  const emailStepUnsatisfied = page.getByRole("button", { name: /^Email, step \d+ of \d+, completed$/ });
+  check("[AC5] the Email dot is NOT 'completed' while the typed field is malformed, even though the server has an address on file",
+    !(await emailStepUnsatisfied.isVisible().catch(() => false)));
+
+  const launchBtn = page.getByRole("button", { name: /^Enter no_human$/ });
+  await launchBtn.click();
+  await page.waitForTimeout(400);
+
+  check("[AC5] completion was refused: no POST /api/onboarding/complete", !state.hits.has("complete"));
+  const alert = page.locator('[role="alert"]');
+  check("[AC5] the refusal is shown to the user via role=\"alert\"", await alert.isVisible().catch(() => false));
+  check("[AC5] the wizard lands back on the Email step",
+    await page.getByRole("heading", { name: /One email address for this install/i }).isVisible().catch(() => false));
+  check("[AC5] no page errors", errors.length === 0, errors[0] || "");
+
+  await ctx.close();
+}
+
 await ac1();
 await ac2();
 await ac3();
 await ac4();
+await ac5();
 
 await browser.close();
 srv.close();

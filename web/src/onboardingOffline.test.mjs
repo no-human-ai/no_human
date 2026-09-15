@@ -86,9 +86,11 @@ test("an HTTP failure is a step error, not an outage", () => {
     "POST /api/x → 422",
   );
   assert.equal(isNetworkError(new Error(msg)), false);
-  // The per-step error surface is untouched by this change (role="alert" was
-  // added separately so a refusal is announced, not just rendered silently —
-  // see onboardingEmailStep.test.mjs).
+  // This HTTP-failure path renders through the SAME single `.ob-error` div
+  // every step's refusal shares, so the role="alert" added for the email
+  // reload fix (onboardingEmailStep.test.mjs) applies here too — deliberately:
+  // any step's refusal deserves the same screen-reader announcement, not
+  // just the email one.
   assert.match(onboardingSrc, /\{err && <div className="ob-error" role="alert">\{err\}<\/div>\}/);
 });
 
