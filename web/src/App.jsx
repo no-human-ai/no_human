@@ -40,6 +40,7 @@ import {
 } from "./backlogSelection.js";
 import QueueNotice from "./QueueNotice.jsx";
 import { feasibilityCreateToast } from "./feasibilityToast.js";
+import { tickStallNotice } from "./tickStallNotice.js";
 
 // P3: how long the create-time feasibility toast stays up — long enough to
 // read one sentence, short enough not to pile up. Mirrors Board.jsx's own
@@ -1250,6 +1251,10 @@ export default function App() {
   // SCRUM-15: same derivation as OverviewStrip/lane headers so the sidebar
   // "Working (N)" figure agrees with the board instead of its own count.
   const sidebarCounts = deriveCounts(tasks);
+  // Detected by the scheduler (scheduler.py health_snapshot) and exposed on
+  // /api/worker/status, but until this line existed nothing rendered it — a
+  // stalled tick loop read exactly like a quiet one. See tickStallNotice.js.
+  const tickStall = tickStallNotice(workerStatus);
   const banner = connectionBanner(wsPhase);
   const updateBar = updateBanner({ update, dismissedVersion: updateDismissed });
   const onUpdateAction = (action) => {
@@ -1441,6 +1446,19 @@ export default function App() {
             <div className="nh-alarm" role="alert"
                  title={`WakeWatcher failed to start: ${workerStatus.watcher_error}. Parked tasks will not wake until the server restarts cleanly.`}>
               Wake watcher down — parked tasks won't wake
+            </div>
+          )}
+          {/* MEASURED 2026-09-14: the scheduler's tick loop stopped ticking on
+              a live server and nothing told anyone — seconds_since_last_tick
+              grew wall-clock-for-wall-clock across two samples while every
+              error field read None. Ranked above the advisory loaded_code_stale
+              banner below: a dead loop means finished work stops being picked
+              up, which outranks running superseded code. See
+              tickStallNotice.js for the view-model and the surface-only
+              decision (no restart, no event — see that file's header). */}
+          {tickStall && (
+            <div className={tickStall.className} role={tickStall.role} title={tickStall.title}>
+              {tickStall.text}
             </div>
           )}
           {/* The server loads its backend once and never reloads it, so a
