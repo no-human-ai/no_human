@@ -15,6 +15,34 @@ def test_signature_stable_across_volatile_tokens():
     assert error_signature(a) == error_signature(b)
 
 
+def test_signature_stable_across_windows_paths():
+    """The Windows twin of the volatile-token test above. A native backslash
+    path (or a forward-slash drive path) with a per-run-varying, non-hex
+    segment must collapse to <path> like a POSIX one, or the SAME error
+    fingerprints differently on Windows and StuckDetector (which keys on this)
+    under-fires. The volatile segment here (`tmpv5k2p9qz` / `tmpq8w1e7rt`) is a
+    tempfile-style name, deliberately not pure hex, so it is NOT masked by the
+    separate hex/hash rule."""
+    a = r'AssertionError: mismatch' '\n  File "C:\\Users\\u\\AppData\\Local\\Temp\\tmpv5k2p9qz\\case.py", line 8'
+    b = r'AssertionError: mismatch' '\n  File "C:\\Users\\u\\AppData\\Local\\Temp\\tmpq8w1e7rt\\case.py", line 8'
+    assert error_signature(a) == error_signature(b)
+    # A UNC share path, same requirement.
+    u1 = r'boom \\build01\out\job7391\bin\x.dll not found'
+    u2 = r'boom \\build02\out\job8145\bin\x.dll not found'
+    assert error_signature(u1) == error_signature(u2)
+    # And a forward-slash drive path collapses drive letter and all.
+    f1 = r'oops at C:/work/run-4821/x.py'
+    f2 = r'oops at C:/work/run-9137/x.py'
+    assert error_signature(f1) == error_signature(f2)
+
+
+def test_signature_does_not_overcollapse_a_trailing_colon_token():
+    """The drive-letter rule must not fire on a colon inside a longer token,
+    or two genuinely different errors could be merged. `note:/a` and `x:/a`
+    differ only in the leading word, which must survive."""
+    assert error_signature("note:/alpha done") != error_signature("warn:/alpha done")
+
+
 def test_signature_differs_on_real_change():
     a = "AssertionError: expected 1 got 2"
     b = "TypeError: cannot add str and int"
