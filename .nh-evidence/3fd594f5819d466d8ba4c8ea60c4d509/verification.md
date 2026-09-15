@@ -1,23 +1,47 @@
 # How I verified this — full log
 
-_Harness-captured record for task `3fd594f5`, commit `cca5bccad63f393b6b52da701b2f0a423fe2edb2` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `3fd594f5`, commit `2355db5735c1fcb213fce09a864289626da2801e` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ## How I verified this
-2 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
+4 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
 
 ### test
-- `cd /Users/eyalgolan/.<redacted>/worktrees/3fd594f5819d466d8ba4c8ea60c4d509.51048.2411a3ae uv run pytest tests/test_dmg_stamp_acceptance.py -q 2>&1 | tail -30`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/3fd594f5819d466d8ba4c8ea60c4d509.51048.34ed228a uv run pytest tests/test_dmg_stamp_acceptance.py -q 2>&1 | tail -30`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-   Building no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/3fd594f5819d466d8ba4c8ea60c4d509.51048.2411a3ae
-      Built no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/3fd594f5819d466d8ba4c8ea60c4d509.51048.2411a3ae
-Installed 73 packages in 152ms
+   Building no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/3fd594f5819d466d8ba4c8ea60c4d509.51048.34ed228a
+      Built no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/3fd594f5819d466d8ba4c8ea60c4d509.51048.34ed228a
+Installed 73 packages in 498ms
 ............                                                             [100%]
-12 passed in 5.06s
+12 passed in 15.40s
 ```
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/3fd594f5819d466d8ba4c8ea60c4d509.51048.2411a3ae uv run pytest tests/ -m repoguard -q 2>&1 | tail -40`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/3fd594f5819d466d8ba4c8ea60c4d509.51048.34ed228a uv run pytest tests/ -m repoguard -q 2>&1 | tail -40`
+
+```
+def test_every_line_citation_currently_resolves_exactly():
+        """The shipped docs are exactly anchored today, not merely within drift
+        tolerance — this is what gives `scripts/reanchor_citations.py --check`
+        something to enforce, and proves the new tolerance did not quietly
+        downgrade every legacy citation to "drifted".
+        """
+        checked = 0
+        for doc, raw, resolve_path, token in CITATION_TABLE:
+            tail = raw.split(":", 1)[1]
+            if not _LEGACY_LINE_SPEC_RE.match(tail):
+                continue  # symbol citation — not part of this guard
+            if (doc, raw) in _ABSENT_OK and not _resolve_source(resolve_path)
+[... 1,563 of 2,702 characters omitted from the middle ...]
+https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/test_readme_claims.py::test_doc_citations_resolve_to_the_code_they_describe[security.md:desktop/electron-builder.config.cjs:421]
+FAILED tests/test_readme_claims.py::test_every_line_citation_currently_resolves_exactly
+2 failed, 173 passed, 13 skipped, 13028 deselected, 2 warnings in 76.25s (0:01:16)
+```  
+  _excerpt - 2,690 characters of output in total_
+
+- `cd /Users/eyalgolan/.<redacted>/worktrees/3fd594f5819d466d8ba4c8ea60c4d509.51048.34ed228a uv run pytest tests/ -m repoguard -q 2>&1 | tail -20`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
@@ -26,16 +50,24 @@ warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not mat
 ...........................................                              [100%]
 =============================== warnings summary ===============================
 src/<redacted>/testing/test_layers.py:35
-  /Users/eyalgolan/.<redacted>/worktrees/3fd594f5819d466d8ba4c8ea60c4d509.51048.2411a3ae/src/<redacted>/testing/test_layers.
+  /Users/eyalgolan/.<redacted>/worktrees/3fd594f5819d466d8ba4c8ea60c4d509.51048.34ed228a/src/<redacted>/testing/test_layers.
 [... 158 of 1,297 characters omitted from the middle ...]
 src/<redacted>/testing/test_layers.py:89
-  /Users/eyalgolan/.<redacted>/worktrees/3fd594f5819d466d8ba4c8ea60c4d509.51048.2411a3ae/src/<redacted>/testing/test_layers.py:89: PytestCollectionWarning: cannot collect test class 'TestPlan' because it has a __init__ constructor (from: tests/test_test_layers.py)
+  /Users/eyalgolan/.<redacted>/worktrees/3fd594f5819d466d8ba4c8ea60c4d509.51048.34ed228a/src/<redacted>/testing/test_layers.py:89: PytestCollectionWarning: cannot collect test class 'TestPlan' because it has a __init__ constructor (from: tests/test_test_layers.py)
     @dataclass
 
 -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-175 passed, 13 skipped, 13003 deselected, 2 warnings in 15.77s
+175 passed, 13 skipped, 13028 deselected, 2 warnings in 55.70s
 ```  
   _excerpt - 1,283 characters of output in total_
+
+- `cd /Users/eyalgolan/.<redacted>/worktrees/3fd594f5819d466d8ba4c8ea60c4d509.51048.34ed228a uv run pytest tests/test_dmg_stamp_acceptance.py -q 2>&1 | tail -10`
+
+```
+warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+............                                                             [100%]
+12 passed in 4.87s
+```
 
 
 **Not verified:** everything below is a limit of this section, listed whether or not it bit this attempt.
