@@ -2131,6 +2131,232 @@ def test_an_absolute_non_code_path_is_staged_via_the_explicit_paths_branch(
     assert strict.returncode == 0, strict.stdout + strict.stderr
 
 
+# --- the frozen desktop build (issue #402). In the PyInstaller bundle
+# --- `sys.executable` is the `nh` binary, not a Python, so every
+# --- `[sys.executable, <script>]` spawn in manifest_repair.py re-entered the
+# --- click CLI and died in its own argument parser (`Error: No such command`)
+# --- at COMMIT time, inside an attempt. These drive the REAL commit path
+# --- rather than an argv seam on purpose: an argv assertion cannot tell that
+# --- argv[0] is not an interpreter, which is exactly why the existing suites
+# --- could not see this class. ---------------------------------------------
+
+
+def _freeze_as_nh(tmp_path, monkeypatch, work):
+    """Force the bundle's shape on this process, and return the file the fake
+    `nh` appends to — which must stay absent.
+
+    `sys.executable` becomes an `nh` stub that is emphatically NOT a Python:
+    it records the argv it was handed and exits the way the shipped binary
+    does. `<repo>/.venv` gets a link to the interpreter actually running this
+    test so the resolution has a deterministic answer instead of depending on
+    whatever `python3` the PATH happens to hold.
+    """
+    invoked = tmp_path / "nh-was-invoked.txt"
+    nh = tmp_path / "nh"
+    nh.write_text(
+        "#!/bin/sh\n"
+        f"printf '%s\\n' \"$*\" >> '{invoked}'\n"
+        "echo \"Error: No such command '$1'.\" >&2\n"
+        "exit 2\n",
+        encoding="utf-8")
+    nh.chmod(0o755)
+    venv_python = work / ".venv" / "bin" / "python"
+    venv_python.parent.mkdir(parents=True)
+    venv_python.symlink_to(sys.executable)
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(nh))
+    return invoked
+
+
+def _no_interpreter_anywhere(monkeypatch, tmp_path):
+    """The frozen build on a machine with no Python but the bundle's own."""
+    nh = tmp_path / "nh"
+    nh.write_text("", encoding="utf-8")
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(nh))
+    monkeypatch.setattr(shutil, "which", lambda _n: None)
+
+
+def test_frozen_pin_maintenance_runs_the_guard_instead_of_the_nh_binary(
+        tmp_path, repo_with_bare_remote, monkeypatch):
+    """Site 1, `approve_pending_pins`: the proactive `approve --all --prune`.
+    On the unfixed code the stub `nh` is spawned, exits 2, and the maintenance
+    silently does nothing before every commit in the packaged app."""
+    from no_human.vcs.manifest_repair import approve_pending_pins
+    work = _repo_with_manifest_gate(repo_with_bare_remote)
+    repo = GitRepo(work, identity_name="agent", identity_email="a@x.y",
+                   never_push_to=[])
+    repo.create_branch("no-human/frozen1", base="main")
+    (work / "src").mkdir()
+    (work / "src" / "mod.py").write_text("y = 2\n")
+    invoked = _freeze_as_nh(tmp_path, monkeypatch, work)
+
+    approve_pending_pins(repo, ["src/mod.py"])
+
+    assert not invoked.exists(), (
+        "pin maintenance shelled out to the frozen nh binary: "
+        + invoked.read_text(encoding="utf-8"))
+    assert (work / "guard_calls.txt").read_text(encoding="utf-8") == \
+        "approve --all --prune\n"
+
+
+def test_frozen_proactive_write_regenerates_the_manifest(
+        tmp_path, repo_with_bare_remote, monkeypatch):
+    """Site 2, `write_pending_manifest`: the PUBLIC-tree proactive
+    `check_release_manifest.py --write`, against the REAL script."""
+    from no_human.vcs.manifest_repair import write_pending_manifest
+    work = _repo_with_real_public_manifest_gate(repo_with_bare_remote)
+    repo = GitRepo(work, identity_name="agent", identity_email="a@x.y",
+                   never_push_to=[])
+    repo.create_branch("no-human/frozen2", base="main")
+    (work / "src" / "pkg" / "mod.py").write_text("y = 2\n")
+    before = (work / "RELEASE_MANIFEST.txt").read_text(encoding="utf-8")
+    invoked = _freeze_as_nh(tmp_path, monkeypatch, work)
+
+    out = write_pending_manifest(repo, ["src/pkg/mod.py"])
+
+    assert not invoked.exists(), (
+        "the proactive --write shelled out to the frozen nh binary: "
+        + invoked.read_text(encoding="utf-8"))
+    assert (work / "RELEASE_MANIFEST.txt").read_text(encoding="utf-8") != before
+    assert "RELEASE_MANIFEST.txt" in " ".join(out or [])
+
+
+def test_frozen_reactive_approve_repairs_the_refusal_and_commits(
+        tmp_path, repo_with_bare_remote, monkeypatch):
+    """Sites 3 and 4, `commit_with_manifest_repair`'s PRIVATE-tree route (the
+    retry after a count-drift reconciliation resolves the same interpreter).
+    On the unfixed code the repair spawns `nh approve <paths>`, which cannot
+    fix anything, and the attempt dies on the second refusal."""
+    from no_human.vcs import commit_with_manifest_repair
+    work = _repo_with_manifest_gate(repo_with_bare_remote)
+    repo = GitRepo(work, identity_name="agent", identity_email="a@x.y",
+                   never_push_to=[])
+    repo.create_branch("no-human/frozen3", base="main")
+    (work / "src").mkdir()
+    (work / "src" / "mod.py").write_text("y = 2\n")
+    invoked = _freeze_as_nh(tmp_path, monkeypatch, work)
+    repairs = []
+
+    result = commit_with_manifest_repair(
+        repo, ["src/mod.py"], "feat: change",
+        on_repair=lambda p, note: repairs.append(p))
+
+    assert not invoked.exists(), (
+        "the reactive repair shelled out to the frozen nh binary: "
+        + invoked.read_text(encoding="utf-8"))
+    assert result.sha
+    assert repairs == [["src/pkg/mod.py", "tests/test_mod.py"]]
+    assert (work / "approve_called.txt").read_text(encoding="utf-8") == \
+        "src/pkg/mod.py tests/test_mod.py"
+
+
+def test_frozen_reactive_manifest_write_repairs_the_refusal_and_commits(
+        tmp_path, repo_with_bare_remote, monkeypatch):
+    """Site 5, `_repair_by_manifest_write`: the PUBLIC-tree reactive route,
+    against the real gate and the real `check_release_manifest.py`."""
+    from no_human.vcs import commit_with_manifest_repair
+    work = _repo_with_real_public_manifest_gate(repo_with_bare_remote)
+    repo = GitRepo(work, identity_name="agent", identity_email="a@x.y",
+                   never_push_to=[])
+    repo.create_branch("no-human/frozen4", base="main")
+    (work / "src" / "pkg" / "mod.py").write_text("y = 2\n")
+    invoked = _freeze_as_nh(tmp_path, monkeypatch, work)
+
+    result = commit_with_manifest_repair(repo, ["src/pkg/mod.py"], "feat: change")
+
+    assert not invoked.exists(), (
+        "the --write repair shelled out to the frozen nh binary: "
+        + invoked.read_text(encoding="utf-8"))
+    assert result.sha
+    committed = subprocess.run(
+        ["git", "show", "--name-only", "--format=", "HEAD"],
+        cwd=work, capture_output=True, text=True, check=True).stdout
+    assert "RELEASE_MANIFEST.txt" in committed
+    assert ".venv" not in committed, "the fixture's venv leaked into the commit"
+
+
+def test_a_frozen_build_with_no_interpreter_fails_the_commit_by_name(
+        tmp_path, repo_with_bare_remote, monkeypatch):
+    """Fail closed, loudly. No interpreter anywhere means the repair cannot
+    run, and the honest outcome is the gate refusal the caller already knows
+    how to classify — never a silent pass, never a spawn of the CLI."""
+    from no_human.vcs import GitError, commit_with_manifest_repair, is_gate_refusal
+    work = _repo_with_real_public_manifest_gate(repo_with_bare_remote)
+    repo = GitRepo(work, identity_name="agent", identity_email="a@x.y",
+                   never_push_to=[])
+    repo.create_branch("no-human/frozen5", base="main")
+    (work / "src" / "pkg" / "mod.py").write_text("y = 2\n")
+    _no_interpreter_anywhere(monkeypatch, tmp_path)
+    head_before = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=work,
+        capture_output=True, text=True, check=True).stdout.strip()
+
+    with pytest.raises(GitError, match="no Python interpreter available") as excinfo:
+        commit_with_manifest_repair(repo, ["src/pkg/mod.py"], "feat: change")
+
+    assert "manifest re-approve failed" in str(excinfo.value)
+    assert is_gate_refusal(str(excinfo.value)), (
+        "the checkpoint bypass seam classifies on that substring")
+    head_after = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=work,
+        capture_output=True, text=True, check=True).stdout.strip()
+    assert head_after == head_before
+
+
+def test_a_frozen_build_with_no_interpreter_keeps_the_proactive_pass_advisory(
+        tmp_path, repo_with_bare_remote, monkeypatch):
+    """The proactive pair never raise, by contract — a refusal there is
+    advisory and the file fails later, honestly, by name. That must not change
+    just because the interpreter is the thing that is missing."""
+    from no_human.vcs.manifest_repair import (
+        approve_pending_pins,
+        write_pending_manifest,
+    )
+    work = _repo_with_real_public_manifest_gate(repo_with_bare_remote)
+    repo = GitRepo(work, identity_name="agent", identity_email="a@x.y",
+                   never_push_to=[])
+    repo.create_branch("no-human/frozen6", base="main")
+    (work / "src" / "pkg" / "mod.py").write_text("y = 2\n")
+    before = (work / "RELEASE_MANIFEST.txt").read_text(encoding="utf-8")
+    _no_interpreter_anywhere(monkeypatch, tmp_path)
+
+    approve_pending_pins(repo, ["src/pkg/mod.py"])
+    assert write_pending_manifest(repo, ["src/pkg/mod.py"]) == ["src/pkg/mod.py"]
+
+    assert (work / "RELEASE_MANIFEST.txt").read_text(encoding="utf-8") == before
+
+
+def test_no_spawn_in_manifest_repair_uses_sys_executable_as_the_interpreter():
+    """The ratchet, and the reason this issue exists at all: this is the
+    FOURTH module to grow the same defect, and the previous three were each
+    fixed one call site at a time. Reading the module's own AST is the only
+    check that cannot be satisfied by fixing four sites out of five."""
+    import ast
+
+    src_path = Path(vcs.__file__).parent / "manifest_repair.py"
+    tree = ast.parse(src_path.read_text(encoding="utf-8"), filename=str(src_path))
+    spawns = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and ast.unparse(node.func).startswith(("subprocess.", "os.exec", "os.spawn",
+                                                "os.system"))
+        and node.args
+    ]
+    assert spawns, "the AST walk found no spawns at all — the scan is broken"
+    offenders = []
+    for node in spawns:
+        argv = node.args[0]
+        head = argv.elts[0] if isinstance(argv, (ast.List, ast.Tuple)) and argv.elts \
+            else argv
+        if "sys.executable" in ast.unparse(head):
+            offenders.append(f"{src_path.name}:{node.lineno}")
+    assert offenders == [], (
+        f"{len(offenders)} of {len(spawns)} spawns still pass `sys.executable` as "
+        f"the interpreter, which is the frozen `nh` binary in the desktop "
+        f"build: {offenders}")
+
+
 # --- lock-contention retry (main-6cec2140 booked two specs `crashed` on a
 # --- `git add` and a `git checkout -B` that failed on briefly-held locks) ----
 

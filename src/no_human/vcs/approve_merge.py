@@ -145,6 +145,7 @@ from pathlib import Path
 from typing import Callable
 
 from ..agent.session_mark import current_mark
+from ..proc import real_python
 from .git import GitError, GitRepo, ProtectedBranch
 from .pr_watcher import parse_pr_url
 
@@ -620,29 +621,16 @@ def _real_python(repo_path: Path | None = None) -> str | None:
     button failed at step "tests" for EVERY repo, and at step "manifest" for
     this repo's shape, on every land made from the app.
 
-    Third instance of this exact scar, and the reason this one is shared
-    rather than written inline again: ``testing/repro_gate.py::_pytest_python``
-    carries it for the repro gate (where it produced a confident but FALSE
-    verdict) and ``core/worktree.py::_builder_python`` carries it for venv
-    creation.
-
-    The target repo's own venv is tried first — it has the repo's
-    dependencies and pytest — then ``python3``/``python`` on PATH. ``None``
-    means the caller must fail closed and say so, never shell out to the CLI
-    by accident.
+    Third instance of this exact scar. A FOURTH then landed in
+    ``vcs/manifest_repair.py`` (issue #402), so the resolution itself now
+    lives once in ``proc.real_python`` and this is the merge gate's binding
+    of it — the target repo's own venv tried first, because it has the
+    repo's dependencies and pytest. This wrapper stays because it is the
+    name the merge gate's tests pin and the docstring the reviewer of that
+    incident reads. ``None`` means the caller must fail closed and say so,
+    never shell out to the CLI by accident.
     """
-    if not getattr(sys, "frozen", False):
-        return sys.executable
-    if repo_path is not None:
-        for sub, name in ((("Scripts",), "python.exe"), (("bin",), "python")):
-            candidate = Path(repo_path).joinpath(".venv", *sub, name)
-            if candidate.is_file():
-                return str(candidate)
-    for name in ("python3", "python"):
-        found = shutil.which(name)
-        if found:
-            return found
-    return None
+    return real_python(Path(repo_path) / ".venv" if repo_path is not None else None)
 
 
 def _run_pytest(argv: list[str], *, cwd: Path, timeout: float,
