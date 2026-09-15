@@ -6,6 +6,27 @@ All notable changes to no_human. The format follows
 
 ## [Unreleased]
 
+### Changed
+- **Wiring evidence reads JS/TS and class bodies, not just Python module top
+  level** (issue #114 phase 4). The reference half of the check was always
+  language-agnostic — `git grep -w` reads bytes — but the declaration half was
+  `ast.parse` over `.py` files at module top level, so a diff in any other
+  language and any method added to a class were structurally invisible. Over
+  the 300 most recent non-merge commits on `main`, 25% of the commits that
+  touch code touch something other than Python and 20% of the Python symbols
+  added sit inside a class. Declarations now come from a new
+  `review/symbols.py`: Python at module level and in class bodies, reported by
+  qualified name (`Store.recompute_totals`), plus `export`ed module-level
+  declarations in `.js/.jsx/.mjs/.cjs/.ts/.tsx` read by a scanner that blanks
+  comments and string literals first. A `def` inside a function, an unexported
+  JS binding and a dunder method are deliberately not collected — the first two
+  are file-private by construction, and the language calls the third, so no
+  reference search could find the call that does exist. The whole pass now runs
+  under one deadline instead of a per-subprocess timeout (with a `git grep` per
+  name, a per-call timeout bounded nothing in aggregate) and returns the
+  symbols it had already decided when the budget runs out. Still advisory, and
+  every failure still resolves toward silence rather than toward an accusation.
+
 ### Fixed
 - `nhCanAutoUpdate` was computed only from the macOS signing plan, then
   stamped into the single `extraMetadata` block shared by every
