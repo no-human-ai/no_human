@@ -53,6 +53,10 @@ _ALLOWED_EVENTS: dict[str, frozenset[str]] = {
     "feature_used": frozenset({"name", "environment"}),
     "task_ended": frozenset({"outcome", "attempts", "duration_bucket", "environment"}),
     "tasks_orphaned": frozenset({"count_bucket", "environment"}),
+    "onboarding_step_viewed": frozenset({"step", "environment"}),
+    "onboarding_repo_selected": frozenset({"environment"}),
+    "onboarding_completed": frozenset({"path", "environment"}),
+    "task_create_refused": frozenset({"reason", "environment"}),
 }
 
 # Event names the DEPLOYED first-party Lambda accepts (as of 2026-08-16).
@@ -61,11 +65,31 @@ _ALLOWED_EVENTS: dict[str, frozenset[str]] = {
 # batch stays queued forever, so `flush()` drops them on the `kind ==
 # "lambda"` wire path only, until the server-side allowlist ships. PostHog
 # (the default destination, and where this triage data actually comes from)
-# accepts everything in `_ALLOWED_EVENTS` and is unaffected.
+# accepts everything in `_ALLOWED_EVENTS` and is unaffected. The four
+# onboarding-funnel events (`onboarding_step_viewed`, `onboarding_repo_selected`,
+# `onboarding_completed`, `task_create_refused`) are excluded from
+# `_LAMBDA_EVENTS` for the same reason: they have not shipped server-side
+# either.
 _LAMBDA_EVENTS = frozenset({
     "app_started", "task_created", "task_completed", "task_failed",
     "approve_clicked", "feature_used",
 })
+
+# The wizard's own step keys, in order — mirrors `Onboarding.jsx`'s
+# `BASE_STEPS` and api/app.py's `_WIZARD_STEPS`. Kept in sync (not imported,
+# which a Python module cannot do from a JSX/Python-server source) by
+# tests/test_onboarding_funnel_telemetry.py::test_step_key_matches_the_wizards_own_list,
+# which parses `BASE_STEPS` out of Onboarding.jsx's own source rather than
+# trusting this frozenset to stay in sync on its own.
+ONBOARDING_STEPS = frozenset({
+    "welcome", "email", "repos", "projects", "integrations", "discord", "summary",
+})
+
+# Closed enum of `onboarding_completed`'s `path` prop.
+ONBOARDING_PATHS = frozenset({"minimal", "full"})
+
+# Closed enum of `task_create_refused`'s `reason` prop.
+TASK_REFUSAL_REASONS = frozenset({"setup_mode"})
 
 # Closed enum of `task_failed`'s `reason_category` prop — a machine-readable
 # failure PATTERN, never free text (no task id, title, repo name, or detail
@@ -104,6 +128,9 @@ _ALLOWED_PROP_VALUES: dict[tuple[str, str], frozenset[str]] = {
     ("task_ended", "outcome"): TASK_END_OUTCOMES,
     ("task_ended", "duration_bucket"): DURATION_BUCKETS,
     ("tasks_orphaned", "count_bucket"): ORPHAN_COUNT_BUCKETS,
+    ("onboarding_step_viewed", "step"): ONBOARDING_STEPS,
+    ("onboarding_completed", "path"): ONBOARDING_PATHS,
+    ("task_create_refused", "reason"): TASK_REFUSAL_REASONS,
 }
 
 # Recognized CI platform markers (intake-resolved: covers ~95% of CI

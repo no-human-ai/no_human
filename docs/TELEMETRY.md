@@ -17,8 +17,8 @@ security-review framing of this same channel).
 
 ## The complete event list
 
-There are exactly nine possible event kinds, eight sent by the server and
-one (`screen_viewed`) by the browser.
+There are exactly thirteen possible event kinds, twelve sent by the server
+and one (`screen_viewed`) by the browser.
 
 | Event | Channel | Props |
 |---|---|---|
@@ -30,6 +30,10 @@ one (`screen_viewed`) by the browser.
 | `feature_used` | server | `name`, `environment` |
 | `task_ended` | server | `outcome`, `attempts`, `duration_bucket`, `environment` |
 | `tasks_orphaned` | server | `count_bucket`, `environment` |
+| `onboarding_step_viewed` | server | `step`, `environment` |
+| `onboarding_repo_selected` | server | `environment` |
+| `onboarding_completed` | server | `path`, `environment` |
+| `task_create_refused` | server | `reason`, `environment` |
 | `screen_viewed` | browser | `screen` (the lane name — `board`/`backlog`/`done`/`failed`/`stats`/`settings`/…, never content) |
 
 Every prop name is validated against `_ALLOWED_EVENTS`; an unknown kind or
@@ -55,6 +59,16 @@ path, prompt, or failure detail can ever leave the machine through them.
   byte-identical by this change.)
 - `tasks_orphaned.count_bucket` — `ORPHAN_COUNT_BUCKETS`: one of `0`, `1`,
   `2-5`, `6+`.
+- `onboarding_step_viewed.step` — `ONBOARDING_STEPS`: the wizard's own step
+  keys (`api/app.py`'s `_WIZARD_STEPS`, kept equal to `Onboarding.jsx`'s
+  `BASE_STEPS` by
+  `tests/test_onboarding_funnel_telemetry.py::test_step_key_matches_the_wizards_own_list`,
+  which parses `BASE_STEPS` out of `Onboarding.jsx`'s own source rather than
+  trusting a separate literal to stay in sync).
+- `onboarding_completed.path` — `ONBOARDING_PATHS`: one of `minimal`, `full`.
+- `task_create_refused.reason` — `TASK_REFUSAL_REASONS`: one of
+  `setup_mode`. Only this machine-readable reason ships; the human-facing
+  `SETUP_MODE_DETAIL` string (which carries a filesystem path) never does.
 
 ## `task_completed`: the ordinary successful-delivery path
 
@@ -172,15 +186,50 @@ The default destination is PostHog, which accepts everything in
 (`telemetry.endpoint`) validates a batch WHOLESALE against ITS OWN closed
 allowlist and 400s the entire batch on one unrecognized event name — and a
 rejected batch stays queued forever, wedging every later flush behind it.
-`task_ended` and `tasks_orphaned` are new: they have not shipped to the
-Lambda's server-side allowlist yet. Until they do, `telemetry.flush()`
-drops any event whose name is not in `_LAMBDA_EVENTS` on the `kind ==
-"lambda"` wire path only — never affecting PostHog, and never wedging the
-queue (an all-dropped batch is deleted, never re-POSTed empty).
+`task_ended`, `tasks_orphaned`, and the four onboarding-funnel events
+(`onboarding_step_viewed`, `onboarding_repo_selected`, `onboarding_completed`,
+`task_create_refused`) are new: none of them have shipped to the Lambda's
+server-side allowlist yet. Until they do, `telemetry.flush()` drops any
+event whose name is not in `_LAMBDA_EVENTS` on the `kind == "lambda"` wire
+path only — never affecting PostHog, and never wedging the queue (an
+all-dropped batch is deleted, never re-POSTed empty).
 `tests/test_telemetry.py::test_client_allowlist_matches_the_deployed_lambda_contract`
 pins `_LAMBDA_EVENTS` as the Lambda's deployed six names and asserts it is a
 strict subset of `_ALLOWED_EVENTS` — this file (and that test) must be
-updated together the day the Lambda actually ships the new two.
+updated together the day the Lambda actually ships any of the new ones.
+
+## The onboarding funnel
+
+`app_started` and `task_created` alone could not tell "abandoned the wizard"
+from "never opened the app", or "closed the tab" from "hit a wall and gave
+up" — 276 of 291 sampled installs emitted exactly one event ever, with
+nothing recorded in between. Four events close that gap:
+
+- `onboarding_step_viewed` fires when the wizard shows a step, via
+  `POST /api/onboarding/step` (`api/app.py`). The server checks `step`
+  against its own closed `_WIZARD_STEPS` and 422s an unlisted value rather
+  than ever passing it to telemetry — a stale or tampered client can't
+  smuggle free text through this route.
+- `onboarding_repo_selected` fires once an install has onboarded at least
+  one repo — once per INSTALL, not once per repo (a per-repo count would
+  itself be a cardinality leak).
+- `onboarding_completed` fires when the wizard finishes, carrying which path
+  was taken (`minimal` or `full`).
+- `task_create_refused` fires when `POST /api/tasks` refuses to create a
+  task for lack of credentials — the reason is always the fixed string
+  `setup_mode`; the human-facing detail string is never read for this
+  purpose.
+
+All four are latched to fire at most once per install (`_record_onboarding_once`
+in `api/app.py`, keyed under `config.onboarding.funnel_once`, distinct
+markers per step/repo-selection/completion/refusal) so a user revisiting a
+step, or onboarding several repos, does not inflate the count.
+
+Desktop first-launch blind spot (documented, not fixed): `desktop/main.mjs`'s
+pre-credential native setup screen returns before `ensureServer(...)` ever
+boots a server, so no server-side telemetry — not even `app_started` — is
+reachable on that path. Out of scope for this change; pinned by
+`tests/test_onboarding_funnel_telemetry.py::test_desktop_first_launch_gate_is_documented_as_uninstrumented`.
 
 ## Never sent
 

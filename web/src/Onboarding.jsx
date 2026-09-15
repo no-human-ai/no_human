@@ -5,8 +5,9 @@ import {
   generateDocs, fetchIntegrationSetup, saveIntegrationSetup,
   testIntegration,
   proveRepoSSE, confirmRepoProfile, fetchReadiness, setRepoUiEvidence,
-  probeServer, registerOnboardingEmail,
+  probeServer, recordOnboardingStep, registerOnboardingEmail,
 } from "./api.js";
+import { makeStepReporter } from "./onboardingFunnel.js";
 import { kickoffWikiGeneration } from "./onboardingDocsKickoff.js";
 import { isNetworkError, offlineBanner, createServerProbe } from "./offlineRetry.js";
 import { repoBadges, discoveryMessage, searchEmptyMessage, ambiguousNames, rowName } from "./discoveredRepos.js";
@@ -287,6 +288,19 @@ export default function Onboarding({ onComplete }) {
     // A step that autoFocuses its own input has already placed focus better than we can;
     // stealing it back to the container would undo that.
     if (card && !card.contains(document.activeElement)) card.focus();
+  }, [i]);
+
+  // Reports the current step to the funnel telemetry endpoint, once per step
+  // per session (see onboardingFunnel.js's makeStepReporter — a Set-based
+  // dedup that survives StrictMode's double-invoke and forward/back
+  // revisits). Lazily initialized into a ref so the dedup state itself
+  // survives across renders.
+  const stepReporter = useRef(null);
+  if (stepReporter.current === null) {
+    stepReporter.current = makeStepReporter(recordOnboardingStep);
+  }
+  useEffect(() => {
+    stepReporter.current(STEPS[i].key);
   }, [i]);
 
   // While offline, probe /api/version every 3s (fixed cadence, no escalation
