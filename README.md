@@ -313,6 +313,20 @@ convention: every GitHub API call is checked against a two-endpoint allowlist
 `dry_run: true` to print the verdict to the job log/summary and make no
 GitHub API calls at all.
 
+**Known limitation: the tamper guard's "full test tree" claim holds for
+ASCII test filenames, not non-ASCII ones.** The tamper check walks every test
+file in the repository (not just the `max_files`-capped subset sent to the
+reviewer) via an unquoted `git ls-tree`, so a test file whose name contains
+non-ASCII bytes is listed in git's C-quoted string form (e.g.
+`"r\303\251gression_test.py"`) instead of its real path, and silently drops
+out of the guard's before/after comparison — deleting or weakening such a
+file will not currently be caught. This Action's own diffed/reviewed file
+list is not affected by the equivalent problem (it explicitly re-quotes and
+re-verifies every path it hands to the reviewer), but the underlying
+tamper-check module is out of scope for this Action to change. If your test
+suite has non-ASCII test filenames, treat the tamper guard as best-effort for
+those specific files until that's fixed upstream.
+
 ## MCP server — hand it work from the agent you are already in
 
 no_human ships an **MCP (Model Context Protocol) server**: a stdio bridge, built

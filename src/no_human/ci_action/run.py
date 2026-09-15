@@ -30,6 +30,19 @@ One process, one pull request, one comment, then exit. The state machine:
    a best-effort ``file:line`` locally by parsing the hunk headers of a
    scoped ``git diff`` for the reported path, with a well-defined fallback
    (bare path, no line) when that parse turns up nothing.
+   KNOWN LIMITATION, not fixed here: ``testing/runner.py``'s own
+   ``_git_files`` helper (out of scope for this Action to modify) lists the
+   test tree via an unquoted ``git ls-tree -r --name-only`` — no ``-z``, no
+   ``core.quotePath=false`` — so a test file whose name contains non-ASCII
+   bytes or other C-quotable characters is listed in its C-quoted STRING
+   form (e.g. ``"r\303\251gression_test.py"``) rather than its real path, and
+   the guard's before/after comparison silently fails to line that entry up
+   across commits. The "full test tree" claim above holds for ASCII test
+   filenames; a non-ASCII-named test file can currently defeat the tamper
+   guard the same way an unquoted diff pathspec once defeated the reviewed
+   diff (see :func:`_literal_pathspec`) — this module cannot fix that
+   without editing the out-of-scope file, so it is documented here and in
+   the README instead of silently claimed away.
 5. REVIEW. ``AdversarialReviewer`` — the SAME independent fresh-context
    reviewer the queueing ``nh review`` path uses — is constructed directly
    and asked for exactly one verdict (``single_turn=True``). A
@@ -42,8 +55,9 @@ One process, one pull request, one comment, then exit. The state machine:
    through :mod:`no_human.ci_action.github`'s create-or-replace-in-place
    upsert, keyed by the ``<!-- no-human-review-gate:v1 -->`` HTML marker.
    Never :data:`no_human.vcs.comment_poster.AGENT_COMMENT_MARKER` or
-   :data:`no_human.vcs.pr_watcher.REVIEW_CHECKLIST_MARKER` — this is a
-   distinct product surface and must not wake the product's own PR watcher.
+   :data:`no_human.core.orchestrator.Orchestrator.REVIEW_CHECKLIST_MARKER` —
+   this is a distinct product surface and must not wake the product's own PR
+   watcher.
 7. EXIT. 0 = ran and passed, or a documented fork-skip. 1 = ran and found
    blocking findings or tampering (only when ``fail_on_findings`` is true).
    2 = did not run at all.
@@ -85,8 +99,9 @@ DEFAULT_DRY_RUN = "false"
 
 #: This Action's own comment identity — deliberately NOT one of the product's
 #: own markers (`vcs.comment_poster.AGENT_COMMENT_MARKER`,
-#: `vcs.pr_watcher.REVIEW_CHECKLIST_MARKER`): those wake the product's own PR
-#: watcher, which must never fire off a comment this standalone Action posts.
+#: `core.orchestrator.Orchestrator.REVIEW_CHECKLIST_MARKER`): those wake the
+#: product's own PR watcher, which must never fire off a comment this
+#: standalone Action posts.
 MARKER = "<!-- no-human-review-gate:v1 -->"
 
 #: GitHub rejects a comment body over 65536 bytes; stay under github.py's cap.
@@ -133,13 +148,38 @@ def _input(name: str, default: str = "") -> str:
     return os.environ.get(f"INPUT_{name.upper()}", default)
 
 
+def _literal_pathspec(path: str) -> str:
+    """Wrap *path* in git's ``:(literal)`` pathspec magic.
+
+    Every path this module ever splices into a ``git diff -- <path>``
+    argument list came out of another `git` command's own listing (never
+    user-typed), but that does not make it safe to hand back as a bare
+    pathspec: git treats leading ``:``, and any of ``*?[]^!``, as PATHSPEC
+    MAGIC, not literal filename characters. A file named ``:colon.py`` or
+    ``a[b].py`` matches NOTHING as a pathspec and silently vanishes from the
+    resulting diff while `kept`/the rendered comment still claim it was
+    reviewed. ``:(literal)`` turns the rest of the string back into a plain
+    byte-for-byte match — verified against a real repo containing a
+    `:colon.py` file, where the unprefixed form produced an empty diff for
+    that path and the `:(literal)` form did not.
+    """
+    return f":(literal){path}"
+
+
 def _git(repo: Path, *args: str) -> str:
     subcommand = args[0] if args else ""
     if subcommand not in _ALLOWED_GIT_SUBCOMMANDS:
         raise ActionError(f"refusing to run `git {subcommand}`: not on the read-only allowlist")
-    proc = subprocess.run(
-        ["git", *args], cwd=repo, capture_output=True, text=True,
-    )
+    try:
+        proc = subprocess.run(
+            # `-c core.quotePath=false` disables C-quoting of non-ASCII bytes
+            # in ALL output this call can produce (`--name-only` listings and
+            # `--patch`/`diff --git a/... b/...` headers alike) — `-z` alone
+            # only covers the `--name-only` case (see the call site below).
+            ["git", "-c", "core.quotePath=false", *args], cwd=repo, capture_output=True, text=True,
+        )
+    except FileNotFoundError as exc:
+        raise ActionError(f"`git` is not on PATH: {exc}") from exc
     if proc.returncode != 0:
         raise ActionError((proc.stderr or f"git {' '.join(args)} failed").strip())
     return proc.stdout
@@ -282,7 +322,10 @@ def _first_changed_line(repo: Path, before_ref: str, after_ref: str, path: str) 
     if not path:
         return 0
     try:
-        patch = _git(repo, "diff", "--no-color", "--patch", f"{before_ref}..{after_ref}", "--", path)
+        patch = _git(
+            repo, "diff", "--no-color", "--patch", f"{before_ref}..{after_ref}",
+            "--", _literal_pathspec(path),
+        )
     except ActionError:
         return 0
     if "deleted file mode" in patch:
@@ -375,7 +418,7 @@ def render_body(
         "",
         f"- Model: `{model}` (credential mode: `{credential_mode}`)",
         f"- Files reviewed: {files_reviewed} of {files_total}"
-        + (f" (capped by `max_files`)" if files_reviewed < files_total else ""),
+        + (" (capped by `max_files`)" if files_reviewed < files_total else ""),
     ]
     if tampered:
         lines.append("- **Tamper guard: TAMPERED** — see findings below.")
@@ -574,16 +617,6 @@ def main(argv: list[str] | None = None) -> int:  # noqa: ARG001 - argv unused, k
         # `diff_override` ends up "" (falsy), sending
         # `AdversarialReviewer.review` down its no-override branch, which
         # recomputes the diff itself over EVERY file and ignores `max_files`.
-        # `-z` NUL-terminates each path and disables git's default C-quoting
-        # of non-ASCII/special bytes in `--name-only` output. Without it, a
-        # path like `régression.py` comes back as the quoted STRING
-        # `"r\303\251gression.py"`, which then fails to match anything as a
-        # pathspec below — the file silently drops out of `diff_override`
-        # while the rendered comment still claims it was reviewed, and in
-        # the degenerate case where every changed path is quoted,
-        # `diff_override` ends up "" (falsy), sending
-        # `AdversarialReviewer.review` down its no-override branch, which
-        # recomputes the diff itself over EVERY file and ignores `max_files`.
         raw_changed = _git(workspace, "diff", "-z", "--name-only", f"{merge_base}..{head_sha}")
     except ActionError as exc:
         return _fail(f"could not compute the diff: {exc}")
@@ -606,9 +639,41 @@ def main(argv: list[str] | None = None) -> int:  # noqa: ARG001 - argv unused, k
         return _post_and_exit(body, "PASS", repo_full, pr_number, github_token, dry_run, fail_on_findings)
 
     try:
-        diff_override = _git(workspace, "diff", "--no-color", "--patch", f"{merge_base}..{head_sha}", "--", *kept)
+        diff_override = _git(
+            workspace, "diff", "--no-color", "--patch", f"{merge_base}..{head_sha}",
+            "--", *(_literal_pathspec(p) for p in kept),
+        )
     except ActionError as exc:
         return _fail(f"could not compute the scoped diff: {exc}")
+
+    # COVERAGE VERIFICATION. `kept` is non-empty here (the `if not kept`
+    # branch above already returned), so a `diff_override` that does not
+    # actually contain every path in `kept` — including the degenerate case
+    # where it comes back empty entirely — must never be treated as "nothing
+    # to review" or silently handed to `AdversarialReviewer.review` anyway.
+    # An empty/partial `diff_override` is FALSY, and `AdversarialReviewer
+    # .review` treats a falsy `diff_override` as "no override given": it
+    # recomputes the diff itself over EVERY changed file, ignoring
+    # `max_files` and the cost bound the README advertises, while this
+    # module's own `files_reviewed` output keeps claiming only `len(kept)`
+    # files were sent. Refusing loudly here is strictly safer than either
+    # silently under-reviewing (a path present in `kept` but absent from the
+    # diff text, e.g. a pathspec-magic character git still didn't match) or
+    # silently over-reviewing (the reviewer's own fallback path). This is a
+    # substring check, not a re-parse of the diff, so it works uniformly for
+    # both the pathspec-magic case (`:(literal)` above already fixes the
+    # match, this only guards against some future regression) and the
+    # non-ASCII case (`core.quotePath=false` in `_git` keeps headers
+    # unquoted so the raw path text is actually present to find).
+    missing = [p for p in kept if p not in diff_override]
+    if missing:
+        return _fail(
+            f"the scoped diff does not cover {len(missing)} file(s) that were "
+            f"selected for review ({', '.join(missing[:5])}"
+            f"{', ...' if len(missing) > 5 else ''}) — refusing rather than "
+            "silently reviewing an incomplete diff or falling back to "
+            "reviewing every changed file uncapped"
+        )
     diff_capped = len(diff_override) > _REVIEWER_DIFF_CAP
 
     try:
@@ -698,6 +763,13 @@ def _post_and_exit(
             with github.GitHubClient(token=github_token, api_url=api_url) as client:
                 comment = github.upsert_comment(client, repo_full, pr_number, MARKER, body)
         except (github.GitHubAPIError, github.WriteSurfaceViolation) as exc:
+            # The review already ran and reached a verdict — a failure to
+            # POST it must not also discard it. Put the rendered body in the
+            # job summary (the one surface this process can still write to
+            # without the GitHub API) before falling through to `_fail`'s own
+            # exit-2 report, so a comment-post failure never reads as "no
+            # findings" to anyone checking the job's summary tab.
+            _append_step_summary(body)
             return _fail(f"could not post the review comment: {exc}")
         _set_output("verdict", verdict)
         # GITHUB_SERVER_URL is GitHub's own documented way to get the correct

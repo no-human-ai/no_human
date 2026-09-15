@@ -124,16 +124,45 @@ RUN useradd --create-home --uid 1000 --shell /bin/sh nhaction \
 # its own permission-skip flag with "--dangerously-skip-permissions cannot be
 # used with root/sudo privileges for security reasons" when the process is
 # UID 0 — which root-by-default would otherwise make every job on this image.
+#
+# Deliberately NOT `set -eu` around these steps: a bare `set -e` failure exits
+# with whatever raw status the failing command happened to return (or 128+n
+# for a signal), which is NOT one of this Action's documented exit codes (0 =
+# ran and passed, 1 = ran and found blocking findings, 2 = did not run at
+# all — see run.py's module docstring) and could even collide with 1 by
+# accident, misreporting a root-level setup failure as "ran and found
+# findings". Every step below is instead checked explicitly and, on failure,
+# emits a `::error::` annotation (the same workflow-command convention
+# run.py's own `_fail` uses) and exits 2 itself — infra failures must fail
+# exactly as loudly and legibly as `no_human.ci_action.run`'s own exit-2
+# paths, never as an unexplained shell status. `set -u` alone is kept (catches
+# a genuinely unset variable, which is always a bug here, not an expected
+# runtime condition) since it cannot produce an undocumented exit code any
+# differently than any other unhandled shell error already would.
 RUN printf '%s\n' \
         '#!/bin/sh' \
-        'set -eu' \
+        'set -u' \
         'HOME_DIR="${HOME:-/github/home}"' \
         'export HOME="$HOME_DIR"' \
-        'mkdir -p "$HOME_DIR"' \
-        'git config --global --add safe.directory "${GITHUB_WORKSPACE:-*}"' \
-        'chown -R nhaction:nhaction "$HOME_DIR"' \
+        'if ! mkdir -p "$HOME_DIR"; then' \
+        '    echo "::error::entrypoint setup failed: could not create HOME directory $HOME_DIR"' \
+        '    exit 2' \
+        'fi' \
+        'if ! git config --global --add safe.directory "${GITHUB_WORKSPACE:-*}"; then' \
+        '    echo "::error::entrypoint setup failed: git config --global --add safe.directory"' \
+        '    exit 2' \
+        'fi' \
+        'if ! chown -R nhaction:nhaction "$HOME_DIR"; then' \
+        '    echo "::error::entrypoint setup failed: chown -R HOME directory $HOME_DIR"' \
+        '    exit 2' \
+        'fi' \
         'for f in "${GITHUB_OUTPUT:-}" "${GITHUB_STEP_SUMMARY:-}"; do' \
-        '    if [ -n "${f:-}" ] && [ -f "$f" ]; then chown nhaction:nhaction "$f"; fi' \
+        '    if [ -n "${f:-}" ] && [ -f "$f" ]; then' \
+        '        if ! chown nhaction:nhaction "$f"; then' \
+        '            echo "::error::entrypoint setup failed: chown $f"' \
+        '            exit 2' \
+        '        fi' \
+        '    fi' \
         'done' \
         'exec setpriv --reuid=nhaction --regid=nhaction --init-groups uv run --no-sync --project /app python -m no_human.ci_action.run "$@"' \
         > /entrypoint.sh \

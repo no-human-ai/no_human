@@ -541,6 +541,218 @@ def test_changed_paths_survive_git_c_quoting(repo):
     assert not any(p.startswith('"') for p in changed)
 
 
+# --------------------------------------------------------------------------- #
+# Pathspec-magic filenames (git diff `-- <path>`, not `--name-only`)          #
+# --------------------------------------------------------------------------- #
+
+
+def test_pathspec_magic_filename_is_not_silently_dropped_from_the_diff(env, monkeypatch, repo):
+    """A path that is itself a `git diff -- <path>` PATHSPEC-MAGIC token —
+    e.g. one starting with `:` — is a DIFFERENT bug from the non-ASCII/
+    C-quoting one above: `-z` already fixes `--name-only` quoting, and
+    bracket/glob characters (`[`, `]`, `*`, `?`) are interpreted as fnmatch
+    wildcards at any position, not just when leading. But a LEADING `:` on
+    its own switches the whole pathspec argument into git's "magic" syntax,
+    and a bare `git diff -- :colon.py` matches NOTHING — the file silently
+    drops out of `diff_override` while the rendered comment still claims
+    full coverage. `_literal_pathspec`'s `:(literal)` prefix is the fix.
+    Independently verified against a real (non-hermetic) repo outside this
+    test: the bare-pathspec form of this exact diff omits `:colon.py`
+    entirely from its output; the `:(literal)`-prefixed form does not."""
+    evil = repo.path / ":colon.py"
+    evil.write_text("def backdoor(cmd):\n    import os\n    os.system(cmd)\n")
+    _git(repo.path, "add", ".")
+    _git(repo.path, "commit", "-q", "-m", "add a pathspec-magic filename")
+    new_head = _git(repo.path, "rev-parse", "HEAD").strip()
+
+    event = _event(repo)
+    event["pull_request"]["head"]["sha"] = new_head
+    env["event_path"].write_text(json.dumps(event))
+
+    seen = {}
+
+    class _Fake:
+        def __init__(self, *, model, **kw):
+            pass
+
+        async def review(self, task, **kwargs):
+            seen["diff"] = kwargs["diff_override"]
+            return _pass_decision()
+
+    monkeypatch.setattr(run, "AdversarialReviewer", _Fake)
+    bodies = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(200, json=[])
+        bodies.append(json.loads(request.content))
+        return httpx.Response(201, json={"id": 1, "body": ""})
+
+    _mock_client(monkeypatch, handler)
+    assert run.main() == run.EXIT_OK
+    assert "diff" in seen and seen["diff"], "diff_override must not be empty/falsy"
+    assert "backdoor" in seen["diff"], "the pathspec-magic-named file must not be dropped from the reviewed diff"
+    assert "Files reviewed: 3 of 3" in bodies[0]["body"]
+
+
+def _tracking_reviewer(constructed: list[bool]):
+    """A reviewer double that records construction but never raises.
+
+    Deliberately NOT `_fake_reviewer(exc=...)`: `main()`'s reviewer call is
+    wrapped in a blanket `except Exception` that reports EXIT_DID_NOT_RUN for
+    ANY reviewer-side failure, so a construction-time or review-time
+    exception would make a test pass even with the coverage guard fully
+    disabled (verified: an earlier draft of this test using `exc=` passed
+    under an ablation that deleted the guard entirely — a false-positive
+    pin). Tracking construction, plus asserting on the guard's own specific
+    `::error::...does not cover...` message below, is what actually
+    distinguishes "the guard refused" from "the reviewer merely failed"."""
+
+    class _Tracking:
+        def __init__(self, *, model, **kw):
+            constructed.append(True)
+
+        async def review(self, task, **kwargs):
+            constructed.append(True)
+            return _pass_decision()
+
+    return _Tracking
+
+
+def test_empty_diff_override_with_nonempty_kept_fails_closed(env, monkeypatch, repo, capsys):
+    """If the scoped `git diff --patch -- <pathspecs>` ever comes back empty,
+    or missing any of `kept`, despite `kept` itself being non-empty — whether
+    from a pathspec regression, an unforeseen git edge case, or anything
+    else — this must be a loud exit-2 refusal, never a silent fall-through.
+    A falsy `diff_override` reaching `AdversarialReviewer.review` sends it
+    down its OWN no-override branch, which recomputes the diff itself over
+    EVERY changed file and silently ignores `max_files` — exactly the cost
+    bound this Action's `max_files` input exists to guarantee. Reproduced by
+    monkeypatching `_git` to return "" for the scoped patch call specifically
+    (isolating the guard from whatever git-level cause might produce that
+    input), not by trying to make git itself misbehave — the guard must not
+    care WHY the diff came back incomplete."""
+    real_git = run._git
+
+    def _fake_git(repo_path, *args):
+        if "--patch" in args:
+            return ""
+        return real_git(repo_path, *args)
+
+    monkeypatch.setattr(run, "_git", _fake_git)
+    constructed: list[bool] = []
+    monkeypatch.setattr(run, "AdversarialReviewer", _tracking_reviewer(constructed))
+    calls: list[tuple[str, str]] = []
+    _mock_client(monkeypatch, _no_comments_then_create_handler(calls))
+    assert run.main() == run.EXIT_DID_NOT_RUN
+    assert not calls, "must fail before ever contacting the GitHub API"
+    assert not constructed, "must refuse before ever constructing the reviewer"
+    assert "does not cover" in capsys.readouterr().out, (
+        "must be the coverage guard's own refusal, not some other failure "
+        "mode incidentally producing the same exit code"
+    )
+
+
+def test_partial_diff_coverage_fails_closed(env, monkeypatch, repo, capsys):
+    """The coverage check is per-path, not just "is the whole thing empty":
+    a `diff_override` that covers SOME of `kept` but is silently missing one
+    file must refuse just as loudly as a fully-empty one."""
+    real_git = run._git
+
+    def _fake_git(repo_path, *args):
+        if "--patch" in args:
+            full = real_git(repo_path, *args)
+            # Strip out the `tests/bar.py` hunk to simulate one path silently
+            # missing from an otherwise-real diff.
+            return "\n".join(
+                line for line in full.splitlines() if "bar.py" not in line
+            )
+        return real_git(repo_path, *args)
+
+    monkeypatch.setattr(run, "_git", _fake_git)
+    constructed: list[bool] = []
+    monkeypatch.setattr(run, "AdversarialReviewer", _tracking_reviewer(constructed))
+    calls: list[tuple[str, str]] = []
+    _mock_client(monkeypatch, _no_comments_then_create_handler(calls))
+    assert run.main() == run.EXIT_DID_NOT_RUN
+    assert not calls, "must fail before ever contacting the GitHub API"
+    assert not constructed, "must refuse before ever constructing the reviewer"
+    assert "does not cover" in capsys.readouterr().out, (
+        "must be the coverage guard's own refusal, not some other failure "
+        "mode incidentally producing the same exit code"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Comment-marker identity                                                     #
+# --------------------------------------------------------------------------- #
+
+
+def test_marker_is_distinct_from_the_product_own_comment_markers():
+    """This Action's comment marker must never collide with — or equal —
+    either of the product's own PR-comment markers, or an upsert this Action
+    runs on a `pull_request` event could edit/find a comment meant for the
+    product's own agent-comment or review-checklist surface (and vice
+    versa), which the module docstring documents as a hard non-goal."""
+    from no_human.core.orchestrator import Orchestrator
+    from no_human.vcs.comment_poster import AGENT_COMMENT_MARKER
+
+    assert run.MARKER
+    assert run.MARKER != AGENT_COMMENT_MARKER
+    assert run.MARKER != Orchestrator.REVIEW_CHECKLIST_MARKER
+    assert AGENT_COMMENT_MARKER not in run.MARKER
+    assert Orchestrator.REVIEW_CHECKLIST_MARKER not in run.MARKER
+
+
+# --------------------------------------------------------------------------- #
+# Tamper guard: documented non-ASCII blind spot (testing/runner.py, OOS)      #
+# --------------------------------------------------------------------------- #
+
+
+def test_tamper_guard_non_ascii_test_filename_blind_spot_is_real_and_documented(tmp_path):
+    """CHARACTERIZATION test, not a regression pin on a FIX: this documents a
+    real, currently-uncorrected gap in `testing.runner.tamper_check_between`
+    (`testing/runner.py` is out of scope for this Action to modify — see the
+    module docstring's "KNOWN LIMITATION" paragraph). An identical weakening
+    (3 assertions -> 1) of an ASCII-named test file IS caught; the same
+    weakening of a non-ASCII-named one is not, because `_git_files`'s
+    unquoted `git ls-tree -r --name-only` returns the C-quoted STRING form
+    of the path (e.g. `"r\\303\\251gression_test.py"`), which
+    `tamper_guard.is_test_file` then fails to recognize as a test file at
+    all — it is silently absent from both the before and after snapshots.
+    This test exists so a future change to either module is forced to
+    notice and update this assertion rather than silently drifting further
+    from the module docstring's caveat."""
+    from no_human.testing.runner import tamper_check_between
+
+    d = tmp_path / "repo"
+    (d / "tests").mkdir(parents=True)
+    _git(d, "init", "-q")
+    _git(d, "config", "user.email", "t@example.com")
+    _git(d, "config", "user.name", "t")
+    evil = d / "tests" / "régression_test.py"
+    evil.write_text(
+        "def test_regression():\n"
+        "    assert 1 == 1\n    assert 2 == 2\n    assert 3 == 3\n"
+    )
+    _git(d, "add", ".")
+    _git(d, "commit", "-q", "-m", "base")
+    before = _git(d, "rev-parse", "HEAD").strip()
+
+    evil.write_text("def test_regression():\n    assert 1 == 1\n")
+    _git(d, "add", ".")
+    _git(d, "commit", "-q", "-m", "weaken the non-ascii-named test")
+    after = _git(d, "rev-parse", "HEAD").strip()
+
+    report = tamper_check_between(d, before, after)
+    assert report.tampered is False, (
+        "documented limitation: a non-ASCII test filename currently defeats "
+        "the tamper guard. If this assertion starts failing, the "
+        "limitation was fixed upstream — update the module docstring's "
+        "KNOWN LIMITATION paragraph (and this test) to match."
+    )
+
+
 def test_set_output_write_failure_does_not_raise(tmp_path, monkeypatch):
     """A GITHUB_OUTPUT write failure (e.g. the runner-owned-file/permission
     shape reproduced against the real Docker image, where this process
