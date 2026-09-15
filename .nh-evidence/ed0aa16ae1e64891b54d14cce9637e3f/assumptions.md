@@ -1,0 +1,17 @@
+# Assumptions
+
+_Harness-captured record for task `ed0aa16a`, commit `6dc7ab5adefb3dd9496a385ee56b60a1dd219acb` — not model-authored: no_human wrote this file from the intake step's recorded questions and assumptions. It records what the gate produced; it is not a verdict of the model that wrote the code._
+
+> ⚠️ **Unresolved:** You've hit your session limit · resets 3:10pm (Asia/Jerusalem) ('personal' subscription)
+
+<details><summary>⚠️ 6 assumptions made on your behalf — verify at review</summary>
+
+- **Q:** What specific action should the watcher take upon detecting a stale-but-mergeable PR? (AC2 requires acting, not merely recording—but the action is undefined.) **A:** Emit a pr_base_remeasured event to the task context when a stale-but-mergeable state is detected, making the state transition visible in the task's event log and surfacing it for operator visibility. This acts on the state without consuming a coder attempt, changing task status, or re-triggering work. _(assumption)_
+- **Q:** For BLOCKER 1: backfill recorded pr_base_sha from merge-base, or prevent FRESH verdicts from deleting backfilled records? **A:** Backfill pr_base_sha from the PR's actual merge-base using `git merge-base origin/<base> <pr_branch>` rather than the current trunk tip, since merge-base represents the actual delivery base and is computable for any open PR. This ensures correct data enters the system rather than backfilling with the current tip and preventing deletion afterward. _(assumption)_
+- **Q:** How should per-tick base fetch across parked PRs be bounded to prevent network serialization—per-PR timeout, total-cycle budget, or adaptive? **A:** Implement a total-cycle budget allocated across all base fetches per poll interval (e.g., 60 seconds distributed across all parked PRs per 10-minute poll cycle) to prevent network serialization and ensure the feature stays within the poll interval even with many stale PRs and degraded networks. _(assumption)_
+- **Q:** If stale and mergeable signals disagree within one tick, should the action require both signals agreeing, or act on stale alone? **A:** Require both signals to agree (stale AND mergeable) before the watcher acts, since they derive from different snapshots (forge poll vs. local fetch) and AC2 specifies acting on the state in exactly that combination. Acting only on stale creates a timing race where a PR might transition to unmergeable between measurements. _(assumption)_
+- **Q:** Should pr_base_ref source-of-truth be standardized across all rungs to one form (and which—ctx.get('pr_base_ref') or base_branch vs ctx['base_branch']), or documented as intentionally different? **A:** Standardize all rungs to use ctx["base_branch"] throughout the codebase, as it is the established pattern in other watcher rungs (_check_pr_conflict, _complete_if_content_landed) and provably works. If the new rung requires pr_base_ref for a specific reason, document that difference with a code comment explaining the deviation. _(assumption)_
+- **Q:** For test_info_unset_sentinel_is_not_none: delete it (sibling catches the same assertion), or rewrite its docstring to describe what it actually tests? **A:** Delete test_info_unset_sentinel_is_not_none, since its sibling test already catches the same assertion and the test continues to pass even after the one-line change it claims to guard against. Deleting redundant tests reduces maintenance burden and clarifies coverage intent. _(assumption)_
+
+</details>
+
