@@ -72,6 +72,7 @@ from .budget_conflict import (
     resolve_hunks,
     run_budget_test,
 )
+from ..proc import real_python
 from .git import GitError, GitRepo, ProtectedBranch
 from .manifest_repair import _PRUNED_RE
 from .pr_watcher import (
@@ -136,17 +137,16 @@ def _inventory_argv() -> list[str]:
     """Base argv for invoking ``check_release_manifest.py`` — the manifest
     tool of repos WITHOUT ``scripts/export_guard.py`` (the public working
     repo): ``--write`` rebuilds every pin from the tracked tree, ``--strict``
-    verifies. Same monkeypatch seam as ``_export_guard_argv``. Uses the
-    running interpreter, not ``uv run``: the script is stdlib-only by its own
-    contract, and ``uv run`` inside a resolver worktree would sync/claim a
-    venv there for nothing. In a PyInstaller-frozen build ``sys.executable``
-    is the ``nh`` binary, NOT a Python (the ``repro_gate._pytest_python``
-    lesson) — fall back to a PATH interpreter there; any Python serves a
-    stdlib-only script."""
-    if getattr(sys, "frozen", False):
-        py = shutil.which("python3") or shutil.which("python") or "python3"
-        return [py, "scripts/check_release_manifest.py"]
-    return [sys.executable, "scripts/check_release_manifest.py"]
+    verifies. Same monkeypatch seam as ``_export_guard_argv``. Uses
+    ``proc.real_python`` — the interpreter resolver every other
+    ``sys.executable`` fallback in this codebase shares (issue #402) — not
+    ``uv run``: the script is stdlib-only by its own contract, and ``uv run``
+    inside a resolver worktree would sync/claim a venv there for nothing. Any
+    Python serves a stdlib-only script, so the venv preference `real_python`
+    applies elsewhere is harmless here; the ``"python3"`` literal is kept as
+    the last resort because this call site, unlike the others, never fails
+    closed — it must always return an argv."""
+    return [real_python() or "python3", "scripts/check_release_manifest.py"]
 
 
 async def resolve_base_tip(repo_path: str, base: str) -> str | None:

@@ -737,6 +737,16 @@ def _run_at_commit(
     started = time.monotonic()
     worktree = tmp / "tree"
     try:
+        # `git worktree add` is a checkout, so it runs any smudge FILTER the
+        # checked-out tree's `.gitattributes` names. Here the tree is the coder's
+        # REVIEWED commit, whose `.gitattributes` the coder controls, and a
+        # `filter.<x>.smudge` planted in the repo's shared config would run that
+        # program inside this (reviewer) process. There is no `-c` switch that
+        # neutralises arbitrary filters, so the boundary is the scrubbed env:
+        # `_git_subprocess_env` denies it the launcher's secrets. (`GitRepo.
+        # add_worktree` runs scrubbed already; this raw call did not.)
+        from ..vcs.git import _git_subprocess_env
+
         added = subprocess.run(
             ["git", "worktree", "add", "--detach", str(worktree), sha],
             cwd=repo_path,
@@ -744,6 +754,7 @@ def _run_at_commit(
             text=True,
             errors="replace",
             timeout=timeout,
+            env=_git_subprocess_env("worktree"),
         )
         if added.returncode != 0:
             log.warning(
