@@ -120,6 +120,19 @@ _EXECUTABLE_SUFFIXES = (".cmd", ".bat", ".ps1", ".exe", ".com")
 #: ordinary filename character.
 _ADS_SEPARATOR = "::"
 
+#: The same suffix set as an optional regex fragment, for the RAW-TEXT matchers
+#: in `guard.py` that name a binary immediately before a following space (#305):
+#: `\brm\s+`, `\bgit\s+`, `(?:gh|glab)\s+`, `(?:nh|no-human)\s+`. Those miss
+#: `rm.exe -rf /`, `gh.exe pr merge 7` and friends because `.exe` sits between
+#: the name and the space the pattern expects. Splice this in after the name.
+#:
+#: Derived from `_EXECUTABLE_SUFFIXES` so the two cannot drift. Ungated, exactly
+#: like the argv-side strip in `command_name` (#107): a POSIX file named
+#: `rm.exe` is unusual, and reading it as `rm` errs toward denial, which is the
+#: direction a guard should err in. Casing is handled by `case_flags()` at each
+#: compile site, so this fragment carries no case logic of its own.
+EXE_SUFFIX_RE = r"(?:\.(?:%s))?" % "|".join(s[1:] for s in _EXECUTABLE_SUFFIXES)
+
 
 def case_flags(cwd: str | None = None, path_env: str | None = None) -> int:
     r"""`re.IGNORECASE` where the host folds case, else no flag.
