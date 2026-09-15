@@ -42,23 +42,38 @@ async def test_the_per_cycle_base_fetch_budget_bounds_a_slow_network(
     per-task allowance — so a slow network cannot make the whole sweep
     exceed the watcher's poll interval no matter how many PRs are parked.
 
-    Proven by making every `fetch_base_ref` call artificially slow (0.1s)
+    Proven by making every `fetch_base_ref` call artificially slow (0.3s)
     and giving the watcher a budget that can only ever afford ONE such
     fetch, across three parked, otherwise-identical PRs. If the budget were
     per-task (or not enforced at all), all three fetches would run and the
-    tick would take ~0.3s+; with a correctly-enforced shared budget at most
-    one fetch happens and the tick finishes in a small fraction of that."""
+    tick would take ~0.9s+; with a correctly-enforced shared budget at most
+    two fetches happen (the budget check only gates the *start* of a fetch,
+    so one fetch may still push spend past the limit).
+
+    `resolve_trunk_tip` (a real, local, read-only git subprocess call the
+    budget deliberately does NOT bound — see this module's docstring) is
+    also stubbed out here, purely so this test's wall-clock measurement
+    isn't at the mercy of subprocess-spawn contention from other tests
+    running concurrently under `-n 4`; without that, the *fetch* budget
+    this test exists to pin would be swamped by unrelated local-git noise.
+    That leaves `call_count` — not wall time — doing the real assertion
+    work; the timing check below is a loose sanity bound, not the pin."""
     work = _repo(tmp_path)
+    tip = _trunk_sha(work)
 
     call_count = 0
 
     async def _slow_fetch(repo_path, base, *, timeout=None):
         nonlocal call_count
         call_count += 1
-        time.sleep(0.1)  # simulates a slow network hop, not local git cost
+        time.sleep(0.3)  # simulates a slow network hop, not local git cost
         return True
 
+    async def _instant_tip(repo_path, base):
+        return tip  # no real subprocess — isolates the fetch budget itself
+
     monkeypatch.setattr(delivered_base, "fetch_base_ref", _slow_fetch)
+    monkeypatch.setattr(delivered_base, "resolve_trunk_tip", _instant_tip)
 
     for i in range(3):
         branch = f"feature-budget-{i}"
@@ -68,17 +83,23 @@ async def test_the_per_cycle_base_fetch_budget_bounds_a_slow_network(
             url=f"https://x/pull/budget-{i}")
 
     w = _watcher(store, mergeable="MERGEABLE", merge_state="CLEAN")
-    # Only enough allowance for roughly one slow fetch — never three.
-    w.base_fetch_budget = timedelta(seconds=0.15)
+    # Enough allowance for one slow fetch plus a sliver, never three.
+    w.base_fetch_budget = timedelta(seconds=0.4)
 
     started = time.monotonic()
     await w.tick()
     elapsed = time.monotonic() - started
 
+    # The deterministic pin: a real per-task (or unenforced) budget would
+    # let all three 0.3s fetches run; a correctly shared per-tick budget of
+    # 0.4s can only ever afford (up to) two.
     assert call_count <= 2, (
         f"expected the shared per-tick budget to skip at least one of "
         f"three slow fetches, but {call_count} ran")
-    assert elapsed < 0.3, (
+    # Loose sanity bound only (not the pin — see docstring): 3 fetches take
+    # >=0.9s of pure sleep; even with generous scheduling slack this stays
+    # well clear of that.
+    assert elapsed < 0.85, (
         f"tick took {elapsed:.3f}s — the budget did not bound total fetch "
         f"time across the parked PRs it swept")
 
@@ -121,6 +142,19 @@ _FORBIDDEN_PHRASES = [
 # FORBIDDEN:END
 
 
+def _offending_phrases(rel: str, raw_text: str) -> list[str]:
+    """Return the forbidden phrases found in ``raw_text``, with the literal
+    ``_FORBIDDEN_PHRASES`` list itself (fenced between the FORBIDDEN:BEGIN
+    and FORBIDDEN:END markers above) stripped out first — otherwise this
+    file's own data would trip its own scan the moment it reads itself."""
+    begin = raw_text.find("FORBIDDEN:BEGIN")
+    end = raw_text.find("FORBIDDEN:END")
+    if begin != -1 and end != -1 and end > begin:
+        raw_text = raw_text[:begin] + raw_text[end + len("FORBIDDEN:END"):]
+    text = raw_text.lower()
+    return [f"{rel}: {phrase!r}" for phrase in _FORBIDDEN_PHRASES if phrase in text]
+
+
 def test_no_source_text_asserts_an_acceptance_criteria_amendment():
     """Scans this feature's own source and test files for text that would
     claim the code does something it does not: narrows a resolved
@@ -133,10 +167,8 @@ def test_no_source_text_asserts_an_acceptance_criteria_amendment():
     repo_root = Path(__file__).resolve().parent.parent
     offenders: list[str] = []
     for rel in _SCANNED_FILES:
-        text = (repo_root / rel).read_text(encoding="utf-8").lower()
-        for phrase in _FORBIDDEN_PHRASES:
-            if phrase in text:
-                offenders.append(f"{rel}: {phrase!r}")
+        raw = (repo_root / rel).read_text(encoding="utf-8")
+        offenders.extend(_offending_phrases(rel, raw))
     assert not offenders, f"forbidden acceptance-criteria-amendment text found: {offenders}"
 
 
