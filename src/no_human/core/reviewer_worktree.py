@@ -173,14 +173,28 @@ def _run_git(repo_path: Path, *args: str, timeout: float) -> str:
     # `_run_git(repo_path, "rev-parse", ref, timeout=t)` resolves to the
     # already-classified-LOCAL `exec:git rev-parse`, same as every other git
     # wrapper in this tree.
+    # This runner brackets EVERY reviewer.review: snapshot()/compare() run
+    # `git status`/`ls-files`/`rev-parse` on the coder's attempt tree, and the
+    # revert path runs `checkout`/`reset`. A coder-planted `core.fsmonitor`
+    # (fires on the status scan) or `filter.<x>.smudge` (fires on the checkout)
+    # in the repo's shared config would otherwise run a program in THIS reviewer
+    # process. `-c core.fsmonitor=false` neutralises the status trigger (inert on
+    # rev-parse/ls-files, and the config-detection reads go through
+    # `_config_norm_map`'s own `git config --file`, not this runner, so they are
+    # unaffected); the secret-scrubbed env is the only boundary against an
+    # arbitrary smudge filter and denies any such program the launcher's
+    # credentials. See `vcs/git._git_subprocess_env`.
+    from ..vcs.git import _git_subprocess_env
+
     try:
         proc = subprocess.run(
-            ["git", *args],
+            ["git", "-c", "core.fsmonitor=false", *args],
             cwd=repo_path,
             capture_output=True,
             text=True,
             errors="replace",
             timeout=timeout,
+            env=_git_subprocess_env(args[0] if args else None),
         )
     except subprocess.TimeoutExpired as exc:
         raise WorktreeCheckFailed(

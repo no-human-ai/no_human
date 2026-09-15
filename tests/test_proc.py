@@ -1,3 +1,4 @@
+import inspect
 import os
 import shutil
 import sys
@@ -8,6 +9,7 @@ from no_human.proc import (
     hidden_console_kwargs,
     real_python,
 )
+from no_human.testing import ui_evidence
 
 
 def test_windows_flags_hide_console_and_new_group():
@@ -101,3 +103,14 @@ def test_a_frozen_build_never_returns_the_frozen_binary(monkeypatch, tmp_path):
     monkeypatch.setattr(sys, "frozen", True, raising=False)
     monkeypatch.setattr(sys, "executable", str(nh))
     assert real_python(tmp_path / "venv") == str(exe) != str(nh)
+
+
+def test_ui_evidence_is_named_as_a_deliberate_non_consumer():
+    """`testing/ui_evidence.py::_hermetic_start_argv` deliberately runs the
+    frozen `nh` binary itself (there is no separate Python to hand a module
+    path to in a freeze) — the one call site this helper must NOT absorb.
+    The docstring says so, and the source still does it, so nobody "fixes"
+    it into a fifth `real_python` call site."""
+    assert "ui_evidence" in real_python.__doc__
+    source = inspect.getsource(ui_evidence._hermetic_start_argv)
+    assert '[sys.executable] if getattr(sys, "frozen", False)' in source
