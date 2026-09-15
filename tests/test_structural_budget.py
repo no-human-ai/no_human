@@ -50,6 +50,7 @@ cannot parse must fail loudly, not vanish from coverage.
 from __future__ import annotations
 
 import ast
+import re
 import textwrap
 import time
 from dataclasses import dataclass
@@ -67,6 +68,13 @@ MAX_FILE_LINES = 2500
 # Frozen at HEAD 2b2370f582f95465ba408c12224a511c6c74f692, 2026-08-26.
 # Measured with the scanner below; see the PR body for the full table.
 # 16 functions > 300 lines.
+#
+# LEDGER CONVENTION: each entry below records what was measured AT THAT
+# POINT IN TIME ("actual 3019", "measured on this tree"). Never phrase an
+# entry as matching/equalling the frozen value the row lands on -- later
+# entries are expected to move that same value further, which turns a true
+# sentence false without anyone editing it. `test_no_ledger_entry_claims_
+# equality_with_a_frozen_value` below enforces this.
 FROZEN_FUNCTION_LINES = {
     # 2099 -> 2108 (+9): PR #877 widens the tamper base to three-dot
     # origin/<base>...HEAD so a sanctioned merge isn't charged with main's own
@@ -2234,8 +2242,8 @@ FROZEN_FILE_LINES = {
     # branch. Measured on this tree with the scanner below, not by arithmetic:
     # base 680d6889 actual 2925 (frozen was stale-high at 2926), main
     # 0b8c2dc4 actual 2959, this branch's own tip before the merge (a185a275)
-    # actual 2985, and after the merge (this tree) actual 3019 -- matching the
-    # frozen value below exactly.
+    # actual 2985, and after the merge (this tree) actual 3019, which is what
+    # this entry froze. Later entries below move it further.
     # 3019 -> 3022 (+3): send-back N2 fix on #328 -- guard.py:1131's comment
     # falsely claimed `_FORGE_MERGE` "was the one lexical gate WITHOUT"
     # `case_flags()`; `_FORGE_WRITE`, `_GIT_WRITE` and `_LEXICAL_LIVE_SERVER`
