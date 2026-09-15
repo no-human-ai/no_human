@@ -56,9 +56,17 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
+import yaml
+
 from ..agent.backend import BackendUnavailable
 from ..agent.backend_check import find_claude_cli
-from ..config import AuthError, MissingCredentialError, load_config, assert_subscription_mode
+from ..config import (
+    AuthError,
+    ConfigError,
+    MissingCredentialError,
+    load_config,
+    assert_subscription_mode,
+)
 from ..core.role_backend_settings import effective_role_backend
 from ..core.runtime import assert_task_backend_usable
 from ..core.task import Task
@@ -112,9 +120,10 @@ class GateResult:
     # override of the Claude default pin for the reviewer role. Populated
     # from the same `effective_role_backend` resolver `_check_credential`
     # previews and `AdversarialReviewer.from_config` itself consults — never
-    # re-derived a second way. `render_markdown` discloses this only when
-    # `reviewer_backend_is_default` is False, since the default case is
-    # already implied and doesn't need calling out.
+    # re-derived a second way. `render_markdown` always prints the backend
+    # and model, default or not, so a reader can always tell which model
+    # produced the checklist; it adds an "overridden" note only when
+    # `reviewer_backend_is_default` is False.
     reviewer_backend: str = "claude"
     reviewer_model: str = ""
     reviewer_backend_is_default: bool = True
@@ -457,7 +466,7 @@ def _materialized_head(repo_path: Path, sha: str):
         clone = subprocess.run(
             ["git", "clone", "--local", "--shared", "--no-checkout", "-q",
              str(repo_path), str(tmp_dir)],
-            capture_output=True, text=True,
+            capture_output=True, text=True, env=_no_prompt_env(),
         )
         if clone.returncode != 0:
             raise GateUnavailable(
@@ -466,7 +475,7 @@ def _materialized_head(repo_path: Path, sha: str):
             )
         checkout = subprocess.run(
             ["git", "checkout", "--detach", "-q", sha],
-            cwd=tmp_dir, capture_output=True, text=True,
+            cwd=tmp_dir, capture_output=True, text=True, env=_no_prompt_env(),
         )
         if checkout.returncode != 0:
             raise GateUnavailable(
@@ -496,8 +505,21 @@ async def run_gate(
     """
     repo_path = _resolve_repo_root(Path(repo_path))
 
-    config = load_config()
-    _check_credential(config)
+    # `load_config()` itself can raise `AuthError` (an `ANTHROPIC_API_KEY`
+    # smuggled into config.yaml — `_reject_api_key_in_config`), `ValueError`
+    # (an invalid `llm.role_backends` entry — `_reject_invalid_role_backends`
+    # raises a bare `ValueError`, not `ConfigError`), `ConfigError` (config
+    # asks for the removed decomposition path — `_reject_decomposition_
+    # enabled`), or `yaml.YAMLError` (a malformed config.yaml) — all above
+    # and outside `_check_credential`'s own handling of the auth check it
+    # performs. Any of these is "cannot run the gate", the same as every
+    # other named precondition here, not a crash that should escape as an
+    # unhandled exit 1.
+    try:
+        config = load_config()
+        _check_credential(config)
+    except (AuthError, ConfigError, ValueError, yaml.YAMLError) as exc:
+        raise GateUnavailable(f"cannot load the no_human config: {exc}") from exc
 
     # Every `GitRepo` call below (`head_sha`, `current_branch`, the mode
     # resolvers) runs `git` with `check=True` and raises `GitError` on a
@@ -586,9 +608,14 @@ async def run_gate(
             )
     except ReviewerUnavailable as exc:
         # The reviewer itself reaches "no verdict" and escalates rather than
-        # guessing (reviewer.py:2601) — that means the gate did not run, the
+        # guessing (reviewer.py:2611) — that means the gate did not run, the
         # same shape as every other unmet precondition here.
         raise GateUnavailable(f"the reviewer could not reach a verdict: {exc}") from exc
+    except (AuthError, BackendUnavailable) as exc:
+        # A reviewer backend whose credential/CLI vanished between
+        # `_check_credential`'s preview and this call (e.g. a codex-pinned
+        # reviewer whose CLI disappeared) — still "cannot run", not a crash.
+        raise GateUnavailable(f"the reviewer backend became unusable: {exc}") from exc
 
     passed = decision.passed and not tamper.tampered and not truncated
 
@@ -616,12 +643,14 @@ def render_markdown(result: GateResult) -> str:
     verdict = "PASS" if result.passed else "FAIL"
     lines.append(f"## no_human gate — {verdict}")
     lines.append(f"**Compared:** {result.comparison}")
-    if not result.reviewer_backend_is_default:
-        model_suffix = f" ({result.reviewer_model})" if result.reviewer_model else ""
-        lines.append(
-            f"**Reviewer backend:** `{result.reviewer_backend}`{model_suffix} "
-            "— overridden from the Claude default via `llm.role_backends.reviewer`"
-        )
+    model_suffix = f" ({result.reviewer_model})" if result.reviewer_model else ""
+    override_note = (
+        "" if result.reviewer_backend_is_default
+        else " — overridden from the Claude default via `llm.role_backends.reviewer`"
+    )
+    lines.append(
+        f"**Reviewer backend:** `{result.reviewer_backend}`{model_suffix}{override_note}"
+    )
     if result.truncated:
         lines.append(
             f"**⚠ diff exceeded the {_DIFF_CAP:,}-char single-turn review "

@@ -1305,9 +1305,13 @@ def test_rendered_markdown_discloses_a_non_default_reviewer_backend():
     assert "gpt-5-codex" in text
 
 
-def test_rendered_markdown_does_not_disclose_the_default_reviewer_backend():
+def test_rendered_markdown_always_discloses_the_reviewer_backend_even_default():
+    """A user must always be able to tell which model produced the checklist
+    — even the default (claude) case is printed now, not just an operator
+    override. The "overridden" note, however, is default-only-omitted."""
     text = render_markdown(_result())
-    assert "Reviewer backend" not in text
+    assert "**Reviewer backend:** `claude`" in text
+    assert "overridden" not in text
 
 
 # --------------------------------------------------------------------------- #
@@ -1354,6 +1358,155 @@ def test_reviewer_unavailable_is_reported_as_gate_unavailable(tmp_path, monkeypa
 
     import asyncio
     with pytest.raises(GateUnavailable, match="could not reach a verdict"):
+        asyncio.run(run_gate(repo))
+
+
+# --------------------------------------------------------------------------- #
+# 20b. load_config() itself raising, above _check_credential's own handling  #
+# --------------------------------------------------------------------------- #
+#
+# `run_gate` calls the REAL `no_human.config.load_config` (never faked in
+# this section — no `_FakeConfig`, no lambda standing in for it) against a
+# REAL config.yaml written to disk by each test. `load_config` is not
+# parameterised by `run_gate` (it is always called with zero arguments), so
+# each test redirects only the function's *default argument value* —
+# `load_config.__defaults__` — to the temp file it wrote, via
+# `monkeypatch.setattr`, restored automatically at teardown. The function
+# object itself, and everything it does (`yaml.safe_load`,
+# `_reject_api_key_in_config`, `_reject_invalid_role_backends`,
+# `_reject_decomposition_enabled`), is the genuine, unfaked implementation —
+# exactly what the human reviewer's "test each with a real config file, not
+# a monkeypatch of `load_config`" instruction asked for.
+
+def _redirect_real_load_config_to(monkeypatch, cfg_path):
+    """Point the REAL `load_config`'s default `config_path` at `cfg_path`,
+    without replacing the function itself."""
+    monkeypatch.setattr(oneshot.load_config, "__defaults__", (cfg_path,))
+    # `_check_credential` must never even be reached for these — the
+    # exception fires inside `load_config` itself — but keep the claude CLI
+    # discovery answered so the ONLY thing under test is `load_config`.
+    monkeypatch.setattr(oneshot, "find_claude_cli", lambda: "/usr/bin/claude")
+
+
+def test_a_real_config_file_with_a_smuggled_api_key_refuses_by_name(tmp_path, monkeypatch):
+    """`_reject_api_key_in_config` raises `AuthError` from inside the real
+    `load_config` — above and outside `_check_credential`'s own try/except.
+    Before the BLOCKER 1 fix this escaped `run_gate` as an unhandled
+    `AuthError`, not a named `GateUnavailable` refusal."""
+    repo, _bare = _make_repo_with_origin(tmp_path)
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text("llm:\n  ANTHROPIC_API_KEY: sk-ant-leaked\n")
+    _redirect_real_load_config_to(monkeypatch, cfg_path)
+
+    import asyncio
+    with pytest.raises(GateUnavailable, match="ANTHROPIC_API_KEY") as exc_info:
+        asyncio.run(run_gate(repo))
+    assert "cannot load the no_human config" in str(exc_info.value)
+
+
+def test_a_malformed_config_yaml_file_refuses_by_name(tmp_path, monkeypatch):
+    """A syntactically broken config.yaml raises `yaml.YAMLError` from inside
+    the real `load_config`. Before the BLOCKER 1 fix this escaped `run_gate`
+    as an unhandled `yaml.scanner.ScannerError`, not a named
+    `GateUnavailable` refusal."""
+    repo, _bare = _make_repo_with_origin(tmp_path)
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text("llm: [unterminated flow sequence\n")
+    _redirect_real_load_config_to(monkeypatch, cfg_path)
+
+    import asyncio
+    with pytest.raises(GateUnavailable, match="cannot load the no_human config"):
+        asyncio.run(run_gate(repo))
+
+
+def test_a_real_config_file_with_an_invalid_role_backends_entry_refuses_by_name(
+    tmp_path, monkeypatch,
+):
+    """`_reject_invalid_role_backends` raises a bare `ValueError` (not
+    `ConfigError` — the docstring in `run_gate` used to say `ConfigError`,
+    which was wrong) from inside the real `load_config` when
+    `llm.role_backends` is not exactly what the Settings write path would
+    have produced. Before the BLOCKER 1 fix this escaped `run_gate` as an
+    unhandled `ValueError`, not a named `GateUnavailable` refusal."""
+    repo, _bare = _make_repo_with_origin(tmp_path)
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(
+        "llm:\n"
+        "  role_backends:\n"
+        "    reviewer:\n"
+        "      backend: not-a-real-backend\n"
+        "      model: some-model\n"
+    )
+    _redirect_real_load_config_to(monkeypatch, cfg_path)
+
+    import asyncio
+    with pytest.raises(GateUnavailable, match="cannot load the no_human config"):
+        asyncio.run(run_gate(repo))
+
+
+def test_a_real_config_file_asking_for_removed_decomposition_refuses_by_name(
+    tmp_path, monkeypatch,
+):
+    """`_reject_decomposition_enabled` raises `ConfigError` from inside the
+    real `load_config`. Before the BLOCKER 1 fix this escaped `run_gate` as
+    an unhandled `ConfigError`, not a named `GateUnavailable` refusal."""
+    repo, _bare = _make_repo_with_origin(tmp_path)
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text("decomposition:\n  enabled: true\n")
+    _redirect_real_load_config_to(monkeypatch, cfg_path)
+
+    import asyncio
+    with pytest.raises(GateUnavailable, match="cannot load the no_human config"):
+        asyncio.run(run_gate(repo))
+
+
+def test_the_verb_exits_2_and_prints_no_pass_on_a_real_bad_config_file(
+    tmp_path, monkeypatch,
+):
+    """End to end through the CLI verb (not just `run_gate` directly): a real
+    bad config file must produce exit 2 and never the word PASS, exactly
+    like every other named precondition failure."""
+    repo, _bare = _make_repo_with_origin(tmp_path)
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text("llm:\n  ANTHROPIC_API_KEY: sk-ant-leaked\n")
+    _redirect_real_load_config_to(monkeypatch, cfg_path)
+
+    result = CliRunner().invoke(gate, ["--repo", str(repo)])
+    assert result.exit_code == 2
+    assert "cannot run the gate" in result.output
+    assert "PASS" not in result.output
+
+
+def test_reviewer_backend_becoming_unusable_after_preflight_refuses_by_name(
+    tmp_path, monkeypatch,
+):
+    """The SECOND `except (AuthError, BackendUnavailable)` clause
+    (oneshot.py, around the `reviewer.review()` call) — distinct from the
+    one around `AdversarialReviewer.from_config` and distinct from
+    `_check_credential`'s own preview. A reviewer backend that passes
+    preflight but raises `AuthError` once actually invoked (e.g. a
+    credential that is revoked mid-run) must still refuse by name, not
+    crash."""
+    repo, _bare = _make_repo_with_origin(tmp_path)
+    _git(repo, "checkout", "-b", "feature")
+    (repo / "b.txt").write_text("change\n")
+    _git(repo, "add", "b.txt")
+    _git(repo, "commit", "-m", "feature commit")
+
+    _ok_credential(monkeypatch)
+
+    class _RevokedMidRunReviewer:
+        @classmethod
+        def from_config(cls, data, **kw):
+            return cls()
+
+        async def review(self, *a, **kw):
+            raise AuthError("credential revoked mid-run")
+
+    monkeypatch.setattr(oneshot, "AdversarialReviewer", _RevokedMidRunReviewer)
+
+    import asyncio
+    with pytest.raises(GateUnavailable, match="reviewer backend became unusable"):
         asyncio.run(run_gate(repo))
 
 

@@ -50,8 +50,8 @@ This plugin ships two agent skills:
 
 | Skill | What it does | What it compares | Needs |
 |---|---|---|---|
-| [`file-a-task`](skills/file-a-task/SKILL.md) | Files work into no_human (`task_add`) and checks on it (`task_status`) so no_human plans, codes, tests, and opens a pull request for it. | N/A — hands the work off entirely. | Your running no_human **server** (`nh start`) and its database. |
-| [`review-this-branch`](skills/review-this-branch/SKILL.md) | Runs `nh gate` — the fresh-session adversarial reviewer plus the tamper guard — over the current branch or a GitHub pull request, and relays the Markdown pass/fail checklist with file:line citations. | The working tree branch against its **merge base** with `origin`'s default branch, or a PR's head against its merge base. | **Your own Claude credential** (`claude setup-token`) — the same one every other `nh` command uses. No server, no database, no onboarding: it runs once and exits. |
+| [`file-a-task`](skills/file-a-task/SKILL.md) | Files work into no_human (`task_add`) and checks on it (`task_status`) so no_human plans, codes, tests, and opens a pull request for it. | N/A: hands the work off entirely. | Your running no_human **server** (`nh start`) and its database. |
+| [`review-this-branch`](skills/review-this-branch/SKILL.md) | Runs `nh gate`, the fresh-session adversarial reviewer plus the tamper guard, over the current branch or a GitHub pull request, and relays the Markdown pass/fail checklist with file:line citations. | The working tree branch against its **merge base** with `origin`'s default branch, or a PR's head against its merge base. | **Your own Claude credential** (`claude setup-token`), the same one every other `nh` command uses. No server, no database, no onboarding: it runs once and exits. |
 
 As both say too: no_human opens the pull request and stops — merge is always
 the human's action, and `review-this-branch` only ever reads and reports.

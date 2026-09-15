@@ -74,9 +74,13 @@ counts. Do not summarize away the citations or the counts.
 edits a file in your checkout, and it must never be followed by a commit, a
 push, an approval, or a merge of the pull request on the agent's behalf.**
 `nh gate` itself only runs read-only git plumbing against your checkout:
-`rev-parse`, `merge-base`, `diff`, `status --porcelain`, `config --get
-remote.origin.url` (to check a `--pr` URL names your own repo), and, in PR
-mode, one additive `git fetch` of the PR's ref. It also uses the tamper
+`rev-parse`, `merge-base`, `diff`, `status --porcelain`, `symbolic-ref`
+(reads the locally recorded default branch; never a network call), `config
+--get remote.origin.url` (to check a `--pr` URL names your own repo), and,
+in PR mode, one additive `git fetch` of the PR's ref. Every invocation,
+default and `--pr` alike, also makes one local `git clone --local --shared`
+of your own checkout into a throwaway temp directory (see below) and a
+`git checkout` inside that temp directory only. It also uses the tamper
 guard's own read-only calls (`ls-tree`, `show`) and a read-only reviewer
 backend. This list describes what the current implementation does, not a
 promise that it will never grow; it never becomes a write.
