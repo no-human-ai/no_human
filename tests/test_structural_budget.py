@@ -2176,7 +2176,19 @@ FROZEN_FILE_LINES = {
     # also returns 'pr_base_remeasured'/'pr_base_undetermined' through it, so
     # the claim was stale. Reworded to describe the shape instead of
     # enumerating a set the code no longer honors. Measured with `scan_tree`.
-    "blockers/wake.py": 3183,
+    # 3183 -> 3210 (+27): `_reverify_base_locally`'s STALE-path
+    # `fetch_conflict_refs` call was not charged against the shared
+    # per-tick `base_fetch_budget` (review finding on this feature) -- a
+    # slow network could blow the STALE branch's own fetch-and-retry past
+    # the poll interval, uncounted, on every parked stale PR. Fixed by
+    # threading an optional `timeout` keyword through `fetch_conflict_refs`
+    # (mirroring `delivered_base.fetch_base_ref`'s existing seam) down to
+    # `_reverify_base_locally`, and by having `_check_base_stale` check the
+    # remaining budget before calling it, time the call, and charge the
+    # elapsed wall time back to `_base_fetch_spent` -- the same discipline
+    # already applied to the `measure()` fetch immediately above it.
+    # Measured on this tree with `scan_tree`.
+    "blockers/wake.py": 3210,
     # +91: `_SCAN_WRAPPER_NAMES` + `_peel_scan_wrappers` — peels
     # timeout/xargs/nice/stdbuf (and siblings) for the scan-severity check
     # only, so a wrapped `find … -delete` in a denied compound classifies

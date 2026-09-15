@@ -2438,6 +2438,7 @@ class WakeWatcher:
 
     async def _reverify_base_locally(
         self, task: Task, measure_base: str | None, branch_name: str | None,
+        *, fetch_timeout: float | None = None,
     ) -> tuple[set[str] | None, str]:
         """`_check_base_stale`'s STALE branch, split out to keep that
         function under the file's function-size budget: re-run
@@ -2448,6 +2449,13 @@ class WakeWatcher:
         ``(conflict_paths, local_check_error)``; ``conflict_paths is None``
         means the question could not be asked at all even after retrying,
         and `local_check_error` is always populated in that case.
+
+        ``fetch_timeout`` bounds the ONE network call this function can make
+        (the fetch-and-retry's `fetch_conflict_refs`) — the caller charges
+        this call's wall time against the shared per-tick `base_fetch_budget`
+        (see `_check_base_stale`), so this must never inherit `_git_rc`'s
+        fixed 120s ceiling: a still-uncapped retry here is exactly how a
+        single stale PR could blow past `wake_poll_interval` on its own.
         """
         from ..vcs.derived_conflict import conflicting_paths, fetch_conflict_refs
 
@@ -2474,7 +2482,8 @@ class WakeWatcher:
                         "(unresolvable ref?)")
                 try:
                     fetched = await fetch_conflict_refs(
-                        task.repo_path, measure_base, branch_name)
+                        task.repo_path, measure_base, branch_name,
+                        timeout=fetch_timeout)
                 except Exception as fexc:  # noqa: BLE001 — best-effort precondition
                     fetched = False
                     log.warning(
@@ -2695,8 +2704,30 @@ class WakeWatcher:
         # real conflict" from "could not even ask". A real conflict at the
         # new tip is left for `_check_pr_conflict`'s own ladder, never
         # handled here (see the docstring above).
-        conflict_paths, local_check_error = await self._reverify_base_locally(
-            task, measure_base, branch_name)
+        #
+        # This re-verification can itself fetch (`fetch_conflict_refs`, on
+        # the fetch-and-retry path) — the SAME shared per-tick
+        # `base_fetch_budget` `measure()` was just charged against above,
+        # checked and charged again here. Without this, a stale PR's local
+        # re-verification would inherit `_git_rc`'s fixed 120s ceiling
+        # uncharged, and a whole tick's worth of parked stale PRs could each
+        # spend up to 120s beyond the budget already tracked for `measure()`
+        # — exactly the unbounded network cost `base_fetch_budget` exists to
+        # prevent (see the docstring above).
+        remaining = self.base_fetch_budget.total_seconds() - self._base_fetch_spent
+        if remaining <= 0:
+            # Budget already spent this tick — defer local re-verification
+            # to a later tick rather than risk this PR alone pushing the
+            # sweep past `wake_poll_interval`. Nothing is written, so this
+            # PR is neither debounced nor lost: it is simply re-tried once
+            # the budget resets (see `tick()`).
+            return None
+        started = time.monotonic()
+        try:
+            conflict_paths, local_check_error = await self._reverify_base_locally(
+                task, measure_base, branch_name, fetch_timeout=min(remaining, 15.0))
+        finally:
+            self._base_fetch_spent += time.monotonic() - started
 
         if await self._is_terminal(task):
             return None

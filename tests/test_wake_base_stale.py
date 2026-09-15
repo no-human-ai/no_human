@@ -327,9 +327,9 @@ async def test_stale_pr_recovers_after_a_flaky_first_enumeration(
             raise RuntimeError("bad object main")
         return await real_conflicting_paths(repo_path, base_tip, branch_arg)
 
-    async def spying_fetch(repo_path, base, branch_arg):
+    async def spying_fetch(repo_path, base, branch_arg, *, timeout=None):
         fetch_calls.append((repo_path, base, branch_arg))
-        return await real_fetch(repo_path, base, branch_arg)
+        return await real_fetch(repo_path, base, branch_arg, timeout=timeout)
 
     monkeypatch.setattr(dc, "conflicting_paths", flaky)
     monkeypatch.setattr(dc, "fetch_conflict_refs", spying_fetch)

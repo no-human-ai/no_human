@@ -104,6 +104,68 @@ async def test_the_per_cycle_base_fetch_budget_bounds_a_slow_network(
         f"time across the parked PRs it swept")
 
 
+async def test_the_stale_reverify_fetch_is_charged_against_the_shared_budget(
+        store, tmp_path, monkeypatch):
+    """`_check_base_stale`'s STALE branch calls `_reverify_base_locally`,
+    which — whenever `conflicting_paths` cannot resolve a ref — itself
+    fetches via `fetch_conflict_refs` on its fetch-and-retry path. That
+    fetch must be charged against the SAME shared per-tick
+    `base_fetch_budget` the `measure()` fetch above it is charged against
+    (see test 1 above): otherwise a stale PR's local re-verification
+    inherits `_git_rc`'s fixed 120s ceiling uncounted, and a tick with
+    several parked stale PRs could each spend well beyond the configured
+    budget before the sweep even reaches the dedup guard.
+
+    Forces every `conflicting_paths` call to return `None` (so
+    `_reverify_base_locally` always takes its fetch-and-retry path) and
+    makes `fetch_conflict_refs` artificially slow (0.3s) while counting
+    calls. With a budget that can only ever afford ONE such slow fetch
+    (plus the two fast, local `measure()` fetches), a SECOND stale PR's
+    re-verification must be skipped entirely — the fetch never attempted —
+    rather than inheriting an unbounded, uncharged allowance."""
+    from no_human.vcs import derived_conflict as dc
+
+    work = _repo(tmp_path)
+    lander = _clone(tmp_path, work, "lander")
+    recorded = _trunk_sha(work)
+    branch_a, branch_b = "feature-budget-a", "feature-budget-b"
+    _make_branch(work, branch_a)
+    _make_branch(work, branch_b)
+    _land(lander, "another.py")  # trunk moves past `recorded` for both PRs
+
+    fetch_calls: list[float | None] = []
+
+    async def _never_resolves(repo_path, base_tip, branch_arg):
+        return None
+
+    async def _slow_fetch(repo_path, base, branch_arg, *, timeout=None):
+        fetch_calls.append(timeout)
+        time.sleep(0.3)  # simulates a slow network hop
+        return True
+
+    monkeypatch.setattr(dc, "conflicting_paths", _never_resolves)
+    monkeypatch.setattr(dc, "fetch_conflict_refs", _slow_fetch)
+
+    t_a = await _pr_task(store, work, base_sha=recorded, pr_branch=branch_a,
+                          url="https://x/pull/budget-a")
+    t_b = await _pr_task(store, work, base_sha=recorded, pr_branch=branch_b,
+                          url="https://x/pull/budget-b")
+    w = _watcher(store, mergeable="MERGEABLE", merge_state="CLEAN")
+    # Enough for both (fast, local) `measure()` fetches plus exactly one
+    # slow reverify fetch — never two.
+    w.base_fetch_budget = timedelta(seconds=0.2)
+
+    await w._check_base_stale(t_a, "https://x/pull/budget-a",
+                               {"mergeable": "MERGEABLE"})
+    await w._check_base_stale(t_b, "https://x/pull/budget-b",
+                               {"mergeable": "MERGEABLE"})
+
+    assert len(fetch_calls) == 1, (
+        f"expected the shared per-tick budget to skip the second stale "
+        f"PR's reverify fetch entirely, but {len(fetch_calls)} slow "
+        f"fetches ran")
+
+
 # ---------------------------------------------------------------------------
 # 2. no source text claims an amendment this code does not perform
 # ---------------------------------------------------------------------------
