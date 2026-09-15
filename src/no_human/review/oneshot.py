@@ -90,8 +90,14 @@ _PR_URL_RE = re.compile(
 )
 
 # `origin`'s remote URL, in either the https or the ssh form git accepts.
+# The host is anchored to either the very start of the URL or right after a
+# `/` or `@` — otherwise `github\.com` matches as a bare substring, so
+# `https://evilgithub.com/acme/widgets` (host `evilgithub.com`, not GitHub at
+# all) would read as owner `acme` repo `widgets` on GitHub, and a `--pr` URL
+# could be laundered through a lookalike origin as "this checkout's own
+# repository".
 _ORIGIN_URL_RE = re.compile(
-    r"github\.com[:/](?P<owner>[^/]+)/(?P<repo>[^/]+?)(?:\.git)?/?$"
+    r"(?:^|[/@])github\.com[:/](?P<owner>[^/]+)/(?P<repo>[^/]+?)(?:\.git)?/?$"
 )
 
 
@@ -487,6 +493,17 @@ def _materialized_head(repo_path: Path, sha: str):
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
+def _format_tamper(tamper: "tamper_guard.TamperReport") -> str:
+    """One-line tamper guard summary (`TamperReport.summary` plus its
+    `reasons`), used by the `GateUnavailable` messages that surface an
+    already-computed tamper result rather than drop it when a later
+    precondition fails."""
+    summary = tamper.summary
+    if tamper.reasons:
+        summary += "; " + "; ".join(tamper.reasons)
+    return summary
+
+
 async def run_gate(
     repo_path: Path,
     *,
@@ -516,7 +533,11 @@ async def run_gate(
     # other named precondition here, not a crash that should escape as an
     # unhandled exit 1.
     try:
-        config = load_config()
+        # `create_if_missing=False`: a read-only gate run must never have the
+        # side effect of materializing `~/.no_human/config.yaml` on a machine
+        # that has never run `nh init` — see `db.py`'s identical
+        # `create_if_missing=False` comment on its own `load_config` call.
+        config = load_config(create_if_missing=False)
         _check_credential(config)
     except (AuthError, ConfigError, ValueError, yaml.YAMLError) as exc:
         raise GateUnavailable(f"cannot load the no_human config: {exc}") from exc
@@ -568,8 +589,17 @@ async def run_gate(
     # `_DIFF_CAP` chars (reviewer.py:2537) with no signal back to the
     # caller — a diff bigger than the cap would otherwise get a fraction of
     # itself reviewed and could still print a bare PASS on that partial
-    # view. Detect it here and make sure a truncated review can never pass.
-    truncated = len(diff) > _DIFF_CAP
+    # view. Refuse by name BEFORE the tamper guard runs or the reviewer is
+    # constructed (and billed) at all: a gate that cannot see the whole diff
+    # has not really reviewed anything, so this must be exit 2 ("could not
+    # run"), never exit 1 with an empty or partial checklist.
+    if len(diff) > _DIFF_CAP:
+        raise GateUnavailable(
+            f"the diff is {len(diff):,} characters, over the single-turn "
+            f"review cap of {_DIFF_CAP:,} characters — refusing rather than "
+            "construct and bill a reviewer that would only see a truncated "
+            "prefix of the change"
+        )
 
     try:
         tamper = tamper_check_between(
@@ -588,8 +618,13 @@ async def run_gate(
     except (AuthError, BackendUnavailable) as exc:
         # Construction itself can fail preflight (e.g. a reviewer pinned to
         # a backend whose credential vanished between `_check_credential`'s
-        # preview and now) — that is still "cannot run", not a crash.
-        raise GateUnavailable(f"could not construct the reviewer: {exc}") from exc
+        # preview and now) — that is still "cannot run", not a crash. The
+        # tamper guard already ran above; surface it rather than drop it, so
+        # a real tamper finding is not silently lost behind this refusal.
+        raise GateUnavailable(
+            f"could not construct the reviewer: {exc} "
+            f"(tamper guard already ran: {_format_tamper(tamper)})"
+        ) from exc
 
     try:
         # The reviewer's citation check reads `review_repo_path` straight off
@@ -610,14 +645,43 @@ async def run_gate(
         # The reviewer itself reaches "no verdict" and escalates rather than
         # guessing (reviewer.py:2611) — that means the gate did not run, the
         # same shape as every other unmet precondition here.
-        raise GateUnavailable(f"the reviewer could not reach a verdict: {exc}") from exc
+        raise GateUnavailable(
+            f"the reviewer could not reach a verdict: {exc} "
+            f"(tamper guard already ran: {_format_tamper(tamper)})"
+        ) from exc
     except (AuthError, BackendUnavailable) as exc:
         # A reviewer backend whose credential/CLI vanished between
         # `_check_credential`'s preview and this call (e.g. a codex-pinned
         # reviewer whose CLI disappeared) — still "cannot run", not a crash.
-        raise GateUnavailable(f"the reviewer backend became unusable: {exc}") from exc
+        raise GateUnavailable(
+            f"the reviewer backend became unusable: {exc} "
+            f"(tamper guard already ran: {_format_tamper(tamper)})"
+        ) from exc
 
-    passed = decision.passed and not tamper.tampered and not truncated
+    if decision.transport_error:
+        # A timeout or transport failure inside the single-turn reviewer
+        # (reviewer.py's `_fast_review`) comes back as an ordinary-looking
+        # FAILING decision — an unclassified "timeout" checklist item that
+        # `blocking_items`/`_refute_candidates` cannot tell apart from a real
+        # finding (it does not match `_reached_no_verdict`'s "structured
+        # output present" sentinel, the only other "gate did not really run"
+        # signal `reviewer.py` exposes). Left unchecked, that is a review
+        # that never happened reading as a real FAIL — the same class of bug
+        # this module exists to prevent for every other unmet precondition.
+        # `reviewer.py` is out of scope for this change, so the refute pass
+        # it may already have run against the bogus "timeout" item cannot be
+        # suppressed from here; this only fixes the verdict that reaches the
+        # caller.
+        if decision.checklist:
+            reason = decision.checklist[0].evidence or decision.checklist[0].label
+        else:
+            reason = "no checklist recorded"
+        raise GateUnavailable(
+            f"the reviewer did not complete (transport error / timeout): "
+            f"{reason} (tamper guard already ran: {_format_tamper(tamper)})"
+        )
+
+    passed = decision.passed and not tamper.tampered
 
     role_backend = effective_role_backend(config.data, "reviewer")
 
@@ -630,7 +694,7 @@ async def run_gate(
         tamper=tamper,
         decision=decision,
         uncommitted=uncommitted,
-        truncated=truncated,
+        truncated=False,
         reviewer_backend=role_backend["backend"],
         reviewer_model=role_backend["model"],
         reviewer_backend_is_default=role_backend["is_default"],

@@ -122,7 +122,7 @@ class _FakeConfig:
 
 def _ok_credential(monkeypatch):
     monkeypatch.setattr(oneshot, "find_claude_cli", lambda: "/usr/bin/claude")
-    monkeypatch.setattr(oneshot, "load_config", lambda: _FakeConfig())
+    monkeypatch.setattr(oneshot, "load_config", lambda **kw: _FakeConfig())
     monkeypatch.setattr(oneshot, "assert_subscription_mode", lambda **kw: None)
 
 
@@ -311,7 +311,7 @@ def _repo_fingerprint(repo):
 # `_origin_owner_repo`/`_resolve_pr_mode`, `GitRepo.current_branch`/
 # `head_sha`/`default_branch`, and `runner.py`'s `_git_show`/`_git_files`).
 # `clone`/`checkout` are deliberately absent here: they exist only inside
-# `_materialized_pr_head`'s throwaway temp clone and are checked separately.
+# `_materialized_head`'s throwaway temp clone and are checked separately.
 _READ_ONLY_GIT_VERBS = {
     "rev-parse", "merge-base", "diff", "status", "config", "fetch",
     "symbolic-ref", "remote", "ls-tree", "show",
@@ -455,7 +455,7 @@ def test_the_gate_never_shells_out_to_a_write_command(tmp_path, monkeypatch):
 def test_no_credential_refuses_and_names_what_is_missing(tmp_path, monkeypatch):
     repo, _bare = _make_repo_with_origin(tmp_path)
     monkeypatch.setattr(oneshot, "find_claude_cli", lambda: "/usr/bin/claude")
-    monkeypatch.setattr(oneshot, "load_config", lambda: _FakeConfig())
+    monkeypatch.setattr(oneshot, "load_config", lambda **kw: _FakeConfig())
 
     def _raise(**kw):
         raise MissingCredentialError("no subscription token on file")
@@ -479,7 +479,7 @@ def test_a_credential_problem_that_is_not_a_missing_credential_is_named_as_such(
     never "no credential"."""
     repo, _bare = _make_repo_with_origin(tmp_path)
     monkeypatch.setattr(oneshot, "find_claude_cli", lambda: "/usr/bin/claude")
-    monkeypatch.setattr(oneshot, "load_config", lambda: _FakeConfig())
+    monkeypatch.setattr(oneshot, "load_config", lambda **kw: _FakeConfig())
 
     def _raise(**kw):
         raise AuthError("ANTHROPIC_API_KEY is set but auth_mode is subscription")
@@ -672,7 +672,7 @@ def test_pr_mode_never_shells_out_to_a_write_command_against_the_users_checkout(
 ):
     """Same fail-closed allowlist as the branch-mode version above, applied
     to PR mode: `clone`/`checkout` are only permitted against the throwaway
-    PR-head clone (see `_materialized_pr_head`), never against `real_repo`."""
+    PR-head clone (see `_materialized_head`), never against `real_repo`."""
     repo, bare = _make_repo_with_github_origin(tmp_path)
     pr_src = _push_pr_ref(bare, tmp_path / "pr_src3", 13)
     (pr_src / "d.txt").write_text("pr change\n")
@@ -938,11 +938,16 @@ def test_run_gate_actually_discovers_real_uncommitted_files(tmp_path, monkeypatc
 # 13. a diff bigger than the reviewer's single-turn cap can never pass        #
 # --------------------------------------------------------------------------- #
 
-def test_a_diff_over_the_review_cap_never_passes(tmp_path, monkeypatch):
+def test_a_diff_over_the_review_cap_refuses_before_constructing_the_reviewer(
+    tmp_path, monkeypatch,
+):
     """`AdversarialReviewer.review` silently truncates `diff_override` past
     `_DIFF_CAP` chars with no signal back to the caller (reviewer.py:2537) —
     so without this guard, a diff bigger than the cap would get a fraction
-    of itself reviewed and could still come back as a bare PASS."""
+    of itself reviewed and could still come back as a bare PASS. The gate
+    must refuse by name (exit 2, `GateUnavailable`) BEFORE constructing (and
+    billing) a reviewer at all — never construct one, run it on a truncated
+    prefix, and only then report FAIL with an empty checklist."""
     repo, _bare = _make_repo_with_origin(tmp_path)
     _git(repo, "checkout", "-b", "feature")
     # One line per byte-ish, comfortably over `_DIFF_CAP` (60_000 chars).
@@ -951,12 +956,27 @@ def test_a_diff_over_the_review_cap_never_passes(tmp_path, monkeypatch):
     _git(repo, "commit", "-m", "huge change")
 
     _ok_credential(monkeypatch)
-    monkeypatch.setattr(oneshot, "AdversarialReviewer", _stub_reviewer(_PASSING_DECISION))
+    constructed = []
+
+    class _NeverConstructed:
+        @classmethod
+        def from_config(cls, data, **kw):
+            constructed.append(True)
+            return cls()
+
+        async def review(self, task, *, repo_path, diff_override, before_ref, **kw):
+            constructed.append(True)
+            return _PASSING_DECISION
+
+    monkeypatch.setattr(oneshot, "AdversarialReviewer", _NeverConstructed)
 
     import asyncio
-    result = asyncio.run(run_gate(repo))
-    assert result.truncated is True
-    assert result.passed is False, "a truncated review must never be a bare pass"
+    with pytest.raises(GateUnavailable, match=r"60,000|_DIFF_CAP|characters"):
+        asyncio.run(run_gate(repo))
+    assert not constructed, (
+        "the reviewer must never be constructed or invoked once the diff "
+        "exceeds the single-turn review cap"
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -1246,7 +1266,7 @@ def test_check_credential_consults_the_reviewers_role_backend(tmp_path, monkeypa
         def get(self, key, default=None):
             return self.data.get(key, default)
 
-    monkeypatch.setattr(oneshot, "load_config", lambda: _CodexConfig())
+    monkeypatch.setattr(oneshot, "load_config", lambda **kw: _CodexConfig())
     # Poison the claude-only path: if `_check_credential` still hardcodes
     # it, this raises "the claude CLI is not on PATH" instead of the
     # codex-specific refusal below, proving the wrong check ran.
@@ -1282,7 +1302,7 @@ def test_run_gate_populates_and_discloses_a_non_default_reviewer_backend(
         def get(self, key, default=None):
             return self.data.get(key, default)
 
-    monkeypatch.setattr(oneshot, "load_config", lambda: _CodexConfig())
+    monkeypatch.setattr(oneshot, "load_config", lambda **kw: _CodexConfig())
     monkeypatch.setattr(oneshot, "assert_task_backend_usable", lambda *a, **kw: None)
     monkeypatch.setattr(oneshot, "AdversarialReviewer", _stub_reviewer(_PASSING_DECISION))
 
@@ -1320,7 +1340,7 @@ def test_rendered_markdown_always_discloses_the_reviewer_backend_even_default():
 
 def test_claude_cli_not_on_path_refuses_by_name(tmp_path, monkeypatch):
     repo, _bare = _make_repo_with_origin(tmp_path)
-    monkeypatch.setattr(oneshot, "load_config", lambda: _FakeConfig())
+    monkeypatch.setattr(oneshot, "load_config", lambda **kw: _FakeConfig())
     monkeypatch.setattr(oneshot, "find_claude_cli", lambda: None)
 
     import asyncio
@@ -1678,3 +1698,186 @@ def test_branch_mode_names_a_detached_head_accurately(tmp_path, monkeypatch):
     result = asyncio.run(run_gate(repo))
     assert "working tree in detached HEAD @" in result.comparison
     assert "working tree branch `HEAD`" not in result.comparison
+
+
+# --------------------------------------------------------------------------- #
+# 23. BLOCKING 1(a) — a reviewer timeout/transport error must refuse,        #
+#     never read as a genuine FAIL verdict                                   #
+# --------------------------------------------------------------------------- #
+
+def test_a_transport_error_decision_refuses_instead_of_reporting_a_fail(
+    tmp_path, monkeypatch,
+):
+    """`reviewer.py`'s `_fast_review` sets `ReviewDecision.transport_error =
+    True` on both a timeout (an otherwise-ordinary-looking FAILING decision
+    with an unclassified `"timeout"` checklist item) and an underlying
+    transport `is_error`. Either way the gate never reached a real verdict —
+    without this guard that "timeout" item reads exactly like a real
+    blocking finding to `render_markdown`/the CLI's exit code, so a review
+    that never ran would print a confident FAIL (exit 1) instead of refusing
+    (exit 2)."""
+    repo, _bare = _make_repo_with_origin(tmp_path)
+    _git(repo, "checkout", "-b", "feature")
+    (repo / "b.txt").write_text("change\n")
+    _git(repo, "add", "b.txt")
+    _git(repo, "commit", "-m", "feature commit")
+
+    _ok_credential(monkeypatch)
+    timeout_decision = ReviewDecision(
+        passed=False,
+        checklist=[
+            ChecklistItem(label="timeout", passed=False,
+                          evidence="reviewer timed out after 300s — fail closed"),
+        ],
+        transport_error=True,
+    )
+    monkeypatch.setattr(oneshot, "AdversarialReviewer", _stub_reviewer(timeout_decision))
+
+    import asyncio
+    with pytest.raises(GateUnavailable, match="transport error"):
+        asyncio.run(run_gate(repo))
+
+
+def test_a_transport_error_decision_exits_2_not_1_from_the_cli(tmp_path, monkeypatch):
+    """Same failure mode as above, exercised through the `nh gate` CLI verb
+    directly: a transport-error decision must exit 2 (refused), never 1
+    (which an agent or CI gate would read as "reviewed and found blocking
+    issues" instead of "did not actually review anything")."""
+    repo, _bare = _make_repo_with_origin(tmp_path)
+
+    async def _raise(repo_path, **kw):
+        raise GateUnavailable(
+            "the reviewer did not complete (transport error / timeout): "
+            "reviewer timed out after 300s — fail closed"
+        )
+
+    monkeypatch.setattr(oneshot, "run_gate", _raise)
+    result = CliRunner().invoke(gate, ["--repo", str(repo)])
+    assert result.exit_code == 2, result.output
+    assert "cannot run the gate" in result.output
+    assert "FAIL" not in result.output
+    assert "PASS" not in result.output
+
+
+# --------------------------------------------------------------------------- #
+# 24. BLOCKING 2 — `load_config(create_if_missing=False)` must never          #
+#     materialize `~/.no_human` on a machine that has never run `nh init`    #
+# --------------------------------------------------------------------------- #
+
+def test_load_config_with_create_if_missing_false_does_not_create_the_directory(
+    tmp_path, monkeypatch,
+):
+    """Root-cause regression for the false "does not need ~/.no_human at
+    all" claim: `load_config`'s directory-privatization call used to run
+    unconditionally (`ensure_private_dir(NO_HUMAN_HOME)`), regardless of
+    `create_if_missing` — so a read-only call, exactly what `run_gate` makes,
+    still materialized `~/.no_human` on a fresh machine. `db.py`,
+    `cli/commands.py`'s update-check, and `intake/mcp_bridge.py` all already
+    pass `create_if_missing=False` on the same documented assumption that it
+    has no side effect; this pins that assumption directly against
+    `load_config`, independent of the gate."""
+    from no_human import config as config_mod
+
+    fresh_home = tmp_path / "fresh_home"
+    fresh_home.mkdir()
+    monkeypatch.setattr(config_mod, "NO_HUMAN_HOME", fresh_home / ".no_human")
+    cfg_path = fresh_home / ".no_human" / "config.yaml"
+    monkeypatch.setattr(config_mod.load_config, "__defaults__", (cfg_path,))
+
+    assert not (fresh_home / ".no_human").exists()
+    config_mod.load_config(create_if_missing=False)
+    assert not (fresh_home / ".no_human").exists(), (
+        "load_config(create_if_missing=False) must not create ~/.no_human "
+        "on a machine that has never run `nh init`"
+    )
+
+
+def test_run_gate_does_not_materialize_no_human_home_on_a_fresh_machine(
+    tmp_path, monkeypatch,
+):
+    """End-to-end version of the above through `run_gate` itself: on a
+    machine that has never run `nh init`, running the gate must leave
+    `~/.no_human` absent — not create an empty `config.yaml` as a side
+    effect of a read-only config lookup."""
+    from no_human import config as config_mod
+
+    fresh_home = tmp_path / "fresh_home"
+    fresh_home.mkdir()
+    monkeypatch.setattr(config_mod, "NO_HUMAN_HOME", fresh_home / ".no_human")
+    cfg_path = fresh_home / ".no_human" / "config.yaml"
+    monkeypatch.setattr(config_mod.load_config, "__defaults__", (cfg_path,))
+    monkeypatch.setattr(oneshot, "load_config", config_mod.load_config)
+
+    repo, _bare = _make_repo_with_origin(tmp_path)
+    _git(repo, "checkout", "-b", "feature")
+    (repo / "b.txt").write_text("change\n")
+    _git(repo, "add", "b.txt")
+    _git(repo, "commit", "-m", "feature commit")
+
+    monkeypatch.setattr(oneshot, "find_claude_cli", lambda: "/usr/bin/claude")
+    monkeypatch.setattr(oneshot, "assert_subscription_mode", lambda **kw: None)
+    monkeypatch.setattr(oneshot, "AdversarialReviewer", _stub_reviewer(_PASSING_DECISION))
+
+    import asyncio
+    assert not (fresh_home / ".no_human").exists()
+    result = asyncio.run(run_gate(repo))
+    assert result.passed is True
+    assert not (fresh_home / ".no_human").exists(), (
+        "run_gate must not materialize ~/.no_human on a fresh machine"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# 25. BLOCKING 3 — the refusal message must never fold mid-token at a        #
+#     narrow console width                                                   #
+# --------------------------------------------------------------------------- #
+
+def test_the_refusal_message_prints_unbroken_at_a_narrow_console_width(
+    tmp_path, monkeypatch,
+):
+    """`console.print` without `soft_wrap=True` wraps a long unbroken token
+    (e.g. a filesystem path in a refusal message) mid-character at a narrow
+    terminal width, scattering it across several lines. SKILL.md tells the
+    agent to relay the refusal message back to the human verbatim — a
+    silently-folded path would be relayed broken. Pin the console to a
+    narrow width and assert a long token in the refusal message survives as
+    one contiguous run of text in the output."""
+    import no_human.cli.commands as cmd_mod
+
+    monkeypatch.setattr(cmd_mod.console, "_width", 20)
+
+    long_token = "a" * 5 + "/" + "b" * 60  # much wider than the pinned console
+    message = f"no credential: not found at {long_token}"
+
+    async def _raise(repo_path, **kw):
+        raise GateUnavailable(message)
+
+    monkeypatch.setattr(oneshot, "run_gate", _raise)
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    result = CliRunner().invoke(gate, ["--repo", str(repo)])
+
+    assert result.exit_code == 2
+    assert long_token in result.output, (
+        "the long token folded across lines instead of printing unbroken "
+        f"(soft_wrap missing?):\n{result.output!r}"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# 26. non-blocking — origin URL host must be anchored, not substring-matched #
+# --------------------------------------------------------------------------- #
+
+def test_a_lookalike_origin_host_is_not_treated_as_github(tmp_path, monkeypatch):
+    """`evilgithub.com/acme/widgets` contains `github.com` as a bare
+    substring — an unanchored regex would misread that host as GitHub
+    itself (owner `acme`, repo `widgets`), letting a `--pr` URL be laundered
+    through a lookalike origin as "this checkout's own repository"."""
+    repo, _bare = _make_repo_with_origin(tmp_path)
+    _git(repo, "remote", "set-url", "origin", "https://evilgithub.com/acme/widgets")
+
+    assert oneshot._origin_owner_repo(repo) is None, (
+        "a lookalike host containing github.com as a substring must not "
+        "resolve to a GitHub (owner, repo) pair"
+    )

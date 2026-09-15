@@ -5998,8 +5998,12 @@ def gate(repo, pr_url, base, title, description):
     Runs the fresh-session adversarial reviewer and the tamper guard over the
     working tree branch (against its merge base) or, with --pr, a GitHub pull
     request — and prints a Markdown pass/fail checklist with file:line
-    citations. Reads and reports only: never commits, pushes, merges, or
-    edits a file. Requires the user's own Claude credential
+    citations. Never commits, pushes, merges, or edits a tracked file. The
+    write surface is otherwise limited to: reading (never creating)
+    ~/.no_human/config.yaml if one already exists, and, in --pr mode only, a
+    single `git fetch` of the pull request's ref into THIS checkout (writes
+    `FETCH_HEAD` and the fetched objects, but creates no branch and moves no
+    ref you own). Requires the user's own Claude credential
     (`claude setup-token`), exactly as every other `nh` command does.
     """
     from ..review.oneshot import GateUnavailable, render_markdown, run_gate
@@ -6011,7 +6015,8 @@ def gate(repo, pr_url, base, title, description):
                 title=title, description=description,
             )
         except GateUnavailable as exc:
-            console.print(f"[bold red]cannot run the gate:[/] {escape(str(exc))}")
+            console.print(f"[bold red]cannot run the gate:[/] {escape(str(exc))}",
+                          soft_wrap=True)
             sys.exit(2)
         console.print(escape(render_markdown(result)), soft_wrap=True)
         sys.exit(0 if result.passed else 1)

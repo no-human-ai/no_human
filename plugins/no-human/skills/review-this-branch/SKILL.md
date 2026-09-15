@@ -45,10 +45,11 @@ Optional flags: `--repo <path>` to point at a checkout other than the
 current directory, `--base <ref>` to override the comparison base.
 
 The comparison actually used, for example `working tree branch ... against
-merge base with origin/<default>` or `pull request #N head ... against merge
-base with origin/<default>`, is always printed at the top of the output. If
-the working tree has uncommitted changes, the output says so explicitly and
-those files are **not** reviewed; commit them first if they should be.
+merge base with origin/<default>` or `pull request owner/repo#N head ...
+against merge base with origin/<default>`, is always printed at the top of
+the output. If the working tree has uncommitted changes, the output says so
+explicitly and those files are **not** reviewed; commit them first if they
+should be.
 
 ## Reading the result: the exit-code contract
 
@@ -56,13 +57,18 @@ those files are **not** reviewed; commit them first if they should be.
 |---|---|
 | `0` | Gate passed: reviewer found no blocking findings **and** the tamper guard found no test-weakening. |
 | `1` | Gate failed: a blocking review finding or a tamper-guard finding (deleted/weakened tests). |
-| `2` | Gate **refused to run**. A named precondition failed (no credential, no upstream, not a git repo, PR fetch failed). |
+| `2` | Gate **refused to run** — no review verdict was reached at all. A named precondition failed: no credential, no upstream, not a git repo, PR fetch failed, the diff is over the single-turn review cap, or the reviewer timed out / hit a transport error. |
 
-**On exit `2`, never report a pass.** Relay the exact refusal message back to
-the human (it names the missing credential, missing upstream, or fetch
-failure) instead of guessing at a verdict. Only exit `0` is a pass; treat
-exit `1` and exit `2` identically as "cannot say this is fine" until the
-human has read the printed detail.
+**On exit `2`, never report a pass — and never report the reviewer's
+checklist as a fail either, since the reviewer never actually finished.**
+This includes a diff too large to review and a reviewer timeout or transport
+error: both refuse before or without a real verdict, not with a "no
+findings" pass or a "timeout" finding treated as a real blocking issue.
+Relay the exact refusal message back to the human (it names the missing
+credential, missing upstream, oversized diff, or fetch/transport failure)
+instead of guessing at a verdict. Only exit `0` is a pass; treat exit `1` and
+exit `2` identically as "cannot say this is fine" until the human has read
+the printed detail.
 
 Relay the full Markdown checklist `nh gate` prints back to the human,
 including every `file:line` citation and the tamper guard's before/after
@@ -71,24 +77,33 @@ counts. Do not summarize away the citations or the counts.
 ## Product boundary: read and report only, never write
 
 **This skill only reads and reports. It never commits, pushes, merges, or
-edits a file in your checkout, and it must never be followed by a commit, a
-push, an approval, or a merge of the pull request on the agent's behalf.**
-`nh gate` itself only runs read-only git plumbing against your checkout:
-`rev-parse`, `merge-base`, `diff`, `status --porcelain`, `symbolic-ref`
-(reads the locally recorded default branch; never a network call), `config
---get remote.origin.url` (to check a `--pr` URL names your own repo), and,
-in PR mode, one additive `git fetch` of the PR's ref. Every invocation,
-default and `--pr` alike, also makes one local `git clone --local --shared`
-of your own checkout into a throwaway temp directory (see below) and a
-`git checkout` inside that temp directory only. It also uses the tamper
-guard's own read-only calls (`ls-tree`, `show`) and a read-only reviewer
-backend. This list describes what the current implementation does, not a
-promise that it will never grow; it never becomes a write.
+edits a tracked file in your checkout, and it must never be followed by a
+commit, a push, an approval, or a merge of the pull request on the agent's
+behalf.** The exact write surface, stated in full:
 
-In both modes it also makes a throwaway local clone of your checkout in a
-temp directory, read-only against your checkout and deleted before the
-command exits, so the review reads the exact committed tree it diffed
-instead of your live working tree (which may be dirty) or, in PR mode,
-whatever branch you happen to have checked out. Merge is always the human's
-action. After running this skill, your job is to relay the checklist, not to
-act on it.
+- `~/.no_human/config.yaml` is **read if it already exists** (for reviewer
+  backend/model settings); it is never created by this skill. On a machine
+  that has never run `nh init`, `nh gate` leaves `~/.no_human` untouched —
+  there is no on-demand `~/.no_human` setup here, unlike other `nh` commands.
+- In `--pr` mode only, one additive `git fetch` of the pull request's ref
+  writes `FETCH_HEAD` and the fetched objects **into your checkout**. It
+  creates no branch and moves no ref you own.
+- Every invocation, default and `--pr` alike, also makes one local
+  `git clone --local --shared` of your own checkout into a throwaway temp
+  directory (see below) and a `git checkout` inside that temp directory
+  only — never against your own checkout.
+
+Beyond that, `nh gate` only runs read-only git plumbing against your
+checkout: `rev-parse`, `merge-base`, `diff`, `status --porcelain`,
+`symbolic-ref` (reads the locally recorded default branch; never a network
+call), and `config --get remote.origin.url` (to check a `--pr` URL names
+your own repo). It also uses the tamper guard's own read-only calls
+(`ls-tree`, `show`) and a read-only reviewer backend. This list describes
+what the current implementation does, not a promise that it will never grow;
+it never becomes a write against a tracked file.
+
+The throwaway clone exists so the review reads the exact committed tree it
+diffed instead of your live working tree (which may be dirty) or, in PR
+mode, whatever branch you happen to have checked out; it is deleted before
+the command exits. Merge is always the human's action. After running this
+skill, your job is to relay the checklist, not to act on it.
