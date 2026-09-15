@@ -1,126 +1,23 @@
 # How I verified this — full log
 
-_Harness-captured record for task `3fd594f5`, commit `d401893d3756dbf855dc580b03a55bbe74f4b514` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `3fd594f5`, commit `cca5bccad63f393b6b52da701b2f0a423fe2edb2` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ## How I verified this
-6 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
+2 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
 
 ### test
-- `uv run pytest tests/ -m repoguard -q > /tmp/gate_pytest.log 2>&1; echo "PYTEST_EXIT=$?"; tail -40 /tmp/gate_pytest.log`
-
-```
-PYTEST_EXIT=1
-    def test_every_line_citation_currently_resolves_exactly():
-        """The shipped docs are exactly anchored today, not merely within drift
-        tolerance — this is what gives `scripts/reanchor_citations.py --check`
-        something to enforce, and proves the new tolerance did not quietly
-        downgrade every legacy citation to "drifted".
-        """
-        checked = 0
-        for doc, raw, resolve_path, token in CITATION_TABLE:
-            tail = raw.split(":", 1)[1]
-            if not _LEGACY_LINE_SPEC_RE.match(tail):
-                continue  # symbol citation — not part of this guard
-            if (doc, raw) in _ABSENT_OK and not _resolve_source
-[... 1,577 of 2,716 characters omitted from the middle ...]
-https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-=========================== short test summary info ============================
-FAILED tests/test_readme_claims.py::test_doc_citations_resolve_to_the_code_they_describe[security.md:desktop/electron-builder.config.cjs:371]
-FAILED tests/test_readme_claims.py::test_every_line_citation_currently_resolves_exactly
-2 failed, 173 passed, 13 skipped, 12947 deselected, 2 warnings in 96.01s (0:01:36)
-```  
-  _excerpt - 2,704 characters of output in total_
-
-- `uv run pytest tests/ -m repoguard -q > /tmp/gate_pytest2.log 2>&1; echo "PYTEST_EXIT=$?"; tail -20 /tmp/gate_pytest2.log`
-
-```
-PYTEST_EXIT=1
-E             
-E             - exact
-E             + missing
-
-tests/test_readme_claims.py:2604: AssertionError
-=============================== warnings summary ===============================
-src/<redacted>/testing/test_layers.py:35
-  /Users/eyalgolan/.<redacted>/worktrees/3fd594f5819d466d8ba4c8ea60c4d509.51048.3876f785/src/<redacted>/testing/test_layers.py:35: PytestCollectionWarning: cannot collect test class 'TestLayer' because it has a __init__ constructor (from: tests/test_test_layers.py)
-    @dataclass
-
-src/<redacted>/testing/test_layers.py:89
-  /Users/eyalgolan/.<redacted>/worktrees/3fd594f5819d466d8ba4c8ea60c4d509.51048.3876f785/src/<redacted>/testing/t
-[... 271 of 1,410 characters omitted from the middle ...]
-rt test summary info ============================
-FAILED tests/test_readme_claims.py::test_doc_citations_resolve_to_the_code_they_describe[security.md:desktop/electron-builder.config.cjs:371]
-FAILED tests/test_readme_claims.py::test_the_citation_table_covers_every_line_citation_in_the_three_docs
-FAILED tests/test_readme_claims.py::test_every_line_citation_currently_resolves_exactly
-3 failed, 172 passed, 13 skipped, 12947 deselected, 2 warnings in 5.51s
-```  
-  _excerpt - 1,398 characters of output in total_
-
-- `uv run pytest tests/ -m repoguard -q > /tmp/gate_pytest3.log 2>&1; echo "PYTEST_EXIT=$?"; tail -15 /tmp/gate_pytest3.log`
-
-```
-PYTEST_EXIT=0
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-.....................................s.s.s.s.s.s.s.s.s.s................ [ 38%]
-...............................s..........................s............. [ 77%]
-...........................................                              [100%]
-=============================== warnings summary ===============================
-src/<redacted>/testing/test_layers.py:35
-  /Users/eyalgolan/.<redacted>/worktrees/3fd594f5819d466d8ba4c8ea60c4d509.51048.3876f785/src/<redacted>/testin
-[... 171 of 1,310 characters omitted from the middle ...]
-
-src/<redacted>/testing/test_layers.py:89
-  /Users/eyalgolan/.<redacted>/worktrees/3fd594f5819d466d8ba4c8ea60c4d509.51048.3876f785/src/<redacted>/testing/test_layers.py:89: PytestCollectionWarning: cannot collect test class 'TestPlan' because it has a __init__ constructor (from: tests/test_test_layers.py)
-    @dataclass
-
--- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-175 passed, 13 skipped, 12947 deselected, 2 warnings in 5.45s
-```  
-  _excerpt - 1,296 characters of output in total_
-
-- `{ { [ -e desktop/node_modules ] || ln -sfn "$(dirname "$(git rev-parse --git-common-dir)")/desktop/node_modules" desktop/node_modules; } && node --test desktop/*.test.mjs && uv run pytest tests/ -m repoguard -q; } > /tmp/final_gate.log 2>&1; echo "EXIT=$?"; tail -30 /tmp/final_gate.log`
-
-```
-EXIT=0
-  ...
-# Subtest: a listener that throws cannot take the updater down
-ok 472 - a listener that throws cannot take the updater down
-  ---
-  duration_ms: 0.136958
-  ...
-1..472
-# tests 472
-# suites 0
-# pass 471
-# fail 0
-# cancelled 0
-# skipped 1
-# todo 0
-# duration_ms 94257.037125
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-.....................................s.s.s.s.s.s.s.s.s.s................ [ 38%]
-...............................s..........................s............. [ 77%]
-.........................................
-[... 442 of 1,581 characters omitted from the middle ...]
-
-src/<redacted>/testing/test_layers.py:89
-  /Users/eyalgolan/.<redacted>/worktrees/3fd594f5819d466d8ba4c8ea60c4d509.51048.3876f785/src/<redacted>/testing/test_layers.py:89: PytestCollectionWarning: cannot collect test class 'TestPlan' because it has a __init__ constructor (from: tests/test_test_layers.py)
-    @dataclass
-
--- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-175 passed, 13 skipped, 12947 deselected, 2 warnings in 4.70s
-```  
-  _excerpt - 1,567 characters of output in total_
-
-- `uv run pytest tests/test_dmg_stamp_acceptance.py -q 2>&1 | tail -15`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/3fd594f5819d466d8ba4c8ea60c4d509.51048.2411a3ae uv run pytest tests/test_dmg_stamp_acceptance.py -q 2>&1 | tail -30`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+   Building no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/3fd594f5819d466d8ba4c8ea60c4d509.51048.2411a3ae
+      Built no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/3fd594f5819d466d8ba4c8ea60c4d509.51048.2411a3ae
+Installed 73 packages in 152ms
 ............                                                             [100%]
-12 passed in 1.88s
+12 passed in 5.06s
 ```
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/3fd594f5819d466d8ba4c8ea60c4d509.51048.3876f785 uv run pytest tests/ -m repoguard -q 2>&1 | tail -15`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/3fd594f5819d466d8ba4c8ea60c4d509.51048.2411a3ae uv run pytest tests/ -m repoguard -q 2>&1 | tail -40`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
@@ -129,17 +26,16 @@ warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not mat
 ...........................................                              [100%]
 =============================== warnings summary ===============================
 src/<redacted>/testing/test_layers.py:35
-  /Users/eyalgolan/.<redacted>/worktrees/3fd594f5819d466d8ba4c8ea60c4d509.51048.3876f785/src/<redacted>/testing/test_layers.
-[... 157 of 1,296 characters omitted from the middle ...]
-
+  /Users/eyalgolan/.<redacted>/worktrees/3fd594f5819d466d8ba4c8ea60c4d509.51048.2411a3ae/src/<redacted>/testing/test_layers.
+[... 158 of 1,297 characters omitted from the middle ...]
 src/<redacted>/testing/test_layers.py:89
-  /Users/eyalgolan/.<redacted>/worktrees/3fd594f5819d466d8ba4c8ea60c4d509.51048.3876f785/src/<redacted>/testing/test_layers.py:89: PytestCollectionWarning: cannot collect test class 'TestPlan' because it has a __init__ constructor (from: tests/test_test_layers.py)
+  /Users/eyalgolan/.<redacted>/worktrees/3fd594f5819d466d8ba4c8ea60c4d509.51048.2411a3ae/src/<redacted>/testing/test_layers.py:89: PytestCollectionWarning: cannot collect test class 'TestPlan' because it has a __init__ constructor (from: tests/test_test_layers.py)
     @dataclass
 
 -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-175 passed, 13 skipped, 12947 deselected, 2 warnings in 5.41s
+175 passed, 13 skipped, 13003 deselected, 2 warnings in 15.77s
 ```  
-  _excerpt - 1,282 characters of output in total_
+  _excerpt - 1,283 characters of output in total_
 
 
 **Not verified:** everything below is a limit of this section, listed whether or not it bit this attempt.
