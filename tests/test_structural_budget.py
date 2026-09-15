@@ -238,7 +238,14 @@ FROZEN_FUNCTION_LINES = {
     # to make this retry's non-fast-forward path the expected outcome
     # (comment-only; `forced = _is_non_fast_forward(exc)` itself is
     # unchanged). Measured on this tree with the scanner below.
-    "core/orchestrator.py:Orchestrator._finalize": 441,
+    # 441 -> 442 (+1): stale-delivered-base watcher fix (2026-09-15) — one
+    # line merges `vcs.delivered_base.record_at_delivery`'s result into
+    # `ctx` so the trunk tip a PR was measured against gets recorded at
+    # delivery time (see `vcs/delivered_base.py`'s module docstring for the
+    # defect this closes). No comment added; the call site is
+    # self-describing and the referenced module documents the why. Measured
+    # on this tree with the scanner below.
+    "core/orchestrator.py:Orchestrator._finalize": 442,
     # Pre-existing on main (measured red at d3d7d3a82a, this session's start):
     # an earlier fleet land grew stream() +6 without re-freezing it on its
     # merge result — the same "landed without measuring the ratchet" failure
@@ -1467,7 +1474,11 @@ FROZEN_FILE_LINES = {
     # and the `reason if reason is not None else ...` fix replacing `reason
     # or ...` in `_revert_worktree_writes_unguarded`. Re-measured on this
     # tree with `scan_tree`, not carried over as a stale delta.
-    "core/orchestrator.py": 24728,
+    # 24728 -> 24729 (+1): stale-delivered-base watcher fix (2026-09-15) —
+    # `_finalize` now merges `vcs.delivered_base.record_at_delivery`'s
+    # result into `ctx` (see the FROZEN_FUNCTION_LINES entry above for this
+    # same function). Re-measured with `scan_tree` on this tree.
+    "core/orchestrator.py": 24729,
 
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
@@ -1673,7 +1684,14 @@ FROZEN_FILE_LINES = {
     # a task a later task's `follows_id` already names as followed-up-on, in
     # both the single-task and `--ready --yes` paths. Measured via
     # `wc -l src/no_human/cli/commands.py`.
-    "cli/commands.py": 9149,
+    # 9149 -> 9187 (+38): stale-delivered-base watcher fix (2026-09-15) —
+    # `nh task show` now renders `pr_base_freshness`/`pr_base_sha_source`
+    # (previously only shown when a `pr_base_freshness` record existed,
+    # which silently hid a backfilled `pr_base_sha_source` with no
+    # freshness verdict yet) and falls back to `ctx["base_branch"]` when
+    # `pr_base_ref` was never recorded. Re-measured with `scan_tree` on
+    # the merge result.
+    "cli/commands.py": 9187,
     # api/app.py 5338 -> 5346 (+8): same budget-floor warning surfaced by
     # `send-back`/`reply` as `budget_warning` in the JSON response. Net cost
     # was trimmed from a naive +14 to +8 by computing `Bounds.from_config(...)`
@@ -2141,7 +2159,36 @@ FROZEN_FILE_LINES = {
     # the FROZEN_FUNCTION_LINES `_check_pr_conflict` entry above (the
     # whole-file delta equals that function's delta). Measured on this tree
     # with the scanner below.
-    "blockers/wake.py": 2763,
+    # 2763 -> 3181 (+418): stale-delivered-base watcher fix (2026-09-15) --
+    # three entirely new methods with no prior frozen baseline:
+    # `_check_base_stale` (rung 4.5, acts on stale-but-mergeable per the
+    # original acceptance criterion), `_reverify_base_locally` (its local
+    # re-verification helper), and `_poll_mergeable` (the shared single-poll
+    # extraction `_check_pr_conflict` now also calls via its `info=`
+    # keyword). None of `_check_pr_conflict`'s round/escalation/mechanical-
+    # resolution logic changed; see the unchanged `_check_pr_conflict`
+    # FROZEN_FUNCTION_LINES entry above (464, ratcheted down from 465
+    # measured mid-change, since only its `info=` keyword and a docstring
+    # sentence were added). Measured on this tree with `scan_tree`, not by
+    # arithmetic on 2763 or on PR #319's number.
+    # 3181 -> 3183 (+2): `tick()`'s docstring claimed a closed set of two
+    # action strings ('resumed'/'escalated_timeout'); `_check_open_pr` now
+    # also returns 'pr_base_remeasured'/'pr_base_undetermined' through it, so
+    # the claim was stale. Reworded to describe the shape instead of
+    # enumerating a set the code no longer honors. Measured with `scan_tree`.
+    # 3183 -> 3210 (+27): `_reverify_base_locally`'s STALE-path
+    # `fetch_conflict_refs` call was not charged against the shared
+    # per-tick `base_fetch_budget` (review finding on this feature) -- a
+    # slow network could blow the STALE branch's own fetch-and-retry past
+    # the poll interval, uncounted, on every parked stale PR. Fixed by
+    # threading an optional `timeout` keyword through `fetch_conflict_refs`
+    # (mirroring `delivered_base.fetch_base_ref`'s existing seam) down to
+    # `_reverify_base_locally`, and by having `_check_base_stale` check the
+    # remaining budget before calling it, time the call, and charge the
+    # elapsed wall time back to `_base_fetch_spent` -- the same discipline
+    # already applied to the `measure()` fetch immediately above it.
+    # Measured on this tree with `scan_tree`.
+    "blockers/wake.py": 3210,
     # +91: `_SCAN_WRAPPER_NAMES` + `_peel_scan_wrappers` — peels
     # timeout/xargs/nice/stdbuf (and siblings) for the scan-severity check
     # only, so a wrapped `find … -delete` in a denied compound classifies
