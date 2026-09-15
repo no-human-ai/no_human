@@ -5446,7 +5446,7 @@ async def onboarding_status(request: Request) -> dict[str, Any]:
         # (`_ONBOARDING_STATUS_REDACTED_FIELDS`), so this reports only its
         # EXISTENCE. A boolean carries no PII, so the route-walk leak test
         # stays green.
-        "email_registered": bool((ob.get("email") or "").strip()),
+        "email_registered": isinstance(ob.get("email"), str) and bool(ob["email"].strip()),
         **_onboarding_public(ob),
     }
 
