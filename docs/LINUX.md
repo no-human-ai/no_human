@@ -335,6 +335,34 @@ empty until billing is fixed and the job runs.
 | Wall time / billed minutes | clone→artefacts ≈ 3 min, whole lane ≈ 6 min on this box (no CI minutes billed) | not run |
 | **Finding on a REAL desktop only** | Playwright's launch failed once with *"Authorization required… Missing X server or $DISPLAY"*: the driver overrides `HOME`, so `XAUTHORITY` defaulted into the throwaway home. Under `xvfb-run` (CI) `XAUTHORITY` is set explicitly, so the class never appears there. Remedy on a real display: `export XAUTHORITY=$HOME/.Xauthority` before the driver (done in `lane-a.sh`; the driver itself is unchanged — a real user never runs it) | n/a |
 
+### 6.1 The `02-board.png` defect, fixed
+
+The 2026-08-18 row above says it plainly: the screenshot the driver named
+"the board" was, in fact, "the onboarding wizard's Welcome step" — step 1 of
+7, not the board the filename claimed. A screenshot alone never proved what
+it showed, so nothing failed the job for it.
+
+`packaging/linux-acceptance.mjs` now drives the wizard to completion and
+proves five distinct, honestly-named surfaces before ever writing their
+files — each one asserted against its own on-screen DOM state
+(`packaging/linuxAcceptanceSurfaces.mjs`, `verifySurface`/`walkSurfaces`), not
+inferred from a screenshot after the fact:
+
+| File | What it proves before it is written |
+| --- | --- |
+| `01-credential-screen.png` | `token.html` on first run — `#token` and `#save` on screen |
+| `02-onboarding-welcome.png` | the wizard's own Welcome step group (`role="group"`, `aria-label` "Step 1 of 7: Welcome") — named honestly as the wizard, not the board |
+| `03-board-first-run.png` | the primary sidebar and the first-run empty-state title on screen, AND no wizard step group still present — the board surface cannot pass while any wizard step is on screen, which is what makes the original defect impossible to reproduce green |
+| `04-settings.png` | the Settings overlay (`role="dialog"`) opened via `getByRole("button", { name: /^Settings$/ })` |
+| `05-stats.png` | the Stats page (`.stats-page`) opened via `getByRole("button", { name: /^Stats$/ })`, with the Stats nav row itself proven `aria-current="page"` |
+
+Two things this fix does NOT do, by design (intake decision, not an
+oversight): it drives the wizard and reaches the board/Settings/Stats, but it
+never creates or runs a task (the dummy token cannot authenticate a real API
+call, so the walk stops at "surfaces are reachable," not a task outcome it
+cannot honestly produce); and it asserts entry into the wizard plus arrival
+at the board, not every one of the wizard's 7 steps individually.
+
 ## 7. Lane B — acceptance as a real user, Ubuntu 24.04 desktop
 
 Walked 2026-08-18 on a REAL Ubuntu 24.04 desktop (EC2 `m7i-flex.large`,
