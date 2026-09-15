@@ -4,7 +4,7 @@
 // step.mjs used to hardcode `BASE_STEPS_COUNT = 8` in a comment naming
 // welcome/repos/projects/docs/integrations/history/rules/summary — three of
 // which (docs, history, rules) left the wizard on 2026-09-04 / 2026-08-30,
-// while email/discord joined it on 2026-09-12, and the literal was never
+// while discord joined it on 2026-09-12 and email joined it on 2026-09-13,
 // updated. `Onboarding.jsx` is JSX (plain `node` cannot `import` it) and
 // `BASE_STEPS` is a module-private `const`, so the only way to derive the
 // expectation without editing `Onboarding.jsx` (out of scope for the walk

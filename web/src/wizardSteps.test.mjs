@@ -53,6 +53,27 @@ test("throws on an entry shape it cannot parse (residue check)", () => {
   assert.throws(() => parseBaseSteps(src), /residue|could not match/);
 });
 
+test("throws when BASE_STEPS parses to zero entries", () => {
+  const src = `const BASE_STEPS = [
+  ];`;
+  assert.throws(() => parseBaseSteps(src), /zero entries/);
+});
+
+test("throws when BASE_STEPS parses to fewer than two entries", () => {
+  const src = `const BASE_STEPS = [
+    { key: "welcome", title: "Welcome" },
+  ];`;
+  assert.throws(() => parseBaseSteps(src), /fewer than two entries/);
+});
+
+test("throws on an entry with a whitespace-only key or title", () => {
+  const src = `const BASE_STEPS = [
+    { key: "   ", title: "Welcome" },
+    { key: "summary", title: "Launch" },
+  ];`;
+  assert.throws(() => parseBaseSteps(src), /empty key or title/);
+});
+
 test("throws on duplicate keys", () => {
   const src = `const BASE_STEPS = [
     { key: "welcome", title: "Welcome" },
@@ -70,11 +91,17 @@ test("throws on duplicate titles", () => {
 });
 
 test("bracket-matches past a nested literal", () => {
+  // The bracket-looking text lives INSIDE the array, between two real
+  // entries, as a comment containing "[...]" — a lazy `indexOf("];")` scan
+  // (rather than real depth-counted bracket matching) stops right there,
+  // truncating the body before the "summary" entry and leaving only one
+  // parsed step, which trips the "fewer than two entries" guard. Correct
+  // bracket counting must see past it to the array's real closing `];`.
   const src = `const BASE_STEPS = [
     { key: "welcome", title: "Welcome" },
+    // nested example: ["docs"];
     { key: "summary", title: "Launch" },
-  ];
-  const OTHER = ["not", "part", "of", "steps"];`;
+  ];`;
   const steps = parseBaseSteps(src);
   assert.deepEqual(steps.map((s) => s.key), ["welcome", "summary"]);
 });
