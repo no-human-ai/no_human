@@ -1662,18 +1662,30 @@ FROZEN_FILE_LINES = {
     # landing checkout) has no local ref, so the bare name silently
     # degraded the verdict to `state="unknown"` and masked a real conflict
     # as fail-open-landable.
-    # 9048 -> 9059 (+11): #343 (PR #379) gives task `config` its own writer, so
-    # the three `apply_action` call sites in this file each persist the raise
-    # through `update_task_config` beside the action that produced it, instead
-    # of letting a generic save write a stale blob back.
-    # Measured on the squashed tree with the scanner below.
-    # 9059 -> 9149 (+90): #232 wires `nh task add --follows` (resolves a
-    # predecessor by id/prefix and records `follows_id`) and makes `nh
-    # approve` refuse — with `--force-superseded` as the explicit override —
-    # a task a later task's `follows_id` already names as followed-up-on, in
-    # both the single-task and `--ready --yes` paths. Measured via
-    # `wc -l src/no_human/cli/commands.py`.
-    "cli/commands.py": 9149,
+    # 9048 -> 9085 (+37): new `nh gate` verb, a thin click wrapper over
+    # `review.oneshot.run_gate` that runs the fresh-session reviewer and the
+    # tamper guard over the current branch or a GitHub PR with no daemon, no
+    # server, and no Store.
+    # 9085 -> 9096 (+11): merged with #343 (PR #379), which gives task
+    # `config` its own writer, so the three `apply_action` call sites in this
+    # file each persist the raise through `update_task_config` beside the
+    # action that produced it, instead of letting a generic save write a
+    # stale blob back.
+    # 9096 -> 9101 (+5): `gate`'s docstring now states the write surface in
+    # full (config.yaml is read, never created; --pr mode's `git fetch`
+    # writes only `FETCH_HEAD` and fetched objects) instead of the shorter
+    # "reads and reports only" claim a staff review found to be inaccurate,
+    # and the `GateUnavailable` refusal now prints with `soft_wrap=True` so a
+    # long credential path or PR URL cannot fold mid-token in a narrow
+    # terminal.
+    # 9101 -> 9191 (+90): merged with origin/main, which wires `nh task add
+    # --follows` (#232, resolves a predecessor by id/prefix and records
+    # `follows_id`) and makes `nh approve` refuse — with
+    # `--force-superseded` as the explicit override — a task a later task's
+    # `follows_id` already names as followed-up-on, in both the single-task
+    # and `--ready --yes` paths.
+    # Measured via `wc -l src/no_human/cli/commands.py` (agrees: 9191).
+    "cli/commands.py": 9191,
     # api/app.py 5338 -> 5346 (+8): same budget-floor warning surfaced by
     # `send-back`/`reply` as `budget_warning` in the JSON response. Net cost
     # was trimmed from a naive +14 to +8 by computing `Bounds.from_config(...)`
@@ -2034,7 +2046,12 @@ FROZEN_FILE_LINES = {
     # 3646 -> 3657 (+11): the `hooks.per_edit_type` default (#114 phase 2)
     # and the comment recording why it ships off while `per_edit_lint`
     # ships on. Re-measured on the merge result.
-    "config.py": 3657,
+    # 3657 -> 3668 (+11): `load_config`'s `ensure_private_dir` call is now
+    # gated on `create_if_missing or NO_HUMAN_HOME.exists()` instead of
+    # running unconditionally, so a `create_if_missing=False` read (`nh
+    # gate`'s config read among others) no longer materializes
+    # `~/.no_human` on a machine that has never run `nh init`.
+    "config.py": 3668,
     # +61: the tamper-adjudication one-bounded-retry contract (mechanical-
     # failure classification + the extracted `_review_tamper_adjudication`
     # helper that keeps `AdversarialReviewer.review` itself under the

@@ -235,6 +235,18 @@ Any other MCP client takes the usual stdio entry:
 { "mcpServers": { "no_human": { "command": "nh", "args": ["mcp-serve"] } } }
 ```
 
+The plugin also ships a second skill, `review-this-branch`, that does not
+need the MCP server or `~/.no_human` at all: it runs `nh gate`, a one-shot
+CLI verb that puts the fresh-session adversarial reviewer and the tamper
+guard directly on your current branch or a GitHub pull request, using your
+own Claude credential, and exits with a pass/fail Markdown checklist,
+with nothing installed or running beyond the `nh` CLI itself.
+
+```bash
+nh gate                        # current branch vs. its merge base with origin's default branch
+nh gate --pr <github-pr-url>   # a GitHub pull request's head vs. its merge base
+```
+
 ## Docs
 
 | | |

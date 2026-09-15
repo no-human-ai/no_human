@@ -44,13 +44,17 @@ repository root would also be read as the project's own MCP config by anyone who
 opens this repo in Claude Code — including no_human's coder sessions working in
 this repo — and that is not what this is for.
 
-## The skill
+## The skills
 
-This plugin also ships an agent skill at
-[`skills/file-a-task/SKILL.md`](skills/file-a-task/SKILL.md) teaching an
-agent when and how to file work into no_human with `task_add` and
-`task_status`. As it says there too: no_human opens the pull request and
-stops — merge is always the human's action.
+This plugin ships two agent skills:
+
+| Skill | What it does | What it compares | Needs |
+|---|---|---|---|
+| [`file-a-task`](skills/file-a-task/SKILL.md) | Files work into no_human (`task_add`) and checks on it (`task_status`) so no_human plans, codes, tests, and opens a pull request for it. | N/A: hands the work off entirely. | Your running no_human **server** (`nh start`) and its database. |
+| [`review-this-branch`](skills/review-this-branch/SKILL.md) | Runs `nh gate`, the fresh-session adversarial reviewer plus the tamper guard, over the current branch or a GitHub pull request, and relays the Markdown pass/fail checklist with file:line citations. Read-only against your checkout: it never commits, pushes, merges, or edits a tracked file; in `--pr` mode it does one additive `git fetch` (writes `FETCH_HEAD`/fetched objects into your checkout, moves no ref you own). | The working tree branch against its **merge base** with `origin`'s default branch, or a PR's head against its merge base. | **Your own Claude credential** (`claude setup-token`), the same one every other `nh` command uses. No server, no database, and no onboarding: it never creates `~/.no_human` on a machine that lacks it, only reads `~/.no_human/config.yaml` if one is already there. It runs once and exits. |
+
+As both say too: no_human opens the pull request and stops, and merge is
+always the human's action; `review-this-branch` only ever reads and reports.
 
 ## Try it
 
