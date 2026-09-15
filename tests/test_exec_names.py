@@ -407,6 +407,18 @@ def test_a_totally_unmeasurable_probe_still_reaches_the_final_fold(monkeypatch):
     assert exec_names.host_folds_case(cwd="/no_human-nonexistent-probe-dir", path_env="") is True
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows locks a directory that is a process's cwd, so os.rmdir "
+    "raises WinError 32 and the 'cwd removed under us' precondition cannot be "
+    "produced with real filesystem calls. The guard this pins "
+    "(_candidate_anchors catching OSError) is not OS-specific, and the POSIX "
+    "run exercises it; a mock-getcwd repro is deliberately not used here "
+    "because this test's contract is that a REAL removed cwd, not a patched "
+    "os.getcwd, is what raised. sys.platform, not os.name == n-t, so this "
+    "skip does not trip test_no_test_asserts_the_permissive_fallback, whose "
+    "needle is the deleted probe fallback, a different concern from a skip.",
+)
 def test_the_probe_survives_a_removed_process_cwd(tmp_path, monkeypatch):
     """Crash repro (case-fold review, BLOCKER 1): `_candidate_anchors` fell
     back to a bare `os.getcwd()` whenever its own `cwd` argument was falsy --
@@ -588,6 +600,17 @@ def _verdicts_with_fold(fold: bool, rows=_FOLD_SENSITIVE_ROWS, readonly=False) -
         import json
         from no_human.agent import exec_names
         exec_names.host_folds_case = lambda *a, **k: {fold!r}
+        # Pin the OTHER axis too. A case-SENSITIVE executable world is a POSIX
+        # concept: `command_name` folds unconditionally when `is_windows`
+        # (`fold_case = is_windows or host_folds_case()`), because `GIT.EXE` and
+        # `git.exe` are one file on Windows regardless of the volume's case
+        # flag. So a `fold={fold!r}` row asserting a case-sensitive host must
+        # hold `_IS_WINDOWS` False, or it silently only passes on a POSIX
+        # runner: the fold probe alone does not simulate the whole host. The
+        # pin lands AFTER the guard import (the patterns are already compiled)
+        # because `_IS_WINDOWS` is read per call, not baked in.
+        from no_human.agent import guard as _guard
+        _guard._IS_WINDOWS = False
         from no_human.agent.guard import evaluate
         out = {{}}
         for cmd in {list(rows)!r}:
@@ -1009,22 +1032,15 @@ def test_the_other_windows_executable_spellings_deny_too(command, on_windows):
         "timeout 30 git.exe push origin main",
     ],
 )
-def test_the_raw_text_matchers_are_still_open_and_that_is_recorded(command, on_windows):
-    """Not a fix, a boundary, and the reason this PR says Refs and not Closes.
-
-    These three decide through RAW-TEXT matchers (`_RM_RF`, the lexical
-    merge-stack matcher, and the `timeout` wrapper which is not in `_WRAPPERS`)
-    rather than through argv[0], so no name resolver can reach them. Closing
-    them means widening those patterns, which is a separate change against the
-    same issue.
-
-    Asserted so that whoever widens them sees this go red and removes it
-    deliberately, instead of the residual being rediscovered from scratch.
+def test_the_raw_text_matchers_strip_the_exe_suffix(command, on_windows):
+    """The raw-text half of #305, now closed. These decide through RAW-TEXT
+    matchers (`_RM_RF`, `_FORGE_MERGE`, the whole-string push fallback) rather
+    than argv[0], so the argv resolver never reached them. Each such matcher
+    now carries `exec_names.EXE_SUFFIX_RE` after its binary name, so `rm.exe`
+    reads as `rm`. This row's predecessor asserted these were OPEN; the widening
+    landed, so the row was promoted here per that test's own instruction.
     """
-    assert not _decide(command), (
-        "this now denies, so the raw-text matchers have been widened: delete "
-        "this test and move the row into the parametrised cases above"
-    )
+    assert _decide(command), "a raw-text matcher still misses the .exe spelling"
 
 
 @pytest.mark.parametrize("command", ["GH.EXE pr merge 7", "NH.exe approve 7"])
@@ -1072,20 +1088,46 @@ def test_the_windows_spellings_are_left_alone_on_posix(on_posix, on_case_sensiti
     assert _decide("git push origin main")
 
 
-def test_the_unquoted_backslash_path_is_still_open_and_that_is_recorded():
-    """Not a fix, a boundary.
+@pytest.mark.parametrize("command", [
+    r"C:\tools\git.exe push origin main",       # raw-text push fallback
+    r"C:\tools\git.exe reset --hard HEAD",      # _GIT_DESTRUCTIVE
+    r"C:\Program Files\gh.exe pr merge 7",      # _FORGE_MERGE (space and all)
+    r"C:\tools\rm.exe -rf /",                   # _RM_RF
+    r"C:\tools\nh.exe merge-stack run",         # _LEXICAL_MERGE_STACK
+])
+def test_an_unquoted_backslash_path_is_caught_when_a_raw_text_matcher_names_it(command):
+    """A side effect of the raw-text suffix fix worth pinning.
 
-    POSIX `shlex` deletes the separators before any name resolution, so this
-    reaches the resolver as `C:toolsgit.exe` and no basename can recover it.
-    Closing it means `guard.py` consulting `win_readings`, which is the half of
-    #105 that #301 fixed for the venv guard only.
-
-    Asserted rather than left unsaid so that whoever closes that half sees this
-    test go red and deletes it deliberately, instead of the gap being
-    rediscovered from scratch a third time.
+    POSIX `shlex` deletes the backslashes, so argv analysis sees
+    `C:toolsgit.exe` and cannot recover the name -- that is #105's unquoted
+    backslash residual. But a raw-text matcher reads the ORIGINAL string, where
+    `\\bgit` still finds `git` inside the path, so once the suffix fragment
+    lets it read `git.exe` as `git`, these deny without any shlex fix. It is
+    not the general close of #105's half; it is every command that happens to
+    have a raw-text twin.
     """
-    assert not _decide(r"C:\tools\git.exe push origin main"), (
-        "the unquoted backslash path now denies; #105's remaining half has "
-        "landed, so delete this test and add the row to the parametrised "
-        "never_push_to case above"
+    assert _decide(command)
+
+
+@pytest.mark.parametrize("command", [
+    r"C:\tools\git.exe stash",       # working-tree clobber: argv-only, no raw-text twin
+    r"C:\tools\nh.exe approve 7",    # the merge gate: argv-only (_approve_denial)
+])
+def test_an_argv_only_gate_is_still_open_to_an_unquoted_backslash_path(command, on_windows):
+    """The genuine remainder of #105's unquoted-backslash half, and why this
+    PR is still `Refs` on that issue rather than `Closes`.
+
+    `git stash`'s working-tree clobber and `nh approve`'s merge gate have no
+    raw-text twin -- the clobber decision needs argv plus a cwd check, and
+    `nh approve` is resolved purely from argv. shlex deletes the separators
+    before either runs, so `C:toolsgit.exe`/`C:toolsnh.exe` names nothing.
+    Closing this needs `guard.py` to consult `win_readings`, the half of #105
+    that #301 fixed for the venv guard only.
+
+    Asserted so that whoever wires `win_readings` into the argv gates sees this
+    go red and promotes the rows, instead of the gap being rediscovered.
+    """
+    assert not _decide(command), (
+        "an argv-only gate now denies an unquoted backslash path; win_readings "
+        "must have reached it -- promote these rows and delete this test"
     )

@@ -193,7 +193,19 @@ def error_signature(text: str) -> str:
     norm = re.sub(r"\b[0-9a-f]{8,}\b", "<hash>", norm)
     norm = re.sub(r"\d{4}-\d{2}-\d{2}[t ]\d{2}:\d{2}:\d{2}", "<ts>", norm)
     norm = re.sub(r":\d+(:\d+)?", ":<n>", norm)        # file:line:col
-    norm = re.sub(r"/[^\s'\"]+", "<path>", norm)        # absolute paths
+    # Windows absolute paths first, so a drive-letter or UNC prefix collapses
+    # WITH the rest instead of being left behind by the POSIX rule below (which
+    # would only eat the run after the first `/`). Backslash paths have no
+    # leading `/`, so without these the same error fingerprints differently on
+    # Windows whenever the path carries a per-run-varying, non-hex segment (a
+    # tempfile dir, a pytest tmp counter, a PID), and StuckDetector under-fires.
+    # `norm` is already lowercased, hence `[a-z]`; the lookbehind keeps a real
+    # drive letter (`c:\`) matching while a colon inside a longer token
+    # (`hklm:\`, `note:/`) does not. Relative backslash paths stay unstripped,
+    # exactly as relative POSIX paths already are.
+    norm = re.sub(r"(?<![a-z0-9_])[a-z]:[\\/][^\s'\"]*", "<path>", norm)  # C:\ or C:/
+    norm = re.sub(r"\\{2}[^\s'\"]+", "<path>", norm)                      # UNC \\srv\share
+    norm = re.sub(r"/[^\s'\"]+", "<path>", norm)        # POSIX absolute paths
     norm = re.sub(r"\s+", " ", norm).strip()
     return hashlib.sha256(norm.encode()).hexdigest()[:16]
 

@@ -60,3 +60,21 @@ async def test_follows_id_survives_update_task_columns(store, tmp_path):
     reloaded = await store.get_task(b.id)
     assert reloaded.follows_id == a.id
     assert reloaded.priority == "low"
+
+
+async def test_list_tasks_following_returns_only_direct_successors(store, tmp_path):
+    """`list_tasks_following` (issue #232) is the query `nh approve` uses to
+    warn/refuse landing a task a later one already claims to follow up on —
+    it must return exactly the tasks naming this one, not siblings or the
+    predecessor itself."""
+    a = Task.new("a", repo_path=str(tmp_path))
+    await store.create_task(a)
+    b = Task.new("b", repo_path=str(tmp_path), follows_id=a.id)
+    await store.create_task(b)
+    unrelated = Task.new("unrelated", repo_path=str(tmp_path))
+    await store.create_task(unrelated)
+
+    followers = await store.list_tasks_following(a.id)
+    assert [t.id for t in followers] == [b.id]
+    assert await store.list_tasks_following(b.id) == []
+    assert await store.list_tasks_following(unrelated.id) == []

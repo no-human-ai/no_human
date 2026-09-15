@@ -1540,6 +1540,15 @@ class Store:
         )
         return Task.from_row(dict(row)) if row else None
 
+    async def list_tasks_following(self, task_id: str) -> list[Task]:
+        """Tasks whose `follows_id` points at `task_id` — i.e. the follow-ups
+        that supersede it (issue #232). Used by `nh approve` to warn/refuse
+        before landing a task a later one already claims to follow up on."""
+        rows = await self._fetchall(
+            "SELECT * FROM tasks WHERE follows_id = ?", (task_id,)
+        )
+        return [Task.from_row(dict(r)) for r in rows]
+
     async def list_imported_tasks(self, source: str) -> list[ImportedTaskRow]:
         """Narrow projection for the backlog picker's imported-chip lookup
         (SCRUM-54): only (external_id, id, status, created_at) for tasks from

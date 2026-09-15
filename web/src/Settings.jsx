@@ -7,7 +7,7 @@ import {
   fetchRules, fetchSkills, rejectLearning, removeRule, removeSkill,
   fetchProjects, createProject, updateProject, deleteProject,
   fetchProfiles, detectRepos, onboardRepo,
-  fetchAuthStatus, setAuthToken, setCodexMode, setCodexKey, fetchVersion,
+  fetchAuthStatus, setAuthToken, setCodexMode, setCodexKey,
   fetchRetireCandidates, retireLearning, restoreLearning,
   pauseLearning, deleteLearning, fetchConfig,
   fetchQuarantineCounts, fetchTelemetryConsent, saveTelemetryConsent,
@@ -31,6 +31,7 @@ import { retireCandidates } from "./learningRetire.js";
 import { useEscapeKey } from "./useEscapeKey.js";
 import { pluralize } from "./pluralize.js";
 import { updateNotice, subscribeUpdates } from "./updateNotice.js";
+import { useRunningVersion } from "./useRunningVersion.js";
 import IntegrationsPanel from "./Integrations.jsx";
 import ModelsPanel from "./ModelsPanel.jsx";
 import WorkersPanel from "./WorkersPanel.jsx";
@@ -72,30 +73,20 @@ function UpdatesPanel() {
   // browser". The server IS the installed package, so it can be asked - and
   // it also knows whether that package is actually published on the channel
   // the panel would tell the operator to `pip install` from.
-  const [versionInfo, setVersionInfo] = useState(null);
+  //
+  // That resolution moved into useRunningVersion (#332): About prints the
+  // version too now, and a second copy of the shell-then-server precedence
+  // could disagree with this one after an upgrade. `channel` is the rest of
+  // the same GET /api/version payload (dist_name/published).
+  const { version: current, inShell, channel } = useRunningVersion();
   const desktop = typeof window !== "undefined" ? window.nhDesktop : undefined;
-  const inShell = Boolean(desktop?.shell);
 
   // Pushes the live update AND pulls getLastUpdate() to seed from a fact
   // retained before this panel mounted (e.g. a startup check that finished
   // before the operator ever opened Settings) — see updateNotice.js.
   useEffect(() => subscribeUpdates({ desktop, setUpdate }), [desktop]);
 
-  useEffect(() => {
-    if (inShell) return undefined;
-    let live = true;
-    // Best-effort, exactly like the composer's greeting: a failed lookup leaves
-    // the version unknown, which is what it always was. Never fabricated.
-    fetchVersion().then((v) => { if (live) setVersionInfo(v); }).catch(() => {});
-    return () => { live = false; };
-  }, [inShell]);
-
-  const view = updateNotice({
-    inShell,
-    current: desktop?.version ?? versionInfo?.version,
-    update,
-    channel: versionInfo,
-  });
+  const view = updateNotice({ inShell, current, update, channel });
 
   const run = useCallback(async (fn) => {
     if (!fn) return;
