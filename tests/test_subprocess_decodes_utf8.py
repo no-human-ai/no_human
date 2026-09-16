@@ -143,6 +143,83 @@ def _is_undeclared_decode_call(call: ast.Call, aliases: set[str]) -> bool:
     return not ({"encoding", "errors"} <= kw)
 
 
+def _seam_param_names(fn: ast.AST, aliases: set[str]) -> set[str]:
+    """Parameter names of *fn* whose DEFAULT VALUE is a bound subprocess
+    method — the injectable-runner seam pattern
+    (``def install(*, runner=subprocess.run): ... runner(cmd, text=True)``).
+    The call site itself, ``runner(...)``, names no subprocess attribute at
+    all: it is a bare ``ast.Name`` call, structurally invisible to
+    `_subprocess_call_sites`'s `<alias>.<method>(...)` shape. This is
+    exactly the class of site `walks_provision.install_walks` slipped
+    through as before this scanner learned to resolve it: `runner` defaults
+    to `subprocess.run` (the seam), and the call at its use site carries
+    `text=True` with neither `encoding=` nor `errors=`.
+    """
+    if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return set()
+    args = fn.args
+    positional = args.posonlyargs + args.args
+    defaults = args.defaults
+    pairs = list(zip(positional[len(positional) - len(defaults):], defaults)) if defaults else []
+    pairs += list(zip(args.kwonlyargs, args.kw_defaults))
+    seams = set()
+    for arg, default in pairs:
+        if (
+            isinstance(default, ast.Attribute)
+            and isinstance(default.value, ast.Name)
+            and default.value.id in aliases
+            and default.attr in _SYNC_METHODS
+        ):
+            seams.add(arg.arg)
+    return seams
+
+
+def _is_undeclared_seam_call(call: ast.Call, seam_params: set[str]) -> bool:
+    """Whether *call* is a bare-name call through an injected-runner seam
+    (``runner(...)`` where ``runner`` is a parameter defaulting to a bound
+    subprocess method) that decodes text without pinning both `encoding=`
+    and `errors=`. Mirrors `_is_undeclared_decode_call`'s kwarg logic
+    exactly — only the shape of the callee differs (`ast.Name` bound to a
+    seam parameter, not `<alias>.<method>` attribute access)."""
+    if not (isinstance(call.func, ast.Name) and call.func.id in seam_params):
+        return False
+    kw = {k.arg for k in call.keywords}
+    text_mode = bool(kw & {"text", "universal_newlines", "encoding"})
+    if not text_mode:
+        return False
+    return not ({"encoding", "errors"} <= kw)
+
+
+def _seam_offenders(tree: ast.Module, aliases: set[str]) -> list[int]:
+    """Line numbers of undeclared-decode calls made through an
+    injected-runner seam anywhere in *tree* — the counterpart to
+    `_is_undeclared_decode_call` for call sites a direct
+    `<alias>.<method>(...)` walk cannot see. Scoped per function: a
+    parameter only seams the body of the function that declares it."""
+    offenders = []
+    for fn in ast.walk(tree):
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        seam_params = _seam_param_names(fn, aliases)
+        if not seam_params:
+            continue
+        for node in ast.walk(fn):
+            if isinstance(node, ast.Call) and _is_undeclared_seam_call(node, seam_params):
+                offenders.append(node.lineno)
+    return offenders
+
+
+def _offending_lines(tree: ast.Module) -> list[int]:
+    """Every undeclared-decode call line in *tree*: direct
+    `<alias>.<method>(...)` sites AND injected-runner-seam sites."""
+    aliases = _subprocess_aliases(tree)
+    direct = [
+        node.lineno for node in ast.walk(tree)
+        if _is_undeclared_decode_call(node, aliases)
+    ]
+    return sorted(direct + _seam_offenders(tree, aliases))
+
+
 def _offenders(path: pathlib.Path) -> list[int]:
     """Line numbers of undeclared-decode subprocess calls in *path*, or `[]`
     on a syntax error (mirrors `test_text_reads_declare_encoding.py`'s
@@ -152,11 +229,7 @@ def _offenders(path: pathlib.Path) -> list[int]:
         tree = ast.parse(path.read_bytes(), filename=str(path))
     except SyntaxError:
         return []
-    aliases = _subprocess_aliases(tree)
-    return [
-        node.lineno for node in ast.walk(tree)
-        if _is_undeclared_decode_call(node, aliases)
-    ]
+    return _offending_lines(tree)
 
 
 def test_no_subprocess_in_src_decodes_with_the_host_codepage():
@@ -225,6 +298,75 @@ def test_the_scanner_matches_decoding_calls_and_nothing_else(source, flagged, wh
     aliases = _subprocess_aliases(tree)
     hits = [n for n in ast.walk(tree) if _is_undeclared_decode_call(n, aliases)]
     assert bool(hits) is flagged, why
+
+
+@pytest.mark.parametrize(
+    ("source", "flagged", "why"),
+    [
+        (b"import subprocess\n"
+         b"def install(*, runner=subprocess.run):\n"
+         b"    runner(x, capture_output=True, text=True)\n",
+         True,
+         "an injected-runner seam (default arg = subprocess.run) must be "
+         "flagged, not just direct subprocess.*(...) calls — this is "
+         "exactly walks_provision.install_walks's shape"),
+        (b"import subprocess\n"
+         b"def install(*, runner=subprocess.run):\n"
+         b"    runner(x, capture_output=True, text=True, encoding='utf-8', "
+         b"errors='replace')\n",
+         False, "a seam call that already names both is clean"),
+        (b"import subprocess\n"
+         b"def install(*, runner=subprocess.run):\n"
+         b"    runner(x, capture_output=True)\n",
+         False, "byte-mode through a seam is still out of scope"),
+        (b"import subprocess as sp\n"
+         b"def install(*, runner=sp.run):\n"
+         b"    runner(x, text=True)\n",
+         True, "an aliased subprocess default must still be resolved"),
+        (b"def other(*, runner=some_factory()):\n"
+         b"    runner(x, text=True)\n",
+         False,
+         "a parameter whose default is not a bound subprocess method is "
+         "not a seam at all"),
+        (b"import subprocess\n"
+         b"def install(*, runner=subprocess.run):\n"
+         b"    other_name(x, text=True)\n",
+         False, "a call to an unrelated name is not a seam call"),
+    ],
+)
+def test_the_scanner_flags_injected_runner_seams(source, flagged, why):
+    tree = ast.parse(source)
+    offenders = _offending_lines(tree)
+    assert bool(offenders) is flagged, why
+
+
+def test_the_guard_sees_the_walks_provision_runner_seam():
+    """`install_walks`'s `runner=subprocess.run` parameter is an
+    injected-runner seam, not a direct `subprocess.run(...)` call: the call
+    site is `runner(step, ...)`, a bare-name call the plain attribute-walk
+    in `_is_undeclared_decode_call` cannot see on its own. This is the
+    positive control for the SEAM half of the scanner (mirrors
+    `test_the_guard_can_see_the_site_that_already_complies` for the direct
+    half): proves the scanner actually inspects this specific site and
+    finds it clean post-fix, so the flat zero in
+    `test_no_subprocess_in_src_decodes_with_the_host_codepage` means the
+    seam was checked, not silently skipped the way it was before this
+    scanner learned to resolve injected-runner defaults."""
+    path = SRC / "walks_provision.py"
+    tree = ast.parse(path.read_bytes(), filename=str(path))
+    aliases = _subprocess_aliases(tree)
+    fn = next(
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "install_walks"
+    )
+    assert _seam_param_names(fn, aliases) == {"runner"}, (
+        "install_walks's runner=subprocess.run default is no longer "
+        "recognised as a seam -- update this pin"
+    )
+    assert _seam_offenders(tree, aliases) == [], (
+        "install_walks's runner(...) call must name both encoding= and "
+        "errors=; see the module-wide guard's failure message for the line"
+    )
 
 
 def test_byte_mode_sites_are_left_alone():
