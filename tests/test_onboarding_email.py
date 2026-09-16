@@ -168,7 +168,7 @@ async def test_registering_an_email_persists_to_config_yaml_and_is_redacted_from
     r = await client.post("/api/onboarding/email", json={"email": "person@example.com"})
     assert r.status_code == 200, r.text
     body = r.json()
-    assert set(body) == {"ok", "welcome"}, "the response must never echo the address back"
+    assert set(body) == {"ok", "welcome", "registration"}, "the response must never echo the address back"
     assert body["ok"] is True
 
     import yaml
@@ -477,7 +477,7 @@ async def test_a_no_send_repost_does_not_clobber_the_recorded_outcome_or_timesta
 
     r2 = await client.post("/api/onboarding/email", json={"email": "person@example.com"})
     assert r2.status_code == 200
-    assert r2.json() == {"ok": True, "welcome": "skipped_unchanged"}
+    assert r2.json() == {"ok": True, "welcome": "skipped_unchanged", "registration": "skipped_unchanged"}
     after_second = dict(app.state.config.data["onboarding"])
     assert after_second["welcome_status"] == "sent", (
         "a no-send re-post must not replace the recorded send outcome"
