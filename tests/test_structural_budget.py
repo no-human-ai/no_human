@@ -2046,12 +2046,16 @@ FROZEN_FILE_LINES = {
     # 3646 -> 3657 (+11): the `hooks.per_edit_type` default (#114 phase 2)
     # and the comment recording why it ships off while `per_edit_lint`
     # ships on. Re-measured on the merge result.
+    # 3657 -> 3661 (+4): `RESEND_API_KEY_VAR` — the welcome email's transport
+    # (email/send.py) reads it from ~/.no_human/.env or the process
+    # environment only, and it joins the `_reject_api_key_in_config` banned
+    # set. Re-measured on this tree.
     # 3657 -> 3668 (+11): `load_config`'s `ensure_private_dir` call is now
     # gated on `create_if_missing or NO_HUMAN_HOME.exists()` instead of
     # running unconditionally, so a `create_if_missing=False` read (`nh
     # gate`'s config read among others) no longer materializes
     # `~/.no_human` on a machine that has never run `nh init`.
-    "config.py": 3668,
+    "config.py": 3672,
     # +61: the tamper-adjudication one-bounded-retry contract (mechanical-
     # failure classification + the extracted `_review_tamper_adjudication`
     # helper that keeps `AdversarialReviewer.review` itself under the
