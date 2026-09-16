@@ -7,6 +7,20 @@ All notable changes to no_human. The format follows
 ## [Unreleased]
 
 ### Fixed
+- **A `workflow_dispatch` release build on `main` was cancelled by the next
+  push to `main`** — measured twice: run 35120284385 (`windows_release` on
+  main, head `b4663e4a`) was cancelled mid-NSIS-package when commit
+  `fbbc0817` landed and the push run took the group, skipping Verify
+  artefact / Checksums / Upload with no installer produced; earlier,
+  `faa1370c`'s own CI was cancelled by the next push, landing with no green
+  verdict. `.github/workflows/ci.yml`'s `concurrency.group` keyed only on
+  `github.workflow`/`github.ref`, so a dispatch and an ordinary push to the
+  same ref shared one group under `cancel-in-progress: true` and whichever
+  started last cancelled the other. The group now appends a constant
+  `-dispatch` discriminant for `workflow_dispatch` runs, isolating a release
+  build from same-ref pushes while two dispatches on the same ref still
+  serialize with each other; push/pull_request keep the unchanged
+  ref-based group.
 - **A hanging `gh`/`glab` call in the wake tick could stall the whole
   scheduler indefinitely** — measured live (2026-09-14): `Scheduler.tick()`
   stalled with idle workers and a full queue (`tick_stalled: true`,
