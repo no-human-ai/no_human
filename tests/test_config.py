@@ -138,6 +138,34 @@ def test_load_config_rejects_api_key(tmp_path):
         load_config(cfg_path)
 
 
+def test_a_resend_key_in_config_is_rejected(tmp_path):
+    """Same rule as the Anthropic/Codex keys, one member wider: the welcome
+    email's transport (`no_human.email.send`) reads RESEND_API_KEY only from
+    `~/.no_human/.env` or the process environment, never config.yaml."""
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text("email:\n  RESEND_API_KEY: re_leaked_key\n")
+    with pytest.raises(AuthError, match="RESEND_API_KEY") as ei:
+        load_config(cfg_path)
+    assert "re_leaked_key" not in str(ei.value)
+
+
+def test_a_resend_key_nested_in_config_is_rejected(tmp_path):
+    """The guard walks the whole tree, not just the top level."""
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(
+        "integrations:\n  email:\n    RESEND_API_KEY: re_leaked_key\n"
+    )
+    with pytest.raises(AuthError, match="RESEND_API_KEY"):
+        load_config(cfg_path)
+
+
+def test_resend_key_var_is_the_one_the_transport_reads():
+    """The name the config guard bans must be the exact name the transport
+    reads — a guard on a different string would be silent decoration."""
+    from no_human.email import send
+    assert send.RESEND_KEY_VAR == config.RESEND_API_KEY_VAR
+
+
 def test_load_config_rejects_decomposition_enabled(tmp_path):
     """The LeadAgent child-task path was removed 2026-08-12 (operator
     decision A1); re-enabling its gate must fail loudly at startup, not
