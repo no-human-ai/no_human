@@ -1,45 +1,47 @@
 # How I verified this — full log
 
-_Harness-captured record for task `c8cebc3e`, commit `e9a94a92aa10e5ce9aca812581e91d5cd1f19910` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `c8cebc3e`, commit `cfc3c68a9151f481780e72cae3e0269bff4787cd` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ## How I verified this
 3 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
 
 ### test
-- `uv run pytest tests/test_onboarding_email_forward.py tests/test_onboarding_email.py tests/test_onboarding_api.py tests/test_egress_allowlist.py tests/test_egress_disclosure.py tests/test_readme_claims.py tests/test_structural_budget.py -q 2>&1 | tail -80`
+- `uv run pytest tests/test_onboarding_email_forward.py tests/test_onboarding_email.py tests/test_onboarding_api.py tests/test_egress_allowlist.py tests/test_egress_disclosure.py tests/test_readme_claims.py tests/test_structural_budget.py -q -n 4 2>&1 | tail -60`
 
 ```
+bringing up nodes...
+bringing up nodes...
+
 ........................................................................ [ 21%]
-........................................................................ [ 43%]
-..................s.s.s.s.s.s.s.s.s.s................................... [ 65%]
-............s.............................s............................. [ 86%]
+............................................s.s.s.s.s.s.s.s.s.s......... [ 43%]
+.......................................s................................ [ 65%]
+....s................................................................... [ 86%]
 ............................................                             [100%]
-320 passed, 12 skipped in 42.94s
+320 passed, 12 skipped in 15.77s
 ```
 
-- `uv run pytest tests/test_resend_transport.py tests/test_config.py tests/test_repro_gate.py tests/test_reviewer_worktree.py -q 2>&1 | tail -40`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/c8cebc3e13d24a03ba8b5ef052abfbfe.28594.489e16df && uv run pytest tests/test_codex_oversized_jsonl_line.py tests/test_codex_oversized_jsonl_line_teardown_repro.py tests/test_pr_watcher_cli_timeout.py tests/test_wake_tick_does_not_stall_scheduler.py -q -n 4 2>&1 | tail -30`
 
 ```
-........................................................................ [ 27%]
-........................................................................ [ 54%]
-........................................................................ [ 81%]
-................................................                         [100%]
-264 passed in 54.91s
+bringing up nodes...
+bringing up nodes...
+
+........................                                                 [100%]
+24 passed in 25.84s
 ```
 
-- `uv run pytest tests/test_onboarding_email_forward.py tests/test_onboarding_email.py tests/test_onboarding_api.py tests/test_egress_allowlist.py tests/test_egress_disclosure.py tests/test_readme_claims.py tests/test_structural_budget.py tests/test_resend_transport.py tests/test_config.py tests/test_repro_gate.py tests/test_reviewer_worktree.py -q 2>&1 | tail -20`
+- `uv run pytest tests/test_onboarding_email_forward.py tests/test_onboarding_email.py tests/test_onboarding_api.py tests/test_egress_allowlist.py tests/test_egress_disclosure.py tests/test_readme_claims.py tests/test_structural_budget.py -q -n 4 2>&1 | tail -15`
 
 ```
-........................................................................ [ 12%]
-........................................................................ [ 24%]
-..................s.s.s.s.s.s.s.s.s.s................................... [ 36%]
-............s.............................s............................. [ 48%]
-........................................................................ [ 60%]
-........................................................................ [ 72%]
-........................................................................ [ 84%]
-........................................................................ [ 96%]
-....................                                                     [100%]
-584 passed, 12 skipped in 108.86s (0:01:48)
+bringing up nodes...
+bringing up nodes...
+
+........................................................................ [ 21%]
+...........................................s.s.s.s.s.s.s.s.s.s.......... [ 43%]
+......................................s................................. [ 65%]
+....s................................................................... [ 86%]
+............................................                             [100%]
+320 passed, 12 skipped in 14.04s
 ```
 
 
