@@ -151,7 +151,7 @@ def test_decline_recognition_is_not_a_hardcoded_phrase_list():
         "whatever you think",
         "don't care",
     ]
-    source = Path(grill.__file__).read_text()
+    source = Path(grill.__file__).read_text(encoding="utf-8")
     tree = ast.parse(source)
 
     for node in ast.walk(tree):
