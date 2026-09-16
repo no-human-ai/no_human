@@ -1710,7 +1710,12 @@ FROZEN_FILE_LINES = {
     # `_bootstrap(require_auth=False)` setup and the local
     # `audit_diverged_tasks` import. Measured on this tree with the
     # scanner below.
-    "cli/commands.py": 9208,
+    # 9208 -> 9250 (+42): merged with origin/main, which independently added
+    # the `nh gate` verb (a thin click wrapper over `review.oneshot.run_gate`
+    # that runs the fresh-session reviewer and the tamper guard over the
+    # current branch or a GitHub PR with no daemon, no server, and no Store).
+    # Measured via `wc -l src/no_human/cli/commands.py` (agrees: 9250).
+    "cli/commands.py": 9250,
     # api/app.py 5338 -> 5346 (+8): same budget-floor warning surfaced by
     # `send-back`/`reply` as `budget_warning` in the JSON response. Net cost
     # was trimmed from a naive +14 to +8 by computing `Bounds.from_config(...)`
@@ -2075,7 +2080,12 @@ FROZEN_FILE_LINES = {
     # (email/send.py) reads it from ~/.no_human/.env or the process
     # environment only, and it joins the `_reject_api_key_in_config` banned
     # set. Re-measured on this tree.
-    "config.py": 3661,
+    # 3661 -> 3672 (+11): `load_config`'s `ensure_private_dir` call is now
+    # gated on `create_if_missing or NO_HUMAN_HOME.exists()` instead of
+    # running unconditionally, so a `create_if_missing=False` read (`nh
+    # gate`'s config read among others) no longer materializes
+    # `~/.no_human` on a machine that has never run `nh init`.
+    "config.py": 3672,
     # +61: the tamper-adjudication one-bounded-retry contract (mechanical-
     # failure classification + the extracted `_review_tamper_adjudication`
     # helper that keeps `AdversarialReviewer.review` itself under the
