@@ -256,7 +256,28 @@ def count_assertions(source: str) -> int:
 
 
 def count_skips(source: str) -> int:
-    return len(_SKIP_MARK.findall(source))
+    """Skip/xfail markers (rule 2). String-literal interiors are masked first —
+
+    a test that writes a GENERATED fixture file containing the literal text
+    ``"@pytest.mark.skip(reason='not now')"`` (to prove the tamper guard catches
+    that payload when it lands as real code) had that string counted as a skip
+    marker against our OWN suite, firing rule 2 on the test written to exercise
+    it. Masking removes that false positive; a marker actually decorating a
+    ``def`` or actually calling ``pytest.skip(...)``/``pytest.xfail(...)`` is
+    never inside a string literal, so every real form still counts, including
+    the two legitimate platform guards (``pytest.skip("posix permission bits
+    only")`` / ``pytest.skip("root ignores file permission bits")``) that were
+    swept up in the same miscount. The trade: a skip marker hidden inside a
+    string is no longer counted (fails open by one signal), but a string is not
+    executable — it cannot itself neuter a collected test — so nothing a real
+    cheat depends on is lost. Unparseable source falls back to raw scanning,
+    exactly as before.
+    """
+    try:
+        scannable = _mask_python_string_literals(source)
+    except SyntaxError:
+        scannable = source
+    return len(_SKIP_MARK.findall(scannable))
 
 
 def _mask_python_string_literals(source: str) -> str:
@@ -310,12 +331,165 @@ def count_tautologies(source: str) -> int:
     return len(_TAUTOLOGY.findall(scannable))
 
 
+def _mask_non_autouse_test_scopes(source: str) -> str:
+    """Return *source* with string-literal interiors AND the body of every test
+    function / non-autouse fixture blanked to spaces, preserving byte offsets
+    and newlines — same idiom as `_mask_python_string_literals`, folded into
+    ONE `ast.parse` and one buffer rather than composed as two sequential
+    passes.
+
+    That composition was tried first and is unsafe: an implicitly-concatenated
+    multi-part f-string (``"a" f"b {x}"``, e.g.
+    ``tests/test_citation_drift_preflight.py``'s
+    ``"...list, " f"never None/empty: {events}"``) has a single ``Constant``
+    node whose span crosses the boundary between the two literals, including
+    the closing quote of the first and the ``f"`` opener of the second.
+    Blanking that span to spaces turns valid Python into an unterminated
+    string — so re-parsing the string-masked text to find function scopes
+    raised `SyntaxError` on input that parsed fine originally, silently
+    falling back to the OLD unscoped behaviour for exactly the file this
+    change exists to fix. Doing both maskings against the SAME tree/buffer,
+    with no intermediate re-parse, avoids that failure mode entirely: the
+    output is never re-parsed as Python, only regex-scanned.
+
+    Why mask strings here at all: `count_faking_fixtures` scans text, so
+    prose in a docstring or fixture-content string that happens to read
+    ``autouse=True`` or ``monkeypatch.setattr(...)`` must not be mistaken for
+    a real signal, exactly like `_mask_python_string_literals` does for
+    `count_tautologies`.
+
+    Why mask scopes: the live false positive this exists to close. A file can
+    have exactly
+    one autouse fixture whose entire body resets a process-wide singleton
+    (``tests/test_citation_drift_preflight.py``'s
+    ``_clean_infra_breaker_singleton`` — copied, docstring included, from
+    ``tests/test_structural_budget_preflight.py``, itself copied from
+    ``tests/test_repro_waived_corrective_round.py``: an established
+    convention, not a one-off) and ALSO use `monkeypatch` as an ordinary
+    per-test argument seven times over, patching only external boundaries
+    (``sys.executable``, env vars, a public helper). The old rule read
+    "this file has an autouse fixture" and "this file uses monkeypatch
+    somewhere" and concluded the fixture did the patching — a false
+    TAMPERED verdict on a file whose autouse fixture patches nothing.
+
+    Scoping fixes that by attribution, not by loosening detection: a fake-patch
+    call only counts against `count_faking_fixtures` when it is inside the
+    fixture's OWN body (or at module scope — see below), never inside a
+    `def test_*` body or a fixture that was not opted into for every test.
+    Decorators and signatures are left unmasked, so `autouse=True` and the
+    fixture decorator itself still register.
+
+    Deliberately NOT masked, so two verified CAUGHT samples
+    (`testdata/tamper_samples/rule4_evasions.txt`) stay caught:
+
+      * module-level code, including a plain module-level helper function
+        (`patching_local_helper`: the patch lives in a helper `_prep(mp)`
+        that the autouse fixture merely calls — the cheat is one call away
+        from the fixture body, and hiding a fake-patch behind an unmasked
+        helper is not a gap this change should open) and a module-level
+        patch primitive started/stopped from the fixture
+        (`module_patcher_started_in_fixture`: `_P = mock.patch(...)` at
+        module scope, `_P.start()`/`_P.stop()` in the fixture).
+
+    A function is an "autouse fixture" if a decorator is a call to
+    `pytest.fixture`/`fixture` carrying a literal `autouse=True` keyword, OR a
+    bare name bound at module level to such a call (the `@_auto` /
+    `_auto = pytest.fixture(autouse=True)` alias shape). Only DIRECT calls
+    within a fixture's own body count — a `monkeypatch.setattr` reached through
+    a helper the fixture invokes is not attributed to the fixture syntactically,
+    matching the module-level-helper carve-out above.
+
+    ``ast`` column offsets are UTF-8 BYTE offsets, exactly like the string
+    masker, for the same non-ASCII-safety reason.
+    """
+    tree = ast.parse(source)
+    data = bytearray(source.encode("utf-8"))
+    line_starts = [0]
+    for line in source.encode("utf-8").splitlines(keepends=True):
+        line_starts.append(line_starts[-1] + len(line))
+
+    def _offset(lineno: int, col: int) -> int:      # 1-based lineno, 0-based byte col
+        return line_starts[lineno - 1] + col
+
+    def _mask_range(start: int, end: int) -> None:
+        for i in range(start, min(end, len(data))):
+            if data[i] != 0x0A:                      # keep newlines
+                data[i] = 0x20
+
+    # 1. String-literal interiors, exactly like `_mask_python_string_literals`.
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Constant) and isinstance(node.value, str)
+                and node.end_lineno is not None):
+            _mask_range(
+                _offset(node.lineno, node.col_offset),
+                _offset(node.end_lineno, node.end_col_offset),
+            )
+
+    def _decorator_target_name(dec: ast.expr) -> str | None:
+        if isinstance(dec, ast.Call):
+            dec = dec.func
+        if isinstance(dec, ast.Attribute):
+            return dec.attr
+        if isinstance(dec, ast.Name):
+            return dec.id
+        return None
+
+    def _is_autouse_fixture_call(node: ast.expr) -> bool:
+        if not isinstance(node, ast.Call) or _decorator_target_name(node) != "fixture":
+            return False
+        return any(
+            kw.arg == "autouse"
+            and isinstance(kw.value, ast.Constant)
+            and kw.value.value is True
+            for kw in node.keywords
+        )
+
+    # One-pass module-level map: `_auto = pytest.fixture(autouse=True)` then
+    # `@_auto` — the aliased-call evasion shape.
+    alias_is_autouse: dict[str, bool] = {}
+    for stmt in tree.body:
+        if (isinstance(stmt, ast.Assign) and len(stmt.targets) == 1
+                and isinstance(stmt.targets[0], ast.Name)
+                and _is_autouse_fixture_call(stmt.value)):
+            alias_is_autouse[stmt.targets[0].id] = True
+
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        decorators = node.decorator_list
+        is_autouse = any(
+            _is_autouse_fixture_call(d)
+            or (isinstance(d, ast.Name) and alias_is_autouse.get(d.id, False))
+            for d in decorators
+        )
+        is_fixture = is_autouse or any(
+            _decorator_target_name(d) == "fixture" for d in decorators
+        )
+        is_test_decl = node.name.startswith("test")
+        if not (is_test_decl or (is_fixture and not is_autouse)):
+            continue  # autouse fixture or plain helper: leave visible
+        if not node.body or node.end_lineno is None:
+            continue
+        _mask_range(
+            _offset(node.body[0].lineno, node.body[0].col_offset),
+            _offset(node.end_lineno, node.end_col_offset),
+        )
+    return data.decode("utf-8")
+
+
 def count_faking_fixtures(source: str) -> int:
     """Number of autouse fixtures that also use a behaviour-faking patch.
 
-    A fixture block is approximated as the file when both signals co-occur; we
+    Attribution is by AST scope (`_mask_non_autouse_test_scopes`, which also
+    masks string-literal interiors in the same pass): a fake-patch call counts
+    only when it is inside an autouse fixture's own body or at module scope,
+    never inside a
+    `def test_*` body or a fixture nobody opted into for every test. We then
     count the smaller of (autouse markers, fake-patch calls) so adding one
-    autouse monkeypatch.setattr fixture counts as exactly one cheat signal.
+    autouse `monkeypatch.setattr` fixture counts as exactly one cheat signal.
+    Unparseable source (non-Python, a partial diff) falls back to the RAW
+    text scan — the exact behaviour this function had before scoping existed
+    — so nothing is weakened for input the masker cannot walk.
 
     KNOWN ASYMMETRY, kept deliberately. `check()` exempts a brand-new path from
     the *skip* comparison ("absent is not zero"), but does NOT exempt it from
@@ -336,11 +510,22 @@ def count_faking_fixtures(source: str) -> int:
     in a new file costs a human a look. If that nuisance is ever measured to be
     frequent, the fix is a narrower `_FAKE_PATCH` (patching the SUT's own module
     vs. patching `time`/`datetime`), NOT a new-file exemption.
+
+    Two residual attributions are kept ON PURPOSE, not tightened further: a
+    fake-patch primitive at bare MODULE scope, and one reached through a plain
+    module-level helper function the fixture calls (see
+    `_mask_non_autouse_test_scopes`'s docstring for the two CAUGHT samples this
+    protects). Narrowing either would move a verified live cheat from CAUGHT to
+    a gap for the sake of a false positive neither sample exhibits.
     """
-    if not _AUTOUSE.search(source):
+    try:
+        scannable = _mask_non_autouse_test_scopes(source)
+    except SyntaxError:
+        scannable = source
+    if not _AUTOUSE.search(scannable):
         return 0
-    autouse = len(_AUTOUSE.findall(source))
-    patches = len(_FAKE_PATCH.findall(source))
+    autouse = len(_AUTOUSE.findall(scannable))
+    patches = len(_FAKE_PATCH.findall(scannable))
     return min(autouse, patches)
 
 
