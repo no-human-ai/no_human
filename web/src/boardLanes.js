@@ -18,14 +18,17 @@
 // (--c-review) — NOT the blue of Working.
 import { approvalLive } from "./approvalState.js";
 
+// partial_success: a crash stranded a real commit after it landed but before
+// a PR existed (core/lanes.py LANE_STATUSES carries the matching comment).
+// It is terminal and reads on the board exactly where a human already looks
+// for "what happened to my task" — the Failed lane below — not a fourth
+// outcome lane. isRealFailure/isSalvaged tell the two apart.
+//
+// NOTE: `e2e/lane_model.py::parse_lanes` parses each entry below as a
+// SINGLE-LINE `{ ... }` object literal — no comment may sit between entries.
 export const LANES = [
   { key: "answer",  label: "Needs Answer", accent: "var(--c-answer)",    statuses: ["awaiting_input", "escalated"], loud: true, needsYou: true, staleCollapse: true, emptyIcon: "✓", emptyHint: "All caught up — nothing needs your input" },
   { key: "working", label: "Working",      accent: "var(--c-building)",  statuses: ["pending", "context", "planning", "implementing", "reviewing", "testing", "compound_parent", "paused_quota"], emptyIcon: "○", emptyHint: "No tasks in flight" },
-  // partial_success: a crash stranded a real commit after it landed but
-  // before a PR existed (core/lanes.py LANE_STATUSES carries the matching
-  // comment). It is terminal and reads on the board exactly where a human
-  // already looks for "what happened to my task" — the Failed lane — not a
-  // fourth outcome lane. isRealFailure/isSalvaged below tell the two apart.
   { key: "failed",  label: "Failed",       accent: "var(--c-escalated)", statuses: ["failed", "partial_success"], outcome: true, emptyIcon: "○", emptyHint: "No failures" },
   { key: "review",  label: "Review PR",    accent: "var(--c-review)",    statuses: ["awaiting_approval"], loud: true, needsYou: true, emptyIcon: "○", emptyHint: "No PRs waiting for review" },
   { key: "done",    label: "Done",         accent: "var(--c-done)",      statuses: ["done"], outcome: true, emptyIcon: "○", emptyHint: "Nothing shipped yet" },

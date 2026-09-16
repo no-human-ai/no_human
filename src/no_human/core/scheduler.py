@@ -2561,9 +2561,22 @@ class Scheduler:
                     target_status = _TS.FAILED
 
             # Mark the task FAILED, or PARTIAL_SUCCESS if salvaged, so it
-            # doesn't stay stuck.
+            # doesn't stay stuck. Each branch calls `set_status` with a
+            # LITERAL `TaskStatus.X` attribute rather than the `target_status`
+            # variable on purpose: `test_resume_entry_registry.py`'s AST walk
+            # treats a non-literal `set_status` target as an unregistered
+            # "re-entry into the loop" (it might be claimable, so it must be
+            # accounted for) — a bookkeeping question this terminal, one-way
+            # crash write has nothing to do with. Two literal call sites keep
+            # that walk's answer unchanged: neither FAILED nor PARTIAL_SUCCESS
+            # is claimable.
             try:
-                await self.store.set_status(task, target_status, validate=False)
+                if target_status is _TS.PARTIAL_SUCCESS:
+                    await self.store.set_status(
+                        task, _TS.PARTIAL_SUCCESS, validate=False)
+                else:
+                    await self.store.set_status(
+                        task, _TS.FAILED, validate=False)
                 self._consecutive_status_write_failures = 0
             except Exception as werr:  # noqa: BLE001
                 # This used to be `except Exception: pass`, with no counter.
