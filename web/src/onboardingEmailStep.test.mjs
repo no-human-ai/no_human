@@ -131,3 +131,17 @@ test("finish() and startMinimal() both refuse to complete without a registered e
   assert.match(startMinimalBody, /await ensureEmailRegistered\(\);/, "startMinimal() must require the address too — it is a second completion path (the Repositories step's Skip-setup shortcut) that bypasses the Email step just like the stepper jump does");
   assert.ok(startMinimalBody.indexOf("ensureEmailRegistered()") < startMinimalBody.indexOf("completeOnboarding("));
 });
+
+test("the email step discloses that the address is sent to and stored by no_human", () => {
+  const block = src.match(/\{step\.key === "email" && \(([\s\S]*?)\n {10}\)\}/);
+  assert.ok(block, "email step render block not found");
+  const text = block[1];
+  // JSX prose wraps across source lines, so collapse whitespace before
+  // matching the disclosure phrase — the same reason this file's other
+  // sweeps operate on `text`/`block` rather than raw single-line regexes.
+  const normalized = text.replace(/\s+/g, " ");
+  assert.match(normalized, /sent to and stored by no_human/i,
+    "the email step must disclose that the address now leaves the device");
+  assert.ok(!/nothing is sent from here/i.test(normalized),
+    "the stale 'nothing is sent from here' claim must be gone now that it forwards the address");
+});

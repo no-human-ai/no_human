@@ -181,6 +181,10 @@ CODEX_SUBSCRIPTION_SCRUB_VARS = (
 # backend seam that would use it.
 LOCAL_LLM_API_KEY_VAR = "LOCAL_LLM_API_KEY"
 
+# The welcome email's transport (email/send.py). Read from ~/.no_human/.env
+# or the process environment, exactly like every other credential here —
+# NEVER config.yaml, enforced below by `_reject_api_key_in_config`.
+RESEND_API_KEY_VAR = "RESEND_API_KEY"
 
 # Windows cannot express POSIX permission bits: `os.chmod` there only toggles
 # FILE_ATTRIBUTE_READONLY, and the mode argument to `os.open` is ignored except
@@ -1970,7 +1974,14 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # digging into the DB. False skips posting (an event still fires).
         "post_checklist_comment": True,
     },
-    "onboarding": {"completed": False},
+    "onboarding": {
+        "completed": False,
+        # Hosted registration intake for the mandatory Email step (task
+        # "onboarding email must reach our servers"). Empty by default — an
+        # unset endpoint means email/register.py makes zero network calls.
+        # NH_ONBOARDING_REGISTER_URL (env) takes precedence when set.
+        "registration_endpoint": None,
+    },
     "profile": {
         # Megaplan P1 (full autonomy). By default a profile drives a task only
         # after a human confirms it (ProjectProfile.is_usable). These opt-in
@@ -2823,8 +2834,19 @@ def load_config(
     # dropped the mkdir, which silently narrowed a contract: a custom path
     # under a missing parent used to be created and started raising
     # FileNotFoundError from _atomic_write_text instead.
+    #
+    # `ensure_private_dir` used to run unconditionally here, even when
+    # `create_if_missing=False` — several callers pass that flag specifically
+    # so a read-only load has no side effect on a machine that has never run
+    # `nh init` (see the `create_if_missing=False` comments in `db.py`'s
+    # retention-days read, `cli/commands.py`'s update-check and MCP-role
+    # lookups, and `intake/mcp_bridge.py`'s base-URL read — every one of them
+    # was actually violated by this, materializing `~/.no_human` regardless
+    # of the flag). Only privatize when either a write is coming
+    # (`create_if_missing`) or the directory is already there to secure.
     if config_path.parent == NO_HUMAN_HOME:
-        ensure_private_dir(NO_HUMAN_HOME)
+        if create_if_missing or NO_HUMAN_HOME.exists():
+            ensure_private_dir(NO_HUMAN_HOME)
     elif create_if_missing:
         config_path.parent.mkdir(parents=True, exist_ok=True)
     if not config_path.exists() and create_if_missing:
@@ -3532,7 +3554,7 @@ def _reject_api_key_in_config(data: dict[str, Any]) -> None:
     The rule now also covers a credential smuggled inside a URL, since
     ``llm.local_base_url`` is a URL and not a bare key.
     """
-    banned = {API_KEY_VAR, CODEX_API_KEY_VAR}
+    banned = {API_KEY_VAR, CODEX_API_KEY_VAR, RESEND_API_KEY_VAR}
 
     def walk(node: Any) -> None:
         if isinstance(node, dict):

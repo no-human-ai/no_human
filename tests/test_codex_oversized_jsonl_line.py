@@ -32,6 +32,24 @@ fixture shape so they exercise the exact call site (`create_subprocess_exec`
 `tests/test_codex_backend.py`'s `_fake_codex`, which backs stdout with a
 real (but in-memory-fed) `asyncio.StreamReader` — sufficient for that file's
 job of characterizing the NORMALIZER, not this incident's transport layer.
+
+INCIDENT 2026-09 (issue #104, run 35005108921 on 90204bf6): this file's own
+``test_the_unfixed_readline_raises_the_exact_asyncio_valueerror`` flaked to
+CI's 30-minute ceiling roughly 1/100 runs. Its ``finally`` did
+``proc.kill()`` then an unbounded ``await proc.wait()`` with no stdout
+drain. On CPython 3.12, ``BaseSubprocessTransport._wait()`` only resolves
+its waiter via ``_call_connection_lost``, which only fires once *every*
+pipe has disconnected. The fake CLI here still had its oversized line
+sitting unread in the ``StreamReader`` buffer; when that buffer exceeds
+``2 * limit`` the reader calls ``transport.pause_reading()`` — and a paused
+read transport never delivers EOF, so stdout never disconnects and the
+already-registered ``wait()`` waiter never wakes, even though the child is
+long dead (``returncode == -9``). Draining ``proc.stdout`` to EOF before
+``wait()`` resumes the transport, lets EOF arrive, and the reap completes
+immediately. This is test-only: production's ``_kill_and_reap`` in
+``codex_backend.py`` does not drain stdout either, but bounds the hang via
+``_TEARDOWN_WAIT`` instead — a separate, not-carried ticket (b7090c45). No
+production behavior changes here.
 """
 
 from __future__ import annotations
@@ -71,6 +89,25 @@ def _write_fake_cli(tmp_path, body: str, *, name: str = "fake-codex") -> str:
     path.write_text(_FAKE_CLI_HEADER.format(python=sys.executable, body=body))
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
     return str(path)
+
+
+async def _drain_stdout_then_wait(proc, *, timeout=30):
+    """Bounded stdout-drain-then-reap: the actual fix for the teardown
+    deadlock described in the module docstring above. A ``StreamReader``
+    left PAUSED by unread output never sees EOF, so its pipe never
+    disconnects and a ``wait()`` registered while the child was still alive
+    never resolves on CPython 3.12 (``_call_connection_lost`` is the only
+    path that wakes ``_exit_waiters``, and it needs every pipe to
+    disconnect). Reading ``proc.stdout`` to EOF resumes the transport and
+    lets that disconnect happen, so the reap below completes. Swallowing
+    the drain's own errors is deliberate here: a drain failure must never
+    stand in for whatever exception the caller's own body already raised.
+    """
+    try:
+        await asyncio.wait_for(proc.stdout.read(), timeout)
+    except Exception:  # noqa: BLE001
+        pass
+    return await asyncio.wait_for(proc.wait(), timeout)
 
 
 _BODY_OVERSIZED_EVENT = textwrap.dedent(
@@ -170,7 +207,109 @@ async def test_the_unfixed_readline_raises_the_exact_asyncio_valueerror(
     finally:
         if proc.returncode is None:
             proc.kill()
-        await asyncio.wait_for(proc.wait(), 30)
+        # The readline() above left the StreamReader's buffer past 2*limit,
+        # so it PAUSED its transport; see the module docstring and
+        # _drain_stdout_then_wait for why an undrained wait() can hang.
+        await _drain_stdout_then_wait(proc, timeout=30)
+
+
+# ---------------------------------------------------------------------------
+# AC2 control — a deterministic, on-demand reproduction of the deadlock
+# itself, independent of CI load (contrast with the ~1/100 flake above: the
+# default 65536-byte limit and a single 300 KiB line do not reliably pause
+# the reader on this machine — the readline() that raises the ValueError can
+# leave the buffer empty depending on exactly how the exception unwinds).
+# Forcing a small limit and a large, never-terminated write makes the pause
+# unconditional.
+# ---------------------------------------------------------------------------
+
+_BODY_FLOOD_THEN_LINGER = (
+    'emit({"type": "thread.started", "thread_id": "th_1"})\n'
+    'sys.stdout.write("x" * 2_000_000)\n'  # never newline-terminated
+    'sys.stdout.flush()\n'
+    'import time; time.sleep(30)\n'  # stay alive until the test kills us
+)
+
+_PROBE_STDOUT_LIMIT = 4096  # small enough that a few KiB pauses the reader
+_PROBE_DEADLOCK_WAIT = 2.0  # long enough to be a real hang, short for CI
+_PROBE_DRAIN_WAIT = 5.0
+
+
+@pytest.mark.parametrize("drain_stdout", [False, True], ids=["no-drain", "drain"])
+async def test_a_paused_stdout_deadlocks_the_reap_unless_it_is_drained(
+        tmp_path, drain_stdout):
+    """Failing-before/passing-after control for the teardown fix above,
+    self-contained so it does not depend on CI load or timing: with the
+    reader provably paused and the ``wait()`` waiter registered while the
+    child is still alive, killing the child and immediately awaiting that
+    waiter times out (``no-drain``) unless ``proc.stdout`` is drained to EOF
+    first (``drain``), matching ``_drain_stdout_then_wait`` above."""
+    cli = _write_fake_cli(tmp_path, _BODY_FLOOD_THEN_LINGER, name="fake-flood")
+    proc = await asyncio.create_subprocess_exec(
+        cli,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        limit=_PROBE_STDOUT_LIMIT,
+    )
+    assert proc.stdin is not None and proc.stdout is not None
+    waiter = None
+    try:
+        proc.stdin.write(b"prompt\n")
+        await asyncio.wait_for(proc.stdin.drain(), 30)
+        proc.stdin.close()
+
+        first = await asyncio.wait_for(proc.stdout.readline(), 30)
+        assert first, "the small thread.started line must read fine first"
+
+        # Poll (bounded) until the reader has actually paused its transport
+        # rather than reading anything more — reading here would defeat the
+        # whole point of the probe.
+        for _ in range(1000):
+            if getattr(proc.stdout, "_paused", False):
+                break
+            await asyncio.sleep(0.01)
+        else:
+            pytest.fail(
+                "proc.stdout never set _paused — either the child didn't "
+                "write enough to exceed 2*limit, or CPython renamed/removed "
+                "StreamReader._paused; this probe proves nothing until "
+                "that's addressed")
+        assert len(proc.stdout._buffer) > 0
+
+        # Register the waiter BEFORE kill: the child is provably alive here,
+        # so this future lands in the transport's _exit_waiters, which only
+        # _call_connection_lost (i.e. every pipe disconnecting) can resolve
+        # — the same shape as the real finally blocks in this file.
+        waiter = asyncio.ensure_future(proc.wait())
+        await asyncio.sleep(0)
+
+        proc.kill()
+
+        if drain_stdout:
+            await asyncio.wait_for(proc.stdout.read(), _PROBE_DRAIN_WAIT)
+            result = await asyncio.wait_for(
+                asyncio.shield(waiter), _PROBE_DRAIN_WAIT)
+            assert result == -9
+        else:
+            with pytest.raises(TimeoutError):
+                await asyncio.wait_for(
+                    asyncio.shield(waiter), _PROBE_DEADLOCK_WAIT)
+    finally:
+        # Always drain and reap, even in the no-drain branch — otherwise
+        # this probe leaks a live transport whose __del__ can raise once the
+        # event loop closes (see codex_backend.py's _kill_and_reap comments
+        # for the same failure mode in production).
+        if proc.returncode is None:
+            proc.kill()
+        try:
+            await asyncio.wait_for(proc.stdout.read(), _PROBE_DRAIN_WAIT)
+        except Exception:  # noqa: BLE001
+            pass
+        if waiter is not None:
+            await asyncio.wait_for(waiter, _PROBE_DRAIN_WAIT)
+        else:
+            await asyncio.wait_for(proc.wait(), _PROBE_DRAIN_WAIT)
 
 
 # ---------------------------------------------------------------------------

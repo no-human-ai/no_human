@@ -41,6 +41,25 @@ from no_human import telemetry
 from no_human.api.app import app
 from no_human.email import base, send
 
+# `_default_transport()` now (post Resend-wiring) actually looks at
+# `~/.no_human/.env` and the process environment. Every test in this module
+# routes through `send.send_welcome` — directly or via POST
+# /api/onboarding/email — so BOTH halves of the isolation are mandatory here,
+# module-wide, or a run on an operator machine with a real RESEND_API_KEY
+# would mail a real stranger at one of the literal example.com addresses
+# below: `isolated_env_file` (tests/conftest.py) keeps the .env file out of
+# it, `no_resend_key` keeps an inherited process env var out of it. Neither
+# is autouse (tamper_guard scores an autouse-that-monkeypatches fixture as
+# faking the system under test); both are opted into once, here, for the
+# whole module via `usefixtures`.
+pytestmark = pytest.mark.usefixtures("isolated_env_file", "no_resend_key")
+
+
+@pytest.fixture
+def no_resend_key(monkeypatch):
+    monkeypatch.delenv(send.RESEND_KEY_VAR, raising=False)
+
+
 # ── fixtures (patterns lifted verbatim from tests/test_onboarding_api.py and
 # tests/test_telemetry.py — not reinvented) ────────────────────────────────
 
@@ -168,7 +187,7 @@ async def test_registering_an_email_persists_to_config_yaml_and_is_redacted_from
     r = await client.post("/api/onboarding/email", json={"email": "person@example.com"})
     assert r.status_code == 200, r.text
     body = r.json()
-    assert set(body) == {"ok", "welcome"}, "the response must never echo the address back"
+    assert set(body) == {"ok", "welcome", "registration"}, "the response must never echo the address back"
     assert body["ok"] is True
 
     import yaml
@@ -404,12 +423,96 @@ def test_a_fake_transport_substituted_in_observes_the_rendered_message():
 
 
 def test_default_transport_never_claims_delivery_works():
+    """No `transport=` here — this reaches the REAL `_default_transport()`.
+    Safe only because of this module's `pytestmark` (isolated_env_file +
+    no_resend_key): with no key visible anywhere, `_default_transport()`
+    still returns `UnavailableTransport`, exactly as before Resend existed."""
     status = send.send_welcome("person@example.com")
     assert status == "not_sent:unconfigured"
     with pytest.raises(send.TransportUnavailable):
         send.UnavailableTransport().send(
             send.render_welcome("person@example.com")
         )
+
+
+# ── Resend wiring: the route picks it up when a key is configured, ignores
+# a key placed in config.yaml, and stays fail-open when the transport raises.
+
+
+@pytest.fixture
+def resend_opener_success(monkeypatch):
+    """Stands in for `urllib.request.urlopen` with an always-accepts
+    response — the only network seam `ResendTransport` has, so this is what
+    keeps the test below off the real wire even though the route itself
+    takes no `transport=` argument."""
+    calls = []
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        status = 200
+
+        def getcode(self):
+            return 200
+
+    def opener(req, timeout=None):
+        calls.append(req)
+        return _Resp()
+
+    monkeypatch.setattr("urllib.request.urlopen", opener)
+    return calls
+
+
+@pytest.mark.asyncio
+async def test_the_route_sends_through_resend_when_a_key_is_configured(
+    client, resend_opener_success, monkeypatch
+):
+    monkeypatch.setenv(send.RESEND_KEY_VAR, "re_test_key")
+    r = await client.post("/api/onboarding/email", json={"email": "person@example.com"})
+    assert r.status_code == 200, r.text
+    assert r.json()["welcome"] == "sent"
+    assert len(resend_opener_success) == 1
+    assert resend_opener_success[0].full_url == send.RESEND_ENDPOINT
+
+
+@pytest.mark.asyncio
+async def test_the_route_stays_unconfigured_without_a_key(client):
+    """The positive control for the test above — without it, a route hard-
+    wired off Resend entirely would satisfy it too."""
+    r = await client.post("/api/onboarding/email", json={"email": "person@example.com"})
+    assert r.status_code == 200, r.text
+    assert r.json()["welcome"] == "not_sent:unconfigured"
+
+
+@pytest.mark.asyncio
+async def test_a_raising_transport_leaves_the_registration_intact(client, monkeypatch):
+    """Fail-open end to end: a transport failure must not fail onboarding."""
+    class _Raising:
+        def send(self, msg):
+            raise RuntimeError("some transport-library detail")
+
+    monkeypatch.setattr(send, "_default_transport", lambda: _Raising())
+    r = await client.post("/api/onboarding/email", json={"email": "person@example.com"})
+    assert r.status_code == 200, r.text
+    assert r.json()["welcome"] == "not_sent:transport_error"
+
+    status = await client.get("/api/onboarding/status")
+    assert status.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_a_key_in_config_yaml_is_never_read_as_the_resend_key(client):
+    """`_resend_api_key` never looks at `app.state.config` at all — only
+    `~/.no_human/.env` and the process environment — so a key sitting in the
+    in-memory config (however it got there) must be inert."""
+    app.state.config.data["email"] = {"RESEND_API_KEY": "re_should_be_ignored"}
+    r = await client.post("/api/onboarding/email", json={"email": "person@example.com"})
+    assert r.status_code == 200, r.text
+    assert r.json()["welcome"] == "not_sent:unconfigured"
 
 
 def test_failure_categories_are_closed_and_address_free():
@@ -477,7 +580,7 @@ async def test_a_no_send_repost_does_not_clobber_the_recorded_outcome_or_timesta
 
     r2 = await client.post("/api/onboarding/email", json={"email": "person@example.com"})
     assert r2.status_code == 200
-    assert r2.json() == {"ok": True, "welcome": "skipped_unchanged"}
+    assert r2.json() == {"ok": True, "welcome": "skipped_unchanged", "registration": "skipped_unchanged"}
     after_second = dict(app.state.config.data["onboarding"])
     assert after_second["welcome_status"] == "sent", (
         "a no-send re-post must not replace the recorded send outcome"
