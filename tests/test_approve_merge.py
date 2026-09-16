@@ -2495,3 +2495,179 @@ def test_run_pytest_forces_utf8_on_the_child_without_touching_the_caller_env():
     assert "PYTHONIOENCODING" not in caller_env, (
         "the caller's dict must not be mutated — it belongs to the call site, "
         "which reuses it")
+
+
+# --------------------------------------------------------------------------- #
+# land_task — the gate runs the repo profile's own test command              #
+# --------------------------------------------------------------------------- #
+
+def test_the_full_gate_runs_the_repo_profile_test_command(land_env, monkeypatch):
+    """AC-1: the FULL gate runs the repo profile's own `test_cmd` (e.g. `npm
+    test`) instead of unconditionally forcing `python -m pytest`."""
+    calls = _patch_run_pytest(monkeypatch, returncode=0)
+    base_sha = land_env.remote_main_sha()
+    branch, _head_sha = land_env.cut_branch("no-human/t-npm-full")
+    result = land_task(
+        repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
+        task_id="deadbeef", task_title="Add feature", review_evidence="review PASS",
+        config=land_env.config, tested_commit_sha=base_sha, test_cmd="npm test",
+    )
+    assert result.ok, result.stderr
+    assert result.gate == "full"
+    assert len(calls) == 1
+    assert calls[0]["argv"] == ["npm", "test"]
+
+
+def test_a_non_pytest_profile_command_forces_the_full_gate(land_env, monkeypatch):
+    """A non-pytest profile command has no `-q <paths>` subset mode, so a tree
+    that would otherwise qualify for the FOCUSED gate must fall back to the
+    FULL profile command rather than silently skipping the gate."""
+    calls = _patch_run_pytest(monkeypatch, returncode=0)
+    branch, _head_sha = land_env.cut_branch(
+        "no-human/t-npm-forces-full",
+        extra_files={"tests/test_feature.py": "def test_x():\n    assert True\n"},
+    )
+    head_sha = _pin_branch_head(land_env)
+    result = land_task(
+        repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
+        task_id="deadbeef", task_title="Add feature", review_evidence="review PASS",
+        config=land_env.config, tested_commit_sha=head_sha, test_cmd="npm test",
+    )
+    assert result.ok, result.stderr
+    assert result.gate == "full"
+    assert "not pytest-based" in result.gate_reason
+    assert len(calls) == 1
+    assert calls[0]["argv"] == ["npm", "test"]
+
+
+def test_a_pytest_profile_command_keeps_the_focused_gate(land_env, monkeypatch):
+    """A profile `test_cmd` that is itself pytest-based (e.g. `uv run pytest
+    -q -n 4`) must not disturb the FOCUSED gate's byte-identical
+    `[python, -m, pytest, -q, <paths>]` invocation — only the FULL gate ever
+    runs the profile's own command verbatim."""
+    calls = _patch_run_pytest(monkeypatch, returncode=0)
+    branch, _head_sha = land_env.cut_branch(
+        "no-human/t-pytest-cmd-focused",
+        extra_files={"tests/test_feature.py": "def test_x():\n    assert True\n"},
+    )
+    head_sha = _pin_branch_head(land_env)
+    result = land_task(
+        repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
+        task_id="deadbeef", task_title="Add feature", review_evidence="review PASS",
+        config=land_env.config, tested_commit_sha=head_sha,
+        test_cmd="uv run pytest -q -n 4",
+    )
+    assert result.ok, result.stderr
+    assert result.gate == "focused"
+    assert len(calls) == 1
+    assert calls[0]["argv"] == [sys.executable, "-m", "pytest", "-q", "tests/test_feature.py"]
+
+
+def test_no_profile_command_falls_back_to_python_dash_m_pytest(land_env, monkeypatch):
+    """`test_cmd=""` (no profile command, or resolution failed) means "fall
+    back to `python -m pytest`" — today's behaviour, pinned byte-identical."""
+    calls = _patch_run_pytest(monkeypatch, returncode=0)
+    base_sha = land_env.remote_main_sha()
+    branch, _head_sha = land_env.cut_branch("no-human/t-nocmd-fallback")
+    result = land_task(
+        repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
+        task_id="deadbeef", task_title="Add feature", review_evidence="review PASS",
+        config=land_env.config, tested_commit_sha=base_sha, test_cmd="",
+    )
+    assert result.ok, result.stderr
+    assert result.gate == "full"
+    assert len(calls) == 1
+    assert calls[0]["argv"][:3] == [sys.executable, "-m", "pytest"]
+
+
+def test_a_runner_that_cannot_start_fails_closed_naming_the_runner(land_env, monkeypatch):
+    """A runner that cannot even start (e.g. `npm` missing on PATH) must fail
+    closed with a message naming the runner — never a raw test-dump, and
+    never a landed merge."""
+    def _raise(argv, *, cwd, timeout, env):
+        raise FileNotFoundError("npm")
+
+    monkeypatch.setattr("no_human.vcs.approve_merge._run_pytest", _raise)
+    before = land_env.remote_main_sha()
+    branch, _head_sha = land_env.cut_branch("no-human/t-runner-missing")
+    result = land_task(
+        repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
+        task_id="deadbeef", task_title="Add feature", review_evidence="review PASS",
+        config=land_env.config, tested_commit_sha="", test_cmd="npm test",
+    )
+    assert not result.ok
+    assert result.step == "tests"
+    assert "npm" in result.stderr
+    assert land_env.remote_main_sha() == before, "a runner that cannot start must not land"
+    assert "passed" not in result.stderr, "a failed-to-start runner must not read as a test dump"
+
+
+def test_exit_code_5_still_annotates_and_lands_with_a_profile_command(land_env, monkeypatch):
+    """Exit code 5 (no tests collected) stays "annotate and continue" even
+    when the FULL gate ran the repo's own profile command, not just the
+    `python -m pytest` fallback."""
+    calls = _patch_run_pytest(monkeypatch, returncode=5)
+    branch, _head_sha = land_env.cut_branch("no-human/t-nocollect-profile")
+    result = land_task(
+        repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
+        task_id="deadbeef", task_title="Add feature", review_evidence="review PASS",
+        config=land_env.config, tested_commit_sha="", test_cmd="npm test",
+    )
+    assert result.ok, result.stderr
+    assert result.gate == "full"
+    assert "no tests collected" in result.gate_reason
+    assert len(calls) == 1
+    assert calls[0]["argv"] == ["npm", "test"]
+
+
+def test_no_second_test_runner_seam_outside_run_pytest():
+    """Regression guard for the prior attempt (f40b0c0f): it added a SECOND
+    real subprocess seam (`_sh([py, "-c", "import pytest"])` behind a
+    `_pytest_importable` pre-check) outside the single sanctioned
+    `_run_pytest` seam. In a frozen build `py` is a PATH-fallback
+    interpreter with no pytest installed, so the pre-check returned False
+    and the gate failed closed on a VALID land. `_run_pytest` must stay the
+    only place either pytest or a profile command is actually invoked —
+    unavailability is discovered by attempting the real run (`OSError`),
+    never by a separate importability/probe subprocess."""
+    import ast
+
+    src_path = Path(approve_merge.__file__)
+    source = src_path.read_text(encoding="utf-8")
+    assert "import pytest" not in source
+    assert "_pytest_importable" not in source
+
+    tree = ast.parse(source, filename=str(src_path))
+    py_runner_sh_calls = []
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id == "_sh" and node.args):
+            continue
+        first = node.args[0]
+        if not isinstance(first, ast.List) or not first.elts:
+            continue
+        head = first.elts[0]
+        if not (isinstance(head, ast.Name) and head.id == "py"):
+            continue
+        # An interpreter-runner `_sh` call: only the known export_guard /
+        # check_release_manifest verify/approve steps may exist. None of
+        # them may pass "-c" (a probe/import-check — e.g. `[py, "-c",
+        # "import pytest"]` — is exactly the second-seam regression this
+        # test guards against) or invoke pytest directly (that belongs
+        # solely to `_run_pytest`).
+        literal_rest = [
+            elt.value for elt in first.elts[1:]
+            if isinstance(elt, ast.Constant) and isinstance(elt.value, str)
+        ]
+        assert "-c" not in literal_rest, (
+            "found an interpreter _sh([py, ...]) call using -c — a second "
+            "test-runner/import-probe seam outside _run_pytest")
+        assert not any("pytest" in arg for arg in literal_rest), (
+            "found an interpreter _sh([py, ...]) call invoking pytest "
+            "outside the single sanctioned _run_pytest seam")
+        py_runner_sh_calls.append(literal_rest)
+    assert py_runner_sh_calls, (
+        "expected at least the export_guard/check_release_manifest verify "
+        "calls to use [py, ...] via _sh — none found; did _sh's call "
+        "convention change?"
+    )

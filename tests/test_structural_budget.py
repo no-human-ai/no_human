@@ -1673,7 +1673,12 @@ FROZEN_FILE_LINES = {
     # a task a later task's `follows_id` already names as followed-up-on, in
     # both the single-task and `--ready --yes` paths. Measured via
     # `wc -l src/no_human/cli/commands.py`.
-    "cli/commands.py": 9149,
+    # 9149 -> 9156 (+7): `_land_one` resolves the repo profile's own test
+    # command (`profile_resolve.resolve_test_cmd`) and threads it through as
+    # `land_task(..., test_cmd=gate_cmd)`, so the merge gate's FULL run uses
+    # the repo's own `npm test`/etc. instead of always forcing `python -m
+    # pytest`. Measured via `wc -l src/no_human/cli/commands.py`.
+    "cli/commands.py": 9156,
     # api/app.py 5338 -> 5346 (+8): same budget-floor warning surfaced by
     # `send-back`/`reply` as `budget_warning` in the JSON response. Net cost
     # was trimmed from a naive +14 to +8 by computing `Bounds.from_config(...)`
@@ -1856,7 +1861,11 @@ FROZEN_FILE_LINES = {
     # through `update_task_config` at the API call site, same reason as
     # `cli/commands.py` above.
     # Measured on the squashed tree with the scanner below.
-    "api/app.py": 6346,
+    # 6346 -> 6353 (+7): `_merge_task_pr` resolves the repo profile's own
+    # test command (`profile_resolve.resolve_test_cmd`) and threads it
+    # through as `land_task(..., test_cmd=gate_cmd)`, same reason as
+    # `cli/commands.py` above. Measured via `wc -l src/no_human/api/app.py`.
+    "api/app.py": 6353,
     # +51: W5 active-time phase writer (phase instrumentation).
     # +84: `list_escalations`/`list_review_fails`/`list_tamper_trips` — the
     # three new failure-signal sources the recurring learning harvest mines.
