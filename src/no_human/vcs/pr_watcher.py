@@ -70,22 +70,83 @@ class PrFeedback:
 # GitHub comment fetcher
 # ---------------------------------------------------------------------------
 
+# `_NEW_SESSION` is defined below (near `_git_rc`) but module globals resolve
+# at CALL time, not definition time, so referencing it here before its own
+# definition line is fine; it is not moved or duplicated.
+#
+# A ceiling, not a budget. Every call site below is a forge NETWORK command
+# (`gh pr view`, `gh pr checks`, `gh api ...`, `glab api ...`): a healthy call
+# is sub-second, but `gh`/`glab`'s own retry/backoff against a degraded forge
+# (rate limiting, a stalled TLS handshake, an auth prompt reading from a
+# pipe that never closes) is minutes-scale, not seconds-scale. 120s matches
+# `_GIT_TIMEOUT` below (same file, same rationale shape): high enough that a
+# merely slow forge never reads as a false failure, low enough that one dead
+# call cannot hang forever.
+#
+# It bounds ONE invocation of `_run_cli`. It does NOT bound a `WakeWatcher`
+# tick or a `Scheduler.tick` — both call this once-or-more per parked task,
+# in sequence, so N parked tasks each hitting this ceiling still cost up to
+# N x _CLI_TIMEOUT. `core/scheduler.py` does not add a second, aggregate
+# timeout around that sequential loop either (see the comment at its
+# `await self.wake.tick(...)` call site) — this constant is the only bound
+# in the chain, and it is a per-call one.
+#
+# Write-side calls (`gh api -X POST/PATCH`, `glab api --method POST/PUT`) are
+# bounded by the SAME constant, uniformly, with no exemption:
+#   - What is abandoned on timeout: a POST/PATCH/PUT that already landed
+#     server-side is not rolled back; only the client-side response is lost,
+#     and `_run_cli` reports it exactly like any other failure (`None`).
+#   - Idempotent write (`upsert_agent_comment`): marker-deduped via
+#     `_find_marker_id` (`<!-- nh:<key> -->`), so a retry after an abandoned
+#     POST finds the orphaned comment and PATCHes/PUTs it in place instead of
+#     creating a second one.
+#   - Non-idempotent write (`post_reply_comment`): no dedupe, so an abandoned
+#     POST that actually succeeded plus a later retry can leave a duplicate
+#     reviewer-reply comment. Accepted deliberately: a duplicate comment is
+#     cosmetic and human-visible, while a scheduler stalled waiting on a
+#     write-side `gh` call stops ALL work -- including the retry that would
+#     have found the duplicate-avoiding marker. Preventing the stall dominates.
+#   - No exemption is carved out because every write call above is reachable
+#     from inside the same sequential wake tick as the read calls (e.g.
+#     `_evaluate -> _check_ci_gate_integration -> upsert_agent_comment`);
+#     exempting the write path would leave the stall hole open there alone.
+_CLI_TIMEOUT = 120.0
+
+
 async def _run_cli(cmd: list[str]) -> str | None:
-    """Run a CLI command; return stdout or None on failure."""
+    """Run a CLI command; return stdout or None on failure (never hangs; see
+    `_CLI_TIMEOUT`)."""
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
+            stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            # Own process group so the timeout below can reap a grandchild
+            # (e.g. a credential helper `gh` forked) that would otherwise
+            # keep inheriting the stdout pipe and hold `communicate()` open
+            # even after `gh`/`glab` itself is gone. Same shape as `_git_rc`.
+            **_NEW_SESSION,
         )
-        out, err = await proc.communicate()
-        if proc.returncode != 0:
-            log.debug("cmd %s failed: %s", cmd[:3], err.decode()[:200])
-            return None
-        return out.decode()
     except FileNotFoundError:
         log.debug("CLI not found: %s", cmd[0])
         return None
+    try:
+        out, err = await asyncio.wait_for(proc.communicate(), _CLI_TIMEOUT)
+    except TimeoutError:  # asyncio.TimeoutError is an alias of it since 3.11
+        # Every failure mode of the cleanup is swallowed: `os.killpg` does not
+        # exist on Windows, the group may already be gone, and this runs on
+        # the watcher's event loop, where a raise would take down the poll.
+        with contextlib.suppress(Exception):
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        with contextlib.suppress(Exception):
+            proc.kill()
+        log.warning("cmd %s timed out after %ss", cmd[:3], _CLI_TIMEOUT)
+        return None
+    if proc.returncode != 0:
+        log.debug("cmd %s failed: %s", cmd[:3], err.decode()[:200])
+        return None
+    return out.decode()
 
 
 async def fetch_github_pr_comments(
