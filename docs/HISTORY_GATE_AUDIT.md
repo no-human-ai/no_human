@@ -196,17 +196,20 @@ recurring term is the codebase's own domain vocabulary appearing in its own
 source, not third-party or employer content leaking in.
 
 **Evidence — the `.nh-local` hits are a real, confirmed leak.** `git show
-83b0b3640dc8:.nh-local` returns exactly one line of real content:
+83b0b3640dc8:.nh-local` returns exactly one line of real content (shown
+below with the personal-owner segment redacted the same way the scanner
+redacts it, so this audit does not itself re-ship the trace it is
+reporting on):
 
 ```
-/Users/eyalgolan/git/snc/master/no_human/.nh-local
+/Users/e*(9)/git/snc/master/no_human/.nh-local
 ```
 
 This is a **genuine absolute path from the operator's own machine**,
 committed verbatim into public history — the `s*(3)` redacted term
 (`"snc"`, the private repo's own path segment) and the `e*(9)` redacted
-term reported under §5.4 below (`"eyalgolan"`) are both real substrings of
-this one real line, not a false positive of any kind.
+term reported under §5.4 below (the operator's account name) are both
+real substrings of this one real line, not a false positive of any kind.
 
 **Evidence — the `e*(11)` message/identity hits are the operator's own,
 already-known identity.** `e*(11)` (11 characters, matching
@@ -259,12 +262,13 @@ this gate is testing, not real machine paths.
 **Evidence — the 5th signature, `/Users/e*(9)/...` in `.nh-local`, is a real,
 confirmed leak.** This is the exact same commit and the exact same real
 line already read in §5.3: `git show 83b0b3640dc8:.nh-local` →
-`/Users/eyalgolan/git/snc/master/no_human/.nh-local` — a genuine absolute
-home-directory path from the operator's own machine. The 9-character
-`e`-term matches `"eyalgolan"` exactly. This same signature also appears
-once more under the `message` surface (commit `5760cef4f8ec`); reading that
-commit's message directly (public data) confirms it too contains a real,
-plaintext absolute path: `nh repo setup-cmds /Users/eyalgolan/git/no_human-public ...`.
+`/Users/e*(9)/git/snc/master/no_human/.nh-local` (redacted, per the note in
+§5.3) — a genuine absolute home-directory path from the operator's own
+machine. The 9-character `e`-term matches the operator's account name
+exactly. This same signature also appears once more under the `message`
+surface (commit `5760cef4f8ec`); reading that commit's message directly
+(public data) confirms it too contains a real, plaintext absolute path:
+`nh repo setup-cmds /Users/e*(9)/git/no_human-public ...` (same redaction).
 
 **Why the class verdict is REAL-TRACE.** Two independent, directly-confirmed
 real hits (one blob, one message) of a genuine absolute machine path,
@@ -296,8 +300,8 @@ that also contains a confirmed real trace.
 directly-confirmed real trace — the operator's own already-known identity
 appearing in commit trailers and messages (expected, public-by-design git
 metadata, not a secret), and, more importantly, a genuine absolute machine
-path (`/Users/eyalgolan/git/snc/master/no_human/.nh-local`) leaked verbatim
-into two places in public history. Flipping `NH_GUARD_MODE` from `report` to
+path (`/Users/e*(9)/git/snc/master/no_human/.nh-local`, redacted per §5.3)
+leaked verbatim into two places in public history. Flipping `NH_GUARD_MODE` from `report` to
 `enforce` today would immediately and permanently block every push on a
 repository whose history is already public and cannot be un-published by a
 gate — it would not remediate the one real leak, only make the tool
@@ -331,10 +335,11 @@ re-verified against a fresh scan — not before.
   instruction.
 - **Did not edit `nh-guard`, `EXPORT_CLASSIFICATION.txt`, `contributors/*.md`,
   `RELEASE_MANIFEST.txt`, or any CI lane definition — all of these live
-  outside this worktree** (in `/Users/eyalgolan/git/snc/master/no_human` or
-  `/Users/eyalgolan/git/no_human-public`), and the harness instructions for
-  this task are explicit: "This is your working directory — make ALL edits
-  here... do not touch any other checkout of this repo." PLAN.md's own file
+  outside this worktree** (in the private source checkout, or in a separate
+  public-repo checkout used only as the `--repo` scan target), and the
+  harness instructions for this task are explicit: "This is your working
+  directory — make ALL edits here... do not touch any other checkout of
+  this repo." PLAN.md's own file
   list had proposed a `nh-guard` truncation-limit fix (raising the 600-char
   guard-log excerpt) and an `EXPORT_CLASSIFICATION.txt` ship-line pointing at
   this document; both are reasonable and reversible follow-ups an operator
