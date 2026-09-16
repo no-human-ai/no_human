@@ -34,6 +34,7 @@ EXPECTED_JOB_TIMEOUTS = {
     "inventory": 5,
     "python": 30,
     "web": 15,
+    "web_e2e": 25,
     "wheel": 20,
     # The paths detector (#297): one gh api call, no checkout.
     "changed": 5,

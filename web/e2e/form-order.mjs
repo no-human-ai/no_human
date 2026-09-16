@@ -173,7 +173,15 @@ visited.push("board");
 // on Escape, and when it stays open the sidebar is gone from the DOM — which is how
 // an earlier revision of this file skipped every settings screen while still
 // reporting a clean positive control off the composer alone.
-const settingsNav = page.locator(".nh-sidebar >> text=Settings");
+// NOT a bare `text=Settings` scoped to `.nh-sidebar`: with a fresh context (no
+// localStorage) and onboarding mocked complete, the one-time AI-config nudge
+// (App.jsx's `aiConfigNudge`, "hosts it as a flow sibling in .nh-sidebar-foot")
+// renders INSIDE the sidebar too, ahead of the real settings row in DOM order,
+// and its body copy ("...all in Settings") also contains the word "Settings" —
+// so `.first()` clicked that inert, handler-less text div instead of the real
+// nav row, and every tab check below failed against an overlay that never
+// opened. `.nh-settings-row` is the actual clickable row (App.jsx ~line 1539).
+const settingsNav = page.locator(".nh-sidebar .nh-settings-row");
 check("settings is reachable from the sidebar", (await settingsNav.count()) > 0);
 if (await settingsNav.count()) {
   await settingsNav.first().click();

@@ -10,71 +10,61 @@
 //
 // Each suite exits non-zero on failure, so this does too.
 //
-//   npm run e2e            # everything (needs a server on :8420 for live-flows)
-//   node e2e/board.mjs     # one suite
+//   npm run e2e             # everything in manifest.mjs (needs a server on :8420 for
+//                            #   the "manual"-lane walks that want one — see manifest.mjs)
+//   npm run e2e:ci          # only the "ci"-lane walks (what the web_e2e GitHub Actions job runs)
+//   node e2e/run-all.mjs --lane=manual   # only the "manual"-lane walks
+//   node e2e/board.mjs      # one suite
 //
-// live-flows.mjs drives the REAL server read-only: every non-GET request is hard-blocked, so it
-// can never approve/cancel/retry anything on the operator's board.
+// Which walk runs in which lane, and why, lives in one place: e2e/manifest.mjs.
 
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { WALKS } from "./manifest.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
-// live-flows needs the running server; the rest are self-contained (they serve dist themselves).
-const SUITES = [
-  ["board", "board.mjs"],
-  ["drawer", "drawer.mjs"],
-  ["inspector scroll drift (G-2)", "inspector-scroll-drift.mjs"],
-  ["merge progress", "merge-progress.mjs"],
-  ["composer", "composer.mjs"],
-  ["backlog queue", "backlog-queue.mjs"],
-  ["form order", "form-order.mjs"],
-  ["outcomes (3-lane board)", "outcomes.mjs"],
-  ["mobile nav", "mobile-nav.mjs"],
-  ["onboarding a11y", "onboarding-a11y.mjs"],
-  ["onboarding consent step", "onboarding-consent-step.mjs"],
-  ["onboarding summary counts", "onboarding-summary-counts.mjs"],
-  ["onboarding minimal path", "onboarding-minimal-path.mjs"],
-  ["onboarding step nav", "onboarding-step-nav.mjs"],
-  ["onboarding discord step", "onboarding-discord-step.mjs"],
-  ["onboarding recent card layout", "onboarding-recent-card-layout.mjs"],
-  ["integrations help + validate", "integrations-help-validate.mjs"],
-  ["settings a11y", "settings-a11y.mjs"],
-  ["settings account", "settings-account.mjs"],
-  ["models pane", "models-pane.mjs"],
-  ["rules archive", "rules-archive.mjs"],
-  ["failure reason", "failure-reason.mjs"],
-  ["grill a11y", "grill-a11y.mjs"],
-  ["dead click race", "dead-click-race.mjs"],
-  ["replay body leak", "replay-body-leak.mjs"],
-  ["replay DOM leak", "replay-dom-leak.mjs"],
-  ["live flows (needs :8420)", "live-flows.mjs"],
-  ["electron shell (needs :8420 + desktop install)", "electron-smoke.mjs"],
-];
+const laneArg = process.argv.find((a) => a.startsWith("--lane="));
+const lane = laneArg ? laneArg.slice("--lane=".length) : "all";
+if (!["all", "ci", "manual"].includes(lane)) {
+  console.error(`Unknown --lane=${lane} (expected: all, ci, manual)`);
+  process.exit(2);
+}
+const SUITES = WALKS.filter((w) => lane === "all" || w.lane === lane);
 
 const run = (file) =>
   new Promise((resolve) => {
+    const started = process.hrtime.bigint();
     const p = spawn(process.execPath, [join(HERE, file)], { stdio: ["ignore", "pipe", "pipe"] });
     let out = "";
     p.stdout.on("data", (d) => (out += d));
     p.stderr.on("data", (d) => (out += d));
-    p.on("close", (code) => resolve({ code, out }));
+    p.on("close", (code) => {
+      const elapsedS = Number(process.hrtime.bigint() - started) / 1e9;
+      resolve({ code, out, elapsedS });
+    });
   });
 
+const suiteStart = process.hrtime.bigint();
 let failed = 0;
-for (const [name, file] of SUITES) {
-  const { code, out } = await run(file);
+for (const { name, file } of SUITES) {
+  const { code, out, elapsedS } = await run(file);
   const last = out.trim().split("\n").filter(Boolean).pop() || "(no output)";
+  const timing = `(${elapsedS.toFixed(1)}s)`;
   if (code === 0) {
-    console.log(`PASS  ${name.padEnd(26)} ${last}`);
+    console.log(`PASS  ${name.padEnd(26)} ${timing.padEnd(8)} ${last}`);
   } else {
     failed += 1;
-    console.log(`FAIL  ${name.padEnd(26)} ${last}`);
+    console.log(`FAIL  ${name.padEnd(26)} ${timing.padEnd(8)} ${last}`);
     console.log(out.split("\n").filter((l) => /^FAIL|PAGEERROR|Error/.test(l)).slice(0, 6).join("\n"));
   }
 }
+const totalS = Number(process.hrtime.bigint() - suiteStart) / 1e9;
 
-console.log(failed ? `\n${failed} SUITE(S) FAILED` : "\nUI GATE GREEN");
+console.log(
+  failed
+    ? `\n${failed} SUITE(S) FAILED — ${SUITES.length} walks, ${failed} failed, ${totalS.toFixed(1)}s`
+    : `\nUI GATE GREEN — ${SUITES.length} walks, 0 failed, ${totalS.toFixed(1)}s`
+);
 process.exit(failed ? 1 : 0);

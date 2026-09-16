@@ -107,6 +107,10 @@ test("the step button's accessible name carries title, position and state", () =
 
 const here = fileURLToPath(new URL(".", import.meta.url));
 const src = readFileSync(here + "Onboarding.jsx", "utf8");
+// BASE_STEPS moved out of Onboarding.jsx into its own module (so an e2e walk
+// can import the real source of truth instead of hardcoding a rail length) —
+// read the step list from there, not from the component source.
+const stepsSrc = readFileSync(here + "onboardingSteps.js", "utf8");
 
 const NAV = (() => {
   const start = src.indexOf('<div className="ob-nav">');
@@ -117,7 +121,7 @@ const NAV = (() => {
 })();
 
 test("the wizard's STEPS list really has lastIndex 6, so these cases are the real ones", () => {
-  const steps = [...src.matchAll(/\{ key: "\w+",\s+title:/g)];
+  const steps = [...stepsSrc.matchAll(/\{ key: "\w+",\s+title:/g)];
   assert.equal(steps.length - 1, LAST,
     "STEPS changed length — update LAST in this test so the launch case still tests the LAST step");
 });
