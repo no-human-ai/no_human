@@ -6002,15 +6002,9 @@ class Orchestrator:
 
         await self._refresh_stale_base(task, repo, branch, base, base_pin=base_pin)
 
-        # Aligns `branch`'s local head with its own LIVE pushed tip BEFORE
-        # the coder session starts (see the method docstring). Runs AFTER
-        # `_refresh_stale_base` on purpose: `_refresh_stale_base` has its own
-        # pinned, observation-only divergence check (it merges `base` only,
-        # and never fixes a branch's divergence from its own remote tip) —
-        # running this first would erase that divergence before
-        # `_refresh_stale_base` ever measured it. Running after leaves that
-        # measurement untouched and then finishes the reconciliation the base
-        # merge was never responsible for.
+        # After `_refresh_stale_base` (base-only; never fixes divergence
+        # from the branch's OWN remote tip) so its pinned measurement isn't
+        # erased before it runs — see the method docstring.
         await self._align_branch_with_pushed_tip(task, repo, branch, attempt_id)
 
         # PR-F Gate 2: create matching branches in linked repos so changes
@@ -8073,11 +8067,8 @@ class Orchestrator:
             await self.store.update_attempt(
                 attempt_id, status="failed", failure_reason=str(exc),
                 completed_at=_now())
-            # `_reconcile_remote_branch` attaches `remote_tip` only on the
-            # "genuinely diverged from the branch's own pushed tip" raise —
-            # every other `ReviewedShaMismatch` (unreadable history, a plain
-            # sha mismatch) leaves it unset, so this stays the generic
-            # fallback escalation for those.
+            # `remote_tip` is set only on the "genuinely diverged" raise;
+            # other mismatches keep the generic fallback.
             if getattr(exc, "remote_tip", ""):
                 return await self._escalate_diverged_pushed_branch(
                     task, repo, branch, exc)

@@ -173,7 +173,13 @@ FROZEN_FUNCTION_LINES = {
     # ConvergenceAbort)` pattern the two sibling preflight call sites
     # already use. The preflight body itself lives in its own method, not
     # here. Re-measured on the MERGED tree with the scanner's own metric.
-    "core/orchestrator.py:Orchestrator._run_attempt": 2280,
+    # 2280 -> 2285 (+5): pushed-tip-divergence fix — one call to the new
+    # `_align_branch_with_pushed_tip` (plus a 3-line rationale comment)
+    # right after `_refresh_stale_base`, so a rejected task's rework is
+    # reconciled with its own already-pushed tip before the coder session
+    # starts. The method body itself lives elsewhere. Re-measured on the
+    # merge result.
+    "core/orchestrator.py:Orchestrator._run_attempt": 2285,
     # 760 -> 778 (+18): dispatch-time intake-eval hoisted path — the `elif
     # ctx.get("eval_result")` branch that acts on a grill/wizard-stored
     # verdict (idempotency marker, cost/residual-gap comments) added inside
@@ -238,7 +244,12 @@ FROZEN_FUNCTION_LINES = {
     # to make this retry's non-fast-forward path the expected outcome
     # (comment-only; `forced = _is_non_fast_forward(exc)` itself is
     # unchanged). Measured on this tree with the scanner below.
-    "core/orchestrator.py:Orchestrator._finalize": 441,
+    # 441 -> 446 (+5): pushed-tip-divergence fix — the `ReviewedShaMismatch`
+    # except block now routes to `_escalate_diverged_pushed_branch` (naming
+    # both shas and offering a merge) whenever `remote_tip` is set on the
+    # exception, instead of always falling through to the generic, empty-
+    # options `_escalate`. Re-measured on the merge result.
+    "core/orchestrator.py:Orchestrator._finalize": 446,
     # Pre-existing on main (measured red at d3d7d3a82a, this session's start):
     # an earlier fleet land grew stream() +6 without re-freezing it on its
     # merge result — the same "landed without measuring the ratchet" failure
@@ -1467,7 +1478,15 @@ FROZEN_FILE_LINES = {
     # and the `reason if reason is not None else ...` fix replacing `reason
     # or ...` in `_revert_worktree_writes_unguarded`. Re-measured on this
     # tree with `scan_tree`, not carried over as a stale delta.
-    "core/orchestrator.py": 24728,
+    # 24728 -> 24917 (+189): pushed-tip-divergence fix — the new
+    # `_align_branch_with_pushed_tip` method (reconciles a rejected task's
+    # rework with its own already-pushed tip, fast-forward or `-X ours`
+    # merge, never rebase/force), its call site in `_run_attempt`, the
+    # `remote_tip`/`reviewed_sha`/`branch` attributes attached in
+    # `_reconcile_remote_branch`'s genuinely-diverged raise, and the new
+    # `_escalate_diverged_pushed_branch` escalation helper. Re-measured on
+    # this tree with `scan_tree`.
+    "core/orchestrator.py": 24917,
 
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
@@ -1983,7 +2002,12 @@ FROZEN_FILE_LINES = {
     # approve` uses to find the task(s) that name a given task in
     # `follows_id` — used to warn/refuse landing a task a later one already
     # follows up on. Measured via `wc -l src/no_human/core/db.py`.
-    "core/db.py": 5331,
+    # 5331 -> 5363 (+32): pushed-tip-divergence fix — `count_attempts_
+    # failing_like` and `failure_reason_class_counts`, the `failure_reason
+    # LIKE` query interface a PR body uses to state how many past attempts
+    # hit a given failure class without inventing the number. Measured via
+    # `wc -l src/no_human/core/db.py`.
+    "core/db.py": 5363,
     # +71: set_local_backend_fields — the config-write helper for the Settings
     # pane's local coder-backend fields (llm.local_model / llm.local_base_url).
     # +75: Codex account config helpers.
