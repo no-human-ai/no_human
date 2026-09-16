@@ -17,6 +17,11 @@ The hosted endpoint URL and optional bearer token are OPERATOR CONFIGURATION
 value baked into this module: there is no production URL or credential to
 hardcode here, and shipping none is the deliberate, non-blocking encoding of
 that open question -- an unset endpoint makes zero network calls.
+
+The resolved endpoint must be `https://` (loopback excepted for tests, the
+same exception `brain/client.py`'s `_base()` grants its control-plane URL):
+a misconfigured `http://` endpoint is refused rather than used, since sending
+this request at all means putting the address on the wire.
 """
 
 from __future__ import annotations
@@ -27,6 +32,7 @@ import os
 import sys
 import urllib.request
 from typing import Any, Protocol
+from urllib.parse import urlsplit
 
 log = logging.getLogger("no_human.email")
 
@@ -39,6 +45,33 @@ _HTTP_TIMEOUT = 10.0
 
 _URL_ENV = "NH_ONBOARDING_REGISTER_URL"
 _TOKEN_ENV = "NH_ONBOARDING_REGISTER_TOKEN"
+
+#: The only hosts the plaintext-HTTP exception covers, mirroring
+#: brain/client.py's `_base()` guard exactly: compared against the PARSED
+#: host, never a string prefix -- `"http://localhost.evil.com"
+#: .startswith("http://localhost")` is True, so the prefix form would let a
+#: remote host reach this over plaintext HTTP.
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+
+
+def _is_https_or_loopback(url: str) -> bool:
+    """Refuse to ship the address over plaintext HTTP to a non-loopback host.
+
+    Same invariant `brain/client.py`'s `_base()` enforces on the control-plane
+    URL: an operator-configured `onboarding.registration_endpoint` (or
+    `NH_ONBOARDING_REGISTER_URL`) that resolves to `http://` would forward the
+    email in cleartext, so it is rejected here before any transport is
+    invoked -- not just for the shipped `UrlOpenTransport`, but for the
+    explicit `endpoint=` override too, since both carry the same PII.
+    """
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return False
+    host = (parts.hostname or "").lower()
+    if parts.scheme == "https":
+        return True
+    return parts.scheme == "http" and host in _LOOPBACK_HOSTS
 
 
 class RegisterTransport(Protocol):
@@ -122,6 +155,12 @@ def register_email(
     else:
         url, headers = _endpoint(config)
     if not url:
+        return "not_configured"
+    if not _is_https_or_loopback(url):
+        log.warning(
+            "onboarding registration endpoint must be https:// (loopback "
+            "excepted for tests); refusing to forward over plaintext HTTP"
+        )
         return "not_configured"
 
     plat = _platform(platform)

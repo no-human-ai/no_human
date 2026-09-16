@@ -97,6 +97,55 @@ async def test_no_endpoint_configured_makes_zero_outbound_calls(client, tmp_path
     assert on_disk["onboarding"]["email"] == "person@example.com"
 
 
+# ── HTTPS enforcement: a misconfigured plaintext endpoint must not ship the
+#    address in cleartext, mirroring brain/client.py's `_base()` guard ──────
+
+
+@pytest.mark.asyncio
+async def test_non_https_endpoint_makes_zero_outbound_calls(client, monkeypatch, tmp_path):
+    monkeypatch.setenv("NH_ONBOARDING_REGISTER_URL", "http://register.invalid/intake")
+    fake = _RecordingTransport()
+    app.state.register_transport = fake
+
+    r = await client.post("/api/onboarding/email", json={"email": "person@example.com"})
+    assert r.status_code == 200, r.text
+    assert r.json()["registration"] == "not_configured"
+    assert fake.calls == [], "a plaintext http:// endpoint must never be posted to"
+
+    import yaml
+    on_disk = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
+    assert on_disk["onboarding"]["email"] == "person@example.com"
+
+
+@pytest.mark.parametrize(
+    "url,expected",
+    [
+        ("https://register.invalid/intake", True),
+        ("http://register.invalid/intake", False),
+        ("http://localhost:8420/intake", True),
+        ("http://127.0.0.1:8420/intake", True),
+        ("http://[::1]:8420/intake", True),
+        ("http://localhost.evil.com/intake", False),
+        ("http://127.0.0.1@evil.com/intake", False),
+        ("", False),
+        ("not a url", False),
+    ],
+)
+def test_is_https_or_loopback(url, expected):
+    assert register._is_https_or_loopback(url) is expected
+
+
+def test_register_email_refuses_plaintext_endpoint_via_direct_call(caplog):
+    fake = _RecordingTransport()
+    with caplog.at_level(logging.WARNING):
+        status = register.register_email(
+            "person@example.com", transport=fake, endpoint="http://register.invalid/intake"
+        )
+    assert status == "not_configured"
+    assert fake.calls == []
+    assert "person@example.com" not in caplog.text
+
+
 # ── AC2: fail-open, off the critical path ──────────────────────────────────
 
 
