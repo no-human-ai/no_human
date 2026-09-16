@@ -43,6 +43,19 @@ test("a group headed by a newer cancel promotes the real failure to the represen
   assert.deepEqual(rows[0].olderIds, ["cancel_new", "cancel_old"]);
 });
 
+// A partial_success (salvaged) task points at a real, human-reachable commit
+// on a branch — the one card in a same-title group that must never end up
+// buried behind "+N older" under a newer plain failure or cancel.
+test("a group headed by a newer plain failure still promotes the salvaged task", () => {
+  const rows = groupFailedByTitle([
+    { id: "fail_new", title: "Per-PR CI_GATE", status: "failed", cancelled: false, created_at: "2026-07-13T11:26:04Z" },
+    { id: "salvaged", title: "Per-PR CI_GATE", status: "partial_success", created_at: "2026-07-13T11:05:57Z" },
+  ]);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].task.id, "salvaged", "the salvaged commit must head the group, even though it is older");
+  assert.deepEqual(rows[0].olderIds, ["fail_new"]);
+});
+
 test("with several real failures the NEWEST real failure heads the group", () => {
   const rows = groupFailedByTitle([
     { id: "f_old", title: "T", status: "failed", created_at: "2026-07-10T00:00:00Z" },

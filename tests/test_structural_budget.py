@@ -2486,6 +2486,13 @@ FROZEN_FILE_LINES = {
     # the `_resolve_branch_sha` helper it uses and the `PARTIAL_SUCCESS`
     # terminal-status wiring in `_run` itself. Measured on this tree with the
     # scanner below.
+    # PLACEHOLDER_A -> PLACEHOLDER_B: the final `set_status` crash write was
+    # split into two branches, each passing a LITERAL `TaskStatus.X` attribute
+    # instead of the `target_status` variable — `tests/test_resume_entry_registry.py`'s
+    # AST walk flags any `set_status` call whose target is a non-literal
+    # variable as an unregistered "re-entry site" (it might be claimable), and
+    # this terminal, one-way crash write is neither. Measured on this tree
+    # with the scanner below.
     "core/scheduler.py": PLACEHOLDER,
 }
 
