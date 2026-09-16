@@ -190,6 +190,25 @@ export function packagedSigning() {
   }
 }
 
+// The hosted onboarding-intake URL, stamped into the packaged package.json at
+// build time (electron-builder.config.cjs, from NH_ONBOARDING_REGISTER_URL) and
+// read here the same way as packagedSigning — from the packaged metadata, never
+// the live environment, so which builds forward is a build-time decision. An
+// official build carries it; a fork build (no stamp) returns null and forwards
+// nothing. The value is pushed into the spawned server's env (below) because it
+// is email/register.py — running in that server — that reads
+// NH_ONBOARDING_REGISTER_URL and forwards the address.
+export function packagedOnboardingEndpoint() {
+  try {
+    const pkg = JSON.parse(
+      fs.readFileSync(path.join(__dirname, "package.json"), "utf8"));
+    const url = pkg.nhOnboardingRegisterUrl;
+    return (typeof url === "string" && url) ? url : null;
+  } catch {
+    return null;
+  }
+}
+
 let updater = null;
 // The last version FACT (never a bare "failed"), for a renderer that mounts
 // after the event already fired — see retainedUpdate()'s doc for why.
@@ -568,6 +587,15 @@ async function _loadBoardOrError(w, current) {
   // Register at SPAWN, not on return: for the ~20s until ensureServer resolves
   // the child was in no registry, so nothing could stop it and a token save
   // reported success over a server holding the old credential.
+  // An official build carries the hosted onboarding-intake URL; propagate it
+  // into the server we are about to spawn (server.mjs spreads process.env into
+  // the child) so email/register.py forwards the onboarding address. A fork
+  // build has no stamp and this is a no-op. A value the user has already set in
+  // the live env wins, so a self-hoster can point it elsewhere.
+  const onboardingUrl = packagedOnboardingEndpoint();
+  if (onboardingUrl && !process.env.NH_ONBOARDING_REGISTER_URL) {
+    process.env.NH_ONBOARDING_REGISTER_URL = onboardingUrl;
+  }
   const result = await ensureServer({
     origin: ORIGIN,
     spawnTimeoutMs: SPAWN_TIMEOUT_MS,   // undefined → server.mjs's measured default
