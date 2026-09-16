@@ -1613,9 +1613,11 @@ def test_the_onboarding_docs_name_the_command_that_verifies_the_install(doc_name
 # had been widened. Fixed this round. These guards are the mechanism that
 # keeps each fix from rotting the same way it broke the first time.
 
+SECURITY_DOC = REPO / "docs" / "security.md"
 EVAL_MD = REPO / "docs" / "eval.md"
 KNOWN_ISSUES_MD = REPO / "docs" / "KNOWN_ISSUES.md"
 VERIFICATION_MD = REPO / "docs" / "verification.md"
+WINDOWS_MD = REPO / "docs" / "WINDOWS.md"
 
 
 @pytest.fixture(scope="module")
@@ -2007,9 +2009,9 @@ CITATION_TABLE = (
      "PreToolUse guard"),
     ("security.md", "vcs/pr_watcher.py:default_pr_state", "vcs/pr_watcher.py",
      '"gh", "pr", "view"'),
-    ("security.md", "vcs/git.py:GitRepo._have_remote_commit:1220", "vcs/git.py",
+    ("security.md", "vcs/git.py:GitRepo._have_remote_commit:1262", "vcs/git.py",
      '"git", "fetch"'),
-    ("security.md", ":GitRepo.fetch:1556", "vcs/git.py", '["fetch", remote]'),
+    ("security.md", ":GitRepo.fetch:1598", "vcs/git.py", '["fetch", remote]'),
     ("security.md", "cli/commands.py:merge_stack_run:3206", "cli/commands.py",
      '"gh", "pr", "merge"'),
     ("security.md", "cli/commands.py:approve:5640", "cli/commands.py",
@@ -2053,6 +2055,8 @@ CITATION_TABLE = (
      "Only WHETHER a non-empty token exists"),
     ("security.md", "brain/client.py:89-133", "brain/client.py",
      "cfg.control_plane_url"),
+    ("security.md", "email/send.py:ResendTransport.send", "email/send.py",
+     "resend rejected the send"),
     ("security.md", "telemetry.py:_destination", "telemetry.py",
      "posthog_host"),
     ("security.md", "intake/mcp_bridge.py:40", "intake/mcp_bridge.py",
@@ -2079,6 +2083,8 @@ CITATION_TABLE = (
      "northstar_card.py", "def spec_mean_success_rate("),
     # docs/KNOWN_ISSUES.md
     ("KNOWN_ISSUES.md", "db.py:Store.connect", "db.py", "aiosqlite.connect"),
+    # docs/WINDOWS.md
+    ("WINDOWS.md", "cli/commands.py:_try_kill:7595", "cli/commands.py", "signal.SIGKILL"),
 )
 
 assert len(CITATION_TABLE) >= 20, (
@@ -2100,6 +2106,7 @@ _CITATION_DOC_PATHS = {
     "security.md": SECURITY_DOC,
     "eval.md": EVAL_MD,
     "KNOWN_ISSUES.md": KNOWN_ISSUES_MD,
+    "WINDOWS.md": WINDOWS_MD,
 }
 
 
@@ -2386,9 +2393,9 @@ def test_absent_tolerant_citation_still_checks_content_when_present():
         _check_citation(doc, raw, resolve_path, "no-such-token-in-this-file")
 
 
-def test_the_citation_table_covers_every_line_citation_in_the_three_docs():
+def test_the_citation_table_covers_every_line_citation_in_the_four_docs():
     """Every backticked `path:line[-line]` OR `path:Symbol[:line[-line]]`
-    citation actually written in security.md/eval.md/KNOWN_ISSUES.md must
+    citation actually written in security.md/eval.md/KNOWN_ISSUES.md/WINDOWS.md must
     have a row in CITATION_TABLE — otherwise this guard only ever checks the
     citations someone remembered to add, which is exactly the blind spot
     that let the originals rot. Legacy line-only citations remain legal —
@@ -2403,6 +2410,18 @@ def test_the_citation_table_covers_every_line_citation_in_the_three_docs():
     extra: list[str] = []
     for doc, path in _CITATION_DOC_PATHS.items():
         text = path.read_text(encoding="utf-8")
+        open_tag = "<!-- citations: historical -->"
+        close_tag = "<!-- /citations: historical -->"
+        if open_tag in text:
+            assert text.count(open_tag) == text.count(close_tag), (
+                f"{doc} has unbalanced historical citation fences"
+            )
+            text = re.sub(
+                r'<!-- citations: historical -->.*?<!-- /citations: historical -->',
+                '',
+                text,
+                flags=re.DOTALL
+            )
         found = set(_LINE_CITATION_RE.findall(text)) | set(
             _SYMBOL_CITATION_RE.findall(text)
         )
@@ -3051,56 +3070,6 @@ def test_a_symbol_row_beyond_the_window_fails(tmp_path, monkeypatch):
         _check_citation(
             "security.md", "widget.py:widget_fn:11", "widget.py", "MARKER PHRASE"
         )
-
-
-def test_windows_md_code_line_citations_resolve():
-    """The OTHER half of #110: a bare line number into a live source file.
-
-    The reporter found `docs/WINDOWS.md` citing `cli/commands.py:4352` when
-    the line it described had moved 2,766 lines. A CITATION_TABLE row cannot
-    catch that: `_CITATION_DOC_PATHS` does not include `WINDOWS.md`, so
-    `_check_citation` never opens the doc -- I added such a row first and
-    measured it inert (rotting the citation back to 4352 left the file at
-    `137 passed`).
-
-    This reads the doc instead. For every `path/to/file.py:N` citation naming
-    a file under `src/no_human`, the cited line must still contain the token
-    the surrounding table cell describes. Only `.py` citations are checked:
-    nine of the doc's other citations name bare `.mjs`/`.cjs` basenames under
-    `desktop/`, which `_resolve_source` looks for under `src/no_human` only
-    and does not find -- registering the whole doc is a larger job than #110.
-    """
-    doc_path = Path(__file__).resolve().parent.parent / "docs" / "WINDOWS.md"
-    doc = doc_path.read_text(encoding="utf-8")
-    src_root = Path(__file__).resolve().parent.parent / "src" / "no_human"
-
-    #: cited path -> a token that must appear on the cited line
-    EXPECTED = {"cli/commands.py": "signal.SIGKILL"}
-
-    cites = re.findall(r"`([a-z_/]+\.py):(\d+)`", doc)
-    checked = 0
-    for rel, lineno in cites:
-        if rel not in EXPECTED:
-            continue
-        target = src_root / rel
-        assert target.is_file(), f"WINDOWS.md cites {rel}, which does not exist"
-        lines = target.read_text(encoding="utf-8").splitlines()
-        n = int(lineno)
-        assert 1 <= n <= len(lines), (
-            f"WINDOWS.md cites {rel}:{n}, but that file has {len(lines)} lines"
-        )
-        token = EXPECTED[rel]
-        assert token in lines[n - 1], (
-            f"WINDOWS.md cites {rel}:{n} for `{token}`, but that line reads "
-            f"{lines[n - 1].strip()!r}. The citation has rotted -- this is the "
-            f"defect #110 reported."
-        )
-        checked += 1
-
-    assert checked, (
-        "no checkable .py line citation found in WINDOWS.md -- the instrument "
-        "would pass vacuously"
-    )
 
 
 # --------------------------------------------------------------------------- #

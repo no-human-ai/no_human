@@ -162,7 +162,7 @@ named here.
   and line and quote the lines they are about. Same destination as the push.
 - **PR receipt and status polling** — `gh` / `glab` calls for the PR's head SHA
   and its mergeability (`vcs/pr_watcher.py:default_pr_state`, `vcs/receipts.py`), plus
-  `git fetch origin` (`vcs/git.py:GitRepo._have_remote_commit:1220`, `:GitRepo.fetch:1556`),
+  `git fetch origin` (`vcs/git.py:GitRepo._have_remote_commit:1262`, `:GitRepo.fetch:1598`),
   while a task waits on CI or review.
   These read; they send only the identifiers of a PR you just created.
 - **`nh merge-stack run` calls `gh pr merge`** against your git host
@@ -443,6 +443,15 @@ config key that turns it on and the default that keeps it off.
   `team_brain.control_plane_url` to **`""`**; when set, the client exchanges
   task patterns with that URL over `https` (loopback excepted)
   (`brain/client.py:89-133`).
+- **Welcome email (Resend).** Gated on an **environment variable**, not a
+  config key: `_default_transport()` (`email/send.py`) constructs a
+  `ResendTransport` only when `RESEND_API_KEY` is present in
+  `~/.no_human/.env` (chmod 600, gitignored) or the process environment —
+  never `config.yaml`. With no key, the default is still
+  `UnavailableTransport` and nothing touches the network. Configured, one
+  `urllib.request` POST carries the onboarding welcome email's subject, body
+  and the address you typed to `https://api.resend.com/emails`
+  (`email/send.py:ResendTransport.send`).
 
 ### Not egress: loopback
 
