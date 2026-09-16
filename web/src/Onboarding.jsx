@@ -875,9 +875,9 @@ export default function Onboarding({ onComplete }) {
             <Stagger>
               <h2 className="ob-h2">One email address for this install</h2>
               <p className="ob-note">
-                It is stored in your local config, and nothing is sent from here
-                yet — delivery is not wired up. When it is, this is where the
-                welcome goes. Nothing else, and no marketing list.
+                It is stored in your local config, and it is also sent to and
+                stored by no_human so the team can email you about this
+                install. Nothing else, and no marketing list.
               </p>
               <div className="ob-row">
                 <input
