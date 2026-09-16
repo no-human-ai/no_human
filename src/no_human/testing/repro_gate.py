@@ -369,6 +369,26 @@ def _pytest_python(repo_path: Path) -> str | None:
     return real_python(bin_dir.parent if bin_dir is not None else None)
 
 
+_EXECUTED_RE = re.compile(r"\b\d+\s+(passed|failed|errors?|xpassed|xfailed)\b")
+_COLLECTED_RE = re.compile(r"\bcollected\s+\d+\s+items?\b")
+
+
+def _pytest_never_loaded(out: str) -> bool:
+    """True when ``python -m pytest`` could not import pytest AT ALL.
+
+    The phrase alone is NOT enough: a test can fail cleanly while its own
+    output happens to print "No module named pytest" (e.g. as part of an
+    assertion message), which is test OUTPUT, not a launch error. A session
+    that actually ran always emits a count line (``N passed/failed/error(s)/
+    xpassed/xfailed``) or a ``collected N items`` line; when either is
+    present the phrase is not the launch error, and the real exit code is
+    the verdict.
+    """
+    if "No module named pytest" not in out and "No module named 'pytest'" not in out:
+        return False
+    return not (_EXECUTED_RE.search(out) or _COLLECTED_RE.search(out))
+
+
 def _run_pytest_proc(
     tests: list[str], cwd: Path, env: dict, python: str,
 ) -> tuple[int | None, str]:
@@ -376,11 +396,12 @@ def _run_pytest_proc(
 
     ``returncode`` is ``None`` when pytest could not even be launched or
     could not load at all (missing interpreter, timeout, pytest not
-    importable) — an ENVIRONMENT failure indistinguishable from any exit
-    code, so the caller must treat it as "could not run" rather than infer
-    anything from it. Any other value is the real pytest exit code (0-5),
-    including 5 ("no tests collected"), which IS meaningful and is left for
-    the caller to classify (see :func:`_nothing_executed`)."""
+    importable AND no test session ran) — an ENVIRONMENT failure
+    indistinguishable from any exit code, so the caller must treat it as
+    "could not run" rather than infer anything from it. Any other value is
+    the real pytest exit code (0-5), including 5 ("no tests collected"),
+    which IS meaningful and is left for the caller to classify (see
+    :func:`_nothing_executed`)."""
     try:
         proc = subprocess.run(
             [python, "-m", "pytest", "-x", "-q", "--no-header", *tests],
@@ -395,8 +416,9 @@ def _run_pytest_proc(
     # The interpreter can't even load pytest (a bare system python3 fallback,
     # or the frozen binary re-running the CLI). That is an environment failure,
     # NOT a test verdict — treat as not-ran so the caller returns "error", never
-    # a false "fail".
-    if "No module named pytest" in out or "No module named 'pytest'" in out:
+    # a false "fail". But only when no session actually ran: a test that fails
+    # cleanly while its own output mentions the phrase is a real verdict.
+    if _pytest_never_loaded(out):
         return None, out
     return proc.returncode, out
 
@@ -424,9 +446,6 @@ def _run_pytest(
     # not a test verdict. Anything that ran at least one test gives 0-4.
     ran = returncode != 5 and "no tests ran" not in out.lower()
     return ran, returncode == 0, out
-
-
-_EXECUTED_RE = re.compile(r"\b\d+\s+(passed|failed|errors?|xpassed|xfailed)\b")
 
 
 def _nothing_executed(returncode: int, out: str) -> str | None:

@@ -2055,6 +2055,10 @@ CITATION_TABLE = (
      "Only WHETHER a non-empty token exists"),
     ("security.md", "brain/client.py:89-133", "brain/client.py",
      "cfg.control_plane_url"),
+    ("security.md", "email/register.py:register_email", "email/register.py",
+     "Fail-open: any transport problem"),
+    ("security.md", "email/send.py:ResendTransport.send", "email/send.py",
+     "resend rejected the send"),
     ("security.md", "telemetry.py:_destination", "telemetry.py",
      "posthog_host"),
     ("security.md", "intake/mcp_bridge.py:40", "intake/mcp_bridge.py",
@@ -2064,10 +2068,10 @@ CITATION_TABLE = (
     ("security.md", "history/extractor.py:65-72", "history/extractor.py",
      "csrf_token"),
     # docs/eval.md
-    ("eval.md", "src/no_human/cli/commands.py:bench_run:8213",
+    ("eval.md", "src/no_human/cli/commands.py:bench_run:8255",
      "src/no_human/cli/commands.py", "different --trials are not resumed"),
-    ("eval.md", ":bench_run:8364", "src/no_human/cli/commands.py", "asyncio.gather"),
-    ("eval.md", ":bench_run:8242", "src/no_human/cli/commands.py",
+    ("eval.md", ":bench_run:8406", "src/no_human/cli/commands.py", "asyncio.gather"),
+    ("eval.md", ":bench_run:8284", "src/no_human/cli/commands.py",
      "(sc.task_id, sc.trial)"),
     ("eval.md", "src/no_human/eval/northstar_card.py:NorthStarCard.pass_k_rate:456",
      "src/no_human/eval/northstar_card.py", "def pass_k_rate("),
@@ -2082,7 +2086,7 @@ CITATION_TABLE = (
     # docs/KNOWN_ISSUES.md
     ("KNOWN_ISSUES.md", "db.py:Store.connect", "db.py", "aiosqlite.connect"),
     # docs/WINDOWS.md
-    ("WINDOWS.md", "cli/commands.py:_try_kill:7595", "cli/commands.py", "signal.SIGKILL"),
+    ("WINDOWS.md", "cli/commands.py:_try_kill:7637", "cli/commands.py", "signal.SIGKILL"),
 )
 
 assert len(CITATION_TABLE) >= 20, (
