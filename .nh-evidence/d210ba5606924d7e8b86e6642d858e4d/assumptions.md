@@ -1,6 +1,6 @@
 # Assumptions
 
-_Harness-captured record for task `d210ba56`, commit `a7aea13342dff9d6f838fe98ea450e1c3eaa9db5` — not model-authored: no_human wrote this file from the intake step's recorded questions and assumptions. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `d210ba56`, commit `97f60c9696b8ca952b58e7dd87c4fcc3ca8c6cc8` — not model-authored: no_human wrote this file from the intake step's recorded questions and assumptions. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 > ⚠️ **Unresolved:** You've hit your session limit · resets 3:10pm (Asia/Jerusalem) ('personal' subscription)
 
