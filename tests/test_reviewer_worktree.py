@@ -251,6 +251,229 @@ def test_excluded_volatile_paths_do_not_trigger_reviewer_wrote(worktree_env):
     )
 
 
+@pytest.mark.parametrize("shape", ["created", "rewritten", "deleted"])
+def test_auto_gc_pidfile_in_the_common_dir_does_not_discard_the_verdict(
+    worktree_env, shape,
+):
+    """Root-cause regression (task: git's auto-gc pidfile discards completed
+    review verdicts). `git gc --auto`, triggered by ANY of the up to four
+    coder worktrees or the operator checkout sharing this common dir running
+    `git commit`/`fetch`/`merge` during the review window — never the
+    worktree under review itself — creates `common/gc.pid` at the start of
+    its run and removes it at the end. Five completed review verdicts were
+    discarded on 2026-09-14 by exactly this file appearing, changing, or
+    disappearing mid-review (see `_VOLATILE_COMMON_EXACT`'s `gc.pid` comment
+    in reviewer_worktree.py and docs/GC_COMMON_DIR_FILES.md). Writing the
+    file directly, rather than waiting for a real `git gc --auto` to fire,
+    isolates the exclusion from this git version's own auto-gc trigger
+    heuristics — the same rationale as
+    `test_excluded_volatile_paths_do_not_trigger_reviewer_wrote` above."""
+    common = worktree_env["common_dir"]
+    pidfile = common / "gc.pid"
+
+    if shape in ("rewritten", "deleted"):
+        pidfile.write_text("11111 some-other-host\n")
+
+    before = rw.snapshot(worktree_env["wt"], timeout=_TIMEOUT)
+
+    if shape == "created":
+        pidfile.write_text("22222 this-host\n")
+    elif shape == "rewritten":
+        pidfile.write_text("33333 this-host\n")
+    else:
+        pidfile.unlink()
+
+    delta = rw.compare(worktree_env["wt"], before, timeout=_TIMEOUT)
+    assert delta.is_empty(), (
+        f"gc.pid {shape!r} in the common dir discarded the verdict: "
+        f"added={delta.added} modified={delta.modified} deleted={delta.deleted}"
+    )
+    offending = [*delta.added, *delta.modified, *delta.deleted]
+    assert not any("gc.pid" in p for p in offending), offending
+
+
+def test_gc_and_maintenance_bookkeeping_files_do_not_discard_the_verdict(
+    worktree_env,
+):
+    """The rest of `_VOLATILE_COMMON_EXACT`'s gc/maintenance bookkeeping
+    names, confirmed either by direct empirical capture of a real `git
+    maintenance run` against a throwaway repo (`gc.pid.lock`,
+    `packed-refs.lock`, `packed-refs.new`, `HEAD.lock`) or by `man git-gc`
+    (`gc.log`, written only when an auto-gc attempt FAILS). `maintenance.lock`
+    — the name `man git-maintenance` alludes to for its object-database lock
+    — is deliberately NOT covered here: it could not be confirmed to exist as
+    a literal common-dir path in this git version despite multiple targeted
+    attempts (a pre-planted stub, a `GIT_TRACE2_EVENT` trace, and a tight-loop
+    directory-listing capture across a comprehensive multi-task run), so it is
+    left OUT of `_VOLATILE_COMMON_EXACT` and stays watched by default — see
+    docs/GC_COMMON_DIR_FILES.md."""
+    wt = worktree_env["wt"]
+    common = worktree_env["common_dir"]
+    before = rw.snapshot(wt, timeout=_TIMEOUT)
+
+    (common / "gc.pid.lock").write_text("22222 this-host\n")
+    (common / "gc.log").write_text("error: some object is corrupt\n")
+    (common / "packed-refs.lock").write_text("")
+    existing_packed_refs = common / "packed-refs"
+    (common / "packed-refs.new").write_text(
+        existing_packed_refs.read_text(encoding="utf-8")
+        if existing_packed_refs.exists() else "")
+    (common / "HEAD.lock").write_text("ref: refs/heads/no-human/task-1\n")
+
+    delta = rw.compare(wt, before, timeout=_TIMEOUT)
+    assert delta.is_empty(), (
+        "gc/maintenance bookkeeping files in the common dir discarded the "
+        f"verdict: added={delta.added} modified={delta.modified} "
+        f"deleted={delta.deleted}"
+    )
+
+    # gc.log's other shape: a pre-existing gc.log (a previous auto-gc
+    # failure) removed by the NEXT successful auto-gc.
+    before2 = rw.snapshot(wt, timeout=_TIMEOUT)
+    (common / "gc.log").unlink()
+    delta2 = rw.compare(wt, before2, timeout=_TIMEOUT)
+    assert delta2.is_empty(), (
+        "gc.log's removal discarded the verdict: "
+        f"added={delta2.added} modified={delta2.modified} "
+        f"deleted={delta2.deleted}"
+    )
+
+
+def test_gc_bookkeeping_in_the_admin_dir_is_still_watched(worktree_env):
+    """The common-only scoping (`label == "common"`) pinned both ways: a
+    `gc.pid` appearing in THIS worktree's own admin dir — where no other
+    worktree ever writes — is not excused by `_VOLATILE_COMMON_EXACT` at
+    all, exactly like `COMMIT_EDITMSG`/`info/refs` before it."""
+    wt = worktree_env["wt"]
+    admin = worktree_env["admin_dir"]
+    before = rw.snapshot(wt, timeout=_TIMEOUT)
+
+    (admin / "gc.pid").write_text("22222 this-host\n")
+
+    delta = rw.compare(wt, before, timeout=_TIMEOUT)
+    assert ".git/admin/gc.pid" in delta.added, (
+        f"an admin-dir gc.pid was excused: added={delta.added} "
+        f"modified={delta.modified} deleted={delta.deleted}")
+
+
+def test_non_gc_git_dir_writes_still_discard(worktree_env):
+    """Everything else in the common dir must still discard: a real
+    execution-surface config key, a newly planted hook, `config.lock` itself
+    — the concrete proof no `*.lock` glob crept into this change — and a
+    rewrite of `objects/info/alternates`, the one named exception to the
+    `objects/` prune (see `Snapshot.alternates`)."""
+    wt = worktree_env["wt"]
+    admin = worktree_env["admin_dir"]
+    common = worktree_env["common_dir"]
+    cfg = common / "config"
+    alternates = common / "objects" / "info" / "alternates"
+    alternates.parent.mkdir(parents=True, exist_ok=True)
+
+    before = rw.snapshot(wt, timeout=_TIMEOUT)
+
+    _git(wt, "config", "--file", str(cfg), "core.hooksPath", "/tmp/x")
+    hook = admin / "hooks" / "post-checkout"
+    hook.parent.mkdir(parents=True, exist_ok=True)
+    hook.write_text("#!/bin/sh\ntrue\n")
+    hook.chmod(0o755)
+    (common / "config.lock").write_text("[core]\n")
+    alternates.write_text("/tmp/some-foreign-object-store/objects\n")
+
+    delta = rw.compare(wt, before, timeout=_TIMEOUT)
+    assert not delta.is_empty()
+    assert any("/config" in p and "core.hookspath" in p for p in delta.modified), (
+        f"a core.hooksPath config change was excused: modified={delta.modified}")
+    assert ".git/admin/hooks/post-checkout" in delta.added, (
+        f"a newly planted hook was excused: added={delta.added}")
+    assert any(p.endswith("common/config.lock") for p in delta.added), (
+        "config.lock was excused, implying a *.lock glob crept into this "
+        f"change: added={delta.added}")
+    assert any("objects/info/alternates" in p for p in delta.added), (
+        "objects/info/alternates was excused: "
+        f"added={delta.added} modified={delta.modified}")
+
+
+@pytest.mark.parametrize("shape", ["created", "rewritten", "deleted"])
+def test_objects_info_alternates_change_still_discards_the_verdict(
+    worktree_env, shape,
+):
+    """`objects/` as a whole stays walk-pruned by the pre-existing
+    `_SKIPPED_GIT_DIR_PREFIXES` (unchanged by this task), but
+    `objects/info/alternates` is a NAMED exception to that prune: rewriting
+    it makes a foreign object store resolvable through this repo, so
+    `Snapshot.alternates`/`compare()` read and diff it directly, outside the
+    walk (see the `alternates` field's docstring on `Snapshot`). All three
+    shapes — created, rewritten, deleted — must still discard the verdict;
+    this is a targeted watch, not a reopening of `_SKIPPED_GIT_DIR_PREFIXES`
+    (see `test_the_gc_exclusions_are_exact_label_scoped_names` for that
+    constant staying unchanged)."""
+    wt = worktree_env["wt"]
+    common = worktree_env["common_dir"]
+    alternates = common / "objects" / "info" / "alternates"
+    alternates.parent.mkdir(parents=True, exist_ok=True)
+
+    if shape in ("rewritten", "deleted"):
+        alternates.write_text("/tmp/some-preexisting-foreign-store/objects\n")
+
+    before = rw.snapshot(wt, timeout=_TIMEOUT)
+
+    if shape == "created":
+        alternates.write_text("/tmp/some-foreign-object-store/objects\n")
+    elif shape == "rewritten":
+        alternates.write_text("/tmp/a-different-foreign-object-store/objects\n")
+    else:
+        alternates.unlink()
+
+    delta = rw.compare(wt, before, timeout=_TIMEOUT)
+    assert not delta.is_empty(), (
+        f"objects/info/alternates {shape!r} in the common dir was excused: "
+        f"added={delta.added} modified={delta.modified} deleted={delta.deleted}"
+    )
+    offending = [*delta.added, *delta.modified, *delta.deleted]
+    assert any("objects/info/alternates" in p for p in offending), offending
+
+
+def test_a_real_write_alongside_gc_pid_churn_still_discards(worktree_env):
+    """Concurrency: gc bookkeeping churn happening AT THE SAME TIME as a
+    real reviewer write must not curtain the real write — the whole point
+    of scoping the exclusion to exact, narrow names rather than anything
+    broader."""
+    wt = worktree_env["wt"]
+    admin = worktree_env["admin_dir"]
+    common = worktree_env["common_dir"]
+    before = rw.snapshot(wt, timeout=_TIMEOUT)
+
+    (common / "gc.pid").write_text("22222 this-host\n")
+    hook = admin / "hooks" / "post-checkout"
+    hook.parent.mkdir(parents=True, exist_ok=True)
+    hook.write_text("#!/bin/sh\ntrue\n")
+    hook.chmod(0o755)
+
+    delta = rw.compare(wt, before, timeout=_TIMEOUT)
+    assert not delta.is_empty()
+    assert ".git/admin/hooks/post-checkout" in delta.added, (
+        f"a real write alongside gc.pid churn was missed: added={delta.added}")
+    offending = [*delta.added, *delta.modified, *delta.deleted]
+    assert not any("gc.pid" in p for p in offending), (
+        f"gc.pid churn was named alongside the real write: {offending}")
+
+
+def test_the_gc_exclusions_are_exact_label_scoped_names():
+    """No prefix, glob, regex or `startswith` matching — every entry of
+    `_VOLATILE_COMMON_EXACT` is a literal, exact name, and this task does
+    not widen `_VOLATILE_GIT_PREFIX`/`_SKIPPED_GIT_DIR_PREFIXES`."""
+    for name in rw._VOLATILE_COMMON_EXACT:
+        assert "*" not in name and "?" not in name, name
+
+    for near_miss in ("gc.pid.backup", "gc", "gcXpid", "packed-refs.locked",
+                       "HEAD.locking", "gc.logging", "maintenance.lock"):
+        assert not rw._is_volatile_git_path(near_miss, "common"), near_miss
+
+    assert rw._VOLATILE_GIT_PREFIX == "logs/"
+    assert rw._SKIPPED_GIT_DIR_PREFIXES == frozenset(
+        {"worktrees/", "objects/", "refs/"})
+
+
 def test_config_reserialization_excused_but_key_change_and_source_edit_caught(
     worktree_env,
 ):

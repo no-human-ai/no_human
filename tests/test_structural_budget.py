@@ -2340,7 +2340,11 @@ FROZEN_FILE_LINES = {
     # legitimately-claimed row still cannot be overwritten. Plus the
     # read-only `lease_lost` property mirroring `_lease_lost` for
     # `health.py`/`api/app.py`. Measured on this tree with the scanner below.
-    "core/scheduler.py": 3196,
+    # 3196 -> 3205 (+9): explanatory comment on the un-timeout-wrapped
+    # `self.wake.tick` await in the dispatch loop, clarifying that
+    # `_CLI_TIMEOUT` bounds only a single `pr_watcher._run_cli` call, not the
+    # whole sequential sweep over parked tasks. No behavior change.
+    "core/scheduler.py": 3205,
 }
 
 
