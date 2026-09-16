@@ -951,6 +951,11 @@ jobs:
         if: github.event_name == 'workflow_dispatch' && inputs.windows_release
         working-directory: desktop
         timeout-minutes: 15
+        env:
+          # Stamped into the packaged app so the onboarding email reaches our
+          # hosted intake. From a repo secret, so a fork's build (no secret →
+          # empty → electron-builder omits the field) never forwards.
+          NH_ONBOARDING_REGISTER_URL: ${{ secrets.ONBOARDING_REGISTER_URL }}
         run: npm run dist:win
 
       # Same contract as the linux job's verify step: exit 3 ("every check that
@@ -1143,6 +1148,10 @@ jobs:
       # SKIPped off macOS, and the linux block never asks for it).
       - name: Package the .deb and the AppImage (x64)
         working-directory: desktop
+        env:
+          # See the Windows dist step: official builds forward the onboarding
+          # email; a fork build lacks the secret and forwards nothing.
+          NH_ONBOARDING_REGISTER_URL: ${{ secrets.ONBOARDING_REGISTER_URL }}
         run: npm run dist:linux
 
       - name: What was built
