@@ -28,6 +28,7 @@ import os
 import platform
 import sqlite3
 import time
+import traceback
 from collections import deque
 from datetime import datetime, timedelta, timezone
 from typing import Awaitable, Callable
@@ -61,6 +62,15 @@ log = logging.getLogger("no_human.scheduler")
 #: `testing/runner.py`'s command-output excerpts are, so one runaway process
 #: cannot balloon the task_events row.
 _STDERR_EXCERPT_CAP = 2048
+
+#: The truncation marker both excerpts on a pool-crash event use. One constant
+#: so a reader who learned it from `stderr_excerpt` reads the traceback the same.
+_TRUNCATION_MARKER = "\n… [truncated]"
+
+#: Same bound as `stderr_excerpt`: both land in one durable event row, and a
+#: runaway traceback must not balloon it. Named separately so the two stay
+#: independently tunable without a second magic number today.
+_TRACEBACK_EXCERPT_CAP = _STDERR_EXCERPT_CAP
 
 # Tasks the scheduler may pick up: freshly created, or flipped back to
 # IMPLEMENTING by the WakeWatcher / `nh reply` resume. IMPLEMENTING first —
@@ -504,6 +514,41 @@ def _is_transient_db_lock(exc: BaseException) -> bool:
     if code is None:
         return True
     return code == sqlite3.SQLITE_BUSY
+
+
+def _traceback_excerpt(exc: BaseException) -> str:
+    """Formatted traceback of THE EXCEPTION PASSED IN — never `format_exc()`.
+
+    `format_exc()` reads `sys.exc_info()`, i.e. whatever is being handled RIGHT
+    NOW. Anything between the crash and the event write that raises and handles
+    its own exception (an `_on_event` callback, a logging handler, an awaited
+    step) leaves that ambient state naming the wrong crash; outside a handler it
+    yields the literal "NoneType: None". The exception object carries its own
+    `__traceback__` — read that.
+
+    Tail-capped, not head-capped: the LAST frame names the raising file and
+    line, which is the entire reason this field exists, so a deep stack must
+    lose its outermost frames. Same direction as claude_backend's `tb[-4000:]`.
+
+    `format_exception`'s own last list entry is always the outermost
+    exception's formatted message line(s) — a pathologically long exception
+    MESSAGE (not a deep stack) is capped there FIRST, before the overall
+    tail-slice, so a giant `str(exc)` cannot crowd the frame that names the
+    raising file/line out of the kept tail entirely.
+    """
+    try:
+        parts = traceback.format_exception(type(exc), exc, exc.__traceback__)
+    except Exception:  # noqa: BLE001 — a broken __repr__/__str__ on a custom
+        return ""      # exception must not cost us the rest of the event
+    text = "".join(parts).strip()
+    if len(text) <= _TRACEBACK_EXCERPT_CAP:
+        return text
+    half = _TRACEBACK_EXCERPT_CAP // 2
+    last = parts[-1] if parts else ""
+    if len(last) > half:
+        parts = parts[:-1] + [last[:half]]
+    text = "".join(parts).strip()
+    return _TRUNCATION_MARKER + "\n" + text[-_TRACEBACK_EXCERPT_CAP:]
 
 
 class Scheduler:
@@ -2408,7 +2453,7 @@ class Scheduler:
             stderr_excerpt = (stderr_raw or "").strip()
             if len(stderr_excerpt) > _STDERR_EXCERPT_CAP:
                 stderr_excerpt = (stderr_excerpt[:_STDERR_EXCERPT_CAP]
-                                   + "\n… [truncated]")
+                                   + _TRUNCATION_MARKER)
             # logging only — a bare print/traceback to stderr raises
             # BrokenPipeError inside THIS except when the desktop parent that
             # piped our stderr has crashed away (SCRUM-11), killing the pool
@@ -2431,6 +2476,7 @@ class Scheduler:
             # protect (see the stderr note above — that hazard is real, but it
             # is about writing to a broken pipe, not about the store).
             try:
+                tb_excerpt = _traceback_excerpt(exc)
                 crash_event = {
                     "source": "scheduler", "kind": "task_crashed",
                     "text": termination_reason,
@@ -2438,6 +2484,8 @@ class Scheduler:
                     "termination_reason": termination_reason,
                     "ts": time.time(),
                 }
+                if tb_excerpt:
+                    crash_event["traceback"] = tb_excerpt
                 if stderr_excerpt:
                     crash_event["stderr_excerpt"] = stderr_excerpt
                 await self.store.save_events(task.id, [crash_event])
