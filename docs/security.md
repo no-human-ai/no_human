@@ -334,9 +334,9 @@ named here.
   `~/.no_human/config.yaml` or `NH_NO_UPDATE_CHECK=1`
   (`updates.py:57`, which also covers CI).
 - **The desktop app checks GitHub Releases at startup**, once a day
-  (`desktop/main.mjs:251` → `desktop/updater.mjs:116`, called at startup from
-  `desktop/main.mjs:1113`, feed `provider: github, owner: no-human-ai, repo:
-  no_human` — `desktop/electron-builder.config.cjs:446`). It never downloads on its own
+  (`desktop/main.mjs:270` → `desktop/updater.mjs:116`, called at startup from
+  `desktop/main.mjs:1141`, feed `provider: github, owner: no-human-ai, repo:
+  no_human` — `desktop/electron-builder.config.cjs:457`). It never downloads on its own
   (`autoDownload` is off, `desktop/updater.mjs:68`). **This is a separate code
   path from the PyPI check above and neither `NH_NO_UPDATE_CHECK` nor
   `updates.enabled` exists in `desktop/` — those switches do not reach it.**

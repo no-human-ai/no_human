@@ -396,6 +396,17 @@ module.exports = {
   extraMetadata: {
     nhSigning: plan.mode,
     nhCanAutoUpdate: stamp.canAutoUpdate,
+    // The hosted onboarding-intake URL, stamped ONLY when the build environment
+    // carries NH_ONBOARDING_REGISTER_URL: the CI release jobs pass it from the
+    // ONBOARDING_REGISTER_URL repo secret, and the local macOS release build
+    // exports it. A fork build has neither, so the key is ABSENT and the shipped
+    // app forwards no onboarding email (main.mjs's packagedOnboardingEndpoint
+    // returns null). Like nhSigning/nhCanAutoUpdate this is read from the
+    // packaged metadata at runtime, never from the live env, so which builds
+    // forward is decided here at build time, not by a user exporting a var.
+    ...(process.env.NH_ONBOARDING_REGISTER_URL
+      ? { nhOnboardingRegisterUrl: process.env.NH_ONBOARDING_REGISTER_URL }
+      : {}),
   },
   mac,
   win,
