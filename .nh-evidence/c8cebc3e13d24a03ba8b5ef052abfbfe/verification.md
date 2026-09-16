@@ -1,136 +1,45 @@
 # How I verified this — full log
 
-_Harness-captured record for task `c8cebc3e`, commit `bfb76bbc924eccfa2c5cd794070c924c0988fcb2` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `c8cebc3e`, commit `e9a94a92aa10e5ce9aca812581e91d5cd1f19910` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ## How I verified this
-8 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
+3 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
 
 ### test
-- `uv run pytest tests/test_onboarding_email_forward.py -q 2>&1 | tail -60`
+- `uv run pytest tests/test_onboarding_email_forward.py tests/test_onboarding_email.py tests/test_onboarding_api.py tests/test_egress_allowlist.py tests/test_egress_disclosure.py tests/test_readme_claims.py tests/test_structural_budget.py -q 2>&1 | tail -80`
 
 ```
-........................                                                 [100%]
-24 passed in 1.78s
+........................................................................ [ 21%]
+........................................................................ [ 43%]
+..................s.s.s.s.s.s.s.s.s.s................................... [ 65%]
+............s.............................s............................. [ 86%]
+............................................                             [100%]
+320 passed, 12 skipped in 42.94s
 ```
 
-- `uv run pytest tests/test_onboarding_email_forward.py tests/test_onboarding_email.py tests/test_onboarding_api.py tests/test_egress_allowlist.py tests/test_egress_disclosure.py tests/test_readme_claims.py tests/test_structural_budget.py tests/test_config.py -q 2>&1 | tail -80`
+- `uv run pytest tests/test_resend_transport.py tests/test_config.py tests/test_repro_gate.py tests/test_reviewer_worktree.py -q 2>&1 | tail -40`
 
 ```
-........................................................................ [ 17%]
-........................................................................ [ 34%]
-..............s.s.s.s.s.s.s.s.s.s....................................... [ 52%]
-........s............................s.................................. [ 69%]
-........................................................................ [ 86%]
-......................................................                   [100%]
-402 passed, 12 skipped in 30.11s
+........................................................................ [ 27%]
+........................................................................ [ 54%]
+........................................................................ [ 81%]
+................................................                         [100%]
+264 passed in 54.91s
 ```
 
-- `uv run pytest tests/test_repro_gate.py tests/test_resend_transport.py -q 2>&1 | tail -40`
+- `uv run pytest tests/test_onboarding_email_forward.py tests/test_onboarding_email.py tests/test_onboarding_api.py tests/test_egress_allowlist.py tests/test_egress_disclosure.py tests/test_readme_claims.py tests/test_structural_budget.py tests/test_resend_transport.py tests/test_config.py tests/test_repro_gate.py tests/test_reviewer_worktree.py -q 2>&1 | tail -20`
 
 ```
-ERROR: file or directory not found: tests/test_resend_transport.py
-
-
-no tests ran in 0.00s
-```
-
-- `uv run pytest tests/test_structural_budget.py tests/test_readme_claims.py tests/test_egress_allowlist.py tests/test_egress_disclosure.py -q 2>&1 | tail -40`
-
-```
-..............................................s.s.s.s.s.s.s.s.s.s....... [ 32%]
-........................................s............................s.. [ 64%]
+........................................................................ [ 12%]
+........................................................................ [ 24%]
+..................s.s.s.s.s.s.s.s.s.s................................... [ 36%]
+............s.............................s............................. [ 48%]
+........................................................................ [ 60%]
+........................................................................ [ 72%]
+........................................................................ [ 84%]
 ........................................................................ [ 96%]
-.........                                                                [100%]
-213 passed, 12 skipped in 25.36s
-```
-
-- `uv run pytest tests/test_onboarding_email_forward.py tests/test_onboarding_email.py tests/test_onboarding_api.py tests/test_egress_allowlist.py tests/test_egress_disclosure.py tests/test_readme_claims.py tests/test_structural_budget.py tests/test_config.py -q -n 4 2>&1 | tail -40`
-
-```
-bringing up nodes...
-bringing up nodes...
-
-........................................................................ [ 17%]
-...............................................s........................ [ 34%]
-...............s.s.s.s.s.s.s.s.s.........................s.............. [ 52%]
-....................................................s................... [ 69%]
-........................................................................ [ 86%]
-......................................................                   [100%]
-402 passed, 12 skipped in 19.50s
-```
-
-- `cp .<redacted>/scratch/register_base.py src/<redacted>/email/register.py && uv run pytest tests/test_onboarding_email_forward.py -q -k "https_or_loopback or non_https or refuses_plaintext" 2>&1 | tail -60`
-
-```
-def test_is_https_or_loopback(url, expected):
->       assert register._is_https_or_loopback(url) is expected
-               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-E       AttributeError: module '<redacted>.email.register' has no attribute '_is_https_or_loopback'
-
-tests/test_onboarding_email_forward.py:135: AttributeError
-__________________ test_is_https_or_loopback[not a url-False] __________________
-
-url = 'not a url', expected = False
-
-    @pytest.mark.parametrize(
-        "url,expected",
-        [
-            ("https://register.invalid/intake", True),
-            ("http://register.invalid/intake", False),
-            ("http://localhost:8420/intake", True),
-            ("http:
-[... 2,075 of 3,214 characters omitted from the middle ...]
-lhost.evil.com/intake-False]
-FAILED tests/test_onboarding_email_forward.py::test_is_https_or_loopback[http://127.0.0.1@evil.com/intake-False]
-FAILED tests/test_onboarding_email_forward.py::test_is_https_or_loopback[-False]
-FAILED tests/test_onboarding_email_forward.py::test_is_https_or_loopback[not a url-False]
-FAILED tests/test_onboarding_email_forward.py::test_register_email_refuses_plaintext_endpoint_via_direct_call
-11 failed, 13 deselected in 1.34s
-```  
-  _excerpt - 3,210 characters of output in total_
-
-- `git diff --stat src/<redacted>/email/register.py && echo --- && uv run pytest tests/test_onboarding_email_forward.py tests/test_onboarding_email.py tests/test_onboarding_api.py tests/test_egress_allowlist.py tests/test_egress_disclosure.py tests/test_readme_claims.py tests/test_structural_budget.py tests/test_config.py -q -n 4 2>&1 | tail -20`
-
-```
-src/<redacted>/email/register.py | 39 +++++++++++++++++++++++++++++++++++++++
- 1 file changed, 39 insertions(+)
----
-bringing up nodes...
-bringing up nodes...
-
-........................................................................ [ 17%]
-................................................s....................... [ 34%]
-...............s.s.s.s.s.s.s.s.s.........................s.............. [ 52%]
-................................................s....................... [ 69%]
-........................................................................ [ 86%]
-......................................................                   [100%]
-402 passed, 12 skipped in 17.91s
-```
-
-- `uv run pytest tests/test_onboarding_email_forward.py tests/test_onboarding_email.py tests/test_onboarding_api.py tests/test_egress_allowlist.py tests/test_egress_disclosure.py tests/test_readme_claims.py tests/test_structural_budget.py tests/test_config.py -q -n 4 2>&1 | tail -20 && echo "=== web ===" && (cd web && node --test src/onboardingEmailStep.test.mjs 2>&1 | tail -10)`
-
-```
-bringing up nodes...
-bringing up nodes...
-
-........................................................................ [ 17%]
-...............................................s........................ [ 34%]
-...............s.s.s.s.s.s.s.s.s.........................s.............. [ 52%]
-................................................s....................... [ 69%]
-........................................................................ [ 86%]
-......................................................                   [100%]
-402 passed, 12 skipped in 23.77s
-=== web ===
-  ...
-1..12
-# tests 12
-# suites 0
-# pass 12
-# fail 0
-# cancelled 0
-# skipped 0
-# todo 0
-# duration_ms 40.432
+....................                                                     [100%]
+584 passed, 12 skipped in 108.86s (0:01:48)
 ```
 
 
