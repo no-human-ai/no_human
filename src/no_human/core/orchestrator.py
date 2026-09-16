@@ -8269,11 +8269,23 @@ class Orchestrator:
                                        merge_policy_error=type(exc).__name__)
         policy_evidence = self._deliver_evidence_ledger(  # #23 proof ledger
             repo, task, policy_evidence, head_sha=head_sha, review_checklist_raw=review_checklist_raw)
+        # AC5: the query is async (`Store.count_attempts_failing_like`) and
+        # `_pr_body` is sync, so it is run HERE, on this async path, and its
+        # result threaded in as a plain int — `_pr_body`/`_failure_class_
+        # history_note` never touch `self.store` themselves. A query failure
+        # degrades to `None` (rendered as "no count"), never blocks delivery.
+        try:
+            history_count = await self.store.count_attempts_failing_like(
+                DIVERGED_PUSHED_BRANCH_FAILURE_PATTERN)
+        except Exception as exc:  # noqa: BLE001 — advisory only; never blocks the PR
+            self._advisory(f"failure-class history count missing from PR body: {exc}")
+            history_count = None
         body = self._pr_body(task, commit, result, test_evidence=test_evidence, receipts=receipts,
                              repo=repo, base=base, branch=branch, attempt_n=attempt_n, merge_policy=merge_policy_dict,
                              evidence=policy_evidence,
                              verification_artifact_path=verification_artifact_path,
-                             ui_evidence_section=ui_evidence_section)
+                             ui_evidence_section=ui_evidence_section,
+                             history_count=history_count)
         # Refresh the body only if THIS TASK opened the draft that is sitting on THIS
         # branch. Durable (task.context), so it survives a park/resume and a process
         # restart; branch-scoped, so a revision onto a different branch cannot inherit it.
@@ -23052,6 +23064,7 @@ SIX of them read a checkpoint and TWO do not — but do
         evidence: PrEvidence | None = None,
         verification_artifact_path: str = "",
         ui_evidence_section: str = "",
+        history_count: int | None = None,
     ) -> str:
         # Short and to the point: no boilerplate, no product name, no verbose
         # dump. The title is the PR title; the body is criteria + a brief summary
@@ -23140,6 +23153,7 @@ SIX of them read a checkpoint and TWO do not — but do
         criteria_block = f"## Acceptance criteria\n{criteria}\n\n"
         assumptions = self._assumptions_section(task)
         superseded = self._superseded_section(task)
+        history_note = self._failure_class_history_note(history_count)
         footer = self._merge_boundary_footer(
             task, branch=branch, base=base, attempt_n=attempt_n)
 
@@ -23147,7 +23161,7 @@ SIX of them read a checkpoint and TWO do not — but do
             headline = evidence.headline() if evidence_section else ""
             return (f"{ticket_line}{headline}{evidence_section}{criteria_block}"
                     f"## Changes\n{changes_text}\n\n{assumptions}{superseded}"
-                    f"{verification}{ui_evidence_section}{footer}")
+                    f"{verification}{ui_evidence_section}{history_note}{footer}")
 
         # Computed ONCE, before the first `_assemble`: `_mechanical_changes_
         # summary` shells out to git (one `log`, one `diff`), and passing the
@@ -23414,6 +23428,29 @@ SIX of them read a checkpoint and TWO do not — but do
                           for u in urls[:6])
         return ("## Superseded PRs\nEarlier attempts on this task opened these "
                 "drafts and did not finish them:\n" + lines + "\n\n")
+
+    def _failure_class_history_note(self, history_count: int | None) -> str:
+        """AC5: state, IN THE PR BODY, how many attempt rows project-wide
+        have already recorded the "diverged pushed tip" delivery-refusal
+        failure class (`DIVERGED_PUSHED_BRANCH_FAILURE_PATTERN`) — a real,
+        query-derived number, never an invented one.
+
+        `_pr_body` is synchronous and `Store.count_attempts_failing_like` is
+        async, so this method never touches `self.store` itself: `_finalize`
+        runs the query on its own async path and passes the already-computed
+        result in as `history_count`. `None` means the query could not run
+        (a cold connection, e.g.) or was never attempted — the body renders
+        without this line rather than failing delivery over it, exactly like
+        every other advisory block in `_pr_body`.
+        """
+        if history_count is None:
+            return ""
+        return (
+            "\n\n_Recorded history: the \"diverged pushed tip\" delivery-refusal "
+            f"failure class (a rejected task's rework diverging from its own "
+            f"pushed branch tip) has occurred on {history_count} attempt(s) "
+            "project-wide, per `Store.count_attempts_failing_like`._"
+        )
 
     def _merge_boundary_footer(
         self, task: Task, *, branch: str | None = None, base: str | None = None,

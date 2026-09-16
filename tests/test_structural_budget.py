@@ -249,7 +249,13 @@ FROZEN_FUNCTION_LINES = {
     # both shas and offering a merge) whenever `remote_tip` is set on the
     # exception, instead of always falling through to the generic, empty-
     # options `_escalate`. Re-measured on the merge result.
-    "core/orchestrator.py:Orchestrator._finalize": 446,
+    # 446 -> 458 (+12): AC5 follow-up — `_finalize` now runs `Store.
+    # count_attempts_failing_like` on its own async path (try/except,
+    # advisory only) and threads the resulting count into `_pr_body` as
+    # `history_count=`, so the delivered PR body states the query-derived
+    # count directly rather than only the runtime escalation blocker seeing
+    # it. Re-measured on this tree with `scan_tree`.
+    "core/orchestrator.py:Orchestrator._finalize": 458,
     # Pre-existing on main (measured red at d3d7d3a82a, this session's start):
     # an earlier fleet land grew stream() +6 without re-freezing it on its
     # merge result — the same "landed without measuring the ratchet" failure
@@ -1492,7 +1498,14 @@ FROZEN_FILE_LINES = {
     # `_escalate_diverged_pushed_branch` so the escalation states a
     # query-derived historical count instead of an invented one.
     # Re-measured on this tree with `scan_tree`.
-    "core/orchestrator.py": 24939,
+    # 24939 -> 24976 (+37): AC5 follow-up round 2 — `_pr_body` gained a
+    # `history_count=` parameter and the new `_failure_class_history_note`
+    # helper (rendered into the assembled body), and `_finalize` now
+    # computes that count on its own async path and threads it through, so
+    # the DELIVERED PR BODY states the query-derived count, not only the
+    # divergence escalation blocker. Re-measured on this tree with
+    # `scan_tree`.
+    "core/orchestrator.py": 24976,
 
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
