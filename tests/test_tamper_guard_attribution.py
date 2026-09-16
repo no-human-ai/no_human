@@ -100,6 +100,38 @@ def test_a_patching_autouse_fixture_is_seen_even_beside_per_test_monkeypatch():
     assert tamper_guard.count_faking_fixtures(src) >= 1
 
 
+def test_a_per_test_patch_decorator_is_not_credited_to_an_isolation_autouse_fixture():
+    """Regression for a reviewer-caught gap in the first fix: masking blanked
+    a masked function's BODY but left its DECORATORS visible, so a
+    `@mock.patch("mymod.thing")` decorator directly on a test still counted
+    as a fake-patch and got attributed to an unrelated isolation-only autouse
+    fixture. A patch applied via a test's own decorator is a per-test patch —
+    exactly the 'monkeypatching elsewhere in the file' this whole fix is
+    about — and must not survive the mask."""
+    src = (
+        "import pytest\n"
+        "from unittest import mock\n\n"
+        "@pytest.fixture(autouse=True)\n"
+        "def _clean():\n"
+        "    infra_breaker().reset()\n"
+        "    yield\n"
+        "    infra_breaker().reset()\n\n"
+        "@mock.patch('mymod.thing')\n"
+        "def test_a(m):\n"
+        "    assert m is not None\n"
+    )
+    assert tamper_guard.count_faking_fixtures(src) == 0
+
+    report = tamper_guard.check(
+        {"tests/t.py": "import pytest\n"},
+        {"tests/t.py": src},
+    )
+    assert report.tampered is False, report.reasons
+    assert not any("autouse monkeypatch fixture" in r for r in report.reasons), (
+        report.reasons
+    )
+
+
 def test_autouse_fixture_in_a_class_and_async_fixture_still_counted():
     """Guards the AST walk depth / `AsyncFunctionDef` handling the CAUGHT
     corpus depends on: a fixture nested in a class body, and an async

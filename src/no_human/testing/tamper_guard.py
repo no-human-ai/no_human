@@ -375,9 +375,13 @@ def _mask_non_autouse_test_scopes(source: str) -> str:
     Scoping fixes that by attribution, not by loosening detection: a fake-patch
     call only counts against `count_faking_fixtures` when it is inside the
     fixture's OWN body (or at module scope — see below), never inside a
-    `def test_*` body or a fixture that was not opted into for every test.
-    Decorators and signatures are left unmasked, so `autouse=True` and the
-    fixture decorator itself still register.
+    `def test_*` body/decorator or a fixture that was not opted into for
+    every test. A masked function's OWN decorators are masked along with its
+    body — a `@mock.patch("mymod.thing")` decorator directly on a test is a
+    per-test patch, not the autouse fixture's, so it must not survive the
+    mask either. The autouse fixture ITSELF is never masked at all (decorator
+    list included), so `autouse=True` and any patch decorator actually on
+    the fixture still register.
 
     Deliberately NOT masked, so two verified CAUGHT samples
     (`testdata/tamper_samples/rule4_evasions.txt`) stay caught:
@@ -468,6 +472,17 @@ def _mask_non_autouse_test_scopes(source: str) -> str:
         is_test_decl = node.name.startswith("test")
         if not (is_test_decl or (is_fixture and not is_autouse)):
             continue  # autouse fixture or plain helper: leave visible
+        # A masked function's OWN decorators are per-test/per-fixture, not the
+        # autouse fixture's — e.g. `@mock.patch("mymod.thing")` directly on
+        # `def test_a(m)`. That is exactly the "monkeypatching elsewhere in
+        # the file" this function exists to keep out of the autouse fixture's
+        # count, so it is masked right alongside the body, not left visible.
+        for dec in decorators:
+            if dec.end_lineno is not None:
+                _mask_range(
+                    _offset(dec.lineno, dec.col_offset),
+                    _offset(dec.end_lineno, dec.end_col_offset),
+                )
         if not node.body or node.end_lineno is None:
             continue
         _mask_range(
