@@ -44,9 +44,10 @@ test("narrative never leaks a raw status/kind enum (no underscores)", () => {
   }
 });
 
-test("the derived status list matches the backend enum exactly (14 values, includes compound_parent)", () => {
-  assert.equal(ALL_STATUSES.length, 14, `expected 14 statuses, derived: ${JSON.stringify(ALL_STATUSES)}`);
+test("the derived status list matches the backend enum exactly (15 values, includes compound_parent and partial_success)", () => {
+  assert.equal(ALL_STATUSES.length, 15, `expected 15 statuses, derived: ${JSON.stringify(ALL_STATUSES)}`);
   assert.ok(ALL_STATUSES.includes("compound_parent"), "compound_parent must be derived from task.py, not hand-omitted");
+  assert.ok(ALL_STATUSES.includes("partial_success"), "partial_success (a crash that salvaged a commit) must be derived from task.py, not hand-omitted");
 });
 
 test("narrativeFor is total over every backend status — never throws, always colors, always says something", () => {

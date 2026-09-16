@@ -419,7 +419,12 @@ FROZEN_FUNCTION_LINES = {
     # (commit ee792bfa): a new terminal state for an escalated task a human
     # landed by hand, gated like failed_pre_pr/pending_never_ran. Reviewed
     # on its merits; re-anchored here as its landing baseline.
-    "blockers/landed_override.py:approve_landed_override": 322,
+    # Grew 322 -> 328 (+6) when PARTIAL_SUCCESS joined the `failed_pre_pr`
+    # shape: the `text +=` line for that shape now names the task's actual
+    # prior status word instead of hard-coding "failed", so a salvaged task's
+    # override record does not contradict what it already told a human.
+    # Reviewed on its merits; re-anchored here as its landing baseline.
+    "blockers/landed_override.py:approve_landed_override": 328,
     # +43: folds the whole unattributed_usage ledger (owned + ownerless) into
     # cost_usd_total/tokens_total and exposes ledger_owned_tokens/
     # ledger_ownerless_tokens, so per-task pre-attempt spend agrees with
@@ -2353,7 +2358,22 @@ FROZEN_FILE_LINES = {
     # `self.wake.tick` await in the dispatch loop, clarifying that
     # `_CLI_TIMEOUT` bounds only a single `pr_watcher._run_cli` call, not the
     # whole sequential sweep over parked tasks. No behavior change.
-    "core/scheduler.py": 3205,
+    # 3196 -> 3314 (+118): `_salvage_committed_work` (called from `_run`'s
+    # pool-crash handler when an attempt already has a `commit_sha` — resolves
+    # the branch's real tip via `git rev-parse --verify` off-thread, records a
+    # top-level `salvaged_work` context field and a `work_salvaged` event, and
+    # closes the attempt with a `failure_reason` naming the branch+sha), plus
+    # the `_resolve_branch_sha` helper it uses and the `PARTIAL_SUCCESS`
+    # terminal-status wiring in `_run` itself. Measured on this tree with the
+    # scanner below.
+    # 3314 -> 3327 (+13): the final `set_status` crash write was split into
+    # two branches, each passing a LITERAL `TaskStatus.X` attribute instead of
+    # the `target_status` variable — `tests/test_resume_entry_registry.py`'s
+    # AST walk flags any `set_status` call whose target is a non-literal
+    # variable as an unregistered "re-entry site" (it might be claimable), and
+    # this terminal, one-way crash write is neither. Measured on this tree
+    # with the scanner below.
+    "core/scheduler.py": 3336,
 }
 
 

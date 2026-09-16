@@ -152,6 +152,12 @@
       "waiting": false
     },
     {
+      "name": "a crash that salvaged a commit still routes to Failed",
+      "task": { "id": "t-partial-success", "status": "partial_success" },
+      "lane": "failed",
+      "waiting": false
+    },
+    {
       "name": "an unknown status falls back to Working, never lost",
       "task": { "id": "t-unknown", "status": "some_new_state" },
       "lane": "working",
