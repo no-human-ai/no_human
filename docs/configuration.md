@@ -1115,6 +1115,13 @@ either shape, add it here too: nothing will remind you.
   **It cannot reach outside your home directory**: a root that resolves
   elsewhere is refused, by design. For repos on another volume use the
   onboarding UI's "Search another folder", which takes any path.
+- `onboarding.registration_endpoint` (default **null**) — a hosted intake URL
+  that, when set, receives the address entered at the onboarding Email step
+  (plus a `desktop-<platform>` plan string and `source: "onboarding"`), so the
+  team can reach the person who typed it. `NH_ONBOARDING_REGISTER_URL` (env)
+  can set or override it. Left unset, `email/register.py` makes zero network
+  calls; the address stays local, in `onboarding.email`. See
+  `docs/security.md` §7 for the fail-open contract.
 - `max_thinking_tokens` (default 10000) — a TOP-LEVEL key, not nested under
   `llm`. It caps extended thinking on models that support it, and applies only
   when the task's computed complexity tier turns thinking on; there is no way
