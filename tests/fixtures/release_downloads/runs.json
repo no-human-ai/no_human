@@ -1,0 +1,51 @@
+[
+  {
+    "databaseId": 1001,
+    "conclusion": "failure",
+    "createdAt": "2026-09-14T14:25:25Z",
+    "headBranch": "v0.2.3",
+    "status": "completed"
+  },
+  {
+    "databaseId": 1002,
+    "conclusion": "failure",
+    "createdAt": "2026-09-14T14:34:17Z",
+    "headBranch": "v0.2.3",
+    "status": "completed"
+  },
+  {
+    "databaseId": 1003,
+    "conclusion": "failure",
+    "createdAt": "2026-09-14T14:44:28Z",
+    "headBranch": "v0.2.3",
+    "status": "completed"
+  },
+  {
+    "databaseId": 1004,
+    "conclusion": "failure",
+    "createdAt": "2026-08-01T09:00:00Z",
+    "headBranch": "v0.4.0",
+    "status": "completed"
+  },
+  {
+    "databaseId": 1005,
+    "conclusion": "success",
+    "createdAt": "2026-08-05T09:00:00Z",
+    "headBranch": "v0.5.0",
+    "status": "completed"
+  },
+  {
+    "databaseId": 1006,
+    "conclusion": "success",
+    "createdAt": "2026-08-10T09:00:00Z",
+    "headBranch": "main",
+    "status": "completed"
+  },
+  {
+    "databaseId": 1007,
+    "conclusion": "failure",
+    "createdAt": "2026-08-12T09:00:00Z",
+    "headBranch": "v0.6.0",
+    "status": "completed"
+  }
+]
