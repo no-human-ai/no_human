@@ -1825,6 +1825,20 @@ def _citation_root_mismatch(repo_path: Path, *, reviewed_sha: str = "") -> str:
     return ""
 
 
+def _root_mismatch_for_diff_override(
+    repo_path: Path, reviewed_sha: str, diff_override: str | None, before_ref: str,
+) -> str:
+    """`_citation_fails` trusts `repo_path` to describe the AFTER side of the
+    reviewed range; with `diff_override` that diff came from elsewhere, so
+    that trust needs checking (see `_citation_root_mismatch`). The multi-turn
+    path reviews refs it read itself and needs no check — this only fires
+    for `diff_override` reviews."""
+    return (
+        _citation_root_mismatch(repo_path, reviewed_sha=reviewed_sha)
+        if diff_override and before_ref else ""
+    )
+
+
 def _verify_citations(
     items: list[ChecklistItem], repo_path: Path, before_ref: str,
     extra_repos: list[tuple[Path, str]] | None = None,
@@ -2657,18 +2671,8 @@ class AdversarialReviewer:
             full_files, omitted_files = _full_file_context(
                 repo_path, before_ref, after_ref,
             )
-        # `_citation_fails` opens files under `repo_path` on disk and trusts it
-        # to describe the AFTER side of the reviewed range. With `diff_override`
-        # that diff was computed somewhere else — possibly not from
-        # `repo_path`'s current state at all — so that trust needs checking:
-        # a dirty or wrong-commit worktree cannot answer citation questions
-        # about the reviewed diff, and a citation check failing for THAT
-        # reason must not silently demote a blocking finding (see
-        # `_verify_citations`). The multi-turn path reviews refs it read
-        # itself, so it needs no check.
-        root_mismatch = (
-            _citation_root_mismatch(repo_path, reviewed_sha=reviewed_sha)
-            if diff_override and before_ref else ""
+        root_mismatch = _root_mismatch_for_diff_override(
+            repo_path, reviewed_sha, diff_override, before_ref,
         )
         # Review depth scales with diff size: a small, risk-free diff (routed
         # by `core/review_routing.route`, called before this method) gets the
@@ -2728,10 +2732,8 @@ class AdversarialReviewer:
         # single-turn call (no tools). The model has everything it needs in
         # the prompt — no repo exploration.
         if diff_override or route_single_turn:
-            decision = await self._fast_review(
-                prompt, repo_path, before_ref=before_ref,
-                root_mismatch=root_mismatch,
-            )
+            decision = await self._fast_review(prompt, repo_path, before_ref=before_ref,
+                                               root_mismatch=root_mismatch)
             # R17: `_fast_review` has no no-verdict interception of its own, so
             # this exit used to hand the fail-closed sentinel to the verdict
             # handler as a finding against the DIFF. It is the gate — a gate
@@ -2806,10 +2808,8 @@ class AdversarialReviewer:
                     if len(decision.demoted_citations) > demoted_before:
                         was_passed = decision.passed
                         decision.passed = _gate_verdict(
-                            decision.checklist, {"passed": False},
-                            decision.stages, goal=decision.goal)
-                        if decision.passed and not was_passed:
-                            decision.passed_due_to_demotion = True
+                            decision.checklist, {"passed": False}, decision.stages, goal=decision.goal)
+                        decision.passed_due_to_demotion |= decision.passed and not was_passed
 
         # C3-G1: complex-tier tasks get parallel single-turn angle passes.
         # Angles are ADDITIVE and best-effort: one that times out or crashes

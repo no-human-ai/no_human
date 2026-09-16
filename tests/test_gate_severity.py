@@ -188,7 +188,7 @@ async def test_angle_passes_skipped_after_a_decided_fail(monkeypatch, tmp_path):
     r = AdversarialReviewer(model="claude-opus-5")
     calls = {"fast": 0}
 
-    async def fake_fast(prompt, repo_path, before_ref="HEAD~1"):
+    async def fake_fast(prompt, repo_path, before_ref="HEAD~1", root_mismatch=""):
         calls["fast"] += 1
         return ReviewDecision(passed=False, raw_output="FAIL")
     monkeypatch.setattr(r, "_fast_review", fake_fast)

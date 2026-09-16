@@ -2123,7 +2123,20 @@ FROZEN_FILE_LINES = {
     # env scrubbed of foreign secrets, and the docstring explaining why a
     # coder-planted `diff.external`/`diff.<x>.textconv` must not run in the
     # reviewer process. Security hardening; measured on this tree.
-    "review/reviewer.py": 3147,
+    # 3147 -> 3272 (+125): citation-root-mismatch detection. `diff_override`
+    # reviews trusted `repo_path`'s on-disk tree to answer citation questions
+    # about a diff that may have been computed elsewhere; a dirty or
+    # wrong-commit worktree let a real blocking finding get silently demoted
+    # to advisory. Adds `_citation_root_mismatch` and the small
+    # `_root_mismatch_for_diff_override` helper (read-only local git
+    # plumbing), threads `root_mismatch` through `_verify_citations` /
+    # `_parse_review_output` / `_fast_review` / `review()`, and adds two
+    # `ReviewDecision` fields (`citation_root_mismatch`,
+    # `passed_due_to_demotion`) so a caller can tell a mismatch-guarded
+    # BLOCK apart from a genuine pass, and a pass that only happened because
+    # every blocking finding was demoted apart from a clean one. Measured on
+    # this tree with the scanner below.
+    "review/reviewer.py": 3272,
     # 2706 -> 2711 (+5): pre-existing red on main at 03b262d23 (e922e9b4's
     # landing, change-scoped tests missed the ratchet) — repaired, measured,
     # on this merge; same cause as the two function-level wake.py bumps above.
