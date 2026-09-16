@@ -53,10 +53,18 @@ class AuditReport:
     rows: list[AuditRow] = field(default_factory=list)
     counts: dict[str, int] = field(default_factory=dict)
     scanned: int = 0  # live tasks scanned, whether or not they had a readable repo
+    # Distinct task ids with >= 1 diverged row. `_candidate_branches` can
+    # return more than one branch for the same task (the current `pr_branch`
+    # plus older same-stem local branches from before a recut), so `counts`
+    # — incremented once per *row* — is not the right source for "how many
+    # TASKS are diverged" (acceptance criterion 5's literal wording). This
+    # set is task-deduplicated so `diverged_count` cannot overcount a single
+    # looping task as more than one.
+    diverged_task_ids: set[str] = field(default_factory=set)
 
     @property
     def diverged_count(self) -> int:
-        return self.counts.get("diverged", 0)
+        return len(self.diverged_task_ids)
 
 
 def _branch_prefix(config) -> str:
@@ -136,4 +144,6 @@ async def audit_diverged_tasks(
                     remote_sha=remote_sha, state=state,
                 ))
                 report.counts[state] = report.counts.get(state, 0) + 1
+                if state == "diverged":
+                    report.diverged_task_ids.add(task.id)
     return report

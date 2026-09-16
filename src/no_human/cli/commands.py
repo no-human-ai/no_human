@@ -7347,8 +7347,6 @@ def diverged(as_json):
     Exit code is always 0 — this is informational, not a gate: a diverged
     branch a recut already recovered from is not itself a failure.
     """
-    import json as _json_mod
-
     from ..core.diverged_audit import audit_diverged_tasks
 
     config, _ = _bootstrap(require_auth=False)
@@ -7358,7 +7356,9 @@ def diverged(as_json):
             report = await audit_diverged_tasks(store, config.data)
 
         if as_json:
-            console.print(_json_mod.dumps({
+            # click.echo, not console.print: Rich wraps long lines (a task
+            # title), corrupting the embedded JSON with a stray newline.
+            click.echo(json.dumps({
                 "scanned": report.scanned,
                 "counts": report.counts,
                 "rows": [

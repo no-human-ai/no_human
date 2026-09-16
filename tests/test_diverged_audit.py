@@ -116,6 +116,50 @@ async def test_audit_counts_diverged_live_tasks(store, tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Test 8b (AC5 correctness): a task with TWO diverged branches (its current
+# `pr_branch` plus an older same-stem local branch, e.g. left over from
+# before a prior recut) counts as ONE diverged task, not two.
+# `_candidate_branches` deliberately returns every same-stem branch so none
+# are silently dropped from the detail rows — but the AC5 headline asks
+# "how many TASKS are diverged", so `diverged_count` must be deduplicated
+# by task_id rather than counting rows.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_a_task_with_two_diverged_branches_counts_once(store, tmp_path):
+    repo = _work(tmp_path, "two-branch")
+    bare = _bare(tmp_path, "two-branch.git")
+    _git(repo, "remote", "add", "origin", str(bare))
+
+    task = Task.new("Recut audit dedup test", repo_path=str(repo))
+    await store.create_task(task)
+    stem = f"no-human/{task.id[:8]}"
+
+    for branch in (stem, f"{stem}-2"):
+        _git(repo, "checkout", "-q", "-b", branch, "main")
+        (repo / "pr.py").write_text(f"{branch} v1\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-q", "-m", "pr work")
+        _git(repo, "push", "-q", "-u", "origin", branch)
+        (repo / "pr.py").write_text(f"{branch} v1, rewritten\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-q", "--amend", "-m", "pr work (rewritten)")
+
+    task.context = {"pr_branch": stem}
+    await store.update_task(task)
+
+    report = await audit_diverged_tasks(store, {})
+
+    div_rows = [r for r in report.rows
+                if r.task_id == task.id and r.state == "diverged"]
+    assert len(div_rows) == 2, div_rows  # both branches really are diverged
+    assert report.diverged_task_ids == {task.id}
+    assert report.diverged_count == 1, (
+        "one task with two diverged branches must count as one diverged "
+        f"task, not {report.diverged_count}")
+
+
+# ---------------------------------------------------------------------------
 # Test 9: the audit is pure observation — no push, no store write.
 # ---------------------------------------------------------------------------
 
@@ -189,6 +233,7 @@ def test_nh_diverged_prints_the_count(tmp_path, monkeypatch):
         ],
         counts={"diverged": 1, "up_to_date": 2},
         scanned=3,
+        diverged_task_ids={"t1"},
     )
 
     async def _fake_audit(store, config, **kw):
