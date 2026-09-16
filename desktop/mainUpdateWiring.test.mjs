@@ -92,6 +92,16 @@ test("the signing verdict fails CLOSED when the stamp is absent", () => {
     "an unstamped build must report itself unsigned, not unknown-but-fine");
 });
 
+test("packagedOnboardingEndpoint returns null on an unstamped build", () => {
+  // Same fork-safety as the signing verdict above: this checkout's
+  // desktop/package.json carries no nhOnboardingRegisterUrl, so the honest
+  // answer is "forward nowhere". Only an official build (electron-builder
+  // stamped the field from NH_ONBOARDING_REGISTER_URL) forwards the onboarding
+  // email; a fork build must stay silent.
+  assert.equal(main.packagedOnboardingEndpoint(), null,
+    "an unstamped build must not forward the onboarding email anywhere");
+});
+
 test("the update handlers are NOT restricted to the setup screen", () => {
   // nh:save-token and friends are gated on token.html. These are driven by the
   // board, so reusing that gate would reject every real call — a mistake worth
