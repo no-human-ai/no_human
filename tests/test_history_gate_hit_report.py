@@ -141,7 +141,7 @@ def test_parses_literal_family_marker_grammar():
 def test_parses_literal_family_absolute_home_path_variant():
     hit = hgr.parse_hit_body(
         "identity",
-        "b6d5c0608ea7 AUTHOR Avri Schneider <avri.schneider@gmail.com> :: "
+        "112233445566 AUTHOR Pat Contributor <pat.contributor@example.com> :: "
         "u79/f.py:1491:/home/o*(8)/...:plaintext (absolute home path)",
         "raw",
     )
@@ -150,7 +150,7 @@ def test_parses_literal_family_absolute_home_path_variant():
     # hits group by MATCH STYLE, not by every wording variant of "how".
     assert hit.klass == "literal:absolute-home-path"
     assert hit.match == "/home/o*(8)/..."
-    assert hit.identity == "Avri Schneider <avri.schneider@gmail.com>"
+    assert hit.identity == "Pat Contributor <pat.contributor@example.com>"
 
 
 def test_shape_and_literal_families_group_separately_even_on_same_surface():
