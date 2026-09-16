@@ -1467,7 +1467,15 @@ FROZEN_FILE_LINES = {
     # and the `reason if reason is not None else ...` fix replacing `reason
     # or ...` in `_revert_worktree_writes_unguarded`. Re-measured on this
     # tree with `scan_tree`, not carried over as a stale delta.
-    "core/orchestrator.py": 24728,
+    # 24728 -> 24887 (+159): `claim_gate_decision` extracted delivery's
+    # zero-diff claim decision (uncommitted tree / report kind / resumed
+    # head / parsed claim vs. subject) into one function that both
+    # `_run_attempt`'s commit section and the new mid-attempt landed-claim
+    # guard call, plus the guard's own wiring (`_ordered_post_tool_hooks`'s
+    # `landed_hook` slot, its construction in `_run_attempt`, and feeding it
+    # from the event stream in `_forward_event`). Re-measured on this tree
+    # with `scan_tree`, not carried-over arithmetic.
+    "core/orchestrator.py": 24887,
 
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo

@@ -2979,6 +2979,15 @@ class Orchestrator:
         sv = getattr(self, "_active_supervisor", None)
         if sv is not None and event.text and event.kind in ("text", "assistant", "result"):
             sv.note_text(event.text)
+        # Same feed, for the landed-claim guard: it only sees a claim if the
+        # coder's own prose reaches it here. Best-effort — an advisory must
+        # never break the event stream it rides on.
+        guard = getattr(self, "_landed_claim_guard", None)
+        if guard is not None and event.text and event.kind in ("text", "assistant", "result"):
+            try:
+                guard.note_text(event.text)
+            except Exception:
+                pass
         # Track files the agent intentionally modified so we only commit those
         # (not test side-effects like state files updated during test runs).
         # Phase 7e: feed tool calls to the doom-loop detector.  If the
@@ -6090,6 +6099,7 @@ class Orchestrator:
                     branched_from_own_partial=branched_from_own_partial,
                     announce=False,
                 ),
+                on_event=self.emit,
             )
             self._landed_claim_guard = landed_hook
 
