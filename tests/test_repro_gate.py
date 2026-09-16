@@ -161,6 +161,79 @@ def test_pytest_not_importable_is_an_error_never_a_fail():
     assert ran2 is False and ok2 is False
 
 
+def test_clean_failure_mentioning_missing_pytest_is_a_real_verdict(monkeypatch):
+    """A test that fails cleanly while its own output happens to contain the
+    phrase 'No module named pytest' must NOT be misclassified as an
+    environment failure — pytest DID run a session here."""
+    import types
+    fail_out = (
+        "F\n=== FAILURES ===\n"
+        "test_full_gate_runs_the_profile_test_command\n"
+        "E   AssertionError: ModuleNotFoundError: No module named pytest\n"
+        "1 failed in 0.31s\n"
+    )
+    fake = types.SimpleNamespace(stdout=fail_out, stderr="", returncode=1)
+    monkeypatch.setattr(repro_gate.subprocess, "run", lambda *a, **k: fake)
+    rc, out = repro_gate._run_pytest_proc(["x.py::t"], Path("."), {}, "python")
+    assert rc == 1
+    assert out == fail_out
+    ran, ok, out2 = repro_gate._run_pytest(["x.py::t"], Path("."), {}, "python")
+    assert (ran, ok) == (True, False)
+
+    pass_out = "1 passed in 0.1s\nNo module named pytest appears here too\n"
+    fake_pass = types.SimpleNamespace(stdout=pass_out, stderr="", returncode=0)
+    monkeypatch.setattr(repro_gate.subprocess, "run", lambda *a, **k: fake_pass)
+    rc2, _ = repro_gate._run_pytest_proc(["x.py::t"], Path("."), {}, "python")
+    assert rc2 == 0
+
+
+def test_pytest_truly_not_importable_is_still_an_env_failure(monkeypatch):
+    """The genuine env-failure — pytest never runs a session at all — must
+    still be caught, whether the message uses bare or quoted 'pytest'."""
+    import types
+    fake = types.SimpleNamespace(
+        stdout="", stderr="/usr/bin/python: No module named pytest\n",
+        returncode=1)
+    monkeypatch.setattr(repro_gate.subprocess, "run", lambda *a, **k: fake)
+    rc, _ = repro_gate._run_pytest_proc(["x.py::t"], Path("."), {}, "python")
+    assert rc is None
+
+    fake_quoted = types.SimpleNamespace(
+        stdout="", stderr="ModuleNotFoundError: No module named 'pytest'\n",
+        returncode=1)
+    monkeypatch.setattr(repro_gate.subprocess, "run", lambda *a, **k: fake_quoted)
+    rc2, _ = repro_gate._run_pytest_proc(["x.py::t"], Path("."), {}, "python")
+    assert rc2 is None
+
+
+def test_env_failure_branches_other_than_the_phrase_are_unchanged(monkeypatch):
+    """The timeout and OSError env-failure branches must be untouched by
+    the session-aware detection fix."""
+    def raise_timeout(*a, **k):
+        raise subprocess.TimeoutExpired(cmd="pytest", timeout=repro_gate._RUN_TIMEOUT)
+    monkeypatch.setattr(repro_gate.subprocess, "run", raise_timeout)
+    rc, out = repro_gate._run_pytest_proc(["x.py::t"], Path("."), {}, "python")
+    assert rc is None
+    assert "timed out after" in out
+    monkeypatch.undo()
+
+    rc2, out2 = repro_gate._run_pytest_proc(
+        ["x.py::t"], Path("."), {}, "/does/not/exist/python")
+    assert rc2 is None
+    assert "could not run pytest" in out2
+
+
+def test_collected_line_alone_proves_a_session_ran(monkeypatch):
+    """A 'collected N items' line (no summary count) is enough on its own
+    to prove a session ran, even alongside the missing-pytest phrase."""
+    import types
+    out = "collected 1 item\nNo module named pytest\n"
+    fake = types.SimpleNamespace(stdout=out, stderr="", returncode=2)
+    monkeypatch.setattr(repro_gate.subprocess, "run", lambda *a, **k: fake)
+    rc, _ = repro_gate._run_pytest_proc(["x.py::t"], Path("."), {}, "python")
+    assert rc == 2
+
+
 def test_manifest_reader_tolerates_garbage(tmp_path):
     (tmp_path / ".no_human").mkdir()
     (tmp_path / MANIFEST).write_text("{not json")
