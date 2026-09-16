@@ -806,9 +806,19 @@ jobs:
     # the cache step below is a documented fact, not a guess about where
     # electron-builder and @electron/get happen to cache today. See
     # docs/DISTRIBUTION.md §6.
+    #
+    # Deliberately under `runner.temp`, not `~`: electron-builder resolves
+    # ELECTRON_BUILDER_CACHE/ELECTRON_CACHE with Node's path.resolve(), which
+    # does NOT expand a leading `~` -- it would become a literal `~` directory
+    # under the step's cwd, while actions/cache resolves `~` in `path:` to the
+    # runner's home. That mismatch means the download location and the cached
+    # location never agree, so the cache can never hit. `${{ runner.temp }}`
+    # is already an absolute, job-scoped path with no tilde involved, so the
+    # exact same string is used here and in the cache step's `path:` below --
+    # there is nothing left to expand differently.
     env:
-      ELECTRON_BUILDER_CACHE: ~\AppData\Local\electron-builder\Cache
-      ELECTRON_CACHE: ~\AppData\Local\electron\Cache
+      ELECTRON_BUILDER_CACHE: ${{ runner.temp }}\electron-builder-cache
+      ELECTRON_CACHE: ${{ runner.temp }}\electron-cache
     defaults:
       run:
         shell: pwsh
@@ -889,8 +899,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            ~\AppData\Local\electron-builder\Cache
-            ~\AppData\Local\electron\Cache
+            ${{ runner.temp }}\electron-builder-cache
+            ${{ runner.temp }}\electron-cache
           key: eb-binaries-${{ runner.os }}-${{ hashFiles('desktop/package-lock.json') }}
           restore-keys: |
             eb-binaries-${{ runner.os }}-
@@ -1107,9 +1117,19 @@ jobs:
     # the cache step below is a documented fact, not a guess about where
     # electron-builder and @electron/get happen to cache today. See
     # docs/DISTRIBUTION.md §6.
+    #
+    # Deliberately under `runner.temp`, not `~`: electron-builder resolves
+    # ELECTRON_BUILDER_CACHE/ELECTRON_CACHE with Node's path.resolve(), which
+    # does NOT expand a leading `~` -- it would become a literal `~` directory
+    # under the step's cwd, while actions/cache resolves `~` in `path:` to the
+    # runner's home. That mismatch means the download location and the cached
+    # location never agree, so the cache can never hit. `${{ runner.temp }}`
+    # is already an absolute, job-scoped path with no tilde involved, so the
+    # exact same string is used here and in the cache step's `path:` below --
+    # there is nothing left to expand differently.
     env:
-      ELECTRON_BUILDER_CACHE: ~/.cache/electron-builder
-      ELECTRON_CACHE: ~/.cache/electron
+      ELECTRON_BUILDER_CACHE: ${{ runner.temp }}/electron-builder-cache
+      ELECTRON_CACHE: ${{ runner.temp }}/electron-cache
     steps:
       # fetch-depth: 0 for the same reason as the windows job: the stale-
       # checkout guard in build-installer.sh needs origin/main to exist, or it
@@ -1191,8 +1211,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            ~/.cache/electron-builder
-            ~/.cache/electron
+            ${{ runner.temp }}/electron-builder-cache
+            ${{ runner.temp }}/electron-cache
           key: eb-binaries-${{ runner.os }}-${{ hashFiles('desktop/package-lock.json') }}
           restore-keys: |
             eb-binaries-${{ runner.os }}-

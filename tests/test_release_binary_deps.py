@@ -495,3 +495,45 @@ def test_both_release_jobs_pin_electron_cache_env_vars():
         env = job.get("env", {})
         assert "ELECTRON_CACHE" in env
         assert "ELECTRON_BUILDER_CACHE" in env
+
+
+def test_the_pinned_cache_dirs_are_not_a_bare_tilde():
+    """electron-builder resolves ELECTRON_BUILDER_CACHE/ELECTRON_CACHE with
+    Node's path.resolve(), which does NOT expand a leading '~' -- it becomes
+    a literal '~' directory under the step's cwd. A value like
+    '~\\AppData\\Local\\electron-builder\\Cache' therefore never matches
+    where actions/cache restores/saves ('~' expanded to the runner's home),
+    so the cache can never hit. The env value must be an absolute path with
+    no leading tilde (e.g. built from the `runner.temp`/`runner.workspace`
+    contexts, which are already absolute).
+    """
+    workflow = _load_workflow()
+    for job_name in ("windows", "linux"):
+        job = _job(workflow, job_name)
+        env = job["env"]
+        for name in ("ELECTRON_BUILDER_CACHE", "ELECTRON_CACHE"):
+            value = env[name]
+            assert not value.startswith("~"), (
+                f"{job_name}.env.{name} = {value!r} starts with a literal "
+                "'~', which Node's path.resolve() does not expand -- this "
+                "is the exact bug that makes the cache never hit"
+            )
+
+
+def test_the_cache_path_matches_the_pinned_env_vars_exactly():
+    """The cache step's `path:` entries must be the SAME strings as the
+    pinned ELECTRON_BUILDER_CACHE/ELECTRON_CACHE env vars, so the directory
+    actions/cache restores into is provably the directory electron-builder
+    reads from -- not merely two paths that happen to resolve the same way
+    under two different expansion rules.
+    """
+    workflow = _load_workflow()
+    for job_name in ("windows", "linux"):
+        job = _job(workflow, job_name)
+        env = job["env"]
+        cache_step = _step(job, "Cache electron-builder's downloaded binaries")
+        path_lines = [
+            line for line in cache_step["with"]["path"].splitlines() if line.strip()
+        ]
+        assert env["ELECTRON_BUILDER_CACHE"] in path_lines
+        assert env["ELECTRON_CACHE"] in path_lines
