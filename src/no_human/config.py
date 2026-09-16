@@ -1970,7 +1970,14 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # digging into the DB. False skips posting (an event still fires).
         "post_checklist_comment": True,
     },
-    "onboarding": {"completed": False},
+    "onboarding": {
+        "completed": False,
+        # Hosted registration intake for the mandatory Email step (task
+        # "onboarding email must reach our servers"). Empty by default — an
+        # unset endpoint means email/register.py makes zero network calls.
+        # NH_ONBOARDING_REGISTER_URL (env) takes precedence when set.
+        "registration_endpoint": None,
+    },
     "profile": {
         # Megaplan P1 (full autonomy). By default a profile drives a task only
         # after a human confirms it (ProjectProfile.is_usable). These opt-in

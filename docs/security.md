@@ -443,6 +443,20 @@ config key that turns it on and the default that keeps it off.
   `team_brain.control_plane_url` to **`""`**; when set, the client exchanges
   task patterns with that URL over `https` (loopback excepted)
   (`brain/client.py:89-133`).
+- **Onboarding email registration.** The Email step's `POST
+  /api/onboarding/email` always persists the address locally first
+  (`~/.no_human/config.yaml`'s `onboarding.email`), then — off the request's
+  critical path — forwards it to a hosted registration intake so the team can
+  reach the person who typed it, reusing the existing waitlist intake's
+  `{email, plan, source}` shape with `source: "onboarding"` and a
+  `desktop-<platform>` plan derived from local OS metadata
+  (`email/register.py:register_email`). `onboarding.registration_endpoint`
+  defaults to **`null`**, and `NH_ONBOARDING_REGISTER_URL` (env) can set or
+  override it; with neither set, zero network calls are made. The forward is
+  fail-open: any transport error or timeout (10s) collapses to a
+  `stored_locally_only` status and never blocks or fails the onboarding
+  response, and neither the address nor any exception detail is logged or
+  returned — only a closed-vocabulary status string.
 
 ### Not egress: loopback
 

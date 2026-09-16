@@ -972,6 +972,21 @@ ALLOWLIST: dict[str, dict[str, Allowed]] = {
             _CFG + "context.m365.token — absent from DEFAULT_CONFIG entirely; "
                    "the client raises before building the request"),
     },
+    # The CAPTURE half of "onboarding email must reach our servers": forwards
+    # the address just entered at onboarding (plus a `desktop-<platform>`
+    # plan string) to a hosted registration intake, off-thread and after the
+    # local persist. Fail-open — never raises, never logs/returns the
+    # address (register_email's docstring). Reuses the existing waitlist
+    # intake's payload shape with `source: "onboarding"`.
+    "email/register.py": {
+        "http:urllib.request": Allowed(
+            "your configured onboarding registration intake — the email "
+            "address just registered, plus a `desktop-<platform>` plan "
+            "string and `source: \"onboarding\"`",
+            _CFG + "onboarding.registration_endpoint — empty/None by "
+                   "default, so an unconfigured install sends nothing; "
+                   "NH_ONBOARDING_REGISTER_URL env var can set/override it"),
+    },
     "brain/client.py": {
         "http:httpx": Allowed("team_brain.control_plane_url — task patterns",
                               _CFG + "team_brain.enabled, "
