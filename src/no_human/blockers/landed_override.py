@@ -9,7 +9,10 @@ Five eligible shapes, resolved by ``_resolve_shape``:
   verbatim (see ``vcs/pr_watcher.py``'s ``_contained_at``/``default_branch_shipped``).
 - ``"failed_pre_pr"`` — a task that died BEFORE ever opening a PR (budget
   exhaustion, a pre-review test failure, a compile error — any pre-PR cause)
-  whose branch content a human later lands by hand. Live incident: task
+  whose branch content a human later lands by hand. Covers both ``FAILED``
+  and ``PARTIAL_SUCCESS`` tasks — the latter is the same pre-PR shape, just
+  one where the scheduler's crash handler already found and recorded the
+  stranded commit itself (``Scheduler._salvage_committed_work``). Live incident: task
   5b2246c1 review-PASSed head 9ba09affa, hit the lifetime budget cap before a
   PR ever opened, and the content was hand-landed at ca7bc32cf — leaving the
   board showing FAILED for shipped work, with neither `nh approve --landed`
@@ -206,7 +209,7 @@ LANDED_OVERRIDE_KIND = "approved_landed_override"
 #: refusal one layer deeper). Membership here is NECESSARY, never sufficient.
 LANDED_OVERRIDE_ELIGIBLE_STATUSES: frozenset[TaskStatus] = frozenset({
     TaskStatus.AWAITING_APPROVAL, TaskStatus.FAILED, TaskStatus.PENDING,
-    TaskStatus.DONE, TaskStatus.ESCALATED,
+    TaskStatus.DONE, TaskStatus.ESCALATED, TaskStatus.PARTIAL_SUCCESS,
 })
 
 
@@ -214,9 +217,9 @@ def ineligible_status_reason(status: TaskStatus) -> str:
     """The ONE wording used to refuse an ineligible status, at either layer."""
     return (
         f"task is {status.value!r}, not awaiting_approval, a pre-PR failed "
-        "task, a never-dispatched pending task, an escalated task whose "
-        "content a human landed by hand, or a done task with no completion "
-        "evidence on record"
+        "or partial_success task, a never-dispatched pending task, an "
+        "escalated task whose content a human landed by hand, or a done "
+        "task with no completion evidence on record"
     )
 
 
@@ -282,7 +285,13 @@ async def _resolve_shape(store: Any, task: Task) -> str:
     if task.status is TaskStatus.AWAITING_APPROVAL:
         return "awaiting_approval"
 
-    if task.status is TaskStatus.FAILED:
+    if task.status in (TaskStatus.FAILED, TaskStatus.PARTIAL_SUCCESS):
+        # PARTIAL_SUCCESS is the pre-PR shape by construction — it exists
+        # ONLY for a crash that landed a commit before any PR opened (see
+        # `Scheduler._salvage_committed_work`) — so it is folded into
+        # `failed_pre_pr` rather than growing a sixth shape: the same
+        # cancel/PR-evidence guards below apply unchanged, and the branch the
+        # override lands from is the one `salvaged_work` already recorded.
         ctx = task.context or {}
         if ctx.get("cancel_reason"):
             raise OverrideRefused(
@@ -811,7 +820,13 @@ async def approve_landed_override(
         f"Justification: {justification}"
     )
     if shape == "failed_pre_pr":
-        text += " prior status: failed (no PR was ever opened)."
+        # Both statuses this shape covers describe themselves accurately
+        # here rather than always saying "failed" — a partial_success task
+        # already told a human its commit was salvaged; the override text
+        # should not contradict that by calling it a bare failure.
+        text += (
+            f" prior status: {task.status.value} (no PR was ever opened)."
+        )
     elif shape == "pending_never_ran":
         text += " prior status: pending (no attempt ever ran)."
     elif shape == "escalated_hand_landed":

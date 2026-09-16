@@ -358,6 +358,15 @@ class TaskOut(BaseModel):
     # distinction every total_* field above already makes.
     cost_usd: float | None = None
     cost_model: str | None = None
+    #: The branch/commit a `partial_success` salvage found still holding the
+    #: work — top-level and human-visible (not nested under `context`) per
+    #: the incident this status exists for: a crash between "the attempt
+    #: committed" and "the PR is open" must not strand the commit somewhere
+    #: only a log file remembers. `None` for every other status/outcome.
+    #: Populated from `task.context["salvaged_work"]`
+    #: (`Scheduler._salvage_committed_work`), never computed here.
+    salvaged_branch: str | None = None
+    salvaged_commit_sha: str | None = None
 
     @classmethod
     def from_task(
@@ -437,7 +446,21 @@ class TaskOut(BaseModel):
             full_report=full_report,
             cost_usd=cost_usd,
             cost_model=cost_model,
+            **_salvaged_work_fields(task),
         )
+
+
+def _salvaged_work_fields(task: Task) -> dict:
+    """`{"salvaged_branch": ..., "salvaged_commit_sha": ...}`, both `None`
+    unless a post-commit crash salvage (`Scheduler._salvage_committed_work`)
+    recorded `task.context["salvaged_work"]`. The ONE place both `TaskOut`
+    and `TaskSummaryOut` read this from, so the two cannot drift."""
+    rec = (task.context or {}).get("salvaged_work")
+    if not isinstance(rec, dict):
+        return {"salvaged_branch": None, "salvaged_commit_sha": None}
+    branch = str(rec.get("branch") or "").strip() or None
+    sha = str(rec.get("commit_sha") or "").strip() or None
+    return {"salvaged_branch": branch, "salvaged_commit_sha": sha}
 
 
 def _failure_reason(task: Task, attempts: list[dict]) -> str | None:
@@ -456,8 +479,14 @@ def _failure_reason(task: Task, attempts: list[dict]) -> str | None:
       describes work that was interrupted, not a failure anyone diagnosed. The
       same distinction the read sites in `cli/commands.py` and `api/app.py`
       already make, and that `core/metrics.py` was missing.
+
+    `partial_success` reads this too: `Scheduler._salvage_committed_work`'s
+    caller closes the dying attempt with a `failure_reason` that names the
+    branch and sha verbatim (`close_open_attempts(..., reason=...)`), and
+    that IS this heading's exact question — "why isn't this just done" — even
+    though the status word is not literally `failed`.
     """
-    if task.status.value != "failed":
+    if task.status.value not in ("failed", "partial_success"):
         return None
     if (task.context or {}).get("cancel_reason") is not None:
         return None
@@ -644,6 +673,12 @@ class TaskSummaryOut(BaseModel):
     # create found nothing worth flagging, mirroring `estimate_feasibility`'s
     # own fail-open contract.
     feasibility_hint: dict | None = None
+    #: Mirrors `TaskOut.salvaged_branch`/`salvaged_commit_sha` — see that
+    #: field's docstring. Duplicated here (not just on `TaskOut`) because the
+    #: board list is exactly where a human first notices a task went
+    #: `partial_success` instead of `done`.
+    salvaged_branch: str | None = None
+    salvaged_commit_sha: str | None = None
 
     @classmethod
     def from_task(
@@ -763,6 +798,7 @@ class TaskSummaryOut(BaseModel):
             cost_usd=cost_usd,
             cost_model=cost_model,
             feasibility_hint=(task.context or {}).get("feasibility_hint"),
+            **_salvaged_work_fields(task),
         )
 
 

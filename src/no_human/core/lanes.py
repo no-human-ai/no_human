@@ -41,7 +41,10 @@ LANE_STATUSES: tuple[tuple[str, tuple[str, ...]], ...] = (
             "paused_quota",
         ),
     ),
-    ("failed", ("failed",)),
+    # partial_success: a crash stranded a real commit after it landed but
+    # before a PR existed. It is terminal and it is where a human already
+    # looks for "what happened to my task" — not a fourth outcome lane.
+    ("failed", ("failed", "partial_success")),
     ("review", ("awaiting_approval",)),
     ("done", ("done",)),
 )
@@ -184,7 +187,10 @@ def status_buckets(tasks: Any, waiting_for_slot_ids: Any = ()) -> dict[str, int]
             buckets["working"] += 1
         elif t.status in _WAITING:
             buckets["waiting"] += 1
-        elif t.status == TaskStatus.FAILED:
+        elif t.status in (TaskStatus.FAILED, TaskStatus.PARTIAL_SUCCESS):
+            # partial_success rolls into the same coarse count as failed: the
+            # distinguishing surface is the status string and the board row
+            # (LANE_STATUSES above), not this six-bucket CLI summary.
             buckets["failed"] += 1
         elif t.status == TaskStatus.DONE:
             buckets["done"] += 1
