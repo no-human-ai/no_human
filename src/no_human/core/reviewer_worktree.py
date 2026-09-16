@@ -194,7 +194,7 @@ def _run_git(repo_path: Path, *args: str, timeout: float) -> str:
             text=True,
             errors="replace",
             timeout=timeout,
-            env=_git_subprocess_env(args[0] if args else None),
+            env=_git_subprocess_env(args[0] if args else None), encoding="utf-8",
         )
     except subprocess.TimeoutExpired as exc:
         raise WorktreeCheckFailed(
@@ -531,7 +531,7 @@ def _config_effective(path: Path, *, timeout: float) -> str | None:
     try:
         proc = subprocess.run(
             ["git", "config", "--list", "-z", "--file", str(path)],
-            capture_output=True, text=True, errors="replace", timeout=timeout,
+            capture_output=True, text=True, errors="replace", timeout=timeout, encoding="utf-8",
         )
     except (subprocess.TimeoutExpired, OSError):
         return None

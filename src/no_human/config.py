@@ -313,7 +313,7 @@ def _run_icacls(args: list[str]) -> tuple[int, str]:
             "could read."
         )
     proc = _subprocess.run(
-        [exe, *args], capture_output=True, text=True, timeout=30,
+        [exe, *args], capture_output=True, text=True, timeout=30, encoding="utf-8", errors="replace",
     )
     return proc.returncode, f"{proc.stdout}\n{proc.stderr}"
 
@@ -2644,7 +2644,7 @@ def _macos_start_token(pid: int) -> str | None:
     try:
         proc = subprocess.run(
             ["ps", "-o", "lstart=", "-p", str(pid)],
-            capture_output=True, text=True, timeout=2,
+            capture_output=True, text=True, timeout=2, encoding="utf-8", errors="replace",
         )
     except (OSError, subprocess.SubprocessError):
         return None

@@ -73,7 +73,7 @@ def _run_gh(args: list[str], *, hostname: str = "") -> dict[str, Any]:
         cmd += ["--hostname", hostname]
     cmd += args
     result = subprocess.run(
-        cmd, capture_output=True, text=True, timeout=30,
+        cmd, capture_output=True, text=True, timeout=30, encoding="utf-8", errors="replace",
     )
     if result.returncode != 0:
         raise RuntimeError(f"gh api failed ({result.returncode}): {result.stderr.strip()}")

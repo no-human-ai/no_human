@@ -72,7 +72,7 @@ def _git(cwd: Path, *args: str) -> str | None:
     try:
         proc = subprocess.run(
             ["git", "-C", str(cwd), *args],
-            capture_output=True, text=True, timeout=_GIT_TIMEOUT,
+            capture_output=True, text=True, timeout=_GIT_TIMEOUT, encoding="utf-8", errors="replace",
         )
     except (OSError, subprocess.SubprocessError):
         return None

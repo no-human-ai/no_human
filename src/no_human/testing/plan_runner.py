@@ -343,7 +343,7 @@ def _check_branch_freshness(
     try:
         code_head = subprocess.run(
             ["git", "rev-parse", "HEAD"],
-            cwd=task_repo, capture_output=True, text=True, timeout=10,
+            cwd=task_repo, capture_output=True, text=True, timeout=10, encoding="utf-8", errors="replace",
         ).stdout.strip()
         if not code_head:
             return

@@ -407,7 +407,7 @@ def _run_probe(
 ) -> subprocess.CompletedProcess | None:
     try:
         return subprocess.run(
-            cmd, capture_output=True, text=True, timeout=timeout, input=input_text, env=env,
+            cmd, capture_output=True, text=True, timeout=timeout, input=input_text, env=env, encoding="utf-8", errors="replace",
         )
     except (OSError, subprocess.TimeoutExpired):
         return None

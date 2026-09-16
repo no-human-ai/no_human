@@ -381,11 +381,17 @@ def _run_pytest_proc(
     anything from it. Any other value is the real pytest exit code (0-5),
     including 5 ("no tests collected"), which IS meaningful and is left for
     the caller to classify (see :func:`_nothing_executed`)."""
+    # `python` is `_pytest_python`'s pick, a real interpreter, not the frozen
+    # `nh` binary — its own stdout follows PYTHONIOENCODING. Pin it to utf-8
+    # on a COPY of the caller's env so it agrees with this call's own
+    # encoding="utf-8" read of that stdout (see proc.py's policy note); the
+    # caller's dict is its own and must not gain a key it did not ask for.
+    env = {**env, "PYTHONIOENCODING": "utf-8"}
     try:
         proc = subprocess.run(
             [python, "-m", "pytest", "-x", "-q", "--no-header", *tests],
             cwd=cwd, env=env, capture_output=True, text=True,
-            timeout=_RUN_TIMEOUT,
+            timeout=_RUN_TIMEOUT, encoding="utf-8", errors="replace",
         )
     except subprocess.TimeoutExpired:
         return None, f"timed out after {_RUN_TIMEOUT}s"
@@ -562,7 +568,7 @@ def _runner_sanity_check(argv: list[str], cwd: Path, env: dict) -> tuple[bool, s
     try:
         proc = subprocess.run(
             argv, cwd=cwd, env=env, capture_output=True, text=True,
-            timeout=_SANITY_TIMEOUT,
+            timeout=_SANITY_TIMEOUT, encoding="utf-8", errors="replace",
         )
     except subprocess.TimeoutExpired:
         return False, (
@@ -606,7 +612,7 @@ def _run_test_cmd(
     try:
         proc = subprocess.run(
             [*argv, *tests], cwd=cwd, env=env, capture_output=True, text=True,
-            timeout=_RUN_TIMEOUT,
+            timeout=_RUN_TIMEOUT, encoding="utf-8", errors="replace",
         )
     except subprocess.TimeoutExpired:
         return False, False, f"timed out after {_RUN_TIMEOUT}s"
@@ -735,7 +741,7 @@ def run_repro_gate(
         added = subprocess.run(
             ["git", "worktree", "add", "--detach", str(worktree), base_ref],
             cwd=repo_path, capture_output=True, text=True,
-            env=_git_subprocess_env("worktree"),
+            env=_git_subprocess_env("worktree"), encoding="utf-8", errors="replace",
         )
         if added.returncode != 0:
             return ReproResult("error", tests=tests, reasons=[

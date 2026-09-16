@@ -86,7 +86,7 @@ def _referencing_paths(
     grep = subprocess.run(
         ["git", "grep", "-l", "-w", "--fixed-strings", "-e", name, after_ref],
         cwd=repo_path, capture_output=True, text=True, errors="replace",
-        timeout=timeout,
+        timeout=timeout, encoding="utf-8",
     )
     if grep.returncode not in (0, 1):
         return None
@@ -119,7 +119,7 @@ def collect_wiring_evidence(
         proc = subprocess.run(
             ["git", "diff", "--name-status", "-M", f"{before_ref}..{after_ref}"],
             cwd=repo_path, capture_output=True, text=True, errors="replace",
-            timeout=remaining(),
+            timeout=remaining(), encoding="utf-8",
         )
         if proc.returncode != 0:
             return []

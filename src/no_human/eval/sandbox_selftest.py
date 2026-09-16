@@ -95,7 +95,7 @@ def wrong_tree_imports(work: Path, *, python: str | None = None,
                 [python or sys.executable, "-m", "pytest", "-q", "-s",
                  "-p", "no:cacheprovider", str(probe)],
                 cwd=work, capture_output=True, text=True, timeout=120,
-                env=env).stdout
+                env=env, encoding="utf-8", errors="replace").stdout
         except (OSError, subprocess.SubprocessError):
             # A pre-flight must never be what breaks the run it protects.
             continue

@@ -282,7 +282,7 @@ class GitRepo:
         # an unclassifiable `exec:git <dynamic>` (test_egress_allowlist).
         proc = subprocess.run(
             cmd, cwd=self.path, capture_output=True, text=True, env=run_env,
-            **hidden_console_kwargs(),
+            **hidden_console_kwargs(), encoding="utf-8", errors="replace",
         )
         if check:
             for backoff in _GIT_RETRY_BACKOFFS_S:
@@ -291,7 +291,7 @@ class GitRepo:
                 time.sleep(backoff)
                 proc = subprocess.run(
                     cmd, cwd=self.path, capture_output=True, text=True,
-                    env=run_env, **hidden_console_kwargs(),
+                    env=run_env, **hidden_console_kwargs(), encoding="utf-8", errors="replace",
                 )
         if check and proc.returncode != 0:
             raise GitError(
@@ -320,7 +320,7 @@ class GitRepo:
         run_env = _git_subprocess_env(args[0] if args else None)
         proc = subprocess.run(
             cmd, cwd=self.path, capture_output=True, text=True, env=run_env,
-            **hidden_console_kwargs(),
+            **hidden_console_kwargs(), encoding="utf-8", errors="replace",
         )
         if check:
             # Same inline lock-contention retry as `_run` (see the note there).
@@ -330,7 +330,7 @@ class GitRepo:
                 time.sleep(backoff)
                 proc = subprocess.run(
                     cmd, cwd=self.path, capture_output=True, text=True, env=run_env,
-                    **hidden_console_kwargs(),
+                    **hidden_console_kwargs(), encoding="utf-8", errors="replace",
                 )
         if check and proc.returncode != 0:
             raise GitError(
@@ -362,7 +362,7 @@ class GitRepo:
         run_env = _git_subprocess_env(args[0] if args else None)
         proc = subprocess.run(
             cmd, cwd=self.path, capture_output=True, text=True, env=run_env,
-            **hidden_console_kwargs(),
+            **hidden_console_kwargs(), encoding="utf-8", errors="replace",
         )
         if check:
             for backoff in _GIT_RETRY_BACKOFFS_S:
@@ -371,7 +371,7 @@ class GitRepo:
                 time.sleep(backoff)
                 proc = subprocess.run(
                     cmd, cwd=self.path, capture_output=True, text=True, env=run_env,
-                    **hidden_console_kwargs(),
+                    **hidden_console_kwargs(), encoding="utf-8", errors="replace",
                 )
         if check and proc.returncode != 0:
             raise GitError(
@@ -1235,7 +1235,7 @@ class GitRepo:
         proc = subprocess.run(
             ["git", "merge-base", "--is-ancestor", sha, descendant],
             cwd=self.path, capture_output=True, text=True,
-            **hidden_console_kwargs(),
+            **hidden_console_kwargs(), encoding="utf-8", errors="replace",
         )
         return proc.returncode == 0
 
@@ -1253,7 +1253,7 @@ class GitRepo:
         have_obj = subprocess.run(
             ["git", "cat-file", "-e", f"{remote_sha}^{{commit}}"],
             cwd=self.path, capture_output=True, text=True,
-            **hidden_console_kwargs(),
+            **hidden_console_kwargs(), encoding="utf-8", errors="replace",
         )
         if have_obj.returncode == 0:
             return True
@@ -1262,14 +1262,14 @@ class GitRepo:
             ["git", "fetch", "--refmap=", remote,
              f"+refs/heads/{branch}:{private_ref}"],
             cwd=self.path, capture_output=True, text=True, timeout=timeout,
-            **hidden_console_kwargs(),
+            **hidden_console_kwargs(), encoding="utf-8", errors="replace",
         )
         if fetched.returncode != 0:
             return False
         have_obj = subprocess.run(
             ["git", "cat-file", "-e", f"{remote_sha}^{{commit}}"],
             cwd=self.path, capture_output=True, text=True,
-            **hidden_console_kwargs(),
+            **hidden_console_kwargs(), encoding="utf-8", errors="replace",
         )
         return have_obj.returncode == 0
 
@@ -1295,7 +1295,7 @@ class GitRepo:
             ls = subprocess.run(
                 ["git", "ls-remote", "--heads", remote, *patterns],
                 cwd=self.path, capture_output=True, text=True, timeout=timeout,
-                **hidden_console_kwargs(),
+                **hidden_console_kwargs(), encoding="utf-8", errors="replace",
             )
         except (subprocess.TimeoutExpired, OSError):
             return []
@@ -1354,7 +1354,7 @@ class GitRepo:
             ls = subprocess.run(
                 ["git", "ls-remote", remote, ref],
                 cwd=self.path, capture_output=True, text=True, timeout=timeout,
-                **hidden_console_kwargs(),
+                **hidden_console_kwargs(), encoding="utf-8", errors="replace",
             )
         except (subprocess.TimeoutExpired, OSError):
             return None
@@ -1450,7 +1450,7 @@ class GitRepo:
             ls = subprocess.run(
                 ["git", "ls-remote", remote, f"refs/heads/{branch}"],
                 cwd=self.path, capture_output=True, text=True, timeout=timeout,
-                **hidden_console_kwargs(),
+                **hidden_console_kwargs(), encoding="utf-8", errors="replace",
             )
         except (subprocess.TimeoutExpired, OSError):
             return False
@@ -1566,7 +1566,7 @@ class GitRepo:
         ls = subprocess.run(
             ["git", "ls-remote", remote, f"refs/heads/{branch}"],
             cwd=self.path, capture_output=True, text=True, timeout=timeout,
-            **hidden_console_kwargs(),
+            **hidden_console_kwargs(), encoding="utf-8", errors="replace",
         )
         if ls.returncode != 0 or not ls.stdout.strip():
             return "unknown"
@@ -1602,7 +1602,7 @@ class GitRepo:
             subprocess.run(
                 ["git", *args],
                 cwd=self.path, capture_output=True, text=True, timeout=timeout,
-                **hidden_console_kwargs(),
+                **hidden_console_kwargs(), encoding="utf-8", errors="replace",
             )
         except (subprocess.TimeoutExpired, OSError):
             pass  # best-effort; offline work must still function

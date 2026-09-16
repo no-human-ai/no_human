@@ -768,7 +768,7 @@ def _git_diff(repo_path: str, commit_sha: str, base: str | None = None) -> str:
             # the single-commit range instead of an empty diff.
             check = subprocess.run(
                 ["git", "rev-parse", "--verify", "--quiet", f"{base}^{{commit}}"],
-                cwd=repo_path, capture_output=True, text=True, timeout=10,
+                cwd=repo_path, capture_output=True, text=True, timeout=10, encoding="utf-8", errors="replace",
             )
             if check.returncode == 0:
                 # Three-dot form diffs from the merge-base, so base moving on
@@ -790,7 +790,7 @@ def _git_diff(repo_path: str, commit_sha: str, base: str | None = None) -> str:
             )
         proc = subprocess.run(
             ["git", "diff", diff_range, "--no-color"],
-            cwd=repo_path, capture_output=True, text=True, timeout=10,
+            cwd=repo_path, capture_output=True, text=True, timeout=10, encoding="utf-8", errors="replace",
         )
         return proc.stdout[:32000] if proc.returncode == 0 else ""
     except Exception:  # noqa: BLE001
@@ -2358,7 +2358,7 @@ def _windows_kill_by_cmdline(task_id: str) -> int:
     )
     enum = subprocess.run(
         ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
-        capture_output=True, text=True, timeout=20,
+        capture_output=True, text=True, timeout=20, encoding="utf-8", errors="replace",
     )
     if enum.returncode != 0:
         return 0
@@ -2914,7 +2914,7 @@ async def scaffold_repo(body: ScaffoldRepoRequest, request: Request) -> dict[str
                  "-c", "commit.gpgsign=false",
                  *args],
                 check=True, capture_output=True, text=True, timeout=30,
-                env=git_env)
+                env=git_env, encoding="utf-8", errors="replace")
         target.mkdir()
         created = True
         _git("init", "-q")

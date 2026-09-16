@@ -138,7 +138,7 @@ def changed_entries(repo_path: Path, before: str, after: str) -> list[Entry]:
     routes FULL, never SINGLE_TURN)."""
     proc = subprocess.run(
         ["git", "diff", "--name-status", "-M", f"{before}..{after}"],
-        cwd=repo_path, capture_output=True, text=True, errors="replace",
+        cwd=repo_path, capture_output=True, text=True, errors="replace", encoding="utf-8",
     )
     if proc.returncode != 0:
         raise RuntimeError(
@@ -164,7 +164,7 @@ def diff_line_count(repo_path: Path, before: str, after: str) -> int | None:
     FULL_REVIEW (fail-closed, same rule as an unreadable diff)."""
     proc = subprocess.run(
         ["git", "diff", "--numstat", "-M", f"{before}..{after}"],
-        cwd=repo_path, capture_output=True, text=True, errors="replace",
+        cwd=repo_path, capture_output=True, text=True, errors="replace", encoding="utf-8",
     )
     if proc.returncode != 0:
         return None
@@ -198,7 +198,7 @@ def _diff_text(repo_path: Path, before: str, after: str) -> str | None:
         ["git", "-c", "core.fsmonitor=false", "diff", "-M",
          "--no-ext-diff", "--no-textconv", f"{before}..{after}"],
         cwd=repo_path, capture_output=True, text=True, errors="replace",
-        env=_git_subprocess_env("diff"),
+        env=_git_subprocess_env("diff"), encoding="utf-8",
     )
     if proc.returncode != 0:
         return None

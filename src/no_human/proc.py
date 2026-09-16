@@ -86,6 +86,25 @@ def real_python(*venvs: Path | str | None) -> str | None:
     deliberately invokes the frozen ``nh`` binary itself when frozen — in a
     freeze there is no separate Python to hand ``-m no_human.cli.commands``
     to, `nh` IS what must be started. Do not "fix" it to call this helper.
+
+    Decoding a child's output. Every caller that shells out to the interpreter
+    this returns and captures its text output must decode that output itself
+    with an explicit ``encoding="utf-8"`` AND an explicit ``errors=`` — never
+    bare ``text=True``/``universal_newlines=True``. Without both, CPython
+    falls back to the host's locale codepage: on POSIX that raises
+    ``UnicodeDecodeError`` on the first byte it cannot decode; on Windows the
+    decode happens inside `subprocess`'s background reader thread
+    (``_readerthread``), so the exception kills that thread silently and
+    ``Popen.communicate()`` returns ``None`` for the stream instead of raising
+    anywhere the caller can see — every ``.strip()``/``.splitlines()`` call
+    downstream then blows up on `None`, or the failure is swallowed if the
+    call site is wrapped in a broad ``except``. A child spawned via
+    ``real_python`` is a plain ``python``/``python.exe``, so its own stdout
+    encoding follows ``PYTHONIOENCODING`` (or the host default when unset);
+    callers that also control the child's environment should set
+    ``PYTHONIOENCODING=utf-8`` on that child so producer and consumer agree,
+    but that is a belt to this module's suspenders — it does not substitute
+    for the caller naming ``encoding=``/``errors=`` on its own decode.
     """
     if not getattr(sys, "frozen", False):
         return sys.executable

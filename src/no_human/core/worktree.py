@@ -517,8 +517,14 @@ def _create_venv(target: Path, displaced: Path | None = None) -> None:
             "rather than write to the shared venv", target)
         return
     try:
+        # `python` here is real_python()'s pick, not the frozen `nh` binary —
+        # its own stdout follows PYTHONIOENCODING (or the host default when
+        # unset). Pin it to utf-8 on a COPY of the environment so it agrees
+        # with the encoding="utf-8" this call already reads with.
+        venv_env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
         proc = subprocess.run([python, "-m", "venv", str(target)],
-                              capture_output=True, text=True, timeout=120)
+                              capture_output=True, text=True, timeout=120, encoding="utf-8", errors="replace",
+                              env=venv_env)
         failed = getattr(proc, "returncode", 1) != 0
     except (OSError, subprocess.SubprocessError) as exc:
         log.debug("worktree venv: %s -m venv failed: %s", python, exc)

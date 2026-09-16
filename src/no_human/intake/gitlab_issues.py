@@ -39,7 +39,7 @@ class GitLabAdapter:
         proc = subprocess.run(
             ["glab", "api", "--hostname", gl.host,
              f"projects/{encoded}/issues/{gl.iid}"],
-            capture_output=True, text=True,
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
         )
         if proc.returncode != 0:
             raise RuntimeError(f"glab api failed: {proc.stderr.strip()}")

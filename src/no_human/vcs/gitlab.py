@@ -31,7 +31,7 @@ def open_mr(
             "--no-merge",
             "--yes",
         ],
-        cwd=repo_path, capture_output=True, text=True,
+        cwd=repo_path, capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
     if proc.returncode == 0:
         return proc.stdout.strip()

@@ -447,7 +447,7 @@ def _git_diff(repo_path: Path, before: str = "HEAD~1", after: str = "HEAD") -> t
         ["git", "-c", "core.fsmonitor=false", "diff", f"{before}..{after}",
          "--stat", "--patch", "--no-color", "--no-ext-diff", "--no-textconv"],
         cwd=repo_path, capture_output=True, text=True,
-        env=_git_subprocess_env("diff"),
+        env=_git_subprocess_env("diff"), encoding="utf-8", errors="replace",
     )
     raw = proc.stdout or ""
     return raw[:_DIFF_CAP], len(raw)
@@ -478,7 +478,7 @@ def _changed_paths(repo_path: Path, before: str, after: str,
     """
     proc = subprocess.run(
         ["git", "diff", "--name-status", "-M", f"{before}..{after}"],
-        cwd=repo_path, capture_output=True, text=True, errors="replace",
+        cwd=repo_path, capture_output=True, text=True, errors="replace", encoding="utf-8",
     )
     paths: list[str] = []
     for line in (proc.stdout or "").splitlines():

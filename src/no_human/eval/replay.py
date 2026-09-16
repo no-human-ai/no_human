@@ -69,7 +69,7 @@ class TaskScore:
 
 
 def _git(cwd: Path, *args: str) -> None:
-    subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True)
+    subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True, encoding="utf-8", errors="replace")
 
 
 class ReplayRunner:
@@ -115,7 +115,7 @@ class ReplayRunner:
     async def run_one(self, golden: GoldenTask, *, workdir: Path) -> TaskScore:
         work = self._setup_sandbox(golden, workdir)
         base_sha = subprocess.run(
-            ["git", "rev-parse", "HEAD"], cwd=work, capture_output=True, text=True
+            ["git", "rev-parse", "HEAD"], cwd=work, capture_output=True, text=True, encoding="utf-8", errors="replace"
         ).stdout.strip()
 
         store = await Store(workdir / "eval.db").connect()
@@ -275,7 +275,7 @@ class ReplayRunner:
             [sys.executable, "-m", "pytest", "-q", str(test_file)],
             cwd=work, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
             env={**os.environ, "PYTHONPATH": str(work)},
-            start_new_session=True,
+            start_new_session=True, encoding="utf-8", errors="replace",
         )
         try:
             proc.communicate(timeout=300)
@@ -292,7 +292,7 @@ class ReplayRunner:
             return None
         agent_diff = subprocess.run(
             ["git", "diff", base_sha, "HEAD"], cwd=work,
-            capture_output=True, text=True,
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
         ).stdout
         verdict = await self.judge.judge(
             task_title=golden.title, criteria=golden.acceptance_criteria,

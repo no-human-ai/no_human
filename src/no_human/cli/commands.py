@@ -3203,7 +3203,7 @@ def merge_stack_run(project, squash):
                     console.print(f"[red]skip[/] unparseable PR: {pr}")
                     break
                 console.print(f"[bold]merging[/] {pr} …")
-                proc = subprocess.run(["gh", "pr", "merge", pr, method], capture_output=True, text=True)
+                proc = subprocess.run(["gh", "pr", "merge", pr, method], capture_output=True, text=True, encoding="utf-8", errors="replace")
                 if proc.returncode != 0:
                     console.print(f"[red]merge failed[/] (needs a rebase or CI is "
                                   f"red): {proc.stderr.strip()[:200]}")
@@ -5996,7 +5996,7 @@ def diff(task_id):
                     cwd=t.repo_path,
                     capture_output=True,
                     text=True,
-                    timeout=15,
+                    timeout=15, encoding="utf-8", errors="replace",
                 )
                 if result.returncode == 0:
                     console.print(result.stdout or "[dim](empty diff)[/]")
@@ -7609,7 +7609,7 @@ def _windows_try_kill(pid: int, *, force: bool):
 
     argv = ["taskkill", *(["/F"] if force else []), "/T", "/PID", str(pid)]
     try:
-        proc = subprocess.run(argv, capture_output=True, text=True, timeout=15)
+        proc = subprocess.run(argv, capture_output=True, text=True, timeout=15, encoding="utf-8", errors="replace")
     except OSError:
         return None
     out = f"{proc.stdout or ''}{proc.stderr or ''}".lower()

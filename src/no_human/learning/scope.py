@@ -122,7 +122,7 @@ def _git(repo_path: str, *args: str) -> str:
     try:
         out = subprocess.run(
             ["git", "-C", repo_path, *args],
-            capture_output=True, text=True, timeout=_GIT_TIMEOUT,
+            capture_output=True, text=True, timeout=_GIT_TIMEOUT, encoding="utf-8", errors="replace",
         )
     except (OSError, subprocess.TimeoutExpired):
         return ""

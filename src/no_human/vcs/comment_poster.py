@@ -56,7 +56,7 @@ def pick_pr_for_file(file: str, pr_files: dict[str, list[str]], fallback: str | 
 
 def _run(argv: list[str], timeout: int = 15) -> tuple[bool, str]:
     try:
-        p = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+        p = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, encoding="utf-8", errors="replace")
         if p.returncode == 0:
             return True, ""
         return False, (p.stderr.strip() or p.stdout.strip())[:300]
@@ -224,7 +224,7 @@ def marker_present_on_pr(url: str, marker: str) -> tuple[bool, bool]:
         argv = ["gh", "api", "--hostname", host, "--paginate",
                 f"repos/{slug}/issues/{number}/comments?per_page=100"]
     try:
-        p = subprocess.run(argv, capture_output=True, text=True, timeout=60)
+        p = subprocess.run(argv, capture_output=True, text=True, timeout=60, encoding="utf-8", errors="replace")
         if p.returncode != 0:
             return False, False
     except Exception:  # noqa: BLE001 — unreadable is not empty
@@ -267,7 +267,7 @@ def _gitlab_diff_refs(host: str, slug: str, number: int) -> dict | None:
     try:
         p = subprocess.run(
             ["glab", "api", "--hostname", host, f"projects/{slug}/merge_requests/{number}"],
-            capture_output=True, text=True, timeout=20,
+            capture_output=True, text=True, timeout=20, encoding="utf-8", errors="replace",
         )
         if p.returncode != 0:
             return None
@@ -306,7 +306,7 @@ def _post_gitlab_inline(host: str, slug: str, number: int, body: str,
             ["glab", "api", "--hostname", host, "-X", "POST",
              "-H", "Content-Type: application/json",
              f"projects/{slug}/merge_requests/{number}/discussions", "--input", "-"],
-            input=payload, capture_output=True, text=True, timeout=20,
+            input=payload, capture_output=True, text=True, timeout=20, encoding="utf-8", errors="replace",
         )
         if p.returncode == 0:
             return True, ""
@@ -319,7 +319,7 @@ def _head_sha(host_args: list[str], slug: str, number: int) -> tuple[bool, str]:
     try:
         p = subprocess.run(
             ["gh", "api", *host_args, f"repos/{slug}/pulls/{number}", "--jq", ".head.sha"],
-            capture_output=True, text=True, timeout=15,
+            capture_output=True, text=True, timeout=15, encoding="utf-8", errors="replace",
         )
         return (p.returncode == 0, p.stdout.strip())
     except subprocess.TimeoutExpired:
