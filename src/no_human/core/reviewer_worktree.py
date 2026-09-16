@@ -97,6 +97,18 @@ class Snapshot:
     #: blinding bit flip (flags change) -- the "index" entry in
     #: `_VOLATILE_GIT_EXACT` excuses only the former.
     index_flags: dict[str, str] = field(default_factory=dict)
+    #: `{label: content_hash}` for `<root>/objects/info/alternates` under
+    #: each of `admin`/`common`, read DIRECTLY — outside `_git_dir_inventory`
+    #: — because the whole `objects/` subtree those roots live under is
+    #: walk-pruned by `_SKIPPED_GIT_DIR_PREFIXES` before this file would ever
+    #: be reached. This is a single NAMED, targeted watch (see the
+    #: `objects/info/alternates` paragraph in `_is_volatile_git_path`'s
+    #: docstring for why it alone, and not the rest of `objects/`, is worth
+    #: this): rewriting it makes a foreign object store resolvable through
+    #: this repo, a real execution-adjacent effect `compare()` used to miss
+    #: entirely. `_content_hash`'s "deleted" sentinel marks an absent file so
+    #: created/deleted/rewritten are all distinguishable in `compare`.
+    alternates: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -324,15 +336,20 @@ _SKIPPED_GIT_DIR_PREFIXES = frozenset({
     # immutable — it is identified BY their sha256 — but do NOT read that as
     # "nothing under this tree can be modified": an earlier revision claimed
     # the only possible write here is an ADDITION and that claim is FALSE.
-    # `objects/info/alternates` is an ordinary mutable file that git READS, and
-    # rewriting it makes a foreign object store resolvable through this repo
-    # while `compare()` reports an empty delta (measured: `git cat-file` on a
-    # foreign blob goes 128 -> 0). The counter-example and the full residual
-    # are in `_is_volatile_git_path`'s docstring below; it is named here too
-    # because this is where a reader auditing the exclusion list arrives, and
-    # the refuted sentence used to be all they found. The store also gains new
-    # objects constantly from every OTHER concurrent task's linked worktree,
-    # not just this review.
+    # `objects/info/alternates` is an ordinary mutable file that git READS,
+    # and rewriting it makes a foreign object store resolvable through this
+    # repo (measured: `git cat-file` on a foreign blob goes 128 -> 0). THIS
+    # ONE NAME is therefore watched anyway, DIRECTLY, outside this walk —
+    # `Snapshot.alternates` reads `<root>/objects/info/alternates` for each
+    # of `admin`/`common` and `compare()` diffs it on its own, so this prune
+    # does not blind the guard to it. That is a single named exception, not
+    # a reopening of the prune: the rest of `objects/` (packs, idx,
+    # commit-graph, multi-pack-index, loose objects and every lock among
+    # them) is NOT walked or watched by anything — still a real residual,
+    # covered in full in `_is_volatile_git_path`'s docstring below and named
+    # here too because this is where a reader auditing the exclusion list
+    # arrives. The store also gains new objects constantly from every OTHER
+    # concurrent task's linked worktree, not just this review.
     # Walking and content-hashing it anyway was both a real
     # perf cost (measured on this checkout: 150MB across 2628 files, read
     # three times per review — snapshot, compare, and revert's own internal
@@ -372,6 +389,88 @@ _SKIPPED_GIT_DIR_PREFIXES = frozenset({
 # volatile-path exclusion: every added/changed key (the `include.path`/
 # `alias.*`/filter surfaces above) is still caught.
 
+#: Excused ONLY under the "common" label — see `_is_volatile_git_path`'s
+#: third excuse branch, below. Do NOT "simplify" these into
+#: `_VOLATILE_GIT_EXACT`; the "common" scoping is measured (see the
+#: neighbouring comment on that branch) and applies to every name below, not
+#: just the original two.
+_VOLATILE_COMMON_EXACT = frozenset({
+    # Git's own editor-buffer file for the primary checkout's `git commit`.
+    # Pure data, read back only to seed the next commit message; never
+    # executed. (Original excuse; unchanged.)
+    "COMMIT_EDITMSG",
+    # A generated ref cache, rewritten by `git gc`/`git fetch` against the
+    # primary checkout. Never executed. (Original excuse; unchanged.)
+    "info/refs",
+    # `git gc --auto`'s pidfile: created at the start of a gc run and removed
+    # at the end, holding this host's hostname+pid so a second concurrent gc
+    # can detect the first is still running. Read only to COMPARE against the
+    # current process's own hostname+pid — never executed, never resolved to
+    # a path. Written by ANY of the up to four coder worktrees or the
+    # operator checkout sharing this common dir running `git commit`/`fetch`/
+    # `merge` (anything that trips git's auto-gc heuristic), never by the
+    # worktree under review itself. THE MEASURED INCIDENT this exclusion
+    # fixes: five completed review verdicts discarded on 2026-09-14 by this
+    # exact file appearing or disappearing mid-review — `f2dea6f3` attempt 4
+    # (deleted), `a5beea7d` attempt 11 (deleted; the task then failed
+    # BUDGET_EXHAUSTED), `7606f734` attempt 9 (created), `6e7eb947` attempt 3
+    # (created; 8.2M cache-read tokens spent re-reviewing), `1cbc1c65`
+    # attempt 14 (rewritten) — ~25M raw tokens across the five, zero
+    # tracked-path changes in any of them. Full research behind every name
+    # in this set: docs/GC_COMMON_DIR_FILES.md.
+    "gc.pid",
+    # Transient lockfile for `gc.pid`: created, then either renamed onto
+    # `gc.pid` or deleted on rollback, by git's generic lockfile API — the
+    # same create-then-rename-or-delete pattern already excused for
+    # `index.lock` above. Never read back, never executed. Confirmed
+    # empirically (git 2.50.1): appears and disappears during a real
+    # `git gc`/`git maintenance run`.
+    "gc.pid.lock",
+    # Left behind by `git gc --auto` only when an auto-gc attempt FAILS, to
+    # suppress the next auto-gc attempt until `gc.logExpiry` (default 1 day)
+    # passes (`man git-gc`). Its contents are only re-printed to stderr on
+    # the next attempt, never executed; presence/mtime are the only things
+    # git itself reads. Same shared-common-dir writers as `gc.pid`, same
+    # "not this review's business" rationale.
+    "gc.log",
+    # Transient lock for `packed-refs`, created by `git pack-refs` (run by
+    # gc/maintenance) then renamed onto `packed-refs` or deleted on
+    # rollback — `packed-refs` itself is already excused, unscoped, in
+    # `_VOLATILE_GIT_EXACT` above for exactly this reason. Never read back,
+    # never executed. Confirmed empirically alongside `gc.pid`/
+    # `gc.pid.lock` in a captured `git maintenance run`.
+    "packed-refs.lock",
+    # `git pack-refs`'s tempfile holding the NEW `packed-refs` content in
+    # full before it is renamed onto `packed-refs` — the rename-staging half
+    # of the same operation `packed-refs.lock` locks. Never read back as a
+    # ref source itself, never executed. Discovered empirically (not named
+    # by any git manual page consulted) alongside the other confirmed names
+    # above; see docs/GC_COMMON_DIR_FILES.md for the capture.
+    "packed-refs.new",
+    # Transient lock for `common/HEAD`, observed during `git maintenance
+    # run` via the same lockfile API as `index.lock`/`gc.pid.lock` above —
+    # renamed onto `HEAD` or deleted on rollback, never read back. Excusing
+    # the LOCK does not weaken `common/HEAD`'s own protection: the lock
+    # carries no content this guard would ever adjudicate, and
+    # `common/HEAD`'s actual content stays watched, unexcused, via the
+    # content-shape check in `compare()` (see the `common/HEAD` paragraph in
+    # this function's docstring) — a real repoint still discards.
+    "HEAD.lock",
+})
+# Still watched, deliberately, and NOT in `_VOLATILE_COMMON_EXACT`:
+# `config`/`config.worktree`/`config.lock` (config's own effective-key
+# adjudication above already covers ordinary `maintenance.*` config churn;
+# `config.lock` has no measured incident and sits on the exec-on-checkout
+# surface — the concrete argument against any `*.lock` glob), `shallow`/
+# `shallow.lock` (no measured incident; not applicable to these worktrees),
+# `hooks/**`/`info/attributes`/`commondir` (execution/pointer surfaces), and
+# `maintenance.lock` (`man git-maintenance` describes an object-database
+# lock taken by `git maintenance run`, but no file by that name was ever
+# observed in the common dir across multiple targeted captures on this git
+# version — see docs/GC_COMMON_DIR_FILES.md; left watched rather than
+# excused on unconfirmed evidence). Full research and disposition table:
+# docs/GC_COMMON_DIR_FILES.md.
+
 
 def _is_volatile_git_path(rel: str, label: str) -> bool:
     """Is this `.git`-relative path one git rewrites as DATA and never runs?
@@ -397,8 +496,16 @@ def _is_volatile_git_path(rel: str, label: str) -> bool:
     its contents are content-addressed and immutable, so the only possible
     write is an addition. That is false for at least one path inside it:
     `objects/info/alternates` is an ordinary mutable file that git READS, and
-    rewriting it makes a foreign object store resolvable through this repo
-    while `compare()` reports empty.
+    rewriting it makes a foreign object store resolvable through this repo.
+    Because that one is a NAMED, known exception rather than a general
+    property of the pruned tree, it is watched anyway: `Snapshot.alternates`
+    reads `<root>/objects/info/alternates` directly, for both `admin` and
+    `common`, outside `_git_dir_inventory`'s walk, and `compare()` diffs it
+    on its own — a rewrite is reported (`.git/<label>/objects/info/
+    alternates` in `added`/`modified`/`deleted`). The rest of `objects/`
+    (packs, idx, commit-graph, multi-pack-index, loose objects, and every
+    lock among them) stays unwalked and unwatched; this closes one file, not
+    the tree.
 
     STATE THE PROPERTY, NOT ONE INSTANCE OF IT. Two earlier revisions of
     this paragraph each framed the hole one size too small — first as
@@ -415,8 +522,8 @@ def _is_volatile_git_path(rel: str, label: str) -> bool:
     the effectively-watched set is EXACTLY: the `.git` inventory minus its
     walk-pruned trees (`_SKIPPED_GIT_DIR_PREFIXES`: `objects/`, `refs/`,
     `worktrees/`) and minus the excused volatile names/prefix
-    (`_VOLATILE_GIT_EXACT`, `logs/`), minus, under `common` only, the two
-    label-scoped names `COMMIT_EDITMSG`/`info/refs` (this function's third
+    (`_VOLATILE_GIT_EXACT`, `logs/`), minus, under `common` only, the
+    label-scoped names in `_VOLATILE_COMMON_EXACT` (this function's third
     excuse branch, below); with `common/HEAD` walked but adjudicated by
     CONTENT SHAPE in `compare()`, so a symref -> symref repoint is not
     reported (see the `common/HEAD` paragraph below); plus the worktree
@@ -431,11 +538,15 @@ def _is_volatile_git_path(rel: str, label: str) -> bool:
     constant names above are the boundary, not a summary of it.
 
     That bypass is PRE-EXISTING — it reproduces identically against main, so
-    nothing here introduces or widens it — but it is a live hole and it is
-    recorded rather than implied. Closing it would require RESOLVING the
-    pointer targets (`core.hooksPath`, `include.path`, and any future kin)
-    and watching wherever they land; unpruning the `.git` trees alone would
-    not reach a target outside `.git` at all.
+    nothing here introduces or widens it — and it is recorded rather than
+    implied. `objects/info/alternates` is no longer an instance of it (see
+    the paragraph above: it is watched directly, by name, outside the
+    prune), but the GENERAL property still holds for every other pointer
+    surface. Closing the rest would require RESOLVING the remaining pointer
+    targets (`core.hooksPath`, `include.path`, and any future kin) and
+    watching wherever they land; unpruning the `.git` trees alone would not
+    reach a target outside `.git` at all, and would not by itself resolve
+    any pointer's content either.
 
     `label` is "admin" (this worktree's own git dir) or "common" (the SHARED
     one, which on a linked-worktree install IS the primary checkout's `.git`).
@@ -475,13 +586,14 @@ def _is_volatile_git_path(rel: str, label: str) -> bool:
     # content-adjudicated in `compare`, not path-skipped — see above.)
     # Neither excused name is ever executed by git.
     #
-    # BOTH ARE SCOPED TO "common", which is where the concurrent writer
-    # is. An earlier revision left COMMIT_EDITMSG and info/refs unscoped, which
-    # blinded the ADMIN side too — this worktree's OWN git dir, where no other
-    # process writes — and a review measured that as a detection regression
-    # against main for both. Scoping them costs nothing (the false positives
-    # all arrive via "common") and is pinned in both directions below.
-    if label == "common" and rel in ("COMMIT_EDITMSG", "info/refs"):
+    # EVERY NAME IN `_VOLATILE_COMMON_EXACT` IS SCOPED TO "common", which is
+    # where the concurrent writer is. An earlier revision left COMMIT_EDITMSG
+    # and info/refs unscoped, which blinded the ADMIN side too — this
+    # worktree's OWN git dir, where no other process writes — and a review
+    # measured that as a detection regression against main for both. Scoping
+    # them costs nothing (the false positives all arrive via "common") and
+    # is pinned in both directions below.
+    if label == "common" and rel in _VOLATILE_COMMON_EXACT:
         return True
     return False
 
@@ -907,9 +1019,18 @@ def snapshot(repo_path: Path, *, timeout: float) -> Snapshot:
             common_head = None  # unreadable reads as "not a symref" -> fail closed
     config_norm = _config_norm_map(admin_dir, common_dir, timeout=timeout)
     index_flags = _index_flags(repo_path, timeout=timeout)
+    # Targeted watch, deliberately OUTSIDE `_git_dir_inventory`'s walk (which
+    # skips all of `objects/` via `_SKIPPED_GIT_DIR_PREFIXES`): see the
+    # `alternates` field's docstring on `Snapshot`.
+    alternates: dict[str, str] = {
+        "admin": _content_hash(admin_dir / "objects" / "info" / "alternates"),
+    }
+    if common_dir != admin_dir:
+        alternates["common"] = _content_hash(
+            common_dir / "objects" / "info" / "alternates")
     return Snapshot(head=head, entries=entries, git_entries=git_entries,
                     common_head=common_head, config_norm=config_norm,
-                    index_flags=index_flags)
+                    index_flags=index_flags, alternates=alternates)
 
 
 #: One branch symref line, exactly — what `git checkout <branch>` writes.
@@ -1043,6 +1164,27 @@ def compare(repo_path: Path, before: Snapshot, *, timeout: float) -> Delta:
             added.append(display)
         else:
             modified.append(display)
+    # `objects/info/alternates`, watched DIRECTLY (see `Snapshot.alternates`)
+    # because `objects/` itself stays walk-pruned by
+    # `_SKIPPED_GIT_DIR_PREFIXES` — unchanged by this task. This is the one
+    # NAMED exception to that prune, not a reopening of it: rewriting this
+    # single file makes a foreign object store resolvable through the repo
+    # while `_git_dir_inventory` would otherwise report nothing, so it is
+    # read and compared on its own, outside the walk.
+    for label in sorted(set(before.alternates) | set(after.alternates)):
+        b_hash = before.alternates.get(label)
+        a_hash = after.alternates.get(label)
+        if a_hash == b_hash:
+            continue
+        display = f".git/{label}/objects/info/alternates"
+        b_present = b_hash is not None and b_hash != "deleted"
+        a_present = a_hash is not None and a_hash != "deleted"
+        if a_present and b_present:
+            modified.append(display)
+        elif a_present:
+            added.append(display)
+        elif b_present:
+            deleted.append(display)
     # Index FLAG BITS (assume-unchanged / skip-worktree) — see
     # `_index_flags` and the "index" entry in `_VOLATILE_GIT_EXACT`.
     # Reporting ANY path flagged in `after` (not merely a before/after
