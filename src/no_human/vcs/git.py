@@ -1319,6 +1319,37 @@ class GitRepo:
                 continue
         return matches
 
+    def list_remote_branch_names(self, pattern: str, *, remote: str = "origin",
+                                  timeout: int = 30) -> list[str]:
+        """Names (no `refs/heads/` prefix) of remote branches matching `pattern`.
+
+        `git ls-remote --heads <remote> <pattern>` — the same read as
+        `remote_branches_containing`, minus the sha-containment check: this
+        is a name-only listing, used by `vcs/recut.py` to find the highest
+        `<stem>-N` suffix already published so a recut never collides with a
+        name the remote has already advertised. Read-only, writes no ref.
+        Every unreadable state (rc != 0, empty stdout, a timeout, or `git`
+        missing) returns `[]` — fails closed to "assume nothing is published
+        under this pattern", exactly like `remote_branches_containing`.
+        """
+        try:
+            ls = subprocess.run(
+                ["git", "ls-remote", "--heads", remote, pattern],
+                cwd=self.path, capture_output=True, text=True, timeout=timeout,
+                **hidden_console_kwargs(),
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            return []
+        if ls.returncode != 0 or not ls.stdout.strip():
+            return []
+        names = []
+        for line in ls.stdout.splitlines():
+            parts = line.split()
+            if len(parts) != 2 or not parts[1].startswith("refs/heads/"):
+                continue
+            names.append(parts[1].removeprefix("refs/heads/"))
+        return names
+
     def ls_remote_exact(self, ref: str, *, remote: str = "origin",
                          timeout: int = 30) -> str | None:
         """The sha `remote` currently advertises for `ref`, or `None`.

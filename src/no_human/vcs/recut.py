@@ -42,10 +42,8 @@ creates.
 from __future__ import annotations
 
 import re
-import subprocess
 from dataclasses import dataclass
 
-from ..proc import hidden_console_kwargs
 from .git import GitError, GitRepo
 
 __all__ = [
@@ -113,35 +111,13 @@ def next_recut_branch(
         if not m:
             continue
         max_suffix = max(max_suffix, int(m.group(2)) if m.group(2) else 1)
-    remote_names = _remote_branch_names(repo, stem, remote=remote, timeout=timeout)
+    remote_names = repo.list_remote_branch_names(f"{stem}*", remote=remote, timeout=timeout)
     for name in remote_names:
         m = pattern.fullmatch(name)
         if not m:
             continue
         max_suffix = max(max_suffix, int(m.group(2)) if m.group(2) else 1)
     return f"{stem}-{max_suffix + 1}"
-
-
-def _remote_branch_names(
-    repo: GitRepo, stem: str, *, remote: str, timeout: int,
-) -> list[str]:
-    try:
-        ls = subprocess.run(
-            ["git", "ls-remote", "--heads", remote, f"{stem}*"],
-            cwd=repo.path, capture_output=True, text=True, timeout=timeout,
-            **hidden_console_kwargs(),
-        )
-    except (subprocess.TimeoutExpired, OSError):
-        return []
-    if ls.returncode != 0 or not ls.stdout.strip():
-        return []
-    names = []
-    for line in ls.stdout.splitlines():
-        parts = line.split()
-        if len(parts) != 2 or not parts[1].startswith("refs/heads/"):
-            continue
-        names.append(parts[1].removeprefix("refs/heads/"))
-    return names
 
 
 def diverged_state(repo: GitRepo, branch: str, *, remote: str = "origin") -> str:
