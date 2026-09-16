@@ -282,6 +282,7 @@ class GitRepo:
         # an unclassifiable `exec:git <dynamic>` (test_egress_allowlist).
         proc = subprocess.run(
             cmd, cwd=self.path, capture_output=True, text=True, env=run_env,
+            encoding="utf-8", errors="replace",
             **hidden_console_kwargs(),
         )
         if check:
@@ -291,6 +292,7 @@ class GitRepo:
                 time.sleep(backoff)
                 proc = subprocess.run(
                     cmd, cwd=self.path, capture_output=True, text=True,
+                    encoding="utf-8", errors="replace",
                     env=run_env, **hidden_console_kwargs(),
                 )
         if check and proc.returncode != 0:
@@ -320,6 +322,7 @@ class GitRepo:
         run_env = _git_subprocess_env(args[0] if args else None)
         proc = subprocess.run(
             cmd, cwd=self.path, capture_output=True, text=True, env=run_env,
+            encoding="utf-8", errors="replace",
             **hidden_console_kwargs(),
         )
         if check:
@@ -330,6 +333,7 @@ class GitRepo:
                 time.sleep(backoff)
                 proc = subprocess.run(
                     cmd, cwd=self.path, capture_output=True, text=True, env=run_env,
+                    encoding="utf-8", errors="replace",
                     **hidden_console_kwargs(),
                 )
         if check and proc.returncode != 0:
@@ -362,6 +366,7 @@ class GitRepo:
         run_env = _git_subprocess_env(args[0] if args else None)
         proc = subprocess.run(
             cmd, cwd=self.path, capture_output=True, text=True, env=run_env,
+            encoding="utf-8", errors="replace",
             **hidden_console_kwargs(),
         )
         if check:
@@ -371,6 +376,7 @@ class GitRepo:
                 time.sleep(backoff)
                 proc = subprocess.run(
                     cmd, cwd=self.path, capture_output=True, text=True, env=run_env,
+                    encoding="utf-8", errors="replace",
                     **hidden_console_kwargs(),
                 )
         if check and proc.returncode != 0:
@@ -1235,6 +1241,7 @@ class GitRepo:
         proc = subprocess.run(
             ["git", "merge-base", "--is-ancestor", sha, descendant],
             cwd=self.path, capture_output=True, text=True,
+            encoding="utf-8", errors="replace",
             **hidden_console_kwargs(),
         )
         return proc.returncode == 0
@@ -1253,6 +1260,7 @@ class GitRepo:
         have_obj = subprocess.run(
             ["git", "cat-file", "-e", f"{remote_sha}^{{commit}}"],
             cwd=self.path, capture_output=True, text=True,
+            encoding="utf-8", errors="replace",
             **hidden_console_kwargs(),
         )
         if have_obj.returncode == 0:
@@ -1262,6 +1270,7 @@ class GitRepo:
             ["git", "fetch", "--refmap=", remote,
              f"+refs/heads/{branch}:{private_ref}"],
             cwd=self.path, capture_output=True, text=True, timeout=timeout,
+            encoding="utf-8", errors="replace",
             **hidden_console_kwargs(),
         )
         if fetched.returncode != 0:
@@ -1269,6 +1278,7 @@ class GitRepo:
         have_obj = subprocess.run(
             ["git", "cat-file", "-e", f"{remote_sha}^{{commit}}"],
             cwd=self.path, capture_output=True, text=True,
+            encoding="utf-8", errors="replace",
             **hidden_console_kwargs(),
         )
         return have_obj.returncode == 0
@@ -1295,6 +1305,7 @@ class GitRepo:
             ls = subprocess.run(
                 ["git", "ls-remote", "--heads", remote, *patterns],
                 cwd=self.path, capture_output=True, text=True, timeout=timeout,
+                encoding="utf-8", errors="replace",
                 **hidden_console_kwargs(),
             )
         except (subprocess.TimeoutExpired, OSError):
@@ -1336,6 +1347,7 @@ class GitRepo:
             ls = subprocess.run(
                 ["git", "ls-remote", "--heads", remote, pattern],
                 cwd=self.path, capture_output=True, text=True, timeout=timeout,
+                encoding="utf-8", errors="replace",
                 **hidden_console_kwargs(),
             )
         except (subprocess.TimeoutExpired, OSError):
@@ -1385,6 +1397,7 @@ class GitRepo:
             ls = subprocess.run(
                 ["git", "ls-remote", remote, ref],
                 cwd=self.path, capture_output=True, text=True, timeout=timeout,
+                encoding="utf-8", errors="replace",
                 **hidden_console_kwargs(),
             )
         except (subprocess.TimeoutExpired, OSError):
@@ -1481,6 +1494,7 @@ class GitRepo:
             ls = subprocess.run(
                 ["git", "ls-remote", remote, f"refs/heads/{branch}"],
                 cwd=self.path, capture_output=True, text=True, timeout=timeout,
+                encoding="utf-8", errors="replace",
                 **hidden_console_kwargs(),
             )
         except (subprocess.TimeoutExpired, OSError):
@@ -1597,6 +1611,7 @@ class GitRepo:
         ls = subprocess.run(
             ["git", "ls-remote", remote, f"refs/heads/{branch}"],
             cwd=self.path, capture_output=True, text=True, timeout=timeout,
+            encoding="utf-8", errors="replace",
             **hidden_console_kwargs(),
         )
         if ls.returncode != 0 or not ls.stdout.strip():
@@ -1633,6 +1648,7 @@ class GitRepo:
             subprocess.run(
                 ["git", *args],
                 cwd=self.path, capture_output=True, text=True, timeout=timeout,
+                encoding="utf-8", errors="replace",
                 **hidden_console_kwargs(),
             )
         except (subprocess.TimeoutExpired, OSError):
