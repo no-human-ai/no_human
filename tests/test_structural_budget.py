@@ -2034,7 +2034,12 @@ FROZEN_FILE_LINES = {
     # 3646 -> 3657 (+11): the `hooks.per_edit_type` default (#114 phase 2)
     # and the comment recording why it ships off while `per_edit_lint`
     # ships on. Re-measured on the merge result.
-    "config.py": 3657,
+    # 3657 -> 3667 (+10): `newline="\n"` on `atomic_write_0600` and
+    # `_atomic_write_text` (the CRLF-.env desktop-credential fix) plus the
+    # docstring paragraphs explaining why each write must not let Windows
+    # text-mode translation reintroduce a trailing CRLF. Measured on this
+    # tree.
+    "config.py": 3667,
     # +61: the tamper-adjudication one-bounded-retry contract (mechanical-
     # failure classification + the extracted `_review_tamper_adjudication`
     # helper that keeps `AdversarialReviewer.review` itself under the
