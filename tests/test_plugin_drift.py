@@ -1,8 +1,9 @@
 """Drift test tying the shipped Claude Code plugin to the live MCP bridge.
 
 The bridge's tool set (``src/no_human/intake/mcp_bridge.py``) is the pinned
-truth; the plugin's skill (``plugins/no-human/skills/file-a-task/SKILL.md``)
-and README document it in prose. Nothing enforced those two stayed in sync,
+truth; the plugin's skills (``plugins/no-human/skills/file-a-task/SKILL.md``
+and ``plugins/no-human/skills/review-this-branch/SKILL.md``) and README
+document it in prose. Nothing enforced that these stayed in sync,
 so a renamed tool or parameter could rot the packaging silently. This file
 enumerates the bridge's tools the same way ``tests/test_mcp_bridge.py`` does
 (``mcp_bridge.mcp.list_tools()``) and asserts every tool name and every
@@ -13,8 +14,11 @@ plugin manifest files the packaging depends on.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from pathlib import Path
+
+import pytest
 
 from no_human.intake import mcp_bridge
 
@@ -30,6 +34,9 @@ SKILL_MD = REPO_ROOT / "plugins" / "no-human" / "skills" / "file-a-task" / "SKIL
 PLUGIN_README = REPO_ROOT / "plugins" / "no-human" / "README.md"
 MCP_JSON = REPO_ROOT / "plugins" / "no-human" / ".mcp.json"
 PLUGIN_MANIFEST = REPO_ROOT / "plugins" / "no-human" / ".claude-plugin" / "plugin.json"
+GATE_SKILL_MD = (
+    REPO_ROOT / "plugins" / "no-human" / "skills" / "review-this-branch" / "SKILL.md"
+)
 
 
 async def _bridge_tools():
@@ -103,3 +110,90 @@ def test_mcp_json_launches_exactly_nh_mcp_serve():
 def test_plugin_manifest_parses_with_name_no_human():
     data = json.loads(PLUGIN_MANIFEST.read_text(encoding="utf-8"))
     assert data["name"] == "no-human"
+
+
+def test_the_gate_skill_has_frontmatter_with_a_name():
+    text = GATE_SKILL_MD.read_text(encoding="utf-8")
+    assert text.startswith("---"), "SKILL.md must open with YAML frontmatter"
+    frontmatter, _, _ = text[3:].partition("---")
+    assert "name:" in frontmatter, "SKILL.md frontmatter must declare name"
+    assert "description:" in frontmatter, "SKILL.md frontmatter must declare description"
+
+
+def test_the_gate_skill_names_the_verb_and_the_credential():
+    text = GATE_SKILL_MD.read_text(encoding="utf-8")
+    assert "nh gate" in text, "SKILL.md must name the CLI verb it runs"
+    assert "claude setup-token" in text, (
+        "SKILL.md must tell the agent to use the user's own Claude credential"
+    )
+    assert "merge base" in text, "SKILL.md must name the comparison it uses"
+
+
+def test_the_gate_skill_pins_the_exit_code_contract():
+    """The exit-code table is the skill's whole safety contract — nothing
+    else stops an agent from relaying a pass on exit 1 or 2. Pin the two
+    load-bearing sentences verbatim so an edit that quietly loosens them
+    (e.g. "exit code 2 also means ... report a pass") goes red here instead
+    of shipping silently."""
+    text = GATE_SKILL_MD.read_text(encoding="utf-8")
+    assert "On exit `2`, never report a pass." in text
+    assert "Only exit `0` is a pass" in text
+
+
+def test_the_gate_skill_is_documented_in_the_plugin_readme():
+    text = PLUGIN_README.read_text(encoding="utf-8")
+    assert "review-this-branch" in text, (
+        "the plugin README must document the review-this-branch skill"
+    )
+    assert "nh gate" in text
+
+
+# (pattern, human-readable label) — matched case-insensitively, whitespace-
+# tolerant, against every line of GATE_SKILL_MD. A prior version of this
+# guard only rejected the three exact literal substrings "git commit",
+# "git push", "gh pr merge" — blind to an approval verb (`nh approve`,
+# `gh pr review --approve`) or a write-then-execute shell chain that never
+# spells any of those three phrases at all.
+_FORBIDDEN_WRITE_PATTERNS = [
+    (r"git\s+commit", "a commit"),
+    (r"git\s+push", "a push"),
+    (r"gh\s+pr\s+merge", "a PR merge"),
+    (r"gh\s+pr\s+review\s+(--approve|-a\b)", "a PR approval"),
+    (r"\bnh\s+approve\b", "an approval verb"),
+    (r">>?\s*\S+(\.sh|\.py)?\s*&&\s*(bash|sh|python3?|\./)", "a write-then-execute shell chain"),
+]
+
+
+def test_the_gate_skill_promises_no_writes():
+    text = GATE_SKILL_MD.read_text(encoding="utf-8")
+    assert "merge is always the human" in text.lower(), (
+        "SKILL.md must state the product boundary: read and report only"
+    )
+    for line in text.splitlines():
+        lowered = line.lower()
+        for pattern, label in _FORBIDDEN_WRITE_PATTERNS:
+            assert not re.search(pattern, lowered), (
+                f"SKILL.md must never instruct {label}; found: {line!r}"
+            )
+
+
+@pytest.mark.parametrize("sample", [
+    "run `git commit -am wip` first",
+    "then `git push origin feature`",
+    "finish with `gh pr merge --squash`",
+    "approve it via `gh pr review --approve`",
+    "or just run `gh pr review -a`",
+    "call `nh approve <task-id>` once you're happy",
+    "cat > deploy.sh && bash deploy.sh",
+    "echo done >> log.txt && ./log.txt",
+])
+def test_the_no_writes_guard_actually_catches_every_forbidden_shape(sample):
+    """Meta-test for the guard above: each of these strings is exactly the
+    shape of instruction `test_the_gate_skill_promises_no_writes` exists to
+    reject. If a future edit to `_FORBIDDEN_WRITE_PATTERNS` narrows it back
+    to blind spots (as the pre-fix, three-literal version was), this goes
+    red before SKILL.md ever needs to say something dangerous to notice."""
+    lowered = sample.lower()
+    assert any(re.search(pattern, lowered) for pattern, _label in _FORBIDDEN_WRITE_PATTERNS), (
+        f"no forbidden-write pattern matched {sample!r}"
+    )
