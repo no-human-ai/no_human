@@ -2163,6 +2163,15 @@ class Scheduler:
                 # Pass the claimed set so the stuck-active sweep judges only
                 # tasks a worker is actually running — a resumed task waiting
                 # for a free slot is silent by design, not hung.
+                #
+                # No timeout wraps this await. `WakeWatcher.tick` loops every
+                # parked task SEQUENTIALLY, and each forge call it makes
+                # bottoms out in `pr_watcher._run_cli`, which now bounds only
+                # that ONE invocation via `_CLI_TIMEOUT` (see that module's
+                # docstring). `_CLI_TIMEOUT` does not, on its own, bound how
+                # long THIS await can take for a batch of parked tasks — it
+                # only guarantees the watcher can no longer hang forever on a
+                # single dead call.
                 await self.wake.tick(now=now, active_ids=set(self._inflight))
             except Exception as exc:  # noqa: BLE001 — watcher must not kill the pool
                 log.warning("wake tick failed: %s", exc)
