@@ -330,6 +330,91 @@ def fallback_blocker(detail: str, *, resume_branch: str = "",
     )
 
 
+def diverged_pushed_branch(
+    *, branch: str, remote_tip: str, reviewed_sha: str, stats: dict,
+    detail: str, resume_branch: str = "", resume_commit: str = "",
+    goal: str = "",
+) -> Blocker:
+    """Build the escalation for a rework that genuinely diverged from its
+    own pushed tip — `_align_branch_with_pushed_tip` could not merge the two
+    lines together (a real conflict), so `_reconcile_remote_branch` refused
+    delivery.
+
+    `stats` is `GitRepo.divergence_stats(remote_tip, reviewed_sha)` — "a" is
+    the pushed tip, "b" is the reviewed rework. Both FULL shas are named (a
+    human comparing against `git log`/`gh` needs the exact object, not a
+    truncated prefix that could collide), and the prose says which side
+    carries more work using commit count as the primary signal and file
+    count for scope, per the intake answer.
+
+    `category=NOVEL_UNKNOWN` — unchanged routing/telemetry (this is about
+    the prose and options, not a new route). `reason_is_agent_authored`
+    defaults to `False`: this text is written here, by no_human's own code,
+    from git facts it already verified — never lifted from the coder's
+    output.
+
+    `options` carry labels only, never an `action` dict: `blockers/
+    actions.py` hard-rejects any verb it doesn't already know
+    (`set_task_config` / `park` / `approve_plan`), and inventing a new one
+    here would raise `ActionError` the moment a human picked it. The merge
+    is offered FIRST because it resolves the ordinary case without losing
+    either line's history; "open a fresh branch" and "discard the rework"
+    are named as real options but are never performed automatically — that
+    judgment call is a human's per the intake answer on when a rework
+    legitimately supersedes its tip.
+    """
+    tip8, reviewed8 = remote_tip[:8], reviewed_sha[:8]
+    tip_commits = stats.get("only_a_commits", -1)
+    tip_files = stats.get("only_a_files", -1)
+    rework_commits = stats.get("only_b_commits", -1)
+    rework_files = stats.get("only_b_files", -1)
+    more_work = "the rework" if rework_commits >= tip_commits else "the pushed tip"
+    root_cause = (
+        f"the rework line {reviewed8} carries {rework_commits} commit(s) "
+        f"affecting {rework_files} file(s); the pushed tip {tip8} carries "
+        f"{tip_commits} commit(s) affecting {tip_files} file(s) — "
+        f"{more_work} carries more work"
+    )
+    evidence = (
+        f"{detail} | pushed tip {remote_tip} ({tip_commits} commit(s), "
+        f"{tip_files} file(s) only on that side); reviewed rework "
+        f"{reviewed_sha} ({rework_commits} commit(s), {rework_files} "
+        "file(s) only on that side)"
+    )
+    return Blocker(
+        category=BlockerCategory.NOVEL_UNKNOWN,
+        transient=False,
+        confidence=0.9,
+        root_cause_hypothesis=root_cause,
+        goal=goal,
+        evidence=evidence,
+        question=(
+            "Reconcile the rework with the branch's pushed tip — no force "
+            "push is possible, and none will be attempted."
+        ),
+        options=[
+            BlockerOption(
+                label=(
+                    f"Merge the pushed tip {tip8} into the rework and "
+                    "re-deliver (keeps both lines, fast-forwards the "
+                    "remote, no force push)"
+                ),
+            ),
+            BlockerOption(
+                label=(
+                    "Open a fresh branch from the rework and deliver there "
+                    f"(the rework supersedes the pushed tip {tip8})"
+                ),
+            ),
+            BlockerOption(
+                label=f"Discard the rework and keep the pushed tip {tip8}",
+            ),
+        ],
+        resume_branch=resume_branch,
+        resume_commit=resume_commit,
+    )
+
+
 def missing_access(
     env_key: str,
     *,

@@ -2956,6 +2956,38 @@ class Store:
         )
         return int(row["n"]) if row else 0
 
+    async def count_attempts_failing_like(self, pattern: str) -> int:
+        """How many attempt rows, across every task, carry a `failure_reason`
+        matching SQL `LIKE` `pattern` (e.g. `%is not an ancestor of the
+        reviewed sha%`).
+
+        Read-only history query, no new column or migration — `failure_reason`
+        already carries the exact message a failed attempt's exception left
+        behind (see `_finalize`'s `ReviewedShaMismatch` handling), so a class
+        of failure can be counted retroactively by matching its wording,
+        exactly like `_recently_failed_reason` above matches on non-empty
+        rather than on content. Used to state, in a PR body, how many past
+        attempts hit a given failure class without inventing or estimating
+        the number.
+        """
+        row = await self._fetchone(
+            "SELECT COUNT(*) AS n FROM attempts WHERE failure_reason LIKE ?",
+            (pattern,),
+        )
+        return int(row["n"]) if row else 0
+
+    async def failure_reason_class_counts(
+        self, patterns: dict[str, str],
+    ) -> dict[str, int]:
+        """`{label: count}` for several `failure_reason LIKE` patterns in one
+        call — a thin fan-out over `count_attempts_failing_like`, for a
+        caller (e.g. a PR body) that wants several failure classes' historical
+        counts at once without a query per class in application code."""
+        return {
+            label: await self.count_attempts_failing_like(pattern)
+            for label, pattern in patterns.items()
+        }
+
     async def attempt_counts(self) -> dict[str, int]:
         """`task_id -> number of attempt rows`, in ONE grouped query.
 

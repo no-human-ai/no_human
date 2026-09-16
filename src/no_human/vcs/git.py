@@ -1080,8 +1080,10 @@ class GitRepo:
             return False
         return self.head_sha() != before
 
-    def merge_base_into_branch(self, base: str) -> bool:
-        """Merge *base* into this branch. True iff the branch moved.
+    def merge_commit_into_branch(self, sha: str, *, message: str,
+                                  keep_ours: bool = False,
+                                  allow_ff: bool = False) -> bool:
+        """Merge *sha* into this branch. True iff the branch moved.
 
         The counterpart to `rebase_onto` for a branch that has a pushed
         remote tip: a rebase there would rewrite every commit on the branch,
@@ -1101,11 +1103,19 @@ class GitRepo:
         cured (same contract `rebase_onto` documents for its own conflicts);
         the caller reports the staleness and proceeds un-merged.
 
-        `--no-ff` is deliberate, not incidental: it keeps a real merge
-        commit even in the rare case git could fast-forward instead, so the
-        record ("merged X into it") always matches what the history shows.
-        A plain fast-forward would also satisfy the ancestry property this
-        method exists for; `--no-ff` is chosen for that determinism.
+        `--no-ff` is the default: it keeps a real merge commit even in the
+        rare case git could fast-forward instead, so the record ("merged X
+        into it") always matches what the history shows. Pass `allow_ff=True`
+        for a caller that specifically wants a plain fast-forward (no merge
+        commit at all) when the branch is merely BEHIND `sha` — `git merge`
+        without `--no-ff` fast-forwards in that case and only falls back to a
+        real merge commit when the histories have actually diverged.
+
+        `keep_ours=True` passes `-X ours`, which auto-resolves *conflicting
+        hunks* in this branch's favour. It never drops a file that exists
+        only on `sha`'s side, and `sha`'s own commits remain in history (they
+        are already on the remote) — that is what "keeping this branch's
+        side" means here.
 
         Refuses (`ProtectedBranch`) when the current branch matches
         `never_push_to`, checked before any git invocation, so a refusal
@@ -1118,10 +1128,16 @@ class GitRepo:
         if _branch_protected(branch, self.never_push_to):
             raise ProtectedBranch(
                 f"refusing to merge into protected branch: {branch}")
-        ref = (self.resolve_commitish(base) if base else None) or base
+        ref = (self.resolve_commitish(sha) if sha else None) or sha
         if not ref:
             return False
         before = self.head_sha()
+        args = ["merge"]
+        if not allow_ff:
+            args.append("--no-ff")
+        if keep_ours:
+            args += ["-X", "ours"]
+        args += ["-m", message, ref]
         try:
             # Literal "merge" as the first argument, so the egress analyser
             # resolves the channel to `exec:git merge`, not `exec:git
@@ -1129,10 +1145,7 @@ class GitRepo:
             # already in `_COMMIT_WRITING_SUBCOMMANDS`, so the identity scrub
             # applies and the merge commit is attributed to this class's
             # configured identity, not whatever the ambient env holds.
-            self._run(
-                "merge", "--no-ff", "-m",
-                f"Merge {base} into {branch} (base staleness)", ref,
-            )
+            self._run(*args)
         except GitError:
             # Unconditional and `check=False`: a failure that never started a
             # merge must not raise a second exception here — same
@@ -1140,6 +1153,48 @@ class GitRepo:
             self._run("merge", "--abort", check=False)
             return False
         return self.head_sha() != before
+
+    def merge_base_into_branch(self, base: str) -> bool:
+        """Merge *base* into this branch. True iff the branch moved.
+
+        A thin call into `merge_commit_into_branch` with this method's
+        original, unchanged behaviour: a real `--no-ff` merge commit
+        (`keep_ours=False`, `allow_ff=False`) with the same commit message
+        `_refresh_stale_base` and `tests/test_base_staleness_pushed_branch.py`
+        already pin. See `merge_commit_into_branch` for the full contract
+        (conflict handling, protected-branch refusal, no rebase fallback).
+        """
+        branch = self.current_branch()
+        return self.merge_commit_into_branch(
+            base, message=f"Merge {base} into {branch} (base staleness)")
+
+    def divergence_stats(self, a: str, b: str) -> dict:
+        """Commit/file counts each side of two diverged (or related) shas.
+
+        `{"only_a_commits", "only_b_commits", "only_a_files", "only_b_files"}`
+        — commits reachable from `b` but not `a` (`rev-list --count a..b`,
+        i.e. what `b` carries that `a` lacks), and symmetrically for `a`;
+        count of files touched only on each side (`diff --name-only`,
+        two-dot, matching the asymmetry `commit_subjects` uses). This is
+        prose for a human-facing escalation, not a gate: every git call runs
+        with `check=False`, and an unreadable object (bad sha, unresolvable
+        ref) yields `-1` for a count rather than raising — a stats call may
+        never fail an attempt.
+        """
+        def _count(rng: str) -> int:
+            out = self._run("rev-list", "--count", rng, check=False)
+            return int(out) if out.isdigit() else -1
+
+        def _files(rng: str) -> int:
+            out = self._run("diff", "--name-only", rng, check=False)
+            return len([ln for ln in out.splitlines() if ln])
+
+        return {
+            "only_a_commits": _count(f"{b}..{a}"),
+            "only_b_commits": _count(f"{a}..{b}"),
+            "only_a_files": _files(f"{b}..{a}"),
+            "only_b_files": _files(f"{a}..{b}"),
+        }
 
     def head_commit(self, base: str) -> CommitResult:
         """Describe HEAD as a commit against *base* — for work already committed.

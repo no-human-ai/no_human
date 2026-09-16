@@ -58,6 +58,7 @@ from ..blockers import (
     BlockerOption,
     blocker_prompt_suffix,
     clear_pending_send_back,
+    diverged_pushed_branch,
     fallback_blocker,
     find_stored_answer,
     human_event,
@@ -4042,6 +4043,146 @@ class Orchestrator:
             diverged=diverged,
         )
 
+    async def _align_branch_with_pushed_tip(
+        self, task: Task, repo: GitRepo, branch: str, attempt_id: str,
+    ) -> None:
+        """Reconcile `branch`'s freshly-established local head with its own
+        LIVE pushed tip (`fetch_remote_branch_sha`, never the tracking ref)
+        BEFORE the coder session starts.
+
+        This is the root-cause fix for the delivery refusals seen on
+        1cbc1c65/7606f734/af1602af: neither the revision/reject route
+        (`ctx['pr_branch']`) nor the fresh route (`create_branch`/
+        `checkout -B`) ever read the branch's live remote tip at
+        establishment, so a rework could silently be built on a line that
+        resets below (or otherwise diverges from) an already-pushed tip.
+        Delivery's ancestor gate (`_reconcile_remote_branch`) then correctly
+        refused — but by then the whole attempt had already run. Aligning
+        here, before the coder ever sees the branch, means the ordinary
+        case never reaches that refusal at all.
+
+        Called AFTER `_refresh_stale_base`, deliberately: `_refresh_stale_base`
+        has its own pre-existing, observation-only divergence check (it merges
+        `base` only and explicitly never fixes a branch's divergence from its
+        *own* remote tip — see its docstring and the `diverged` advisory it
+        emits, pinned verbatim by `tests/test_base_staleness_pushed_branch.py`).
+        Running this method first would silently resolve that divergence
+        before `_refresh_stale_base` ever measured it, changing an existing,
+        pinned observation into a false negative. Running after leaves
+        `_refresh_stale_base`'s measurement and advisory exactly as they were,
+        and this method then finishes reconciling whatever divergence remains
+        against the branch's own pushed tip — the one thing the base merge
+        was never responsible for fixing.
+
+        Three outcomes, mirroring `_refresh_stale_base`'s shape:
+          - `remote_tip` unreadable — `fetch_remote_branch_sha` returns
+            `None` for BOTH "never pushed" and "remote unreachable"; both
+            must fail OPEN (no-op) here, exactly as they do there. Treating
+            an unreachable remote as "diverged" would invent a merge out of
+            a transient network blip.
+          - HEAD is already a descendant of `remote_tip` (no-op), or is an
+            ancestor of it — the branch is strictly BEHIND its own pushed
+            tip (the `-B`-reset shape). `merge_commit_into_branch(tip, ...,
+            allow_ff=True)` then performs a plain git fast-forward (no `-X`,
+            no `--no-ff`): git fast-forwards silently whenever it can, even
+            with `-m` given, so no merge commit is created. Both leave HEAD
+            a descendant of the pushed tip, so `_reconcile_remote_branch`
+            can fast-forward the remote to it later — never a force push.
+          - Otherwise genuinely diverged: merged with `-X ours`
+            (`merge_commit_into_branch(..., keep_ours=True)`) so the new
+            head keeps this attempt's own resolution while remaining a
+            descendant of both lines. A merge, never a rebase — rebasing
+            here would rewrite the very tip this method exists to preserve,
+            reproducing the bug it fixes.
+
+        Never fails the attempt: any exception degrades to an advisory and
+        the attempt proceeds on whatever local head it already had. If a
+        genuine divergence cannot be merged (a real conflict even under
+        `-X ours`, e.g. a rename/delete clash), delivery's ancestor gate
+        still refuses at the end exactly as before, and
+        `_escalate_diverged_pushed_branch` gives the human a concrete way
+        out instead of an empty blocker.
+        """
+        try:
+            remote_tip = repo.fetch_remote_branch_sha(branch)
+        except Exception as exc:  # noqa: BLE001 — alignment must never raise
+            self._advisory(f"pushed tip alignment check failed: {exc}")
+            return
+        if not remote_tip:
+            return  # never pushed, or remote unreadable — nothing to align to
+        try:
+            head_before = repo.head_sha()
+            if remote_tip == head_before or repo.is_ancestor(remote_tip, head_before):
+                return  # already a descendant — nothing to align
+            behind = repo.is_ancestor(head_before, remote_tip)
+        except Exception as exc:  # noqa: BLE001 — alignment must never raise
+            self._advisory(f"pushed tip alignment ancestry check failed: {exc}")
+            return
+        mode = "fast_forward" if behind else "merge"
+        ok = False
+        try:
+            if behind:
+                ok = repo.merge_commit_into_branch(
+                    remote_tip,
+                    message=(
+                        f"Merge pushed tip {remote_tip[:8]} into {branch} "
+                        "(pushed-tip alignment)"
+                    ),
+                    allow_ff=True,
+                )
+            else:
+                ok = repo.merge_commit_into_branch(
+                    remote_tip,
+                    message=(
+                        f"Merge pushed tip {remote_tip[:8]} of {branch} "
+                        "into the rework"
+                    ),
+                    keep_ours=True,
+                )
+        except Exception as exc:  # noqa: BLE001 — alignment must never raise
+            self._advisory(f"pushed tip alignment ({mode}) failed: {exc}")
+            ok = False
+        try:
+            head_after = repo.head_sha()
+        except Exception:  # noqa: BLE001 — best-effort, record-only
+            head_after = None
+        try:
+            stats = repo.divergence_stats(remote_tip, head_before)
+        except Exception:  # noqa: BLE001 — best-effort, record-only
+            stats = {}
+        record = {
+            "attempt_id": attempt_id,
+            "branch": branch,
+            "remote_tip": remote_tip,
+            "head_before": head_before,
+            "head_after": head_after,
+            "mode": mode,
+            "ok": ok,
+            "stats": stats,
+        }
+        task.context = await self.store.merge_context(
+            task.id, {"pushed_tip_alignment": record})
+        if ok:
+            self.emit(
+                "pushed_tip_realigned",
+                f"branch {branch} realigned with its pushed tip {remote_tip} "
+                f"via {mode}",
+                branch=branch, remote_tip=remote_tip, mode=mode,
+            )
+        else:
+            self._advisory(
+                f"pushed tip alignment ({mode}) could not reconcile branch "
+                f"{branch} with its pushed tip {remote_tip}; delivery may "
+                "still refuse this attempt"
+            )
+            self.emit(
+                "pushed_tip_merge_conflict",
+                f"branch {branch} could not be realigned with its pushed "
+                f"tip {remote_tip} ({mode}); delivery may still refuse "
+                "this attempt",
+                branch=branch, remote_tip=remote_tip, mode=mode, ok=False,
+            )
+
     def _agent_git_identity(self) -> dict[str, str]:
         """Env that forces the agent's own `git commit` to use no_human's name.
 
@@ -5860,6 +6001,17 @@ class Orchestrator:
             )
 
         await self._refresh_stale_base(task, repo, branch, base, base_pin=base_pin)
+
+        # Aligns `branch`'s local head with its own LIVE pushed tip BEFORE
+        # the coder session starts (see the method docstring). Runs AFTER
+        # `_refresh_stale_base` on purpose: `_refresh_stale_base` has its own
+        # pinned, observation-only divergence check (it merges `base` only,
+        # and never fixes a branch's divergence from its own remote tip) —
+        # running this first would erase that divergence before
+        # `_refresh_stale_base` ever measured it. Running after leaves that
+        # measurement untouched and then finishes the reconciliation the base
+        # merge was never responsible for.
+        await self._align_branch_with_pushed_tip(task, repo, branch, attempt_id)
 
         # PR-F Gate 2: create matching branches in linked repos so changes
         # there land on their own deterministic branch (never_push_to honoured).
@@ -7921,6 +8073,14 @@ class Orchestrator:
             await self.store.update_attempt(
                 attempt_id, status="failed", failure_reason=str(exc),
                 completed_at=_now())
+            # `_reconcile_remote_branch` attaches `remote_tip` only on the
+            # "genuinely diverged from the branch's own pushed tip" raise —
+            # every other `ReviewedShaMismatch` (unreadable history, a plain
+            # sha mismatch) leaves it unset, so this stays the generic
+            # fallback escalation for those.
+            if getattr(exc, "remote_tip", ""):
+                return await self._escalate_diverged_pushed_branch(
+                    task, repo, branch, exc)
             return await self._escalate(task, str(exc), repo=repo, branch=branch)
 
         # C3: validate base branch against project's declared default. If the
@@ -8640,6 +8800,37 @@ class Orchestrator:
         NOVEL_UNKNOWN report (never bare prose; 22.4)."""
         blocker = fallback_blocker(detail, goal=goal or task.title)
         return await self._raise_blocker(task, blocker, repo=repo, branch=branch)
+
+    async def _escalate_diverged_pushed_branch(
+        self, task: Task, repo: GitRepo, branch: str, exc: ReviewedShaMismatch,
+    ) -> TaskOutcome:
+        """Escalate the one case `_align_branch_with_pushed_tip` could not
+        prevent: `_reconcile_remote_branch` refused because the reviewed
+        rework genuinely diverged from `branch`'s own pushed tip (a real
+        conflict even under `-X ours`, e.g. a rename/delete clash).
+
+        `exc.remote_tip` / `exc.reviewed_sha` / `exc.branch` are the
+        attributes `_reconcile_remote_branch` attaches before raising — read
+        those, never the message string, which stays pinned verbatim for
+        `tests/test_base_staleness_pushed_branch.py`. `divergence_stats`
+        gives the human both a commit count and a file count for each side,
+        so the escalation can say which one carries more work instead of
+        just naming two shas and shrugging.
+        """
+        remote_tip = getattr(exc, "remote_tip", "") or ""
+        reviewed_sha = getattr(exc, "reviewed_sha", "") or ""
+        try:
+            stats = repo.divergence_stats(remote_tip, reviewed_sha)
+        except Exception:  # noqa: BLE001 — escalation must never raise
+            stats = {}
+        blocker = diverged_pushed_branch(
+            branch=branch, remote_tip=remote_tip, reviewed_sha=reviewed_sha,
+            stats=stats, detail=str(exc), goal=task.title,
+        )
+        return await self._raise_blocker(
+            task, blocker, repo=repo, branch=branch,
+            reason_category="diverged_pushed_branch",
+        )
 
     async def _advance_after_review(
         self, task: Task, target: TaskStatus, *, attempt_id: str,
@@ -12290,10 +12481,17 @@ class Orchestrator:
                 f"{branch}: {remote_tip} -> {target}",
             )
             return
-        raise ReviewedShaMismatch(
+        exc = ReviewedShaMismatch(
             f"delivery refused: branch {branch} remote tip {remote_tip} "
             f"(fetched) is not an ancestor of the reviewed sha {target} "
             f"(human_gated_resume={human_gated_resume})")
+        # Structured attributes for the escalation (`_escalate_diverged_pushed_branch`)
+        # to key on — never substring-match the message above, which stays
+        # pinned verbatim by `tests/test_base_staleness_pushed_branch.py`.
+        exc.remote_tip = remote_tip
+        exc.reviewed_sha = target
+        exc.branch = branch
+        raise exc
 
     def _ahead_reviewed_candidate(
         self, repo, tip: str, ordered_shas: list[str], *, head_sha: str | None,
