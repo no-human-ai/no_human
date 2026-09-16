@@ -173,7 +173,15 @@ FROZEN_FUNCTION_LINES = {
     # ConvergenceAbort)` pattern the two sibling preflight call sites
     # already use. The preflight body itself lives in its own method, not
     # here. Re-measured on the MERGED tree with the scanner's own metric.
-    "core/orchestrator.py:Orchestrator._run_attempt": 2280,
+    # 2280 -> 2308 (+28): rebased-branch recut fix — the Hook 1 call site
+    # (`_recover_diverged_branch`) added right after `_refresh_stale_base`,
+    # so an already-diverged branch is recut before the attempt spends a
+    # round on work that would only hit the same non-fast-forward refusal
+    # at delivery. The recut logic itself lives in `vcs/recut.py` and the
+    # hook body, not here — this is only the call site plus its
+    # explanatory comment and the once-per-branch context bookkeeping it
+    # threads through. Measured on this tree with the scanner below.
+    "core/orchestrator.py:Orchestrator._run_attempt": 2308,
     # 760 -> 778 (+18): dispatch-time intake-eval hoisted path — the `elif
     # ctx.get("eval_result")` branch that acts on a grill/wizard-stored
     # verdict (idempotency marker, cost/residual-gap comments) added inside
@@ -238,7 +246,14 @@ FROZEN_FUNCTION_LINES = {
     # to make this retry's non-fast-forward path the expected outcome
     # (comment-only; `forced = _is_non_fast_forward(exc)` itself is
     # unchanged). Measured on this tree with the scanner below.
-    "core/orchestrator.py:Orchestrator._finalize": 441,
+    # 441 -> 470 (+29): rebased-branch recut fix — `_assert_delivery_sha`
+    # now returns `(sha, branch)` instead of just `sha`, so `_finalize`
+    # captures the possibly-recut `branch` alongside `original_branch`,
+    # threads the rebound branch through the PR-body/comment plumbing when
+    # they differ, and posts the idempotent "superseded by" comment on the
+    # old PR via `_post_recut_comment` (guarded so it fires at most once
+    # per recut). Measured on this tree with the scanner below.
+    "core/orchestrator.py:Orchestrator._finalize": 470,
     # Pre-existing on main (measured red at d3d7d3a82a, this session's start):
     # an earlier fleet land grew stream() +6 without re-freezing it on its
     # merge result — the same "landed without measuring the ratchet" failure
@@ -527,7 +542,13 @@ FROZEN_FUNCTION_CC = {
     # ConvergenceAbort)` wrapper around the `_citation_drift_preflight`
     # call adds one `try` handler branch each. Re-measured on the merge
     # result with the scanner below.
-    "core/orchestrator.py:Orchestrator._run_attempt": 254,
+    # 254 -> 257 (+3): rebased-branch recut fix — Hook 1's call site
+    # (`_recover_diverged_branch`) adds its own `try/except
+    # ReviewedShaMismatch` wrapper around the call, plus the
+    # `if recut_branch != branch:` guard on the returned (possibly rebound)
+    # branch, matching the shape of the sibling preflight call sites
+    # already counted above. Measured on this tree with the scanner below.
+    "core/orchestrator.py:Orchestrator._run_attempt": 257,
     # Landing of 4e0299ad: unchanged at 115 — the harness row is dropped by
     # the comprehension filter inside `_reviewer_items`, which the scanner
     # counts the same as the `if` it replaced (the first landing pass had a
@@ -1467,7 +1488,17 @@ FROZEN_FILE_LINES = {
     # and the `reason if reason is not None else ...` fix replacing `reason
     # or ...` in `_revert_worktree_writes_unguarded`. Re-measured on this
     # tree with `scan_tree`, not carried over as a stale delta.
-    "core/orchestrator.py": 24728,
+    # 24728 -> 25039 (+311): rebased-branch recut fix — the two new hook
+    # methods (`_recover_diverged_branch`, Hook 1, called from
+    # `_run_attempt`; `_reconcile_remote_branch`, Hook 2, called from the
+    # existing delivery path) plus their call-site integration and the
+    # `_record_recut`/`_post_recut_comment` helpers `_finalize` uses to
+    # thread the possibly-rebound branch through the PR-body/comment
+    # plumbing. The recut mechanics themselves (branch naming, replay,
+    # push) live in the new `vcs/recut.py`, not here — this is the
+    # orchestrator-side wiring only. Measured on this tree with the
+    # scanner below.
+    "core/orchestrator.py": 25039,
 
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
@@ -1673,7 +1704,13 @@ FROZEN_FILE_LINES = {
     # a task a later task's `follows_id` already names as followed-up-on, in
     # both the single-task and `--ready --yes` paths. Measured via
     # `wc -l src/no_human/cli/commands.py`.
-    "cli/commands.py": 9149,
+    # 9149 -> 9208 (+59): rebased-branch recut fix — the new `nh diverged`
+    # command (AC5: reports how many live tasks are currently stuck in the
+    # diverged-branch state, informational only, always exits 0) plus its
+    # `_bootstrap(require_auth=False)` setup and the local
+    # `audit_diverged_tasks` import. Measured on this tree with the
+    # scanner below.
+    "cli/commands.py": 9208,
     # api/app.py 5338 -> 5346 (+8): same budget-floor warning surfaced by
     # `send-back`/`reply` as `budget_warning` in the JSON response. Net cost
     # was trimmed from a naive +14 to +8 by computing `Bounds.from_config(...)`
