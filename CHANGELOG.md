@@ -7,6 +7,62 @@ All notable changes to no_human. The format follows
 ## [Unreleased]
 
 ### Fixed
+- **A hanging `gh`/`glab` call in the wake tick could stall the whole
+  scheduler indefinitely** — measured live (2026-09-14): `Scheduler.tick()`
+  stalled with idle workers and a full queue (`tick_stalled: true`,
+  `seconds_since_last_tick: 647`). `tick()` awaits `WakeWatcher.tick()`,
+  which loops every parked task sequentially and calls
+  `pr_watcher._run_cli` per task; unlike its sibling `_git_rc` (same file),
+  `_run_cli`'s `await proc.communicate()` had no bound, so one hung forge
+  call (a stalled TLS handshake, an auth prompt reading a closed stdin, a
+  non-terminating `--paginate` walk) blocked every other parked task behind
+  it forever. `_run_cli` now bounds each invocation with a new
+  `_CLI_TIMEOUT` (120s, aligned with `_GIT_TIMEOUT`), reaping the hung
+  process group on expiry and returning `None` — the same fail-closed shape
+  every other `_run_cli` failure already produces, applied uniformly to
+  read- and write-side (`gh api POST/PATCH`, `glab api --method POST/PUT`)
+  calls alike.
+
+### Changed
+- **Wiring evidence reads JS/TS and class bodies, not just Python module top
+  level** (issue #114 phase 4). The reference half of the check was always
+  language-agnostic — `git grep -w` reads bytes — but the declaration half was
+  `ast.parse` over `.py` files at module top level, so a diff in any other
+  language and any method added to a class were structurally invisible. Over
+  the 300 most recent non-merge commits on `main`, 25% of the commits that
+  touch code touch something other than Python and 20% of the Python symbols
+  added sit inside a class. Declarations now come from a new
+  `review/symbols.py`: Python at module level and in class bodies, reported by
+  qualified name (`Store.recompute_totals`), plus `export`ed module-level
+  declarations in `.js/.jsx/.mjs/.cjs/.ts/.tsx` read by a scanner that blanks
+  comments and string literals first. A `def` inside a function, an unexported
+  JS binding and a dunder method are deliberately not collected — the first two
+  are file-private by construction, and the language calls the third, so no
+  reference search could find the call that does exist. The whole pass now runs
+  under one deadline instead of a per-subprocess timeout (with a `git grep` per
+  name, a per-call timeout bounded nothing in aggregate) and returns the
+  symbols it had already decided when the budget runs out. Still advisory, and
+  every failure still resolves toward silence rather than toward an accusation.
+
+### Fixed
+- `nhCanAutoUpdate` was computed only from the macOS signing plan, then
+  stamped into the single `extraMetadata` block shared by every
+  electron-builder platform target — so a credentialed Apple environment
+  that also emitted a Windows or Linux artifact (an operator's own signed
+  release shell, `--mac --win`, etc.) stamped `true` into that artifact too,
+  even though the Windows/Linux update path is unverified and, per
+  electron-updater's own NSIS signature check, would run an unsigned
+  installer with no Authenticode verification at all. `nhCanAutoUpdate` is
+  now computed from the macOS plan AND the platform(s) this invocation
+  actually targets (`autoUpdateStamp` in `desktop/signing.cjs`): `true` only
+  when every targeted platform is macOS, `false` otherwise, and a hard
+  refusal (nonzero exit) if a single invocation mixes a signed AND notarized
+  mac target with any other platform, since no single stamp is correct for
+  both — a signed-but-not-notarized mac target mixed with another platform
+  still exits 0 and stamps `false`, since `plan.canAutoUpdate` is already
+  false in that state and there is nothing to mis-stamp. A
+  `beforePack` guard (`assertStampMatchesPlatform`) backstops any invocation
+  shape argv parsing can't see.
 - **The venv install guard's resolver never resolved a Windows candidate
   path.** `_safe_realpath` returns a native-separator (backslash) path on a
   real Windows host by construction, never through `win_readings.readings`

@@ -1662,12 +1662,30 @@ FROZEN_FILE_LINES = {
     # landing checkout) has no local ref, so the bare name silently
     # degraded the verdict to `state="unknown"` and masked a real conflict
     # as fail-open-landable.
-    # 9048 -> 9059 (+11): #343 (PR #379) gives task `config` its own writer, so
-    # the three `apply_action` call sites in this file each persist the raise
-    # through `update_task_config` beside the action that produced it, instead
-    # of letting a generic save write a stale blob back.
-    # Measured on the squashed tree with the scanner below.
-    "cli/commands.py": 9059,
+    # 9048 -> 9085 (+37): new `nh gate` verb, a thin click wrapper over
+    # `review.oneshot.run_gate` that runs the fresh-session reviewer and the
+    # tamper guard over the current branch or a GitHub PR with no daemon, no
+    # server, and no Store.
+    # 9085 -> 9096 (+11): merged with #343 (PR #379), which gives task
+    # `config` its own writer, so the three `apply_action` call sites in this
+    # file each persist the raise through `update_task_config` beside the
+    # action that produced it, instead of letting a generic save write a
+    # stale blob back.
+    # 9096 -> 9101 (+5): `gate`'s docstring now states the write surface in
+    # full (config.yaml is read, never created; --pr mode's `git fetch`
+    # writes only `FETCH_HEAD` and fetched objects) instead of the shorter
+    # "reads and reports only" claim a staff review found to be inaccurate,
+    # and the `GateUnavailable` refusal now prints with `soft_wrap=True` so a
+    # long credential path or PR URL cannot fold mid-token in a narrow
+    # terminal.
+    # 9101 -> 9191 (+90): merged with origin/main, which wires `nh task add
+    # --follows` (#232, resolves a predecessor by id/prefix and records
+    # `follows_id`) and makes `nh approve` refuse — with
+    # `--force-superseded` as the explicit override — a task a later task's
+    # `follows_id` already names as followed-up-on, in both the single-task
+    # and `--ready --yes` paths.
+    # Measured via `wc -l src/no_human/cli/commands.py` (agrees: 9191).
+    "cli/commands.py": 9191,
     # api/app.py 5338 -> 5346 (+8): same budget-floor warning surfaced by
     # `send-back`/`reply` as `budget_warning` in the JSON response. Net cost
     # was trimmed from a naive +14 to +8 by computing `Bounds.from_config(...)`
@@ -1850,7 +1868,11 @@ FROZEN_FILE_LINES = {
     # through `update_task_config` at the API call site, same reason as
     # `cli/commands.py` above.
     # Measured on the squashed tree with the scanner below.
-    "api/app.py": 6346,
+    # 6346 -> 6357 (+11): `onboarding_register_email` now forwards the newly
+    # registered address to `email/register.py:register_email` off-thread
+    # after the local persist, and threads `registration_status` into the
+    # persisted onboarding state and the response body. Measured on this tree.
+    "api/app.py": 6357,
     # +51: W5 active-time phase writer (phase instrumentation).
     # +84: `list_escalations`/`list_review_fails`/`list_tamper_trips` — the
     # three new failure-signal sources the recurring learning harvest mines.
@@ -1973,7 +1995,11 @@ FROZEN_FILE_LINES = {
     # reasoning: the next person adding a column to those writers needs to know
     # `config` is deliberately absent rather than forgotten.
     # Measured on the squashed tree with the scanner below.
-    "core/db.py": 5322,
+    # 5322 -> 5331 (+9): #232 adds `list_tasks_following`, the query `nh
+    # approve` uses to find the task(s) that name a given task in
+    # `follows_id` — used to warn/refuse landing a task a later one already
+    # follows up on. Measured via `wc -l src/no_human/core/db.py`.
+    "core/db.py": 5331,
     # +71: set_local_backend_fields — the config-write helper for the Settings
     # pane's local coder-backend fields (llm.local_model / llm.local_base_url).
     # +75: Codex account config helpers.
@@ -2024,7 +2050,21 @@ FROZEN_FILE_LINES = {
     # 3646 -> 3657 (+11): the `hooks.per_edit_type` default (#114 phase 2)
     # and the comment recording why it ships off while `per_edit_lint`
     # ships on. Re-measured on the merge result.
-    "config.py": 3657,
+    # 3657 -> 3661 (+4): `RESEND_API_KEY_VAR` — the welcome email's transport
+    # (email/send.py) reads it from ~/.no_human/.env or the process
+    # environment only, and it joins the `_reject_api_key_in_config` banned
+    # set. Re-measured on this tree.
+    # 3661 -> 3672 (+11): `load_config`'s `ensure_private_dir` call is now
+    # gated on `create_if_missing or NO_HUMAN_HOME.exists()` instead of
+    # running unconditionally, so a `create_if_missing=False` read (`nh
+    # gate`'s config read among others) no longer materializes
+    # `~/.no_human` on a machine that has never run `nh init`.
+    # set.
+    # 3661 -> 3668 (+7): `onboarding.registration_endpoint` (default null)
+    # and its explanatory comment -- the hosted-intake gate `email/register.py`
+    # reads before forwarding an onboarding address off-machine. Measured on
+    # the merge result.
+    "config.py": 3679,
     # +61: the tamper-adjudication one-bounded-retry contract (mechanical-
     # failure classification + the extracted `_review_tamper_adjudication`
     # helper that keeps `AdversarialReviewer.review` itself under the
@@ -2109,7 +2149,11 @@ FROZEN_FILE_LINES = {
     # render). Added a branch (plus docstring) giving that case its own
     # honest lead-in instead of reusing the "determined" one. Measured on
     # this merge.
-    "review/reviewer.py": 3134,
+    # 3134 -> 3147 (+13): `_git_diff` gets `--no-ext-diff --no-textconv`, an
+    # env scrubbed of foreign secrets, and the docstring explaining why a
+    # coder-planted `diff.external`/`diff.<x>.textconv` must not run in the
+    # reviewer process. Security hardening; measured on this tree.
+    "review/reviewer.py": 3147,
     # 2706 -> 2711 (+5): pre-existing red on main at 03b262d23 (e922e9b4's
     # landing, change-scoped tests missed the ratchet) — repaired, measured,
     # on this merge; same cause as the two function-level wake.py bumps above.
@@ -2305,7 +2349,11 @@ FROZEN_FILE_LINES = {
     # legitimately-claimed row still cannot be overwritten. Plus the
     # read-only `lease_lost` property mirroring `_lease_lost` for
     # `health.py`/`api/app.py`. Measured on this tree with the scanner below.
-    "core/scheduler.py": 3196,
+    # 3196 -> 3205 (+9): explanatory comment on the un-timeout-wrapped
+    # `self.wake.tick` await in the dispatch loop, clarifying that
+    # `_CLI_TIMEOUT` bounds only a single `pr_watcher._run_cli` call, not the
+    # whole sequential sweep over parked tasks. No behavior change.
+    "core/scheduler.py": 3205,
 }
 
 

@@ -629,14 +629,14 @@ ALLOWLIST: dict[str, dict[str, Allowed]] = {
     "vcs/manifest_repair.py": {
         "exec:<dynamic>": Allowed(
             "the TARGET REPO's own `scripts/export_guard.py` (repo-controlled "
-            "content), run in two shapes: PROACTIVELY as `[sys.executable, "
+            "content), run in two shapes: PROACTIVELY as `[<interpreter>, "
             "<repo>/scripts/export_guard.py, 'approve', '--all', '--prune']` "
             "before every commit attempt (300s timeout), and REACTIVELY as "
-            "`[sys.executable, <repo>/scripts/export_guard.py, 'approve', "
+            "`[<interpreter>, <repo>/scripts/export_guard.py, 'approve', "
             "<refused paths>]` — the manifest gate's documented FIX, inside "
             "the task worktree (120s timeout); the committed guard rewrites "
             "RELEASE_MANIFEST.txt pins and dials nothing. On the PUBLIC repo "
-            "shape (no `export_guard.py`), REACTIVELY as `[sys.executable, "
+            "shape (no `export_guard.py`), REACTIVELY as `[<interpreter>, "
             "<repo>/scripts/check_release_manifest.py, '--write']` — the "
             "same gate's documented FIX for a tree with no classification "
             "ledger to consult, also inside the task worktree (120s "
@@ -653,7 +653,11 @@ ALLOWLIST: dict[str, dict[str, Allowed]] = {
             "paths at all (a Bash-only coder), it stages the whole tree "
             "instead before the same `--write`; a failing or hanging "
             "proactive run is log-only and falls through to the REACTIVE "
-            "route above as fallback",
+            "route above as fallback. `<interpreter>` is whatever "
+            "`proc.real_python` resolves: `sys.executable` in an ordinary "
+            "install, and in the frozen desktop build a venv/PATH Python "
+            "instead of the `nh` binary `sys.executable` is there (issue "
+            "#402). It changes WHAT RUNS the script, never what is run",
             _ON + "the pipeline commit path — proactively on every commit "
             "(both repo shapes now), reactively on exactly the manifest "
             "gate's changed-pinned-files refusal (commit_with_manifest_repair, "
@@ -885,6 +889,31 @@ ALLOWLIST: dict[str, dict[str, Allowed]] = {
     # GIT_SUBCOMMANDS classifies LOCAL, and ALLOWLIST names only what can leave
     # the machine. test_no_stale_allowlist_entries is what forced the old line
     # out when the probe went — it failed naming exactly this entry.
+    # The one-shot gate (`nh gate` / `nh gate --pr <url>`, `review/oneshot.py`):
+    # fetching a PR by number without creating or deleting a branch ref, unlike
+    # `orchestrator._fetch_pr_diff`'s `_nh_review_pr` branch. Additive and
+    # idempotent — writes only objects and `FETCH_HEAD` — but it is still a
+    # round-trip to the remote, so it is named here like every other fetch.
+    "review/oneshot.py": {
+        "exec:git fetch": Allowed(
+            "your git remote — `git fetch origin refs/pull/<n>/head` at "
+            ":389, to compare a PR's head against its merge base",
+            "user-invoked: only when `nh gate --pr <url>` is given a pull "
+            "request URL; the default `nh gate` (current branch) never "
+            "reaches this path"),
+        "exec:git clone": Allowed(
+            "no remote at all — `git clone --local --shared --no-checkout` "
+            "at :473 clones the user's own repo (whatever ref it is on) "
+            "into a throwaway temp directory so the reviewed head can be "
+            "checked out for citation verification against the exact "
+            "reviewed tree, never the user's live working tree; `--local` "
+            "reads the source repo's object store directly and never dials "
+            "a network URL",
+            "user-invoked: runs on EVERY `nh gate` invocation, default "
+            "(current branch) and `--pr <url>` alike — `_materialized_head` "
+            "clones in both modes so a dirty working tree can never demote "
+            "a citation-backed finding"),
+    },
     "integrations/__init__.py": {
         "http:httpx": Allowed(
             "Jira / Linear / CircleCI / your Teams webhook — health checks",
@@ -953,6 +982,17 @@ ALLOWLIST: dict[str, dict[str, Allowed]] = {
         "http:httpx": Allowed("https://api.monday.com/v2",
                               _CFG + "integrations.monday.enabled"),
     },
+    # The welcome email's transport. Gated on the KEY, not on a config flag:
+    # `_default_transport()` returns `UnavailableTransport` and touches the
+    # network not at all unless RESEND_API_KEY is in ~/.no_human/.env, so an
+    # ordinary install never reaches this host. stdlib urllib on purpose —
+    # adding an SDK for one POST is exactly what the lean-stack rule forbids.
+    "email/send.py": {
+        "http:urllib.request": Allowed(
+            "https://api.resend.com/emails — one POST carrying the welcome "
+            "email's subject, body and the recipient the user typed",
+            "env:RESEND_API_KEY"),
+    },
     "notify/slack.py": {
         "http:httpx": Allowed("the Slack webhook URL you set — a task-status line",
                               _CFG + "notifications.slack_webhook_url"),
@@ -967,6 +1007,21 @@ ALLOWLIST: dict[str, dict[str, Allowed]] = {
             "external id or up to three keywords from its title",
             _CFG + "context.m365.token — absent from DEFAULT_CONFIG entirely; "
                    "the client raises before building the request"),
+    },
+    # The CAPTURE half of "onboarding email must reach our servers": forwards
+    # the address just entered at onboarding (plus a `desktop-<platform>`
+    # plan string) to a hosted registration intake, off-thread and after the
+    # local persist. Fail-open — never raises, never logs/returns the
+    # address (register_email's docstring). Reuses the existing waitlist
+    # intake's payload shape with `source: "onboarding"`.
+    "email/register.py": {
+        "http:urllib.request": Allowed(
+            "your configured onboarding registration intake — the email "
+            "address just registered, plus a `desktop-<platform>` plan "
+            "string and `source: \"onboarding\"`",
+            _CFG + "onboarding.registration_endpoint — empty/None by "
+                   "default, so an unconfigured install sends nothing; "
+                   "NH_ONBOARDING_REGISTER_URL env var can set/override it"),
     },
     "brain/client.py": {
         "http:httpx": Allowed("team_brain.control_plane_url — task patterns",

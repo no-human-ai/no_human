@@ -208,6 +208,118 @@ def test_approve_wrong_status(tmp_path, monkeypatch):
     assert "not awaiting_approval" in output or "cannot approve" in output
 
 
+# --------------------------------------------------------------------------- #
+# nh approve — superseded tasks (issue #232)                                  #
+# --------------------------------------------------------------------------- #
+
+def _seed_follow_up(db_path: Path, follows_id: str, *, title="Follow-up",
+                    status: TaskStatus = TaskStatus.PENDING) -> str:
+    async def _go():
+        async with Store(db_path) as s:
+            t = Task.new(title, repo_path="/tmp/repo", follows_id=follows_id)
+            await s.create_task(t)
+            if status is not TaskStatus.PENDING:
+                await s.set_status(t, status, validate=False)
+            return t.id
+    return asyncio.run(_go())
+
+
+def test_approve_refuses_a_superseded_task(tmp_path, monkeypatch):
+    """The near-miss issue #232 reports: a task a later one already follows
+    up on nearly got merged anyway. `nh approve` must refuse it outright,
+    naming the successor, instead of landing over already-superseded work."""
+    db = tmp_path / "test.db"
+    task_id = _seed_task(db, TaskStatus.AWAITING_APPROVAL, title="Original task")
+    follow_up_id = _seed_follow_up(db, task_id, title="Supersedes the original")
+    runner = _make_runner(db, monkeypatch)
+
+    result = runner.invoke(cli, ["approve", task_id[:8]])
+
+    assert result.exit_code == 1
+    assert "refused" in result.output.lower()
+    assert follow_up_id[:8] in result.output
+    assert "--force-superseded" in result.output
+
+    refreshed = _get_task(db, task_id)
+    assert refreshed.status is TaskStatus.AWAITING_APPROVAL
+    assert refreshed.context is None or refreshed.context.get("approved_at") is None
+
+
+def test_approve_force_superseded_overrides_the_refusal(tmp_path, monkeypatch):
+    """--force-superseded is the explicit human override for a follow-up
+    that doesn't actually replace this task — approval proceeds exactly as
+    it would without any successor."""
+    db = tmp_path / "test.db"
+    task_id = _seed_task(db, TaskStatus.AWAITING_APPROVAL)
+    _seed_follow_up(db, task_id)
+
+    async def _ctx():
+        async with Store(db) as s:
+            await s.merge_context(task_id, {
+                "already_satisfied_report":
+                    "ALREADY-SATISFIED\nCRITERION: x — MET — evidence: a.py:1",
+                "already_satisfied_landing": {
+                    "on_base": True, "sha": "deadbeef", "branch": "",
+                    "ship_ref": "origin/main",
+                },
+            })
+    asyncio.run(_ctx())
+    runner = _make_runner(db, monkeypatch)
+
+    result = runner.invoke(cli, ["approve", task_id[:8], "--force-superseded"])
+
+    assert result.exit_code == 0, result.output
+    assert "already satisfied" in result.output.lower()
+    refreshed = _get_task(db, task_id)
+    assert refreshed.status is TaskStatus.DONE
+
+
+def test_approve_not_blocked_by_a_cancelled_successor(tmp_path, monkeypatch):
+    """A follow-up that was itself cancelled no longer supersedes anything —
+    it must not block approval of the task it named in `follows_id`."""
+    db = tmp_path / "test.db"
+    task_id = _seed_task(db, TaskStatus.AWAITING_APPROVAL)
+    cancelled_id = _seed_follow_up(db, task_id, title="Filed by mistake")
+
+    async def _cancel():
+        async with Store(db) as s:
+            t = await s.get_task(cancelled_id)
+            t.context = await s.record_cancel_reason(cancelled_id, "filed by mistake")
+            await s.set_status(t, TaskStatus.FAILED, validate=False)
+
+    asyncio.run(_cancel())
+
+    async def _ctx():
+        async with Store(db) as s:
+            await s.merge_context(task_id, {
+                "already_satisfied_report":
+                    "ALREADY-SATISFIED\nCRITERION: x — MET — evidence: a.py:1",
+                "already_satisfied_landing": {
+                    "on_base": True, "sha": "deadbeef", "branch": "",
+                    "ship_ref": "origin/main",
+                },
+            })
+    asyncio.run(_ctx())
+    runner = _make_runner(db, monkeypatch)
+
+    result = runner.invoke(cli, ["approve", task_id[:8]])
+
+    assert result.exit_code == 0, result.output
+    assert "refused" not in result.output.lower()
+    refreshed = _get_task(db, task_id)
+    assert refreshed.status is TaskStatus.DONE
+
+
+def test_approve_force_superseded_flag_rejected_with_ready(tmp_path, monkeypatch):
+    db = tmp_path / "test.db"
+    runner = _make_runner(db, monkeypatch)
+
+    result = runner.invoke(cli, ["approve", "--ready", "--force-superseded"])
+
+    assert result.exit_code == 2
+    assert "--force-superseded" in result.output
+
+
 def _git(repo, *args, check=True):
     import subprocess
     return subprocess.run(["git", "-C", str(repo), *args], check=check,

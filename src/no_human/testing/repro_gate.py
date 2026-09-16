@@ -41,6 +41,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from ..proc import real_python
+
 if TYPE_CHECKING:
     from ..profile import ProjectProfile
 
@@ -348,24 +350,43 @@ def _pytest_python(repo_path: Path) -> str | None:
     confident but FALSE ``fail`` for every bugfix. In a frozen build fall back to
     a real interpreter: the target repo's own venv first (it has the repo's deps
     and pytest), then ``python3``/``python`` on PATH. None → the caller fails
-    closed to ``error`` (advisory), never a false pass/fail."""
+    closed to ``error`` (advisory), never a false pass/fail.
+
+    The frozen fast-path stays here rather than inside ``proc.real_python``
+    because ``_venv_bin`` globs the repo root, and this runs on every repro
+    gate in an ordinary (non-frozen) install where the answer is already
+    known."""
     if not getattr(sys, "frozen", False):
         return sys.executable
     from .runner import _venv_bin
 
-    from .runner import _IS_WINDOWS
-
+    # `_venv_bin` returns the interpreter's own directory (`<venv>/bin`, or
+    # `<venv>\Scripts` on Windows), so hand `real_python` the venv ROOT and
+    # let it pick the right filename for the host — an extensionless `python`
+    # in `Scripts` is not a file, and naming it returned a path that does not
+    # exist.
     bin_dir = _venv_bin(repo_path)
-    if bin_dir is not None:
-        # `_venv_bin` returns `<venv>\Scripts` on Windows, where the
-        # interpreter is `python.exe` — an extensionless `python` there is not
-        # a file, so this returned a path that does not exist.
-        return str(bin_dir / ("python.exe" if _IS_WINDOWS else "python"))
-    for name in ("python3", "python"):
-        found = shutil.which(name)
-        if found:
-            return found
-    return None
+    return real_python(bin_dir.parent if bin_dir is not None else None)
+
+
+_EXECUTED_RE = re.compile(r"\b\d+\s+(passed|failed|errors?|xpassed|xfailed)\b")
+_COLLECTED_RE = re.compile(r"\bcollected\s+\d+\s+items?\b")
+
+
+def _pytest_never_loaded(out: str) -> bool:
+    """True when ``python -m pytest`` could not import pytest AT ALL.
+
+    The phrase alone is NOT enough: a test can fail cleanly while its own
+    output happens to print "No module named pytest" (e.g. as part of an
+    assertion message), which is test OUTPUT, not a launch error. A session
+    that actually ran always emits a count line (``N passed/failed/error(s)/
+    xpassed/xfailed``) or a ``collected N items`` line; when either is
+    present the phrase is not the launch error, and the real exit code is
+    the verdict.
+    """
+    if "No module named pytest" not in out and "No module named 'pytest'" not in out:
+        return False
+    return not (_EXECUTED_RE.search(out) or _COLLECTED_RE.search(out))
 
 
 def _run_pytest_proc(
@@ -375,11 +396,12 @@ def _run_pytest_proc(
 
     ``returncode`` is ``None`` when pytest could not even be launched or
     could not load at all (missing interpreter, timeout, pytest not
-    importable) — an ENVIRONMENT failure indistinguishable from any exit
-    code, so the caller must treat it as "could not run" rather than infer
-    anything from it. Any other value is the real pytest exit code (0-5),
-    including 5 ("no tests collected"), which IS meaningful and is left for
-    the caller to classify (see :func:`_nothing_executed`)."""
+    importable AND no test session ran) — an ENVIRONMENT failure
+    indistinguishable from any exit code, so the caller must treat it as
+    "could not run" rather than infer anything from it. Any other value is
+    the real pytest exit code (0-5), including 5 ("no tests collected"),
+    which IS meaningful and is left for the caller to classify (see
+    :func:`_nothing_executed`)."""
     try:
         proc = subprocess.run(
             [python, "-m", "pytest", "-x", "-q", "--no-header", *tests],
@@ -394,8 +416,9 @@ def _run_pytest_proc(
     # The interpreter can't even load pytest (a bare system python3 fallback,
     # or the frozen binary re-running the CLI). That is an environment failure,
     # NOT a test verdict — treat as not-ran so the caller returns "error", never
-    # a false "fail".
-    if "No module named pytest" in out or "No module named 'pytest'" in out:
+    # a false "fail". But only when no session actually ran: a test that fails
+    # cleanly while its own output mentions the phrase is a real verdict.
+    if _pytest_never_loaded(out):
         return None, out
     return proc.returncode, out
 
@@ -423,9 +446,6 @@ def _run_pytest(
     # not a test verdict. Anything that ran at least one test gives 0-4.
     ran = returncode != 5 and "no tests ran" not in out.lower()
     return ran, returncode == 0, out
-
-
-_EXECUTED_RE = re.compile(r"\b\d+\s+(passed|failed|errors?|xpassed|xfailed)\b")
 
 
 def _nothing_executed(returncode: int, out: str) -> str | None:
@@ -725,9 +745,16 @@ def run_repro_gate(
     tmp = Path(tempfile.mkdtemp(prefix="nh-repro-"))
     worktree = tmp / "base"
     try:
+        # A checkout runs the tree's smudge filters; a coder-planted
+        # `filter.<x>.smudge` in the shared config would run inside this process.
+        # No `-c` flag neutralises arbitrary filters, so the scrubbed env is the
+        # boundary — same as `review/type_evidence.py` and `GitRepo.add_worktree`.
+        from ..vcs.git import _git_subprocess_env
+
         added = subprocess.run(
             ["git", "worktree", "add", "--detach", str(worktree), base_ref],
             cwd=repo_path, capture_output=True, text=True,
+            env=_git_subprocess_env("worktree"),
         )
         if added.returncode != 0:
             return ReproResult("error", tests=tests, reasons=[
