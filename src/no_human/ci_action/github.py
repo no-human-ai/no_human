@@ -208,17 +208,30 @@ class GitHubClient:
         proceed to post — see the module docstring and ``run.py``'s upsert
         step for why a transient read failure must not be read as "no prior
         comment exists".
+
+        Pagination is driven by an incrementing ``page=`` query parameter we
+        construct ourselves, not by following the response's ``Link``
+        header. GitHub returns that header in at least two shapes —
+        ``https://api.github.com/repos/{owner}/{repo}/...`` and, in cases
+        such as a renamed or ID-addressed repository,
+        ``https://api.github.com/repositories/{id}/...`` — and the second
+        form does not match ``_COMMENTS_LIST_PATH``'s ``/repos/...`` anchor.
+        Following it verbatim would make :func:`_assert_write_allowed`
+        correctly refuse a URL it cannot prove is the comments-list
+        endpoint, which would surface as an exit-2 failure discarding an
+        already-computed review verdict. Owning the URL ourselves avoids the
+        ambiguity entirely: a short page (fewer than ``per_page`` items) is
+        unambiguously the last one.
         """
         out: list[Comment] = []
-        path = f"/repos/{repo}/issues/{pr_number}/comments?per_page=100"
-        for _ in range(_MAX_LIST_PAGES):
+        for page in range(1, _MAX_LIST_PAGES + 1):
+            path = f"/repos/{repo}/issues/{pr_number}/comments?per_page=100&page={page}"
             resp = self._send("GET", path)
-            for item in resp.json():
+            items = resp.json()
+            for item in items:
                 out.append(Comment(id=item["id"], body=item.get("body") or ""))
-            next_link = _next_link(resp.headers.get("Link", ""))
-            if not next_link:
+            if len(items) < 100:
                 break
-            path = next_link
         return out
 
     def create_comment(self, repo: str, pr_number: int, body: str) -> Comment:
@@ -277,20 +290,3 @@ def upsert_comment(
         if existing is not None:
             return client.update_comment(repo, existing.id, body)
         raise
-
-
-_LINK_RE = re.compile(r'<([^>]+)>;\s*rel="next"')
-
-
-def _next_link(link_header: str) -> str | None:
-    if not link_header:
-        return None
-    m = _LINK_RE.search(link_header)
-    if not m:
-        return None
-    url = m.group(1)
-    # httpx.Client.request accepts a path relative to base_url; a full next
-    # URL from GitHub already includes the scheme+host, and httpx follows an
-    # absolute URL string fine when passed as the `url` positional either way.
-    idx = url.find("/repos/")
-    return url[idx:] if idx != -1 else url

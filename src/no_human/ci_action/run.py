@@ -450,7 +450,7 @@ def render_body(
             lines.append(f"- {_cell(d)}")
         lines += ["", "</details>"]
 
-    lines += ["", "---", "*Posted by the no_human review gate GitHub Action. This comment is replaced in place on every run — it is never duplicated.*"]
+    lines += ["", "---", "*Posted by the no_human review gate GitHub Action. This comment is found and replaced in place on every run.*"]
     body = "\n".join(lines)
     return _truncate(body, blocking, advisory)
 

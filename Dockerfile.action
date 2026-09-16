@@ -52,7 +52,16 @@ RUN mkdir -p /etc/apt/keyrings \
     && npm install -g @anthropic-ai/claude-code@2.1.270 \
     && npm cache clean --force
 
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
+# Pinned by digest (not `:latest`, unlike Dockerfile / Dockerfile.mcp, which
+# are out of scope for this change to touch): this image runs with a
+# secret-bearing credential on every third-party pull request it reviews, so
+# an unpinned base here is a live supply-chain surface, not just a
+# reproducibility nit. Bump the digest deliberately when picking up a new uv
+# release; resolve the current one with:
+#   curl -s ghcr.io/v2/astral-sh/uv/manifests/latest \
+#     -H "Authorization: Bearer $(curl -s https://ghcr.io/token?scope=repository:astral-sh/uv:pull | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"])')" \
+#     -H "Accept: application/vnd.oci.image.index.v1+json" -D - -o /dev/null | grep -i digest
+COPY --from=ghcr.io/astral-sh/uv:latest@sha256:62f8c047d0a0e9ece6b53fc63df902585a67a47a7f318ddec4a37db586edc8e3 /uv /uvx /usr/local/bin/
 
 WORKDIR /app
 # hatch_build.py is BUILD CONFIGURATION (a custom hatchling hook resolved
@@ -60,6 +69,23 @@ WORKDIR /app
 COPY pyproject.toml uv.lock README.md hatch_build.py ./
 COPY src/ ./src/
 COPY migrations/ ./migrations/
+
+# Pin uv's cache under /app (owned by `nhaction` below, not root's default
+# `$HOME/.cache`) so it is unaffected by whatever HOME resolves to at
+# container-run time. Without this, `uv sync` here at build time (as root,
+# HOME=/root) populates `/root/.cache/uv` with root-owned content; the
+# entrypoint's runtime `uv run --no-sync` then drops to UID 1000 via
+# `setpriv`, and if the caller starts the container with no `-e HOME=...`
+# override, HOME defaults to `/root` too — which is a directory this image
+# never gives UID 1000 write access to, only a fresh/absent one (see the
+# entrypoint's HOME_DIR chown below). That combination reproduces as `uv`
+# failing closed with a `Permission denied` on `/root/.cache/uv/...` instead
+# of this Action's own legible `::error::` messages — verified against a real
+# bare `docker run --rm <image>` with no env vars at all (exactly CI's "fails
+# closed with no event context" smoke test). Scoping the cache to `/app`
+# removes the dependency on HOME's ownership entirely rather than patching
+# around it.
+ENV UV_CACHE_DIR=/app/.uv-cache
 
 RUN uv sync --frozen --no-dev
 
@@ -91,11 +117,21 @@ RUN useradd --create-home --uid 1000 --shell /bin/sh nhaction \
 #
 # Entrypoint runs as root (the container's default user, per above) and does
 # three things before dropping privilege:
-#   1. Take ownership of HOME (`/github/home` for Docker actions, per GitHub's
-#      own env contract — never assume `/home/nhaction`) so `git config
-#      --global` and the `claude` CLI's own config/cache writes succeed as
-#      UID 1000. `mkdir -p` first: on a fresh runner, `/github/home` may not
-#      exist yet at all.
+#   1. Take ownership of the HOME directory itself — NOT recursively — so
+#      `git config --global` and the `claude` CLI can create new files/dirs
+#      under it (`~/.gitconfig`, `~/.claude/...`) as UID 1000. `/github/home`
+#      for Docker actions (per GitHub's own env contract — never assume
+#      `/home/nhaction`) is shared across every container action in the same
+#      job, not private to this one; a recursive chown would permanently
+#      re-own whatever an earlier or later step in that job left there,
+#      which is someone else's data, not this Action's to touch. A
+#      non-recursive chown does not need that: Unix only checks the
+#      *containing* directory's owner/write-bit to create a new entry, so
+#      once the top-level directory is UID 1000, `git`/`claude` can create
+#      arbitrarily nested new paths under it (each new directory they create
+#      is owned by the process that created it) without this script ever
+#      touching pre-existing content. `mkdir -p` first: on a fresh runner,
+#      `/github/home` may not exist yet at all.
 #   2. Take ownership of GITHUB_OUTPUT and GITHUB_STEP_SUMMARY themselves
 #      (files, not directories, and each may be absent — e.g. GITHUB_OUTPUT is
 #      unset entirely in `dry_run` local testing) so `no_human.ci_action.run`
@@ -152,8 +188,8 @@ RUN printf '%s\n' \
         '    echo "::error::entrypoint setup failed: git config --global --add safe.directory"' \
         '    exit 2' \
         'fi' \
-        'if ! chown -R nhaction:nhaction "$HOME_DIR"; then' \
-        '    echo "::error::entrypoint setup failed: chown -R HOME directory $HOME_DIR"' \
+        'if ! chown nhaction:nhaction "$HOME_DIR"; then' \
+        '    echo "::error::entrypoint setup failed: chown HOME directory $HOME_DIR"' \
         '    exit 2' \
         'fi' \
         'for f in "${GITHUB_OUTPUT:-}" "${GITHUB_STEP_SUMMARY:-}"; do' \

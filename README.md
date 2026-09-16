@@ -206,8 +206,8 @@ video with every step):
 Run the same adversarial reviewer and tamper guard as a pull-request check —
 one shot, no daemon, no `~/.no_human` database, and not the queueing `nh
 review` CLI path. It posts a single pass/fail checklist comment with
-`file:line` citations, created once and then updated in place — never
-duplicated.
+`file:line` citations, found by its own marker and updated in place on every
+run rather than creating a new one each time.
 
 ```yaml
 # .github/workflows/review-gate.yml
@@ -326,6 +326,20 @@ re-verifies every path it hands to the reviewer), but the underlying
 tamper-check module is out of scope for this Action to change. If your test
 suite has non-ASCII test filenames, treat the tamper guard as best-effort for
 those specific files until that's fixed upstream.
+
+**Known limitation: two runs racing each other, or a pull request already
+carrying 1,000+ other comments, can produce a duplicate.** The Action finds
+its own prior comment by listing the PR's comments (up to 10 pages of 100)
+and picking the lowest-id one carrying its marker; two runs started close
+together can both list before either creates, and each will create its own
+comment. A later run of either still converges — it lists again, finds the
+lowest-id marked comment, and updates that one — but the extra comment is
+not deleted. The same "list, then act" gap means a marked comment that would
+only appear on page 11 or later (over 1,000 other comments already on the
+pull request) reads as absent and gets a new one created rather than
+updated. Both are accepted, documented bounds rather than silent failures:
+if your workflow can trigger two runs for the same commit, add a
+`concurrency:` group keyed on the pull request to serialize them.
 
 ## MCP server — hand it work from the agent you are already in
 

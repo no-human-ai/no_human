@@ -1193,6 +1193,59 @@ def test_find_marked_comment_picks_lowest_id_among_duplicates():
     assert found is not None and found.id == 7
 
 
+def test_list_comments_paginates_by_its_own_page_counter_not_the_link_header():
+    """Regression: GitHub's alternate ``/repositories/{id}/...`` Link-header
+
+    form previously made ``_next_link`` return an absolute URL that
+    ``_assert_write_allowed`` then refused (it only matches ``/repos/...``),
+    turning a successful review into an exit-2 failure. Pagination is now
+    driven by a ``page=`` counter this client owns, so it must reach page 2
+    (and see that comment) even when the first response's ``Link`` header is
+    in that problematic form — proving the header is no longer consulted.
+    """
+    requests: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(str(request.url))
+        if "page=2" in str(request.url):
+            return httpx.Response(200, json=[{"id": 2, "body": "second page"}])
+        assert "page=1" in str(request.url)
+        return httpx.Response(
+            200,
+            json=[{"id": i, "body": "x"} for i in range(100)],
+            headers={
+                "Link": (
+                    '<https://api.github.com/repositories/999/issues/1/comments?page=2>; '
+                    'rel="next"'
+                )
+            },
+        )
+
+    client = github.GitHubClient(token="t", transport=httpx.MockTransport(handler), sleep=lambda s: None)
+    comments = client.list_comments("o/r", 1)
+    assert [c.id for c in comments] == [*range(100), 2]
+    assert len(requests) == 2
+
+
+def test_list_comments_stops_at_the_page_cap_without_erroring():
+    """A pull request with 1,000+ prior comments must not loop forever or
+
+    raise — it stops at the documented ``_MAX_LIST_PAGES`` bound. A marked
+    comment that would only appear beyond that bound reads as absent (see
+    the README's "Known limitation" note on this), not as a crash.
+    """
+    call_count = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        call_count["n"] += 1
+        return httpx.Response(200, json=[{"id": call_count["n"], "body": "x"} for _ in range(100)])
+
+    client = github.GitHubClient(token="t", transport=httpx.MockTransport(handler), sleep=lambda s: None)
+    comments = client.list_comments("o/r", 1)
+    assert call_count["n"] == github._MAX_LIST_PAGES
+    assert len(comments) == github._MAX_LIST_PAGES * 100
+
+
 @pytest.mark.parametrize(
     "status, body_text, headers, expect_message",
     [
