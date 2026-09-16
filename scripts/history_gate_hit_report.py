@@ -526,6 +526,29 @@ def cmd_report(args: argparse.Namespace) -> int:
         return 0
 
     groups = group_hits(hits)
+
+    if args.classify:
+        if not args.enforce or not args.enforce_reason:
+            print("error: --classify requires --enforce {yes,no} and "
+                  "--enforce-reason", file=sys.stderr)
+            return 2
+        raw_classifications = json.loads(
+            Path(args.classify).read_text(encoding="utf-8"))
+        classifications = {
+            klass: (entry["verdict"], entry["rationale"])
+            for klass, entry in raw_classifications.items()
+        }
+        enforce_verdict = (args.enforce == "yes", args.enforce_reason)
+        try:
+            markdown = render_markdown(
+                groups, classifications, elided=elided,
+                enforce_verdict=enforce_verdict, totals=totals)
+        except ReportError as exc:
+            print(f"report error: {exc}", file=sys.stderr)
+            return 2
+        print(markdown)
+        return 0
+
     print(json.dumps(
         {k: {"raw_count": g.raw_count,
              "distinct_matches": len(g.distinct_matches),
@@ -564,6 +587,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
     src.add_argument("--stdout", help="captured stdout text (may be capped)")
     p_report.add_argument("--check-totals", default=None,
                           help="e.g. blob=214,message=33,identity=32,path=0,tag=0")
+    p_report.add_argument(
+        "--classify", default=None,
+        help="JSON file: {class: {\"verdict\": REAL-TRACE|FALSE-POSITIVE, "
+             "\"rationale\": str}}; when given, renders classified markdown "
+             "via render_markdown() instead of the raw group-stats JSON")
+    p_report.add_argument("--enforce", choices=["yes", "no"], default=None,
+                          help="required with --classify: the ENFORCE verdict")
+    p_report.add_argument("--enforce-reason", default=None,
+                          help="required with --classify: non-empty reason")
     p_report.set_defaults(func=cmd_report)
 
     return ap

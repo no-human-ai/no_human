@@ -452,3 +452,87 @@ def test_gate_error_is_exit_2_not_1(tmp_path, capsys):
     rc = hgr.cmd_scan(args)
     assert rc == 2, "a gate-arming failure must be exit 2, never conflated with exit 1 (leak found)"
     assert not out_json.exists(), "no JSON should be written when the gate could not be armed"
+
+
+# --------------------------------------------------------------------------- #
+# `report --classify`: the CLI path must actually reach render_markdown.
+#
+# Without this, render_markdown is only ever exercised by tests handing it
+# pre-built classification dicts, and nothing on the command line can turn a
+# captured scan into the classified, ENFORCE-verdict deliverable AC2/AC4
+# require — the tool would be a framework, not something that produces the
+# report. These tests prove `report --classify ... --enforce ...
+# --enforce-reason ...` really renders it, end to end, from a JSON hits file.
+# --------------------------------------------------------------------------- #
+
+def _report_args(tmp_path, *, classify=None, enforce=None, enforce_reason=None):
+    hits_json = tmp_path / "hits.json"
+    hits_json.write_text(json.dumps({
+        "blob_hits": ["abc123def456 src/thing.py :: shape_x: match1"],
+        "path_hits": [],
+        "message_hits": [],
+        "identity_hits": [],
+        "tag_hits": [],
+    }), encoding="utf-8")
+    return argparse.Namespace(
+        json=str(hits_json), stdout=None, check_totals=None,
+        classify=classify, enforce=enforce, enforce_reason=enforce_reason,
+    )
+
+
+def test_cmd_report_renders_classified_markdown_via_classify_flag(tmp_path, capsys):
+    classify_json = tmp_path / "classify.json"
+    classify_json.write_text(json.dumps({
+        "shape_x": {"verdict": "FALSE-POSITIVE",
+                    "rationale": "match1 is a synthetic test fixture."},
+    }), encoding="utf-8")
+
+    args = _report_args(
+        tmp_path, classify=str(classify_json), enforce="no",
+        enforce_reason="only one false-positive class was scanned; nothing "
+                        "here supports flipping the gate.")
+    rc = hgr.cmd_report(args)
+    assert rc == 0
+
+    out = capsys.readouterr().out
+    assert "## Class: `shape_x` — FALSE-POSITIVE" in out
+    assert "match1 is a synthetic test fixture." in out
+    assert "RECOMMENDATION: ENFORCE = NO" in out
+
+
+def test_cmd_report_classify_requires_enforce_args(tmp_path, capsys):
+    classify_json = tmp_path / "classify.json"
+    classify_json.write_text(json.dumps({
+        "shape_x": {"verdict": "FALSE-POSITIVE", "rationale": "fixture"},
+    }), encoding="utf-8")
+
+    args = _report_args(tmp_path, classify=str(classify_json), enforce=None,
+                        enforce_reason=None)
+    rc = hgr.cmd_report(args)
+    assert rc == 2, "missing --enforce/--enforce-reason must not silently render"
+    assert "RECOMMENDATION" not in capsys.readouterr().out
+
+
+def test_cmd_report_classify_propagates_report_error_as_exit_2(tmp_path, capsys):
+    # classify.json omits the class actually present in the hits -> render_markdown
+    # must raise ReportError (no classification for a class with hits), and
+    # cmd_report must surface that as exit 2, not crash or fabricate a verdict.
+    classify_json = tmp_path / "classify.json"
+    classify_json.write_text(json.dumps({}), encoding="utf-8")
+
+    args = _report_args(tmp_path, classify=str(classify_json), enforce="no",
+                        enforce_reason="placeholder")
+    rc = hgr.cmd_report(args)
+    assert rc == 2
+    assert "no classification for class" in capsys.readouterr().err
+
+
+def test_cmd_report_without_classify_still_prints_raw_group_json(tmp_path, capsys):
+    # Backward compatibility: the pre-existing, unclassified stats path (used
+    # for quick inspection of a fresh capture before classification exists)
+    # must keep working exactly as before when --classify is not given.
+    args = _report_args(tmp_path)
+    rc = hgr.cmd_report(args)
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["shape_x"]["raw_count"] == 1
