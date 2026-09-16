@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -56,6 +57,14 @@ def _load_checker():
     spec.loader.exec_module(module)
     return module
 
+
+@dataclass(frozen=True)
+class Reconciliation:
+    doc: str
+    raw: str
+    stable_prefix: str
+    new_raw: str
+    resolve_path: str
 
 @dataclass(frozen=True)
 class Drift:
@@ -151,6 +160,31 @@ def plan(mod, rows) -> tuple[list[Drift], list[Unfixable]]:
     return drifts, unfixable
 
 
+
+def diagnose_divergence(doc_text: str, doc_path: Path, d: Drift, is_table: bool, mod) -> str:
+    tail = d.old_raw.split(":", 1)[1]
+    if mod._LEGACY_LINE_SPEC_RE.match(tail):
+        return (f"`{d.old_raw}` does not occur exactly once in {doc_path.name}\n"
+                f"  `--apply` will not guess which surface is authoritative.\n"
+                f"  Legacy line citations have no stable symbol identity and must be resolved manually.")
+
+    prefix = d.old_raw.rsplit(":", 1)[0]
+    pattern = r"`(" + re.escape(prefix) + r":\d+(?:-\d+)?)" + r"`" if not is_table else r'"(' + re.escape(prefix) + r':\d+(?:-\d+)?)"'
+    matches = re.findall(pattern, doc_text)
+    if len(matches) == 1:
+        doc_val = matches[0]
+        doc_str = doc_val if not is_table else d.old_raw
+        tab_str = d.old_raw if not is_table else doc_val
+        return (f"Citation is already divergent:\n"
+                f"  documentation: `{doc_str}`\n"
+                f"  table:         `{tab_str}`\n"
+                f"  source:        `{d.new_raw}`\n\n"
+                f"  `--apply` will not guess which surface is authoritative.\n"
+                f"  Use `--reconcile` to derive both from the source, or resolve manually.")
+    else:
+        return (f"`{d.old_raw}` does not occur exactly once in {doc_path.name} "
+                f"— will not guess which occurrence to rewrite")
+
 def rewrite(text: str, raw: str, new_raw: str) -> str | None:
     """Replace the single backtick-wrapped occurrence of *raw* in *text*
     with *new_raw*. Pure. Returns None — never guesses — if `` `raw` ``
@@ -174,7 +208,8 @@ def rewrite_table_row(text: str, raw: str, new_raw: str) -> str | None:
     or the CITATION_TABLE literal cannot be located at all."""
     try:
         start, end = _table_slice(text)
-    except ValueError:
+    except ValueError as e:
+        print("TABLE_SLICE ERROR:", e); print("TEXT IS:", repr(text))
         return None
     body = text[start:end]
     needle = f'"{raw}"'
@@ -203,15 +238,13 @@ def _apply_all(
         if new_doc_text is None:
             unresolved.append(Unfixable(
                 d.doc, d.old_raw,
-                f"`{d.old_raw}` does not occur exactly once in {doc_path} "
-                f"— will not guess which occurrence to rewrite"))
+                diagnose_divergence(doc_text, doc_path, d, False, mod)))
             continue
         new_table_text = rewrite_table_row(table_text, d.old_raw, d.new_raw)
         if new_table_text is None:
             unresolved.append(Unfixable(
                 d.doc, d.old_raw,
-                f'"{d.old_raw}" does not occur exactly once in CITATION_TABLE '
-                f"— will not guess which row to rewrite"))
+                diagnose_divergence(table_text, table_path, d, True, mod)))
             continue
         doc_texts[doc_path] = new_doc_text
         table_text = new_table_text
@@ -221,6 +254,107 @@ def _apply_all(
     doc_texts[table_path] = table_text
     return doc_texts, unresolved
 
+
+
+def reconcile_plan(mod, rows) -> tuple[list[Reconciliation], list[Unfixable]]:
+    reconciliations: list[Reconciliation] = []
+    unfixable: list[Unfixable] = []
+    for doc, raw, resolve_path, token in rows:
+        tail = raw.split(":", 1)[1]
+        if mod._LEGACY_LINE_SPEC_RE.match(tail):
+            unfixable.append(Unfixable(
+                doc, raw,
+                "legacy line-only citation cannot be auto-reconciled (no stable symbol identity)"))
+            continue
+
+        cited = mod._cited_line(tail)
+        if cited is None:
+            continue
+        hits = mod._resolve_source(resolve_path)
+        if len(hits) != 1:
+            unfixable.append(Unfixable(doc, raw, f"source path does not resolve to exactly one file"))
+            continue
+
+        symbol = tail.rsplit(":", 1)[0]
+        actual = mod._token_line_in_symbol(hits[0].read_text(encoding="utf-8"), symbol, token)
+        if actual is None:
+            unfixable.append(Unfixable(doc, raw, f"symbol {symbol!r} or token not found in source"))
+            continue
+
+        prefix = raw.split(":", 1)[0]
+        stable_prefix = f"{prefix}:{symbol}"
+        new_raw = f"{stable_prefix}:{_new_symbol_spec(tail, actual)}"
+        reconciliations.append(Reconciliation(doc, raw, stable_prefix, new_raw, resolve_path))
+
+    return reconciliations, unfixable
+
+def rewrite_reconcile(text: str, stable_prefix: str, new_raw: str) -> tuple[str | None, bool]:
+    pattern = r"`(" + re.escape(stable_prefix) + r":\d+(?:-\d+)?)" + r"`"
+    matches = re.findall(pattern, text)
+    print("TABLE MATCHES:", matches)
+    print("MATCHES:", matches)
+    if len(matches) != 1:
+        return None, False
+    old_raw = matches[0]
+    changed = old_raw != new_raw
+    return text.replace(f"`{old_raw}`", f"`{new_raw}`", 1), changed
+
+def rewrite_table_row_reconcile(text: str, stable_prefix: str, new_raw: str) -> tuple[str | None, bool]:
+    try:
+        start, end = _table_slice(text)
+    except ValueError as e:
+        print("TABLE_SLICE ERROR:", e); print("TEXT IS:", repr(text))
+        return None, False
+    body = text[start:end]
+    pattern = r'"(' + re.escape(stable_prefix) + r':\d+(?:-\d+)?)"'
+    matches = re.findall(pattern, body)
+    print("TABLE MATCHES:", matches)
+    print("MATCHES:", matches)
+    if len(matches) != 1:
+        return None, False
+    old_raw = matches[0]
+    changed = old_raw != new_raw
+    new_body = body.replace(f'"{old_raw}"', f'"{new_raw}"', 1)
+    return text[:start] + new_body + text[end:], changed
+
+def _reconcile_all(
+    mod, reconciliations: list[Reconciliation]
+) -> tuple[dict[Path, str] | None, list[Unfixable], int]:
+    table_path = REPO / "tests" / "test_readme_claims.py"
+    doc_texts: dict[Path, str] = {}
+    table_text = table_path.read_text(encoding="utf-8")
+    unresolved: list[Unfixable] = []
+    total_changed = 0
+
+    for r in reconciliations:
+        doc_path = mod._CITATION_DOC_PATHS[r.doc]
+        doc_text = doc_texts.get(doc_path, doc_path.read_text(encoding="utf-8"))
+
+        new_doc_text, doc_changed = rewrite_reconcile(doc_text, r.stable_prefix, r.new_raw)
+        if new_doc_text is None:
+            unresolved.append(Unfixable(
+                r.doc, r.raw,
+                f"`{r.stable_prefix}` does not occur exactly once in {doc_path.name} "
+                f"— will not guess which occurrence to reconcile"))
+            continue
+
+        new_table_text, table_changed = rewrite_table_row_reconcile(table_text, r.stable_prefix, r.new_raw)
+        if new_table_text is None:
+            unresolved.append(Unfixable(
+                r.doc, r.raw,
+                f'"{r.stable_prefix}" does not occur exactly once in CITATION_TABLE '
+                f"— will not guess which row to reconcile"))
+            continue
+
+        doc_texts[doc_path] = new_doc_text
+        table_text = new_table_text
+        if doc_changed or table_changed:
+            total_changed += 1
+
+    if unresolved:
+        return None, unresolved, 0
+    doc_texts[table_path] = table_text
+    return doc_texts, unresolved, total_changed
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
@@ -235,6 +369,8 @@ def main(argv: list[str] | None = None) -> int:
     mode.add_argument("--apply", action="store_true",
                        help="rewrite the doc and CITATION_TABLE row for "
                             "every drifted citation")
+    mode.add_argument("--reconcile", action="store_true",
+                       help="force the doc and CITATION_TABLE to the source-derived citation (opt-in)")
     args = ap.parse_args(argv)
 
     try:
@@ -243,6 +379,29 @@ def main(argv: list[str] | None = None) -> int:
         print(f"FAIL: could not load tests/test_readme_claims.py: {exc}")
         print("VERDICT=FAIL")
         return 2
+
+    if args.reconcile:
+        recs, unfixable = reconcile_plan(mod, mod.CITATION_TABLE)
+        for u in unfixable:
+            print(f"FAIL: {u.doc} `{u.raw}` — {u.reason}")
+
+        texts, unresolved, total_changed = _reconcile_all(mod, recs)
+        if texts is None:
+            for u in unresolved:
+                print(f"FAIL: {u.doc} `{u.raw}` — {u.reason}")
+            print("VERDICT=FAIL")
+            return 1
+
+        if not unfixable and total_changed == 0:
+            print("VERDICT=OK")
+            return 0
+
+        for path, new_text in texts.items():
+            path.write_text(new_text, encoding="utf-8", newline="\n")
+
+        print(f"reconciled {total_changed} citation(s)")
+        print("VERDICT=" + ("FAIL" if unfixable else "OK"))
+        return 1 if unfixable else 0
 
     drifts, unfixable = plan(mod, mod.CITATION_TABLE)
 
