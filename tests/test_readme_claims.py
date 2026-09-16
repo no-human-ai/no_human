@@ -2055,6 +2055,8 @@ CITATION_TABLE = (
      "Only WHETHER a non-empty token exists"),
     ("security.md", "brain/client.py:89-133", "brain/client.py",
      "cfg.control_plane_url"),
+    ("security.md", "email/send.py:ResendTransport.send", "email/send.py",
+     "resend rejected the send"),
     ("security.md", "telemetry.py:_destination", "telemetry.py",
      "posthog_host"),
     ("security.md", "intake/mcp_bridge.py:40", "intake/mcp_bridge.py",
