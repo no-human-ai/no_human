@@ -2834,8 +2834,19 @@ def load_config(
     # dropped the mkdir, which silently narrowed a contract: a custom path
     # under a missing parent used to be created and started raising
     # FileNotFoundError from _atomic_write_text instead.
+    #
+    # `ensure_private_dir` used to run unconditionally here, even when
+    # `create_if_missing=False` — several callers pass that flag specifically
+    # so a read-only load has no side effect on a machine that has never run
+    # `nh init` (see the `create_if_missing=False` comments in `db.py`'s
+    # retention-days read, `cli/commands.py`'s update-check and MCP-role
+    # lookups, and `intake/mcp_bridge.py`'s base-URL read — every one of them
+    # was actually violated by this, materializing `~/.no_human` regardless
+    # of the flag). Only privatize when either a write is coming
+    # (`create_if_missing`) or the directory is already there to secure.
     if config_path.parent == NO_HUMAN_HOME:
-        ensure_private_dir(NO_HUMAN_HOME)
+        if create_if_missing or NO_HUMAN_HOME.exists():
+            ensure_private_dir(NO_HUMAN_HOME)
     elif create_if_missing:
         config_path.parent.mkdir(parents=True, exist_ok=True)
     if not config_path.exists() and create_if_missing:
