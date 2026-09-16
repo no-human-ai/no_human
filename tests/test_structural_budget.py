@@ -1871,8 +1871,14 @@ FROZEN_FILE_LINES = {
     # 6346 -> 6355 (+9): `onboarding_status` gains `email_registered`, a
     # boolean-only echo of whether an email was captured, so a reload can
     # restore the Email step's UI state without ever re-exposing the
-    # address itself. Measured on this tree with the scanner below.
-    "api/app.py": 6355,
+    # address itself.
+    # 6355 -> 6366 (+11): merged with `onboarding_register_email` now
+    # forwarding the newly registered address to
+    # `email/register.py:register_email` off-thread after the local persist,
+    # and threading `registration_status` into the persisted onboarding
+    # state and the response body. Measured on this tree with the scanner
+    # below.
+    "api/app.py": 6366,
     # +51: W5 active-time phase writer (phase instrumentation).
     # +84: `list_escalations`/`list_review_fails`/`list_tamper_trips` — the
     # three new failure-signal sources the recurring learning harvest mines.
@@ -2059,7 +2065,12 @@ FROZEN_FILE_LINES = {
     # running unconditionally, so a `create_if_missing=False` read (`nh
     # gate`'s config read among others) no longer materializes
     # `~/.no_human` on a machine that has never run `nh init`.
-    "config.py": 3672,
+    # set.
+    # 3661 -> 3668 (+7): `onboarding.registration_endpoint` (default null)
+    # and its explanatory comment -- the hosted-intake gate `email/register.py`
+    # reads before forwarding an onboarding address off-machine. Measured on
+    # the merge result.
+    "config.py": 3679,
     # +61: the tamper-adjudication one-bounded-retry contract (mechanical-
     # failure classification + the extracted `_review_tamper_adjudication`
     # helper that keeps `AdversarialReviewer.review` itself under the
