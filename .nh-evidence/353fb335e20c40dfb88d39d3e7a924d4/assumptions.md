@@ -1,6 +1,6 @@
 # Assumptions
 
-_Harness-captured record for task `353fb335`, commit `3a02d8574090105b61cacb128cd7cff9445ab4f4` — not model-authored: no_human wrote this file from the intake step's recorded questions and assumptions. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `353fb335`, commit `3d80c85bd7a17d2cfd9eb9717080528ed89bb660` — not model-authored: no_human wrote this file from the intake step's recorded questions and assumptions. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 <details><summary>⚠️ 4 assumptions made on your behalf — verify at review</summary>
 
