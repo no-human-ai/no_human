@@ -181,6 +181,10 @@ CODEX_SUBSCRIPTION_SCRUB_VARS = (
 # backend seam that would use it.
 LOCAL_LLM_API_KEY_VAR = "LOCAL_LLM_API_KEY"
 
+# The welcome email's transport (email/send.py). Read from ~/.no_human/.env
+# or the process environment, exactly like every other credential here —
+# NEVER config.yaml, enforced below by `_reject_api_key_in_config`.
+RESEND_API_KEY_VAR = "RESEND_API_KEY"
 
 # Windows cannot express POSIX permission bits: `os.chmod` there only toggles
 # FILE_ATTRIBUTE_READONLY, and the mode argument to `os.open` is ignored except
@@ -3542,7 +3546,7 @@ def _reject_api_key_in_config(data: dict[str, Any]) -> None:
     The rule now also covers a credential smuggled inside a URL, since
     ``llm.local_base_url`` is a URL and not a bare key.
     """
-    banned = {API_KEY_VAR, CODEX_API_KEY_VAR}
+    banned = {API_KEY_VAR, CODEX_API_KEY_VAR, RESEND_API_KEY_VAR}
 
     def walk(node: Any) -> None:
         if isinstance(node, dict):
