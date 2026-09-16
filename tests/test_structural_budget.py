@@ -2039,7 +2039,11 @@ FROZEN_FILE_LINES = {
     # 3646 -> 3657 (+11): the `hooks.per_edit_type` default (#114 phase 2)
     # and the comment recording why it ships off while `per_edit_lint`
     # ships on. Re-measured on the merge result.
-    "config.py": 3657,
+    # 3657 -> 3661 (+4): `RESEND_API_KEY_VAR` — the welcome email's transport
+    # (email/send.py) reads it from ~/.no_human/.env or the process
+    # environment only, and it joins the `_reject_api_key_in_config` banned
+    # set. Re-measured on this tree.
+    "config.py": 3661,
     # +61: the tamper-adjudication one-bounded-retry contract (mechanical-
     # failure classification + the extracted `_review_tamper_adjudication`
     # helper that keeps `AdversarialReviewer.review` itself under the
