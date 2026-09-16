@@ -516,6 +516,36 @@ test("mutation: reverting nhSigning to plan.mode makes the Windows/Linux tests f
   }
 });
 
+// ---------------------------------------------------------------------------
+// The onboarding-intake URL is stamped into extraMetadata ONLY when the build
+// env carries it. The CI release jobs pass it from the ONBOARDING_REGISTER_URL
+// secret and the local macOS build exports it; a fork build has neither, so the
+// key must be ABSENT and the shipped app forwards no onboarding email. This is
+// the whole fork-safety gate — main.mjs reads the stamp back at runtime.
+// ---------------------------------------------------------------------------
+test("onboarding endpoint is stamped when the build env provides it", () => {
+  const url = "https://intake.example/onboard";
+  const { meta, status, stderr } = stampFor({
+    argv: ["--linux"], env: { NH_ONBOARDING_REGISTER_URL: url },
+  });
+  assert.equal(status, 0, `child failed: ${stderr}`);
+  assert.ok(meta, "no stamp captured");
+  assert.equal(meta.nhOnboardingRegisterUrl, url,
+    "an official build must stamp the intake URL so the app can forward");
+});
+
+test("onboarding endpoint is ABSENT when the build env does not provide it", () => {
+  // A fork's unset secret resolves to "" in the workflow — that empty value
+  // must NOT stamp a key, or main.mjs would forward the address to "".
+  const { meta, status, stderr } = stampFor({
+    argv: ["--linux"], env: { NH_ONBOARDING_REGISTER_URL: "" },
+  });
+  assert.equal(status, 0, `child failed: ${stderr}`);
+  assert.ok(meta, "no stamp captured");
+  assert.ok(!("nhOnboardingRegisterUrl" in meta),
+    "a fork build (no secret) must not stamp any onboarding endpoint");
+});
+
 function ROOT_desktop() {
   return path.join(ROOT, "desktop");
 }
