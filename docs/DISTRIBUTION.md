@@ -408,10 +408,12 @@ check pypi.org/project/no-human/ directly.
 
 **Desktop to GitHub Releases** — the public `no-human-ai/no_human` repo is
 where `electron-updater`'s configured `github` provider looks
-(`desktop/electron-builder.config.cjs:366`):
+(`desktop/electron-builder.config.cjs:446`). Publish with
+`packaging/publish-release.sh`, not a bare `gh release create`/`gh release
+upload`:
 
 ```sh
-gh release create v<version> \
+packaging/publish-release.sh --tag v<version> \
   packaging/dist/no_human-<version>.dmg \
   desktop/dist/no_human-<version>-arm64-mac.zip \
   desktop/dist/latest-mac.yml \
@@ -424,6 +426,34 @@ produces an updater that fails for every user. A Windows or Linux release adds
 that platform's own installer/package, plus (for Linux) `SHA256SUMS-linux.txt`
 for integrity, per `docs/LINUX.md`.
 
+`packaging/publish-release.sh` wraps the same `gh release create`/`gh release
+upload` call with `scripts/check_release_feeds.py`, run both before the
+upload (against the exact file list on the command line) and after (against
+the live release), because a bare `gh` call has no such check and that is
+exactly how it went wrong before: v0.2.2 and v0.2.3's `latest-mac.yml` both
+named a `no_human-<version>-arm64.dmg` that no release ever uploaded, and
+v0.1.7 and v0.2.0 shipped Windows/Linux assets with no `latest.yml`/
+`latest-linux.yml` at all. Both slipped through unnoticed for two releases
+because nothing checked a feed's `url:`/`path:` against the assets actually
+attached to the release.
+
+The chosen fix is to stop `no_human-<version>-arm64.dmg` from ever being
+named in the first place: `desktop/electron-builder.config.cjs`'s `mac.target`
+no longer includes `dmg` (`zip` and `dir` stay). This is a build-time fix, not
+a publish-time filter — `scripts/check_release_feeds.py` (run by
+`packaging/publish-release.sh`) exists to catch a regression of this exact
+shape, not to launder one out of a feed after the fact. The reason
+electron-builder's own `dmg` target had to go, and not just deduplicated
+against `packaging/make-dmg.sh`'s output, is that the two are not
+duplicates: electron-builder's `dmg` target signs its output but never
+notarizes or staples it, so even if it were uploaded, Gatekeeper would refuse
+to open it. `packaging/make-dmg.sh` is what actually produces the notarized
+DMG that ships, entirely outside electron-builder's own target list.
+
 > ⚠️ `electron-builder`'s GitHub provider defaults `releaseType` to **draft**,
 > and a draft release is invisible to the updater — it looks exactly like "no
-> updates available". Publish the release, don't leave it drafted.
+> updates available". `packaging/publish-release.sh`'s post-publish check
+> fails on this too — `scripts/check_release_feeds.py` treats a draft release
+> as a hard problem, not just a warning — so a drafted release will not pass
+> as "published" by this script either. Publish the release, don't leave it
+> drafted.
