@@ -2057,6 +2057,8 @@ CITATION_TABLE = (
      "cfg.control_plane_url"),
     ("security.md", "email/register.py:register_email", "email/register.py",
      "Fail-open: any transport problem"),
+    ("security.md", "email/send.py:ResendTransport.send", "email/send.py",
+     "resend rejected the send"),
     ("security.md", "telemetry.py:_destination", "telemetry.py",
      "posthog_host"),
     ("security.md", "intake/mcp_bridge.py:40", "intake/mcp_bridge.py",

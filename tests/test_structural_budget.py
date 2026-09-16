@@ -2038,11 +2038,15 @@ FROZEN_FILE_LINES = {
     # 3646 -> 3657 (+11): the `hooks.per_edit_type` default (#114 phase 2)
     # and the comment recording why it ships off while `per_edit_lint`
     # ships on. Re-measured on the merge result.
-    # 3657 -> 3664 (+7): `onboarding.registration_endpoint` (default null)
+    # 3657 -> 3661 (+4): `RESEND_API_KEY_VAR` — the welcome email's transport
+    # (email/send.py) reads it from ~/.no_human/.env or the process
+    # environment only, and it joins the `_reject_api_key_in_config` banned
+    # set.
+    # 3661 -> 3668 (+7): `onboarding.registration_endpoint` (default null)
     # and its explanatory comment -- the hosted-intake gate `email/register.py`
     # reads before forwarding an onboarding address off-machine. Measured on
-    # this tree.
-    "config.py": 3664,
+    # the merge result.
+    "config.py": 3668,
     # +61: the tamper-adjudication one-bounded-retry contract (mechanical-
     # failure classification + the extracted `_review_tamper_adjudication`
     # helper that keeps `AdversarialReviewer.review` itself under the
