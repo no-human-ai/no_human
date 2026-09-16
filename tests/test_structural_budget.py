@@ -1868,6 +1868,10 @@ FROZEN_FILE_LINES = {
     # through `update_task_config` at the API call site, same reason as
     # `cli/commands.py` above.
     # Measured on the squashed tree with the scanner below.
+    # 6346 -> 6357 (+11): `onboarding_register_email` now forwards the newly
+    # registered address to `email/register.py:register_email` off-thread
+    # after the local persist, and threads `registration_status` into the
+    # persisted onboarding state and the response body. Measured on this tree.
     # 6346 -> 6435 (+89): task c4873936 REFILE — the onboarding funnel
     # telemetry blind spot. Adds `POST /api/onboarding/step`
     # (`onboarding_step_viewed`), a `repo_selected` marker in
@@ -1877,7 +1881,7 @@ FROZEN_FILE_LINES = {
     # once-per-install `_record_onboarding_once` latch, and refusal
     # telemetry in `create_task`. Measured via `scan_tree(SRC)`
     # (tests/test_structural_budget.py's own scanner), not `wc -l`.
-    "api/app.py": 6435,
+    "api/app.py": 6446,
     # +51: W5 active-time phase writer (phase instrumentation).
     # +84: `list_escalations`/`list_review_fails`/`list_tamper_trips` — the
     # three new failure-signal sources the recurring learning harvest mines.
@@ -2064,7 +2068,12 @@ FROZEN_FILE_LINES = {
     # running unconditionally, so a `create_if_missing=False` read (`nh
     # gate`'s config read among others) no longer materializes
     # `~/.no_human` on a machine that has never run `nh init`.
-    "config.py": 3672,
+    # set.
+    # 3661 -> 3668 (+7): `onboarding.registration_endpoint` (default null)
+    # and its explanatory comment -- the hosted-intake gate `email/register.py`
+    # reads before forwarding an onboarding address off-machine. Measured on
+    # the merge result.
+    "config.py": 3679,
     # +61: the tamper-adjudication one-bounded-retry contract (mechanical-
     # failure classification + the extracted `_review_tamper_adjudication`
     # helper that keeps `AdversarialReviewer.review` itself under the
