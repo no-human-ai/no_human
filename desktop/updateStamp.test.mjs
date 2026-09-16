@@ -148,9 +148,11 @@ test("AC1: Windows target with Apple credentials present stamps false", () => {
     assert.equal(status, 0, `child failed for argv=${argv}: ${stderr}`);
     assert.ok(meta, `no stamp captured for argv=${argv}`);
     assert.equal(meta.nhCanAutoUpdate, false, `argv=${argv} stamped true`);
-    assert.equal(meta.nhSigning, "signed",
-      "the Apple credentials must still be read as signed — this is not a "
-      + "test of signingPlan(), only of what gets STAMPED for a non-mac target");
+    // Sibling ticket to this one: nhSigning must not claim macOS signing for
+    // a Windows target either, even though the Apple credentials ARE read as
+    // signed by signingPlan() — nothing signed THIS artifact.
+    assert.equal(meta.nhSigning, "unsigned",
+      `argv=${argv} claimed macOS signing for a Windows target`);
   }
 });
 
@@ -160,8 +162,95 @@ test("AC1: Linux target with Apple credentials present stamps false", () => {
     assert.equal(status, 0, `child failed for argv=${argv}: ${stderr}`);
     assert.ok(meta, `no stamp captured for argv=${argv}`);
     assert.equal(meta.nhCanAutoUpdate, false, `argv=${argv} stamped true`);
+    assert.equal(meta.nhSigning, "unsigned",
+      `argv=${argv} claimed macOS signing for a Linux target`);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// nhSigning: the sibling of nhCanAutoUpdate. A Windows or Linux target must
+// never claim macOS signing/notarization just because Apple credentials
+// happen to be present in the invoking environment.
+// ---------------------------------------------------------------------------
+
+test("nhSigning: --win / --linux with Apple credentials does not claim macOS signing", () => {
+  for (const argv of [["--win"], ["-w"], ["--linux"], ["-l"]]) {
+    const { meta, status, stderr } = stampFor({ argv, env: CREDS });
+    assert.equal(status, 0, `child failed for argv=${argv}: ${stderr}`);
+    assert.ok(meta, `no stamp captured for argv=${argv}`);
+    assert.equal(meta.nhSigning, "unsigned", `argv=${argv}`);
+    assert.notEqual(meta.nhSigning, "signed", `argv=${argv}`);
+    assert.notEqual(meta.nhSigning, "signed-not-notarized", `argv=${argv}`);
+  }
+});
+
+test("nhSigning: --mac with the same credentials still stamps the macOS plan's mode", () => {
+  {
+    const { meta, status, stderr } = stampFor({ argv: ["--mac"], env: CREDS });
+    assert.equal(status, 0, stderr);
     assert.equal(meta.nhSigning, "signed");
   }
+  {
+    const { meta, status, stderr } = stampFor({ argv: ["--mac"], env: { CSC_LINK: CREDS.CSC_LINK } });
+    assert.equal(status, 0, stderr);
+    assert.equal(meta.nhSigning, "signed-not-notarized");
+  }
+});
+
+test("nhSigning: --win with a Windows certificate stamps signed", () => {
+  {
+    const { meta, status, stderr } = stampFor({
+      argv: ["--win"],
+      env: { WIN_CSC_LINK: "file:///tmp/not-a-real.pfx" },
+    });
+    assert.equal(status, 0, stderr);
+    assert.equal(meta.nhSigning, "signed");
+  }
+  {
+    // The Windows certificate is what decides it, even with Apple credentials
+    // ALSO present in the same environment.
+    const { meta, status, stderr } = stampFor({
+      argv: ["--win"],
+      env: { ...CREDS, WIN_CSC_LINK: "file:///tmp/not-a-real.pfx" },
+    });
+    assert.equal(status, 0, stderr);
+    assert.equal(meta.nhSigning, "signed");
+  }
+});
+
+test("nhSigning: --win without a Windows certificate stamps unsigned", () => {
+  {
+    const { meta, status, stderr } = stampFor({ argv: ["--win"], env: {} });
+    assert.equal(status, 0, stderr);
+    assert.equal(meta.nhSigning, "unsigned");
+  }
+  {
+    const { meta, status, stderr } = stampFor({ argv: ["--win"], env: CREDS });
+    assert.equal(status, 0, stderr);
+    assert.equal(meta.nhSigning, "unsigned");
+  }
+});
+
+test("nhSigning: mixed --mac --win under-claims rather than over-claims", () => {
+  // signed-not-notarized on the mac side (CSC_LINK only, no notary creds) so
+  // stamp.fatal does not fire and the child actually reaches extraMetadata.
+  const { meta, status, stderr } = stampFor({
+    argv: ["--mac", "--win"],
+    env: { CSC_LINK: CREDS.CSC_LINK },
+  });
+  assert.equal(status, 0, `unsigned-mixed invocation should not be fatal: ${stderr}`);
+  assert.ok(meta);
+  assert.equal(meta.nhSigning, "unsigned");
+});
+
+test("AC3: extraMetadata reads the per-platform signing stamp, not the macOS plan", () => {
+  const config = fs.readFileSync(path.join(here, "electron-builder.config.cjs"), "utf8");
+  const metaBlock = config.slice(config.indexOf("extraMetadata: {"));
+  const block = metaBlock.slice(0, metaBlock.indexOf("},"));
+  assert.match(block, /nhSigning:\s*signing\.mode/,
+    "extraMetadata.nhSigning must be wired to the per-platform signing stamp");
+  assert.doesNotMatch(block, /nhSigning:\s*plan\.mode/,
+    "extraMetadata.nhSigning must not read the bare macOS plan directly");
 });
 
 // ---------------------------------------------------------------------------
@@ -380,6 +469,51 @@ test("mutation: reverting stamp.canAutoUpdate to plan.canAutoUpdate makes AC1 fa
     + "test needs to be revisited, not deleted");
 
   fs.rmSync(outDir, { recursive: true, force: true });
+});
+
+// ---------------------------------------------------------------------------
+// Mutation test for nhSigning: revert the fix (stamp `plan.mode` directly,
+// the pre-fix bug this ticket is about) and confirm the Windows/Linux
+// nhSigning tests go RED. Same recipe as the nhCanAutoUpdate mutation above.
+// ---------------------------------------------------------------------------
+
+test("mutation: reverting nhSigning to plan.mode makes the Windows/Linux tests fail", () => {
+  for (const argv of [["--win"], ["--linux"]]) {
+    const outDir = fs.mkdtempSync(path.join(os.tmpdir(), "nh-signingstamp-mutant-"));
+    fs.mkdirSync(path.join(outDir, "web", "public"), { recursive: true });
+    fs.copyFileSync(REAL_MASTER, path.join(outDir, "web", "public", "nh-mark-512.png"));
+    fs.cpSync(ROOT_desktop(), path.join(outDir, "desktop"), { recursive: true });
+    fs.cpSync(path.join(ROOT, "packaging"), path.join(outDir, "packaging"), { recursive: true });
+
+    const configPath = path.join(outDir, "desktop", "electron-builder.config.cjs");
+    const original = fs.readFileSync(configPath, "utf8");
+    assert.match(original, /nhSigning:\s*signing\.mode/,
+      "sanity check: the copy must still contain the fixed line before mutating it");
+    const mutated = original.replace(
+      /nhSigning:\s*signing\.mode/,
+      "nhSigning: plan.mode",
+    );
+    assert.notEqual(mutated, original, "the mutation must actually change the file");
+    fs.writeFileSync(configPath, mutated);
+
+    const { meta, status, stderr } = stampFor({
+      argv,
+      env: CREDS,
+      cwd: path.join(outDir, "desktop"),
+    });
+    assert.equal(status, 0, `mutant child crashed unexpectedly for argv=${argv}: ${stderr}`);
+    assert.ok(meta, `mutant produced no stamp for argv=${argv}`);
+    // This is the bug this ticket is about: the mutated (pre-fix) config
+    // stamps the macOS plan's "signed" for a Windows/Linux target when Apple
+    // credentials are present, even though nothing signed that artifact.
+    assert.equal(meta.nhSigning, "signed",
+      `expected the REVERTED code to reproduce the original bug for argv=${argv} `
+      + "(claiming macOS signing for a non-mac target) — if this is not "
+      + "\"signed\", either the mutation didn't take or something else now "
+      + "prevents the bug, and this test needs to be revisited, not deleted");
+
+    fs.rmSync(outDir, { recursive: true, force: true });
+  }
 });
 
 function ROOT_desktop() {
