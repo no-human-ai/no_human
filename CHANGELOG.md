@@ -6,6 +6,23 @@ All notable changes to no_human. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- **A hanging `gh`/`glab` call in the wake tick could stall the whole
+  scheduler indefinitely** — measured live (2026-09-14): `Scheduler.tick()`
+  stalled with idle workers and a full queue (`tick_stalled: true`,
+  `seconds_since_last_tick: 647`). `tick()` awaits `WakeWatcher.tick()`,
+  which loops every parked task sequentially and calls
+  `pr_watcher._run_cli` per task; unlike its sibling `_git_rc` (same file),
+  `_run_cli`'s `await proc.communicate()` had no bound, so one hung forge
+  call (a stalled TLS handshake, an auth prompt reading a closed stdin, a
+  non-terminating `--paginate` walk) blocked every other parked task behind
+  it forever. `_run_cli` now bounds each invocation with a new
+  `_CLI_TIMEOUT` (120s, aligned with `_GIT_TIMEOUT`), reaping the hung
+  process group on expiry and returning `None` — the same fail-closed shape
+  every other `_run_cli` failure already produces, applied uniformly to
+  read- and write-side (`gh api POST/PATCH`, `glab api --method POST/PUT`)
+  calls alike.
+
 ### Changed
 - **Wiring evidence reads JS/TS and class bodies, not just Python module top
   level** (issue #114 phase 4). The reference half of the check was always
