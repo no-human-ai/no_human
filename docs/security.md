@@ -443,6 +443,15 @@ config key that turns it on and the default that keeps it off.
   `team_brain.control_plane_url` to **`""`**; when set, the client exchanges
   task patterns with that URL over `https` (loopback excepted)
   (`brain/client.py:89-133`).
+- **Welcome email (Resend).** Gated on an **environment variable**, not a
+  config key: `_default_transport()` (`email/send.py`) constructs a
+  `ResendTransport` only when `RESEND_API_KEY` is present in
+  `~/.no_human/.env` (chmod 600, gitignored) or the process environment —
+  never `config.yaml`. With no key, the default is still
+  `UnavailableTransport` and nothing touches the network. Configured, one
+  `urllib.request` POST carries the onboarding welcome email's subject, body
+  and the address you typed to `https://api.resend.com/emails`
+  (`email/send.py:ResendTransport.send`).
 
 ### Not egress: loopback
 
