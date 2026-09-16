@@ -317,3 +317,57 @@ def test_reconcile_refuses_duplicate_prefix(tmp_path, monkeypatch):
     assert texts is None
     assert len(unresolved) == 1
     assert "does not occur exactly once" in unresolved[0].reason
+
+def test_reconcile_converges_multi_citation_per_symbol(tmp_path, monkeypatch):
+    """Pin the exact shape from eval.md where one symbol is cited multiple
+    times in the same document (one qualified, two shorthand).
+    Exact matching the citation string avoids the 'does not occur exactly once'
+    error that a naive symbol-only substring search would trip on."""
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "tests").mkdir()
+    doc_path = tmp_path / "docs" / "fake.md"
+    table_path = tmp_path / "tests" / "test_readme_claims.py"
+
+    doc_text = (
+        "Here are three citations for the same symbol:\n"
+        "`src/no_human/cli/commands.py:bench_run:8255`\n"
+        "`:bench_run:8406`\n"
+        "`:bench_run:8284`\n"
+    )
+    doc_path.write_text(doc_text, encoding="utf-8")
+    table_text = (
+        'CITATION_TABLE = (\n'
+        '    ("fake.md", ":bench_run:8406", "src/no_human/cli/commands.py", "token"),\n'
+        ')\n\nassert len(CITATION_TABLE) >= 20,\n'
+    )
+    table_path.write_text(table_text, encoding="utf-8")
+    monkeypatch.setattr(ra, "REPO", tmp_path)
+
+    fake_mod = types.SimpleNamespace(
+        _CITATION_DOC_PATHS={"fake.md": doc_path},
+        _LEGACY_LINE_SPEC_RE=re.compile(r"^\d+(?:-\d+)?$"),
+    )
+
+    recon = ra.Reconciliation(
+        doc="fake.md", raw=":bench_run:8406",
+        stable_prefix=":bench_run", new_raw=":bench_run:9000",
+        resolve_path="src/no_human/cli/commands.py"
+    )
+
+    texts, unresolved, total_changed = ra._reconcile_all(fake_mod, [recon])
+
+    assert texts is not None, f"Expected successful rewrite, got unresolved: {unresolved}"
+    assert len(unresolved) == 0
+    assert total_changed == 1
+    
+    # Verify the document replaced only the target citation
+    new_doc = texts[doc_path]
+    assert "`src/no_human/cli/commands.py:bench_run:8255`" in new_doc
+    assert "`:bench_run:9000`" in new_doc
+    assert "`:bench_run:8284`" in new_doc
+    assert "`:bench_run:8406`" not in new_doc
+
+    # Verify the table row was rewritten
+    new_table = texts[table_path]
+    assert '":bench_run:9000"' in new_table
+    assert '":bench_run:8406"' not in new_table

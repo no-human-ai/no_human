@@ -288,33 +288,38 @@ def reconcile_plan(mod, rows) -> tuple[list[Reconciliation], list[Unfixable]]:
 
     return reconciliations, unfixable
 
-def rewrite_reconcile(text: str, stable_prefix: str, new_raw: str) -> tuple[str | None, bool]:
+def rewrite_reconcile(text: str, stable_prefix: str, old_raw: str, new_raw: str) -> tuple[str | None, bool]:
+    needle = f"`{old_raw}`"
+    if text.count(needle) == 1:
+        return text.replace(needle, f"`{new_raw}`", 1), old_raw != new_raw
+
     pattern = r"`(" + re.escape(stable_prefix) + r":\d+(?:-\d+)?)" + r"`"
     matches = re.findall(pattern, text)
-    print("TABLE MATCHES:", matches)
-    print("MATCHES:", matches)
     if len(matches) != 1:
         return None, False
-    old_raw = matches[0]
-    changed = old_raw != new_raw
-    return text.replace(f"`{old_raw}`", f"`{new_raw}`", 1), changed
+    found_raw = matches[0]
+    changed = found_raw != new_raw
+    return text.replace(f"`{found_raw}`", f"`{new_raw}`", 1), changed
 
-def rewrite_table_row_reconcile(text: str, stable_prefix: str, new_raw: str) -> tuple[str | None, bool]:
+def rewrite_table_row_reconcile(text: str, stable_prefix: str, old_raw: str, new_raw: str) -> tuple[str | None, bool]:
     try:
         start, end = _table_slice(text)
-    except ValueError as e:
-        print("TABLE_SLICE ERROR:", e); print("TEXT IS:", repr(text))
+    except ValueError:
         return None, False
     body = text[start:end]
+    
+    needle = f'"{old_raw}"'
+    if body.count(needle) == 1:
+        new_body = body.replace(needle, f'"{new_raw}"', 1)
+        return text[:start] + new_body + text[end:], old_raw != new_raw
+        
     pattern = r'"(' + re.escape(stable_prefix) + r':\d+(?:-\d+)?)"'
     matches = re.findall(pattern, body)
-    print("TABLE MATCHES:", matches)
-    print("MATCHES:", matches)
     if len(matches) != 1:
         return None, False
-    old_raw = matches[0]
-    changed = old_raw != new_raw
-    new_body = body.replace(f'"{old_raw}"', f'"{new_raw}"', 1)
+    found_raw = matches[0]
+    changed = found_raw != new_raw
+    new_body = body.replace(f'"{found_raw}"', f'"{new_raw}"', 1)
     return text[:start] + new_body + text[end:], changed
 
 def _reconcile_all(
@@ -330,15 +335,15 @@ def _reconcile_all(
         doc_path = mod._CITATION_DOC_PATHS[r.doc]
         doc_text = doc_texts.get(doc_path, doc_path.read_text(encoding="utf-8"))
 
-        new_doc_text, doc_changed = rewrite_reconcile(doc_text, r.stable_prefix, r.new_raw)
+        new_doc_text, doc_changed = rewrite_reconcile(doc_text, r.stable_prefix, r.raw, r.new_raw)
         if new_doc_text is None:
             unresolved.append(Unfixable(
                 r.doc, r.raw,
-                f"`{r.stable_prefix}` does not occur exactly once in {doc_path.name} "
+                f"`{r.raw}` does not occur exactly once in {doc_path.name} "
                 f"— will not guess which occurrence to reconcile"))
             continue
 
-        new_table_text, table_changed = rewrite_table_row_reconcile(table_text, r.stable_prefix, r.new_raw)
+        new_table_text, table_changed = rewrite_table_row_reconcile(table_text, r.stable_prefix, r.raw, r.new_raw)
         if new_table_text is None:
             unresolved.append(Unfixable(
                 r.doc, r.raw,
