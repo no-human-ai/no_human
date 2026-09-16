@@ -7,6 +7,18 @@ All notable changes to no_human. The format follows
 ## [Unreleased]
 
 ### Fixed
+- **Windows: codebase context was silently lost on every task** —
+  `CodebaseSource._search` parsed `rg`/`grep` output as `path:line:text` via
+  `line.split(":", 2)`. A Windows absolute path carries a drive-letter colon
+  (`C:\repo\lib\math.js:12:  const y = 1`), so every hit became `Path('C')`
+  and `_gather_sync`'s `path.relative_to(repo)` then raised — caught per-source
+  by the gatherer, so the failure was one log line and the task ran with no
+  codebase context (and, since the exception aborted `_search` before
+  `_git_log`, no recent-commits chunk either). `_search` now parses with a
+  regex (`CodebaseSource._parse_match_line`) that matches the first
+  `:<digits>:` field non-greedily, so the drive colon (followed by a
+  backslash, not digits) stays in the path while a colon inside the matched
+  text is preserved.
 - **A hanging `gh`/`glab` call in the wake tick could stall the whole
   scheduler indefinitely** — measured live (2026-09-14): `Scheduler.tick()`
   stalled with idle workers and a full queue (`tick_stalled: true`,
