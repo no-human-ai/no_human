@@ -1868,7 +1868,11 @@ FROZEN_FILE_LINES = {
     # through `update_task_config` at the API call site, same reason as
     # `cli/commands.py` above.
     # Measured on the squashed tree with the scanner below.
-    "api/app.py": 6346,
+    # 6346 -> 6357 (+11): `onboarding_register_email` now forwards the newly
+    # registered address to `email/register.py:register_email` off-thread
+    # after the local persist, and threads `registration_status` into the
+    # persisted onboarding state and the response body. Measured on this tree.
+    "api/app.py": 6357,
     # +51: W5 active-time phase writer (phase instrumentation).
     # +84: `list_escalations`/`list_review_fails`/`list_tamper_trips` — the
     # three new failure-signal sources the recurring learning harvest mines.
@@ -2055,12 +2059,17 @@ FROZEN_FILE_LINES = {
     # running unconditionally, so a `create_if_missing=False` read (`nh
     # gate`'s config read among others) no longer materializes
     # `~/.no_human` on a machine that has never run `nh init`.
+    # set.
+    # 3661 -> 3668 (+7): `onboarding.registration_endpoint` (default null)
+    # and its explanatory comment -- the hosted-intake gate `email/register.py`
+    # reads before forwarding an onboarding address off-machine. Measured on
+    # the merge result.
     # 3657 -> 3667 (+10): `newline="\n"` on `atomic_write_0600` and
     # `_atomic_write_text` (the CRLF-.env desktop-credential fix) plus the
     # docstring paragraphs explaining why each write must not let Windows
     # text-mode translation reintroduce a trailing CRLF. Measured on this
     # tree.
-    "config.py": 3682,
+    "config.py": 3689,
     # +61: the tamper-adjudication one-bounded-retry contract (mechanical-
     # failure classification + the extracted `_review_tamper_adjudication`
     # helper that keeps `AdversarialReviewer.review` itself under the

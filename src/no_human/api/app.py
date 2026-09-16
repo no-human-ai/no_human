@@ -5495,25 +5495,32 @@ def _well_formed_email(addr: str) -> bool:
 async def onboarding_register_email(
     body: OnboardingEmailRequest, request: Request
 ) -> dict[str, Any]:
-    """Register the onboarding email and (best-effort) send the welcome email.
+    """Register the onboarding email: persist it locally, forward it to the
+    hosted registration intake, and (best-effort) send the welcome email.
 
-    Persist-before-send: the address is written to `onboarding` FIRST, so a
-    transport failure (today, always — see `no_human.email.send`) never loses
-    a registered address. Re-posting the same, unchanged address is a no-op
-    for sending (idempotent) but still returns 200.
+    Persist-before-forward-before-send: the address is written to
+    `onboarding` FIRST, so neither the registration forward nor the welcome
+    send can ever lose a registered address by failing. Both are off the
+    critical path — a hosted-endpoint error or timeout, or a transport
+    failure (today, always — see `no_human.email.send`), still returns 200
+    with the address persisted locally. Re-posting the same, unchanged
+    address is a no-op for both (idempotent) but still returns 200.
 
-    Idempotent means writing nothing either, not just sending nothing: the
-    wizard posts twice on the ordinary path (the Email step's Continue, then
-    `ensureEmailRegistered` at Finish), and persisting unconditionally
-    replaced the recorded `welcome_status` ("sent") with "skipped_unchanged"
-    and moved `email_at` off the moment of registration. The stored fields
-    describe the REGISTRATION, and a re-post is not one.
+    Idempotent means writing nothing either, not just sending/forwarding
+    nothing: the wizard posts twice on the ordinary path (the Email step's
+    Continue, then `ensureEmailRegistered` at Finish), and persisting
+    unconditionally replaced the recorded `welcome_status` ("sent") with
+    "skipped_unchanged" and moved `email_at` off the moment of registration.
+    The stored fields describe the REGISTRATION, and a re-post is not one.
 
-    The response never echoes the address back (`{"ok": True, "welcome": ...}`
-    only) — `welcome` is either one of send_welcome's closed status strings or
-    this route's own `"skipped_unchanged"` when the address is unchanged, never
-    a claim that delivery to an arbitrary recipient succeeded.
+    The response never echoes the address back
+    (`{"ok": True, "welcome": ..., "registration": ...}` only) — `welcome`
+    is one of send_welcome's closed status strings, `registration` is one of
+    `no_human.email.register.STATUSES`, and both fall back to this route's
+    own `"skipped_unchanged"` when the address is unchanged. Neither is ever
+    free text, so nothing address-shaped can leave via a status string.
     """
+    from ..email.register import register_email
     from ..email.send import send_welcome
 
     addr = (body.email or "").strip()
@@ -5522,11 +5529,15 @@ async def onboarding_register_email(
     config = request.app.state.config
     prior = _read_onboarding(config)
     if prior.get("email") == addr:
-        return {"ok": True, "welcome": "skipped_unchanged"}
+        return {"ok": True, "welcome": "skipped_unchanged", "registration": "skipped_unchanged"}
     _persist_onboarding(config, {"email": addr, "email_at": _now()})
+    register_transport = getattr(request.app.state, "register_transport", None)
+    registration = await asyncio.to_thread(
+        register_email, addr, transport=register_transport, config=config
+    )
     status = await asyncio.to_thread(send_welcome, addr)
-    _persist_onboarding(config, {"welcome_status": status})
-    return {"ok": True, "welcome": status}
+    _persist_onboarding(config, {"welcome_status": status, "registration_status": registration})
+    return {"ok": True, "welcome": status, "registration": registration}
 
 
 @app.post("/api/onboarding/repos/onboard")
