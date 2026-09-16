@@ -148,12 +148,14 @@ export function coarseStatus(task) {
   return { label, colorVar };
 }
 
-// A task in a terminal state (done/failed — cancelled is failed + a flag,
-// see boardLanes.js) has nothing left to decide: any blocker it carries is
+// A task in a terminal state (done/failed/partial_success — cancelled is
+// failed + a flag, see boardLanes.js; partial_success is a crash that
+// stranded a real commit before any PR, also terminal — core/task.py's
+// TERMINAL_STATES) has nothing left to decide: any blocker it carries is
 // history, not a live ask. Single definition so the milestone timeline, the
 // details micro, and SlideOver's own inline check never drift from each other.
 export function isTerminalStatus(status) {
-  return status === "done" || status === "failed";
+  return status === "done" || status === "failed" || status === "partial_success";
 }
 
 // User-facing label for a task kind — never the raw backend value verbatim
