@@ -333,7 +333,7 @@ def fallback_blocker(detail: str, *, resume_branch: str = "",
 def diverged_pushed_branch(
     *, branch: str, remote_tip: str, reviewed_sha: str, stats: dict,
     detail: str, resume_branch: str = "", resume_commit: str = "",
-    goal: str = "",
+    goal: str = "", history_count: int | None = None,
 ) -> Blocker:
     """Build the escalation for a rework that genuinely diverged from its
     own pushed tip — `_align_branch_with_pushed_tip` could not merge the two
@@ -362,6 +362,13 @@ def diverged_pushed_branch(
     are named as real options but are never performed automatically — that
     judgment call is a human's per the intake answer on when a rework
     legitimately supersedes its tip.
+
+    `history_count` is `Store.count_attempts_failing_like`'s result
+    (`_escalate_diverged_pushed_branch`, `core/orchestrator.py`) — how many
+    attempt rows, across every task, already recorded this exact failure
+    class. `None` means the query itself could not run (never blocks the
+    escalation); it is stated as "unavailable" rather than a fabricated
+    number.
     """
     tip8, reviewed8 = remote_tip[:8], reviewed_sha[:8]
     tip_commits = stats.get("only_a_commits", -1)
@@ -375,11 +382,19 @@ def diverged_pushed_branch(
         f"{tip_commits} commit(s) affecting {tip_files} file(s) — "
         f"{more_work} carries more work"
     )
+    history_note = (
+        f"this exact failure class (failure_reason LIKE "
+        f"'%is not an ancestor of the reviewed sha%') has been recorded on "
+        f"{history_count} attempt(s) in history"
+        if history_count is not None
+        else "the historical count for this failure class is unavailable "
+        "(the query over recorded failure reasons could not run)"
+    )
     evidence = (
         f"{detail} | pushed tip {remote_tip} ({tip_commits} commit(s), "
         f"{tip_files} file(s) only on that side); reviewed rework "
         f"{reviewed_sha} ({rework_commits} commit(s), {rework_files} "
-        "file(s) only on that side)"
+        f"file(s) only on that side) | {history_note}"
     )
     return Blocker(
         category=BlockerCategory.NOVEL_UNKNOWN,

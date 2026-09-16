@@ -43,6 +43,7 @@ from tests.test_base_staleness_pushed_branch import (  # noqa: F401
     origin,
     repo,
 )
+from tests.test_failure_reason_history_query import _seed_attempt
 from tests.test_rejected_rework_pushed_tip import _make_diverged_rework
 
 
@@ -242,3 +243,70 @@ async def test_delivery_refusal_routes_to_the_structured_blocker_not_the_empty_f
     assert reviewed_sha in blocker["evidence"]
     assert any("merge" in o["label"].lower() for o in blocker["options"])
     assert all(o["action"] is None for o in blocker["options"])
+
+
+@pytest.mark.asyncio
+async def test_the_escalation_states_a_query_derived_historical_count(
+    repo, tmp_path, store,
+):
+    """AC5: the escalation must state how many attempts have hit this exact
+    failure class historically, using `Store.count_attempts_failing_like`
+    over recorded `failure_reason` rows (`_escalate_diverged_pushed_branch`)
+    — never an invented or estimated number. Seeds three prior attempts
+    with the genuine refusal wording (plus a lookalike and an unrelated
+    reason, which must NOT be counted) on the SAME store `_finalize` below
+    reads from, then drives a real diverged-pushed-tip refusal through it
+    and asserts the blocker's evidence carries the query's actual count."""
+    await _seed_attempt(
+        store, title="prior-1",
+        failure_reason=(
+            "delivery refused: branch no-human/aaa-1 remote tip aaa111 "
+            "(fetched) is not an ancestor of the reviewed sha bbb222 "
+            "(human_gated_resume=False)"))
+    await _seed_attempt(
+        store, title="prior-2",
+        failure_reason=(
+            "delivery refused: branch no-human/bbb-1 remote tip ccc333 "
+            "(fetched) is not an ancestor of the reviewed sha ddd444 "
+            "(human_gated_resume=False)"))
+    await _seed_attempt(
+        store, title="prior-3",
+        failure_reason=(
+            "delivery refused: branch no-human/ccc-1 remote tip eee555 "
+            "(fetched) is not an ancestor of the reviewed sha fff666 "
+            "(human_gated_resume=True)"))
+    # A lookalike and an unrelated reason — must NOT inflate the count.
+    await _seed_attempt(
+        store, title="prior-lookalike",
+        failure_reason=(
+            "delivery refused: could not fast-forward no-human/x to "
+            "reviewed sha zzz999: some ancestor lookup failed"))
+    await _seed_attempt(
+        store, title="prior-unrelated", failure_reason="budget exhausted after 40 turns")
+
+    remote_tip = _make_diverged_rework(repo, "no-human/esc5")
+    gr = GitRepo(repo)
+    reviewed_sha = gr.head_sha()
+    assert gr.is_ancestor(remote_tip, reviewed_sha) is False
+
+    orch = _orch(store, tmp_path)
+    task = Task.new("Fix the thing", repo_path=str(repo))
+    task.context = _stamp(task.context, reviewed_sha)
+    await store.create_task(task)
+    await store.set_status(task, TaskStatus.TESTING, validate=False)
+    attempt_id = await store.create_attempt(task.id, 1)
+
+    commit = _Commit()
+    commit.sha = reviewed_sha
+
+    out = await orch._finalize(
+        task, gr, "no-human/esc5", "main", commit, attempt_id, _Result())
+    assert out.status == TaskStatus.ESCALATED, out.detail
+
+    blocker = task.blocker
+    assert blocker is not None
+    # The THIS attempt's own failure_reason is recorded by `_finalize`
+    # before the escalation queries — the count therefore includes it too
+    # (4 total: the 3 seeded genuine hits + this one), proving the number
+    # comes from the live query, not a value computed before this call.
+    assert "4 attempt(s)" in blocker["evidence"], blocker["evidence"]

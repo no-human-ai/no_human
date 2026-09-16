@@ -820,6 +820,14 @@ class ReviewedShaMismatch(RuntimeError):
     """
 
 
+#: The exact wording `_reconcile_remote_branch` raises for a genuine
+#: pushed-tip divergence (`tests/test_diverged_delivery_escalation.py` pins
+#: the full message verbatim) — `%`-wrapped for `Store.
+#: count_attempts_failing_like`'s SQL `LIKE`, so `_escalate_diverged_pushed_
+#: branch` can state a query-derived historical count instead of guessing one.
+DIVERGED_PUSHED_BRANCH_FAILURE_PATTERN = "%is not an ancestor of the reviewed sha%"
+
+
 class BudgetAbort(RuntimeError):
     """The running attempt crossed the task's remaining lifetime token budget.
 
@@ -8807,6 +8815,14 @@ class Orchestrator:
         gives the human both a commit count and a file count for each side,
         so the escalation can say which one carries more work instead of
         just naming two shas and shrugging.
+
+        `Store.count_attempts_failing_like` (`core/db.py`) is queried here
+        for how many attempt rows, across every task, already recorded this
+        exact failure class — a real number from recorded history, per that
+        method's own docstring ("without inventing or estimating the
+        number"), not a guess. A query failure (e.g. a cold connection)
+        must not block the escalation, so it degrades to `None` and the
+        blocker states the count is unavailable rather than fabricating one.
         """
         remote_tip = getattr(exc, "remote_tip", "") or ""
         reviewed_sha = getattr(exc, "reviewed_sha", "") or ""
@@ -8814,9 +8830,15 @@ class Orchestrator:
             stats = repo.divergence_stats(remote_tip, reviewed_sha)
         except Exception:  # noqa: BLE001 — escalation must never raise
             stats = {}
+        try:
+            history_count = await self.store.count_attempts_failing_like(
+                DIVERGED_PUSHED_BRANCH_FAILURE_PATTERN)
+        except Exception:  # noqa: BLE001 — escalation must never raise
+            history_count = None
         blocker = diverged_pushed_branch(
             branch=branch, remote_tip=remote_tip, reviewed_sha=reviewed_sha,
             stats=stats, detail=str(exc), goal=task.title,
+            history_count=history_count,
         )
         return await self._raise_blocker(
             task, blocker, repo=repo, branch=branch,

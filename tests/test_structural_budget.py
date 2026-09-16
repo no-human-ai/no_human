@@ -1486,7 +1486,13 @@ FROZEN_FILE_LINES = {
     # `_reconcile_remote_branch`'s genuinely-diverged raise, and the new
     # `_escalate_diverged_pushed_branch` escalation helper. Re-measured on
     # this tree with `scan_tree`.
-    "core/orchestrator.py": 24917,
+    # 24917 -> 24939 (+22): AC5 follow-up — module-level
+    # `DIVERGED_PUSHED_BRANCH_FAILURE_PATTERN` constant and wiring
+    # `Store.count_attempts_failing_like` into
+    # `_escalate_diverged_pushed_branch` so the escalation states a
+    # query-derived historical count instead of an invented one.
+    # Re-measured on this tree with `scan_tree`.
+    "core/orchestrator.py": 24939,
 
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
