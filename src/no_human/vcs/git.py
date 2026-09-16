@@ -16,7 +16,7 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator
+from typing import Callable, Iterator
 
 from ..agent.child_env import drop_foreign_secrets
 from ..proc import hidden_console_kwargs
@@ -1240,7 +1240,9 @@ class GitRepo:
         return proc.returncode == 0
 
     def _have_remote_commit(self, remote: str, branch: str, remote_sha: str,
-                             timeout: int) -> bool:
+                             timeout: int, *,
+                             on_transient: Callable[[str], None] | None = None,
+                             ) -> bool:
         """Is *remote_sha* available in this local object store?
 
         Factored out of `remote_branch_relation` (still byte-identical
@@ -1249,6 +1251,10 @@ class GitRepo:
         named by `ls-remote`. See that method's docstring for why the
         fetch-on-miss uses `--refmap=` into a private namespace rather than
         the tracking ref.
+
+        `on_transient`, when given, is called with a note whenever a `False`
+        here came from a failed/timed-out fetch rather than a proven-absent
+        object — purely additive, the return value is unchanged either way.
         """
         have_obj = subprocess.run(
             ["git", "cat-file", "-e", f"{remote_sha}^{{commit}}"],
@@ -1258,13 +1264,25 @@ class GitRepo:
         if have_obj.returncode == 0:
             return True
         private_ref = f"refs/no_human/push-check/{branch}"
-        fetched = subprocess.run(
-            ["git", "fetch", "--refmap=", remote,
-             f"+refs/heads/{branch}:{private_ref}"],
-            cwd=self.path, capture_output=True, text=True, timeout=timeout,
-            **hidden_console_kwargs(),
-        )
+        try:
+            fetched = subprocess.run(
+                ["git", "fetch", "--refmap=", remote,
+                 f"+refs/heads/{branch}:{private_ref}"],
+                cwd=self.path, capture_output=True, text=True, timeout=timeout,
+                **hidden_console_kwargs(),
+            )
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            if on_transient is not None:
+                on_transient(
+                    f"fetch of {branch!r} from {remote!r} timed out or "
+                    f"failed ({exc})")
+            return False
         if fetched.returncode != 0:
+            if on_transient is not None:
+                on_transient(
+                    f"fetch of {branch!r} from {remote!r} failed "
+                    f"(rc={fetched.returncode}): "
+                    f"{fetched.stderr.strip()[:200]}")
             return False
         have_obj = subprocess.run(
             ["git", "cat-file", "-e", f"{remote_sha}^{{commit}}"],
@@ -1275,7 +1293,9 @@ class GitRepo:
 
     def remote_branches_containing(self, sha: str, patterns: list[str], *,
                                     remote: str = "origin",
-                                    timeout: int = 30) -> list[str]:
+                                    timeout: int = 30,
+                                    on_transient: Callable[[str], None] | None = None,
+                                    ) -> list[str]:
         """Which remote branches (matching *patterns*) contain *sha*?
 
         Proves "the work is on a remote ref" — NOT "the work merged"; a
@@ -1290,6 +1310,15 @@ class GitRepo:
         Read-only and idempotent: it writes no ref of its own; the only
         write is `_have_remote_commit`'s private, overwritten-in-place
         `refs/no_human/push-check/<branch>`, never a tracking ref.
+
+        `on_transient`, when given, is called with a note whenever `[]` (or a
+        dropped ref) came from a failed/timed-out git call rather than a
+        proven-empty remote — purely additive, the return value is
+        unchanged either way. This is the sink a caller needs to tell "this
+        branch was never pushed" apart from "a fetch for this branch failed
+        and we could not check" — the two used to be indistinguishable,
+        which is what let a transient sibling-branch fetch failure read as a
+        proven absence.
         """
         try:
             ls = subprocess.run(
@@ -1297,9 +1326,19 @@ class GitRepo:
                 cwd=self.path, capture_output=True, text=True, timeout=timeout,
                 **hidden_console_kwargs(),
             )
-        except (subprocess.TimeoutExpired, OSError):
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            if on_transient is not None:
+                on_transient(
+                    f"ls-remote --heads {remote!r} timed out or failed "
+                    f"({exc})")
             return []
-        if ls.returncode != 0 or not ls.stdout.strip():
+        if ls.returncode != 0:
+            if on_transient is not None:
+                on_transient(
+                    f"ls-remote --heads {remote!r} failed "
+                    f"(rc={ls.returncode}): {ls.stderr.strip()[:200]}")
+            return []
+        if not ls.stdout.strip():
             return []
         matches: list[str] = []
         for line in ls.stdout.splitlines():
@@ -1312,10 +1351,13 @@ class GitRepo:
                 if remote_sha == sha:
                     matches.append(name)
                     continue
-                if (self._have_remote_commit(remote, name, remote_sha, timeout)
+                if (self._have_remote_commit(remote, name, remote_sha, timeout,
+                                              on_transient=on_transient)
                         and self.is_ancestor(sha, remote_sha)):
                     matches.append(name)
-            except Exception:  # noqa: BLE001 — one bad ref must not sink the rest
+            except Exception as exc:  # noqa: BLE001 — one bad ref must not sink the rest
+                if on_transient is not None:
+                    on_transient(f"checking ref {name!r} for {sha} failed ({exc})")
                 continue
         return matches
 
@@ -1534,7 +1576,9 @@ class GitRepo:
         return sha
 
     def remote_branch_relation(self, branch: str, *, remote: str = "origin",
-                                timeout: int = 30) -> str:
+                                timeout: int = 30,
+                                on_transient: Callable[[str], None] | None = None,
+                                ) -> str:
         """How local ``branch`` relates to its own tip on ``remote``.
 
         Returns ``"behind"`` (local is an ancestor of the remote tip — the
@@ -1559,6 +1603,11 @@ class GitRepo:
         silently updates the tracking ref anyway (confirmed empirically);
         only an empty ``--refmap=`` disables that and writes exclusively to
         the private destination.
+
+        `on_transient`, when given, is called with a note whenever the
+        ``"unknown"`` returned below came from a failed git call rather than
+        a proven "never pushed" — purely additive, the return value is
+        unchanged either way.
         """
         local = self._run("rev-parse", branch, check=False)
         if not local:
@@ -1568,12 +1617,19 @@ class GitRepo:
             cwd=self.path, capture_output=True, text=True, timeout=timeout,
             **hidden_console_kwargs(),
         )
-        if ls.returncode != 0 or not ls.stdout.strip():
+        if ls.returncode != 0:
+            if on_transient is not None:
+                on_transient(
+                    f"ls-remote {remote!r} for {branch!r} failed "
+                    f"(rc={ls.returncode}): {ls.stderr.strip()[:200]}")
+            return "unknown"
+        if not ls.stdout.strip():
             return "unknown"
         remote_sha = ls.stdout.split()[0]
         if remote_sha == local:
             return "up_to_date"
-        if not self._have_remote_commit(remote, branch, remote_sha, timeout):
+        if not self._have_remote_commit(remote, branch, remote_sha, timeout,
+                                         on_transient=on_transient):
             return "unknown"
         return "behind" if self.is_ancestor(local, remote_sha) else "diverged"
 

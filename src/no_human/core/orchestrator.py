@@ -891,6 +891,38 @@ class TaskOutcome:
 #: repeated at each use, and the escalation choice now depends on it.
 _REPORT_KINDS = ("investigation", "design_doc")
 
+
+@dataclass(frozen=True)
+class ClaimGate:
+    """What `claim_gate_decision` found when asked whether a zero-diff
+    ALREADY-SATISFIED claim would be judged, and how.
+
+    One of five mutually exclusive `stage`s, in the same order `_run_attempt`
+    checks them: `"uncommitted"` (the tree has uncommitted changes — no
+    zero-diff claim is even possible this round), `"report"` (a report-kind
+    task with a non-empty report — never a landed-work claim), `"resumed"`
+    (the branch already carries commits ahead of base that no completed
+    review judged, or an ineligible zero-diff head — routed to a full
+    review, not the claim gate), `"no_claim"` (a clean, non-report,
+    non-resumed tree whose final text does not parse as an ALREADY-SATISFIED
+    claim), and `"claim"` (a parsed claim, classified against the same
+    subject tree delivery classifies).
+
+    `refuses`/`reason` describe delivery's verdict ONLY when `stage ==
+    "claim"`; they are meaningless otherwise. `undetermined`, when non-empty,
+    means at least one git call behind that verdict failed or timed out —
+    `refuses` is always forced to `False` in that case, since a transient
+    failure must never read as a proven refusal.
+    """
+
+    stage: str
+    resumed_commit: Any = None
+    claim: str | None = None
+    subject: tuple | None = None
+    refuses: bool = False
+    reason: str = ""
+    undetermined: str = ""
+
 #: The failure detail for an attempt that ran to completion without editing a
 #: file. `_drive` matches on it to break the retry loop, so it lives here rather
 #: than being spelled out at each site.
@@ -5951,6 +5983,7 @@ class Orchestrator:
         # working agent in real time (replaces the human-in-the-loop).
         supervisor = self._build_supervisor(task, str(repo.path), plan=plan)
         self._active_supervisor = supervisor  # so _agent_sink can feed it agent prose
+        self._landed_claim_guard = None  # so _agent_sink can feed it agent prose
         if supervisor is not None:
             self.emit("supervisor", "supervisor active")
 
@@ -6041,9 +6074,29 @@ class Orchestrator:
                 on_event=self.emit,
             )
 
+        # Landed-claim guard: tells a mid-attempt "already exists / already
+        # landed at <sha>" claim IMMEDIATELY when delivery will refuse it,
+        # instead of letting the attempt burn its whole turn budget only to
+        # be refused once it reaches the claim gate for real. `decide` asks
+        # the exact question delivery itself asks (`claim_gate_decision`)
+        # against the live tree — never a second copy of that logic.
+        landed_hook = None
+        if _can_hooks:
+            from ..agent.landed_claim_guard import LandedClaimGuardHook
+            landed_hook = LandedClaimGuardHook(
+                decide=partial(
+                    self.claim_gate_decision, task, repo,
+                    base=base, branch=branch,
+                    branched_from_own_partial=branched_from_own_partial,
+                    announce=False,
+                ),
+            )
+            self._landed_claim_guard = landed_hook
+
         if _can_hooks:
             composed = self._compose_post_tool_hooks(
-                receipt_hook, lint_hook, scope_hook, type_hook)
+                receipt_hook, lint_hook, scope_hook, type_hook,
+                landed_hook=landed_hook)
             if composed is not None:
                 extra["lint_hook"] = composed
 
@@ -6652,212 +6705,109 @@ class Orchestrator:
                 task, emitted, repo=repo, branch=branch, attempt_id=attempt_id)
 
         # --- commit (deterministic) ---
-        resumed_commit = None
-        if not repo.has_changes():
+        gate = await self.claim_gate_decision(
+            task, repo, base=base, branch=branch,
+            branched_from_own_partial=branched_from_own_partial,
+            final_text=result.final_text,
+        )
+        if gate.stage == "report":
             # Investigation and design-doc tasks may produce findings (the
             # report / the document) without code changes — that is their
             # SUCCESS outcome, not a failure.
-            if (task.kind in _REPORT_KINDS
-                    and (result.final_text or "").strip()):
-                findings = (result.final_text or "").strip()
-                # Defect 204f2177: assert kind/criteria consistency BEFORE
-                # applying report-only completion. A report-only kind
-                # (design_doc/investigation) produces a report and never
-                # code — so criteria demanding a tested/shipped artifact (a
-                # CLI flag, red-first tests, an endpoint) can never be
-                # satisfied by it. That live ticket was classified
-                # design_doc, then marked DONE on "design doc complete
-                # (report-only, no code changes)" with the demanded CLI flag
-                # never shipped and nothing flagged the mismatch. Refuse
-                # instead of silently completing, and escalate to a human —
-                # never lower the bar by completing anyway.
-                mismatch = kind_criteria_mismatch(task.kind, task.acceptance_criteria)
-                if mismatch is not None:
-                    await self.store.update_attempt(
-                        attempt_id, status="failed",
-                        failure_reason=f"kind/criteria mismatch: {mismatch}")
-                    self.emit("kind_criteria_mismatch", mismatch)
-                    mismatch_blocker = Blocker(
-                        category=BlockerCategory.AMBIGUITY,
-                        transient=False, confidence=1.0, goal=task.title,
-                        root_cause_hypothesis=mismatch,
-                        evidence=mismatch,
-                        question=(
-                            "This task's kind is report-only (design_doc/"
-                            "investigation) but its acceptance criteria "
-                            "demand a tested/shipped artifact a report can "
-                            "never deliver. Confirm the right kind (e.g. "
-                            "feature/bugfix) or drop the test-bearing "
-                            "criteria if this really is report-only."
-                        ),
-                    )
-                    return await self._raise_blocker(
-                        task, mismatch_blocker, repo=repo, branch=branch,
-                        attempt_id=attempt_id)
-                # C3: a report-kind task bypasses the code reviewer, so its only
-                # completion bar is that the report is non-empty. Reject an
-                # unambiguously-inadequate deliverable (a bare "Done.", a
-                # placeholder, an empty design doc) as a FAILED attempt so the
-                # bounded loop retries with the reason as feedback and, if the
-                # agent still can't produce substance, escalates honestly rather
-                # than marking a non-answer DONE. High-precision: a terse-but-real
-                # finding passes (report_quality.report_inadequacy).
-                inadequate = report_inadequacy(findings, task.kind)
-                if inadequate is not None:
-                    await self.store.update_attempt(
-                        attempt_id, status="failed",
-                        failure_reason=f"inadequate report: {inadequate}")
-                    self.emit("report_inadequate", inadequate)
-                    # Carried for the escalation: without it the human sees
-                    # "inadequate" N times and never what the agent actually
-                    # produced — the same gap the zero-diff escalation closed.
-                    task.context = {
-                        **(task.context or {}),
-                        "inadequate_report_reason": inadequate,
-                        "inadequate_report_text": findings[:2000],
-                    }
-                    await self.store.update_task(task)
-                    return TaskOutcome(
-                        task, status=TaskStatus.FAILED,
-                        detail=f"{_INADEQUATE_REPORT_DETAIL}: {inadequate}")
-                task.context = {**(task.context or {}), "findings": findings}
-                await self.store.update_task(task)
+            findings = (result.final_text or "").strip()
+            # Defect 204f2177: assert kind/criteria consistency BEFORE
+            # applying report-only completion. A report-only kind
+            # (design_doc/investigation) produces a report and never
+            # code — so criteria demanding a tested/shipped artifact (a
+            # CLI flag, red-first tests, an endpoint) can never be
+            # satisfied by it. That live ticket was classified
+            # design_doc, then marked DONE on "design doc complete
+            # (report-only, no code changes)" with the demanded CLI flag
+            # never shipped and nothing flagged the mismatch. Refuse
+            # instead of silently completing, and escalate to a human —
+            # never lower the bar by completing anyway.
+            mismatch = kind_criteria_mismatch(task.kind, task.acceptance_criteria)
+            if mismatch is not None:
                 await self.store.update_attempt(
-                    attempt_id, status="succeeded",
-                    failure_reason=None,
+                    attempt_id, status="failed",
+                    failure_reason=f"kind/criteria mismatch: {mismatch}")
+                self.emit("kind_criteria_mismatch", mismatch)
+                mismatch_blocker = Blocker(
+                    category=BlockerCategory.AMBIGUITY,
+                    transient=False, confidence=1.0, goal=task.title,
+                    root_cause_hypothesis=mismatch,
+                    evidence=mismatch,
+                    question=(
+                        "This task's kind is report-only (design_doc/"
+                        "investigation) but its acceptance criteria "
+                        "demand a tested/shipped artifact a report can "
+                        "never deliver. Confirm the right kind (e.g. "
+                        "feature/bugfix) or drop the test-bearing "
+                        "criteria if this really is report-only."
+                    ),
                 )
-                detail = (f"{'design doc' if task.kind == 'design_doc' else 'investigation'}"
-                      " complete (report-only, no code changes)")
-                self.emit("investigation_report", detail)
-                await self.store.set_status(
-                    task, TaskStatus.DONE, validate=False,
-                    event={"source": "orchestrator", "kind": "investigation_report",
-                           "text": detail})
-                self.emit("state", "done", status="done")
-                # The findings ARE the deliverable — they must ride on
-                # outcome.report or every consumer that judges the deliverable
-                # (the north-star bench) sees only the placeholder detail (the
-                # #85 bug class, re-found live on v7 spec ns-0e7bf1ae: the
-                # judge read "investigation complete (report-only, no code
-                # changes)" while the real answer sat in context["findings"]).
-                return TaskOutcome(task, status=TaskStatus.DONE, detail=detail,
-                                   report=findings)
-
-            # A resumed attempt (`nh reply`, D15) restarts from a [WIP-BLOCKED]
-            # checkpoint whose work is ALREADY COMMITTED on the branch. The agent
-            # correctly adds nothing, and `has_changes()` — which only sees the
-            # working tree — reads that as "no file changes". Task 84251cb2 had
-            # 645 lines committed against dev and was failed for it twice.
-            # The change is the branch's diff against base, so ask git.
-            #
-            # 🔴 NOT when this attempt inherited the previous attempt's
-            # [WIP-PARTIAL]: that also has commits_ahead(base) > 0 before its
-            # agent does anything, so crediting it would report an attempt that
-            # edited NOTHING as `succeeded`, open a PR on abandoned half-work, and
-            # stop `unproductive_streak` from ever incrementing — silently
-            # deleting the two-consecutive-zero-diff escalation. Before the branch
-            # point was fixed this was masked, because the partial work was being
-            # discarded anyway.
-            #
-            # BOTH paths ask `_is_own_partial`, which applies ONE rule: the work
-            # is the loop's own iff the branch point is a [WIP-PARTIAL] that no
-            # HUMAN gated. An earlier comment here claimed the discriminator
-            # differs by path and that `resume_from` "only a human writes" —
-            # both were false (`wake.py` writes it too, on five autonomous
-            # paths), and splitting the rule was wrong in each direction.
-            resumed_commit = (
-                repo.head_commit(base)
-                if base and repo.commits_ahead(base) > 0
-                and not branched_from_own_partial
-                else None
+                return await self._raise_blocker(
+                    task, mismatch_blocker, repo=repo, branch=branch,
+                    attempt_id=attempt_id)
+            # C3: a report-kind task bypasses the code reviewer, so its only
+            # completion bar is that the report is non-empty. Reject an
+            # unambiguously-inadequate deliverable (a bare "Done.", a
+            # placeholder, an empty design doc) as a FAILED attempt so the
+            # bounded loop retries with the reason as feedback and, if the
+            # agent still can't produce substance, escalates honestly rather
+            # than marking a non-answer DONE. High-precision: a terse-but-real
+            # finding passes (report_quality.report_inadequacy).
+            inadequate = report_inadequacy(findings, task.kind)
+            if inadequate is not None:
+                await self.store.update_attempt(
+                    attempt_id, status="failed",
+                    failure_reason=f"inadequate report: {inadequate}")
+                self.emit("report_inadequate", inadequate)
+                # Carried for the escalation: without it the human sees
+                # "inadequate" N times and never what the agent actually
+                # produced — the same gap the zero-diff escalation closed.
+                task.context = {
+                    **(task.context or {}),
+                    "inadequate_report_reason": inadequate,
+                    "inadequate_report_text": findings[:2000],
+                }
+                await self.store.update_task(task)
+                return TaskOutcome(
+                    task, status=TaskStatus.FAILED,
+                    detail=f"{_INADEQUATE_REPORT_DETAIL}: {inadequate}")
+            task.context = {**(task.context or {}), "findings": findings}
+            await self.store.update_task(task)
+            await self.store.update_attempt(
+                attempt_id, status="succeeded",
+                failure_reason=None,
             )
-            # Incidents 0847f2c2 (claim terminal) and d256ae60 (silent
-            # terminal), both 2026-09-08: a wake/machine resume branching from
-            # its OWN checkpoint sets `branched_from_own_partial` above, so
-            # `resumed_commit` is still `None` even though the branch head may
-            # carry a `[WIP-BLOCKED]`/`[WIP-PARTIAL]` diff no review ever
-            # judged. Route it to the full review BEFORE the claim parse below
-            # gets a chance to burn the attempt on a subject
-            # `_already_satisfied_subject` structurally refuses, and before
-            # the silent zero-diff fall-through fails it as "no file changes"
-            # when there plainly are some.
-            if resumed_commit is None and base:
-                resumed_commit = self._route_unjudged_head(task, repo, base)
-            if resumed_commit is None:
-                # A fully-cited ALREADY-SATISFIED claim is the one zero-diff
-                # completion that is not a failure: verify it against the code
-                # (reviewer gate) instead of failing the attempt. Anything less
-                # keeps the anti-fabrication default below.
-                claim = _parse_already_satisfied(
-                    result.final_text or "",
-                    len(task.acceptance_criteria or []),
-                )
-                if claim is None:
-                    # …and if the report did not parse, ONE single-turn
-                    # follow-up asking for the contract format before the
-                    # attempt dies on phrasing. Nothing else about this branch
-                    # moves: no nudge on empty text, and a nudge that still
-                    # does not parse falls straight through to the failure
-                    # below (`_reformat_nudge`).
-                    #
-                    # The three sink controls are caught HERE, not inside the
-                    # nudge. The coder turn's own handlers for them are the
-                    # `except` clauses on the try block far above, which closed
-                    # before `has_changes()` was ever asked — so an abort raised
-                    # this late reaches no handler at all and would escape
-                    # `_run_attempt` entirely (`_drive` catches only
-                    # QuotaExhausted; verified by reading it, not assumed).
-                    try:
-                        claim = await self._reformat_nudge(
-                            task, result, repo=repo, attempt_id=attempt_id)
-                    except CancelRequested as exc:
-                        return await self._honor_cancel(
-                            task, repo, branch, str(exc), attempt_id=attempt_id)
-                    except (BudgetAbort, StuckAbort, ConvergenceAbort) as exc:
-                        return await self._abort_during_nudge(
-                            task, repo, attempt_id, exc, result=result,
-                            branch=branch)
-                if claim is not None:
-                    # Ineligibility can no longer be true here: the hoisted
-                    # `_route_unjudged_head` call above already routed every
-                    # unjudged-diff head to review before this claim was even
-                    # parsed, so whatever survives to this point is either a
-                    # no-diff claim or a head a completed review already
-                    # passed — both eligible by construction.
-                    return await self._gate_already_satisfied(
-                        task, repo, attempt_id, claim, branch=branch,
-                        attempt_n=attempt_n, result=result, base=base,
-                    )
-            if resumed_commit is None:
-                landed = await self._land_no_changes_needed(
-                    task, repo=repo, attempt_id=attempt_id, result=result)
-                if landed is not None:
-                    return landed
-                detail = _NO_CHANGES_DETAIL
-                # Keep what the agent SAID. Task d9d458b5 explained three times
-                # that the work was already committed and that it would not
-                # fabricate an edit; the reason was dropped on the floor and the
-                # loop retried a decision that only a human could make.
-                # Written unconditionally, even when empty: the escalation quotes
-                # this as the reason for THIS attempt, and a conditional write
-                # would let a talkative attempt 1 put words in a silent
-                # attempt 2's mouth.
-                # The ORIGINAL final text, deliberately, even when a reformat
-                # nudge ran and also failed to parse: this field answers "what
-                # did the agent conclude", and the nudge's reply is a restatement
-                # of that under a formatting instruction WE wrote. Escalating
-                # with our own prompt's echo instead of the agent's reasoning is
-                # the exact loss (task d9d458b5) this field was added to stop.
-                ctx = task.context or {}
-                ctx["zero_diff_reason"] = (result.final_text or "").strip()[:2000]
-                task.context = ctx
-                await self.store.update_task(task)
-                await self.store.update_attempt(
-                    attempt_id, status="failed", failure_reason=detail,
-                )
-                return TaskOutcome(task, status=TaskStatus.FAILED, detail=detail)
-            commit = resumed_commit
-        else:
+            detail = (f"{'design doc' if task.kind == 'design_doc' else 'investigation'}"
+                  " complete (report-only, no code changes)")
+            self.emit("investigation_report", detail)
+            await self.store.set_status(
+                task, TaskStatus.DONE, validate=False,
+                event={"source": "orchestrator", "kind": "investigation_report",
+                       "text": detail})
+            self.emit("state", "done", status="done")
+            # The findings ARE the deliverable — they must ride on
+            # outcome.report or every consumer that judges the deliverable
+            # (the north-star bench) sees only the placeholder detail (the
+            # #85 bug class, re-found live on v7 spec ns-0e7bf1ae: the
+            # judge read "investigation complete (report-only, no code
+            # changes)" while the real answer sat in context["findings"]).
+            return TaskOutcome(task, status=TaskStatus.DONE, detail=detail,
+                               report=findings)
+        elif gate.stage == "resumed":
+            # A resumed attempt (`nh reply`, D15) restarts from a [WIP-BLOCKED]
+            # checkpoint whose work is ALREADY COMMITTED on the branch, or the
+            # branch head otherwise carries a diff no completed review has
+            # judged — `claim_gate_decision` (mirroring `_run_attempt`'s own
+            # former inline order) already ruled out crediting a same-loop
+            # partial resume and already routed an ineligible head through
+            # `_route_unjudged_head`. Task 84251cb2 had 645 lines committed
+            # against dev and was failed for it twice before this existed.
+            commit = gate.resumed_commit
+        elif gate.stage == "uncommitted":
             commit_msg = self._commit_message(task)
             # Only commit files the agent intentionally wrote/edited — not test
             # side-effects (e.g. state files updated by running vitest).
@@ -6907,11 +6857,81 @@ class Orchestrator:
                 # must be on the task's record, warnings included (approve
                 # prints e.g. "N stale pin(s)" to stderr).
                 self._emit_manifest_repairs(repaired)
+        else:
+            # gate.stage is "no_claim" or "claim": a fully-cited
+            # ALREADY-SATISFIED claim is the one zero-diff completion that is
+            # not a failure: verify it against the code (reviewer gate)
+            # instead of failing the attempt. Anything less keeps the
+            # anti-fabrication default below.
+            claim = gate.claim if gate.stage == "claim" else None
+            if claim is None:
+                # …and if the report did not parse, ONE single-turn
+                # follow-up asking for the contract format before the
+                # attempt dies on phrasing. Nothing else about this branch
+                # moves: no nudge on empty text, and a nudge that still
+                # does not parse falls straight through to the failure
+                # below (`_reformat_nudge`).
+                #
+                # The three sink controls are caught HERE, not inside the
+                # nudge. The coder turn's own handlers for them are the
+                # `except` clauses on the try block far above, which closed
+                # before the commit-section decision was ever made — so an
+                # abort raised this late reaches no handler at all and would
+                # escape `_run_attempt` entirely (`_drive` catches only
+                # QuotaExhausted; verified by reading it, not assumed).
+                try:
+                    claim = await self._reformat_nudge(
+                        task, result, repo=repo, attempt_id=attempt_id)
+                except CancelRequested as exc:
+                    return await self._honor_cancel(
+                        task, repo, branch, str(exc), attempt_id=attempt_id)
+                except (BudgetAbort, StuckAbort, ConvergenceAbort) as exc:
+                    return await self._abort_during_nudge(
+                        task, repo, attempt_id, exc, result=result,
+                        branch=branch)
+            if claim is not None:
+                # `gate.subject` is reused only when it was computed against
+                # this exact claim text (`gate.stage == "claim"`, so no
+                # nudge ran) — a nudge produces different text than
+                # `claim_gate_decision` classified, so it must ask fresh.
+                precomputed = gate.subject if gate.stage == "claim" else None
+                return await self._gate_already_satisfied(
+                    task, repo, attempt_id, claim, branch=branch,
+                    attempt_n=attempt_n, result=result, base=base,
+                    subject=precomputed,
+                )
+            landed = await self._land_no_changes_needed(
+                task, repo=repo, attempt_id=attempt_id, result=result)
+            if landed is not None:
+                return landed
+            detail = _NO_CHANGES_DETAIL
+            # Keep what the agent SAID. Task d9d458b5 explained three times
+            # that the work was already committed and that it would not
+            # fabricate an edit; the reason was dropped on the floor and the
+            # loop retried a decision that only a human could make.
+            # Written unconditionally, even when empty: the escalation quotes
+            # this as the reason for THIS attempt, and a conditional write
+            # would let a talkative attempt 1 put words in a silent
+            # attempt 2's mouth.
+            # The ORIGINAL final text, deliberately, even when a reformat
+            # nudge ran and also failed to parse: this field answers "what
+            # did the agent conclude", and the nudge's reply is a restatement
+            # of that under a formatting instruction WE wrote. Escalating
+            # with our own prompt's echo instead of the agent's reasoning is
+            # the exact loss (task d9d458b5) this field was added to stop.
+            ctx = task.context or {}
+            ctx["zero_diff_reason"] = (result.final_text or "").strip()[:2000]
+            task.context = ctx
+            await self.store.update_task(task)
+            await self.store.update_attempt(
+                attempt_id, status="failed", failure_reason=detail,
+            )
+            return TaskOutcome(task, status=TaskStatus.FAILED, detail=detail)
         await self.store.update_attempt(attempt_id, commit_sha=commit.sha)
         # Size is reported, not enforced: the human approving the PR is the gate,
         # and they should see how big the change is (config.py:safety explains why
         # the line/file cap is off by default).
-        resumed = resumed_commit is not None
+        resumed = gate.stage == "resumed"
         self.emit(
             "commit",
             f"{commit.sha[:8]} ({commit.files_changed} files, "
@@ -11058,6 +11078,7 @@ class Orchestrator:
         self, task: Task, repo: GitRepo, attempt_id: str, claim: str, *,
         branch: str | None, attempt_n: int | None = None,
         result: Any = None, base: str | None = None,
+        subject: tuple | None = None,
     ) -> TaskOutcome:
         """A zero-diff attempt claimed every criterion is ALREADY met, with the
         per-criterion evidence table. Never take the coder's word for it: the
@@ -11067,7 +11088,14 @@ class Orchestrator:
         be no PR — but when this run's own pre-gate draft IS the PR, the body
         is refreshed through the same evidence chain `_finalize` uses and the
         review-checklist comment is posted, all best-effort).
-        FAIL → a normal failed attempt whose findings feed the bounded loop."""
+        FAIL → a normal failed attempt whose findings feed the bounded loop.
+
+        `subject`, when given, is the six-tuple `claim_gate_decision` already
+        computed against this exact tree moments earlier — reused as-is
+        instead of asking git the same question twice. `None` (every caller
+        before this parameter existed, and every caller that parsed its
+        claim from a reformat nudge) falls back to asking here, unchanged.
+        """
         self._emit_review(
             "review_start",
             "zero-diff ALREADY-SATISFIED claim — verifying every citation "
@@ -11076,9 +11104,11 @@ class Orchestrator:
         # Resolve and classify the exact tree BEFORE a reviewer can spend a
         # token on it. An already-satisfied verdict is meaningful only for a
         # tree a delivery could actually ship.
+        if subject is None:
+            subject = await self._already_satisfied_subject(
+                task, repo, base=base, branch=branch)
         (shippable, reviewed_sha, subject, subject_reason, subject_on_main,
-         ship_ref) = await self._already_satisfied_subject(
-            task, repo, base=base, branch=branch)
+         ship_ref) = subject
         try:
             reviewed_branch = repo.current_branch()
         except Exception:  # noqa: BLE001 — advisory label only
@@ -12440,13 +12470,25 @@ class Orchestrator:
 
     async def _already_satisfied_subject(
         self, task: Task, repo, *, base: str | None, branch: str | None,
+        on_transient: Callable[[str], None] | None = None,
     ) -> tuple[bool, str, str, str, bool, str]:
         """Classify the exact tree an already-satisfied claim may judge.
 
         A claim can describe an existing shipping tree, or the exact pushed
         tip a delivery offers. Everything else fails closed: a reviewer must
         never verify an unpushable checkpoint and turn it into approval proof.
+
+        `on_transient`, when given, receives a note for every site where the
+        refusal below could be caused by a failed/timed-out git network call
+        rather than a genuine absence — purely additive: it never changes
+        which of the tuple values below is returned, only whether a caller
+        (the mid-attempt claim guard) treats a refusal as proven or as
+        merely undetermined.
         """
+        def _note(text: str) -> None:
+            if on_transient is not None:
+                on_transient(text)
+
         # `task` is needed below to enumerate THIS task's own pushed agent
         # branches (attempt 2+ pushes to a distinct branch — see
         # branch_prefix usage at ~4407 — so the offered branch alone can
@@ -12454,6 +12496,7 @@ class Orchestrator:
         try:
             head = repo.head_sha().strip()
         except Exception as exc:  # noqa: BLE001 — unreadable means unshippable
+            _note(f"head sha unresolvable ({exc})")
             return False, "", "", (
                 "the sha the claim would be judged against is unresolvable "
                 f"({exc})"), False, ""
@@ -12491,7 +12534,8 @@ class Orchestrator:
         for candidate in names:
             try:
                 ship_sha = repo.branch_sha(candidate).strip()
-            except Exception:  # noqa: BLE001 — try the next local ref
+            except Exception as exc:  # noqa: BLE001 — try the next local ref
+                _note(f"resolving ship ref {candidate!r} failed ({exc})")
                 continue
             if ship_sha:
                 ship_ref = candidate
@@ -12505,6 +12549,7 @@ class Orchestrator:
         try:
             on_ship_ref = repo.is_ancestor(head, ship_sha)
         except Exception as exc:  # noqa: BLE001 — cannot prove shipping truth
+            _note(f"is_ancestor({head}, {ship_sha}) failed ({exc})")
             return False, head, "", (
                 f"cannot determine whether {head} is on {ship_ref} ({exc})"), \
                 False, ship_ref
@@ -12528,6 +12573,7 @@ class Orchestrator:
         try:
             branch_sha = repo.branch_sha(branch).strip()
         except Exception as exc:  # noqa: BLE001 — an unresolved branch cannot ship
+            _note(f"delivery branch {branch!r} unresolvable ({exc})")
             return False, head, "", (
                 f"{prefix}; delivery branch {branch!r} is unresolvable ({exc})"), \
                 False, ship_ref
@@ -12541,6 +12587,7 @@ class Orchestrator:
         try:
             remote_url = repo.remote_url()
         except Exception as exc:  # noqa: BLE001 — a remote check must be proof
+            _note(f"resolving origin remote failed ({exc})")
             return False, head, "", (
                 f"{prefix}; cannot resolve origin remote ({exc})"), False, ship_ref
         if remote_url is None:
@@ -12550,8 +12597,10 @@ class Orchestrator:
         relation = None
         if local_is_reviewed:
             try:
-                relation = await asyncio.to_thread(repo.remote_branch_relation, branch)
+                relation = await asyncio.to_thread(
+                    repo.remote_branch_relation, branch, on_transient=on_transient)
             except Exception as exc:  # noqa: BLE001 — external check must fail closed
+                _note(f"remote_branch_relation({branch!r}) failed ({exc})")
                 return False, head, "", (
                     f"{prefix}; cannot verify pushed branch {branch!r} ({exc})"), \
                     False, ship_ref
@@ -12572,8 +12621,10 @@ class Orchestrator:
         stem = f"{prefix_cfg}{task.id[:8]}"
         try:
             task_branches = await asyncio.to_thread(
-                repo.remote_branches_containing, head, [stem, f"{stem}-*"])
-        except Exception:  # noqa: BLE001 — sibling check is best-effort proof only
+                repo.remote_branches_containing, head, [stem, f"{stem}-*"],
+                on_transient=on_transient)
+        except Exception as exc:  # noqa: BLE001 — sibling check is best-effort proof only
+            _note(f"sibling-branch check for {stem!r} failed ({exc})")
             task_branches = []
         task_branches = [
             name for name in task_branches
@@ -12733,7 +12784,9 @@ class Orchestrator:
             return True
         return subject.strip().startswith(("[WIP-BLOCKED]", "[WIP-PARTIAL]"))
 
-    def _route_unjudged_head(self, task: Task, repo, base: str) -> CommitResult | None:
+    def _route_unjudged_head(
+        self, task: Task, repo, base: str, *, announce: bool = True,
+    ) -> CommitResult | None:
         """`CommitResult` when this zero-diff attempt's branch head carries a
         diff no completed review has judged — else ``None``.
 
@@ -12748,17 +12801,106 @@ class Orchestrator:
         neighbouring `[WIP-PARTIAL]` incident on the same date and shape. All
         are the SAME defect: an unreviewed diff sat at head and neither
         terminal ever sent it to a reviewer.
+
+        `announce=False` suppresses the `already_satisfied_ineligible` event
+        — for a caller (the mid-attempt claim guard) probing this same
+        decision against the live tree without narrating it into the task's
+        own event stream a second time.
         """
         eligible, why = self._already_satisfied_eligible(task, repo, base)
         if eligible:
             return None
-        self._emit_review(
-            "already_satisfied_ineligible",
-            "resumed attempt added nothing new and its branch head carries "
-            f"an unreviewed diff ({why}) — routing to a full independent "
-            "review of the branch diff",
-        )
+        if announce:
+            self._emit_review(
+                "already_satisfied_ineligible",
+                "resumed attempt added nothing new and its branch head "
+                f"carries an unreviewed diff ({why}) — routing to a full "
+                "independent review of the branch diff",
+            )
         return repo.head_commit(base)
+
+    async def claim_gate_decision(
+        self, task: Task, repo: GitRepo, *, base: str | None, branch: str | None,
+        branched_from_own_partial: bool, final_text: str | None,
+        announce: bool = True,
+    ) -> ClaimGate:
+        """The single decision `_run_attempt`'s commit section makes about a
+        zero-diff attempt, extracted so the mid-attempt claim guard can ask
+        the exact same question of the live tree instead of keeping its own
+        copy of the answer.
+
+        Mirrors `_run_attempt`'s commit-section order exactly: uncommitted
+        changes end it before a claim is even possible; a report-kind task
+        with a report ends it next; a resumed branch carrying an unreviewed
+        diff (ahead of base and not an own-partial resume, OR ineligible per
+        `_route_unjudged_head`) routes to a full review instead of the claim
+        gate; only then is `final_text` parsed for an ALREADY-SATISFIED claim,
+        and only a parsed claim is classified against the subject tree
+        `_already_satisfied_subject` builds — the same classification
+        delivery itself ships on.
+
+        `announce=False` (the guard's use) suppresses `_route_unjudged_head`'s
+        `already_satisfied_ineligible` event so probing does not narrate a
+        second copy of an event delivery will emit itself when it reaches
+        this same point for real.
+
+        `refuses`/`reason`/`undetermined` are populated only when
+        `stage == "claim"`. `undetermined`, whenever it is non-empty, forces
+        `refuses` back to `False` — a git call that failed or timed out
+        while building the subject tree must never be read as a proven
+        refusal.
+        """
+
+        def _prefix():
+            if repo.has_changes():
+                return "uncommitted", None
+            if task.kind in _REPORT_KINDS and (final_text or "").strip():
+                return "report", None
+            resumed_commit = (
+                repo.head_commit(base)
+                if base and repo.commits_ahead(base) > 0
+                and not branched_from_own_partial
+                else None
+            )
+            if resumed_commit is None and base:
+                resumed_commit = self._route_unjudged_head(
+                    task, repo, base, announce=announce)
+            if resumed_commit is not None:
+                return "resumed", resumed_commit
+            return None, None
+
+        # No try/except around the prefix: `_run_attempt` calls these same
+        # predicates uncaught today, so a prefix exception must keep
+        # propagating exactly as it does now — delivery's crash-through
+        # behaviour is not something this function is allowed to change.
+        # The guard's own caller is responsible for treating any exception
+        # out of this whole method as "inject nothing".
+        stage, resumed_commit = await asyncio.to_thread(_prefix)
+
+        if stage == "uncommitted":
+            return ClaimGate(stage="uncommitted")
+        if stage == "report":
+            return ClaimGate(stage="report")
+        if stage == "resumed":
+            return ClaimGate(stage="resumed", resumed_commit=resumed_commit)
+
+        claim = _parse_already_satisfied(
+            final_text or "", len(task.acceptance_criteria or []))
+        if claim is None:
+            return ClaimGate(stage="no_claim")
+
+        notes: list[str] = []
+        subject = await self._already_satisfied_subject(
+            task, repo, base=base, branch=branch, on_transient=notes.append)
+        refuses = not subject[0]
+        reason = subject[3]
+        undetermined = "; ".join(notes)
+        if undetermined:
+            refuses = False
+        return ClaimGate(
+            stage="claim", claim=claim, subject=subject,
+            refuses=refuses, reason=reason, undetermined=undetermined,
+        )
 
     async def _append_review_history(
         self, task: Task, decision, *, commit_sha: str = "",
@@ -22758,7 +22900,7 @@ SIX of them read a checkpoint and TWO do not — but do
 
     @staticmethod
     def _ordered_post_tool_hooks(
-        receipt_hook, lint_hook, scope_hook, type_hook=None
+        receipt_hook, lint_hook, scope_hook, type_hook=None, *, landed_hook=None,
     ) -> list:
         """The PostToolUse hooks, in the order they must run.
 
@@ -22770,6 +22912,12 @@ SIX of them read a checkpoint and TWO do not — but do
         receipts would go missing precisely on the attempts that had the most to
         report. Moving it last leaves every other test in the suite passing,
         which is why the property has its own.
+
+        The landed-claim guard goes SECOND, ahead of lint/type/scope: it only
+        ever fires on the coder's final-text tool call (a Stop-shaped turn),
+        never on an ordinary edit, so its position relative to the others is
+        never actually contended — it is placed early so a refusal reaches the
+        model without waiting on hooks that cannot fire on the same call.
 
         The type hook (issue #114 phase 2) goes THIRD, ahead of the scope guard,
         and that is the same kind of property rather than a preference. Its
@@ -22785,18 +22933,19 @@ SIX of them read a checkpoint and TWO do not — but do
         parse produces type output not worth the turn.
         """
         return [
-            h for h in (receipt_hook, lint_hook, type_hook, scope_hook)
+            h for h in (receipt_hook, landed_hook, lint_hook, type_hook, scope_hook)
             if h is not None
         ]
 
     @classmethod
     def _compose_post_tool_hooks(
-        cls, receipt_hook, lint_hook, scope_hook, type_hook=None
+        cls, receipt_hook, lint_hook, scope_hook, type_hook=None, *,
+        landed_hook=None,
     ):
         """One PostToolUse callable for the backend, or None when there are no
         hooks to install. ClaudeBackend accepts a single `lint_hook`."""
         hooks = cls._ordered_post_tool_hooks(
-            receipt_hook, lint_hook, scope_hook, type_hook)
+            receipt_hook, lint_hook, scope_hook, type_hook, landed_hook=landed_hook)
         if not hooks:
             return None
         if len(hooks) == 1:
