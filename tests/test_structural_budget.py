@@ -2328,6 +2328,10 @@ FROZEN_FILE_LINES = {
     # legitimately-claimed row still cannot be overwritten. Plus the
     # read-only `lease_lost` property mirroring `_lease_lost` for
     # `health.py`/`api/app.py`. Measured on this tree with the scanner below.
+    # 3196 -> 3205 (+9): explanatory comment on the un-timeout-wrapped
+    # `self.wake.tick` await in the dispatch loop, clarifying that
+    # `_CLI_TIMEOUT` bounds only a single `pr_watcher._run_cli` call, not the
+    # whole sequential sweep over parked tasks. No behavior change.
     # 3196 -> 3314 (+118): `_salvage_committed_work` (called from `_run`'s
     # pool-crash handler when an attempt already has a `commit_sha` — resolves
     # the branch's real tip via `git rev-parse --verify` off-thread, records a
@@ -2343,7 +2347,7 @@ FROZEN_FILE_LINES = {
     # variable as an unregistered "re-entry site" (it might be claimable), and
     # this terminal, one-way crash write is neither. Measured on this tree
     # with the scanner below.
-    "core/scheduler.py": 3327,
+    "core/scheduler.py": 3336,
 }
 
 
