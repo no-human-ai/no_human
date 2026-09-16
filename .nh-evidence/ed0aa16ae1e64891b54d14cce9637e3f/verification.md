@@ -1,80 +1,83 @@
 # How I verified this — full log
 
-_Harness-captured record for task `ed0aa16a`, commit `36a382d1d755c87b66205f45ca1b57a19ebc8289` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `ed0aa16a`, commit `c1827b9eca5b3d3c4cf221626afde05d55635131` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ## How I verified this
-5 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
+6 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
 
 ### test
-- `uv run pytest -q tests/test_wake_base_stale.py tests/test_wake_base_stale_followups.py tests/test_finalize_records_delivered_base.py tests/test_structural_budget.py tests/test_readme_claims.py -n 4 2>&1 | tail -80`
+- `uv run pytest -q tests/test_readme_claims.py tests/test_structural_budget.py 2>&1 | tail -60`
 
 ```
-Using CPython 3.12.13
-Creating virtual environment at: .venv
-   Building no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/ed0aa16ae1e64891b54d14cce9637e3f.62504.98b118f9
-      Built no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/ed0aa16ae1e64891b54d14cce9637e3f.62504.98b118f9
-Installed 73 packages in 134ms
-bringing up nodes...
-bringing up nodes...
-
-.......................................s.s.s.s.s.s.s.s.s.s.............. [ 32%]
-........................................s............................... [ 64%]
-...s.................................................................... [ 96%]
-.......                                                                  [100%]
-211 passed, 12 skipped in 25.86s
+............................s.s.s.s.s.s.s.s.s.s......................... [ 36%]
+......................s............................s.................... [ 73%]
+.....................................................                    [100%]
+185 passed, 12 skipped in 14.10s
 ```
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/ed0aa16ae1e64891b54d14cce9637e3f.62504.98b118f9 uv run pytest -q -n 4 \   tests/test_wake_base_stale.py \   tests/test_wake_base_stale_followups.py \   tests/test_finalize_records_delivered_base.py \   tests/test_structural_budget.py \   tests/test_readme_claims.py \   2>&1 | tail -20`
+- `timeout 300 uv run pytest -q tests/test_wake_base_stale.py tests/test_wake_base_stale_followups.py tests/test_finalize_records_delivered_base.py tests/test_plugin_drift.py tests/test_egress_allowlist.py tests/test_gate_oneshot.py -n 4 2>&1 | tail -80`
+
+```
+(eval):1: command not found: timeout
+```
+
+- `uv run pytest -q tests/test_wake_base_stale.py tests/test_wake_base_stale_followups.py tests/test_finalize_records_delivered_base.py tests/test_plugin_drift.py tests/test_egress_allowlist.py tests/test_gate_oneshot.py -n 4 2>&1 | tail -100`
 
 ```
 bringing up nodes...
 bringing up nodes...
 
-.......................................s.s.s.s.s.s.s.s.s.s.............. [ 32%]
-.......................................s..............................s. [ 64%]
-........................................................................ [ 96%]
-.......                                                                  [100%]
-211 passed, 12 skipped in 6.63s
+........................................................................ [ 53%]
+...............................................................          [100%]
+135 passed in 31.97s
 ```
 
-- `cd /tmp/nh_repro_check_ed0aa16a && git log --oneline -1 && uv run pytest -q tests/test_wake_base_stale_followups.py::test_the_stale_reverify_fetch_is_charged_against_the_shared_budget 2>&1 | tail -50`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/ed0aa16ae1e64891b54d14cce9637e3f.28594.e6be273e uv run pytest -q -n 4 tests/test_wake_base_stale.py tests/test_wake_base_stale_followups.py tests/test_finalize_rec [... 77 of 420 characters omitted from the middle ...] ms.py tests/test_approve_ready_cli.py tests/test_plugin_drift.py tests/test_egress_allowlist.py tests/test_gate_oneshot.py 2>&1 | tail -60`
 
 ```
-f17e20f3 Merge origin/main (e427e776) into the stale-but-mergeable-PR branch
-Using CPython 3.12.13
-Creating virtual environment at: .venv
-   Building no-human @ file:///private/tmp/nh_repro_check_ed0aa16a
-      Built no-human @ file:///private/tmp/nh_repro_check_ed0aa16a
-Installed 73 packages in 81ms
-ERROR: not found: /private/tmp/nh_repro_check_ed0aa16a/tests/test_wake_base_stale_followups.py::test_the_stale_reverify_fetch_is_charged_against_the_shared_budget
-(no match in any of [<Module test_wake_base_stale_followups.py>])
+inherits `_git_rc`'s fixed 120s ceiling uncounted, and a tick with
+        several parked stale PRs could each spend well beyond the configured
+        budget before the sweep even reaches the dedup guard.
+    
+        Forces every `conflicting_paths` call to return `None` (so
+        `_reverify_base_locally` always takes its fetch-and-retry path) and
+        makes `fetch_conflict_refs` artificially slow (0.3s) while counting
+        calls. With a budget that can only ever afford ONE such slow fetch
+        (plus the two fast, local `measure()` fetches), a SECOND stale PR's
+        re-verification must be skipped entirely — the fetch never attempted —
+        rather 
+[... 2,006 of 3,145 characters omitted from the middle ...]
+the shared per-tick budget to skip the second stale PR's reverify fetch entirely, but 0 slow fetches ran
+E       assert 0 == 1
+E        +  where 0 = len([])
 
+tests/test_wake_base_stale_followups.py:163: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_wake_base_stale_followups.py::test_the_stale_reverify_fetch_is_charged_against_the_shared_budget
+1 failed, 340 passed, 12 skipped in 36.03s
+```  
+  _excerpt - 3,143 characters of output in total_
 
-no tests ran in 2.34s
-Shell cwd was reset to /Users/eyalgolan/.<redacted>/worktrees/ed0aa16ae1e64891b54d14cce9637e3f.62504.98b118f9
+- `uv run pytest -q -s tests/test_wake_base_stale_followups.py::test_the_stale_reverify_fetch_is_charged_against_the_shared_budget 2>&1 | tail -60`
+
+```
+DEBUG reached STALE branch
+.
+1 passed in 2.78s
 ```
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/ed0aa16ae1e64891b54d14cce9637e3f.62504.98b118f9 uv run pytest -q -n 4 \   tests/test_wake_base_stale.py \   tests/test_wake_base_stale_followups.py \   tests/test_finalize_records_delivered_base.py \   tests/test_structural_budget.py \   tests/test_readme_claims.py \   tests/test_wake.py 2>&1 | tail -30`
+- `uv run pytest -q -n 4 tests/test_wake_base_stale.py tests/test_wake_base_stale_followups.py tests/test_finalize_records_delivered_base.py tests/test_structural_budget.py tests/test_readme_claims.py tests/test_approve_ready_cli.py tests/test_plugin_drift.py tests/test_egress_allowlist.py tests/test_gate_oneshot.py 2>&1 | tail -10`
 
 ```
 bringing up nodes...
 bringing up nodes...
 
-
-no tests ran in 0.41s
-```
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/ed0aa16ae1e64891b54d14cce9637e3f.62504.98b118f9 uv run pytest -q -n 4 \   tests/test_wake_base_stale.py \   tests/test_wake_base_stale_followups.py \   tests/test_ [... 107 of 450 characters omitted from the middle ...] tests/test_wake_comment_conflict_precedence.py \   tests/test_wake_conflict.py \   tests/test_wake_pr_closed_repair.py \   2>&1 | tail -30`
-
-```
-bringing up nodes...
-bringing up nodes...
-
-.........................s.s.s.s.s.s.s.s.s.s............................ [ 26%]
-.......................................................s................ [ 53%]
-............................................s........................... [ 80%]
-...................................................                      [100%]
-255 passed, 12 skipped in 7.36s
+............s.s..s.s.s.s.s.s.s.s........................................ [ 20%]
+..............................s......................................... [ 40%]
+...........................s............................................ [ 61%]
+........................................................................ [ 81%]
+.................................................................        [100%]
+341 passed, 12 skipped in 31.67s
 ```
 
 
