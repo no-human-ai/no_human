@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import shlex
 import shutil
 import signal
 import subprocess
@@ -20,7 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from ..proc import hidden_console_kwargs
+from ..proc import hidden_console_kwargs, real_python
 from . import tamper_guard
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -922,13 +923,18 @@ def _fix_invocation(cmd: str, output: str, repo_path: Path) -> str | None:
     # pytest bad flags → strip addopts
     if "pytest" in cmd and "unrecognized arguments" in output:
         return f'pytest -q --override-ini="addopts=" --override-ini="testpaths=" {repo_path}'
-    # bare `pytest` can't import pytest ITSELF → re-run via no_human's own
-    # interpreter, which always has pytest (it's a dependency of ours). This is
-    # deterministic (no PATH guessing) and CANNOT manufacture a false pass: if
-    # the tested project needs deps our interpreter lacks, pytest re-errors with
-    # a DIFFERENT module name, `_is_invocation_error` re-flags it, and the loop
-    # stays at honest "no test evidence". Scoped to a BARE `pytest` — `uv run
-    # pytest ...` manages its own env (a different failure mode) and is left
+    # bare `pytest` can't import pytest ITSELF → re-run via a REAL interpreter
+    # (the target repo's own venv, then a PATH python — never `sys.executable`
+    # blindly: in the PyInstaller desktop build that IS the frozen `nh` binary,
+    # so `f"{sys.executable} -m pytest"` re-enters the click CLI and dies at
+    # `Error: No such option '-m'` instead of running anything). `None` when no
+    # real interpreter resolves: fail closed, no retry, honest "no test
+    # evidence" — never an `nh -m pytest` argv. This is deterministic (no PATH
+    # guessing beyond `real_python`'s own) and CANNOT manufacture a false pass:
+    # if the tested project needs deps that interpreter lacks, pytest re-errors
+    # with a DIFFERENT module name, `_is_invocation_error` re-flags it, and the
+    # loop stays at honest "no test evidence". Scoped to a BARE `pytest` — `uv
+    # run pytest ...` manages its own env (a different failure mode) and is left
     # alone. The needle matches pytest ITSELF or a `pytest_*` plugin being
     # unimportable — both are safe: a still-missing plugin just re-errors on the
     # retry → honest "no evidence", never a false pass. A ModuleNotFound naming
@@ -941,8 +947,12 @@ def _fix_invocation(cmd: str, output: str, repo_path: Path) -> str | None:
             or "no module named 'pytest'" in out_lower
             or _SHELL_NOT_FOUND.search(output) is not None
         ):
+            python = _rescue_python(repo_path)
+            if python is None:
+                return None  # frozen build, no real interpreter: fail closed
             rest = stripped[len("pytest"):]
-            return f"{sys.executable} -m pytest{rest}"
+            quoted = _shell_quote(python) if " " in python else python
+            return f"{quoted} -m pytest{rest}"
     return None
 
 
@@ -972,6 +982,31 @@ def _venv_bin(repo_path: Path) -> Path | None:
         if (bin_dir / exe).exists():
             return bin_dir
     return None
+
+
+def _rescue_python(repo_path: Path) -> str | None:
+    """A REAL interpreter for the class-3 `pytest` rescue, or None.
+
+    Never `sys.executable` blindly: in the PyInstaller desktop build that is
+    the frozen `nh` binary, so `f"{sys.executable} -m pytest"` re-enters the
+    click CLI and dies at `Error: No such option '-m'` — the rescue fires
+    exactly when it is needed and structurally cannot work. Same scar, same
+    resolver as `proc.real_python`'s other call sites (#402/#414). None means
+    fail closed: the caller returns None and the attempt settles at honest
+    "no test evidence", which is what it did anyway on a freeze today.
+    """
+    bin_dir = _venv_bin(repo_path)
+    return real_python(bin_dir.parent if bin_dir is not None else None)
+
+
+def _shell_quote(path: str) -> str:
+    """Quote *path* for the `_run_shell` `shell=True` command line.
+
+    Only called when *path* contains whitespace (a frozen venv under e.g.
+    `C:\\Program Files\\...`), so the ordinary-install output — `sys.executable`
+    has no spaces in every environment this suite runs in — stays untouched.
+    """
+    return f'"{path}"' if _IS_WINDOWS else shlex.quote(path)
 
 
 def _is_node_cmd(cmd: str) -> bool:
