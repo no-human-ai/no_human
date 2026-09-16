@@ -129,7 +129,8 @@ from .prompt_blocks import (
     estimate_tokens,
     ui_evidence_block,
 )
-from ..project_config import apply_repo_config, load_repo_config
+from ..project_config import load_repo_config
+from . import profile_resolve
 from .report_quality import report_inadequacy
 from ..vcs import (
     CommitResult,
@@ -16152,10 +16153,7 @@ class Orchestrator:
         was PROVEN to run clean (megaplan P1). Proof (the exact command exited 0
         in a real subprocess at onboarding) is the safety signal; the flag only
         removes the human click, never the proof."""
-        if prof is None:
-            return False
-        auto = bool(self.config.get("profile", {}).get("auto_confirm_proven", False))
-        return prof.usable_under_policy(auto_confirm_proven=auto)
+        return profile_resolve.profile_usable_under_policy(prof, self.config)
 
     @staticmethod
     def _primary_repo_path(repo_path) -> str | None:
@@ -16164,55 +16162,17 @@ class Orchestrator:
         task that looks itself up by its worktree path finds nothing — which
         is how all three tasks of the first parallel run (2026-07-11) lost
         their proven test command and burned max_attempts on the fallback."""
-        try:
-            proc = subprocess.run(
-                ["git", "-C", str(repo_path), "rev-parse",
-                 "--path-format=absolute", "--git-common-dir"],
-                capture_output=True, text=True, timeout=10,
-            )
-        except (subprocess.TimeoutExpired, OSError):
-            return None
-        common = (proc.stdout or "").strip()
-        if proc.returncode != 0 or not common.endswith("/.git"):
-            return None
-        primary = common[: -len("/.git")]
-        return primary if primary != str(repo_path).rstrip("/") else None
+        return profile_resolve.primary_repo_path(repo_path)
 
     async def _usable_profile(self, repo_path) -> Any | None:
         """Return the repo's ProjectProfile if it may drive a task under the
         active policy (see ``_profile_usable_under_policy``); else None. Prefer
         the SQLite mirror (keyed by the PRIMARY path — worktrees resolve to
         it); fall back to the repo's ``.no_human/project.yml``."""
-        from ..profile import ProjectProfile
-        prof = None
-        hit_cand = None
-        candidates = [str(repo_path)]
-        primary = self._primary_repo_path(repo_path)
-        if primary:
-            candidates.append(primary)
-        for cand in candidates:
-            try:
-                prof = await self.store.get_profile(cand)
-            except Exception as exc:  # noqa: BLE001
-                log.warning("profile lookup failed: %s", exc)
-            if prof is not None:
-                hit_cand = cand
-                break
-        if prof is not None:
-            self._warn_profile_divergence(hit_cand, prof)
-        if prof is None:
-            for cand in candidates:
-                try:
-                    prof = ProjectProfile.load(cand)
-                except Exception:  # noqa: BLE001
-                    prof = None
-                if prof is not None:
-                    break
-        if not self._profile_usable_under_policy(prof):
-            return None
-        # The repo's own `.no_human.yml` may fill routing rules the operator's
-        # profile leaves empty (never replace them) — see project_config.py.
-        return apply_repo_config(prof, self._repo_config(repo_path))
+        return await profile_resolve.usable_profile(
+            self.store, self.config, repo_path,
+            on_divergence=self._warn_profile_divergence,
+            repo_config=self._repo_config(repo_path))
 
     def _warn_profile_divergence(self, repo_path, db_prof) -> None:
         """Advise ONCE when the documented `.no_human/project.yml` disagrees
@@ -16303,13 +16263,7 @@ class Orchestrator:
         """Resolve the test command: an explicit config override wins; else a
         usable profile's proven ``test_cmd``; else None so ``run_tests`` falls
         back to ``detect_command`` (the heuristic of last resort)."""
-        explicit = self.config.get("tests", {}).get("command")
-        if explicit:
-            return explicit
-        prof = await self._usable_profile(repo.path)
-        if prof and prof.test_cmd:
-            return prof.test_cmd
-        return None
+        return await profile_resolve.resolve_test_cmd(self.store, self.config, repo.path)
 
     async def _resolve_test_target(
         self, repo: GitRepo,
