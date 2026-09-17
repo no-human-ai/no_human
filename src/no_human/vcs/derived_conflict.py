@@ -146,6 +146,25 @@ def _export_guard_argv() -> list[str]:
     return ["uv", "run", "python", "scripts/export_guard.py"]
 
 
+def _interpreter_has_pytest(python: str) -> bool:
+    """True if *python* can actually ``import pytest`` — the one thing
+    `real_python` itself never checks. `real_python` only proves an
+    interpreter EXISTS on PATH (or in a venv); on a frozen build with no
+    worktree `.venv`, that PATH probe can land on a bare system interpreter
+    (e.g. system 3.9) that resolves fine but lacks this repo's dependencies,
+    and `tests/test_structural_budget.py`'s scanner needs pytest to run.
+    Trusting `real_python`'s non-`None` result alone reproduces the exact bug
+    this module exists to fix, just one layer down."""
+    try:
+        proc = subprocess.run(
+            [python, "-c", "import pytest"],
+            capture_output=True, text=True, timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return proc.returncode == 0
+
+
 def _inventory_python(worktree_path: Path | None = None) -> str:
     """The Python interpreter to run `check_release_manifest.py` with —
     ``proc.real_python``, the interpreter resolver every other
@@ -160,8 +179,13 @@ def _inventory_python(worktree_path: Path | None = None) -> str:
     `NoInterpreterError`).
 
     Raises `NoInterpreterError` — never returns the ``"python3"`` literal —
-    when no interpreter resolves at all, mirroring the two existing
-    fail-closed messages in ``approve_merge.py``."""
+    when no interpreter resolves at all, OR when the one `real_python` hands
+    back cannot `import pytest` (`_interpreter_has_pytest`): `real_python`
+    proves an interpreter exists, not that it carries this repo's
+    dependencies, and a mis-resolved interpreter is exactly what turned a
+    mechanically resolvable manifest-only conflict into a human escalation
+    (PRs #463/#475/#483/#491). Mirrors the two existing fail-closed messages
+    in ``approve_merge.py``."""
     py = real_python(worktree_path / ".venv" if worktree_path is not None else None)
     if py is None:
         raise NoInterpreterError(
@@ -169,6 +193,14 @@ def _inventory_python(worktree_path: Path | None = None) -> str:
             "RELEASE_MANIFEST.txt: this build's sys.executable is the "
             "frozen `nh` binary and no python3/python was found on PATH, "
             f"nor a .venv in the resolver worktree {worktree_path}")
+    if not _interpreter_has_pytest(py):
+        raise NoInterpreterError(
+            "no Python interpreter available to regenerate "
+            f"RELEASE_MANIFEST.txt: the resolved interpreter {py!r} cannot "
+            "`import pytest` (this build's sys.executable is the frozen "
+            "`nh` binary; no .venv with pytest was found in the resolver "
+            f"worktree {worktree_path}, and the PATH python3/python found "
+            "instead lacks the dependency)")
     return py
 
 

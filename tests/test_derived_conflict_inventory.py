@@ -24,6 +24,16 @@ resolved to the system interpreter (no pytest), which crashes
 "timed out" regenerate failure (`NoInterpreterError is EnvironmentError is
 OSError`, caught by `_run_inventory`'s existing `except OSError`). The fix
 raises `NoInterpreterError` instead of ever returning `"python3"`.
+
+Round two of the same bug (first review of this fix): `real_python` itself
+does NOT return `None` in the `nh-derived-*` worktree unless PATH has
+NOTHING named python3/python at all — when a pytest-less system interpreter
+IS on PATH (the exact 3.9 the ticket names), `real_python` resolves to it
+happily, and trusting that non-`None` result was only half the fix.
+`_inventory_python` now probes the resolved interpreter with
+`_interpreter_has_pytest` (an actual `import pytest` subprocess run) and
+raises `NoInterpreterError` when the probe fails, never handing back an
+interpreter that cannot run `tests/test_structural_budget.py`'s scanner.
 """
 from __future__ import annotations
 
@@ -175,6 +185,11 @@ def test_classification_eligibility_fails_closed_without_export_guard(tmp_path):
 
 def test_inventory_argv_delegates_to_the_shared_real_python(monkeypatch):
     monkeypatch.setattr(dc, "real_python", lambda *a: "/opt/marker/python")
+    # `/opt/marker/python` is a marker path, not a real interpreter — stub
+    # out the `import pytest` probe so this test isolates the delegation
+    # seam (does `_inventory_argv` call the shared `real_python`?) from the
+    # separate pytest-capability check `_interpreter_has_pytest` performs.
+    monkeypatch.setattr(dc, "_interpreter_has_pytest", lambda *a: True)
     assert dc._inventory_argv() == [
         "/opt/marker/python", "scripts/check_release_manifest.py"]
 
@@ -190,6 +205,28 @@ def test_inventory_argv_interpreter_can_import_pytest(tmp_path):
                               capture_output=True, text=True)
         assert proc.returncode == 0, proc.stdout + proc.stderr
         assert "No module named" not in proc.stderr
+
+
+def test_inventory_python_rejects_a_resolved_interpreter_without_pytest(
+        monkeypatch, tmp_path):
+    """The exact shape the review found still broken: `real_python` doesn't
+    return `None` here — it resolves to a REAL, executable, pytest-less
+    interpreter (the system 3.9 an `nh-derived-*` resolver worktree finds on
+    PATH when there is no worktree `.venv`). Trusting that non-`None` result
+    alone reproduces PRs #463/#475/#483/#491 one layer down. A real
+    executable is used (not a mocked `subprocess.run`) so the probe itself,
+    not a stand-in for it, is what's exercised."""
+    pytest_less = tmp_path / "pytest_less_python"
+    pytest_less.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    pytest_less.chmod(0o755)
+    monkeypatch.setattr(dc, "real_python", lambda *a: str(pytest_less))
+
+    assert dc._interpreter_has_pytest(str(pytest_less)) is False
+    with pytest.raises(dc.NoInterpreterError) as exc_info:
+        dc._inventory_argv()
+    message = str(exc_info.value)
+    assert "RELEASE_MANIFEST" in message
+    assert "pytest" in message
 
 
 def test_inventory_argv_raises_when_no_interpreter_resolves(monkeypatch,
@@ -245,6 +282,11 @@ def test_inventory_argv_never_returns_the_frozen_binary_when_frozen(
     monkeypatch.setattr(sys, "executable", str(nh))
     monkeypatch.setattr(shutil, "which",
                          lambda n: f"/usr/bin/{n}" if n == "python3" else None)
+    # `/usr/bin/python3` is a stand-in path for this test's purposes — stub
+    # the pytest-capability probe so this test isolates the frozen/PATH
+    # resolution path from whether that literal path actually carries
+    # pytest on the machine running the test.
+    monkeypatch.setattr(dc, "_interpreter_has_pytest", lambda *a: True)
     argv = dc._inventory_argv()
     assert argv[0] == "/usr/bin/python3"
     assert argv[0] != str(nh)
