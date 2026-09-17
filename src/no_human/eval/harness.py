@@ -196,14 +196,14 @@ async def run_shadow(
     subprocess.run(["git", "init", "--bare", str(shadow_bare)],
                    check=True, capture_output=True)
     _remotes = subprocess.run(["git", "remote"], cwd=sandbox,
-                              capture_output=True, text=True).stdout.split()
+                              capture_output=True, text=True, encoding="utf-8", errors="replace").stdout.split()
     for _r in _remotes:
         subprocess.run(["git", "remote", "remove", _r], cwd=sandbox,
                        capture_output=True)
     subprocess.run(["git", "remote", "add", "origin", str(shadow_bare)],
                    cwd=sandbox, check=True, capture_output=True)
     base_sha = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=sandbox, capture_output=True, text=True
+        ["git", "rev-parse", "HEAD"], cwd=sandbox, capture_output=True, text=True, encoding="utf-8", errors="replace"
     ).stdout.strip()
 
     store = await Store(base_tmp / "shadow.db").connect()
@@ -229,7 +229,7 @@ async def run_shadow(
                                   "backend turn; failed honestly instead of wedging"})
             diff = subprocess.run(
                 ["git", "diff", base_sha, "HEAD"], cwd=sandbox,
-                capture_output=True, text=True,
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
             ).stdout
             return ShadowResult(
                 task_id=task.id, outcome_status="timed_out",
@@ -239,7 +239,7 @@ async def run_shadow(
             )
         diff = subprocess.run(
             ["git", "diff", base_sha, "HEAD"], cwd=sandbox,
-            capture_output=True, text=True,
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
         ).stdout
         return ShadowResult(
             task_id=task.id, outcome_status=outcome.status.value,

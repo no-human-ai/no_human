@@ -592,7 +592,7 @@ class OnboardEngine:
         try:
             proc = subprocess.run(
                 ["git", "remote", "get-url", "origin"],
-                cwd=repo, capture_output=True, text=True, timeout=10,
+                cwd=repo, capture_output=True, text=True, timeout=10, encoding="utf-8", errors="replace",
             )
         except (OSError, subprocess.SubprocessError):
             return "", ""

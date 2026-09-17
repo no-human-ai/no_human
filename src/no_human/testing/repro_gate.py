@@ -406,7 +406,7 @@ def _run_pytest_proc(
         proc = subprocess.run(
             [python, "-m", "pytest", "-x", "-q", "--no-header", *tests],
             cwd=cwd, env=env, capture_output=True, text=True,
-            timeout=_RUN_TIMEOUT,
+            timeout=_RUN_TIMEOUT, encoding="utf-8", errors="replace",
         )
     except subprocess.TimeoutExpired:
         return None, f"timed out after {_RUN_TIMEOUT}s"
@@ -581,7 +581,7 @@ def _runner_sanity_check(argv: list[str], cwd: Path, env: dict) -> tuple[bool, s
     try:
         proc = subprocess.run(
             argv, cwd=cwd, env=env, capture_output=True, text=True,
-            timeout=_SANITY_TIMEOUT,
+            timeout=_SANITY_TIMEOUT, encoding="utf-8", errors="replace",
         )
     except subprocess.TimeoutExpired:
         return False, (
@@ -625,7 +625,7 @@ def _run_test_cmd(
     try:
         proc = subprocess.run(
             [*argv, *tests], cwd=cwd, env=env, capture_output=True, text=True,
-            timeout=_RUN_TIMEOUT,
+            timeout=_RUN_TIMEOUT, encoding="utf-8", errors="replace",
         )
     except subprocess.TimeoutExpired:
         return False, False, f"timed out after {_RUN_TIMEOUT}s"
@@ -754,7 +754,7 @@ def run_repro_gate(
         added = subprocess.run(
             ["git", "worktree", "add", "--detach", str(worktree), base_ref],
             cwd=repo_path, capture_output=True, text=True,
-            env=_git_subprocess_env("worktree"),
+            env=_git_subprocess_env("worktree"), encoding="utf-8", errors="replace",
         )
         if added.returncode != 0:
             return ReproResult("error", tests=tests, reasons=[

@@ -636,7 +636,7 @@ def _run_checker(
             text=True,
             errors="replace",
             timeout=timeout,
-            env=_checker_env(),
+            env=_checker_env(), encoding="utf-8",
         )
     except subprocess.TimeoutExpired:
         log.warning("%s type check timed out after %ds in %s", checker.name, timeout, cwd)
@@ -688,7 +688,7 @@ def _resolve_sha(repo_path: Path, ref: str, *, timeout: int = 20) -> str | None:
             capture_output=True,
             text=True,
             errors="replace",
-            timeout=timeout,
+            timeout=timeout, encoding="utf-8",
         )
     except (subprocess.TimeoutExpired, OSError):
         return None
@@ -754,7 +754,7 @@ def _run_at_commit(
             text=True,
             errors="replace",
             timeout=timeout,
-            env=_git_subprocess_env("worktree"),
+            env=_git_subprocess_env("worktree"), encoding="utf-8",
         )
         if added.returncode != 0:
             log.warning(

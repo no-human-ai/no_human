@@ -555,7 +555,7 @@ def _subprocess_run(cmd: list[str]) -> str:
     behaves identically.
     """
     _load_gitlab_token()
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     if proc.returncode == 0:
         return (proc.stdout or "") + (proc.stderr or "")
     detail = ((proc.stderr or "") + " " + (proc.stdout or "")).strip()

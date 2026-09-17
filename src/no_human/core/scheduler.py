@@ -3231,7 +3231,7 @@ class WikiRefreshJob:
                     r = subprocess.run(
                         ["git", "rev-parse", "HEAD"],
                         capture_output=True, text=True, timeout=5,
-                        cwd=repo,
+                        cwd=repo, encoding="utf-8", errors="replace",
                     )
                     head = r.stdout.strip() if r.returncode == 0 else ""
                 except (FileNotFoundError, subprocess.TimeoutExpired):

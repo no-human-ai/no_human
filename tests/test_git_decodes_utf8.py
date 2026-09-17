@@ -89,6 +89,28 @@ def test_non_ascii_subject_round_trips_under_a_non_utf8_locale(
     assert subject == HEBREW_SUBJECT
 
 
+def test_the_orchestrator_format_s_subject_round_trips(
+    repo_with_non_ascii_subject, monkeypatch
+):
+    """`core/orchestrator.py` reads the subject with a different spelling than
+    the test above: `log -1 --format=%s <head> --` (lines 5732, 12827, 13042,
+    20952), not `log -1 --pretty=%s`. Both spellings route through the same
+    `GitRepo._run`, but pinning this exact invocation means a future edit that
+    swaps `_run` for a bespoke call in orchestrator.py cannot silently drop the
+    encoding without breaking a test that speaks the orchestrator's own
+    argv shape.
+    """
+    monkeypatch.setattr(locale, "getpreferredencoding", lambda *a, **k: "cp1255")
+    if hasattr(locale, "getencoding"):
+        monkeypatch.setattr(locale, "getencoding", lambda *a, **k: "cp1255")
+
+    repo = GitRepo(repo_with_non_ascii_subject)
+    head = repo._run("rev-parse", "HEAD")
+    subject = repo._run("log", "-1", "--format=%s", head, "--")
+
+    assert subject == HEBREW_SUBJECT
+
+
 def _text_mode_subprocess_calls(path: Path):
     """(lineno, keyword-names) for every `subprocess.*` call in *path*."""
     tree = ast.parse(path.read_text(encoding="utf-8"))

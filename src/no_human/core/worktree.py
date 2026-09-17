@@ -518,7 +518,7 @@ def _create_venv(target: Path, displaced: Path | None = None) -> None:
         return
     try:
         proc = subprocess.run([python, "-m", "venv", str(target)],
-                              capture_output=True, text=True, timeout=120)
+                              capture_output=True, text=True, timeout=120, encoding="utf-8", errors="replace")
         failed = getattr(proc, "returncode", 1) != 0
     except (OSError, subprocess.SubprocessError) as exc:
         log.debug("worktree venv: %s -m venv failed: %s", python, exc)

@@ -422,7 +422,7 @@ def _git_status(repo: Path, untracked: str, timeout: float) -> str | None:
             ["git", "-C", str(repo), "--no-optional-locks",
              "-c", "core.fsmonitor=false", "status", "--porcelain",
              f"--untracked-files={untracked}", "--ignore-submodules=all"],
-            capture_output=True, text=True, timeout=timeout, env=env,
+            capture_output=True, text=True, timeout=timeout, env=env, encoding="utf-8", errors="replace",
         )
     except (subprocess.TimeoutExpired, OSError) as exc:  # noqa: BLE001
         log.debug("status probe (-u%s) gave no answer for %s: %s",

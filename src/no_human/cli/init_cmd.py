@@ -77,7 +77,7 @@ def _check_tool(binary: str, flag: str) -> str | None:
         return None
     try:
         out = subprocess.run(
-            [path, flag], capture_output=True, text=True, timeout=10,
+            [path, flag], capture_output=True, text=True, timeout=10, encoding="utf-8", errors="replace",
         )
         return (out.stdout.strip() or out.stderr.strip())[:120]
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
@@ -590,7 +590,7 @@ def _git_config(key: str) -> str:
     try:
         out = subprocess.run(
             ["git", "config", "--global", key],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True, text=True, timeout=5, encoding="utf-8", errors="replace",
         )
         return out.stdout.strip()
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):

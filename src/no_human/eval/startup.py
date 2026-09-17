@@ -285,7 +285,7 @@ class MaterialisedSprint:
 
 def _git(cwd: Path, *args: str) -> str:
     out = subprocess.run(["git", *args], cwd=cwd, check=True,
-                         capture_output=True, text=True)
+                         capture_output=True, text=True, encoding="utf-8", errors="replace")
     return out.stdout.strip()
 
 

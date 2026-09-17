@@ -177,7 +177,7 @@ def _git(repo: Path, *args: str) -> str:
             # in ALL output this call can produce (`--name-only` listings and
             # `--patch`/`diff --git a/... b/...` headers alike) — `-z` alone
             # only covers the `--name-only` case (see the call site below).
-            ["git", "-c", "core.quotePath=false", *args], cwd=repo, capture_output=True, text=True,
+            ["git", "-c", "core.quotePath=false", *args], cwd=repo, capture_output=True, text=True, encoding="utf-8", errors="replace",
         )
     except FileNotFoundError as exc:
         raise ActionError(f"`git` is not on PATH: {exc}") from exc

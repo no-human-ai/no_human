@@ -224,7 +224,7 @@ def _running_checkout(start: Path | None = None) -> Path | None:
     try:
         result = subprocess.run(
             ["git", "rev-parse", "--show-toplevel"],
-            cwd=start, capture_output=True, text=True, timeout=5,
+            cwd=start, capture_output=True, text=True, timeout=5, encoding="utf-8", errors="replace",
         )
         if result.returncode == 0 and result.stdout.strip():
             return Path(result.stdout.strip()).resolve()
@@ -248,7 +248,7 @@ def _repo_worktree_roots(start: Path) -> list[Path]:
     try:
         result = subprocess.run(
             ["git", "worktree", "list", "--porcelain"],
-            cwd=start, capture_output=True, text=True, timeout=5,
+            cwd=start, capture_output=True, text=True, timeout=5, encoding="utf-8", errors="replace",
         )
     except (OSError, subprocess.SubprocessError):
         return []

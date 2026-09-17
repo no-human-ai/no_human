@@ -372,7 +372,7 @@ def run_reanchor(
             cwd=repo_path,
             capture_output=True,
             text=True,
-            timeout=timeout,
+            timeout=timeout, encoding="utf-8", errors="replace",
         )
     except subprocess.TimeoutExpired as exc:
         return CitationOutcome(

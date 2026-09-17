@@ -260,7 +260,7 @@ def approve_pending_pins(
             return subprocess.run(
                 [python, str(guard), "approve", "--all", "--prune"],
                 cwd=repo.path, capture_output=True, text=True,
-                timeout=_PREAPPROVE_TIMEOUT_S,
+                timeout=_PREAPPROVE_TIMEOUT_S, encoding="utf-8", errors="replace",
             )
         except subprocess.TimeoutExpired:
             _logger.warning(
@@ -560,7 +560,7 @@ def write_pending_manifest(
         proc = subprocess.run(
             [python, str(script), "--write"],
             cwd=repo.path, capture_output=True, text=True,
-            timeout=_MANIFEST_WRITE_TIMEOUT_S,
+            timeout=_MANIFEST_WRITE_TIMEOUT_S, encoding="utf-8", errors="replace",
         )
     except subprocess.TimeoutExpired:
         _logger.warning(
@@ -709,7 +709,7 @@ def commit_with_manifest_repair(
             proc = subprocess.run(
                 [python, str(guard), "approve", *pinned],
                 cwd=repo.path, capture_output=True, text=True,
-                timeout=_APPROVE_TIMEOUT_S,
+                timeout=_APPROVE_TIMEOUT_S, encoding="utf-8", errors="replace",
             )
         except subprocess.TimeoutExpired:
             raise GitError(
@@ -722,7 +722,7 @@ def commit_with_manifest_repair(
                     retry = subprocess.run(
                         [python, str(guard), "approve", *pinned],
                         cwd=repo.path, capture_output=True, text=True,
-                        timeout=_APPROVE_TIMEOUT_S,
+                        timeout=_APPROVE_TIMEOUT_S, encoding="utf-8", errors="replace",
                     )
                 except subprocess.TimeoutExpired:
                     raise GitError(
@@ -820,7 +820,7 @@ def _repair_by_manifest_write(
         proc = subprocess.run(
             [python, str(script), "--write"],
             cwd=repo.path, capture_output=True, text=True,
-            timeout=_MANIFEST_WRITE_TIMEOUT_S,
+            timeout=_MANIFEST_WRITE_TIMEOUT_S, encoding="utf-8", errors="replace",
         )
     except subprocess.TimeoutExpired:
         raise GitError(

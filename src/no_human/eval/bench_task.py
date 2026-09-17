@@ -520,7 +520,7 @@ def _pin_for(repo_path: Path, branch: str, started: str) -> str:
         out = subprocess.run(
             ["git", "rev-list", "-1", f"--before={started}",
              branch or "HEAD"],
-            cwd=repo_path, capture_output=True, text=True, timeout=30,
+            cwd=repo_path, capture_output=True, text=True, timeout=30, encoding="utf-8", errors="replace",
         )
         return out.stdout.strip() if out.returncode == 0 else ""
     except (OSError, subprocess.TimeoutExpired):

@@ -160,7 +160,7 @@ def _no_prompt_env() -> dict[str, str]:
 def _git(repo_path: Path, *args: str) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["git", *args], cwd=repo_path, capture_output=True, text=True,
-        env=_no_prompt_env(),
+        env=_no_prompt_env(), encoding="utf-8", errors="replace",
     )
 
 
@@ -179,7 +179,7 @@ def _resolve_repo_root(path: Path) -> Path:
     """
     proc = subprocess.run(
         ["git", "rev-parse", "--show-toplevel"], cwd=path,
-        capture_output=True, text=True, env=_no_prompt_env(),
+        capture_output=True, text=True, env=_no_prompt_env(), encoding="utf-8", errors="replace",
     )
     if proc.returncode != 0:
         return path
@@ -476,7 +476,7 @@ def _materialized_head(repo_path: Path, sha: str):
         clone = subprocess.run(
             ["git", "clone", "--local", "--shared", "--no-checkout", "-q",
              str(repo_path), str(tmp_dir)],
-            capture_output=True, text=True, env=_no_prompt_env(),
+            capture_output=True, text=True, env=_no_prompt_env(), encoding="utf-8", errors="replace",
         )
         if clone.returncode != 0:
             raise GateUnavailable(
@@ -485,7 +485,7 @@ def _materialized_head(repo_path: Path, sha: str):
             )
         checkout = subprocess.run(
             ["git", "checkout", "--detach", "-q", sha],
-            cwd=tmp_dir, capture_output=True, text=True, env=_no_prompt_env(),
+            cwd=tmp_dir, capture_output=True, text=True, env=_no_prompt_env(), encoding="utf-8", errors="replace",
         )
         if checkout.returncode != 0:
             raise GateUnavailable(

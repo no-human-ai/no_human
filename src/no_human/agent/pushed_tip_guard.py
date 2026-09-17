@@ -245,7 +245,7 @@ def _git(cwd: str, *args: str, timeout: float = 5) -> str | None:
     try:
         proc = subprocess.run(
             ["git", "-C", cwd, *args],
-            capture_output=True, text=True, timeout=timeout,
+            capture_output=True, text=True, timeout=timeout, encoding="utf-8", errors="replace",
         )
     except Exception:
         return None
@@ -260,7 +260,7 @@ def _git_ok(cwd: str, *args: str, timeout: float = 5) -> bool:
     try:
         proc = subprocess.run(
             ["git", "-C", cwd, *args],
-            capture_output=True, text=True, timeout=timeout,
+            capture_output=True, text=True, timeout=timeout, encoding="utf-8", errors="replace",
         )
     except Exception:
         return False

@@ -39,7 +39,7 @@ class GitHubAdapter:
         proc = subprocess.run(
             ["gh", "api", "--hostname", gh.host,
              f"repos/{gh.owner}/{gh.repo}/issues/{gh.number}"],
-            capture_output=True, text=True,
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
         )
         if proc.returncode != 0:
             raise RuntimeError(f"gh api failed: {proc.stderr.strip()}")

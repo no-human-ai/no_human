@@ -247,7 +247,7 @@ def _git_head(repo: Path) -> str:
         r = subprocess.run(
             ["git", "rev-parse", "HEAD"],
             capture_output=True, text=True, timeout=5,
-            cwd=repo,
+            cwd=repo, encoding="utf-8", errors="replace",
         )
         return r.stdout.strip() if r.returncode == 0 else ""
     except (FileNotFoundError, subprocess.TimeoutExpired):
@@ -261,7 +261,7 @@ def _git_diff_stat(repo: Path, since_sha: str, *, max_chars: int = 3000) -> str:
     try:
         r = subprocess.run(
             ["git", "diff", "--stat", f"{since_sha}..HEAD"],
-            capture_output=True, text=True, timeout=10, cwd=repo,
+            capture_output=True, text=True, timeout=10, cwd=repo, encoding="utf-8", errors="replace",
         )
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return ""

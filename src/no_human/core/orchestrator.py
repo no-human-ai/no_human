@@ -4093,7 +4093,7 @@ class Orchestrator:
             return []
         readable = subprocess.run(
             ["git", "-C", str(repo.path), "cat-file", "-e", f"{pinned}^{{commit}}"],
-            capture_output=True, text=True,
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
         )
         if readable.returncode != 0:
             log.warning(
@@ -6125,7 +6125,7 @@ class Orchestrator:
                     # Run with env-export wrapper so we can capture exported vars.
                     proc = subprocess.run(
                         cmd, shell=True, capture_output=True, text=True,
-                        timeout=120, cwd=str(repo.path), env=isolate_attempt_env(repo.path),
+                        timeout=120, cwd=str(repo.path), env=isolate_attempt_env(repo.path), encoding="utf-8", errors="replace",
                     )
                     if proc.returncode != 0:
                         detail = (f"env_setup failed (rc={proc.returncode}): "
@@ -15899,7 +15899,7 @@ class Orchestrator:
             p = subprocess.run(
                 ["glab", "api", "--hostname", host,
                  f"projects/{slug}/merge_requests/{number}/changes"],
-                capture_output=True, text=True, timeout=30,
+                capture_output=True, text=True, timeout=30, encoding="utf-8", errors="replace",
             )
             if p.returncode != 0 or not p.stdout.strip():
                 return ""
@@ -15936,7 +15936,7 @@ class Orchestrator:
                 ["gh", "api", *host_args,
                  f"repos/{owner_repo}/pulls/{number}",
                  "-H", "Accept: application/vnd.github.diff"],
-                capture_output=True, text=True, timeout=30, cwd=str(cwd),
+                capture_output=True, text=True, timeout=30, cwd=str(cwd), encoding="utf-8", errors="replace",
             )
             if proc.returncode == 0 and proc.stdout.strip():
                 return proc.stdout[:100_000]  # cap at 100KB
@@ -16479,7 +16479,7 @@ class Orchestrator:
             proc = subprocess.run(
                 ["git", "-C", str(repo_path), "rev-parse",
                  "--path-format=absolute", "--git-common-dir"],
-                capture_output=True, text=True, timeout=10,
+                capture_output=True, text=True, timeout=10, encoding="utf-8", errors="replace",
             )
         except (subprocess.TimeoutExpired, OSError):
             return None

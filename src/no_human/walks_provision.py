@@ -49,7 +49,7 @@ def install_walks(
     for step in plan:
         cmd_str = " ".join(step)
         try:
-            result = runner(step, capture_output=True, text=True, timeout=timeout)
+            result = runner(step, capture_output=True, text=True, timeout=timeout, encoding="utf-8", errors="replace")
         except FileNotFoundError:
             messages.append(f"FAILED: `{cmd_str}` — command not found")
             return False, messages

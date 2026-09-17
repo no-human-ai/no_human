@@ -40,7 +40,7 @@ def open_pr(
             "--body", body,
             "--draft",
         ],
-        cwd=repo_path, capture_output=True, text=True,
+        cwd=repo_path, capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
     if proc.returncode == 0:
         return proc.stdout.strip()
@@ -79,7 +79,7 @@ def open_pr(
                 return existing
             edit = subprocess.run(
                 ["gh", "pr", "edit", existing, "--body", body],
-                cwd=repo_path, capture_output=True, text=True,
+                cwd=repo_path, capture_output=True, text=True, encoding="utf-8", errors="replace",
             )
             if edit.returncode != 0:
                 log.warning("gh pr edit failed for %s (%s); PR keeps its earlier body",
@@ -108,7 +108,7 @@ def mark_pr_ready(repo_path: Path, pr_url: str) -> str:
     try:
         proc = subprocess.run(
             ["gh", "pr", "ready", pr_url],
-            cwd=repo_path, capture_output=True, text=True,
+            cwd=repo_path, capture_output=True, text=True, encoding="utf-8", errors="replace",
         )
     except FileNotFoundError as exc:
         return f"unavailable: {exc}"
@@ -128,7 +128,7 @@ def _existing_pr_url(repo_path: Path, branch: str) -> str | None:
     proc = subprocess.run(
         ["gh", "pr", "list", "--head", branch, "--state", "open",
          "--json", "url", "--jq", ".[0].url"],
-        cwd=repo_path, capture_output=True, text=True,
+        cwd=repo_path, capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
     url = proc.stdout.strip()
     return url or None

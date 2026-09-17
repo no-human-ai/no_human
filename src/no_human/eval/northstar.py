@@ -440,12 +440,12 @@ def _git(cwd: Path, *args: str) -> str:
     """
     from ..vcs.git import _GIT_RETRY_BACKOFFS_S, is_transient_git_failure
     cmd = ["git", *args]
-    proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
+    proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     for backoff in _GIT_RETRY_BACKOFFS_S:
         if proc.returncode == 0 or not is_transient_git_failure(proc.stderr):
             break
         time.sleep(backoff)
-        proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
+        proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     if proc.returncode != 0:
         raise subprocess.CalledProcessError(
             proc.returncode, cmd, output=proc.stdout, stderr=proc.stderr)
@@ -515,7 +515,7 @@ def _sandbox_repo(src: Path, work: Path, pin: str, bare: Path) -> Path:
     # upstream would be a guard-invisible escape). Remove them ALL, then add
     # origin at the local bare.
     existing = subprocess.run(["git", "remote"], cwd=work,
-                              capture_output=True, text=True).stdout.split()
+                              capture_output=True, text=True, encoding="utf-8", errors="replace").stdout.split()
     for r in existing:
         subprocess.run(["git", "remote", "remove", r], cwd=work,
                        capture_output=True)
@@ -627,11 +627,11 @@ def _ref_signature(repo: Path) -> str:
             ["git", "for-each-ref",
              "--format=%(refname) %(objectname)",
              "refs/heads/no-human/", "refs/heads/bench-", "refs/heads/nh-"],
-            cwd=repo, capture_output=True, text=True).stdout
+            cwd=repo, capture_output=True, text=True, encoding="utf-8", errors="replace").stdout
         head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo,
-                              capture_output=True, text=True).stdout.strip()
+                              capture_output=True, text=True, encoding="utf-8", errors="replace").stdout.strip()
         branch = subprocess.run(["git", "symbolic-ref", "-q", "HEAD"], cwd=repo,
-                                capture_output=True, text=True).stdout.strip()
+                                capture_output=True, text=True, encoding="utf-8", errors="replace").stdout.strip()
         return f"{out}\nHEAD {branch} {head}\n"
     except OSError:
         return ""
@@ -1021,7 +1021,7 @@ class NorthStarRunner:
             agent_diff = (await asyncio.to_thread(
                 subprocess.run,
                 ["git", "diff", base_sha, diff_ref], cwd=work,
-                capture_output=True, text=True)).stdout
+                capture_output=True, text=True, encoding="utf-8", errors="replace")).stdout
             # The judge grades on criteria PLUS the judge-only rubric. The
             # rubric exists precisely because acceptance_criteria is dual-
             # audience (it is copied onto the coder's Task in `_bench_task`);
@@ -1087,7 +1087,7 @@ class NorthStarRunner:
             [sys.executable, "-m", "pytest", "-q", str(f)], cwd=work,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
             env={**os.environ, "PYTHONPATH": str(work)},
-            start_new_session=True)
+            start_new_session=True, encoding="utf-8", errors="replace")
         try:
             proc.communicate(timeout=300)
         except subprocess.TimeoutExpired:

@@ -1238,7 +1238,7 @@ def _run_shell_streaming(
     proc = subprocess.Popen(
         cmd, cwd=work_dir, shell=True,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-        bufsize=1, env=run_env, **_NEW_GROUP_KWARGS,
+        bufsize=1, env=run_env, **_NEW_GROUP_KWARGS, encoding="utf-8", errors="replace",
     )
     _register(work_dir, proc)
     chunks: list[str] = []
@@ -1289,7 +1289,7 @@ def _run_shell(
     proc = subprocess.Popen(
         cmd, cwd=work_dir, shell=True,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-        env=run_env, **_NEW_GROUP_KWARGS,
+        env=run_env, **_NEW_GROUP_KWARGS, encoding="utf-8", errors="replace",
     )
     _register(work_dir, proc)
     try:
@@ -1507,7 +1507,7 @@ def run_lint_on_changed(
     try:
         proc = subprocess.run(
             cmd, cwd=repo_path, shell=True, capture_output=True, text=True,
-            timeout=timeout, env=_env_for(Path(repo_path)),
+            timeout=timeout, env=_env_for(Path(repo_path)), encoding="utf-8", errors="replace",
         )
     except subprocess.TimeoutExpired:
         return LintResult(True, False, cmd, f"lint timed out after {timeout}s")
@@ -1543,7 +1543,7 @@ def run_command(
     try:
         proc = subprocess.run(
             command, cwd=repo_path, shell=True, capture_output=True, text=True,
-            timeout=timeout,
+            timeout=timeout, encoding="utf-8", errors="replace",
         )
     except subprocess.TimeoutExpired:
         return False, -1, f"timed out after {timeout}s"
@@ -1570,7 +1570,7 @@ def _git_show(repo_path: Path, ref: str, path: str) -> str:
 def _git_files(repo_path: Path, ref: str) -> list[str]:
     proc = subprocess.run(
         ["git", "ls-tree", "-r", "--name-only", ref],
-        cwd=repo_path, capture_output=True, text=True,
+        cwd=repo_path, capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
     return [f for f in proc.stdout.splitlines() if f] if proc.returncode == 0 else []
 
@@ -1589,7 +1589,7 @@ def run_held_out_tests(repo_path: Path, *, timeout: int = 120) -> TestRunResult 
     try:
         proc = subprocess.run(
             cmd, cwd=repo_path, shell=True, capture_output=True, text=True,
-            timeout=timeout, env=_env_for(Path(repo_path)),
+            timeout=timeout, env=_env_for(Path(repo_path)), encoding="utf-8", errors="replace",
         )
     except subprocess.TimeoutExpired:
         return TestRunResult(True, False, 0, 0, 1, cmd, f"timed out after {timeout}s")
@@ -1620,7 +1620,7 @@ def test_file_diff(
     try:
         proc = subprocess.run(
             ["git", "diff", "--name-only", f"{before_ref}..{after_ref}"],
-            cwd=repo_path, capture_output=True, text=True,
+            cwd=repo_path, capture_output=True, text=True, encoding="utf-8", errors="replace",
         )
         if proc.returncode != 0:
             return ""
@@ -1640,7 +1640,7 @@ def test_file_diff(
              "--no-ext-diff", "--no-textconv", f"{before_ref}..{after_ref}",
              "--", *paths],
             cwd=repo_path, capture_output=True, text=True,
-            env=_git_subprocess_env("diff"),
+            env=_git_subprocess_env("diff"), encoding="utf-8", errors="replace",
         )
         return proc.stdout if proc.returncode == 0 else ""
     except Exception:  # noqa: BLE001 — no diff is a CANNOT_DECIDE, not a crash
@@ -1658,7 +1658,7 @@ class TamperCheckUnavailable(RuntimeError):
 def _rev_parse(repo_path: Path, ref: str) -> str | None:
     proc = subprocess.run(
         ["git", "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"],
-        cwd=repo_path, capture_output=True, text=True,
+        cwd=repo_path, capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
     sha = proc.stdout.strip()
     return sha if proc.returncode == 0 and sha else None
@@ -1666,7 +1666,7 @@ def _rev_parse(repo_path: Path, ref: str) -> str | None:
 
 def _merge_base(repo_path: Path, a: str, b: str) -> str | None:
     proc = subprocess.run(
-        ["git", "merge-base", a, b], cwd=repo_path, capture_output=True, text=True,
+        ["git", "merge-base", a, b], cwd=repo_path, capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
     sha = proc.stdout.strip()
     return sha if proc.returncode == 0 and sha else None
@@ -1675,7 +1675,7 @@ def _merge_base(repo_path: Path, a: str, b: str) -> str | None:
 def _is_ancestor(repo_path: Path, ancestor: str, descendant: str) -> bool:
     proc = subprocess.run(
         ["git", "merge-base", "--is-ancestor", ancestor, descendant],
-        cwd=repo_path, capture_output=True, text=True,
+        cwd=repo_path, capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
     return proc.returncode == 0
 
