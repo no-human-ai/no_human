@@ -131,6 +131,31 @@ def test_search_line_length_cap_on_grep_branch(code_repo, monkeypatch):
         assert len(text) <= CodebaseSource._MAX_LINE_CHARS
 
 
+def test_parse_match_line_posix():
+    parsed = CodebaseSource._parse_match_line("/repo/lib/math.js:12:  const y = 1")
+    assert parsed == ("/repo/lib/math.js", "12", "  const y = 1")
+
+
+def test_parse_match_line_windows_drive_letter():
+    line = r"C:\repo\lib\math.js:12:  const x: number = 1"
+    parsed = CodebaseSource._parse_match_line(line)
+    assert parsed is not None
+    path, line_no, text = parsed
+    assert path == r"C:\repo\lib\math.js"
+    assert line_no == "12"
+    assert text == "  const x: number = 1"
+
+
+def test_parse_match_line_text_with_colons_posix():
+    parsed = CodebaseSource._parse_match_line("/repo/a.py:7:d = {'k': 'v:1'}")
+    assert parsed == ("/repo/a.py", "7", "d = {'k': 'v:1'}")
+
+
+def test_parse_match_line_rejects_non_match():
+    assert CodebaseSource._parse_match_line("Binary file x matches") is None
+    assert CodebaseSource._parse_match_line("/repo/a.py:no-digits:text") is None
+
+
 def test_bounds_are_class_constants_not_branch_literals():
     assert CodebaseSource._MAX_FILESIZE_BYTES == 256 * 1024
     assert CodebaseSource._MAX_MATCHES_PER_FILE == 5
