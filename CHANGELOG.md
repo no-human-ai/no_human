@@ -6,6 +6,25 @@ All notable changes to no_human. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- **The history gate now judges the pushed range, not the whole tip tree.**
+  `verify_public_history.py` scans whatever tree it's pointed at regardless of
+  `--since`, so a verdict for one commit and a verdict for a completely
+  different multi-commit range came back byte-identical — the "FAILED"
+  verdict was a property of the repository, not of what was being pushed.
+  `scripts/history_gate_hit_report.py` gains a new `gate` subcommand that
+  scans twice (once at the pushed ref, once at the merge-base with what the
+  remote already has) and attributes every hit, extra file, and missing file
+  by set difference into hits INTRODUCED BY the range vs. already
+  PRE-EXISTING at the base, with per-hit provenance (`introduced_by`,
+  `provenance_source`) naming the commit that introduced it. A new opt-in
+  `scripts/hooks/pre-push` hook runs `gate` and refuses a push only on
+  range-introduced hits, relaying the full per-hit detail (not just a summary
+  line) so it survives callers that truncate output to a tail. `scan` and
+  `report` output is unchanged. `gate`'s output is new and not
+  backward-compatible with anything (there was no prior range-scoped output
+  to be compatible with).
+
 ## [0.2.4] - 2026-09-17
 
 ### Added
