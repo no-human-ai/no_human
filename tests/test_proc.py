@@ -45,8 +45,10 @@ def _plant(venv, *, windows_shape=False):
 
 
 def test_an_ordinary_install_is_just_sys_executable(monkeypatch, tmp_path):
-    """Not frozen: no probing at all, and a venv argument is ignored — the
-    interpreter running nh already has nh's dependencies."""
+    """Not frozen: no probing at all, and a venv argument is ignored — several
+    callers depend on this (venv creation builds with the running interpreter;
+    a caller needing the target's test deps off a freeze resolves its own venv
+    first, see `vcs/approve_merge._real_python`)."""
     monkeypatch.delattr(sys, "frozen", raising=False)
     _plant(tmp_path / "venv")
     assert real_python(tmp_path / "venv") == sys.executable
