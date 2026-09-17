@@ -412,3 +412,81 @@ def test_reconcile_preserves_single_symbol_in_new_raw(tmp_path, monkeypatch):
     assert "`cli/commands.py:merge_stack_run:9000`" in new_doc
     # Assert explicitly that the duplicated symbol does NOT occur
     assert "`cli/commands.py:merge_stack_run:merge_stack_run:" not in new_doc
+
+def test_main_reconcile_reports_only_modified_files(tmp_path, monkeypatch, capsys):
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "tests").mkdir()
+    doc_path = tmp_path / "docs" / "fake.md"
+    table_path = tmp_path / "tests" / "test_readme_claims.py"
+    resolve_path = tmp_path / "widget.py"
+
+    doc_path.write_text("See `widget.py:bench_run:8217` for details.\n", encoding="utf-8")
+    table_path.write_text(
+        'CITATION_TABLE = (\n'
+        '    ("fake.md", "widget.py:bench_run:8213", "widget.py", "token"),\n'
+        ')\n\nassert len(CITATION_TABLE) >= 20,\n',
+        encoding="utf-8",
+    )
+    resolve_path.write_text("def bench_run():\n    pass # token\n", encoding="utf-8")
+
+    monkeypatch.setattr(ra, "REPO", tmp_path)
+
+    fake_mod = types.SimpleNamespace(
+        CITATION_TABLE=(("fake.md", "widget.py:bench_run:8213", "widget.py", "token"),),
+        _CITATION_DOC_PATHS={"fake.md": doc_path},
+        _LEGACY_LINE_SPEC_RE=re.compile(r"^\d+(?:-\d+)?$"),
+        _cited_line=lambda tail: 8213,
+        _resolve_source=lambda path: [resolve_path],
+        _token_line_in_symbol=lambda text, sym, tok: 2,
+    )
+    monkeypatch.setattr(ra, "_load_checker", lambda: fake_mod)
+
+    ret = ra.main(["--reconcile"])
+    assert ret == 0
+
+    stdout = capsys.readouterr().out
+    assert "Reconciled 1 citation(s)." in stdout
+    assert "Modified:" in stdout
+    # Both doc and table changed
+    assert "tests/test_readme_claims.py" in stdout
+    assert "docs/fake.md" in stdout
+
+def test_main_reconcile_reports_no_modified_files_when_zero_changes(tmp_path, monkeypatch, capsys):
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "tests").mkdir()
+    doc_path = tmp_path / "docs" / "fake.md"
+    table_path = tmp_path / "tests" / "test_readme_claims.py"
+    resolve_path = tmp_path / "widget.py"
+
+    doc_path.write_text("See `widget.py:bench_run:2` for details.\n", encoding="utf-8")
+    table_path.write_text(
+        'CITATION_TABLE = (\n'
+        '    ("fake.md", "widget.py:bench_run:2", "widget.py", "token"),\n'
+        ')\n\nassert len(CITATION_TABLE) >= 20,\n',
+        encoding="utf-8",
+    )
+    resolve_path.write_text("def bench_run():\n    pass # token\n", encoding="utf-8")
+
+    monkeypatch.setattr(ra, "REPO", tmp_path)
+
+    fake_mod = types.SimpleNamespace(
+        CITATION_TABLE=(
+            ("fake.md", "widget.py:bench_run:2", "widget.py", "token"),
+            ("fake.md", "legacy:5", "legacy", "token"),
+        ),
+        _CITATION_DOC_PATHS={"fake.md": doc_path},
+        _LEGACY_LINE_SPEC_RE=re.compile(r"^\d+(?:-\d+)?$"),
+        _cited_line=lambda tail: 2,
+        _resolve_source=lambda path: [resolve_path],
+        _token_line_in_symbol=lambda text, sym, tok: 2,
+    )
+    monkeypatch.setattr(ra, "_load_checker", lambda: fake_mod)
+
+    ret = ra.main(["--reconcile"])
+    assert ret == 1
+
+    stdout = capsys.readouterr().out
+    assert "Reconciled 0 citation(s)." in stdout
+    assert "Modified:" not in stdout
+    assert "Unfixable citations remain: 1" in stdout
+    assert "VERDICT=FAIL" in stdout

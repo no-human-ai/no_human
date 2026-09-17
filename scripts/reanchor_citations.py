@@ -208,8 +208,7 @@ def rewrite_table_row(text: str, raw: str, new_raw: str) -> str | None:
     or the CITATION_TABLE literal cannot be located at all."""
     try:
         start, end = _table_slice(text)
-    except ValueError as e:
-        print("TABLE_SLICE ERROR:", e); print("TEXT IS:", repr(text))
+    except ValueError:
         return None
     body = text[start:end]
     needle = f'"{raw}"'
@@ -231,6 +230,8 @@ def _apply_all(
     table_text = table_path.read_text(encoding="utf-8")
     unresolved: list[Unfixable] = []
 
+    changed_paths: set[Path] = set()
+
     for d in drifts:
         doc_path = mod._CITATION_DOC_PATHS[d.doc]
         doc_text = doc_texts.get(doc_path, doc_path.read_text(encoding="utf-8"))
@@ -248,11 +249,19 @@ def _apply_all(
             continue
         doc_texts[doc_path] = new_doc_text
         table_text = new_table_text
+        changed_paths.add(doc_path)
+        changed_paths.add(table_path)
 
     if unresolved:
         return None, unresolved
-    doc_texts[table_path] = table_text
-    return doc_texts, unresolved
+
+    final_texts = {}
+    for path in changed_paths:
+        if path == table_path:
+            final_texts[path] = table_text
+        else:
+            final_texts[path] = doc_texts[path]
+    return final_texts, unresolved
 
 
 
@@ -331,6 +340,8 @@ def _reconcile_all(
     unresolved: list[Unfixable] = []
     total_changed = 0
 
+    changed_paths: set[Path] = set()
+
     for r in reconciliations:
         doc_path = mod._CITATION_DOC_PATHS[r.doc]
         doc_text = doc_texts.get(doc_path, doc_path.read_text(encoding="utf-8"))
@@ -355,11 +366,21 @@ def _reconcile_all(
         table_text = new_table_text
         if doc_changed or table_changed:
             total_changed += 1
+        if doc_changed:
+            changed_paths.add(doc_path)
+        if table_changed:
+            changed_paths.add(table_path)
 
     if unresolved:
         return None, unresolved, 0
-    doc_texts[table_path] = table_text
-    return doc_texts, unresolved, total_changed
+
+    final_texts = {}
+    for path in changed_paths:
+        if path == table_path:
+            final_texts[path] = table_text
+        else:
+            final_texts[path] = doc_texts[path]
+    return final_texts, unresolved, total_changed
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
