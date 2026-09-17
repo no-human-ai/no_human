@@ -6,6 +6,15 @@ All notable changes to no_human. The format follows
 
 ## [Unreleased]
 
+### Added
+- **`nh changelog-check` lists commits missing a CHANGELOG.md touch.**
+  Defaults to the range since the newest tag; prints sha and subject for
+  every commit that changes a user-visible surface (shipped source, the
+  desktop app, the web board, user-facing docs) and does not itself touch
+  `CHANGELOG.md`, and exits non-zero when that list is non-empty. `nh
+  approve --landed` now prints a non-blocking pointer to it when the landed
+  commit is such a gap.
+
 ## [0.2.4] - 2026-09-17
 
 ### Added
