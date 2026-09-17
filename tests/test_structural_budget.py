@@ -2107,6 +2107,14 @@ FROZEN_FILE_LINES = {
     # docstring paragraphs explaining why each write must not let Windows
     # text-mode translation reintroduce a trailing CRLF. Measured on this
     # tree.
+    # 3667 -> 3689 (+22): merge of this branch's base-history main pull --
+    # this CRLF entry's own 3657 base and the two entries above it (the
+    # ensure_private_dir gating and onboarding.registration_endpoint
+    # additions, both rooted at 3661) diverged from the same 3657/3661
+    # ancestors and landed as independent, non-overlapping additions
+    # alongside RESEND_API_KEY_VAR. Measured on this tree with the scanner
+    # below: actual 3689, which is what this entry froze at this point.
+    # Later entries would move it further.
     "config.py": 3689,
     # +61: the tamper-adjudication one-bounded-retry contract (mechanical-
     # failure classification + the extracted `_review_tamper_adjudication`
@@ -2416,6 +2424,12 @@ FROZEN_FILE_LINES = {
     # final message line first so it cannot crowd the raising frame out of
     # the kept tail) plus its call lines in `_run`'s crash handler. Measured
     # on this tree with the scanner below.
+    # 3244 -> 3253 (+9): merge of the two entries directly above it -- the
+    # dispatch-loop comment and the traceback-field addition, both diverged
+    # from the same 3196 base -- landed as independent, non-overlapping
+    # additions. Measured on this tree with the scanner below: actual 3253,
+    # which is what this entry froze at this point. Later entries would
+    # move it further.
     "core/scheduler.py": 3253,
 }
 
