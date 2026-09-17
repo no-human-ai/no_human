@@ -1488,17 +1488,17 @@ FROZEN_FILE_LINES = {
     # and the `reason if reason is not None else ...` fix replacing `reason
     # or ...` in `_revert_worktree_writes_unguarded`. Re-measured on this
     # tree with `scan_tree`, not carried over as a stale delta.
-    # 24728 -> 25039 (+311): rebased-branch recut fix — the two new hook
-    # methods (`_recover_diverged_branch`, Hook 1, called from
-    # `_run_attempt`; `_reconcile_remote_branch`, Hook 2, called from the
-    # existing delivery path) plus their call-site integration and the
-    # `_record_recut`/`_post_recut_comment` helpers `_finalize` uses to
-    # thread the possibly-rebound branch through the PR-body/comment
-    # plumbing. The recut mechanics themselves (branch naming, replay,
-    # push) live in the new `vcs/recut.py`, not here — this is the
-    # orchestrator-side wiring only. Measured on this tree with the
-    # scanner below.
-    "core/orchestrator.py": 25039,
+    # 24728 -> 25198 (+470): two independent features landed on top of each
+    # other and were merged together — `claim_gate_decision` (extracting
+    # delivery's zero-diff claim decision into one function that both
+    # `_run_attempt`'s commit section and the new mid-attempt landed-claim
+    # guard call, plus the guard's own wiring) and the rebased-branch recut
+    # fix (`_recover_diverged_branch`/`_reconcile_remote_branch` and their
+    # call-site integration; the recut mechanics themselves live in the new
+    # `vcs/recut.py`, not here). Re-measured on this merged tree with
+    # `len(Path(...).read_text().splitlines())`, the scanner's own metric,
+    # not either parent's number carried forward by hand.
+    "core/orchestrator.py": 25198,
 
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
