@@ -3261,7 +3261,7 @@ class Store:
         # `worktree.salvage_dead_worktrees` (`hard_kill_salvage`, on a
         # SIGKILL/pid-death) and by the reviewer-side wall path (a dead or
         # quota-walled review turn closes the CODER's attempt row for that
-        # round with `infra_failure=1`, ~`orchestrator.py:7178`, so a
+        # round with `infra_failure=1` (`_escalate_reviewer_unavailable`, so a
         # reviewer-session death is not left an unattributed dead row) — and
         # likewise by the coder's own quota/infra wall (`_park_quota`'s
         # `infra_failure=1` row, which can carry millions of streamed tokens)

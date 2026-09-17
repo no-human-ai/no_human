@@ -9,7 +9,7 @@ symbol so both surfaces share one answer instead of re-deriving it.
 **Rule 1 — the vendor pin is separate from the model tier, and must be
 stated, not implied.** ``agent.backend.CLAUDE_PINNED_ROLES`` pins *which
 backend* runs a role, not which model: ``resolve_backend_name``
-(``agent/backend.py:259-267``) returns ``"claude"`` for every role except
+(``agent/backend.py``) returns ``"claude"`` for every role except
 ``"coder"``, and each of the five roles reads its own model id from its own
 ``llm.*`` config key. **All five roles' models are user-changeable.** What a
 pinned role is *not* offered is a non-Claude id — the coder's backend
@@ -29,8 +29,8 @@ sits before the spend is ever made and can refuse outright — so it does. No
 free-text field, no "custom model" escape hatch.
 
 The operator's A/B that rejected ``claude-opus-5`` as the reviewer is
-recorded next to ``review_model`` in ``config.py`` (around line 1151) —
-see that comment for the numbers; they are not restated here.
+recorded next to ``review_model`` in ``config.py`` — see that comment for
+the numbers; they are not restated here.
 
 These functions read nothing live. The five read sites bind the config
 object the server loaded at start (``core/runtime.py``, ``review/reviewer.py``,

@@ -454,7 +454,16 @@ and keep whatever citation policy they already had.
 An approximate **quantity** — a size, duration, token count or line-count
 estimate that names its own unit, like `~120MB`, `~1078s` or `~500 LOC` — is
 not an anchor and is untouched by this rule; the unit is exactly what tells
-a reader "this is a measurement", not "go look around this line".
+a reader "this is a measurement", not "go look around this line". The
+scanner keeps an allow-list of real units for exactly this reason (an
+unrecognized trailing word is an anchor by default, not a quantity), and
+also catches `~L12034`, bare `L12034`, `around/near/approx. line 12034`,
+the `≈` spelling, and a tilde-prefixed file:line citation like
+`` ~`orchestrator.py:7178` ``. It deliberately does not extend to this
+repo's separate, pre-existing, non-tilde `file.py:LINE` cross-reference
+convention used 50+ times throughout `src/` — a different syntax, a
+different (precise, not approximate) population, out of scope for this
+gate.
 
 ## Proposing a change
 

@@ -39,26 +39,44 @@ bitwise-not literals, neither of which is prose at all.
 The classifier used by this gate instead:
 
 1. Looks only at **comments and string literals** (`tokenize.COMMENT`
-   tokens and `ast.Constant` string nodes) — never raw code — which alone
-   drops every `HEAD~1` and every `~` bitwise-not operator, since those
-   live in code, not prose.
-2. Requires the `~` to **start a token**: `(?<![\\w~])~` — this drops
-   `sha~2` / `main~2`-style prose that happens to contain a tilde
-   mid-word, and it is why `HEAD~1` is also excluded a second, independent
-   way (the `D` before the `~` is a word character).
-3. Requires **3+ digits**, optionally as an `NNN-NNN` range. The range
+   tokens and `ast.Constant` string nodes, including the literal parts of
+   an f-string's `JoinedStr`) — never raw code — which alone drops every
+   `HEAD~1` and every `~` bitwise-not operator, since those live in code,
+   not prose.
+2. Requires an anchor marker to **start a token**: a bare `~`/`≈` followed
+   by digits (`(?<![\\w~≈])[~≈]`), `~line N`, a hedge word with no tilde at
+   all (`around|near|approximately|roughly (at) line N`), a capital `L`
+   fused to digits with or without a leading tilde (`~L12034`, bare
+   `L12034`), or a tilde directly in front of a `file.ext:N[-N]` citation
+   (`` ~`orchestrator.py:7178` ``). Requiring the tilde/hedge-word/L-prefix
+   drops `sha~2` / `main~2`-style prose that happens to contain a tilde
+   mid-word, `HEAD~1` (the `D` before the `~` is a word character), AND —
+   deliberately — this repo's separate, pervasive, bare `file.py:LINE`
+   citation convention (no tilde, no hedge word), used 50+ times across
+   `src/` as a precise, non-approximate, same-population cross-reference:
+   different syntax, different population, different policy, out of scope
+   here (see `tests/test_readme_claims.py`'s disjoint `docs/`-only handling
+   of the same bare syntax).
+3. Requires **3-6 digits**, optionally as an `NNN-NNN` range. The range
    branch is load-bearing: this repo shipped `(db.py ~2884-2892)`, and
    without it the gate would report a confusing half-token. The 3-digit
    floor is deliberate — the 2-digit band (`~40 chars`, `~10 ms`) is
    entirely quantities, and a 2-digit anchor into a 24,000-line file is
    not a shape that occurs.
-4. Flags the number **only when it is not followed by a unit or counted
-   noun** (`[-–]?\\s*[A-Za-z%×^]+`), minus a stopword deny-list
-   (`in`, `and`, `or`, `the`, `a`, `an`, `is`, `at`, `to`, `on`, `by`, `as`,
-   `that`, `this`, `which`, `for`, `from`, `with`). `of` is deliberately
-   **not** in that deny-list: `~394 of the pending backlog` is a live
-   partitive-quantity idiom in this tree, and treating `of` as a stopword
-   would misflag it.
+4. Flags the number **only when it is not followed by a real unit** —an
+   ALLOW-list of counted nouns (`k`, `M`, `MB`, `GB`, `s`, `ms`, `x`,
+   `LOC`, `turn(s)`, `file(s)`, `line(s)`, `token(s)`, `char(s)`,
+   `characters`, `px`), not a stopword DENY-list. An earlier draft of this
+   gate used a deny-list — "any word that isn't specifically on this list
+   proves a quantity" — which is backwards: it let an un-enumerated word
+   like "handles" in `~12034 handles the rebase case` prove nothing, so
+   the anchor read as a quantity and passed. The allow-list inverts this:
+   an unrecognised trailing word (`handles`, `below`, `ff.`) means ANCHOR
+   by default. `~394 of the pending backlog` and `~700 of the 1000
+   characters` are a live partitive-quantity idiom (`of the ...`/`of
+   <digit>`) handled as a narrow exception; `of` followed by anything else
+   — notably a filename, as in `~12034 of orchestrator.py` — is not that
+   idiom and stays an anchor.
 
 Applied to the tree at the time this gate was written, this returned 17
 hits with zero false positives: 16 true anchors (15 in
@@ -67,7 +85,14 @@ quantity, `vcs/receipts.py:89`'s `gh caps the files array (~100)`, caught
 bare only because its noun happens to *precede* the number. All 16
 anchors were replaced by symbol names (or the number was dropped where no
 symbol could be confirmed); `receipts.py:89` gained the one word it was
-missing, `(~100 files)`, with the number itself untouched.
+missing, `(~100 files)`, with the number itself untouched. A later
+send-back widened the classifier (the allow-list inversion above, plus
+the `~line`/hedge-word/`L`-prefixed/tilde-file-citation shapes) and found
+more anchors the narrower classifier could not see, in `core/task.py`,
+`api/models.py`, `core/db.py`, `core/model_catalog.py` (two, one of them
+a second, previously unseen citation), `api/app.py` and
+`blockers/send_back.py`; each was resolved against its real target and
+replaced the same way — see CHANGELOG.md for the file-by-file list.
 
 FAIL-CLOSED I/O
 ----------------
@@ -97,23 +122,83 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 #: one-line-widenable if it is ever revisited.
 SCANNED_AREAS = ("src",)
 
-#: The `~` must start a token (drops `sha~2`, `main~2`, and — together with
-#: rule 1 restricting to comments/strings — `HEAD~1` and bitwise-not `~x`).
-#: 3+ digits, optionally an `NNN-NNN` range so `~2884-2892` counts once.
-_ANCHOR_TOKEN = re.compile(r"(?<![\w~])~(\d{3,5}(?:-\d{3,5})?)")
+#: The `~` (or `≈`, "approximately equal") must start a token (drops
+#: `sha~2`, `main~2`, and — together with rule 1 restricting to
+#: comments/strings — `HEAD~1` and bitwise-not `~x`). 3-6 digits, optionally
+#: an `NNN-NNN` range so `~2884-2892` counts once, and an optional space so
+#: `~ 12034` counts too.
+_ANCHOR_LEAD = "~≈"
+_BARE_NUMERIC = re.compile(
+    r"(?<![\w~≈])[" + _ANCHOR_LEAD + r"]\s*(\d{3,6}(?:-\d{3,6})?)"
+)
+
+#: The tilde attaches to the word "line", not the number: `~line 12034`.
+_TILDE_LINE_WORD = re.compile(
+    r"(?<![\w~≈])[" + _ANCHOR_LEAD + r"]\s*line\s+(\d{3,6}(?:-\d{3,6})?)",
+    re.IGNORECASE,
+)
+
+#: No tilde at all, but a hedge word says the same thing: "around line
+#: 12034", "approximately at line 12034".
+_HEDGE_LINE_WORD = re.compile(
+    r"\b(?:around|near|approx(?:imately)?|roughly)\b(?:\s+at)?\s+line\s+"
+    r"(\d{3,6}(?:-\d{3,6})?)",
+    re.IGNORECASE,
+)
+
+#: A capital `L` fused directly to 3+ digits, with or without a leading
+#: tilde: `~L12034`, bare `L12034` (this repo shipped both).
+_L_PREFIXED = re.compile(r"(?<![\w~≈])~?\s*L(\d{3,6})\b")
+
+#: A tilde (or quote-wrapped tilde) directly in front of a `file.ext:NNN`
+#: citation: `` ~`orchestrator.py:7178` ``, `~'my file.py':12034`. Requires
+#: the leading tilde, so it does NOT match this repo's separate, pervasive,
+#: bare `file.py:LINE` citation convention (no tilde, no hedge word) used
+#: 50+ times across src/ as precise same-population cross-references — a
+#: different syntax, different population, different policy (see the module
+#: docstring), and explicitly out of scope here.
+_TILDE_FILE_CITE = re.compile(
+    r"(?<![\w~≈])~\s*[`'\"]?"
+    r"[\w./ -]+?\.(?:py|js|jsx|ts|tsx|md|json|ya?ml|txt)"
+    r"[`'\"]?:(\d{3,6})(?:-(\d{3,6}))?"
+)
 
 #: What "followed by a unit or counted noun" means: an optional leading
 #: hyphen/en-dash (`~328-turn`), optional space (`~500 LOC`), then a run of
-#: letters/`%`/`×`/`^`.
-_UNIT_TAIL = re.compile(r"^[-–]?\s*([A-Za-z%×^]+)")
+#: letters.
+_UNIT_TAIL = re.compile(r"^[-–]?\s*([A-Za-z]+)")
 
-#: Words that do NOT count as a real unit/noun, so a number followed by one
-#: of these is still an anchor, not a quantity. `of` is deliberately absent:
-#: `~394 of the pending backlog` is a live partitive-quantity idiom.
-_STOPWORDS = {
-    "in", "and", "or", "the", "a", "an", "is", "at", "to", "on", "by", "as",
-    "that", "this", "which", "for", "from", "with",
+#: ALLOW-list of real units/counted nouns — the inverse of a stopword
+#: deny-list. A deny-list treats "any word that isn't specifically listed"
+#: as proof of a quantity, so a real anchor like "~12034 handles the rebase
+#: case" slipped through as a false negative (nothing named "handles" as
+#: NOT a unit). An allow-list instead requires the trailing word to be a
+#: real, recognised unit; anything else — "handles", "below", "ff.",
+#: unrecognised — defaults to ANCHOR.
+_UNITS = {
+    "k", "m", "mb", "gb", "s", "ms", "x", "loc",
+    "turn", "turns", "file", "files", "line", "lines",
+    "token", "tokens", "char", "chars", "characters", "px",
 }
+
+#: `~394 of the pending backlog` and `~700 of the 1000 characters` are a
+#: live partitive-quantity idiom in this tree: "of" followed by "the" (or a
+#: number) continues a quantity — and so does "of" followed by NOTHING else
+#: on the physical line, since `tokenize.COMMENT` hands us each `#`-line in
+#: isolation and this repo really does split the idiom across two
+#: consecutive comment lines (see `learning/queue.py`: "...produced ~394 of"
+#: / "the NULL-origin pending rows..."). "of" followed by anything else on
+#: the SAME line — notably a filename, as in "~12034 of orchestrator.py" —
+#: is not that idiom and is still an anchor.
+_PARTITIVE_OF = re.compile(r"^\s+of(?:\s*$|\s+(?:the\b|\d))", re.IGNORECASE)
+
+
+def _is_quantity_tail(tail: str) -> bool:
+    unit = _UNIT_TAIL.match(tail)
+    if unit and unit.group(1).lower() in _UNITS:
+        return True
+    return bool(_PARTITIVE_OF.match(tail))
+
 
 #: A naive count with none of the above discrimination — what a quick
 #: `grep -oE '~[0-9]{3,5}' -r src/` gives you. Used only to demonstrate the
@@ -122,18 +207,36 @@ _BARE_ANCHOR_SHAPE = re.compile(r"~[0-9]{3,5}")
 
 
 def _find_anchors(text: str) -> list[tuple[int, str]]:
-    """`(offset, matched_token)` for every `~NNN` shape in `text` that reads
-    as an approximate LINE ANCHOR rather than a quantity.
+    """`(offset, matched_token)` for every shape in `text` that reads as an
+    approximate LINE ANCHOR rather than a quantity.
 
     See the module docstring for the counting method this implements.
     """
     hits: list[tuple[int, str]] = []
-    for match in _ANCHOR_TOKEN.finditer(text):
-        tail = text[match.end():]
-        unit = _UNIT_TAIL.match(tail)
-        if unit and unit.group(1).lower() not in _STOPWORDS:
-            continue  # a real unit/counted noun follows: a quantity
+    seen_spans: set[tuple[int, int]] = set()
+
+    for match in _BARE_NUMERIC.finditer(text):
+        if _is_quantity_tail(text[match.end():]):
+            continue  # a real unit/counted noun (or partitive idiom) follows
+        seen_spans.add(match.span())
         hits.append((match.start(), match.group(0)))
+
+    for pattern in (
+        _TILDE_LINE_WORD,
+        _HEDGE_LINE_WORD,
+        _L_PREFIXED,
+        _TILDE_FILE_CITE,
+    ):
+        for match in pattern.finditer(text):
+            if any(
+                match.start() < end and start < match.end()
+                for start, end in seen_spans
+            ):
+                continue  # already counted by an earlier, more specific match
+            seen_spans.add(match.span())
+            hits.append((match.start(), match.group(0)))
+
+    hits.sort(key=lambda hit: hit[0])
     return hits
 
 
@@ -328,6 +431,128 @@ def test_an_anchor_deep_in_a_docstring_reports_its_own_line(tmp_path):
     offenders = _file_offenders(planted)
     assert len(offenders) == 1, offenders
     assert ":30:" in offenders[0], offenders
+
+
+# ---------------------------------------------------------------------------
+# Finding A: a deny-list ("not a specific stopword") lets an unenumerated
+# word following the number prove nothing, so a real anchor like
+# "~12034 handles the rebase case" read as a quantity and passed GREEN. The
+# allow-list above fixes this; the mutation is demonstrated, not asserted.
+# ---------------------------------------------------------------------------
+
+
+def test_the_word_following_number_false_negative_is_fixed(tmp_path):
+    """The exact repro: a copy of a real `src/` file gains a comment whose
+    trailing word ("handles") is not any recognised unit. A deny-list-based
+    classifier lets this through as a quantity; this gate must not."""
+    real = REPO_ROOT / "src" / "no_human" / "core" / "bounds.py"
+    original = real.read_text(encoding="utf-8")
+    assert _file_offenders(real) == [], (
+        "bounds.py is expected to be clean before mutation; if not, this "
+        "test can't tell the mutation from pre-existing rot"
+    )
+
+    mutated = original + "\n# the retry check at ~12034 handles the rebase case\n"
+    planted_lineno = len(mutated.splitlines())
+    copy_path = tmp_path / "bounds.py"
+    copy_path.write_text(mutated, encoding="utf-8")
+
+    offenders = _file_offenders(copy_path, label="src/no_human/core/bounds.py")
+    matching = [o for o in offenders if "~12034" in o]
+    assert matching, (
+        "'~12034 handles the rebase case' was not caught: a word following "
+        "the number that is not a recognised unit must default to ANCHOR, "
+        "not quantity"
+    )
+    assert any(f":{planted_lineno}:" in o for o in matching), matching
+
+
+#: Shapes this send-back's Finding A explicitly named as uncaught. Each
+#: must yield exactly one anchor hit.
+_WIDER_ANCHOR_SHAPES = [
+    "~12034 handles the retry",
+    "~12034 below",
+    "~12034 of orchestrator.py",
+    "~12034 ff.",
+    "~L12034",
+    "~ 12034",
+    "around line 12034",
+    "approximately at line 12034",
+    "L12034",
+    "≈12034",  # U+2248, "approximately equal to"
+    "~`orchestrator.py:12034`",
+    "~`orchestrator.py:12034-12045`",
+    "~'my file.py':12034",
+]
+
+
+@pytest.mark.parametrize("shape", _WIDER_ANCHOR_SHAPES)
+def test_every_wider_anchor_shape_from_the_send_back_is_caught(shape):
+    hits = _find_anchors(shape)
+    assert len(hits) == 1, f"expected exactly one anchor in {shape!r}, got {hits}"
+
+
+def test_bare_file_line_citations_stay_out_of_scope():
+    """`orchestrator.py:12034` with NO leading tilde and no hedge word is
+    this repo's separate, pervasive, precise cross-reference convention
+    (used 50+ times across `src/`, e.g. `(orchestrator.py:2396)`) — the
+    same disjoint syntax `tests/test_readme_claims.py` already polices for
+    `docs/`. Disclosed scope decision: this gate does not extend to it."""
+    assert _find_anchors("see orchestrator.py:12034 for the real check") == []
+    assert _find_anchors("see orchestrator.py:12034-12045 for the real check") == []
+
+
+def test_an_anchor_survives_a_non_ascii_path(tmp_path):
+    """A file path containing non-ASCII characters must not make the
+    scanner skip the file — an offender is reported by its own label, not
+    silently dropped because the directory name is unusual."""
+    weird_dir = tmp_path / "café"
+    weird_dir.mkdir()
+    planted = weird_dir / "bounds.py"
+    planted.write_text("# the retry check is at ~12034\n", encoding="utf-8")
+
+    offenders = _file_offenders(planted)
+    assert len(offenders) == 1, offenders
+    assert "~12034" in offenders[0], offenders
+
+
+def test_a_six_digit_anchor_is_caught(tmp_path):
+    """This gate's digit ceiling is 6, not 5: a future file long enough to
+    need a 6-digit line reference must still be caught."""
+    planted = tmp_path / "big_file.py"
+    planted.write_text("# the retry check is at ~123456\n", encoding="utf-8")
+
+    offenders = _file_offenders(planted)
+    assert len(offenders) == 1, offenders
+    assert "~123456" in offenders[0], offenders
+
+
+def test_an_anchor_inside_an_fstring_literal_part_is_caught(tmp_path):
+    """An f-string's literal segments are `ast.Constant` nodes nested
+    inside `ast.JoinedStr`; `ast.walk` must still reach them."""
+    planted = tmp_path / "fstring_anchor.py"
+    planted.write_text(
+        'x = 1\n'
+        'msg = f"the retry check is at ~12034 for task {x}"\n',
+        encoding="utf-8",
+    )
+
+    offenders = _file_offenders(planted)
+    assert len(offenders) == 1, offenders
+    assert ":2:" in offenders[0] and "~12034" in offenders[0], offenders
+
+
+def test_an_anchor_on_a_crlf_line_is_caught(tmp_path):
+    """Windows-style line endings must not hide an anchor from the
+    tokenizer or the line-splitting used for string-literal spans."""
+    planted = tmp_path / "crlf_anchor.py"
+    planted.write_bytes(
+        b"x = 1\r\n# the retry check is at ~12034\r\n"
+    )
+
+    offenders = _file_offenders(planted)
+    assert len(offenders) == 1, offenders
+    assert ":2:" in offenders[0] and "~12034" in offenders[0], offenders
 
 
 # ---------------------------------------------------------------------------
