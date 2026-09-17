@@ -411,7 +411,7 @@ not a design review or a lint config, and adds no dependency.
 
 ## A preflight that catches citation drift before review, not after
 
-A citation is a `file.py:LINE` reference a doc makes into code; any edit
+A citation is a `file.py:LINE` reference a doc makes into code (or a shorthand `:symbol:LINE` when the path is implied by context); any edit
 above that line drifts it. Left alone, drift only surfaces in the post-review
 TESTING step, on a coder change that review already passed — burning a full
 attempt on a defect the coder could not have known about while the code was

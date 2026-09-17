@@ -145,6 +145,7 @@ from ..vcs import (
 from ..vcs import ci_rollup, pr_watcher
 from ..vcs.push_hook import refresh_protected_patterns
 from ..vcs.receipts import verify_pr_receipt
+from ..vcs.recut import already_recut, branch_stem, diverged_state, recut
 from ..vcs.task_pr import resolve_task_pr
 from . import merge_policy
 from . import plan_gate
@@ -5902,6 +5903,34 @@ class Orchestrator:
 
         await self._refresh_stale_base(task, repo, branch, base, base_pin=base_pin)
 
+        # Already-diverged case: `branch` may have been rewritten (rebased,
+        # squashed, amended) since it was last pushed, in which case pushing
+        # it later would be correctly refused as a non-fast-forward — and,
+        # before this fix, every subsequent attempt reproduced the exact
+        # same refusal forever. Recover AFTER `_refresh_stale_base` (not
+        # before): that call has its own, pre-existing already-diverged
+        # advisory + base-merge behaviour that must still run, observably,
+        # on the branch the divergence was actually detected on (see its
+        # own docstring). A base merge cannot itself resolve a pre-existing
+        # divergence (the remote tip is still not an ancestor of the new
+        # merged head — same git-ancestry reasoning either way), so the
+        # branch is still exactly as "diverged" here as it was before the
+        # merge; recutting now means the branch that goes on to the draft-PR
+        # push, review, and `_finalize` carries BOTH the reviewed work AND
+        # the fresh base merge, and has no remote history of its own, so
+        # that push fast-forwards cleanly and cannot race this recovery.
+        # See `_recover_diverged_branch` and `vcs/recut.py`.
+        try:
+            recut_branch = await self._recover_diverged_branch(task, repo, branch)
+        except ReviewedShaMismatch as exc:
+            log.error("%s", exc)
+            return await self._escalate(task, str(exc), repo=repo, branch=branch)
+        if recut_branch != branch:
+            branch = recut_branch
+            ctx = task.context or {}
+            await self.store.update_attempt(attempt_id, branch_name=branch)
+            self._active_branch = branch
+
         # PR-F Gate 2: create matching branches in linked repos so changes
         # there land on their own deterministic branch (never_push_to honoured).
         linked_repos_git: list[tuple[str, GitRepo, str]] = []  # (path, repo, base_branch)
@@ -7942,8 +7971,9 @@ class Orchestrator:
         # move between the passing review round and this push (a concurrent
         # commit, a rebase). Fail closed: an unreadable tip or an absent/
         # unstamped history refuses to push, same as a sha mismatch.
+        original_branch = branch
         try:
-            pre_push_sha = self._assert_delivery_sha(
+            pre_push_sha, branch = self._assert_delivery_sha(
                 task, repo, branch, human_gated_resume=human_gated_resume)
         except ReviewedShaMismatch as exc:
             log.error("%s", exc)
@@ -7952,6 +7982,27 @@ class Orchestrator:
                 attempt_id, status="failed", failure_reason=str(exc),
                 completed_at=_now())
             return await self._escalate(task, str(exc), repo=repo, branch=branch)
+
+        # A genuine divergence recovered mid-delivery (see
+        # `_reconcile_remote_branch`) rebinds `branch` to a freshly cut,
+        # never-before-pushed name. Every later use of `branch` in this
+        # function (open_pr, ctx["pr_branch"], update_attempt, the
+        # linked-repo loop) picks this up for free. The old, now-superseded
+        # PR is notified further below, once the new PR actually exists and
+        # its URL is known — see the `recut_from_branch` check near
+        # `ctx["pr_delivered_url"]`. The OLD pr url must be captured NOW,
+        # before this function's own later writes overwrite
+        # ctx["pr_delivered_url"]/ctx["pr_watch"] with the NEW PR's url.
+        recut_from_branch = None
+        recut_old_pr_url = None
+        if branch != original_branch:
+            recut_from_branch = original_branch
+            _recut_ctx = task.context if isinstance(task.context, dict) else {}
+            recut_old_pr_url = (
+                _recut_ctx.get("pr_delivered_url")
+                or _recut_ctx.get("pr_watch")
+                or _recut_ctx.get("pr_draft_created")
+            )
 
         # C3: validate base branch against project's declared default. If the
         # profile never set one, auto-detect the remote's actual default
@@ -8342,6 +8393,13 @@ class Orchestrator:
             ctx["linked_pr_urls"] = linked_pr_urls
         task.context = ctx
         await self.store.update_task(task)
+
+        if recut_from_branch is not None:
+            # Best-effort, idempotent (key="recut") note on the OLD PR now
+            # that the new one's URL (`pr.url`, just written above) exists
+            # to point to. Must never fail an otherwise-successful delivery.
+            await self._post_recut_comment(
+                task, recut_from_branch, branch, recut_old_pr_url, pr.url)
 
         # PR OUTCOME telemetry (migration 0010). "Success" here has only ever
         # meant "reached AWAITING_APPROVAL/DONE" — i.e. a PR EXISTED — and
@@ -12288,9 +12346,115 @@ class Orchestrator:
         """
         return set(self._passing_review_shas_in_order(task))
 
+    async def _recover_diverged_branch(
+        self, task: Task, repo, branch: str,
+    ) -> str:
+        """Hook 1 — the ALREADY-DIVERGED case, run right after
+        `_refresh_stale_base` and before anything else (the draft-PR push,
+        the review, `_finalize`) touches `branch` this attempt.
+
+        Deliberately AFTER `_refresh_stale_base`, not before: that call has
+        its own, pre-existing already-diverged advisory + base-merge
+        behaviour (see its docstring) that must still observe and act on
+        the branch the divergence actually happened on. A base merge
+        cannot itself resolve a pre-existing divergence — the remote tip
+        is still not an ancestor of the new merged head either way — so
+        the branch is exactly as eligible for recut afterward as it was
+        before the merge; recutting here just means the branch that goes
+        on to the draft-PR push, review, and `_finalize` also carries the
+        fresh base merge.
+
+        A resumed task's branch (`ctx["pr_branch"]`) can have been rewritten
+        — rebased onto a moved base, squashed, amended — since it was last
+        pushed. Left alone, this attempt would reproduce the same reviewed,
+        green diff and hit the exact same non-fast-forward refusal at
+        delivery that every previous attempt hit: an unbounded loop that
+        never reaches a human or a merged PR (see `vcs/recut.py`'s module
+        docstring for the full rationale).
+
+        `diverged_state` classifies the branch against its own remote tip:
+        only `"diverged"` (neither side is an ancestor of the other) acts
+        here. `"behind"` and `"up_to_date"` are silently left alone — a
+        behind branch is normal (this attempt hasn't pushed yet) and must
+        never be recut, and `"unknown"` (never pushed, or the remote is
+        unreachable) fails open to today's behaviour, same as always.
+
+        One-shot: if `branch` already has a `recut` entry in
+        `task.context`, a SECOND divergence on the same branch is not
+        recut again — it escalates instead (via the caller's
+        `ReviewedShaMismatch` handler) — that is the bound that keeps an
+        unattended failure honest ("no more than one further attempt is
+        spent after the divergence is first detectable").
+
+        This method is `async` and persists the bookkeeping immediately via
+        `store.merge_context` (RFC 7396 — the `recut` list is read,
+        appended to, and written back whole, never a single-element merge),
+        unlike `_reconcile_remote_branch` (sync, Hook 2), which can only
+        mutate `task.context` in memory and relies on `_finalize`'s later
+        `update_task` to persist it.
+        """
+        try:
+            state = diverged_state(repo, branch)
+        except Exception as exc:  # noqa: BLE001 — recut must never raise here
+            # Fail open exactly like `_refresh_stale_base`'s own divergence
+            # check (which has already emitted its own "divergence check
+            # failed" advisory for this same attempt, above) — logged, not
+            # re-advised, so a transient ancestry-query failure is visible
+            # exactly once per attempt rather than duplicated here.
+            log.warning("recut divergence check failed for %s: %s", branch, exc)
+            return branch
+        if state != "diverged":
+            return branch
+        ctx = task.context if isinstance(task.context, dict) else {}
+        if already_recut(ctx, branch):
+            remote_sha = repo.fetch_remote_branch_sha(branch)
+            local_sha = repo.branch_sha(branch)
+            raise ReviewedShaMismatch(
+                f"delivery refused: branch {branch} has already been recut "
+                f"once (see task.context['recut']) and has diverged again "
+                f"— local tip {local_sha} vs remote tip {remote_sha} — "
+                f"refusing to recut a second time; a human must decide")
+        remote_sha = repo.fetch_remote_branch_sha(branch)
+        if remote_sha is None:
+            return branch  # unreachable remote mid-check — fail open
+        reviewed_sha = repo.branch_sha(branch)
+        stem = branch_stem(self.config, task.id)
+        try:
+            result = recut(
+                repo, stem=stem, from_branch=branch,
+                reviewed_sha=reviewed_sha, remote_sha=remote_sha,
+            )
+        except (GitError, ProtectedBranch) as exc:
+            raise ReviewedShaMismatch(
+                f"delivery refused: branch {branch} has diverged from its "
+                f"own pushed tip (remote {remote_sha}, local {reviewed_sha}) "
+                f"and the recovery recut failed: {exc}") from exc
+        merged = await self.store.merge_context(task.id, {
+            "recut": [
+                *(ctx.get("recut") or []),
+                {
+                    "from_branch": result.from_branch,
+                    "from_sha": result.reviewed_sha,
+                    "remote_sha": result.remote_sha,
+                    "to_branch": result.to_branch,
+                    "at": _now(),
+                },
+            ],
+            "pr_branch": result.to_branch,
+        })
+        task.context = merged
+        self.emit(
+            "branch_recut",
+            f"{branch}@{reviewed_sha} -> {result.to_branch} "
+            f"(remote tip was {remote_sha})",
+            ok=True,
+        )
+        return result.to_branch
+
     def _reconcile_remote_branch(
         self, repo, branch: str, target: str, *, human_gated_resume: bool,
-    ) -> None:
+        task: Task | None = None,
+    ) -> str:
         """Fetch `branch`'s LIVE remote tip and reconcile it with `target`
         (a sha already proven to be the reviewed commit) before delivery
         proceeds to push.
@@ -12300,7 +12464,7 @@ class Orchestrator:
         docstring: it is a forward-looking divergence guard, not the fix for
         the delivery-refusal incidents (those were a LOCAL branch-ref lag —
         see `fast_forward_local_branch`'s docstring — and this method's
-        network read was never in that path). Three outcomes:
+        network read was never in that path). Four outcomes:
 
         * remote tip is `None` (no remote / never pushed / unreachable) or
           already equals `target` — nothing to do, fail open exactly like
@@ -12311,13 +12475,28 @@ class Orchestrator:
           remote hasn't seen that push yet). Fast-forward the remote branch
           itself to `target` and proceed; this is additive-only, never a
           force.
-        * otherwise — the remote holds a commit `target` does not descend
-          from, a genuine divergence. Refuse, naming the sha this method
-          just fetched (never a stale cached value).
+        * `target` is an ancestor of the remote tip — the remote holds
+          commits `target` does not descend from IN THE OTHER DIRECTION
+          (`target` is behind). Recutting here would silently orphan those
+          remote-only commits, so this is a hard guard: unchanged refusal,
+          never recut, regardless of `task`.
+        * otherwise — neither is an ancestor of the other: a genuine
+          divergence (a rebase, squash, or amend after the branch was
+          already pushed). If `task` is given, the branch has a reachable
+          `origin`, and this branch has not already been recut once for
+          this task, recover via `recut()`: cut a brand-new, never-before-
+          pushed branch name at `target` and fast-forward-push it (trivially
+          a fast-forward, since the name is new), then return that new
+          branch name for the caller to deliver on instead. Otherwise —
+          `task is None` (the bare-instance/legacy call shape), no reachable
+          remote, or the one-shot recut budget for this branch is already
+          spent — fall through to the exact same refusal message this
+          method has always raised, byte-for-byte, so callers that predate
+          recut (and the tests pinning this exact string) are unaffected.
         """
         remote_tip = repo.fetch_remote_branch_sha(branch)
         if remote_tip is None or remote_tip == target:
-            return
+            return branch
         if repo.is_ancestor(remote_tip, target):
             try:
                 repo.push_sha_fast_forward(target, branch)
@@ -12329,11 +12508,134 @@ class Orchestrator:
                 "delivery_branch_fast_forwarded",
                 f"{branch}: {remote_tip} -> {target}",
             )
-            return
+            return branch
+        ctx = task.context if task is not None and isinstance(task.context, dict) else {}
+        if not repo.is_ancestor(target, remote_tip):
+            # Genuine divergence (not "behind"): try a recut before
+            # refusing. `is_ancestor(target, remote_tip)` being False here
+            # means the "behind" case above didn't apply either, so this is
+            # the true "neither is an ancestor of the other" state.
+            #
+            # `ctx.get("pr_branch") == branch` additionally requires that
+            # `branch` be *this task's own tracked delivery branch* — the
+            # one `_run_attempt` read out of `ctx["pr_branch"]` to resume on
+            # (see Hook 1, `_recover_diverged_branch`). A caller finalizing
+            # some other branch on this task's behalf (no such bookkeeping)
+            # is exactly the shape `_assert_delivery_sha`'s other refusals
+            # are for, and is left refusing exactly as before — recut only
+            # ever acts on a branch the task itself is known to be driving.
+            if (
+                task is not None
+                and ctx.get("pr_branch") == branch
+                and repo.remote_url() is not None
+                and not already_recut(ctx, branch)
+            ):
+                stem = branch_stem(self.config, task.id)
+                try:
+                    result = recut(
+                        repo, stem=stem, from_branch=branch,
+                        reviewed_sha=target, remote_sha=remote_tip,
+                    )
+                except (GitError, ProtectedBranch):
+                    pass  # falls through to the unchanged refusal below
+                else:
+                    self._record_recut(task, result)
+                    self.emit(
+                        "branch_recut",
+                        f"{branch}@{target} -> {result.to_branch} "
+                        f"(remote tip was {remote_tip})",
+                        ok=True,
+                    )
+                    return result.to_branch
+        prior = [
+            e for e in (ctx.get("recut") or [])
+            if isinstance(e, dict) and e.get("from_branch") == branch
+        ]
+        suffix = (
+            f" (already recut once, to {prior[-1].get('to_branch')!r}; "
+            "not recutting again)"
+            if prior else ""
+        )
         raise ReviewedShaMismatch(
             f"delivery refused: branch {branch} remote tip {remote_tip} "
             f"(fetched) is not an ancestor of the reviewed sha {target} "
-            f"(human_gated_resume={human_gated_resume})")
+            f"(human_gated_resume={human_gated_resume}){suffix}")
+
+    def _record_recut(self, task: Task, result) -> None:
+        """In-memory-only bookkeeping for a just-performed recut.
+
+        `_reconcile_remote_branch` is a *sync* method and cannot itself
+        `await self.store.merge_context(...)`. It mutates `task.context`
+        in place instead; the one and only caller, `_assert_delivery_sha`,
+        is called from `_finalize`, which already performs a later
+        `await self.store.update_task(task)` once delivery succeeds — that
+        existing write persists this mutation too, in the same round trip.
+        (Hook 1, in `_run_attempt`, is `async` and persists immediately
+        instead — see `_recover_diverged_branch`.)
+
+        RFC 7396 JSON-merge-patch (`Store.merge_context`) REPLACES lists
+        wholesale rather than appending, so the existing list is read,
+        appended to, and the whole list is written back — never a bare
+        single-element merge.
+        """
+        ctx = task.context if isinstance(task.context, dict) else {}
+        entries = list(ctx.get("recut") or [])
+        entries.append({
+            "from_branch": result.from_branch,
+            "from_sha": result.reviewed_sha,
+            "remote_sha": result.remote_sha,
+            "to_branch": result.to_branch,
+            "at": _now(),
+        })
+        ctx["recut"] = entries
+        task.context = ctx
+
+    async def _post_recut_comment(
+        self, task: Task, from_branch: str, to_branch: str,
+        old_pr_url: str | None, new_pr_url: str,
+    ) -> None:
+        """Best-effort, idempotent note on the OLD (now-superseded) PR.
+
+        GitHub/GitLab cannot repoint a PR's head ref, so "repoint the PR" is
+        necessarily: a brand-new PR gets opened for `to_branch` by the
+        normal `open_pr` delivery path (already done by the time this is
+        called — `new_pr_url` is that PR's url), and the old PR — left open
+        and byte-for-byte untouched, never closed, retitled, or abandoned —
+        gets one upsert-keyed comment naming what happened. `key="recut"`
+        makes this idempotent across repeated attempts: a second delivery
+        on the same recut does not spam a second comment.
+
+        `old_pr_url` must be read by the caller BEFORE this attempt's own
+        delivery overwrites `ctx["pr_delivered_url"]`/`ctx["pr_watch"]` with
+        the new PR's url — this method never reads `task.context` itself,
+        precisely to avoid that trap.
+
+        Advisory only: any failure here (missing PR URL, forge API error)
+        is swallowed after being emitted, and must never fail an otherwise-
+        successful delivery.
+        """
+        if not old_pr_url:
+            return
+        parsed = pr_watcher.parse_pr_url(old_pr_url)
+        if parsed is None:
+            return
+        forge, host, slug, number = parsed
+        pr_ref = f"{slug}!{number}" if forge == "gitlab" else f"{host}/{slug}#{number}"
+        message = (
+            f"Superseded by a recut: `{from_branch}` diverged from its own "
+            f"pushed tip (remote was at the sha this task last pushed), so "
+            f"delivery cut a fresh branch `{to_branch}` at the already-"
+            f"reviewed sha and pushed that instead — nothing was force-"
+            f"pushed and this branch/PR was left untouched. "
+            + (f"New PR: {new_pr_url}" if new_pr_url else f"New branch: {to_branch}")
+        )
+        try:
+            await pr_watcher.upsert_agent_comment(pr_ref, message, key="recut")
+        except Exception as exc:  # noqa: BLE001 — advisory, never fails delivery
+            self.emit(
+                "recut_comment_failed",
+                f"could not post recut notice on {pr_ref}: {exc}",
+            )
 
     def _ahead_reviewed_candidate(
         self, repo, tip: str, ordered_shas: list[str], *, head_sha: str | None,
@@ -12391,8 +12693,15 @@ class Orchestrator:
 
     def _assert_delivery_sha(
         self, task: Task, repo, branch: str, *, human_gated_resume: bool = False,
-    ) -> str:
-        """Fail closed unless the branch tip about to be pushed is exactly a
+    ) -> tuple[str, str]:
+        """Returns `(sha, delivery_branch)`: the exact sha to push, and the
+        branch to push it to. `delivery_branch` is `branch` unchanged in
+        every case except a genuine divergence recovered mid-call by
+        `_reconcile_remote_branch` cutting a fresh branch (see that
+        method's docstring) — the caller (`_finalize`) must deliver on the
+        returned branch, not the one it was given.
+
+        Fail closed unless the branch tip about to be pushed is exactly a
         sha a passing review round stamped (or the review gate ran advisory
         no-reviewer pass-through this attempt, in which case no diff was ever
         judged and no stamp can exist) — or provably a descendant reachable
@@ -12430,7 +12739,7 @@ class Orchestrator:
                 "review gate ran advisory (no reviewer configured, "
                 "reviewer.allow_advisory=true), so nothing was ever reviewed",
             )
-            return tip
+            return tip, branch
         ordered_shas = self._passing_review_shas_in_order(task)
         shas = set(ordered_shas)
         if not shas:
@@ -12438,9 +12747,10 @@ class Orchestrator:
                 f"no review round stamped a sha for this task "
                 f"(human_gated_resume={human_gated_resume})")
         if tip in shas:
-            self._reconcile_remote_branch(
-                repo, branch, tip, human_gated_resume=human_gated_resume)
-            return tip
+            branch = self._reconcile_remote_branch(
+                repo, branch, tip, human_gated_resume=human_gated_resume,
+                task=task)
+            return tip, branch
         try:
             head_sha = repo.head_sha()
         except GitError:
@@ -12474,9 +12784,10 @@ class Orchestrator:
                 f"delivery refused: branch {branch} tip {tip} is not the "
                 f"reviewed sha (passing rounds stamped: {sorted(shas)}) "
                 f"(human_gated_resume={human_gated_resume})")
-        self._reconcile_remote_branch(
-            repo, branch, candidate, human_gated_resume=human_gated_resume)
-        return candidate
+        branch = self._reconcile_remote_branch(
+            repo, branch, candidate, human_gated_resume=human_gated_resume,
+            task=task)
+        return candidate, branch
 
     async def _already_satisfied_subject(
         self, task: Task, repo, *, base: str | None, branch: str | None,

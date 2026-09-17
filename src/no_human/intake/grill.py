@@ -110,6 +110,33 @@ Emit EXACTLY one ```json block. No other prose after it.
 """
 
 
+# Appended to the Previous Q&A section, and ONLY when there is history — an
+# empty history has nothing to not-re-ask, so the rule would be noise.
+# Deliberately brace-free: this string is a *substituted value* for
+# _GRILL_PROMPT.format(), so braces are safe today, but staying brace-free
+# makes it immune to a future double-format refactor.
+_ANSWERED_RULES = """\
+RULES ABOUT THE Q&A ABOVE:
+  - NEVER ask a question that is already answered in the Previous Q&A
+    above — not in the same words, and not in any rewording or narrowed
+    variant that seeks the same decision. The user has answered it. Asking
+    again is a RULE VIOLATION: it wastes one of the user's limited rounds
+    and reads as though their answer was ignored. Treat every answer above
+    as settled, move to a DIFFERENT open ambiguity, or emit the final spec.
+  - An answer may DECLINE to specify further instead of choosing: it defers
+    the decision to you, states no preference, or asks you to proceed,
+    continue, or skip ahead with what is already known. Judge this by what
+    the answer MEANS, not by matching any particular words or phrases, in
+    any phrasing and any language. Such an answer is a STOP signal, not an
+    ordinary answer. Do NOT re-ask it, do NOT rephrase it, and do NOT ask
+    about a different facet of the same ambiguity. Resolve what is left
+    open yourself with the most conservative, reversible, repo-evidenced
+    default, record that choice explicitly in the description or acceptance
+    criteria so the implementing agent is not blocked, and emit the final
+    spec now with type: "done".
+"""
+
+
 def _build_qa_section(qa_history: list[dict]) -> str:
     if not qa_history:
         return ""
@@ -117,7 +144,7 @@ def _build_qa_section(qa_history: list[dict]) -> str:
     for i, qa in enumerate(qa_history, 1):
         lines.append(f"  Q{i}: {qa['question']}")
         lines.append(f"  A{i}: {qa['answer']}")
-    return "\n".join(lines) + "\n"
+    return "\n".join(lines) + "\n" + _ANSWERED_RULES
 
 
 def parse_grill_response(
