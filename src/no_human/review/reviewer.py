@@ -47,6 +47,7 @@ from ..review.wiring_evidence import (
 )
 from ..core.jsonparse import loads_lenient
 from ..core.task import Task
+from .diff_coverage import DiffCoverageError, InspectionTracker, budget_diff
 
 log = logging.getLogger(__name__)
 
@@ -446,7 +447,7 @@ class ReviewDecision:
         return d
 
 
-def _git_diff(repo_path: Path, before: str = "HEAD~1", after: str = "HEAD") -> tuple[str, int]:
+def _git_diff(repo_path: Path, before: str = "HEAD~1", after: str = "HEAD") -> tuple[str, int, list[str]]:
     """Return (truncated_diff, total_length).
 
     `--no-ext-diff --no-textconv` are a SECURITY boundary, not formatting:
@@ -466,7 +467,11 @@ def _git_diff(repo_path: Path, before: str = "HEAD~1", after: str = "HEAD") -> t
         env=_git_subprocess_env("diff"),
     )
     raw = proc.stdout or ""
-    return raw[:_DIFF_CAP], len(raw)
+    try:
+        rendered, cut_paths = budget_diff(raw, _DIFF_CAP)
+    except DiffCoverageError as exc:
+        raise ReviewerUnavailable(f"review diff coverage unavailable: {exc}") from exc
+    return rendered, len(raw), cut_paths
 
 
 def _changed_paths(repo_path: Path, before: str, after: str,
@@ -593,7 +598,7 @@ def _linked_repos_review_section(linked: list[tuple[Path, str]]) -> str:
         "you may also read any linked repo by absolute path with your tools.\n"
     ]
     for lpath, lbefore in linked:
-        diff, total = _git_diff(lpath, lbefore, "HEAD")
+        diff, total, _cut_paths = _git_diff(lpath, lbefore, "HEAD")
         if not diff.strip():
             parts.append(
                 f"\n--- linked repo {lpath} — NO CHANGES in this repo ---\n"
@@ -2648,7 +2653,7 @@ class AdversarialReviewer:
                 prompt, repo_path, before_ref="HEAD", verify_citations=False)
 
         # Gate mode (default): original adversarial review.
-        full_files, omitted_files = "", []
+        full_files, omitted_files, cut_paths = "", [], []
         lint_evidence = ""
         wiring_evidence = ""
         type_evidence = ""
@@ -2667,7 +2672,7 @@ class AdversarialReviewer:
             diff = diff_override[:_DIFF_CAP]
             diff_total_len = len(diff_override)
         else:
-            diff, diff_total_len = _git_diff(repo_path, before_ref, after_ref)
+            diff, diff_total_len, cut_paths = _git_diff(repo_path, before_ref, after_ref)
             full_files, omitted_files = _full_file_context(
                 repo_path, before_ref, after_ref,
             )
@@ -2755,6 +2760,7 @@ class AdversarialReviewer:
                 prompt, repo_path, before_ref=before_ref,
                 max_turns=self._tier_review_turns(task),
                 extra_repos=linked_repos or None,
+                required_inspections=cut_paths,
             )
 
         # Bounded refute pass (gate path only — see the module-level comment
@@ -2945,6 +2951,7 @@ class AdversarialReviewer:
         *, max_turns: int = _REVIEW_TURNS, timeout: int | None = None,
         before_ref: str = "HEAD~1", verify_citations: bool = True,
         extra_repos: list[tuple[Path, str]] | None = None,
+        required_inspections: list[str] | None = None,
     ) -> ReviewDecision:
         """Multi-turn review — model can explore the repo with read-only tools.
 
@@ -3016,6 +3023,7 @@ class AdversarialReviewer:
                 prompt, repo_path, max_turns=budget, timeout=round_timeout,
                 before_ref=before_ref, verify_citations=verify_citations,
                 extra_repos=extra_repos,
+                required_inspections=required_inspections,
             )
             if decision is not None:
                 # `result`'s own usage is already stamped on `decision`.
@@ -3180,6 +3188,7 @@ class AdversarialReviewer:
         self, prompt: str, repo_path: Path, *, max_turns: int, timeout: int,
         before_ref: str = "HEAD~1", verify_citations: bool = True,
         extra_repos: list[tuple[Path, str]] | None = None,
+        required_inspections: list[str] | None = None,
     ) -> tuple[ReviewDecision | None, str, AgentResult | None]:
         """One reviewer session.
 
@@ -3192,11 +3201,13 @@ class AdversarialReviewer:
         decision it returns.
         """
         all_text_parts: list[str] = []
+        tracker = InspectionTracker(required_inspections)
         original_on_event = self._on_event
 
         def _capture_event(event):
             if event.text:
                 all_text_parts.append(event.text)
+            tracker.note_event(event)
             if original_on_event:
                 original_on_event(event)
 
@@ -3269,4 +3280,7 @@ class AdversarialReviewer:
         # Default None, not 0 — an absent split must stay distinguishable from
         # a measured zero all the way to `attempts.review_output_tokens`.
         decision.output_tokens = getattr(result, "output_tokens", None)
+        rejection = tracker.rejection()
+        if rejection:
+            return None, rejection, result
         return decision, "", result

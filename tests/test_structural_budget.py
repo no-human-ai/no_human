@@ -2206,7 +2206,21 @@ FROZEN_FILE_LINES = {
     # BLOCK apart from a genuine pass, and a pass that only happened because
     # every blocking finding was demoted apart from a clean one. Measured on
     # this tree with the scanner below.
-    "review/reviewer.py": 3272,
+    # 3272 -> 3286 (+14): per-file diff budget (issue #437). Blind prefix
+    # truncation cut the diff at `_DIFF_CAP` and git orders `src/` before
+    # `tests/`, so on a large change the test files were dropped first and a
+    # reviewer reached a verdict having never seen them. `_git_diff` now
+    # renders through `budget_diff`, fails closed on `DiffCoverageError`, and
+    # returns the paths it had to cut; those are threaded to the reviewer
+    # session, which rejects a verdict that never referenced them. The +14 is
+    # wiring only — the import, the `try`/`except` around `budget_diff`, and
+    # `required_inspections` through three signatures. The mechanism itself
+    # (the tool-input walk and the rejection message) lives in
+    # `review/diff_coverage.py` as `InspectionTracker`, next to the coverage
+    # note it enforces and unit-testable there; leaving it inline here cost
+    # +27. `AdversarialReviewer.review` stays at 300 and off
+    # FROZEN_FUNCTION_LINES. Measured on this merge with the scanner below.
+    "review/reviewer.py": 3286,
     # 2706 -> 2711 (+5): pre-existing red on main at 03b262d23 (e922e9b4's
     # landing, change-scoped tests missed the ratchet) — repaired, measured,
     # on this merge; same cause as the two function-level wake.py bumps above.
