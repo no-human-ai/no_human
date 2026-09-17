@@ -1,6 +1,6 @@
 # Evidence ledger
 
-_Harness-captured record for task `9cd3ed94`, commit `38b09c3bf2b9959d9f25f3c4fc35ceb410aaa680` — not model-authored: no_human wrote this file from this attempt's gate outputs. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `9cd3ed94`, commit `16ed6e8176518100e7d2d6916659e4592db12dec` — not model-authored: no_human wrote this file from this attempt's gate outputs. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 These files back the pull request's **Evidence** table and its "How I verified this" section; the body links to them at this commit, so what it points at cannot change. `verification.md` carries the command log and, when commands were recorded, the list of what that log cannot attest.
 
