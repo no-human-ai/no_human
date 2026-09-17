@@ -181,7 +181,13 @@ FROZEN_FUNCTION_LINES = {
     # hook body, not here — this is only the call site plus its
     # explanatory comment and the once-per-branch context bookkeeping it
     # threads through. Measured on this tree with the scanner below.
-    "core/orchestrator.py:Orchestrator._run_attempt": 2308,
+    # 2308 -> 2311 (+3): rework-after-rejection reconvergence fix — the
+    # `_recover_diverged_branch` call site now checks `exc.blocker` and
+    # routes to `_raise_blocker` when the exception carries a pre-built
+    # structured blocker (the unavoidable-divergence escalation), falling
+    # back to the existing `_escalate` string path otherwise. Measured on
+    # this tree with the scanner below.
+    "core/orchestrator.py:Orchestrator._run_attempt": 2311,
     # 760 -> 778 (+18): dispatch-time intake-eval hoisted path — the `elif
     # ctx.get("eval_result")` branch that acts on a grill/wizard-stored
     # verdict (idempotency marker, cost/residual-gap comments) added inside
@@ -253,7 +259,13 @@ FROZEN_FUNCTION_LINES = {
     # they differ, and posts the idempotent "superseded by" comment on the
     # old PR via `_post_recut_comment` (guarded so it fires at most once
     # per recut). Measured on this tree with the scanner below.
-    "core/orchestrator.py:Orchestrator._finalize": 470,
+    # 470 -> 473 (+3): rework-after-rejection reconvergence fix — the
+    # `_assert_delivery_sha` call site now checks `exc.blocker` and routes
+    # to `_raise_blocker` when the exception carries a pre-built structured
+    # blocker (the unavoidable-divergence escalation), falling back to the
+    # existing `_escalate` string path otherwise. Measured on this tree
+    # with the scanner below.
+    "core/orchestrator.py:Orchestrator._finalize": 473,
     # Pre-existing on main (measured red at d3d7d3a82a, this session's start):
     # an earlier fleet land grew stream() +6 without re-freezing it on its
     # merge result — the same "landed without measuring the ratchet" failure
@@ -548,7 +560,11 @@ FROZEN_FUNCTION_CC = {
     # `if recut_branch != branch:` guard on the returned (possibly rebound)
     # branch, matching the shape of the sibling preflight call sites
     # already counted above. Measured on this tree with the scanner below.
-    "core/orchestrator.py:Orchestrator._run_attempt": 257,
+    # 257 -> 258 (+1): rework-after-rejection reconvergence fix — the
+    # `if exc.blocker is not None:` branch added to the existing
+    # `ReviewedShaMismatch` handler adds one `If` node. Measured on this
+    # tree with the scanner below.
+    "core/orchestrator.py:Orchestrator._run_attempt": 258,
     # Landing of 4e0299ad: unchanged at 115 — the harness row is dropped by
     # the comprehension filter inside `_reviewer_items`, which the scanner
     # counts the same as the `if` it replaced (the first landing pass had a
@@ -1498,7 +1514,16 @@ FROZEN_FILE_LINES = {
     # push) live in the new `vcs/recut.py`, not here — this is the
     # orchestrator-side wiring only. Measured on this tree with the
     # scanner below.
-    "core/orchestrator.py": 25039,
+    # 25039 -> 25144 (+105): rework-after-rejection reconvergence fix —
+    # the `already_reconverged`/`divergence_summary`/`is_rework_after_rejection`/
+    # `reconverge` imports from `vcs/reconverge.py`, the new
+    # `_reconverge_rework` method (attempts an automatic rebase of the
+    # rework onto its own pushed tip before falling back to recut), the
+    # `is_rework_after_rejection` check gating it in
+    # `_recover_diverged_branch`, and the two `exc.blocker` branches routing
+    # to `_raise_blocker` at the divergence escalation sites. Measured on
+    # this tree with the scanner below.
+    "core/orchestrator.py": 25144,
 
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
