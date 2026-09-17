@@ -825,7 +825,8 @@ whenever the *page's own* navigated-to hostname is literally `localhost` or
 that case, regardless of `recordBody`/`recordHeaders`; the only override is
 an internal runtime property, not an `init()` option, and this app does not
 set it). This board "ALWAYS serves on 127.0.0.1" for the common local-only
-case (see `web/src/telemetry.js`'s header comment), so for that specific,
+case (see the `internal_or_test_user_hostname` comment in
+`web/src/telemetry.js`'s `initTelemetry`), so for that specific,
 common deployment mode the leak this fix addresses was already suppressed by
 the SDK's own dev-safety default, independently of `replayScrub.js`. That
 guard does **not** apply when the board is reached over a LAN IP, a custom

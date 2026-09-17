@@ -1,5 +1,7 @@
 """Tests for local test-command detection (testing/runner.py)."""
 
+import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -474,6 +476,80 @@ def test_fix_invocation_reruns_bare_pytest_via_our_interpreter(tmp_path):
     assert fixed is not None
     assert fixed.startswith(sys.executable)
     assert fixed.endswith("-m pytest -q")
+
+
+def test_the_pytest_rescue_never_re_invokes_the_frozen_nh_binary(tmp_path, monkeypatch):
+    """AC1: under a frozen build (``sys.frozen=True``) ``sys.executable`` IS
+    the frozen ``nh`` binary — `nh -m pytest` dies in click's own argument
+    parser ("No such option '-m'") instead of running anything. The class-3
+    rescue must resolve a REAL interpreter instead: the target repo's own
+    venv first, then a PATH python."""
+    from no_human.testing.runner import _fix_invocation
+
+    nh = tmp_path / "nh"
+    nh.write_text("", encoding="utf-8")
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(nh))
+
+    out = "ModuleNotFoundError: No module named 'pytest'"
+
+    # Repo venv present -> preferred over PATH.
+    repo = tmp_path / "repo"
+    sub, name = ("Scripts", "python.exe") if os.name == "nt" else ("bin", "python")
+    venv_python = repo / ".venv" / sub / name
+    venv_python.parent.mkdir(parents=True)
+    venv_python.write_text("", encoding="utf-8")
+
+    result = _fix_invocation("pytest -q", out, repo)
+    assert result is not None
+    assert result.split()[0] == str(venv_python)
+    assert str(nh) not in result
+    assert result.endswith("-m pytest -q")
+
+    # No repo venv -> falls back to a PATH python.
+    repo2 = tmp_path / "repo2"
+    repo2.mkdir()
+    monkeypatch.setattr(shutil, "which", lambda _n: "/usr/bin/python3")
+    result2 = _fix_invocation("pytest -q", out, repo2)
+    assert result2 is not None
+    assert result2.split()[0] == "/usr/bin/python3"
+    assert str(nh) not in result2
+    assert result2.endswith("-m pytest -q")
+
+
+def test_an_ordinary_install_rescue_is_byte_identical(tmp_path, monkeypatch):
+    """AC2: off a freeze the rescue is unchanged — the repo's venv is
+    ignored (real_python short-circuits to sys.executable) and the rewritten
+    command is byte-identical to before this fix."""
+    from no_human.testing.runner import _fix_invocation
+
+    monkeypatch.delattr(sys, "frozen", raising=False)
+    sub, name = ("Scripts", "python.exe") if os.name == "nt" else ("bin", "python")
+    venv_python = tmp_path / ".venv" / sub / name
+    venv_python.parent.mkdir(parents=True)
+    venv_python.write_text("", encoding="utf-8")
+
+    out = "ModuleNotFoundError: No module named 'pytest'"
+    assert _fix_invocation("pytest -q", out, tmp_path) == f"{sys.executable} -m pytest -q"
+
+
+def test_the_pytest_rescue_fails_closed_when_no_real_python_exists(tmp_path, monkeypatch):
+    """AC3: frozen, no repo venv, no PATH python -> None. The caller
+    (`run_tests`) already skips the retry on a None `retry_cmd`, so this
+    settles at honest "no test evidence" -- never an `nh -m pytest` argv."""
+    from no_human.testing.runner import _fix_invocation
+
+    nh = tmp_path / "nh"
+    nh.write_text("", encoding="utf-8")
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(nh))
+    monkeypatch.setattr(shutil, "which", lambda _n: None)
+
+    for out in (
+        "ModuleNotFoundError: No module named 'pytest'",
+        "sh: 1: pytest: not found",
+    ):
+        assert _fix_invocation("pytest -q", out, tmp_path) is None, out
 
 
 def test_fix_invocation_leaves_a_project_dep_gap_honest(tmp_path):
