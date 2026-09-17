@@ -663,6 +663,22 @@ ALLOWLIST: dict[str, dict[str, Allowed]] = {
             "gate's changed-pinned-files refusal (commit_with_manifest_repair, "
             "approve_pending_pins, write_pending_manifest)"),
     },
+    # Its own module ON PURPOSE, same precedent as vcs/manifest_repair.py's
+    # comment above: the `<dynamic>` bucket is per-file.
+    "vcs/derived_conflict.py": {
+        "exec:<dynamic>": Allowed(
+            "nothing off this machine — `[<interpreter>, '-c', 'import "
+            "pytest']` (`_interpreter_has_pytest`, :159), a local self-check "
+            "that the interpreter `proc.real_python` resolved actually "
+            "carries this repo's dependencies BEFORE it is ever used to run "
+            "`scripts/check_release_manifest.py --write` (the manifest-only "
+            "conflict's mechanical fix). `<interpreter>` is the same "
+            "resolution vcs/manifest_repair.py's row above documents; this "
+            "call imports one stdlib-adjacent module and exits — it dials "
+            "nothing",
+            _ON + "the derived-conflict watcher (blockers/wake.py), "
+            "whenever a PR's only conflicting path is RELEASE_MANIFEST.txt"),
+    },
     "vcs/github.py": {
         "exec:gh": Allowed("your GitHub host — PR create/read",
                            _ON + "open_pr terminates every task"),
