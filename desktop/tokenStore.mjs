@@ -216,10 +216,17 @@ export function envPath(home = os.homedir()) {
 }
 
 /** Parse KEY=VALUE lines. Later wins, matching dotenv; comments preserved by
- *  writeToken, which edits lines rather than re-serialising this map. */
+ *  writeToken, which edits lines rather than re-serialising this map.
+ *
+ * Splits on `/\r?\n/`, NOT `"\n"`: on a CRLF file, `"\n"`-splitting leaves a
+ * trailing `\r` on every line. JS `.` excludes ALL line terminators
+ * (including `\r`), and the regex below is un-anchored by `m`, so `$` demands
+ * end-of-string — the `\r` makes the WHOLE LINE fail to match and it is
+ * silently dropped, not merely mis-trimmed. There is no value to `.trim()`;
+ * the split is the fix. */
 export function parseEnv(text) {
   const out = {};
-  for (const line of text.split("\n")) {
+  for (const line of text.split(/\r?\n/)) {
     const m = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/);
     if (m) out[m[1]] = m[2].trim();
   }
@@ -243,7 +250,7 @@ export function configuredProfile(home = os.homedir()) {
     const text = fs.readFileSync(
       path.join(home, ".no_human", "config.yaml"), "utf8");
     let inLlm = false;
-    for (const line of text.split("\n")) {
+    for (const line of text.split(/\r?\n/)) {
       if (/^llm\s*:/.test(line)) { inLlm = true; continue; }
       if (inLlm) {
         if (/^\S/.test(line)) break;
@@ -372,7 +379,7 @@ function writeEnvVar(key, value, home) {
 
   let lines = [];
   try {
-    lines = fs.readFileSync(p, "utf8").split("\n");
+    lines = fs.readFileSync(p, "utf8").split(/\r?\n/);
   } catch { /* first run — no file yet */ }
 
   // Remove EVERY existing occurrence, not just the first: dotenv (and parseEnv)
@@ -442,7 +449,7 @@ export function configuredAuthMode(home = os.homedir()) {
     const text = fs.readFileSync(
       path.join(home, ".no_human", "config.yaml"), "utf8");
     let inLlm = false;
-    for (const line of text.split("\n")) {
+    for (const line of text.split(/\r?\n/)) {
       if (/^llm\s*:/.test(line)) { inLlm = true; continue; }
       if (inLlm) {
         if (/^\S/.test(line)) break;
