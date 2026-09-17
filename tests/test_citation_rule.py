@@ -9,6 +9,7 @@ verdict, so they never fail the gate, and the demotion is loud.
 
 from __future__ import annotations
 
+import json
 import subprocess
 
 import pytest
@@ -112,3 +113,25 @@ def test_without_a_repo_path_parsing_is_unchanged(repo):
     ]))
     assert not d.passed
     assert not d.demoted_citations
+
+
+def test_passed_due_to_demotion_distinguishes_a_demoted_pass_from_a_clean_one(repo):
+    """`passed_due_to_demotion` is True exactly on the demote-and-pass path
+    this file exercises above, and False on an ordinary clean pass — see
+    tests/test_citation_root_mismatch.py for the mismatch-path coverage."""
+    demoted = _parse_review_output(_review([
+        {"label": "ghost", "passed": False, "severity": "critical",
+         "evidence": "x", "file": "src/does_not_exist.py", "line": 10},
+    ]), repo_path=repo, before_ref="HEAD~1")
+    assert demoted.passed and demoted.demoted_citations
+    assert demoted.passed_due_to_demotion is True
+
+    clean_text = ("REVIEW_JSON_START\n"
+                  + json.dumps({"passed": True, "items": [
+                      {"label": "ok", "passed": True, "severity": "",
+                       "evidence": "", "file": "", "line": 0},
+                  ]})
+                  + "\nREVIEW_JSON_END")
+    clean = _parse_review_output(clean_text, repo_path=repo, before_ref="HEAD~1")
+    assert clean.passed
+    assert clean.passed_due_to_demotion is False

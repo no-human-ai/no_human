@@ -1392,12 +1392,13 @@ def test_linked_repo_citation_demoted_only_without_the_linked_repo(linked_pair):
 
     single = ChecklistItem(label="stub", passed=False, evidence="no-op",
                            file="service.py", line=3, severity="critical")
-    demoted_single = _verify_citations([single], primary := linked_pair[0], "HEAD~1")
+    demoted_single, _undemotable_single = _verify_citations(
+        [single], primary := linked_pair[0], "HEAD~1")
     assert demoted_single and single.severity == "low"  # old behaviour: demoted
 
     multi = ChecklistItem(label="stub", passed=False, evidence="no-op",
                           file="service.py", line=3, severity="critical")
-    demoted_multi = _verify_citations(
+    demoted_multi, _undemotable_multi = _verify_citations(
         [multi], primary, "HEAD~1", extra_repos=[(linked_pair[1], "HEAD~1")])
     assert not demoted_multi and multi.severity == "critical"  # kept blocking
 

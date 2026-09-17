@@ -408,13 +408,18 @@ A citation that drifts within the window still passes (with a `UserWarning`)
 but should be re-anchored, not left to rely on the tolerance forever:
 
 ```
-uv run python scripts/reanchor_citations.py --check   # is anything drifted?
-uv run python scripts/reanchor_citations.py --apply   # rewrite doc + table
+uv run python scripts/reanchor_citations.py --check       # is anything drifted?
+uv run python scripts/reanchor_citations.py --apply       # rewrite doc + table
+uv run python scripts/reanchor_citations.py --reconcile   # force doc + table to source
 ```
 
 `--apply` rewrites both the doc's citation and its matching row in
 `CITATION_TABLE` together, or writes neither — it never guesses which
 occurrence to rewrite when a citation's raw text appears more than once.
+
+Use `--reconcile` when the documentation citation and `CITATION_TABLE` have diverged.
+It derives both surfaces independently from the source. It is the explicit opt-in
+reconciliation mode.
 
 ### Referring to code from source comments
 
