@@ -1,12 +1,12 @@
 # Verifiers
 
-_Harness-captured record for task `0d637473`, commit `34dd24dc85d7138d8e1394d4f7ab53157111555a` — not model-authored: no_human wrote this file from the deterministic verifier rules selected for this commit's files. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `0d637473`, commit `8f2da7fdddbb9618993ca10b17b684f2b595d91b` — not model-authored: no_human wrote this file from the deterministic verifier rules selected for this commit's files. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ```json
 [
   {
-    "comment": "All test functions added in the new file and the modified tests in test_telemetry.py contain assert statements or pytest.raises blocks; the modifications to test_telemetry_environment.py and test_structural_budget.py only touch data dicts, not test bodies.",
-    "evidence": "Every added test function contains at least one assertion, e.g. test_never_started_emits_nothing has `assert _queue_lines(temp_home) == []` and test_unlisted_step_value_raises uses `with pytest.raises(ValueError, match=\"not allowed\")`.",
+    "comment": "All 27 added test functions and the modified tests in test_telemetry.py contain at least one assertion or pytest.raises block; no assertion-free test was introduced.",
+    "evidence": "Every def test_* in the new file and modified tests contains asserts/pytest.raises, e.g. test_never_started_emits_nothing has `assert _queue_lines(temp_home) == []` and test_unlisted_step_value_raises uses `with pytest.raises(ValueError, match=\"not allowed\")`.",
     "file": "tests/test_onboarding_funnel_telemetry.py",
     "files_checked": [
       "tests/test_onboarding_funnel_telemetry.py",
@@ -18,13 +18,13 @@ _Harness-captured record for task `0d637473`, commit `34dd24dc85d7138d8e1394d4f7
     "no_verdict": false,
     "passed": true,
     "severity": "medium",
-    "tokens_used": 1067,
+    "tokens_used": 1315,
     "unavailable": false,
     "verifier_id": "tests-assert-something"
   },
   {
-    "comment": "Purely behavioral/telemetry change with no styling or color touched, so the light/dark theme color-token constraint is vacuously satisfied.",
-    "evidence": "The diff adds only onboarding funnel telemetry (recordOnboardingStep, makeStepReporter, a useEffect/useRef wiring, a replayScrub classification entry, and tests). No JSX className, inline style, or CSS color is added or modified, and no hex/rgb/hsl literal appears anywhere in the change.",
+    "comment": "This change is purely funnel-telemetry plumbing; it introduces no colors at all, so the no-hardcoded-color / theme-token requirement is satisfied vacuously.",
+    "evidence": "The diff adds only telemetry logic (onboardingFunnel.js, recordOnboardingStep, a useEffect/useRef step reporter, replayScrub classification) \u2014 no JSX className color changes, no inline style properties, and no hex/rgb/hsl color literals anywhere in the changed lines.",
     "file": "",
     "files_checked": [
       "web/src/Onboarding.jsx",
@@ -37,7 +37,7 @@ _Harness-captured record for task `0d637473`, commit `34dd24dc85d7138d8e1394d4f7
     "no_verdict": false,
     "passed": true,
     "severity": "medium",
-    "tokens_used": 335,
+    "tokens_used": 350,
     "unavailable": false,
     "verifier_id": "board-uses-theme-tokens"
   }
