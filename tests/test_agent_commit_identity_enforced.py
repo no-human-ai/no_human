@@ -816,3 +816,428 @@ def test_commit_identities_puts_exclude_shas_before_the_trailing_dashdash(
     assert f"^{sha2}" in argv[:dashdash_index]
     assert argv.index(f"^{sha1}") < dashdash_index
     assert argv.index(f"^{sha2}") < dashdash_index
+
+
+# --------------------------------------------------------------------------- #
+# (9) — closing the three post-rebase false-positive classes without         #
+# reopening the d6b79919 laundering path: a SECOND pin, the `origin` URL     #
+# string itself (never a sha, never coder-writable), lets the gate-time      #
+# read of `refs/heads/<base>` cover base content that lands after `base_pin` #
+# was taken, and a bounded patch-equivalence check covers content a          #
+# `git rebase` re-committed under new shas — both additive-only, both fail   #
+# closed.                                                                     #
+# --------------------------------------------------------------------------- #
+
+
+def _bare_with_work(tmp_path, name="w9"):
+    """A bare `origin` + a working clone on `main`, `git config user.*` the
+    OPERATOR identity, `main` pushed — the shared setup every test below
+    attacks or extends differently. Leaves `work` checked out on `main`
+    (callers cut their own attempt branch from whatever tip they need)."""
+    bare = tmp_path / f"{name}-origin.git"
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(bare)],
+                    check=True, capture_output=True)
+    work = tmp_path / f"{name}-work"
+    work.mkdir()
+    _git(work, "init", "-q", "-b", "main")
+    _git(work, "config", "user.email", _OPERATOR_EMAIL)
+    _git(work, "config", "user.name", _OPERATOR_NAME)
+    (work / "f.txt").write_text("base\n")
+    _git(work, "add", "-A")
+    _git(work, "commit", "-q", "-m", "init")
+    _git(work, "remote", "add", "origin", str(bare))
+    _git(work, "push", "-q", "-u", "origin", "main")
+    return bare, work
+
+
+def _commit_as(work, message, *, author_name, author_email,
+               committer_name=None, committer_email=None):
+    """A commit stamped with an explicit author/committer pair via env,
+    bypassing the repo's `git config user.*` entirely — the same technique
+    `_AGENT_ENV` uses, generalised to arbitrary (including foreign/human)
+    identities. Assumes the change is already staged or is a tracked-file
+    modification (`-am`)."""
+    env = dict(os.environ)
+    env["GIT_AUTHOR_NAME"] = author_name
+    env["GIT_AUTHOR_EMAIL"] = author_email
+    env["GIT_COMMITTER_NAME"] = committer_name or author_name
+    env["GIT_COMMITTER_EMAIL"] = committer_email or author_email
+    subprocess.run(["git", "commit", "-q", "-am", message], cwd=work,
+                    env=env, check=True, capture_output=True, text=True)
+    return _git(work, "rev-parse", "HEAD")
+
+
+def test_rebased_base_commits_are_not_flagged(tmp_path):
+    """AC1. `origin/main` gets three operator commits; the attempt branch is
+    cut from main's tip; the agent's own `git rebase`-shaped replay
+    re-commits those three under NEW shas with the original (operator)
+    author preserved and the CURRENT (agent) identity stamped as committer
+    — exactly the shape `git rebase` produces when replaying inherited base
+    commits onto a base that was itself rewritten upstream. Built with
+    `cherry-pick` rather than a literal `git rebase` invocation so the
+    resulting shas/authors/committers are pinned exactly; the mechanism
+    (preserve author, stamp the current committer) is identical.
+
+    RED on base: `GitRepo.base_equivalent_commits` does not exist there —
+    this call raises `AttributeError`."""
+    bare, work = _bare_with_work(tmp_path, "rebase")
+    base_shas = []
+    for i in range(3):
+        (work / "f.txt").write_text(f"op{i}\n")
+        _git(work, "commit", "-q", "-am", f"op commit {i}")
+        base_shas.append(_git(work, "rev-parse", "HEAD"))
+    _git(work, "push", "-q", "origin", "main")
+    _git(work, "checkout", "-q", "-b", "nh/attempt-1")
+    since_sha = _git(work, "rev-parse", "nh/attempt-1")
+
+    repo = GitRepo(work)
+    base_pin = repo.ls_remote_exact("refs/heads/main")
+    remote_pin = str(bare)
+    assert base_pin == base_shas[-1]
+
+    # The rewrite: reset the attempt branch to the pre-base-commits point,
+    # then cherry-pick each base commit UNDER THE AGENT'S ENV — cherry-pick
+    # preserves the original author but stamps the current identity as
+    # committer, exactly the `git rebase` replay shape.
+    _git(work, "reset", "-q", "--hard", "HEAD~3")
+    env = {**os.environ, **_AGENT_ENV}
+    rewritten = []
+    for sha in base_shas:
+        subprocess.run(["git", "cherry-pick", sha], cwd=work, env=env,
+                        check=True, capture_output=True, text=True)
+        rewritten.append(_git(work, "rev-parse", "HEAD"))
+    assert rewritten != base_shas, "the rewrite must produce new shas"
+
+    # The agent's own contribution, cleanly under its own identity.
+    (work / "g.txt").write_text("agent work\n")
+    subprocess.run(["git", "add", "g.txt"], cwd=work, check=True,
+                    capture_output=True)
+    subprocess.run(["git", "commit", "-q", "-m", "agent work"], cwd=work,
+                    env=env, check=True, capture_output=True, text=True)
+
+    orch = _orch(tmp_path)
+    offenders = orch._foreign_authored_commits(
+        repo, "main", since=since_sha, base_pin=base_pin, remote_pin=remote_pin,
+    )
+    assert offenders == [], offenders
+
+    for sha in rewritten:
+        is_ancestor = subprocess.run(
+            ["git", "-C", str(work), "merge-base", "--is-ancestor", sha, base_pin],
+            capture_output=True,
+        )
+        assert is_ancestor.returncode != 0, (
+            "the rewritten sha must NOT be an ancestor of the pin — the "
+            "pass must come from patch equivalence, not ancestry"
+        )
+
+
+def test_base_commit_that_landed_after_the_pin_is_not_flagged(tmp_path):
+    """AC2a. A pin is taken; only AFTER that does a new operator commit land
+    on `origin/main` (ordinary upstream progress during a long attempt);
+    the attempt branch merges it in. Without `remote_pin` it is still
+    flagged — the pin alone doesn't cover it, since it postdates the pin;
+    with `remote_pin`, the gate-time re-read of the pinned URL covers it.
+
+    RED on base: `_foreign_authored_commits`/`_base_exclusion_refs` accept
+    no `remote_pin` keyword there — this call raises `TypeError`."""
+    bare, work = _bare_with_work(tmp_path, "after-pin")
+    _git(work, "checkout", "-q", "-b", "nh/attempt-1")
+    since_sha = _git(work, "rev-parse", "nh/attempt-1")
+
+    repo = GitRepo(work)
+    base_pin = repo.ls_remote_exact("refs/heads/main")
+    remote_pin = str(bare)
+
+    # Upstream progress AFTER the pin — a second, independent clone, so the
+    # attempt branch's own checkout is untouched by it.
+    other = tmp_path / "after-pin-other"
+    subprocess.run(["git", "clone", "-q", str(bare), str(other)], check=True,
+                    capture_output=True)
+    _git(other, "config", "user.email", _OPERATOR_EMAIL)
+    _git(other, "config", "user.name", _OPERATOR_NAME)
+    (other / "f.txt").write_text("landed after pin\n")
+    _git(other, "commit", "-q", "-am", "op commit after pin")
+    after_pin_sha = _git(other, "rev-parse", "HEAD")
+    _git(other, "push", "-q", "origin", "main")
+
+    _git(work, "fetch", "-q", "origin")
+    env = {**os.environ, **_AGENT_ENV}
+    subprocess.run(["git", "merge", "-q", "--no-ff", "-m", "merge main",
+                    "origin/main"], cwd=work, env=env, check=True,
+                   capture_output=True, text=True)
+
+    orch = _orch(tmp_path)
+    offenders_no_remote_pin = orch._foreign_authored_commits(
+        repo, "main", since=since_sha, base_pin=base_pin,
+    )
+    assert any(after_pin_sha[:8] in o for o in offenders_no_remote_pin), (
+        "without remote_pin the pin alone must not cover a base commit "
+        "that landed after it"
+    )
+
+    offenders_with_remote_pin = orch._foreign_authored_commits(
+        repo, "main", since=since_sha, base_pin=base_pin, remote_pin=remote_pin,
+    )
+    assert offenders_with_remote_pin == [], offenders_with_remote_pin
+
+
+def test_external_contributor_base_commit_reaches_the_branch_cleanly(tmp_path):
+    """AC2b. Same shape as AC2a, but the base commit that lands after the
+    pin is authored by a genuine external contributor
+    (`author=Sreekant Baheti`, `committer=GitHub <noreply@github.com>` — the
+    real shape a squash-merged GitHub PR produces) rather than the
+    operator. Still excused once `remote_pin` is supplied — the exclusion
+    is rooted in WHAT the base branch actually has, not in whose identity
+    put it there."""
+    bare, work = _bare_with_work(tmp_path, "external")
+    _git(work, "checkout", "-q", "-b", "nh/attempt-1")
+    since_sha = _git(work, "rev-parse", "nh/attempt-1")
+
+    repo = GitRepo(work)
+    base_pin = repo.ls_remote_exact("refs/heads/main")
+    remote_pin = str(bare)
+
+    other = tmp_path / "external-other"
+    subprocess.run(["git", "clone", "-q", str(bare), str(other)], check=True,
+                    capture_output=True)
+    (other / "f.txt").write_text("external contribution\n")
+    contributor_sha = _commit_as(
+        other, "external PR",
+        author_name="Sreekant Baheti", author_email="sreekant@example.com",
+        committer_name="GitHub", committer_email="noreply@github.com",
+    )
+    _git(other, "push", "-q", "origin", "main")
+
+    _git(work, "fetch", "-q", "origin")
+    env = {**os.environ, **_AGENT_ENV}
+    subprocess.run(["git", "merge", "-q", "--no-ff", "-m", "merge main",
+                    "origin/main"], cwd=work, env=env, check=True,
+                   capture_output=True, text=True)
+
+    orch = _orch(tmp_path)
+    offenders = orch._foreign_authored_commits(
+        repo, "main", since=since_sha, base_pin=base_pin, remote_pin=remote_pin,
+    )
+    assert offenders == [], (contributor_sha, offenders)
+
+
+def test_coder_movable_refs_cannot_widen_the_exclusion(tmp_path):
+    """AC3. `remote_pin` is captured ONCE, before the coder session, as a
+    plain URL string — the same discipline `base_pin` already gets for the
+    sha. Everything the coder CAN move locally (`remote.origin.url`,
+    `remote.origin.push`, the local `main` ref, `refs/remotes/origin/main`)
+    is exercised here; none of it can retarget what `remote_pin` names,
+    because `ls_remote_exact(ref, remote=remote_pin)` passes that string
+    straight to `git ls-remote <remote_pin> <ref>` — it never consults
+    local git config at all."""
+    bare, work = _bare_with_work(tmp_path, "movable")
+    _git(work, "checkout", "-q", "-b", "nh/attempt-1")
+    since_sha = _git(work, "rev-parse", "nh/attempt-1")
+
+    repo = GitRepo(work)
+    base_pin = repo.ls_remote_exact("refs/heads/main")
+    remote_pin = str(bare)  # captured BEFORE the "coder session" below
+
+    # The rogue remote: a fork of the real history with one forged commit
+    # added on top — shares history with the real base (the realistic
+    # shape of an attacker-controlled fork), so the merge below is an
+    # ordinary fast-forward-able merge, not an unrelated-histories one.
+    rogue = tmp_path / "movable-rogue.git"
+    subprocess.run(["git", "clone", "-q", "--bare", str(bare), str(rogue)],
+                    check=True, capture_output=True)
+    rogue_work = tmp_path / "movable-rogue-work"
+    subprocess.run(["git", "clone", "-q", str(rogue), str(rogue_work)],
+                    check=True, capture_output=True)
+    (rogue_work / "f.txt").write_text("forged\n")
+    subprocess.run(["git", "add", "-A"], cwd=rogue_work, check=True,
+                    capture_output=True)
+    forged_sha = _commit_as(
+        rogue_work, "forged commit",
+        author_name="Mallory", author_email="mallory@evil.example",
+    )
+    _git(rogue_work, "push", "-q", "origin", "main")
+
+    # "the coder": repoint everything it CAN reach.
+    _git(work, "remote", "set-url", "origin", str(rogue))
+    _git(work, "config", "remote.origin.push", "+refs/heads/*:refs/heads/*")
+    _git(work, "fetch", "-q", str(rogue), "main")
+    _git(work, "update-ref", "refs/heads/main", forged_sha)
+    _git(work, "update-ref", "refs/remotes/origin/main", forged_sha)
+
+    env = {**os.environ, **_AGENT_ENV}
+    subprocess.run(["git", "merge", "-q", "--no-ff", "-m", "merge main",
+                    "main"], cwd=work, env=env, check=True,
+                   capture_output=True, text=True)
+
+    orch = _orch(tmp_path)
+    offenders = orch._foreign_authored_commits(
+        repo, "main", since=since_sha, base_pin=base_pin, remote_pin=remote_pin,
+    )
+    assert any(forged_sha[:8] in o for o in offenders), (
+        "the forged commit must remain an offender: remote_pin is the "
+        "REAL url captured before the attack, immune to every local "
+        "config/ref move the coder made afterward"
+    )
+    assert orch._base_exclusion_refs(
+        repo, base_pin, base="main", remote_pin=remote_pin,
+    ) == [base_pin], (
+        "moving local refs/config must not widen the exclusion root beyond "
+        "the real base pin"
+    )
+
+
+def test_patch_equivalence_is_rooted_only_in_the_real_remote_base(tmp_path):
+    """AC3b. A commit patch-equal to one that exists only on a coder-created
+    local branch — never on the real, pinned base — must still be flagged:
+    `base_equivalent_commits` is only ever called with a root
+    `_base_exclusion_refs` has independently verified (the pin, or a
+    gate-time read proven present via `ensure_remote_commit`), so patch
+    equivalence to content that lives ONLY on a coder-controlled ref must
+    never itself become an excuse."""
+    bare, work = _bare_with_work(tmp_path, "equiv-root")
+    _git(work, "checkout", "-q", "-b", "nh/attempt-1")
+    since_sha = _git(work, "rev-parse", "nh/attempt-1")
+
+    repo = GitRepo(work)
+    base_pin = repo.ls_remote_exact("refs/heads/main")
+    remote_pin = str(bare)
+
+    # A coder-only local branch carrying content the real base never had.
+    _git(work, "checkout", "-q", "-b", "coder-local", "main")
+    (work / "f.txt").write_text("only on a local branch\n")
+    _git(work, "commit", "-q", "-am", "local-only content")
+    _git(work, "checkout", "-q", "nh/attempt-1")
+
+    # The attempt branch gets a commit with the IDENTICAL patch, under a
+    # foreign identity — patch-equal to the coder-local commit, but NOT to
+    # anything reachable from the real pinned base.
+    (work / "f.txt").write_text("only on a local branch\n")
+    forged_sha = _commit_as(
+        work, "same patch as the coder-only branch",
+        author_name="Mallory", author_email="mallory@evil.example",
+    )
+
+    orch = _orch(tmp_path)
+    offenders = orch._foreign_authored_commits(
+        repo, "main", since=since_sha, base_pin=base_pin, remote_pin=remote_pin,
+    )
+    assert any(forged_sha[:8] in o for o in offenders), (
+        "patch-equivalence to content that exists only on a coder-created "
+        "local branch must never excuse a commit — only equivalence to the "
+        "VERIFIED base root may"
+    )
+
+
+def test_genuinely_foreign_commit_is_still_refused(tmp_path):
+    """AC4 (negative control). A novel diff, authored by a foreign identity,
+    unreachable from and not patch-equivalent to anything on the real
+    remote base — the ordinary "did the coder actually forge a commit"
+    case this whole gate exists for. Must still be an offender with both
+    `base_pin` and `remote_pin` supplied."""
+    bare, work = _bare_with_work(tmp_path, "foreign")
+    _git(work, "checkout", "-q", "-b", "nh/attempt-1")
+    since_sha = _git(work, "rev-parse", "nh/attempt-1")
+
+    repo = GitRepo(work)
+    base_pin = repo.ls_remote_exact("refs/heads/main")
+    remote_pin = str(bare)
+
+    (work / "f.txt").write_text("mallory's novel change\n")
+    forged_sha = _commit_as(
+        work, "novel change",
+        author_name="Mallory", author_email="mallory@evil.example",
+    )
+
+    orch = _orch(tmp_path)
+    offenders = orch._foreign_authored_commits(
+        repo, "main", since=since_sha, base_pin=base_pin, remote_pin=remote_pin,
+    )
+    assert any(forged_sha[:8] in o for o in offenders), offenders
+
+
+def test_human_hand_commit_on_the_agent_branch_is_still_refused(tmp_path):
+    """Out-of-scope guard (8c285a80). `author=no_human, committer=eyalgolan`
+    — a human hand-committing on the agent's own branch under the agent's
+    author identity but their own committer identity — is a DIFFERENT shape
+    than anything this fix excuses (a real base commit, or a rebase-rewrite
+    of one) and must remain an offender: novel diff, unreachable from and
+    not patch-equivalent to the base."""
+    bare, work = _bare_with_work(tmp_path, "hand-commit")
+    _git(work, "checkout", "-q", "-b", "nh/attempt-1")
+    since_sha = _git(work, "rev-parse", "nh/attempt-1")
+
+    repo = GitRepo(work)
+    base_pin = repo.ls_remote_exact("refs/heads/main")
+    remote_pin = str(bare)
+
+    (work / "f.txt").write_text("human hand-commit\n")
+    hand_sha = _commit_as(
+        work, "human hand commit",
+        author_name=_AGENT_NAME, author_email=_AGENT_EMAIL,
+        committer_name=_OPERATOR_NAME, committer_email=_OPERATOR_EMAIL,
+    )
+
+    orch = _orch(tmp_path)
+    offenders = orch._foreign_authored_commits(
+        repo, "main", since=since_sha, base_pin=base_pin, remote_pin=remote_pin,
+    )
+    assert any(hand_sha[:8] in o for o in offenders), offenders
+
+
+def test_run_attempt_pins_the_remote_url_before_the_coder_session():
+    """Wiring. `remote_url(` must be called in `_run_attempt`'s own frame
+    BEFORE the coder session runs (mirrors `test_the_gate_runs_on_the_codex_
+    backend_path`'s source-assertion idiom for `base_pin`), and
+    `_foreign_authored_commits` must be called with `remote_pin=` — proving
+    the gate-time re-read root is actually threaded through, not silently
+    dropped."""
+    src = inspect.getsource(Orchestrator._run_attempt)
+    assert "remote_url(" in src
+    assert "remote_pin=remote_pin" in src
+
+    idx_remote_url = src.index("remote_url(")
+    idx_backend_run = src.index("self.backend.run(")
+    assert idx_remote_url < idx_backend_run, (
+        "the remote URL must be pinned before the coder session starts, "
+        "the same pre-session discipline as base_pin"
+    )
+
+    idx_foreign = src.index("self._foreign_authored_commits(")
+    idx_remote_pin_kwarg = src.index("remote_pin=remote_pin")
+    assert idx_foreign < idx_remote_pin_kwarg, (
+        "remote_pin= must be threaded into the _foreign_authored_commits call"
+    )
+
+
+def test_base_equivalent_commits_validates_and_caps(tmp_path):
+    """git layer. Non-hex root raises `GitError`; a rebase-shaped replay
+    (same diff, new sha, new parent chain) yields the patch-equivalence
+    set; exceeding `cap` returns an empty set — fail closed, never a
+    silent partial scan."""
+    work = _repo_on_main(tmp_path)
+    repo = GitRepo(work)
+
+    with pytest.raises(GitError):
+        repo.base_equivalent_commits("not-hex-at-all")
+    with pytest.raises(GitError):
+        repo.base_equivalent_commits("--upload-pack=evil")
+
+    _git(work, "checkout", "-q", "main")
+    (work / "f.txt").write_text("main moved on\n")
+    _git(work, "commit", "-q", "-am", "main moved on")
+    root = _git(work, "rev-parse", "main")
+
+    _git(work, "checkout", "-q", "nh/attempt-1")
+    (work / "f.txt").write_text("main moved on\n")
+    _git(work, "commit", "-q", "-am", "rewritten, same patch")
+    rewritten_sha = _git(work, "rev-parse", "HEAD")
+    assert rewritten_sha != root
+
+    equivalent = repo.base_equivalent_commits(root)
+    assert equivalent == {rewritten_sha}, equivalent
+
+    assert repo.base_equivalent_commits(root, cap=0) == set(), (
+        "exceeding the cap must return an empty set, fail closed, never "
+        "a partial scan"
+    )

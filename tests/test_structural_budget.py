@@ -181,7 +181,16 @@ FROZEN_FUNCTION_LINES = {
     # hook body, not here — this is only the call site plus its
     # explanatory comment and the once-per-branch context bookkeeping it
     # threads through. Measured on this tree with the scanner below.
-    "core/orchestrator.py:Orchestrator._run_attempt": 2308,
+    # 2308 -> 2323 (+15): base-branch-commits-after-rebase attribution fix —
+    # a second pin, `remote_pin = repo.remote_url("origin") if base else
+    # None`, captured in this SAME frame right after the existing `base_pin`
+    # block, plus its `emit("base_remote_pin", ...)` / fail-closed
+    # `log.warning` branch when the origin url doesn't resolve. Deliberately
+    # kept inline for the same reason `base_pin` is: the guarantee is that
+    # this is the orchestrator's own frame, before the coder session starts,
+    # and a helper callable from elsewhere would weaken that. Measured on
+    # this tree with the scanner below.
+    "core/orchestrator.py:Orchestrator._run_attempt": 2323,
     # 760 -> 778 (+18): dispatch-time intake-eval hoisted path — the `elif
     # ctx.get("eval_result")` branch that acts on a grill/wizard-stored
     # verdict (idempotency marker, cost/residual-gap comments) added inside
@@ -548,7 +557,12 @@ FROZEN_FUNCTION_CC = {
     # `if recut_branch != branch:` guard on the returned (possibly rebound)
     # branch, matching the shape of the sibling preflight call sites
     # already counted above. Measured on this tree with the scanner below.
-    "core/orchestrator.py:Orchestrator._run_attempt": 257,
+    # 257 -> 260 (+3): base-branch-commits-after-rebase attribution fix — the
+    # `remote_pin = repo.remote_url("origin") if base else None` conditional
+    # expression, the `if remote_pin:` / `elif base:` branch pair around the
+    # advisory emit/log-warning. Measured on this tree with the scanner
+    # below.
+    "core/orchestrator.py:Orchestrator._run_attempt": 260,
     # Landing of 4e0299ad: unchanged at 115 — the harness row is dropped by
     # the comprehension filter inside `_reviewer_items`, which the scanner
     # counts the same as the `if` it replaced (the first landing pass had a
@@ -1498,7 +1512,17 @@ FROZEN_FILE_LINES = {
     # push) live in the new `vcs/recut.py`, not here — this is the
     # orchestrator-side wiring only. Measured on this tree with the
     # scanner below.
-    "core/orchestrator.py": 25039,
+    # 25039 -> 25135 (+96): base-branch-commits-after-rebase attribution fix
+    # — `_base_exclusion_refs` gains the gate-time re-read rooted in a
+    # pinned remote URL (`base=`/`remote_pin=` params, the `ensure_remote_
+    # commit` verification, the de-dup/order-stable union) plus a rewritten
+    # docstring stating the two-pin trust model; `_foreign_authored_commits`
+    # gains `remote_pin=` threading and the lazy patch-equivalence excusal
+    # (`base_equivalent_commits`, the `attribution_rebase_excused` advisory
+    # emit) plus its own docstring paragraphs explaining both; `_run_attempt`
+    # gains the +15-line `remote_pin` pin block counted in the function-line
+    # entry above. Measured on this tree with the scanner below.
+    "core/orchestrator.py": 25135,
 
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
