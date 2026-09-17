@@ -83,6 +83,11 @@ LOOPBACK_ONLY: dict[str, str] = {
         "own API",
     "history/extractor.py":
         "host defaults to 127.0.0.1; probes a language server on a local port",
+    "core/stranded_attempts.py":
+        "urlopen(http://<server host, 127.0.0.1 by default>:<port>/api/tasks) "
+        "— the stranded-attempt reaper's own liveness probe for a possibly-live "
+        "pool, same trust model as cli/pool_probe.py (asking our own local "
+        "server whether it is still there)",
 }
 
 

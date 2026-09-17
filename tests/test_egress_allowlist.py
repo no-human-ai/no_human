@@ -459,6 +459,15 @@ ALLOWLIST: dict[str, dict[str, Allowed]] = {
             "no_human's own API", "loopback: http://{server.host}:{server.port}"
             "/api/queue/health, server.host defaults to 127.0.0.1"),
     },
+    # The stranded-attempt reaper's own pool-liveness probe: one GET of our
+    # own `/api/tasks`, same destination and trust model as cli/pool_probe.py
+    # above, reimplemented in `core` rather than imported from `cli` (core
+    # must not depend on cli).
+    "core/stranded_attempts.py": {
+        "http:urllib.request": Allowed(
+            "no_human's own API", "loopback: http://{server.host}:{server.port}"
+            "/api/tasks, server.host defaults to 127.0.0.1"),
+    },
     "intake/mcp_bridge.py": {
         "http:httpx": Allowed("no_human's own API",
                               "loopback: http://{server.host}:{server.port} "
@@ -2273,8 +2282,11 @@ def test_loopback_entries_really_bind_loopback() -> None:
     # loads can fetch from anywhere, so that channel is config-gated instead.
     # + `api/local_boundary.py` (the Host/Origin boundary split out of
     # api/app.py) AND the hermetic walk backend's loopback channel — two
-    # independent +1s over the same base, merged: 14.
-    assert checked == 14, f"expected 14 loopback channels, found {checked}"
+    # independent +1s over the same base, merged: 14. + `core/stranded_
+    # attempts.py`'s own pool-liveness GET of `/api/tasks` (same destination
+    # and trust model as cli/pool_probe.py, reimplemented in core so core
+    # need not import cli): 15.
+    assert checked == 15, f"expected 15 loopback channels, found {checked}"
 
 
 def test_no_unused_local_classifications() -> None:

@@ -93,6 +93,18 @@ REGISTRY: dict[tuple[str, str], str] = {
     # send-back-resume round that produced zero diff, going forward through
     # TESTING (always legal from here) to AWAITING_APPROVAL.
     ("core/orchestrator.py", "Orchestrator._land_no_changes_needed"): INTERNAL,
+    # The stranded-attempt reaper runs at boot immediately AFTER
+    # `Scheduler._salvage_dead_worktrees` and never before it (see the
+    # ordering comment at the `run_forever` call site) — salvage is the one
+    # that decides the checkpoint: it stamps `resume_from` with machine
+    # provenance (`by="hard_kill_salvage"`) when the dead attempt left
+    # uncommitted work, and leaves whatever was already there (a still-armed
+    # human gate, or nothing) untouched when the worktree was already clean.
+    # The reaper itself never writes `resume_from` — it only retires the
+    # attempt row salvage already made safe to retire and flips the task's
+    # status to match reality, so it inherits whatever salvage already
+    # decided rather than making a second, competing decision.
+    ("core/stranded_attempts.py", "reap_stranded_implementing_attempts"): INHERITS,
 }
 
 CLAIMABLE = {"PENDING", "IMPLEMENTING"}
@@ -321,6 +333,10 @@ STOP_REGISTRY: dict[tuple[str, str], str] = {
     ("core/orchestrator.py", "Orchestrator._run_attempt"): STOP_INTERNAL,
     ("core/orchestrator.py", "Orchestrator._advance_after_review"): STOP_INTERNAL,
     ("core/orchestrator.py", "Orchestrator._land_no_changes_needed"): STOP_INTERNAL,
+    # A dead-pool reap is a machine re-entry that executes no new human
+    # decision, exactly like the orphan sweep and the graceful-stop requeue
+    # above: a pending stop survives it and `_drive` honours it on turn zero.
+    ("core/stranded_attempts.py", "reap_stranded_implementing_attempts"): KEEPS,
 }
 
 
