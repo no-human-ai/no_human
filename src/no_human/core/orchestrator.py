@@ -917,26 +917,59 @@ def _integrity_failure_detail(delta: Any) -> str:
 
     Capped per bucket because a delta can be large and this text is persisted;
     the counts stay, so a truncated list is never mistaken for the whole one.
+
+    A delta reaching this function never has a config-only cause anymore — a
+    readable, non-benign config-key change routes through `Delta.environment`
+    and `reviewer_worktree_environment_change` instead, and never discards by
+    itself (task reviewer-worktree-shared-config-attribution). But other
+    `.git`-subtree entries (a planted hook, a flipped index flag) still
+    reach here with no worktree path alongside them, and this module has no
+    way to say the REVIEWER, as opposed to anything else with write access to
+    the same shared `.git` dir, produced them — so the lead sentence below
+    only claims reviewer authorship when a worktree path (or a `HEAD:` commit
+    entry, which is unambiguously the reviewer's own `git commit`) is in the
+    delta too.
     """
     shown = [f"+{p}" for p in delta.added[:_INTEGRITY_PATHS_SHOWN]]
     shown += [f"~{p}" for p in delta.modified[:_INTEGRITY_PATHS_SHOWN]]
     shown += [f"-{p}" for p in delta.deleted[:_INTEGRITY_PATHS_SHOWN]]
     total = len(delta.added) + len(delta.modified) + len(delta.deleted)
     more = total - len(shown)
+    all_paths = (*delta.added, *delta.modified, *delta.deleted)
     # ".git/"-prefixed paths are deliberately NOT claimed reverted: `revert`
     # never touches them (hash-only inventory, no bytes to restore) — the
     # discard of the verdict IS the protection there. Saying "reverted"
     # about them welded a false clause onto persisted operator-read text,
     # and every path in the incident data was exactly that class.
-    has_git = any(p.startswith(".git/")
-                  for p in (*delta.added, *delta.modified, *delta.deleted))
+    has_git = any(p.startswith(".git/") for p in all_paths)
     tail = (" — worktree paths reverted to the reviewed baseline; "
             ".git-path changes are flagged, not reverted; "
             "the verdict is discarded" if has_git else
             " — reverted to the reviewed baseline and the verdict discarded")
-    return (
+    # A delta reaching this point is, by construction, never empty (see
+    # `delta.is_empty()`) and never a `.git`-config-only environment change
+    # (those route through `reviewer_worktree_environment_change` and never
+    # reach `_integrity_failure_decision` at all — see `_run_reviewer`). But
+    # EVERY remaining path can still be `.git/`-prefixed (a planted hook, a
+    # flipped index flag, a rewritten `objects/info/alternates`) with no
+    # WORKTREE path involved, and none of this module's evidence says the
+    # reviewer under test — as opposed to something else with write access to
+    # this same `.git` dir — is the one that changed it. Only when at least
+    # one path is a worktree file (or a synthetic `HEAD:` commit entry, which
+    # IS the reviewer's own `git commit`) does the evidence support naming the
+    # reviewer; a `.git`-only delta gets the same counts/paths/tail with a
+    # lead sentence that does not assert authorship it cannot establish.
+    all_git_only = bool(all_paths) and all(p.startswith(".git/") for p in all_paths)
+    lead = (
+        "the .git state of the reviewed checkout changed during the review; "
+        "that state is shared with the main checkout and every other "
+        "worktree, so the writer is not established "
+        if all_git_only else
         "the reviewer wrote to the worktree it was judging "
-        f"({len(delta.added)} added, {len(delta.modified)} modified, "
+    )
+    return (
+        lead
+        + f"({len(delta.added)} added, {len(delta.modified)} modified, "
         f"{len(delta.deleted)} deleted): "
         + ", ".join(shown)
         + (f" and {more} more" if more > 0 else "")
@@ -20668,6 +20701,28 @@ class Orchestrator:
                 "review; no tracked path changed — the verdict stands",
                 paths=list(delta.benign),
                 keys=list(getattr(delta, "benign_keys", [])),
+                at=datetime.now(timezone.utc).isoformat(),
+                baseline_commit=before.head,
+            )
+
+        # `delta.environment` (reviewer-worktree-shared-config-attribution):
+        # a readable, non-benign config key-set change on a `.git` config
+        # file SHARED with the main checkout and every other worktree
+        # (`gh pr checkout`'s `git remote add fork<N>` in the main checkout
+        # is the incident shape this event was added for). The file records
+        # no writer, so this is disclosed as an environment event, never
+        # charged to the reviewer — `reviewer_wrote` is NOT emitted for these
+        # paths. `getattr` for the same reason as `delta.benign` above:
+        # older stand-in `Delta`s in the wiring tests predate this field.
+        if getattr(delta, "environment", None):
+            self.emit(
+                "reviewer_worktree_environment_change",
+                "a git config file shared with the main checkout and every "
+                "other worktree changed during the review; shared state "
+                "records no writer, so this is an environment event, not a "
+                "reviewer write — the verdict stands",
+                paths=list(delta.environment),
+                keys=list(getattr(delta, "environment_keys", [])),
                 at=datetime.now(timezone.utc).isoformat(),
                 baseline_commit=before.head,
             )

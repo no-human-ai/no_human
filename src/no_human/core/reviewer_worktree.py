@@ -42,6 +42,28 @@ the reviewer's payload — this module's own opening threat, with no `.git`
 artefact involved. `_index_flags`/`compare()` close this by reading the
 index's FLAG BITS via `git ls-files -v`, watched separately from the
 excused bytes.
+
+Fourth re-scope (this revision): `.git/common/config` is not the
+reviewer's file to begin with — it is SHARED, byte-for-byte, with the main
+checkout and with every other linked worktree, and `git` gives no way to
+redirect a repo-LOCAL config write elsewhere. Measured directly: `d=$(mktemp
+-d); git init -q "$d"; GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG="$d/other" git
+-C "$d" remote add foo https://example.com/x.git` still writes
+`[remote "foo"]` into `$d/.git/config`, and `$d/other` is never created —
+`GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM`/`GIT_CONFIG` redirect only the
+global/system scopes, never the local one `.git/common/config` *is*. `gh pr
+checkout` run in the main checkout (`git remote add fork<N> ...`) lands in
+that same shared file a reviewer worktree reads through `common_dir`, with
+no record of which process wrote it. A prior revision of this module
+treated any such change as a reviewer write and discarded the verdict for
+it — the exact failure recorded as task `reviewer-worktree-shared-config-
+attribution`. `compare()` now reports a readable, real (non-benign)
+config-key-set change as `Delta.environment`, disclosed but NOT
+verdict-discarding — the writer cannot be established, so it is reported as
+what it provably is (an environment event), not what it cannot be shown to
+be (a reviewer write). A config change that lands ALONGSIDE an unrelated
+tracked-path write still discards, through that other path, exactly as
+before.
 """
 
 from __future__ import annotations
@@ -126,10 +148,28 @@ class Delta:
     #: The config keys that changed within `benign` paths, for the disclosure
     #: event — never used for gating.
     benign_keys: list[str] = field(default_factory=list)
-    #: The changed config keys that were NOT on the benign allowlist and so
-    #: kept the file a violation — capped at `_MAX_NONBENIGN_KEYS_SHOWN`.
-    #: Disclosure only; the discard already happened via `modified`.
+    #: The changed config keys that were NOT on the benign allowlist. Named
+    #: for disclosure alongside `environment` (a real key-set change no
+    #: longer discards on its own — see `environment` below) and, when a
+    #: config change lands alongside an unrelated tracked-path write, also
+    #: named in that write's discard.
     nonbenign_keys: list[str] = field(default_factory=list)
+    #: `.git`-common-dir config paths whose EFFECTIVE key set changed to a
+    #: value NOT on the benign allowlist, where the file itself was still
+    #: readable on both sides. Unlike `modified`, this is NOT a
+    #: verdict-discarding write: `.git/common/config` is shared by the main
+    #: checkout and every OTHER worktree too (`gh pr checkout` in the main
+    #: checkout, another worktree's `git remote add`, ...), and the file
+    #: records no writer — attributing a change in it to the reviewer under
+    #: test is a claim this module has no evidence for. Deliberately excluded
+    #: from `is_empty()`: an environment-only delta IS empty for gate
+    #: purposes, same shape as `benign` above, but for the opposite reason
+    #: (unknown writer, not a known-safe one). See the module docstring's
+    #: "Fourth re-scope" paragraph for the measurement behind this.
+    environment: list[str] = field(default_factory=list)
+    #: The config keys that changed within `environment` paths, capped at
+    #: `_MAX_NONBENIGN_KEYS_SHOWN`. Disclosure only.
+    environment_keys: list[str] = field(default_factory=list)
 
     def is_empty(self) -> bool:
         return not (self.added or self.modified or self.deleted)
@@ -168,7 +208,8 @@ SUBPROCESS_CALL_AUDIT: dict[str, str] = {
         "an is not None and bn == an` (see the `bn`/`an` comparison in "
         "`compare()`), so a config read that failed on either side of the "
         "diff keeps the byte-level violation and fails closed rather than "
-        "silently excusing a real key change."
+        "silently excusing a real key change or misrouting it to the "
+        "unattributed `Delta.environment` branch instead of the discard."
     ),
 }
 
@@ -1064,7 +1105,10 @@ def compare(repo_path: Path, before: Snapshot, *, timeout: float) -> Delta:
     is reported through the SAME added/modified/deleted lists, prefixed
     `.git/`, so it rides the one `reviewer_wrote` event + verdict-discard
     path the worktree-file delta already uses — one code path, one event
-    kind, one discard.
+    kind, one discard. The one exception is a config file's real key-set
+    change (see `Delta.environment`): `.git/common/config` is shared with
+    the main checkout and every other worktree and records no writer, so it
+    is reported separately and does not, by itself, discard.
     """
     repo_path = Path(repo_path)
     after = snapshot(repo_path, timeout=timeout)
@@ -1074,6 +1118,8 @@ def compare(repo_path: Path, before: Snapshot, *, timeout: float) -> Delta:
     benign: list[str] = []
     benign_keys: list[str] = []
     nonbenign_keys: list[str] = []
+    environment: list[str] = []
+    environment_keys: list[str] = []
     for path in sorted(set(before.entries) | set(after.entries)):
         b = before.entries.get(path)
         a = after.entries.get(path)
@@ -1097,7 +1143,6 @@ def compare(repo_path: Path, before: Snapshot, *, timeout: float) -> Delta:
     for path in sorted(set(before.git_entries) | set(after.git_entries)):
         b = before.git_entries.get(path)
         a = after.git_entries.get(path)
-        nonbenign_for_this_path: list[str] = []
         if a == b:
             continue
         if path == "common/HEAD" and a is not None and b is not None:
@@ -1149,15 +1194,22 @@ def compare(repo_path: Path, before: Snapshot, *, timeout: float) -> Delta:
                     benign.append(f".git/{path}")
                     benign_keys.extend(sorted(changed))
                     continue
+                # Real, readable, non-benign key-set change on a file this
+                # worktree SHARES with the main checkout and every other
+                # linked worktree (see the module docstring's "Fourth
+                # re-scope"). No signal here can say who wrote it, so this is
+                # reported as an environment event — disclosed, but not a
+                # verdict-discarding write. A config change alongside an
+                # unrelated tracked-path write still discards, through that
+                # other path, below.
                 nonbenign_for_this_path = sorted(
                     k for k in changed if not _is_benign_config_key(k))
+                shown_keys = nonbenign_for_this_path[:_MAX_NONBENIGN_KEYS_SHOWN]
+                environment.append(f".git/{path}")
+                environment_keys.extend(shown_keys)
+                nonbenign_keys.extend(shown_keys)
+                continue
         display = f".git/{path}"
-        if nonbenign_for_this_path:
-            shown_keys = nonbenign_for_this_path[:_MAX_NONBENIGN_KEYS_SHOWN]
-            more = len(nonbenign_for_this_path) - len(shown_keys)
-            display += (" (non-benign keys: " + ", ".join(shown_keys)
-                        + (f" and {more} more" if more else "") + ")")
-            nonbenign_keys.extend(shown_keys)
         if a is None:
             deleted.append(display)
         elif b is None:
@@ -1206,7 +1258,9 @@ def compare(repo_path: Path, before: Snapshot, *, timeout: float) -> Delta:
         modified.append(f"HEAD:{before.head}->{after.head}")
     return Delta(added=sorted(added), modified=sorted(modified), deleted=sorted(deleted),
                  benign=sorted(benign), benign_keys=sorted(set(benign_keys)),
-                 nonbenign_keys=sorted(set(nonbenign_keys)))
+                 nonbenign_keys=sorted(set(nonbenign_keys)),
+                 environment=sorted(environment),
+                 environment_keys=sorted(set(environment_keys)))
 
 
 def revert(repo_path: Path, before: Snapshot, delta: Delta, *, timeout: float) -> None:
