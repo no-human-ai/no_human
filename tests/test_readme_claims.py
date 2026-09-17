@@ -2009,9 +2009,9 @@ CITATION_TABLE = (
      "PreToolUse guard"),
     ("security.md", "vcs/pr_watcher.py:default_pr_state", "vcs/pr_watcher.py",
      '"gh", "pr", "view"'),
-    ("security.md", "vcs/git.py:GitRepo._have_remote_commit:1262", "vcs/git.py",
+    ("security.md", "vcs/git.py:GitRepo._have_remote_commit:1270", "vcs/git.py",
      '"git", "fetch"'),
-    ("security.md", ":GitRepo.fetch:1598", "vcs/git.py", '["fetch", remote]'),
+    ("security.md", ":GitRepo.fetch:1644", "vcs/git.py", '["fetch", remote]'),
     ("security.md", "cli/commands.py:merge_stack_run:3206", "cli/commands.py",
      '"gh", "pr", "merge"'),
     ("security.md", "cli/commands.py:approve:5640", "cli/commands.py",
@@ -2068,10 +2068,10 @@ CITATION_TABLE = (
     ("security.md", "history/extractor.py:65-72", "history/extractor.py",
      "csrf_token"),
     # docs/eval.md
-    ("eval.md", "src/no_human/cli/commands.py:bench_run:8255",
+    ("eval.md", "src/no_human/cli/commands.py:bench_run:8314",
      "src/no_human/cli/commands.py", "different --trials are not resumed"),
-    ("eval.md", ":bench_run:8406", "src/no_human/cli/commands.py", "asyncio.gather"),
-    ("eval.md", ":bench_run:8284", "src/no_human/cli/commands.py",
+    ("eval.md", ":bench_run:8465", "src/no_human/cli/commands.py", "asyncio.gather"),
+    ("eval.md", ":bench_run:8343", "src/no_human/cli/commands.py",
      "(sc.task_id, sc.trial)"),
     ("eval.md", "src/no_human/eval/northstar_card.py:NorthStarCard.pass_k_rate:456",
      "src/no_human/eval/northstar_card.py", "def pass_k_rate("),
@@ -2086,7 +2086,7 @@ CITATION_TABLE = (
     # docs/KNOWN_ISSUES.md
     ("KNOWN_ISSUES.md", "db.py:Store.connect", "db.py", "aiosqlite.connect"),
     # docs/WINDOWS.md
-    ("WINDOWS.md", "cli/commands.py:_try_kill:7637", "cli/commands.py", "signal.SIGKILL"),
+    ("WINDOWS.md", "cli/commands.py:_try_kill:7696", "cli/commands.py", "signal.SIGKILL"),
 )
 
 assert len(CITATION_TABLE) >= 20, (
