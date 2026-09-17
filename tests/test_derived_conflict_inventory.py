@@ -14,6 +14,16 @@ roots itself via `git rev-parse --show-toplevel` from its own location, so it
 runs unmodified in the fixture. `_inventory_argv()` uses `sys.executable` on
 an unfrozen build, so no monkeypatch is needed: the tests exercise the exact
 argv production runs here.
+
+Bugfix context (found live overnight, blocked PRs #463/#475/#483/#491):
+`_inventory_argv` used to fall back to a bare ``"python3"`` literal when
+`real_python` returned `None` — the ONE call site in the codebase that never
+failed closed. In an `nh-derived-*` resolver worktree that fallback silently
+resolved to the system interpreter (no pytest), which crashes
+`tests/test_structural_budget.py`'s scanner and gets misreported as a
+"timed out" regenerate failure (`NoInterpreterError is EnvironmentError is
+OSError`, caught by `_run_inventory`'s existing `except OSError`). The fix
+raises `NoInterpreterError` instead of ever returning `"python3"`.
 """
 from __future__ import annotations
 
@@ -21,6 +31,8 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+import pytest
 
 from no_human.vcs import derived_conflict as dc
 
@@ -167,14 +179,59 @@ def test_inventory_argv_delegates_to_the_shared_real_python(monkeypatch):
         "/opt/marker/python", "scripts/check_release_manifest.py"]
 
 
-def test_inventory_argv_falls_back_to_the_python3_literal_when_unresolved(
-        monkeypatch):
-    """Unlike every other `real_python` call site, this one never fails
-    closed — `resolve_derived_conflict`'s caller has no `None` branch — so
-    an unresolved interpreter still produces a runnable argv."""
+def test_inventory_argv_interpreter_can_import_pytest(tmp_path):
+    """The argv `_inventory_argv` actually produces in THIS environment must
+    be a real, dependency-carrying interpreter — not merely a Python. Covers
+    both call shapes: no worktree (today's production call from
+    `_run_inventory` before this fix threaded the path through) and a
+    worktree path (the shape `_run_inventory` uses now)."""
+    for argv in (dc._inventory_argv(), dc._inventory_argv(tmp_path)):
+        proc = subprocess.run([argv[0], "-c", "import pytest"],
+                              capture_output=True, text=True)
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert "No module named" not in proc.stderr
+
+
+def test_inventory_argv_raises_when_no_interpreter_resolves(monkeypatch,
+                                                             tmp_path):
+    """`real_python` resolving to `None` (a frozen build, no python3/python
+    on PATH, no worktree `.venv`) must fail closed with a named exception —
+    never silently return the `"python3"` literal, which is how PRs
+    #463/#475/#483/#491 got stuck: an unverified system interpreter without
+    pytest, misreported as a timeout."""
     monkeypatch.setattr(dc, "real_python", lambda *a: None)
-    assert dc._inventory_argv() == [
-        "python3", "scripts/check_release_manifest.py"]
+    with pytest.raises(dc.NoInterpreterError) as exc_info:
+        dc._inventory_argv()
+    assert isinstance(exc_info.value, EnvironmentError)
+    message = str(exc_info.value)
+    assert "RELEASE_MANIFEST" in message
+    assert "python" in message
+    # No call shape silently produces the literal fallback — with a worktree
+    # path threaded through, too.
+    with pytest.raises(dc.NoInterpreterError):
+        dc._inventory_argv(tmp_path)
+
+
+def test_manifest_regen_reports_the_missing_interpreter_not_a_timeout(
+        tmp_path, monkeypatch):
+    """When `real_python` resolves to `None` mid-resolution (simulating the
+    `nh-derived-*` temp tree), the regenerate step must name the missing
+    interpreter as the cause — never "timed out", which is the
+    silent-misattribution shape `NoInterpreterError` exists to prevent (it
+    is a DISTINCT `EnvironmentError` subclass so `_run_inventory`'s
+    `except (subprocess.TimeoutExpired, OSError)` cannot swallow it into the
+    same `None`/"timed out" result a real timeout produces). No exception
+    may escape to the caller — `wake.py` awaits this via
+    `asyncio.to_thread` and a raised exception there crashes the watcher."""
+    work, base_tip = _conflicting_fixture(tmp_path)
+    monkeypatch.setattr(dc, "real_python", lambda *a: None)
+
+    res = dc.resolve_derived_conflict(str(work), "feature", base_tip,
+                                      remote="origin")
+    assert not res.ok
+    assert res.step == "regenerate"
+    assert "no Python interpreter" in res.detail
+    assert "timed out" not in res.detail
 
 
 def test_inventory_argv_never_returns_the_frozen_binary_when_frozen(
@@ -214,3 +271,40 @@ async def test_a_write_refusal_is_a_regenerate_failure_not_a_push(tmp_path):
     assert not res.ok and res.step == "regenerate"
     after = _git(work, "rev-parse", "origin/feature").stdout.strip()
     assert before == after  # nothing was pushed
+
+
+async def test_manifest_only_conflict_resolves_with_no_markers_and_a_clean_tree(
+        tmp_path):
+    """The end-to-end shape the bug report describes: a PR whose conflict is
+    confined ENTIRELY to RELEASE_MANIFEST.txt must resolve mechanically —
+    no conflict markers survive, the merge is clean, and no human
+    escalation is needed to land it (the whole point of this module)."""
+    work, base_tip = _conflicting_fixture(tmp_path)
+
+    # (a) the conflict is real and confined to the manifest alone.
+    paths = await dc.conflicting_paths(str(work), "main", "feature")
+    assert paths == {"RELEASE_MANIFEST.txt"}
+
+    res = dc.resolve_derived_conflict(str(work), "feature", base_tip,
+                                      remote="origin")
+    assert res.ok, f"step={res.step}: {res.detail}"
+    assert res.pushed_sha
+
+    # (b) the pushed manifest carries no conflict markers.
+    check = tmp_path / "check"
+    _run(["git", "clone", "-q", "-b", "feature", str(work / ".git"), str(check)],
+         cwd=tmp_path)
+    _git(check, "checkout", "-q", res.pushed_sha)
+    manifest = (check / "RELEASE_MANIFEST.txt").read_text(encoding="utf-8")
+    for marker in ("<<<<<<<", "=======", ">>>>>>>"):
+        assert marker not in manifest
+
+    # (c) the checkout is a genuinely clean, unmerged-free tree, and the
+    # inventory tool itself is satisfied in --strict mode — i.e. nothing
+    # here needs a human to look at it.
+    assert dc._unmerged_paths(check) == set()
+    status = _git(check, "status", "--porcelain").stdout
+    assert status.strip() == ""
+    verify = _run([sys.executable, "scripts/check_release_manifest.py",
+                  "--strict"], cwd=check)
+    assert verify.returncode == 0, verify.stdout + verify.stderr

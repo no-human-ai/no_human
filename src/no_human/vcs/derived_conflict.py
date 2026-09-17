@@ -125,6 +125,19 @@ from .pr_watcher import (
 DERIVED_ARTEFACTS = frozenset({"RELEASE_MANIFEST.txt"})
 
 
+class NoInterpreterError(EnvironmentError):
+    """No real Python interpreter is available to run the inventory tool
+    (`scripts/check_release_manifest.py`). Raised instead of falling back to
+    an unverified ``"python3"`` on PATH: a mis-resolved interpreter (e.g. the
+    system 3.9 found in an `nh-derived-*` resolver worktree, which lacks
+    pytest and crashes `tests/test_structural_budget.py`'s scanner) turns a
+    mechanically resolvable manifest-only conflict into a silent human
+    escalation (PRs #463/#475/#483/#491). A distinct subclass, not a bare
+    `EnvironmentError`, because `EnvironmentError is OSError` and
+    `_run_inventory` already catches `OSError` around the subprocess spawn —
+    a bare raise would be swallowed there and misreported as a timeout."""
+
+
 def _export_guard_argv() -> list[str]:
     """Base argv for invoking ``export_guard.py``. A module-level seam so
     tests can monkeypatch it to ``[sys.executable, "scripts/export_guard.py"]``
@@ -133,20 +146,40 @@ def _export_guard_argv() -> list[str]:
     return ["uv", "run", "python", "scripts/export_guard.py"]
 
 
-def _inventory_argv() -> list[str]:
+def _inventory_python(worktree_path: Path | None = None) -> str:
+    """The Python interpreter to run `check_release_manifest.py` with —
+    ``proc.real_python``, the interpreter resolver every other
+    ``sys.executable`` fallback in this codebase shares (issue #402), with
+    the resolver worktree's own ``.venv`` preferred over bare PATH, mirroring
+    ``approve_merge._real_python``. On an unfrozen build this is still
+    `sys.executable` (nh's own interpreter, which has pytest) — unchanged
+    behaviour on the happy path. On a frozen build it now prefers the
+    worktree's own venv before an unverified PATH `python3`, which may be an
+    older or dependency-free interpreter (system 3.9 lacks pytest, and
+    `tests/test_structural_budget.py`'s scanner needs it — see
+    `NoInterpreterError`).
+
+    Raises `NoInterpreterError` — never returns the ``"python3"`` literal —
+    when no interpreter resolves at all, mirroring the two existing
+    fail-closed messages in ``approve_merge.py``."""
+    py = real_python(worktree_path / ".venv" if worktree_path is not None else None)
+    if py is None:
+        raise NoInterpreterError(
+            "no Python interpreter available to regenerate "
+            "RELEASE_MANIFEST.txt: this build's sys.executable is the "
+            "frozen `nh` binary and no python3/python was found on PATH, "
+            f"nor a .venv in the resolver worktree {worktree_path}")
+    return py
+
+
+def _inventory_argv(worktree_path: Path | None = None) -> list[str]:
     """Base argv for invoking ``check_release_manifest.py`` — the manifest
     tool of repos WITHOUT ``scripts/export_guard.py`` (the public working
     repo): ``--write`` rebuilds every pin from the tracked tree, ``--strict``
-    verifies. Same monkeypatch seam as ``_export_guard_argv``. Uses
-    ``proc.real_python`` — the interpreter resolver every other
-    ``sys.executable`` fallback in this codebase shares (issue #402) — not
-    ``uv run``: the script is stdlib-only by its own contract, and ``uv run``
-    inside a resolver worktree would sync/claim a venv there for nothing. Any
-    Python serves a stdlib-only script, so the venv preference `real_python`
-    applies elsewhere is harmless here; the ``"python3"`` literal is kept as
-    the last resort because this call site, unlike the others, never fails
-    closed — it must always return an argv."""
-    return [real_python() or "python3", "scripts/check_release_manifest.py"]
+    verifies. Same monkeypatch seam as ``_export_guard_argv``. See
+    `_inventory_python` for interpreter resolution; propagates
+    `NoInterpreterError` rather than ever returning a bare ``"python3"``."""
+    return [_inventory_python(worktree_path), "scripts/check_release_manifest.py"]
 
 
 async def resolve_base_tip(repo_path: str, base: str) -> str | None:
@@ -563,10 +596,15 @@ def _run_inventory(worktree_path: Path, subargs: list[str], *,
     Python on PATH the fallback argv's interpreter may not exist
     (`FileNotFoundError`), and that must fail the resolution closed, not
     crash the wake watcher (same pair `approve_merge.py` catches around
-    `_sh`)."""
+    `_sh`).
+
+    `_inventory_argv` is resolved OUTSIDE the try so a `NoInterpreterError`
+    (an `EnvironmentError`, hence `OSError`) propagates to the caller instead
+    of being swallowed into the `None`/"timed out" result below — see
+    `NoInterpreterError`'s docstring for why that distinction matters."""
+    argv = _inventory_argv(worktree_path)
     try:
-        return _sh([*_inventory_argv(), *subargs], cwd=worktree_path,
-                   timeout=timeout)
+        return _sh([*argv, *subargs], cwd=worktree_path, timeout=timeout)
     except (subprocess.TimeoutExpired, OSError):
         return None
 
@@ -736,9 +774,18 @@ def _inventory_resolve_tail(*, repo: GitRepo, worktree_path: Path, remote: str,
     CLASSIFICATION_NAME-eligible conflict for this backend, and `--write`
     itself exits 2 if a classification file appears (belt and braces).
     Called with the merge already committed/staged in `worktree_path` (after
-    steps 3-4), so the tree `--write` hashes is the merged, resolved one."""
-    write_proc = _run_inventory(
-        worktree_path, ["--write"], timeout=_APPROVE_TIMEOUT_S)
+    steps 3-4), so the tree `--write` hashes is the merged, resolved one.
+
+    A `NoInterpreterError` from either `_run_inventory` call (no real Python
+    resolves in `worktree_path`) is caught here and turned into a named
+    `DerivedResolution(ok=False, step="regenerate", ...)` rather than let to
+    escape into `wake.py`'s `asyncio.to_thread(resolver, ...)`, where it
+    would crash the wake watcher instead of escalating honestly."""
+    try:
+        write_proc = _run_inventory(
+            worktree_path, ["--write"], timeout=_APPROVE_TIMEOUT_S)
+    except NoInterpreterError as exc:
+        return DerivedResolution(ok=False, step="regenerate", detail=str(exc))
     if write_proc is None:
         return DerivedResolution(
             ok=False, step="regenerate",
@@ -771,8 +818,11 @@ def _inventory_resolve_tail(*, repo: GitRepo, worktree_path: Path, remote: str,
     # file with no row fails HERE, matching what the inventory CI job runs —
     # the no-flag run only warns on that class. No classification arithmetic
     # exists on this backend, so there is no count-drift backstop. --------- #
-    verify_proc = _run_inventory(
-        worktree_path, ["--strict"], timeout=_VERIFY_TIMEOUT_S)
+    try:
+        verify_proc = _run_inventory(
+            worktree_path, ["--strict"], timeout=_VERIFY_TIMEOUT_S)
+    except NoInterpreterError as exc:
+        return DerivedResolution(ok=False, step="regenerate", detail=str(exc))
     if verify_proc is None:
         return DerivedResolution(
             ok=False, step="verify",
