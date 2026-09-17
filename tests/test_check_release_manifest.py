@@ -469,6 +469,82 @@ def test_write_produces_lf_bytes_on_every_platform(tmp_path):
     assert written.endswith(b"\n")
 
 
+def _interpreter_below_310() -> str | None:
+    """A python on this host older than 3.10, or None if there isn't one.
+
+    The floor is not arbitrary. `vcs/derived_conflict.py::_inventory_argv`
+    hands this script a bare ``python3`` when the product is a frozen build
+    with no interpreter of its own, and on macOS that resolves to
+    /usr/bin/python3, which is 3.9.
+    """
+    for candidate in ("/usr/bin/python3", "python3.9", "python3.8"):
+        try:
+            out = subprocess.run(
+                [candidate, "-c",
+                 "import sys; print(sys.version_info[0], sys.version_info[1])"],
+                capture_output=True, text=True, timeout=30)
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if out.returncode != 0:
+            continue
+        try:
+            major, minor = (int(part) for part in out.stdout.split())
+        except ValueError:
+            continue
+        if (major, minor) < (3, 10):
+            return candidate
+    return None
+
+
+def test_write_runs_on_the_oldest_interpreter_the_resolver_can_pick(tmp_path):
+    """Regression: `--write` used a `Path.write_text` keyword added in 3.10.
+
+    "Standard library + git only" is this script's stated contract, and it
+    held — the failure was an API LEVEL, not an import, which is a distinction
+    that cost the derived-artefact conflict resolver every pull request it was
+    called on: `--write` raised TypeError under the bare `python3` that
+    `_inventory_argv` hands it, and each conflict escalated to a human instead
+    of being regenerated.
+
+    This skips on a host that has no interpreter below 3.10 — a CI ubuntu
+    runner is one — so it is a developer-machine convenience, not the gate.
+    The gate is the `File inventory` job in .github/workflows/ci.yml, which
+    installs 3.9 explicitly and runs this same command.
+    """
+    old_python = _interpreter_below_310()
+    if old_python is None:
+        pytest.skip(
+            "no interpreter below 3.10 on this host; the real gate is the "
+            "`File inventory` job in .github/workflows/ci.yml, which installs "
+            "3.9 with actions/setup-python and runs `--write` under it")
+
+    repo = make_repo(tmp_path)
+    proc = subprocess.run([old_python, str(SCRIPT), "--root", str(repo), "--write"],
+                          capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert (repo / "RELEASE_MANIFEST.txt").read_bytes()
+
+
+def test_the_old_interpreter_produces_the_same_bytes_as_this_one(tmp_path):
+    """The manifest is compared as bytes by git, so "runs" is not enough: the
+    two interpreters must write the identical file, or a resolver regenerating
+    under 3.9 would produce a diff against a manifest written under 3.12."""
+    old_python = _interpreter_below_310()
+    if old_python is None:
+        pytest.skip("no interpreter below 3.10 on this host (see the test above)")
+
+    repo = make_repo(tmp_path)
+    subprocess.run([sys.executable, str(SCRIPT), "--root", str(repo), "--write"],
+                   capture_output=True, text=True, check=True)
+    current = (repo / "RELEASE_MANIFEST.txt").read_bytes()
+
+    (repo / "RELEASE_MANIFEST.txt").unlink()
+    subprocess.run([old_python, str(SCRIPT), "--root", str(repo), "--write"],
+                   capture_output=True, text=True, check=True)
+
+    assert (repo / "RELEASE_MANIFEST.txt").read_bytes() == current
+
+
 def test_rewriting_the_manifest_is_idempotent_byte_for_byte(tmp_path):
     """A second `--write` over an unchanged tree must not alter a single byte,
     which is what makes a large diff a real signal rather than noise."""
