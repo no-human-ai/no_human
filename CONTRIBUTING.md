@@ -421,6 +421,50 @@ Use `--reconcile` when the documentation citation and `CITATION_TABLE` have dive
 It derives both surfaces independently from the source. It is the explicit opt-in
 reconciliation mode.
 
+### Referring to code from source comments
+
+A comment or docstring in `src/` that points at "the thing I mean" names the
+**symbol**, never a line number. `tests/test_no_approximate_line_anchors.py`
+enforces this: it fails the build on any `~NNN`-shaped approximate line
+anchor (`"the check is at ~12034"`, `"(db.py ~2884-2892)"`) found in a
+comment or string literal anywhere under `src/`. Unlike the doc citations
+above, there is no tolerance window here — the convention is to forbid the
+anchor outright, not to resolve and re-tolerate it.
+
+This was a measured decision, not a guess: resolving every anchor this repo
+had shipped against the symbol it actually described found 16 of 18 already
+pointing at the wrong function, some by hundreds of lines. A drift-tolerant
+gate (mirroring the docs' `±5`-line tolerance) would therefore fail almost
+immediately against nearly the whole population and demand exactly the same
+fix — write the symbol name — plus a permanent resolver and an arguable
+tolerance window to maintain forever after. A symbol name (`` `_is_wip_partial` ``,
+`` `_already_satisfied_subject` ``) never goes stale and costs nothing to
+keep true, and the reader has to grep for it either way. This mirrors the
+"prefer symbol form for hot files" guidance directly above — `src/`'s hottest
+file, `core/orchestrator.py`, is exactly where 15 of the 18 anchors lived;
+2 more turned up in `vcs/recut.py`, added by an unrelated change that
+landed mid-review, and the gate caught both before they could rot — which
+is the whole point of forbidding the shape instead of merely re-tolerating
+drift in it.
+
+This applies to `src/` only, per the shipped-source focus above; `tests/`,
+`docs/`, `scripts/`, `e2e/`, `eval/`, `examples/` and `web/` are unaffected
+and keep whatever citation policy they already had.
+
+An approximate **quantity** — a size, duration, token count or line-count
+estimate that names its own unit, like `~120MB`, `~1078s` or `~500 LOC` — is
+not an anchor and is untouched by this rule; the unit is exactly what tells
+a reader "this is a measurement", not "go look around this line". The
+scanner keeps an allow-list of real units for exactly this reason (an
+unrecognized trailing word is an anchor by default, not a quantity), and
+also catches `~L12034`, bare `L12034`, `around/near/approx. line 12034`,
+the `≈` spelling, and a tilde-prefixed file:line citation like
+`` ~`orchestrator.py:7178` ``. It deliberately does not extend to this
+repo's separate, pre-existing, non-tilde `file.py:LINE` cross-reference
+convention used 50+ times throughout `src/` — a different syntax, a
+different (precise, not approximate) population, out of scope for this
+gate.
+
 ## Proposing a change
 
 1. Open an issue describing the problem. For a bug, include the repro.

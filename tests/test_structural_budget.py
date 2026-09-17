@@ -1488,17 +1488,28 @@ FROZEN_FILE_LINES = {
     # and the `reason if reason is not None else ...` fix replacing `reason
     # or ...` in `_revert_worktree_writes_unguarded`. Re-measured on this
     # tree with `scan_tree`, not carried over as a stale delta.
-    # 24728 -> 25039 (+311): rebased-branch recut fix — the two new hook
-    # methods (`_recover_diverged_branch`, Hook 1, called from
-    # `_run_attempt`; `_reconcile_remote_branch`, Hook 2, called from the
-    # existing delivery path) plus their call-site integration and the
+    # 24728 -> 24733 (+5): tests/test_no_approximate_line_anchors.py removed
+    # 15 `~NNN`-shaped approximate line anchors from comments/docstrings in
+    # this file and replaced them with symbol names (e.g. `_run_attempt`'s
+    # `branch_prefix` usage instead of `~4407`) or dropped the parenthetical
+    # where no symbol could be confirmed — prose-only, no behaviour change.
+    # A symbol name is longer than a bare number, so several of the
+    # rewritten sentences wrap onto one more physical line than before.
+    # Re-measured on this tree with `scan_tree`, not carried over.
+    # 24728 -> 25039 (+311, on the other side of a since-reconciled merge):
+    # rebased-branch recut fix — the two new hook methods
+    # (`_recover_diverged_branch`, Hook 1, called from `_run_attempt`;
+    # `_reconcile_remote_branch`, Hook 2, called from the existing delivery
+    # path) plus their call-site integration and the
     # `_record_recut`/`_post_recut_comment` helpers `_finalize` uses to
     # thread the possibly-rebound branch through the PR-body/comment
     # plumbing. The recut mechanics themselves (branch naming, replay,
     # push) live in the new `vcs/recut.py`, not here — this is the
-    # orchestrator-side wiring only. Measured on this tree with the
-    # scanner below.
-    "core/orchestrator.py": 25039,
+    # orchestrator-side wiring only.
+    # 24733 (this task's tip) merged with 25039 (main's tip) -> 25044: both
+    # deltas landed in the same file with no textual overlap; re-measured on
+    # this tree with `scan_tree`, not carried-over arithmetic.
+    "core/orchestrator.py": 25044,
 
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo

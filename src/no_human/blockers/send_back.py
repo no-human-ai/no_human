@@ -106,8 +106,8 @@ async def record_pending_send_back(
 
 async def clear_pending_send_back(store: Any, task: Any) -> None:
     """Clear the pending marker — a round DID start, so the send-back (if
-    any) is no longer pending. RFC 7396 delete via `merge_context`
-    (``db.py`` L1585): a ``None`` value removes the key outright, so a task
+    any) is no longer pending. RFC 7396 delete via ``db.py``'s
+    `merge_context`: a ``None`` value removes the key outright, so a task
     with no pending send-back is a no-op cleared to the same "absent" state.
     """
     try:

@@ -525,8 +525,8 @@ class Task:
     # unlike `parent_id` (the LeadAgent compound-child relation the orchestrator
     # still knows about), nothing schedules or aggregates on this column; it
     # exists so the drawer/API can say "follows <task>" without the follow-up
-    # being mistaken for a sub-task (see this file's COMPOUND_PARENT note above,
-    # ~line 170: nothing creates new compound-parent rows any more, but the
+    # being mistaken for a sub-task (see this file's COMPOUND_PARENT note
+    # above: nothing creates new compound-parent rows any more, but the
     # transition table stays for historical rows — a follow-up must not reuse
     # that relation).
     follows_id: str | None = None

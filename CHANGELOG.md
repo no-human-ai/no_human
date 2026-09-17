@@ -49,6 +49,39 @@ All notable changes to no_human. The format follows
   symbols it had already decided when the budget runs out. Still advisory, and
   every failure still resolves toward silence rather than toward an accusation.
 ### Fixed
+- **Approximate line anchors (`"the check is at ~12034"`) in `src/` comments
+  and docstrings rotted on every landing and nothing validated them.**
+  Resolving the 18 anchors this repo had shipped by the time this landed
+  (15 in `core/orchestrator.py`, 1 in `vcs/landability.py`, and 2 more in
+  `vcs/recut.py` that arrived from `main` mid-review) against the symbol
+  each actually described found 16 of 18 already pointing at the wrong
+  function, some by hundreds of lines — `tests/test_readme_claims.py`'s
+  citation machinery only ever covered a different syntax (`file.py:LINE`)
+  in three docs. All 18 are now named by symbol instead (or the number was
+  dropped where no real callsite could be confirmed), and a new gate,
+  `tests/test_no_approximate_line_anchors.py`, fails the build on any new
+  `~NNN`-shaped anchor found in a comment or string literal under `src/` —
+  a convention, not a drift-tolerant checker, since the anchors were already
+  wrong rather than merely destined to rot. The scanner looks only at
+  `tokenize` comments and `ast.Constant` string literals so an approximate
+  *quantity* that names its unit (`~120MB`, `~1078s`, `~500 LOC`) is left
+  untouched; a bare `grep -oE '~[0-9]{3,5}'` over `src/` over-counts the true
+  anchor population by roughly double for exactly that reason. The unit
+  check itself first shipped as a deny-list ("anything that isn't one of
+  these stopwords counts as a unit"), which passed anchors like `~12034
+  handles the rebase case` straight through — the trailing word just had to
+  be *some* word. Eight more anchors the deny-list had missed (in
+  `api/app.py`, `api/models.py`, `blockers/send_back.py`, `core/db.py`,
+  `core/model_catalog.py` (two), and `core/task.py`) are fixed the same way,
+  and the check is now an allow-list of real units (`k`, `M`, `MB`, `s`,
+  `ms`, `x`, `LOC`, `line(s)`, `token(s)`, `char(s)`, `turn(s)`, `file(s)`,
+  `px`) plus a partitive-`of` idiom (`~394 of the pending backlog`) — an
+  unrecognized trailing word is an anchor by default. The scanner also now
+  catches `~L12034`, bare `L12034`, `around/near/approx. line 12034`, `≈12034`,
+  and a tilde-prefixed file:line citation (`` ~`orchestrator.py:7178` ``);
+  it still leaves this repo's separate, pre-existing, non-tilde
+  `file.py:LINE` cross-reference convention (50+ occurrences, a different
+  syntax serving a different, precise population) untouched.
 - **Approve & merge works in the shipped desktop app again.** In the frozen
   build the merge gate shelled out through the packaged binary as if it were a
   Python interpreter, so every `nh approve` and every board **Approve** failed

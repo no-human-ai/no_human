@@ -5424,9 +5424,9 @@ class Orchestrator:
         (`set_status` returning ``None``) leaves no `succeeded` attempt row
         and no `no_changes_needed` marker on a task that reads failed. No
         `mechanical_round` stamp either — that flag exempts a post-PASS
-        MECHANICAL round's token spend from the lifetime budget (db.py
-        ~2884-2892); this round is a normal, budget-counted attempt that
-        happens to need no new commit.
+        MECHANICAL round's token spend from the lifetime budget
+        (db.py::_lifetime_included_sql); this round is a normal,
+        budget-counted attempt that happens to need no new commit.
         """
         if not await self._send_back_resume_round(task, repo=repo):
             return None
@@ -12759,9 +12759,10 @@ class Orchestrator:
         never verify an unpushable checkpoint and turn it into approval proof.
         """
         # `task` is needed below to enumerate THIS task's own pushed agent
-        # branches (attempt 2+ pushes to a distinct branch — see
-        # branch_prefix usage at ~4407 — so the offered branch alone can
-        # undercount what this task has actually shipped to the remote).
+        # branches (attempt 2+ pushes to a distinct branch — see the
+        # `branch_prefix` usage in `_run_attempt`'s attempt-suffixed branch
+        # naming — so the offered branch alone can undercount what this
+        # task has actually shipped to the remote).
         try:
             head = repo.head_sha().strip()
         except Exception as exc:  # noqa: BLE001 — unreadable means unshippable
@@ -12844,8 +12845,9 @@ class Orchestrator:
                 False, ship_ref
         # The local pointer is still a refusal signal, but the decision is
         # made *after* the remote evidence below: attempt 2+ pushes to a
-        # DIFFERENT, attempt-suffixed branch of this same task (~4407)
-        # while `branch` still names an earlier/unpushed one, so a lagging
+        # DIFFERENT, attempt-suffixed branch of this same task (see
+        # `_run_attempt`'s `branch_prefix` usage) while `branch` still names
+        # an earlier/unpushed one, so a lagging
         # local pointer is exactly the case the sibling fallback below
         # exists for — returning here would make that fallback unreachable.
         local_is_reviewed = branch_sha == head
@@ -12872,8 +12874,9 @@ class Orchestrator:
         # `branch` itself isn't up to date (or its local pointer lags) — but
         # constraint #2 forbids the agent merging to `ship_ref`, so attempt
         # 2+ pushes to a DIFFERENT, attempt-suffixed branch of this same
-        # task (~4407) while `branch` here still names an earlier/unpushed
-        # one. Before refusing, check whether one of THIS task's other
+        # task (see `_run_attempt`'s `branch_prefix` usage) while `branch`
+        # here still names an earlier/unpushed one. Before refusing, check
+        # whether one of THIS task's other
         # pushed branches already contains `head` — sibling branches only,
         # never any remote ref, so a foreign task's branch can't satisfy
         # this claim. `remote_branch_relation` compares the remote tip to
@@ -12936,7 +12939,7 @@ class Orchestrator:
           read `wake` as eligible on provenance alone, so the coder's re-verified
           ALREADY-SATISFIED claim went to `_gate_already_satisfied` — which
           structurally refuses a `[WIP-BLOCKED]` subject (`_already_satisfied_
-          subject`, ~10674) — and the attempt was `failed` with "already-satisfied
+          subject`) — and the attempt was `failed` with "already-satisfied
           claim refused" instead of reviewing the finished work already on the
           branch.
         * task d256ae60 (the silent terminal): the same shape, but the resumed
@@ -12948,7 +12951,7 @@ class Orchestrator:
 
         A THIRD incident, same date, on the neighbouring subject: a `[WIP-PARTIAL]`
         checkpoint (a wake/quota park mid-coder, no HUMAN gate) off the ship ref
-        fails `_already_satisfied_subject` (~10674) exactly as a `[WIP-BLOCKED]`
+        fails `_already_satisfied_subject` exactly as a `[WIP-BLOCKED]`
         one does — incidents A (claim terminal) and B (silent terminal) verbatim,
         just on the other subject. There is no shape in which a `[WIP-PARTIAL]`
         head off the ship ref is safe to route through the claim gate: whoever
@@ -13022,8 +13025,8 @@ class Orchestrator:
     def _head_is_wip_checkpoint(repo, sha: str) -> bool:
         """Is ``sha`` a ``[WIP-BLOCKED]`` OR ``[WIP-PARTIAL]`` checkpoint — a
         quota/human park or a wake/quota park mid-attempt — a subject
-        `_already_satisfied_subject` (~10674) refuses whenever the commit is
-        not also on the ship ref (~10665)?
+        `_already_satisfied_subject` refuses whenever the commit is
+        not also on the ship ref (its own `is_ancestor` check)?
 
         Routing such a head to the claim gate off the ship ref is guaranteed
         to burn the attempt (task 0847f2c2 on `[WIP-BLOCKED]`; the neighbouring
@@ -13034,8 +13037,8 @@ class Orchestrator:
         off the ship ref, so there is no shape in which only one of them is
         safe here — widening from `[WIP-BLOCKED]`-only to both prefixes is the
         whole fix. Fails CLOSED on an unreadable subject: an unreadable head
-        must not buy the claim escape, same rationale as `_is_wip_partial`
-        (~17967), whose sibling check this is.
+        must not buy the claim escape, same rationale as `_is_wip_partial`,
+        whose sibling check this is.
         """
         try:
             subject = repo._run(
@@ -13049,7 +13052,7 @@ class Orchestrator:
         diff no completed review has judged — else ``None``.
 
         Hoisted into `_run_attempt` before BOTH zero-diff terminals so a
-        `branched_from_own_partial` resume (`_is_own_partial`, ~17843 — every
+        `branched_from_own_partial` resume (`_is_own_partial` — every
         `wake`/machine resume whose sha matches its own `resume_from`) cannot
         reach either one on an unjudged diff: incident 0847f2c2 (claim
         terminal, a fully-cited claim was refused by `_already_satisfied_
@@ -14732,7 +14735,7 @@ class Orchestrator:
             # the next call IS the retry.
             #
             # ONE NAMED EXCEPTION to "no retry loop of its own", scoped exactly as
-            # narrowly as `_finalize`'s own `forced` decision (~7981) is scoped: a
+            # narrowly as `_finalize`'s own `forced` decision is scoped: a
             # `pr_conflict` round used to rebase the already-pushed task branch BY
             # CONSTRUCTION, making the plain push above non-fast-forward on EVERY
             # such round. `agent/pushed_tip_guard` now DENIES that rebase and
@@ -14746,9 +14749,10 @@ class Orchestrator:
             # review that round with no PR, the exact state 0a / PR-021 exists to
             # prevent (see the docstring). `_finalize`'s force decision is the
             # single source of truth for when a force-push is safe; this reuses its
-            # module-level predicate verbatim (~247) rather than inventing a second
-            # heuristic — the only extra conjunct is the round marker, because this
-            # call retries *before* a review verdict exists for `_finalize`'s own
+            # module-level `_is_non_fast_forward` predicate verbatim rather than
+            # inventing a second heuristic — the only extra conjunct is the
+            # round marker, because this call retries *before* a review
+            # verdict exists for `_finalize`'s own
             # predicate to read. `PushBehindRemote` is re-raised above and the
             # predicate itself returns False for it (belt and braces).
             # Unlike `_finalize`'s transient-forge retry, this rejection is
@@ -16638,7 +16642,7 @@ class Orchestrator:
         rules = list(getattr(prof, "test_commands", None) or [])
         if not rules:
             return base, None  # no routing rules ⇒ default (every repo but no_human)
-        # _agent_edited_files is set per attempt (line ~1050) by the edit hook.
+        # _agent_edited_files is set per attempt by the `_agent_sink` edit hook.
         # On a RESUMED attempt the coder may make no new edits (the work is
         # already committed at the [WIP-BLOCKED] checkpoint), so that set is
         # empty — fall back to the attempt's committed change set (the same
@@ -23202,9 +23206,10 @@ SIX of them read a checkpoint and TWO do not — but do
         # verdict was computed from, which is exactly the bug this parameter
         # exists to close. `_finalize` therefore never reaches this branch;
         # it stays live only for callers with nothing pre-gathered (the
-        # pre-review draft body at ~10789, the body rebuild at ~8477, and this
-        # file's own unit tests), which leave it at the default `None` and get
-        # the old gather-it-here behaviour.
+        # pre-review draft body in `_open_draft_pr_for_review`, the body
+        # rebuild in `_gate_already_satisfied`, and this file's own unit
+        # tests), which leave it at the default `None` and get the old
+        # gather-it-here behaviour.
         if evidence is None:
             evidence = self._gather_evidence(
                 task, test_evidence=test_evidence, receipts=receipts,

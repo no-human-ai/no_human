@@ -829,8 +829,8 @@ FEATURE_NAMES = frozenset({
 # NOT the same set as create_task's own source clamp — see the call site.
 # "linear" is a real value the web client sends: web/src/App.jsx's backlog-seed
 # effect sets `source: tracker` where `tracker` is "linear" for a Linear-origin
-# ticket (App.jsx ~L907), and TaskComposer passes that straight through to this
-# endpoint's `body.source` (TaskComposer.jsx ~L153, L404).
+# ticket, and TaskComposer passes that straight through to this endpoint's
+# `body.source`.
 _BACKLOG_IMPORT_SOURCES = frozenset({"jira", "linear"})
 
 

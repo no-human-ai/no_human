@@ -31,8 +31,8 @@ mechanically_resolvable`'s wider eligible set, is what decides "derived":
 `mechanically_resolvable` also accepts `EXPORT_CLASSIFICATION.txt`- and
 `tests/test_structural_budget.py`-shaped conflicts, because that function
 backs a DIFFERENT resolver (`resolve_derived_conflict`) that can actually
-fix those up. `approve_merge.land_task`'s squash step (approve_merge.py
-~1060) tolerates exactly one shape: `unmerged == {"RELEASE_MANIFEST.txt"}`
+fix those up. `approve_merge.land_task`'s squash step tolerates exactly
+one shape: `unmerged == {"RELEASE_MANIFEST.txt"}`
 and nothing else — any other unmerged set, including a conflict that ALSO
 touches `RELEASE_MANIFEST.txt`, refuses at `squash`. Classifying anything
 wider than that singleton as "derived" here would make `--ready` render

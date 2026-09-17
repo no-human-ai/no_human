@@ -346,7 +346,7 @@ class TaskOut(BaseModel):
     #: how close this task is to being killed (used/cap/remaining). Populated by
     #: the detail endpoint (`from_task` has no store); `null` there. See
     #: `BudgetOut`. Frontend note: `web/src/SlideOver.jsx`'s `sys-summary` block
-    #: (near the "Attempt: #N" item, ~line 1658) is the obvious place to add a
+    #: (near the "Attempt: #N" item) is the obvious place to add a
     #: "used/cap · N% of budget" chip from `task.budget`; no UI is built here.
     budget: BudgetOut | None = None
     # USD, summed across every attempt by core.cost.attempts_cost — the same
