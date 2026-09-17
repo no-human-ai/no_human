@@ -1,64 +1,65 @@
 # How I verified this — full log
 
-_Harness-captured record for task `b93006fb`, commit `9a73fde76e64e757ee530001f573fa6436f3c22a` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `b93006fb`, commit `ea2a8f75395008b08905bc9584c0d7c10f0aba9b` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ## How I verified this
-5 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
+4 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
 
 ### test
-- `uv run pytest -q tests/test_release_binary_deps.py 2>&1 | tail -60`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/b93006fbf64d4c4491ed15a8f710ab37.6460.3e54ce8a uv run pytest -q -n 4 tests/test_release_binary_deps.py tests/test_npm_registry.py tests/test_ci_network_step_bounds.py tests/test_desktop_job_follows_paths.py tests/test_ci_upload_assertions_not_line_ending_dependent.py tests/test_check_release_manifest.py 2>&1 | tail -80`
 
 ```
-.....................................                                    [100%]
-37 passed in 0.79s
+Using CPython 3.12.13
+Creating virtual environment at: .venv
+   Building no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/b93006fbf64d4c4491ed15a8f710ab37.6460.3e54ce8a
+      Built no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/b93006fbf64d4c4491ed15a8f710ab37.6460.3e54ce8a
+Installed 73 packages in 190ms
+bringing up nodes...
+bringing up nodes...
+
+........................................................................ [ 68%]
+............s.ssss.s.s...........                                        [100%]
+98 passed, 7 skipped in 7.70s
 ```
 
-- `uv run pytest -q tests/test_ci_network_step_bounds.py tests/test_desktop_job_follows_paths.py \                tests/test_ci_upload_assertions_not_line_ending_dependent.py \                tests/test_ci.py tests/test_check_release_manifest.py tests/test_npm_registry.py 2>&1 | tail -60`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/b93006fbf64d4c4491ed15a8f710ab37.6460.3e54ce8a uv run pytest -q tests/test_release_binary_deps.py -rs 2>&1 | grep -A2 SKIPPED | head -30 echo "=== conflict markers [... 91 of 434 characters omitted from the middle ...] p -v "ASSUMPTIONS\|<redacted>" | head -20 echo "=== manifest re-check clean ===" python3 scripts/check_release_manifest.py 2>&1 | tail -10`
 
 ```
-........................................................................ [ 40%]
-........................................................................ [ 80%]
-..................sss.ssss..........                                     [100%]
-173 passed, 7 skipped in 25.75s
+=== conflict markers anywhere tracked ===
+=== manifest re-check clean ===
+OK: 1695 file(s) match RELEASE_MANIFEST.txt
 ```
 
-- `uv run pytest -q tests/test_release_binary_deps.py tests/test_ci_network_step_bounds.py tests/test_desktop_job_follows_paths.py \                tests/test_ci_upload_assertions_not_line_ending_dependent.py \                tests/test_ci.py tests/test_check_release_manifest.py tests/test_npm_registry.py -n 4 2>&1 | tail -20`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/b93006fbf64d4c4491ed15a8f710ab37.6460.3e54ce8a uv run pytest -q tests/test_release_binary_deps.py::test_the_pinned_cache_dirs_are_not_a_bare_tilde -v 2>&1 | tail -10`
+
+```
+<redacted> isolated HOME: /var/folders/1r/3r0rt1jd4j1456rsg_fh4d380000gn/T/nh-test-home-efcd31xt
+rootdir: /Users/eyalgolan/.<redacted>/worktrees/b93006fbf64d4c4491ed15a8f710ab37.6460.3e54ce8a
+configfile: pyproject.toml
+plugins: anyio-4.14.0, no-human-0.2.4, cov-7.1.0, xdist-3.8.0, asyncio-1.4.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 1 item
+
+tests/test_release_binary_deps.py .                                      [100%]
+
+============================== 1 passed in 0.75s ===============================
+```
+
+- `cd /Users/eyalgolan/.<redacted>/worktrees/b93006fbf64d4c4491ed15a8f710ab37.6460.3e54ce8a uv run pytest -q -n 4 tests/test_release_binary_deps.py tests/test_npm_registry.py tests/test_ci_network_step_bounds.py tests/test_desktop_job_follows_paths.py tests/test_ci_upload_assertions_not_line_ending_dependent.py tests/test_check_release_manifest.py 2>&1 | tail -20`
 
 ```
 bringing up nodes...
 bringing up nodes...
 
-........................................................................ [ 33%]
-........................................................................ [ 66%]
-................................sss..sss.s.............................. [ 99%]
-.                                                                        [100%]
-210 passed, 7 skipped in 17.39s
-```
-
-- `uv run pytest -q tests/test_release_binary_deps.py -k "tilde or cache_path_matches" 2>&1 | tail -20`
-
-```
-..                                                                       [100%]
-2 passed, 37 deselected in 0.77s
-```
-
-- `uv run pytest -q tests/test_release_binary_deps.py tests/test_ci_network_step_bounds.py tests/test_desktop_job_follows_paths.py \                tests/test_ci_upload_assertions_not_line_ending_dependent.py \                tests/test_ci.py tests/test_check_release_manifest.py tests/test_npm_registry.py -n 4 2>&1 | tail -15`
-
-```
-bringing up nodes...
-bringing up nodes...
-
-........................................................................ [ 32%]
-........................................................................ [ 65%]
-..............................sss.ssss.................................. [ 98%]
-...                                                                      [100%]
-212 passed, 7 skipped in 19.14s
+........................................................................ [ 68%]
+............s.ssss.s.s...........                                        [100%]
+98 passed, 7 skipped in 50.75s
 ```
 
 
 **Not verified:** everything below is a limit of this section, listed whether or not it bit this attempt.
 
-- no command recognised as e2e, http, typecheck, lint, build was recorded
+- no command recognised as e2e, http, typecheck, lint, build was recorded - and a recorded command is shown with its middle omitted, so a check inside the omitted part cannot be ruled out
 - an entry shows that a command LINE was submitted to the shell and what came back - never that the check recognised inside it RAN, and never that it was the RIGHT command: `pytest -k test_nothing` prints a clean run, and a recorded command line may name a check the shell never reached yet is still counted - TEN SHAPES WERE DRIVEN against bash 3.2.57 with the check replaced by a marker-printing stub and the marker was absent in every one: a failed `&&`, a taken `||`, an `exit`, an `exec`, an `exit` inside a `source`d script, a syntax error that aborts the REST of the line, a multi-line `if false`, a `case` that matches nothing, `set -e` aborting an earlier command, and `set -u` on an unset variable; that list is MEASURED, NOT EXHAUSTIVE, because this module is not bash, so a kind this section does NOT list as missing is a kind some recorded line named, which is not the same as a kind that ran
 - the text is the coder's: the session chose the command string and, through `echo`/`printf`, can choose the output too. Both are shown as inert text, and no entry ASSERTS a pass, a fail, or an exit status - `pytest -q | tail -3` exits with `tail`'s status, `Error: Exit code 1` is a line IN THE OUTPUT, and where the harness reported a timeout or an interruption instead of output that report is appended to the captured text in square brackets. Read the output
 - recognition reads the command line ONLY - it never looks inside what a command runs, so `bash -c 'uv run pytest -q'` leaves no receipt at all while `make test` leaves one that names `make` and not the recipe it ran; and the other way, a check merely NAMED in a heredoc body, or in a quoted string that happens to spell a shell separator, can be recorded as though it ran
