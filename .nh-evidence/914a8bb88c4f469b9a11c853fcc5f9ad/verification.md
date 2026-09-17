@@ -1,165 +1,219 @@
 # How I verified this — full log
 
-_Harness-captured record for task `914a8bb8`, commit `ea961e09697f8f60b142a4769ddcca74e921381a` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `914a8bb8`, commit `5faed31af5eb00fe3879dcb0d230d779a8b46624` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ## How I verified this
 11 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
 
 ### test
-- `npm test 2>&1 | tail -20`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/914a8bb88c4f469b9a11c853fcc5f9ad.6460.123778bb/web npm test 2>&1 | tail -40`
 
 ```
 ...
-# Subtest: a close during an in-flight snapshot cancels it and restarts backoff at 1s
-ok 1762 - a close during an in-flight snapshot cancels it and restarts backoff at 1s
+# Subtest: the reconnector never stops retrying
+ok 1763 - the reconnector never stops retrying
   ---
-  duration_ms: 0.150625
+  duration_ms: 0.333833
+  ...
+# Subtest: on open, the init snapshot is re-fetched and delivered
+ok 1764 - on open, the init snapshot is re-fetched and delivered
+  ---
+  duration_ms: 0.220709
+  ...
+# Subtest: onSnapshot delivers the fresh snapshot verbatim — the stale array is not merged into
+ok 1765 - onSnapshot delivers the fresh snapshot verbatim — the stale array is not merged into
+  ---
+  duration_ms: 0.137
+  ...
+# Subtest: a failing snapshot fetch retries on a shorter backoff and never publishes 'live'
+ok 1766 - a failing snapshot fetch retries on a shorter backoff
+[... 107 of 1,246 characters omitted from the middle ...]
+ot cancels it and restarts backoff at 1s
+ok 1767 - a close during an in-flight snapshot cancels it and restarts backoff at 1s
+  ---
+  duration_ms: 0.211167
   ...
 # Subtest: stop() is idempotent and leaves no pending timer or open socket
-ok 1763 - stop() is idempotent and leaves no pending timer or open socket
+ok 1768 - stop() is idempotent and leaves no pending timer or open socket
   ---
-  duration_ms: 0.163209
+  duration_ms: 0.212
   ...
-1..1763
-# tests 1763
+1..1768
+# tests 1768
 # suites 0
-# pass 1762
+# pass 1767
 # fail 1
 # cancelled 0
 # skipped 0
 # todo 0
-# duration_ms 656.198458
+# duration_ms 974.355292
+```  
+  _excerpt - 1,246 characters of output in total_
+
+- `cd /Users/eyalgolan/.<redacted>/worktrees/914a8bb88c4f469b9a11c853fcc5f9ad.6460.123778bb/web npm test 2>&1 | grep -n "^not ok"`
+
+```
+2900:not ok 579 - every walk file on disk appears in the manifest exactly once, and vice versa
 ```
 
-- `npm test 2>&1 | grep -B2 -A 25 "^not ok"`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/914a8bb88c4f469b9a11c853fcc5f9ad.6460.123778bb/web npm test 2>&1 | sed -n '2895,2950p'`
 
 ```
-...
-# Subtest: the wizard's STEPS list really has lastIndex 6, so these cases are the real ones
-not ok 1169 - the wizard's STEPS list really has lastIndex 6, so these cases are the real ones
+ok 578 - every walk lane is either ci or manual
   ---
-  duration_ms: 0.795833
-  location: '/Users/eyalgolan/.<redacted>/worktrees/914a8bb88c4f469b9a11c853fcc5f9ad.62504.2b528b22/web/src/onboardingNav.test.mjs:119:1'
+  duration_ms: 0.206375
+  ...
+# Subtest: every walk file on disk appears in the manifest exactly once, and vice versa
+not ok 579 - every walk file on disk appears in the manifest exactly once, and vice versa
+  ---
+  duration_ms: 1.12425
+  location: '/Users/eyalgolan/.<redacted>/worktrees/914a8bb88c4f469b9a11c853fcc5f9ad.6460.123778bb/web/src/e2eManifest.test.mjs:44:1'
   failureType: 'testCodeFailure'
-  error: |-
-    STEPS changed length — update LAST in this test so the launch case still tests the LAST step
-    
-    -1 !== 6
-    
+  error: 'replayBodyDecode.mjs exists in e2e/ but is not listed in manifest.mjs'
   code: 'ERR_ASSERTION'
   name: 'AssertionError'
-  expected: 6
-  actual: -1
-  operator: 'strictEqual'
+  expected: true
+  actual: false
+  operator: '=='
   stack: |-
-    TestContext.<anonymous> (file:///Users/
-[... 199 of 1,338 characters omitted from the middle ...]
-st_runner/test:796:25)
-    Test.processPendingSubtests (node:internal/test_runner/test:526:18)
-    Test.postRun (node:internal/test_runner/test:889:19)
-    Test.run (node:internal/test_runner/test:835:12)
-    async Test.processPendingSubtests (node:internal/test_runner/test:526:7)
+    TestContext.<anonymous> (file
+[... 930 of 2,069 characters omitted from the middle ...]
+nmeasured != zero
+ok 583 - null (not '0 tokens') when the fields are absent — unmeasured != zero
+  ---
+  duration_ms: 0.04325
   ...
-# Subtest: the step indicator renders BUTTONS that jump via setI, gated on canJumpTo
-ok 1170 - the step indicator renders BUTTONS that jump via setI, gated on canJumpTo
+# Subtest: null for a missing/undefined task
+ok 584 - null for a missing/undefined task
+  ---
+  duration_ms: 0.039583
+  ...
+# Subtest: token compaction matches fmtTokens
+ok 585 - token compaction matches fmtTokens
+  ---
+  duration_ms: 0.559625
+  ...
+# Subtest: pr_feedback_deferred renders as a human label, not the raw kind
 ```  
-  _excerpt - 1,334 characters of output in total_
+  _excerpt - 2,065 characters of output in total_
 
-- `npm test 2>&1 | tail -10`
-
-```
-...
-1..1763
-# tests 1763
-# suites 0
-# pass 1763
-# fail 0
-# cancelled 0
-# skipped 0
-# todo 0
-# duration_ms 648.709916
-```
-
-- `uv run pytest tests/test_ci_network_step_bounds.py tests/test_desktop_job_follows_paths.py -q 2>&1 | tail -30`
-
-```
-....................................                                     [100%]
-36 passed in 6.41s
-```
-
-- `head -20 tests/test_test_lanes.py; echo ---; uv run pytest tests/test_test_lanes.py -q 2>&1 | tail -15`
-
-```
-"""The two test lanes are spelled identically in both places, and they partition
-the suite.
-
-`.github/workflows/ci.yml` and `scripts/run_tests.sh` each choose tests with a
-`-m` marker expression, and the two are maintained by hand. Both files already
-argue for this guard in prose:
-
-  ci.yml          "every node is in exactly one, which tests/test_test_lanes.py
-                   pins and the collection counts reconcile"
-  CONTRIBUTING.md "a mistyped marker expression drops a node out of *both*, and
-                   a test that runs nowhere looks exactly like a test that
-                   passes"
-
-Until this file existed those two sentences named a test that was not in the
-tree (issue #109): it lived only in the private repo this project was developed
-in, where four of its assertions checked for files that do not exist here, so
-the prose was exported and the test was not.
-
-This is the public-tree version. It checks the two properties that matter and
-nothing that depends on the other repository.
----
-....                                                                     [100%]
-4 passed in 15.53s
-```
-
-- `cd web && npm test 2>&1 | tail -20`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/914a8bb88c4f469b9a11c853fcc5f9ad.6460.123778bb/web npm test 2>&1 | tail -15`
 
 ```
 ...
-# Subtest: a close during an in-flight snapshot cancels it and restarts backoff at 1s
-ok 1762 - a close during an in-flight snapshot cancels it and restarts backoff at 1s
-  ---
-  duration_ms: 0.1985
-  ...
 # Subtest: stop() is idempotent and leaves no pending timer or open socket
-ok 1763 - stop() is idempotent and leaves no pending timer or open socket
+ok 1768 - stop() is idempotent and leaves no pending timer or open socket
   ---
-  duration_ms: 0.180209
+  duration_ms: 0.226292
   ...
-1..1763
-# tests 1763
+1..1768
+# tests 1768
 # suites 0
-# pass 1763
+# pass 1768
 # fail 0
 # cancelled 0
 # skipped 0
 # todo 0
-# duration_ms 920.590459
+# duration_ms 715.74875
 ```
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/914a8bb88c4f469b9a11c853fcc5f9ad.62504.2b528b22 && uv run pytest tests/test_ci_network_step_bounds.py tests/test_desktop_job_follows_paths.py -q 2>&1 | tail -10`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/914a8bb88c4f469b9a11c853fcc5f9ad.6460.123778bb uv run pytest tests/test_ci_network_step_bounds.py -q 2>&1 | tail -20`
 
 ```
-....................................                                     [100%]
-36 passed in 4.59s
+Using CPython 3.12.13
+Creating virtual environment at: .venv
+   Building no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/914a8bb88c4f469b9a11c853fcc5f9ad.6460.123778bb
+      Built no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/914a8bb88c4f469b9a11c853fcc5f9ad.6460.123778bb
+Installed 73 packages in 307ms
+............                                                             [100%]
+12 passed in 5.95s
+```
+
+- `cd /Users/eyalgolan/.<redacted>/worktrees/914a8bb88c4f469b9a11c853fcc5f9ad.6460.123778bb cp .github/workflows/ci.yml /tmp/ci_after.yml git show d73c1078:.github/workflows/ci.yml > .github/workflows/ci.yml  [... 80 of 423 characters omitted from the middle ...] /workflows/ci.yml uv run pytest tests/test_ci_network_step_bounds.py::test_web_e2e_job_runs_the_ci_lane_unconditionally -q 2>&1 | tail -20`
+
+```
+--- ci.yml now base version, web_e2e count: ---
+0
+=================================== FAILURES ===================================
+______________ test_web_e2e_job_runs_the_ci_lane_unconditionally _______________
+
+    def test_web_e2e_job_runs_the_ci_lane_unconditionally():
+        """The `web_e2e` job actually executes the Playwright walks (the feature
+        this test guards, see .<redacted>/PLAN.md) -- before it existed, `npm run
+        e2e` was reachable only by a human's own invocation, so the walks' own
+        coverage was advisory. No `if:`/`needs:` at the job level: it must run on
+        exactly what the `web` job above it runs on (push to main, every PR),
+       
+[... 309 of 1,448 characters omitted from the middle ...]
+ "github.event_name == 'pull_request'", 'runs-on': 'ubuntu-latest', 'timeout-minut... {'name': 'Context files under load limits', 'run': 'python scripts/check_context_files.py --claude CLAUDE.md'}]}, ...}
+
+tests/test_ci_network_step_bounds.py:222: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_ci_network_step_bounds.py::test_web_e2e_job_runs_the_ci_lane_unconditionally
+1 failed in 0.86s
+```  
+  _excerpt - 1,446 characters of output in total_
+
+- `cd /Users/eyalgolan/.<redacted>/worktrees/914a8bb88c4f469b9a11c853fcc5f9ad.6460.123778bb cp /tmp/ci_after.yml .github/workflows/ci.yml diff /tmp/ci_after.yml .github/workflows/ci.yml && echo "restored identical" uv run pytest tests/test_ci_network_step_bounds.py::test_web_e2e_job_runs_the_ci_lane_unconditionally -q 2>&1 | tail -10`
+
+```
+restored identical
+.                                                                        [100%]
+1 passed in 0.81s
+```
+
+- `cd /Users/eyalgolan/.<redacted>/worktrees/914a8bb88c4f469b9a11c853fcc5f9ad.6460.123778bb && uv run pytest tests/test_ci_network_step_bounds.py tests/test_desktop_job_follows_paths.py tests/test_test_lanes.py -q 2>&1 | tail -40`
+
+```
+.........................................                                [100%]
+41 passed in 29.91s
+```
+
+- `cd /Users/eyalgolan/.<redacted>/worktrees/914a8bb88c4f469b9a11c853fcc5f9ad.6460.123778bb/web && npm test 2>&1 | tail -15`
+
+```
+...
+# Subtest: stop() is idempotent and leaves no pending timer or open socket
+ok 1768 - stop() is idempotent and leaves no pending timer or open socket
+  ---
+  duration_ms: 0.419708
+  ...
+1..1768
+# tests 1768
+# suites 0
+# pass 1768
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 1026.931042
 ```
 
 
-### e2e
-- `cd /Users/eyalgolan/.<redacted>/worktrees/914a8bb88c4f469b9a11c853fcc5f9ad.62504.2b528b22/web && ls node_modules >/dev/null 2>&1 && echo "node_modules exists" || echo "missing"; node --version; npx playwright --version 2>&1 | head -5`
+### lint
+- `cd /Users/eyalgolan/.<redacted>/worktrees/914a8bb88c4f469b9a11c853fcc5f9ad.6460.123778bb/web && npm run lint 2>&1 | tail -40`
 
 ```
-node_modules exists
-v20.20.2
-Version 1.61.1
+> no-human-board@0.2.4 lint
+> eslint .
+
+
+/Users/eyalgolan/.<redacted>/worktrees/914a8bb88c4f469b9a11c853fcc5f9ad.6460.123778bb/web/src/Integrations.jsx
+  301:5  error  Definition for rule 'react-hooks/exhaustive-deps' was not found  react-hooks/exhaustive-deps
+
+/Users/eyalgolan/.<redacted>/worktrees/914a8bb88c4f469b9a11c853fcc5f9ad.6460.123778bb/web/src/onboardingEmail.js
+  31:3  warning  Unused eslint-disable directive (no problems were reported from 'no-control-regex')
+
+/Users/eyalgolan/.<redacted>/worktrees/914a8bb88c4f469b9a11c853fcc5f9ad.6460.123778bb/web/src/sidebarNav.test.mjs
+  117:3  warning  Unused eslint-disable directive (no problems were reported from 'no-misleading-character-class')
+
+✖ 3 problems (1 error, 2 warnings)
+  0 errors and 2 warnings potentially fixable with the `--fix` option.
 ```
 
 
 ### build
-- `npm run build 2>&1 | tail -20`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/914a8bb88c4f469b9a11c853fcc5f9ad.6460.123778bb/web npm run build 2>&1 | tail -20`
 
 ```
 dist/assets/-F63fjptAgt5VM-kVkqdyU8n1iEq131nj-otFQ-C05TWSE2.woff2                8.86 kB
@@ -172,54 +226,20 @@ dist/assets/-F6pfjptAgt5VM-kVkqdyU8n1ioa1XdgregdFA-BkxdLi3-.woff2               
 dist/assets/rP2Wp2ywxg089UriCZaSExdy3sGt9zz86GPwyKK58UfivUw4
 [... 509 of 1,648 characters omitted from the middle ...]
 
-dist/assets/index-CzcXGG31.js                                                  721.67 kB │ gzip: 220.91 kB
+dist/assets/index-xdUcbz1R.js                                                  721.66 kB │ gzip: 220.91 kB
 
 (!) Some chunks are larger than 500 kB after minification. Consider:
 - Using dynamic import() to code-split the application
 - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
 - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
-✓ built in 1.32s
+✓ built in 2.99s
 ```  
   _excerpt - 1,648 characters of output in total_
-
-- `npm run build 2>&1 | tail -20`
-
-```
-dist/assets/-F63fjptAgt5VM-kVkqdyU8n1iEq131nj-otFQ-C05TWSE2.woff2                8.86 kB
-dist/assets/-F6qfjptAgt5VM-kVkqdyU8n3vAOwl5FgsAXHNlYzg-BRMVj9uZ.woff2            8.96 kB
-dist/assets/-F6pfjptAgt5VM-kVkqdyU8n1ioa23dgregdFOFh-DjXFaAjD.woff2              9.79 kB
-dist/assets/-F63fjptAgt5VM-kVkqdyU8n1i8q131nj-o-BJoXLJYV.woff2                  10.05 kB
-dist/assets/-F6qfjptAgt5VM-kVkqdyU8n3twJwlBFgsAXHNk-C820gu2e.woff2              10.06 kB
-dist/assets/-F6qfjptAgt5VM-kVkqdyU8n3vAOwlBFgsAXHNk-DpGnXj3s.woff2              10.12 kB
-dist/assets/-F6pfjptAgt5VM-kVkqdyU8n1ioa1XdgregdFA-BkxdLi3-.woff2               11.57 kB
-dist/assets/rP2Wp2ywxg089UriCZaSExdy3sGt9zz86GPwyKK58UfivUw4
-[... 509 of 1,648 characters omitted from the middle ...]
-
-dist/assets/index-C0zKT-8U.js                                                  721.67 kB │ gzip: 220.92 kB
-
-(!) Some chunks are larger than 500 kB after minification. Consider:
-- Using dynamic import() to code-split the application
-- Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
-- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
-✓ built in 1.62s
-```  
-  _excerpt - 1,648 characters of output in total_
-
-- `rm -f e2e/board.mjs.bak && npm run build > /tmp/build.out 2>&1; echo "BUILD_EXIT=$?"; tail -5 /tmp/build.out`
-
-```
-BUILD_EXIT=0
-(!) Some chunks are larger than 500 kB after minification. Consider:
-- Using dynamic import() to code-split the application
-- Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
-- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
-✓ built in 1.34s
-```
 
 
 **Not verified:** everything below is a limit of this section, listed whether or not it bit this attempt.
 
-- no command recognised as http, typecheck, lint was recorded
+- no command recognised as e2e, http, typecheck was recorded - and a recorded command is shown with its middle omitted, so a check inside the omitted part cannot be ruled out
 - an entry shows that a command LINE was submitted to the shell and what came back - never that the check recognised inside it RAN, and never that it was the RIGHT command: `pytest -k test_nothing` prints a clean run, and a recorded command line may name a check the shell never reached yet is still counted - TEN SHAPES WERE DRIVEN against bash 3.2.57 with the check replaced by a marker-printing stub and the marker was absent in every one: a failed `&&`, a taken `||`, an `exit`, an `exec`, an `exit` inside a `source`d script, a syntax error that aborts the REST of the line, a multi-line `if false`, a `case` that matches nothing, `set -e` aborting an earlier command, and `set -u` on an unset variable; that list is MEASURED, NOT EXHAUSTIVE, because this module is not bash, so a kind this section does NOT list as missing is a kind some recorded line named, which is not the same as a kind that ran
 - the text is the coder's: the session chose the command string and, through `echo`/`printf`, can choose the output too. Both are shown as inert text, and no entry ASSERTS a pass, a fail, or an exit status - `pytest -q | tail -3` exits with `tail`'s status, `Error: Exit code 1` is a line IN THE OUTPUT, and where the harness reported a timeout or an interruption instead of output that report is appended to the captured text in square brackets. Read the output
 - recognition reads the command line ONLY - it never looks inside what a command runs, so `bash -c 'uv run pytest -q'` leaves no receipt at all while `make test` leaves one that names `make` and not the recipe it ran; and the other way, a check merely NAMED in a heredoc body, or in a quoted string that happens to spell a shell separator, can be recorded as though it ran

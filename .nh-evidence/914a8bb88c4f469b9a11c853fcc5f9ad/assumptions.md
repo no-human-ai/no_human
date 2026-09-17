@@ -1,6 +1,10 @@
 # Assumptions
 
-_Harness-captured record for task `914a8bb8`, commit `ea961e09697f8f60b142a4769ddcca74e921381a` — not model-authored: no_human wrote this file from the intake step's recorded questions and assumptions. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `914a8bb8`, commit `5faed31af5eb00fe3879dcb0d230d779a8b46624` — not model-authored: no_human wrote this file from the intake step's recorded questions and assumptions. It records what the gate produced; it is not a verdict of the model that wrote the code._
+
+> ⚠️ **Unresolved:** mechanical derived-artefact conflict resolution failed: https://github.com/no-human-ai/no_human/pull/483 step=regenerate
+
+> ⚠️ **Open question:** PR https://github.com/no-human-ai/no_human/pull/483 conflicts only in derived artefact(s) (RELEASE_MANIFEST.txt) but mechanical resolution failed at step 'regenerate'; detail: check_release_manifest --write failed (1): Traceback (most recent call last): File "/private/var/folders/1r/3r0rt1jd4j1456rsg_fh4d380000gn/T/nh-derived-0aw_t95k/scripts/check_release_manifest.py", line 410, in <module> raise
 
 <details><summary>⚠️ 2 assumptions made on your behalf — verify at review</summary>
 
