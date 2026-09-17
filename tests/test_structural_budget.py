@@ -1715,7 +1715,12 @@ FROZEN_FILE_LINES = {
     # that runs the fresh-session reviewer and the tamper guard over the
     # current branch or a GitHub PR with no daemon, no server, and no Store).
     # Measured via `wc -l src/no_human/cli/commands.py` (agrees: 9250).
-    "cli/commands.py": 9250,
+    # 9250 -> 9294 (+44): new `nh changelog-check` command (walks a commit
+    # range for user-visible-surface commits that never touch CHANGELOG.md,
+    # exits non-zero when any are found) plus a non-blocking warning in
+    # `_approve_go_landed` that names it when the just-landed commit is one
+    # of those. Measured via `wc -l src/no_human/cli/commands.py`.
+    "cli/commands.py": 9294,
     # api/app.py 5338 -> 5346 (+8): same budget-floor warning surfaced by
     # `send-back`/`reply` as `budget_warning` in the JSON response. Net cost
     # was trimmed from a naive +14 to +8 by computing `Bounds.from_config(...)`
