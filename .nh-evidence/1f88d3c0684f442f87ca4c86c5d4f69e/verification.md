@@ -1,41 +1,47 @@
 # How I verified this — full log
 
-_Harness-captured record for task `1f88d3c0`, commit `7abbc71e1b659ced360f5ae311d12414a9c399ef` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `1f88d3c0`, commit `aa6a7e12420e95cb4f70f08156cba8a1583829ca` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ## How I verified this
-7 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
+8 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
 
 ### test
-- `uv run pytest tests/ -m repoguard -q 2>&1 | tail -40`
+- `uv run pytest tests/test_readme_claims.py -q -k "citation or CITATION" 2>&1 | tail -30`
 
 ```
-def test_every_line_citation_currently_resolves_exactly():
-        """The shipped docs are exactly anchored today, not merely within drift
-        tolerance — this is what gives `scripts/reanchor_citations.py --check`
-        something to enforce, and proves the new tolerance did not quietly
-        downgrade every legacy citation to "drifted".
-        """
-        checked = 0
-        for doc, raw, resolve_path, token in CITATION_TABLE:
-            tail = raw.split(":", 1)[1]
-            if not _LEGACY_LINE_SPEC_RE.match(tail):
-                continue  # symbol citation — not part of this guard
-            if (doc, raw) in _ABSENT_OK and not _resolve_source(resolve_path)
-[... 1,552 of 2,691 characters omitted from the middle ...]
+.......................s.............................s.......            [100%]
+59 passed, 2 skipped, 119 deselected in 2.40s
+```
 
-
--- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-=========================== short test summary info ============================
-FAILED tests/test_readme_claims.py::test_doc_citations_resolve_to_the_code_they_describe[security.md:desktop/electron-builder.config.cjs:427]
-FAILED tests/test_readme_claims.py::test_every_line_citation_currently_resolves_exactly
-2 failed, 173 passed, 13 skipped, 13118 deselected, 2 warnings in 5.05s
-```  
-  _excerpt - 2,679 characters of output in total_
-
-- `uv run pytest tests/test_readme_claims.py -q -k "electron_builder or citations_resolve" 2>&1 | tail -20 echo "---full repoguard---" uv run pytest tests/ -m repoguard -q 2>&1 | tail -10`
+- `uv run pytest tests/test_readme_claims.py -q --collect-only -k "electron-builder.config.cjs" 2>&1 | head -40`
 
 ```
-lines = _citation_source_lines(resolve_path, tail)
+tests/test_readme_claims.py::test_doc_citations_resolve_to_the_code_they_describe[security.md:desktop/electron-builder.config.cjs:453]
+
+1/180 tests collected (179 deselected) in 0.05s
+```
+
+- `uv run pytest tests/test_readme_claims.py -q -n 4 2>&1 | tail -20`
+
+```
+bringing up nodes...
+bringing up nodes...
+
+...s....s......s......ss....ss.......s...........................s...... [ 40%]
+.................................s.s.................................... [ 80%]
+..............................s.....                                     [100%]
+168 passed, 12 skipped in 1.55s
+```
+
+- `cp desktop/electron-builder.config.cjs /tmp/ebc.fixed.bak git show origin/main:desktop/electron-builder.config.cjs > desktop/electron-builder.config.cjs uv run pytest "tests/test_readme_claims.py::test_doc_citations_resolve_to_the_code_they_describe[security.md:desktop/electron-builder.config.cjs:453]" -q 2>&1 | tail -25`
+
+```
+UserWarning,
+                    stacklevel=2,
+                )
+                return
+            # status == "missing"
+            lines = _citation_source_lines(resolve_path, tail)
             haystack = "\n".join(lines) if lines else "(citation is out of range)"
 >           assert False, (
                 f"{doc} cites `{raw}` for {token!r}, but the line(s) now read:\n"
@@ -43,91 +49,61 @@ lines = _citation_source_lines(resolve_path, tail)
                 f"and {token!r} was not found within "
                 f"±{_CITATION_DRIFT_WINDOW} lines of the citation either — "
                 f"{detail}; re-derive the citation from the current tree, or run "
-                f"`uv run python scripts/reanchor_citations.py --apply` if the "
-                f"nearest candidate above is the right target"
-            )
-E           Assert
-[... 1,276 of 2,415 characters omitted from the middle ...]
-ort test summary info ============================
-FAILED tests/test_readme_claims.py::test_doc_citations_resolve_to_the_code_they_describe[security.md:desktop/electron-builder.config.cjs:427]
-FAILED tests/test_readme_claims.py::test_the_citation_table_covers_every_line_citation_in_the_four_docs
-FAILED tests/test_readme_claims.py::test_every_line_citation_currently_resolves_exactly
-3 failed, 172 passed, 13 skipped, 13118 deselected, 2 warnings in 4.77s
+                f"`uv run python s
+[... 431 of 1,570 characters omitted from the middle ...]
+ation from the current tree, or run `uv run python scripts/reanchor_citations.py --apply` if the nearest candidate above is the right target
+E           assert False
+
+tests/test_readme_claims.py:2270: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_readme_claims.py::test_doc_citations_resolve_to_the_code_they_describe[security.md:desktop/electron-builder.config.cjs:453]
+1 failed in 0.39s
 ```  
-  _excerpt - 2,409 characters of output in total_
+  _excerpt - 1,570 characters of output in total_
 
-- `uv run pytest tests/ -m repoguard -q 2>&1 | tail -20`
-
-```
-.....................................s.s.s.s.s.s.s.s.s.s................ [ 38%]
-...............................s...........................s............ [ 77%]
-...........................................                              [100%]
-=============================== warnings summary ===============================
-src/<redacted>/testing/test_layers.py:35
-  /Users/eyalgolan/.<redacted>/worktrees/1f88d3c0684f442f87ca4c86c5d4f69e.62504.b02bf600/src/<redacted>/testing/test_layers.py:35: PytestCollectionWarning: cannot collect test class 'TestLayer' because it has a __init__ constructor (from: tests/test_test_layers.py)
-    @dataclass
-
-src/<redacted>/testing/test_layers.py:89
-  /Users/eyalgolan/.<redacted>/worktrees/1f88d3c0684f442f87ca4c86c5d4f69e.62504.b02bf600/src/<redacted>/testing/test_layers.py:89: PytestCollectionWarning: cannot collect test class 'TestPlan' because it has a __init__ constructor (from: tests/test_test_layers.py)
-    @dataclass
-
--- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-175 passed, 13 skipped, 13118 deselected, 2 warnings in 5.93s
-```
-
-- `uv run pytest tests/ -m repoguard -q 2>&1 | tail -12`
+- `cp /tmp/ebc.fixed.bak desktop/electron-builder.config.cjs diff /tmp/ebc.fixed.bak desktop/electron-builder.config.cjs && echo RESTORED_OK uv run pytest "tests/test_readme_claims.py::test_doc_citations_resolve_to_the_code_they_describe[security.md:desktop/electron-builder.config.cjs:453]" -q 2>&1 | tail -10 git status --short`
 
 ```
-...........................................                              [100%]
-=============================== warnings summary ===============================
-src/<redacted>/testing/test_layers.py:35
-  /Users/eyalgolan/.<redacted>/worktrees/1f88d3c0684f442f87ca4c86c5d4f69e.62504.b02bf600/src/<redacted>/testing/test_layers.py:35: PytestCollectionWarning: cannot collect test class 'TestLayer' because it has a __init__ constructor (from: tests/test_test_layers.py)
-    @dataclass
-
-src/<redacted>/testing/test_layers.py:89
-  /Users/eyalgolan/.<redacted>/worktrees/1f88d3c0684f442f87ca4c86c5d4f69e.62504.b02bf600/src/<redacted>/testing/test_layers.py:89: PytestCollectionWarning: cannot collect test class 'TestPlan' because it has a __init__ constructor (from: tests/test_test_layers.py)
-    @dataclass
-
--- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-175 passed, 13 skipped, 13118 deselected, 2 warnings in 4.72s
+RESTORED_OK
+.                                                                        [100%]
+1 passed in 0.35s
 ```
 
-- `uv run pytest tests/test_readme_claims.py::test_every_line_citation_currently_resolves_exactly -q 2>&1 | tail -10`
+- `uv run pytest tests/test_nhsigning_stamp_repro.py -q 2>&1 | tail -30`
 
 ```
 .                                                                        [100%]
-1 passed in 0.44s
+1 passed in 6.07s
 ```
 
-- `uv run pytest tests/ -m repoguard -q > /tmp/final_repoguard.txt 2>&1; echo "PYTEST_EXIT=$?"; tail -12 /tmp/final_repoguard.txt echo "---release manifest check---" uv run python scripts/check_release_manifest.py`
+- `cp desktop/electron-builder.config.cjs /tmp/ebc2.bak sed -i '' 's/nhSigning: signing.mode,/nhSigning: plan.mode,/' desktop/electron-builder.config.cjs uv run pytest tests/test_nhsigning_stamp_repro.py -q 2>&1 | tail -15 echo "---restore---" cp /tmp/ebc2.bak desktop/electron-builder.config.cjs diff /tmp/ebc2.bak desktop/electron-builder.config.cjs && echo RESTORED_OK git status --short`
 
 ```
-PYTEST_EXIT=0
-...........................................                              [100%]
-=============================== warnings summary ===============================
-src/<redacted>/testing/test_layers.py:35
-  /Users/eyalgolan/.<redacted>/worktrees/1f88d3c0684f442f87ca4c86c5d4f69e.62504.b02bf600/src/<redacted>/testing/test_layers.py:35: PytestCollectionWarning: cannot collect test class 'TestLayer' because it has a __init__ constructor (from: tests/test_test_layers.py)
-    @dataclass
+E         # fail 8
+E         # cancelled 0
+E         # skipped 0
+E         # todo 0
+E         # duration_ms 3194.528209
+E         
+E         STDERR:
+E         
+E       assert 1 == 0
+E        +  where 1 = CompletedProcess(args=['/Users/eyalgolan/.local/bin/node', '--test', 'signing.test.mjs', 'updateStamp.test.mjs'], retu...sts 70\n# suites 0\n# pass 62\n# fail 8\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 3194.528209\n', stderr='').returncode
 
-src/<redacted>/testing/test_layers.py:89
-  /Users/eyalgolan/.<redacted>/worktrees/1f88d3c0684f442f87ca4c86c5d4f69e.62504.b02bf600/src/<redacted>/testing/test_layers.py:89: PytestCollectionWarning: cannot collect test class 'TestPlan' because it has a __init__ constructor (from: tests/test_test_layers.py)
-    @dataclass
-
--- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-175 passed, 13 skipped, 13118 deselected, 2 warnings in 4.55s
----release manifest check---
-OK: 1637 file(s) match RELEASE_MANIFEST.txt
+tests/test_nhsigning_stamp_repro.py:60: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_nhsigning_stamp_repro.py::test_nhsigning_stamp_js_suite_passes
+1 failed in 3.60s
+---restore---
+RESTORED_OK
+?? tests/test_nhsigning_stamp_repro.py
 ```
 
-- `uv run pytest tests/test_readme_claims.py::test_every_line_citation_currently_resolves_exactly -q 2>&1 | tail -5 echo "---" git status --short`
+- `uv run pytest tests/test_nhsigning_stamp_repro.py -q 2>&1 | tail -20`
 
 ```
 .                                                                        [100%]
-1 passed in 0.50s
----
- M RELEASE_MANIFEST.txt
- M docs/security.md
- M tests/test_readme_claims.py
+1 passed in 20.90s
 ```
 
 
