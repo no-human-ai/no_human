@@ -228,7 +228,7 @@ jobs:
         with:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha }}
-      - uses: no-human-ai/no_human@main # no versioned tag yet — see below
+      - uses: no-human-ai/no_human@v0.2.4 # a release tag; a reviewed SHA is stronger — see below
         with:
           credential: ${{ secrets.ANTHROPIC_API_KEY }}
           github_token: ${{ github.token }}
@@ -244,12 +244,14 @@ cites line numbers against whatever tree is on disk — it refuses to run
 rather than review the wrong one, so omitting `ref:` here turns into a red,
 actionable exit `2`, not a silent misreview.
 
-This Action has no versioned release yet — `no-human-ai/no_human`'s tags
-today run `v0.1.0` through `v0.2.3`, none of which contain `action.yml`. A
-`v1` tag will be cut at the first release that ships it. Until then, pin to
-`@main` for the latest revision, or better, pin to the exact commit SHA
-you've reviewed (`no-human-ai/no_human@<sha>`) so a later change to `main`
-can't alter what your workflow runs.
+There is no `v1` tag for this Action yet. `v0.2.4` was the first release tag to
+carry `action.yml`, so `no-human-ai/no_human@v0.2.4` resolves and is what the
+example above pins — but a release tag is not a moving major version, and
+`@main` is whatever landed most recently. **A commit SHA you have reviewed
+(`no-human-ai/no_human@<sha>`) is stronger still**: a branch moves by
+definition and a tag can be moved, so a SHA is the only form under which a
+later change to this repository cannot alter what your workflow runs — and this
+Action runs with your credential.
 
 `credential` takes either shape of your own Anthropic credential — an
 `ANTHROPIC_API_KEY` (`sk-ant-api...`) or a Claude subscription OAuth token

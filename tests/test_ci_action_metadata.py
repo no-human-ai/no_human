@@ -170,6 +170,65 @@ def test_readme_workflow_snippet_parses_and_uses_this_action():
     assert any(u.startswith("no-human-ai/no_human") for u in uses)
     credential_step = next(s for s in steps if s.get("uses", "").startswith("no-human-ai/no_human"))
     assert "credential" in credential_step.get("with", {})
+    # A reader copies this block verbatim, so the ref has to resolve. Worth its
+    # own assertion because the prose recommends `no-human-ai/no_human@<sha>`,
+    # which means a snippet reverted to that placeholder would satisfy the
+    # prose/snippet coupling test for free — the exact defect this branch's
+    # first draft shipped.
+    action_ref = next(u for u in uses if u.startswith("no-human-ai/no_human"))
+    assert "<" not in action_ref, (
+        f"the snippet must pin a ref a reader can resolve, not a placeholder: "
+        f"{action_ref}")
+
+
+def test_readme_prose_names_the_ref_the_snippet_pins():
+    """The prose says the snippet pins a particular ref. Couple them.
+
+    The section pins a release tag in the example and argues for a reviewed
+    SHA in the prose, and the prose ties the two together by naming the ref the
+    example uses. That sentence is true when written and silently false the
+    moment the snippet's ref is bumped — which this arrangement invites, since
+    a hard-pinned tag, unlike `@main`, does not pick up a later fix to the
+    Action. Every other assertion about that line matches on
+    `startswith("no-human-ai/no_human")` and ignores the `@ref` entirely, so
+    nothing else in the suite can see the bump.
+
+    Worth stating plainly because it is why this test exists at all: the claim
+    this section previously got wrong could not be gated — it quantified over
+    future git tags, which no test in the tree can read. This one is a string
+    comparison inside a single file, so there is no excuse for leaving it to
+    review attention.
+    """
+    text = README.read_text(encoding="utf-8")
+    snippets = [s for s in _readme_workflow_snippets() if "no-human-ai/no_human" in s]
+    assert snippets, "README's GitHub Action section must include a workflow snippet"
+    steps = next(iter(yaml.safe_load(snippets[0])["jobs"].values()))["steps"]
+    ref = next(s["uses"] for s in steps
+               if s.get("uses", "").startswith("no-human-ai/no_human"))
+
+    # PROSE, which means: this section, and not the fenced blocks in it. Both
+    # halves are load-bearing, and the first draft of this test had neither.
+    #
+    # Searching the whole file for "`<ref>` resolves" was wrong twice over. It
+    # was too LOOSE, because the fence the ref was just read FROM is part of
+    # the file — a `# \`...@v0.2.4\` resolves` comment inside the snippet
+    # satisfied it with the prose sentence deleted outright, which is the
+    # expectation being recomputed from the thing under test. And it was too
+    # TIGHT, because it pinned the verb: rewording "resolves" to "is
+    # resolvable" turned it red while the prose still named the ref on that
+    # very line, and the failure message then told the maintainer something
+    # false at the exact moment they would be tempted to edit the test.
+    # Both bounds are load-bearing and each was missing from an earlier draft.
+    # Splitting on the heading alone runs to END OF FILE — 230 lines across six
+    # sections, not the 145 of this one — so a stray mention of the ref in
+    # `## Community` satisfied it with this section's prose gutted. That is the
+    # same "haystack is larger than the claim" hole as the fence one, a layer
+    # out. The strip covers ``` and ~~~ fences; markdown has both.
+    section = text.split("## GitHub Action", 1)[1].split("\n## ", 1)[0]
+    prose = re.sub(r"(```|~~~).*?\1", "", section, flags=re.S)
+    assert f"`{ref}`" in prose, (
+        f"the snippet pins `{ref}`, but this section's prose never names that "
+        "ref — bump them together, or the cross-reference is false")
 
 
 def test_readme_workflow_snippet_declares_contents_read_permission():
