@@ -173,7 +173,15 @@ FROZEN_FUNCTION_LINES = {
     # ConvergenceAbort)` pattern the two sibling preflight call sites
     # already use. The preflight body itself lives in its own method, not
     # here. Re-measured on the MERGED tree with the scanner's own metric.
-    "core/orchestrator.py:Orchestrator._run_attempt": 2280,
+    # 2280 -> 2308 (+28): rebased-branch recut fix — the Hook 1 call site
+    # (`_recover_diverged_branch`) added right after `_refresh_stale_base`,
+    # so an already-diverged branch is recut before the attempt spends a
+    # round on work that would only hit the same non-fast-forward refusal
+    # at delivery. The recut logic itself lives in `vcs/recut.py` and the
+    # hook body, not here — this is only the call site plus its
+    # explanatory comment and the once-per-branch context bookkeeping it
+    # threads through. Measured on this tree with the scanner below.
+    "core/orchestrator.py:Orchestrator._run_attempt": 2308,
     # 760 -> 778 (+18): dispatch-time intake-eval hoisted path — the `elif
     # ctx.get("eval_result")` branch that acts on a grill/wizard-stored
     # verdict (idempotency marker, cost/residual-gap comments) added inside
@@ -238,7 +246,14 @@ FROZEN_FUNCTION_LINES = {
     # to make this retry's non-fast-forward path the expected outcome
     # (comment-only; `forced = _is_non_fast_forward(exc)` itself is
     # unchanged). Measured on this tree with the scanner below.
-    "core/orchestrator.py:Orchestrator._finalize": 441,
+    # 441 -> 470 (+29): rebased-branch recut fix — `_assert_delivery_sha`
+    # now returns `(sha, branch)` instead of just `sha`, so `_finalize`
+    # captures the possibly-recut `branch` alongside `original_branch`,
+    # threads the rebound branch through the PR-body/comment plumbing when
+    # they differ, and posts the idempotent "superseded by" comment on the
+    # old PR via `_post_recut_comment` (guarded so it fires at most once
+    # per recut). Measured on this tree with the scanner below.
+    "core/orchestrator.py:Orchestrator._finalize": 470,
     # Pre-existing on main (measured red at d3d7d3a82a, this session's start):
     # an earlier fleet land grew stream() +6 without re-freezing it on its
     # merge result — the same "landed without measuring the ratchet" failure
@@ -527,7 +542,13 @@ FROZEN_FUNCTION_CC = {
     # ConvergenceAbort)` wrapper around the `_citation_drift_preflight`
     # call adds one `try` handler branch each. Re-measured on the merge
     # result with the scanner below.
-    "core/orchestrator.py:Orchestrator._run_attempt": 254,
+    # 254 -> 257 (+3): rebased-branch recut fix — Hook 1's call site
+    # (`_recover_diverged_branch`) adds its own `try/except
+    # ReviewedShaMismatch` wrapper around the call, plus the
+    # `if recut_branch != branch:` guard on the returned (possibly rebound)
+    # branch, matching the shape of the sibling preflight call sites
+    # already counted above. Measured on this tree with the scanner below.
+    "core/orchestrator.py:Orchestrator._run_attempt": 257,
     # Landing of 4e0299ad: unchanged at 115 — the harness row is dropped by
     # the comprehension filter inside `_reviewer_items`, which the scanner
     # counts the same as the `if` it replaced (the first landing pass had a
@@ -1467,7 +1488,17 @@ FROZEN_FILE_LINES = {
     # and the `reason if reason is not None else ...` fix replacing `reason
     # or ...` in `_revert_worktree_writes_unguarded`. Re-measured on this
     # tree with `scan_tree`, not carried over as a stale delta.
-    "core/orchestrator.py": 24728,
+    # 24728 -> 25039 (+311): rebased-branch recut fix — the two new hook
+    # methods (`_recover_diverged_branch`, Hook 1, called from
+    # `_run_attempt`; `_reconcile_remote_branch`, Hook 2, called from the
+    # existing delivery path) plus their call-site integration and the
+    # `_record_recut`/`_post_recut_comment` helpers `_finalize` uses to
+    # thread the possibly-rebound branch through the PR-body/comment
+    # plumbing. The recut mechanics themselves (branch naming, replay,
+    # push) live in the new `vcs/recut.py`, not here — this is the
+    # orchestrator-side wiring only. Measured on this tree with the
+    # scanner below.
+    "core/orchestrator.py": 25039,
 
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
@@ -1662,30 +1693,29 @@ FROZEN_FILE_LINES = {
     # landing checkout) has no local ref, so the bare name silently
     # degraded the verdict to `state="unknown"` and masked a real conflict
     # as fail-open-landable.
-    # 9048 -> 9085 (+37): new `nh gate` verb, a thin click wrapper over
-    # `review.oneshot.run_gate` that runs the fresh-session reviewer and the
-    # tamper guard over the current branch or a GitHub PR with no daemon, no
-    # server, and no Store.
-    # 9085 -> 9096 (+11): merged with #343 (PR #379), which gives task
-    # `config` its own writer, so the three `apply_action` call sites in this
-    # file each persist the raise through `update_task_config` beside the
-    # action that produced it, instead of letting a generic save write a
-    # stale blob back.
-    # 9096 -> 9101 (+5): `gate`'s docstring now states the write surface in
-    # full (config.yaml is read, never created; --pr mode's `git fetch`
-    # writes only `FETCH_HEAD` and fetched objects) instead of the shorter
-    # "reads and reports only" claim a staff review found to be inaccurate,
-    # and the `GateUnavailable` refusal now prints with `soft_wrap=True` so a
-    # long credential path or PR URL cannot fold mid-token in a narrow
-    # terminal.
-    # 9101 -> 9191 (+90): merged with origin/main, which wires `nh task add
-    # --follows` (#232, resolves a predecessor by id/prefix and records
-    # `follows_id`) and makes `nh approve` refuse — with
-    # `--force-superseded` as the explicit override — a task a later task's
-    # `follows_id` already names as followed-up-on, in both the single-task
-    # and `--ready --yes` paths.
-    # Measured via `wc -l src/no_human/cli/commands.py` (agrees: 9191).
-    "cli/commands.py": 9191,
+    # 9048 -> 9059 (+11): #343 (PR #379) gives task `config` its own writer, so
+    # the three `apply_action` call sites in this file each persist the raise
+    # through `update_task_config` beside the action that produced it, instead
+    # of letting a generic save write a stale blob back.
+    # Measured on the squashed tree with the scanner below.
+    # 9059 -> 9149 (+90): #232 wires `nh task add --follows` (resolves a
+    # predecessor by id/prefix and records `follows_id`) and makes `nh
+    # approve` refuse — with `--force-superseded` as the explicit override —
+    # a task a later task's `follows_id` already names as followed-up-on, in
+    # both the single-task and `--ready --yes` paths. Measured via
+    # `wc -l src/no_human/cli/commands.py`.
+    # 9149 -> 9208 (+59): rebased-branch recut fix — the new `nh diverged`
+    # command (AC5: reports how many live tasks are currently stuck in the
+    # diverged-branch state, informational only, always exits 0) plus its
+    # `_bootstrap(require_auth=False)` setup and the local
+    # `audit_diverged_tasks` import. Measured on this tree with the
+    # scanner below.
+    # 9208 -> 9250 (+42): merged with origin/main, which independently added
+    # the `nh gate` verb (a thin click wrapper over `review.oneshot.run_gate`
+    # that runs the fresh-session reviewer and the tamper guard over the
+    # current branch or a GitHub PR with no daemon, no server, and no Store).
+    # Measured via `wc -l src/no_human/cli/commands.py` (agrees: 9250).
+    "cli/commands.py": 9250,
     # api/app.py 5338 -> 5346 (+8): same budget-floor warning surfaced by
     # `send-back`/`reply` as `budget_warning` in the JSON response. Net cost
     # was trimmed from a naive +14 to +8 by computing `Bounds.from_config(...)`
@@ -2064,7 +2094,12 @@ FROZEN_FILE_LINES = {
     # and its explanatory comment -- the hosted-intake gate `email/register.py`
     # reads before forwarding an onboarding address off-machine. Measured on
     # the merge result.
-    "config.py": 3679,
+    # 3657 -> 3667 (+10): `newline="\n"` on `atomic_write_0600` and
+    # `_atomic_write_text` (the CRLF-.env desktop-credential fix) plus the
+    # docstring paragraphs explaining why each write must not let Windows
+    # text-mode translation reintroduce a trailing CRLF. Measured on this
+    # tree.
+    "config.py": 3689,
     # +61: the tamper-adjudication one-bounded-retry contract (mechanical-
     # failure classification + the extracted `_review_tamper_adjudication`
     # helper that keeps `AdversarialReviewer.review` itself under the
@@ -2153,7 +2188,34 @@ FROZEN_FILE_LINES = {
     # env scrubbed of foreign secrets, and the docstring explaining why a
     # coder-planted `diff.external`/`diff.<x>.textconv` must not run in the
     # reviewer process. Security hardening; measured on this tree.
-    "review/reviewer.py": 3147,
+    # 3147 -> 3272 (+125): citation-root-mismatch detection. `diff_override`
+    # reviews trusted `repo_path`'s on-disk tree to answer citation questions
+    # about a diff that may have been computed elsewhere; a dirty or
+    # wrong-commit worktree let a real blocking finding get silently demoted
+    # to advisory. Adds `_citation_root_mismatch` and the small
+    # `_root_mismatch_for_diff_override` helper (read-only local git
+    # plumbing), threads `root_mismatch` through `_verify_citations` /
+    # `_parse_review_output` / `_fast_review` / `review()`, and adds two
+    # `ReviewDecision` fields (`citation_root_mismatch`,
+    # `passed_due_to_demotion`) so a caller can tell a mismatch-guarded
+    # BLOCK apart from a genuine pass, and a pass that only happened because
+    # every blocking finding was demoted apart from a clean one. Measured on
+    # this tree with the scanner below.
+    # 3272 -> 3286 (+14): per-file diff budget (issue #437). Blind prefix
+    # truncation cut the diff at `_DIFF_CAP` and git orders `src/` before
+    # `tests/`, so on a large change the test files were dropped first and a
+    # reviewer reached a verdict having never seen them. `_git_diff` now
+    # renders through `budget_diff`, fails closed on `DiffCoverageError`, and
+    # returns the paths it had to cut; those are threaded to the reviewer
+    # session, which rejects a verdict that never referenced them. The +14 is
+    # wiring only — the import, the `try`/`except` around `budget_diff`, and
+    # `required_inspections` through three signatures. The mechanism itself
+    # (the tool-input walk and the rejection message) lives in
+    # `review/diff_coverage.py` as `InspectionTracker`, next to the coverage
+    # note it enforces and unit-testable there; leaving it inline here cost
+    # +27. `AdversarialReviewer.review` stays at 300 and off
+    # FROZEN_FUNCTION_LINES. Measured on this merge with the scanner below.
+    "review/reviewer.py": 3286,
     # 2706 -> 2711 (+5): pre-existing red on main at 03b262d23 (e922e9b4's
     # landing, change-scoped tests missed the ratchet) — repaired, measured,
     # on this merge; same cause as the two function-level wake.py bumps above.
@@ -2353,7 +2415,14 @@ FROZEN_FILE_LINES = {
     # `self.wake.tick` await in the dispatch loop, clarifying that
     # `_CLI_TIMEOUT` bounds only a single `pr_watcher._run_cli` call, not the
     # whole sequential sweep over parked tasks. No behavior change.
-    "core/scheduler.py": 3205,
+    # 3196 -> 3244 (+48): the durable `task_crashed` event's `traceback` field —
+    # module-level `_traceback_excerpt` (formats `exc.__traceback__`, never
+    # `format_exc()`, tail-capped at `_TRACEBACK_EXCERPT_CAP` with the same
+    # `_TRUNCATION_MARKER` `stderr_excerpt` uses, capping the exception's own
+    # final message line first so it cannot crowd the raising frame out of
+    # the kept tail) plus its call lines in `_run`'s crash handler. Measured
+    # on this tree with the scanner below.
+    "core/scheduler.py": 3253,
 }
 
 

@@ -20,7 +20,7 @@
 // PostHog ingestion endpoint — not a JS assertion against an exclusion
 // array.
 //
-// Four things are checked against the real captured bytes:
+// Six things are checked against the real captured bytes:
 //   1. vacuity guard      — the harness actually captured $snapshot replay
 //                            events at all (a clean result on a harness that
 //                            captured nothing would be meaningless).
@@ -52,15 +52,33 @@
 //                            than a re-read of the classification table.
 //                            This check is scoped to the network-capture
 //                            channel only, NOT "every captured byte": the
-//                            same name is also rendered into the DOM (a
-//                            status-indicator `title` attribute —
-//                            web/src/drainChip.js) and leaks via that
-//                            separate DOM/rrweb capture channel in BOTH the
-//                            masked and unmasked pass, unaffected by
-//                            maskCapturedNetworkRequestFn. That is a known,
-//                            pre-existing, separately-filed leak this PR
-//                            does not fix — the harness surfaces it as an
-//                            INFO line, not a failing assertion.
+//                            same name used to also be rendered into the DOM
+//                            (a status-indicator `title` attribute —
+//                            web/src/drainChip.js), a separate, pre-existing
+//                            leak in the DOM/rrweb capture channel filed and
+//                            fixed separately from this check's scope
+//                            (drainChip.js:51-58, as of 2026-09-16). Checks 6
+//                            and 7 below are what now stand in for what used
+//                            to be an unenforced INFO line about that DOM
+//                            channel — they are real, gated assertions on the
+//                            harness's OWN decompression health instead.
+//   6. harness integrity (decompression) — the per-field rrweb gzip decode
+//                            that checks 2/3/4 depend on to see the DOM/rrweb
+//                            capture channel actually ran this pass: the cv
+//                            marker matched, at least one field inflated, zero
+//                            inflate failures, and the expanded haystack is
+//                            strictly larger than the network-only one. If the
+//                            decode path silently degrades (a marker drift, or
+//                            decode() falling back to raw text), this check
+//                            fails instead of checks 2-5 quietly passing for
+//                            the wrong reason.
+//   7. harness integrity (DOM-only control) — a string that is generated
+//                            client-side and never sent over the network
+//                            (DOM_ONLY_CONTROL, currently drainChip.js's fixed
+//                            quota-pause title) must be present in the
+//                            decompressed DOM/rrweb haystack and absent from
+//                            the network-only one — proof the DOM/rrweb decode
+//                            path itself works, not just that byte counts grew.
 //
 // Checks 2, 3, and 4 (and their controls) ARE scoped to "every captured
 // byte" across BOTH channels. posthog-js's recorder chunk gzip-compresses
@@ -88,10 +106,10 @@
 //
 //   node e2e/replay-body-leak.mjs   # needs `npm run build` first (drives web/dist)
 import http from "node:http";
-import zlib from "node:zlib";
 import fs from "node:fs";
 import path from "node:path";
 import { chromium } from "playwright";
+import { createDecodeStats, decode, decompressionHealth } from "./replayBodyDecode.mjs";
 
 const WEB_DIR = new URL("..", import.meta.url).pathname;
 const DIST_DIR = path.join(WEB_DIR, "dist");
@@ -157,6 +175,15 @@ const SENTINEL_QUOTA_PROFILE = "zzqq-quota-profile-canary-4e8b";
 // guarantees every real one IS classified) — this is the "endpoint nobody
 // considered" default-deny proof.
 const UNLISTED_PATH = "/api/zzqq-never-enumerated-endpoint";
+// DOM-only positive control for check B below (harness-integrity, not
+// leak-scoped): drainChip.js's pausedPresentation() fixed `title` string for
+// reason === "quota". It is generated client-side by React and rendered into
+// a `title` attribute (drainChip.js:71, PausedIndicator at :98-106) — never
+// sent over the network in any request/response body — so it can only ever
+// show up in the decompressed DOM/rrweb capture channel (mFullHay), never in
+// the network-capture haystack (mNetHay). See check B's comment for what to
+// do if this string is ever changed or removed.
+const DOM_ONLY_CONTROL = "Pool-wide quota cooldown";
 
 const MIME = {
   ".html": "text/html", ".js": "text/javascript", ".css": "text/css",
@@ -172,109 +199,16 @@ function readBody(req) {
   });
 }
 
-// posthog-js's recorder chunk (lazy-recorder.js) gzip-compresses individual
-// rrweb snapshot fields BEFORE they ever reach a "$snapshot" event's
-// `properties.$snapshot_data` array — independent of, and NOT disabled by,
-// this harness's mock `supportedCompression: []` config (which only
-// controls the OUTER whole-POST-body transport encoding, e.g. a
-// content-encoding: gzip header on the fetch/XHR itself). For a
-// `FullSnapshot` event the whole `data` field is replaced by compressed
-// bytes; for a `Mutation`/`StyleSheetRule` `IncrementalSnapshot`, the
-// `texts`/`attributes`/`removes`/`adds` sub-fields are each compressed
-// individually — both cases marked with `cv: "2024-10"` on the event. The
-// compressed bytes are encoded as a JS "binary string" (one UTF-16 code
-// unit per raw byte, via `String.fromCharCode`) — NOT base64 — so
-// `Buffer.from(s, "binary")` (Node's alias for latin1) reverses it
-// byte-for-byte before `zlib.gunzipSync`.
-//
-// Without reversing this, a substring search over the outer captured JSON
-// text is blind to whatever DOM content (element text nodes, attributes —
-// e.g. a rendered `title="..."` attribute) got swept into a FullSnapshot or
-// a Mutation record. That DOM/rrweb capture channel is entirely separate
-// from the network-capture channel `maskCapturedNetworkRequestFn`
-// (replayScrub.js) redacts — so a substring check that never decompresses
-// this can't tell "not on the wire at all" apart from "on the wire, just
-// gzip'd where a naive scan can't see it".
-function inflateBinaryGzipString(s) {
-  if (typeof s !== "string" || s.length === 0) return undefined;
-  try {
-    return zlib.gunzipSync(Buffer.from(s, "binary")).toString("utf8");
-  } catch {
-    return undefined;
-  }
-}
-
-// Decompresses one rrweb event's `cv: "2024-10"`-marked field(s) (see above)
-// into plain text, so its DOM content can be substring-checked like
-// anything else. Returns "" for events that aren't compressed (most —
-// e.g. the "rrweb/network@1" Plugin-type events that actually carry HTTP
-// request/response bodies are never in the compression-eligible set: only
-// FullSnapshot and Mutation/StyleSheetRule IncrementalSnapshot events are).
-function decompressRrwebEvent(ev) {
-  if (!ev || ev.cv !== "2024-10" || ev.data == null) return "";
-  const pieces = [];
-  if (typeof ev.data === "string") {
-    const out = inflateBinaryGzipString(ev.data);
-    if (out !== undefined) pieces.push(out);
-  } else if (typeof ev.data === "object") {
-    for (const key of ["texts", "attributes", "removes", "adds"]) {
-      const out = inflateBinaryGzipString(ev.data[key]);
-      if (out !== undefined) pieces.push(out);
-    }
-  }
-  return pieces.join("\n");
-}
-
-// Returns:
-//   - text: the decoded raw outer TEXT (byte-level substring inspection
-//     scope for the NETWORK-capture channel specifically — this is what
-//     maskCapturedNetworkRequestFn actually redacts, and it is never
-//     gzip'd per-field the way DOM snapshot data is, so this text already
-//     contains any network-capture body content in the clear).
-//   - expandedText: `text` plus every inner rrweb DOM snapshot field this
-//     request's $snapshot event(s) carried, decompressed — the broader
-//     scope for "absent from every captured byte" claims that must also
-//     account for the DOM/rrweb channel, not just the network sub-channel.
-//   - events: best-effort parsed top-level PostHog events (for the vacuity
-//     guard: proving $snapshot events were actually captured).
-function decode(raw, req) {
-  let buf = raw;
-  try {
-    const enc = req.headers["content-encoding"] || "";
-    if (enc.includes("gzip")) buf = zlib.gunzipSync(buf);
-  } catch {
-    /* fall through to raw */
-  }
-  let text = buf.toString("utf8");
-  if (text.startsWith("data=")) {
-    try {
-      const b64 = decodeURIComponent(text.slice(5));
-      text = Buffer.from(b64, "base64").toString("utf8");
-    } catch {
-      /* keep text */
-    }
-  }
-  let parsed;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    return { text, expandedText: text, events: [] };
-  }
-  const events = Array.isArray(parsed) ? parsed : parsed.batch ? parsed.batch : [parsed];
-  const inner = [];
-  for (const ev of events) {
-    const rrwebEvents =
-      ev && ev.properties && Array.isArray(ev.properties.$snapshot_data) ? ev.properties.$snapshot_data : [];
-    for (const re of rrwebEvents) {
-      const d = decompressRrwebEvent(re);
-      if (d) inner.push(d);
-    }
-  }
-  const expandedText = inner.length ? text + "\n\x00\n" + inner.join("\n\x00\n") : text;
-  return { text, expandedText, events };
-}
-
-function makeServer({ variant, rawTexts, expandedTexts, capturedEvents, unmatched }) {
+// decode()/decompressRrwebEvent()/inflateBinaryGzipString() (the per-field
+// rrweb gzip reversal that makes checks 2/3/4 span the DOM/rrweb capture
+// channel, not just the network-capture one) live in ./replayBodyDecode.mjs
+// now — extracted so they're unit-testable without a browser, and so they
+// can accumulate a `stats` object across a whole pass instead of silently
+// swallowing a decode failure. See that file's header comment for the full
+// rationale. decompressionHealth(stats, ...) below is what turns "did
+// decompression actually run" into check A, a real check() instead of an
+// INFO line nobody gates on.
+function makeServer({ variant, rawTexts, expandedTexts, capturedEvents, unmatched, stats }) {
   return http.createServer(async (req, res) => {
     const url = new URL(req.url, "http://localhost");
     const p = url.pathname;
@@ -340,7 +274,7 @@ function makeServer({ variant, rawTexts, expandedTexts, capturedEvents, unmatche
 
     if (req.method === "POST" && (p === "/ph/e/" || p === "/ph/i/v0/e/" || p === "/ph/s/" || p === "/ph/batch/")) {
       const raw = await readBody(req);
-      const { text, expandedText, events } = decode(raw, req);
+      const { text, expandedText, events } = decode(raw, req, stats);
       rawTexts.push(text);
       expandedTexts.push(expandedText);
       for (const ev of events) {
@@ -455,7 +389,8 @@ async function runPass(browser, variant) {
   const expandedTexts = [];
   const capturedEvents = [];
   const unmatched = [];
-  const server = makeServer({ variant, rawTexts, expandedTexts, capturedEvents, unmatched });
+  const stats = createDecodeStats();
+  const server = makeServer({ variant, rawTexts, expandedTexts, capturedEvents, unmatched, stats });
   const port = await listen(server);
   const base = `http://${TEST_HOST}:${port}`;
 
@@ -599,6 +534,7 @@ async function runPass(browser, variant) {
     capturedEvents,
     unmatched: [...new Set(unmatched)],
     consoleErrors: consoleErrors.slice(0, 5),
+    stats,
   };
 }
 
@@ -686,16 +622,60 @@ try {
     "masked: queue/health's paused_profile (quota-wall auth-profile name) is absent from the captured NETWORK-capture body",
     !mNetHay.includes(SENTINEL_QUOTA_PROFILE),
   );
-  // Known, separately-filed leak (informational only — not a build-breaking
-  // assertion, and deliberately not treated as "fixed" by this check): the
-  // same sentinel DOES appear in the decompressed DOM/rrweb channel of the
-  // MASKED pass, via drainChip.js rendering the profile name into a `title`
-  // attribute. This is surfaced here so the gap stays visible rather than
-  // silently disappearing once fullHay exists, without blocking this PR on
-  // a fix that's explicitly out of scope for it.
-  console.log(
-    `INFO: masked pass — paused_profile present in decompressed DOM/rrweb channel: ` +
-      `${mFullHay.includes(SENTINEL_QUOTA_PROFILE)} (known drainChip.js leak, filed separately, not fixed here)`,
+  // As of 2026-09-16, drainChip.js's pausedPresentation() (see its header
+  // comment, :51-58) no longer renders paused_profile at all — the DOM leak
+  // the old INFO line here used to report on is already fixed, and
+  // replay-dom-leak.mjs separately asserts it stays absent. This is the
+  // upstream defect this file's own harness-integrity checks (A and B below)
+  // exist to guard against: an unenforced INFO line degraded silently for
+  // who knows how long before anyone noticed the leak it described had
+  // already been closed. Checks A/B replace it with real, gated assertions
+  // instead of another line nobody gates on.
+
+  // 6. Check A — harness integrity: did decode()'s per-field rrweb gzip
+  // decompression actually run for this pass? Without this, checks 2/3/4/5
+  // above could all "pass" for the wrong reason — decode() silently
+  // degraded to returning raw (undecompressed) text, so fullHay is really
+  // just netHay again and every "absent from every captured byte" claim
+  // above only ever checked the network channel. Mutating decode.mjs's
+  // `cv !== "2024-10"` marker, or forcing expandedText = text, both make
+  // this FAIL — see replayBodyDecode.mjs's decompressionHealth() and its
+  // unit tests (web/src/replayBodyDecode.test.mjs) for the exact conditions.
+  const maskedHealth = decompressionHealth(masked.stats, {
+    netBytes: Buffer.byteLength(mNetHay, "utf8"),
+    fullBytes: Buffer.byteLength(mFullHay, "utf8"),
+  });
+  check(
+    "harness integrity: per-field rrweb gzip decompression actually ran (cv marker matched, N fields inflated, 0 failures, expanded haystack strictly larger than the network-only one)",
+    maskedHealth.ok,
+    maskedHealth.reason,
+  );
+
+  // 7. Check B — DOM-channel positive control. This asserts the harness's
+  // OWN decompression is working, not any app behaviour: DOM_ONLY_CONTROL
+  // (drainChip.js's fixed "Pool-wide quota cooldown" title, see its
+  // constant comment above) is generated client-side and never sent over
+  // the network in any request/response body, so it can appear ONLY in the
+  // decompressed DOM/rrweb channel (mFullHay) and can NEVER appear in the
+  // network-only haystack (mNetHay) — a stronger, decode-path-specific
+  // liveness proof than check A's byte-count comparison alone.
+  //
+  // If this string is ever "fixed away" — drainChip.js's copy changes, the
+  // quota indicator markup is removed, or whatever DOM-only string is
+  // anchored here stops being rendered — this check must be RE-ANCHORED to
+  // a different string that is present in fullHay and absent from netHay.
+  // It must never be deleted, and never weakened back into an unenforced
+  // INFO line: doing either silently restores the exact fail-open shape
+  // this pair of checks exists to close. (This is precisely what happened
+  // to the string this control replaces: the drainChip.js paused_profile
+  // leak the old INFO line reported on is already fixed as of 2026-09-16,
+  // per drainChip.js:51-58 and replay-dom-leak.mjs's own assertion of its
+  // absence — so SENTINEL_QUOTA_PROFILE could not be reused as a control
+  // here, since it isn't reliably present in fullHay any more.)
+  check(
+    "harness integrity: a DOM-only control string IS present in the decompressed DOM/rrweb channel AND absent from the network-only haystack",
+    mFullHay.includes(DOM_ONLY_CONTROL) && !mNetHay.includes(DOM_ONLY_CONTROL),
+    `present in fullHay=${mFullHay.includes(DOM_ONLY_CONTROL)}, present in netHay=${mNetHay.includes(DOM_ONLY_CONTROL)}`,
   );
 
   // Control: same bundle, masking mechanism string-patched away — must leak.

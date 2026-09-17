@@ -22,7 +22,7 @@ export function configuredPort(
   try {
     const text = fs.readFileSync(configPath, "utf8");
     let inServer = false;
-    for (const line of text.split("\n")) {
+    for (const line of text.split(/\r?\n/)) {
       if (/^server\s*:/.test(line)) { inServer = true; continue; }
       if (inServer) {
         if (/^\S/.test(line)) break;               // left the server: block

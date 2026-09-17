@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..core.task import Task
+from .criteria import extract_acceptance_criteria
 
 _ISSUE_URL = re.compile(
     r"https?://(?P<host>[^/]+)/(?P<owner>[^/]+)/(?P<repo>[^/]+)/issues/(?P<num>\d+)"
@@ -53,7 +54,8 @@ class GitHubAdapter:
         task = Task.new(title, source="github",
                         external_id=f"{ref.get('owner')}/{ref.get('repo')}#{raw.get('number')}",
                         description=body)
-        task.acceptance_criteria = _checklist_items(body)
+        task.acceptance_criteria = extract_acceptance_criteria(
+            body, f"GitHub issue {task.external_id}")
         task.context = {
             "github": {
                 "url": raw.get("html_url"),
@@ -63,8 +65,3 @@ class GitHubAdapter:
             }
         }
         return task
-
-
-def _checklist_items(body: str) -> list[str]:
-    """Pull GitHub task-list checkboxes (`- [ ] ...`) as acceptance criteria."""
-    return [m.strip() for m in re.findall(r"^\s*[-*]\s*\[[ xX]\]\s*(.+)$", body, re.M)]
