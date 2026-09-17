@@ -67,6 +67,12 @@ EXPECTED = {
         "review": {
             "name": "no_human review gate",
             "runs-on": "ubuntu-latest",
+            # The credential is an environment secret of `review-gate`; a job
+            # that does not name its environment is handed an empty string and
+            # the Action fails closed. Deleting this key is the single-change
+            # mutation that reproduced run 35272950327's
+            # "the `credential` input is empty".
+            "environment": "review-gate",
             "timeout-minutes": 30,
             "steps": [
                 {

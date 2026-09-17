@@ -7,9 +7,10 @@
 # rather than by the next one; and it adds a job name, a timeout and the
 # `concurrency` bound below. The secret's name differs too: it is named for
 # what it is meant to hold — an OAuth token rather than the API key the
-# README's example reads. At the time of writing that secret is NOT set on
-# this repository, so every SAME-REPOSITORY run here is the Action's own
-# fail-closed exit 2: the gate is wired, not running. A fork run is not
+# README's example reads. That secret is not a REPOSITORY secret: it is an
+# environment secret of `review-gate`, and the job below names that
+# environment. Read the comment there for what naming it is expected to do
+# and why the expectation is being measured rather than assumed. A fork run is not
 # affected either way — it skips green before the credential is read, as the
 # next paragraph says, and tests/test_ci_action.py pins that ordering.
 #
@@ -49,6 +50,20 @@ jobs:
   review:
     name: no_human review gate
     runs-on: ubuntu-latest
+    # The credential is an ENVIRONMENT secret of `review-gate`, not a
+    # repository secret, and an environment secret reaches only a job that
+    # names its environment here — which is why every run before this line
+    # existed failed closed with "the `credential` input is empty".
+    # `review-gate`'s deployment branch policy lists exactly one branch,
+    # `main`, while a `pull_request` run's `github.ref` is
+    # `refs/pull/<n>/merge`. If GitHub evaluates that policy against the ref,
+    # this job is REFUSED rather than credentialed, and that refusal is the
+    # boundary: it is what stops a branch pushed by any of this repository's
+    # non-admin collaborators from reading the token by editing this file.
+    # That claim was reasoned from the policy and never observed, and the
+    # whole workflow_run design rests on it, so this line is here to measure
+    # it. Whichever way the run goes, the result decides the design.
+    environment: review-gate
     timeout-minutes: 30
     steps:
       # Both `with:` values are load-bearing, and `ci_action/run.py` exits 2
