@@ -114,9 +114,21 @@ jobs:
           # .author.login is null when the commit's email address is not
           # attached to any GitHub account. That is unsigned as far as this
           # ledger is concerned, and the error below says how to fix it.
+          #
+          # The `.[] | (...)` parentheses are load-bearing. Written as
+          # `.[].author.login // "UNLINKED-EMAIL"`, jq applies `//` to the
+          # whole STREAM, not to each element: the alternative is used only
+          # when EVERY login is null, so a pull request mixing one resolvable
+          # author with one unresolvable one reported just the resolvable
+          # name and the sentinel never appeared. Measured on PR #513, which
+          # carried a commit authored as `<name>@<hostname>.local`:
+          #   `.[].author.login // "..."`   -> Ayaan-20-11 eyalgolan
+          #   `.[] | (.author.login // ...)` -> Ayaan-20-11 eyalgolan UNLINKED-EMAIL
+          # The first is this job passing an author GitHub cannot identify,
+          # which is the one thing the ledger exists to prevent.
           authors=$(gh api --paginate \
             "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/commits" \
-            --jq '.[].author.login // "UNLINKED-EMAIL"' | sort -u)
+            --jq '.[] | (.author.login // "UNLINKED-EMAIL")' | sort -u)
 
           # The agent exemption is trusted only on PRs the agent (or the
           # maintainer) opened: anyone can forge a commit's author email, so a
