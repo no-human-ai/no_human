@@ -373,28 +373,44 @@ def test_byte_mode_sites_are_left_alone():
     """Two named byte-mode call sites the sweep deliberately did not touch.
     Both decode their own bytes downstream by hand
     (`review/reviewer.py::_file_text` returns `proc.stdout.decode("utf-8",
-    errors="replace")`; `testing/runner.py`'s Windows `taskkill` path only
-    ever inspects `.returncode`) — adding `encoding=` at the call site would
-    silently change their return type from `bytes` to `str`, a behaviour
-    change out of scope for this fix. Pinned by exact line so a future edit
-    that adds `text=`/`encoding=` here trips this test rather than silently
-    widening the guard's blast radius."""
+    errors="replace")`; `testing/runner.py::_kill_process_tree`'s Windows
+    `taskkill` path only ever inspects `.returncode`) — adding `encoding=` at
+    the call site would silently change their return type from `bytes` to
+    `str`, a behaviour change out of scope for this fix. Pinned by ENCLOSING
+    FUNCTION NAME rather than line number — an unrelated edit earlier in the
+    file shifts every line below it, and a line-anchored pin then either
+    false-fails on drift it has no stake in or, worse, silently starts
+    checking the wrong statement. The function name is the stable part of
+    the site's identity; a future edit that adds `text=`/`encoding=` inside
+    that same function still trips this test rather than silently widening
+    the guard's blast radius."""
     samples = [
-        (SRC / "review" / "reviewer.py", 500),
-        (SRC / "testing" / "runner.py", 58),
+        (SRC / "review" / "reviewer.py", "_file_text"),
+        (SRC / "testing" / "runner.py", "_kill_process_tree"),
     ]
-    for path, lineno in samples:
+    for path, func_name in samples:
         tree = ast.parse(path.read_bytes(), filename=str(path))
         aliases = _subprocess_aliases(tree)
-        sites = [n for n in _subprocess_call_sites(tree, aliases) if n.lineno == lineno]
         rel = path.relative_to(REPO_ROOT).as_posix()
+        fn = next(
+            (n for n in ast.walk(tree)
+             if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+             and n.name == func_name),
+            None,
+        )
+        assert fn is not None, (
+            f"{rel} no longer defines {func_name}(); update this pin"
+        )
+        sites = _subprocess_call_sites(fn, aliases)
         assert len(sites) == 1, (
-            f"{rel}:{lineno} is no longer a subprocess call site; "
-            "update this pin (and double check it is still byte-mode)"
+            f"{rel}::{func_name} no longer has exactly one subprocess call "
+            "site (found "
+            f"{len(sites)}); update this pin (and double check it is still "
+            "byte-mode)"
         )
         kw = {k.arg for k in sites[0].keywords}
         assert not (kw & {"text", "universal_newlines", "encoding"}), (
-            f"{rel}:{lineno} gained a text-mode kwarg; this test only "
+            f"{rel}::{func_name} gained a text-mode kwarg; this test only "
             "guards it as byte-mode, decide deliberately whether it should "
             "join the guarded set"
         )

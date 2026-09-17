@@ -1130,6 +1130,20 @@ ALLOWLIST: dict[str, dict[str, Allowed]] = {
             "python3, git, uv, claude, each with `--version`",
             "user-invoked: `nh init` prerequisite check only"),
     },
+    # The GitHub Action entrypoint (`python -m no_human.ci_action.run`) —
+    # a wholly separate one-shot distribution surface from `nh review`
+    # (cli/commands.py's queueing path). It never runs unless a repository's
+    # own workflow adds this Action to a `pull_request` job; write access is
+    # additionally mechanically confined to the PR's own comment thread by
+    # `_assert_write_allowed` (list/create/update `issues/.../comments` only —
+    # no merge, review, or PR-PATCH endpoint is reachable in code).
+    "ci_action/github.py": {
+        "http:httpx": Allowed(
+            "your GitHub host's REST API — read, create, or update the "
+            "review gate's own single PR comment; nothing else is reachable",
+            "user-invoked: only inside the `no_human review gate` GitHub "
+            "Action, one call per job"),
+    },
 
     # -- Developer tooling: the bench, not the installed run path ----------
     "eval/northstar.py": {

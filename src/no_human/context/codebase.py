@@ -3,12 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import shutil
 import subprocess
 from pathlib import Path
 
 from ..core.task import Task
 from .base import ContextChunk, keywords
+
+#: rg/grep emit `<path>:<line>:<text>`. The path is matched non-greedily so the
+#: FIRST `:<digits>:` field wins: a Windows drive-letter colon is followed by a
+#: backslash, not digits, so `C:\repo\lib\math.js` stays whole. `(.*)$` keeps the
+#: rest verbatim, so colons inside the matched source line are preserved.
+_MATCH_LINE_RE = re.compile(r"^(.+?):(\d+):(.*)$")
 
 
 class CodebaseSource:
@@ -60,6 +67,12 @@ class CodebaseSource:
     )
     _SEARCH_TIMEOUT = 20  # must be < ContextGatherer.per_source_timeout (30s)
 
+    @staticmethod
+    def _parse_match_line(line: str) -> tuple[str, str, str] | None:
+        """(path, line_no, text) from one rg/grep output line, or None if it isn't one."""
+        m = _MATCH_LINE_RE.match(line)
+        return (m.group(1), m.group(2), m.group(3)) if m else None
+
     # Content bounds — a property of the gatherer's contract, NOT of ripgrep's
     # flag set. Enforced in _search's shared parse loop so every backend
     # (rg, grep, any future third one) is bound by them. grep has no
@@ -101,10 +114,11 @@ class CodebaseSource:
             proc = type("R", (), {"stdout": proc_stdout, "returncode": -1})()
         oversize: dict[Path, bool] = {}   # stat() cache — one stat per file, not per line
         for line in proc.stdout.splitlines():
-            parts = line.split(":", 2)
-            if len(parts) < 3:
+            parsed = self._parse_match_line(line)
+            if parsed is None:
                 continue
-            fp = Path(parts[0])
+            raw_path, line_no, text = parsed
+            fp = Path(raw_path)
             existing = hits.setdefault(fp, [])
             if len(existing) >= self._MAX_MATCHES_PER_FILE:
                 continue                      # per-file match cap (both branches)
@@ -117,7 +131,7 @@ class CodebaseSource:
                                               # over-cap size excludes.
             if oversize[fp]:
                 continue                      # size cap (both branches)
-            existing.append(f"{parts[1]}: {parts[2].strip()[:self._MAX_LINE_CHARS]}")
+            existing.append(f"{line_no}: {text.strip()[:self._MAX_LINE_CHARS]}")
         hits = {p: ls for p, ls in hits.items() if ls}   # drop keys left empty by the caps
         # rank files by number of matches (most relevant first)
         return dict(sorted(hits.items(), key=lambda kv: len(kv[1]), reverse=True))
