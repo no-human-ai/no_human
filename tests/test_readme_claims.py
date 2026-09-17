@@ -2328,7 +2328,8 @@ def _check_citation(
         f"{doc} cites `{raw}` for {token!r}, which is on line {actual} of "
         f"{display_path}, not {cited_line} — {abs(actual - cited_line)} line(s) "
         f"out. Run `uv run python scripts/reanchor_citations.py --apply` to "
-        f"re-anchor it; the symbol resolves, so the rewrite is exact"
+        f"re-anchor normal drift, or `--reconcile` (or resolve manually) if the "
+        f"documentation and table surfaces have diverged"
     )
     # The same verdict a bare row gets: inside the window it is drift and warns,
     # beyond it the number is simply wrong and fails. The one difference is that
