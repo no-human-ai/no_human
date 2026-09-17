@@ -257,7 +257,7 @@ def codex_exec_help(cli: str, *, resume: bool = False, timeout: float = 10.0) ->
         proc = subprocess.run(
             argv, capture_output=True, text=True,
             timeout=timeout, check=False,
-            **hidden_console_kwargs(),
+            **hidden_console_kwargs(), encoding="utf-8", errors="replace",
         )
         combined = (proc.stdout or "") + (proc.stderr or "")
         text = combined if combined.strip() else None
@@ -282,7 +282,7 @@ def codex_version(cli: str, *, timeout: float = 10.0) -> str:
         proc = subprocess.run(
             [cli, "--version"], capture_output=True, text=True,
             timeout=timeout, check=False,
-            **hidden_console_kwargs(),
+            **hidden_console_kwargs(), encoding="utf-8", errors="replace",
         )
         combined = ((proc.stdout or "") + (proc.stderr or "")).strip()
         if combined:
@@ -495,7 +495,7 @@ def codex_login_status(
         proc = subprocess.run(
             [cli, "login", "status"], capture_output=True, text=True,
             timeout=timeout_s, env=env,
-            **hidden_console_kwargs(),
+            **hidden_console_kwargs(), encoding="utf-8", errors="replace",
         )
     except subprocess.TimeoutExpired as exc:
         return CodexSessionStatus(present=False, via="none", detail=f"timed out: {exc}")

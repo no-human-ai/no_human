@@ -38,7 +38,7 @@ def _head_sha(repo_path: Path) -> str:
     # crash or an indefinite block (this runs inside the API request path too).
     try:
         proc = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo_path,
-                              capture_output=True, text=True, timeout=5)
+                              capture_output=True, text=True, timeout=5, encoding="utf-8", errors="replace")
     except (OSError, subprocess.SubprocessError):
         return "no-git"
     return proc.stdout.strip() if proc.returncode == 0 else "no-git"

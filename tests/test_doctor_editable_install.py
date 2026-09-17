@@ -77,7 +77,7 @@ def test_spec_resolving_to_a_sibling_worktree_of_the_same_repo_is_silent(tmp_pat
     primary = _fake_checkout(tmp_path, "primary")
     linked = _fake_checkout(tmp_path, "linked")
 
-    def fake_run(cmd, cwd, capture_output, text, timeout):
+    def fake_run(cmd, cwd, capture_output, text, timeout, **kwargs):
         if cmd[:2] == ["git", "worktree"]:
             out = f"worktree {primary}\nworktree {linked}\n"
             return SimpleNamespace(returncode=0, stdout=out)

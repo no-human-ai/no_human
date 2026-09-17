@@ -107,7 +107,7 @@ class CodebaseSource:
             cmd.append(str(repo))
         try:
             proc = subprocess.run(cmd, capture_output=True, text=True,
-                                 timeout=self._SEARCH_TIMEOUT)
+                                 timeout=self._SEARCH_TIMEOUT, encoding="utf-8", errors="replace")
         except subprocess.TimeoutExpired as exc:
             # Return partial results from whatever stdout was captured.
             proc_stdout = (exc.stdout or b"").decode(errors="replace") if isinstance(exc.stdout, bytes) else (exc.stdout or "")
@@ -139,6 +139,6 @@ class CodebaseSource:
     def _git_log(self, repo: Path) -> str:
         proc = subprocess.run(
             ["git", "-C", str(repo), "log", "--oneline", "-n", str(self.max_commits)],
-            capture_output=True, text=True,
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
         )
         return proc.stdout.strip() if proc.returncode == 0 else ""

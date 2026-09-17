@@ -282,7 +282,7 @@ def check_dependency_diff(repo_path: Path) -> list[str]:
     try:
         before = subprocess.run(
             ["git", "show", "HEAD:pyproject.toml"],
-            cwd=repo_path, capture_output=True, text=True,
+            cwd=repo_path, capture_output=True, text=True, encoding="utf-8", errors="replace",
         )
         before_deps = _parse_deps(before.stdout or "")
     except Exception:

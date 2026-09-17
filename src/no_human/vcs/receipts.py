@@ -41,7 +41,7 @@ class Receipt:
 
 def _default_runner(args: list[str], *, cwd: Path) -> Any:
     return subprocess.run(args, cwd=cwd, capture_output=True, text=True,
-                          timeout=60)
+                          timeout=60, encoding="utf-8", errors="replace")
 
 
 def verify_pr_receipt(

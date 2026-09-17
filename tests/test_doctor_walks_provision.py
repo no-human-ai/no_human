@@ -210,6 +210,43 @@ def test_install_walks_runs_every_plan_step_in_order_through_the_injected_runner
     assert all(m.startswith("OK:") for m in messages)
 
 
+def test_install_walks_pins_utf8_and_replace_on_every_runner_call(monkeypatch):
+    """`install_walks` invokes its injected `runner` with `text=True` —
+    decoding the child's output. Without an explicit `encoding=`, that
+    decode falls back to the host's locale codepage; on a non-UTF-8 Windows
+    codepage (Hebrew cp1255, Cyrillic cp1251, ...), a stray non-ASCII byte
+    in a package manager's or playwright's stderr kills the reader thread
+    (see `tests/test_subprocess_decodes_utf8.py`'s module docstring for the
+    full CPython mechanism) and `result.stderr` comes back `None` — silently
+    swallowed to `""` by `install_walks`'s own `(getattr(result, "stderr",
+    "") or "")`, losing the FAILED message's diagnostic. Pinning both
+    `encoding="utf-8"` and `errors="replace"` on the call itself is the only
+    fix that keeps the diagnostic without ever raising or returning `None`."""
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+    monkeypatch.setattr(doctor_mod, "_running_checkout", lambda: Path("/repo"))
+
+    seen_kwargs = []
+
+    def spy(argv, **kw):
+        seen_kwargs.append(kw)
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    ok, _messages = walks_provision.install_walks(runner=spy)
+    assert ok is True
+    assert seen_kwargs, "the plan must run at least one step for this to be meaningful"
+    for kw in seen_kwargs:
+        assert kw.get("text") is True
+        assert kw.get("encoding") == "utf-8", (
+            "install_walks's runner call must name encoding='utf-8' -- "
+            "text=True alone decodes with the host's ANSI codepage"
+        )
+        assert kw.get("errors") == "replace", (
+            "install_walks's runner call must name an explicit errors= "
+            "policy alongside encoding= -- errors= alone (with no "
+            "encoding=) still decodes through the wrong codec"
+        )
+
+
 def test_install_walks_stops_at_the_first_failing_step_with_no_rollback(monkeypatch):
     monkeypatch.setattr(shutil, "which", lambda name: None)
     monkeypatch.setattr(doctor_mod, "_running_checkout", lambda: None)

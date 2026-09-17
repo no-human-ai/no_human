@@ -188,7 +188,7 @@ def _holdout_ok(task: CorpusTask, work: Path) -> bool | None:
         # a checkout somebody then has to read `git status` on.
         env={**os.environ, "PYTHONPATH": str(work),
              "PYTHONDONTWRITEBYTECODE": "1"},
-        start_new_session=True)
+        start_new_session=True, encoding="utf-8", errors="replace")
     try:
         proc.communicate(timeout=HOLDOUT_TIMEOUT_S)
     except subprocess.TimeoutExpired:

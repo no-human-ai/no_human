@@ -2201,7 +2201,11 @@ FROZEN_FILE_LINES = {
     # BLOCK apart from a genuine pass, and a pass that only happened because
     # every blocking finding was demoted apart from a clean one. Measured on
     # this tree with the scanner below.
-    "review/reviewer.py": 3272,
+    # 3272 -> 3274 (+2): pinning explicit encoding="utf-8", errors="replace"
+    # on the two subprocess.run text-decode call sites in this file
+    # (_git_diff, _changed_paths) per the subprocess-decode-utf8 fix; each
+    # kwarg addition pushed one call's argument list onto an extra line.
+    "review/reviewer.py": 3274,
     # 2706 -> 2711 (+5): pre-existing red on main at 03b262d23 (e922e9b4's
     # landing, change-scoped tests missed the ratchet) — repaired, measured,
     # on this merge; same cause as the two function-level wake.py bumps above.

@@ -273,7 +273,7 @@ jobs:
           LC_ALL: C
           LANG: C
           PYTHONUTF8: "0"
-        run: uv run --no-sync pytest -q tests/test_text_reads_declare_encoding.py
+        run: uv run --no-sync pytest -q tests/test_text_reads_declare_encoding.py tests/test_subprocess_decodes_utf8.py
 
   python:
     name: Python

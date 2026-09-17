@@ -182,7 +182,7 @@ def changed_line_numbers(
              "--no-color", "--unified=0", "-M",
              "--src-prefix=a/", "--dst-prefix=b/", f"{before_ref}..{after_ref}"],
             cwd=repo_path, capture_output=True, text=True,
-            errors="replace", timeout=timeout,
+            errors="replace", timeout=timeout, encoding="utf-8",
         )
         if proc.returncode != 0:
             log.warning("git diff for changed lines exited %d: %s",
@@ -294,7 +294,7 @@ def collect_lint_evidence(
             return []
         proc = subprocess.run(
             ["ruff", "check", "--output-format=json", "--no-fix", *files],
-            cwd=repo_path, capture_output=True, text=True, timeout=timeout,
+            cwd=repo_path, capture_output=True, text=True, timeout=timeout, encoding="utf-8", errors="replace",
         )
         # ruff exits 1 when it finds violations — that is a normal result, not
         # a failure. Anything else (2 = usage/config error, missing binary

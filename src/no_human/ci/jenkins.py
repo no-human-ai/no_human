@@ -421,7 +421,7 @@ def _subprocess_run(cmd: list[str]) -> str | None:
     We do NOT pass -f, so an HTTP response — even 4xx/5xx — exits 0 and its status
     rides in the marker for _interpret_curl to classify. A non-zero exit means a
     connection-level failure (no HTTP response) → None → infra."""
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     if proc.returncode != 0:
         return None
     return proc.stdout or ""

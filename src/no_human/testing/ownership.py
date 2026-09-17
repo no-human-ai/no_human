@@ -128,7 +128,7 @@ def _diff_status(
             ["git", "diff", "--no-ext-diff", "--no-textconv", "--name-status",
              "-M", f"{before_ref}..{after_ref}"],
             cwd=repo_path, capture_output=True, text=True, errors="replace",
-            timeout=timeout,
+            timeout=timeout, encoding="utf-8",
         )
     except (subprocess.TimeoutExpired, OSError):
         return None
