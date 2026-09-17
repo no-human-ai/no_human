@@ -16,11 +16,16 @@ import { WALKS } from "../e2e/manifest.mjs";
 const here = dirname(fileURLToPath(import.meta.url));
 const E2E_DIR = join(here, "..", "e2e");
 
-// Every real walk file in e2e/, excluding the two files that are not
-// themselves walks: run-all.mjs (the runner) and manifest.mjs (this data).
+// Every real walk file in e2e/, excluding files that are not themselves
+// walks: run-all.mjs (the runner), manifest.mjs (this data), and
+// replayBodyDecode.mjs (a pure decode helper with no entry point of its
+// own — only `export function`s, imported by replay-body-leak.mjs and
+// unit-tested directly via src/replayBodyDecode.test.mjs; see its own
+// header comment).
+const NOT_A_WALK = new Set(["run-all.mjs", "manifest.mjs", "replayBodyDecode.mjs"]);
 const walkFilesOnDisk = readdirSync(E2E_DIR)
   .filter((f) => (f.endsWith(".mjs")))
-  .filter((f) => f !== "run-all.mjs" && f !== "manifest.mjs");
+  .filter((f) => !NOT_A_WALK.has(f));
 
 test("every manual-lane walk states a substantive reason (>=40 chars)", () => {
   for (const w of WALKS) {
