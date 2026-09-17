@@ -30,6 +30,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from no_human import config as cfg  # noqa: E402
+from no_human.context.codebase import CodebaseSource  # noqa: E402
 
 # --------------------------------------------------------------------------- #
 # Defect 1 — the credential file's 0600 is a silent no-op on Windows           #
@@ -984,3 +985,28 @@ def test_git_env_allowlist_carries_a_home_on_windows():
     assert {"PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE", "TZ"} <= keep
     # And nothing that redirects git's writes or identity has been let in.
     assert not any(k.startswith("GIT_") for k in keep)
+
+
+# --------------------------------------------------------------------------- #
+# Defect N — the rg/grep match parse loses the whole codebase context source   #
+# on a Windows drive-lettered path                                            #
+# --------------------------------------------------------------------------- #
+
+def test_codebase_search_parse_keeps_windows_drive_letter():
+    """`rg`/`grep` emit `<path>:<line>:<text>`. A naive `split(":", 2)` treats
+    a Windows drive letter (`C:\\...`) as the first field, turning every hit
+    into `Path('C')` and later blowing up `relative_to(repo)` — the whole
+    codebase context source is lost with one log line. The parse must find the
+    FIRST `:<digits>:` field instead."""
+    win_line = r"C:\Users\x\repo\lib\math.js:12:  const x: number = 1"
+    parsed = CodebaseSource._parse_match_line(win_line)
+    assert parsed is not None
+    path, line_no, text = parsed
+    assert path == r"C:\Users\x\repo\lib\math.js"
+    assert line_no == "12"
+    assert text == "  const x: number = 1"
+
+    # POSIX sibling — byte-identical to the pre-fix behaviour.
+    posix_line = "/repo/lib/math.js:12:  const x: number = 1"
+    parsed_posix = CodebaseSource._parse_match_line(posix_line)
+    assert parsed_posix == ("/repo/lib/math.js", "12", "  const x: number = 1")

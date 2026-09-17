@@ -1794,6 +1794,222 @@ async def test_a_pool_crash_with_no_stderr_omits_the_field(store):
     assert "stderr_excerpt" not in crashed[0]
 
 
+def _raise_attribute_error():
+    None.strip()                      # the frame these crash tests pin
+
+
+_RAISE_LINE = _raise_attribute_error.__code__.co_firstlineno + 1
+
+
+def _raise_and_handle_unrelated():
+    try:
+        raise ValueError("DECOY-UNRELATED, handled right here")
+    except ValueError:
+        pass
+
+
+async def test_a_pool_crash_records_the_traceback_not_just_the_message(store):
+    """The durable `task_crashed` event must carry the FORMATTED traceback of
+    the crashing exception, not just its one-line `str()`. A real incident on
+    a packaged Windows install recorded only `AttributeError: 'NoneType'
+    object has no attribute 'strip'` — no frame, no file, no line — and two
+    sessions searched the source for the offending call and could not find
+    it. One frame would have ended that search immediately."""
+    class CrashingOrch:
+        async def run_task(self, task):
+            _raise_attribute_error()
+
+    sched = Scheduler(store, lambda task=None: CrashingOrch(), max_workers=1)
+    ids = await _mk_tasks(store, 1)
+
+    await sched.tick()
+    await sched.wait_idle()
+
+    events = await store.list_events(ids[0])
+    crashed = [e for e in events if e.get("kind") == "task_crashed"]
+    assert crashed, "no durable task_crashed event was recorded"
+    tb = crashed[0]["traceback"]
+    assert "Traceback (most recent call last)" in tb
+    assert "test_scheduler.py" in tb
+    assert f"line {_RAISE_LINE}" in tb
+    assert "_raise_attribute_error" in tb
+    assert "AttributeError" in tb
+    assert "\n" in tb, "a one-liner is not a traceback"
+
+
+async def test_the_crash_traceback_comes_from_the_exception_not_ambient_state(store):
+    """`_traceback_excerpt` must read the exception object's OWN
+    `__traceback__`, never `traceback.format_exc()` — which reads whatever
+    `sys.exc_info()` says is being handled RIGHT NOW. Anything between the
+    crash and the event write that raises and handles its own exception (an
+    `_on_event` callback, a logging handler, an awaited step) would leave a
+    `format_exc()`-based implementation naming the WRONG crash."""
+    # (a) Direct call, from OUTSIDE any except block, on an exception stashed
+    # via `except ... as e: caught = e`. A `format_exc()` implementation
+    # reads `sys.exc_info()` here — empty outside a handler — and would
+    # yield the literal "NoneType: None" instead of the real frames.
+    caught = None
+    try:
+        _raise_attribute_error()
+    except AttributeError as e:
+        caught = e
+
+    tb = scheduler_mod._traceback_excerpt(caught)
+    assert "_raise_attribute_error" in tb
+    assert "AttributeError" in tb
+    assert "NoneType: None" not in tb
+
+    # (b) End-to-end: an `on_event` callback fires BETWEEN the crash and the
+    # durable write and raises-and-handles its own, unrelated exception.
+    class CrashingOrch:
+        async def run_task(self, task):
+            _raise_attribute_error()
+
+    sched = Scheduler(
+        store, lambda task=None: CrashingOrch(), max_workers=1,
+        on_event=lambda kind, text: _raise_and_handle_unrelated(),
+    )
+    ids = await _mk_tasks(store, 1)
+
+    await sched.tick()
+    await sched.wait_idle()
+
+    events = await store.list_events(ids[0])
+    crashed = [e for e in events if e.get("kind") == "task_crashed"]
+    assert crashed, "no durable task_crashed event was recorded"
+    tb2 = crashed[0]["traceback"]
+    assert "_raise_attribute_error" in tb2
+    assert "AttributeError" in tb2
+    assert "DECOY-UNRELATED" not in tb2, "the decoy's message leaked in"
+    assert "ValueError" not in tb2, "the decoy's type leaked in"
+
+
+async def test_a_pool_crash_traceback_is_capped_not_unbounded(store):
+    """A runaway traceback must not balloon the persisted event forever —
+    capped the same way `stderr_excerpt` already is, with the same marker."""
+    class CrashingOrch:
+        async def run_task(self, task):
+            raise RuntimeError("x" * 20_000)
+
+    sched = Scheduler(store, lambda task=None: CrashingOrch(), max_workers=1)
+    ids = await _mk_tasks(store, 1)
+
+    await sched.tick()
+    await sched.wait_idle()
+
+    events = await store.list_events(ids[0])
+    crashed = [e for e in events if e.get("kind") == "task_crashed"]
+    tb = crashed[0]["traceback"]
+    assert len(tb) < 20_000, "20k must be truncated, not stored verbatim"
+    assert len(tb) <= (
+        scheduler_mod._TRACEBACK_EXCERPT_CAP + len(scheduler_mod._TRUNCATION_MARKER) + 1)
+    assert "… [truncated]" in tb
+    assert "run_task" in tb, (
+        "the cap must be a TAIL cap — the innermost raising frame is the "
+        "entire reason this field exists and must survive truncation")
+
+
+async def test_a_pool_crash_with_no_stderr_still_records_the_traceback(store):
+    """A plain `AttributeError` with nothing on `.stderr` — the exact shape
+    of the reported incident — must still get a traceback recorded, since
+    this is the one case the un-fixed code records nothing extra for."""
+    class CrashingOrch:
+        async def run_task(self, task):
+            _raise_attribute_error()
+
+    sched = Scheduler(store, lambda task=None: CrashingOrch(), max_workers=1)
+    ids = await _mk_tasks(store, 1)
+
+    await sched.tick()
+    await sched.wait_idle()
+
+    events = await store.list_events(ids[0])
+    crashed = [e for e in events if e.get("kind") == "task_crashed"]
+    ev = crashed[0]
+    assert "stderr_excerpt" not in ev, "unchanged contract: no stderr, no key"
+    assert ev["exit_code"] is None
+    assert f"line {_RAISE_LINE}" in ev["traceback"]
+
+
+async def test_a_failed_crash_event_write_still_marks_the_task_failed(store):
+    """A failure to persist the durable crash event must not cost the
+    `set_status(FAILED)` below it — the event write is inside its own `try`
+    precisely so a broken store doesn't leave the task stuck forever."""
+    class CrashingOrch:
+        async def run_task(self, task):
+            _raise_attribute_error()
+
+    sched = Scheduler(store, lambda task=None: CrashingOrch(), max_workers=1)
+    ids = await _mk_tasks(store, 1)
+
+    real_save_events = store.save_events
+
+    async def flaky_save_events(task_id, events):
+        if any(e.get("kind") == "task_crashed" for e in events):
+            raise RuntimeError("store down")
+        return await real_save_events(task_id, events)
+
+    store.save_events = flaky_save_events
+
+    await sched.tick()
+    await sched.wait_idle()
+
+    t = await store.find_task(ids[0])
+    assert t.status is TaskStatus.FAILED, (
+        "set_status(FAILED) must still run when the event write raises")
+    assert sched.inflight == set()
+
+
+def test_the_pool_crash_handler_never_writes_to_process_stderr():
+    """AST guard: no bare `print(...)`, `traceback.print_exc()`/
+    `print_exception()`, `sys.stderr`/`sys.__stderr__` access, or `file=`
+    keyword may appear anywhere in the pool-crash except block. SCRUM-11: a
+    raw write to inherited stderr raises `BrokenPipeError` when the desktop
+    parent piping it has crashed away — reintroducing that write would kill
+    the very pool worker this except exists to protect."""
+    source = pathlib.Path(scheduler_mod.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source, filename=scheduler_mod.__file__)
+
+    handler_node = None
+
+    class Finder(ast.NodeVisitor):
+        def visit_ExceptHandler(self, node):
+            nonlocal handler_node
+            for sub in ast.walk(node):
+                if isinstance(sub, ast.Constant) and sub.value == "task_crashed":
+                    handler_node = node
+                    return
+            self.generic_visit(node)
+
+    Finder().visit(tree)
+    assert handler_node is not None, (
+        "could not locate the except handler owning the task_crashed literal "
+        "— scheduler.py's crash-handling structure may have moved")
+
+    violations: list[str] = []
+    for node in ast.walk(handler_node):
+        if isinstance(node, ast.Call):
+            func = node.func
+            name = (func.attr if isinstance(func, ast.Attribute)
+                     else func.id if isinstance(func, ast.Name) else None)
+            if name == "print":
+                violations.append("a bare print(...) call")
+            elif name in ("print_exc", "print_exception"):
+                violations.append(f"a traceback.{name}(...) call")
+            for kw in node.keywords:
+                if kw.arg == "file":
+                    violations.append("a file= keyword argument")
+        elif isinstance(node, ast.Attribute):
+            if (node.attr in ("stderr", "__stderr__")
+                    and isinstance(node.value, ast.Name) and node.value.id == "sys"):
+                violations.append(f"a sys.{node.attr} access")
+
+    assert not violations, (
+        "the pool-crash except block must never write to process stderr "
+        "(SCRUM-11: a raw write raises BrokenPipeError when the desktop "
+        f"parent piping our stderr has crashed away). Found: {violations}")
+
+
 # --------------------------------------------------------------------------- #
 # `nh serve --until-empty`: drain-and-exit (KI-3 / ADOPT-17)                   #
 # --------------------------------------------------------------------------- #

@@ -25,8 +25,9 @@ import pytest
 from click.testing import CliRunner
 
 from no_human.cli.commands import gate
+from no_human.core.task import Task
 from no_human.review import oneshot
-from no_human.review.oneshot import GateUnavailable, GateResult, render_markdown, run_gate
+from no_human.review.oneshot import GateUnavailable, GateResult, render_markdown, review_diff, run_gate
 from no_human.review.reviewer import ReviewDecision, ReviewerUnavailable
 from no_human.review.selfcheck import ChecklistItem
 from no_human.config import AuthError, MissingCredentialError
@@ -178,6 +179,48 @@ def test_the_gate_renders_file_and_line_citations(tmp_path, monkeypatch):
 # --------------------------------------------------------------------------- #
 # 2. exactly one one-shot construction site                                   #
 # --------------------------------------------------------------------------- #
+
+async def test_review_diff_passes_the_callers_diff_and_refs_through_single_turn(monkeypatch):
+    """`review_diff` is the seam the GitHub Action calls instead of building a
+    reviewer itself. What it forwards IS its contract, so record the call: the
+    caller's diff must arrive as `diff_override` (a falsy one would make the
+    reviewer recompute over every changed file and ignore the caller's cap),
+    the caller's refs must arrive unchanged, the review must be single-turn,
+    and `reviewed_sha` must be the head the caller named. Without this, every
+    one of those can be dropped and the suite stays green."""
+    seen = {}
+
+    class _Recording:
+        def __init__(self, *, model=None, **kw):
+            seen["model"] = model
+
+        async def review(self, task, **kwargs):
+            seen.update(kwargs)
+            seen["task"] = task
+            return ReviewDecision(passed=True, checklist=[])
+
+    monkeypatch.setattr(oneshot, "AdversarialReviewer", _Recording)
+    task = Task.new(title="t", description="d", repo_path="/tmp/x", kind="feature")
+
+    decision = await review_diff(
+        task,
+        repo_path=Path("/tmp/x"),
+        diff="diff --git a/a b/a\n+line\n",
+        before_ref="base123",
+        after_ref="head456",
+        model="claude-opus-4-8",
+    )
+
+    assert decision.passed is True
+    assert seen["model"] == "claude-opus-4-8"
+    assert seen["diff_override"] == "diff --git a/a b/a\n+line\n"
+    assert seen["before_ref"] == "base123"
+    assert seen["after_ref"] == "head456"
+    assert seen["reviewed_sha"] == "head456"
+    assert seen["single_turn"] is True
+    assert seen["repo_path"] == Path("/tmp/x")
+    assert seen["task"] is task
+
 
 def test_only_one_module_constructs_the_oneshot_reviewer_call():
     """`diff_override=` marks the one-shot construction site this module
