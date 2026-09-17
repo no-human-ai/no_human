@@ -28,6 +28,7 @@ from urllib.parse import quote
 import httpx
 
 from ..core.task import Task
+from .criteria import extract_acceptance_criteria
 
 log = logging.getLogger("no_human.intake.jira")
 
@@ -46,6 +47,15 @@ def _adf_text(desc: Any) -> str:
     def walk(node: Any) -> None:
         if not isinstance(node, dict):
             return
+        if node.get("type") == "heading":
+            level = (node.get("attrs") or {}).get("level", 1)
+            level = level if isinstance(level, int) and 1 <= level <= 6 else 1
+            out.append("#" * level + " ")
+        if node.get("type") == "listItem":
+            out.append("- ")
+        if node.get("type") == "taskItem":
+            state = (node.get("attrs") or {}).get("state")
+            out.append("- [x] " if state == "DONE" else "- [ ] ")
         if node.get("type") == "text" and "text" in node:
             out.append(node["text"])
         for child in node.get("content") or []:
@@ -61,11 +71,6 @@ def _text_to_adf(text: str) -> dict[str, Any]:
     """Wrap plain text as a minimal ADF document for the comment API."""
     return {"type": "doc", "version": 1, "content": [
         {"type": "paragraph", "content": [{"type": "text", "text": text}]}]}
-
-
-def _checklist_items(text: str) -> list[str]:
-    """Markdown task-list checkboxes (`- [ ] ...`) as acceptance criteria."""
-    return [m.strip() for m in re.findall(r"^\s*[-*]\s*\[[ xX]\]\s*(.+)$", text, re.M)]
 
 
 class JiraAdapter:
@@ -201,7 +206,8 @@ class JiraAdapter:
         summary = fields.get("summary") or key or "Jira issue"
         description = _adf_text(fields.get("description"))
         task = Task.new(summary, source="jira", external_id=key, description=description)
-        task.acceptance_criteria = _checklist_items(description)
+        task.acceptance_criteria = extract_acceptance_criteria(
+            description, f"Jira issue {task.external_id}")
         task.context = {
             "jira": {
                 "url": f"{self.site}/browse/{key}" if key else self.site,
