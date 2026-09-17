@@ -306,8 +306,14 @@ def test_the_landed_override_and_restore_approval_guards_are_unchanged():
         TaskStatus.TESTING, TaskStatus.AWAITING_APPROVAL,
     })
     assert TERMINAL_LANDED_RECONCILABLE == frozenset({TaskStatus.FAILED})
-    assert ALLOWED_TRANSITIONS[TaskStatus.IMPLEMENTING] == \
-        ALLOWED_TRANSITIONS[TaskStatus.IMPLEMENTING]
+    # Freeze the IMPLEMENTING edge set itself — not just the two edges the
+    # reaper cares about — against being silently widened to reach this
+    # feature's targets through the general map instead of the narrow gate.
+    assert ALLOWED_TRANSITIONS[TaskStatus.IMPLEMENTING] == frozenset({
+        TaskStatus.REVIEWING, TaskStatus.TESTING, TaskStatus.COMPOUND_PARENT,
+        TaskStatus.BLOCKED, TaskStatus.AWAITING_INPUT,
+        TaskStatus.PAUSED_QUOTA, TaskStatus.ESCALATED, TaskStatus.FAILED,
+    })
     assert TaskStatus.PENDING not in ALLOWED_TRANSITIONS[TaskStatus.IMPLEMENTING]
     assert TaskStatus.AWAITING_APPROVAL not in \
         ALLOWED_TRANSITIONS[TaskStatus.IMPLEMENTING]
