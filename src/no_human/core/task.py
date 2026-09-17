@@ -289,6 +289,40 @@ def assert_terminal_landed_reconciliation(src: TaskStatus) -> None:
             f"{src.value} -> done is not a terminal landed reconciliation")
 
 
+#: Statuses from which `core.stranded_attempts.reap_stranded_implementing_
+#: attempts` may return a task whose `in_progress` attempt was reaped (its
+#: owning pool is provably dead) back to `PENDING`/`AWAITING_APPROVAL`. Only
+#: IMPLEMENTING: that is the one status the reaper ever finds a dead
+#: `in_progress` attempt row under. This does NOT add
+#: `IMPLEMENTING -> PENDING` or `IMPLEMENTING -> AWAITING_APPROVAL` to
+#: `ALLOWED_TRANSITIONS` — a plain `set_status(task, PENDING)` call from
+#: IMPLEMENTING keeps raising `IllegalTransition` exactly as before; only a
+#: caller naming `reconciliation_gate=assert_stranded_reap` gets the second,
+#: narrower chance this gate grants.
+STRANDED_REAPABLE: frozenset[TaskStatus] = frozenset({
+    TaskStatus.IMPLEMENTING,
+})
+
+
+def assert_stranded_reap(src: TaskStatus) -> None:
+    """Raise `IllegalTransition` unless *src* is `IMPLEMENTING`.
+
+    A third, narrow reconciliation gate, sibling of
+    `assert_landed_reconciliation`/`assert_terminal_landed_reconciliation`:
+    validates the reaper's own precondition (a dead `in_progress` attempt
+    was found and retired under this task) independent of whichever of the
+    two destinations — `PENDING` or `AWAITING_APPROVAL` — the reaper is
+    moving the row to. Passed as `set_status(task, target,
+    reconciliation_gate=assert_stranded_reap)`, so the write still goes
+    through the general `ALLOWED_TRANSITIONS` map first, unconditionally;
+    this only gets consulted once that map has already refused the edge.
+    """
+    if src not in STRANDED_REAPABLE:
+        raise IllegalTransition(
+            f"{src.value} -> pending/awaiting_approval is not a stranded "
+            "reap")
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 

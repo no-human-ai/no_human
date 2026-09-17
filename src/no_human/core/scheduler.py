@@ -47,6 +47,7 @@ from . import plan_gate
 from . import slot_wait
 from .events import EventPersister
 from .infra_breaker import infra_breaker
+from .stranded_attempts import reap_stranded_implementing_attempts
 from .task import (
     LANDED_RECONCILABLE, TERMINAL_LANDED_RECONCILABLE, TaskStatus,
     priority_rank,
@@ -1565,6 +1566,37 @@ class Scheduler:
                 "startup: salvaged %d dead worktree(s), skipped %d",
                 salvaged, skipped)
 
+    async def _reap_stranded_implementing_attempts(self) -> None:
+        """Startup-only: retire a dead ``in_progress`` attempt on a task the
+        POOL itself abandoned mid-run — never touched by any other sweep.
+
+        `_reconcile_terminal_task_attempts` above only sees rows whose TASK
+        already finished; `_recover_orphans` below only iterates
+        `_ORPHANABLE` (CONTEXT/PLANNING/REVIEWING/TESTING) — IMPLEMENTING is
+        deliberately absent from that tuple because a live worker owns most
+        IMPLEMENTING rows most of the time, and requeueing out from under
+        one is the destructive incident 6408aba0 already fixed once. When
+        the whole pool that owned the row is provably dead instead (this
+        boot, or a live sibling/lease check, says so), nothing else ever
+        reaps it: on restart the new pool re-discovers and re-does already-
+        finished work, then escalates, and every reconciliation verb stays
+        fail-closed against `implementing` status forever. See
+        `core.stranded_attempts.reap_stranded_implementing_attempts` for the
+        liveness gate (server probe / pidfile / lease / worktree owner /
+        recent row activity — fails CLOSED on any of them) and the retire +
+        validated-transition write. Must never block boot.
+        """
+        try:
+            reaped, skipped = await reap_stranded_implementing_attempts(
+                self.store, self._config, row_is_live=self._row_is_live)
+        except Exception:  # noqa: BLE001 — reaping must never block boot
+            log.exception("startup: reaping stranded implementing attempts failed")
+            return
+        if reaped or skipped:
+            log.info(
+                "startup: reaped %d stranded implementing attempt(s), "
+                "skipped %d", reaped, skipped)
+
     async def _row_is_live(self, t) -> bool:
         """True when *t* shows evidence a worker still owns it — this
         process's own claim, or a row/event write within the grace window
@@ -2592,6 +2624,12 @@ class Scheduler:
         # dirty worktree from a hard-killed worker must be salvaged before
         # its own next run reaps it with no commit.
         await self._salvage_dead_worktrees()
+        # AFTER salvage (a dead worker's uncommitted work must be committed
+        # before anything moves the task off IMPLEMENTING) and BEFORE orphan
+        # recovery (which iterates `_ORPHANABLE`, i.e. NON-terminal statuses
+        # only — IMPLEMENTING is invisible to it, so a dead attempt stranded
+        # there would otherwise sit untouched forever).
+        await self._reap_stranded_implementing_attempts()
         await self._recover_orphans()
         # AFTER the orphan sweep (which only moves rows between claimable
         # states) and BEFORE the first tick: a wall the previous process was
