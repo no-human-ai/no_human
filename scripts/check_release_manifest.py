@@ -266,11 +266,20 @@ def write_manifest(root: Path) -> int:
 
     rows = {rel: hash_path(root, rel) for rel in tracked}
     body = "".join(f"{digest}  {rel}\n" for rel, digest in sorted(rows.items()))
-    # newline="\n" so the bytes are identical on every platform. Without it the
-    # write goes through the platform's text layer, which on Windows makes every
-    # row CRLF; the compare side reads back through the same layer and stays
-    # quiet, so the tool looks fine while git reports the whole file as changed.
-    manifest_path.write_text(HEADER + body, encoding="utf-8", newline="\n")
+    # Written as BYTES, which is the only way to be sure of them. Through the
+    # text layer the platform decides: on Windows every row becomes CRLF, the
+    # compare side reads back through the same layer and stays quiet, and the
+    # tool looks fine while git reports the whole file as changed.
+    #
+    # `write_text(..., newline="\n")` expressed the same intent and was correct
+    # on the interpreter this repo runs, but the `newline` keyword reached
+    # `Path.write_text` only in Python 3.10 — and this script is handed a bare
+    # `python3` by `vcs/derived_conflict.py::_inventory_argv`, which on macOS is
+    # /usr/bin/python3, still 3.9. It died there with a TypeError, and because
+    # that path is the derived-artefact conflict resolver, the crash surfaced as
+    # pull requests escalating to a human for a manifest a machine could have
+    # regenerated. `write_bytes` needs no version at all.
+    manifest_path.write_bytes((HEADER + body).encode("utf-8"))
     _warn_if_nearly_every_row_changed(previous, rows)
     print(f"{MANIFEST_NAME}: wrote {len(rows)} row(s)")
     return 0
