@@ -490,3 +490,81 @@ def test_main_reconcile_reports_no_modified_files_when_zero_changes(tmp_path, mo
     assert "Modified:" not in stdout
     assert "Unfixable citations remain: 1" in stdout
     assert "VERDICT=FAIL" in stdout
+
+
+# --------------------------------------------------------------------------- #
+# `--apply` actually reaching the filesystem.                                 #
+#                                                                             #
+# Everything above drives `_apply_all`, which returns a {path: new_text} dict  #
+# and touches nothing. The one line that turns that dict into bytes on disk    #
+# lives in `main()`, and nothing observed it: replacing it with `pass` left    #
+# every test in this file green. So the wiring between "computed the new       #
+# text" and "the file now holds it" was uncovered, which is the seam that      #
+# matters — a helper that computes a perfect rewrite and never writes it is    #
+# indistinguishable from a working one at the level of a returned dict.        #
+# --------------------------------------------------------------------------- #
+
+def _drift_fixture(tmp_path: Path):
+    """A repo shaped like the real one, with exactly one drifted citation."""
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "tests").mkdir()
+    doc_path = tmp_path / "docs" / "fake.md"
+    table_path = tmp_path / "tests" / "test_readme_claims.py"
+    doc_path.write_text("See `widget.py:5` for details.\n", encoding="utf-8")
+    table_path.write_text(
+        'CITATION_TABLE = (\n'
+        '    ("fake.md", "widget.py:5", "widget.py", "line 5"),\n'
+        ')\n\nassert len(CITATION_TABLE) >= 20,\n',
+        encoding="utf-8",
+    )
+    return doc_path, table_path
+
+
+def test_apply_writes_the_rewritten_text_to_disk(tmp_path, monkeypatch):
+    """The artifact, not the return value: after `--apply`, read the files."""
+    doc_path, table_path = _drift_fixture(tmp_path)
+    monkeypatch.setattr(ra, "REPO", tmp_path)
+
+    fake_mod = types.SimpleNamespace(
+        _CITATION_DOC_PATHS={"fake.md": doc_path},
+        CITATION_TABLE=(("fake.md", "widget.py:5", "widget.py", "line 5"),),
+    )
+    monkeypatch.setattr(ra, "_load_checker", lambda: fake_mod)
+    monkeypatch.setattr(ra, "plan", lambda mod, table: (
+        [ra.Drift(doc="fake.md", old_raw="widget.py:5", new_raw="widget.py:8",
+                  resolve_path="widget.py")], []))
+
+    assert ra.main(["--apply"]) == 0
+
+    assert doc_path.read_text(encoding="utf-8") == "See `widget.py:8` for details.\n"
+    assert '"widget.py:8"' in table_path.read_text(encoding="utf-8")
+
+
+def test_apply_writes_lf_bytes_and_no_bom(tmp_path, monkeypatch):
+    """Written as bytes so the platform's text layer never decides.
+
+    On Windows a text-layer write turns every line of a rewritten doc into
+    CRLF, and a four-citation change lands as a whole-file diff.
+    """
+    doc_path, _table_path = _drift_fixture(tmp_path)
+    monkeypatch.setattr(ra, "REPO", tmp_path)
+
+    fake_mod = types.SimpleNamespace(
+        _CITATION_DOC_PATHS={"fake.md": doc_path},
+        CITATION_TABLE=(("fake.md", "widget.py:5", "widget.py", "line 5"),),
+    )
+    monkeypatch.setattr(ra, "_load_checker", lambda: fake_mod)
+    monkeypatch.setattr(ra, "plan", lambda mod, table: (
+        [ra.Drift(doc="fake.md", old_raw="widget.py:5", new_raw="widget.py:8",
+                  resolve_path="widget.py")], []))
+
+    # Assert the run succeeded and the content actually changed before asking
+    # about its bytes: without these two, every assertion below is satisfied by
+    # the untouched fixture, and the test passes when the write is deleted.
+    assert ra.main(["--apply"]) == 0
+
+    written = doc_path.read_bytes()
+    assert b"widget.py:8" in written
+    assert b"\r" not in written
+    assert not written.startswith(b"\xef\xbb\xbf")
+    assert written.endswith(b"\n")
