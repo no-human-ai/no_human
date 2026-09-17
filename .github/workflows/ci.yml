@@ -215,6 +215,40 @@ jobs:
       - name: Tree matches RELEASE_MANIFEST.txt
         run: python scripts/check_release_manifest.py --strict
 
+      # The script is not only run by this job. `vcs/derived_conflict.py`'s
+      # `_inventory_argv` hands it a bare `python3` when the product is a
+      # frozen build with no interpreter of its own, and on macOS that is
+      # /usr/bin/python3 — 3.9. It once used a `Path.write_text` keyword
+      # introduced in 3.10, so `--write` raised TypeError there and every
+      # derived-artefact conflict the resolver touched escalated to a human.
+      # "Stdlib-only" did not catch that, because it is a claim about imports.
+      # Running the real thing on the real floor does. `--write` rather than
+      # `--strict` because the crash was on the write path, and in a scratch
+      # repo so this job's own checkout is never rewritten.
+      # 3.9 because it is the stock macOS interpreter, which is what makes it
+      # the useful checkpoint. actions/python-versions publishes every 3.9 from
+      # 3.9.12 to 3.9.25 with a linux 24.04 build, and `"3.9"` resolves to the
+      # highest match, so this installs on ubuntu-latest instead of reddening a
+      # required check for an unrelated reason.
+      - uses: actions/setup-python@v5
+        id: oldest-python
+        with:
+          python-version: "3.9"
+
+      - name: --write runs on the oldest interpreter the resolver can pick
+        run: |
+          set -eu
+          scratch="$(mktemp -d)"
+          cp scripts/check_release_manifest.py "$scratch/"
+          cd "$scratch"
+          git init -q -b main .
+          printf 'x\n' > a.txt
+          git add -A
+          git -c user.email=ci@example.com -c user.name=ci commit -qm base
+          "${{ steps.oldest-python.outputs.python-path }}" -V
+          "${{ steps.oldest-python.outputs.python-path }}" check_release_manifest.py --write
+          test -s RELEASE_MANIFEST.txt
+
   locale:
     name: ASCII locale (collection)
     runs-on: ubuntu-latest
