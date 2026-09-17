@@ -60,8 +60,9 @@ def branch_stem(config: dict, task_id: str) -> str:
     """The task's own branch family name, e.g. ``no-human/abc12345``.
 
     Mirrors the exact naming convention used at branch-creation time
-    (`orchestrator.py`'s `_run_attempt`, ~5682) and at the sibling-branch
-    scan used to satisfy an already-satisfied claim (~12571). This
+    (`orchestrator.py`'s `_run_attempt`) and at the sibling-branch scan
+    used to satisfy an already-satisfied claim
+    (`orchestrator.py`'s `_already_satisfied_subject`). This
     function does not change that convention — it only reads it — so
     every existing branch name (bare stem, or ``stem-N`` for attempt
     N > 1) is still exactly what it always was.

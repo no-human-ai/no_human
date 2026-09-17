@@ -432,7 +432,7 @@ above, there is no tolerance window here — the convention is to forbid the
 anchor outright, not to resolve and re-tolerate it.
 
 This was a measured decision, not a guess: resolving every anchor this repo
-had shipped against the symbol it actually described found 15 of 16 already
+had shipped against the symbol it actually described found 16 of 18 already
 pointing at the wrong function, some by hundreds of lines. A drift-tolerant
 gate (mirroring the docs' `±5`-line tolerance) would therefore fail almost
 immediately against nearly the whole population and demand exactly the same
@@ -441,7 +441,11 @@ tolerance window to maintain forever after. A symbol name (`` `_is_wip_partial` 
 `` `_already_satisfied_subject` ``) never goes stale and costs nothing to
 keep true, and the reader has to grep for it either way. This mirrors the
 "prefer symbol form for hot files" guidance directly above — `src/`'s hottest
-file, `core/orchestrator.py`, is exactly where 15 of the 16 anchors lived.
+file, `core/orchestrator.py`, is exactly where 15 of the 18 anchors lived;
+2 more turned up in `vcs/recut.py`, added by an unrelated change that
+landed mid-review, and the gate caught both before they could rot — which
+is the whole point of forbidding the shape instead of merely re-tolerating
+drift in it.
 
 This applies to `src/` only, per the shipped-source focus above; `tests/`,
 `docs/`, `scripts/`, `e2e/`, `eval/`, `examples/` and `web/` are unaffected
