@@ -13,7 +13,11 @@ nothing). These tests guard four things so the document cannot silently rot:
    forks, `pull_request_target` stays refused) are true of the *code*, not
    just asserted in prose.
 
-No fixtures, no autouse, no monkeypatch, no new pytest marker.
+No fixtures, no autouse, no new pytest marker. `test_run_py_behaviour_is_unchanged`
+does take pytest's own built-in `monkeypatch` fixture (to set
+`GITHUB_EVENT_NAME` for the duration of that one test, restored
+automatically at teardown) — that is not a fixture this module defines, and
+it is not autouse.
 """
 
 from __future__ import annotations
@@ -29,6 +33,16 @@ DOC_PATH = REPO_ROOT / "docs" / "design" / "untrusted-pr-review-gate.md"
 README_PATH = REPO_ROOT / "docs" / "README.md"
 
 _CITATION_RE = re.compile(r"([A-Za-z0-9_./-]+\.(?:py|yml|md)):(\d+)(?:-(\d+))?")
+
+# A stricter form: a backtick-quoted citation immediately followed by a
+# verbatim quote of the source text it claims to be citing, e.g.
+# `` `path/to/file.py:26-27`: "the exact source text" ``. Unlike
+# `_CITATION_RE` (which only checks the file has enough lines — a citation
+# with every line number replaced by `:1` still passes that), this checks
+# the claimed line range actually *contains* the quoted text.
+_QUOTED_CITATION_RE = re.compile(
+    r"`([A-Za-z0-9_./-]+\.(?:py|yml|md)):(\d+)(?:-(\d+))?`:\s*\"([^\"]+)\""
+)
 
 
 def _doc_text() -> str:
@@ -88,6 +102,32 @@ def test_every_citation_in_the_design_doc_resolves():
     assert checked == len(citations)
 
 
+def test_every_quoted_citation_in_the_design_doc_matches_the_source():
+    """A citation with a trailing verbatim quote must be checked against the
+    actual text at that line range, not just against the file's line count —
+    that is exactly the gap that let a stale `run.py:25-26` citation survive
+    a rewrite that moved the quoted text to line 27."""
+    text = _doc_text()
+    matches = list(_QUOTED_CITATION_RE.finditer(text))
+    assert matches, "expected at least one citation with a verbatim source quote"
+
+    for match in matches:
+        rel_path, start_line, end_line, quoted = match.groups()
+        path = REPO_ROOT / rel_path
+        assert path.is_file(), f"quoted citation points at a missing path: {rel_path}"
+        lines = path.read_text(encoding="utf-8").splitlines()
+        start = int(start_line)
+        end = int(end_line) if end_line else start
+        window = " ".join(line.strip() for line in lines[start - 1 : end])
+        normalized_window = re.sub(r"\s+", " ", window)
+        normalized_quote = re.sub(r"\s+", " ", quoted.strip())
+        assert normalized_quote in normalized_window, (
+            f"citation claims {rel_path}:{start_line}"
+            f"{'-' + end_line if end_line else ''} contains {quoted!r}, "
+            f"but that text is not on those lines (found: {normalized_window!r})"
+        )
+
+
 def test_design_doc_states_the_fork_and_pull_request_target_invariants():
     text = _doc_text()
     assert "_is_fork_pr" in text
@@ -141,6 +181,30 @@ def test_design_doc_names_the_workflow_run_boundary_and_why_pull_request_is_not_
     behaviour_2 = text[text.index("Named GitHub behaviour #2"):]
     assert "default branch" in behaviour_2.lower()
     assert "main" in behaviour_2
+
+
+def test_design_doc_states_the_environment_secret_requirement():
+    """The `workflow_run` split alone does not protect the credential — only
+    scoping it to an environment with a `main`-only deployment-branch policy
+    does. The doc must say so and must not leave `action.yml:14`'s
+    "repository secret" language standing uncorrected."""
+    text = _doc_text()
+    assert "environment secret" in text or "environment-scoped" in text
+    assert "deployment-branch policy" in text or "deployment branch policy" in text
+    assert "action.yml:14" in text
+    assert "repository secret" in text  # named as the thing being corrected
+
+
+def test_design_doc_names_the_workflow_run_event_check_and_artifact_handling():
+    """`workflow_run` fires on any completion of a workflow with the watched
+    name, not just on a pull request — the doc must require re-checking
+    `workflow_run.event`/`conclusion`, and must address (or explicitly scope
+    out) the untrusted artifact download."""
+    text = _doc_text()
+    assert "workflow_run.event" in text
+    assert "workflow_run.conclusion" in text
+    assert "artifact" in text.lower()
+    assert "path traversal" in text.lower() or "zip" in text.lower()
 
 
 def test_design_doc_states_the_tamper_guard_did_not_run_sentence():

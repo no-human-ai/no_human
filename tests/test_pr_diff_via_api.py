@@ -20,9 +20,18 @@ pinned by `tests/test_test_lanes.py` is unaffected.
 
 Skips rather than fails without a token or without network, so the suite
 stays green offline and in this repo's own CI (the `python` job's "Run
-tests" step, `.github/workflows/ci.yml:355-360`, sets no `GITHUB_TOKEN` or
+tests" step, `.github/workflows/ci.yml:364-369`, sets no `GITHUB_TOKEN` or
 `GH_TOKEN` env var). A wrong-shaped 200 response is never a skip — that is
 this test doing its job.
+
+This module's live assertions are therefore developer-machine-only today:
+nothing in `.github/workflows/ci.yml` wires a token into the job that runs
+this file, so `pytestmark` below skips all three tests in every CI run and
+they execute only when a human runs this file locally with `GITHUB_TOKEN` or
+`GH_TOKEN` set (e.g. `GITHUB_TOKEN="$(gh auth token)"`). Wiring `github.token`
+into the test step so this proof runs in CI
+is exactly the kind of workflow edit this design describes but does not
+land — `.github/workflows/ci.yml` is out of scope for this change.
 """
 
 from __future__ import annotations
