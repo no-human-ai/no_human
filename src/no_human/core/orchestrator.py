@@ -4062,50 +4062,79 @@ class Orchestrator:
 
     def _base_exclusion_refs(
         self, repo: GitRepo, pinned: str | None,
+        *, base: str | None = None, remote_pin: str | None = None,
     ) -> list[str]:
         """The sha(s) whose own ancestry `_foreign_authored_commits` should
         exclude from its attribution window — i.e. "commits the base branch
         already had", not "commits this attempt made".
 
-        `pinned` MUST be a sha resolved ONCE, before the coder session
-        started (`_run_attempt` calls `repo.ls_remote_exact` right after
-        `_protect_base_branch`, and stores it on the attempt row). Re-reading
-        `origin/<base>` HERE, at gate time, instead of trusting that pin
-        would hand the coder a laundering path on any non-main base: the
-        pre-push hook only ever protected `git.never_push_to`
-        (main/master/release/* plus whatever `_protect_base_branch` adds),
-        so a coder that force-pushes a forged-identity commit onto
-        `refs/heads/<base>` on the remote — nothing stops that for a base the
-        hook doesn't cover as strictly as main — would make its own forgery
-        the exclusion root if this method re-resolved the base fresh.
-        Because the pin was captured before the coder ever ran, nothing it
-        does afterward can move what gets excluded.
+        `pinned` is a sha resolved ONCE, before the coder session started
+        (`_run_attempt` calls `repo.ls_remote_exact` right after
+        `_protect_base_branch`, and stores it on the attempt row). That pin
+        alone is not enough: a base commit that lands on the real remote
+        *after* the pin was taken (a rebase, or another contributor's push
+        to `main` while this attempt is running) is legitimate base content
+        the attempt never introduced, but it postdates `pinned` and so isn't
+        covered by it.
 
-        `pinned` falsy (no base, or `ls_remote_exact` returned `None` because
-        the remote was unreachable, the ref didn't exist, or the answer was
-        ambiguous) returns `[]` — NO exclusion, which only ever means MORE
-        commits get checked for attribution, never fewer; that is the
-        fail-closed direction. Likewise if the pinned sha's own commit object
-        cannot be read locally (a stale or bogus pin) — logged and excluded
-        as `[]` rather than trusted blind.
+        To cover that without reopening the laundering path that d6b79919
+        rejected, this method may re-read the base at gate time ONLY through
+        `remote_pin` — the literal `origin` URL string captured in
+        `_run_attempt`'s own frame *before* the coder session started (the
+        same pre-session-only discipline as `pinned` itself, just applied to
+        the URL instead of the sha). It is explicitly NOT allowed to consult
+        anything the coder can move: not the `origin/<base>` tracking ref,
+        not a local `<base>` branch, not `remote.origin.url`/
+        `remote.origin.push` read now (those could have been repointed at a
+        rogue remote holding a forged commit). `remote_pin` is a plain
+        string a later config write cannot retarget, and `_protect_base_branch`
+        (plus the pre-push hook in `vcs/push_hook.py`) already keeps the real
+        `refs/heads/<base>` on that pinned remote unwritable by the coder, so
+        an exact `refs/heads/<base>` lookup against it is safe to trust.
+
+        When both `base` and `remote_pin` are given, `ls_remote_exact` is
+        used for an exact-ref match against `remote_pin`, and any hit is
+        proven actually fetchable/present locally via `ensure_remote_commit`
+        before being trusted — anything else (no match, unreachable, fetch
+        fails) is dropped silently, which only ever means MORE commits get
+        checked for attribution, never fewer.
+
+        Falsy `pinned` and no usable fresh read both mean `[]` — NO
+        exclusion, the fail-closed direction. Likewise if the pinned sha's
+        own commit object cannot be read locally (a stale or bogus pin) —
+        logged and excluded as `[]` rather than trusted blind. The two
+        roots, when both present, are unioned (de-duplicated, order-stable):
+        a base that moved backwards or sideways on the remote still excludes
+        `pinned`, so this is strictly additive to the prior behaviour.
         """
-        if not pinned:
-            return []
-        readable = subprocess.run(
-            ["git", "-C", str(repo.path), "cat-file", "-e", f"{pinned}^{{commit}}"],
-            capture_output=True, text=True,
-        )
-        if readable.returncode != 0:
-            log.warning(
-                "base_pin %s is not a readable commit in %s; excluding "
-                "nothing (fail closed)", pinned, repo.path,
+        refs: list[str] = []
+        if pinned:
+            readable = subprocess.run(
+                ["git", "-C", str(repo.path), "cat-file", "-e", f"{pinned}^{{commit}}"],
+                capture_output=True, text=True,
             )
-            return []
-        return [pinned]
+            if readable.returncode != 0:
+                log.warning(
+                    "base_pin %s is not a readable commit in %s; excluding "
+                    "nothing (fail closed)", pinned, repo.path,
+                )
+            else:
+                refs.append(pinned)
+        if base and remote_pin:
+            fresh = repo.ls_remote_exact(f"refs/heads/{base}", remote=remote_pin)
+            if fresh and repo.ensure_remote_commit(remote_pin, base, fresh):
+                refs.append(fresh)
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for ref in refs:
+            if ref not in seen:
+                seen.add(ref)
+                ordered.append(ref)
+        return ordered
 
     def _foreign_authored_commits(
         self, repo: GitRepo, base: str | None, since: str | None = None,
-        base_pin: str | None = None,
+        base_pin: str | None = None, remote_pin: str | None = None,
     ) -> list[str]:
         """Post-hoc attribution gate for constraint #2 ("the agent commits
         under a distinct identity"). `_agent_git_identity` EXPORTS that
@@ -4158,6 +4187,26 @@ class Orchestrator:
         forged base-branch push is trying to open. Omitted (the default),
         this method's behaviour is identical to before `base_pin` existed.
 
+        `remote_pin`, when given, is the `origin` URL string `_run_attempt`
+        captured in the same pre-session frame as `base_pin` (see
+        `_base_exclusion_refs` for the full trust argument). It lets the
+        gate-time exclusion root cover base content that lands *after*
+        `base_pin` was taken — a rebase, or another contributor's commit
+        reaching `base` from main — without letting the coder move the
+        exclusion root itself, since neither the URL string nor the
+        hook-protected `refs/heads/<base>` it names are coder-writable.
+
+        Beyond the ref-based exclusion, a bounded patch-equivalence check
+        (`GitRepo.base_equivalent_commits`) additionally excuses any
+        candidate offender in this window whose diff is byte-identical to a
+        commit already reachable from the *verified* exclusion roots — this
+        is what covers the "agent's own `git rebase` re-commits main's
+        history under new shas" shape, where the rewritten commit is not an
+        ancestor of any exclusion root even though its content already is.
+        Excusal by equivalence is deliberately narrow: it only ever drops
+        candidates whose content the base already has, never widens what
+        counts as "the agent's own identity".
+
         This DETECTS and FAILS the attempt; it does not and cannot make
         forgery impossible — a commit outside this window, or a run where the
         configured agent identity itself equals the operator's, is not
@@ -4175,7 +4224,8 @@ class Orchestrator:
         like a real mismatch — loud and stop, not quiet and pass.
         """
         window = since if since is not None else self._review_base(repo, base)
-        exclusion = self._base_exclusion_refs(repo, base_pin)
+        exclusion = self._base_exclusion_refs(
+            repo, base_pin, base=base, remote_pin=remote_pin)
         try:
             commits = (
                 repo.commit_identities(window, exclude=exclusion)
@@ -4190,21 +4240,52 @@ class Orchestrator:
         identity = self._agent_git_identity()
         want_name = identity["GIT_AUTHOR_NAME"].casefold()
         want_email = identity["GIT_AUTHOR_EMAIL"].casefold()
-        offenders: list[str] = []
-        for c in commits:
-            ok = (
+        mismatched = [
+            c for c in commits
+            if not (
                 c.author_name.casefold() == want_name
                 and c.author_email.casefold() == want_email
                 and c.committer_name.casefold() == want_name
                 and c.committer_email.casefold() == want_email
             )
-            if not ok:
-                offenders.append(
-                    f"{c.sha[:8]} author={c.author_name} <{c.author_email}> "
-                    f"committer={c.committer_name} <{c.committer_email}> "
-                    f"— expected {identity['GIT_AUTHOR_NAME']} "
-                    f"<{identity['GIT_AUTHOR_EMAIL']}>"
+        ]
+        excused: set[str] = set()
+        if mismatched and exclusion:
+            try:
+                for root in exclusion:
+                    excused |= repo.base_equivalent_commits(root)
+            except GitError as exc:
+                log.warning(
+                    "base_equivalent_commits failed for %s: %s; excusing "
+                    "nothing (fail closed)", exclusion, exc,
                 )
+                excused = set()
+            else:
+                if excused:
+                    excused_here = [c for c in mismatched if c.sha in excused]
+                    if excused_here:
+                        log.info(
+                            "attribution: excusing %d commit(s) as "
+                            "patch-equivalent to verified base content: %s",
+                            len(excused_here),
+                            ", ".join(c.sha[:8] for c in excused_here),
+                        )
+                        self.emit(
+                            "attribution_rebase_excused",
+                            f"excused {len(excused_here)} commit(s) "
+                            f"equivalent to base content",
+                            shas=[c.sha for c in excused_here],
+                        )
+        offenders: list[str] = []
+        for c in mismatched:
+            if c.sha in excused:
+                continue
+            offenders.append(
+                f"{c.sha[:8]} author={c.author_name} <{c.author_email}> "
+                f"committer={c.committer_name} <{c.committer_email}> "
+                f"— expected {identity['GIT_AUTHOR_NAME']} "
+                f"<{identity['GIT_AUTHOR_EMAIL']}>"
+            )
         if len(offenders) > 8:
             offenders = offenders[:8] + [f"(+{len(offenders) - 8} more)"]
         return offenders
@@ -5860,6 +5941,20 @@ class Orchestrator:
                 "exclusion window this attempt"
             )
 
+        # Pinned in this SAME frame, for the same reason: the literal
+        # `origin` URL string, not anything the coder could later repoint
+        # (`remote.origin.url`, `remote.origin.push`). It lets the gate
+        # re-read `refs/heads/<base>` at gate time without trusting anything
+        # coder-writable — see `_base_exclusion_refs`.
+        remote_pin = repo.remote_url("origin") if base else None
+        if remote_pin:
+            self.emit("base_remote_pin", f"pinned origin url for {base}")
+        elif base:
+            log.warning(
+                "origin remote url unresolvable for base=%r — gate-time "
+                "base re-read is disabled this attempt", base,
+            )
+
         await self._refresh_stale_base(task, repo, branch, base, base_pin=base_pin)
 
         # Already-diverged case: `branch` may have been rewritten (rebased,
@@ -6987,7 +7082,8 @@ class Orchestrator:
         # already-credited prior-session checkpoint commit on every resume).
         # Linked repos (`task.linked_repos`) are not covered by this check.
         foreign = self._foreign_authored_commits(
-            repo, base, since=attempt_start_sha, base_pin=base_pin)
+            repo, base, since=attempt_start_sha, base_pin=base_pin,
+            remote_pin=remote_pin)
         if foreign:
             detail = (
                 "commit attribution mismatch — one or more commits on this "
