@@ -956,8 +956,18 @@ _NEW_SESSION: dict[str, object] = {} if os.name == "nt" else {"start_new_session
 _GIT_TIMEOUT = 120.0
 
 
-async def _git_rc(repo_path: str, *args: str) -> tuple[int, str]:
-    """Run a local git command; return (returncode, stripped stdout)."""
+async def _git_rc(repo_path: str, *args: str,
+                   timeout: float | None = None) -> tuple[int, str]:
+    """Run a local git command; return (returncode, stripped stdout).
+
+    ``timeout`` defaults to the fixed `_GIT_TIMEOUT` ceiling above; a caller
+    that needs to bound many calls within a shared budget (the base-staleness
+    rung, across several parked PRs in one tick) may pass a smaller value.
+    Never larger than `_GIT_TIMEOUT` in practice, but nothing here enforces
+    that — the driver-execution risk documented above is unaffected either
+    way, since a SMALLER bound only kills the subprocess sooner.
+    """
+    effective_timeout = _GIT_TIMEOUT if timeout is None else timeout
     try:
         proc = await asyncio.create_subprocess_exec(
             "git", "-C", repo_path, *args,
@@ -976,7 +986,7 @@ async def _git_rc(repo_path: str, *args: str) -> tuple[int, str]:
         # a false shipped", so any failure must read as a non-zero rc.
         return 1, ""
     try:
-        out, _ = await asyncio.wait_for(proc.communicate(), _GIT_TIMEOUT)
+        out, _ = await asyncio.wait_for(proc.communicate(), effective_timeout)
     except TimeoutError:  # asyncio.TimeoutError is an alias of it since 3.11
         # Every failure mode of the cleanup is swallowed: `os.killpg` does not
         # exist on Windows, the group may already be gone, and this runs on the
@@ -986,7 +996,7 @@ async def _git_rc(repo_path: str, *args: str) -> tuple[int, str]:
         with contextlib.suppress(Exception):
             proc.kill()
         log.warning("git %s timed out after %ss in %s", args[0] if args else "",
-                    _GIT_TIMEOUT, repo_path)
+                    effective_timeout, repo_path)
         return 1, ""
     return proc.returncode, out.decode("utf-8", "replace").strip()
 

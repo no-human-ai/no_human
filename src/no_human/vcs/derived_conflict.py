@@ -189,7 +189,8 @@ async def conflicting_paths(repo_path: str, base_tip: str,
     return result[1]
 
 
-async def fetch_conflict_refs(repo_path: str, base: str, branch: str) -> bool:
+async def fetch_conflict_refs(repo_path: str, base: str, branch: str, *,
+                               timeout: float | None = None) -> bool:
     """Best-effort ``git fetch origin <base> <branch>`` — the common cause of
     an enumeration failure (`conflicting_paths` raising, or returning
     ``None``) is a stale/missing ref in the watcher's checkout. Returns
@@ -200,10 +201,16 @@ async def fetch_conflict_refs(repo_path: str, base: str, branch: str) -> bool:
     ``_git_rc`` already swallows `OSError` (git absent) and enforces
     `_GIT_TIMEOUT`, returning `rc=1` for both — so this never raises for
     those; it only additionally guards empty arguments.
+
+    ``timeout`` bounds this ONE call (same seam as
+    `delivered_base.fetch_base_ref`), so a caller re-verifying several
+    parked PRs against a shared per-tick budget can cap this fetch below
+    `_GIT_TIMEOUT`'s fixed 120s ceiling instead of inheriting it.
     """
     if not repo_path or not base or not branch:
         return False
-    rc, _ = await _git_rc(repo_path, "fetch", "--quiet", "origin", base, branch)
+    rc, _ = await _git_rc(repo_path, "fetch", "--quiet", "origin", base, branch,
+                           timeout=timeout)
     return rc == 0
 
 

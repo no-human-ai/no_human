@@ -246,14 +246,21 @@ FROZEN_FUNCTION_LINES = {
     # to make this retry's non-fast-forward path the expected outcome
     # (comment-only; `forced = _is_non_fast_forward(exc)` itself is
     # unchanged). Measured on this tree with the scanner below.
-    # 441 -> 470 (+29): rebased-branch recut fix — `_assert_delivery_sha`
-    # now returns `(sha, branch)` instead of just `sha`, so `_finalize`
-    # captures the possibly-recut `branch` alongside `original_branch`,
-    # threads the rebound branch through the PR-body/comment plumbing when
-    # they differ, and posts the idempotent "superseded by" comment on the
-    # old PR via `_post_recut_comment` (guarded so it fires at most once
-    # per recut). Measured on this tree with the scanner below.
-    "core/orchestrator.py:Orchestrator._finalize": 470,
+    # 441 -> 442 (+1): stale-delivered-base watcher fix (2026-09-15) — one
+    # line merges `vcs.delivered_base.record_at_delivery`'s result into
+    # `ctx` so the trunk tip a PR was measured against gets recorded at
+    # delivery time (see `vcs/delivered_base.py`'s module docstring for the
+    # defect this closes). No comment added; the call site is
+    # self-describing and the referenced module documents the why.
+    # 442 -> 471 (+29): rebased-branch recut fix, landed in the same merge —
+    # `_assert_delivery_sha` now returns `(sha, branch)` instead of just
+    # `sha`, so `_finalize` captures the possibly-recut `branch` alongside
+    # `original_branch`, threads the rebound branch through the PR-body/
+    # comment plumbing when they differ, and posts the idempotent
+    # "superseded by" comment on the old PR via `_post_recut_comment`
+    # (guarded so it fires at most once per recut). Measured on this tree
+    # with the scanner below (both fixes present together).
+    "core/orchestrator.py:Orchestrator._finalize": 471,
     # Pre-existing on main (measured red at d3d7d3a82a, this session's start):
     # an earlier fleet land grew stream() +6 without re-freezing it on its
     # merge result — the same "landed without measuring the ratchet" failure
@@ -1488,17 +1495,24 @@ FROZEN_FILE_LINES = {
     # and the `reason if reason is not None else ...` fix replacing `reason
     # or ...` in `_revert_worktree_writes_unguarded`. Re-measured on this
     # tree with `scan_tree`, not carried over as a stale delta.
-    # 24728 -> 25039 (+311): rebased-branch recut fix — the two new hook
-    # methods (`_recover_diverged_branch`, Hook 1, called from
-    # `_run_attempt`; `_reconcile_remote_branch`, Hook 2, called from the
-    # existing delivery path) plus their call-site integration and the
-    # `_record_recut`/`_post_recut_comment` helpers `_finalize` uses to
+    # 24728 -> 24729 (+1): stale-delivered-base watcher fix (2026-09-15) —
+    # `_finalize` now merges `vcs.delivered_base.record_at_delivery`'s
+    # result into `ctx` (see the FROZEN_FUNCTION_LINES entry above for this
+    # same function).
+    # 24729 -> 25040 (+311, landed in the same merge): rebased-branch recut
+    # fix — the two new hook methods (`_recover_diverged_branch`, Hook 1,
+    # called from `_run_attempt`; `_reconcile_remote_branch`, Hook 2, called
+    # from the existing delivery path) plus their call-site integration and
+    # the `_record_recut`/`_post_recut_comment` helpers `_finalize` uses to
     # thread the possibly-rebound branch through the PR-body/comment
     # plumbing. The recut mechanics themselves (branch naming, replay,
     # push) live in the new `vcs/recut.py`, not here — this is the
-    # orchestrator-side wiring only. Measured on this tree with the
-    # scanner below.
-    "core/orchestrator.py": 25039,
+    # orchestrator-side wiring only. Re-measured on the resolved tree with
+    # `scan_tree`'s own `text.splitlines()` count (not `wc -l`, which
+    # undercounts this file by 3 — it has a handful of U+2028/U+2029/U+0085
+    # line-separator characters embedded in string literals that
+    # `str.splitlines()` treats as line breaks and `wc -l` does not).
+    "core/orchestrator.py": 25040,
 
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
@@ -1693,29 +1707,43 @@ FROZEN_FILE_LINES = {
     # landing checkout) has no local ref, so the bare name silently
     # degraded the verdict to `state="unknown"` and masked a real conflict
     # as fail-open-landable.
-    # 9048 -> 9059 (+11): #343 (PR #379) gives task `config` its own writer, so
-    # the three `apply_action` call sites in this file each persist the raise
-    # through `update_task_config` beside the action that produced it, instead
-    # of letting a generic save write a stale blob back.
-    # Measured on the squashed tree with the scanner below.
-    # 9059 -> 9149 (+90): #232 wires `nh task add --follows` (resolves a
-    # predecessor by id/prefix and records `follows_id`) and makes `nh
-    # approve` refuse — with `--force-superseded` as the explicit override —
-    # a task a later task's `follows_id` already names as followed-up-on, in
-    # both the single-task and `--ready --yes` paths. Measured via
-    # `wc -l src/no_human/cli/commands.py`.
-    # 9149 -> 9208 (+59): rebased-branch recut fix — the new `nh diverged`
-    # command (AC5: reports how many live tasks are currently stuck in the
-    # diverged-branch state, informational only, always exits 0) plus its
-    # `_bootstrap(require_auth=False)` setup and the local
-    # `audit_diverged_tasks` import. Measured on this tree with the
-    # scanner below.
-    # 9208 -> 9250 (+42): merged with origin/main, which independently added
-    # the `nh gate` verb (a thin click wrapper over `review.oneshot.run_gate`
-    # that runs the fresh-session reviewer and the tamper guard over the
-    # current branch or a GitHub PR with no daemon, no server, and no Store).
-    # Measured via `wc -l src/no_human/cli/commands.py` (agrees: 9250).
-    "cli/commands.py": 9250,
+    # 9048 -> 9085 (+37): new `nh gate` verb, a thin click wrapper over
+    # `review.oneshot.run_gate` that runs the fresh-session reviewer and the
+    # tamper guard over the current branch or a GitHub PR with no daemon, no
+    # server, and no Store.
+    # 9085 -> 9096 (+11): merged with #343 (PR #379), which gives task
+    # `config` its own writer, so the three `apply_action` call sites in this
+    # file each persist the raise through `update_task_config` beside the
+    # action that produced it, instead of letting a generic save write a
+    # stale blob back.
+    # 9096 -> 9101 (+5): `gate`'s docstring now states the write surface in
+    # full (config.yaml is read, never created; --pr mode's `git fetch`
+    # writes only `FETCH_HEAD` and fetched objects) instead of the shorter
+    # "reads and reports only" claim a staff review found to be inaccurate,
+    # and the `GateUnavailable` refusal now prints with `soft_wrap=True` so a
+    # long credential path or PR URL cannot fold mid-token in a narrow
+    # terminal.
+    # 9101 -> 9191 (+90): merged with origin/main, which wires `nh task add
+    # --follows` (#232, resolves a predecessor by id/prefix and records
+    # `follows_id`) and makes `nh approve` refuse — with
+    # `--force-superseded` as the explicit override — a task a later task's
+    # `follows_id` already names as followed-up-on, in both the single-task
+    # and `--ready --yes` paths.
+    # 9191 -> 9229 (+38): stale-delivered-base watcher fix (2026-09-15) —
+    # `nh task show` now renders `pr_base_freshness`/`pr_base_sha_source`
+    # (previously only shown when a `pr_base_freshness` record existed,
+    # which silently hid a backfilled `pr_base_sha_source` with no
+    # freshness verdict yet) and falls back to `ctx["base_branch"]` when
+    # `pr_base_ref` was never recorded.
+    # 9229 -> 9288 (+59, landed in the same merge): rebased-branch recut fix
+    # — the new `nh diverged` command (AC5: reports how many live tasks are
+    # currently stuck in the diverged-branch state, informational only,
+    # always exits 0) plus its `_bootstrap(require_auth=False)` setup and
+    # the local `audit_diverged_tasks` import. `nh gate` was already present
+    # on both sides of this merge (added independently before it), so it is
+    # not a separate delta here. Re-measured on the resolved tree with
+    # `scan_tree`, not carried over as a stale delta from either parent.
+    "cli/commands.py": 9288,
     # api/app.py 5338 -> 5346 (+8): same budget-floor warning surfaced by
     # `send-back`/`reply` as `budget_warning` in the JSON response. Net cost
     # was trimmed from a naive +14 to +8 by computing `Bounds.from_config(...)`
@@ -2219,7 +2247,36 @@ FROZEN_FILE_LINES = {
     # the FROZEN_FUNCTION_LINES `_check_pr_conflict` entry above (the
     # whole-file delta equals that function's delta). Measured on this tree
     # with the scanner below.
-    "blockers/wake.py": 2763,
+    # 2763 -> 3181 (+418): stale-delivered-base watcher fix (2026-09-15) --
+    # three entirely new methods with no prior frozen baseline:
+    # `_check_base_stale` (rung 4.5, acts on stale-but-mergeable per the
+    # original acceptance criterion), `_reverify_base_locally` (its local
+    # re-verification helper), and `_poll_mergeable` (the shared single-poll
+    # extraction `_check_pr_conflict` now also calls via its `info=`
+    # keyword). None of `_check_pr_conflict`'s round/escalation/mechanical-
+    # resolution logic changed; see the unchanged `_check_pr_conflict`
+    # FROZEN_FUNCTION_LINES entry above (464, ratcheted down from 465
+    # measured mid-change, since only its `info=` keyword and a docstring
+    # sentence were added). Measured on this tree with `scan_tree`, not by
+    # arithmetic on 2763 or on PR #319's number.
+    # 3181 -> 3183 (+2): `tick()`'s docstring claimed a closed set of two
+    # action strings ('resumed'/'escalated_timeout'); `_check_open_pr` now
+    # also returns 'pr_base_remeasured'/'pr_base_undetermined' through it, so
+    # the claim was stale. Reworded to describe the shape instead of
+    # enumerating a set the code no longer honors. Measured with `scan_tree`.
+    # 3183 -> 3210 (+27): `_reverify_base_locally`'s STALE-path
+    # `fetch_conflict_refs` call was not charged against the shared
+    # per-tick `base_fetch_budget` (review finding on this feature) -- a
+    # slow network could blow the STALE branch's own fetch-and-retry past
+    # the poll interval, uncounted, on every parked stale PR. Fixed by
+    # threading an optional `timeout` keyword through `fetch_conflict_refs`
+    # (mirroring `delivered_base.fetch_base_ref`'s existing seam) down to
+    # `_reverify_base_locally`, and by having `_check_base_stale` check the
+    # remaining budget before calling it, time the call, and charge the
+    # elapsed wall time back to `_base_fetch_spent` -- the same discipline
+    # already applied to the `measure()` fetch immediately above it.
+    # Measured on this tree with `scan_tree`.
+    "blockers/wake.py": 3210,
     # +91: `_SCAN_WRAPPER_NAMES` + `_peel_scan_wrappers` — peels
     # timeout/xargs/nice/stdbuf (and siblings) for the scan-severity check
     # only, so a wrapped `find … -delete` in a denied compound classifies

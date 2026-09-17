@@ -86,6 +86,10 @@ export const EVENT_LABELS = {
   // the board's approve button, refused (task e24cee25/PR #643: a refusal
   // used to reach the operator nowhere at all)
   approve_refused: "Approve refused",
+  // stale-but-mergeable PR re-measurement (task 22c4ddf6 finding #3):
+  // trunk moved under a still-MERGEABLE PR
+  pr_base_remeasured: "PR base re-measured",
+  pr_base_undetermined: "PR base freshness undetermined",
 };
 
 export function eventLabel(kind) {
