@@ -1,0 +1,89 @@
+#!/bin/sh
+# no_human pre-push history gate -- OPT-IN. Blocks a push that INTRODUCES a
+# scanned term in the commits being pushed, by running the `gate` subcommand
+# of history_gate_hit_report.py, which asks the private scanner
+# (verify_public_history.py, drop-classified, not shipped in this repo)
+# TWICE -- once at the tip of what's being pushed, once at the merge-base
+# with what the remote already has -- and attributes hits by set difference,
+# so the verdict is a property of THIS PUSH's range, not of the whole
+# repository's tip tree. See history_gate_hit_report.py's "layer 3" comment
+# for why that distinction matters.
+#
+# Does nothing unless both the private scanner and its source repo are
+# configured, via env (NH_HISTORY_GATE_SCANNER / NH_HISTORY_GATE_SOURCE) or
+# git config (nh.historygate.scanner / nh.historygate.source) -- most clones
+# of this repo have neither, and a missing scanner must not wedge a push.
+#
+# Installed the same way as scripts/hooks/pre-commit: symlink this file into
+# .git/hooks/pre-push, or run `git config core.hooksPath scripts/hooks` to
+# enable every hook in this directory at once. NOT wired into
+# scripts/hooks/install.sh (which only installs pre-commit) -- opt in to
+# this one separately, since not every clone has the private scanner to
+# point it at.
+#
+# Relays the gate's FULL stdout/stderr untouched. nh-guard's own 600-
+# character tail-truncation of scanner output is exactly the failure mode
+# this hook exists not to repeat for the range verdict -- which `gate`'s
+# renderer places LAST for that reason -- so this hook must never itself cut
+# that output down.
+#
+# Refuses the push (exit 1) only on hits/extra/missing files INTRODUCED BY
+# the range being pushed (`gate`'s default `--fail-on range`); a non-zero
+# PRE-EXISTING backlog at the merge base is reported, not enforced, here --
+# it is the whole repository's problem, not this push's.
+
+# Resolve this script's OWN true location, following symlinks by hand
+# (`readlink -f` is not available on every `readlink` this hook may run
+# under, e.g. the BSD one on macOS). This deliberately does NOT use
+# `git rev-parse --show-toplevel` to find sibling files: this hook is
+# typically installed as a symlink INTO the repository being pushed, which
+# is not this repository.
+self="$0"
+while [ -L "$self" ]; do
+    link=$(readlink "$self")
+    case "$link" in
+        /*) self="$link" ;;
+        *) self="$(dirname "$self")/$link" ;;
+    esac
+done
+hook_dir=$(cd "$(dirname "$self")" && pwd)
+gate="$hook_dir/../history_gate_hit_report.py"
+[ -f "$gate" ] || exit 0
+
+scanner="${NH_HISTORY_GATE_SCANNER:-$(git config --get nh.historygate.scanner 2>/dev/null)}"
+source_repo="${NH_HISTORY_GATE_SOURCE:-$(git config --get nh.historygate.source 2>/dev/null)}"
+if [ -z "$scanner" ] || [ -z "$source_repo" ] || [ ! -f "$scanner" ] || [ ! -d "$source_repo" ]; then
+    exit 0
+fi
+
+root=$(cd "$hook_dir/../.." && pwd)
+if [ -x "$root/.venv/bin/python" ]; then
+    py="$root/.venv/bin/python"
+elif command -v python3 >/dev/null 2>&1; then
+    py=python3
+elif command -v python >/dev/null 2>&1; then
+    py=python
+else
+    echo "no_human pre-push history gate: no python found; skipping (push allowed)." >&2
+    exit 0
+fi
+
+repo=$(git rev-parse --show-toplevel)
+zero="0000000000000000000000000000000000000000"
+empty_tree="4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+
+status=0
+while read -r local_ref local_sha remote_ref remote_sha; do
+    [ -z "$local_ref" ] && continue
+    [ "$local_sha" = "$zero" ] && continue  # a delete: nothing pushed to scan
+
+    since="$remote_sha"
+    [ "$remote_sha" = "$zero" ] && since="$empty_tree"  # brand-new remote ref: nothing pre-existing
+
+    "$py" "$gate" gate --scanner "$scanner" --source "$source_repo" \
+        --repo "$repo" --ref "$local_sha" --since "$since"
+    line_rc=$?
+    [ "$line_rc" -gt "$status" ] && status=$line_rc
+done
+
+exit "$status"

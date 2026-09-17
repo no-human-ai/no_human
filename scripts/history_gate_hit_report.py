@@ -46,6 +46,7 @@ import dataclasses
 import importlib.util
 import json
 import re
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -94,6 +95,18 @@ class Hit:
     role: str | None = None
     ref: str | None = None
     tag_target: str | None = None
+    #: Set only for hits attributed as RANGE-introduced (see `run_range_scan`
+    #: below): the commit, IN THE SCANNED RANGE, that `git log` shows first
+    #: touching this hit's path — the per-hit provenance that makes a RANGE
+    #: verdict checkable instead of merely asserted. `None` for a hit that was
+    #: never range-attributed (e.g. every hit from plain `scan`/`report`, and
+    #: every PRE-EXISTING hit from `gate`).
+    introduced_by: str | None = None
+    #: How `introduced_by` was derived: "git-log" (found via `git log` on the
+    #: hit's path within the range) or "hit-commit" (fell back to the
+    #: scanner's own commit field, for surfaces with no path) or "unknown"
+    #: (neither yielded a commit). `None` when `introduced_by` is `None`.
+    provenance_source: str | None = None
 
     def dedup_key(self) -> tuple:
         """The COMMIT-INDEPENDENT identity of this hit.
@@ -562,6 +575,375 @@ def cmd_report(args: argparse.Namespace) -> int:
     return 0
 
 
+
+# --------------------------------------------------------------------------- #
+# layer 3: range attribution — a verdict about the RANGE, not the tree
+# --------------------------------------------------------------------------- #
+#
+# `verify_public_history.py --ref X --since Y` scans the whole tip TREE at X
+# regardless of Y: its verdict is a property of the repository, not of the
+# commits being pushed (measured: a single-commit range and a completely
+# different 7-file range produced byte-identical 19-blob-hit, 195-extra-file
+# verdicts). The scanner itself cannot be patched (private, drop-classified).
+#
+# The fix asks it TWICE instead — once at `ref` (the tip of what's being
+# pushed) and once at the merge-base of `since`/`ref` (the last state the
+# other side already had) — and attributes each hit and each extra/missing
+# file by set difference on `Hit.dedup_key()` / path identity: anything in
+# the tip scan not also in the base scan was INTRODUCED BY the range;
+# anything in both was already PRE-EXISTING before the range started. That
+# split is what turns "the tree has 19 leaks" into "this push adds 1 leak; 18
+# were already there" — two different answers this file must never let get
+# read as each other.
+
+def _git(repo: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", *args], cwd=repo, capture_output=True,
+                          text=True)
+
+
+def _git_out(repo: Path, *args: str) -> str:
+    proc = _git(repo, *args)
+    if proc.returncode != 0:
+        raise ReportError(
+            f"git {' '.join(args)} failed (exit {proc.returncode}): "
+            f"{proc.stderr.strip()}")
+    return proc.stdout.strip()
+
+
+def merge_base(repo: Path, since: str, ref: str) -> tuple[str, str]:
+    """The base of the range being scanned, and how it was derived.
+
+    `base_kind` is `"merge-base"` in the normal case. If `since`/`ref` share
+    no ancestry, `git merge-base` fails and this falls back to `since`
+    resolved directly, labelled `"since"` — the label never claims
+    `merge-base` succeeded when it did not.
+    """
+    proc = _git(repo, "merge-base", since, ref)
+    if proc.returncode == 0:
+        return proc.stdout.strip(), "merge-base"
+    return _git_out(repo, "rev-parse", since), "since"
+
+
+def range_commits(repo: Path, base: str, ref: str) -> list[str]:
+    out = _git_out(repo, "rev-list", "--reverse", f"{base}..{ref}")
+    return [line for line in out.splitlines() if line]
+
+
+def range_paths(repo: Path, base: str, ref: str) -> list[str]:
+    out = _git_out(repo, "diff", "--name-only", base, ref)
+    return [line for line in out.splitlines() if line]
+
+
+def first_touching_commit(repo: Path, base: str, ref: str,
+                          path: str) -> str | None:
+    """The first commit IN THE RANGE `base..ref` that touches `path` — the
+    per-hit provenance value that makes a RANGE attribution checkable against
+    plain `git log` instead of merely asserted by this tool.
+    """
+    out = _git_out(repo, "log", "--reverse", "--format=%H", f"{base}..{ref}",
+                   "--", path)
+    lines = [line for line in out.splitlines() if line]
+    return lines[0] if lines else None
+
+
+def attribute_hits(tip_hits: list[Hit],
+                   base_hits: list[Hit]) -> tuple[list[Hit], list[Hit]]:
+    """Split the tip scan's hits into `(introduced, preexisting)` by set
+    difference on `Hit.dedup_key()` against the base scan's hits. A hit whose
+    dedup key is not present at the base was introduced somewhere in
+    `base..ref`; one whose key is already present at the base was there
+    before the range started.
+    """
+    base_keys = {h.dedup_key() for h in base_hits}
+    introduced = [h for h in tip_hits if h.dedup_key() not in base_keys]
+    preexisting = [h for h in tip_hits if h.dedup_key() in base_keys]
+    return introduced, preexisting
+
+
+def attribute_extra_files(tip_extra: list[str], base_extra: list[str],
+                          range_paths_: list[str]) -> dict[str, list[str]]:
+    """The same range/pre-existing split, applied to a flat file-path list
+    (`extra_files` or `missing_files`) instead of `Hit` objects — per the
+    resolved intake assumption that the "extra file(s)" count gets the same
+    treatment as hits, for consistency.
+
+    `range_extra_untouched` flags paths that are new-at-tip-vs-base but that
+    the range's own diff (`range_paths_`, from `git diff --name-only
+    base..ref`) never touched — e.g. a file the scanner newly considers
+    "extra" for a reason unrelated to any change in this push (a rule change
+    on the base side, or a rename it doesn't track). Those are still counted
+    as range-introduced (the base scan genuinely didn't have them), but are
+    flagged separately so they don't silently read as "this push added this
+    file" when `git diff` disagrees.
+    """
+    base_set = set(base_extra)
+    range_set = set(range_paths_)
+    range_extra = [p for p in tip_extra if p not in base_set]
+    preexisting_extra = [p for p in tip_extra if p in base_set]
+    range_extra_untouched = [p for p in range_extra if p not in range_set]
+    return {
+        "range_extra": range_extra,
+        "preexisting_extra": preexisting_extra,
+        "range_extra_untouched": range_extra_untouched,
+    }
+
+
+@dataclasses.dataclass
+class RangeVerdict:
+    """The result of asking the scanner about a RANGE (`since`..`ref`)
+    instead of a tree. Every *_extra/_missing list below is a plain path
+    list; every *_hits list is `Hit` objects (range-introduced ones carry
+    `introduced_by`/`provenance_source`)."""
+
+    ref: str
+    since: str
+    base: str
+    base_kind: str
+    range_commit_count: int
+    tip_payload: dict
+    base_payload: dict
+    tip_hits: list[Hit]
+    tip_extra: list[str]
+    tip_missing: list[str]
+    introduced_hits: list[Hit]
+    preexisting_hits: list[Hit]
+    range_extra: list[str]
+    preexisting_extra: list[str]
+    range_extra_untouched: list[str]
+    range_missing: list[str]
+    preexisting_missing: list[str]
+    range_missing_untouched: list[str]
+
+    @property
+    def failed(self) -> bool:
+        """PASSED means zero hits and zero extra/missing files were
+        INTRODUCED BY this range — a non-zero pre-existing backlog at the
+        base does not fail the range verdict; it is reported, not enforced,
+        by the default `--fail-on range`."""
+        return bool(self.introduced_hits or self.range_extra
+                   or self.range_missing)
+
+
+def run_range_scan(mod, *, source: Path, repo: Path, ref: str, since: str,
+                   progress) -> RangeVerdict:
+    """Ask the scanner TWICE (tip at `ref`, base at `merge-base(since, ref)`)
+    via the existing `run_scanner`, then attribute every hit and every extra/
+    missing file to the range or to pre-existing backlog. Reuses
+    `run_scanner` UNCHANGED for both calls — this file adds attribution
+    around it, it does not alter how the scanner itself is armed or run.
+    """
+    base, base_kind = merge_base(repo, since, ref)
+    commits = range_commits(repo, base, ref)
+    r_paths = range_paths(repo, base, ref)
+
+    tip_payload = run_scanner(mod, source=source, repo=repo, since=None,
+                              ref=ref, progress=progress)
+    base_payload = run_scanner(mod, source=source, repo=repo, since=None,
+                               ref=base, progress=progress)
+
+    tip_hits = hits_from_json(tip_payload)
+    base_hits = hits_from_json(base_payload)
+    introduced, preexisting = attribute_hits(tip_hits, base_hits)
+
+    for hit in introduced:
+        commit = None
+        prov_source = "unknown"
+        if hit.path is not None:
+            commit = first_touching_commit(repo, base, ref, hit.path)
+            if commit:
+                prov_source = "git-log"
+        if commit is None and hit.commit:
+            commit = hit.commit
+            prov_source = "hit-commit"
+        hit.introduced_by = commit
+        hit.provenance_source = prov_source if commit else "unknown"
+
+    tip_extra = list(tip_payload.get("extra_files", []))
+    base_extra = list(base_payload.get("extra_files", []))
+    extra = attribute_extra_files(tip_extra, base_extra, r_paths)
+
+    tip_missing = list(tip_payload.get("missing_files", []))
+    base_missing = list(base_payload.get("missing_files", []))
+    missing = attribute_extra_files(tip_missing, base_missing, r_paths)
+
+    return RangeVerdict(
+        ref=ref, since=since, base=base, base_kind=base_kind,
+        range_commit_count=len(commits),
+        tip_payload=tip_payload, base_payload=base_payload,
+        tip_hits=tip_hits, tip_extra=tip_extra, tip_missing=tip_missing,
+        introduced_hits=introduced, preexisting_hits=preexisting,
+        range_extra=extra["range_extra"],
+        preexisting_extra=extra["preexisting_extra"],
+        range_extra_untouched=extra["range_extra_untouched"],
+        range_missing=missing["range_extra"],
+        preexisting_missing=missing["preexisting_extra"],
+        range_missing_untouched=missing["range_extra_untouched"],
+    )
+
+
+def _surface_counts(hits: list[Hit]) -> dict[str, int]:
+    counts = {surface: 0 for surface, _ in _JSON_SURFACE_KEYS}
+    for hit in hits:
+        counts[hit.surface] = counts.get(hit.surface, 0) + 1
+    return counts
+
+
+def _format_surface_counts(counts: dict[str, int]) -> str:
+    return (", ".join(f"{counts.get(surface, 0)} {surface}"
+                      for surface, _ in _JSON_SURFACE_KEYS)
+           + " hit(s)")
+
+
+def render_range_verdict(verdict: RangeVerdict) -> str:
+    """Render the RANGE verdict. The summary line names BOTH the
+    range-introduced and the pre-existing-at-base numbers explicitly, so
+    neither can be read as the other (AC2) — and it is the LAST line printed,
+    after the full RANGE hit list, so a caller that only keeps the tail of
+    this output (e.g. a 600-character truncation) still keeps the verdict and
+    at least the most recent hit(s) (AC3).
+    """
+    lines: list[str] = []
+    lines.append(
+        f"history gate: scanned {verdict.base}..{verdict.ref} "
+        f"({verdict.range_commit_count} commit(s)); base {verdict.base} "
+        f"({verdict.base_kind})")
+
+    pre_counts = _surface_counts(verdict.preexisting_hits)
+    lines.append(
+        "history gate: PRE-EXISTING at base: "
+        + _format_surface_counts(pre_counts)
+        + f"; {len(verdict.preexisting_extra)} extra, "
+          f"{len(verdict.preexisting_missing)} missing file(s) "
+          "[backlog, tracked separately — not this push]")
+
+    tip_counts = _surface_counts(verdict.tip_hits)
+    lines.append(
+        f"history gate: TIP-WIDE total at {verdict.ref}: "
+        + _format_surface_counts(tip_counts)
+        + f"; {len(verdict.tip_extra)} extra, "
+          f"{len(verdict.tip_missing)} missing file(s)")
+
+    range_lines: list[str] = []
+    for hit in verdict.introduced_hits:
+        prov = f"{hit.introduced_by or 'unknown'} via {hit.provenance_source or 'unknown'}"
+        range_lines.append(
+            f"  RANGE {hit.surface} {hit.raw.strip()}  [introduced by {prov}]")
+    for path in verdict.range_extra:
+        range_lines.append(f"  RANGE EXTRA {path}")
+    for path in verdict.range_missing:
+        range_lines.append(f"  RANGE MISSING {path}")
+
+    if range_lines:
+        lines.append(
+            f"history gate: RANGE HITS (introduced by "
+            f"{verdict.base}..{verdict.ref}) - {len(range_lines)}:")
+        lines.extend(range_lines)
+
+    intro_counts = _surface_counts(verdict.introduced_hits)
+    total_preexisting = sum(pre_counts.values())
+    lines.append(
+        f"history gate: RANGE VERDICT: "
+        f"{'FAILED' if verdict.failed else 'PASSED'} - "
+        + _format_surface_counts(intro_counts)
+        + " introduced by this range; "
+          f"{len(verdict.range_extra)} extra, "
+          f"{len(verdict.range_missing)} missing file(s) introduced by this "
+          "range; "
+          f"{total_preexisting} hit(s) and "
+          f"{len(verdict.preexisting_extra)} extra file(s) pre-existing at "
+          "base (NOT this range)")
+
+    return "\n".join(lines) + "\n"
+
+
+def _verdict_payload(verdict: RangeVerdict) -> dict:
+    return {
+        "ref": verdict.ref,
+        "since": verdict.since,
+        "base": verdict.base,
+        "base_kind": verdict.base_kind,
+        "range_commit_count": verdict.range_commit_count,
+        "failed": verdict.failed,
+        "introduced_hits": [dataclasses.asdict(h) for h in verdict.introduced_hits],
+        "preexisting_hits": [dataclasses.asdict(h) for h in verdict.preexisting_hits],
+        "range_extra": verdict.range_extra,
+        "preexisting_extra": verdict.preexisting_extra,
+        "range_extra_untouched": verdict.range_extra_untouched,
+        "range_missing": verdict.range_missing,
+        "preexisting_missing": verdict.preexisting_missing,
+        "range_missing_untouched": verdict.range_missing_untouched,
+        "tip_payload": verdict.tip_payload,
+        "base_payload": verdict.base_payload,
+    }
+
+
+def _render_range_detail(verdict: RangeVerdict) -> str:
+    """The UNCAPPED per-hit detail for `--detail`: every range-introduced and
+    pre-existing hit/extra/missing entry, one per line — never just the
+    summary line, and never capped, regardless of how many there are (AC3)."""
+    lines: list[str] = []
+    for hit in verdict.introduced_hits:
+        prov = f"{hit.introduced_by or 'unknown'} via {hit.provenance_source or 'unknown'}"
+        lines.append(f"RANGE {hit.surface} {hit.raw.strip()}  [introduced by {prov}]")
+    for path in verdict.range_extra:
+        lines.append(f"RANGE EXTRA {path}")
+    for path in verdict.range_missing:
+        lines.append(f"RANGE MISSING {path}")
+    for hit in verdict.preexisting_hits:
+        lines.append(f"PRE-EXISTING {hit.surface} {hit.raw.strip()}")
+    for path in verdict.preexisting_extra:
+        lines.append(f"PRE-EXISTING EXTRA {path}")
+    for path in verdict.preexisting_missing:
+        lines.append(f"PRE-EXISTING MISSING {path}")
+    return "\n".join(lines) + ("\n" if lines else "")
+
+
+def cmd_gate(args: argparse.Namespace) -> int:
+    scanner_path = Path(args.scanner).resolve()
+    mod = _load_module_by_path("_history_gate_scanner_ext", scanner_path)
+    source = Path(args.source).resolve()
+    repo = Path(args.repo).resolve()
+
+    def progress(msg: str) -> None:
+        print(msg, flush=True)
+        if args.progress_log:
+            with open(args.progress_log, "a", encoding="utf-8") as fh:
+                fh.write(msg + "\n")
+
+    try:
+        verdict = run_range_scan(mod, source=source, repo=repo, ref=args.ref,
+                                 since=args.since, progress=progress)
+    except Exception as exc:
+        # Same exit-2-by-class-name contract as `cmd_scan`: a gate-arming
+        # problem (from either the tip or the base scan) is never conflated
+        # with a leak verdict.
+        if type(exc).__name__ in ("GateError", "ExportError"):
+            print(f"history gate could not be armed or could not finish: {exc}",
+                  file=sys.stderr)
+            return 2
+        raise
+
+    # The RANGE verdict is printed LAST (see render_range_verdict) so it is
+    # the part a tail-truncating caller keeps.
+    print(render_range_verdict(verdict), end="")
+
+    if args.json:
+        Path(args.json).write_text(
+            json.dumps(_verdict_payload(verdict), indent=2, sort_keys=True),
+            encoding="utf-8")
+    if args.detail:
+        Path(args.detail).write_text(_render_range_detail(verdict),
+                                     encoding="utf-8")
+
+    if args.fail_on == "tip":
+        failed = bool(verdict.introduced_hits or verdict.preexisting_hits
+                     or verdict.range_extra or verdict.preexisting_extra
+                     or verdict.range_missing or verdict.preexisting_missing)
+    else:
+        failed = verdict.failed
+    return 1 if failed else 0
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="history_gate_hit_report.py")
     sub = ap.add_subparsers(dest="command", required=True)
@@ -597,6 +979,34 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p_report.add_argument("--enforce-reason", default=None,
                           help="required with --classify: non-empty reason")
     p_report.set_defaults(func=cmd_report)
+
+    p_gate = sub.add_parser(
+        "gate",
+        help="scan a RANGE (since..ref), not the whole tip tree, and emit a "
+             "verdict that distinguishes hits INTRODUCED BY the range from "
+             "hits already PRE-EXISTING at the merge base")
+    p_gate.add_argument("--scanner", required=True,
+                        help="path to verify_public_history.py")
+    p_gate.add_argument("--source", required=True,
+                        help="private source repo holding the shape/term rules")
+    p_gate.add_argument("--repo", required=True,
+                        help="the published repository to scan")
+    p_gate.add_argument("--ref", required=True, help="tip of the range")
+    p_gate.add_argument("--since", required=True,
+                        help="the other end of the range; merge-base(since, "
+                             "ref) is the base the range is diffed against")
+    p_gate.add_argument("--json", default=None,
+                        help="write the full structured range verdict here")
+    p_gate.add_argument("--detail", default=None,
+                        help="write the uncapped per-hit RANGE/PRE-EXISTING "
+                             "detail here (never just the summary line)")
+    p_gate.add_argument("--progress-log", default=None)
+    p_gate.add_argument(
+        "--fail-on", choices=["range", "tip"], default="range",
+        help="exit 1 on range-introduced hits only (default — what a "
+             "pre-push gate should refuse on), or on any tip-wide hit "
+             "(escape hatch for a full-history audit)")
+    p_gate.set_defaults(func=cmd_gate)
 
     return ap
 
