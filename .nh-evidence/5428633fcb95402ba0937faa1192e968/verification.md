@@ -1,120 +1,114 @@
 # How I verified this — full log
 
-_Harness-captured record for task `5428633f`, commit `3b673b7f02f521e2b3b1355d44bdc40b6d89d965` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `5428633f`, commit `e872b0e71137d487eeb1f3aaea265c29b5bdb981` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ## How I verified this
-8 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
+7 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
 
 ### test
-- `uv run pytest tests/test_structural_budget.py::test_no_ledger_entry_claims_equality_with_a_frozen_value -q 2>&1 | tail -40`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/5428633fcb95402ba0937faa1192e968.6460.e3bc9109 uv run pytest /tmp/repro_check/test_hybrid_base.py -q -k "test_no_ledger_entry_claims_equality_with_a_frozen_value" 2>&1 | tail -40`
 
 ```
-Using CPython 3.12.13
-Creating virtual environment at: .venv
-   Building no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/5428633fcb95402ba0937faa1192e968.62504.a1d2737c
-      Built no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/5428633fcb95402ba0937faa1192e968.62504.a1d2737c
-Installed 73 packages in 83ms
-.                                                                        [100%]
-1 passed in 2.44s
-```
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/5428633fcb95402ba0937faa1192e968.62504.a1d2737c cp tests/test_structural_budget.py /tmp/repro_check/current_backup.py cp /tmp/repro_check/combined_base_plus_test.p [... 164 of 507 characters omitted from the middle ...] == restoring ===" cp /tmp/repro_check/current_backup.py tests/test_structural_budget.py git status --short tests/test_structural_budget.py`
-
-```
-)
-        assert _LEDGER_CLAIM_FORMS.search(synthetic), (
-            "the banned-claim matcher failed its positive control -- it does "
-            "not catch the known pre-fix sentence, so a clean sweep proves nothing"
-        )
+if not run:
+                    continue
+                checked_rows += 1
     
-        lines = Path(__file__).read_text(encoding="utf-8").splitlines()
-        blocks = _ledger_dict_blocks(lines)
-        assert len(blocks) == 3, f"expected 3 frozen dicts, found {[b[0] for b in blocks]}"
-    
-        claim_violations = []
-        chain_breaks = []
-        checked_rows = 0
-        for dict_name, start, end in blocks:
-            for i in range(start + 1, end):
-                m = _LEDGER_ROW_RE.match(lines[i])
-     
-[... 2,672 of 3,811 characters omitted from the middle ...]
-in 0b8c2dc4 into this branch --...erge (a185a275) actual 2985, and after the merge (this tree) actual 3019 -- matching the frozen value below exactly."']
+                # Every non-terminal AND terminal ledger sub-entry is banned from
+                # asserting equality with the frozen value: even a currently-true
+                # terminal claim rots the moment the next entry lands.
+                sub_entries = [s for s in re.split(r"(?=\d+\s*->\s*\d+)", run) if s.strip()]
+                for sub in sub_entries:
+                    if _LEDGER_CLAIM_FORMS.search(sub):
+                        claim_violations.append(
+                            f'{dict_name}["{key}"] = {frozen_value} (line {i + 1}): {sub.strip()!r}'
+             
+[... 1,810 of 2,949 characters omitted from the middle ...]
+): merge of main 0b8c2dc4 into this branch --...erge (a185a275) actual 2985, and after the merge (this tree) actual 3019 -- matching the frozen value below exactly."']
 
-tests/test_structural_budget.py:2793: AssertionError
+/tmp/repro_check/test_hybrid_base.py:2880: AssertionError
 =========================== short test summary info ============================
-FAILED tests/test_structural_budget.py::test_no_ledger_entry_claims_equality_with_a_frozen_value
-1 failed in 0.45s
-=== restoring ===
- M tests/test_structural_budget.py
+FAILED ../../../../../tmp/repro_check/test_hybrid_base.py::test_no_ledger_entry_claims_equality_with_a_frozen_value
+1 failed, 18 deselected in 0.03s
 ```  
-  _excerpt - 3,811 characters of output in total_
+  _excerpt - 2,949 characters of output in total_
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/5428633fcb95402ba0937faa1192e968.62504.a1d2737c diff tests/test_structural_budget.py /tmp/repro_check/current_backup.py && echo "IDENTICAL - restore OK" uv run pytest tests/test_structural_budget.py::test_no_ledger_entry_claims_equality_with_a_frozen_value -q 2>&1 | tail -5`
-
-```
-IDENTICAL - restore OK
-.                                                                        [100%]
-1 passed in 0.37s
-```
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/5428633fcb95402ba0937faa1192e968.62504.a1d2737c uv run pytest tests/test_structural_budget.py -q 2>&1 | tail -30`
-
-```
-...................                                                      [100%]
-19 passed in 1.61s
-```
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/5428633fcb95402ba0937faa1192e968.62504.a1d2737c uv run pytest tests/test_ledger_claim_form_repro.py -q`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/5428633fcb95402ba0937faa1192e968.6460.e3bc9109 uv run pytest tests/test_ledger_claim_form_repro.py -q 2>&1 | tail -20`
 
 ```
 .                                                                        [100%]
-1 passed in 1.33s
+1 passed in 0.71s
 ```
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/5428633fcb95402ba0937faa1192e968.62504.a1d2737c SIM=$(mktemp -d /tmp/nh-repro-verify.XXXXXX) echo "SIM=$SIM" mkdir -p "$SIM/tests" git show 7347088d34c9eccfa971f33 [... 504 of 847 characters omitted from the middle ...] t=$?" echo "=== AFTER (attempt's own tree) ===" uv run pytest tests/test_ledger_claim_form_repro.py -q ; echo "exit=$?" echo "SIMDIR=$SIM"`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/5428633fcb95402ba0937faa1192e968.6460.e3bc9109 mkdir -p /tmp/repro_before_check/tests cp /tmp/base_budget.py /tmp/repro_before_check/tests/test_structural_budget.p [... 170 of 513 characters omitted from the middle ...] dacted>/worktrees/5428633fcb95402ba0937faa1192e968.6460.e3bc9109 python -m pytest tests/test_ledger_claim_form_repro.py -q 2>&1 | tail -30`
 
 ```
-SIM=/tmp/nh-repro-verify.17qt5A
-=== BEFORE (base_ref content for test_structural_budget.py + current new witness file) ===
-F                                                                        [100%]
-=================================== FAILURES ===================================
-______ test_ledger_entry_no_longer_claims_equality_with_the_frozen_value _______
-
-    def test_ledger_entry_no_longer_claims_equality_with_the_frozen_value():
+def test_ledger_entry_no_longer_claims_equality_with_the_frozen_value():
         text = _BUDGET_FILE.read_text(encoding="utf-8")
         # Only the ledger/header portion of the file, not the guard test's own
         # source -- that test embeds this exact phrase as its positive-control
-        # synthetic string
-[... 1,623 of 2,762 characters omitted from the middle ...]
- show
+        # synthetic string, which would otherwise make this witness un-passable.
+        ledger_region, _, _ = text.partition(
+            "def test_no_ledger_entry_claims_equality_with_a_frozen_value"
+        )
+        normalized = " ".join(
+            line.strip().lstrip("#").strip() for line in ledger_region.splitlines()
+        )
+>       assert _BANNED_PHRASE not in normalized, (
+    
+[... 1,184 of 2,323 characters omitted from the middle ...]
+       
+E         ...Full output truncated (2 lines hidden), use '-vv' to show
 
 tests/test_ledger_claim_form_repro.py:46: AssertionError
 =========================== short test summary info ============================
 FAILED tests/test_ledger_claim_form_repro.py::test_ledger_entry_no_longer_claims_equality_with_the_frozen_value
-1 failed in 0.25s
-exit=1
-=== AFTER (attempt's own tree) ===
-.                                                                        [100%]
-1 passed in 0.71s
-exit=0
-SIMDIR=/tmp/nh-repro-verify.17qt5A
+1 failed in 0.21s
+Shell cwd was reset to /Users/eyalgolan/.<redacted>/worktrees/5428633fcb95402ba0937faa1192e968.6460.e3bc9109
 ```  
-  _excerpt - 2,762 characters of output in total_
+  _excerpt - 2,321 characters of output in total_
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/5428633fcb95402ba0937faa1192e968.62504.a1d2737c uv run pytest tests/test_structural_budget.py tests/test_ledger_claim_form_repro.py -q`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/5428633fcb95402ba0937faa1192e968.6460.e3bc9109 uv run pytest -q -n 4 tests/test_structural_budget.py tests/test_ledger_claim_form_repro.py 2>&1 | tail -40`
 
 ```
+bringing up nodes...
+bringing up nodes...
+
 ....................                                                     [100%]
-20 passed in 2.52s
+20 passed in 2.53s
 ```
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/5428633fcb95402ba0937faa1192e968.62504.a1d2737c uv run pytest tests/test_repro_gate.py tests/test_declared_repro_files_committed_preflight.py -q 2>&1 | tail -20`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/5428633fcb95402ba0937faa1192e968.6460.e3bc9109 uv run pytest -q -n 4 tests/test_structural_budget.py tests/test_ledger_claim_form_repro.py -v 2>&1 | tail -25 echo "=== git status ===" git status --porcelain`
 
 ```
-........................................................................ [ 68%]
-.................................                                        [100%]
-105 passed in 25.52s
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.1.1, pluggy-1.6.0
+<redacted> isolated HOME: /var/folders/1r/3r0rt1jd4j1456rsg_fh4d380000gn/T/nh-test-home-fh2uom4b
+rootdir: /Users/eyalgolan/.<redacted>/worktrees/5428633fcb95402ba0937faa1192e968.6460.e3bc9109
+configfile: pyproject.toml
+plugins: anyio-4.14.0, no-human-0.2.4, cov-7.1.0, xdist-3.8.0, asyncio-1.4.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+created: 4/4 workers
+4 workers [20 items]
+
+....................                                                     [100%]
+============================== 20 passed in 2.32s ==============================
+=== git status ===
+```
+
+- `cd /Users/eyalgolan/.<redacted>/worktrees/5428633fcb95402ba0937faa1192e968.6460.e3bc9109 uv run pytest tests/test_structural_budget.py -q -n 4 -v 2>&1 | grep -E "test_no_ledger_entry_claims_equality|PASSED|passed|failed"`
+
+```
+============================== 19 passed in 2.39s ==============================
+```
+
+- `cd /Users/eyalgolan/.<redacted>/worktrees/5428633fcb95402ba0937faa1192e968.6460.e3bc9109 uv run pytest tests/test_structural_budget.py tests/test_ledger_claim_form_repro.py -q -n 4 2>&1 | tail -10`
+
+```
+bringing up nodes...
+bringing up nodes...
+
+....................                                                     [100%]
+20 passed in 2.57s
 ```
 
 

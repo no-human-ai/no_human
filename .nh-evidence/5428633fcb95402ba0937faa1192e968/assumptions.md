@@ -1,8 +1,8 @@
 # Assumptions
 
-_Harness-captured record for task `5428633f`, commit `3b673b7f02f521e2b3b1355d44bdc40b6d89d965` — not model-authored: no_human wrote this file from the intake step's recorded questions and assumptions. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `5428633f`, commit `e872b0e71137d487eeb1f3aaea265c29b5bdb981` — not model-authored: no_human wrote this file from the intake step's recorded questions and assumptions. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
-> ⚠️ **Unresolved:** You've hit your session limit · resets 1:10am (Asia/Jerusalem) ('personal' subscription)
+> ⚠️ **Unresolved:** SDK reported HTTP 403 — infrastructure/auth, not work ('personal3' subscription)
 
 <details><summary>⚠️ 3 assumptions made on your behalf — verify at review</summary>
 
