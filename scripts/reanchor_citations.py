@@ -423,7 +423,11 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         for path, new_text in texts.items():
-            path.write_text(new_text, encoding="utf-8", newline="\n")
+            # Write raw LF-terminated bytes (not write_text) so the platform's
+            # text layer never translates '\n' to CRLF (#32), and so this
+            # keeps working under a pre-3.10 `python3` — see the `--apply`
+            # write below for the full rationale.
+            path.write_bytes(new_text.encode("utf-8"))
 
         print(f"Reconciled {total_changed} citation(s).")
         if texts:
@@ -467,11 +471,15 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     for path, new_text in texts.items():
-        # newline="\n" for the same reason `check_release_manifest.py --write`
-        # needs it (#32): without it the write goes through the platform's text
-        # layer, so on Windows every line in the file comes out CRLF and a
-        # four-citation change lands as a thousand-line diff.
-        path.write_text(new_text, encoding="utf-8", newline="\n")
+        # Write raw LF-terminated bytes (not write_text) for the same reason
+        # `check_release_manifest.py --write` does (#32): without it the write
+        # goes through the platform's text layer, so on Windows every line in
+        # the file comes out CRLF and a four-citation change lands as a
+        # thousand-line diff. write_text(..., newline="\n") would give the same
+        # LF guarantee, but that keyword only exists on Python >=3.10, and this
+        # script can be invoked through an older system `python3` (see
+        # check_release_manifest.py's write_manifest for the same constraint).
+        path.write_bytes(new_text.encode("utf-8"))
 
     print(f"Applied {len(drifts)} re-anchor(s).")
     if texts:

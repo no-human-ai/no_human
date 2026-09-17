@@ -2468,6 +2468,31 @@ def test_sh_round_trips_a_non_ascii_commit_subject(tmp_path):
         "test cannot distinguish a working codec from a broken one")
 
 
+def test_cap_preserves_the_final_line_of_over_cap_output():
+    """A Python traceback carries its exception type/message on the LAST
+    line. Head-only truncation (the pre-fix behaviour) threw that line away
+    whenever stdout+stderr exceeded `_STDERR_CAP`, which is exactly how four
+    real escalations arrived with only the frame list visible and the
+    `TypeError` itself cut off."""
+    frames = "  File 'x', line 1, in f\n" * 400  # well over _STDERR_CAP chars
+    long_text = "Traceback (most recent call last):\n" + frames
+    capped = approve_merge._cap(long_text + "\nTypeError: boom")
+
+    assert capped.endswith("TypeError: boom")
+    assert len(long_text) > approve_merge._STDERR_CAP, (
+        "fixture must actually exceed the cap or this test proves nothing")
+
+    # Short text is returned unchanged.
+    assert approve_merge._cap("short and sweet") == "short and sweet"
+
+    # A single over-long line with no newline at all must still come back
+    # bounded, not echoed in full.
+    huge_one_liner = "x" * (approve_merge._STDERR_CAP * 5)
+    result = approve_merge._cap(huge_one_liner)
+    assert len(result) <= (
+        approve_merge._STDERR_CAP + approve_merge._TAIL_LINE_CAP + 20)
+
+
 def test_run_pytest_forces_utf8_on_the_child_without_touching_the_caller_env():
     """git and gh emit UTF-8 whatever the console codepage; a captured PYTHON
     child does not — it follows the locale. `_sh` decodes as UTF-8, so the

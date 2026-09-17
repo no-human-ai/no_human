@@ -194,11 +194,30 @@ class LandResult:
     gate_reason: str = ""
 
 
+_TAIL_LINE_CAP = 500  # a preserved last line is itself bounded
+
+
 def _cap(text: str) -> str:
+    """Head-truncate to ``_STDERR_CAP`` but always keep the last line whole.
+
+    A Python traceback carries its exception type/message on the LAST line,
+    so head-only truncation threw away exactly the diagnostic a human needed
+    to debug an escalation (e.g. ``TypeError: write_text() got an unexpected
+    keyword argument 'newline'``). The last line is itself bounded by
+    ``_TAIL_LINE_CAP`` so a single huge no-newline blob still can't blow up
+    the output; the whole result is bounded by
+    ``_STDERR_CAP + _TAIL_LINE_CAP`` plus a small separator, never unbounded.
+    """
     text = (text or "").strip()
     if len(text) <= _STDERR_CAP:
         return text
-    return text[:_STDERR_CAP] + "\n…(truncated)"
+    head = text[:_STDERR_CAP]
+    last = text.rsplit("\n", 1)[-1]
+    if len(last) > _TAIL_LINE_CAP:
+        last = "…" + last[-_TAIL_LINE_CAP:]
+    if last and last not in head:
+        return head + "\n…(truncated)\n" + last
+    return head + "\n…(truncated)"
 
 
 def _sh(args: list[str], *, cwd: Path | str, timeout: float | None = None,

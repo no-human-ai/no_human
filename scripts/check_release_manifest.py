@@ -266,11 +266,16 @@ def write_manifest(root: Path) -> int:
 
     rows = {rel: hash_path(root, rel) for rel in tracked}
     body = "".join(f"{digest}  {rel}\n" for rel, digest in sorted(rows.items()))
-    # newline="\n" so the bytes are identical on every platform. Without it the
-    # write goes through the platform's text layer, which on Windows makes every
-    # row CRLF; the compare side reads back through the same layer and stays
-    # quiet, so the tool looks fine while git reports the whole file as changed.
-    manifest_path.write_text(HEADER + body, encoding="utf-8", newline="\n")
+    # Write raw LF-terminated bytes directly (not write_text) so the platform's
+    # text layer never gets a chance to translate '\n' to CRLF; on Windows that
+    # translation would make every row CRLF while the compare side reads back
+    # through the same layer and stays quiet, so the tool looks fine while git
+    # reports the whole file as changed (issue #32). We avoid
+    # write_text(..., newline="\n") for the same LF guarantee because the
+    # `newline` keyword only exists on Python >=3.10: this script is invoked by
+    # derived_conflict._inventory_argv() through whatever `python3` is found on
+    # PATH, which on macOS is /usr/bin/python3 (3.9.6 as of this writing).
+    manifest_path.write_bytes((HEADER + body).encode("utf-8"))
     _warn_if_nearly_every_row_changed(previous, rows)
     print(f"{MANIFEST_NAME}: wrote {len(rows)} row(s)")
     return 0

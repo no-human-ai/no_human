@@ -141,11 +141,20 @@ def _inventory_argv() -> list[str]:
     ``proc.real_python`` — the interpreter resolver every other
     ``sys.executable`` fallback in this codebase shares (issue #402) — not
     ``uv run``: the script is stdlib-only by its own contract, and ``uv run``
-    inside a resolver worktree would sync/claim a venv there for nothing. Any
-    Python serves a stdlib-only script, so the venv preference `real_python`
-    applies elsewhere is harmless here; the ``"python3"`` literal is kept as
-    the last resort because this call site, unlike the others, never fails
-    closed — it must always return an argv."""
+    inside a resolver worktree would sync/claim a venv there for nothing.
+    Stdlib-only is NOT the same as version-agnostic, though: the
+    ``"python3"`` literal fallback can resolve to whatever system interpreter
+    is on PATH — as old as 3.9 on a stock macOS install — so
+    ``check_release_manifest.py`` (and its sibling ``reanchor_citations.py``)
+    must stay within the Python-3.9 stdlib API surface (e.g. no
+    ``Path.write_text(newline=...)``, 3.10+ only). See
+    ``testing/citation_drift.py``'s ``reanchor_command`` for the sibling call
+    site that makes the opposite, also-correct choice: it never falls back to
+    a bare ``python``/``python3`` off PATH, because it targets an arbitrary
+    external repo's venv rather than this repo's own stdlib-only script. The
+    ``"python3"`` literal is kept as the last resort here because this call
+    site, unlike the others, never fails closed — it must always return an
+    argv."""
     return [real_python() or "python3", "scripts/check_release_manifest.py"]
 
 

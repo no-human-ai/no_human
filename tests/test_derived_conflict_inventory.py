@@ -214,3 +214,38 @@ async def test_a_write_refusal_is_a_regenerate_failure_not_a_push(tmp_path):
     assert not res.ok and res.step == "regenerate"
     after = _git(work, "rev-parse", "origin/feature").stdout.strip()
     assert before == after  # nothing was pushed
+
+
+def test_a_regenerate_failure_detail_keeps_the_traceback_last_line(
+        tmp_path, monkeypatch):
+    """A failed `--write` subprocess's stdout+stderr is capped via `_cap`
+    before landing in `DerivedResolution.detail`. A Python traceback carries
+    its exception type/message on the LAST line — the exact field defect
+    this reproduces is a Python-3.9 interpreter's `Path.write_text` raising
+    `TypeError: ... unexpected keyword argument 'newline'` at the end of a
+    long frame list. `_cap` must preserve that last line, not just the head,
+    or the escalation shows only stack frames with the real error cut off."""
+    work, base_tip = _conflicting_fixture(tmp_path)
+
+    frames = "  File \"x.py\", line 1, in f\n" * 400  # far over _STDERR_CAP
+    traceback_text = (
+        "Traceback (most recent call last):\n" + frames
+        + "TypeError: write_text() got an unexpected keyword argument 'newline'\n"
+    )
+    assert len(traceback_text) > 4000, (
+        "fixture must actually exceed the cap or this test proves nothing")
+    fake_write_proc = subprocess.CompletedProcess(
+        args=[], returncode=1, stdout=traceback_text, stderr="")
+
+    def fake_run_inventory(worktree_path, subargs, *, timeout):
+        assert subargs == ["--write"], (
+            "a failed --write must never reach --strict verification")
+        return fake_write_proc
+
+    monkeypatch.setattr(dc, "_run_inventory", fake_run_inventory)
+
+    res = dc.resolve_derived_conflict(str(work), "feature", base_tip,
+                                      remote="origin")
+    assert not res.ok and res.step == "regenerate"
+    assert res.detail.endswith(
+        "TypeError: write_text() got an unexpected keyword argument 'newline'")

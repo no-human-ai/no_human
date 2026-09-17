@@ -549,3 +549,59 @@ def test_an_unreadable_previous_manifest_costs_only_the_note(tmp_path):
     proc = run("--root", str(repo), "--write")
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert "existing row(s) changed" not in proc.stderr
+
+
+# --------------------------------------------------------------------------
+# --write must survive an old (pre-3.10) `Path.write_text` signature: the
+# conflict resolver runs this script through whatever `python3` it finds on
+# PATH (derived_conflict._inventory_argv), which on a stock macOS install is
+# 3.9.6. `Path.write_text(..., newline=...)` only exists on Python >=3.10.
+# --------------------------------------------------------------------------
+
+def _load_module():
+    spec = importlib.util.spec_from_file_location("_nh_check_manifest_39", SCRIPT)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_write_manifest_survives_a_python39_write_text_signature(tmp_path, monkeypatch):
+    """Reproduces the exact TypeError seen in the field: `write_manifest` must
+    not call `Path.write_text(..., newline=...)`, because that keyword was
+    added in Python 3.10 and the resolver's fallback interpreter can be older.
+    """
+    mod = _load_module()
+    repo = make_repo(tmp_path)
+
+    def stub_write_text(self, data, encoding=None, errors=None):
+        # Mimics the real Python 3.9 `Path.write_text` signature: any extra
+        # keyword (e.g. `newline`) is a TypeError, exactly like the field
+        # traceback this test reproduces.
+        return Path.write_bytes(self, data.encode(encoding or "utf-8"))
+
+    monkeypatch.setattr(Path, "write_text", stub_write_text, raising=True)
+
+    assert mod.write_manifest(repo) == 0
+
+    written = (repo / "RELEASE_MANIFEST.txt").read_bytes()
+    assert written
+    assert b"\r" not in written
+
+
+def test_write_manifest_bytes_match_the_pre_fix_text_write(tmp_path):
+    """The fix must not change a single byte of a shipped pin file: writing
+    raw encoded bytes must produce exactly what `write_text(..., newline="\\n")`
+    produced before, on a host (this one) where that call still works."""
+    mod = _load_module()
+    repo = make_repo(tmp_path)
+
+    assert mod.write_manifest(repo) == 0
+    actual = (repo / "RELEASE_MANIFEST.txt").read_bytes()
+
+    tracked = [rel for rel in mod.tracked_files(repo) if rel != mod.MANIFEST_NAME]
+    rows = {rel: mod.hash_path(repo, rel) for rel in tracked}
+    body = "".join(f"{digest}  {rel}\n" for rel, digest in sorted(rows.items()))
+    reference = tmp_path / "reference_manifest.txt"
+    reference.write_text(mod.HEADER + body, encoding="utf-8", newline="\n")
+
+    assert actual == reference.read_bytes()

@@ -490,3 +490,49 @@ def test_main_reconcile_reports_no_modified_files_when_zero_changes(tmp_path, mo
     assert "Modified:" not in stdout
     assert "Unfixable citations remain: 1" in stdout
     assert "VERDICT=FAIL" in stdout
+
+
+def test_apply_writes_survive_a_python39_write_text_signature(tmp_path, monkeypatch):
+    """Same defect class as `check_release_manifest.py --write`: the `--apply`
+    write path must not depend on `Path.write_text(..., newline=...)`, since
+    that keyword only exists on Python >=3.10 and this script is reachable
+    through an older system `python3` the same way `check_release_manifest.py`
+    is. This stub mimics the real Python 3.9 `Path.write_text` signature —
+    any extra keyword is a TypeError."""
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "tests").mkdir()
+    doc_path = tmp_path / "docs" / "fake.md"
+    table_path = tmp_path / "tests" / "test_readme_claims.py"
+
+    doc_path.write_text("See `widget.py:5` for details.\n", encoding="utf-8")
+    table_path.write_text(
+        'CITATION_TABLE = (\n'
+        '    ("fake.md", "widget.py:5", "widget.py", "line 5"),\n'
+        ')\n\nassert len(CITATION_TABLE) >= 20,\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(ra, "REPO", tmp_path)
+
+    def fake_locate(resolve_path, spec, token):
+        assert spec == "5"
+        return "drifted", 8, ""
+
+    fake_mod = types.SimpleNamespace(
+        CITATION_TABLE=(("fake.md", "widget.py:5", "widget.py", "line 5"),),
+        _CITATION_DOC_PATHS={"fake.md": doc_path},
+        _LEGACY_LINE_SPEC_RE=re.compile(r"^\d+(?:-\d+)?$"),
+        _locate_line_citation=fake_locate,
+    )
+    monkeypatch.setattr(ra, "_load_checker", lambda: fake_mod)
+
+    def stub_write_text(self, data, encoding=None, errors=None):
+        return Path.write_bytes(self, data.encode(encoding or "utf-8"))
+
+    monkeypatch.setattr(Path, "write_text", stub_write_text, raising=True)
+
+    ret = ra.main(["--apply"])
+    assert ret == 0
+
+    assert b"\r" not in doc_path.read_bytes()
+    assert b"\r" not in table_path.read_bytes()
+    assert "widget.py:8" in doc_path.read_text(encoding="utf-8")
