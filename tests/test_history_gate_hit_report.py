@@ -536,3 +536,79 @@ def test_cmd_report_without_classify_still_prints_raw_group_json(tmp_path, capsy
     assert rc == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["shape_x"]["raw_count"] == 1
+
+
+# --------------------------------------------------------------------------- #
+# Range attribution (layer 3): PURE functions only — no git, no scanner. The
+# end-to-end behavior (real scratch repo, real merge-base, real `gate`
+# subcommand) is covered separately in
+# tests/test_history_gate_range_attribution.py; these tests isolate the
+# set-difference logic itself so it can be proven correct without git.
+# --------------------------------------------------------------------------- #
+
+def test_attribute_hits_splits_on_dedup_key():
+    tip_hits, _ = hgr.parse_hit_lines([
+        "  LEAK blob c1 src/new.py :: shape_x: NEW",
+        "  LEAK blob c0 legacy/old.py :: shape_x: OLD",
+    ])
+    base_hits, _ = hgr.parse_hit_lines([
+        "  LEAK blob c0 legacy/old.py :: shape_x: OLD",
+    ])
+    introduced, preexisting = hgr.attribute_hits(tip_hits, base_hits)
+    assert [h.path for h in introduced] == ["src/new.py"]
+    assert [h.path for h in preexisting] == ["legacy/old.py"]
+
+
+def test_attribute_hits_dedups_by_commit_independent_key_not_raw_hit():
+    # The SAME (path, class, match) hit replayed under a DIFFERENT commit sha
+    # at the base must still count as pre-existing: dedup_key() is
+    # commit-independent by design (Hit.dedup_key's own docstring), and
+    # attribute_hits must respect that instead of diffing on raw hit
+    # equality (which includes the commit sha and would always miss).
+    tip_hits, _ = hgr.parse_hit_lines([
+        "  LEAK blob c_tip legacy/old.py :: shape_x: OLD",
+    ])
+    base_hits, _ = hgr.parse_hit_lines([
+        "  LEAK blob c_base legacy/old.py :: shape_x: OLD",
+    ])
+    introduced, preexisting = hgr.attribute_hits(tip_hits, base_hits)
+    assert introduced == []
+    assert len(preexisting) == 1
+
+
+def test_attribute_extra_files_splits_and_flags_untouched():
+    tip_extra = ["extra/old.bin", "extra/new.bin", "extra/renamed.bin"]
+    base_extra = ["extra/old.bin"]
+    range_paths = ["extra/new.bin"]  # git diff never names renamed.bin
+    result = hgr.attribute_extra_files(tip_extra, base_extra, range_paths)
+    assert result["preexisting_extra"] == ["extra/old.bin"]
+    assert set(result["range_extra"]) == {"extra/new.bin", "extra/renamed.bin"}
+    # new-at-tip-vs-base but never named by `git diff` for this range: still
+    # counted as range-introduced (the base scan genuinely lacked it), but
+    # flagged separately so it can't silently be read as "this push added
+    # this file" when the range's own diff disagrees.
+    assert result["range_extra_untouched"] == ["extra/renamed.bin"]
+
+
+def test_render_range_verdict_passes_with_nonzero_preexisting():
+    # A non-zero PRE-EXISTING backlog at the base must not fail the RANGE
+    # verdict, and must not be silently dropped from the summary either.
+    tip_hits, _ = hgr.parse_hit_lines([
+        "  LEAK blob c0 legacy/old.py :: shape_x: OLD",
+    ])
+    verdict = hgr.RangeVerdict(
+        ref="C", since="B", base="B", base_kind="merge-base",
+        range_commit_count=1,
+        tip_payload={}, base_payload={},
+        tip_hits=tip_hits, tip_extra=[], tip_missing=[],
+        introduced_hits=[], preexisting_hits=tip_hits,
+        range_extra=[], preexisting_extra=[], range_extra_untouched=[],
+        range_missing=[], preexisting_missing=[], range_missing_untouched=[],
+    )
+    assert verdict.failed is False
+
+    text = hgr.render_range_verdict(verdict)
+    assert "RANGE VERDICT: PASSED" in text
+    assert ("0 blob, 0 path, 0 message, 0 identity, 0 tag hit(s) introduced "
+           "by this range") in text
+    assert "1 hit(s) and 0 extra file(s) pre-existing at base" in text
