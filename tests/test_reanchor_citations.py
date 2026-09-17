@@ -359,7 +359,7 @@ def test_reconcile_converges_multi_citation_per_symbol(tmp_path, monkeypatch):
     assert texts is not None, f"Expected successful rewrite, got unresolved: {unresolved}"
     assert len(unresolved) == 0
     assert total_changed == 1
-    
+
     # Verify the document replaced only the target citation
     new_doc = texts[doc_path]
     assert "`src/no_human/cli/commands.py:bench_run:8255`" in new_doc
@@ -371,3 +371,44 @@ def test_reconcile_converges_multi_citation_per_symbol(tmp_path, monkeypatch):
     new_table = texts[table_path]
     assert '":bench_run:9000"' in new_table
     assert '":bench_run:8406"' not in new_table
+
+def test_reconcile_preserves_single_symbol_in_new_raw(tmp_path, monkeypatch):
+    """Pin the exact shape of a fully qualified symbol-backed citation to ensure
+    reconciliation does not duplicate the symbol in the new citation string."""
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "tests").mkdir()
+    doc_path = tmp_path / "docs" / "fake.md"
+    table_path = tmp_path / "tests" / "test_readme_claims.py"
+
+    doc_text = "See `cli/commands.py:merge_stack_run:3206`\n"
+    doc_path.write_text(doc_text, encoding="utf-8")
+    table_text = (
+        'CITATION_TABLE = (\n'
+        '    ("fake.md", "cli/commands.py:merge_stack_run:3206", "cli/commands.py", "token"),\n'
+        ')\n\nassert len(CITATION_TABLE) >= 20,\n'
+    )
+    table_path.write_text(table_text, encoding="utf-8")
+    monkeypatch.setattr(ra, "REPO", tmp_path)
+
+    fake_mod = types.SimpleNamespace(
+        _CITATION_DOC_PATHS={"fake.md": doc_path},
+        _LEGACY_LINE_SPEC_RE=re.compile(r"^\d+(?:-\d+)?$"),
+    )
+
+    recon = ra.Reconciliation(
+        doc="fake.md", raw="cli/commands.py:merge_stack_run:3206",
+        stable_prefix="cli/commands.py:merge_stack_run", new_raw="cli/commands.py:merge_stack_run:9000",
+        resolve_path="cli/commands.py"
+    )
+
+    texts, unresolved, total_changed = ra._reconcile_all(fake_mod, [recon])
+
+    assert texts is not None, f"Expected successful rewrite, got unresolved: {unresolved}"
+    assert len(unresolved) == 0
+    assert total_changed == 1
+
+    new_doc = texts[doc_path]
+    # Assert exact expected string
+    assert "`cli/commands.py:merge_stack_run:9000`" in new_doc
+    # Assert explicitly that the duplicated symbol does NOT occur
+    assert "`cli/commands.py:merge_stack_run:merge_stack_run:" not in new_doc

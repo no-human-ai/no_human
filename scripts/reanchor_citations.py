@@ -283,7 +283,7 @@ def reconcile_plan(mod, rows) -> tuple[list[Reconciliation], list[Unfixable]]:
 
         prefix = raw.split(":", 1)[0]
         stable_prefix = f"{prefix}:{symbol}"
-        new_raw = f"{stable_prefix}:{_new_symbol_spec(tail, actual)}"
+        new_raw = f"{prefix}:{_new_symbol_spec(tail, actual)}"
         reconciliations.append(Reconciliation(doc, raw, stable_prefix, new_raw, resolve_path))
 
     return reconciliations, unfixable
@@ -307,12 +307,12 @@ def rewrite_table_row_reconcile(text: str, stable_prefix: str, old_raw: str, new
     except ValueError:
         return None, False
     body = text[start:end]
-    
+
     needle = f'"{old_raw}"'
     if body.count(needle) == 1:
         new_body = body.replace(needle, f'"{new_raw}"', 1)
         return text[:start] + new_body + text[end:], old_raw != new_raw
-        
+
     pattern = r'"(' + re.escape(stable_prefix) + r':\d+(?:-\d+)?)"'
     matches = re.findall(pattern, body)
     if len(matches) != 1:
@@ -404,7 +404,15 @@ def main(argv: list[str] | None = None) -> int:
         for path, new_text in texts.items():
             path.write_text(new_text, encoding="utf-8", newline="\n")
 
-        print(f"reconciled {total_changed} citation(s)")
+        print(f"Reconciled {total_changed} citation(s).")
+        if texts:
+            print("Modified:")
+            for path in texts:
+                print(f"  {path.relative_to(REPO).as_posix()}")
+
+        if unfixable:
+            print(f"\nUnfixable citations remain: {len(unfixable)}")
+
         print("VERDICT=" + ("FAIL" if unfixable else "OK"))
         return 1 if unfixable else 0
 
@@ -443,7 +451,16 @@ def main(argv: list[str] | None = None) -> int:
         # layer, so on Windows every line in the file comes out CRLF and a
         # four-citation change lands as a thousand-line diff.
         path.write_text(new_text, encoding="utf-8", newline="\n")
-    print(f"applied {len(drifts)} re-anchor(s)")
+
+    print(f"Applied {len(drifts)} re-anchor(s).")
+    if texts:
+        print("Modified:")
+        for path in texts:
+            print(f"  {path.relative_to(REPO).as_posix()}")
+
+    if unfixable:
+        print(f"\nUnfixable citations remain: {len(unfixable)}")
+
     print("VERDICT=" + ("FAIL" if unfixable else "OK"))
     return 1 if unfixable else 0
 
