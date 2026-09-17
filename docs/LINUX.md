@@ -221,10 +221,11 @@ release path, and move the floor deliberately (it is a glibc decision).
 A **release** build is the same job triggered by `workflow_dispatch` with
 `linux_release=true` on the merged `main` sha; the operator downloads the artefact, re-verifies the sums,
 and attaches the three files to the GitHub release by hand (Linux joins the
-existing `v0.1.0` release the way Windows did). Dispatch it when `main` is
-quiet: the workflow-level `concurrency` group (`cancel-in-progress: true`)
-cancels an in-flight run on any push to `main`, and the same dispatch also
-runs the python job's `slow or nightly` guards, which bill in the same run.
+existing `v0.1.0` release the way Windows did). A `workflow_dispatch` run
+takes its own concurrency group (`...-dispatch`), so a push to `main` no
+longer cancels an in-flight release build; a *second* dispatch on the same
+ref still supersedes the first, and the same dispatch also runs the python
+job's `slow or nightly` guards, which bill in the same run.
 
 **Run, and green.** The first release run was the public repo's own CI on
 2026-08-19 (run 32191761089, commit `671b26ae`, `linux_release=true`): all six

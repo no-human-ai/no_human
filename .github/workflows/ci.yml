@@ -57,8 +57,26 @@ on:
         type: boolean
         default: false
 
+# A push/PR run should be superseded by the next push on the same ref -- a
+# stale run costs minutes and tells nobody anything. A RELEASE build must
+# not be: it is a `workflow_dispatch` with one of the `*_release` inputs,
+# it takes ~20 minutes, and its only product is a run artefact that exists
+# only if the run reaches the upload step.
+#
+# Measured twice: run 35120284385 (windows_release on main, head b4663e4a)
+# was cancelled mid-NSIS-package when commit fbbc0817 landed and the push
+# run took the group -- Verify artefact / Checksums / Upload all skipped,
+# no installer produced.
+#
+# So a dispatch gets its own group, on the same ref, that a push cannot
+# join and therefore cannot cancel. The discriminant is the constant
+# `-dispatch`, not `github.run_id`: two dispatches on one ref still share a
+# group (one release build at a time, the later one supersedes), while a
+# push and a dispatch on that ref never do. Applies on every branch;
+# `workflow_dispatch` is not main-only. There is deliberately no `schedule:`
+# trigger in this file (see the `on:` block), so no third case exists.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}${{ github.event_name == 'workflow_dispatch' && '-dispatch' || '' }}
   cancel-in-progress: true
 
 permissions:
@@ -539,6 +557,91 @@ jobs:
       - name: Build the product image
         run: docker build -t no-human:ci .
 
+      # The review-gate Action (action.yml / Dockerfile.action) ships as its
+      # own image; nothing else in this workflow builds it, so a broken
+      # `COPY`/`uv sync`/entrypoint here would only be caught by a user's own
+      # PR. No credential is used or needed for this: the smoke test below
+      # runs the built image with NO GitHub Actions env vars set at all, which
+      # must fail closed (exit 2, naming the unsupported/missing event) before
+      # the container ever tries to reach a model or the GitHub API — that is
+      # the one behavior a container smoke test can pin without a secret.
+      - name: Build the review-gate action image
+        run: docker build -f Dockerfile.action -t no-human-action:ci .
+
+      - name: Smoke test — action image fails closed with no event context
+        run: |
+          set +e
+          docker run --rm no-human-action:ci
+          status=$?
+          set -e
+          echo "exit status: $status"
+          test "$status" -eq 2
+
+      # The smoke test above runs the image with `docker run`'s own default
+      # user (root) and no mounted paths at all — it cannot catch a container
+      # that only breaks once it meets the RUNNER's actual ownership shape.
+      # That shape is: GITHUB_WORKSPACE, HOME (remapped to /github/home for
+      # Docker actions) and any GITHUB_OUTPUT/GITHUB_STEP_SUMMARY file are all
+      # owned by the job's own UID — on a GitHub-hosted Ubuntu runner, UID
+      # 1001 ("runner"), never UID 0 and never the image's own baked-in UID
+      # 1000 ("nhaction"). This ubuntu-latest job step already runs as that
+      # same UID, so creating these paths here (no chown needed) reproduces
+      # the real shape exactly. Two concrete failures this catches that the
+      # step above cannot: a container that assumes root owns these paths
+      # dies on `git config --global` (exit 255, outside the 0/1/2 contract);
+      # a container that assumes ITS OWN UID owns them dies with a
+      # PermissionError writing GITHUB_OUTPUT (previously misreported as exit
+      # 1 "blocking findings" instead of the infra failure it actually is).
+      # No credential is set, so a correctly-behaving container still exits 2
+      # here — but only AFTER getting through root-setup and the privilege
+      # drop to UID 1000 for the CLI subprocess, which is the part this test
+      # exists to pin.
+      - name: Smoke test — action image in the runner's real ownership shape
+        run: |
+          set -eu
+          id -u
+          mkdir -p /tmp/gh-workspace /tmp/gh-home
+          cd /tmp/gh-workspace
+          git init -q -b main .
+          git -c user.email=ci@example.com -c user.name=ci commit -q --allow-empty -m base
+          cd -
+          touch /tmp/gh-output /tmp/gh-summary
+          cat > /tmp/gh-event.json <<'EOF'
+          {
+            "pull_request": {
+              "number": 1,
+              "head": {"sha": "0000000000000000000000000000000000000000", "repo": {"full_name": "o/r"}},
+              "base": {"sha": "0000000000000000000000000000000000000000", "repo": {"full_name": "o/r"}}
+            },
+            "repository": {"full_name": "o/r"}
+          }
+          EOF
+          set +e
+          docker run --rm \
+            -v /tmp/gh-workspace:/github/workspace \
+            -v /tmp/gh-home:/github/home \
+            -v /tmp/gh-output:/tmp/gh-output \
+            -v /tmp/gh-summary:/tmp/gh-summary \
+            -v /tmp/gh-event.json:/tmp/gh-event.json:ro \
+            --workdir /github/workspace \
+            -e HOME=/github/home \
+            -e GITHUB_EVENT_NAME=pull_request \
+            -e GITHUB_EVENT_PATH=/tmp/gh-event.json \
+            -e GITHUB_WORKSPACE=/github/workspace \
+            -e GITHUB_OUTPUT=/tmp/gh-output \
+            -e GITHUB_STEP_SUMMARY=/tmp/gh-summary \
+            -e GITHUB_API_URL=https://api.github.com \
+            -e GITHUB_SERVER_URL=https://github.com \
+            -e INPUT_GITHUB_TOKEN=not-a-real-token \
+            no-human-action:ci
+          status=$?
+          set -e
+          echo "exit status: $status"
+          echo "--- GITHUB_OUTPUT written by the container (proves the privilege-dropped write succeeded) ---"
+          cat /tmp/gh-output
+          test "$status" -eq 2
+          grep -q "^skipped=false$" /tmp/gh-output
+
   # GitHub has no per-job `paths:` filter, so a job that only some PRs should
   # pay for can either be labelled by hand or ask what the PR touched. PR #279
   # is why this job exists: its entire content was `desktop/package-lock.json`
@@ -951,6 +1054,11 @@ jobs:
         if: github.event_name == 'workflow_dispatch' && inputs.windows_release
         working-directory: desktop
         timeout-minutes: 15
+        env:
+          # Stamped into the packaged app so the onboarding email reaches our
+          # hosted intake. From a repo secret, so a fork's build (no secret →
+          # empty → electron-builder omits the field) never forwards.
+          NH_ONBOARDING_REGISTER_URL: ${{ secrets.ONBOARDING_REGISTER_URL }}
         run: npm run dist:win
 
       # Same contract as the linux job's verify step: exit 3 ("every check that
@@ -1143,6 +1251,10 @@ jobs:
       # SKIPped off macOS, and the linux block never asks for it).
       - name: Package the .deb and the AppImage (x64)
         working-directory: desktop
+        env:
+          # See the Windows dist step: official builds forward the onboarding
+          # email; a fork build lacks the secret and forwards nothing.
+          NH_ONBOARDING_REGISTER_URL: ${{ secrets.ONBOARDING_REGISTER_URL }}
         run: npm run dist:linux
 
       - name: What was built

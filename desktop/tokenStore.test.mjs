@@ -439,3 +439,108 @@ test("setAuthMode preserves a CRLF file's newline convention (no mixed EOL)", ()
   assert.match(out, /auth_mode: api_key/);
   assert.ok(out.split("\n").every((l, i, a) => i === a.length - 1 || l.endsWith("\r")), "every line keeps its CR (no bare LF in a CRLF file)");
 });
+
+// ── CRLF .env regression: a CRLF-terminated line used to be DROPPED, not ──
+// merely mis-trimmed. `.` excludes ALL line terminators (including \r), and
+// the KEY=VALUE regex is un-anchored by the `m` flag, so `$` demanded
+// end-of-string and the whole line failed to match under text.split("\n").
+// These pin the fix at every layer the bug actually broke: the low-level
+// parse map (AC1), the real gate main.mjs calls (AC2), and mixed/absent
+// terminators (AC4).
+
+test("parseEnv: a CRLF .env parses byte-identically to the LF equivalent", () => {
+  const body = `FOO=bar\n${TOKEN_KEY}=sk-ant-oat-crlfliteral0123\nBAZ=qux\n`;
+  const lf = body;
+  const crlf = body.replace(/\n/g, "\r\n");
+  // deepStrictEqual alone would pass if BOTH sides dropped the key — the
+  // literal assertion below is what makes this test discriminating.
+  assert.deepStrictEqual(parseEnv(crlf), parseEnv(lf));
+  assert.equal(parseEnv(crlf)[TOKEN_KEY], "sk-ant-oat-crlfliteral0123");
+});
+
+test("hasToken: a CRLF .env is seen even with an EMPTY process env", () => {
+  const h = home();
+  fs.mkdirSync(join(h, ".no_human"), { recursive: true });
+  const bytes = Buffer.from(`${TOKEN_KEY}=sk-ant-oat-crlfbytes\r\n`, "utf8");
+  assert.equal(bytes[bytes.length - 2], 0x0d, "fixture sanity: bytes end 0d 0a");
+  assert.equal(bytes[bytes.length - 1], 0x0a);
+  fs.writeFileSync(envPath(h), bytes);
+  // An empty env object means the process.env fall-through cannot mask a
+  // dropped line — if parseEnv silently loses the key, this is false.
+  assert.equal(hasToken({}, h), true);
+});
+
+test("hasCredential: a CRLF .env and a CRLF config.yaml still gate correctly", () => {
+  const h = home();
+  fs.mkdirSync(join(h, ".no_human"), { recursive: true });
+  // Subscription (default mode, no config.yaml at all): CRLF .env token.
+  fs.writeFileSync(envPath(h), Buffer.from(`${TOKEN_KEY}=sk-ant-oat-crlfsub\r\n`));
+  assert.equal(hasCredential({}, h), true,
+    "subscription mode must see a CRLF-terminated token");
+  // api_key mode via a CRLF config.yaml — exercises the second reader
+  // (configuredAuthMode) and the second hasCredential branch.
+  fs.writeFileSync(join(h, ".no_human", "config.yaml"),
+    "llm:\r\n  auth_mode: api_key\r\n");
+  fs.writeFileSync(envPath(h), Buffer.from(`${API_KEY_VAR}=sk-ant-api03-crlf\r\n`));
+  assert.equal(hasCredential({}, h), true,
+    "api_key mode must see a CRLF-terminated key behind a CRLF config.yaml");
+});
+
+test("hasToken/hasCredential guard-rail: no .env, empty env => false", () => {
+  // Proves the positive assertions above are discriminating: with nothing on
+  // disk and nothing in the environment, both must still report absent.
+  const h = home();
+  assert.equal(hasToken({}, h), false);
+  assert.equal(hasCredential({}, h), false);
+});
+
+test("a CRLF .env still wins over process.env", () => {
+  const h = home();
+  fs.mkdirSync(join(h, ".no_human"), { recursive: true });
+  const A = "sk-ant-oat-FILEVALUE-AAAA";
+  const B = "sk-ant-oat-ENVVALUE-BBBB";
+  fs.writeFileSync(envPath(h), Buffer.from(`${TOKEN_KEY}=${A}\r\n`));
+  // The file's own value must survive CRLF parsing exactly, not merely
+  // "something truthy" — matching config.py:167's documented precedence
+  // (".env wins over an inherited token: it is the curated source").
+  assert.equal(parseEnv(fs.readFileSync(envPath(h), "utf8"))[TOKEN_KEY], A);
+  assert.equal(hasToken({ [TOKEN_KEY]: B }, h), true,
+    "the .env file must still be consulted even though process.env also has a value");
+});
+
+test("parseEnv: mixed CRLF and LF line endings in one file", () => {
+  const env = parseEnv("A=1\r\nB=2\nC=3\r\n");
+  assert.equal(env.A, "1");
+  assert.equal(env.B, "2");
+  assert.equal(env.C, "3");
+});
+
+test("parseEnv: no trailing newline still parses the final key (LF-interior)", () => {
+  const env = parseEnv("A=1\nB=2");
+  assert.equal(env.A, "1");
+  assert.equal(env.B, "2");
+});
+
+test("parseEnv: no trailing newline still parses the final key (CRLF-interior)", () => {
+  const env = parseEnv("A=1\r\nB=2");
+  assert.equal(env.A, "1");
+  assert.equal(env.B, "2");
+});
+
+test("writeEnvVar over a CRLF .env leaves no mixed endings", () => {
+  const h = home();
+  fs.mkdirSync(join(h, ".no_human"), { recursive: true });
+  fs.writeFileSync(envPath(h),
+    Buffer.from(`JIRA_TOKEN=keep\r\n${TOKEN_KEY}=OLDVALUE\r\n`, "utf8"));
+  writeToken("sk-ant-oat-newvalue", h);
+  const bytes = fs.readFileSync(envPath(h));
+  assert.ok(!bytes.includes(0x0d), "no CR byte anywhere in the rewritten file");
+  assert.equal(bytes[bytes.length - 1], 0x0a, "file must end with a newline");
+  assert.notEqual(bytes[bytes.length - 2], 0x0a,
+    "exactly one trailing newline, not a blank line after it");
+  const text = bytes.toString("utf8");
+  assert.equal(parseEnv(text)[TOKEN_KEY], "sk-ant-oat-newvalue");
+  assert.equal(parseEnv(text).JIRA_TOKEN, "keep",
+    "another secret must survive the CRLF-to-LF cleanup");
+  assertOwnerOnly(envPath(h));
+});

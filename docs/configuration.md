@@ -821,7 +821,8 @@ whenever the *page's own* navigated-to hostname is literally `localhost` or
 that case, regardless of `recordBody`/`recordHeaders`; the only override is
 an internal runtime property, not an `init()` option, and this app does not
 set it). This board "ALWAYS serves on 127.0.0.1" for the common local-only
-case (see `web/src/telemetry.js`'s header comment), so for that specific,
+case (see the `internal_or_test_user_hostname` comment in
+`web/src/telemetry.js`'s `initTelemetry`), so for that specific,
 common deployment mode the leak this fix addresses was already suppressed by
 the SDK's own dev-safety default, independently of `replayScrub.js`. That
 guard does **not** apply when the board is reached over a LAN IP, a custom
@@ -1115,6 +1116,13 @@ either shape, add it here too: nothing will remind you.
   **It cannot reach outside your home directory**: a root that resolves
   elsewhere is refused, by design. For repos on another volume use the
   onboarding UI's "Search another folder", which takes any path.
+- `onboarding.registration_endpoint` (default **null**) — a hosted intake URL
+  that, when set, receives the address entered at the onboarding Email step
+  (plus a `desktop-<platform>` plan string and `source: "onboarding"`), so the
+  team can reach the person who typed it. `NH_ONBOARDING_REGISTER_URL` (env)
+  can set or override it. Left unset, `email/register.py` makes zero network
+  calls; the address stays local, in `onboarding.email`. See
+  `docs/security.md` §7 for the fail-open contract.
 - `max_thinking_tokens` (default 10000) — a TOP-LEVEL key, not nested under
   `llm`. It caps extended thinking on models that support it, and applies only
   when the task's computed complexity tier turns thinking on; there is no way

@@ -1054,6 +1054,12 @@ def atomic_write_0600(path: Path, content: str) -> None:
     written to a file whose permissions are unproven. If it cannot be secured,
     this raises :class:`CredentialPermissionError` and leaves *path* untouched
     rather than writing a token any account on the machine could read.
+
+    ``newline="\\n"`` disables Python's universal-newline translation on write,
+    which otherwise turns every ``"\n"`` in *content* — including the trailing
+    one every caller appends — into ``os.linesep`` (``\r\n`` on Windows). A
+    CRLF-terminated ``.env`` makes the desktop app's line-splitting readers
+    drop the credential line outright, so this file must never emit one.
     """
     tmp = path.with_name(path.name + ".tmp")
     fd = os.open(str(tmp), os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
@@ -1064,7 +1070,7 @@ def atomic_write_0600(path: Path, content: str) -> None:
             os.close(fd)
             windows_restrict_to_owner(tmp)
             fd = os.open(str(tmp), os.O_WRONLY | os.O_TRUNC)
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
             f.write(content)
         os.replace(tmp, path)
     finally:
@@ -1974,7 +1980,14 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # digging into the DB. False skips posting (an event still fires).
         "post_checklist_comment": True,
     },
-    "onboarding": {"completed": False},
+    "onboarding": {
+        "completed": False,
+        # Hosted registration intake for the mandatory Email step (task
+        # "onboarding email must reach our servers"). Empty by default — an
+        # unset endpoint means email/register.py makes zero network calls.
+        # NH_ONBOARDING_REGISTER_URL (env) takes precedence when set.
+        "registration_endpoint": None,
+    },
     "profile": {
         # Megaplan P1 (full autonomy). By default a profile drives a task only
         # after a human confirms it (ProjectProfile.is_usable). These opt-in
@@ -2800,9 +2813,13 @@ def _atomic_write_text(path: Path, content: str) -> None:
     Writes to a sibling ``.tmp`` file first, then replaces the target in a
     single rename — so a concurrent reader of *path* will never see a
     half-written file.
+
+    ``newline="\\n"`` matches :func:`atomic_write_0600`: without it, Windows
+    text-mode translation turns every ``"\n"`` into ``\r\n``, which is how a
+    prior setup save regressed an LF ``config.yaml`` line into CRLF.
     """
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(content, encoding="utf-8")
+    tmp.write_text(content, encoding="utf-8", newline="\n")
     os.replace(tmp, path)
 
 
