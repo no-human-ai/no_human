@@ -156,6 +156,7 @@ export const API_BODY_CLASSIFICATION = {
   "/api/onboarding/repos/prove": { tier: "redact", why: "proves repo setup at a filesystem path" },
   "/api/onboarding/repos/ui-evidence": { tier: "redact", why: "captures onboarding UI evidence tied to a repo path" },
   "/api/onboarding/rules/confirm": { tier: "redact", why: "confirms repo rules content" },
+  "/api/onboarding/step": { tier: "redact", why: "request body is a closed step-key enum (server 422s anything outside _WIZARD_STEPS) with no PII, but not worth an allowlist entry for one small body" },
 
   // --- Tier 3: redacted. User text / operator content ---
   "/api/search": { tier: "redact", why: "search query + results are operator text (also present in the `?q=` query string, stripped from the request line)" },

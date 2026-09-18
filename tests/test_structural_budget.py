@@ -1910,7 +1910,16 @@ FROZEN_FILE_LINES = {
     # registered address to `email/register.py:register_email` off-thread
     # after the local persist, and threads `registration_status` into the
     # persisted onboarding state and the response body. Measured on this tree.
-    "api/app.py": 6357,
+    # 6346 -> 6435 (+89): task c4873936 REFILE — the onboarding funnel
+    # telemetry blind spot. Adds `POST /api/onboarding/step`
+    # (`onboarding_step_viewed`), a `repo_selected` marker in
+    # `onboarding_onboard_repo`, a `completed` marker in `onboarding_complete`
+    # (emitted before its existing `_onboarding_public(ob)`-redacted return,
+    # so the fix keeps main's email redaction on that response), the
+    # once-per-install `_record_onboarding_once` latch, and refusal
+    # telemetry in `create_task`. Measured via `scan_tree(SRC)`
+    # (tests/test_structural_budget.py's own scanner), not `wc -l`.
+    "api/app.py": 6446,
     # +51: W5 active-time phase writer (phase instrumentation).
     # +84: `list_escalations`/`list_review_fails`/`list_tamper_trips` — the
     # three new failure-signal sources the recurring learning harvest mines.
