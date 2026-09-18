@@ -501,57 +501,68 @@ def test_the_gate_mention_scan_is_not_quadratic():
     """Review round 6 found a NEW quadratic of the same class this rule had
     already removed once: the whole command was unmasked once PER SEGMENT.
     3.4 s against a 138 ms base on a realistic 800-line script, inside a
-    PreToolUse hook. Hoisted out of the loop. Loose bound: the shape, not a
-    machine.
+    PreToolUse hook. Hoisted out of the loop
+    (`src/no_human/agent/guard.py:1784-1792`: `_mask_payloads` runs once,
+    then `gate_mentioned = bool(_GATE_MENTION.search(_unmask(masked,
+    table)))` sits ABOVE `for sep, raw in zip(seps, parts):`, not inside it).
 
-    That is what the docstring said, but the assertion was a machine:
-    `elapsed < 0.6` of wall clock. Shared runners landed 0.64 to 0.72 s on
-    good code and took 3 of the last 12 ci.yml runs red with it, one of them
-    a JS-only PR (issue #125). Between 0.6 s and the multi-second regression
-    this exists to catch, only flakes live.
+    That used to be checked with `time.process_time()`: an `elapsed < 0.6`
+    ratio/absolute bound. Shared runners landed 0.64 to 0.72 s on good code
+    and took 3 of the last 12 ci.yml runs red with it, one of them a JS-only
+    PR (issue #125) — a wall clock reads the runner's load, not the shape of
+    the scan.
 
-    So measure the shape. Doubling the input doubles a linear scan and
-    quadruples a quadratic one, and the runner's speed cancels out of a
-    ratio. Measured on this rule, on one machine: linear 1.70 to 2.39 over 15
-    samples; the quadratic put back by hand 3.87 to 3.97 over 3 (t400 4.4 s,
-    t800 17.5 s). The 3.0 bound sits between, 26% clear of the observed
-    linear worst case and 22% under the observed quadratic best.
-
-    `process_time`, not `monotonic`, so a scheduler preemption inside either
-    half does not enter the ratio.
-
-    A ratio cannot see a UNIFORM slowdown, which the old bound could, so a
-    wall-clock check survives as a backstop, at a value chosen never to
-    flake: 3.0 s is about 10x what the 800-line scan costs and about 6x under
-    what the reintroduced quadratic cost."""
+    So this measures the shape directly instead of timing it: the total
+    number of characters handed to `guard._unmask` during one
+    `guard.evaluate` call. `_unmask` is a pure function of its `tok`
+    argument's length (it has no I/O, no clock, nothing load-sensitive), and
+    "unmask once, not once per segment" is exactly a claim about how much
+    text is ever passed to it — hoisted out of the loop, the mention scan's
+    own `_unmask(masked, table)` call contributes `len(masked)` once, no
+    matter how many segments the command has; pulled inside the loop, it
+    contributes roughly `len(masked)` again for EACH segment, so the total
+    grows with segment count, not just input length. Doubling the input
+    (400 to 800 lines, so also ~doubling segment count) should therefore
+    still only double the character total under the fix; the reintroduced
+    per-segment regression instead multiplies it by roughly the segment
+    count, which itself scales with input size — the same quadratic shape,
+    now visible as a character count instead of a duration, and identical on
+    a quiet laptop and a saturated CI runner."""
     def script(lines):
         return "\n".join(
             f'echo "line {i}" $VAR{i} && grep -n "x" f{i}.txt'
             for i in range(lines))
 
-    def cpu_seconds(text):
-        start = time.process_time()
-        guard.evaluate("Bash", {"command": text}, forbidden_paths=FORBIDDEN,
-                       never_push_to=PROTECTED, readonly=False)
-        return time.process_time() - start
+    def unmask_chars(text):
+        calls = []
+        real_unmask = guard._unmask
 
-    # Warm the regex caches. Under `-n 4` this test can be the first in its
-    # worker to reach `guard.evaluate`, and a one-time cost paid inside the
-    # 400-line half would flatter the ratio.
-    cpu_seconds(script(50))
+        def recording_unmask(tok, table):
+            calls.append(len(tok))
+            return real_unmask(tok, table)
 
-    small = cpu_seconds(script(400))
-    large = cpu_seconds(script(800))
+        guard._unmask = recording_unmask
+        try:
+            guard.evaluate("Bash", {"command": text}, forbidden_paths=FORBIDDEN,
+                           never_push_to=PROTECTED, readonly=False)
+        finally:
+            guard._unmask = real_unmask
+        return sum(calls), len(calls)
+
+    small, small_calls = unmask_chars(script(400))
+    large, large_calls = unmask_chars(script(800))
     ratio = large / small
     assert ratio < 3.0, (
-        f"{small:.3f}s at 400 lines, {large:.3f}s at 800, ratio {ratio:.2f}: "
-        "doubling the input did much more than double the work, so the "
-        "gate-mention scan is unmasking the whole command once per segment "
-        "again")
-    assert large < 3.0, (
-        f"{large:.3f}s of CPU on an 800-line script, against roughly 0.3s "
-        "when this bound was written. The ratio above passed, so this is not "
-        "the quadratic; something has made the whole scan far slower")
+        f"{small} chars handed to `_unmask` at 400 lines ({small_calls} "
+        f"calls), {large} at 800 ({large_calls} calls), ratio {ratio:.2f}: "
+        "doubling the input did much more than double the text unmasked, so "
+        "the gate-mention scan is unmasking the whole command once per "
+        "segment again")
+    assert large <= 8 * len(script(800)), (
+        f"{large} chars handed to `_unmask` for an 800-line script of "
+        f"{len(script(800))} chars — the ratio above passed, so this is not "
+        "the quadratic; something else is unmasking far more text than the "
+        "command itself contains")
 
 
 def test_a_backslash_newline_is_a_continuation_not_a_separator():
