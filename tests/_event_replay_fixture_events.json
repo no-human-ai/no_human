@@ -1,0 +1,2669 @@
+[
+ {
+  "source": "orchestrator",
+  "kind": "attempt_start",
+  "text": "attempt 1/3",
+  "max_turns": 500,
+  "ts": 1789534788.836729,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Read",
+  "tool_input": {
+   "file_path": "/workspace/example-repo/.no_human/worktrees/__TASK_ID__.4242.deadbeef/.no_human/PLAN.md"
+  },
+  "tool_use_id": "toolu_01T1w74vMoHHM8g6jCGRb8nm",
+  "ts": 1789534796.971008,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_01T1w74vMoHHM8g6jCGRb8nm",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 16851,
+  "over_cap": true,
+  "non_text_blocks": 0,
+  "ts": 1789534796.990753,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Bash",
+  "tool_input": {
+   "command": "wc -l /workspace/example-repo/.no_human/worktrees/__TASK_ID__.4242.deadbeef/.no_human/PLAN.md"
+  },
+  "tool_use_id": "toolu_011sk5UEYKdXRkpNQfp95Rjz",
+  "ts": 1789534800.191137,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_011sk5UEYKdXRkpNQfp95Rjz",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 111,
+  "over_cap": false,
+  "non_text_blocks": 0,
+  "ts": 1789534800.253194,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Read",
+  "tool_input": {
+   "file_path": "/workspace/example-repo/.no_human/worktrees/__TASK_ID__.4242.deadbeef/.no_human/PLAN.md",
+   "offset": 104,
+   "limit": 15
+  },
+  "tool_use_id": "toolu_01YSFadHvGQqQ6KV2ZnXtNXS",
+  "ts": 1789534804.336695,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_01YSFadHvGQqQ6KV2ZnXtNXS",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 1085,
+  "over_cap": false,
+  "non_text_blocks": 0,
+  "ts": 1789534804.342092,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Bash",
+  "tool_input": {
+   "command": "wc -l src/no_human/core/orchestrator.py src/no_human/vcs/git.py tests/test_already_satisfied_subject_tree.py tests/test_structural_budget.py"
+  },
+  "tool_use_id": "toolu_01QVtAjsCw7vKhrjj17xDk8d",
+  "ts": 1789534807.4817522,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_01QVtAjsCw7vKhrjj17xDk8d",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 185,
+  "over_cap": false,
+  "non_text_blocks": 0,
+  "ts": 1789534807.502194,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Bash",
+  "tool_input": {
+   "command": "grep -n \"_already_satisfied_subject\\|_REPORT_KINDS\\|_route_unjudged_head\\|_gate_already_satisfied\\|_already_satisfied_eligible\\|_parse_already_satisfied\\|_land_no_changes_needed\\|_head_is_wip_checkpoint\\|def _run_attempt\\|_ordered_post_tool_hooks\\|_compose_post_tool_hooks\\|_agent_sink\\|_active_supervisor\\|receipt_hook\\|lint_hook\\|type_hook\\|scope_hook\\|_can_hooks\\|backend_degraded\" src/no_human/core/orchestrator.py | head -150"
+  },
+  "tool_use_id": "toolu_01XQjuhJ5Ac15DKgenRS9wwW",
+  "ts": 1789534811.852617,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_01XQjuhJ5Ac15DKgenRS9wwW",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 4337,
+  "over_cap": true,
+  "non_text_blocks": 0,
+  "ts": 1789534815.397994,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Bash",
+  "tool_input": {
+   "command": "grep -n \"_already_satisfied_subject\\|_already_satisfied_eligible\\|_gate_already_satisfied\\|_head_is_wip_checkpoint\" src/no_human/core/orchestrator.py"
+  },
+  "tool_use_id": "toolu_019vA7VKFcy3BPpfgPGig3SC",
+  "ts": 1789534818.30231,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_019vA7VKFcy3BPpfgPGig3SC",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 1563,
+  "over_cap": false,
+  "non_text_blocks": 0,
+  "ts": 1789534818.4513972,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Read",
+  "tool_input": {
+   "file_path": "/workspace/example-repo/.no_human/worktrees/__TASK_ID__.4242.deadbeef/src/no_human/core/orchestrator.py",
+   "offset": 6700,
+   "limit": 150
+  },
+  "tool_use_id": "toolu_01V2nXWHe4irCYEMBKCrHQ83",
+  "ts": 1789534822.210017,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_01V2nXWHe4irCYEMBKCrHQ83",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 10289,
+  "over_cap": true,
+  "non_text_blocks": 0,
+  "ts": 1789534822.217941,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Bash",
+  "tool_input": {
+   "command": "grep -n \"has_changes\\|_REPORT_KINDS\" src/no_human/core/orchestrator.py | sed -n '1,60p'"
+  },
+  "tool_use_id": "toolu_01YFpcJzbe3Ls3b52a7B229s",
+  "ts": 1789534824.5758028,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_01YFpcJzbe3Ls3b52a7B229s",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 1702,
+  "over_cap": false,
+  "non_text_blocks": 0,
+  "ts": 1789534824.594615,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Read",
+  "tool_input": {
+   "file_path": "/workspace/example-repo/.no_human/worktrees/__TASK_ID__.4242.deadbeef/src/no_human/core/orchestrator.py",
+   "offset": 6600,
+   "limit": 100
+  },
+  "tool_use_id": "toolu_01QL2RrXLmcJvynfkgnqsFEM",
+  "ts": 1789534827.798839,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_01QL2RrXLmcJvynfkgnqsFEM",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 6430,
+  "over_cap": true,
+  "non_text_blocks": 0,
+  "ts": 1789534827.805067,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Read",
+  "tool_input": {
+   "file_path": "/workspace/example-repo/.no_human/worktrees/__TASK_ID__.4242.deadbeef/src/no_human/core/orchestrator.py",
+   "offset": 10990,
+   "limit": 150
+  },
+  "tool_use_id": "toolu_01PtVUpLVCw4sKprPWqbuHNG",
+  "ts": 1789534846.708771,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_01PtVUpLVCw4sKprPWqbuHNG",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 8937,
+  "over_cap": true,
+  "non_text_blocks": 0,
+  "ts": 1789534849.996854,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Read",
+  "tool_input": {
+   "file_path": "/workspace/example-repo/.no_human/worktrees/__TASK_ID__.4242.deadbeef/src/no_human/core/orchestrator.py",
+   "offset": 12441,
+   "limit": 190
+  },
+  "tool_use_id": "toolu_01EBX6NCJGJytA56yk2bp6NE",
+  "ts": 1789534853.7061288,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_01EBX6NCJGJytA56yk2bp6NE",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 10996,
+  "over_cap": true,
+  "non_text_blocks": 0,
+  "ts": 1789534853.712895,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Read",
+  "tool_input": {
+   "file_path": "/workspace/example-repo/.no_human/worktrees/__TASK_ID__.4242.deadbeef/src/no_human/core/orchestrator.py",
+   "offset": 12630,
+   "limit": 200
+  },
+  "tool_use_id": "toolu_01TCnv9YhCugsJ2wGArvUngj",
+  "ts": 1789534858.6795,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_01TCnv9YhCugsJ2wGArvUngj",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 12196,
+  "over_cap": true,
+  "non_text_blocks": 0,
+  "ts": 1789534858.6852539,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Read",
+  "tool_input": {
+   "file_path": "/workspace/example-repo/.no_human/worktrees/__TASK_ID__.4242.deadbeef/src/no_human/core/orchestrator.py",
+   "offset": 5940,
+   "limit": 130
+  },
+  "tool_use_id": "toolu_01NW5g1si4CdskaeFKc5mrdP",
+  "ts": 1789534864.2542,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_01NW5g1si4CdskaeFKc5mrdP",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 7904,
+  "over_cap": true,
+  "non_text_blocks": 0,
+  "ts": 1789534864.2603142,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Read",
+  "tool_input": {
+   "file_path": "/workspace/example-repo/.no_human/worktrees/__TASK_ID__.4242.deadbeef/src/no_human/core/orchestrator.py",
+   "offset": 22755,
+   "limit": 80
+  },
+  "tool_use_id": "toolu_012P3ihEdm5PyghV7m8VQ4L9",
+  "ts": 1789534868.2723389,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_012P3ihEdm5PyghV7m8VQ4L9",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 4275,
+  "over_cap": true,
+  "non_text_blocks": 0,
+  "ts": 1789534868.279506,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Read",
+  "tool_input": {
+   "file_path": "/workspace/example-repo/.no_human/worktrees/__TASK_ID__.4242.deadbeef/src/no_human/core/orchestrator.py",
+   "offset": 2797,
+   "limit": 160
+  },
+  "tool_use_id": "toolu_014pHXxw19wnJgLcqYCcZ5fY",
+  "ts": 1789534872.8673081,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_014pHXxw19wnJgLcqYCcZ5fY",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 10916,
+  "over_cap": true,
+  "non_text_blocks": 0,
+  "ts": 1789534876.704591,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Bash",
+  "tool_input": {
+   "command": "grep -n \"_active_supervisor\" src/no_human/core/orchestrator.py"
+  },
+  "tool_use_id": "toolu_01BHvR8FAaaDcB4aK7ADr161",
+  "ts": 1789534878.9865952,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_01BHvR8FAaaDcB4aK7ADr161",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 199,
+  "over_cap": false,
+  "non_text_blocks": 0,
+  "ts": 1789534879.009814,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Bash",
+  "tool_input": {
+   "command": "grep -n \"branched_from_own_partial\" src/no_human/core/orchestrator.py | head -30"
+  },
+  "tool_use_id": "toolu_01HPB56PfXipGqocLTKyYnrJ",
+  "ts": 1789534895.098897,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_01HPB56PfXipGqocLTKyYnrJ",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 575,
+  "over_cap": false,
+  "non_text_blocks": 0,
+  "ts": 1789534895.122616,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Read",
+  "tool_input": {
+   "file_path": "/workspace/example-repo/.no_human/worktrees/__TASK_ID__.4242.deadbeef/src/no_human/core/orchestrator.py",
+   "offset": 5525,
+   "limit": 120
+  },
+  "tool_use_id": "toolu_01Nx6zUZXLHm8xt4bFXGpq57",
+  "ts": 1789534900.037296,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_01Nx6zUZXLHm8xt4bFXGpq57",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 8302,
+  "over_cap": true,
+  "non_text_blocks": 0,
+  "ts": 1789534900.0440059,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Bash",
+  "tool_input": {
+   "command": "grep -n \"^\\s*branch = \\|^\\s*branch=\" src/no_human/core/orchestrator.py | awk -F: '$1>5525 && $1<6100'"
+  },
+  "tool_use_id": "toolu_01Q9xgdXLupBZpgdKDQgWt1R",
+  "ts": 1789534902.751582,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_01Q9xgdXLupBZpgdKDQgWt1R",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 69,
+  "over_cap": false,
+  "non_text_blocks": 0,
+  "ts": 1789534902.77129,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Bash",
+  "tool_input": {
+   "command": "sed -n '1,60p' src/no_human/core/orchestrator.py | grep -n \"^import\\|^from\""
+  },
+  "tool_use_id": "toolu_011m9DtF9kQ4hjCog11QcG8H",
+  "ts": 1789534904.796386,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_011m9DtF9kQ4hjCog11QcG8H",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 1020,
+  "over_cap": false,
+  "non_text_blocks": 0,
+  "ts": 1789534909.011227,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Read",
+  "tool_input": {
+   "file_path": "/workspace/example-repo/.no_human/worktrees/__TASK_ID__.4242.deadbeef/src/no_human/agent/verification_receipts.py"
+  },
+  "tool_use_id": "toolu_01Qv4pTitfr6Sv4rUUKmvLQM",
+  "ts": 1789534912.911907,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_01Qv4pTitfr6Sv4rUUKmvLQM",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 17519,
+  "over_cap": true,
+  "non_text_blocks": 0,
+  "ts": 1789534913.138607,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Bash",
+  "tool_input": {
+   "command": "grep -n \"additionalContext\\|class ScopeGuardHook\\|async def hook\\|def __init__\" src/no_human/agent/scope_guard.py | head -30"
+  },
+  "tool_use_id": "toolu_01R6Ss8j9DigfChae8yuJe76",
+  "ts": 1789534915.878756,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_01R6Ss8j9DigfChae8yuJe76",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 121,
+  "over_cap": false,
+  "non_text_blocks": 0,
+  "ts": 1789534915.9033542,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Read",
+  "tool_input": {
+   "file_path": "/workspace/example-repo/.no_human/worktrees/__TASK_ID__.4242.deadbeef/src/no_human/agent/scope_guard.py",
+   "offset": 330,
+   "limit": 70
+  },
+  "tool_use_id": "toolu_0156x48gt7F3Kv1eb1FMtfet",
+  "ts": 1789534919.177471,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_0156x48gt7F3Kv1eb1FMtfet",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 2751,
+  "over_cap": true,
+  "non_text_blocks": 0,
+  "ts": 1789534919.183139,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Bash",
+  "tool_input": {
+   "command": "grep -n \"def remote_branches_containing\\|def _have_remote_commit\\|def remote_branch_relation\\|def branch_sha\\|def remote_url\\|def is_ancestor\\|def head_sha\\|def head_commit\\|def commits_ahead\\|def has_changes\\|def default_branch\" src/no_human/vcs/git.py"
+  },
+  "tool_use_id": "toolu_013vEPCVM7WzNQyPQhATFQSM",
+  "ts": 1789534923.058111,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_013vEPCVM7WzNQyPQhATFQSM",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 683,
+  "over_cap": false,
+  "non_text_blocks": 0,
+  "ts": 1789534923.076705,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Read",
+  "tool_input": {
+   "file_path": "/workspace/example-repo/.no_human/worktrees/__TASK_ID__.4242.deadbeef/src/no_human/vcs/git.py",
+   "offset": 1225,
+   "limit": 380
+  },
+  "tool_use_id": "toolu_01Wwjfdthwm7mdnQ5ogttLg1",
+  "ts": 1789534926.401056,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_01Wwjfdthwm7mdnQ5ogttLg1",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 17894,
+  "over_cap": true,
+  "non_text_blocks": 0,
+  "ts": 1789534930.3814971,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Read",
+  "tool_input": {
+   "file_path": "/workspace/example-repo/.no_human/worktrees/__TASK_ID__.4242.deadbeef/src/no_human/core/orchestrator.py",
+   "offset": 11140,
+   "limit": 80
+  },
+  "tool_use_id": "toolu_01Vrv6Y6yn6w39gFoH9U2E42",
+  "ts": 1789535143.8738508,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_01Vrv6Y6yn6w39gFoH9U2E42",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 5220,
+  "over_cap": true,
+  "non_text_blocks": 0,
+  "ts": 1789535143.8893929,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Read",
+  "tool_input": {
+   "file_path": "/workspace/example-repo/.no_human/worktrees/__TASK_ID__.4242.deadbeef/src/no_human/core/orchestrator.py",
+   "offset": 11057,
+   "limit": 90
+  },
+  "tool_use_id": "toolu_0185XPgKqLHtU8TPHJcMhTfr",
+  "ts": 1789535360.5291982,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_0185XPgKqLHtU8TPHJcMhTfr",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 5497,
+  "over_cap": true,
+  "non_text_blocks": 0,
+  "ts": 1789535360.5513868,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Read",
+  "tool_input": {
+   "file_path": "/workspace/example-repo/.no_human/worktrees/__TASK_ID__.4242.deadbeef/src/no_human/core/orchestrator.py",
+   "offset": 6600,
+   "limit": 260
+  },
+  "tool_use_id": "toolu_017WosPxnBHLb9AydeDr7d8m",
+  "ts": 1789535364.689335,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_017WosPxnBHLb9AydeDr7d8m",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 17659,
+  "over_cap": true,
+  "non_text_blocks": 0,
+  "ts": 1789535364.695266,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Read",
+  "tool_input": {
+   "file_path": "/workspace/example-repo/.no_human/worktrees/__TASK_ID__.4242.deadbeef/src/no_human/core/orchestrator.py",
+   "offset": 6863,
+   "limit": 90
+  },
+  "tool_use_id": "toolu_01EdiHXqTSqxqsMzDmNDpCXt",
+  "ts": 1789535368.297264,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_01EdiHXqTSqxqsMzDmNDpCXt",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 5665,
+  "over_cap": true,
+  "non_text_blocks": 0,
+  "ts": 1789535368.302658,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Bash",
+  "tool_input": {
+   "command": "awk 'NR>=6654 && NR<=6920 {printf \"%d:%d:%s\\n\", NR, length($0)-length(gensub(/^ */,\"\",\"g\",$0)), $0}' src/no_human/core/orchestrator.py | grep -nE ':(0|4|8|12|16):' | sed -n '1,250p' | awk -F: '{print $1\": indent=\"$3\" | \"substr($0, index($0,$4))}' "
+  },
+  "tool_use_id": "toolu_01T8FMwMgGPySoU2obxfUkaS",
+  "ts": 1789535384.6152189,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_01T8FMwMgGPySoU2obxfUkaS",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 126,
+  "over_cap": false,
+  "non_text_blocks": 0,
+  "ts": 1789535389.3553998,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Bash",
+  "tool_input": {
+   "command": "python3 - <<'EOF'\nwith open(\"src/no_human/core/orchestrator.py\") as f:\n    lines = f.readlines()\nfor i in range(6653, 6920):\n    line = lines[i]\n    stripped = line.lstrip(\" \")\n    indent = len(line) - len(stripped)\n    if stripped.strip() == \"\" :\n        continue\n    print(f\"{i+1:5d} {indent:3d} {stripped.rstrip()[:100]}\")\nEOF"
+  },
+  "tool_use_id": "toolu_016LaPM9j75ftDhJmHTPHEDf",
+  "ts": 1789535391.458443,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_016LaPM9j75ftDhJmHTPHEDf",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 4338,
+  "over_cap": true,
+  "non_text_blocks": 0,
+  "ts": 1789535391.5326998,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Bash",
+  "tool_input": {
+   "command": "python3 - <<'EOF'\nwith open(\"src/no_human/core/orchestrator.py\") as f:\n    lines = f.readlines()\nfor i in range(6830, 6880):\n    line = lines[i]\n    stripped = line.lstrip(\" \")\n    indent = len(line) - len(stripped)\n    print(f\"{i+1:5d} {indent:3d} {stripped.rstrip()[:100]}\")\nEOF"
+  },
+  "tool_use_id": "toolu_01MbRL3xLuU7wT5TqpfpPNjY",
+  "ts": 1789535393.856019,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_01MbRL3xLuU7wT5TqpfpPNjY",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 2670,
+  "over_cap": true,
+  "non_text_blocks": 0,
+  "ts": 1789535393.919251,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Read",
+  "tool_input": {
+   "file_path": "/workspace/example-repo/.no_human/worktrees/__TASK_ID__.4242.deadbeef/src/no_human/core/orchestrator.py",
+   "offset": 870,
+   "limit": 40
+  },
+  "tool_use_id": "toolu_012vtvwEAi1fiRZkiMVvPqVe",
+  "ts": 1789535448.7306151,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_012vtvwEAi1fiRZkiMVvPqVe",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 2146,
+  "over_cap": true,
+  "non_text_blocks": 0,
+  "ts": 1789535448.741672,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Read",
+  "tool_input": {
+   "file_path": "/workspace/example-repo/.no_human/worktrees/__TASK_ID__.4242.deadbeef/src/no_human/core/orchestrator.py",
+   "offset": 12441,
+   "limit": 170
+  },
+  "tool_use_id": "toolu_01E1wkNUjVbyewCs1C7bxRn1",
+  "ts": 1789535453.9469042,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_01E1wkNUjVbyewCs1C7bxRn1",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 9706,
+  "over_cap": true,
+  "non_text_blocks": 0,
+  "ts": 1789535453.953059,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Edit",
+  "tool_input": {
+   "replace_all": false,
+   "file_path": "/workspace/example-repo/.no_human/worktrees/__TASK_ID__.4242.deadbeef/src/no_human/core/orchestrator.py",
+   "old_string": "    async def _already_satisfied_subject(\n        self, task: Task, repo, *, base: str | None, branch: str | None,\n    ) -> tuple[bool, str, str, str, bool, str]:\n        \"\"\"Classify the exact tree an already-satisfied claim may judge.\n\n        A claim can describe an existing shipping tree, or the exact pushed\n        tip a delivery offers. Everything else fails closed: a reviewer must\n        never verify an unpushable checkpoint and turn it into approval proof.\n        \"\"\"\n        # `task` is needed below to enumerate THIS task's own pushed agent\n        # branches (attempt 2+ pushes to a distinct branch \u2014 see\n        # branch_prefix usage at ~4407 \u2014 so the offered branch alone can\n        # undercount what this task has actually shipped to the remote).\n        try:\n            head = repo.head_sha().strip()\n        except Exception as exc:  # noqa: BLE001 \u2014 unreadable means unshippable\n            return False, \"\", \"\", (\n                \"the sha the claim would be judged against is unresolvable \"\n                f\"({exc})\"), False, \"\"",
+   "new_string": "    async def _already_satisfied_subject(\n        self, task: Task, repo, *, base: str | None, branch: str | None,\n        on_transient: Callable[[str], None] | None = None,\n    ) -> tuple[bool, str, str, str, bool, str]:\n        \"\"\"Classify the exact tree an already-satisfied claim may judge.\n\n        A claim can describe an existing shipping tree, or the exact pushed\n        tip a delivery offers. Everything else fails closed: a reviewer must\n        never verify an unpushable checkpoint and turn it into approval proof.\n\n        `on_transient`, when given, receives a note for every site where the\n        refusal below could be caused by a failed/timed-out git network call\n        rather than a genuine absence \u2014 purely additive: it never changes\n        which of the tuple values below is returned, only whether a caller\n        (the mid-attempt claim guard) treats a refusal as proven or as\n        merely undetermined.\n        \"\"\"\n        def _note(text: str) -> None:\n            if on_transient is not None:\n                on_transient(text)\n\n        # `task` is needed below to enumerate THIS task's own pushed agent\n        # branches (attempt 2+ pushes to a distinct branch \u2014 see\n        # branch_prefix usage at ~4407 \u2014 so the offered branch alone can\n        # undercount what this task has actually shipped to the remote).\n        try:\n            head = repo.head_sha().strip()\n        except Exception as exc:  # noqa: BLE001 \u2014 unreadable means unshippable\n            _note(f\"head sha unresolvable ({exc})\")\n            return False, \"\", \"\", (\n                \"the sha the claim would be judged against is unresolvable \"\n                f\"({exc})\"), False, \"\""
+  },
+  "tool_use_id": "toolu_01JJDAP65w3hm3yM7Q2nxsda",
+  "ts": 1789535469.570313,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_01JJDAP65w3hm3yM7Q2nxsda",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 224,
+  "over_cap": false,
+  "non_text_blocks": 0,
+  "ts": 1789535474.734616,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Bash",
+  "tool_input": {
+   "command": "grep -n \"^from typing import\\|^from collections.abc import\\|Callable\" src/no_human/core/orchestrator.py | head -10"
+  },
+  "tool_use_id": "toolu_018AbjUhtHPcNhTBzHQvWLtn",
+  "ts": 1789535476.511711,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_018AbjUhtHPcNhTBzHQvWLtn",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 231,
+  "over_cap": false,
+  "non_text_blocks": 0,
+  "ts": 1789535476.5399091,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Edit",
+  "tool_input": {
+   "replace_all": false,
+   "file_path": "/workspace/example-repo/.no_human/worktrees/__TASK_ID__.4242.deadbeef/src/no_human/core/orchestrator.py",
+   "old_string": "            try:\n                ship_sha = repo.branch_sha(candidate).strip()\n            except Exception:  # noqa: BLE001 \u2014 try the next local ref\n                continue",
+   "new_string": "            try:\n                ship_sha = repo.branch_sha(candidate).strip()\n            except Exception as exc:  # noqa: BLE001 \u2014 try the next local ref\n                _note(f\"resolving ship ref {candidate!r} failed ({exc})\")\n                continue"
+  },
+  "tool_use_id": "toolu_016TGNRtu1Sg4M2ZrdmxKfe7",
+  "ts": 1789535480.771887,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_016TGNRtu1Sg4M2ZrdmxKfe7",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 224,
+  "over_cap": false,
+  "non_text_blocks": 0,
+  "ts": 1789535480.839326,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Edit",
+  "tool_input": {
+   "replace_all": false,
+   "file_path": "/workspace/example-repo/.no_human/worktrees/__TASK_ID__.4242.deadbeef/src/no_human/core/orchestrator.py",
+   "old_string": "        try:\n            on_ship_ref = repo.is_ancestor(head, ship_sha)\n        except Exception as exc:  # noqa: BLE001 \u2014 cannot prove shipping truth\n            return False, head, \"\", (\n                f\"cannot determine whether {head} is on {ship_ref} ({exc})\"), \\\n                False, ship_ref",
+   "new_string": "        try:\n            on_ship_ref = repo.is_ancestor(head, ship_sha)\n        except Exception as exc:  # noqa: BLE001 \u2014 cannot prove shipping truth\n            _note(f\"is_ancestor({head}, {ship_sha}) failed ({exc})\")\n            return False, head, \"\", (\n                f\"cannot determine whether {head} is on {ship_ref} ({exc})\"), \\\n                False, ship_ref"
+  },
+  "tool_use_id": "toolu_014Ho1SCiZioiUbnwKbs7oti",
+  "ts": 1789535513.629981,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_014Ho1SCiZioiUbnwKbs7oti",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 224,
+  "over_cap": false,
+  "non_text_blocks": 0,
+  "ts": 1789535513.7074182,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Edit",
+  "tool_input": {
+   "replace_all": false,
+   "file_path": "/workspace/example-repo/.no_human/worktrees/__TASK_ID__.4242.deadbeef/src/no_human/core/orchestrator.py",
+   "old_string": "        try:\n            branch_sha = repo.branch_sha(branch).strip()\n        except Exception as exc:  # noqa: BLE001 \u2014 an unresolved branch cannot ship\n            return False, head, \"\", (\n                f\"{prefix}; delivery branch {branch!r} is unresolvable ({exc})\"), \\\n                False, ship_ref",
+   "new_string": "        try:\n            branch_sha = repo.branch_sha(branch).strip()\n        except Exception as exc:  # noqa: BLE001 \u2014 an unresolved branch cannot ship\n            _note(f\"delivery branch {branch!r} unresolvable ({exc})\")\n            return False, head, \"\", (\n                f\"{prefix}; delivery branch {branch!r} is unresolvable ({exc})\"), \\\n                False, ship_ref"
+  },
+  "tool_use_id": "toolu_01NVszYbQEUWYi2tHCj3fK4s",
+  "ts": 1789535518.365748,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_01NVszYbQEUWYi2tHCj3fK4s",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 224,
+  "over_cap": false,
+  "non_text_blocks": 0,
+  "ts": 1789535518.449572,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Edit",
+  "tool_input": {
+   "replace_all": false,
+   "file_path": "/workspace/example-repo/.no_human/worktrees/__TASK_ID__.4242.deadbeef/src/no_human/core/orchestrator.py",
+   "old_string": "        try:\n            remote_url = repo.remote_url()\n        except Exception as exc:  # noqa: BLE001 \u2014 a remote check must be proof\n            return False, head, \"\", (\n                f\"{prefix}; cannot resolve origin remote ({exc})\"), False, ship_ref",
+   "new_string": "        try:\n            remote_url = repo.remote_url()\n        except Exception as exc:  # noqa: BLE001 \u2014 a remote check must be proof\n            _note(f\"resolving origin remote failed ({exc})\")\n            return False, head, \"\", (\n                f\"{prefix}; cannot resolve origin remote ({exc})\"), False, ship_ref"
+  },
+  "tool_use_id": "toolu_01FJc6T5zNA3bRgULBmnWjgF",
+  "ts": 1789535522.7475479,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_01FJc6T5zNA3bRgULBmnWjgF",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 224,
+  "over_cap": false,
+  "non_text_blocks": 0,
+  "ts": 1789535526.693991,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Edit",
+  "tool_input": {
+   "replace_all": false,
+   "file_path": "/workspace/example-repo/.no_human/worktrees/__TASK_ID__.4242.deadbeef/src/no_human/core/orchestrator.py",
+   "old_string": "        relation = None\n        if local_is_reviewed:\n            try:\n                relation = await asyncio.to_thread(repo.remote_branch_relation, branch)\n            except Exception as exc:  # noqa: BLE001 \u2014 external check must fail closed\n                return False, head, \"\", (\n                    f\"{prefix}; cannot verify pushed branch {branch!r} ({exc})\"), \\\n                    False, ship_ref",
+   "new_string": "        relation = None\n        if local_is_reviewed:\n            try:\n                relation = await asyncio.to_thread(\n                    repo.remote_branch_relation, branch, on_transient=on_transient)\n            except Exception as exc:  # noqa: BLE001 \u2014 external check must fail closed\n                _note(f\"remote_branch_relation({branch!r}) failed ({exc})\")\n                return False, head, \"\", (\n                    f\"{prefix}; cannot verify pushed branch {branch!r} ({exc})\"), \\\n                    False, ship_ref"
+  },
+  "tool_use_id": "toolu_012zXz86JqQi8rHiRWemxEWM",
+  "ts": 1789535531.601579,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_012zXz86JqQi8rHiRWemxEWM",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 224,
+  "over_cap": false,
+  "non_text_blocks": 0,
+  "ts": 1789535531.687217,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Edit",
+  "tool_input": {
+   "replace_all": false,
+   "file_path": "/workspace/example-repo/.no_human/worktrees/__TASK_ID__.4242.deadbeef/src/no_human/core/orchestrator.py",
+   "old_string": "        try:\n            task_branches = await asyncio.to_thread(\n                repo.remote_branches_containing, head, [stem, f\"{stem}-*\"])\n        except Exception:  # noqa: BLE001 \u2014 sibling check is best-effort proof only\n            task_branches = []",
+   "new_string": "        try:\n            task_branches = await asyncio.to_thread(\n                repo.remote_branches_containing, head, [stem, f\"{stem}-*\"],\n                on_transient=on_transient)\n        except Exception as exc:  # noqa: BLE001 \u2014 sibling check is best-effort proof only\n            _note(f\"sibling-branch check for {stem!r} failed ({exc})\")\n            task_branches = []"
+  },
+  "tool_use_id": "toolu_019Lo74vdpCjy6PWc9cGWoL5",
+  "ts": 1789535536.095658,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_019Lo74vdpCjy6PWc9cGWoL5",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 224,
+  "over_cap": false,
+  "non_text_blocks": 0,
+  "ts": 1789535536.186789,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Bash",
+  "tool_input": {
+   "command": "cd src/no_human/vcs && grep -n \"^    def _have_remote_commit\\|^    def remote_branches_containing\\|^    def remote_branch_relation\\|^    def ls_remote_exact\\|^    def fetch_remote_branch_sha\\|^    def remote_branch_confirmed_absent\\|^    def push\\|^    def is_ancestor\\|^    def diff\\|^    def changed_files\\|^    def fetch\\b\" git.py"
+  },
+  "tool_use_id": "toolu_01WvGFUktesbkGSzAqe4kh4X",
+  "ts": 1789535539.764054,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_01WvGFUktesbkGSzAqe4kh4X",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 893,
+  "over_cap": false,
+  "non_text_blocks": 0,
+  "ts": 1789535539.7875662,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Read",
+  "tool_input": {
+   "file_path": "/workspace/example-repo/.no_human/worktrees/__TASK_ID__.4242.deadbeef/src/no_human/vcs/git.py",
+   "offset": 1242,
+   "limit": 80
+  },
+  "tool_use_id": "toolu_01Wz3mC6R44xPsk394PDmvcJ",
+  "ts": 1789535543.629558,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_01Wz3mC6R44xPsk394PDmvcJ",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 4190,
+  "over_cap": true,
+  "non_text_blocks": 0,
+  "ts": 1789535543.6364238,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Read",
+  "tool_input": {
+   "file_path": "/workspace/example-repo/.no_human/worktrees/__TASK_ID__.4242.deadbeef/src/no_human/vcs/git.py",
+   "offset": 1536,
+   "limit": 44
+  },
+  "tool_use_id": "toolu_013od3n1j2TYaNSs9qwpMgBV",
+  "ts": 1789535546.969141,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_013od3n1j2TYaNSs9qwpMgBV",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 2633,
+  "over_cap": true,
+  "non_text_blocks": 0,
+  "ts": 1789535551.653415,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Edit",
+  "tool_input": {
+   "replace_all": false,
+   "file_path": "/workspace/example-repo/.no_human/worktrees/__TASK_ID__.4242.deadbeef/src/no_human/vcs/git.py",
+   "old_string": "    def _have_remote_commit(self, remote: str, branch: str, remote_sha: str,\n                             timeout: int) -> bool:\n        \"\"\"Is *remote_sha* available in this local object store?\n\n        Factored out of `remote_branch_relation` (still byte-identical\n        behaviour) and reused by `remote_branches_containing`: both need to\n        prove a remote-advertised sha is actually fetchable, not merely\n        named by `ls-remote`. See that method's docstring for why the\n        fetch-on-miss uses `--refmap=` into a private namespace rather than\n        the tracking ref.\n        \"\"\"\n        have_obj = subprocess.run(\n            [\"git\", \"cat-file\", \"-e\", f\"{remote_sha}^{{commit}}\"],\n            cwd=self.path, capture_output=True, text=True,\n            **hidden_console_kwargs(),\n        )\n        if have_obj.returncode == 0:\n            return True\n        private_ref = f\"refs/no_human/push-check/{branch}\"\n        fetched = subprocess.run(\n            [\"git\", \"fetch\", \"--refmap=\", remote,\n             f\"+refs/heads/{branch}:{private_ref}\"],\n            cwd=self.path, capture_output=True, text=True, timeout=timeout,\n            **hidden_console_kwargs(),\n        )\n        if fetched.returncode != 0:\n            return False\n        have_obj = subprocess.run(\n            [\"git\", \"cat-file\", \"-e\", f\"{remote_sha}^{{commit}}\"],\n            cwd=self.path, capture_output=True, text=True,\n            **hidden_console_kwargs(),\n        )\n        return have_obj.returncode == 0",
+   "new_string": "    def _have_remote_commit(self, remote: str, branch: str, remote_sha: str,\n                             timeout: int, *,\n                             on_transient: Callable[[str], None] | None = None,\n                             ) -> bool:\n        \"\"\"Is *remote_sha* available in this local object store?\n\n        Factored out of `remote_branch_relation` (still byte-identical\n        behaviour) and reused by `remote_branches_containing`: both need to\n        prove a remote-advertised sha is actually fetchable, not merely\n        named by `ls-remote`. See that method's docstring for why the\n        fetch-on-miss uses `--refmap=` into a private namespace rather than\n        the tracking ref.\n\n        `on_transient`, when given, is called with a note whenever a `False`\n        here came from a failed/timed-out fetch rather than a proven-absent\n        object \u2014 purely additive, the return value is unchanged either way.\n        \"\"\"\n        have_obj = subprocess.run(\n            [\"git\", \"cat-file\", \"-e\", f\"{remote_sha}^{{commit}}\"],\n            cwd=self.path, capture_output=True, text=True,\n            **hidden_console_kwargs(),\n        )\n        if have_obj.returncode == 0:\n            return True\n        private_ref = f\"refs/no_human/push-check/{branch}\"\n        try:\n            fetched = subprocess.run(\n                [\"git\", \"fetch\", \"--refmap=\", remote,\n                 f\"+refs/heads/{branch}:{private_ref}\"],\n                cwd=self.path, capture_output=True, text=True, timeout=timeout,\n                **hidden_console_kwargs(),\n            )\n        except (subprocess.TimeoutExpired, OSError) as exc:\n            if on_transient is not None:\n                on_transient(\n                    f\"fetch of {branch!r} from {remote!r} timed out or \"\n                    f\"failed ({exc})\")\n            return False\n        if fetched.returncode != 0:\n            if on_transient is not None:\n                on_transient(\n                    f\"fetch of {branch!r} from {remote!r} failed \"\n                    f\"(rc={fetched.returncode}): \"\n                    f\"{fetched.stderr.strip()[:200]}\")\n            return False\n        have_obj = subprocess.run(\n            [\"git\", \"cat-file\", \"-e\", f\"{remote_sha}^{{commit}}\"],\n            cwd=self.path, capture_output=True, text=True,\n            **hidden_console_kwargs(),\n        )\n        return have_obj.returncode == 0"
+  },
+  "tool_use_id": "toolu_01TP8GFB2HqhvAq5FUc3sYML",
+  "ts": 1789535572.9509919,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_01TP8GFB2HqhvAq5FUc3sYML",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 214,
+  "over_cap": false,
+  "non_text_blocks": 0,
+  "ts": 1789535572.961496,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Bash",
+  "tool_input": {
+   "command": "grep -n \"^from typing import\\|^import typing\\|Callable\" /workspace/example-repo/.no_human/worktrees/__TASK_ID__.4242.deadbeef/src/no_human/vcs/git.py | head -5"
+  },
+  "tool_use_id": "toolu_01RwraoDZX2xvGon1uHHfLrs",
+  "ts": 1789535575.655978,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_01RwraoDZX2xvGon1uHHfLrs",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 115,
+  "over_cap": false,
+  "non_text_blocks": 0,
+  "ts": 1789535575.682391,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Edit",
+  "tool_input": {
+   "replace_all": false,
+   "file_path": "/workspace/example-repo/.no_human/worktrees/__TASK_ID__.4242.deadbeef/src/no_human/vcs/git.py",
+   "old_string": "from typing import Iterator",
+   "new_string": "from typing import Callable, Iterator"
+  },
+  "tool_use_id": "toolu_01QvLg1JysvWNA9CLXGyLWqp",
+  "ts": 1789535578.633913,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_01QvLg1JysvWNA9CLXGyLWqp",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 214,
+  "over_cap": false,
+  "non_text_blocks": 0,
+  "ts": 1789535578.6423528,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Edit",
+  "tool_input": {
+   "replace_all": false,
+   "file_path": "/workspace/example-repo/.no_human/worktrees/__TASK_ID__.4242.deadbeef/src/no_human/vcs/git.py",
+   "old_string": "    def remote_branches_containing(self, sha: str, patterns: list[str], *,\n                                    remote: str = \"origin\",\n                                    timeout: int = 30) -> list[str]:\n        \"\"\"Which remote branches (matching *patterns*) contain *sha*?\n\n        Proves \"the work is on a remote ref\" \u2014 NOT \"the work merged\"; a\n        match here is exactly as strong as `remote_branch_relation`'s\n        `up_to_date`, deliberately extended from tip-equality to ancestry\n        (a later commit on the same pushed branch still contains an\n        earlier reviewed sha). Reachable states of `git ls-remote --heads`\n        (the VCS API used here): rc 0 with matching refs, rc 0 with empty\n        stdout (nothing pushed), rc != 0 (auth/unreachable/bad URL), a\n        timeout, or `OSError` (git missing) \u2014 every one of those last four\n        returns `[]`, so the caller fails closed and refuses the claim.\n        Read-only and idempotent: it writes no ref of its own; the only\n        write is `_have_remote_commit`'s private, overwritten-in-place\n        `refs/no_human/push-check/<branch>`, never a tracking ref.\n        \"\"\"\n        try:\n            ls = subprocess.run(\n                [\"git\", \"ls-remote\", \"--heads\", remote, *patterns],\n                cwd=self.path, capture_output=True, text=True, timeout=timeout,\n                **hidden_console_kwargs(),\n            )\n        except (subprocess.TimeoutExpired, OSError):\n            return []\n        if ls.returncode != 0 or not ls.stdout.strip():\n            return []\n        matches: list[str] = []\n        for line in ls.stdout.splitlines():\n            parts = line.split()\n            if len(parts) != 2 or not parts[1].startswith(\"refs/heads/\"):\n                continue\n            remote_sha, ref = parts\n            name = ref.removeprefix(\"refs/heads/\")\n            try:\n                if remote_sha == sha:\n                    matches.append(name)\n                    continue\n                if (self._have_remote_commit(remote, name, remote_sha, timeout)\n                        and self.is_ancestor(sha, remote_sha)):\n                    matches.append(name)\n            except Exception:  # noqa: BLE001 \u2014 one bad ref must not sink the rest\n                continue\n        return matches",
+   "new_string": "    def remote_branches_containing(self, sha: str, patterns: list[str], *,\n                                    remote: str = \"origin\",\n                                    timeout: int = 30,\n                                    on_transient: Callable[[str], None] | None = None,\n                                    ) -> list[str]:\n        \"\"\"Which remote branches (matching *patterns*) contain *sha*?\n\n        Proves \"the work is on a remote ref\" \u2014 NOT \"the work merged\"; a\n        match here is exactly as strong as `remote_branch_relation`'s\n        `up_to_date`, deliberately extended from tip-equality to ancestry\n        (a later commit on the same pushed branch still contains an\n        earlier reviewed sha). Reachable states of `git ls-remote --heads`\n        (the VCS API used here): rc 0 with matching refs, rc 0 with empty\n        stdout (nothing pushed), rc != 0 (auth/unreachable/bad URL), a\n        timeout, or `OSError` (git missing) \u2014 every one of those last four\n        returns `[]`, so the caller fails closed and refuses the claim.\n        Read-only and idempotent: it writes no ref of its own; the only\n        write is `_have_remote_commit`'s private, overwritten-in-place\n        `refs/no_human/push-check/<branch>`, never a tracking ref.\n\n        `on_transient`, when given, is called with a note whenever `[]` (or a\n        dropped ref) came from a failed/timed-out git call rather than a\n        proven-empty remote \u2014 purely additive, the return value is\n        unchanged either way. This is the sink a caller needs to tell \"this\n        branch was never pushed\" apart from \"a fetch for this branch failed\n        and we could not check\" \u2014 the two used to be indistinguishable,\n        which is what let a transient sibling-branch fetch failure read as a\n        proven absence.\n        \"\"\"\n        try:\n            ls = subprocess.run(\n                [\"git\", \"ls-remote\", \"--heads\", remote, *patterns],\n                cwd=self.path, capture_output=True, text=True, timeout=timeout,\n                **hidden_console_kwargs(),\n            )\n        except (subprocess.TimeoutExpired, OSError) as exc:\n            if on_transient is not None:\n                on_transient(\n                    f\"ls-remote --heads {remote!r} timed out or failed \"\n                    f\"({exc})\")\n            return []\n        if ls.returncode != 0:\n            if on_transient is not None:\n                on_transient(\n                    f\"ls-remote --heads {remote!r} failed \"\n                    f\"(rc={ls.returncode}): {ls.stderr.strip()[:200]}\")\n            return []\n        if not ls.stdout.strip():\n            return []\n        matches: list[str] = []\n        for line in ls.stdout.splitlines():\n            parts = line.split()\n            if len(parts) != 2 or not parts[1].startswith(\"refs/heads/\"):\n                continue\n            remote_sha, ref = parts\n            name = ref.removeprefix(\"refs/heads/\")\n            try:\n                if remote_sha == sha:\n                    matches.append(name)\n                    continue\n                if (self._have_remote_commit(remote, name, remote_sha, timeout,\n                                              on_transient=on_transient)\n                        and self.is_ancestor(sha, remote_sha)):\n                    matches.append(name)\n            except Exception as exc:  # noqa: BLE001 \u2014 one bad ref must not sink the rest\n                if on_transient is not None:\n                    on_transient(f\"checking ref {name!r} for {sha} failed ({exc})\")\n                continue\n        return matches"
+  },
+  "tool_use_id": "toolu_01SrWyr6apCdBJ8dzKBq472B",
+  "ts": 1789535593.984462,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_01SrWyr6apCdBJ8dzKBq472B",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 214,
+  "over_cap": false,
+  "non_text_blocks": 0,
+  "ts": 1789535593.9933162,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Edit",
+  "tool_input": {
+   "replace_all": false,
+   "file_path": "/workspace/example-repo/.no_human/worktrees/__TASK_ID__.4242.deadbeef/src/no_human/vcs/git.py",
+   "old_string": "    def remote_branch_relation(self, branch: str, *, remote: str = \"origin\",\n                                timeout: int = 30) -> str:\n        \"\"\"How local ``branch`` relates to its own tip on ``remote``.",
+   "new_string": "    def remote_branch_relation(self, branch: str, *, remote: str = \"origin\",\n                                timeout: int = 30,\n                                on_transient: Callable[[str], None] | None = None,\n                                ) -> str:\n        \"\"\"How local ``branch`` relates to its own tip on ``remote``."
+  },
+  "tool_use_id": "toolu_01MzgTd7k8FMngL75izng72z",
+  "ts": 1789535598.236717,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_01MzgTd7k8FMngL75izng72z",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 214,
+  "over_cap": false,
+  "non_text_blocks": 0,
+  "ts": 1789535602.448535,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Edit",
+  "tool_input": {
+   "replace_all": false,
+   "file_path": "/workspace/example-repo/.no_human/worktrees/__TASK_ID__.4242.deadbeef/src/no_human/vcs/git.py",
+   "old_string": "        only an empty ``--refmap=`` disables that and writes exclusively to\n        the private destination.\n        \"\"\"\n        local = self._run(\"rev-parse\", branch, check=False)\n        if not local:\n            return \"unknown\"\n        ls = subprocess.run(\n            [\"git\", \"ls-remote\", remote, f\"refs/heads/{branch}\"],\n            cwd=self.path, capture_output=True, text=True, timeout=timeout,\n            **hidden_console_kwargs(),\n        )\n        if ls.returncode != 0 or not ls.stdout.strip():\n            return \"unknown\"\n        remote_sha = ls.stdout.split()[0]\n        if remote_sha == local:\n            return \"up_to_date\"\n        if not self._have_remote_commit(remote, branch, remote_sha, timeout):\n            return \"unknown\"\n        return \"behind\" if self.is_ancestor(local, remote_sha) else \"diverged\"",
+   "new_string": "        only an empty ``--refmap=`` disables that and writes exclusively to\n        the private destination.\n\n        `on_transient`, when given, is called with a note whenever the\n        ``\"unknown\"`` returned below came from a failed git call rather than\n        a proven \"never pushed\" \u2014 purely additive, the return value is\n        unchanged either way.\n        \"\"\"\n        local = self._run(\"rev-parse\", branch, check=False)\n        if not local:\n            return \"unknown\"\n        ls = subprocess.run(\n            [\"git\", \"ls-remote\", remote, f\"refs/heads/{branch}\"],\n            cwd=self.path, capture_output=True, text=True, timeout=timeout,\n            **hidden_console_kwargs(),\n        )\n        if ls.returncode != 0:\n            if on_transient is not None:\n                on_transient(\n                    f\"ls-remote {remote!r} for {branch!r} failed \"\n                    f\"(rc={ls.returncode}): {ls.stderr.strip()[:200]}\")\n            return \"unknown\"\n        if not ls.stdout.strip():\n            return \"unknown\"\n        remote_sha = ls.stdout.split()[0]\n        if remote_sha == local:\n            return \"up_to_date\"\n        if not self._have_remote_commit(remote, branch, remote_sha, timeout,\n                                         on_transient=on_transient):\n            return \"unknown\"\n        return \"behind\" if self.is_ancestor(local, remote_sha) else \"diverged\""
+  },
+  "tool_use_id": "toolu_01M2vNs3zSFqEkrGdgo4Eu5e",
+  "ts": 1789535609.951164,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_01M2vNs3zSFqEkrGdgo4Eu5e",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 214,
+  "over_cap": false,
+  "non_text_blocks": 0,
+  "ts": 1789535609.960141,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Edit",
+  "tool_input": {
+   "replace_all": false,
+   "file_path": "/workspace/example-repo/.no_human/worktrees/__TASK_ID__.4242.deadbeef/src/no_human/core/orchestrator.py",
+   "old_string": "#: Kinds whose deliverable is a REPORT, not a diff. Named once: the tuple was\n#: repeated at each use, and the escalation choice now depends on it.\n_REPORT_KINDS = (\"investigation\", \"design_doc\")",
+   "new_string": "#: Kinds whose deliverable is a REPORT, not a diff. Named once: the tuple was\n#: repeated at each use, and the escalation choice now depends on it.\n_REPORT_KINDS = (\"investigation\", \"design_doc\")\n\n\n@dataclass(frozen=True)\nclass ClaimGate:\n    \"\"\"What `claim_gate_decision` found when asked whether a zero-diff\n    ALREADY-SATISFIED claim would be judged, and how.\n\n    One of five mutually exclusive `stage`s, in the same order `_run_attempt`\n    checks them: `\"uncommitted\"` (the tree has uncommitted changes \u2014 no\n    zero-diff claim is even possible this round), `\"report\"` (a report-kind\n    task with a non-empty report \u2014 never a landed-work claim), `\"resumed\"`\n    (the branch already carries commits ahead of base that no completed\n    review judged, or an ineligible zero-diff head \u2014 routed to a full\n    review, not the claim gate), `\"no_claim\"` (a clean, non-report,\n    non-resumed tree whose final text does not parse as an ALREADY-SATISFIED\n    claim), and `\"claim\"` (a parsed claim, classified against the same\n    subject tree delivery classifies).\n\n    `refuses`/`reason` describe delivery's verdict ONLY when `stage ==\n    \"claim\"`; they are meaningless otherwise. `undetermined`, when non-empty,\n    means at least one git call behind that verdict failed or timed out \u2014\n    `refuses` is always forced to `False` in that case, since a transient\n    failure must never read as a proven refusal.\n    \"\"\"\n\n    stage: str\n    resumed_commit: Any = None\n    claim: str | None = None\n    subject: tuple | None = None\n    refuses: bool = False\n    reason: str = \"\"\n    undetermined: str = \"\""
+  },
+  "tool_use_id": "toolu_01CWDoMHGXKoVLxCJUerxFmo",
+  "ts": 1789535621.835794,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_01CWDoMHGXKoVLxCJUerxFmo",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 224,
+  "over_cap": false,
+  "non_text_blocks": 0,
+  "ts": 1789535621.901401,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Bash",
+  "tool_input": {
+   "command": "cd /workspace/example-repo/.no_human/worktrees/__TASK_ID__.4242.deadbeef && grep -n \"_route_unjudged_head\" src/no_human/core/orchestrator.py"
+  },
+  "tool_use_id": "toolu_01BC8TeWCCHiG2B2CwD3WvXd",
+  "ts": 1789535624.712088,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_01BC8TeWCCHiG2B2CwD3WvXd",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 422,
+  "over_cap": false,
+  "non_text_blocks": 0,
+  "ts": 1789535624.7317388,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Read",
+  "tool_input": {
+   "file_path": "/workspace/example-repo/.no_human/worktrees/__TASK_ID__.4242.deadbeef/src/no_human/core/orchestrator.py",
+   "offset": 12789,
+   "limit": 40
+  },
+  "tool_use_id": "toolu_01VvVCyV3Wwc9L3M7VQWbNhQ",
+  "ts": 1789535627.400388,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_01VvVCyV3Wwc9L3M7VQWbNhQ",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 2443,
+  "over_cap": true,
+  "non_text_blocks": 0,
+  "ts": 1789535627.4051552,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Edit",
+  "tool_input": {
+   "replace_all": false,
+   "file_path": "/workspace/example-repo/.no_human/worktrees/__TASK_ID__.4242.deadbeef/src/no_human/core/orchestrator.py",
+   "old_string": "    def _route_unjudged_head(self, task: Task, repo, base: str) -> CommitResult | None:\n        \"\"\"`CommitResult` when this zero-diff attempt's branch head carries a\n        diff no completed review has judged \u2014 else ``None``.\n\n        Hoisted into `_run_attempt` before BOTH zero-diff terminals so a\n        `branched_from_own_partial` resume (`_is_own_partial`, ~17843 \u2014 every\n        `wake`/machine resume whose sha matches its own `resume_from`) cannot\n        reach either one on an unjudged diff: incident 0847f2c2 (claim\n        terminal, a fully-cited claim was refused by `_already_satisfied_\n        subject`'s `[WIP-BLOCKED]` check) and incident d256ae60 (silent\n        terminal, no claim parsed at all, so the old code never even asked\n        eligibility and fell straight to `_NO_CHANGES_DETAIL`), plus the\n        neighbouring `[WIP-PARTIAL]` incident on the same date and shape. All\n        are the SAME defect: an unreviewed diff sat at head and neither\n        terminal ever sent it to a reviewer.\n        \"\"\"\n        eligible, why = self._already_satisfied_eligible(task, repo, base)\n        if eligible:\n            return None\n        self._emit_review(\n            \"already_satisfied_ineligible\",\n            \"resumed attempt added nothing new and its branch head carries \"\n            f\"an unreviewed diff ({why}) \u2014 routing to a full independent \"\n            \"review of the branch diff\",\n        )\n        return repo.head_commit(base)",
+   "new_string": "    def _route_unjudged_head(\n        self, task: Task, repo, base: str, *, announce: bool = True,\n    ) -> CommitResult | None:\n        \"\"\"`CommitResult` when this zero-diff attempt's branch head carries a\n        diff no completed review has judged \u2014 else ``None``.\n\n        Hoisted into `_run_attempt` before BOTH zero-diff terminals so a\n        `branched_from_own_partial` resume (`_is_own_partial`, ~17843 \u2014 every\n        `wake`/machine resume whose sha matches its own `resume_from`) cannot\n        reach either one on an unjudged diff: incident 0847f2c2 (claim\n        terminal, a fully-cited claim was refused by `_already_satisfied_\n        subject`'s `[WIP-BLOCKED]` check) and incident d256ae60 (silent\n        terminal, no claim parsed at all, so the old code never even asked\n        eligibility and fell straight to `_NO_CHANGES_DETAIL`), plus the\n        neighbouring `[WIP-PARTIAL]` incident on the same date and shape. All\n        are the SAME defect: an unreviewed diff sat at head and neither\n        terminal ever sent it to a reviewer.\n\n        `announce=False` suppresses the `already_satisfied_ineligible` event\n        \u2014 for a caller (the mid-attempt claim guard) probing this same\n        decision against the live tree without narrating it into the task's\n        own event stream a second time.\n        \"\"\"\n        eligible, why = self._already_satisfied_eligible(task, repo, base)\n        if eligible:\n            return None\n        if announce:\n            self._emit_review(\n                \"already_satisfied_ineligible\",\n                \"resumed attempt added nothing new and its branch head \"\n                f\"carries an unreviewed diff ({why}) \u2014 routing to a full \"\n                \"independent review of the branch diff\",\n            )\n        return repo.head_commit(base)"
+  },
+  "tool_use_id": "toolu_01BEkjbmKLyykLwZCiYEhedE",
+  "ts": 1789535637.893037,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_01BEkjbmKLyykLwZCiYEhedE",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 224,
+  "over_cap": false,
+  "non_text_blocks": 0,
+  "ts": 1789535640.8590379,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Edit",
+  "tool_input": {
+   "replace_all": false,
+   "file_path": "/workspace/example-repo/.no_human/worktrees/__TASK_ID__.4242.deadbeef/src/no_human/core/orchestrator.py",
+   "old_string": "    async def _gate_already_satisfied(\n        self, task: Task, repo: GitRepo, attempt_id: str, claim: str, *,\n        branch: str | None, attempt_n: int | None = None,\n        result: Any = None, base: str | None = None,\n    ) -> TaskOutcome:\n        \"\"\"A zero-diff attempt claimed every criterion is ALREADY met, with the\n        per-criterion evidence table. Never take the coder's word for it: the\n        fresh-context reviewer opens each cited file and tries to refute the\n        claim \u2014 the same trust chain as a code diff. PASS \u2192 the human gate\n        (awaiting_approval; the claim is still the deliverable, and there may\n        be no PR \u2014 but when this run's own pre-gate draft IS the PR, the body\n        is refreshed through the same evidence chain `_finalize` uses and the\n        review-checklist comment is posted, all best-effort).\n        FAIL \u2192 a normal failed attempt whose findings feed the bounded loop.\"\"\"\n        self._emit_review(\n            \"review_start\",\n            \"zero-diff ALREADY-SATISFIED claim \u2014 verifying every citation \"\n            \"against the code\",\n        )\n        # Resolve and classify the exact tree BEFORE a reviewer can spend a\n        # token on it. An already-satisfied verdict is meaningful only for a\n        # tree a delivery could actually ship.\n        (shippable, reviewed_sha, subject, subject_reason, subject_on_main,\n         ship_ref) = await self._already_satisfied_subject(\n            task, repo, base=base, branch=branch)",
+   "new_string": "    async def _gate_already_satisfied(\n        self, task: Task, repo: GitRepo, attempt_id: str, claim: str, *,\n        branch: str | None, attempt_n: int | None = None,\n        result: Any = None, base: str | None = None,\n        subject: tuple | None = None,\n    ) -> TaskOutcome:\n        \"\"\"A zero-diff attempt claimed every criterion is ALREADY met, with the\n        per-criterion evidence table. Never take the coder's word for it: the\n        fresh-context reviewer opens each cited file and tries to refute the\n        claim \u2014 the same trust chain as a code diff. PASS \u2192 the human gate\n        (awaiting_approval; the claim is still the deliverable, and there may\n        be no PR \u2014 but when this run's own pre-gate draft IS the PR, the body\n        is refreshed through the same evidence chain `_finalize` uses and the\n        review-checklist comment is posted, all best-effort).\n        FAIL \u2192 a normal failed attempt whose findings feed the bounded loop.\n\n        `subject`, when given, is the six-tuple `claim_gate_decision` already\n        computed against this exact tree moments earlier \u2014 reused as-is\n        instead of asking git the same question twice. `None` (every caller\n        before this parameter existed, and every caller that parsed its\n        claim from a reformat nudge) falls back to asking here, unchanged.\n        \"\"\"\n        self._emit_review(\n            \"review_start\",\n            \"zero-diff ALREADY-SATISFIED claim \u2014 verifying every citation \"\n            \"against the code\",\n        )\n        # Resolve and classify the exact tree BEFORE a reviewer can spend a\n        # token on it. An already-satisfied verdict is meaningful only for a\n        # tree a delivery could actually ship.\n        if subject is None:\n            subject = await self._already_satisfied_subject(\n                task, repo, base=base, branch=branch)\n        (shippable, reviewed_sha, subject, subject_reason, subject_on_main,\n         ship_ref) = subject"
+  },
+  "tool_use_id": "toolu_019tuMs2yLHed3z3vuB4vUgk",
+  "ts": 1789535653.2408562,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_019tuMs2yLHed3z3vuB4vUgk",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 224,
+  "over_cap": false,
+  "non_text_blocks": 0,
+  "ts": 1789535653.300352,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Bash",
+  "tool_input": {
+   "command": "grep -n \"async def _gate_already_satisfied\\|async def _route_unjudged_head\\|def _route_unjudged_head\\|async def _already_satisfied_subject\\|class ClaimGate\\|async def claim_gate_decision\" src/no_human/core/orchestrator.py"
+  },
+  "tool_use_id": "toolu_01XEGZBhmDdzX4WAGAobatsv",
+  "ts": 1789535840.113905,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_01XEGZBhmDdzX4WAGAobatsv",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 149,
+  "over_cap": false,
+  "non_text_blocks": 0,
+  "ts": 1789535840.1426508,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Read",
+  "tool_input": {
+   "file_path": "/workspace/example-repo/.no_human/worktrees/__TASK_ID__.4242.deadbeef/src/no_human/core/orchestrator.py",
+   "offset": 12799,
+   "limit": 50
+  },
+  "tool_use_id": "toolu_01ShVGJE7jXdtKs5eg59GaXF",
+  "ts": 1789535842.427733,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_01ShVGJE7jXdtKs5eg59GaXF",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 2932,
+  "over_cap": true,
+  "non_text_blocks": 0,
+  "ts": 1789535842.439768,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Edit",
+  "tool_input": {
+   "replace_all": false,
+   "file_path": "/workspace/example-repo/.no_human/worktrees/__TASK_ID__.4242.deadbeef/src/no_human/core/orchestrator.py",
+   "old_string": "        return repo.head_commit(base)\n\n    async def _append_review_history(",
+   "new_string": "        return repo.head_commit(base)\n\n    async def claim_gate_decision(\n        self, task: Task, repo: GitRepo, *, base: str | None, branch: str | None,\n        branched_from_own_partial: bool, final_text: str | None,\n        announce: bool = True,\n    ) -> ClaimGate:\n        \"\"\"The single decision `_run_attempt`'s commit section makes about a\n        zero-diff attempt, extracted so the mid-attempt claim guard can ask\n        the exact same question of the live tree instead of keeping its own\n        copy of the answer.\n\n        Mirrors `_run_attempt`'s commit-section order exactly: uncommitted\n        changes end it before a claim is even possible; a report-kind task\n        with a report ends it next; a resumed branch carrying an unreviewed\n        diff (ahead of base and not an own-partial resume, OR ineligible per\n        `_route_unjudged_head`) routes to a full review instead of the claim\n        gate; only then is `final_text` parsed for an ALREADY-SATISFIED claim,\n        and only a parsed claim is classified against the subject tree\n        `_already_satisfied_subject` builds \u2014 the same classification\n        delivery itself ships on.\n\n        `announce=False` (the guard's use) suppresses `_route_unjudged_head`'s\n        `already_satisfied_ineligible` event so probing does not narrate a\n        second copy of an event delivery will emit itself when it reaches\n        this same point for real.\n\n        `refuses`/`reason`/`undetermined` are populated only when\n        `stage == \"claim\"`. `undetermined`, whenever it is non-empty, forces\n        `refuses` back to `False` \u2014 a git call that failed or timed out\n        while building the subject tree must never be read as a proven\n        refusal.\n        \"\"\"\n\n        def _prefix():\n            if repo.has_changes():\n                return \"uncommitted\", None\n            if task.kind in _REPORT_KINDS and (final_text or \"\").strip():\n                return \"report\", None\n            resumed_commit = (\n                repo.head_commit(base)\n                if base and repo.commits_ahead(base) > 0\n                and not branched_from_own_partial\n                else None\n            )\n            if resumed_commit is None and base:\n                resumed_commit = self._route_unjudged_head(\n                    task, repo, base, announce=announce)\n            if resumed_commit is not None:\n                return \"resumed\", resumed_commit\n            return None, None\n\n        # No try/except around the prefix: `_run_attempt` calls these same\n        # predicates uncaught today, so a prefix exception must keep\n        # propagating exactly as it does now \u2014 delivery's crash-through\n        # behaviour is not something this function is allowed to change.\n        # The guard's own caller is responsible for treating any exception\n        # out of this whole method as \"inject nothing\".\n        stage, resumed_commit = await asyncio.to_thread(_prefix)\n\n        if stage == \"uncommitted\":\n            return ClaimGate(stage=\"uncommitted\")\n        if stage == \"report\":\n            return ClaimGate(stage=\"report\")\n        if stage == \"resumed\":\n            return ClaimGate(stage=\"resumed\", resumed_commit=resumed_commit)\n\n        claim = _parse_already_satisfied(\n            final_text or \"\", len(task.acceptance_criteria or []))\n        if claim is None:\n            return ClaimGate(stage=\"no_claim\")\n\n        notes: list[str] = []\n        subject = await self._already_satisfied_subject(\n            task, repo, base=base, branch=branch, on_transient=notes.append)\n        refuses = not subject[0]\n        reason = subject[3]\n        undetermined = \"; \".join(notes)\n        if undetermined:\n            refuses = False\n        return ClaimGate(\n            stage=\"claim\", claim=claim, subject=subject,\n            refuses=refuses, reason=reason, undetermined=undetermined,\n        )\n\n    async def _append_review_history("
+  },
+  "tool_use_id": "toolu_01XGFnm3ybHFGnYP6QqCjJGV",
+  "ts": 1789535854.5804539,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_01XGFnm3ybHFGnYP6QqCjJGV",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 224,
+  "over_cap": false,
+  "non_text_blocks": 0,
+  "ts": 1789535854.638755,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Bash",
+  "tool_input": {
+   "command": "grep -n \"# --- commit (deterministic)\\|resumed_commit = None\\|if not repo.has_changes():\\|commit_with_manifest_repair\\|await self.store.update_attempt(attempt_id, commit_sha=commit.sha)\" src/no_human/core/orchestrator.py | head -40"
+  },
+  "tool_use_id": "toolu_0126CQjGfPHAWqULLurxuiL3",
+  "ts": 1789535856.911336,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_0126CQjGfPHAWqULLurxuiL3",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 1011,
+  "over_cap": false,
+  "non_text_blocks": 0,
+  "ts": 1789535861.148078,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Read",
+  "tool_input": {
+   "file_path": "/workspace/example-repo/.no_human/worktrees/__TASK_ID__.4242.deadbeef/src/no_human/core/orchestrator.py",
+   "offset": 6680,
+   "limit": 265
+  },
+  "tool_use_id": "toolu_01Y72wRYEsJW5jmtEaoDQaCh",
+  "ts": 1789535862.980628,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_01Y72wRYEsJW5jmtEaoDQaCh",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 17644,
+  "over_cap": true,
+  "non_text_blocks": 0,
+  "ts": 1789535862.9958,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Read",
+  "tool_input": {
+   "file_path": "/workspace/example-repo/.no_human/worktrees/__TASK_ID__.4242.deadbeef/src/no_human/core/orchestrator.py",
+   "offset": 6859,
+   "limit": 5
+  },
+  "tool_use_id": "toolu_01VCF7kZWeHkMLEsoSvwHJCm",
+  "ts": 1789535865.358316,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_01VCF7kZWeHkMLEsoSvwHJCm",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 289,
+  "over_cap": false,
+  "non_text_blocks": 0,
+  "ts": 1789535865.363626,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Bash",
+  "tool_input": {
+   "command": "grep -n \"_land_no_changes_needed\" src/no_human/core/orchestrator.py | head -5"
+  },
+  "tool_use_id": "toolu_01JuzKHSbbWGMStjSJbUQY5z",
+  "ts": 1789535891.089252,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_01JuzKHSbbWGMStjSJbUQY5z",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 109,
+  "over_cap": false,
+  "non_text_blocks": 0,
+  "ts": 1789535891.109914,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Read",
+  "tool_input": {
+   "file_path": "/workspace/example-repo/.no_human/worktrees/__TASK_ID__.4242.deadbeef/src/no_human/core/orchestrator.py",
+   "offset": 6862,
+   "limit": 27
+  },
+  "tool_use_id": "toolu_01TFdSjXKx6szYRX3GmM6zSH",
+  "ts": 1789535894.141804,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_01TFdSjXKx6szYRX3GmM6zSH",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 1835,
+  "over_cap": false,
+  "non_text_blocks": 0,
+  "ts": 1789535894.1462889,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Read",
+  "tool_input": {
+   "file_path": "/workspace/example-repo/.no_human/worktrees/__TASK_ID__.4242.deadbeef/src/no_human/core/orchestrator.py",
+   "offset": 6888,
+   "limit": 55
+  },
+  "tool_use_id": "toolu_01Y84Uoy5Pumb1B7XG9aukbL",
+  "ts": 1789535897.4556649,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_01Y84Uoy5Pumb1B7XG9aukbL",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 3520,
+  "over_cap": true,
+  "non_text_blocks": 0,
+  "ts": 1789535900.366325,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Bash",
+  "tool_input": {
+   "command": "grep -n \"branched_from_own_partial\" src/no_human/core/orchestrator.py | head -20"
+  },
+  "tool_use_id": "toolu_012rAUSHximnPbCNt5R1EhM7",
+  "ts": 1789535952.547907,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_012rAUSHximnPbCNt5R1EhM7",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 702,
+  "over_cap": false,
+  "non_text_blocks": 0,
+  "ts": 1789535952.566955,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Bash",
+  "tool_input": {
+   "command": "python3 - <<'PYEOF'\nimport io\n\npath = \"src/no_human/core/orchestrator.py\"\nwith open(path) as f:\n    lines = f.readlines()\n\n# 1-indexed line numbers -> 0-indexed slice\nstart = 6687  # \"resumed_commit = None\"\nend = 6941    # \"self._emit_manifest_repairs(repaired)\"\n\nprint(repr(lines[start-1]))\nprint(repr(lines[end-1]))\nprint(repr(lines[6686-1]))  # comment line before, should be untouched\nprint(repr(lines[6942-1]))  # merge line after, should be untouched\nPYEOF\n"
+  },
+  "tool_use_id": "toolu_01QQD13gYJYdWkEAHGdjjBak",
+  "ts": 1789535957.38533,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_01QQD13gYJYdWkEAHGdjjBak",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 215,
+  "over_cap": false,
+  "non_text_blocks": 0,
+  "ts": 1789535957.44063,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Write",
+  "tool_input": {
+   "file_path": "/tmp/new_commit_section.py",
+   "content": "        gate = await self.claim_gate_decision(\n            task, repo, base=base, branch=branch,\n            branched_from_own_partial=branched_from_own_partial,\n            final_text=result.final_text,\n        )\n        if gate.stage == \"report\":\n            # Investigation and design-doc tasks may produce findings (the\n            # report / the document) without code changes \u2014 that is their\n            # SUCCESS outcome, not a failure.\n            findings = (result.final_text or \"\").strip()\n            # Defect 204f2177: assert kind/criteria consistency BEFORE\n            # applying report-only completion. A report-only kind\n            # (design_doc/investigation) produces a report and never\n            # code \u2014 so criteria demanding a tested/shipped artifact (a\n            # CLI flag, red-first tests, an endpoint) can never be\n            # satisfied by it. That live ticket was classified\n            # design_doc, then marked DONE on \"design doc complete\n            # (report-only, no code changes)\" with the demanded CLI flag\n            # never shipped and nothing flagged the mismatch. Refuse\n            # instead of silently completing, and escalate to a human \u2014\n            # never lower the bar by completing anyway.\n            mismatch = kind_criteria_mismatch(task.kind, task.acceptance_criteria)\n            if mismatch is not None:\n                await self.store.update_attempt(\n                    attempt_id, status=\"failed\",\n                    failure_reason=f\"kind/criteria mismatch: {mismatch}\")\n                self.emit(\"kind_criteria_mismatch\", mismatch)\n                mismatch_blocker = Blocker(\n                    category=BlockerCategory.AMBIGUITY,\n                    transient=False, confidence=1.0, goal=task.title,\n                    root_cause_hypothesis=mismatch,\n                    evidence=mismatch,\n                    question=(\n                        \"This task's kind is report-only (design_doc/\"\n                        \"investigation) but its acceptance criteria \"\n                        \"demand a tested/shipped artifact a report can \"\n                        \"never deliver. Confirm the right kind (e.g. \"\n                        \"feature/bugfix) or drop the test-bearing \"\n                        \"criteria if this really is report-only.\"\n                    ),\n                )\n                return await self._raise_blocker(\n                    task, mismatch_blocker, repo=repo, branch=branch,\n                    attempt_id=attempt_id)\n            # C3: a report-kind task bypasses the code reviewer, so its only\n            # completion bar is that the report is non-empty. Reject an\n            # unambiguously-inadequate deliverable (a bare \"Done.\", a\n            # placeholder, an empty design doc) as a FAILED attempt so the\n            # bounded loop retries with the reason as feedback and, if the\n            # agent still can't produce substance, escalates honestly rather\n            # than marking a non-answer DONE. High-precision: a terse-but-real\n            # finding passes (report_quality.report_inadequacy).\n            inadequate = report_inadequacy(findings, task.kind)\n            if inadequate is not None:\n                await self.store.update_attempt(\n                    attempt_id, status=\"failed\",\n                    failure_reason=f\"inadequate report: {inadequate}\")\n                self.emit(\"report_inadequate\", inadequate)\n                # Carried for the escalation: without it the human sees\n                # \"inadequate\" N times and never what the agent actually\n                # produced \u2014 the same gap the zero-diff escalation closed.\n                task.context = {\n                    **(task.context or {}),\n                    \"inadequate_report_reason\": inadequate,\n                    \"inadequate_report_text\": findings[:2000],\n                }\n                await self.store.update_task(task)\n                return TaskOutcome(\n                    task, status=TaskStatus.FAILED,\n                    detail=f\"{_INADEQUATE_REPORT_DETAIL}: {inadequate}\")\n            task.context = {**(task.context or {}), \"findings\": findings}\n            await self.store.update_task(task)\n            await self.store.update_attempt(\n                attempt_id, status=\"succeeded\",\n                failure_reason=None,\n            )\n            detail = (f\"{'design doc' if task.kind == 'design_doc' else 'investigation'}\"\n                  \" complete (report-only, no code changes)\")\n            self.emit(\"investigation_report\", detail)\n            await self.store.set_status(\n                task, TaskStatus.DONE, validate=False,\n                event={\"source\": \"orchestrator\", \"kind\": \"investigation_report\",\n                       \"text\": detail})\n            self.emit(\"state\", \"done\", status=\"done\")\n            # The findings ARE the deliverable \u2014 they must ride on\n            # outcome.report or every consumer that judges the deliverable\n            # (the north-star bench) sees only the placeholder detail (the\n            # #85 bug class, re-found live on v7 spec ns-0e7bf1ae: the\n            # judge read \"investigation complete (report-only, no code\n            # changes)\" while the real answer sat in context[\"findings\"]).\n            return TaskOutcome(task, status=TaskStatus.DONE, detail=detail,\n                               report=findings)\n        elif gate.stage == \"resumed\":\n            # A resumed attempt (`nh reply`, D15) restarts from a [WIP-BLOCKED]\n            # checkpoint whose work is ALREADY COMMITTED on the branch, or the\n            # branch head otherwise carries a diff no completed review has\n            # judged \u2014 `claim_gate_decision` (mirroring `_run_attempt`'s own\n            # former inline order) already ruled out crediting a same-loop\n            # partial resume and already routed an ineligible head through\n            # `_route_unjudged_head`. Task 84251cb2 had 645 lines committed\n            # against dev and was failed for it twice before this existed.\n            commit = gate.resumed_commit\n        elif gate.stage == \"uncommitted\":\n            commit_msg = self._commit_message(task)\n            # Only commit files the agent intentionally wrote/edited \u2014 not test\n            # side-effects (e.g. state files updated by running vitest).\n            edited = getattr(self, \"_agent_edited_files\", None)\n            repaired: list[tuple[list[str], str]] = []\n            try:\n                try:\n                    # Handles the manifest gate's changed-pinned-files refusal\n                    # by performing the gate's own documented approve+retry\n                    # flow; anything else raises. In a thread: the approve\n                    # re-scans each refused file (~0.24s/file measured) and\n                    # must not stall the loop. The on_repair box is drained\n                    # AFTER the thread returns so the emit stays on the loop\n                    # thread.\n                    commit = await asyncio.to_thread(\n                        commit_with_manifest_repair,\n                        repo, list(edited) if edited else None, commit_msg,\n                        on_repair=lambda p, note: repaired.append((p, note)),\n                    )\n                except ProtectedBranch:\n                    # A pipeline commit aimed at main/master is a wiring bug,\n                    # not an attempt outcome \u2014 surface it loudly, never retry\n                    # it.\n                    raise\n                except GitError as exc:\n                    # 2026-08-11: three finished tasks died as task_crashed\n                    # when a pre-commit refusal propagated raw from this\n                    # call. A commit failure after the work is done is an\n                    # ATTEMPT failure with the refusal as evidence \u2014 never an\n                    # uncategorized crash.\n                    detail = (\"commit failed: \" + str(exc).strip())[:2000]\n                    self.emit(\"commit_refused\", detail[:500])\n                    await self.store.update_attempt(\n                        attempt_id, status=\"failed\", failure_reason=detail,\n                    )\n                    return TaskOutcome(\n                        task, status=TaskStatus.FAILED, detail=detail)\n            finally:\n                # A ledger mutation is NEVER absent from the record.\n                # export_guard's approve rewrites RELEASE_MANIFEST.txt in the\n                # working tree BEFORE the retry commit; if that retry refuses\n                # (or ProtectedBranch propagates) the mutation already\n                # happened, so the drain must run on every exit path \u2014 R2,\n                # 2026-08-12. (`if repaired:` previously sat after the\n                # except-return and could not be reached.)\n                # The pipeline changed the release-approval ledger \u2014 that\n                # must be on the task's record, warnings included (approve\n                # prints e.g. \"N stale pin(s)\" to stderr).\n                self._emit_manifest_repairs(repaired)\n        else:\n            # gate.stage is \"no_claim\" or \"claim\": a fully-cited\n            # ALREADY-SATISFIED claim is the one zero-diff completion that is\n            # not a failure: verify it against the code (reviewer gate)\n            # instead of failing the attempt. Anything less keeps the\n            # anti-fabrication default below.\n            claim = gate.claim if gate.stage == \"claim\" else None\n            if claim is None:\n                # \u2026and if the report did not parse, ONE single-turn\n                # follow-up asking for the contract format before the\n                # attempt dies on phrasing. Nothing else about this branch\n                # moves: no nudge on empty text, and a nudge that still\n                # does not parse falls straight through to the failure\n                # below (`_reformat_nudge`).\n                #\n                # The three sink controls are caught HERE, not inside the\n                # nudge. The coder turn's own handlers for them are the\n                # `except` clauses on the try block far above, which closed\n                # before the commit-section decision was ever made \u2014 so an\n                # abort raised this late reaches no handler at all and would\n                # escape `_run_attempt` entirely (`_drive` catches only\n                # QuotaExhausted; verified by reading it, not assumed).\n                try:\n                    claim = await self._reformat_nudge(\n                        task, result, repo=repo, attempt_id=attempt_id)\n                except CancelRequested as exc:\n                    return await self._honor_cancel(\n                        task, repo, branch, str(exc), attempt_id=attempt_id)\n                except (BudgetAbort, StuckAbort, ConvergenceAbort) as exc:\n                    return await self._abort_during_nudge(\n                        task, repo, attempt_id, exc, result=result,\n                        branch=branch)\n            if claim is not None:\n                # `gate.subject` is reused only when it was computed against\n                # this exact claim text (`gate.stage == \"claim\"`, so no\n                # nudge ran) \u2014 a nudge produces different text than\n                # `claim_gate_decision` classified, so it must ask fresh.\n                precomputed = gate.subject if gate.stage == \"claim\" else None\n                return await self._gate_already_satisfied(\n                    task, repo, attempt_id, claim, branch=branch,\n                    attempt_n=attempt_n, result=result, base=base,\n                    subject=precomputed,\n                )\n            landed = await self._land_no_changes_needed(\n                task, repo=repo, attempt_id=attempt_id, result=result)\n            if landed is not None:\n                return landed\n            detail = _NO_CHANGES_DETAIL\n            # Keep what the agent SAID. Task d9d458b5 explained three times\n            # that the work was already committed and that it would not\n            # fabricate an edit; the reason was dropped on the floor and the\n            # loop retried a decision that only a human could make.\n            # Written unconditionally, even when empty: the escalation quotes\n            # this as the reason for THIS attempt, and a conditional write\n            # would let a talkative attempt 1 put words in a silent\n            # attempt 2's mouth.\n            # The ORIGINAL final text, deliberately, even when a reformat\n            # nudge ran and also failed to parse: this field answers \"what\n            # did the agent conclude\", and the nudge's reply is a restatement\n            # of that under a formatting instruction WE wrote. Escalating\n            # with our own prompt's echo instead of the agent's reasoning is\n            # the exact loss (task d9d458b5) this field was added to stop.\n            ctx = task.context or {}\n            ctx[\"zero_diff_reason\"] = (result.final_text or \"\").strip()[:2000]\n            task.context = ctx\n            await self.store.update_task(task)\n            await self.store.update_attempt(\n                attempt_id, status=\"failed\", failure_reason=detail,\n            )\n            return TaskOutcome(task, status=TaskStatus.FAILED, detail=detail)\n"
+  },
+  "tool_use_id": "toolu_01CsSgaMpKWV5cEnWZf7QRhn",
+  "ts": 1789535983.644811,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_01CsSgaMpKWV5cEnWZf7QRhn",
+  "parent_tool_use_id": null,
+  "is_error": true,
+  "result_chars": 100,
+  "over_cap": false,
+  "non_text_blocks": 0,
+  "ts": 1789535983.647239,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Write",
+  "tool_input": {
+   "file_path": "/workspace/example-repo/.no_human/worktrees/__TASK_ID__.4242.deadbeef/.no_human/new_commit_section.py",
+   "content": "        gate = await self.claim_gate_decision(\n            task, repo, base=base, branch=branch,\n            branched_from_own_partial=branched_from_own_partial,\n            final_text=result.final_text,\n        )\n        if gate.stage == \"report\":\n            # Investigation and design-doc tasks may produce findings (the\n            # report / the document) without code changes \u2014 that is their\n            # SUCCESS outcome, not a failure.\n            findings = (result.final_text or \"\").strip()\n            # Defect 204f2177: assert kind/criteria consistency BEFORE\n            # applying report-only completion. A report-only kind\n            # (design_doc/investigation) produces a report and never\n            # code \u2014 so criteria demanding a tested/shipped artifact (a\n            # CLI flag, red-first tests, an endpoint) can never be\n            # satisfied by it. That live ticket was classified\n            # design_doc, then marked DONE on \"design doc complete\n            # (report-only, no code changes)\" with the demanded CLI flag\n            # never shipped and nothing flagged the mismatch. Refuse\n            # instead of silently completing, and escalate to a human \u2014\n            # never lower the bar by completing anyway.\n            mismatch = kind_criteria_mismatch(task.kind, task.acceptance_criteria)\n            if mismatch is not None:\n                await self.store.update_attempt(\n                    attempt_id, status=\"failed\",\n                    failure_reason=f\"kind/criteria mismatch: {mismatch}\")\n                self.emit(\"kind_criteria_mismatch\", mismatch)\n                mismatch_blocker = Blocker(\n                    category=BlockerCategory.AMBIGUITY,\n                    transient=False, confidence=1.0, goal=task.title,\n                    root_cause_hypothesis=mismatch,\n                    evidence=mismatch,\n                    question=(\n                        \"This task's kind is report-only (design_doc/\"\n                        \"investigation) but its acceptance criteria \"\n                        \"demand a tested/shipped artifact a report can \"\n                        \"never deliver. Confirm the right kind (e.g. \"\n                        \"feature/bugfix) or drop the test-bearing \"\n                        \"criteria if this really is report-only.\"\n                    ),\n                )\n                return await self._raise_blocker(\n                    task, mismatch_blocker, repo=repo, branch=branch,\n                    attempt_id=attempt_id)\n            # C3: a report-kind task bypasses the code reviewer, so its only\n            # completion bar is that the report is non-empty. Reject an\n            # unambiguously-inadequate deliverable (a bare \"Done.\", a\n            # placeholder, an empty design doc) as a FAILED attempt so the\n            # bounded loop retries with the reason as feedback and, if the\n            # agent still can't produce substance, escalates honestly rather\n            # than marking a non-answer DONE. High-precision: a terse-but-real\n            # finding passes (report_quality.report_inadequacy).\n            inadequate = report_inadequacy(findings, task.kind)\n            if inadequate is not None:\n                await self.store.update_attempt(\n                    attempt_id, status=\"failed\",\n                    failure_reason=f\"inadequate report: {inadequate}\")\n                self.emit(\"report_inadequate\", inadequate)\n                # Carried for the escalation: without it the human sees\n                # \"inadequate\" N times and never what the agent actually\n                # produced \u2014 the same gap the zero-diff escalation closed.\n                task.context = {\n                    **(task.context or {}),\n                    \"inadequate_report_reason\": inadequate,\n                    \"inadequate_report_text\": findings[:2000],\n                }\n                await self.store.update_task(task)\n                return TaskOutcome(\n                    task, status=TaskStatus.FAILED,\n                    detail=f\"{_INADEQUATE_REPORT_DETAIL}: {inadequate}\")\n            task.context = {**(task.context or {}), \"findings\": findings}\n            await self.store.update_task(task)\n            await self.store.update_attempt(\n                attempt_id, status=\"succeeded\",\n                failure_reason=None,\n            )\n            detail = (f\"{'design doc' if task.kind == 'design_doc' else 'investigation'}\"\n                  \" complete (report-only, no code changes)\")\n            self.emit(\"investigation_report\", detail)\n            await self.store.set_status(\n                task, TaskStatus.DONE, validate=False,\n                event={\"source\": \"orchestrator\", \"kind\": \"investigation_report\",\n                       \"text\": detail})\n            self.emit(\"state\", \"done\", status=\"done\")\n            # The findings ARE the deliverable \u2014 they must ride on\n            # outcome.report or every consumer that judges the deliverable\n            # (the north-star bench) sees only the placeholder detail (the\n            # #85 bug class, re-found live on v7 spec ns-0e7bf1ae: the\n            # judge read \"investigation complete (report-only, no code\n            # changes)\" while the real answer sat in context[\"findings\"]).\n            return TaskOutcome(task, status=TaskStatus.DONE, detail=detail,\n                               report=findings)\n        elif gate.stage == \"resumed\":\n            # A resumed attempt (`nh reply`, D15) restarts from a [WIP-BLOCKED]\n            # checkpoint whose work is ALREADY COMMITTED on the branch, or the\n            # branch head otherwise carries a diff no completed review has\n            # judged \u2014 `claim_gate_decision` (mirroring `_run_attempt`'s own\n            # former inline order) already ruled out crediting a same-loop\n            # partial resume and already routed an ineligible head through\n            # `_route_unjudged_head`. Task 84251cb2 had 645 lines committed\n            # against dev and was failed for it twice before this existed.\n            commit = gate.resumed_commit\n        elif gate.stage == \"uncommitted\":\n            commit_msg = self._commit_message(task)\n            # Only commit files the agent intentionally wrote/edited \u2014 not test\n            # side-effects (e.g. state files updated by running vitest).\n            edited = getattr(self, \"_agent_edited_files\", None)\n            repaired: list[tuple[list[str], str]] = []\n            try:\n                try:\n                    # Handles the manifest gate's changed-pinned-files refusal\n                    # by performing the gate's own documented approve+retry\n                    # flow; anything else raises. In a thread: the approve\n                    # re-scans each refused file (~0.24s/file measured) and\n                    # must not stall the loop. The on_repair box is drained\n                    # AFTER the thread returns so the emit stays on the loop\n                    # thread.\n                    commit = await asyncio.to_thread(\n                        commit_with_manifest_repair,\n                        repo, list(edited) if edited else None, commit_msg,\n                        on_repair=lambda p, note: repaired.append((p, note)),\n                    )\n                except ProtectedBranch:\n                    # A pipeline commit aimed at main/master is a wiring bug,\n                    # not an attempt outcome \u2014 surface it loudly, never retry\n                    # it.\n                    raise\n                except GitError as exc:\n                    # 2026-08-11: three finished tasks died as task_crashed\n                    # when a pre-commit refusal propagated raw from this\n                    # call. A commit failure after the work is done is an\n                    # ATTEMPT failure with the refusal as evidence \u2014 never an\n                    # uncategorized crash.\n                    detail = (\"commit failed: \" + str(exc).strip())[:2000]\n                    self.emit(\"commit_refused\", detail[:500])\n                    await self.store.update_attempt(\n                        attempt_id, status=\"failed\", failure_reason=detail,\n                    )\n                    return TaskOutcome(\n                        task, status=TaskStatus.FAILED, detail=detail)\n            finally:\n                # A ledger mutation is NEVER absent from the record.\n                # export_guard's approve rewrites RELEASE_MANIFEST.txt in the\n                # working tree BEFORE the retry commit; if that retry refuses\n                # (or ProtectedBranch propagates) the mutation already\n                # happened, so the drain must run on every exit path \u2014 R2,\n                # 2026-08-12. (`if repaired:` previously sat after the\n                # except-return and could not be reached.)\n                # The pipeline changed the release-approval ledger \u2014 that\n                # must be on the task's record, warnings included (approve\n                # prints e.g. \"N stale pin(s)\" to stderr).\n                self._emit_manifest_repairs(repaired)\n        else:\n            # gate.stage is \"no_claim\" or \"claim\": a fully-cited\n            # ALREADY-SATISFIED claim is the one zero-diff completion that is\n            # not a failure: verify it against the code (reviewer gate)\n            # instead of failing the attempt. Anything less keeps the\n            # anti-fabrication default below.\n            claim = gate.claim if gate.stage == \"claim\" else None\n            if claim is None:\n                # \u2026and if the report did not parse, ONE single-turn\n                # follow-up asking for the contract format before the\n                # attempt dies on phrasing. Nothing else about this branch\n                # moves: no nudge on empty text, and a nudge that still\n                # does not parse falls straight through to the failure\n                # below (`_reformat_nudge`).\n                #\n                # The three sink controls are caught HERE, not inside the\n                # nudge. The coder turn's own handlers for them are the\n                # `except` clauses on the try block far above, which closed\n                # before the commit-section decision was ever made \u2014 so an\n                # abort raised this late reaches no handler at all and would\n                # escape `_run_attempt` entirely (`_drive` catches only\n                # QuotaExhausted; verified by reading it, not assumed).\n                try:\n                    claim = await self._reformat_nudge(\n                        task, result, repo=repo, attempt_id=attempt_id)\n                except CancelRequested as exc:\n                    return await self._honor_cancel(\n                        task, repo, branch, str(exc), attempt_id=attempt_id)\n                except (BudgetAbort, StuckAbort, ConvergenceAbort) as exc:\n                    return await self._abort_during_nudge(\n                        task, repo, attempt_id, exc, result=result,\n                        branch=branch)\n            if claim is not None:\n                # `gate.subject` is reused only when it was computed against\n                # this exact claim text (`gate.stage == \"claim\"`, so no\n                # nudge ran) \u2014 a nudge produces different text than\n                # `claim_gate_decision` classified, so it must ask fresh.\n                precomputed = gate.subject if gate.stage == \"claim\" else None\n                return await self._gate_already_satisfied(\n                    task, repo, attempt_id, claim, branch=branch,\n                    attempt_n=attempt_n, result=result, base=base,\n                    subject=precomputed,\n                )\n            landed = await self._land_no_changes_needed(\n                task, repo=repo, attempt_id=attempt_id, result=result)\n            if landed is not None:\n                return landed\n            detail = _NO_CHANGES_DETAIL\n            # Keep what the agent SAID. Task d9d458b5 explained three times\n            # that the work was already committed and that it would not\n            # fabricate an edit; the reason was dropped on the floor and the\n            # loop retried a decision that only a human could make.\n            # Written unconditionally, even when empty: the escalation quotes\n            # this as the reason for THIS attempt, and a conditional write\n            # would let a talkative attempt 1 put words in a silent\n            # attempt 2's mouth.\n            # The ORIGINAL final text, deliberately, even when a reformat\n            # nudge ran and also failed to parse: this field answers \"what\n            # did the agent conclude\", and the nudge's reply is a restatement\n            # of that under a formatting instruction WE wrote. Escalating\n            # with our own prompt's echo instead of the agent's reasoning is\n            # the exact loss (task d9d458b5) this field was added to stop.\n            ctx = task.context or {}\n            ctx[\"zero_diff_reason\"] = (result.final_text or \"\").strip()[:2000]\n            task.context = ctx\n            await self.store.update_task(task)\n            await self.store.update_attempt(\n                attempt_id, status=\"failed\", failure_reason=detail,\n            )\n            return TaskOutcome(task, status=TaskStatus.FAILED, detail=detail)\n"
+  },
+  "tool_use_id": "toolu_01NEwj9fzw6kE82QAMW1iKqj",
+  "ts": 1789536012.570664,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_01NEwj9fzw6kE82QAMW1iKqj",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 212,
+  "over_cap": false,
+  "non_text_blocks": 0,
+  "ts": 1789536012.5761101,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Bash",
+  "tool_input": {
+   "command": "python3 - <<'PYEOF'\npath = \"src/no_human/core/orchestrator.py\"\nwith open(path) as f:\n    lines = f.readlines()\n\nwith open(\".no_human/new_commit_section.py\") as f:\n    new_lines = f.readlines()\n\nstart = 6687  # 1-indexed, \"resumed_commit = None\"\nend = 6941    # 1-indexed, \"self._emit_manifest_repairs(repaired)\"\n\n# sanity checks\nassert lines[start-1].strip() == \"resumed_commit = None\", lines[start-1]\nassert lines[end-1].strip() == \"self._emit_manifest_repairs(repaired)\", lines[end-1]\n\nnew_full = lines[:start-1] + new_lines + lines[end:]\nwith open(path, \"w\") as f:\n    f.writelines(new_full)\nprint(\"done, new total lines:\", len(new_full))\nPYEOF\nrm .no_human/new_commit_section.py"
+  },
+  "tool_use_id": "toolu_013fRJWo84WYuapUefH2N69x",
+  "ts": 1789536017.844222,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_013fRJWo84WYuapUefH2N69x",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 28,
+  "over_cap": false,
+  "non_text_blocks": 0,
+  "ts": 1789536017.887917,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Bash",
+  "tool_input": {
+   "command": "python3 -c \"import ast; ast.parse(open('src/no_human/core/orchestrator.py').read())\" && echo \"SYNTAX OK\""
+  },
+  "tool_use_id": "toolu_01SwZGxJ6o5SmMZmx61ieNRn",
+  "ts": 1789536020.737505,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_01SwZGxJ6o5SmMZmx61ieNRn",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 9,
+  "over_cap": false,
+  "non_text_blocks": 0,
+  "ts": 1789536024.9439979,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Bash",
+  "tool_input": {
+   "command": "grep -n \"# --- commit (deterministic) ---\" src/no_human/core/orchestrator.py"
+  },
+  "tool_use_id": "toolu_01EDsDVYC74hazuMyhWQeoyU",
+  "ts": 1789536026.2622359,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_01EDsDVYC74hazuMyhWQeoyU",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 45,
+  "over_cap": false,
+  "non_text_blocks": 0,
+  "ts": 1789536026.290407,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Read",
+  "tool_input": {
+   "file_path": "/workspace/example-repo/.no_human/worktrees/__TASK_ID__.4242.deadbeef/src/no_human/core/orchestrator.py",
+   "offset": 6680,
+   "limit": 15
+  },
+  "tool_use_id": "toolu_012LKnwf7rp74XjjzRD8c8hK",
+  "ts": 1789536029.346518,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_012LKnwf7rp74XjjzRD8c8hK",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 774,
+  "over_cap": false,
+  "non_text_blocks": 0,
+  "ts": 1789536029.4717288,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Bash",
+  "tool_input": {
+   "command": "grep -n \"await self.store.update_attempt(attempt_id, commit_sha=commit.sha)\" src/no_human/core/orchestrator.py"
+  },
+  "tool_use_id": "toolu_01AwwtnCHePUNDpdcz9QzNHT",
+  "ts": 1789536031.010828,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_01AwwtnCHePUNDpdcz9QzNHT",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 248,
+  "over_cap": false,
+  "non_text_blocks": 0,
+  "ts": 1789536031.029878,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Read",
+  "tool_input": {
+   "file_path": "/workspace/example-repo/.no_human/worktrees/__TASK_ID__.4242.deadbeef/src/no_human/core/orchestrator.py",
+   "offset": 6895,
+   "limit": 20
+  },
+  "tool_use_id": "toolu_017sQnfEgz8nY7YGFL7pL1vE",
+  "ts": 1789536033.8746922,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_017sQnfEgz8nY7YGFL7pL1vE",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 1303,
+  "over_cap": false,
+  "non_text_blocks": 0,
+  "ts": 1789536033.8788538,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Bash",
+  "tool_input": {
+   "command": "grep -n \"resumed_commit\\|\\bresumed\\b\" src/no_human/core/orchestrator.py | awk -F: '$1>6900 && $1<7050'"
+  },
+  "tool_use_id": "toolu_014voFN1H3pSQtwgYfAh23f5",
+  "ts": 1789536036.246899,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_014voFN1H3pSQtwgYfAh23f5",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 242,
+  "over_cap": false,
+  "non_text_blocks": 0,
+  "ts": 1789536040.046238,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Read",
+  "tool_input": {
+   "file_path": "/workspace/example-repo/.no_human/worktrees/__TASK_ID__.4242.deadbeef/src/no_human/core/orchestrator.py",
+   "offset": 6909,
+   "limit": 25
+  },
+  "tool_use_id": "toolu_01A3JzVtgZcBzdsNp7tkChWS",
+  "ts": 1789536043.1894982,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_01A3JzVtgZcBzdsNp7tkChWS",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 1443,
+  "over_cap": false,
+  "non_text_blocks": 0,
+  "ts": 1789536043.2015228,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Edit",
+  "tool_input": {
+   "replace_all": false,
+   "file_path": "/workspace/example-repo/.no_human/worktrees/__TASK_ID__.4242.deadbeef/src/no_human/core/orchestrator.py",
+   "old_string": "        resumed = resumed_commit is not None\n        self.emit(",
+   "new_string": "        resumed = gate.stage == \"resumed\"\n        self.emit("
+  },
+  "tool_use_id": "toolu_01Pk7atotSxkAJ4oh1Gdh4pU",
+  "ts": 1789536046.751601,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_01Pk7atotSxkAJ4oh1Gdh4pU",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 224,
+  "over_cap": false,
+  "non_text_blocks": 0,
+  "ts": 1789536046.821179,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Bash",
+  "tool_input": {
+   "command": "grep -n \"resumed_commit\" src/no_human/core/orchestrator.py"
+  },
+  "tool_use_id": "toolu_01R3ChKxcLcjFZKFkgYj1LjD",
+  "ts": 1789536050.0891469,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_01R3ChKxcLcjFZKFkgYj1LjD",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 667,
+  "over_cap": false,
+  "non_text_blocks": 0,
+  "ts": 1789536050.1164548,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Bash",
+  "tool_input": {
+   "command": "awk 'NR==5600,NR==7100{print NR\": \"$0}' src/no_human/core/orchestrator.py | grep -n \"\\bgate\\b\" "
+  },
+  "tool_use_id": "toolu_015eX5ac3VcKJWQh5G7GrY4m",
+  "ts": 1789536052.424078,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_015eX5ac3VcKJWQh5G7GrY4m",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 2725,
+  "over_cap": true,
+  "non_text_blocks": 0,
+  "ts": 1789536052.468928,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Bash",
+  "tool_input": {
+   "command": "grep -n \"def _run_attempt\" src/no_human/core/orchestrator.py"
+  },
+  "tool_use_id": "toolu_01JftKAjbUi7EpzmpN7fWEdb",
+  "ts": 1789536054.6701708,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_01JftKAjbUi7EpzmpN7fWEdb",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 32,
+  "over_cap": false,
+  "non_text_blocks": 0,
+  "ts": 1789536058.5394702,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Bash",
+  "tool_input": {
+   "command": "python3 - <<'PYEOF'\nimport re\npath = \"src/no_human/core/orchestrator.py\"\nlines = open(path).readlines()\nstart = 5557 - 1\n# find next top-level \"    async def \" or \"    def \" at same indent (4 spaces) after start\nend = None\nfor i in range(start+1, len(lines)):\n    if re.match(r\"    (async )?def \", lines[i]):\n        end = i\n        break\nprint(\"start\", start+1, \"end\", end+1 if end else None)\nbody = \"\".join(lines[start:end])\nfor pat in [\"has_changes\", \"_REPORT_KINDS\", \"commits_ahead(\", \"_route_unjudged_head(\", \"_already_satisfied_subject(\"]:\n    print(pat, \"->\", pat in body)\nPYEOF\n"
+  },
+  "tool_use_id": "toolu_01Lc4yA8jm944bYYpHqTZEZV",
+  "ts": 1789536061.4445949,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_01Lc4yA8jm944bYYpHqTZEZV",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 153,
+  "over_cap": false,
+  "non_text_blocks": 0,
+  "ts": 1789536061.5112221,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Bash",
+  "tool_input": {
+   "command": "awk 'NR==5557,NR==7805{print NR\": \"$0}' src/no_human/core/orchestrator.py | grep -n \"has_changes\\|_REPORT_KINDS\""
+  },
+  "tool_use_id": "toolu_01XqxhVLg7r3DC1ywbbowxg2",
+  "ts": 1789536063.4986439,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_01XqxhVLg7r3DC1ywbbowxg2",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 414,
+  "over_cap": false,
+  "non_text_blocks": 0,
+  "ts": 1789536063.559571,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Read",
+  "tool_input": {
+   "file_path": "/workspace/example-repo/.no_human/worktrees/__TASK_ID__.4242.deadbeef/src/no_human/core/orchestrator.py",
+   "offset": 6250,
+   "limit": 15
+  },
+  "tool_use_id": "toolu_016F3H4EJYU2Dm5NKV4Bc4U2",
+  "ts": 1789536074.949279,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_016F3H4EJYU2Dm5NKV4Bc4U2",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 814,
+  "over_cap": false,
+  "non_text_blocks": 0,
+  "ts": 1789536074.957568,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Bash",
+  "tool_input": {
+   "command": "grep -n \"_ordered_post_tool_hooks\\|_compose_post_tool_hooks\\|receipt_hook\\|ReceiptGuardHook\\|VerificationReceiptHook\\|def _run_attempt\\|_can_hooks\\|backend_degraded\" src/no_human/core/orchestrator.py | head -60"
+  },
+  "tool_use_id": "toolu_01W15zen7jAqAyuXexnJ8uJR",
+  "ts": 1789536078.316444,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_01W15zen7jAqAyuXexnJ8uJR",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 1077,
+  "over_cap": false,
+  "non_text_blocks": 0,
+  "ts": 1789536078.429614,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Read",
+  "tool_input": {
+   "file_path": "/workspace/example-repo/.no_human/worktrees/__TASK_ID__.4242.deadbeef/src/no_human/core/orchestrator.py",
+   "offset": 6020,
+   "limit": 90
+  },
+  "tool_use_id": "toolu_01D5zCn2B3sGDdSQVBLgJDjg",
+  "ts": 1789536081.1361558,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_01D5zCn2B3sGDdSQVBLgJDjg",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 5394,
+  "over_cap": true,
+  "non_text_blocks": 0,
+  "ts": 1789536085.531223,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Read",
+  "tool_input": {
+   "file_path": "/workspace/example-repo/.no_human/worktrees/__TASK_ID__.4242.deadbeef/src/no_human/core/orchestrator.py",
+   "offset": 22875,
+   "limit": 70
+  },
+  "tool_use_id": "toolu_01YBDLrmSyC16Ep6aDutJ4dc",
+  "ts": 1789536088.601239,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_01YBDLrmSyC16Ep6aDutJ4dc",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 3605,
+  "over_cap": true,
+  "non_text_blocks": 0,
+  "ts": 1789536088.6133592,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Bash",
+  "tool_input": {
+   "command": "grep -rn \"_ordered_post_tool_hooks\\|_compose_post_tool_hooks\" tests/ | head -30"
+  },
+  "tool_use_id": "toolu_01SmSndBDQj54RJ3EnPaLaQp",
+  "ts": 1789536091.9949281,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_01SmSndBDQj54RJ3EnPaLaQp",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 1702,
+  "over_cap": false,
+  "non_text_blocks": 0,
+  "ts": 1789536092.035785,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Read",
+  "tool_input": {
+   "file_path": "/workspace/example-repo/.no_human/worktrees/__TASK_ID__.4242.deadbeef/tests/test_type_hook.py",
+   "offset": 1120,
+   "limit": 100
+  },
+  "tool_use_id": "toolu_01YFhpUHYCBuTDdFc5h8WvCH",
+  "ts": 1789536099.59515,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_01YFhpUHYCBuTDdFc5h8WvCH",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 4698,
+  "over_cap": true,
+  "non_text_blocks": 0,
+  "ts": 1789536099.601807,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Edit",
+  "tool_input": {
+   "replace_all": false,
+   "file_path": "/workspace/example-repo/.no_human/worktrees/__TASK_ID__.4242.deadbeef/src/no_human/core/orchestrator.py",
+   "old_string": "    @staticmethod\n    def _ordered_post_tool_hooks(\n        receipt_hook, lint_hook, scope_hook, type_hook=None\n    ) -> list:\n        \"\"\"The PostToolUse hooks, in the order they must run.\n\n        \ud83d\udd34 ORDER IS LOAD-BEARING, AND IT IS TESTED HERE RATHER THAN ASSERTED IN\n        A COMMENT. `_compose_post_tool_hooks` short-circuits on the first hook\n        that returns anything (that is how a single lint message reaches the\n        model instead of three). The receipt observer therefore has to be FIRST:\n        behind lint or scope it would stop running the moment either fired, and\n        receipts would go missing precisely on the attempts that had the most to\n        report. Moving it last leaves every other test in the suite passing,\n        which is why the property has its own.\n\n        The type hook (issue #114 phase 2) goes THIRD, ahead of the scope guard,\n        and that is the same kind of property rather than a preference. Its\n        feedback is once-only by construction \u2014 a report advances the file's\n        baseline, so the diagnostic is never re-sent \u2014 while `check_scope`\n        returns its warning on EVERY edit to an out-of-plan file. Behind the\n        scope guard, a coder legitimately working outside its plan would have\n        type feedback suppressed on every edit for the whole attempt, and\n        suppressed permanently, since the report it lost does not come back.\n        Ahead of it, the cost of the same collision is a scope warning deferred\n        to the next edit, which repeats anyway. It stays behind LINT for the\n        opposite reason: ruff is the cheaper call, and a file that does not\n        parse produces type output not worth the turn.\n        \"\"\"\n        return [\n            h for h in (receipt_hook, lint_hook, type_hook, scope_hook)\n            if h is not None\n        ]\n\n    @classmethod\n    def _compose_post_tool_hooks(\n        cls, receipt_hook, lint_hook, scope_hook, type_hook=None\n    ):\n        \"\"\"One PostToolUse callable for the backend, or None when there are no\n        hooks to install. ClaudeBackend accepts a single `lint_hook`.\"\"\"\n        hooks = cls._ordered_post_tool_hooks(\n            receipt_hook, lint_hook, scope_hook, type_hook)",
+   "new_string": "    @staticmethod\n    def _ordered_post_tool_hooks(\n        receipt_hook, lint_hook, scope_hook, type_hook=None, *, landed_hook=None,\n    ) -> list:\n        \"\"\"The PostToolUse hooks, in the order they must run.\n\n        \ud83d\udd34 ORDER IS LOAD-BEARING, AND IT IS TESTED HERE RATHER THAN ASSERTED IN\n        A COMMENT. `_compose_post_tool_hooks` short-circuits on the first hook\n        that returns anything (that is how a single lint message reaches the\n        model instead of three). The receipt observer therefore has to be FIRST:\n        behind lint or scope it would stop running the moment either fired, and\n        receipts would go missing precisely on the attempts that had the most to\n        report. Moving it last leaves every other test in the suite passing,\n        which is why the property has its own.\n\n        The landed-claim guard goes SECOND, ahead of lint/type/scope: it only\n        ever fires on the coder's final-text tool call (a Stop-shaped turn),\n        never on an ordinary edit, so its position relative to the others is\n        never actually contended \u2014 it is placed early so a refusal reaches the\n        model without waiting on hooks that cannot fire on the same call.\n\n        The type hook (issue #114 phase 2) goes THIRD, ahead of the scope guard,\n        and that is the same kind of property rather than a preference. Its\n        feedback is once-only by construction \u2014 a report advances the file's\n        baseline, so the diagnostic is never re-sent \u2014 while `check_scope`\n        returns its warning on EVERY edit to an out-of-plan file. Behind the\n        scope guard, a coder legitimately working outside its plan would have\n        type feedback suppressed on every edit for the whole attempt, and\n        suppressed permanently, since the report it lost does not come back.\n        Ahead of it, the cost of the same collision is a scope warning deferred\n        to the next edit, which repeats anyway. It stays behind LINT for the\n        opposite reason: ruff is the cheaper call, and a file that does not\n        parse produces type output not worth the turn.\n        \"\"\"\n        return [\n            h for h in (receipt_hook, landed_hook, lint_hook, type_hook, scope_hook)\n            if h is not None\n        ]\n\n    @classmethod\n    def _compose_post_tool_hooks(\n        cls, receipt_hook, lint_hook, scope_hook, type_hook=None, *,\n        landed_hook=None,\n    ):\n        \"\"\"One PostToolUse callable for the backend, or None when there are no\n        hooks to install. ClaudeBackend accepts a single `lint_hook`.\"\"\"\n        hooks = cls._ordered_post_tool_hooks(\n            receipt_hook, lint_hook, scope_hook, type_hook, landed_hook=landed_hook)"
+  },
+  "tool_use_id": "toolu_01Vh5uRQySEZyp2eudnEt64n",
+  "ts": 1789536116.067279,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_01Vh5uRQySEZyp2eudnEt64n",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 224,
+  "over_cap": false,
+  "non_text_blocks": 0,
+  "ts": 1789536116.131671,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Edit",
+  "tool_input": {
+   "replace_all": false,
+   "file_path": "/workspace/example-repo/.no_human/worktrees/__TASK_ID__.4242.deadbeef/src/no_human/core/orchestrator.py",
+   "old_string": "        receipt_hook = None\n        if _can_hooks:\n            from ..agent.verification_receipts import VerificationReceiptHook\n            receipt_hook = VerificationReceiptHook(\n                attempt_id=attempt_id,\n                persist=self.store.add_verification_receipt,\n                on_event=self.emit,\n            )\n\n        if _can_hooks:\n            composed = self._compose_post_tool_hooks(\n                receipt_hook, lint_hook, scope_hook, type_hook)\n            if composed is not None:\n                extra[\"lint_hook\"] = composed",
+   "new_string": "        receipt_hook = None\n        if _can_hooks:\n            from ..agent.verification_receipts import VerificationReceiptHook\n            receipt_hook = VerificationReceiptHook(\n                attempt_id=attempt_id,\n                persist=self.store.add_verification_receipt,\n                on_event=self.emit,\n            )\n\n        # Landed-claim guard: tells a mid-attempt \"already exists / already\n        # landed at <sha>\" claim IMMEDIATELY when delivery will refuse it,\n        # instead of letting the attempt burn its whole turn budget only to\n        # be refused once it reaches the claim gate for real. `decide` asks\n        # the exact question delivery itself asks (`claim_gate_decision`)\n        # against the live tree \u2014 never a second copy of that logic.\n        landed_hook = None\n        if _can_hooks:\n            from ..agent.landed_claim_guard import LandedClaimGuardHook\n            landed_hook = LandedClaimGuardHook(\n                decide=partial(\n                    self.claim_gate_decision, task, repo,\n                    base=base, branch=branch,\n                    branched_from_own_partial=branched_from_own_partial,\n                    announce=False,\n                ),\n            )\n            self._landed_claim_guard = landed_hook\n\n        if _can_hooks:\n            composed = self._compose_post_tool_hooks(\n                receipt_hook, lint_hook, scope_hook, type_hook,\n                landed_hook=landed_hook)\n            if composed is not None:\n                extra[\"lint_hook\"] = composed"
+  },
+  "tool_use_id": "toolu_01WmekBQcnvp77x2UswSgWNH",
+  "ts": 1789536124.915801,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_01WmekBQcnvp77x2UswSgWNH",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 224,
+  "over_cap": false,
+  "non_text_blocks": 0,
+  "ts": 1789536127.882853,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Bash",
+  "tool_input": {
+   "command": "grep -n \"_active_supervisor\" src/no_human/core/orchestrator.py"
+  },
+  "tool_use_id": "toolu_01CTEyGdxwNnikChAqy9Bwmq",
+  "ts": 1789536129.604365,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_01CTEyGdxwNnikChAqy9Bwmq",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 199,
+  "over_cap": false,
+  "non_text_blocks": 0,
+  "ts": 1789536129.623252,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Bash",
+  "tool_input": {
+   "command": "grep -n \"_active_supervisor\\|_landed_claim_guard\" src/no_human/core/orchestrator.py; echo \"---\"; awk 'NR==5980,NR==5990{print NR\": \"$0}' src/no_human/core/orchestrator.py"
+  },
+  "tool_use_id": "toolu_01C85JVaWgceAo4UNZQnC1um",
+  "ts": 1789536132.760163,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_result",
+  "text": "",
+  "tool_name": null,
+  "tool_input": null,
+  "tool_use_id": "toolu_01C85JVaWgceAo4UNZQnC1um",
+  "parent_tool_use_id": null,
+  "is_error": false,
+  "result_chars": 902,
+  "over_cap": false,
+  "non_text_blocks": 0,
+  "ts": 1789536132.802381,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "agent",
+  "kind": "tool_use",
+  "text": "",
+  "tool_name": "Edit",
+  "tool_input": {
+   "replace_all": false,
+   "file_path": "/workspace/example-repo/.no_human/worktrees/__TASK_ID__.4242.deadbeef/src/no_human/core/orchestrator.py",
+   "old_string": "        supervisor = self._build_supervisor(task, str(repo.path), plan=plan)\n        self._active_supervisor = supervisor  # so _agent_sink can feed it agent prose",
+   "new_string": "        supervisor = self._build_supervisor(task, str(repo.path), plan=plan)\n        self._active_supervisor = supervisor  # so _agent_sink can feed it agent prose\n        self._landed_claim_guard = None  # so _agent_sink can feed it agent prose"
+  },
+  "tool_use_id": "toolu_01WtoSHKNSHfV2DQQpbhKp5R",
+  "ts": 1789536142.1230779,
+  "task_id": "__TASK_ID__"
+ },
+ {
+  "source": "orchestrator",
+  "kind": "attempt_start",
+  "text": "attempt 2/3",
+  "max_turns": 500,
+  "ts": 1789536143.910944,
+  "task_id": "__TASK_ID__"
+ }
+]

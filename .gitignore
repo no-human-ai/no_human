@@ -27,6 +27,10 @@ secrets/
 # ...except the memory-triage runbook's committed test fixture: a tracked
 # INPUT (synthetic, neutral content -- see EXPORT_CLASSIFICATION.txt).
 !testdata/memory_triage_fixture.db
+# ...and the event-replay fixture (no_human#422): a real recorded
+# hard-abort attempt's events, anonymized -- see
+# tests/_event_replay_fixture.py for provenance and normalization.
+!testdata/event_replay_fixture.db
 
 # Test scratch
 /tmp_e2e/
