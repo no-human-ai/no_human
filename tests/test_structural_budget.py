@@ -1498,7 +1498,12 @@ FROZEN_FILE_LINES = {
     # push) live in the new `vcs/recut.py`, not here — this is the
     # orchestrator-side wiring only. Measured on this tree with the
     # scanner below.
-    "core/orchestrator.py": 25039,
+    # 25039 -> 25093 (+54): extracted `drive_stuck_detector` so
+    # `no_human.eval.event_replay` can feed a recorded event stream through
+    # the exact same stuck-detection code production runs, instead of a
+    # hand-rolled replica that drifts from it. Measured on this tree with
+    # the scanner below.
+    "core/orchestrator.py": 25093,
 
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
