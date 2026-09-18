@@ -1,14 +1,21 @@
-"""Minimal GitHub REST client for the Action — comment upsert, nothing else.
+"""Minimal GitHub REST client for the Action — comment upsert plus a narrow,
+read-only PR surface, nothing else.
 
 WRITE-SURFACE ENFORCEMENT. Every request this client makes — including
 reads — passes through :func:`_assert_write_allowed`, which raises
-:class:`WriteSurfaceViolation` for any method/path pair other than listing or
-creating an issue comment, or replacing the body of one it already created.
-This is the mechanically-checkable form of "never merges, never pushes, never
-edits the pull request beyond its own comment": there is no code path in this
-module that can reach ``…/pulls/{n}/merge``, ``…/pulls/{n}/reviews``, a
-``PATCH`` of the pull request itself, or ``…/git/refs``, because the request
-method raises before ``httpx`` is ever asked to send it.
+:class:`WriteSurfaceViolation` for any method/path pair outside an explicit
+allowlist: listing or creating an issue comment, replacing the body of one it
+already created, or a read-only ``GET`` of a pull request's metadata, its
+changed-files listing, or a repository file's contents. This is the
+mechanically-checkable form of "never merges, never pushes, never edits the
+pull request beyond its own comment": there is no code path in this module
+that can reach ``…/pulls/{n}/merge``, ``…/pulls/{n}/reviews``, a ``PATCH`` of
+the pull request itself, or ``…/git/refs``, because the request method raises
+before ``httpx`` is ever asked to send it. The read endpoints are GET-only —
+a ``PUT``/``PATCH``/``DELETE`` against any of the same paths is refused just
+as hard as an unlisted one, and the anchors are exact-match regexes (never a
+prefix check), so ``…/pulls/{n}/merge`` cannot slip in under the ``…/pulls/{n}``
+allowance.
 
 IDENTITY. The listing endpoint returns every comment on the PR, not just
 ours; :func:`find_marked_comment` narrows that to ones carrying our HTML
@@ -20,10 +27,12 @@ converges on being ignored rather than multiplying.
 
 from __future__ import annotations
 
+import base64
 import re
 import time
 from dataclasses import dataclass
 from typing import Any, Callable
+from urllib.parse import quote
 
 import httpx
 
@@ -42,6 +51,35 @@ _5XX_BACKOFFS = (1.0, 2.0, 4.0)
 
 _COMMENTS_LIST_PATH = re.compile(r"^/repos/[^/]+/[^/]+/issues/\d+/comments$")
 _COMMENT_ITEM_PATH = re.compile(r"^/repos/[^/]+/[^/]+/issues/comments/\d+$")
+
+#: The three read-only endpoints a `workflow_run` context needs to
+#: reconstruct a PR's diff over REST (it has no checkout to run `git diff`
+#: against). Each is an exact-match anchor, not a prefix — see
+#: `_assert_write_allowed` for why that distinction is load-bearing.
+_PULL_ITEM_PATH = re.compile(r"^/repos/[^/]+/[^/]+/pulls/\d+$")
+_PULL_FILES_PATH = re.compile(r"^/repos/[^/]+/[^/]+/pulls/\d+/files$")
+_CONTENTS_PATH = re.compile(r"^/repos/[^/]+/[^/]+/contents/[^?]+$")
+
+
+def _is_safe_contents_path(path_only: str) -> bool:
+    """Reject path traversal in a `.../contents/<sub>` request before the
+    caller ever treats `_CONTENTS_PATH` matching it as "safe to send".
+
+    `_CONTENTS_PATH`'s `[^?]+` matches any non-`?` character, including `.`
+    and `/` — so on its own it would let a payload like
+    `/repos/o/r/contents/../../pulls/1/merge` through the anchor. This
+    checks the literal sub-path after `.../contents/` for a leading `/` or
+    any `..` path segment (anywhere in the path, not just its start) and
+    refuses both, so traversal can never launder a disallowed shape past
+    this allowlist.
+    """
+    match = _CONTENTS_PATH.match(path_only)
+    if not match:
+        return False
+    sub = path_only.split("/contents/", 1)[1]
+    if sub.startswith("/"):
+        return False
+    return ".." not in sub.split("/")
 
 
 class GitHubAPIError(RuntimeError):
@@ -67,9 +105,17 @@ def _assert_write_allowed(method: str, path: str) -> None:
         return
     if method == "PATCH" and _COMMENT_ITEM_PATH.match(path_only):
         return
+    if method == "GET" and _PULL_ITEM_PATH.match(path_only):
+        return
+    if method == "GET" and _PULL_FILES_PATH.match(path_only):
+        return
+    if method == "GET" and _is_safe_contents_path(path_only):
+        return
     raise WriteSurfaceViolation(
-        f"refused {method} {path}: the Action's only allowed writes are "
-        "GET/POST .../issues/{n}/comments and PATCH .../issues/comments/{id}"
+        f"refused {method} {path}: the Action's only allowed requests are "
+        "GET/POST .../issues/{n}/comments, PATCH .../issues/comments/{id}, "
+        "and read-only GET of .../pulls/{n}, .../pulls/{n}/files, and "
+        ".../contents/{path}"
     )
 
 
@@ -80,7 +126,9 @@ class Comment:
 
 
 class GitHubClient:
-    """Talks to exactly one PR's comment thread. Nothing else is reachable."""
+    """Talks to exactly one PR's comment thread, plus a read-only view of
+    that PR's metadata, changed-file listing, and file contents. Nothing
+    else is reachable — see `_assert_write_allowed`."""
 
     def __init__(
         self,
@@ -252,6 +300,68 @@ class GitHubClient:
         resp = self._send("PATCH", path, json={"body": body})
         item = resp.json()
         return Comment(id=item["id"], body=item.get("body") or "")
+
+    # -- the read-only PR surface (workflow_run mode has no checkout) ------
+
+    def get_pull(self, repo: str, pr_number: int) -> dict:
+        """A pull request's metadata: state, merged, head/base sha, title, body.
+
+        This is how `workflow_run` mode learns whether the PR's head is a
+        fork (there is no `pull_request` payload to read that from), and it
+        is the source of truth for the head sha to review — see run.py's
+        check that this still matches the sha the triggering event named.
+        """
+        path = f"/repos/{repo}/pulls/{pr_number}"
+        resp = self._send("GET", path)
+        data = resp.json()
+        if not isinstance(data, dict):
+            raise GitHubAPIError(f"GET {path} returned an unexpected shape: {type(data).__name__}")
+        return data
+
+    def list_pull_files(self, repo: str, pr_number: int) -> list[dict]:
+        """Every changed file's metadata (filename, status, patch, ...),
+        across up to 10 pages of 100 — the REST substitute for `git diff
+        --name-only` when there is no checkout to run git against.
+        """
+        out: list[dict] = []
+        for page in range(1, _MAX_LIST_PAGES + 1):
+            path = f"/repos/{repo}/pulls/{pr_number}/files?per_page=100&page={page}"
+            resp = self._send("GET", path)
+            items = resp.json()
+            if not isinstance(items, list):
+                raise GitHubAPIError(f"GET {path} returned an unexpected shape: {type(items).__name__}")
+            out.extend(items)
+            if len(items) < 100:
+                break
+        return out
+
+    def get_contents(self, repo: str, path: str, ref: str) -> str | None:
+        """A single file's text content at `ref`, or `None` if it cannot be
+        materialized as plain text (a directory, submodule, symlink, an
+        encoding other than base64, or bytes that do not decode as UTF-8).
+
+        `None` here is a caller signal to simply skip the file rather than
+        fail closed — the diff synthesized from `.../pulls/{n}/files` still
+        names it, so nothing about the file's *presence* in the review is
+        silently dropped, only its on-disk body for citation-checking.
+        """
+        encoded = quote(path, safe="/")
+        url = f"/repos/{repo}/contents/{encoded}?ref={quote(ref, safe='')}"
+        resp = self._send("GET", url)
+        data = resp.json()
+        if not isinstance(data, dict):
+            return None
+        if data.get("type") != "file" or data.get("encoding") != "base64":
+            return None
+        raw = data.get("content", "")
+        try:
+            decoded = base64.b64decode(raw, validate=False)
+        except (ValueError, TypeError):
+            return None
+        try:
+            return decoded.decode("utf-8")
+        except UnicodeDecodeError:
+            return None
 
 
 def find_marked_comment(comments: list[Comment], marker: str) -> Comment | None:
