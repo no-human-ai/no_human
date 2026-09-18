@@ -1353,7 +1353,7 @@ def test_update_path_body_never_claims_the_contributor_was_notified():
 
 def test_mention_is_never_assembled_from_pr_title_or_body(env, monkeypatch):
     event_path = env["event_path"]
-    event = json.loads(event_path.read_text())
+    event = json.loads(event_path.read_text(encoding="utf-8"))
     event["pull_request"]["title"] = "ping @someoneelse"
     event["pull_request"]["body"] = "cc @someoneelse and @another"
     event["pull_request"]["user"] = {"login": "octocat"}
@@ -1378,7 +1378,7 @@ def test_mention_is_never_assembled_from_pr_title_or_body(env, monkeypatch):
 
 def test_missing_user_object_still_posts_without_a_mention(env, monkeypatch):
     event_path = env["event_path"]
-    event = json.loads(event_path.read_text())
+    event = json.loads(event_path.read_text(encoding="utf-8"))
     event["pull_request"]["user"] = None
     event_path.write_text(json.dumps(event))
 
