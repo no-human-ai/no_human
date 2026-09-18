@@ -204,6 +204,34 @@ async def test_registering_an_email_persists_to_config_yaml_and_is_redacted_from
 
 
 @pytest.mark.asyncio
+async def test_status_reports_whether_an_address_is_on_file_without_echoing_it(client, tmp_path):
+    """Reload-onboarding bug fix: the wizard cannot re-derive "is an email
+    already registered" from its own (reset-on-reload) React state, so the
+    guard the Email step enforces before Launch/Skip-setup must be able to
+    ask the server. `email_registered` is a derived boolean, never the
+    address itself — it must appear on a fresh install as False, flip to
+    True the moment an address is registered, and at no point let the real
+    fields (email/email_at/welcome_status) or the address text leak."""
+    status = await client.get("/api/onboarding/status")
+    assert status.status_code == 200
+    body = status.json()
+    assert body["email_registered"] is False, "a fresh install has no address on file"
+    for field in ("email", "email_at", "welcome_status"):
+        assert field not in body
+
+    reg = await client.post("/api/onboarding/email", json={"email": "person@example.com"})
+    assert reg.status_code == 200, reg.text
+
+    status2 = await client.get("/api/onboarding/status")
+    assert status2.status_code == 200
+    body2 = status2.json()
+    assert body2["email_registered"] is True, "must flip once an address is registered"
+    for field in ("email", "email_at", "welcome_status"):
+        assert field not in body2
+    assert "person@example.com" not in json.dumps(body2), "the address itself must never be echoed"
+
+
+@pytest.mark.asyncio
 async def test_onboarding_complete_does_not_echo_the_address_either(client, tmp_path):
     """The redaction on GET /api/onboarding/status is not enough by itself:
     POST /api/onboarding/complete merges and returns the SAME onboarding

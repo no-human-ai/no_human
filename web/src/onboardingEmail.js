@@ -53,3 +53,25 @@ export function emailBlocksContinue(value) {
 export async function submitEmail(value, { registerOnboardingEmail }) {
   await registerOnboardingEmail(String(value || "").trim());
 }
+
+export const EMAIL_MISSING_MESSAGE =
+  "An email address is required to finish setup — enter one on the Email step.";
+
+// Email-step Continue gate. `onFile`: true = the server already holds an
+// address (a reload wiped this mount's field, not the server's record),
+// false = it does not, null = we could not ask (treated as "no"). An empty
+// field over an address the server already has is not an error — that is
+// every reload, and the old gate made it a dead end.
+export function emailStepBlocks({ email, onFile }) {
+  if (onFile === true && String(email || "").trim() === "") return null;
+  return emailBlocksContinue(email);
+}
+
+// Completion gate (`ensureEmailRegistered` in Onboarding.jsx). A NON-empty
+// field is what the user asserts right now, so it is validated even when the
+// server already has an address on file.
+export function requireEmail({ email, onFile }) {
+  const s = String(email || "").trim();
+  if (!s) return onFile === true ? null : EMAIL_MISSING_MESSAGE;
+  return emailBlocksContinue(s) === null ? null : EMAIL_REJECT_MESSAGE;
+}

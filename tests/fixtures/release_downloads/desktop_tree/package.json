@@ -1,0 +1,7 @@
+{
+  "name": "nh-desktop-fixture",
+  "private": true,
+  "devDependencies": {
+    "electron": "43.4.1"
+  }
+}

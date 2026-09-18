@@ -114,9 +114,21 @@ jobs:
           # .author.login is null when the commit's email address is not
           # attached to any GitHub account. That is unsigned as far as this
           # ledger is concerned, and the error below says how to fix it.
+          #
+          # The `.[] | (...)` parentheses are load-bearing. Written as
+          # `.[].author.login // "UNLINKED-EMAIL"`, jq applies `//` to the
+          # whole STREAM, not to each element: the alternative is used only
+          # when EVERY login is null, so a pull request mixing one resolvable
+          # author with one unresolvable one reported just the resolvable
+          # name and the sentinel never appeared. Measured on PR #513, which
+          # carried a commit authored as `<name>@<hostname>.local`:
+          #   `.[].author.login // "..."`   -> Ayaan-20-11 eyalgolan
+          #   `.[] | (.author.login // ...)` -> Ayaan-20-11 eyalgolan UNLINKED-EMAIL
+          # The first is this job passing an author GitHub cannot identify,
+          # which is the one thing the ledger exists to prevent.
           authors=$(gh api --paginate \
             "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/commits" \
-            --jq '.[].author.login // "UNLINKED-EMAIL"' | sort -u)
+            --jq '.[] | (.author.login // "UNLINKED-EMAIL")' | sort -u)
 
           # The agent exemption is trusted only on PRs the agent (or the
           # maintainer) opened: anyone can forge a commit's author email, so a
@@ -939,6 +951,23 @@ jobs:
       || contains(github.event.pull_request.labels.*.name, 'windows'))
     runs-on: windows-latest
     timeout-minutes: 45
+    # Pinned rather than left to per-OS default resolution, so the `path:` in
+    # the cache step below is a documented fact, not a guess about where
+    # electron-builder and @electron/get happen to cache today. See
+    # docs/DISTRIBUTION.md §6.
+    #
+    # Deliberately under `runner.temp`, not `~`: electron-builder resolves
+    # ELECTRON_BUILDER_CACHE/ELECTRON_CACHE with Node's path.resolve(), which
+    # does NOT expand a leading `~` -- it would become a literal `~` directory
+    # under the step's cwd, while actions/cache resolves `~` in `path:` to the
+    # runner's home. That mismatch means the download location and the cached
+    # location never agree, so the cache can never hit. `${{ runner.temp }}`
+    # is already an absolute, job-scoped path with no tilde involved, so the
+    # exact same string is used here and in the cache step's `path:` below --
+    # there is nothing left to expand differently.
+    env:
+      ELECTRON_BUILDER_CACHE: ${{ runner.temp }}\electron-builder-cache
+      ELECTRON_CACHE: ${{ runner.temp }}\electron-cache
     defaults:
       run:
         shell: pwsh
@@ -1003,6 +1032,28 @@ jobs:
           pwsh -NoProfile -ExecutionPolicy Bypass -File packaging\build-installer.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      # electron-builder fetches its own toolchain over HTTPS at package time
+      # (nsis-3.0.4.1.7z, nsis-resources-3.4.1.7z, 7zip-win-x64.tar.gz) and
+      # @electron/get fetches the Electron zip. The v0.2.3 cut (run 34855505802)
+      # died on a 504 from that CDN after both nsis archives had landed, with
+      # every gate green and both targets built. A warm cache survives that.
+      # A COLD cache does not: first run after a lockfile bump, a 7-day
+      # eviction, or a branch with no base-branch cache still goes to the CDN.
+      # That residual exposure is deliberate and written down in
+      # docs/DISTRIBUTION.md §6 — this reduces the window, it does not close it.
+      # Deliberately NOT a retry loop: that turns a visible outage into a slow
+      # one and still fails.
+      - name: Cache electron-builder's downloaded binaries
+        id: eb-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ runner.temp }}\electron-builder-cache
+            ${{ runner.temp }}\electron-cache
+          key: eb-binaries-${{ runner.os }}-${{ hashFiles('desktop/package-lock.json') }}
+          restore-keys: |
+            eb-binaries-${{ runner.os }}-
+
       # The same file list as the ubuntu desktop job, for the same reason:
       # uiPages.test.mjs is the one suite that spawns the real Electron
       # binary. The plain `npm ci` fetches that binary in the postinstall,
@@ -1010,6 +1061,20 @@ jobs:
       - name: Install the desktop shell's dependencies
         working-directory: desktop
         run: npm ci
+
+      # GitHub's cache is branch-scoped: a run restores only a cache saved on
+      # its own branch or the default branch. `npm ci` above runs on every
+      # main push (so the Electron zip is warmable today), but `npm run
+      # dist:win` runs only on a release dispatch — so the nsis/7zip entries
+      # never reach a main-scoped cache and a real cut on a fresh tag branch
+      # cold-misses. This warms them from main, gated on the miss so it costs
+      # one packaging run per desktop/package-lock.json change, not per push.
+      # It uploads nothing — this job is a signal, not a release channel.
+      - name: Warm the electron-builder binary cache (main only, on a cache miss)
+        if: github.event_name == 'push' && steps.eb-cache.outputs.cache-hit != 'true'
+        working-directory: desktop
+        timeout-minutes: 15
+        run: npm run dist:win
 
       # Same reason as the ubuntu desktop job: icons are untracked build
       # outputs and the .ico byte checks need one. Windows derives the .ico
@@ -1202,6 +1267,23 @@ jobs:
       || (github.event_name == 'workflow_dispatch' && inputs.linux_release))
     runs-on: ubuntu-22.04
     timeout-minutes: 45
+    # Pinned rather than left to per-OS default resolution, so the `path:` in
+    # the cache step below is a documented fact, not a guess about where
+    # electron-builder and @electron/get happen to cache today. See
+    # docs/DISTRIBUTION.md §6.
+    #
+    # Deliberately under `runner.temp`, not `~`: electron-builder resolves
+    # ELECTRON_BUILDER_CACHE/ELECTRON_CACHE with Node's path.resolve(), which
+    # does NOT expand a leading `~` -- it would become a literal `~` directory
+    # under the step's cwd, while actions/cache resolves `~` in `path:` to the
+    # runner's home. That mismatch means the download location and the cached
+    # location never agree, so the cache can never hit. `${{ runner.temp }}`
+    # is already an absolute, job-scoped path with no tilde involved, so the
+    # exact same string is used here and in the cache step's `path:` below --
+    # there is nothing left to expand differently.
+    env:
+      ELECTRON_BUILDER_CACHE: ${{ runner.temp }}/electron-builder-cache
+      ELECTRON_CACHE: ${{ runner.temp }}/electron-cache
     steps:
       # fetch-depth: 0 for the same reason as the windows job: the stale-
       # checkout guard in build-installer.sh needs origin/main to exist, or it
@@ -1267,6 +1349,27 @@ jobs:
       - name: Install the board's dependencies
         working-directory: web
         run: npm ci
+
+      # electron-builder fetches its own toolchain over HTTPS at package time
+      # (fpm, the appimage tool) and @electron/get fetches the Electron zip.
+      # The v0.2.3 cut's 504 was on the windows job, but the same CDN backs
+      # this job's downloads too — a warm cache survives that. A COLD cache
+      # does not: first run after a lockfile bump, a 7-day eviction, or a
+      # branch with no base-branch cache still goes to the CDN. That residual
+      # exposure is deliberate and written down in docs/DISTRIBUTION.md §6 —
+      # this reduces the window, it does not close it. Deliberately NOT a
+      # retry loop: that turns a visible outage into a slow one and still
+      # fails.
+      - name: Cache electron-builder's downloaded binaries
+        id: eb-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ runner.temp }}/electron-builder-cache
+            ${{ runner.temp }}/electron-cache
+          key: eb-binaries-${{ runner.os }}-${{ hashFiles('desktop/package-lock.json') }}
+          restore-keys: |
+            eb-binaries-${{ runner.os }}-
 
       # A FULL install here (not --ignore-scripts): electron-builder needs the
       # Electron binary to package, and the AppImage/deb tooling it downloads.
