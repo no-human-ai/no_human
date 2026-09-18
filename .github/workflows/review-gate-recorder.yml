@@ -1,0 +1,46 @@
+# The untrusted half of the review-gate split.
+#
+# On a same-repository `pull_request` event GitHub Actions checks out and runs
+# the workflow YAML from the PULL REQUEST'S OWN HEAD — so nothing written in
+# this file is a boundary against whoever pushed that branch: they can edit
+# this file in the same commit they want reviewed. This job is written to
+# assume exactly that. It holds no secret (there is none to hold — the
+# `secrets` context is never referenced below), checks out no repository
+# code, builds nothing, and runs no test. All it does is write down two facts
+# GitHub's own trusted event payload already knows — the pull request's
+# number and head sha — and hand them to the `workflow_run` job in
+# review-gate.yml, which
+# always runs the DEFAULT BRANCH copy of ITS workflow file regardless of what
+# this one says.
+#
+# Its output is data written by an untrusted job, not a capability, and the
+# other side re-validates it against the API before acting on it — see
+# review-gate.yml's "Re-validate pr.json against the API" step.
+name: no_human review gate recorder
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  record:
+    name: Record the pull request's identity
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Write pr.json
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          jq -n --argjson number "$PR_NUMBER" --arg head_sha "$PR_HEAD_SHA" \
+            '{number: $number, head_sha: $head_sha}' > pr.json
+      - name: Upload it as `pr-context`
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-context
+          path: pr.json
+          if-no-files-found: error
+          retention-days: 1
