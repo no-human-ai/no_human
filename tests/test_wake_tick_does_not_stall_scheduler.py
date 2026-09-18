@@ -34,8 +34,9 @@ wedged test session. `_HANG_GUARD` is a hang guard, not a performance bound:
 it only tells "returned" from "wedged forever" apart, sized at ~100x the
 expected cost so ordinary runner load can never reach it. The one place a
 real wall-clock number still appears is the `slow`-marked twin below, an
-explicit backstop for the workflow_dispatch lane — not on every
-contributor's path.
+explicit backstop excluded from the `pull_request` CI lane (so it is not on
+every contributor's path) but still executed, unfiltered, on every push to
+main and via `workflow_dispatch` (`.github/workflows/ci.yml:360-380`).
 """
 from __future__ import annotations
 
@@ -50,8 +51,12 @@ from no_human.core.task import Task, TaskStatus
 from no_human.vcs import pr_watcher as pw
 
 #: Hang guard only — see the module docstring. ~100x the expected cost of
-#: the default-lane run (n=20 at per_call_timeout=0.01s => ~0.2s nominal).
-_HANG_GUARD = 30.0
+#: the default-lane run (n=20 at per_call_timeout=0.01s => ~0.2s nominal),
+#: and still comfortably above the slow twin's real-time backstop below
+#: (`elapsed <= 40.0` for a nominal 20.0s run) so that backstop can actually
+#: fire as a clean `AssertionError` instead of being preempted by this guard
+#: raising `TimeoutError` first.
+_HANG_GUARD = 45.0
 
 
 class _Calls(list):
@@ -131,22 +136,43 @@ def hang_cli(monkeypatch):
 
 
 class _RecordingAsyncio:
-    """Forwards everything to the real `asyncio`, recording only the
-    timeouts `pr_watcher` asks for. `_run_cli` reaches `wait_for` through
-    the module attribute (`pr_watcher.py:135`), so replacing `pw.asyncio`
-    with this sees every bounded await the tick makes — and nothing the
-    test's own `asyncio` use does, since that still resolves to the real
-    module."""
+    """Forwards everything to the real `asyncio`, recording EVERY call made
+    through this module reference — not just `wait_for` — because a second,
+    unrelated await slipped into `pr_watcher.py`'s chain (e.g. an injected
+    `asyncio.sleep(...)` sitting above the bounded `wait_for` at
+    `pr_watcher.py:135`) is just as real a regression as the per-call bound
+    itself going missing, and recording `wait_for` alone cannot see it: that
+    extra await would simply run alongside the recorded ones, invisible.
+    `_run_cli` reaches both `create_subprocess_exec` and `wait_for` through
+    the module attribute (`pr_watcher.py:120,135`), so replacing `pw.asyncio`
+    with this instance sees every call the tick makes through it — and
+    nothing the test's own `asyncio` use does, since that still resolves to
+    the real module."""
 
     def __init__(self):
         self.waits: list[float] = []
+        #: Name of every callable attribute accessed on this proxy, in
+        #: order — the shape check below asserts this is EXACTLY the
+        #: expected `create_subprocess_exec`/`wait_for` pair per task, so
+        #: any other call (e.g. `sleep`) shows up as an unexpected extra
+        #: entry instead of passing through unnoticed.
+        self.calls: list[str] = []
 
     def __getattr__(self, name):
-        return getattr(asyncio, name)
+        attr = getattr(asyncio, name)
+        if not callable(attr):
+            return attr
 
-    def wait_for(self, aw, timeout):
-        self.waits.append(timeout)
-        return asyncio.wait_for(aw, timeout)
+        def recorder(*args, **kwargs):
+            self.calls.append(name)
+            if name == "wait_for":
+                timeout = kwargs.get("timeout")
+                if timeout is None and len(args) > 1:
+                    timeout = args[1]
+                self.waits.append(timeout)
+            return attr(*args, **kwargs)
+
+        return recorder
 
 
 async def _run_the_bound_check(store, hang_cli, monkeypatch, *, n: int,
@@ -176,6 +202,16 @@ async def _run_the_bound_check(store, hang_cli, monkeypatch, *, n: int,
         f"bounded `asyncio.wait_for(..., {per_call_timeout})` each — got "
         f"{proxy.waits!r}; either a second, unbounded await slipped into "
         "the chain, or the per-call bound stopped being applied")
+    expected_calls = ["create_subprocess_exec", "wait_for"] * n
+    assert proxy.calls == expected_calls, (
+        f"expected `pr_watcher.py` to make exactly `create_subprocess_exec` "
+        f"then `wait_for`, once each per parked task, in that order ({n} "
+        f"of each) — got {proxy.calls!r}. `waits` alone only sees calls "
+        "named `wait_for`; this checks the full sequence of every call "
+        "made through `pw.asyncio`, so a THIRD, unbounded call slipped into "
+        "the chain (e.g. an injected `asyncio.sleep(...)` sitting above "
+        "the bound at pr_watcher.py:135) shows up here as an extra entry "
+        "even though it would never touch `waits`")
     assert len(hang_cli.kills) == n, (
         f"expected all {n} timed-out processes to be reaped, got "
         f"{len(hang_cli.kills)} — the `_CLI_TIMEOUT` bound was requested "
@@ -195,20 +231,29 @@ async def test_twenty_parked_tasks_each_hanging_do_not_stall_the_tick_beyond_n_t
 
     The mechanism assertions live in `_run_the_bound_check` (see the module
     docstring). This test ALSO keeps the one wall-clock assertion left in
-    the whole file, on purpose: `elapsed <= 22.0` (20 x 1.0s + 2.0s
-    overhead) is a real-time backstop that only runs in the `slow`
-    (workflow_dispatch) lane, not on every contributor's PR — sized wide
-    enough (~2x the nominal 20x1.0=20.0s cost) that ordinary CI-runner
-    jitter cannot flake it; it exists to catch a UNIFORM slowdown the
+    the whole file, on purpose: `elapsed <= 40.0`, true ~2x the nominal
+    20x1.0=20.0s cost (not the 1.1x `22.0` the previous draft of this
+    docstring claimed — that was arithmetically wrong and, measured on an
+    idle machine, left only a ~6% margin: below overshoot already observed
+    on shared runners). This is NOT an opt-in-only check: excluded from the
+    `pull_request` lane (`-m "not slow and not nightly"`, `ci.yml:360-380`)
+    so it is not on every contributor's PR, but the SAME empty-selector
+    `push to main` run executes every test unfiltered (`ci.yml:363`), so
+    this still runs, under `-n 4`, on every push to main — plus explicitly
+    via `workflow_dispatch` (`-m "slow or nightly"`). `_HANG_GUARD` (45.0,
+    module-level) is kept comfortably above this 40.0 so the backstop can
+    fire as a clean `AssertionError` rather than being preempted by the
+    guard's `TimeoutError`. It exists to catch a UNIFORM slowdown the
     counting assertions above cannot see, not to grade per-call speed."""
     start = time.monotonic()
     await _run_the_bound_check(
         store, hang_cli, monkeypatch, n=20, per_call_timeout=1.0)
     elapsed = time.monotonic() - start
-    assert elapsed <= 22.0, (
+    assert elapsed <= 40.0, (
         f"Scheduler.tick() took {elapsed:.2f}s for 20 parked tasks at "
-        "1.0s/call — expected <= 22.0s (20 x 1.0 + 2.0 overhead); this is "
-        "the slow-lane real-time backstop, not the default-lane gate")
+        "1.0s/call — expected <= 40.0s (true ~2x the nominal 20.0s cost); "
+        "this is a real-time backstop that runs on every push to main "
+        "(ci.yml's empty push selector), not the default pull_request gate")
 
 
 async def test_the_same_bound_holds_at_a_scaled_down_timeout(store, hang_cli, monkeypatch):

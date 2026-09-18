@@ -12,9 +12,14 @@ timeouts and reaped-process counts for the scheduler
 (`src/no_human/vcs/pr_watcher.py:135`, `src/no_human/blockers/wake.py:466-473`,
 `src/no_human/core/scheduler.py:2161-2177` — no aggregate timeout wraps the
 tick, so the bound is arithmetic: N calls x one fixed per-call timeout each),
-and a count of characters handed to `guard._unmask` for the gate-mention scan
-(`src/no_human/agent/guard.py:1784-1792` — unmasked once, hoisted above the
-per-segment loop).
+and a count of the calls made to, and characters handed to,
+`guard._GATE_MENTION.search` — the gate-mention regex itself, not the
+`_unmask` helper that feeds it — during the scan
+(`src/no_human/agent/guard.py:1784-1792` — searched once, hoisted above the
+per-segment loop; `_unmask` has other call sites in the same function that
+already run once per segment as ordinary, correct argv handling, so counting
+`_unmask` traffic generally is blind to this specific regression — watching
+the one call site `_GATE_MENTION.search` actually has is not).
 
 This file proves those two reformulated tests actually demonstrate a
 real behavioral difference, in the one way that is mechanically possible
@@ -136,12 +141,15 @@ def test_the_guard_quadratic_test_fails_at_base_and_passes_here(monkeypatch):
     deterministic, not a contention artifact — so the imported target test
     raises `AssertionError`: red, as fails-before requires.
 
-    On this branch: the reformulated target test counts the characters
-    handed to `guard._unmask` during one `guard.evaluate` call — a pure
-    function of the code path taken, which the injected CPU burn does not
-    change (it adds cost to each call, not calls or their arguments), so
-    the same injection leaves the char counts, and the test's verdict,
-    unchanged: green, as passes-after requires.
+    On this branch: the reformulated target test counts the calls made to,
+    and characters handed to, `guard._GATE_MENTION.search` (not `_unmask`)
+    during one `guard.evaluate` call — a pure function of the code path
+    taken, which the injected `_unmask` CPU burn does not change (it adds
+    cost to each `_unmask` call, not to `_GATE_MENTION.search`'s call count
+    or arguments, and `_unmask`'s return value — which is all
+    `_GATE_MENTION.search` ever sees — is unaffected by the busy loop above
+    it), so the same injection leaves the search counts, and the test's
+    verdict, unchanged: green, as passes-after requires.
     """
     real_unmask = _guard._unmask
 
