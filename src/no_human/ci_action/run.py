@@ -746,7 +746,7 @@ def _run_pull_request(event: dict[str, Any]) -> int:
     return _finish_review(
         repo_full=repo_full, pr_number=pr_number, github_token=github_token,
         model=model, fail_on_findings=fail_on_findings, dry_run=dry_run,
-        workspace=workspace, diff_override=diff_override,
+        workspace=workspace, diff_text=diff_override,
         before_ref=merge_base, after_ref=head_sha,
         pr_title=pr_title, pr_body=pr_body,
         files_total=files_total, kept=kept, credential_mode=cred.mode,
@@ -763,7 +763,7 @@ def _finish_review(
     fail_on_findings: bool,
     dry_run: bool,
     workspace: Path,
-    diff_override: str,
+    diff_text: str,
     before_ref: str,
     after_ref: str,
     pr_title: str,
@@ -781,10 +781,10 @@ def _finish_review(
     reviewer for one verdict, route findings, render the comment, and
     post-or-exit.
 
-    Both callers have already: computed a ``diff_override`` that covers
-    every path in ``kept`` (their own coverage check, before calling this),
-    stayed under the reviewer's diff cap, and decided whether/how the tamper
-    guard ran. This function does not re-derive any of that — it only knows
+    Both callers have already: computed a scoped diff (``diff_text``) that
+    covers every path in ``kept`` (their own coverage check, before calling
+    this), stayed under the reviewer's diff cap, and decided whether/how the
+    tamper guard ran. This function does not re-derive any of that — it only knows
     how to finish a review once those decisions have been made, so the two
     trigger types cannot drift apart on how a verdict becomes a comment.
     """
@@ -812,7 +812,7 @@ def _finish_review(
             review_diff(
                 task,
                 repo_path=workspace,
-                diff=diff_override,
+                diff=diff_text,
                 before_ref=before_ref,
                 after_ref=after_ref,
                 model=model,
@@ -1071,7 +1071,7 @@ def _run_workflow_run_with_client(
         return _finish_review(
             repo_full=repo_full, pr_number=pr_number, github_token=github_token,
             model=model, fail_on_findings=fail_on_findings, dry_run=dry_run,
-            workspace=tmpdir, diff_override=diff_override,
+            workspace=tmpdir, diff_text=diff_override,
             before_ref=base_sha, after_ref=head_sha,
             pr_title=pr_title, pr_body=pr_body,
             files_total=files_total, kept=kept, credential_mode=cred.mode,

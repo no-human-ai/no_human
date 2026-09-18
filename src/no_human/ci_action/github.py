@@ -112,7 +112,7 @@ def _assert_write_allowed(method: str, path: str) -> None:
     if method == "GET" and _is_safe_contents_path(path_only):
         return
     raise WriteSurfaceViolation(
-        f"refused {method} {path}: the Action's only allowed requests are "
+        f"refused {method} {path}: the Action's only allowed calls are "
         "GET/POST .../issues/{n}/comments, PATCH .../issues/comments/{id}, "
         "and read-only GET of .../pulls/{n}, .../pulls/{n}/files, and "
         ".../contents/{path}"
