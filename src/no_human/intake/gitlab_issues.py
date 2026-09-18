@@ -10,6 +10,7 @@ from typing import Any
 from urllib.parse import quote
 
 from ..core.task import Task
+from .criteria import extract_acceptance_criteria
 
 _ISSUE_URL = re.compile(
     r"https?://(?P<host>[^/]+)/(?P<path>.+?)/-/issues/(?P<iid>\d+)"
@@ -54,9 +55,8 @@ class GitLabAdapter:
         task = Task.new(title, source="gitlab",
                         external_id=f"{ref.get('project_path')}#{raw.get('iid')}",
                         description=body)
-        task.acceptance_criteria = [
-            m.strip() for m in re.findall(r"^\s*[-*]\s*\[[ xX]\]\s*(.+)$", body, re.M)
-        ]
+        task.acceptance_criteria = extract_acceptance_criteria(
+            body, f"GitLab issue {task.external_id}")
         task.context = {
             "gitlab": {
                 "url": raw.get("web_url"),
