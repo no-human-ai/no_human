@@ -1188,6 +1188,16 @@ def test_cell_collapses_newlines_and_escapes_pipes():
     assert run._cell("a\nb|c\r\nd") == "a b\\|c d"
 
 
+def test_cell_escapes_at_signs_so_diff_text_cannot_become_a_mention():
+    # A tamper-guard reason built from a changed path under an npm scoped
+    # package (e.g. `packages/@acme/ui/foo.test.ts`) must never turn into a
+    # live GitHub mention just because it flows through a findings table.
+    cell = run._cell("test file deleted: packages/@acme/ui/foo.test.ts")
+    assert "/@acme" not in cell
+    assert "/\\@acme" in cell
+    assert run._cell("cc @evil") == "cc \\@evil"
+
+
 def test_truncate_drops_advisory_before_hard_truncating():
     advisory = [ChecklistItem(label="nit", passed=False, file="x.py", line=1,
                                comment="x" * 500, severity="low")]
@@ -1233,11 +1243,27 @@ def test_render_body_mentions_the_author_exactly_once():
     assert body.count("@") == 1
 
 
+def test_render_body_mentions_the_author_exactly_once_even_with_at_signs_in_findings():
+    # Unlike the test above (blocking=[], advisory=[], so "exactly one @" is
+    # trivially true), this drives findings whose text carries an `@` — a
+    # tamper-guard reason built from a diff-controlled path — and pins that
+    # the deliberate author mention is STILL the only live `@` in the body:
+    # every other `@` must come back backslash-escaped inside its table cell.
+    blocking = [ChecklistItem(
+        label="tamper guard", passed=False, file="x.ts", line=1,
+        comment="test file deleted: packages/@acme/ui/foo.test.ts", severity="critical",
+    )]
+    body = _render(author_login="octocat", blocking=blocking)
+    assert body.count("@octocat") == 1
+    assert "packages/@acme" not in body
+    assert "packages/\\@acme" in body
+
+
 @pytest.mark.parametrize(
     "login",
     [
         "dependabot[bot]", "renovate[bot]", "github-actions[bot]",
-        "eve<script>", "a`b", "@eve", "-lead", "trail-", "dou--ble",
+        "eve<script>", "a`b", "@eve", "-lead", "trail-",
         "ünïcode", "foo bar", "x" * 40, "", None,
     ],
 )
@@ -1257,6 +1283,19 @@ def test_mention_is_emitted_for_a_normal_login(login):
     assert body.count("@") == 1
 
 
+@pytest.mark.parametrize("login", ["dou--ble", "E--E"])
+def test_mention_is_emitted_for_a_grandfathered_double_hyphen_login(login):
+    # GitHub's signup form now refuses a new double-hyphen login, but the
+    # login NAMESPACE does not retroactively ban it: "E--E" is a real, live
+    # `type: User` account (verified via `gh api /users/E--E`, created
+    # 2015-02-18) that can open a pull request today. Rejecting it here
+    # would silently drop the mention (and the notification) for that whole
+    # class of grandfathered contributors — see `_LOGIN_RE`'s comment.
+    body = _render(author_login=login)
+    assert f"@{login}" in body
+    assert body.count("@") == 1
+
+
 @pytest.mark.parametrize(
     "login, expect_mention",
     [
@@ -1268,9 +1307,11 @@ def test_mention_is_emitted_for_a_normal_login(login):
         ("DEPENDABOT[BOT]", False),
         ("-lead", False),
         ("trail-", False),
-        ("dou--ble", False),
+        ("dou--ble", True),
+        ("E--E", True),
         ("has space", False),
         ("has@at", False),
+        ("octocat\n", False),
         ("x" * 39, True),
         ("x" * 40, False),
         ("", False),
@@ -1654,3 +1695,39 @@ def test_upsert_relists_and_patches_on_create_failure_duplicate_hazard():
     assert c.id == 55
     assert calls.count("POST") == 1 + github._MAX_5XX_RETRIES
     assert calls[-1] == "PATCH"
+
+
+def test_duplicate_hazard_fallback_renders_as_creating_even_though_it_patches():
+    """The re-list-then-PATCH fallback above lands its own comment via an
+    HTTP PATCH, but the docstring's claim ("a create DID happen ... even
+    though this call's own HTTP verb is PATCH") is only true if the caller's
+    render callable is actually invoked with creating=True on that specific
+    call — pin that a mutation of the fallback to creating=False would be
+    caught, since it is not observable from the transport alone."""
+    post_attempted = {"n": 0}
+    seen_creating: list[bool] = []
+
+    def render(creating: bool) -> str:
+        seen_creating.append(creating)
+        return f"{run.MARKER}\nrendered creating={creating}"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            if post_attempted["n"] == 0:
+                return httpx.Response(200, json=[])
+            return httpx.Response(200, json=[{"id": 55, "body": f"{run.MARKER}\nlanded"}])
+        if request.method == "POST":
+            post_attempted["n"] += 1
+            return httpx.Response(500)
+        if request.method == "PATCH":
+            payload = json.loads(request.content)
+            return httpx.Response(200, json={"id": 55, "body": payload["body"]})
+        raise AssertionError(request.method)
+
+    client = github.GitHubClient(token="t", transport=httpx.MockTransport(handler), sleep=lambda s: None)
+    c = github.upsert_comment(client, "o/r", 1, run.MARKER, render)
+    assert c.id == 55
+    assert "creating=True" in c.body
+    # One render for every POST attempt (each retried creating=True render)
+    # plus the final fallback PATCH render, also creating=True.
+    assert seen_creating[-1] is True

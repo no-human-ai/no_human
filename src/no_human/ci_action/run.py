@@ -120,10 +120,16 @@ MARKER = "<!-- no-human-review-gate:v1 -->"
 #: GitHub rejects a comment body over 65536 bytes; stay under github.py's cap.
 _BODY_CAP = github.MAX_BODY_CHARS
 
-#: GitHub's own login grammar: ASCII alphanumeric, single internal hyphens,
-#: no leading/trailing hyphen, no double hyphen. A login that fails this (or
-#: ends in "[bot]") is never mentioned — see `_mention_for`.
-_LOGIN_RE = re.compile(r"^[A-Za-z0-9](?:-?[A-Za-z0-9])*$")
+#: ASCII alphanumeric, no leading/trailing hyphen, <= 39 chars — NOT a ban on
+#: consecutive internal hyphens. GitHub's *signup form* rejects a double
+#: hyphen for new accounts, but the login NAMESPACE does not: older accounts
+#: are grandfathered and remain live, mentionable users (verified live via
+#: `gh api /users/E--E`: `{"login":"E--E","type":"User", ...}`, created
+#: 2015-02-18). A regex that also rejected internal `--` would silently drop
+#: the mention for that whole class of real contributors with no tell to
+#: anyone that it happened — see `_mention_for`. A login that fails this (or
+#: ends in "[bot]") is never mentioned.
+_LOGIN_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9-]*[A-Za-z0-9]\Z|\A[A-Za-z0-9]\Z")
 _LOGIN_MAX = 39
 
 #: The two possible honesty sentences `render_body` pairs with a mention.
@@ -142,13 +148,18 @@ def _mention_for(login: str | None) -> str:
     The login comes from the GitHub API (``pull_request.user.login``), not
     from the diff, PR title, or PR body — but it is still interpolated into
     Markdown an Action with `pull-requests: write` posts, so it is validated
-    against GitHub's own login grammar (ASCII alphanumeric, single internal
-    hyphens, <= 39 chars) before use. A `[bot]`-suffixed login (dependabot,
-    renovate, github-actions, ...) is rejected explicitly, before the regex
-    check, so a future loosening of the regex cannot silently start
-    mentioning bot authors. A rejected login never produces a placeholder
-    (e.g. "(author could not be mentioned)") — the whole mention line is
-    simply omitted, so a bot-authored PR does not carry a permanent tell.
+    against :data:`_LOGIN_RE` (ASCII alphanumeric, no leading/trailing
+    hyphen, <= 39 chars) before use. This is a deliberately STRICTER subset
+    of GitHub's actual login namespace, not a restatement of it: it allows
+    internal ``--`` (grandfathered accounts predating GitHub's later ban on
+    consecutive hyphens at signup keep using them — see :data:`_LOGIN_RE`'s
+    comment), but still rejects anything with no live GitHub login could
+    ever produce. A `[bot]`-suffixed login (dependabot, renovate,
+    github-actions, ...) is rejected explicitly, before the regex check, so
+    a future loosening of the regex cannot silently start mentioning bot
+    authors. A rejected login never produces a placeholder (e.g. "(author
+    could not be mentioned)") — the whole mention line is simply omitted, so
+    a bot-authored PR does not carry a permanent tell.
     """
     if not isinstance(login, str) or not login or len(login) > _LOGIN_MAX:
         return ""
@@ -427,9 +438,22 @@ def _tamper_checklist_items(report, repo: Path, before_ref: str, after_ref: str)
 
 
 def _cell(value: str) -> str:
-    """Collapse newlines and escape ``|`` so *value* survives as one GFM cell."""
+    """Collapse newlines and escape ``|``/``@`` so *value* survives as one GFM cell.
+
+    Findings text (``item.comment``/``item.evidence``) is DERIVED from the
+    diff — e.g. the tamper guard's ``"test file deleted: <path>"`` reasons
+    carry whatever path the contributor chose, including one under an npm
+    scoped-package directory like ``packages/@acme/ui/foo.test.ts``. Left
+    unescaped, that ``@acme`` renders as a live GitHub mention notification
+    the moment this table is posted — no attacker intent required, just an
+    ordinary monorepo layout. The ``@``-mention this module deliberately
+    emits comes ONLY from :func:`_mention_for` on the validated
+    ``author_login`` and is placed above every findings table (see
+    `render_body`'s docstring); escaping ``@`` here keeps that the only
+    mention a rendered body can ever contain.
+    """
     text = str(value).replace("\r\n", " ").replace("\r", " ").replace("\n", " ")
-    return text.replace("|", "\\|")
+    return text.replace("|", "\\|").replace("@", "\\@")
 
 
 def _where(file: str, line: int) -> str:

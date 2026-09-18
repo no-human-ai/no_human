@@ -473,9 +473,15 @@ config key that turns it on and the default that keeps it off.
   document. That comment `@`-mentions the pull request's author, sourced
   *only* from the event payload's `pull_request.user.login` (never the diff
   or the PR's own title/body, both attacker-controlled free text) and
-  validated against GitHub's login grammar before interpolation
-  (`run._mention_for`); a login that fails validation, or ends in `[bot]`,
-  is never mentioned, with no placeholder text either.
+  validated against a login pattern before interpolation (`run._mention_for`,
+  `run._LOGIN_RE`) — ASCII alphanumeric, no leading/trailing hyphen, <= 39
+  chars, deliberately stricter than GitHub's actual login namespace rather
+  than a claim to restate it exactly; a login that fails validation, or ends
+  in `[bot]`, is never mentioned, with no placeholder text either. Findings
+  text quoted into the comment body (e.g. a tamper-guard reason derived from
+  a changed path) is never treated as a mention candidate either: table
+  cells escape `@` so a diff-controlled string can never render as a live
+  GitHub notification.
 - **Welcome email (Resend).** Gated on an **environment variable**, not a
   config key: `_default_transport()` (`email/send.py`) constructs a
   `ResendTransport` only when `RESEND_API_KEY` is present in
