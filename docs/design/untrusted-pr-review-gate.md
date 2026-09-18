@@ -63,8 +63,12 @@ design does not have — and rests nothing on it below.)
 
 The one claim that reliably discriminates is `environment`, and the
 mechanism that makes it discriminate is a **deployment-branch policy** on
-that environment, not a human clicking Approve on every run. Verified live
-against this repository:
+that environment, not a human clicking Approve on every run. Two different
+things were checked here, and they are kept separate on purpose: the first
+shows only that a policy is *configured*; the second is a measurement of
+what the policy actually *does* to a running job.
+
+**Configuration observed** (this is setup, not behaviour):
 
     $ gh api repos/no-human-ai/no_human/environments/review-gate \
         --jq '{protection_rules:(.protection_rules|length)}'
@@ -73,18 +77,44 @@ against this repository:
         --jq '[.branch_policies[].name]'
     ["main"]
 
-`no-human-ai/no_human` already has a `review-gate` environment with one
-protection rule and a branch policy limited to `main`. A job that requests
-that environment from a contributor's branch is refused the secret at the
-environment boundary, automatically, on every run — no click required.
-Required reviewers is a second, heavier layer the same `environment`
-mechanism supports (a human clicks Approve before the job proceeds); it is
-not the only way `environment` discriminates, and this design does not
-require it. Either way, OIDC-to-AWS is a detour, not a fix by itself: the
-environment scoping protects whichever secret it fronts — a cloud credential
-or the Anthropic `credential` this gate already uses — so routing through
-AWS adds a second credential and a second trust policy to protect the same
-thing environment scoping already protects directly (section C).
+`no-human-ai/no_human` has a `review-gate` environment with one protection
+rule and a branch policy limited to `main`. That transcript proves the
+policy exists; it says nothing about what happens when a job on a
+disallowed branch actually requests that environment.
+
+**Refusal observed** (this is the behaviour itself, measured by running a
+job, not inferred from configuration): GitHub Actions run `35283704459`
+requested the `review-gate` environment from `refs/pull/531/merge` — a
+non-`main` ref — and failed in under two seconds with an **empty steps
+array**: no step in that job, including the one that would have read the
+secret, ever started. The run's annotation reads verbatim:
+
+    Branch "refs/pull/531/merge" is not allowed to deploy to review-gate
+    due to environment protection rules.
+
+The precise shape of that behaviour matters for anyone implementing the
+follow-up: this is a **hard job failure at the environment boundary**, not
+"the job runs, just without the secret." Nothing executes — not a
+degraded step, not a partial review, not a comment saying the credential
+was unavailable. An implementer who designs a graceful skip (proceed
+without the credential, post a note explaining why) is building something
+this measurement does not support; the environment boundary aborts the
+whole job before its first step, the same way a fork PR is skipped by
+`_is_fork_pr` before `credential` is read (section B) rather than allowed
+to run degraded.
+
+A job that requests `review-gate` from a contributor's branch is refused
+the secret at the environment boundary, automatically, on every run — no
+click required, and no code inside `review-gate.yml` decides it. Required
+reviewers is a second, heavier layer the same `environment` mechanism
+supports (a human clicks Approve before the job proceeds); it is not the
+only way `environment` discriminates, and this design does not require it
+given the branch-policy refusal just measured. Either way, OIDC-to-AWS is a
+detour, not a fix by itself: the environment scoping protects whichever
+secret it fronts — a cloud credential or the Anthropic `credential` this
+gate already uses — so routing through AWS adds a second credential and a
+second trust policy to protect the same thing environment scoping already
+protects directly (section C).
 
 **What still needs the split to cover forks.** `workflow_run` is triggered
 by an upstream workflow that itself ran on `pull_request` (or
@@ -150,12 +180,16 @@ This design changes no behaviour in `src/no_human/ci_action/run.py`; the
 follow-up adds a `workflow_run` branch *alongside* the existing gate and
 narrows neither of the following:
 
-- `_is_fork_pr` (`src/no_human/ci_action/run.py:250-263`) keeps skipping
-  forks on the `pull_request` trigger
-  (`src/no_human/ci_action/run.py:508-521`), before `credential` is read
-  (`src/no_human/ci_action/run.py:524`).
+- `_is_fork_pr` (`src/no_human/ci_action/run.py:251`: "True when the PR's
+  head repository is not the base repository.") keeps skipping forks on the
+  `pull_request` trigger (`src/no_human/ci_action/run.py:508-521`), before
+  `credential` is read (`src/no_human/ci_action/run.py:524`).
 - `pull_request_target` stays refused outright, exit 2
   (`src/no_human/ci_action/run.py:482-488`).
+- An unsupported event name (anything other than `pull_request` or
+  `pull_request_target`, including `workflow_run` before the follow-up
+  lands) is also refused, not silently skipped
+  (`src/no_human/ci_action/run.py:491`: "this Action only").
 
 Forks are served by fetching their diff as data over the REST API (section
 A, section F) inside the privileged `workflow_run` job — never by checking
@@ -176,9 +210,9 @@ trigger — someone with push access does not need to edit
 `secrets.ANTHROPIC_API_KEY` directly. The `workflow_run` split stops none of
 that on its own.
 
-`action.yml:14` currently tells an operator to "Pass it from a repository
-secret, e.g. `secrets.ANTHROPIC_API_KEY`" — that is exactly the exposure
-above, and it is the language this design corrects rather than repeats. The
+`action.yml:13-14`: "Pass it from a repository secret, e.g.
+secrets.ANTHROPIC_API_KEY." — that is exactly the exposure described above,
+and it is the language this design corrects rather than repeats. The
 credential is protected only when it is instead an **environment secret**,
 on an environment whose deployment-branch policy restricts deployment to
 `main` — the same mechanism verified live in section A (`review-gate`
@@ -232,7 +266,8 @@ Today, `tamper_check_between(workspace, merge_base, head_sha)`
 (`src/no_human/ci_action/run.py:689-692`) walks a real git working tree on
 disk and raises `TamperCheckUnavailable` rather than silently reporting
 "clean" when it cannot
-(`src/no_human/testing/runner.py:1748-1783` — the class is defined at
+(`src/no_human/testing/runner.py:1764`: "Raises `TamperCheckUnavailable`
+when the checkout is not there to inspect." — the class is defined at
 `src/no_human/testing/runner.py:1650`, the raises at
 `src/no_human/testing/runner.py:1780` and
 `src/no_human/testing/runner.py:1783`). Today's caller treats that
@@ -244,8 +279,9 @@ A diff fetched through the REST API (section F) is text, not a checkout —
 and `tamper_check_between` does not run `git diff` at all, so the reason it
 cannot run here is not "there is nothing to diff", it is "there is nothing
 to snapshot". For each of `before_ref` and `after_ref` it *lists* every path
-with `_git_files` (`git ls-tree -r --name-only <ref>`,
-`src/no_human/testing/runner.py:1570-1575`), *reads* each test-path file's
+with `_git_files` (`git ls-tree -r --name-only <ref>`, run via
+`src/no_human/testing/runner.py:1572`: "ls-tree"), *reads* each test-path
+file's
 content at that ref with `_git_show` (`git show <ref>:<path>`,
 `src/no_human/testing/runner.py:1554-1567`), and hands the two
 `{path: source}` snapshots to `tamper_guard.check`
@@ -277,21 +313,43 @@ comment says so in the sentence an implementer must copy verbatim:
 > through the GitHub API with no checked-out test tree, so there was no
 > before/after comparison. This verdict covers the diff only.
 
-Two rules follow, both binding on the follow-up implementation: the comment
-must never render a tamper-guard row that implies a check ran when it did
-not (unlike today's `render_body`, which only ever sets
-`tampered=True`/`False` from a real `tamper_report.tampered`,
-`src/no_human/ci_action/run.py:739-740` — a `workflow_run` path must not
-default `tampered=False` the way the "no changed files" branch does at
-`:634`, which would silently read as "checked, and clean"); and
-`tampered` must never contribute to the PASS/FAIL verdict
-(`src/no_human/ci_action/run.py:754`) when the guard did not run — a
-`workflow_run` review's verdict is FAIL only on reviewer findings, never on
-an absent tamper signal being coerced to "clean". The deferred alternative
-(source both sides through `git/trees?recursive=1` + `contents`, failing
-closed whenever any response reports `"truncated": true`) is recorded here,
-not built — it is one HTTP request per test file plus whatever fan-out the
-directory tree requires, and is explicitly follow-up work.
+Two rules follow, both binding on the follow-up implementation. Neither is
+about `render_body` fabricating a clean tamper row by itself: `render_body`
+(`src/no_human/ci_action/run.py:400-453`) has no else branch on `tampered` —
+it appends a "TAMPERED" line when `tampered` is true and otherwise says
+nothing about tamper at all (`src/no_human/ci_action/run.py:423-424`), and
+it is already called today with a hardcoded `tampered=False` and no real
+tamper report in the legitimate "no changed files" branch
+(`src/no_human/ci_action/run.py:630-637`). That call is fine precisely
+because there is nothing to tamper with when there are no changed files;
+the risk in a `workflow_run` path is different in kind, not a repeat of
+that call.
+
+The actual mechanism that can fabricate a clean-looking tamper signal is
+`_tamper_checklist_items` (`src/no_human/ci_action/run.py:341-371`): it
+builds a `ChecklistItem` labelled "tamper guard" with a `passed` field set
+per `src/no_human/ci_action/run.py:364`: "passed=not report.tampered"
+verbatim from whatever `TamperReport` it is handed. When `tampered` is false that item is
+routed into the *advisory* list alongside the reviewer's own advisory
+findings (`src/no_human/ci_action/run.py:744-745`) and rendered by
+`_findings_table` (`src/no_human/ci_action/run.py:391-397`) as an ordinary
+passing row in the "Advisory findings" table — indistinguishable there from
+a tamper guard that actually ran and found nothing. **Rule 1**: a
+`workflow_run` path that did not run the guard must never call
+`_tamper_checklist_items` with a fabricated `TamperReport(tampered=False)`
+to manufacture that row; when the guard did not run, no "tamper guard" row
+may appear in the findings table at all — only the verbatim "did not run"
+sentence above, delivered through `render_body`'s existing `note` parameter
+(`src/no_human/ci_action/run.py:411`, already used this way at
+`src/no_human/ci_action/run.py:635`). **Rule 2**: `tampered` must never
+contribute to the PASS/FAIL verdict (`src/no_human/ci_action/run.py:754`)
+when the guard did not run — a `workflow_run` review's verdict is FAIL only
+on reviewer findings, never on an absent tamper signal being coerced to
+"clean". The deferred alternative (source both sides through
+`git/trees?recursive=1` + `contents`, failing closed whenever any response
+reports `"truncated": true`) is recorded here, not built — it is one HTTP
+request per test file plus whatever fan-out the directory tree requires,
+and is explicitly follow-up work.
 
 ## E. Cost bound: `max_files` and the reviewer cap both still apply
 
@@ -349,10 +407,10 @@ marker-keyed upsert (`MARKER`, `src/no_human/ci_action/run.py:106`;
 so repeated `workflow_run` runs for the same PR replace one comment in
 place rather than piling up duplicates.
 
-`_assert_write_allowed` (`src/no_human/ci_action/github.py:61-73`) allows
-only `GET`/`POST .../issues/{n}/comments` and `PATCH
-.../issues/comments/{id}` — none of the four calls in the table above is
-reachable through today's `GitHubClient`. Widening that allowlist (or adding
+`_assert_write_allowed` (`src/no_human/ci_action/github.py:71`: "the
+Action's only allowed writes are") allows only `GET`/`POST
+.../issues/{n}/comments` and `PATCH .../issues/comments/{id}` — none of the
+four calls in the table above is reachable through today's `GitHubClient`. Widening that allowlist (or adding
 a second read-only client) to reach `pulls`, `pulls/files`, and `contents`
 is explicit follow-up work this design describes and does not implement;
 `src/no_human/ci_action/github.py` is unmodified by this change.

@@ -8,7 +8,21 @@ nothing). These tests guard four things so the document cannot silently rot:
 1. it exists and is indexed from `docs/README.md`;
 2. it actually answers all four required points (trigger, prompt injection,
    tamper guard without a tree, cost bound);
-3. every `file:line` citation in it resolves to a real line in this tree;
+3. every `file:line` citation in it resolves to a real *file* with enough
+   *lines* to hold the claimed range — this is a weak, structural check
+   only (`test_every_citation_in_the_design_doc_resolves`) and does **not**
+   confirm the cited lines say what the doc claims. A minority of
+   citations additionally carry a verbatim quote of the source text
+   (`` `path:line`: "quoted text" ``); only those are checked against the
+   actual file content
+   (`test_every_quoted_citation_in_the_design_doc_matches_the_source`), and
+   a regression-locking count (`>= 6`) keeps that minority from shrinking
+   back to nothing. As of this writing the doc carries roughly 49 bare
+   `file:line` citations in total and 8 of them are quoted/content-checked
+   — the remaining ~41 are unverified prose citations that a future edit
+   could silently make stale without either test noticing. Widening that
+   coverage further is legitimate follow-up work, not a defect this test
+   suite claims to already close;
 4. the behavioural invariants it describes (`_is_fork_pr` keeps skipping
    forks, `pull_request_target` stays refused) are true of the *code*, not
    just asserted in prose.
@@ -82,6 +96,16 @@ def test_design_doc_answers_all_four_points():
 
 
 def test_every_citation_in_the_design_doc_resolves():
+    """Structural sanity only: every bare `file:line` citation points at a
+    real file with enough lines to contain the claimed range. This does
+    **not** check that the cited lines say what the doc claims they say — a
+    citation with every line number wrong by one, or pointed at the wrong
+    paragraph entirely, still passes this test. Silent rot in a bare
+    citation's *content* is only caught for the subset of citations that
+    carry a verbatim quote, checked below by
+    `test_every_quoted_citation_in_the_design_doc_matches_the_source`. Treat
+    this test as "the doc did not link to nothing", not as "the doc is
+    accurate"."""
     text = _doc_text()
     citations = list(_CITATION_RE.finditer(text))
     assert len(citations) >= 15, "expected many file:line citations in a design doc this detailed"
@@ -109,7 +133,15 @@ def test_every_quoted_citation_in_the_design_doc_matches_the_source():
     a rewrite that moved the quoted text to line 27."""
     text = _doc_text()
     matches = list(_QUOTED_CITATION_RE.finditer(text))
-    assert matches, "expected at least one citation with a verbatim source quote"
+    # Locks in the coverage raised across `run.py`, `runner.py`, `github.py`,
+    # and `action.yml` — a regression here means a future edit deleted a
+    # content-checked citation and fell back to a bare, unverified one.
+    assert len(matches) >= 6, (
+        f"expected at least 6 content-checked citations, found {len(matches)} — "
+        "a bare `file:line` citation with no quote is not checked against the "
+        "source text and can silently rot (see the caveat on "
+        "test_every_citation_in_the_design_doc_resolves above)"
+    )
 
     for match in matches:
         rel_path, start_line, end_line, quoted = match.groups()
@@ -186,12 +218,12 @@ def test_design_doc_names_the_workflow_run_boundary_and_why_pull_request_is_not_
 def test_design_doc_states_the_environment_secret_requirement():
     """The `workflow_run` split alone does not protect the credential — only
     scoping it to an environment with a `main`-only deployment-branch policy
-    does. The doc must say so and must not leave `action.yml:14`'s
+    does. The doc must say so and must not leave `action.yml:13-14`'s
     "repository secret" language standing uncorrected."""
     text = _doc_text()
     assert "environment secret" in text or "environment-scoped" in text
     assert "deployment-branch policy" in text or "deployment branch policy" in text
-    assert "action.yml:14" in text
+    assert "action.yml:13-14" in text
     assert "repository secret" in text  # named as the thing being corrected
 
 
