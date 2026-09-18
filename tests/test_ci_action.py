@@ -1237,7 +1237,11 @@ def _render(author_login="octocat", mention_notifies=False, **overrides):
     )
 
 
-def test_render_body_mentions_the_author_exactly_once():
+def test_render_body_mentions_the_author_exactly_once_with_no_findings():
+    # This drives the trivial case (no findings at all); the property that
+    # a mention stays the ONLY `@` even when findings text carries one is
+    # pinned separately below, by name, since that is the case an attacker
+    # or an ordinary monorepo path could actually threaten.
     body = _render(author_login="octocat")
     assert body.count("@octocat") == 1
     assert body.count("@") == 1
@@ -1257,6 +1261,25 @@ def test_render_body_mentions_the_author_exactly_once_even_with_at_signs_in_find
     assert body.count("@octocat") == 1
     assert "packages/@acme" not in body
     assert "packages/\\@acme" in body
+
+
+def test_a_backtick_in_a_diff_controlled_file_path_cannot_close_the_code_span():
+    # `_where` wraps `item.file` in a single-backtick GFM code span. A file
+    # path containing its OWN backtick (legal in a git filename) would close
+    # that span early if the path were spliced in raw, letting a trailing
+    # `@login` render as a live mention in plain text right after it — this
+    # is the same live-mention hazard `_cell` already closes for
+    # `item.comment`/`item.evidence`, just reached through the file column
+    # instead. Pin that `_where` neutralizes it the same way: no bare `@`
+    # reaches the body no matter where the backtick run happens to end.
+    blocking = [ChecklistItem(
+        label="tamper guard", passed=False,
+        file="x`@attacker`.py", line=5, comment="ok", severity="critical",
+    )]
+    body = _render(author_login="octocat", blocking=blocking)
+    assert body.count("@octocat") == 1
+    assert "x`@attacker" not in body
+    assert "x`\\@attacker" in body
 
 
 @pytest.mark.parametrize(

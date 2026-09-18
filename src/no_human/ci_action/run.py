@@ -449,17 +449,31 @@ def _cell(value: str) -> str:
     ordinary monorepo layout. The ``@``-mention this module deliberately
     emits comes ONLY from :func:`_mention_for` on the validated
     ``author_login`` and is placed above every findings table (see
-    `render_body`'s docstring); escaping ``@`` here keeps that the only
-    mention a rendered body can ever contain.
+    `render_body`'s docstring); escaping ``@`` here — and in :func:`_where`,
+    which every diff-derived file path also passes through — keeps that the
+    only mention a rendered body can ever contain.
     """
     text = str(value).replace("\r\n", " ").replace("\r", " ").replace("\n", " ")
     return text.replace("|", "\\|").replace("@", "\\@")
 
 
 def _where(file: str, line: int) -> str:
+    """Render ``file`` (and optional ``line``) as an inline-code table cell.
+
+    ``file`` is diff-derived (a tamper reason's path, or a reviewer
+    citation), so it is run through :func:`_cell` BEFORE being wrapped in
+    backticks, not after: a raw backtick in the path (legal in a git
+    filename, e.g. ``` `x`@attacker`.py ```) would otherwise close the
+    inline-code span early and let a trailing ``@login`` render as a live
+    GitHub mention outside the code span. Escaping ``@`` to ``\\@`` in the
+    text BEFORE the backticks are added means the character sequence that
+    reaches GitHub is never a bare ``@`` no matter where the span happens to
+    end.
+    """
     if not file:
         return ""
-    return f"`{file}:{line}`" if line else f"`{file}`"
+    safe = _cell(file)
+    return f"`{safe}:{line}`" if line else f"`{safe}`"
 
 
 def _findings_table(items: list[ChecklistItem]) -> list[str]:

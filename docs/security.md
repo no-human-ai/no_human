@@ -479,8 +479,10 @@ config key that turns it on and the default that keeps it off.
   than a claim to restate it exactly; a login that fails validation, or ends
   in `[bot]`, is never mentioned, with no placeholder text either. Findings
   text quoted into the comment body (e.g. a tamper-guard reason derived from
-  a changed path) is never treated as a mention candidate either: table
-  cells escape `@` so a diff-controlled string can never render as a live
+  a changed path) is never treated as a mention candidate either: every
+  table cell — including the file-path column, wrapped in a backtick code
+  span that a path containing its own backtick could otherwise break out of
+  — escapes `@` so a diff-controlled string can never render as a live
   GitHub notification.
 - **Welcome email (Resend).** Gated on an **environment variable**, not a
   config key: `_default_transport()` (`email/send.py`) constructs a
