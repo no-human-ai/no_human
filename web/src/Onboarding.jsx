@@ -5,7 +5,7 @@ import {
   generateDocs, fetchIntegrationSetup, saveIntegrationSetup,
   testIntegration,
   proveRepoSSE, confirmRepoProfile, fetchReadiness, setRepoUiEvidence,
-  probeServer, registerOnboardingEmail,
+  probeServer, fetchOnboardingStatus, registerOnboardingEmail,
 } from "./api.js";
 import { kickoffWikiGeneration } from "./onboardingDocsKickoff.js";
 import { isNetworkError, offlineBanner, createServerProbe } from "./offlineRetry.js";
@@ -26,7 +26,7 @@ import {
   switchLabel, effectiveEnabled,
 } from "./integrationSetup.js";
 import {
-  backDisabled, backDisabledReason, forwardDisabled, canJumpTo, stepButtonLabel,
+  backDisabled, backDisabledReason, forwardDisabled, canJumpTo, stepButtonLabel, stepDone,
 } from "./onboardingNav.js";
 import { canStartMinimal } from "./onboardingMinimal.js";
 import { summaryRepoCounts } from "./onboardingSummary.js";
@@ -35,7 +35,10 @@ import {
   dropRepoEverywhere, unboundProjects, unboundProjectsMessage, projectPayload,
   projectsBlockContinue, launchReadiness,
 } from "./onboardingProjects.js";
-import { emailBlocksContinue, submitEmail, EMAIL_REJECT_MESSAGE } from "./onboardingEmail.js";
+import {
+  emailBlocksContinue, submitEmail, EMAIL_REJECT_MESSAGE,
+  emailStepBlocks, requireEmail,
+} from "./onboardingEmail.js";
 import { BASE_STEPS } from "./onboardingSteps.js";
 
 // Input with live directory autocomplete (via /api/fs/suggest). As you type a
@@ -107,6 +110,11 @@ export default function Onboarding({ onComplete }) {
   // before typing anything.
   const [email, setEmail] = useState("");
   const [emailTouched, setEmailTouched] = useState(false);
+  // Whether the SERVER already holds an address, independent of this mount's
+  // (possibly empty, post-reload) `email` field. null = not asked yet / could
+  // not ask, true/false = the server's answer. This is the fix for the reload
+  // dead-end: a fresh mount's `email` is always "", but the server may not be.
+  const [emailOnFile, setEmailOnFile] = useState(null);
   // The folder a manual "Search another folder" run actually scanned, so the
   // empty/searching state can name it ("" = the initial home+roots auto-scan).
   const [searchedPath, setSearchedPath] = useState("");
@@ -215,8 +223,16 @@ export default function Onboarding({ onComplete }) {
   // Email is REQUIRED (operator decision) — the well-formedness gate blocks
   // Continue exactly the way projectsBlockMsg does, so there is one gating
   // mechanism, not two.
-  const emailBlockMsg = step.key === "email" ? emailBlocksContinue(email) : null;
+  const emailBlockMsg = step.key === "email" ? emailStepBlocks({ email, onFile: emailOnFile }) : null;
   const continueBlocked = projectsBlockMsg !== null || emailBlockMsg !== null;
+  // Feeds the Email step's stepper dot (stepDone), via the same requireEmail
+  // predicate the Launch/Skip-setup click uses, so the dot cannot claim "done"
+  // for a state completion would refuse. The dot reads the status cached when
+  // the wizard loaded; the click re-asks the server when the field is empty
+  // (ensureEmailRegistered), so the two can still diverge if the server loses
+  // the address after load — that gap belongs to the click's fresh check, not
+  // to this render-time read.
+  const emailSatisfied = requireEmail({ email, onFile: emailOnFile }) === null;
 
   // Advancing a step swaps the whole card underneath the user, and nothing moved focus
   // with it. Measured on the pre-change build, not assumed: the Continue button lives in
@@ -274,6 +290,18 @@ export default function Onboarding({ onComplete }) {
     return () => { probeRef.current = null; p.stop(); };
   }, [offline]);
   const obBanner = offlineBanner({ offline, probing });
+
+  // Rehydrate the FACT of a registered address (never the value — the server
+  // never echoes it) on mount and again on reconnect (reloadNonce), so a
+  // reload doesn't strand the wizard believing no address exists when the
+  // server already has one. Deliberately outside guard(): a background
+  // lookup for a field the user may be about to type must not set busy/err.
+  useEffect(() => {
+    fetchOnboardingStatus()
+      .then((s) => setEmailOnFile(Boolean(s?.email_registered)))
+      .catch(noteFetchFailure);
+    // deps intentionally partial (was: eslint-disable react-hooks/exhaustive-deps — plugin never loaded here)
+  }, [reloadNonce]);
 
   // The single choke point every step loader's catch routes through. Returns
   // true when the throw was the server being gone, in which case the caller
@@ -419,13 +447,20 @@ export default function Onboarding({ onComplete }) {
     if (advancing.current) return;
     advancing.current = true;
     try {
-      if (step.key === "email") {
+      if (step.key === "email" && String(email).trim() !== "") {
         // Same contract as the repos branch above: the sub-operation runs
         // through the wizard's ONE failure-handling seam (guard() classifies
         // the rejection as offline/err and never rethrows), then next() runs
         // unconditionally — a failed registration behaves exactly like any
-        // other onboarding endpoint failure, not a new lockout.
-        await guard(() => submitEmail(email, { registerOnboardingEmail }));
+        // other onboarding endpoint failure, not a new lockout. Only submits
+        // when the user actually typed something here: an empty field on a
+        // reload that already has an address on file (emailOnFile) has
+        // nothing new to send. setEmailOnFile is set AFTER the await so a
+        // 422/offline failure does not falsely mark the address as on file.
+        await guard(async () => {
+          await submitEmail(email, { registerOnboardingEmail });
+          setEmailOnFile(true);
+        });
       }
       if (step.key === "repos" && [...selectedRepos].some((p) => !onboarded[p])) {
         await onboardSelected();
@@ -450,9 +485,29 @@ export default function Onboarding({ onComplete }) {
   // which has no notion of a prior address. So calling it again here after an
   // earlier Continue on the Email step neither sends a second welcome email
   // nor rewrites the recorded `welcome_status`/`email_at`.
+  const EMAIL_STEP_INDEX = STEPS.findIndex((s) => s.key === "email");
   async function ensureEmailRegistered() {
-    if (emailBlocksContinue(email) !== null) throw new Error(EMAIL_REJECT_MESSAGE);
-    await submitEmail(email, { registerOnboardingEmail });
+    if (emailBlocksContinue(email) === null) {          // typed here, well-formed
+      await submitEmail(email, { registerOnboardingEmail });
+      setEmailOnFile(true);
+      return;
+    }
+    // Nothing usable in THIS mount. Ask the server rather than refuse on
+    // state a reload wiped: the server is authoritative and this mount's
+    // flag can be stale (reset, restart, second window). A network
+    // rejection propagates so guard() calls it offline, never "your email
+    // is invalid".
+    const empty = String(email).trim() === "";
+    const fresh = empty ? Boolean((await fetchOnboardingStatus())?.email_registered) : false;
+    if (empty) setEmailOnFile(fresh);
+    const msg = requireEmail({ email, onFile: fresh });
+    if (msg !== null) {
+      setErr(msg);
+      setI(EMAIL_STEP_INDEX);
+      throw new Error(msg);
+    }
+    // On file, nothing new to send: the POST is skipped, not faked — we do
+    // not have the value to re-post.
   }
 
   // Abort any live prove stream when the wizard unmounts. The server-side run
@@ -732,23 +787,30 @@ export default function Onboarding({ onComplete }) {
             tabbable; ArrowLeft/ArrowRight move focus. aria-current still marks
             where you are; stepButtonLabel carries the state a screen reader needs. */}
         <div className="ob-stepper" role="list" aria-label="Setup progress" onKeyDown={onStepKeyDown}>
-          {STEPS.map((s, idx) => (
-            <div key={s.key} role="listitem">
-              <button
-                type="button"
-                ref={(el) => { stepRefs.current[idx] = el; }}
-                aria-current={idx === i ? "step" : undefined}
-                aria-label={stepButtonLabel(s, idx, i, STEPS.length)}
-                tabIndex={idx === i ? 0 : -1}
-                disabled={!canJumpTo({ from: i, to: idx, busy })}
-                className={`ob-step${idx === i ? " current" : ""}${idx < i ? " done" : ""}`}
-                onClick={() => { if (canJumpTo({ from: i, to: idx, busy })) setI(idx); }}
-              >
-                <span className="ob-step-dot" />
-                <span className="ob-step-label">{s.title}</span>
-              </button>
-            </div>
-          ))}
+          {STEPS.map((s, idx) => {
+            // The Email dot must not read "done" while completion would still
+            // refuse for want of an address: position alone (idx < i) can't
+            // tell "typed here" from "reload wiped it and the server has
+            // none" apart — stepDone (onboardingNav.js) folds in emailSatisfied.
+            const done = stepDone({ key: s.key, idx, current: i, emailSatisfied });
+            return (
+              <div key={s.key} role="listitem">
+                <button
+                  type="button"
+                  ref={(el) => { stepRefs.current[idx] = el; }}
+                  aria-current={idx === i ? "step" : undefined}
+                  aria-label={stepButtonLabel(s, idx, i, STEPS.length, done)}
+                  tabIndex={idx === i ? 0 : -1}
+                  disabled={!canJumpTo({ from: i, to: idx, busy })}
+                  className={`ob-step${idx === i ? " current" : ""}${done ? " done" : ""}`}
+                  onClick={() => { if (canJumpTo({ from: i, to: idx, busy })) setI(idx); }}
+                >
+                  <span className="ob-step-dot" />
+                  <span className="ob-step-label">{s.title}</span>
+                </button>
+              </div>
+            );
+          })}
         </div>
 
         {/* Incident 2026-09-04: the server died mid-wizard and every step showed
@@ -862,6 +924,9 @@ export default function Onboarding({ onComplete }) {
               </div>
               {emailTouched && emailBlockMsg && (
                 <p className="ob-note" role="status">{emailBlockMsg}</p>
+              )}
+              {emailOnFile === true && !email && (
+                <p className="ob-faint">An address is already registered for this install; typing replaces it.</p>
               )}
               <p className="ob-faint">Required to continue — this step can't be skipped.</p>
             </Stagger>
@@ -1278,7 +1343,7 @@ export default function Onboarding({ onComplete }) {
             </Stagger>
           )}
 
-          {err && <div className="ob-error">{err}</div>}
+          {err && <div className="ob-error" role="alert">{err}</div>}
         </div>
 
         <div className="ob-nav">

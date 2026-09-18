@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-import { backDisabled, backDisabledReason, forwardDisabled, canJumpTo, stepButtonLabel } from "./onboardingNav.js";
+import { backDisabled, backDisabledReason, forwardDisabled, canJumpTo, stepButtonLabel, stepDone } from "./onboardingNav.js";
 
 // BUG (first external DMG tester): "the back button doesn't work" on the repos
 // step of onboarding.
@@ -103,6 +103,36 @@ test("the step button's accessible name carries title, position and state", () =
   assert.equal(stepButtonLabel(step, 2, 5, 8), "Projects, step 3 of 8, completed");
 });
 
+// ── stepDone: the stepper's "done" dot must reflect actual completability,
+// not mere position, for the Email step specifically (the reload bug's fix). ──
+
+test("stepDone: a past, non-email step is always done — position alone decides it", () => {
+  assert.equal(stepDone({ key: "welcome", idx: 0, current: 3, emailSatisfied: false }), true);
+  assert.equal(stepDone({ key: "repos", idx: 2, current: 3, emailSatisfied: false }), true);
+});
+
+test("stepDone: the current or a future step is never done, regardless of emailSatisfied", () => {
+  assert.equal(stepDone({ key: "email", idx: 3, current: 3, emailSatisfied: true }), false);
+  assert.equal(stepDone({ key: "email", idx: 4, current: 3, emailSatisfied: true }), false);
+  assert.equal(stepDone({ key: "welcome", idx: 3, current: 3, emailSatisfied: true }), false);
+});
+
+test("stepDone: a past email step is done only when emailSatisfied is true", () => {
+  assert.equal(stepDone({ key: "email", idx: 1, current: 3, emailSatisfied: true }), true);
+  assert.equal(stepDone({ key: "email", idx: 1, current: 3, emailSatisfied: false }), false,
+    "a stepper jump past Email must not paint it done while completion would still refuse");
+});
+
+test("stepButtonLabel: an explicit done override replaces the default idx<current check", () => {
+  const step = { key: "email", title: "Email" };
+  // idx=1 < current=3 would default to "completed", but an explicit done:false
+  // (the unsatisfied-email case) must override that default.
+  assert.equal(stepButtonLabel(step, 1, 3, 8, false), "Email, step 2 of 8, not started");
+  assert.equal(stepButtonLabel(step, 1, 3, 8, true), "Email, step 2 of 8, completed");
+  // Omitting `done` entirely preserves the original idx<current behaviour byte-for-byte.
+  assert.equal(stepButtonLabel(step, 1, 3, 8), "Email, step 2 of 8, completed");
+});
+
 // ── the wiring: the predicates are what the buttons actually use ────────────
 
 const here = fileURLToPath(new URL(".", import.meta.url));
@@ -131,7 +161,7 @@ test("the step indicator renders BUTTONS that jump via setI, gated on canJumpTo"
   // B2 makes each a real button so a user can jump instead of clicking Back.
   assert.match(src, /className=\{`ob-step[\s\S]*?onClick=\{\(\) => \{ if \(canJumpTo\(/,
     "each step must be a button whose onClick jumps only when canJumpTo allows it");
-  assert.match(src, /aria-label=\{stepButtonLabel\(s, idx, i, STEPS\.length\)\}/,
+  assert.match(src, /aria-label=\{stepButtonLabel\(s, idx, i, STEPS\.length, done\)\}/,
     "the button's accessible name must come from the tested label helper");
   assert.match(src, /onKeyDown=\{onStepKeyDown\}/,
     "the stepper must handle ArrowLeft/ArrowRight for roving focus");

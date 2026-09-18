@@ -56,6 +56,7 @@ export const WALKS = [
     "index 1, so both 'Fix ->' buttons jump one step early. Fixing that is an " +
     "application-code change, out of scope here — see the QUARANTINED comment " +
     "in e2e/onboarding-summary-counts.mjs." },
+  { file: "onboarding-email-reload.mjs", name: "onboarding email reload", lane: "ci" },
   { file: "onboarding-minimal-path.mjs", name: "onboarding minimal path", lane: "ci" },
   { file: "onboarding-step-nav.mjs", name: "onboarding step nav", lane: "ci" },
   { file: "onboarding-discord-step.mjs", name: "onboarding discord step", lane: "ci" },

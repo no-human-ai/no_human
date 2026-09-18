@@ -74,7 +74,7 @@ test("the email input carries ph-no-capture (DOM masking) in addition to the net
 });
 
 test("continueBlocked folds in the email gate beside the existing projects gate — one mechanism, not two", () => {
-  assert.match(src, /const emailBlockMsg = step\.key === "email" \? emailBlocksContinue\(email\) : null;/);
+  assert.match(src, /const emailBlockMsg = step\.key === "email" \? emailStepBlocks\(\{ email, onFile: emailOnFile \}\) : null;/);
   assert.match(src, /const continueBlocked = projectsBlockMsg !== null \|\| emailBlockMsg !== null;/);
 });
 
@@ -89,7 +89,9 @@ test("advance() runs the email submission through guard() and still calls next()
   const m = src.match(/async function advance\(\) \{([\s\S]*?)\n  \}/);
   assert.ok(m, "advance() not found");
   const body = m[1];
-  assert.match(body, /if \(step\.key === "email"\) \{[\s\S]*?await guard\(\(\) => submitEmail\(email, \{ registerOnboardingEmail \}\)\);[\s\S]*?\}/);
+  // Only submits when the user actually typed something — an empty field on
+  // a reload that already has an address on file has nothing new to send.
+  assert.match(body, /if \(step\.key === "email" && String\(email\)\.trim\(\) !== ""\) \{[\s\S]*?await guard\(async \(\) => \{[\s\S]*?await submitEmail\(email, \{ registerOnboardingEmail \}\);[\s\S]*?setEmailOnFile\(true\);[\s\S]*?\}\);[\s\S]*?\}/);
   // next() must still be the last call in the try block, unconditional —
   // exactly mirroring the pre-existing "repos" branch's shape.
   const tryBody = body.match(/try \{([\s\S]*?)\} finally/)[1];
@@ -111,7 +113,11 @@ test("no new error-display surface was added for the email step — the wizard's
 
 test("registerOnboardingEmail and onboardingEmail.js helpers are imported, existing imports untouched", () => {
   assert.match(src, /registerOnboardingEmail,?\s*\n\} from "\.\/api\.js";/);
-  assert.match(src, /import \{ emailBlocksContinue, submitEmail, EMAIL_REJECT_MESSAGE \} from "\.\/onboardingEmail\.js";/);
+  assert.match(src, /fetchOnboardingStatus/, "fetchOnboardingStatus must be imported to hydrate emailOnFile on mount");
+  assert.match(
+    src,
+    /import \{\s*emailBlocksContinue, submitEmail, EMAIL_REJECT_MESSAGE,\s*emailStepBlocks, requireEmail,\s*\} from "\.\/onboardingEmail\.js";/,
+  );
 });
 
 // ── stepper-jump / minimal-skip bypass: both completion paths must register ──
@@ -119,8 +125,16 @@ test("registerOnboardingEmail and onboardingEmail.js helpers are imported, exist
 test("finish() and startMinimal() both refuse to complete without a registered email", () => {
   const helper = src.match(/async function ensureEmailRegistered\(\) \{([\s\S]*?)\n  \}/);
   assert.ok(helper, "ensureEmailRegistered() not found");
-  assert.match(helper[1], /if \(emailBlocksContinue\(email\) !== null\) throw new Error\(EMAIL_REJECT_MESSAGE\);/);
+  // Typed-here-and-valid path still submits directly, same as before.
+  assert.match(helper[1], /if \(emailBlocksContinue\(email\) === null\) \{/);
   assert.match(helper[1], /await submitEmail\(email, \{ registerOnboardingEmail \}\);/);
+  // The fix: an empty mount field re-asks the SERVER before refusing — a
+  // reload wipes this mount's `email` but not the server's record.
+  assert.match(helper[1], /fetchOnboardingStatus\(\)/);
+  assert.match(helper[1], /const msg = requireEmail\(\{ email, onFile: fresh \}\);/);
+  // A refusal is shown to the user (setErr) AND lands them on the Email step
+  // (setI) BEFORE the throw — a throw with no render site is a dead end.
+  assert.match(helper[1], /setErr\(msg\);\s*\n\s*setI\(EMAIL_STEP_INDEX\);\s*\n\s*throw new Error\(msg\);/);
 
   const finishBody = src.slice(src.indexOf("async function finish()"), src.indexOf("\n  }\n", src.indexOf("async function finish()")));
   assert.match(finishBody, /await ensureEmailRegistered\(\);/, "finish() must require the address before launching");
@@ -130,6 +144,24 @@ test("finish() and startMinimal() both refuse to complete without a registered e
   const startMinimalBody = src.slice(src.indexOf("async function startMinimal()"), src.indexOf("\n  }\n", src.indexOf("async function startMinimal()")));
   assert.match(startMinimalBody, /await ensureEmailRegistered\(\);/, "startMinimal() must require the address too — it is a second completion path (the Repositories step's Skip-setup shortcut) that bypasses the Email step just like the stepper jump does");
   assert.ok(startMinimalBody.indexOf("ensureEmailRegistered()") < startMinimalBody.indexOf("completeOnboarding("));
+});
+
+test("mount hydrates emailOnFile from the server so a reload doesn't strand the wizard", () => {
+  assert.match(src, /const \[emailOnFile, setEmailOnFile\] = useState\(null\);/);
+  const m = src.match(/useEffect\(\(\) => \{\s*fetchOnboardingStatus\(\)([\s\S]*?)\}, \[reloadNonce\]\);/);
+  assert.ok(m, "email hydration effect not found, keyed on [reloadNonce]");
+  assert.match(m[1], /setEmailOnFile\(Boolean\(s\?\.email_registered\)\)/);
+  assert.match(m[1], /\.catch\(noteFetchFailure\)/, "must not be wrapped in guard() — a background lookup must not set busy/err");
+});
+
+test("the visible ob-error surface carries role=\"alert\" so a refusal is announced, not just thrown", () => {
+  assert.match(src, /\{err && <div className="ob-error" role="alert">\{err\}<\/div>\}/);
+});
+
+test("the stepper dot and its aria-label route through stepDone, not raw position", () => {
+  assert.match(src, /const done = stepDone\(\{ key: s\.key, idx, current: i, emailSatisfied \}\);/);
+  assert.match(src, /aria-label=\{stepButtonLabel\(s, idx, i, STEPS\.length, done\)\}/);
+  assert.match(src, /className=\{`ob-step\$\{idx === i \? " current" : ""\}\$\{done \? " done" : ""\}`\}/);
 });
 
 test("the email step discloses that the address is sent to and stored by no_human", () => {
