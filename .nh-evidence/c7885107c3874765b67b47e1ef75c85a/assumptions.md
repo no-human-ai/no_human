@@ -1,6 +1,8 @@
 # Assumptions
 
-_Harness-captured record for task `c7885107`, commit `b4206e1b86e5de1a460d2b077115391807ab5316` — not model-authored: no_human wrote this file from the intake step's recorded questions and assumptions. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `c7885107`, commit `8ca80901d9ba6d678edd6ce2f8df1fd466eeb4c0` — not model-authored: no_human wrote this file from the intake step's recorded questions and assumptions. It records what the gate produced; it is not a verdict of the model that wrote the code._
+
+> ⚠️ **Unresolved:** SDK reported HTTP 403 — infrastructure/auth, not work ('personal3' subscription)
 
 <details><summary>⚠️ 5 assumptions made on your behalf — verify at review</summary>
 
