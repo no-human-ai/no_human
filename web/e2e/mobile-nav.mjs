@@ -2,6 +2,20 @@
 // Playwright's .click() scrolls a target into view programmatically, so a click
 // test alone passes even when the button renders off-screen — this asserts on
 // geometry (rect.right <= innerWidth), which is what a human's thumb sees.
+//
+// QUARANTINED (lane: manual — see e2e/manifest.mjs): 4 of ~100 checks fail —
+// "no nav label is clipped" at the two narrowest viewports (small, mobile-short;
+// both themes) — always the SAME label, always the SAME 2px: `In progress
+// 64>62`. Real CSS regression, not a walk bug: src/styles.css:379 gives
+// `.nh-navrow-label` `flex: 1; min-width: 0` so it shrinks and ellipsizes, but
+// the narrow-viewport override at src/styles.css:627 sets `flex: 0 0 auto;
+// max-width: 100%` — `flex-basis: auto` sizes the label to its own content
+// instead of the available track, so at these widths it overflows its box
+// before the `text-overflow: ellipsis` rule ever gets a chance to fire. Fixing
+// it is an application CSS change and out of scope for this task (see OUT OF
+// SCOPE in .no_human/PLAN.md — "fixing product bugs is a different task");
+// this walk stays red on that one defect until the narrow-viewport override
+// keeps `min-width: 0` (or drops `flex: 0 0 auto` back to `flex: 1`).
 import { chromium } from "playwright";
 import http from "node:http";
 import fs from "node:fs";
@@ -175,13 +189,20 @@ for (const [label, viewport] of [
       // clickable. The binding (aria-expanded={showNewTask}) is viewport-agnostic,
       // so one solid round-trip catches a regression the collapsed checks cannot:
       // opening must flip the trigger to "true", closing (Escape) back to "false".
-      await page.locator(".btn-new-task").click();
+      //
+      // `.btn-new-task` is no longer unique to the sidebar trigger — Board.jsx's
+      // empty-state CTA ("New task") reuses the same class, so a bare class
+      // locator now hits Playwright's strict-mode ambiguity check. Target the
+      // sidebar trigger by its accessible name instead ("+ New Task", exact —
+      // Board's empty-state button is spelled "New task", no "+").
+      const newTaskTrigger = page.getByRole("button", { name: "+ New Task", exact: true });
+      await newTaskTrigger.click();
       await page.waitForTimeout(400);
-      const ntOpen = await page.locator(".btn-new-task").getAttribute("aria-expanded").catch(() => null);
+      const ntOpen = await newTaskTrigger.getAttribute("aria-expanded").catch(() => null);
       check(`[${label}/${theme}] New Task reports expanded while its dialog is open`, ntOpen === "true", `expanded=${ntOpen}`);
       await page.keyboard.press("Escape");
       await page.waitForTimeout(300);
-      const ntClosed = await page.locator(".btn-new-task").getAttribute("aria-expanded").catch(() => null);
+      const ntClosed = await newTaskTrigger.getAttribute("aria-expanded").catch(() => null);
       check(`[${label}/${theme}] New Task returns to collapsed after Escape`, ntClosed === "false", `expanded=${ntClosed}`);
     }
 

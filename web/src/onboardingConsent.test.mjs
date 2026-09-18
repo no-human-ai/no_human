@@ -131,9 +131,13 @@ test("no dark patterns in the button copy", () => {
 const here = fileURLToPath(new URL(".", import.meta.url));
 const jsx = readFileSync(here + "Onboarding.jsx", "utf8");
 const api = readFileSync(here + "api.js", "utf8");
+// BASE_STEPS moved out of Onboarding.jsx into its own module (so an e2e walk
+// can import the real source of truth instead of hardcoding a rail length) —
+// read it from there, not from the component source.
+const stepsSrc = readFileSync(here + "onboardingSteps.js", "utf8");
 
 test("the 7 base steps are untouched and nothing is appended after summary", () => {
-  const base = jsx.match(/const BASE_STEPS = \[([\s\S]*?)\n\];/);
+  const base = stepsSrc.match(/export const BASE_STEPS = \[([\s\S]*?)\n\];/);
   assert.ok(base, "the base-step list must still exist as its own array");
   const keys = [...base[1].matchAll(/key: "(\w+)"/g)].map((m) => m[1]);
   assert.deepEqual(
