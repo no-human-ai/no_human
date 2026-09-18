@@ -1,87 +1,125 @@
 # How I verified this — full log
 
-_Harness-captured record for task `8c698186`, commit `c28daaeb6d2a71615f7d3d09c0a0a2ccc23bcff5` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `8c698186`, commit `5a615fd337b1770f46f956b042ed047e0e4aba52` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ## How I verified this
-7 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
+10 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
 
 ### test
-- `uv run pytest -q "tests/test_text_reads_declare_encoding.py::test_no_read_text_in_the_harness_omits_its_encoding[tests]" 2>&1 | tail -30`
+- `uv run pytest tests/test_ci_action.py -q 2>&1 | tail -60`
 
 ```
-.                                                                        [100%]
-1 passed in 6.93s
-```
+...........................................................F............ [ 61%]
+..............................................                           [100%]
+=================================== FAILURES ===================================
+__ test_a_backtick_in_a_diff_controlled_file_path_cannot_close_the_code_span ___
 
-- `uv run pytest -q -n 4 tests/test_ci_action.py tests/test_text_reads_declare_encoding.py 2>&1 | tail -60`
+    def test_a_backtick_in_a_diff_controlled_file_path_cannot_close_the_code_span():
+        # `_where` wraps `item.file` in a single-backtick GFM code span. A file
+        # path containing its OWN backtick (legal in a git filename) would close
+        # that span early if the path were spliced in raw, letting a trailing
+        # `@login` render as a live 
+[... 844 of 1,983 characters omitted from the middle ...]
+y:5` | ok |
+E         ?       +++++++++
+E           
+E           ---
+E           *Posted by the <redacted> review gate GitHub Action. This comment is found and replaced in place on every run.*
 
-```
-bringing up nodes...
-bringing up nodes...
+tests/test_ci_action.py:1281: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_ci_action.py::test_a_backtick_in_a_diff_controlled_file_path_cannot_close_the_code_span
+1 failed, 117 passed in 18.09s
+```  
+  _excerpt - 1,981 characters of output in total_
 
-........................................................................ [ 57%]
-......................................................                   [100%]
-126 passed in 12.59s
-```
-
-- `uv run pytest -q -n 4 tests/test_ci_action.py tests/test_text_reads_declare_encoding.py tests/test_ledger_claim_form_repro.py tests/test_structural_budget.py 2>&1 | tail -40`
-
-```
-bringing up nodes...
-bringing up nodes...
-
-
-no tests ran in 0.62s
-```
-
-- `ls tests/test_ledger_claim_form_repro.py tests/test_structural_budget.py 2>&1; echo "---"; uv run pytest -q tests/test_ledger_claim_form_repro.py 2>&1 | tail -20`
-
-```
-ls: tests/test_ledger_claim_form_repro.py: No such file or directory
-tests/test_structural_budget.py
----
-ERROR: file or directory not found: tests/test_ledger_claim_form_repro.py
-
-
-no tests ran in 0.00s
-```
-
-- `uv run pytest -q -n 4 tests/test_ci_action.py tests/test_text_reads_declare_encoding.py tests/test_structural_budget.py 2>&1 | tail -40`
+- `uv run pytest tests/test_ci_action.py -q 2>&1 | tail -30`
 
 ```
-bringing up nodes...
-bringing up nodes...
-
-........................................................................ [ 50%]
-........................................................................ [100%]
-144 passed in 15.24s
+........................................................................ [ 61%]
+..............................................                           [100%]
+118 passed in 17.65s
 ```
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/8c698186631243dcafdeb3023c6517d7.6460.2d2fb2ce uv run pytest -q -n 4 tests/test_ci_action.py -k "mention or notif or author" 2>&1 | tail -30`
+- `uv run pytest tests/test_ci_action.py tests/test_ci_action_metadata.py -q 2>&1 | tail -30`
 
 ```
-bringing up nodes...
-bringing up nodes...
-
-......................................                                   [100%]
-38 passed in 4.18s
+........................................................................ [ 51%]
+...................................................................      [100%]
+139 passed in 18.24s
 ```
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/8c698186631243dcafdeb3023c6517d7.6460.2d2fb2ce uv run pytest -q -n 4 tests/test_ci_action.py tests/test_text_reads_declare_encoding.py 2>&1 | tail -20`
+- `uv run pytest tests/ -q -m repoguard 2>&1 | tail -40`
 
 ```
-bringing up nodes...
-bringing up nodes...
+..........................................................s.s.s.s.s.s.s. [ 34%]
+s.s.s...............................................s................... [ 68%]
+..........s.......................................................       [100%]
+=============================== warnings summary ===============================
+src/<redacted>/testing/test_layers.py:35
+  /Users/eyalgolan/.<redacted>/worktrees/8c698186631243dcafdeb3023c6517d7.6460.f75a51b0/src/<redacted>/testing/test_layers.py:35: PytestCollectionWarning: cannot collect test class 'TestLayer' because it has a __init__ constructor (from: tests/test_test_layers.py)
+    @dataclass
 
-........................................................................ [ 57%]
-......................................................                   [100%]
-126 passed in 12.78s
+src/<redacted>/testing/test_layers.py:89
+  /Users/eyalgolan/.<redacted>/worktrees/8c698186631243dcafdeb3023c6517d7.6460.f75a51b0/src/<redacted>/testing/test_layers.py:89: PytestCollectionWarning: cannot collect test class 'TestPlan' because it has a __init__ constructor (from: tests/test_test_layers.py)
+    @dataclass
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+198 passed, 13 skipped, 13561 deselected, 2 warnings in 21.91s
+```
+
+- `uv run pytest tests/test_text_reads_declare_encoding.py -q 2>&1 | tail -20`
+
+```
+...............                                                          [100%]
+15 passed in 11.77s
+```
+
+- `uv run pytest tests/test_ci_action.py -q 2>&1 | tail -10`
+
+```
+........................................................................ [ 61%]
+..............................................                           [100%]
+118 passed in 18.65s
+```
+
+- `uv run pytest tests/test_ci_action.py tests/test_ci_action_metadata.py tests/test_text_reads_declare_encoding.py -q 2>&1 | tail -20`
+
+```
+........................................................................ [ 46%]
+........................................................................ [ 93%]
+..........                                                               [100%]
+154 passed in 28.98s
+```
+
+- `uv run pytest tests/test_ci_action.py tests/test_ci_action_metadata.py -q 2>&1 | tail -10`
+
+```
+........................................................................ [ 51%]
+...................................................................      [100%]
+139 passed in 18.47s
+```
+
+
+### lint
+- `uv run ruff check src/<redacted>/ci_action tests/test_ci_action.py 2>&1 | tail -40`
+
+```
+error: Failed to spawn: `ruff`
+  Caused by: No such file or directory (os error 2)
+```
+
+- `grep -n "ruff" pyproject.toml 2>/dev/null | head; which ruff; uv run python -m ruff --version 2>&1 | head -5`
+
+```
+ruff not found
+/Users/eyalgolan/.<redacted>/worktrees/8c698186631243dcafdeb3023c6517d7.6460.f75a51b0/.venv/bin/python3: No module named ruff
 ```
 
 
 **Not verified:** everything below is a limit of this section, listed whether or not it bit this attempt.
 
-- no command recognised as e2e, http, typecheck, lint, build was recorded
+- no command recognised as e2e, http, typecheck, build was recorded
 - an entry shows that a command LINE was submitted to the shell and what came back - never that the check recognised inside it RAN, and never that it was the RIGHT command: `pytest -k test_nothing` prints a clean run, and a recorded command line may name a check the shell never reached yet is still counted - TEN SHAPES WERE DRIVEN against bash 3.2.57 with the check replaced by a marker-printing stub and the marker was absent in every one: a failed `&&`, a taken `||`, an `exit`, an `exec`, an `exit` inside a `source`d script, a syntax error that aborts the REST of the line, a multi-line `if false`, a `case` that matches nothing, `set -e` aborting an earlier command, and `set -u` on an unset variable; that list is MEASURED, NOT EXHAUSTIVE, because this module is not bash, so a kind this section does NOT list as missing is a kind some recorded line named, which is not the same as a kind that ran
 - the text is the coder's: the session chose the command string and, through `echo`/`printf`, can choose the output too. Both are shown as inert text, and no entry ASSERTS a pass, a fail, or an exit status - `pytest -q | tail -3` exits with `tail`'s status, `Error: Exit code 1` is a line IN THE OUTPUT, and where the harness reported a timeout or an interruption instead of output that report is appended to the captured text in square brackets. Read the output
 - recognition reads the command line ONLY - it never looks inside what a command runs, so `bash -c 'uv run pytest -q'` leaves no receipt at all while `make test` leaves one that names `make` and not the recipe it ran; and the other way, a check merely NAMED in a heredoc body, or in a quoted string that happens to spell a shell separator, can be recorded as though it ran
