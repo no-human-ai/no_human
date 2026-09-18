@@ -436,7 +436,8 @@ def render_body(
     tampered: bool,
     note: str = "",
     reviewer_veto: bool = False,
-    tamper_ran: bool = True,
+    tamper_ran: bool = False,
+    tamper_skip_reason: str = "the tamper guard did not run for this review.",
 ) -> str:
     lines = [MARKER, "", f"## no_human review gate — {'✅ PASS' if verdict == 'PASS' else '❌ FAIL'}"]
     if note:
@@ -448,20 +449,24 @@ def render_body(
         + (" (capped by `max_files`)" if files_reviewed < files_total else ""),
     ]
     if not tamper_ran:
-        # A `workflow_run` run has no checked-out tree for the tamper guard
-        # to inspect — see the module docstring's TAMPER GUARD section. This
-        # must say so explicitly rather than simply omitting the line: a
-        # PASS verdict that is silent about the guard having not run would
-        # read, to anyone skimming the comment, as "checked, clean" instead
-        # of "not checked at all". `tampered` is always False when the guard
-        # did not run (nothing ran to set it), so the TAMPERED line below is
-        # unreachable here regardless — this branch is still first and
-        # exclusive so that invariant is explicit, not incidental.
+        # `tamper_ran` defaults to False (fail CLOSED): a call site that
+        # forgets the argument must never silently claim the guard ran, so
+        # it renders this line with the generic default reason rather than
+        # omitting it. This must say so explicitly rather than simply
+        # omitting the line: a PASS verdict that is silent about the guard
+        # having not run would read, to anyone skimming the comment, as
+        # "checked, clean" instead of "not checked at all". The REASON is
+        # supplied by the caller — "no checkout" (workflow_run) and "no
+        # changed files" (either trigger) are different true facts, and
+        # hardcoding one here would make the other call site's comment
+        # confidently wrong instead of merely silent. `tampered` is always
+        # False when the guard did not run (nothing ran to set it), so the
+        # TAMPERED line below is unreachable here regardless — this branch
+        # is still first and exclusive so that invariant is explicit, not
+        # incidental.
         lines.append(
-            "- **Tamper guard: DID NOT RUN** — no checked-out repository "
-            "tree was available in this workflow_run context, so no "
-            "test-tampering check was performed. This comment makes no "
-            "claim about test tampering."
+            f"- **Tamper guard: DID NOT RUN** — {tamper_skip_reason} "
+            "This comment makes no claim about test tampering."
         )
     elif tampered:
         lines.append("- **Tamper guard: TAMPERED** — see findings below.")
@@ -677,10 +682,18 @@ def _run_pull_request(event: dict[str, Any]) -> int:
     dry_run = _input("dry_run", DEFAULT_DRY_RUN).strip().lower() == "true"
 
     if not kept:
+        # There IS a checked-out tree here (this is the `pull_request`
+        # checkout path), so the reason the tamper guard did not run is
+        # "nothing changed to check", not "no tree available" — the two are
+        # different true facts and must not share one hardcoded sentence.
         body = render_body(
             verdict="PASS", blocking=[], advisory=[], demoted_citations=[],
             model=model, files_total=0, files_reviewed=0,
-            credential_mode=cred.mode, tampered=False,
+            credential_mode=cred.mode, tampered=False, tamper_ran=False,
+            tamper_skip_reason=(
+                "no file changes were found between the merge base and the "
+                "head commit, so there was nothing to check for tampering."
+            ),
             note="No file changes were found between the merge base and the head commit — nothing to review.",
         )
         return _post_and_exit(body, "PASS", repo_full, pr_number, github_token, dry_run, fail_on_findings)
@@ -774,6 +787,7 @@ def _finish_review(
     tamper_items: list[ChecklistItem],
     tampered: bool,
     tamper_ran: bool,
+    tamper_skip_reason: str = "",
     note: str = "",
 ) -> int:
     """Shared tail of both the ``pull_request`` (checkout) and
@@ -848,19 +862,36 @@ def _finish_review(
     reviewer_veto = (not decision.passed) and not blocking
     verdict = "FAIL" if (blocking or tampered or not decision.passed) else "PASS"
 
-    body = render_body(
+    render_kwargs: dict[str, Any] = dict(
         verdict=verdict, blocking=blocking, advisory=advisory,
         demoted_citations=decision.demoted_citations, model=model,
         files_total=files_total, files_reviewed=len(kept),
         credential_mode=credential_mode, tampered=tampered, reviewer_veto=reviewer_veto,
         note=note, tamper_ran=tamper_ran,
     )
+    if tamper_skip_reason:
+        # Only override `render_body`'s own generic fallback reason when a
+        # caller actually supplied one — a caller that passes `tamper_ran=
+        # False` without a reason still gets the safe generic sentence
+        # rather than an empty/blank one.
+        render_kwargs["tamper_skip_reason"] = tamper_skip_reason
+    body = render_body(**render_kwargs)
     return _post_and_exit(body, verdict, repo_full, pr_number, github_token, dry_run, fail_on_findings)
 
 
 # --------------------------------------------------------------------------- #
 # workflow_run: reconstruct the PR over REST, no checkout available          #
 # --------------------------------------------------------------------------- #
+
+
+# The one true reason the tamper guard never runs anywhere in this module's
+# `workflow_run` path — shared by both `render_body` call sites below so the
+# sentence can't drift between them. The checkout (`pull_request`) path's own
+# "no changed files" branch has a DIFFERENT true reason and must not reuse this.
+_REST_TAMPER_SKIP_REASON = (
+    "no checked-out repository tree was available in this workflow_run "
+    "context, so no test-tampering check was performed."
+)
 
 
 def _run_workflow_run(event: dict[str, Any]) -> int:
@@ -1013,7 +1044,8 @@ def _run_workflow_run_with_client(
         body = render_body(
             verdict="PASS", blocking=[], advisory=[], demoted_citations=[],
             model=model, files_total=files_total, files_reviewed=0,
-            credential_mode=cred.mode, tampered=False, tamper_ran=False, note=note,
+            credential_mode=cred.mode, tampered=False, tamper_ran=False,
+            tamper_skip_reason=_REST_TAMPER_SKIP_REASON, note=note,
         )
         return _post_and_exit(body, "PASS", repo_full, pr_number, github_token, dry_run, fail_on_findings)
 
@@ -1075,7 +1107,8 @@ def _run_workflow_run_with_client(
             before_ref=base_sha, after_ref=head_sha,
             pr_title=pr_title, pr_body=pr_body,
             files_total=files_total, kept=kept, credential_mode=cred.mode,
-            tamper_items=[], tampered=False, tamper_ran=False, note=note,
+            tamper_items=[], tampered=False, tamper_ran=False,
+            tamper_skip_reason=_REST_TAMPER_SKIP_REASON, note=note,
         )
 
 

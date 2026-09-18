@@ -951,6 +951,43 @@ def test_no_changed_files_is_a_synthetic_pass_without_reviewer_or_tamper(env, mo
     assert run.main() == run.EXIT_OK
 
 
+def test_no_changed_files_comment_states_the_tamper_check_did_not_run(env, monkeypatch, repo):
+    """The checkout (`pull_request`) path's own no-changed-files branch never
+    calls `tamper_check_between` either (there is nothing to diff), so its
+    posted comment must say the guard did not run — with the TRUE reason for
+    this branch ("no changed files"), not the workflow_run REST branch's "no
+    checked-out tree" reason. Regression test for a `render_body` call site
+    that used to omit `tamper_ran` entirely and rely on a fail-OPEN default,
+    which rendered a bare PASS with no tamper line at all."""
+    event = _event(repo)
+    event["pull_request"]["base"]["sha"] = repo.head_sha
+    env["event_path"].write_text(json.dumps(event))
+    monkeypatch.setattr(run, "review_diff", _fake_review_diff(exc=AssertionError("must not run")))
+    monkeypatch.setattr(run, "tamper_check_between", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("must not run")))
+    bodies = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(200, json=[], headers={})
+        if request.method == "POST":
+            bodies.append(json.loads(request.content)["body"])
+            return httpx.Response(201, json={"id": 1, "body": ""})
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    _mock_client(monkeypatch, handler)
+    assert run.main() == run.EXIT_OK
+    assert len(bodies) == 1
+    body = bodies[0]
+    assert "Tamper guard: DID NOT RUN" in body, body
+    assert (
+        "no file changes were found between the merge base and the head "
+        "commit, so there was nothing to check for tampering."
+    ) in body, body
+    assert "no checked-out repository tree was available in this workflow_run" not in body, body
+    for phrase in ("Tamper guard: TAMPERED", "tamper guard passed", "no tampering"):
+        assert phrase not in body, body
+
+
 # --------------------------------------------------------------------------- #
 # Tamper guard                                                                #
 # --------------------------------------------------------------------------- #
@@ -1577,6 +1614,22 @@ def test_truncate_drops_advisory_before_hard_truncating():
     )
     assert len(huge_body) <= run._BODY_CAP
     assert "omitted for length" in huge_body
+
+
+def test_render_body_fails_closed_when_a_caller_forgets_tamper_ran():
+    """`tamper_ran` must default to False, not True: a call site that forgets
+    to pass it can never silently render a clean PASS that implies the guard
+    ran. This is the exact defect class a prior review caught (a call site
+    at the checkout path's no-changed-files branch omitted `tamper_ran` and,
+    with a `True` default, rendered nothing at all about the tamper guard)."""
+    body = run.render_body(
+        verdict="PASS", blocking=[], advisory=[], demoted_citations=[],
+        model="m", files_total=0, files_reviewed=0,
+        credential_mode="api_key", tampered=False,
+    )
+    assert "Tamper guard: DID NOT RUN" in body, body
+    for phrase in ("Tamper guard: TAMPERED", "tamper guard passed", "no tampering"):
+        assert phrase not in body, body
 
 
 # --------------------------------------------------------------------------- #
