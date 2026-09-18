@@ -501,57 +501,97 @@ def test_the_gate_mention_scan_is_not_quadratic():
     """Review round 6 found a NEW quadratic of the same class this rule had
     already removed once: the whole command was unmasked once PER SEGMENT.
     3.4 s against a 138 ms base on a realistic 800-line script, inside a
-    PreToolUse hook. Hoisted out of the loop. Loose bound: the shape, not a
-    machine.
+    PreToolUse hook. Hoisted out of the loop
+    (`src/no_human/agent/guard.py:1784-1792`: `_mask_payloads` runs once,
+    then `gate_mentioned = bool(_GATE_MENTION.search(_unmask(masked,
+    table)))` sits ABOVE `for sep, raw in zip(seps, parts):`, not inside it).
 
-    That is what the docstring said, but the assertion was a machine:
-    `elapsed < 0.6` of wall clock. Shared runners landed 0.64 to 0.72 s on
-    good code and took 3 of the last 12 ci.yml runs red with it, one of them
-    a JS-only PR (issue #125). Between 0.6 s and the multi-second regression
-    this exists to catch, only flakes live.
+    That used to be checked with `time.process_time()`: an `elapsed < 0.6`
+    ratio/absolute bound. Shared runners landed 0.64 to 0.72 s on good code
+    and took 3 of the last 12 ci.yml runs red with it, one of them a JS-only
+    PR (issue #125) — a wall clock reads the runner's load, not the shape of
+    the scan.
 
-    So measure the shape. Doubling the input doubles a linear scan and
-    quadruples a quadratic one, and the runner's speed cancels out of a
-    ratio. Measured on this rule, on one machine: linear 1.70 to 2.39 over 15
-    samples; the quadratic put back by hand 3.87 to 3.97 over 3 (t400 4.4 s,
-    t800 17.5 s). The 3.0 bound sits between, 26% clear of the observed
-    linear worst case and 22% under the observed quadratic best.
+    So this measures the shape directly instead of timing it: how many times
+    — and with how much text — `guard._GATE_MENTION.search` runs during one
+    `guard.evaluate` call. `_GATE_MENTION.search` is a pure function of its
+    argument's length (no I/O, no clock, nothing load-sensitive), and
+    "unmask once, not once per segment" is exactly a claim about how many
+    times the gate-mention scan itself runs and over how much text — hoisted
+    out of the loop, `_GATE_MENTION.search(_unmask(masked, table))` runs
+    EXACTLY ONCE, over the full `len(masked)` characters, no matter how many
+    segments the command has; pulled inside the loop it runs once per
+    segment, each time over the same full-length unmasked text again, so
+    both the call count and the character total grow with segment count, not
+    just input length.
 
-    `process_time`, not `monotonic`, so a scheduler preemption inside either
-    half does not enter the ratio.
+    (An earlier draft of this test counted characters handed to
+    `guard._unmask` instead. That undercounted the regression: `_unmask` has
+    several OTHER call sites in this function (`guard.py:1826`, `:1878`,
+    `:1902`, `:1915`, `:1948-1957`, `:2002-2009`) that already run once per
+    segment as part of normal, correct argv handling, on much shorter
+    per-token strings — so their linear-in-segments volume was already
+    baked into the baseline ratio, and mutating just the gate-mention scan
+    back into the loop added only a small fraction on top, not enough to
+    move `ratio` past its threshold. Watching `_GATE_MENTION.search`
+    directly has no such blind spot: that regex has exactly one call site
+    period, so this counts precisely the calls and chars the "unmasked ONCE"
+    comment at `guard.py:1786-1789` is about, and nothing else.)
 
-    A ratio cannot see a UNIFORM slowdown, which the old bound could, so a
-    wall-clock check survives as a backstop, at a value chosen never to
-    flake: 3.0 s is about 10x what the 800-line scan costs and about 6x under
-    what the reintroduced quadratic cost."""
+    Doubling the input (400 to 800 lines, so also ~doubling segment count)
+    should therefore still only double the search call's character total
+    under the fix, and the call count should stay at exactly 1 regardless of
+    input size; the reintroduced per-segment regression instead multiplies
+    both by roughly the segment count, which itself scales with input size —
+    the same quadratic shape, now visible as call/character counts instead
+    of a duration, and identical on a quiet laptop and a saturated CI
+    runner."""
     def script(lines):
         return "\n".join(
             f'echo "line {i}" $VAR{i} && grep -n "x" f{i}.txt'
             for i in range(lines))
 
-    def cpu_seconds(text):
-        start = time.process_time()
-        guard.evaluate("Bash", {"command": text}, forbidden_paths=FORBIDDEN,
-                       never_push_to=PROTECTED, readonly=False)
-        return time.process_time() - start
+    def scan_chars(text):
+        calls = []
+        real_pattern = guard._GATE_MENTION
 
-    # Warm the regex caches. Under `-n 4` this test can be the first in its
-    # worker to reach `guard.evaluate`, and a one-time cost paid inside the
-    # 400-line half would flatter the ratio.
-    cpu_seconds(script(50))
+        class _RecordingPattern:
+            """`re.Pattern` is an immutable C type — `.search` can't be
+            reassigned on it directly — so this wraps the real compiled
+            pattern and stands in for the module-level name instead."""
 
-    small = cpu_seconds(script(400))
-    large = cpu_seconds(script(800))
+            def search(self, s, *a, **kw):
+                calls.append(len(s))
+                return real_pattern.search(s, *a, **kw)
+
+        guard._GATE_MENTION = _RecordingPattern()
+        try:
+            guard.evaluate("Bash", {"command": text}, forbidden_paths=FORBIDDEN,
+                           never_push_to=PROTECTED, readonly=False)
+        finally:
+            guard._GATE_MENTION = real_pattern
+        return sum(calls), len(calls)
+
+    small, small_calls = scan_chars(script(400))
+    large, large_calls = scan_chars(script(800))
     ratio = large / small
+    assert small_calls == 1 and large_calls == 1, (
+        f"`_GATE_MENTION.search` ran {small_calls} time(s) at 400 lines and "
+        f"{large_calls} time(s) at 800 — expected exactly 1 each: it must "
+        "run once per `guard.evaluate` call (hoisted above the per-segment "
+        "loop), not once per segment")
     assert ratio < 3.0, (
-        f"{small:.3f}s at 400 lines, {large:.3f}s at 800, ratio {ratio:.2f}: "
-        "doubling the input did much more than double the work, so the "
-        "gate-mention scan is unmasking the whole command once per segment "
-        "again")
-    assert large < 3.0, (
-        f"{large:.3f}s of CPU on an 800-line script, against roughly 0.3s "
-        "when this bound was written. The ratio above passed, so this is not "
-        "the quadratic; something has made the whole scan far slower")
+        f"{small} chars handed to `_GATE_MENTION.search` at 400 lines "
+        f"({small_calls} calls), {large} at 800 ({large_calls} calls), "
+        f"ratio {ratio:.2f}: doubling the input did much more than double "
+        "the text scanned, so the gate-mention scan is running once per "
+        "segment again")
+    assert large == len(script(800)), (
+        f"{large} chars handed to `_GATE_MENTION.search` for an 800-line "
+        f"script of {len(script(800))} chars — the single hoisted call scans "
+        "exactly the masked command once, so this should match exactly; a "
+        "mismatch means something other than the one hoisted call is "
+        "feeding this regex")
 
 
 def test_a_backslash_newline_is_a_continuation_not_a_separator():
