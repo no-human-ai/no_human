@@ -675,6 +675,14 @@ silently (`/S`). So SmartScreen behaviour on a genuinely downloaded copy is
 It should be confirmed once a real download path exists. Code signing plus
 reputation is what removes it; that is a separate piece of work.
 
+Producing this installer at all depends on `electron-builder` fetching NSIS
+and 7zip binaries from a third-party CDN at build time — the same download
+path that made the `v0.2.3` Windows release fail with a mid-build 504
+before a single artefact was produced. That dependency, what's measured
+about how often it fails, and the caching mitigation now in CI are covered
+in `docs/DISTRIBUTION.md`, §6 ("Build-time third-party downloads") — see
+that section rather than duplicating it here.
+
 ### 5.6 What was NOT verified
 
 Stated plainly rather than implied by omission:
