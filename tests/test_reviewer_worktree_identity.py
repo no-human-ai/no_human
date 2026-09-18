@@ -142,6 +142,11 @@ def test_touching_a_git_file_without_writing_it_is_not_a_change(linked_worktree)
 
 
 def test_a_content_change_with_an_unchanged_mode_is_still_detected(linked_worktree):
+    """A non-benign config KEY addition with no tracked-path edit alongside it
+    is still DETECTED — but, since the shared config records no writer, it is
+    reported as an unattributed environment event (`Delta.environment`), not
+    charged to the reviewer via `Delta.modified` (task
+    reviewer-worktree-shared-config-attribution)."""
     wt, common = linked_worktree
     cfg = common / "config"
     mode_before = cfg.stat().st_mode
@@ -150,7 +155,9 @@ def test_a_content_change_with_an_unchanged_mode_is_still_detected(linked_worktr
         wt, lambda: cfg.write_text(cfg.read_text(encoding="utf-8") + "\n[alias]\n\tx = !sh -c 'id'\n"))
 
     assert cfg.stat().st_mode == mode_before, "this case must vary ONLY content"
-    assert any(p.startswith(".git/common/config") for p in delta.modified), delta
+    assert delta.is_empty(), delta
+    assert any(p.startswith(".git/common/config") for p in delta.environment), delta
+    assert "alias.x" in delta.environment_keys, delta
 
 
 def test_a_SAME_SIZE_content_change_is_still_detected(linked_worktree):
@@ -286,15 +293,18 @@ def test_the_three_measured_primary_checkout_writers_do_not_discard_a_verdict(
                                       symref -> symref only, see `compare`)
 
     This test exercises exactly those three commands and asserts no more
-    than that: OTHER ordinary primary-checkout actions that CHANGE shared
-    content — `git config user.email`, `git remote add`, a leftover
-    `config.lock` — still discard a verdict, by design (fail-closed on
-    unattributable content changes; an earlier name claimed 'ordinary work
-    never discards', which a review falsified with `git config`). The
-    reverted-allowlist lesson stands separately: what is EXCUSED must be a
-    closed, measured list plus one content-shape rule — everything else
-    under `.git` stays watched, because data there (config, attributes,
-    hooksPath targets) can direct execution.
+    than that: a leftover `config.lock` still discards a verdict, by design
+    (fail-closed on unattributable content changes; an earlier name claimed
+    'ordinary work never discards', which a review falsified with `git
+    config`). A non-benign config KEY change (`git remote add`) is reported
+    as an unattributed `Delta.environment` event instead of discarding (task
+    reviewer-worktree-shared-config-attribution) — see
+    `test_a_fork_remote_added_by_another_checkout_is_an_environment_event_not_a_reviewer_write`
+    in `tests/test_reviewer_worktree.py`. The reverted-allowlist lesson
+    stands separately: what is EXCUSED must be a closed, measured list plus
+    one content-shape rule — everything else under `.git` stays watched,
+    because data there (config, attributes, hooksPath targets) can direct
+    execution.
     """
     wt, common = linked_worktree
     up = common.parent          # `<tmp>/up/.git` -> the primary checkout

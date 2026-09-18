@@ -257,6 +257,14 @@ worktrees also means neither sees untracked files, so a scratch file left in the
 working tree cannot produce a diagnostic that is "net-new" only because the base
 could never have had it.
 
+A worktree-path write like that is exactly what `reviewer_wrote` exists to
+charge. A change to `.git/common/config` — a file shared by the main checkout
+and every OTHER worktree too, such as a `gh pr checkout` in the main checkout
+adding a `fork<N>` remote while this review is in flight — is different: the
+file records no writer, so `compare` never attributes it to the reviewer.
+That case is reported as `reviewer_worktree_environment_change` instead, and
+never discards the verdict on its own.
+
 Four properties are worth knowing, because each one is a defect this design
 had to avoid rather than a feature:
 
