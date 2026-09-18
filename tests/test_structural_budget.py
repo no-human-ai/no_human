@@ -1913,11 +1913,17 @@ FROZEN_FILE_LINES = {
     # through `update_task_config` at the API call site, same reason as
     # `cli/commands.py` above.
     # Measured on the squashed tree with the scanner below.
-    # 6346 -> 6357 (+11): `onboarding_register_email` now forwards the newly
-    # registered address to `email/register.py:register_email` off-thread
-    # after the local persist, and threads `registration_status` into the
-    # persisted onboarding state and the response body. Measured on this tree.
-    "api/app.py": 6357,
+    # 6346 -> 6355 (+9): `onboarding_status` gains `email_registered`, a
+    # boolean-only echo of whether an email was captured, so a reload can
+    # restore the Email step's UI state without ever re-exposing the
+    # address itself.
+    # 6355 -> 6366 (+11): merged with `onboarding_register_email` now
+    # forwarding the newly registered address to
+    # `email/register.py:register_email` off-thread after the local persist,
+    # and threading `registration_status` into the persisted onboarding
+    # state and the response body. Measured on this tree with the scanner
+    # below.
+    "api/app.py": 6366,
     # +51: W5 active-time phase writer (phase instrumentation).
     # +84: `list_escalations`/`list_review_fails`/`list_tamper_trips` — the
     # three new failure-signal sources the recurring learning harvest mines.
