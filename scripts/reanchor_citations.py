@@ -423,7 +423,10 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         for path, new_text in texts.items():
-            path.write_text(new_text, encoding="utf-8", newline="\n")
+            # Bytes, for the reason spelled out at the other write site below:
+            # `newline=` reached `Path.write_text` only in 3.10 and this script
+            # is run under a target repo's own interpreter.
+            path.write_bytes(new_text.encode("utf-8"))
 
         print(f"Reconciled {total_changed} citation(s).")
         if texts:
@@ -467,11 +470,16 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     for path, new_text in texts.items():
-        # newline="\n" for the same reason `check_release_manifest.py --write`
-        # needs it (#32): without it the write goes through the platform's text
-        # layer, so on Windows every line in the file comes out CRLF and a
-        # four-citation change lands as a thousand-line diff.
-        path.write_text(new_text, encoding="utf-8", newline="\n")
+        # Bytes, for the same two reasons `check_release_manifest.py --write`
+        # writes bytes (#32). Through the text layer the platform decides, so
+        # on Windows every line comes out CRLF and a four-citation change lands
+        # as a thousand-line diff. And the `newline=` keyword that expressed
+        # that before reached `Path.write_text` only in 3.10, while
+        # `testing/citation_drift.py` runs this script under the TARGET repo's
+        # own interpreter — a target repo on 3.9 would raise TypeError here.
+        # Whether such a target repo occurs is unverified; the keyword bought
+        # nothing `write_bytes` does not, so it does not need answering.
+        path.write_bytes(new_text.encode("utf-8"))
 
     print(f"Applied {len(drifts)} re-anchor(s).")
     if texts:
