@@ -50,6 +50,7 @@ cannot parse must fail loudly, not vanish from coverage.
 from __future__ import annotations
 
 import ast
+import re
 import textwrap
 import time
 from dataclasses import dataclass
@@ -67,6 +68,13 @@ MAX_FILE_LINES = 2500
 # Frozen at HEAD 2b2370f582f95465ba408c12224a511c6c74f692, 2026-08-26.
 # Measured with the scanner below; see the PR body for the full table.
 # 16 functions > 300 lines.
+#
+# LEDGER CONVENTION: each entry below records what was measured AT THAT
+# POINT IN TIME ("actual 3019", "measured on this tree"). Never phrase an
+# entry as matching/equalling the frozen value the row lands on -- later
+# entries are expected to move that same value further, which turns a true
+# sentence false without anyone editing it. `test_no_ledger_entry_claims_
+# equality_with_a_frozen_value` below enforces this.
 FROZEN_FUNCTION_LINES = {
     # 2099 -> 2108 (+9): PR #877 widens the tamper base to three-dot
     # origin/<base>...HEAD so a sanctioned merge isn't charged with main's own
@@ -2106,6 +2114,14 @@ FROZEN_FILE_LINES = {
     # docstring paragraphs explaining why each write must not let Windows
     # text-mode translation reintroduce a trailing CRLF. Measured on this
     # tree.
+    # 3667 -> 3689 (+22): merge of this branch's base-history main pull --
+    # this CRLF entry's own 3657 base and the two entries above it (the
+    # ensure_private_dir gating and onboarding.registration_endpoint
+    # additions, both rooted at 3661) diverged from the same 3657/3661
+    # ancestors and landed as independent, non-overlapping additions
+    # alongside RESEND_API_KEY_VAR. Measured on this tree with the scanner
+    # below: actual 3689, which is what this entry froze at this point.
+    # Later entries would move it further.
     "config.py": 3689,
     # +61: the tamper-adjudication one-bounded-retry contract (mechanical-
     # failure classification + the extracted `_review_tamper_adjudication`
@@ -2333,8 +2349,8 @@ FROZEN_FILE_LINES = {
     # branch. Measured on this tree with the scanner below, not by arithmetic:
     # base 680d6889 actual 2925 (frozen was stale-high at 2926), main
     # 0b8c2dc4 actual 2959, this branch's own tip before the merge (a185a275)
-    # actual 2985, and after the merge (this tree) actual 3019 -- matching the
-    # frozen value below exactly.
+    # actual 2985, and after the merge (this tree) actual 3019, which is what
+    # this entry froze. Later entries below move it further.
     # 3019 -> 3022 (+3): send-back N2 fix on #328 -- guard.py:1131's comment
     # falsely claimed `_FORGE_MERGE` "was the one lexical gate WITHOUT"
     # `case_flags()`; `_FORGE_WRITE`, `_GIT_WRITE` and `_LEXICAL_LIVE_SERVER`
@@ -2429,6 +2445,12 @@ FROZEN_FILE_LINES = {
     # final message line first so it cannot crowd the raising frame out of
     # the kept tail) plus its call lines in `_run`'s crash handler. Measured
     # on this tree with the scanner below.
+    # 3244 -> 3253 (+9): merge of the two entries directly above it -- the
+    # dispatch-loop comment and the traceback-field addition, both diverged
+    # from the same 3196 base -- landed as independent, non-overlapping
+    # additions. Measured on this tree with the scanner below: actual 3253,
+    # which is what this entry froze at this point. Later entries would
+    # move it further.
     "core/scheduler.py": 3253,
 }
 
@@ -2798,3 +2820,113 @@ def test_verification_doc_names_this_guard_and_its_thresholds():
     assert "300" in doc
     assert "60" in doc
     assert "2,500" in doc
+
+
+# ── ledger self-check ─────────────────────────────────────────────────────── #
+
+# The rot-prone claim form: an entry asserting equality/match against "the
+# frozen value" it precedes. Such a claim is true only until a LATER entry
+# moves that same frozen value -- at which point the earlier sentence goes
+# false with no editor touching it. See LEDGER CONVENTION above
+# FROZEN_FUNCTION_LINES.
+_LEDGER_CLAIM_FORMS = re.compile(
+    r"match(?:ing|es)? the frozen value"
+    r"|equals? the frozen value"
+    r"|the frozen value below(?: exactly)?"
+    r"|same as the frozen (?:value|entry) below",
+    re.IGNORECASE,
+)
+_LEDGER_ROW_RE = re.compile(r'^\s*"([^"]+)":\s*(\d+),\s*$')
+_LEDGER_CHAIN_RE = re.compile(r"(\d+)\s*->\s*(\d+)")
+_LEDGER_DICT_NAMES = ("FROZEN_FUNCTION_LINES", "FROZEN_FUNCTION_CC", "FROZEN_FILE_LINES")
+
+
+def _ledger_dict_blocks(lines: list[str]) -> list[tuple[str, int, int]]:
+    """(dict_name, open_brace_line_idx, close_brace_line_idx) for each frozen dict."""
+    open_re = re.compile(r"^(" + "|".join(_LEDGER_DICT_NAMES) + r") = \{\s*$")
+    blocks = []
+    name, start = None, None
+    for i, line in enumerate(lines):
+        m = open_re.match(line)
+        if m:
+            name, start = m.group(1), i
+            continue
+        if start is not None and line == "}":
+            blocks.append((name, start, i))
+            start = None
+    return blocks
+
+
+def _comment_run_above(lines: list[str], row_idx: int) -> str:
+    j = row_idx - 1
+    run = []
+    while j >= 0 and lines[j].strip().startswith("#"):
+        run.append(lines[j].strip().lstrip("#").strip())
+        j -= 1
+    return " ".join(reversed(run))
+
+
+def test_no_ledger_entry_claims_equality_with_a_frozen_value():
+    # Positive control FIRST: prove the matcher actually catches the known
+    # pre-fix sentence (the "2985 -> 3019 (+34)" entry, once worded "...
+    # actual 3019 -- matching the frozen value below exactly."). A clean
+    # sweep below is worthless if the matcher can't even find this.
+    synthetic = (
+        "2985 -> 3019 (+34): ... and after the merge (this tree) actual "
+        "3019 -- matching the frozen value below exactly."
+    )
+    assert _LEDGER_CLAIM_FORMS.search(synthetic), (
+        "the banned-claim matcher failed its positive control -- it does "
+        "not catch the known pre-fix sentence, so a clean sweep proves nothing"
+    )
+
+    lines = Path(__file__).read_text(encoding="utf-8").splitlines()
+    blocks = _ledger_dict_blocks(lines)
+    assert len(blocks) == 3, f"expected 3 frozen dicts, found {[b[0] for b in blocks]}"
+
+    claim_violations = []
+    chain_breaks = []
+    checked_rows = 0
+    for dict_name, start, end in blocks:
+        for i in range(start + 1, end):
+            m = _LEDGER_ROW_RE.match(lines[i])
+            if not m:
+                continue
+            key, frozen_value = m.group(1), int(m.group(2))
+            run = _comment_run_above(lines, i)
+            if not run:
+                continue
+            checked_rows += 1
+
+            # Every non-terminal AND terminal ledger sub-entry is banned from
+            # asserting equality with the frozen value: even a currently-true
+            # terminal claim rots the moment the next entry lands.
+            sub_entries = [s for s in re.split(r"(?=\d+\s*->\s*\d+)", run) if s.strip()]
+            for sub in sub_entries:
+                if _LEDGER_CLAIM_FORMS.search(sub):
+                    claim_violations.append(
+                        f'{dict_name}["{key}"] = {frozen_value} (line {i + 1}): {sub.strip()!r}'
+                    )
+
+            # Chain-tail invariant: the last "A -> B" target in the run must
+            # equal the frozen value the row lands on.
+            chain_matches = list(_LEDGER_CHAIN_RE.finditer(run))
+            if chain_matches:
+                last_target = int(chain_matches[-1].group(2))
+                if last_target != frozen_value:
+                    chain_breaks.append(
+                        f'{dict_name}["{key}"] (line {i + 1}): chain ends at '
+                        f"{last_target}, frozen value is {frozen_value}"
+                    )
+
+    assert checked_rows >= 30, f"only resolved {checked_rows} ledger rows -- block detection is broken"
+
+    assert not claim_violations, (
+        "ledger entries assert equality/match against a frozen value that a "
+        "later entry is expected to move -- state only what was measured at "
+        "that point in time instead:\n" + "\n".join(claim_violations)
+    )
+    assert not chain_breaks, (
+        "ledger chain's last recorded value does not match the row's frozen "
+        "value:\n" + "\n".join(chain_breaks)
+    )

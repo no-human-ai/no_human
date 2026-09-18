@@ -2350,6 +2350,23 @@ def test_real_python_is_sys_executable_when_not_frozen(monkeypatch):
     assert approve_merge._real_python(None) == sys.executable
 
 
+def test_real_python_prefers_the_repo_venv_when_not_frozen_too(tmp_path, monkeypatch):
+    """The deadlock this fixes: a `uv tool install` of nh is NOT frozen, yet
+    its interpreter (the tool's own venv) carries only runtime deps — no
+    pytest. Before, `_real_python` returned `sys.executable` for any non-frozen
+    build, so the merge gate ran `<tool-python> -m pytest` -> "No module named
+    pytest" at step "tests" and NO PR could land (measured 2026-09-17 against
+    the shipped `nh`). The main repo's `.venv` has the deps, so an existing
+    passed venv now wins even when not frozen."""
+    monkeypatch.delattr(sys, "frozen", raising=False)
+    sub = "Scripts" if os.name == "nt" else "bin"
+    name = "python.exe" if os.name == "nt" else "python"
+    venv_py = tmp_path / ".venv" / sub / name
+    venv_py.parent.mkdir(parents=True)
+    venv_py.write_text("#!/bin/sh\n", encoding="utf-8")
+    assert approve_merge._real_python(tmp_path) == str(venv_py) != sys.executable
+
+
 def test_real_python_prefers_the_repo_venv_in_a_frozen_build(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "frozen", True, raising=False)
     monkeypatch.setattr(sys, "executable", str(tmp_path / "nh"), raising=False)
