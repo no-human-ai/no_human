@@ -1948,6 +1948,15 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # 2026-07-11 reviewer hang). 40 > the 30-min run_tests timeout so a
         # long test never trips it; 0 disables. wake.py mirrors this default
         # (the deep-merge trap: a user `blockers:` block replaces this map).
+        # This is a FLOOR, not the effective value: `_await_coder_turn`
+        # (orchestrator.py) cancels a hung coder turn only after
+        # `bounds.attempt_timeout_s` (default 3600s = 60min) of silence, and
+        # that attempt-level watchdog must get its full chance before this
+        # task-level sweep can fire — otherwise the coarser one escalates a
+        # task whose backend is still inside its own allowance, orphaning the
+        # open attempt row. `wake.effective_stuck_active_minutes` raises this
+        # configured number to `ceil(bounds.attempt_timeout_s/60)+1` whenever
+        # that is larger; a 0 here still disables the watchdog outright.
         "stuck_active_minutes": 40,
     },
     "supervisor": {

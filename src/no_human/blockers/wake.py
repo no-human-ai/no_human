@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import math
 import time
 import re
 from datetime import datetime, timedelta, timezone
@@ -29,7 +30,10 @@ from ..core.task import Task, TaskStatus
 from ..vcs.pr_outcome import observe_pr
 from ..vcs.task_pr import resolve_task_pr
 from .shipped import _TICK_ABORTED, complete_if_content_landed as _complete_landed
-from .taxonomy import BlockerCategory, Blocker, resume_checkpoint, resume_provenance
+from .taxonomy import (
+    BlockerCategory, Blocker, human_gate_armed, resume_checkpoint,
+    resume_provenance,
+)
 
 log = logging.getLogger("no_human.wake")
 
@@ -106,6 +110,61 @@ def _parse_iso(value: str | None) -> datetime | None:
     except ValueError:
         return None
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def effective_stuck_active_minutes(config: dict) -> float:
+    """The stuck-active threshold `_escalate_if_stalled` actually uses.
+
+    Two independent watchdogs guard the same hang: `orchestrator._await_coder_
+    turn` cancels a coder turn with no progress event for
+    `bounds.attempt_timeout_s` seconds (an hour by default), and this
+    task-level sweep escalates any CLAIMED active-status task whose last
+    EVENT is older than `blockers.stuck_active_minutes` (40 by default,
+    configured independently). 40 minutes < 60 minutes, so on stock config
+    the coarse task-level sweep always fires FIRST — 20 minutes before the
+    attempt-level watchdog designed to kill a hung backend has even had its
+    chance — and escalates a task whose backend is still legitimately
+    inside its own allowance, orphaning the open attempt row (its turns and
+    usage are never attributed to anything: this was measured live, not
+    hypothesised).
+
+    The fix is ordering, not a bigger number: the task-level threshold must
+    never be able to fire before the attempt-level one has had its full
+    chance, for WHATEVER the two are independently configured to. So this
+    derives a floor from `bounds.attempt_timeout_s` — mirroring
+    `orchestrator.py`'s own `float(bounds.get("attempt_timeout_s") or 3600)`
+    exactly, including its falsy-``or`` fallback, so the two watchdogs are
+    reading the medium the same way — and returns whichever of the
+    configured value and that floor is larger.
+
+    `raw <= 0` (watchdog explicitly disabled) returns 0.0 immediately and
+    skips the floor entirely: a disabled watchdog must stay disabled, not
+    get resurrected at ~61 minutes by a floor meant to order two ACTIVE
+    watchdogs relative to each other.
+
+    Never raises inside a tick — a non-numeric/negative `attempt_timeout_s`
+    falls back to the same 3600s default `orchestrator.py` uses for the
+    identical input.
+    """
+    blockers_cfg = (config or {}).get("blockers", {}) or {}
+    try:
+        raw = float(blockers_cfg.get("stuck_active_minutes", 40))
+    except (TypeError, ValueError):
+        raw = 40.0
+    if raw <= 0:
+        return 0.0
+    bounds_cfg = (config or {}).get("bounds", {}) or {}
+    try:
+        attempt_s = float(bounds_cfg.get("attempt_timeout_s") or 3600)
+    except (TypeError, ValueError):
+        attempt_s = 3600.0
+    if attempt_s <= 0:
+        attempt_s = 3600.0
+    # Strictly greater than the attempt bound (resolved intake answer): the
+    # attempt-level watchdog must fire and finish closing its own row before
+    # the task-level sweep can act on the same silence.
+    floor_min = math.ceil(attempt_s / 60.0) + 1
+    return max(raw, float(floor_min))
 
 
 class WakeWatcher:
@@ -188,9 +247,15 @@ class WakeWatcher:
         )
         # Stuck-active watchdog threshold (minutes). Default 40 > the 30-min
         # run_tests timeout, so a long test never trips it; a genuinely hung
-        # session does. 0 disables.
-        self.stuck_active_minutes = float(
+        # session does. 0 disables. `raw_stuck_active_minutes` is the
+        # configured number, kept only for log/event text; `stuck_active_
+        # minutes` (what `_escalate_if_stalled` actually reads) is raised to
+        # `effective_stuck_active_minutes`'s floor whenever
+        # `bounds.attempt_timeout_s` would otherwise let the attempt-level
+        # watchdog still be running when this coarser one fires.
+        self.raw_stuck_active_minutes = float(
             blockers_cfg.get("stuck_active_minutes", 40))
+        self.stuck_active_minutes = effective_stuck_active_minutes(config or {})
         # Bounded CI_GATE-integration-failure → fix cycles (M6), same pattern.
         self.max_ci_gate_fix_rounds = int(
             blockers_cfg.get("max_ci_gate_fix_rounds", 3)
@@ -507,21 +572,69 @@ class WakeWatcher:
         # to ESCALATED by the stall watchdog.
         if await self._is_terminal(task):
             return False
+        stalled_status = task.status.value
+        # Stamp the resume checkpoint BEFORE closing the open attempt row
+        # below. `Scheduler._resume_branch_point` (scheduler.py ~:1806-1820)
+        # derives the checkpoint a later resume branches from by reading
+        # `store.latest_open_attempt(task.id).commit_sha` — closing that row
+        # first, with no other record of its sha, would silently throw away
+        # committed WIP on the next human resume. `human_gate_armed` is the
+        # exact predicate the scheduler itself uses for "a human's own
+        # checkpoint is still unconsumed", so an armed human gate here is
+        # left untouched rather than overwritten by this machine stamp.
+        # Fail-open, like every other bookkeeping step here: a stamp failure
+        # must never abort the escalation itself.
+        try:
+            open_row = await self.store.latest_open_attempt(task.id)
+            sha = (open_row or {}).get("commit_sha") or ""
+            ctx = task.context or {}
+            if sha and not human_gate_armed(ctx):
+                resume = ctx.get("resume_from") or {}
+                if resume.get("sha") != sha:
+                    task.context = await self.store.merge_context(
+                        task.id, {"resume_from": resume_provenance(
+                            {"sha": sha}, "stall_escalation")})
+        except Exception:  # noqa: BLE001 — bookkeeping must never abort an escalation
+            log.warning("stall-escalation checkpoint stamp failed for %s",
+                        task.id[:8], exc_info=True)
         data = task.blocker or {}
         data["category"] = "NOVEL_UNKNOWN"
         data["question"] = (
-            f"This task stalled in {task.status.value} — no activity for "
+            f"This task stalled in {stalled_status} — no activity for "
             f"{age_min:.0f} min. The agent/reviewer session likely hung. "
             "Resume to retry, or take over?")
         data["root_cause_hypothesis"] = (
-            f"no event for {age_min:.0f} min while {task.status.value}; "
+            f"no event for {age_min:.0f} min while {stalled_status}; "
             "probable hung Agent-SDK session")
         task.blocker = data
         await self.store.update_task_columns(task)
         await self.store.set_status(task, TaskStatus.ESCALATED, validate=False)
+        # Close the open attempt row so its turns/usage are attributed to a
+        # terminal row instead of orphaned `in_progress` forever (measured:
+        # 86M+ tokens over 243 calls recorded to tasks but not to their
+        # attempt rows). Does NOT stop the backend coroutine that opened the
+        # row — Criterion 4 establishes it keeps running; see `abandon_open_
+        # attempt`'s docstring for why closing the row by id is still safe.
+        # Fail-open: bookkeeping must never abort an escalation already made.
+        usage_note = ""
+        try:
+            closed = await self.store.abandon_open_attempt(
+                task.id,
+                reason=(f"interrupted: the stall watchdog abandoned this "
+                        f"attempt — no event for {age_min:.0f}m while "
+                        f"{stalled_status}"),
+            )
+            if closed:
+                usage_note = (
+                    f" (attempt #{closed.get('attempt_number')} closed: "
+                    f"{closed.get('turns_used')} turns, "
+                    f"{closed.get('tokens_used')} tokens)")
+        except Exception:  # noqa: BLE001 — bookkeeping must never abort an escalation
+            log.warning("stall-escalation attempt close failed for %s",
+                        task.id[:8], exc_info=True)
         await self._emit(task, "escalated_stalled",
-                         f"{task.id[:8]} stalled in {task.status.value} "
-                         f"({age_min:.0f}m no activity) — escalated")
+                         f"{task.id[:8]} stalled in {stalled_status} "
+                         f"({age_min:.0f}m no activity) — escalated{usage_note}")
         return True
 
     # Throttled liveness proof. A healthy parked task produces no action
