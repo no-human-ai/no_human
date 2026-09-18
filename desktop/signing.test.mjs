@@ -14,6 +14,7 @@ import {
   notaryCredentialSet, notarizeCredentials, signingBanner, signingPlan,
   windowsSigningBanner, windowsSigningPlan,
   buildPlatforms, autoUpdateStamp, assertStampMatchesPlatform,
+  platformSigningMode, signingStamp, assertSigningStampMatchesPlatform,
 } from "./signing.cjs";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -195,11 +196,12 @@ test("no Windows certificate: the exe is tagged", () => {
   const p = windowsSigningPlan({});
   assert.equal(p.signed, false);
   assert.equal(p.artifactTag, "-UNSIGNED");
+  assert.equal(p.mode, UNSIGNED);
 });
 
 test("an Apple identity cannot make the exe name claim a signature", () => {
   // The exact shape the issue names: a shared org secret, or a matrix that
-  // exports the Apple variables once for every platform.
+  // exports the Apple variables once for every platform. (#330 shape.)
   const p = windowsSigningPlan({
     CSC_LINK: "file:///apple.p12",
     CSC_NAME: "Developer ID Application: Someone (TEAMID)",
@@ -208,12 +210,15 @@ test("an Apple identity cannot make the exe name claim a signature", () => {
   });
   assert.equal(p.signed, false, "an Apple .p12 cannot sign an exe");
   assert.equal(p.artifactTag, "-UNSIGNED");
+  assert.equal(p.mode, UNSIGNED,
+    "an Apple signing+notarization environment must not make Windows' mode SIGNED");
 });
 
 test("a Windows certificate clears the tag", () => {
   const p = windowsSigningPlan({ [WINDOWS_CERTIFICATE_VAR]: "file:///win.pfx" });
   assert.equal(p.signed, true);
   assert.equal(p.artifactTag, "");
+  assert.equal(p.mode, SIGNED);
 });
 
 test("the two plans are independent in both directions", () => {
@@ -407,4 +412,117 @@ test("assertStampMatchesPlatform: passes for darwin true, and for false anywhere
   assert.doesNotThrow(() => assertStampMatchesPlatform("win32", false));
   assert.doesNotThrow(() => assertStampMatchesPlatform("linux", false));
   assert.doesNotThrow(() => assertStampMatchesPlatform("darwin", false));
+});
+
+
+// ---------------------------------------------------------------------------
+// platformSigningMode / signingStamp / assertSigningStampMatchesPlatform:
+// the nhSigning sibling of buildPlatforms/autoUpdateStamp/
+// assertStampMatchesPlatform above. A single macOS `plan.mode` is not enough
+// to say what a Windows or Linux artifact in the SAME invocation actually
+// got — see signing.cjs's header.
+// ---------------------------------------------------------------------------
+
+const WIN_SIGNED_PLAN = windowsSigningPlan({ [WINDOWS_CERTIFICATE_VAR]: "file:///win.pfx" });
+const WIN_UNSIGNED_PLAN = windowsSigningPlan({});
+
+test("platformSigningMode: darwin reads the macOS plan, win32 reads the Windows plan", () => {
+  assert.equal(
+    platformSigningMode("darwin", { plan: SIGNED_PLAN, winPlan: WIN_UNSIGNED_PLAN }),
+    SIGNED_PLAN.mode,
+  );
+  assert.equal(
+    platformSigningMode("win32", { plan: SIGNED_PLAN, winPlan: WIN_SIGNED_PLAN }),
+    WIN_SIGNED_PLAN.mode,
+  );
+  assert.equal(
+    platformSigningMode("win32", { plan: SIGNED_PLAN, winPlan: WIN_UNSIGNED_PLAN }),
+    UNSIGNED,
+    "a credentialed macOS plan must not leak into the Windows verdict",
+  );
+});
+
+test("platformSigningMode: linux and unrecognised platforms are always unsigned", () => {
+  assert.equal(
+    platformSigningMode("linux", { plan: SIGNED_PLAN, winPlan: WIN_SIGNED_PLAN }),
+    UNSIGNED,
+    "this repo has no Linux signing at all — never claim otherwise",
+  );
+  assert.equal(
+    platformSigningMode("aix", { plan: SIGNED_PLAN, winPlan: WIN_SIGNED_PLAN }),
+    UNSIGNED,
+    "an unrecognised platform must fail closed",
+  );
+});
+
+test("signingStamp: a mac-only target stamps exactly the macOS plan's mode", () => {
+  const stamp = signingStamp({
+    plan: SIGNED_PLAN, winPlan: WIN_UNSIGNED_PLAN, platforms: new Set(["darwin"]),
+  });
+  assert.equal(stamp.mode, SIGNED);
+  assert.equal(stamp.mixed, false);
+});
+
+test("signingStamp: a win-only target never claims the macOS plan's mode", () => {
+  const stamp = signingStamp({
+    plan: SIGNED_PLAN, winPlan: WIN_UNSIGNED_PLAN, platforms: new Set(["win32"]),
+  });
+  assert.equal(stamp.mode, UNSIGNED);
+});
+
+test("signingStamp: a win-only target with a Windows certificate stamps signed", () => {
+  const stamp = signingStamp({
+    plan: SIGNED_PLAN, winPlan: WIN_SIGNED_PLAN, platforms: new Set(["win32"]),
+  });
+  assert.equal(stamp.mode, SIGNED);
+});
+
+test("signingStamp: a linux-only target never claims the macOS plan's mode", () => {
+  const stamp = signingStamp({
+    plan: SIGNED_PLAN, winPlan: WIN_SIGNED_PLAN, platforms: new Set(["linux"]),
+  });
+  assert.equal(stamp.mode, UNSIGNED);
+});
+
+test("signingStamp: mixed darwin+win32 under a signed-not-notarized mac stamps the weakest", () => {
+  const stamp = signingStamp({
+    plan: SIGNED_NOT_NOTARIZED_PLAN, winPlan: WIN_UNSIGNED_PLAN,
+    platforms: new Set(["darwin", "win32"]),
+  });
+  assert.equal(stamp.mode, UNSIGNED);
+  assert.equal(stamp.mixed, true);
+});
+
+test("signingStamp: an empty platform set fails closed to unsigned", () => {
+  const stamp = signingStamp({ plan: SIGNED_PLAN, winPlan: WIN_SIGNED_PLAN, platforms: new Set() });
+  assert.equal(stamp.mode, UNSIGNED);
+  assert.equal(stamp.mixed, false);
+});
+
+test("signingStamp: the reason names the targeted platform set", () => {
+  const stamp = signingStamp({
+    plan: SIGNED_PLAN, winPlan: WIN_UNSIGNED_PLAN, platforms: new Set(["win32"]),
+  });
+  assert.match(stamp.reason, /win32/);
+});
+
+test("assertSigningStampMatchesPlatform: throws when a win32 stamp claims more than it got", () => {
+  assert.throws(
+    () => assertSigningStampMatchesPlatform("win32", SIGNED, { plan: SIGNED_PLAN, winPlan: WIN_UNSIGNED_PLAN }),
+    (err) => /win32/.test(err.message) && /signed/.test(err.message) && /unsigned/.test(err.message),
+  );
+});
+
+test("assertSigningStampMatchesPlatform: does not throw for a truthful stamp", () => {
+  assert.doesNotThrow(() => assertSigningStampMatchesPlatform(
+    "darwin", SIGNED, { plan: SIGNED_PLAN, winPlan: WIN_UNSIGNED_PLAN },
+  ));
+  assert.doesNotThrow(() => assertSigningStampMatchesPlatform(
+    "win32", SIGNED, { plan: SIGNED_PLAN, winPlan: WIN_SIGNED_PLAN },
+  ));
+  for (const platform of ["darwin", "win32", "linux"]) {
+    assert.doesNotThrow(() => assertSigningStampMatchesPlatform(
+      platform, UNSIGNED, { plan: SIGNED_PLAN, winPlan: WIN_SIGNED_PLAN },
+    ));
+  }
 });
