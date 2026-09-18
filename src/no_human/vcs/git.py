@@ -1147,6 +1147,77 @@ class GitRepo:
             return False
         return self.head_sha() != before
 
+    def merge_base(self, a: str, b: str) -> str | None:
+        """The best common ancestor of *a* and *b*, or None if they share no
+        history (or either does not resolve).
+
+        Read-only, `check=False`: same "cannot prove it is not a reason to
+        raise" convention `commits_behind`/`is_ancestor` already use for an
+        unmeasurable pair — a caller deciding whether a rebase is even
+        possible needs `None`, not an exception, when the two sides turn
+        out to be unrelated.
+        """
+        out = self._run("merge-base", a, b, check=False).strip()
+        return out or None
+
+    def count_commits_between(self, a: str, b: str) -> int:
+        """How many commits *b* carries that *a* does not (`a..b`).
+
+        Same shape as `commits_ahead`, generalised to two arbitrary
+        commit-ishes instead of `base..HEAD`: `check=False`, and a
+        non-numeric/empty result (a ref that does not resolve) is 0, never
+        an exception — this is a summary aid for an escalation message, not
+        a safety gate.
+        """
+        out = self._run("rev-list", "--count", f"{a}..{b}", check=False).strip()
+        try:
+            return int(out)
+        except ValueError:
+            return 0
+
+    def rebase_branch_onto(self, onto: str, *, upstream: str) -> bool:
+        """Replay `upstream..HEAD` onto *onto*. True iff the branch moved.
+
+        Same shape as `rebase_onto`, but the target is not "the branch's
+        own moved base" — it is the branch's own PUSHED TIP
+        (`vcs.reconverge`'s only caller). That distinction is what keeps
+        this safe to run unattended: `rebase_onto` rewrites a branch onto a
+        NEW base, making an already-pushed tip mutually unreachable with
+        the rewritten head (see that method's docstring) — exactly the
+        non-fast-forward situation `push_sha_fast_forward` refuses. Here
+        `onto` IS the pushed tip, so a successful replay makes it an
+        ANCESTOR of the new head instead: `is_ancestor(onto, head_sha())`
+        holds afterwards, so the eventual push lands fast-forward-only, no
+        force anywhere.
+
+        `upstream` bounds what gets replayed (`git rebase --onto onto
+        upstream`, i.e. only `upstream..HEAD`) — the merge-base of the
+        rework and the pushed tip, supplied by the caller, so any commits
+        already patch-equivalent to the pushed tip are dropped rather than
+        replayed a second time.
+
+        A CONFLICT aborts and returns False — same "losing a retry to a
+        conflict is worse than the staleness it would have cured" stance
+        `rebase_onto` and `merge_base_into_branch` already take for their
+        own conflicts; the caller reports the failure and falls back to
+        its own recovery, never a force-push. Assumes the branch to
+        reconverge is already checked out (mirrors `rebase_onto`, which
+        makes the same assumption about its caller).
+        """
+        before = self.head_sha()
+        try:
+            # Literal "rebase" as the first argument, so the egress analyser
+            # resolves the channel to `exec:git rebase`, not `exec:git
+            # <dynamic>` (see `_run`'s inline-argv comment above).
+            self._run("rebase", "--onto", onto, upstream)
+        except GitError:
+            # Unconditional and `check=False`: a failure that never started
+            # a rebase must not raise a second exception here — same
+            # belt-and-braces stance as `rebase_onto`'s abort.
+            self._run("rebase", "--abort", check=False)
+            return False
+        return self.head_sha() != before
+
     def head_commit(self, base: str) -> CommitResult:
         """Describe HEAD as a commit against *base* — for work already committed.
 

@@ -11,6 +11,7 @@ from .answers import (
 from .report import (
     blocker_prompt_suffix,
     ci_misconfigured,
+    diverged_branch_blocker,
     extract_code_mechanisms,
     fallback_blocker,
     is_code_mechanism_supported,
@@ -96,6 +97,7 @@ __all__ = [
     "fallback_blocker",
     "missing_access",
     "ci_misconfigured",
+    "diverged_branch_blocker",
     "extract_code_mechanisms",
     "is_code_mechanism_supported",
     "blocker_prompt_suffix",
