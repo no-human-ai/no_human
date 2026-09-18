@@ -1,0 +1,28 @@
+[
+  {
+    "databaseId": 20005,
+    "name": "windows",
+    "conclusion": "success",
+    "steps": [
+      {
+        "name": "Install the desktop shell's dependencies WITH scripts (release build only)",
+        "conclusion": "success"
+      },
+      {
+        "name": "Package the NSIS installer and the zip (release build only)",
+        "conclusion": "success"
+      }
+    ]
+  },
+  {
+    "databaseId": 20006,
+    "name": "linux",
+    "conclusion": "success",
+    "steps": [
+      {
+        "name": "Package the .deb and the AppImage (x64)",
+        "conclusion": "success"
+      }
+    ]
+  }
+]

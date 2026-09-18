@@ -86,8 +86,12 @@ test("an HTTP failure is a step error, not an outage", () => {
     "POST /api/x → 422",
   );
   assert.equal(isNetworkError(new Error(msg)), false);
-  // The per-step error surface is untouched by this change.
-  assert.match(onboardingSrc, /\{err && <div className="ob-error">\{err\}<\/div>\}/);
+  // This HTTP-failure path renders through the SAME single `.ob-error` div
+  // every step's refusal shares, so the role="alert" added for the email
+  // reload fix (onboardingEmailStep.test.mjs) applies here too — deliberately:
+  // any step's refusal deserves the same screen-reader announcement, not
+  // just the email one.
+  assert.match(onboardingSrc, /\{err && <div className="ob-error" role="alert">\{err\}<\/div>\}/);
 });
 
 test("the probe retries every 3s and re-runs the step's fetches once it answers", async () => {
@@ -199,11 +203,11 @@ test("the banner is wizard-level, has a Retry control, and uses role=status not 
 });
 
 test("the reconnect re-runs the current step's loaders", () => {
-  // Both loader effects' dep arrays (repos/integrations, and readiness) must
-  // include reloadNonce, so a reconnect re-fetches the current step's data
-  // instead of leaving it stale.
+  // Loader effects' dep arrays (repos/integrations, readiness, and the email
+  // hydration added for the reload fix) must include reloadNonce, so a
+  // reconnect re-fetches the current step's data instead of leaving it stale.
   const nonceDeps = [...onboardingSrc.matchAll(/\}, \[[^\]]*reloadNonce[^\]]*\]\);/g)];
-  assert.equal(nonceDeps.length, 2, `expected 2 effects depending on reloadNonce, saw ${nonceDeps.length}`);
+  assert.equal(nonceDeps.length, 3, `expected 3 effects depending on reloadNonce, saw ${nonceDeps.length}`);
 });
 
 test("the offline banner styles exist and are themed", () => {
