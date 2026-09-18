@@ -88,7 +88,7 @@ def repo(tmp_path: Path) -> RepoInfo:
 
 def _event(repo: RepoInfo, *, fork: bool = False, deleted_fork: bool = False,
            pr_number: int = 7, title: str = "Add a feature",
-           body: str = "does the thing") -> dict:
+           body: str = "does the thing", author: str | None = "octocat") -> dict:
     base_full = "acme/widgets"
     if deleted_fork:
         head_repo = None
@@ -102,6 +102,7 @@ def _event(repo: RepoInfo, *, fork: bool = False, deleted_fork: bool = False,
             "number": pr_number,
             "title": title,
             "body": body,
+            "user": {"login": author} if author is not None else None,
             "base": {"sha": repo.base_sha},
             "head": {"sha": repo.head_sha, "repo": head_repo},
         },
@@ -1207,6 +1208,211 @@ def test_truncate_drops_advisory_before_hard_truncating():
     )
     assert len(huge_body) <= run._BODY_CAP
     assert "omitted for length" in huge_body
+
+
+# --------------------------------------------------------------------------- #
+# Author mention                                                              #
+# --------------------------------------------------------------------------- #
+
+
+def _render(author_login="octocat", mention_notifies=False, **overrides):
+    kwargs = dict(
+        verdict="PASS", blocking=[], advisory=[], demoted_citations=[],
+        model="m", files_total=1, files_reviewed=1,
+        credential_mode="api_key", tampered=False,
+    )
+    kwargs.update(overrides)
+    return run.render_body(
+        author_login=author_login, mention_notifies=mention_notifies, **kwargs
+    )
+
+
+def test_render_body_mentions_the_author_exactly_once():
+    body = _render(author_login="octocat")
+    assert body.count("@octocat") == 1
+    assert body.count("@") == 1
+
+
+@pytest.mark.parametrize(
+    "login",
+    [
+        "dependabot[bot]", "renovate[bot]", "github-actions[bot]",
+        "eve<script>", "a`b", "@eve", "-lead", "trail-", "dou--ble",
+        "ünïcode", "foo bar", "x" * 40, "", None,
+    ],
+)
+def test_mention_is_omitted_for_unmentionable_logins(login):
+    body = _render(author_login=login)
+    assert "@" not in body
+    assert "unknown" not in body.lower()
+    assert "could not" not in body.lower()
+    assert run._NOTIFIED_SENTENCE not in body
+    assert run._NOT_NOTIFIED_SENTENCE not in body
+
+
+@pytest.mark.parametrize("login", ["octo-cat", "Octo9"])
+def test_mention_is_emitted_for_a_normal_login(login):
+    body = _render(author_login=login)
+    assert f"@{login}" in body
+    assert body.count("@") == 1
+
+
+@pytest.mark.parametrize(
+    "login, expect_mention",
+    [
+        ("octocat", True),
+        ("octo-cat", True),
+        ("Octo9", True),
+        ("a", True),
+        ("dependabot[bot]", False),
+        ("DEPENDABOT[BOT]", False),
+        ("-lead", False),
+        ("trail-", False),
+        ("dou--ble", False),
+        ("has space", False),
+        ("has@at", False),
+        ("x" * 39, True),
+        ("x" * 40, False),
+        ("", False),
+        (None, False),
+    ],
+)
+def test_mention_for_grammar(login, expect_mention):
+    result = run._mention_for(login)
+    if expect_mention:
+        assert result == f"@{login}"
+    else:
+        assert result == ""
+
+
+def test_second_run_patches_and_body_says_it_did_not_notify():
+    """Pin the design decision on the SECOND run against an already-existing
+    marked comment: only a PATCH happens (never a second POST), and the body
+    it sends states plainly that this edit did not notify anyone."""
+    calls: list[str] = []
+    patched_bodies: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.method)
+        if request.method == "GET":
+            return httpx.Response(200, json=[{"id": 3, "body": f"{run.MARKER}\nold"}])
+        if request.method == "PATCH":
+            payload = json.loads(request.content)
+            patched_bodies.append(payload["body"])
+            return httpx.Response(200, json={"id": 3, "body": payload["body"]})
+        raise AssertionError("must not POST when a marked comment already exists")
+
+    client = github.GitHubClient(token="t", transport=httpx.MockTransport(handler), sleep=lambda s: None)
+    render = lambda creating: _render(author_login="octocat", mention_notifies=creating)  # noqa: E731
+    github.upsert_comment(client, "o/r", 1, run.MARKER, render)
+
+    assert calls == ["GET", "PATCH"]
+    assert len(patched_bodies) == 1
+    body = patched_bodies[0]
+    assert body.count("@octocat") == 1
+    assert run._NOT_NOTIFIED_SENTENCE in body
+    assert run._NOTIFIED_SENTENCE not in body
+
+
+def test_first_run_creates_and_body_says_it_notified():
+    calls: list[str] = []
+    created_bodies: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.method)
+        if request.method == "GET":
+            return httpx.Response(200, json=[])
+        payload = json.loads(request.content)
+        created_bodies.append(payload["body"])
+        return httpx.Response(201, json={"id": 9, "body": payload["body"]})
+
+    client = github.GitHubClient(token="t", transport=httpx.MockTransport(handler), sleep=lambda s: None)
+    render = lambda creating: _render(author_login="octocat", mention_notifies=creating)  # noqa: E731
+    github.upsert_comment(client, "o/r", 1, run.MARKER, render)
+
+    assert calls == ["GET", "POST"]
+    assert len(created_bodies) == 1
+    body = created_bodies[0]
+    assert body.count("@octocat") == 1
+    assert run._NOTIFIED_SENTENCE in body
+    assert run._NOT_NOTIFIED_SENTENCE not in body
+
+
+def test_design_decision_is_documented():
+    for text in (run.__doc__, run.render_body.__doc__, github.upsert_comment.__doc__):
+        assert text is not None
+        assert "PATCH" in text
+        assert "notif" in text.lower()
+
+
+def test_update_path_body_never_claims_the_contributor_was_notified():
+    body = _render(author_login="octocat", mention_notifies=False)
+    assert run._NOTIFIED_SENTENCE not in body
+    assert run._NOT_NOTIFIED_SENTENCE in body
+
+
+def test_mention_is_never_assembled_from_pr_title_or_body(env, monkeypatch):
+    event_path = env["event_path"]
+    event = json.loads(event_path.read_text())
+    event["pull_request"]["title"] = "ping @someoneelse"
+    event["pull_request"]["body"] = "cc @someoneelse and @another"
+    event["pull_request"]["user"] = {"login": "octocat"}
+    event_path.write_text(json.dumps(event))
+
+    monkeypatch.setattr(run, "review_diff", _fake_review_diff(_pass_decision()))
+    bodies = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(200, json=[])
+        bodies.append(json.loads(request.content))
+        return httpx.Response(201, json={"id": 1, "body": ""})
+
+    _mock_client(monkeypatch, handler)
+    assert run.main() == run.EXIT_OK
+    body = bodies[0]["body"]
+    assert "@someoneelse" not in body
+    assert "@another" not in body
+    assert body.count("@octocat") == 1
+
+
+def test_missing_user_object_still_posts_without_a_mention(env, monkeypatch):
+    event_path = env["event_path"]
+    event = json.loads(event_path.read_text())
+    event["pull_request"]["user"] = None
+    event_path.write_text(json.dumps(event))
+
+    monkeypatch.setattr(run, "review_diff", _fake_review_diff(_pass_decision()))
+    bodies = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(200, json=[])
+        bodies.append(json.loads(request.content))
+        return httpx.Response(201, json={"id": 1, "body": ""})
+
+    _mock_client(monkeypatch, handler)
+    assert run.main() == run.EXIT_OK
+    assert "@" not in bodies[0]["body"]
+
+
+def test_main_passes_author_login_through(env, monkeypatch):
+    monkeypatch.setattr(run, "review_diff", _fake_review_diff(_pass_decision()))
+    calls: list[tuple[str, str]] = []
+    _mock_client(monkeypatch, _no_comments_then_create_handler(calls))
+
+    captured = {}
+    real_render_body = run.render_body
+
+    def _spy(*args, **kwargs):
+        captured["author_login"] = kwargs.get("author_login")
+        captured["mention_notifies"] = kwargs.get("mention_notifies")
+        return real_render_body(*args, **kwargs)
+
+    monkeypatch.setattr(run, "render_body", _spy)
+    assert run.main() == run.EXIT_OK
+    assert captured["author_login"] == "octocat"
+    assert captured["mention_notifies"] is True
 
 
 # --------------------------------------------------------------------------- #
