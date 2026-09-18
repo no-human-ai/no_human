@@ -417,6 +417,80 @@ def test_pre_push_hook_path_emits_the_full_hit_list(scratch_repo, tmp_path):
 
 
 # --------------------------------------------------------------------------- #
+# Regression: a brand-new remote ref makes the pre-push hook fall back to the
+# well-known empty-tree SHA (4b825dc6...) for `since`. That hash is a valid
+# git object (`rev-parse` accepts it) but NOT a commit, so it cannot sit on
+# the excluded side of a `base..ref` revision range. `gate` must recognize
+# "no common history" and treat the WHOLE ref as the range instead of ever
+# putting that tree object into a `rev-list`/`log` range.
+# --------------------------------------------------------------------------- #
+
+EMPTY_TREE_SHA = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+
+
+def test_brand_new_ref_treats_whole_ref_as_the_range_without_crashing(
+        scratch_repo, tmp_path, capsys):
+    scanner = _write_fake_scanner(tmp_path)
+    args = _gate_args(tmp_path, scanner=scanner, repo=scratch_repo["repo"],
+                      ref=scratch_repo["C"], since=EMPTY_TREE_SHA)
+
+    rc = hgr.cmd_gate(args)
+    out = capsys.readouterr().out
+
+    # Must reach a verdict, not raise: a brand-new-ref push (since == the
+    # empty tree) used to feed a tree object into `base..ref` rev-list/log
+    # ranges.
+    assert rc in (0, 1), f"gate must reach a verdict, not crash:\n{out}"
+    assert "no common history" in out
+    # Nothing pre-exists for a brand-new ref -- the whole tip is the range,
+    # so BOTH the B-planted and C-planted hits are RANGE-introduced, and
+    # PRE-EXISTING at base must be zero.
+    assert "PRE-EXISTING at base: 0 blob" in out
+    assert "src/new.txt" in out
+    assert "legacy/old.txt" in out
+    assert "RANGE VERDICT: FAILED" in out
+    assert rc == 1
+
+
+def test_pre_push_hook_handles_brand_new_ref_push(scratch_repo, tmp_path):
+    """The exact scenario the reviewer measured: `remote_sha` is all-zero (a
+    brand-new remote ref), so the hook sets `since` to the empty-tree SHA
+    before calling `gate`. That must not crash the hook.
+    """
+    scanner_path = _write_fake_scanner(tmp_path)
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+
+    repo = scratch_repo["repo"]
+    hooks_dir = repo / ".git" / "hooks"
+    hooks_dir.mkdir(parents=True, exist_ok=True)
+    hook_path = hooks_dir / "pre-push"
+    if hook_path.exists() or hook_path.is_symlink():
+        hook_path.unlink()
+    hook_path.symlink_to(HOOK_SRC)
+
+    zero = "0" * 40
+    stdin = (f"refs/heads/newbranch {scratch_repo['C']} "
+             f"refs/heads/newbranch {zero}\n")
+    env = {
+        "PATH": os.environ.get("PATH", ""),
+        "NH_HISTORY_GATE_SCANNER": str(scanner_path),
+        "NH_HISTORY_GATE_SOURCE": str(source_dir),
+    }
+    proc = subprocess.run(["sh", str(hook_path)], input=stdin,
+                          capture_output=True, text=True, cwd=repo, env=env)
+
+    assert "Traceback" not in proc.stderr, (
+        f"a brand-new-ref push must not crash the gate\nstdout:\n{proc.stdout}"
+        f"\nstderr:\n{proc.stderr}")
+    assert proc.returncode == 1, (
+        f"hits exist in the new ref, so the push must be refused\n"
+        f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}")
+    assert "src/new.txt" in proc.stdout
+    assert "legacy/old.txt" in proc.stdout
+
+
+# --------------------------------------------------------------------------- #
 # exit-code contract: a gate-arming failure is exit 2, never conflated with a
 # leak verdict (exit 1).
 # --------------------------------------------------------------------------- #

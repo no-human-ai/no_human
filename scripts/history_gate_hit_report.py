@@ -610,38 +610,74 @@ def _git_out(repo: Path, *args: str) -> str:
     return proc.stdout.strip()
 
 
+def _is_commit_ish(repo: Path, rev: str) -> bool:
+    """Whether `rev` resolves to a commit, so it may legally sit on the
+    excluded side of a `base..ref` revision range. False for a tree object
+    such as the well-known empty-tree SHA (`4b825dc6...`) that a brand-new
+    remote ref falls back to as `since` — that hash is a valid git object,
+    so `rev-parse` accepts it, but it is not a commit `rev-list`/`log` can
+    exclude by.
+    """
+    proc = _git(repo, "rev-parse", "--verify", "--quiet", f"{rev}^{{commit}}")
+    return proc.returncode == 0
+
+
 def merge_base(repo: Path, since: str, ref: str) -> tuple[str, str]:
     """The base of the range being scanned, and how it was derived.
 
     `base_kind` is `"merge-base"` in the normal case. If `since`/`ref` share
     no ancestry, `git merge-base` fails and this falls back to `since`
-    resolved directly, labelled `"since"` — the label never claims
-    `merge-base` succeeded when it did not.
+    resolved directly. That fallback is labelled `"since"` when it still
+    resolves to a commit (unrelated histories), or `"no-common-history"`
+    when it does not — e.g. `since` is the empty-tree SHA a brand-new remote
+    ref uses to mean "nothing pre-existing". The label never claims
+    `merge-base` succeeded when it did not, and `"no-common-history"` tells
+    callers the base is not usable on the excluded side of a revision range.
     """
     proc = _git(repo, "merge-base", since, ref)
     if proc.returncode == 0:
         return proc.stdout.strip(), "merge-base"
-    return _git_out(repo, "rev-parse", since), "since"
+    base = _git_out(repo, "rev-parse", since)
+    kind = "since" if _is_commit_ish(repo, base) else "no-common-history"
+    return base, kind
 
 
-def range_commits(repo: Path, base: str, ref: str) -> list[str]:
-    out = _git_out(repo, "rev-list", "--reverse", f"{base}..{ref}")
+def range_commits(repo: Path, base: str | None, ref: str) -> list[str]:
+    """Commits in `base..ref`, or ALL commits reachable from `ref` when
+    `base` is `None` — the brand-new-ref/no-common-history case, where
+    there is no commit to exclude by, so the whole ref IS the range.
+    """
+    if base is None:
+        out = _git_out(repo, "rev-list", "--reverse", ref)
+    else:
+        out = _git_out(repo, "rev-list", "--reverse", f"{base}..{ref}")
     return [line for line in out.splitlines() if line]
 
 
-def range_paths(repo: Path, base: str, ref: str) -> list[str]:
-    out = _git_out(repo, "diff", "--name-only", base, ref)
+def range_paths(repo: Path, base: str | None, ref: str) -> list[str]:
+    """Paths changed in `base..ref`, or every path in `ref`'s tree when
+    `base` is `None` (no-common-history: everything in `ref` is new)."""
+    if base is None:
+        out = _git_out(repo, "ls-tree", "-r", "--name-only", ref)
+    else:
+        out = _git_out(repo, "diff", "--name-only", base, ref)
     return [line for line in out.splitlines() if line]
 
 
-def first_touching_commit(repo: Path, base: str, ref: str,
+def first_touching_commit(repo: Path, base: str | None, ref: str,
                           path: str) -> str | None:
     """The first commit IN THE RANGE `base..ref` that touches `path` — the
     per-hit provenance value that makes a RANGE attribution checkable against
-    plain `git log` instead of merely asserted by this tool.
+    plain `git log` instead of merely asserted by this tool. When `base` is
+    `None` (no-common-history), the range is all of `ref`'s history, so this
+    looks at `ref`'s full history for `path` instead of a `base..ref` range.
     """
-    out = _git_out(repo, "log", "--reverse", "--format=%H", f"{base}..{ref}",
-                   "--", path)
+    if base is None:
+        out = _git_out(repo, "log", "--reverse", "--format=%H", ref,
+                       "--", path)
+    else:
+        out = _git_out(repo, "log", "--reverse", "--format=%H",
+                       f"{base}..{ref}", "--", path)
     lines = [line for line in out.splitlines() if line]
     return lines[0] if lines else None
 
@@ -733,8 +769,17 @@ def run_range_scan(mod, *, source: Path, repo: Path, ref: str, since: str,
     around it, it does not alter how the scanner itself is armed or run.
     """
     base, base_kind = merge_base(repo, since, ref)
-    commits = range_commits(repo, base, ref)
-    r_paths = range_paths(repo, base, ref)
+    # `range_base` is what `range_commits`/`range_paths`/`first_touching_commit`
+    # are allowed to put on the excluded side of a `base..ref` revision range.
+    # When there is no common history (`base_kind == "no-common-history"`,
+    # e.g. `since` fell back to the empty-tree SHA for a brand-new remote
+    # ref), `base` is a tree object, not a commit, and cannot appear there —
+    # so `range_base` is `None` and those helpers walk all of `ref` instead,
+    # which is the correct answer anyway: with nothing pre-existing, the
+    # whole ref IS the range.
+    range_base = None if base_kind == "no-common-history" else base
+    commits = range_commits(repo, range_base, ref)
+    r_paths = range_paths(repo, range_base, ref)
 
     tip_payload = run_scanner(mod, source=source, repo=repo, since=None,
                               ref=ref, progress=progress)
@@ -749,7 +794,7 @@ def run_range_scan(mod, *, source: Path, repo: Path, ref: str, since: str,
         commit = None
         prov_source = "unknown"
         if hit.path is not None:
-            commit = first_touching_commit(repo, base, ref, hit.path)
+            commit = first_touching_commit(repo, range_base, ref, hit.path)
             if commit:
                 prov_source = "git-log"
         if commit is None and hit.commit:
@@ -803,10 +848,17 @@ def render_range_verdict(verdict: RangeVerdict) -> str:
     at least the most recent hit(s) (AC3).
     """
     lines: list[str] = []
-    lines.append(
-        f"history gate: scanned {verdict.base}..{verdict.ref} "
-        f"({verdict.range_commit_count} commit(s)); base {verdict.base} "
-        f"({verdict.base_kind})")
+    if verdict.base_kind == "no-common-history":
+        lines.append(
+            f"history gate: scanned ALL of {verdict.ref} "
+            f"({verdict.range_commit_count} commit(s)); no common history "
+            f"with since={verdict.since} (resolved to {verdict.base}, not a "
+            "commit) — the whole ref is treated as the range")
+    else:
+        lines.append(
+            f"history gate: scanned {verdict.base}..{verdict.ref} "
+            f"({verdict.range_commit_count} commit(s)); base {verdict.base} "
+            f"({verdict.base_kind})")
 
     pre_counts = _surface_counts(verdict.preexisting_hits)
     lines.append(
