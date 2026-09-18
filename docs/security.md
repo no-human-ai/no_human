@@ -470,7 +470,20 @@ config key that turns it on and the default that keeps it off.
   endpoint, which `_assert_write_allowed` enforces in code
   (`ci_action/github.py`). Model calls go out on the `credential` input you
   supply to the job, exactly like any other coder/reviewer session in this
-  document.
+  document. That comment `@`-mentions the pull request's author, sourced
+  *only* from the event payload's `pull_request.user.login` (never the diff
+  or the PR's own title/body, both attacker-controlled free text) and
+  validated against a login pattern before interpolation (`run._mention_for`,
+  `run._LOGIN_RE`) — ASCII alphanumeric, no leading/trailing hyphen, <= 39
+  chars, deliberately stricter than GitHub's actual login namespace rather
+  than a claim to restate it exactly; a login that fails validation, or ends
+  in `[bot]`, is never mentioned, with no placeholder text either. Findings
+  text quoted into the comment body (e.g. a tamper-guard reason derived from
+  a changed path) is never treated as a mention candidate either: every
+  table cell — including the file-path column, wrapped in a backtick code
+  span that a path containing its own backtick could otherwise break out of
+  — escapes `@` so a diff-controlled string can never render as a live
+  GitHub notification.
 - **Welcome email (Resend).** Gated on an **environment variable**, not a
   config key: `_default_transport()` (`email/send.py`) constructs a
   `ResendTransport` only when `RESEND_API_KEY` is present in
