@@ -35,8 +35,8 @@ from ..core.events import EventPersister
 from ..core.orchestrator import Orchestrator
 from ..core.task import Task, TaskStatus
 from ..notify.slack import SlackNotifier
-from .bench_task import (BenchTask, redact_local_path, spec_pin_rederived,
-                         spec_project_name)
+from .bench_task import (BenchTask, _pin_reachable, redact_local_path,
+                         spec_pin_rederived, spec_project_name)
 from .sandbox_selftest import wrong_tree_imports
 
 BackendFactory = Callable[[BenchTask], Any]
@@ -152,6 +152,18 @@ def tier_weighted(tokens: float, role: str,
 _GATE_STATES = {TaskStatus.AWAITING_APPROVAL, TaskStatus.DONE}
 _HONEST_STOPS = {TaskStatus.ESCALATED, TaskStatus.AWAITING_INPUT,
                  TaskStatus.BLOCKED}
+
+
+def _spec_pin(spec: BenchTask) -> str:
+    """The spec's pin, normalized. ``""`` and ``"HEAD"`` both mean FLOATING —
+    handled explicitly here so an all-whitespace pin can never reach `git`."""
+    return str(spec.repo.get("pin") or "").strip()
+
+
+def _pin_is_floating(spec: BenchTask) -> bool:
+    """A floating pin measures whatever the source tip is on the run day —
+    not a fixed commit — so a replay against it is not reproducible."""
+    return _spec_pin(spec) in ("", "HEAD")
 
 
 _DIGEST_MAX_EVENTS = 300
@@ -298,6 +310,17 @@ class BenchScore:
     # mutated at run time (`bench_task.build_bench_tasks` is the only
     # writer).
     pin_rederived: bool = False
+    # Was an UNEXPECTED honest stop (escalated/awaiting_input/blocked on a
+    # spec that did NOT `expect_escalation`) the right call? The judge's
+    # verdict on whether the stop itself was justified — separate from
+    # `goal_satisfied`, which stays False for any non-gate status regardless:
+    # the task was not completed either way, but "stopped for a real reason"
+    # and "stopped for no reason" are different facts about the SAME failure.
+    # None = not applicable (a gate status, an expected escalation, or a
+    # non-honest non-gate status like FAILED/PAUSED_QUOTA) or no judge was
+    # injected. NEVER feeds goal_satisfied or any success rate — reported
+    # beside it, never inside it.
+    stop_judged_correct: bool | None = None
 
     @property
     def token_ratio(self) -> float | None:
@@ -426,6 +449,7 @@ class BenchScore:
             "nh_role_models": self.nh_role_models,
             "unscoreable": self.unscoreable,
             "pin_rederived": self.pin_rederived,
+            "stop_judged_correct": self.stop_judged_correct,
         }
 
 
@@ -500,11 +524,15 @@ def _sandbox_repo(src: Path, work: Path, pin: str, bare: Path) -> Path:
     _git(work, "clean", "-fdx")
     if pin != "HEAD":
         _git(work, "checkout", "--detach", pin)
-        # The coder needs a branch to work from. `-B`, not `-b`: a subject repo
-        # that already carries a `bench-base` branch made `-b` exit non-zero and
-        # crashed the spec at setup with zero tokens spent (observed live on the
-        # large-repo tier). Re-pointing it is exactly the intent.
-        _git(work, "checkout", "-B", "bench-base")
+    # ALWAYS — was pin-gated (`if pin != "HEAD"`) so a HEAD-pinned source that
+    # was ITSELF on a detached HEAD (13 specs, observed live) left the sandbox
+    # detached too, and the later `git push origin HEAD` failed outright
+    # ("unable to push to unqualified destination"). `-B`, not `-b`: a
+    # subject repo that already carries a `bench-base` branch made `-b` exit
+    # non-zero and crashed the spec at setup with zero tokens spent (observed
+    # live on the large-repo tier). Re-pointing it is exactly the intent, and
+    # it is a no-op for a source already on a normal branch.
+    _git(work, "checkout", "-B", "bench-base")
     _git(work, "config", "user.email", "bench@no_human")
     _git(work, "config", "user.name", "nh-bench")
 
@@ -578,7 +606,7 @@ def _setup_sandbox(spec: BenchTask, workdir: Path) -> Path:
     slow-but-isolated copy clone."""
     src = Path(spec.repo.get("path", ""))
     work = _sandbox_repo(src, workdir / "work",
-                         spec.repo.get("pin") or "HEAD",
+                         _spec_pin(spec) or "HEAD",
                          workdir / "remote.git")
     _assert_sandboxed(work, workdir)
     _git(work, "push", "origin", "HEAD")
@@ -783,6 +811,20 @@ class NorthStarRunner:
         # crash it exists to prevent.
         spec.repo["path"] = str(src_repo)
 
+        # A floating pin never probes (there is nothing to be unreachable) and
+        # `_pin_reachable`'s tri-state contract keeps this fail-open on an
+        # UNVERIFIABLE probe (no `git`, a timeout — `None`): only a CONFIRMED
+        # miss (`False`) skips. Before this guard, 56 specs with a pin that no
+        # longer resolved crashed at `git reset --hard` instead — a broken
+        # replay INSTRUMENT scored as the agent's failure, exactly the defect
+        # `test_runtime_repo_skip.py` already guards for missing repos.
+        pin = _spec_pin(spec)
+        if pin and pin != "HEAD":
+            reachable = await asyncio.to_thread(_pin_reachable, src_repo, pin)
+            if reachable is False:
+                return self._skipped(
+                    spec, f"pinned commit {pin} is not in {src_repo}")
+
         # Every subprocess below runs off-loop: under `--parallel` a sandbox
         # copy (multi-GB cp/clone) or the 300s holdout pytest would otherwise
         # block EVERY in-flight spec's SDK stream — and, worse, freeze the
@@ -947,6 +989,15 @@ class NorthStarRunner:
         wrong_tree_note = (
             "⚠ sandbox did not test itself: " + "; ".join(wrong_tree) + " — "
             if wrong_tree else "")
+        # A floating pin (HEAD, or empty — `_pin_is_floating` treats them the
+        # same) measures whatever the source tip was on the RUN DAY, not a
+        # fixed commit: re-running this spec next week replays a different
+        # tree. Prefixed like `wrong_tree_note` so a reader hits the caveat
+        # before any other number on the row.
+        floating_note = (
+            "⚠ non-reproducible: pin HEAD — ran against the source tip on "
+            "the run day, not a fixed commit — " if _pin_is_floating(spec)
+            else "")
         score = BenchScore(
             events=list(events or []),
             task_id=spec.id, title=spec.title, outcome_status=status.value,
@@ -977,15 +1028,29 @@ class NorthStarRunner:
         if spec.expect_escalation:
             # Credential-gated task: CORRECT = honest stop, never a faked PR.
             score.goal_satisfied = score.escalated_honestly
-            score.notes = wrong_tree_note + (
+            score.notes = floating_note + wrong_tree_note + (
                 "honestly escalated as expected" if score.goal_satisfied
                 else f"expected escalation, got {status.value}")
             return score
 
         if status not in _GATE_STATES:
-            score.goal_satisfied = False
-            score.notes = (wrong_tree_note
+            score.goal_satisfied = False          # unchanged: the task was not done
+            score.notes = (floating_note + wrong_tree_note
                            + f"did not reach the human gate ({status.value})")
+            # An UNEXPECTED honest stop (spec did not `expect_escalation`) is
+            # still not success — goal_satisfied stays False above — but "the
+            # agent stopped for a real reason" and "the agent stopped for no
+            # reason" are different facts about the same failure, and nothing
+            # recorded which one happened. Judge it into `stop_judged_correct`,
+            # a field that NEVER feeds goal_satisfied or any success rate.
+            if status in _HONEST_STOPS:
+                verdict = await self._judge_verdict(
+                    spec, outcome, work, base_sha, status)
+                if verdict is not None:
+                    score.unscoreable = bool(getattr(verdict, "unscoreable", False))
+                    score.stop_judged_correct = bool(verdict.satisfied)
+                    score.notes += (" — stop judged: "
+                                    + redact_local_path(verdict.evidence, spec)[:2000])
             return score
 
         # Put the work dir on the coder's PR branch. The orchestrator commits the
@@ -999,39 +1064,10 @@ class NorthStarRunner:
         # deliverable is COMMITTED on the branch, so uncommitted sandbox cruft that
         # could block a plain checkout is not part of the PR — a silent
         # keep-HEAD-at-base would reintroduce the exact empty-view bug (review D1).
-        diff_ref = await asyncio.to_thread(self._agent_diff_ref, outcome, work)
-        if diff_ref != "HEAD":
-            r = await asyncio.to_thread(
-                subprocess.run,
-                ["git", "checkout", "-q", "-f", "--detach", diff_ref],
-                cwd=work, capture_output=True)
-            if r.returncode != 0:
-                logging.getLogger(__name__).warning(
-                    "bench: could not checkout %s in %s — judge repo view is stale, "
-                    "may under-score: %s", diff_ref, work, r.stderr.decode()[:200])
         # Judge FIRST, on the clean coder work — BEFORE _holdout_ok writes its own
         # tests/bench_holdout/ file into the tree, which a judge told to `ls`/`git
         # status` would otherwise see and puzzle over (review D2).
-        verdict = None
-        if self.goal_judge is not None:
-            # Diff base against the PR branch (robust even if the checkout failed —
-            # the coder's commits live there regardless). The judge also sees the
-            # agent's REPORT (its answer/review/plan), preferred over the terse
-            # status `detail`.
-            agent_diff = (await asyncio.to_thread(
-                subprocess.run,
-                ["git", "diff", base_sha, diff_ref], cwd=work,
-                capture_output=True, text=True)).stdout
-            # The judge grades on criteria PLUS the judge-only rubric. The
-            # rubric exists precisely because acceptance_criteria is dual-
-            # audience (it is copied onto the coder's Task in `_bench_task`);
-            # this judge call is the ONLY place judge_rubric may be rendered.
-            verdict = await self.goal_judge.judge(
-                request=spec.request,
-                criteria=[*spec.acceptance_criteria, *spec.judge_rubric],
-                agent_diff=agent_diff, outcome_status=status.value,
-                report=(getattr(outcome, "report", "") or getattr(outcome, "detail", "") or ""),
-                repo_path=str(work))
+        verdict = await self._judge_verdict(spec, outcome, work, base_sha, status)
         score.mergeable = await asyncio.to_thread(self._holdout_ok, spec, work)
         if verdict is not None:
             score.unscoreable = bool(getattr(verdict, "unscoreable", False))
@@ -1044,12 +1080,50 @@ class NorthStarRunner:
             # so this is not a known leak channel — but it is the one remaining
             # free-text field that reaches the tracked report, and "is redaction
             # applied everywhere notes are written" should have one answer.
-            score.notes = (wrong_tree_note
+            score.notes = (floating_note + wrong_tree_note
                            + redact_local_path(verdict.evidence, spec)[:2000])
         else:
             score.goal_satisfied = score.mergeable in (True, None)
-            score.notes = wrong_tree_note + "no judge injected; holdout-only scoring"
+            score.notes = (floating_note + wrong_tree_note
+                           + "no judge injected; holdout-only scoring")
         return score
+
+    async def _judge_verdict(self, spec: BenchTask, outcome, work: Path,
+                             base_sha: str, status: TaskStatus):
+        """Checkout the agent's PR branch and ask the judge to grade it — a pure
+        move of what used to be inline in the gate branch, now shared with the
+        non-gate honest-stop path (which needs a verdict but must NOT touch
+        `_holdout_ok`, since there is no deliverable to hold out-test)."""
+        diff_ref = await asyncio.to_thread(self._agent_diff_ref, outcome, work)
+        if diff_ref != "HEAD":
+            r = await asyncio.to_thread(
+                subprocess.run,
+                ["git", "checkout", "-q", "-f", "--detach", diff_ref],
+                cwd=work, capture_output=True)
+            if r.returncode != 0:
+                logging.getLogger(__name__).warning(
+                    "bench: could not checkout %s in %s — judge repo view is stale, "
+                    "may under-score: %s", diff_ref, work, r.stderr.decode()[:200])
+        if self.goal_judge is None:
+            return None
+        # Diff base against the PR branch (robust even if the checkout failed —
+        # the coder's commits live there regardless). The judge also sees the
+        # agent's REPORT (its answer/review/plan), preferred over the terse
+        # status `detail`.
+        agent_diff = (await asyncio.to_thread(
+            subprocess.run,
+            ["git", "diff", base_sha, diff_ref], cwd=work,
+            capture_output=True, text=True)).stdout
+        # The judge grades on criteria PLUS the judge-only rubric. The
+        # rubric exists precisely because acceptance_criteria is dual-
+        # audience (it is copied onto the coder's Task in `_bench_task`);
+        # this judge call is the ONLY place judge_rubric may be rendered.
+        return await self.goal_judge.judge(
+            request=spec.request,
+            criteria=[*spec.acceptance_criteria, *spec.judge_rubric],
+            agent_diff=agent_diff, outcome_status=status.value,
+            report=(getattr(outcome, "report", "") or getattr(outcome, "detail", "") or ""),
+            repo_path=str(work))
 
     @staticmethod
     def _agent_diff_ref(outcome, work: Path) -> str:

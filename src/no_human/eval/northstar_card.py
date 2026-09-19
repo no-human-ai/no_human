@@ -578,6 +578,29 @@ class NorthStarCard:
                     if _score_field(s, "pin_rederived")})
 
     @property
+    def stops_judged(self) -> int:
+        """Rows where an UNEXPECTED honest stop (escalated/awaiting_input/
+        blocked, on a spec that did NOT ``expect_escalation``) got a judge
+        verdict on whether the stop itself was the right call. Presence, not
+        truthiness — ``stop_judged_correct is not None`` — since ``False`` is
+        as much a verdict as ``True``; only "no verdict at all" (no judge
+        injected, a gate status, an expected escalation) is excluded.
+        Counted over ``measured_scores`` for the same reason as
+        ``pin_rederived_specs``: a row that never measured anything does not
+        belong in a ratio a reader is being shown."""
+        return sum(1 for s in self.measured_scores
+                   if _score_field(s, "stop_judged_correct") is not None)
+
+    @property
+    def stops_judged_correct(self) -> int:
+        """Of ``stops_judged``, how many the judge said were a justified
+        stop. NEVER folded into ``success_rate`` or any success numerator —
+        the task was still not completed either way; this answers a
+        different question (was stopping honest, not whether it shipped)."""
+        return sum(1 for s in self.measured_scores
+                   if _score_field(s, "stop_judged_correct") is True)
+
+    @property
     def total_nh_tokens(self) -> int:
         return sum(s.nh_tokens for s in self.ran)
 
@@ -714,6 +737,11 @@ class NorthStarCard:
                 # must never be mistaken for a full-fidelity baseline.
                 "pin_rederived_specs": self.pin_rederived_specs,
                 "pin_rederived_spec_count": self.pin_rederived_spec_count,
+                # Unexpected honest stops the judge weighed in on, and how
+                # many it called justified — NEVER inside success_rate or any
+                # success numerator above; reported beside it only.
+                "stops_judged": self.stops_judged,
+                "stops_judged_correct": self.stops_judged_correct,
                 "total_nh_tokens": self.total_nh_tokens,
                 "total_orig_tokens": self.total_orig_tokens,
                 "corpus_available": self.corpus_available,
@@ -782,6 +810,10 @@ class NorthStarCard:
             nh_role_models=s.get("nh_role_models") or {},
             unscoreable=bool(s.get("unscoreable", False)),
             pin_rederived=bool(s.get("pin_rederived", False)),
+            # Presence-preserving, NOT bool(...): None/True/False are all
+            # meaningful (no verdict / justified / not justified), so a
+            # legacy file without this key must load as None, not False.
+            stop_judged_correct=s.get("stop_judged_correct"),
         ) for s in data.get("scores", [])]
         agg = data.get("aggregate") or {}
         return NorthStarCard(scores=scores,
@@ -1408,6 +1440,13 @@ def render_northstar_md(card: NorthStarCard,
         "one. For what actually landed, and what that does and does not "
         "establish, run `nh pr-outcomes show` (real runs only).",
         f"  - {_trials_note}",
+        # NOT part of the success rate above — an unexpected honest stop still
+        # scores `goal_satisfied=False` regardless of this verdict; this line
+        # answers a different question (was stopping the right call) that the
+        # headline fraction cannot represent.
+        f"  - Unexpected honest stops judged correct: "
+        f"**{agg['stops_judged_correct']}** of {agg['stops_judged']} judged "
+        f"— NOT part of the success rate above",
         f"- **Median COST ratio (price-weighted, cache-aware; "
         f"basis: {agg['median_cost_ratio_basis']}): "
         f"{agg['median_cost_ratio'] if agg['median_cost_ratio'] is not None else 'n/a'}**"
