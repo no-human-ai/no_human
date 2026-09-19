@@ -48,11 +48,32 @@ reviewing job here checks out nothing at all (see review-gate.yml's own
 comment on why — it fetches the pull request's diff as data through the
 REST API, never the fork's or the branch's own head), so there is no
 `actions/checkout` step left for that test to be about.
+
+A second lesson, added on human review of a first pass at this file (which
+shipped `PINNED_ACTION = dbe45906ecc79fd22eb4ecb9f0679367d4e805a9`):
+`test_the_action_is_pinned_to_a_main_commit_sha`'s regex — 40 hex characters
+on `no-human-ai/no_human` — is shape only. `dbe45906` passes it, is a real
+commit, and IS an ancestor of `main`, and its
+`src/no_human/ci_action/run.py` still hard-refuses every event but
+`pull_request`: this workflow only ever sends `workflow_run`, so every run
+would exit 2, forever. `_check_pin_supports_workflow_run` below is the
+semantic half: it resolves the pinned sha with `git show <sha>:src/
+no_human/ci_action/run.py` and reads THAT commit's own source rather than
+trusting that "on main" implies "does what this file needs." As of writing,
+7f1660bb (the ticket adding `workflow_run` support) has not landed on
+`main` — every commit reachable from `main` fails this check, which is why
+`test_the_pinned_commit_actually_accepts_workflow_run` (the live check
+against today's `PINNED_ACTION`) is marked `xfail(strict=True)`, not
+deleted or weakened: it documents a real, currently-true ordering
+constraint — this file cannot pin a working sha before 7f1660bb lands —
+and turns into a hard failure (XPASS) if a future PINNED_ACTION update
+forgets to remove the marker.
 """
 
 from __future__ import annotations
 
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -252,6 +273,52 @@ def _check_pin_in_text(text: str) -> None:
     _check_pin(_review_step(yaml.safe_load(text))["uses"])
 
 
+def _check_pin_supports_workflow_run(value: str) -> None:
+    """Resolve the pinned commit and read ITS OWN
+    `src/no_human/ci_action/run.py` — format alone is not enough.
+
+    `dbe45906ecc79fd22eb4ecb9f0679367d4e805a9` is 40 hex characters, a real
+    commit, and an ancestor of `main`: `_check_pin` above accepts it and so
+    did 90f9f7cb's frozen `PINNED_ACTION`. It is still the wrong commit,
+    because AT THAT SHA `src/no_human/ci_action/run.py` reads (verified via
+    `git show dbe45906...:src/no_human/ci_action/run.py`):
+
+        if event_name != "pull_request":
+            return _fail(
+                f"unsupported event `{event_name or '(empty)'}` — this "
+                "Action only runs on the `pull_request` trigger"
+            )
+
+    which exits 2 on every `workflow_run` run this job makes, forever. This
+    function fails unless the resolved commit's `run.py` actually branches
+    on `workflow_run` (as of branch `no-human/7f1660bb-2`,
+    `git show cf976c58...:src/no_human/ci_action/run.py` reads
+    `if event_name not in ("pull_request", "workflow_run"):`) — i.e. unless
+    the pin names a commit that CARRIES 7f1660bb's workflow_run support, not
+    merely one that resolves.
+    """
+    sha = value.rsplit("@", 1)[-1]
+    result = subprocess.run(
+        ["git", "show", f"{sha}:src/no_human/ci_action/run.py"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, (
+        f"cannot read src/no_human/ci_action/run.py at {sha}: {result.stderr}"
+    )
+    source = result.stdout
+    assert "workflow_run" in source, (
+        f"{sha}'s run.py never mentions `workflow_run` at all — it refuses "
+        "the trigger this workflow sends"
+    )
+    assert 'if event_name != "pull_request":' not in source, (
+        f"{sha}'s run.py still hard-rejects every event but `pull_request` "
+        "(`if event_name != \"pull_request\":`) — it refuses `workflow_run`"
+    )
+
+
 def _check_if_gate(text: str) -> None:
     job = yaml.safe_load(text)["jobs"]["review"]
     if_expr = job.get("if")
@@ -396,6 +463,82 @@ def test_pin_guard_rejects_dot_slash_and_main(value):
     pass it."""
     with pytest.raises(AssertionError):
         _check_pin(value)
+
+
+def test_pin_support_guard_rejects_a_commit_that_predates_workflow_run_support():
+    """The gap a format-only check misses. `dbe45906` is what 90f9f7cb
+    actually shipped as `PINNED_ACTION`: 40 hex characters, a real commit, an
+    ancestor of `main` — `_check_pin` passes it. It is still the wrong
+    commit, because at that sha `run.py` refuses every event but
+    `pull_request` (see `_check_pin_supports_workflow_run`'s docstring for
+    the exact line). This is the guard the human reviewer asked for after
+    that sha shipped: it would have caught it before merge."""
+    with pytest.raises(AssertionError):
+        _check_pin_supports_workflow_run(
+            "no-human-ai/no_human@dbe45906ecc79fd22eb4ecb9f0679367d4e805a9"
+        )
+
+
+@pytest.mark.parametrize(
+    "sha",
+    [
+        "dbe45906ecc79fd22eb4ecb9f0679367d4e805a9",  # main tip at 90f9f7cb
+        "769b08b8a18d25a643521e1360851d5dcfacc3b2",  # main, one before that
+        "5f99b7af3142bf9fc562bd35d127b852a99bc113",  # main tip as of writing
+    ],
+)
+def test_pin_support_guard_rejects_every_current_main_commit(sha):
+    """As of writing, `7f1660bb` (the ticket that adds `workflow_run`
+    support to `src/no_human/ci_action/run.py`) has not landed on `main` —
+    `git show origin/main:src/no_human/ci_action/run.py | grep -c
+    workflow_run` returns 0. So EVERY commit reachable from `main` today,
+    not just the one 90f9f7cb happened to pick, fails this guard. That is
+    the ordering constraint the ticket names: this repository's `main` has
+    no sha this workflow could correctly pin until that ticket lands."""
+    with pytest.raises(AssertionError):
+        _check_pin_supports_workflow_run(f"no-human-ai/no_human@{sha}")
+
+
+def test_pin_support_guard_accepts_a_commit_that_carries_workflow_run_support():
+    """Positive control, so the two tests above are not just \"the function
+    always raises\". `cf976c58f940b8be326273f8884833e2a2f8d175` is real (in
+    this repository's object database, on branch `no-human/7f1660bb-2`, not
+    yet on `main`) and its `run.py` branches on `workflow_run` explicitly
+    (`if event_name not in ("pull_request", "workflow_run"):`). This commit
+    is cited ONLY as fixture data proving the guard can pass something — it
+    is never shipped as `PINNED_ACTION`, because it is not reachable from
+    `main` (see `test_the_pinned_commit_actually_accepts_workflow_run` for
+    why `PINNED_ACTION` itself is still `dbe45906` today, and the PR body
+    for why that is the correct call rather than pinning a branch tip)."""
+    _check_pin_supports_workflow_run(
+        "no-human-ai/no_human@cf976c58f940b8be326273f8884833e2a2f8d175"
+    )
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "Known, tracked, and expected: 7f1660bb (workflow_run support in "
+        "src/no_human/ci_action/run.py) has not landed on main, so no "
+        "commit reachable from main passes _check_pin_supports_workflow_run "
+        "today (see test_pin_support_guard_rejects_every_current_main_commit)"
+        ". PINNED_ACTION is a documented placeholder pin, not a working one "
+        "-- the file's own comment above the `uses:` line says so, and so "
+        "does the PR body. When 7f1660bb lands and PINNED_ACTION is bumped "
+        "to that landing's sha, this assertion starts passing -- remove "
+        "this xfail in that same diff; strict=True turns an unremoved xfail "
+        "into a failure (XPASS) so that update cannot be missed."
+    ),
+)
+def test_the_pinned_commit_actually_accepts_workflow_run():
+    """The semantic half of the pin guard, applied to the LIVE file.
+    `test_the_action_is_pinned_to_a_main_commit_sha` only checks the shape
+    of `PINNED_ACTION` (40 hex chars on `no-human-ai/no_human`) -- shape
+    alone is exactly what let `dbe45906` ship as the pin although its
+    `run.py` refuses the `workflow_run` trigger this workflow sends. This
+    test resolves `PINNED_ACTION` and re-runs that check for real, and is
+    expected to fail until the pin names a commit that carries 7f1660bb."""
+    _check_pin_supports_workflow_run(PINNED_ACTION)
 
 
 def test_the_review_job_runs_only_after_a_successful_recorder_run():
