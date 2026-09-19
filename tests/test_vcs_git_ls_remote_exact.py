@@ -15,7 +15,6 @@ never guesses.
 from __future__ import annotations
 
 import subprocess
-import time
 from pathlib import Path
 
 import pytest
@@ -158,14 +157,44 @@ def test_oserror_returns_none(monkeypatch, tmp_path):
     assert repo.ls_remote_exact("refs/heads/main") is None
 
 
-def test_latency_against_a_local_bare_origin_is_under_100ms(bare_origin):
-    """Not a hard perf gate (CI variance), but pins the design claim that a
-    single exact-ref `ls-remote` against a local remote is cheap enough to
-    run once per attempt without becoming the bottleneck — measured, not
-    assumed. See PR body for the measured number this test asserts against."""
+def test_ls_remote_exact_makes_exactly_one_subprocess_call(bare_origin, monkeypatch):
+    """Used to assert `elapsed_ms < 100` around one `ls_remote_exact` call —
+    a wall-clock number that reads fork/exec scheduling latency and local git
+    daemon warm-up on whatever machine happens to run it, not anything about
+    this method (own docstring conceded it: 'Not a hard perf gate (CI
+    variance)', while still asserting a hard bound). Measured 129.4ms on a
+    contended CI runner against a 100ms budget — a false red with nothing
+    about the code changed, the same class of failure as PR #497's other two.
+
+    The design claim this pins ('cheap enough to run once per attempt
+    without becoming the bottleneck', `git.py:1365-1393`) is not actually a
+    claim about milliseconds — it is a claim that one `ls_remote_exact` call
+    costs exactly one round trip: a single `git ls-remote` subprocess, no
+    retry loop, no fallback second call, no per-ref re-invocation. That is a
+    call count, and call counts do not depend on machine load: spawning one
+    subprocess is one subprocess whether the box is idle or saturated. A
+    regression that actually threatens the "run once per attempt" claim —
+    e.g. a retry-on-failure loop, or a second verification call — shows up
+    here as `len(calls) != 1`, deterministically, on any machine."""
+    real_run = subprocess.run
+    calls: list[list[str]] = []
+
+    def counting_run(*args, **kwargs):
+        argv = args[0] if args else kwargs.get("args")
+        calls.append(list(argv))
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", counting_run)
     repo = GitRepo(bare_origin["work"])
-    start = time.monotonic()
     sha = repo.ls_remote_exact("refs/heads/develop")
-    elapsed_ms = (time.monotonic() - start) * 1000
+    assert len(calls) == 1, (
+        f"expected exactly one subprocess call for a single ls_remote_exact "
+        f"lookup (the 'cheap enough to run once per attempt' design claim at "
+        f"git.py:1365-1393), got {len(calls)}: {calls!r} — a caller-visible "
+        "slowdown here would come from an extra subprocess spawn (retry/"
+        "fallback/second round trip), which is exactly what this counts, "
+        "not from git itself running slower on a loaded box")
+    assert calls[0][:2] == ["git", "ls-remote"], (
+        f"expected the single call to be a `git ls-remote` invocation, got "
+        f"{calls[0]!r}")
     assert sha == bare_origin["develop_sha"]
-    assert elapsed_ms < 100, f"ls_remote_exact took {elapsed_ms:.1f}ms locally"
