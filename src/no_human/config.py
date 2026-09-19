@@ -1945,7 +1945,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # Stuck-active watchdog: a task emitting NO event for this many
         # minutes while active (implementing/reviewing/testing/planning/
         # context) is escalated (the 2026-07-11 reviewer hang). 0 disables.
-        # FLOOR, not the effective value — see wake.effective_stuck_active_minutes().
+        # FLOOR, not the effective value — see
+        # stall_watchdog.effective_stuck_active_minutes().
         "stuck_active_minutes": 40,
     },
     "supervisor": {

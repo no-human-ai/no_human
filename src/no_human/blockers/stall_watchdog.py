@@ -20,7 +20,6 @@ import logging
 import math
 from typing import TYPE_CHECKING
 
-from ..core.attempt_bookkeeping import abandon_open_attempt
 from .taxonomy import human_gate_armed, resume_provenance
 
 if TYPE_CHECKING:
@@ -104,14 +103,13 @@ async def close_stalled_attempt(
     terminal row instead of orphaned `in_progress` forever (measured: 86M+
     tokens over 243 calls recorded to tasks but not to their attempt rows).
     Does NOT stop the backend coroutine that opened the row — it keeps
-    running; see `attempt_bookkeeping.abandon_open_attempt`'s docstring for
-    why closing the row by id is still safe. Fail-open: bookkeeping must
-    never abort an escalation already made. Returns a human-readable usage
-    suffix (possibly empty) for the escalation event text.
+    running; see `Store.abandon_open_attempt`'s docstring for why closing
+    the row by id is still safe. Fail-open: bookkeeping must never abort an
+    escalation already made. Returns a human-readable usage suffix
+    (possibly empty) for the escalation event text.
     """
     try:
-        closed = await abandon_open_attempt(
-            store,
+        closed = await store.abandon_open_attempt(
             task.id,
             reason=(f"interrupted: the stall watchdog abandoned this "
                     f"attempt — no event for {age_min:.0f}m while "
