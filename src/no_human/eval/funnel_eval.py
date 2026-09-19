@@ -57,6 +57,7 @@ import json
 import logging
 import os
 import signal
+import statistics
 import subprocess
 import time
 from datetime import date
@@ -67,7 +68,7 @@ from ..core.db import USAGE_ROLES, Store, usage_columns_for
 from ..core.orchestrator import Orchestrator
 from ..core.task import Task
 from ..notify.slack import SlackNotifier
-from ..core.pricing import BUDGET_UNIT_KEY, WEIGHTED_UNIT
+from ..core.pricing import BUDGET_UNIT_KEY, WEIGHTED_UNIT, weighted_tokens
 from .funnel_corpus import (
     CORPUS_DIR, EXPECTED_TIERS, CorpusTask, corpus_ceiling_tokens, load_corpus,
 )
@@ -77,15 +78,30 @@ log = logging.getLogger(__name__)
 
 BASELINE_PATH = CORPUS_DIR / "baseline.json"
 
+#: The night-total/per-tier cost reference, beside the baseline. See
+#: `docs/NIGHTLY_EVAL.md`'s "Cost" section for the full rule; summarised here
+#: because the constants below only make sense next to it.
+COST_REFERENCE_PATH = CORPUS_DIR / "cost_median.json"
+
+#: N — how many of the most-recently-recorded nights the reference is the
+#: median of. Documented in docs/NIGHTLY_EVAL.md; change both together.
+COST_HISTORY_NIGHTS = 30
+
+#: Night-total band: tonight's summed weighted cost over this multiple of the
+#: N-night median total is red.
+NIGHT_TOTAL_BAND = 1.15
+
+#: Per-tier band: any ONE tier over this multiple of ITS OWN median (over the
+#: same nights) is red, independent of the night total. Wider than the night
+#: band on purpose — a single tier is noisier at n=1 than the five-tier sum,
+#: and this is exactly the number the old flat 1.25 `COST_BAND` got wrong
+#: (issue #425: 85k-174k on one tier, same-day, all green).
+TIER_BAND = 2.0
+
 #: Deliberately not 8420 (``server.port``'s default, the operator's day
 #: instance). Nothing here binds a socket — the port lands in the run's config
 #: so that if a future step does start one, it cannot land on the operator's.
 NIGHTLY_PORT = 8431
-
-#: How far over its baseline cost a tier may drift before the night is red.
-#: A band, not a cap: token counts are noisy at n=1 and a 1% wobble that fails
-#: a nightly run is a gate people learn to ignore.
-COST_BAND = 1.25
 
 #: Bound on the held-out test subprocess, copied from
 #: ``northstar._holdout_ok`` so the two cannot drift.
@@ -225,23 +241,57 @@ def _checkout_pr_branch(outcome: Any, work: Path) -> None:
 def _spend(attempts: list[dict]) -> dict[str, int]:
     """Every registered role, per price class — the role list is IMPORTED, never
     enumerated here (``northstar._score``'s ``_class_total``: a role in the
-    schema but not in the sum is spend the benchmark hands the product free)."""
+    schema but not in the sum is spend the benchmark hands the product free).
+
+    ``output_tokens`` rides along as a FOURTH key that is not a fourth class:
+    it is the output SHARE of ``tokens_used``, already inside ``total(0)``, the
+    same slice ``db.usage_columns_for``'s own docstring and
+    ``Store._output_columns_by_class`` describe. Summing it into ``total()``
+    would double-count every output token; it exists here only so
+    ``_price`` below can charge it its own (higher) weight.
+    """
     def total(idx: int) -> int:
         keys = [usage_columns_for(t)[idx] for t in USAGE_ROLES]
         return sum(int(a.get(k) or 0) for a in attempts for k in keys)
 
+    output_keys = ["output_tokens" if t == "" else f"{t}output_tokens"
+                   for t in USAGE_ROLES]
+    output_total = sum(int(a.get(k) or 0) for a in attempts for k in output_keys)
+
     return {"tokens_used": total(0), "cache_read_tokens": total(1),
-            "cache_creation_tokens": total(2)}
+            "cache_creation_tokens": total(2), "output_tokens": output_total}
+
+
+def _price(record: dict[str, Any]) -> int:
+    """The record's weighted cost, output premium included.
+
+    ``model=None`` is deliberate, not a missing wire-up: ``_spend`` sums
+    across every role in ``USAGE_ROLES`` (coder, reviewer, planner, utility,
+    supervisor, distill), one id cannot describe six roles, and ``None`` takes
+    ``output_extra_weight``'s conservative fallback — the highest published
+    premium — exactly the rationale in ``weighted_tokens``' own docstring.
+    """
+    return weighted_tokens(
+        tokens_used=record.get("tokens_used") or 0,
+        cache_read_tokens=record.get("cache_read_tokens") or 0,
+        cache_creation_tokens=record.get("cache_creation_tokens") or 0,
+        output_tokens=record.get("output_tokens"),
+        model=None,
+    )
 
 
 async def _run_tier(task: CorpusTask, home: Path, data: dict,
                     backend_factory: Callable[[CorpusTask], Any],
                     reviewer: Any | None) -> dict:
     """Drive one tier to terminal and return its record. Never raises."""
+    # 0, not None: these are honest zero-spend records until `_spend` (and
+    # then `_price`) overwrite them — unlike pricing.py's DB-NULL case (a split
+    # never captured), a tier that never got past "setup" measured no attempts
+    # at all.
     record: dict[str, Any] = {"task": task.name, "stage": "setup",
                               "detail": "", "pr_url": "", "review_passed": False,
                               "holdout": None, "wall_seconds": 0.0,
-                              "weighted_tokens": None}
+                              "weighted_tokens": 0, "output_tokens": 0}
     work: Path | None = None
     t0 = time.monotonic()
     try:
@@ -287,7 +337,7 @@ async def _run_tier(task: CorpusTask, home: Path, data: dict,
                     "exceeded its own wall-clock ceiling")
                 record["wall_seconds"] = time.monotonic() - t0
                 record.update(_spend(await store.list_attempts(nh_task.id)))
-                record["weighted_tokens"] = None
+                record["weighted_tokens"] = _price(record)
                 return record
             record["wall_seconds"] = time.monotonic() - t0
             record["stage"] = outcome.status.value
@@ -295,7 +345,7 @@ async def _run_tier(task: CorpusTask, home: Path, data: dict,
             record["pr_url"] = outcome.pr_url or ""
             attempts = await store.list_attempts(nh_task.id)
             record.update(_spend(attempts))
-            record["weighted_tokens"] = None
+            record["weighted_tokens"] = _price(record)
             record["review_passed"] = any(
                 int(a.get("review_passed") or 0) for a in attempts)
         finally:
@@ -326,17 +376,17 @@ def load_baseline(path: Path | None = None) -> dict:
 def compare_to_baseline(records: list[dict], baseline: dict) -> tuple[bool, list[str]]:
     """Hold tonight's records against the recorded baseline.
 
-    Returns ``(ratchet_holds, lines)``. Two blocking movements: a tier that
-    PASSED at baseline and failed tonight, and a tier that cost more than
-    ``COST_BAND`` times its baseline cost. Both name the task and the numbers,
-    because a ratchet line somebody has to go and re-derive is a ratchet line
-    somebody ignores.
-
-    An improvement is reported and CHANGES NOTHING. This function never writes
-    the baseline: a run that tightens its own floor turns one lucky night into
-    a gate nobody can pass, which is the "bench is an instrument, not a target"
-    failure in its purest form. Refreshing is a human editing the file in the
-    commit that fixes or accepts something.
+    Returns ``(ratchet_holds, lines)``. ONE blocking movement here: a tier
+    that PASSED at baseline and failed tonight (plus a baseline tier missing
+    from tonight's run, which is the same "this used to be covered" failure).
+    Cost is judged separately, by `compare_to_cost_reference` against a
+    rolling median of recent nights — a single baseline number is too noisy
+    at n=1 per tier (issue #425: a tier that varied 85k-174k same-day, all
+    green). This function still notes an improvement for the record, but
+    changes nothing on cost: a run that tightens its own floor turns one
+    lucky night into a gate nobody can pass, which is the "bench is an
+    instrument, not a target" failure in its purest form. Refreshing is a
+    human editing the file in the commit that fixes or accepts something.
     """
     if baseline.get("unseeded"):
         return True, [
@@ -358,15 +408,8 @@ def compare_to_baseline(records: list[dict], baseline: dict) -> tuple[bool, list
             lines.append(
                 f"REGRESSION {rec['task']}: passed at baseline "
                 f"({baseline.get('recorded', 'unknown date')}), failed tonight")
-        band = int(was.get("cost", 0) * COST_BAND)
         cost = int(rec.get("cost") or 0)
-        if cost > band:
-            ok = False
-            lines.append(
-                f"COST {rec['task']}: {cost:,} > {band:,} "
-                f"(baseline {int(was.get('cost', 0)):,} + "
-                f"{int((COST_BAND - 1) * 100)}% band)")
-        elif cost and cost < int(was.get("cost", 0)):
+        if cost and cost < int(was.get("cost", 0)):
             lines.append(
                 f"improved {rec['task']}: {cost:,} vs baseline "
                 f"{int(was.get('cost', 0)):,} — recorded, NOT ratcheted; "
@@ -374,6 +417,101 @@ def compare_to_baseline(records: list[dict], baseline: dict) -> tuple[bool, list
     for name in sorted(set(prior) - {r["task"] for r in records}):
         lines.append(f"missing {name}: in the baseline, not in tonight's run")
         ok = False
+    return ok, lines
+
+
+def load_cost_reference(path: Path | None = None) -> dict:
+    p = Path(path or COST_REFERENCE_PATH)
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        # A missing or unreadable reference is a fresh start, not a green
+        # night with nothing gated on cost forever: `compare_to_cost_reference`
+        # reads `nights: []` as "0 recorded", the same warm-up path a corpus
+        # with fewer than `nights` recorded takes.
+        return {"nights": []}
+
+
+def compare_to_cost_reference(records: list[dict], reference: dict, *,
+                              nights: int = COST_HISTORY_NIGHTS) -> tuple[bool, list[str]]:
+    """Hold tonight's weighted cost against a rolling median of recent nights.
+
+    Two independent movements: the NIGHT TOTAL (summed weighted cost across
+    every tier) over ``NIGHT_TOTAL_BAND`` times the median of the last
+    ``nights`` recorded totals, and any ONE TIER over ``TIER_BAND`` times its
+    own median over the same nights. Either can fire without the other —
+    a single noisy tier should not need to also move the five-tier sum to be
+    caught, and a slow creep spread evenly across tiers should not hide
+    behind each tier individually looking fine.
+
+    Fewer than ``nights`` recorded nights is a WARM-UP, not a failure:
+    the reference has nothing to compare against yet, so tonight passes and
+    says so — this is what lets `cost_median.json` ship with one recorded
+    night instead of needing 30 invented ones.
+    """
+    hist = sorted(reference.get("nights") or [], key=lambda n: n.get("date", ""))
+    hist = hist[-nights:] if nights > 0 else []
+    if len(hist) < nights:
+        return True, [
+            f"cost reference: {len(hist)}/{nights} nights recorded — "
+            "establishing the reference, nothing is gated on cost tonight"]
+
+    lines: list[str] = []
+    ok = True
+
+    def night_total(n: dict) -> int | None:
+        if "total" in n:
+            return int(n["total"])
+        night_tasks = n.get("tasks") or {}
+        if night_tasks:
+            return int(sum(night_tasks.values()))
+        return None
+
+    totals = [night_total(n) for n in hist]
+    valid_totals = [t for t in totals if t is not None]
+    skipped = len(hist) - len(valid_totals)
+    if skipped:
+        lines.append(
+            f"cost reference: {skipped} recorded night(s) had neither "
+            "`total` nor `tasks` — skipped rather than silently shifting "
+            "the median")
+
+    if valid_totals:
+        ref_total = statistics.median(valid_totals)
+        tonight_total = sum(int(r.get("cost") or 0) for r in records)
+        band_total = ref_total * NIGHT_TOTAL_BAND
+        if tonight_total > band_total:
+            ok = False
+            lines.append(
+                f"COST night total: {tonight_total:,} > {band_total:,.0f} "
+                f"({NIGHT_TOTAL_BAND}x the {len(valid_totals)}-night median "
+                f"{ref_total:,.0f})")
+        else:
+            lines.append(
+                f"night total: {tonight_total:,} within {NIGHT_TOTAL_BAND}x "
+                f"the {len(valid_totals)}-night median {ref_total:,.0f}")
+
+    tier_history: dict[str, list[int]] = {}
+    for n in hist:
+        for name, cost in (n.get("tasks") or {}).items():
+            tier_history.setdefault(name, []).append(int(cost))
+
+    for rec in records:
+        name = rec["task"]
+        costs = tier_history.get(name)
+        cost = int(rec.get("cost") or 0)
+        if not costs:
+            lines.append(
+                f"new tier {name} — not in the cost reference, not gated "
+                "on cost")
+            continue
+        med = statistics.median(costs)
+        bound = med * TIER_BAND
+        if cost > bound:
+            ok = False
+            lines.append(
+                f"COST {name}: {cost:,} > {bound:,.0f} "
+                f"({TIER_BAND}x its median {med:,.0f})")
     return ok, lines
 
 
@@ -406,6 +544,9 @@ def _summary(report: dict) -> str:
         "",
         "## Ratchet",
         *[f"- {ln}" for ln in report["ratchet"]],
+        "",
+        "## Cost",
+        *[f"- {ln}" for ln in report["cost_band"]],
         "",
         "Quality is measured by each tier's held-out test. There is no score "
         "here and there must never be one.",
@@ -478,7 +619,8 @@ async def _run(home: Path, out: Path, *, backend_factory, reviewer,
         "instance": {"home": str(home), "db_path": data["database"]["path"],
                      "worktree_root": data["isolation"]["worktree_root"],
                      "workdir": str(home / "work"), "port": data["server"]["port"]},
-        "tasks": [], "passed": 0, "failed": 0, "ratchet": [], "exit_code": 1,
+        "tasks": [], "passed": 0, "failed": 0, "ratchet": [], "cost_band": [],
+        "exit_code": 1,
     }
 
     # BEFORE the budget check and before anything is materialized: a refusal
@@ -487,6 +629,7 @@ async def _run(home: Path, out: Path, *, backend_factory, reviewer,
     if refusal:
         report["refused"] = refusal
         report["ratchet"] = ["not evaluated: the run refused to start"]
+        report["cost_band"] = ["not evaluated: the run refused to start"]
         _write(out, report)
         return 1
 
@@ -500,6 +643,7 @@ async def _run(home: Path, out: Path, *, backend_factory, reviewer,
             f"corpus ceiling {ceiling:,} weighted tokens exceeds "
             f"eval.nightly_budget_tokens {budget:,} — nothing was run")
         report["ratchet"] = ["not evaluated: the run refused to start"]
+        report["cost_band"] = ["not evaluated: the run refused to start"]
         _write(out, report)
         return 1
 
@@ -510,7 +654,7 @@ async def _run(home: Path, out: Path, *, backend_factory, reviewer,
                    "detail": "the run's total wall-clock budget was spent "
                              "before this tier started",
                    "pr_url": "", "review_passed": False, "holdout": None,
-                   "wall_seconds": 0.0, "weighted_tokens": None}
+                   "wall_seconds": 0.0, "weighted_tokens": 0, "output_tokens": 0}
         else:
             rec = await _run_tier(task, home, data, backend_factory, reviewer)
         verdict = evaluate(rec, task.criteria)
@@ -522,7 +666,10 @@ async def _run(home: Path, out: Path, *, backend_factory, reviewer,
     report["failed"] = len(report["tasks"]) - report["passed"]
     ratchet_ok, report["ratchet"] = compare_to_baseline(
         report["tasks"], load_baseline())
-    report["exit_code"] = 0 if (report["failed"] == 0 and ratchet_ok) else 1
+    cost_ok, report["cost_band"] = compare_to_cost_reference(
+        report["tasks"], load_cost_reference(), nights=COST_HISTORY_NIGHTS)
+    report["exit_code"] = 0 if (
+        report["failed"] == 0 and ratchet_ok and cost_ok) else 1
     _write(out, report)
     return report["exit_code"]
 
@@ -580,7 +727,9 @@ def main(argv: list[str] | None = None) -> int:
 
 
 __all__ = ["run_funnel_eval", "compare_to_baseline", "load_baseline",
-           "corpus_ceiling_tokens", "BASELINE_PATH", "main"]
+           "corpus_ceiling_tokens", "BASELINE_PATH", "load_cost_reference",
+           "compare_to_cost_reference", "COST_REFERENCE_PATH",
+           "COST_HISTORY_NIGHTS", "main"]
 
 
 if __name__ == "__main__":

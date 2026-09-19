@@ -31,6 +31,10 @@ pass everything still cannot make a tier green.
 
 ## Cost
 
+This section is the pre-run authorised ceiling — see "The cost reference, and
+how to refresh it" below for the separate post-run verdict that compares
+tonight's actual spend against recent nights.
+
 The corpus's ceiling sum is **10,900,000 weighted tokens** — the worst case if
 every tier spends right up to its limit, priced with the same
 fresh/cache-read/cache-write weights every budget cap in the product uses. A
@@ -124,10 +128,11 @@ out, corpus=[one_tier])`), which is what the test suite does.
 
 ## The baseline, and how to refresh it
 
-`eval/funnel_corpus/baseline.json` is the ratchet. Two movements fail a night:
-
-1. a tier that **passed** at the baseline fails tonight, and
-2. a tier that costs **more than 25% over** its baseline cost.
+`eval/funnel_corpus/baseline.json` is the ratchet. One movement fails a night:
+a tier that **passed** at the baseline fails tonight — including a baseline
+tier that is missing from tonight's run entirely, the same "this used to be
+covered" failure. Cost is **not** judged here any more; see "The cost
+reference, and how to refresh it" below for why and where it moved.
 
 A run also refuses outright if `eval/funnel_corpus/` is not exactly the five
 tiers above — by name, not by count. An emptied or partially checked-out corpus
@@ -144,6 +149,42 @@ and ratchets nothing, and the summary says so. To seed or refresh it: take an
 `baseline.json`, set `unseeded` to `false`, and record the date and the product
 commit — in the commit that fixes or accepts something, never to turn a red
 night green.
+
+## The cost reference, and how to refresh it
+
+`eval/funnel_corpus/cost_median.json` holds the last `COST_HISTORY_NIGHTS`
+(30) recorded nights, and the nightly run holds tonight's weighted cost
+against the **median** of those nights — two independent movements, neither
+gated on the other:
+
+1. the **night total** (every tier's weighted cost, summed) over **1.15x**
+   the median of the last 30 recorded night totals, and
+2. any **one tier** over **2x** its own median over the same 30 nights,
+   regardless of what the night total does.
+
+Either can fire alone: a single noisy tier does not need to also move the
+five-tier sum to be caught, and a slow creep spread evenly across every tier
+does not get to hide behind each tier individually looking fine.
+
+This replaced a flat **25%-over-baseline** band judged per tier against a
+single recorded number, because a single number is too noisy at n=1 per tier:
+issue #425 saw one tier vary 85,000-174,000 weighted tokens across three
+same-day, all-green runs while the *night total* stayed within about 5% of
+its mean the whole time. The old band fired on that noise, not on a
+regression — the median-of-30 reference and the wider (2x) per-tier band
+exist specifically so ordinary day-to-day variance does not read as one.
+
+**Fewer than 30 nights recorded is a warm-up, not a failure.** The reference
+has nothing to compare against yet, so the run passes on cost and says so in
+the summary — this is why `cost_median.json` ships with a single recorded
+night instead of 30 invented ones.
+
+A cheaper or costlier night is **recorded and changes nothing about what
+already passed** — same doctrine as the baseline. To refresh it: append one
+`{"date", "total", "tasks"}` entry, copied from an `out/nightly-YYYY-MM-DD.json`
+**you have read**; never edit or remove an existing entry in place, and never
+invent a night that was not read off a real report — a fabricated entry is a
+fake reference the whole gate then trusts.
 
 ## Scheduling it (after sign-off)
 
