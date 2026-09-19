@@ -1,0 +1,135 @@
+# The credentialed half of the review-gate split. See
+# review-gate-recorder.yml for the untrusted half and
+# docs/design/untrusted-pr-review-gate.md sections A and G for why the split
+# exists at all.
+#
+# A `workflow_run` workflow always executes the YAML from the repository's
+# DEFAULT BRANCH, regardless of which branch or fork the run it watches came
+# from. That is what lets this job — and only this job — name the
+# `review-gate` environment and read its secret: a pull-request branch cannot
+# rewrite this file to reach either.
+#
+# Concretely: naming `environment: review-gate` on a `pull_request` job is
+# refused by GitHub's own environment protection rules before a single step
+# runs. Actions run 35283704459 measured it on this repository: the job
+# failed in 2 seconds with an empty `steps` array, annotation
+# "Branch \"refs/pull/531/merge\" is not allowed to deploy to review-gate due
+# to environment protection rules." — the `review-gate` environment's
+# deployment branch policy is exactly ["main"], which a `pull_request` run's
+# ref never is and a `workflow_run` run's ref (`refs/heads/main`) always is.
+name: no_human review gate
+
+on:
+  workflow_run:
+    workflows: ["no_human review gate recorder"]
+    types: [completed]
+
+# `contents: read` — this job checks out nothing, but the Action step below
+# still runs under the default token scope. `pull-requests: write` is the one
+# extra scope the Action needs to upsert its own review comment.
+# `actions: read` is for downloading the recorder's artifact by run-id, which
+# is a cross-run read the default `contents`/`pull-requests` pair does not
+# cover — asserted from actions/download-artifact's documented contract, NOT
+# independently observed on this repository. If the download step 403s, this
+# line is the first thing to check.
+permissions:
+  contents: read
+  pull-requests: write
+  actions: read
+
+# A cost bound, not tidiness: every run of this job is a model call billed to
+# whatever credential the secret below holds, and this repository's branches
+# are pushed repeatedly while an attempt runs. A superseded run is cancelled
+# rather than left to finish and pay for a diff nobody will read.
+concurrency:
+  group: review-gate-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    name: Review the pull request
+    # An allow-list of one, not a negated `!= 'failure'`: `conclusion` also
+    # takes `cancelled`, `skipped`, `timed_out`, `action_required`, `neutral`,
+    # `stale`, `startup_failure`, and `null`. Any of those means the recorder
+    # did not hand off a `pr-context` artifact worth downloading, so this job
+    # must not start rather than fail confusingly at the download step.
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Repository setting, not something this file can create: an ENVIRONMENT
+    # secret of `review-gate` whose deployment branch policy is exactly
+    # ["main"]. Configuring the environment, its secret, and that branch
+    # policy is an out-of-band operator action — see the PR body.
+    environment: review-gate
+    steps:
+      # Third-party actions in THIS job are sha-pinned, the recorder's are
+      # tag-pinned. That asymmetry is deliberate: this job holds the
+      # credential, so a mutable tag here is the same class of hole the split
+      # exists to close.
+      - name: Download the recorded pull-request context
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.1.1
+        with:
+          name: pr-context
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+
+      # The recorder ran as the pull request's own head, so pr.json is
+      # attacker-authored data, not a capability. This step is what the
+      # recorder's header comment promises: re-validate it against the API
+      # before anything downstream trusts it. `workflow_run.head_sha` comes
+      # from GitHub's own trusted event payload and cannot be forged by the
+      # artifact; `pr.json`'s claim must match it, both as recorded and as
+      # the PR's current head, or the run stops here.
+      - name: Re-validate pr.json against the API
+        id: pr_context
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.0.1
+        with:
+          script: |
+            const fs = require('fs');
+            const pr = JSON.parse(fs.readFileSync('pr.json', 'utf8'));
+            if (!Number.isInteger(pr.number)) {
+              core.setFailed(`pr.json number is not an integer: ${JSON.stringify(pr.number)}`);
+              return;
+            }
+            if (!/^[0-9a-f]{40}$/.test(pr.head_sha)) {
+              core.setFailed(`pr.json head_sha is not a 40-hex sha: ${JSON.stringify(pr.head_sha)}`);
+              return;
+            }
+            const trustedHeadSha = context.payload.workflow_run.head_sha;
+            if (pr.head_sha !== trustedHeadSha) {
+              core.setFailed(`pr.json head_sha ${pr.head_sha} does not match the triggering run's head_sha ${trustedHeadSha}`);
+              return;
+            }
+            const { data: pull } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: pr.number,
+            });
+            if (pull.head.sha !== trustedHeadSha) {
+              core.setFailed(`PR #${pr.number}'s current head ${pull.head.sha} does not match the triggering run's head_sha ${trustedHeadSha}`);
+              return;
+            }
+            if (pull.state !== 'open') {
+              core.setFailed(`PR #${pr.number} is not open (state: ${pull.state})`);
+              return;
+            }
+            core.setOutput('pr_number', String(pr.number));
+            core.setOutput('head_sha', trustedHeadSha);
+
+      # Pinned to a MAIN commit sha, never `./` and never `@main`:
+      #   * `uses: ./` would build the pull request's OWN Dockerfile.action
+      #     inside a job that holds the `review-gate` secret — arbitrary code
+      #     execution with the credential in scope, which undoes the entire
+      #     point of the split.
+      #   * `@main` is a mutable ref; a later push to main would change what
+      #     this job runs without a reviewed diff of THIS file.
+      # This is `origin/main` at the time of writing. TODO(7f1660bb): the
+      # `workflow_run` branch in src/no_human/ci_action/run.py has not landed
+      # yet, so at this sha the Action exits 2 on every run this job makes —
+      # this workflow is wired and inert until the pin above is bumped to a
+      # commit that includes it. This PR does not ship a working gate.
+      - name: Review
+        uses: no-human-ai/no_human@dbe45906ecc79fd22eb4ecb9f0679367d4e805a9
+        with:
+          credential: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ github.token }}
