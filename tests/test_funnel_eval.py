@@ -20,7 +20,8 @@ import pytest
 
 from no_human.eval.funnel_corpus import load_corpus
 from no_human.eval.funnel_eval import (
-    compare_to_baseline, corpus_ceiling_tokens, run_funnel_eval,
+    compare_to_baseline, compare_to_cost_reference, corpus_ceiling_tokens,
+    load_cost_reference, run_funnel_eval,
 )
 
 pytestmark = pytest.mark.usefixtures("isolated_env_file")
@@ -268,21 +269,16 @@ def test_a_pass_turning_into_a_fail_breaks_the_ratchet_and_names_the_task():
     assert any("t2_small_fix" in ln and "REGRESSION" in ln for ln in lines), lines
 
 
-def test_a_cost_band_exceeded_by_more_than_a_quarter_breaks_it_with_numbers():
+def test_the_ratchet_no_longer_judges_cost_a_gross_cost_jump_still_holds():
+    """`compare_to_baseline` used to fail a tier more than 25% over its
+    baseline cost (issue #425: that band fired on ordinary day-to-day noise).
+    Cost is judged by `compare_to_cost_reference` now — even a huge cost jump
+    must not break this ratchet on its own."""
     ok, lines = compare_to_baseline(
         [{"task": "t1_docs_oneliner", "passed": True, "cost": 200_000},
-         {"task": "t2_small_fix", "passed": True, "cost": 1_300_000}], BASE)
-    assert ok is False
-    hit = [ln for ln in lines if "t2_small_fix" in ln and "COST" in ln]
-    assert hit, lines
-    assert "1,300,000" in hit[0] and "1,250,000" in hit[0], hit[0]
-
-
-def test_a_quarter_over_is_inside_the_band():
-    ok, _ = compare_to_baseline(
-        [{"task": "t1_docs_oneliner", "passed": True, "cost": 200_000},
-         {"task": "t2_small_fix", "passed": True, "cost": 1_250_000}], BASE)
+         {"task": "t2_small_fix", "passed": True, "cost": 50_000_000}], BASE)
     assert ok is True
+    assert not any("COST" in ln for ln in lines), lines
 
 
 def test_a_better_run_does_not_auto_tighten_the_baseline(tmp_path):
@@ -339,6 +335,255 @@ def test_a_red_night_still_reports_the_ratchet_line_in_the_summary(
                     reviewer=_PassReviewer(), corpus=_four_tier_corpus()[:1])
     summary = (tmp_path / "out" / "SUMMARY.md").read_text(encoding="utf-8")
     assert "unseeded" in summary.lower() and "report only" in summary.lower()
+
+
+# --------------------------------------------------------------------------- #
+# Cost reference (issue #425) — a night-total band plus a per-tier band, both #
+# medians of recent nights, replacing the flat 25%-over-baseline per-tier     #
+# COST_BAND that fired on ordinary day-to-day noise.                          #
+# --------------------------------------------------------------------------- #
+
+_COST_HIST_SIMPLE = {"nights": [
+    {"date": "2026-08-10", "tasks": {"t1_docs_oneliner": 100_000}},
+    {"date": "2026-08-11", "tasks": {"t1_docs_oneliner": 100_000}},
+    {"date": "2026-08-12", "tasks": {"t1_docs_oneliner": 100_000}},
+]}
+
+
+def test_a_night_total_inside_the_band_holds():
+    ok, lines = compare_to_cost_reference(
+        [{"task": "t1_docs_oneliner", "cost": 114_000}],
+        _COST_HIST_SIMPLE, nights=3)
+    assert ok is True, lines
+    assert any("night total" in ln for ln in lines), lines
+
+
+def test_a_night_total_over_the_band_fails_with_both_numbers():
+    ok, lines = compare_to_cost_reference(
+        [{"task": "t1_docs_oneliner", "cost": 120_000}],
+        _COST_HIST_SIMPLE, nights=3)
+    assert ok is False
+    hit = [ln for ln in lines if "COST night total" in ln]
+    assert hit, lines
+    assert "120,000" in hit[0] and "115,000" in hit[0] and "1.15" in hit[0], hit[0]
+
+
+_TWO_TIER_HIST = {"nights": [
+    {"date": f"2026-08-{10 + i:02d}",
+     "tasks": {"tBig": 900_000, "tSmall": 100_000}}
+    for i in range(3)
+]}
+
+
+def test_the_per_tier_bound_is_twice_the_median_not_a_quarter():
+    """1.5x a tier's median — over the old flat 25% band, issue #425's exact
+    failure mode — must PASS; 2.5x must fail. The total stays inside its own
+    band both times, so this is the per-tier bound doing the work, not the
+    total dragging it along."""
+    ok_pass, lines_pass = compare_to_cost_reference(
+        [{"task": "tBig", "cost": 900_000}, {"task": "tSmall", "cost": 150_000}],
+        _TWO_TIER_HIST, nights=3)
+    assert ok_pass is True, lines_pass
+
+    ok_fail, lines_fail = compare_to_cost_reference(
+        [{"task": "tBig", "cost": 900_000}, {"task": "tSmall", "cost": 250_000}],
+        _TWO_TIER_HIST, nights=3)
+    assert ok_fail is False
+    hit = [ln for ln in lines_fail if "COST tSmall" in ln]
+    assert hit, lines_fail
+    assert "250,000" in hit[0] and "200,000" in hit[0] and "2.0x" in hit[0], hit[0]
+    assert not any("COST night total" in ln for ln in lines_fail), (
+        "the total must not also have fired", lines_fail)
+
+
+def test_the_reference_window_is_thirty_nights_by_default():
+    """Only the most recent 30 nights count — a spike or a lean night more
+    than 30 nights back must not move today's median."""
+    from no_human.eval.funnel_eval import COST_HISTORY_NIGHTS
+    assert COST_HISTORY_NIGHTS == 30
+
+    old_bad_nights = [
+        {"date": f"2026-01-{i:02d}", "tasks": {"t1_docs_oneliner": 10_000_000}}
+        for i in range(1, 6)]
+    recent_nights = [
+        {"date": f"2026-09-{i + 1:02d}", "tasks": {"t1_docs_oneliner": 100_000}}
+        for i in range(30)]
+    ok, lines = compare_to_cost_reference(
+        [{"task": "t1_docs_oneliner", "cost": 114_000}],
+        {"nights": old_bad_nights + recent_nights})
+    assert ok is True, lines
+    assert not any("10,000,000" in ln for ln in lines), lines
+
+
+def test_a_missing_or_unreadable_reference_is_not_a_cost_verdict(tmp_path):
+    missing = load_cost_reference(tmp_path / "does-not-exist.json")
+    assert missing == {"nights": []}
+    ok, lines = compare_to_cost_reference(
+        [{"task": "t1_docs_oneliner", "cost": 9_000_000}], missing, nights=30)
+    assert ok is True
+    assert any("0/30" in ln for ln in lines), lines
+    assert any("establishing" in ln.lower() for ln in lines), lines
+
+    corrupt = tmp_path / "corrupt.json"
+    corrupt.write_text("{not json", encoding="utf-8")
+    assert load_cost_reference(corrupt) == {"nights": []}
+
+
+def test_the_shipped_cost_reference_is_readable_and_covers_corpus_tiers():
+    from no_human.eval.funnel_corpus import CORPUS_DIR, EXPECTED_TIERS
+
+    ref = load_cost_reference(CORPUS_DIR / "cost_median.json")
+    assert ref["nights"], "the shipped reference has no recorded nights"
+    latest = ref["nights"][-1]
+    assert set(latest["tasks"]) == set(EXPECTED_TIERS), (
+        f"reference covers {sorted(latest['tasks'])}, "
+        f"corpus has {sorted(EXPECTED_TIERS)}")
+    assert latest["total"] == sum(latest["tasks"].values())
+
+
+def test_the_cost_verdict_reaches_the_exit_code_and_the_summary(
+        tmp_path, monkeypatch):
+    """The cost verdict is not just a computed value: it must gate the exit
+    code and show up in the human-facing report, the same as the ratchet."""
+    from no_human.eval import funnel_eval as fe
+
+    unseeded_baseline = tmp_path / "baseline.json"
+    unseeded_baseline.write_text(json.dumps({"unseeded": True, "tasks": []}))
+    monkeypatch.setattr(fe, "BASELINE_PATH", unseeded_baseline)
+
+    tiny_ref = tmp_path / "cost_median.json"
+    tiny_ref.write_text(json.dumps(
+        {"nights": [{"date": "2026-08-10", "tasks": {"t1_docs_oneliner": 1}}]}))
+    monkeypatch.setattr(fe, "COST_REFERENCE_PATH", tiny_ref)
+    monkeypatch.setattr(fe, "COST_HISTORY_NIGHTS", 1)
+
+    out = tmp_path / "out"
+    rc = run_funnel_eval(tmp_path / "home", out,
+                         backend_factory=lambda t: _TierBackend(t.name),
+                         reviewer=_PassReviewer(), corpus=_four_tier_corpus()[:1])
+
+    assert rc == 1, "a real run must vastly outspend a 1-token reference"
+    report = json.loads(next(out.glob("nightly-*.json")).read_text(encoding="utf-8"))
+    assert report["exit_code"] == 1
+    assert any("COST night total" in ln for ln in report["cost_band"]), \
+        report["cost_band"]
+
+    summary = (out / "SUMMARY.md").read_text(encoding="utf-8")
+    assert "## Cost" in summary
+    assert "COST night total" in summary
+
+
+# _provenance: only the 2026-08-19 night is RECORDED — it is `baseline.json`'s
+# own seeded row, byte-identical. The 2026-08-20/21 nights are RECONSTRUCTED
+# to the envelope issue #425 cites (totals within ~5% of the mean, one tier
+# swinging 85k-174k): the other two same-day reports it describes are not in
+# git history to read verbatim. Never read the 20th/21st rows as measured.
+_FIVE_TIER_HIST = {"nights": [
+    {"date": "2026-08-19", "total": 653_834, "tasks": {
+        "t1_docs_oneliner": 84_972, "t2_small_fix": 131_731,
+        "t3_small_feature": 156_405, "t4_cross_file": 142_199,
+        "t5_test_first": 138_527}},
+    {"date": "2026-08-20", "total": 689_778, "tasks": {
+        "t1_docs_oneliner": 130_000, "t2_small_fix": 133_000,
+        "t3_small_feature": 157_000, "t4_cross_file": 143_000,
+        "t5_test_first": 126_778}},
+    {"date": "2026-08-21", "total": 725_723, "tasks": {
+        "t1_docs_oneliner": 174_000, "t2_small_fix": 134_731,
+        "t3_small_feature": 158_405, "t4_cross_file": 144_199,
+        "t5_test_first": 114_388}},
+]}
+
+
+def test_three_same_day_nights_of_normal_variance_pass():
+    """Issue #425, reproduced almost verbatim: one tier varied 85k-174k
+    weighted tokens across three same-day passing runs while the night total
+    stayed within ~5% of the mean. The old flat 25%-over-baseline per-tier
+    band fired on this; the night-total/2x-per-tier reference must not."""
+    tonight = [
+        {"task": "t1_docs_oneliner", "cost": 150_000},
+        {"task": "t2_small_fix", "cost": 132_000},
+        {"task": "t3_small_feature", "cost": 157_500},
+        {"task": "t4_cross_file", "cost": 143_500},
+        {"task": "t5_test_first", "cost": 120_000},
+    ]
+    ok, lines = compare_to_cost_reference(tonight, _FIVE_TIER_HIST, nights=3)
+    assert ok is True, lines
+
+
+def test_one_tier_at_two_and_a_half_times_its_median_fails():
+    """One tier spikes to 2.5x its own median while every other tier — and
+    the night total — stays unremarkable: the per-tier bound must catch it
+    even though the total line does not fire."""
+    tonight = [
+        {"task": "t1_docs_oneliner", "cost": 100_000},
+        {"task": "t2_small_fix", "cost": 120_000},
+        {"task": "t3_small_feature", "cost": 140_000},
+        {"task": "t4_cross_file", "cost": 110_000},
+        {"task": "t5_test_first", "cost": 316_945},
+    ]
+    ok, lines = compare_to_cost_reference(tonight, _FIVE_TIER_HIST, nights=3)
+    assert ok is False
+    hit = [ln for ln in lines if "COST t5_test_first" in ln]
+    assert hit, lines
+    assert "316,945" in hit[0] and "253,556" in hit[0], hit[0]
+    assert not any(ln.startswith("COST night total") for ln in lines), (
+        "the night total must not also have fired", lines)
+
+
+class _OutputTierBackend:
+    """Like `_TierBackend`'s t1 branch, but with a captured output/cache
+    split — the shape `weighted_tokens` needs to price the output premium."""
+
+    async def run(self, prompt, *, cwd, max_turns, effort=None, resume=None,
+                  on_event=None, supervisor_hook=None, **kwargs):
+        from no_human.agent.claude_backend import AgentResult
+
+        work = Path(cwd)
+        readme = work / "README.md"
+        readme.write_text(readme.read_text(encoding="utf-8").replace(
+            "at most 100 items", "at most 200 items"))
+        return AgentResult(final_text="done", num_turns=2, is_error=False,
+                           tokens_used=1200, session_id="s",
+                           stop_reason="end_turn", cache_read_tokens=1000,
+                           cache_creation_tokens=800, output_tokens=400)
+
+
+def test_no_record_carries_a_null_weighted_total(tmp_path):
+    """Root cause of issue #425's `weighted_tokens is null`: every path used
+    to write `None`, so `_cost`'s fallback priced every record as if it never
+    spent an output token. No path may write `None` again."""
+    out = tmp_path / "out"
+    run_funnel_eval(tmp_path / "home", out,
+                    backend_factory=lambda t: _TierBackend(t.name),
+                    reviewer=_PassReviewer(), corpus=_four_tier_corpus()[:2])
+    report = json.loads(next(out.glob("nightly-*.json")).read_text(encoding="utf-8"))
+    assert report["tasks"], "nothing ran"
+    for t in report["tasks"]:
+        assert t["weighted_tokens"] is not None, t
+        assert isinstance(t["weighted_tokens"], int), t
+
+
+def test_the_recorded_cost_includes_the_output_premium(tmp_path):
+    """`weighted_tokens` must price the output SHARE of `tokens_used` at its
+    own (higher) weight, and `evaluate()`'s cost must be READ off that total,
+    not recomputed: the expected number below is hand-arithmetic on the
+    record's own fields, never a second call into the pricing function under
+    test."""
+    out = tmp_path / "out"
+    corpus = [t for t in _four_tier_corpus() if t.name == "t1_docs_oneliner"]
+    run_funnel_eval(tmp_path / "home", out,
+                    backend_factory=lambda t: _OutputTierBackend(),
+                    reviewer=_PassReviewer(), corpus=corpus)
+
+    rec = json.loads(next(out.glob("nightly-*.json")).read_text(
+        encoding="utf-8"))["tasks"][0]
+    assert rec["output_tokens"] > 0, "the output split was never captured"
+    expected = int(rec["tokens_used"] * 1.0 + rec["output_tokens"] * 4.0
+                  + rec["cache_read_tokens"] * 0.1
+                  + rec["cache_creation_tokens"] * 1.25)
+    assert rec["weighted_tokens"] == expected, rec
+    assert rec["cost"] == rec["weighted_tokens"], (
+        "evaluate() must read the recorded total, not recompute it", rec)
 
 
 # --------------------------------------------------------------------------- #
