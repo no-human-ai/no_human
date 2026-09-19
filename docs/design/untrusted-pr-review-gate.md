@@ -333,47 +333,85 @@ records that as a pre-existing limitation of the *git-based* path itself,
 orthogonal to whether a tree exists to walk at all. The API path this design
 chooses has no C-quoting exposure because it never shells out to `git`.)
 
-**Decision: do not fabricate a tree.** For a `workflow_run` review whose
-diff came from the API, the tamper guard does not run, and the posted
-comment says so in the sentence an implementer must copy verbatim:
+**Decision: do not fabricate a tree — and do not fabricate a single sentence
+either.** The reason "the tamper guard did not run" must be a **parameter
+the caller passes to `render_body`**, not one fixed string baked into the
+renderer. There are at least two distinct true reasons a review can lack a
+tamper verdict, they are different in kind, and collapsing them into one
+wording makes the comment assert a false cause on whichever path did not
+write it:
 
-> Tamper guard: **did not run** — this pull request's diff was fetched
-> through the GitHub API with no checked-out test tree, so there was no
-> before/after comparison. This verdict covers the diff only.
+**Reason (a) — `workflow_run` / API context, no checkout at all.** The diff
+was fetched through the GitHub API (section F); no `git` checkout of the PR
+exists in this job, so `tamper_check_between` (section D above) is never
+invoked. Proposed reason text for this path: *"no checked-out repository
+tree was available in this workflow_run context, so no test-tampering check
+was performed."*
 
-Two rules follow, both binding on the follow-up implementation. Neither is
-about `render_body` fabricating a clean tamper row by itself: `render_body`
-(`src/no_human/ci_action/run.py:400-453`) has no else branch on `tampered` —
-it appends a "TAMPERED" line when `tampered` is true and otherwise says
-nothing about tamper at all (`src/no_human/ci_action/run.py:423-424`), and
-it is already called today with a hardcoded `tampered=False` and no real
-tamper report in the legitimate "no changed files" branch
-(`src/no_human/ci_action/run.py:630-637`). That call is fine precisely
-because there is nothing to tamper with when there are no changed files;
-the risk in a `workflow_run` path is different in kind, not a repeat of
-that call.
+**Reason (b) — checkout (`pull_request`) path's own no-changed-files
+branch.** This path already exists today and is unrelated to the API split:
+when `kept` is empty, `main()` calls `render_body(..., tampered=False, ...)`
+with `note="No file changes were found between the merge base and the head
+commit — nothing to review."` (`src/no_human/ci_action/run.py:630-637`, the
+literal note text is `run.py:635`). A real checkout exists on this path —
+the reason there is no tamper verdict is not "no tree", it is "no changed
+files to check for tampering". Its reason text must stay this one, verbatim
+close to what already ships: *"no file changes were found between the merge
+base and the head commit, so there was nothing to check for tampering."*
+
+**Binding rule 0 (new): a fixed sentence is itself a bug.** A follow-up
+implementation that reuses reason (a)'s wording on path (b), or vice versa —
+for example by threading one shared string constant through both call
+sites — misstates the cause on whichever path did not write it, and must be
+rejected in review exactly as if it were the fabricated-clean bug below.
+Each path renders its **own** true reason; no path may borrow another's.
+
+Two more rules follow, both already true of today's code and both binding on
+the follow-up. Neither is about `render_body` fabricating a clean tamper row
+by itself: `render_body` (`src/no_human/ci_action/run.py:400-453`) has no
+else branch on `tampered` — it appends a "TAMPERED" line when `tampered` is
+true and otherwise says nothing about tamper at all
+(`src/no_human/ci_action/run.py:423-424`), and it is already called today
+with a hardcoded `tampered=False` and no real tamper report in the
+legitimate "no changed files" branch (reason (b) above,
+`src/no_human/ci_action/run.py:630-637`). That call is fine precisely
+because there is nothing to tamper with when there are no changed files.
 
 The actual mechanism that can fabricate a clean-looking tamper signal is
 `_tamper_checklist_items` (`src/no_human/ci_action/run.py:341-371`): it
 builds a `ChecklistItem` labelled "tamper guard" with a `passed` field set
 per `src/no_human/ci_action/run.py:364`: "passed=not report.tampered"
-verbatim from whatever `TamperReport` it is handed. When `tampered` is false that item is
-routed into the *advisory* list alongside the reviewer's own advisory
-findings (`src/no_human/ci_action/run.py:744-745`) and rendered by
+verbatim from whatever `TamperReport` it is handed. When `tampered` is false
+that item is routed into the *advisory* list alongside the reviewer's own
+advisory findings (`src/no_human/ci_action/run.py:744-745`) and rendered by
 `_findings_table` (`src/no_human/ci_action/run.py:391-397`) as an ordinary
 passing row in the "Advisory findings" table — indistinguishable there from
 a tamper guard that actually ran and found nothing. **Rule 1**: a
 `workflow_run` path that did not run the guard must never call
 `_tamper_checklist_items` with a fabricated `TamperReport(tampered=False)`
 to manufacture that row; when the guard did not run, no "tamper guard" row
-may appear in the findings table at all — only the verbatim "did not run"
-sentence above, delivered through `render_body`'s existing `note` parameter
-(`src/no_human/ci_action/run.py:411`, already used this way at
-`src/no_human/ci_action/run.py:635`). **Rule 2**: `tampered` must never
-contribute to the PASS/FAIL verdict (`src/no_human/ci_action/run.py:754`)
-when the guard did not run — a `workflow_run` review's verdict is FAIL only
-on reviewer findings, never on an absent tamper signal being coerced to
-"clean". The deferred alternative (source both sides through
+may appear in the findings table at all — only the path's own true reason
+text, delivered through the parameter below. **Rule 2**: `tampered` must
+never contribute to the PASS/FAIL verdict
+(`src/no_human/ci_action/run.py:754`) when the guard did not run — a
+`workflow_run` review's verdict is FAIL only on reviewer findings, never on
+an absent tamper signal being coerced to "clean".
+
+**The proposed signature.** `render_body` already carries a `tampered: bool`
+and a free-form `note: str = ""` today (`src/no_human/ci_action/run.py:410-411`,
+`note` already used this way at `:635`). Neither `tamper_ran` nor
+`tamper_skip_reason` exists in this tree — **this design does not add
+them**, since `run.py` is deliberately unchanged here (section B); the
+follow-up implementation must add both: `tamper_ran: bool = False` (the
+render **defaults to "did not run", fail closed — never to "clean"**) and
+`tamper_skip_reason: str | None = None`, the per-path parameter carrying
+reason (a) or reason (b) verbatim. `_tamper_checklist_items` may be called
+only when `tamper_ran` is `True` and a real `TamperReport` was produced.
+This generalizes rules 1 and 2 above into the call signature itself: a
+caller cannot pass `tamper_ran=True` without also having a real report,
+because there is no report parameter to fabricate one from.
+
+The deferred alternative (source both sides through
 `git/trees?recursive=1` + `contents`, failing closed whenever any response
 reports `"truncated": true`) is recorded here, not built — it is one HTTP
 request per test file plus whatever fan-out the directory tree requires,
