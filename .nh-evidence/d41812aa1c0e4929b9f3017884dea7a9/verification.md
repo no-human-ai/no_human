@@ -1,171 +1,184 @@
 # How I verified this — full log
 
-_Harness-captured record for task `d41812aa`, commit `bdb5a1d4e1aaa13ad03166a16c3e026d7be92ff2` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `d41812aa`, commit `f2697a233055781bd25542aa755eb413fd2f7075` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ## How I verified this
-14 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
+13 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
 
-**Not everything recorded is shown:** the 12 most recent of those listed are shown with their captured output, and the other 2 commands are shown as a command line only.
+**Not everything recorded is shown:** the 12 most recent of those listed are shown with their captured output, and the other 1 command is shown as a command line only.
 
 ### test
-- `uv run pytest -q tests/test_wake_tick_does_not_stall_scheduler.py -k "not slow" 2>&1 | tail -30`
+- `uv run pytest -q tests/test_wake_tick_does_not_stall_scheduler.py -k "not twenty_parked" 2>&1 | tail -40`
   _output not shown - see the note above._
-- `uv run pytest -q tests/test_guard.py -k "test_the_gate_mention_scan_is_not_quadratic" 2>&1 | tail -20`
-  _output not shown - see the note above._
-- `uv run pytest -q tests/test_wake_tick_does_not_stall_scheduler.py -k "not slow" 2>&1 | tail -40`
+- `uv run pytest -q -m slow tests/test_wake_tick_does_not_stall_scheduler.py -v 2>&1 | tail -20`
 
 ```
-..                                                                       [100%]
-2 passed, 1 deselected in 2.45s
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.1.1, pluggy-1.6.0
+<redacted> isolated HOME: /var/folders/1r/3r0rt1jd4j1456rsg_fh4d380000gn/T/nh-test-home-2v4sguws
+rootdir: /Users/eyalgolan/.<redacted>/worktrees/d41812aa1c0e4929b9f3017884dea7a9.6460.e4921561
+configfile: pyproject.toml
+plugins: anyio-4.14.0, no-human-0.2.4, cov-7.1.0, xdist-3.8.0, asyncio-1.4.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 3 items / 2 deselected / 1 selected
+
+tests/test_wake_tick_does_not_stall_scheduler.py .                       [100%]
+
+======================= 1 passed, 2 deselected in 22.18s =======================
 ```
 
-- `uv run pytest -q -m slow tests/test_wake_tick_does_not_stall_scheduler.py 2>&1 | tail -40`
+- `uv run pytest -q tests/test_wake_tick_does_not_stall_scheduler.py::test_the_same_bound_holds_at_a_scaled_down_timeout 2>&1 | tail -40`
+
+```
+f"expected `pr_watcher.py` to make exactly `create_subprocess_exec` "
+            f"then `wait_for`, once each per parked task, in that order ({n} "
+            f"of each) — got {proxy.calls!r}. `waits` alone only sees calls "
+            "named `wait_for`; this checks the full sequence of every call "
+            "made through `pw.asyncio`, so a THIRD, unbounded call slipped into "
+            "the chain (e.g. an injected `asyncio.sleep(...)` sitting above "
+            "the bound at pr_watcher.py:135) shows up here as an extra entry "
+            "even though it would never touch `waits`")
+E       AssertionError: expected `pr_watcher.py` to make exactly `create
+[... 3,425 of 4,564 characters omitted from the middle ...]
+er.py:145 cmd ['gh', 'pr', 'view'] timed out after 0.01s
+WARNING  <redacted>.pr_watcher:pr_watcher.py:145 cmd ['gh', 'pr', 'view'] timed out after 0.01s
+WARNING  <redacted>.pr_watcher:pr_watcher.py:145 cmd ['gh', 'pr', 'view'] timed out after 0.01s
+=========================== short test summary info ============================
+FAILED tests/test_wake_tick_does_not_stall_scheduler.py::test_the_same_bound_holds_at_a_scaled_down_timeout
+1 failed in 12.18s
+```  
+  _excerpt - 4,524 characters of output in total_
+
+- `uv run pytest -q tests/test_wake_tick_does_not_stall_scheduler.py::test_the_same_bound_holds_at_a_scaled_down_timeout 2>&1 | tail -20`
 
 ```
 .                                                                        [100%]
-1 passed, 2 deselected in 22.02s
+1 passed in 2.46s
 ```
 
-- `uv run pytest -q tests/test_guard.py -k "test_the_gate_mention_scan_is_not_quadratic" -s 2>&1 | tail -40`
+- `uv run pytest -q tests/test_guard.py::test_the_gate_mention_scan_is_not_quadratic -v 2>&1 | tail -30`
 
 ```
-.
-1 passed, 268 deselected in 2.81s
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.1.1, pluggy-1.6.0
+<redacted> isolated HOME: /var/folders/1r/3r0rt1jd4j1456rsg_fh4d380000gn/T/nh-test-home-1mh9pynt
+rootdir: /Users/eyalgolan/.<redacted>/worktrees/d41812aa1c0e4929b9f3017884dea7a9.6460.e4921561
+configfile: pyproject.toml
+plugins: anyio-4.14.0, no-human-0.2.4, cov-7.1.0, xdist-3.8.0, asyncio-1.4.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 1 item
+
+tests/test_guard.py .                                                    [100%]
+
+============================== 1 passed in 1.83s ===============================
 ```
 
-- `uv run pytest -q tests/test_guard.py -k "test_the_gate_mention_scan_is_not_quadratic" 2>&1 | tail -40`
+- `uv run pytest -q tests/test_guard.py::test_the_gate_mention_scan_is_not_quadratic -v 2>&1 | tail -40`
 
 ```
-count, which itself scales with input size — the same quadratic shape,
-        now visible as a character count instead of a duration, and identical on
-        a quiet laptop and a saturated CI runner."""
-        def script(lines):
-            return "\n".join(
+return "\n".join(
                 f'echo "line {i}" $VAR{i} && grep -n "x" f{i}.txt'
                 for i in range(lines))
     
-        def unmask_chars(text):
+        def scan_chars(text):
             calls = []
-            real_unmask = guard._unmask
+            real_pattern = guard._GATE_MENTION
     
-            def recording_unmask(tok, table):
-                calls.append(len(tok))
-                return real_unmask(tok, table)
+            class _RecordingPattern:
+                """`re.Pattern` is an immutable C type — `.search` can't be
+                reassigned on it directly — so this wraps the real compiled
+                pattern and stands in for the module-level name instead."""
     
-            guard._unmask = recording_unmask
-            try:
-   
-[... 875 of 2,014 characters omitted from the middle ...]
-40 at 800 (6400 calls), ratio 4.10: doubling the input did much more than double the text unmasked, so the gate-mention scan is unmasking the whole command once per segment again
-E       assert 4.0958171239064125 < 3.0
+                def search(self, s, *a, **kw):
+                    calls.append(len(s))
+                    return real_pattern.search(s, *a, **kw)
+    
+            gu
+[... 893 of 2,032 characters omitted from the middle ...]
+00 time(s) at 800 — expected exactly 1 each: it must run once per `guard.evaluate` call (hoisted above the per-segment loop), not once per segment
+E       assert (800 == 1)
 
-tests/test_guard.py:555: AssertionError
+tests/test_guard.py:578: AssertionError
 =========================== short test summary info ============================
 FAILED tests/test_guard.py::test_the_gate_mention_scan_is_not_quadratic - Ass...
-1 failed, 268 deselected in 19.79s
+============================== 1 failed in 12.76s ==============================
 ```  
-  _excerpt - 2,014 characters of output in total_
+  _excerpt - 2,032 characters of output in total_
 
-- `uv run pytest -q tests/test_guard.py -k "test_the_gate_mention_scan_is_not_quadratic" 2>&1 | tail -10`
-
-```
-.                                                                        [100%]
-1 passed, 268 deselected in 2.73s
-```
-
-- `timeout 40 uv run pytest -q tests/test_wake_tick_does_not_stall_scheduler.py -k "test_the_same_bound_holds_at_a_scaled_down_timeout" 2>&1 | tail -40`
+- `git diff --stat src/<redacted>/agent/guard.py src/<redacted>/vcs/pr_watcher.py; echo "---"; uv run pytest -q tests/test_guard.py::test_the_gate_mention_scan_is_not_quadratic tests/test_wake_tick_does_not_stall_scheduler.py -k "not twenty_parked" 2>&1 | tail -15`
 
 ```
-(eval):1: command not found: timeout
+---
+...                                                                      [100%]
+3 passed, 1 deselected in 3.47s
 ```
 
-- `uv run pytest -q tests/test_wake_tick_does_not_stall_scheduler.py -k "test_the_same_bound_holds_at_a_scaled_down_timeout" 2>&1 | tail -40`
+- `uv run pytest -q -m slow tests/test_pr497_timing_gates_are_load_independent.py -v 2>&1 | tail -40`
 
 ```
-tests/test_wake_tick_does_not_stall_scheduler.py:229: 
-_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
-tests/test_wake_tick_does_not_stall_scheduler.py:168: in _run_the_bound_check
-    started = await asyncio.wait_for(sched.tick(), _HANG_GUARD)
-              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-../../../.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/asyncio/tasks.py:519: in wait_for
-    async with timeouts.timeout(timeout):
-               ^^^^^^^^^^^^^^^^^^^^^^^^^
-_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.1.1, pluggy-1.6.0
+<redacted> isolated HOME: /var/folders/1r/3r0rt1jd4j1456rsg_fh4d380000gn/T/nh-test-home-fgunz4_5
+rootdir: /Users/eyalgolan/.<redacted>/worktrees/d41812aa1c0e4929b9f3017884dea7a9.6460.e4921561
+configfile: pyproject.toml
+plugins: anyio-4.14.0, no-human-0.2.4, cov-7.1.0, xdist-3.8.0, asyncio-1.4.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 2 items
 
-self = <Timeout [expired]>
-exc_type = <class 'asyncio.except
-[... 743 of 1,882 characters omitted from the middle ...]
-'re
-                # handling this.
->               raise TimeoutError from exc_val
-E               TimeoutError
+tests/test_pr497_timing_gates_are_load_independent.py ..                 [100%]
 
-../../../.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/asyncio/timeouts.py:115: TimeoutError
-=========================== short test summary info ============================
-FAILED tests/test_wake_tick_does_not_stall_scheduler.py::test_the_same_bound_holds_at_a_scaled_down_timeout
-1 failed, 2 deselected in 32.41s
-```  
-  _excerpt - 1,882 characters of output in total_
+============================== 2 passed in 26.66s ==============================
+```
 
-- `uv run pytest -q tests/test_wake_tick_does_not_stall_scheduler.py -k "not slow" 2>&1 | tail -10`
+- `uv run pytest -q -m slow tests/test_pr497_timing_gates_are_load_independent.py 2>&1 | tail -10`
 
 ```
 ..                                                                       [100%]
-2 passed, 1 deselected in 3.07s
+2 passed in 26.76s
 ```
 
-- `uv run pytest -q tests/test_pr497_timing_gates_are_load_independent.py -v 2>&1 | tail -60`
-
-```
-============================= test session starts ==============================
-platform darwin -- Python 3.12.13, pytest-9.1.1, pluggy-1.6.0
-<redacted> isolated HOME: /var/folders/1r/3r0rt1jd4j1456rsg_fh4d380000gn/T/nh-test-home-qjf132iw
-rootdir: /Users/eyalgolan/.<redacted>/worktrees/d41812aa1c0e4929b9f3017884dea7a9.6460.70ada70b
-configfile: pyproject.toml
-plugins: anyio-4.14.0, no-human-0.2.4, cov-7.1.0, xdist-3.8.0, asyncio-1.4.0
-asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
-collected 2 items
-
-tests/test_pr497_timing_gates_are_load_independent.py ..                 [100%]
-
-============================== 2 passed in 42.32s ==============================
-```
-
-- `uv run pytest -q -m slow tests/test_pr497_timing_gates_are_load_independent.py -v 2>&1 | tail -30`
+- `uv run pytest -q -m slow tests/test_wake_tick_does_not_stall_scheduler.py -v 2>&1 | tail -15`
 
 ```
 ============================= test session starts ==============================
 platform darwin -- Python 3.12.13, pytest-9.1.1, pluggy-1.6.0
-<redacted> isolated HOME: /var/folders/1r/3r0rt1jd4j1456rsg_fh4d380000gn/T/nh-test-home-8bf5_vnu
-rootdir: /Users/eyalgolan/.<redacted>/worktrees/d41812aa1c0e4929b9f3017884dea7a9.6460.70ada70b
+<redacted> isolated HOME: /var/folders/1r/3r0rt1jd4j1456rsg_fh4d380000gn/T/nh-test-home-pg81k1d4
+rootdir: /Users/eyalgolan/.<redacted>/worktrees/d41812aa1c0e4929b9f3017884dea7a9.6460.e4921561
 configfile: pyproject.toml
 plugins: anyio-4.14.0, no-human-0.2.4, cov-7.1.0, xdist-3.8.0, asyncio-1.4.0
 asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
-collected 2 items
+collected 3 items / 2 deselected / 1 selected
 
-tests/test_pr497_timing_gates_are_load_independent.py ..                 [100%]
+tests/test_wake_tick_does_not_stall_scheduler.py .                       [100%]
 
-============================== 2 passed in 49.61s ==============================
+======================= 1 passed, 2 deselected in 21.34s =======================
 ```
 
-- `uv run pytest -q -m "not slow and not nightly" tests/test_pr497_timing_gates_are_load_independent.py 2>&1 | tail -10`
+- `uv run pytest -q tests/test_test_lanes.py 2>&1 | tail -15`
 
 ```
-2 deselected in 0.35s
+....                                                                     [100%]
+4 passed in 70.22s (0:01:10)
 ```
 
-- `uv run pytest -q -m slow tests/test_test_lanes.py 2>&1 | tail -15`
+- `uv run pytest -q --tb=short -n 4 -m "not slow and not nightly" \   --deselect tests/test_scheduler.py::test_reanalysis_maybe_run_produces_result \   --deselect tests/test_scheduler.py::test_reanalysis_dedup_across_runs \   > /tmp/full_lane_run.log 2>&1 & echo "started, pid $!"`
 
 ```
-.                                                                        [100%]
-1 passed, 3 deselected in 26.27s
+started, pid 12882
+```
+
+- `cp /tmp/pr497_verify/scheduler_base.py tests/test_wake_tick_does_not_stall_scheduler.py cp /tmp/pr497_verify/guard_base.py tests/test_guard.py uv run pytest -q tests/test_wake_tick_does_not_stall_scheduler.py::test_the_same_bound_holds_at_a_scaled_down_timeout tests/test_guard.py::test_the_gate_mention_scan_is_not_quadratic 2>&1 | tail -15`
+
+```
+..                                                                       [100%]
+2 passed in 18.02s
 ```
 
 
 **Not verified:** everything below is a limit of this section, listed whether or not it bit this attempt.
 
 - no command recognised as e2e, http, typecheck, lint, build was recorded
-- 2 commands listed above are shown without their captured output: only the 12 most recent carry it
+- 1 command listed above is shown without its captured output: only the 12 most recent carry it
 - an entry shows that a command LINE was submitted to the shell and what came back - never that the check recognised inside it RAN, and never that it was the RIGHT command: `pytest -k test_nothing` prints a clean run, and a recorded command line may name a check the shell never reached yet is still counted - TEN SHAPES WERE DRIVEN against bash 3.2.57 with the check replaced by a marker-printing stub and the marker was absent in every one: a failed `&&`, a taken `||`, an `exit`, an `exec`, an `exit` inside a `source`d script, a syntax error that aborts the REST of the line, a multi-line `if false`, a `case` that matches nothing, `set -e` aborting an earlier command, and `set -u` on an unset variable; that list is MEASURED, NOT EXHAUSTIVE, because this module is not bash, so a kind this section does NOT list as missing is a kind some recorded line named, which is not the same as a kind that ran
 - the text is the coder's: the session chose the command string and, through `echo`/`printf`, can choose the output too. Both are shown as inert text, and no entry ASSERTS a pass, a fail, or an exit status - `pytest -q | tail -3` exits with `tail`'s status, `Error: Exit code 1` is a line IN THE OUTPUT, and where the harness reported a timeout or an interruption instead of output that report is appended to the captured text in square brackets. Read the output
 - recognition reads the command line ONLY - it never looks inside what a command runs, so `bash -c 'uv run pytest -q'` leaves no receipt at all while `make test` leaves one that names `make` and not the recipe it ran; and the other way, a check merely NAMED in a heredoc body, or in a quoted string that happens to spell a shell separator, can be recorded as though it ran
