@@ -157,8 +157,8 @@ Each trial is its own `BenchScore` (`BenchScore.trial`,
 `NorthStarCard.pass_k_rate` — the fraction of specs that passed **every**
 trial, not the mean success rate (`src/no_human/eval/northstar_card.py:NorthStarCard.pass_k_rate:456`) —
 surfaced in the headline as `· pass^{trials} {rate}`
-(`northstar_card.py:success_headline:875-876`), in a dedicated "Per-spec reliability" table
-(`northstar_card.py:render_northstar_md:1555-1559`), and now also as a `pass^k` cell (`n/k`, read
+(`northstar_card.py:success_headline:907-908`), in a dedicated "Per-spec reliability" table
+(`northstar_card.py:render_northstar_md:1594-1598`), and now also as a `pass^k` cell (`n/k`, read
 from the same `per_spec_passes` — no new arithmetic) on each core spec's row
 in the "Per-task" table, present only when `trials > 1` (`pass^1` is
 arithmetically the mean; printing it would read as a second, corroborating
