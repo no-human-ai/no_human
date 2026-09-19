@@ -236,9 +236,10 @@ async def test_twenty_parked_tasks_each_hanging_do_not_stall_the_tick_beyond_n_t
     docstring claimed — that was arithmetically wrong and, measured on an
     idle machine, left only a ~6% margin: below overshoot already observed
     on shared runners). This is NOT an opt-in-only check: excluded from the
-    `pull_request` lane (`-m "not slow and not nightly"`, `ci.yml:360-380`)
-    so it is not on every contributor's PR, but the SAME empty-selector
-    `push to main` run executes every test unfiltered (`ci.yml:363`), so
+    `pull_request` lane (`-m "not slow and not nightly"`, lane table at
+    `ci.yml:364-366`) so it is not on every contributor's PR, but the SAME
+    empty-selector `push to main` run executes every test unfiltered
+    (computed selector at `ci.yml:379`), so
     this still runs, under `-n 4`, on every push to main — plus explicitly
     via `workflow_dispatch` (`-m "slow or nightly"`). `_HANG_GUARD` (45.0,
     module-level) is kept comfortably above this 40.0 so the backstop can
