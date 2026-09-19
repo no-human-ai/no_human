@@ -239,22 +239,51 @@ def test_design_doc_names_the_workflow_run_event_check_and_artifact_handling():
     assert "path traversal" in text.lower() or "zip" in text.lower()
 
 
-def test_design_doc_states_the_tamper_guard_did_not_run_sentence():
+def test_design_doc_states_the_tamper_guard_did_not_run_reason_is_a_parameter_with_two_true_reasons():
+    """Amended AC5: a single verbatim sentence was wrong, because there are two
+    distinct true reasons the guard can fail to run (no checkout at all in a
+    `workflow_run` context vs. a real checkout with no changed files), and a
+    fixed sentence forces a false cause onto whichever path did not write it
+    — exactly the fail-open #540 already had to fix. The doc must instead
+    require: the reason is a *parameter*, both true reasons are named and
+    distinct, no path reuses the other's wording, and the render defaults to
+    "did not run" (fail closed), never to "clean"."""
     text = _doc_text()
-    sentence = (
-        "Tamper guard: **did not run** — this pull request's diff was fetched\n"
-        "> through the GitHub API with no checked-out test tree, so there was no\n"
-        "> before/after comparison. This verdict covers the diff only."
-    )
-    # The doc quotes the sentence as blockquote lines; verify each fragment
-    # appears, in order, so the implementer can copy it verbatim.
-    assert "Tamper guard: **did not run**" in text
-    idx = text.index("Tamper guard: **did not run**")
-    quoted_block = text[idx: idx + 400]
-    assert "GitHub API" in quoted_block
-    assert "no checked-out test tree" in quoted_block
-    assert "before/after comparison" in quoted_block
-    assert "This verdict covers the diff only." in quoted_block
+    # Markdown hard-wraps prose across lines, so a phrase can straddle a
+    # newline; normalize whitespace runs to a single space before doing any
+    # multi-word substring check.
+    norm = re.sub(r"\s+", " ", text)
 
-    # Exactly one occurrence of the sentence-opening phrase in the whole doc.
-    assert text.count("Tamper guard: **did not run**") == 1
+    # The reason must be framed as a parameter passed to render_body, not a
+    # single fixed string baked into the renderer.
+    assert "parameter" in text
+    assert "render_body" in text
+    assert "not one fixed string" in norm or "not a fixed string" in norm
+
+    # Both distinct true reasons must be named, each with its own text.
+    assert "Reason (a)" in text
+    assert "Reason (b)" in text
+    assert "workflow_run" in text
+    idx_a = norm.index("Reason (a)")
+    idx_b = norm.index("Reason (b)")
+    idx_rule0 = norm.index("Binding rule 0")
+    assert idx_a < idx_b < idx_rule0, "expected reason (a), then (b), then the binding rule, in order"
+    reason_a_text = norm[idx_a:idx_b]
+    reason_b_text = norm[idx_b:idx_rule0]
+    assert "no checked-out repository tree" in reason_a_text
+    assert "no test-tampering check was performed" in reason_a_text
+    assert "no file changes were found" in reason_b_text
+    assert "nothing to check for tampering" in reason_b_text
+    # The two reason texts must actually differ — a regression that collapses
+    # them back into one shared string must fail this.
+    assert "no checked-out repository tree" not in reason_b_text
+    assert "no test-tampering check was performed" not in reason_b_text
+    assert "nothing to check for tampering" not in reason_a_text
+
+    # No path may borrow another path's reason text.
+    assert "no path may borrow another" in norm or "must not reuse" in norm
+
+    # Fail closed: the render defaults to "did not run", never "clean".
+    assert "fail closed" in norm.lower()
+    assert '"did not run"' in norm or "“did not run”" in norm
+    assert "never to" in norm and "clean" in norm

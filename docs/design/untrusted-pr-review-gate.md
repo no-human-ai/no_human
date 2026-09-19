@@ -344,7 +344,7 @@ write it:
 **Reason (a) — `workflow_run` / API context, no checkout at all.** The diff
 was fetched through the GitHub API (section F); no `git` checkout of the PR
 exists in this job, so `tamper_check_between` (section D above) is never
-invoked. Proposed reason text for this path: *"no checked-out repository
+invoked. Its reason text for this path must be: *"no checked-out repository
 tree was available in this workflow_run context, so no test-tampering check
 was performed."*
 
@@ -353,7 +353,7 @@ branch.** This path already exists today and is unrelated to the API split:
 when `kept` is empty, `main()` calls `render_body(..., tampered=False, ...)`
 with `note="No file changes were found between the merge base and the head
 commit — nothing to review."` (`src/no_human/ci_action/run.py:630-637`, the
-literal note text is `run.py:635`). A real checkout exists on this path —
+literal note text is `src/no_human/ci_action/run.py:635`). A real checkout exists on this path —
 the reason there is no tamper verdict is not "no tree", it is "no changed
 files to check for tampering". Its reason text must stay this one, verbatim
 close to what already ships: *"no file changes were found between the merge
