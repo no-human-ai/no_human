@@ -49,6 +49,13 @@ All notable changes to no_human. The format follows
   symbols it had already decided when the budget runs out. Still advisory, and
   every failure still resolves toward silence rather than toward an accusation.
 ### Fixed
+- **The repro gate no longer hands a JS/TS repro test to pytest.** In a repo
+  whose profile is Python or declares no ecosystem, a non-`.py` manifest
+  entry used to reach `pytest`, which reported "no tests ran" — an error
+  verdict that named nothing a coder could act on. The gate now refuses that
+  entry before invoking pytest at all, naming the offending file(s) and their
+  extension and stating that no per-file runner is configured, instead of
+  surfacing pytest's own message (428).
 - **Approve & merge works in the shipped desktop app again.** In the frozen
   build the merge gate shelled out through the packaged binary as if it were a
   Python interpreter, so every `nh approve` and every board **Approve** failed
