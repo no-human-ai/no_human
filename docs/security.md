@@ -471,6 +471,49 @@ config key that turns it on and the default that keeps it off.
   (`ci_action/github.py`). Model calls go out on the `credential` input you
   supply to the job, exactly like any other coder/reviewer session in this
   document.
+
+  **This repository wires the Action up but does NOT currently hold a
+  credential for it**, and that is worth stating before anything else, because
+  the paragraph above is about repositories where model calls go out on a
+  credential you supply. `.github/workflows/review-gate.yml` runs the Action on
+  every `pull_request` against `no-human-ai/no_human` itself and reads its
+  credential from a repository secret named `CLAUDE_CODE_OAUTH_TOKEN`. That
+  secret is not set. So today every same-repository pull request gets a red
+  check — the Action's own fail-closed exit 2, naming the missing secret,
+  before any model call — and every fork pull request gets a green skip. The
+  gate is wired, not running.
+
+  The rest of this entry describes what holds WHEN such a secret is set,
+  because the decision about setting one turns on it. Two things are worth
+  stating plainly, one reassuring and one not.
+  GitHub does not hand repository secrets to a workflow run triggered by a
+  fork's **`pull_request`**, and this Action's own fork skip returns before it
+  reads the `credential` input at all, so a fork pull request is a green,
+  comment-free skip rather than a run with an empty secret. (That sentence is
+  about `pull_request` specifically. `pull_request_target` DOES receive
+  secrets on a fork's pull request, which is why this Action refuses that
+  trigger outright, and why `cla-nudge.yml` — which legitimately uses it — runs
+  a shell script and never the reviewer.)
+  The part that is not reassuring: an Actions secret is readable by any
+  workflow file on a branch pushed **to this repository**, and push access here
+  is not limited to the maintainer — outside contributors hold it too. A
+  same-repository pull request runs the workflow file as its own branch has it,
+  with the secret, and with no approval step; that is GitHub's model for
+  `pull_request`, not a setting this repository has chosen.
+
+  The pull-request path is not even the widest one, and it would be misleading
+  to describe it as though it were. A **repository** secret is available to any
+  workflow in the repository, on any branch, under whatever trigger that
+  workflow declares — so anyone who can push a branch can read it with an
+  `on: push` workflow of their own and never open a pull request at all.
+  Nothing in a workflow file restrains that, because the file is theirs.
+  The mechanisms that do restrain it are outside the file: who holds push, and
+  whether the credential is a repository secret at all rather than an
+  **environment** secret on an environment whose deployment-branch policy and
+  required reviewers gate it. Treat "who can push here" and "who holds this
+  credential" as the same list, because GitHub does. An API key is individually
+  revocable and can be scoped to a spend-limited workspace; a subscription
+  OAuth token carries the account behind it.
 - **Welcome email (Resend).** Gated on an **environment variable**, not a
   config key: `_default_transport()` (`email/send.py`) constructs a
   `ResendTransport` only when `RESEND_API_KEY` is present in

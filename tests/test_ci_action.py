@@ -324,6 +324,35 @@ def test_fork_pr_is_skipped_not_reviewed(env, monkeypatch, deleted_fork, capsys)
     assert "skipping" in out.lower()
 
 
+def test_fork_skip_precedes_the_credential_read(env, monkeypatch, capsys):
+    """A fork PR skips green even with NO credential at all.
+
+    The ORDER of two gates in `run.main` is the whole content of this test:
+    the fork skip must return before the credential is read. Every other fork
+    test runs under the `env` fixture, which always sets `INPUT_CREDENTIAL`,
+    so none of them can see the order — moving the credential gate ahead of
+    the fork skip leaves the rest of this file green while flipping every fork
+    pull request from an `EXIT_OK` skip to a red `EXIT_DID_NOT_RUN`.
+
+    That is not hypothetical here. This repository's own workflow reads a
+    secret that is not currently set, so this ordering is the only thing
+    keeping fork pull requests green on it — and docs/security.md, the
+    workflow's own comment and the Action's README all promise that behaviour
+    in as many words. This is the test that makes the promise checkable.
+    """
+    monkeypatch.setenv("INPUT_CREDENTIAL", "")
+    env["event_path"].write_text(json.dumps(_event(env["repo"], fork=True)))
+    calls: list[tuple[str, str]] = []
+    _mock_client(monkeypatch, lambda req: calls.append((req.method, str(req.url))) or httpx.Response(200, json=[]))
+    monkeypatch.setattr(run, "review_diff", _fake_review_diff(exc=AssertionError("must not be called")))
+
+    assert run.main() == run.EXIT_OK, (
+        "a fork PR with an empty credential must skip (EXIT_OK), not fail "
+        "closed — the fork skip has to precede the credential read")
+    assert calls == [], "a fork skip must make zero GitHub API calls"
+    assert "skipping" in capsys.readouterr().out.lower()
+
+
 def test_same_repo_pr_proceeds_to_review(env, monkeypatch):
     monkeypatch.setattr(run, "review_diff", _fake_review_diff(_pass_decision()))
     calls: list[tuple[str, str]] = []
