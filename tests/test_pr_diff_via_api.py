@@ -7,11 +7,16 @@ this file on purpose (see the design's section G: "the fetch path here is
 designed as data, not shipped").
 
 Pinned target: `no-human-ai/no_human` PR **27**, merged 2026-09-03 (immutable
-once merged — the shape it returns cannot drift under this test). Verified
-live during authoring against the unauthenticated API: `changed_files == 4`,
-head sha `4efbad91a2fa2f1bea2b05e1e0a4ac28e96d61ea`, and
-`tests/test_board_csp.py` is one of the four changed files, `status ==
-"added"`, `size == 3746` at that ref.
+once merged — the shape it returns cannot drift under this test). The
+endpoints below do not require authentication for a public repository;
+authoring-time verification used the unauthenticated API and found
+`changed_files == 4`, head sha `4efbad91a2fa2f1bea2b05e1e0a4ac28e96d61ea`,
+and `tests/test_board_csp.py` one of the four changed files, `status ==
+"added"`, `size == 3746` at that ref. The tests below still require a token
+(`_token()`), not because the calls need one, but to stay well clear of the
+unauthenticated rate limit (60 requests/hour per IP, shared with anything
+else on the same network) rather than trip it and skip for the wrong
+reason.
 
 No fixtures, no autouse, no monkeypatch (`tests/conftest.py:130-150` flags an
 autouse fixture that monkeypatches as the single highest-leverage way to make
@@ -20,7 +25,7 @@ pinned by `tests/test_test_lanes.py` is unaffected.
 
 Skips rather than fails without a token or without network, so the suite
 stays green offline and in this repo's own CI (the `python` job's "Run
-tests" step, `.github/workflows/ci.yml:364-369`, sets no `GITHUB_TOKEN` or
+tests" step, `.github/workflows/ci.yml:376-380`, sets no `GITHUB_TOKEN` or
 `GH_TOKEN` env var). A wrong-shaped 200 response is never a skip — that is
 this test doing its job.
 
@@ -81,8 +86,21 @@ def _get(path: str, token: str, *, accept: str = "application/vnd.github+json") 
         pytest.skip(f"no network reaching api.github.com: {exc}")
     finally:
         client.close()
-    if resp.status_code == 403 and resp.headers.get("x-ratelimit-remaining") == "0":
+    # Mirror src/no_human/ci_action/github.py:165's rate-limit taxonomy
+    # (matched, not merely inspired-by): a primary limit is `x-ratelimit-
+    # remaining: 0`; a *secondary* limit is a 403 that carries `Retry-After`
+    # with quota still remaining. A 429 is the same "come back later" signal
+    # under a different status code. None of the three is "this test's
+    # environment is broken" — they are "the token this developer's shell
+    # happens to have is temporarily throttled" and must skip, not fail.
+    if resp.status_code == 403 and (
+        resp.headers.get("x-ratelimit-remaining") == "0" or "Retry-After" in resp.headers
+    ):
         pytest.skip("GitHub API rate limit exhausted for this token")
+    if resp.status_code == 429:
+        pytest.skip("GitHub API rate limit exhausted for this token (429)")
+    if resp.status_code == 401:
+        pytest.skip("GITHUB_TOKEN/GH_TOKEN in this environment is invalid or expired")
     return resp
 
 
@@ -120,8 +138,12 @@ def test_changed_files_come_back_as_data_with_the_fields_the_gate_needs():
 
 
 def test_a_changed_files_contents_come_back_base64_at_the_head_sha():
-    """`GET .../contents/{path}?ref={sha}` — how the design fetches a
-    changed file's text without checking anything out (design section F)."""
+    """`GET .../contents/{path}?ref={sha}` — the design's secondary,
+    per-file fallback for a changed file whose `/files` entry has no
+    `patch` (design section F's table row for this call). `ADDED_FILE_PATH`
+    does carry a `patch` (previous test), so the real flow would not call
+    this endpoint for it; it is exercised directly here only to prove this
+    endpoint's own shape, independent of which files would reach it."""
     token = _token()
     assert token is not None
     resp = _get(

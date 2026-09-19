@@ -17,7 +17,7 @@ nothing). These tests guard four things so the document cannot silently rot:
    actual file content
    (`test_every_quoted_citation_in_the_design_doc_matches_the_source`), and
    a regression-locking count (`>= 6`) keeps that minority from shrinking
-   back to nothing. As of this writing the doc carries roughly 49 bare
+   back to nothing. As of this writing the doc carries roughly 50 bare
    `file:line` citations in total and 8 of them are quoted/content-checked
    — the remaining ~41 are unverified prose citations that a future edit
    could silently make stale without either test noticing. Widening that

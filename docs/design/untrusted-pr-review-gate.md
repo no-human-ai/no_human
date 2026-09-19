@@ -142,6 +142,26 @@ the artifact). Skipping this re-validation would let a fork PR's artifact
 claim an arbitrary PR number and have the privileged job post its review
 comment — or worse, act — on a PR it never fetched the diff for.
 
+Two more conditions the follow-up must enforce, neither optional. First,
+the artifact must be downloaded scoped to the triggering
+`workflow_run.id` specifically (`GET
+/repos/{owner}/{repo}/actions/runs/{workflow_run.id}/artifacts`, then
+download by the returned artifact id) — a lookup by artifact *name* alone,
+without pinning the run id, could resolve to a same-named artifact
+uploaded by a different, unrelated workflow run and let that run's author
+substitute their own PR number. Second, `head.sha == workflow_run.head_sha`
+is necessary but **not sufficient** to identify a unique pull request: the
+same head commit can be the head of two simultaneously open pull requests
+from the same branch against two different base branches, and both would
+satisfy that equality. `GET /repos/{owner}/{repo}/pulls/{artifact_pr_number}`
+alone cannot distinguish them. The follow-up must instead resolve the PR
+through `GET /repos/{owner}/{repo}/commits/{workflow_run.head_sha}/pulls`
+(GitHub's own commit-to-PR lookup, keyed on the trusted `head_sha`, not on
+the artifact's claimed number) and refuse — post nothing, exit non-zero —
+unless that call returns **exactly one** open pull request; the artifact's
+number is then only a cross-check against that result, never the sole
+source of truth for which PR to comment on.
+
 **The `workflow_run` trigger is not scoped by branch or event on its own.**
 `workflow_run` fires whenever a workflow *with the watched name* completes,
 regardless of what triggered that run. The lightweight recorder workflow is
@@ -203,12 +223,20 @@ The `workflow_run` split removes exactly one thing: **exfiltration by
 editing this job's code.** A branch author cannot edit the job that holds
 the credential, because that job's code only exists on `main` (section A).
 That is narrower than "the credential is safe": a GitHub **repository**
-secret is readable by *any* workflow, on *any* branch, under *any*
-trigger — someone with push access does not need to edit
-`review-gate.yml` at all; they can push a branch carrying their own
-`.github/workflows/anything.yml` with `on: push` and reference
-`secrets.ANTHROPIC_API_KEY` directly. The `workflow_run` split stops none of
-that on its own.
+secret is readable by any workflow run in this repository's own context —
+any branch someone with push access controls, under any trigger that
+receives secrets at all (`push`, `workflow_dispatch`, `schedule`,
+`workflow_run`, and same-repository `pull_request`, section A). Someone
+with push access does not need to edit `review-gate.yml` at all; they can
+push a branch carrying their own `.github/workflows/anything.yml` with
+`on: push` and reference `secrets.ANTHROPIC_API_KEY` directly. The
+`workflow_run` split stops none of that on its own. This is deliberately
+scoped to the same-repository population — a **fork's** `pull_request` run
+is the one context that does *not* receive repository secrets at all
+(GitHub withholds them there; that is the entire reason
+`pull_request_target` exists, and it is why section A refuses it,
+`src/no_human/ci_action/run.py:482-488`), so nothing above weakens the
+fork boundary section B already keeps.
 
 `action.yml:13-14`: "Pass it from a repository secret, e.g.
 secrets.ANTHROPIC_API_KEY." — that is exactly the exposure described above,
@@ -380,11 +408,25 @@ New bounds this path needs that the git-based path gets for free:
   (`src/no_human/ci_action/run.py:644-645`), a loud refusal, never a
   silently empty diff for that file.
 - GitHub stops listing files in the `/files` response at 3000 changed
-  files, and a `406` is returned for the whole-PR unified-diff media type
-  when a PR is too large to render as a diff — both must produce the same
-  "refusing rather than reviewing a truncated prefix" message pattern
-  `src/no_human/ci_action/run.py:675-687` already uses for the local cap,
-  never a partial review presented as complete.
+  files. `max_files` has no upper bound enforced today
+  (`src/no_human/ci_action/run.py:601-605` parses it as any positive
+  integer), so an operator who raises it past the default 15 can reach
+  both this cap and more than one page of pagination; either must produce
+  the same "refusing rather than reviewing a truncated prefix" message
+  pattern `src/no_human/ci_action/run.py:675-687` already uses for the
+  local cap, never a partial review presented as complete. (The `406` on
+  the whole-PR unified-diff media type, table row 2 below, is a property
+  of an endpoint this design rejects for the primary path — it cannot be
+  hit through the chosen `/files` + `/contents` path and is recorded in
+  section F only as the reason that endpoint was rejected, not as a state
+  the follow-up must handle.)
+- `GET /repos/{o}/{r}/pulls/{n}` returns `changed_files`, the PR's true
+  total independent of pagination; the follow-up must read it from there; a
+  count derived from summing paginated `/files` pages alone is only correct
+  once every page has been fetched, and `render_body`'s
+  `"Files reviewed: N of M"` line with its "(capped by `max_files`)" suffix
+  (`src/no_human/ci_action/run.py:420-421`) needs the true `M` to render
+  that suffix correctly when `max_files` truncates the list.
 
 ## F. The REST calls this design chooses, and every state they return
 
@@ -395,7 +437,7 @@ All read-only, idempotent; nothing here mutates anything on GitHub.
 | `GET /repos/{o}/{r}/pulls/{n}` | 200; 301 (refuse, do not follow — mirrors `src/no_human/ci_action/github.py:146-150`'s existing rule for the comment endpoints); 304; 401; 403 (not accessible, or rate-limited — check `x-ratelimit-remaining: 0`); 404; 410; 429; 5xx |
 | `GET /repos/{o}/{r}/pulls/{n}` with `Accept: application/vnd.github.diff` | 200 with a unified-diff body; 406 when the PR is too large to diff. **Recorded and rejected** for the primary path: one request, but no per-file granularity, so `max_files` cannot be enforced before the bytes are already spent. |
 | `GET /repos/{o}/{r}/pulls/{n}/files?per_page=100&page=N` | `filename`, `status` in `{added, removed, modified, renamed, copied, changed, unchanged}`, `additions`, `deletions`, `sha`, `contents_url`, optional `patch` (absent per the binary/oversize case in section E), `previous_filename` on a rename. **Chosen primary path.** |
-| `GET /repos/{o}/{r}/contents/{path}?ref={sha}` | `{content, encoding: "base64", size, sha, type}`; `encoding == "none"` with an empty `content` above roughly 1&nbsp;MB (use `raw_url`/the blobs API instead); `type` may be `dir`/`symlink`/`submodule` rather than `file`; 404 for a path absent at that ref (the legitimate `added`/`removed` case, not an error). |
+| `GET /repos/{o}/{r}/contents/{path}?ref={sha}` | `{content, encoding: "base64", size, sha, type}`; `encoding == "none"` with an empty `content` above roughly 1&nbsp;MB (use `raw_url`/the blobs API instead); `type` may be `dir`/`symlink`/`submodule` rather than `file`; 404 for a path absent at that ref (the legitimate `added`/`removed` case, not an error). **Secondary, per-file fallback** — only called for a changed file whose `/files` entry has no `patch` (the binary/oversize case above); an entry that already carries a `patch` needs no separate content fetch, so this call is not on the path for the common case. |
 
 Failure handling mirrors the existing client's taxonomy
 (`src/no_human/ci_action/github.py:144-200`): every one of the above states
