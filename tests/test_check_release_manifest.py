@@ -625,3 +625,90 @@ def test_an_unreadable_previous_manifest_costs_only_the_note(tmp_path):
     proc = run("--root", str(repo), "--write")
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert "existing row(s) changed" not in proc.stderr
+
+
+
+# --------------------------------------------------------------------------
+# Windows checkout line-ending guard (issue #505)
+# --------------------------------------------------------------------------
+
+def _force_reviewed_lf_tree(repo: Path) -> None:
+    """Make the fixture's tracked text bytes canonical LF on every host."""
+    (repo / "README.md").write_bytes(b"hello\n")
+    (repo / "pkg" / "a.py").write_bytes(b"A = 1\n")
+
+
+def _force_crlf(path: Path) -> None:
+    data = path.read_bytes().replace(b"\r\n", b"\n")
+    path.write_bytes(data.replace(b"\n", b"\r\n"))
+
+
+def test_check_diagnoses_crlf_hash_matches_instead_of_recommending_write(tmp_path):
+    """A Windows-style checkout mismatch is not content that should be re-pinned."""
+    repo = make_repo(tmp_path)
+    _force_reviewed_lf_tree(repo)
+    write_manifest(repo)
+    _force_crlf(repo / "README.md")
+    _force_crlf(repo / "pkg" / "a.py")
+
+    proc = run("--root", str(repo))
+
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert "LINE ENDINGS:" in proc.stderr
+    assert "LF-normalized bytes match the reviewed pins exactly" in proc.stderr
+    assert "README.md" in proc.stderr
+    assert "core.autocrlf=" in proc.stderr
+    assert "Do NOT run --write" in proc.stderr
+    assert "regenerate with 'python scripts/check_release_manifest.py --write'" not in proc.stderr
+
+
+def test_write_refuses_crlf_only_drift_and_leaves_manifest_unchanged(tmp_path):
+    """The destructive path is stopped before a CRLF checkout can rewrite pins."""
+    repo = make_repo(tmp_path)
+    _force_reviewed_lf_tree(repo)
+    write_manifest(repo)
+    manifest = repo / "RELEASE_MANIFEST.txt"
+    before = manifest.read_bytes()
+    subprocess.check_call(["git", "config", "core.autocrlf", "true"], cwd=str(repo))
+    _force_crlf(repo / "README.md")
+
+    proc = run("--root", str(repo), "--write")
+
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    assert "--write: REFUSED" in proc.stderr
+    assert "README.md" in proc.stderr
+    assert "core.autocrlf=true" in proc.stderr
+    assert "LF-normalized bytes still match the reviewed manifest" in proc.stderr
+    assert manifest.read_bytes() == before
+
+
+def test_write_does_not_refuse_real_content_change_just_because_autocrlf_is_true(tmp_path):
+    """The guard detects conversion evidence, not the config bit by itself."""
+    repo = make_repo(tmp_path)
+    _force_reviewed_lf_tree(repo)
+    write_manifest(repo)
+    subprocess.check_call(["git", "config", "core.autocrlf", "true"], cwd=str(repo))
+    (repo / "README.md").write_bytes(b"genuinely changed content\r\n")
+
+    proc = run("--root", str(repo), "--write")
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "REFUSED" not in proc.stderr
+    assert "wrote " in proc.stdout
+
+
+def test_any_crlf_only_pin_blocks_a_mixed_regeneration(tmp_path):
+    """One converted reviewed file is enough to make a wide rewrite unsafe."""
+    repo = make_repo(tmp_path)
+    _force_reviewed_lf_tree(repo)
+    write_manifest(repo)
+    manifest = repo / "RELEASE_MANIFEST.txt"
+    before = manifest.read_bytes()
+    _force_crlf(repo / "README.md")
+    (repo / "pkg" / "a.py").write_bytes(b"A = 2\n")
+
+    proc = run("--root", str(repo), "--write")
+
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    assert "README.md" in proc.stderr
+    assert manifest.read_bytes() == before
