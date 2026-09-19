@@ -3566,6 +3566,106 @@ class Orchestrator:
             return SERVER_STOP_REASON
         return None
 
+    async def _persisted_terminal_cancel(self, task: Task) -> str | None:
+        """The cancel reason if a human cancel already landed on the PERSISTED
+        row, invisible to `_pending_cancel` above.
+
+        `_pending_cancel` reads `tasks.cancel_requested` — the pause column —
+        but `POST /api/tasks/{id}/cancel` and `nh task cancel` both CLEAR that
+        column (`clear_cancel_request`) in the same breath they set the row to
+        FAILED (`cancel_session_not_found` shape: no live coder session was
+        found to interrupt, so nothing else records the cancel). When that
+        race lands before this attempt's own `create_attempt`/`set_status`
+        calls — during intake, planning, or between dispatch and the coder
+        session — the only durable trace is the task row itself; a check
+        against in-memory cancel state alone never sees it (issue #423).
+
+        One extra `SELECT` per boundary this is called from — three per
+        attempt, not per turn, so the cost is boundary-scoped, not loop-scoped.
+
+        Deliberately scoped to `FAILED` only: `DONE` cannot be reached while
+        this very call stack is still driving the task, so widening this to
+        other terminal statuses is a separate concern, not needed here.
+
+        Fail-open: a DB hiccup here must not turn a healthy attempt into a
+        false stop, so any read failure is logged and treated as "no cancel".
+        """
+        try:
+            fresh = await self.store.get_task(task.id)
+        except Exception as exc:  # noqa: BLE001 — fail open, never stop a healthy attempt
+            log.warning(
+                "could not check persisted status for %s: %s", task.id[:8], exc)
+            return None
+        if fresh is None or fresh.status is not TaskStatus.FAILED:
+            return None
+        # Sync the in-process handle so a caller reading `task.status` /
+        # `task.context` right after this returns sees the same terminal
+        # state this check just observed, instead of a stale PLANNING/
+        # IMPLEMENTING value that would trip `assert_transition` right back.
+        task.status = fresh.status
+        task.context = fresh.context or task.context
+        return (fresh.context or {}).get("cancel_reason") or "cancelled"
+
+    async def _stop_for_raced_cancel(
+        self, task: Task, reason: str, *, attempt_id: str | None = None,
+    ) -> TaskOutcome:
+        """Stop a raced attempt that lost to a persisted cancel, without
+        raising and without adding to the task's lifetime attempt count.
+
+        Never calls `set_status`: the row is already terminal (FAILED, with
+        `cancel_reason` set), and the CAS in `_write_status` would refuse the
+        write anyway — the crash this closes is exactly THAT refusal followed
+        by a blind `set_status(IMPLEMENTING)` a few lines later. Never calls
+        `clear_cancel_request` (`_persisted_terminal_cancel` proves the pause
+        column is already clear) and never checkpoints/parks through
+        `_honor_cancel` — that would flip the task to BLOCKED and undo the
+        human's terminal cancel.
+
+        When `attempt_id` is given, the row this attempt already created is
+        retired as `interrupted` with every usage column left NULL — no
+        `tokens_used=...` and no `**self._pop_aux_usage()` splat. That is
+        load-bearing, not an oversight:
+          * `status='interrupted'` with all-NULL usage columns matches
+            `Store._lifetime_included_sql`'s
+            `NOT (status='interrupted' AND <zero-priced>)` exclusion, so the
+            row counts toward neither the lifetime attempt count nor the
+            token sums — the same retirement shape
+            `close_attempts_of_terminal_tasks` already writes for zero-work
+            rows, left untouched by this change.
+          * NOT draining `_pop_aux_usage` here leaves the planner/intake/
+            utility accumulators intact so `_drive_watched`'s `finally` ->
+            `_flush_orphaned_aux_usage(task)` books them to the unattributed
+            ledger (`record_unattributed_usage`, `site="orphaned_<role>_usage"`)
+            instead of onto this now-`interrupted` row. A future "helpful"
+            refactor adding the splat back would silently move that spend
+            off the ledger and onto a row excluded from every sum — do not.
+        This path is only reachable BEFORE the coder session starts (the
+        call sites all sit above `backend.run`), so there is never real
+        spend on the row to lose by leaving its usage columns NULL.
+
+        Emits `cancel_race`, not `cancelled_hard`: `cancelled_hard` is in
+        `_TASK_END_KINDS`, and the cancel writer (API/CLI) already fired
+        `telemetry.record_task_cancelled` for this exact
+        `cancel_session_not_found` shape — a second terminal event here would
+        double-count the same cancel.
+        """
+        if attempt_id is not None:
+            await self.store.update_attempt(
+                attempt_id, status="interrupted",
+                failure_reason=(
+                    "interrupted: task was cancelled while this attempt was "
+                    f"starting — {reason}"),
+            )
+        self.emit(
+            "cancel_race",
+            f"stopping: the task was cancelled while this attempt was starting — {reason}",
+            status="failed",
+        )
+        return TaskOutcome(
+            task, status=TaskStatus.FAILED,
+            detail=f"cancelled: {reason}", off_ramp=True,
+        )
+
     # Set by the scheduler at shutdown (`Scheduler.request_stop_checkpoints`).
     # In-process on purpose: a flag in `tasks.cancel_requested` would outlive
     # a SIGKILL and re-fire on the next server's first cheap boundary
@@ -4519,6 +4619,13 @@ class Orchestrator:
         # and the plan-correction route burned a full planner round first.
         # Found by the independent review of the re-entry registry's
         # pending-stop invariant (2026-08-20).
+        # A persisted terminal cancel outranks a cooperative pause, and no
+        # attempt has been created yet at this point in `_drive`, so there is
+        # no row to retire — just stop.
+        terminal = await self._persisted_terminal_cancel(task)
+        if terminal:
+            return await self._stop_for_raced_cancel(task, terminal)
+
         pending = await self._pending_cancel(task)
         if pending:
             return await self._honor_cancel(task, repo, None, pending)
@@ -4897,6 +5004,13 @@ class Orchestrator:
         except Exception as exc:  # noqa: BLE001 — never block a loop on this
             self._advisory(f"could not clear the attempt fingerprint: {exc}")
         for attempt_n in range(1, self.bounds.max_attempts + 1):
+            # A persisted terminal cancel can land here too — e.g. the prior
+            # attempt's coder session already ran and this is the FURTHER
+            # attempt the loop is about to start. No row exists for this
+            # attempt yet, so there is nothing to retire.
+            terminal = await self._persisted_terminal_cancel(task)
+            if terminal:
+                return await self._stop_for_raced_cancel(task, terminal)
             # Honour a cancellation before spending another attempt's tokens.
             # This is the cheap boundary: no session is open, the tree is clean.
             pending = await self._pending_cancel(task)
@@ -5963,6 +6077,19 @@ class Orchestrator:
         # any fixture or historical commit predates this run's configured
         # identity. See `_foreign_authored_commits` for the full reasoning.
         attempt_start_sha = repo.head_sha()
+
+        # A cancel racing between attempt dispatch and here finds no live
+        # coder session to stop (`cancel_session_not_found`) and only marks
+        # the row terminal — this is the last cheap boundary before the SDK
+        # session (and its spend) starts, and the crash site this closes:
+        # a blind `set_status(IMPLEMENTING)` below would either be silently
+        # refused by the CAS guard (in-memory handle then reads FAILED, so a
+        # LATER call on this same attempt raises IllegalTransition) or, once
+        # this attempt already carries the FAILED handle, raise right here.
+        terminal = await self._persisted_terminal_cancel(task)
+        if terminal:
+            return await self._stop_for_raced_cancel(
+                task, terminal, attempt_id=attempt_id)
 
         # --- implement (the SDK session) ---
         await self.store.set_status(task, TaskStatus.IMPLEMENTING)
