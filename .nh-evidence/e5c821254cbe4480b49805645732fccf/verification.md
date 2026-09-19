@@ -1,6 +1,6 @@
 # How I verified this — full log
 
-_Harness-captured record for task `e5c82125`, commit `90f9f7cbb49b3b37e5ebc6d9dfee86835bcf0aed` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `e5c82125`, commit `0bb0d934b7110c45f41709131f9e5a2273a62810` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ## How I verified this
 16 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
@@ -8,173 +8,186 @@ _Harness-captured record for task `e5c82125`, commit `90f9f7cbb49b3b37e5ebc6d9df
 **Not everything recorded is shown:** the 12 most recent of those listed are shown with their captured output, and the other 4 commands are shown as a command line only.
 
 ### test
-- `uv run pytest tests/test_review_gate_workflow.py -v 2>&1 | tail -100`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/e5c821254cbe4480b49805645732fccf.6460.d16060e4 uv run pytest tests/test_review_gate_workflow.py -v 2>&1 | tail -100`
   _output not shown - see the note above._
-- `uv run pytest tests/test_review_gate_workflow.py -v 2>&1 | tail -40`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/e5c821254cbe4480b49805645732fccf.6460.d16060e4 echo "### Mutation 1: delete environment: review-gate ###" python3 - <<'EOF' p = ".github/workflows/review-gate.yml" [... 243 of 586 characters omitted from the middle ...] yml.orig .github/workflows/review-gate.yml cp .<redacted>/scratch/review-gate-recorder.yml.orig .github/workflows/review-gate-recorder.yml`
   _output not shown - see the note above._
-- `cd /Users/eyalgolan/.<redacted>/worktrees/e5c821254cbe4480b49805645732fccf.6460.60894f1e python3 - <<'PY' p = ".github/workflows/review-gate.yml" text = open(p).read() old = "    environment: review-gate\n [... 139 of 482 characters omitted from the middle ...] view_gate_workflow.py -v 2>&1 | tail -15 echo "--- reverting ---" cp /tmp/rg_backup/review-gate.yml.orig .github/workflows/review-gate.yml`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/e5c821254cbe4480b49805645732fccf.6460.d16060e4 echo "### Mutation 2: uses: -> ./ ###" python3 - <<'EOF' p = ".github/workflows/review-gate.yml" t = open(p).read()  [... 258 of 601 characters omitted from the middle ...] yml.orig .github/workflows/review-gate.yml cp .<redacted>/scratch/review-gate-recorder.yml.orig .github/workflows/review-gate-recorder.yml`
   _output not shown - see the note above._
-- `cd /Users/eyalgolan/.<redacted>/worktrees/e5c821254cbe4480b49805645732fccf.6460.60894f1e diff .github/workflows/review-gate.yml /tmp/rg_backup/review-gate.yml.orig && echo "revert OK" uv run pytest tests/test_review_gate_workflow.py -q 2>&1 | tail -5`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/e5c821254cbe4480b49805645732fccf.6460.d16060e4 echo "### Mutation 3: delete if-gate ###" python3 - <<'EOF' p = ".github/workflows/review-gate.yml" t = open(p).read [... 250 of 593 characters omitted from the middle ...] yml.orig .github/workflows/review-gate.yml cp .<redacted>/scratch/review-gate-recorder.yml.orig .github/workflows/review-gate-recorder.yml`
   _output not shown - see the note above._
-- `cd /Users/eyalgolan/.<redacted>/worktrees/e5c821254cbe4480b49805645732fccf.6460.60894f1e python3 - <<'PY' p = ".github/workflows/review-gate.yml" text = open(p).read() old = "uses: no-human-ai/<redacted>@d [... 310 of 653 characters omitted from the middle ...] .yml.orig .github/workflows/review-gate.yml diff .github/workflows/review-gate.yml /tmp/rg_backup/review-gate.yml.orig && echo "revert OK"`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/e5c821254cbe4480b49805645732fccf.6460.d16060e4 echo "### Mutation 5: delete github_token ###" python3 - <<'EOF' p = ".github/workflows/review-gate.yml" t = open(p) [... 234 of 577 characters omitted from the middle ...] yml.orig .github/workflows/review-gate.yml cp .<redacted>/scratch/review-gate-recorder.yml.orig .github/workflows/review-gate-recorder.yml`
 
 ```
---- mutation 2 applied ---
-tests/test_review_gate_workflow.py::test_the_reviewer_is_exactly_this FAILED [  8%]
-tests/test_review_gate_workflow.py::test_the_action_is_pinned_to_a_main_commit_sha FAILED [ 20%]
-tests/test_review_gate_workflow.py::test_each_mutation_turns_the_guard_red[2-uses-dot-slash] FAILED [ 72%]
-tests/test_review_gate_workflow.py::test_each_mutation_turns_the_guard_red[7-continue-on-error] FAILED [ 92%]
-FAILED tests/test_review_gate_workflow.py::test_the_reviewer_is_exactly_this
-FAILED tests/test_review_gate_workflow.py::test_the_action_is_pinned_to_a_main_commit_sha
-FAILED tests/test_review_gate_workflow.py::test_each_mutation_turns_the_guard_red[2-uses-dot-slash]
-FAILED tests/test_review_gate_workflow.py::test_each_mutation_turns_the_guard_red[7-continue-on-error]
---- reverting ---
-revert OK
-```
+### Mutation 5: delete github_token ###
+>       assert text.count(old) == 1, f"fixture drifted: {old!r} not found exactly once"
+E       AssertionError: fixture drifted: '          github_token: ${{ github.token }}\n' not found exactly once
+E       assert 0 == 1
+E        +  where 0 = <built-in method count of str object at 0xa401e3800>('          github_token: ${{ github.token }}\n')
+E        +    where <built-in method count of str object at 0xa401e3800> = '# The credentialed half of the review-gate split. See\n# review-gate-recorder.yml for the untrusted half and\n# docs/...be45906ecc79fd22eb4ecb9f0679367d4e805a9\n        with:\n          credential: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}\n'.count
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/e5c821254cbe4480b49805645732fccf.6460.60894f1e python3 - <<'PY' p = ".github/workflows/review-gate.yml" text = open(p).read() old = "    if: ${{ github.event.workf [... 273 of 616 characters omitted from the middle ...] .yml.orig .github/workflows/review-gate.yml diff .github/workflows/review-gate.yml /tmp/rg_backup/review-gate.yml.orig && echo "revert OK"`
-
-```
---- mutation 3 applied ---
-tests/test_review_gate_workflow.py::test_the_reviewer_is_exactly_this FAILED [  8%]
-tests/test_review_gate_workflow.py::test_the_review_job_runs_only_after_a_successful_recorder_run FAILED [ 36%]
-tests/test_review_gate_workflow.py::test_each_mutation_turns_the_guard_red[3-delete-if-gate] FAILED [ 76%]
-FAILED tests/test_review_gate_workflow.py::test_the_reviewer_is_exactly_this
-FAILED tests/test_review_gate_workflow.py::test_the_review_job_runs_only_after_a_successful_recorder_run
-FAILED tests/test_review_gate_workflow.py::test_each_mutation_turns_the_guard_red[3-delete-if-gate]
---- reverting ---
-revert OK
-```
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/e5c821254cbe4480b49805645732fccf.6460.60894f1e python3 - <<'PY' p = ".github/workflows/review-gate.yml" text = open(p).read() old = "    timeout-minutes: 30\n" ass [... 258 of 601 characters omitted from the middle ...] .yml.orig .github/workflows/review-gate.yml diff .github/workflows/review-gate.yml /tmp/rg_backup/review-gate.yml.orig && echo "revert OK"`
-
-```
---- mutation 4 applied ---
-tests/test_review_gate_workflow.py::test_the_workflows_stay_inside_the_yaml_these_files_permit FAILED [ 44%]
-tests/test_review_gate_workflow.py::test_each_mutation_turns_the_guard_red[4-octal-timeout] FAILED [ 80%]
-FAILED tests/test_review_gate_workflow.py::test_the_workflows_stay_inside_the_yaml_these_files_permit
-FAILED tests/test_review_gate_workflow.py::test_each_mutation_turns_the_guard_red[4-octal-timeout]
---- reverting ---
-revert OK
-```
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/e5c821254cbe4480b49805645732fccf.6460.60894f1e python3 - <<'PY' p = ".github/workflows/review-gate.yml" text = open(p).read() old = "          github_token: ${{ gi [... 252 of 595 characters omitted from the middle ...] .yml.orig .github/workflows/review-gate.yml diff .github/workflows/review-gate.yml /tmp/rg_backup/review-gate.yml.orig && echo "revert OK"`
-
-```
---- mutation 5 applied ---
-tests/test_review_gate_workflow.py::test_the_reviewer_is_exactly_this FAILED [  8%]
-tests/test_review_gate_workflow.py::test_github_token_is_passed_although_action_yml_calls_it_optional FAILED [ 56%]
-tests/test_review_gate_workflow.py::test_each_mutation_turns_the_guard_red[5-delete-github-token] FAILED [ 84%]
+tests/test_review_gate_workflow.py:750: AssertionError
+=========================== short test summary info ============================
 FAILED tests/test_review_gate_workflow.py::test_the_reviewer_is_exactly_this
 FAILED tests/test_review_gate_workflow.py::test_github_token_is_passed_although_action_yml_calls_it_optional
 FAILED tests/test_review_gate_workflow.py::test_each_mutation_turns_the_guard_red[5-delete-github-token]
---- reverting ---
-revert OK
+3 failed, 27 passed, 1 xfailed in 1.51s
 ```
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/e5c821254cbe4480b49805645732fccf.6460.60894f1e python3 - <<'PY' p = ".github/workflows/review-gate.yml" text = open(p).read() old = "secrets.CLAUDE_CODE_OAUTH_TOKE [... 268 of 611 characters omitted from the middle ...] .yml.orig .github/workflows/review-gate.yml diff .github/workflows/review-gate.yml /tmp/rg_backup/review-gate.yml.orig && echo "revert OK"`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/e5c821254cbe4480b49805645732fccf.6460.d16060e4 echo "### Mutation 6: typo secret name ###" python3 - <<'EOF' p = ".github/workflows/review-gate.yml" t = open(p).re [... 247 of 590 characters omitted from the middle ...] yml.orig .github/workflows/review-gate.yml cp .<redacted>/scratch/review-gate-recorder.yml.orig .github/workflows/review-gate-recorder.yml`
 
 ```
---- mutation 6 applied ---
-tests/test_review_gate_workflow.py::test_the_reviewer_is_exactly_this FAILED [  8%]
-tests/test_review_gate_workflow.py::test_each_mutation_turns_the_guard_red[6-typo-secret-name] FAILED [ 88%]
+### Mutation 6: typo secret name ###
+        text = path.read_text(encoding="utf-8")
+>       assert text.count(old) == 1, f"fixture drifted: {old!r} not found exactly once"
+E       AssertionError: fixture drifted: 'secrets.CLAUDE_CODE_OAUTH_TOKEN' not found exactly once
+E       assert 0 == 1
+E        +  where 0 = <built-in method count of str object at 0xc44194000>('secrets.CLAUDE_CODE_OAUTH_TOKEN')
+E        +    where <built-in method count of str object at 0xc44194000> = '# The credentialed half of the review-gate split. See\n# review-gate-recorder.yml for the untrusted half and\n# docs/...     with:\n          credential: ${{ secrets.CLAUDE_CODE_OATH_TOKEN }}\n          github_token: ${{ github.token }}\n'.count
+
+tests/test_review_gate_workflow.py:750: AssertionError
+=========================== short test summary info ============================
 FAILED tests/test_review_gate_workflow.py::test_the_reviewer_is_exactly_this
 FAILED tests/test_review_gate_workflow.py::test_each_mutation_turns_the_guard_red[6-typo-secret-name]
---- reverting ---
-revert OK
+2 failed, 28 passed, 1 xfailed in 1.79s
 ```
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/e5c821254cbe4480b49805645732fccf.6460.60894f1e python3 - <<'PY' p = ".github/workflows/review-gate.yml" text = open(p).read() old = "        uses: no-human-ai/<red [... 335 of 678 characters omitted from the middle ...] .yml.orig .github/workflows/review-gate.yml diff .github/workflows/review-gate.yml /tmp/rg_backup/review-gate.yml.orig && echo "revert OK"`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/e5c821254cbe4480b49805645732fccf.6460.d16060e4 echo "### Mutation 7: add continue-on-error: true ###" python3 - <<'EOF' p = ".github/workflows/review-gate.yml" t = [... 448 of 791 characters omitted from the middle ...] te-recorder.yml diff .github/workflows/review-gate.yml .<redacted>/scratch/review-gate.yml.orig && echo "review-gate.yml matches original"`
 
 ```
---- mutation 7 applied ---
-tests/test_review_gate_workflow.py::test_the_reviewer_is_exactly_this FAILED [  8%]
-tests/test_review_gate_workflow.py::test_the_workflows_stay_inside_the_yaml_these_files_permit FAILED [ 44%]
+### Mutation 7: add continue-on-error: true ###
+>       assert problems == [], "; ".join(problems)
+E       AssertionError: /jobs/review/steps[2]/continue-on-error: bool scalar written as 'true', which PyYAML and GitHub need not read alike
+E       assert ['/jobs/revie...t read alike'] == []
+E         
+E         Left contains one more item: "/jobs/review/steps[2]/continue-on-error: bool scalar written as 'true', which PyYAML and GitHub need not read alike"
+E         Use -v to get more diff
+
+tests/test_review_gate_workflow.py:402: AssertionError
+=========================== short test summary info ============================
 FAILED tests/test_review_gate_workflow.py::test_the_reviewer_is_exactly_this
 FAILED tests/test_review_gate_workflow.py::test_the_workflows_stay_inside_the_yaml_these_files_permit
---- reverting ---
-revert OK
+2 failed, 28 passed, 1 xfailed in 1.70s
+review-gate.yml matches original
 ```
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/e5c821254cbe4480b49805645732fccf.6460.60894f1e python3 - <<'PY' p = ".github/workflows/review-gate.yml" text = open(p).read() old = "    runs-on: ubuntu-latest\n"  [... 264 of 607 characters omitted from the middle ...] .yml.orig .github/workflows/review-gate.yml diff .github/workflows/review-gate.yml /tmp/rg_backup/review-gate.yml.orig && echo "revert OK"`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/e5c821254cbe4480b49805645732fccf.6460.d16060e4 python3 - <<'EOF' p = ".github/workflows/review-gate.yml" t = open(p).read() old = "        uses: no-human-ai/<redac [... 415 of 758 characters omitted from the middle ...] te-recorder.yml diff .github/workflows/review-gate.yml .<redacted>/scratch/review-gate.yml.orig && echo "review-gate.yml matches original"`
 
 ```
---- mutation 8 applied ---
-tests/test_review_gate_workflow.py::test_the_reviewer_is_exactly_this FAILED [  8%]
-tests/test_review_gate_workflow.py::test_each_mutation_turns_the_guard_red[8-windows-latest] FAILED [ 96%]
+FAILED tests/test_review_gate_workflow.py::test_the_reviewer_is_exactly_this
+FAILED tests/test_review_gate_workflow.py::test_the_workflows_stay_inside_the_yaml_these_files_permit
+2 failed, 28 passed, 1 xfailed in 0.72s
+review-gate.yml matches original
+```
+
+- `cd /Users/eyalgolan/.<redacted>/worktrees/e5c821254cbe4480b49805645732fccf.6460.d16060e4 echo "### Mutation 8: runs-on ubuntu-latest -> windows-latest ###" python3 - <<'EOF' p = ".github/workflows/review-g [... 446 of 789 characters omitted from the middle ...] te-recorder.yml diff .github/workflows/review-gate.yml .<redacted>/scratch/review-gate.yml.orig && echo "review-gate.yml matches original"`
+
+```
+### Mutation 8: runs-on ubuntu-latest -> windows-latest ###
 FAILED tests/test_review_gate_workflow.py::test_the_reviewer_is_exactly_this
 FAILED tests/test_review_gate_workflow.py::test_each_mutation_turns_the_guard_red[8-windows-latest]
---- reverting ---
-revert OK
+2 failed, 28 passed, 1 xfailed in 0.72s
+review-gate.yml matches original
 ```
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/e5c821254cbe4480b49805645732fccf.6460.60894f1e python3 - <<'PY' p = ".github/workflows/review-gate-recorder.yml" text = open(p).read() old = "      - name: Upload  [... 369 of 712 characters omitted from the middle ...] /review-gate-recorder.yml diff .github/workflows/review-gate-recorder.yml /tmp/rg_backup/review-gate-recorder.yml.orig && echo "revert OK"`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/e5c821254cbe4480b49805645732fccf.6460.d16060e4 echo "### Mutation 9: add a run: step to the recorder ###" python3 - <<'EOF' p = ".github/workflows/review-gate-reco [... 622 of 965 characters omitted from the middle ...] nal" diff .github/workflows/review-gate-recorder.yml .<redacted>/scratch/review-gate-recorder.yml.orig && echo "recorder matches original"`
 
 ```
---- mutation 9 applied ---
-tests/test_review_gate_workflow.py::test_the_recorder_is_exactly_this FAILED [  4%]
-tests/test_review_gate_workflow.py::test_the_workflows_stay_inside_the_yaml_these_files_permit FAILED [ 44%]
+### Mutation 9: add a run: step to the recorder ###
 FAILED tests/test_review_gate_workflow.py::test_the_recorder_is_exactly_this
 FAILED tests/test_review_gate_workflow.py::test_the_workflows_stay_inside_the_yaml_these_files_permit
---- reverting ---
-revert OK
+2 failed, 28 passed, 1 xfailed in 0.64s
+review-gate.yml matches original
+recorder matches original
 ```
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/e5c821254cbe4480b49805645732fccf.6460.60894f1e diff .github/workflows/review-gate.yml /tmp/rg_backup/review-gate.yml.orig && echo "review-gate.yml OK" diff .github/workflows/review-gate-recorder.yml /tmp/rg_backup/review-gate-recorder.yml.orig && echo "review-gate-recorder.yml OK" uv run pytest tests/test_review_gate_workflow.py -q 2>&1 | tail -5`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/e5c821254cbe4480b49805645732fccf.6460.d16060e4 uv run pytest tests/test_review_gate_workflow.py -v 2>&1 | tail -45`
 
 ```
-review-gate.yml OK
-review-gate-recorder.yml OK
-.........................                                                [100%]
-25 passed in 2.28s
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.1.1, pluggy-1.6.0 -- /Users/eyalgolan/.<redacted>/worktrees/e5c821254cbe4480b49805645732fccf.6460.d16060e4/.venv/bin/python
+cachedir: .pytest_cache
+<redacted> isolated HOME: /var/folders/1r/3r0rt1jd4j1456rsg_fh4d380000gn/T/nh-test-home-o0k4ei_m
+rootdir: /Users/eyalgolan/.<redacted>/worktrees/e5c821254cbe4480b49805645732fccf.6460.d16060e4
+configfile: pyproject.toml
+plugins: anyio-4.14.0, no-human-0.2.4, cov-7.1.0, xdist-3.8.0, asyncio-1.4.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=fun
+[... 3,095 of 4,234 characters omitted from the middle ...]
+the_guard_red[6-typo-secret-name] PASSED [ 90%]
+tests/test_review_gate_workflow.py::test_each_mutation_turns_the_guard_red[7-continue-on-error] PASSED [ 93%]
+tests/test_review_gate_workflow.py::test_each_mutation_turns_the_guard_red[8-windows-latest] PASSED [ 96%]
+tests/test_review_gate_workflow.py::test_each_mutation_turns_the_guard_red[9-recorder-run-step] PASSED [100%]
+
+======================== 30 passed, 1 xfailed in 0.62s =========================
+```  
+  _excerpt - 4,224 characters of output in total_
+
+- `cd /Users/eyalgolan/.<redacted>/worktrees/e5c821254cbe4480b49805645732fccf.6460.d16060e4 echo "=== proof the guard reads real git content, independent of pytest ===" python3 - <<'EOF' import subprocess f [... 703 of 1,042 characters omitted from the middle ...] o echo "=== the two new guard tests standalone ===" uv run pytest tests/test_review_gate_workflow.py -v -k "pin_support" 2>&1 | tail -20`
+
+```
+=== proof the guard reads real git content, independent of pytest ===
+pinned in review-gate.yml (main)              sha=dbe45906ec resolved=True mentions_workflow_run=False hard_rejects_non_pr=True
+current origin/main tip                       sha=5f99b7af31 resolved=True mentions_workflow_run=False hard_rejects_non_pr=True
+unmerged branch no-human/7f1660bb-2           sha=cf976c58f9 resolved=True mentions_workflow_run=True hard_rejects_non_pr=False
+
+=== the two new guard tests standalone ===
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.1.1, pluggy-1.6.0 -- /Users/eyalgolan/.<redacted>/worktrees/
+[... 889 of 2,028 characters omitted from the middle ...]
+pport_guard_rejects_every_current_main_commit[769b08b8a18d25a643521e1360851d5dcfacc3b2] PASSED [ 60%]
+tests/test_review_gate_workflow.py::test_pin_support_guard_rejects_every_current_main_commit[5f99b7af3142bf9fc562bd35d127b852a99bc113] PASSED [ 80%]
+tests/test_review_gate_workflow.py::test_pin_support_guard_accepts_a_commit_that_carries_workflow_run_support PASSED [100%]
+
+======================= 5 passed, 26 deselected in 0.66s =======================
+```  
+  _excerpt - 2,022 characters of output in total_
+
+- `cd /Users/eyalgolan/.<redacted>/worktrees/e5c821254cbe4480b49805645732fccf.6460.d16060e4 uv run pytest tests/test_test_lanes.py tests/test_deselect_lists_agree.py tests/test_check_release_manifest.py tests/test_readme_claims.py tests/test_ci_action.py tests/test_ci_action_metadata.py -q 2>&1 | tail -30`
+
+```
+................sss.ssss.....................................s.s.s.s.s.s [ 23%]
+.s.s.s.s...............................................s................ [ 47%]
+.............s.......................................................... [ 70%]
+........................................................................ [ 94%]
+..................                                                       [100%]
+287 passed, 19 skipped in 34.06s
 ```
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/e5c821254cbe4480b49805645732fccf.6460.60894f1e uv run pytest tests/ -m repoguard -q 2>&1 | tail -40`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/e5c821254cbe4480b49805645732fccf.6460.d16060e4 timeout 300 uv run pytest -q -m repoguard 2>&1 | tail -30`
 
 ```
-..........................................................s.s.s.s.s.s.s. [ 30%]
-s.s.s...............................................s................... [ 61%]
-..........s............................................................. [ 91%]
-...................                                                      [100%]
+(eval):2: command not found: timeout
+```
+
+- `cd /Users/eyalgolan/.<redacted>/worktrees/e5c821254cbe4480b49805645732fccf.6460.d16060e4 uv run pytest -q -m repoguard 2>&1 | tail -30`
+
+```
+..........................................................s.s.s.s.s.s.s. [ 29%]
+s.s.s...............................................s................... [ 59%]
+..........s............................................................. [ 89%]
+.......x.................                                                [100%]
 =============================== warnings summary ===============================
 src/<redacted>/testing/test_layers.py:35
-  /Users/eyalgolan/.<redacted>/worktrees/e5c821254cbe4480b49805645732fccf.6460.60894f1e/src/<redacted>/testing/test_layers.py:35: PytestCollectionWarning: cannot collect test class 'TestLayer' because it has a __init__ constructor (from: tests/test_test_layers.py)
+  /Users/eyalgolan/.<redacted>/worktrees/e5c821254cbe4480b49805645732fccf.6460.d16060e4/src/<redacted>/testing/test_layers.py:35: PytestCollectionWarning: cannot collect test class 'TestLayer' because it has a __init__ constructor (from: tests/test_test_layers.py)
     @dataclass
 
 src/<redacted>/testing/test_layers.py:89
-  /Users/eyalgolan/.<redacted>/worktrees/e5c821254cbe4480b49805645732fccf.6460.60894f1e/src/<redacted>/testing/test_layers.py:89: PytestCollectionWarning: cannot collect test class 'TestPlan' because it has a __init__ constructor (from: tests/test_test_layers.py)
+  /Users/eyalgolan/.<redacted>/worktrees/e5c821254cbe4480b49805645732fccf.6460.d16060e4/src/<redacted>/testing/test_layers.py:89: PytestCollectionWarning: cannot collect test class 'TestPlan' because it has a __init__ constructor (from: tests/test_test_layers.py)
     @dataclass
 
 -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-223 passed, 13 skipped, 13520 deselected, 2 warnings in 23.34s
+228 passed, 13 skipped, 13520 deselected, 1 xfailed, 2 warnings in 5.23s
 ```
 
-- `cd /Users/eyalgolan/.<redacted>/worktrees/e5c821254cbe4480b49805645732fccf.6460.60894f1e uv run pytest tests/test_review_gate_workflow.py --collect-only -q 2>&1 | grep "::test_"`
+- `cd /Users/eyalgolan/.<redacted>/worktrees/e5c821254cbe4480b49805645732fccf.6460.d16060e4 git diff --stat echo "---" uv run pytest tests/test_review_gate_workflow.py -q 2>&1 | tail -5`
 
 ```
-tests/test_review_gate_workflow.py::test_the_recorder_is_exactly_this
-tests/test_review_gate_workflow.py::test_the_reviewer_is_exactly_this
-tests/test_review_gate_workflow.py::test_the_recorder_holds_no_secret_at_all
-tests/test_review_gate_workflow.py::test_the_reviewing_job_names_the_credentialed_environment
-tests/test_review_gate_workflow.py::test_the_action_is_pinned_to_a_main_commit_sha
-tests/test_review_gate_workflow.py::test_pin_guard_rejects_dot_slash_and_main[./]
-tests/test_review_gate_workflow.py::test_pin_guard_rejects_dot_slash_and_main[no-human-ai/<redacted>@main]
-tests/test_review_gate_workflow.py::test_pin_guard_rejects_dot_slash_and_main[no-human-ai/<redacted>
-[... 1,141 of 2,280 characters omitted from the middle ...]
-e_workflow.py::test_each_mutation_turns_the_guard_red[5-delete-github-token]
-tests/test_review_gate_workflow.py::test_each_mutation_turns_the_guard_red[6-typo-secret-name]
-tests/test_review_gate_workflow.py::test_each_mutation_turns_the_guard_red[7-continue-on-error]
-tests/test_review_gate_workflow.py::test_each_mutation_turns_the_guard_red[8-windows-latest]
-tests/test_review_gate_workflow.py::test_each_mutation_turns_the_guard_red[9-recorder-run-step]
-```  
-  _excerpt - 2,276 characters of output in total_
-
-- `cd /Users/eyalgolan/.<redacted>/worktrees/e5c821254cbe4480b49805645732fccf.6460.60894f1e grep -n "<redacted>" .gitignore 2>/dev/null uv run pytest tests/test_review_gate_workflow.py -q 2>&1 | tail -5`
-
-```
-22:.<redacted>/
-.........................                                                [100%]
-25 passed in 2.02s
+RELEASE_MANIFEST.txt               |   2 +-
+ tests/test_review_gate_workflow.py | 143 +++++++++++++++++++++++++++++++++++++
+ 2 files changed, 144 insertions(+), 1 deletion(-)
+---
+.............x.................                                          [100%]
+30 passed, 1 xfailed in 0.56s
 ```
 
 
