@@ -1,0 +1,62 @@
+[
+  {
+    "id": 1001,
+    "node_id": "PRR_kwDOAbc1001",
+    "user": {"login": "alice-reviewer", "id": 5001, "type": "User"},
+    "body": "This breaks the null check on line 40 — please add a guard before dereferencing.",
+    "state": "CHANGES_REQUESTED",
+    "submitted_at": "2026-06-01T10:00:00Z",
+    "html_url": "https://github.com/org/repo/pull/42#pullrequestreview-1001",
+    "author_association": "COLLABORATOR"
+  },
+  {
+    "id": 1002,
+    "node_id": "PRR_kwDOAbc1002",
+    "user": {"login": "bob-reviewer", "id": 5002, "type": "User"},
+    "body": "Looks great, ship it!",
+    "state": "APPROVED",
+    "submitted_at": "2026-06-01T11:00:00Z",
+    "html_url": "https://github.com/org/repo/pull/42#pullrequestreview-1002",
+    "author_association": "COLLABORATOR"
+  },
+  {
+    "id": 1003,
+    "node_id": "PRR_kwDOAbc1003",
+    "user": {"login": "carol-reviewer", "id": 5003, "type": "User"},
+    "body": "Nit: rename this variable to something clearer.",
+    "state": "COMMENTED",
+    "submitted_at": "2026-06-01T12:00:00Z",
+    "html_url": "https://github.com/org/repo/pull/42#pullrequestreview-1003",
+    "author_association": "COLLABORATOR"
+  },
+  {
+    "id": 1004,
+    "node_id": "PRR_kwDOAbc1004",
+    "user": {"login": "dave-reviewer", "id": 5004, "type": "User"},
+    "body": "",
+    "state": "COMMENTED",
+    "submitted_at": "2026-06-01T13:00:00Z",
+    "html_url": "https://github.com/org/repo/pull/42#pullrequestreview-1004",
+    "author_association": "COLLABORATOR"
+  },
+  {
+    "id": 1005,
+    "node_id": "PRR_kwDOAbc1005",
+    "user": {"login": "erin-reviewer", "id": 5005, "type": "User"},
+    "body": "<!-- no_human-agent-comment -->\nAddressed the earlier feedback.",
+    "state": "CHANGES_REQUESTED",
+    "submitted_at": "2026-06-01T14:00:00Z",
+    "html_url": "https://github.com/org/repo/pull/42#pullrequestreview-1005",
+    "author_association": "COLLABORATOR"
+  },
+  {
+    "id": 1006,
+    "node_id": "PRR_kwDOAbc1006",
+    "user": {"login": "frank-reviewer", "id": 5006, "type": "User"},
+    "body": "still drafting my thoughts...",
+    "state": "PENDING",
+    "submitted_at": null,
+    "html_url": "https://github.com/org/repo/pull/42#pullrequestreview-1006",
+    "author_association": "COLLABORATOR"
+  }
+]

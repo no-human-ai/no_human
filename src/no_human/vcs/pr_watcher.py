@@ -36,6 +36,7 @@ class PrComment:
     line: int | None = None
     diff_hunk: str | None = None
     created_at: str = ""
+    author_type: str = ""      # GitHub user.type: "User" | "Bot" | "Organization"; "" = unknown
 
 
 @dataclass
@@ -186,6 +187,7 @@ async def fetch_github_pr_comments(
                 line=c.get("original_line") or c.get("line"),
                 diff_hunk=c.get("diff_hunk"),
                 created_at=created,
+                author_type=c.get("user", {}).get("type", ""),
             ))
 
     # 2. Issue comments (general PR comments)
@@ -205,6 +207,55 @@ async def fetch_github_pr_comments(
                 author=c.get("user", {}).get("login", "unknown"),
                 body=c.get("body", ""),
                 created_at=created,
+                author_type=c.get("user", {}).get("type", ""),
+            ))
+
+    # 3. Review summaries (the review object's own `body`). A review's line
+    # comments (block 1) are separate API objects from its summary; GitHub
+    # returns the SUMMARY only here, on `/pulls/{n}/reviews`, so a
+    # "Request changes" review whose feedback lives entirely in the summary
+    # (measured: ~15% of change-request reviews) is otherwise invisible.
+    #
+    # Full state set this endpoint returns, and the disposition of each:
+    #   APPROVED          - dropped: an approval body is praise, not a
+    #                        change request (explicit acceptance criterion).
+    #   CHANGES_REQUESTED - emitted when body non-empty. The bug this fixes.
+    #   COMMENTED         - emitted when body non-empty.
+    #   DISMISSED         - dropped: explicitly retracted by a maintainer, no
+    #                        longer a standing request.
+    #   PENDING           - dropped: only visible to its own author, and its
+    #                        `submitted_at` is null (falsy guard below covers it).
+    out = await _run_cli([
+        "gh", "api", *host_args,
+        f"repos/{repo}/pulls/{pr_number}/reviews",
+        "--paginate",
+    ])
+    if out:
+        for r in json.loads(out):
+            if r.get("user", {}).get("login") == agent_login:
+                continue
+            state = (r.get("state") or "").upper()
+            if state not in ("CHANGES_REQUESTED", "COMMENTED"):
+                continue
+            body = r.get("body") or ""
+            if not body.strip():
+                continue
+            # Reviews carry no `created_at` — only `submitted_at` — so the
+            # freshness check (and downstream `created_at`-reading code in
+            # wake.py) must key off it. A `PENDING` draft has `submitted_at:
+            # null`, which this falsy guard also drops.
+            submitted = r.get("submitted_at") or ""
+            if not submitted:
+                continue
+            if since and submitted <= since:
+                continue
+            comments.append(PrComment(
+                author=r.get("user", {}).get("login", "unknown"),
+                body=body,
+                path=None,
+                line=None,
+                created_at=submitted,
+                author_type=r.get("user", {}).get("type", ""),
             ))
 
     return comments
