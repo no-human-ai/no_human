@@ -74,9 +74,22 @@ _CI_GREEN_POLL_TIMEOUT_SECONDS = 25
 # `_check_pr_ci` below matches this regex over BOTH channels (ticket
 # 8c8b36b5). blockers.pr_ci_policy=advisory remains the operator's cover for
 # GitHub-hosted checks this doesn't (yet) positively classify.
+#
+# Second alternative: a runner-ACQUISITION outage (ticket 429/E1A) — GitHub
+# repeatedly fails to hand the job a runner, so, same as the billing wall,
+# the job never runs and there is nothing in the repo to fix. Scoped to the
+# full "it … failed to be acquired" tail (with the optional "repeatedly")
+# so it does NOT match the unrelated negative control "The job was not
+# started because the upstream project failed to build." ("the upstream
+# project" is not "it"). No generic runner/acquire wildcard, per the same
+# overmatch-is-dangerous rule above.
 _CI_INFRA_RE = re.compile(
-    r"(?i)recent account payments have failed or your "
+    r"(?i)(?:"
+    r"recent account payments have failed or your "
     r"spending limit needs to be increased"
+    r"|the job was not started because it (?:repeatedly )?"
+    r"failed to be acquired"
+    r")"
 )
 
 # Sentinel returned by `_check_approval_pr_comments(resume=False)`: comments

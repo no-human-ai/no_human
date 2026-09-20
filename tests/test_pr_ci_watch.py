@@ -550,6 +550,12 @@ async def test_the_infra_signature_is_one_full_sentence_not_a_prefix(store):
     assert not _CI_INFRA_RE.search(
         "FAILED tests/test_billing.py::test_dunning - recent account payments have failed"
     )
+    # ticket 429/E1A: the runner-acquisition alternative matches, and the
+    # billing-negative-control above is unaffected by widening the regex.
+    assert _CI_INFRA_RE.search(_RUNNER_ACQUIRE_LOG)
+    assert not _CI_INFRA_RE.search(
+        "The job was not started because the upstream project failed to build."
+    )
 
 
 async def test_empty_log_with_billing_annotation_is_infra_not_a_round(store):
@@ -597,6 +603,61 @@ async def test_empty_log_with_non_infra_annotation_is_a_real_round(store):
     assert fresh.context["pr_ci_rounds"] == 1
     assert fresh.context["send_back_feedback"][-1]["source"] == "pr_ci"
     assert any(k == "pr_ci_red" for k, _ in events)
+
+
+_RUNNER_ACQUIRE_LOG = (
+    "The job was not started because it repeatedly failed to be acquired."
+)
+
+
+async def test_runner_acquisition_failure_is_infra_and_never_counts_a_round(store):
+    """A GitHub runner-acquisition outage (ticket 429/E1A) is a platform-layer
+    failure exactly like the billing wall: the job never ran, so it says
+    nothing about the code — no fix round, no send-back, no escalation."""
+    t = await _approval_task(store)
+    events = []
+    w = _watcher(store, checks=[FAIL_CHECK], log=_RUNNER_ACQUIRE_LOG, events=events)
+    assert await w._check_open_pr(t) is None
+    fresh = await store.get_task(t.id)
+    assert fresh.status is TaskStatus.AWAITING_APPROVAL
+    assert "pr_ci_rounds" not in (fresh.context or {})
+    assert "send_back_feedback" not in (fresh.context or {})
+    assert any(k == "pr_ci_infra" for k, _ in events)
+    assert not any(k in ("escalated_ci", "pr_ci_red") for k, _ in events)
+
+
+async def test_runner_acquisition_on_the_annotation_channel_is_infra(store):
+    """A job that never acquires a runner never produces a log at all — the
+    text lives only in the check-run ANNOTATION, same as the billing wall."""
+    t = await _approval_task(store)
+    events = []
+    w = _watcher(store, checks=[FAIL_CHECK], log="",
+                 annotations=_RUNNER_ACQUIRE_LOG, events=events)
+    assert await w._check_open_pr(t) is None
+    fresh = await store.get_task(t.id)
+    assert fresh.status is TaskStatus.AWAITING_APPROVAL
+    assert not (fresh.context or {}).get("pr_ci_rounds")
+    assert "send_back_feedback" not in (fresh.context or {})
+    assert any(k == "pr_ci_infra" for k, _ in events)
+    assert not any(k in ("escalated_ci", "pr_ci_red") for k, _ in events)
+
+
+async def test_a_real_test_failure_is_still_a_failure_not_infra(store):
+    """The infra widening must not swallow a real red build: a normal
+    test-failure message still counts a round and injects send-back."""
+    t = await _approval_task(store)
+    events = []
+    w = _watcher(
+        store, checks=[FAIL_CHECK],
+        log="FAILED tests/test_wake.py::test_resume - AssertionError: expected 2, got 1",
+        events=events,
+    )
+    assert await w._check_open_pr(t) == "resumed"
+    fresh = await store.get_task(t.id)
+    assert fresh.status is TaskStatus.IMPLEMENTING
+    assert fresh.context["pr_ci_rounds"] == 1
+    assert fresh.context.get("pr_ci_last_sig")
+    assert not any(k == "pr_ci_infra" for k, _ in events)
 
 
 async def test_advisory_policy_records_the_red_but_never_acts(store):

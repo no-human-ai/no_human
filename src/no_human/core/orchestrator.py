@@ -1700,19 +1700,55 @@ def _classify_error(stop_reason: str | None, text: str,
     return "error"
 
 
+_TESTish = r"(?:[Tt]est|IT|Spec|TestCase)"
+
+
+def _looks_like_test_id(name: str) -> bool:
+    """True iff a CI failure name is shaped like a TEST identifier rather than
+    a bare CI job/check label (e.g. GitHub Actions' ``Python``, ``build``,
+    ``test (3.12)``). Only opaque-vs-identifier shape is decided here — no
+    attempt to resolve it against the diff. Accepts exactly three shapes:
+    a pytest node id (``tests/test_x.py::test_y``), a dotted JUnit-style id
+    where every segment is identifier-ish and at least one segment is
+    test-ish (``com.acme.billing.InvoiceIT.testTotals``), or a bare class
+    name ending/prefixed with a test marker (``InvoiceServiceTest``,
+    ``TestInvoiceService``). Anything else — including job labels with
+    spaces, parens, or no test-ish segment — is opaque."""
+    name = name.strip()
+    if not name:
+        return False
+    if "::" in name:
+        left = name.split("::", 1)[0]
+        return left.endswith(".py")
+    if re.fullmatch(r"[A-Za-z_]\w*(?:Test|Tests|TestCase|IT|Spec)", name) or re.fullmatch(
+        r"Test[A-Z]\w*", name
+    ):
+        return True
+    segments = name.split(".")
+    if len(segments) >= 2 and all(re.fullmatch(r"[A-Za-z_][\w-]*", seg) for seg in segments):
+        return any(re.search(_TESTish, seg) for seg in segments)
+    return False
+
+
 def _ci_failure_unrelated(ci_result: "CIResult", changed_files: list[str]) -> str | None:
     """Relatedness triage (Phase 6.3, evidence-based — never numeric).
 
     Return cited evidence iff EVERY failing test maps to a file this change never
     touched (a pre-existing / monorepo-wide failure, not this PR). Return None
     when attribution is unclear (no failing-test names, or no diff info, or any
-    overlap) — None routes into the bounded fix loop, so we never silently skip a
-    failure that might be ours. Matching is by class/file stem, since CI reports
-    test classes (``com.acme.analytics-export.AnalyticsExportE2EIT``) while the diff lists paths
+    overlap, or a failing name that is a CI *job* label rather than a test
+    identifier) — None routes into the bounded fix loop, so we never silently
+    skip a failure that might be ours. Matching is by class/file stem, since CI
+    reports test classes (``com.acme.analytics-export.AnalyticsExportE2EIT``) while the diff lists paths
     (``.../AnalyticsExportE2EIT.java``)."""
     failing = [j for j in ci_result.jobs if j.status == "failed"]
     if not failing or not changed_files:
         return None  # not enough evidence to attribute — fix-loop, don't skip
+    if not all(_looks_like_test_id(j.name) for j in failing):
+        # A job/check name ("Python", "build", "test (3.12)") is absence of
+        # evidence, not evidence of unrelatedness — route to the fix loop
+        # rather than escalate on a false "no overlap" read.
+        return None
     # File stems from the diff (basename without extension), e.g.
     # ".../AnalyticsExportE2EIT.java" -> "analyticsexporte2eit".
     changed_stems = {
