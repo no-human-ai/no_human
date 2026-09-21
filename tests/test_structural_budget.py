@@ -1506,7 +1506,13 @@ FROZEN_FILE_LINES = {
     # push) live in the new `vcs/recut.py`, not here — this is the
     # orchestrator-side wiring only. Measured on this tree with the
     # scanner below.
-    "core/orchestrator.py": 25039,
+    # 25039 -> 25047 (+8): `_run_attempt`'s failure-context dict grows a
+    # `reset_exact` column recording whether `wake_check_at` is the quota
+    # wall's own reset time or the self-correcting fallback hour, so the
+    # scheduler can tell a guessed wall from real evidence before resuming
+    # the pool at full width (issue #431). Measured on this tree with the
+    # scanner below.
+    "core/orchestrator.py": 25047,
 
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
