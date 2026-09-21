@@ -874,6 +874,45 @@ and the Settings > Usage insights pane were removed (operator, 2026-08-26), so
 `telemetry.posthog_host`'s `/batch/` endpoint by default; a configured
 `telemetry.endpoint` (the first-party Lambda) takes precedence when set.
 
+## Capability-gap events: opt-in, default off
+
+A separate channel from usage insights above, with a separate switch, a
+separate pseudonym and a separate destination. It is **off**, and it stays off
+until you turn it on. Full contract in
+[`docs/CAPABILITY_GAP.md`](CAPABILITY_GAP.md).
+
+A capability gap is a bounded attempt that stopped because something the
+machine *needed* was missing — a dead backend, a spent quota, an access it
+does not hold, a budget it may not exceed. An ordinary failure of the change
+itself (a red test, a failed review, a tamper block, an exhausted attempt cap)
+is **not** a capability gap and emits nothing.
+
+```yaml
+capability_gap:
+  enabled: false            # the whole channel; nothing is written or sent while false
+  sink: jsonl               # "jsonl" (a local file, no network) or "http"
+  path: ""                  # empty -> ~/.no_human/capability-gap.jsonl
+  endpoint: ""              # required by sink: http; https, or http on loopback only
+  max_lines: 10000          # lines kept when the file is compacted
+  instance_pseudonym: ""    # empty -> a uuid4 in ~/.no_human/capability-gap-id
+  synthetic: null           # null -> derived; true/false forces the flag
+```
+
+With `sink: jsonl` nothing leaves the machine: events are appended to `path`
+and a local consumer tails the file. With `sink: http` the same file becomes a
+spool that a background thread drains to `endpoint` in batches of 50. An
+`endpoint` that is not `https://` (or `http://` on loopback) resolves no
+destination at all, so a mistyped scheme disables the channel rather than
+being honoured.
+
+Every field of every event comes from a closed set — a coarse capability
+class, a reason code, constraints drawn from per-key enums, a generated event
+id and timestamp, the install pseudonym, the app version, and a synthetic
+flag. There is no free-text field, so no ticket title, prompt, diff, log line,
+path, repo name or credential can travel on it. The pseudonym is minted
+independently of the usage-insights instance id above and is never written to
+`config.yaml`, so a recipient of one channel cannot join it to the other.
+
 ## Tests command
 
 `tests.command` (optional) overrides test detection for the local suite the

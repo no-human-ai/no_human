@@ -2439,6 +2439,36 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # config write path. Never minted in, or accepted from, the browser.
         "instance_id": "",
     },
+    # Opt-IN capability-gap event sink (issue #20) — OFF, and it stays off
+    # until an operator turns it on. A separate channel from `telemetry`
+    # above, with its own pseudonym, so a recipient of one cannot join it to
+    # the other. What it can ever carry is a closed set of coarse capability
+    # classes, reason codes and constraints, enforced in
+    # `capability_gap._validate`; never a ticket title, prompt, diff, log
+    # line, path, repo name or credential.
+    "capability_gap": {
+        "enabled": False,
+        # "jsonl" writes to `path` and nothing leaves the machine; "http"
+        # makes that file a spool drained to `endpoint`. Any other value
+        # resolves no destination, which disables the channel.
+        "sink": "jsonl",
+        # Empty means ~/.no_human/capability-gap.jsonl.
+        "path": "",
+        # Required by the "http" sink, and only honoured as https:// (or
+        # http:// on loopback) — see `capability_gap._valid_endpoint`.
+        "endpoint": "",
+        # Spool lines retained when the file is compacted. Compaction only
+        # runs once the file passes `capability_gap.COMPACT_AT_BYTES`, so an
+        # ordinary append never rewrites it.
+        "max_lines": 10000,
+        # Empty mints a uuid4 into ~/.no_human/capability-gap-id — never into
+        # config.yaml, and never telemetry's `instance_id`.
+        "instance_pseudonym": "",
+        # null classifies from `telemetry.environment()`: anything but a real
+        # install (a pytest run, a bench replay, a CI job, a dev checkout) is
+        # synthetic. A bool forces the answer.
+        "synthetic": None,
+    },
 }
 
 

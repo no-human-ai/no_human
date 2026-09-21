@@ -423,6 +423,22 @@ config key that turns it on and the default that keeps it off.
   client). `DEFAULT_CONFIG` has no `context.m365` block at all, so with no token
   configured the client **fails closed and sends nothing** — it raises before
   building the request (`context/teams.py:50-54`). It is opt-in, not default-on.
+- **Capability-gap events.** `capability_gap.enabled` defaults to **`false`**
+  and `capability_gap.sink` defaults to **`jsonl`**, which writes to a local
+  file and reaches no network at all. Only `capability_gap.sink: "http"` with
+  a `capability_gap.endpoint` sends anything, and then only to that endpoint
+  (`capability_gap.py`). `_valid_endpoint` in `capability_gap.py` accepts
+  `https://` anywhere and `http://` on loopback only, so a mistyped scheme
+  (`file://` above all) resolves no destination rather than being honoured by
+  `urllib`. The payload is a closed vocabulary — a coarse capability class, a
+  reason code, constraints drawn from per-key enums, a generated event id and
+  timestamp, this install's own pseudonym and the app version — enforced by
+  `_validate` in `capability_gap.py` on the way in *and* on the way out, and
+  it carries no free-text field at all, so no ticket title, prompt, diff, log
+  line, path, repo name or credential can travel on it. The pseudonym is
+  minted separately from `telemetry.instance_id` and kept in
+  `~/.no_human/capability-gap-id`, so a recipient of one channel cannot join
+  it to the other.
 - **Slack / Teams notification webhooks.** `notifications.slack_webhook_url` and
   `notifications.teams_webhook_url` both default to **`null`**; with a URL set,
   a task-status line (and, for Teams, a card linking to your board) is POSTed to

@@ -2012,6 +2012,24 @@ def _task_end_outcome(kind: str, blocker_category: str) -> str:
     return "needs_answer"  # safe default: a human is waited on
 
 
+# emit() kinds where a BOUNDED ATTEMPT stopped, mapped onto
+# `capability_gap.OUTCOMES`. This is the whole trigger surface of the
+# capability-gap channel (issue #20) — no other kind is a candidate.
+#
+# "cancelled" and "cancelled_hard" are deliberately absent, and for the same
+# reason `USER_PAUSED` is absent from `capability_gap._CATEGORY_MAP`: a human
+# stopping a task is not the machine lacking a capability. Nothing here
+# depends on `_TASK_END_KINDS`, which answers a different question (did the
+# TASK end) and counts a hard cancel as one.
+_CAPABILITY_GAP_OUTCOMES = {
+    "failed": "failed",
+    "escalated": "escalated",
+    "blocked": "parked",
+    "paused_quota": "parked",
+    "awaiting_input": "needs_answer",
+}
+
+
 class Orchestrator:
     # Pause before the single PR-open retry (transient forge trouble). A class
     # attribute so tests zero it instead of eating a real 30s sleep (EH1) —
@@ -2163,6 +2181,7 @@ class Orchestrator:
     def emit(self, kind: str, text: str = "", **meta: Any) -> None:
         self._sink({"source": "orchestrator", "kind": kind, "text": text, **meta})
         self._telemetry_hook(kind, meta)
+        self._capability_gap_hook(kind, meta)
 
     def _emit_manifest_repairs(self, repaired: list[tuple[list[str], str]]) -> None:
         """Drain every ``on_repair(paths, note)`` call from one manifest
@@ -2263,6 +2282,66 @@ class Orchestrator:
                     "task_ended", config=self.config,
                     outcome=_task_end_outcome(kind, str(meta.get("blocker_category") or "")),
                     attempts=getattr(self, "_tel_attempts", 0), duration_bucket=bucket)
+        except Exception:
+            pass
+
+    def _capability_gap_hook(self, kind: str, meta: dict[str, Any]) -> None:
+        """The ONE capability-gap hook (issue #20): opt-IN, default OFF — see
+        `capability_gap.py`.
+
+        A bounded attempt that stopped because something the machine NEEDED
+        was missing becomes one structured, closed-vocabulary event. Ordinary
+        failures of the change itself (a red test, a failed review, a tamper
+        block, an exhausted attempt cap) are NOT capability gaps and resolve
+        to `None` in `capability_gap.classify`, so nothing is emitted for
+        them.
+
+        It reads only `blocker_category` and `reason_category` off *meta* —
+        both already closed enums. It deliberately never touches `blocker`,
+        which rides along on the same event and carries the agent's own prose
+        (question, hypothesis, evidence); one `.get("blocker")` here would put
+        free text on a wire whose entire guarantee is that there is none.
+
+        Its attempt count and task kind are its own (`_gap_attempts`,
+        `_gap_task_kind`) rather than `_telemetry_hook`'s, so neither
+        channel's bookkeeping can be changed by an edit made for the other.
+        Fail-open by construction — this can never break a run.
+        """
+        try:
+            from .. import capability_gap
+            if kind == "kind":
+                self._gap_task_kind = capability_gap.normalize_task_kind(
+                    str(meta.get("task_kind") or "unknown"))
+                self._gap_attempts = 0
+                return
+            if kind == "attempt_start":
+                self._gap_attempts = getattr(self, "_gap_attempts", 0) + 1
+                return
+            outcome = _CAPABILITY_GAP_OUTCOMES.get(kind)
+            if outcome is None:
+                return
+            category = str(meta.get("blocker_category") or "")
+            classified = capability_gap.classify(
+                category, str(meta.get("reason_category") or ""))
+            if classified is None:
+                return
+            capability_class, reason_code = classified
+            constraints = {
+                "outcome": outcome,
+                "attempts_bucket": capability_gap.attempt_bucket(
+                    getattr(self, "_gap_attempts", 0)),
+                "task_kind": getattr(self, "_gap_task_kind", "unknown"),
+                "backend": capability_gap.normalize_backend(
+                    self._attempt_backend),
+            }
+            # Only ever the category this channel already classifies — an
+            # unclassified one never reaches here (`classify` returned None),
+            # so the constraint's value space stays exactly `_CATEGORY_MAP`.
+            normalized = category.strip().upper()
+            if normalized in capability_gap.CONSTRAINT_VALUES["blocker_category"]:
+                constraints["blocker_category"] = normalized
+            capability_gap.record(capability_class, reason_code,
+                                  constraints=constraints, config=self.config)
         except Exception:
             pass
 
