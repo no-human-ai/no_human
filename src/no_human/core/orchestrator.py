@@ -11423,17 +11423,46 @@ class Orchestrator:
         supervisor failure/timeout/parse-miss) and the blocker is honored
         exactly as before. Advisory infrastructure: no branch of this may
         raise into the pipeline.
+
+        Every non-verdict path is made OBSERVABLE (issue #432: the task
+        database recorded zero verdicts and could not say why, because every
+        way of not producing one was silent). A supervisor reply that ran but
+        did not parse is a DEGRADATION — it emits `advisory` via
+        `self._advisory` so `nh doctor` counts it. The three DESIGNED park
+        reasons — the gate disabled, a non-challengeable category, a task
+        already challenged once — are not degradations, so they emit
+        `blocker_challenge_skipped` (never `advisory`, never
+        `blocker_challenge`) naming the reason, so a correct park does not
+        read as a fault in `nh doctor`.
         """
         from ..agent.advisory import advisory_backend
         from ..blockers.challenge import (CHALLENGEABLE, build_challenge_prompt,
                                           parse_challenge)
         try:
             if not (self.config.get("blockers") or {}).get("challenge", True):
+                self.emit(
+                    "blocker_challenge_skipped",
+                    "blocker challenge gate is disabled — blocker honored "
+                    "unchanged",
+                    reason="gate_disabled",
+                )
                 return None
             if blocker.category not in CHALLENGEABLE:
+                self.emit(
+                    "blocker_challenge_skipped",
+                    f"{blocker.category.value} is not a challengeable "
+                    "category — blocker honored unchanged",
+                    reason="not_challengeable",
+                )
                 return None
             ctx = task.context or {}
             if ctx.get("blocker_challenged"):
+                self.emit(
+                    "blocker_challenge_skipped",
+                    "this task was already challenged once — blocker "
+                    "honored unchanged",
+                    reason="already_challenged",
+                )
                 return None
             model = self.config.get("llm", {}).get(
                 "supervisor_model", "claude-sonnet-5")
@@ -11445,38 +11474,42 @@ class Orchestrator:
                 timeout=120.0)
             self._note_supervisor_usage(result)
             verdict = parse_challenge(getattr(result, "final_text", "") or "")
+            if verdict is None:
+                self._advisory(
+                    "blocker challenge: supervisor reply did not parse as a "
+                    "verdict — blocker honored unchanged")
+                return None
             # One challenge per task, spent whenever the check RAN and parsed —
             # external verdicts confirm honesty and must not be re-litigated
             # on the next blocker either.
-            if verdict is not None:
-                ctx["blocker_challenged"] = True
-                ctx["challenged_blocker"] = blocker.to_dict()
-                written = {
-                    "blocker_challenged": True,
-                    "challenged_blocker": blocker.to_dict(),
-                }
-                if verdict.verdict == "resolvable":
-                    assumptions = list(ctx.get("assumptions") or [])
-                    assumptions.append(
-                        f"{verdict.assumption} (assumed to resolve a "
-                        f"{blocker.category.value} blocker; supervisor-checked)")
-                    written["assumptions"] = assumptions
-                # merge_context, not update_task: `update_task` rewrites the
-                # whole context blob from THIS in-memory copy, so it deletes
-                # keys another writer added meanwhile — and the CLI writes
-                # `resume_from` from a different PROCESS while the attempt is
-                # running. `_record_wip_checkpoint`'s docstring records that as
-                # a live data loss; this write happens on the same path and had
-                # the same exposure.
-                task.context = await self.store.merge_context(task.id, written)
-                self.emit(
-                    "blocker_challenge",
-                    f"{blocker.category.value} blocker judged "
-                    f"{verdict.verdict} by the supervisor",
-                    verdict=verdict.verdict,
-                )
-                if verdict.verdict == "resolvable":
-                    return verdict
+            ctx["blocker_challenged"] = True
+            ctx["challenged_blocker"] = blocker.to_dict()
+            written = {
+                "blocker_challenged": True,
+                "challenged_blocker": blocker.to_dict(),
+            }
+            if verdict.verdict == "resolvable":
+                assumptions = list(ctx.get("assumptions") or [])
+                assumptions.append(
+                    f"{verdict.assumption} (assumed to resolve a "
+                    f"{blocker.category.value} blocker; supervisor-checked)")
+                written["assumptions"] = assumptions
+            # merge_context, not update_task: `update_task` rewrites the
+            # whole context blob from THIS in-memory copy, so it deletes
+            # keys another writer added meanwhile — and the CLI writes
+            # `resume_from` from a different PROCESS while the attempt is
+            # running. `_record_wip_checkpoint`'s docstring records that as
+            # a live data loss; this write happens on the same path and had
+            # the same exposure.
+            task.context = await self.store.merge_context(task.id, written)
+            self.emit(
+                "blocker_challenge",
+                f"{blocker.category.value} blocker judged "
+                f"{verdict.verdict} by the supervisor",
+                verdict=verdict.verdict,
+            )
+            if verdict.verdict == "resolvable":
+                return verdict
             return None
         except Exception as exc:  # noqa: BLE001 — fail open toward honesty
             self._advisory(f"blocker challenge skipped: {exc}")

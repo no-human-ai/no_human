@@ -206,6 +206,161 @@ async def test_supervisor_failure_honors_the_blocker(
     assert len(await store.list_attempts(t.id)) == 1
 
 
+# ── observability of every non-verdict outcome (issue #432) ───────────────── #
+#
+# The task database recorded ZERO challenge verdicts and could not say why,
+# because every way of not producing one was silent: a parse miss returned
+# None with no event, a disabled gate returned None with no event, and so on.
+# These tests pin that every non-verdict path now says WHY, and that saying
+# why changes nothing about what happens to the blocker.
+
+async def test_a_parse_miss_emits_an_advisory_naming_it(
+    bare_repo, tmp_path, store, monkeypatch
+):
+    """The supervisor check RAN — it is not disabled, the category IS
+    challengeable, this is the task's first blocker — but the reply did not
+    parse as a verdict. That is a DEGRADATION of the gate's own
+    infrastructure, exactly like a raised exception, so it must emit an
+    `advisory` event (the kind `nh doctor` counts) naming the parse miss.
+    Before the fix this branch fell through to a silent `return None`."""
+    fake = _FakeSupervisor("this is not a CHALLENGE_JSON block at all")
+    _patch_supervisor(monkeypatch, fake)
+    cfg = _gate_on(tmp_path)
+    events: list = []
+    orch = Orchestrator(store, cfg.data, BlockerBackend(_AMBIGUITY_JSON),
+                        SlackNotifier(None), event_sink=events.append)
+    t = Task.new("add helper", repo_path=str(bare_repo))
+    await store.create_task(t)
+
+    outcome = await orch.run_task(t)
+
+    advisories = [e for e in events if e.get("kind") == "advisory"]
+    assert advisories, f"expected an advisory event, got kinds: {[e.get('kind') for e in events]}"
+    assert any("pars" in e.get("text", "").lower() for e in advisories), (
+        f"advisory must name the parse miss: {advisories}")
+    # the blocker is honored EXACTLY as before: park, no bought attempt.
+    assert outcome.status is TaskStatus.AWAITING_INPUT
+    assert fake.calls == 1
+    assert len(await store.list_attempts(t.id)) == 1
+
+
+async def test_gate_disabled_emits_a_named_non_advisory_event(
+    bare_repo, tmp_path, store, monkeypatch
+):
+    """The gate being off is a DESIGNED park, not a degradation — it must
+    name the reason without reading as a fault (`advisory`) or a verdict
+    (`blocker_challenge`)."""
+    fake = _FakeSupervisor(_resolvable())
+    _patch_supervisor(monkeypatch, fake)
+    cfg = _config(tmp_path)  # blockers.challenge defaults to False here
+    events: list = []
+    orch = Orchestrator(store, cfg.data, BlockerBackend(_AMBIGUITY_JSON),
+                        SlackNotifier(None), event_sink=events.append)
+    t = Task.new("add helper", repo_path=str(bare_repo))
+    await store.create_task(t)
+
+    outcome = await orch.run_task(t)
+
+    skips = [e for e in events if e.get("kind") == "blocker_challenge_skipped"]
+    assert skips, f"expected a named skip event, got kinds: {[e.get('kind') for e in events]}"
+    assert any(e.get("reason") == "gate_disabled" for e in skips), skips
+    assert not any(e.get("kind") in ("advisory", "blocker_challenge") for e in events)
+    assert fake.calls == 0, "the gate must not call the supervisor when disabled"
+    assert outcome.status is TaskStatus.AWAITING_INPUT
+    assert len(await store.list_attempts(t.id)) == 1
+
+
+async def test_non_challengeable_category_emits_a_named_non_advisory_event(
+    bare_repo, tmp_path, store, monkeypatch
+):
+    """MISSING_ACCESS is structurally external — never worth a challenge —
+    and that park must also name itself without reading as a fault."""
+    fake = _FakeSupervisor(_resolvable())
+    _patch_supervisor(monkeypatch, fake)
+    cfg = _gate_on(tmp_path)
+    bjson = ('{"category": "MISSING_ACCESS", "confidence": 0.95, '
+             '"question": "Grant repo write?", '
+             '"root_cause_hypothesis": "token lacks scope"}')
+    events: list = []
+    orch = Orchestrator(store, cfg.data, BlockerBackend(bjson),
+                        SlackNotifier(None), event_sink=events.append)
+    t = Task.new("push the fix", repo_path=str(bare_repo))
+    await store.create_task(t)
+
+    outcome = await orch.run_task(t)
+
+    skips = [e for e in events if e.get("kind") == "blocker_challenge_skipped"]
+    assert skips, f"expected a named skip event, got kinds: {[e.get('kind') for e in events]}"
+    assert any(e.get("reason") == "not_challengeable" for e in skips), skips
+    assert not any(e.get("kind") in ("advisory", "blocker_challenge") for e in events)
+    assert fake.calls == 0, "a missing credential is a human's problem"
+    assert outcome.status in (TaskStatus.ESCALATED, TaskStatus.AWAITING_INPUT,
+                              TaskStatus.BLOCKED)
+
+
+async def test_already_challenged_emits_a_named_non_advisory_event(
+    bare_repo, tmp_path, store, monkeypatch
+):
+    """The SECOND blocker on a task that already spent its one challenge must
+    park unchallenged — and now say why, without reading as a fault."""
+    fake = _FakeSupervisor(_resolvable())
+    _patch_supervisor(monkeypatch, fake)
+    cfg = _gate_on(tmp_path)
+    events: list = []
+    orch = Orchestrator(store, cfg.data, BlockerBackend(_AMBIGUITY_JSON),
+                        SlackNotifier(None), event_sink=events.append)
+    t = Task.new("add helper", repo_path=str(bare_repo))
+    await store.create_task(t)
+
+    outcome = await orch.run_task(t)
+
+    # Same invariant as test_resolvable_costs_the_attempt_then_the_second_
+    # blocker_parks: attempt 1 resolvable -> retried; attempt 2's blocker is
+    # the SECOND on this task -> honored, now with a named event.
+    assert outcome.status is TaskStatus.AWAITING_INPUT
+    assert fake.calls == 1, "the second blocker must not call the supervisor again"
+    skips = [e for e in events if e.get("kind") == "blocker_challenge_skipped"]
+    assert skips, f"expected a named skip event, got kinds: {[e.get('kind') for e in events]}"
+    assert any(e.get("reason") == "already_challenged" for e in skips), skips
+    assert not any(e.get("kind") == "advisory" for e in events)
+    attempts = await store.list_attempts(t.id)
+    assert len(attempts) == 2, "the challenge bought exactly one more attempt"
+
+
+async def test_valid_verdict_still_only_emits_blocker_challenge(
+    bare_repo, tmp_path, store, monkeypatch
+):
+    """A well-formed verdict must keep recording exactly what it records
+    today: `blocker_challenged` in context and a `blocker_challenge` event —
+    never an advisory (the supervisor DID parse). The bought second attempt
+    hits the same unresolved AMBIGUITY again, and — because the task is now
+    already challenged — that one correctly emits the named skip event, same
+    as `test_already_challenged_emits_a_named_non_advisory_event`; only ONE
+    `blocker_challenge` event may ever exist for this task."""
+    fake = _FakeSupervisor(_resolvable())
+    _patch_supervisor(monkeypatch, fake)
+    cfg = _gate_on(tmp_path)
+    events: list = []
+    orch = Orchestrator(store, cfg.data, BlockerBackend(_AMBIGUITY_JSON),
+                        SlackNotifier(None), event_sink=events.append)
+    t = Task.new("add helper", repo_path=str(bare_repo))
+    await store.create_task(t)
+
+    outcome = await orch.run_task(t)
+
+    challenges = [e for e in events if e.get("kind") == "blocker_challenge"]
+    assert len(challenges) == 1 and challenges[0].get("verdict") == "resolvable"
+    assert not any(e.get("kind") == "advisory" for e in events), (
+        "the supervisor's reply parsed cleanly — no degradation occurred")
+    refreshed = await store.get_task(t.id)
+    assert (refreshed.context or {}).get("blocker_challenged") is True
+    # park/resume behaviour is byte-identical to main: the same outcome
+    # status and attempt count as test_resolvable_costs_the_attempt_then_
+    # the_second_blocker_parks asserts against the unmodified pipeline.
+    assert outcome.status is TaskStatus.AWAITING_INPUT
+    assert len(await store.list_attempts(t.id)) == 2
+
+
 async def test_a_challenged_attempts_work_survives_into_the_next_attempt(
     bare_repo, tmp_path, store, monkeypatch
 ):
