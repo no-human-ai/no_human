@@ -646,11 +646,20 @@ def test_parse_quota_reset_clamps_to_the_five_minute_floor():
 
 
 def test_parse_quota_reset_beyond_six_hours_falls_back_to_none():
-    """A parse landing days out is treated as wrong, not trusted — the caller
-    (`QuotaExhausted`) falls back to the fixed RETRY_AFTER_S hour instead."""
+    """Pinned name, changed bound (issue #431): a DATED reset (month + day,
+    not just a bare hour) within the new 8-day ceiling parses to that exact
+    time — a weekly quota reset is legitimately days out, and the dated form
+    is a much stronger signal than a bare hour, so it earns a wider ceiling
+    than the undated 6-hour one. What still falls back to None is a dated
+    reset BEYOND that wider ceiling."""
     now = datetime(2026, 8, 22, 1, 3, 55, tzinfo=timezone.utc)
     r = parse_quota_reset("resets Aug 25 at 6pm (Asia/Jerusalem)", now=now)
-    assert r is None
+    assert r == datetime(2026, 8, 25, 15, 0, tzinfo=timezone.utc)
+
+    # ~14 days out is still beyond even the wider dated ceiling — a parse
+    # that far out is treated as wrong, not trusted.
+    beyond = parse_quota_reset("resets Sep 5 at 6pm (Asia/Jerusalem)", now=now)
+    assert beyond is None
 
 
 # --------------------------------------------------------------------------- #
@@ -704,14 +713,63 @@ def test_quota_exhausted_explicit_resets_at_still_wins(monkeypatch):
 
 
 def test_quota_exhausted_beyond_six_hours_falls_back_not_days_out(monkeypatch):
+    """Pinned name, changed bound (issue #431): see the parse-level test
+    above — a dated reset within 8 days now parks exactly, and it is only
+    a dated reset genuinely far out (or a stale message rolled a year
+    forward) that still falls back to the fixed retry hour."""
     import no_human.core.bounds as bounds_mod
     monkeypatch.setattr(bounds_mod, "datetime", _FixedNow)
 
     exc = QuotaExhausted("resets Aug 25 at 6pm (Asia/Jerusalem)")
 
+    assert exc.resets_at == "2026-08-25T15:00:00+00:00"
+    assert exc.reset_exact is True
+
+    # A dated message far enough out (~14 days) still falls back to the
+    # fixed retry hour, and `reset_exact` records that it is a guess, not
+    # the wall's own time.
+    far = QuotaExhausted("resets Sep 5 at 6pm (Asia/Jerusalem)")
     expected = (_FixedNow._fixed
                 + timedelta(seconds=QuotaExhausted.RETRY_AFTER_S)).isoformat()
-    assert exc.resets_at == expected
+    assert far.resets_at == expected
+    assert far.reset_exact is False
+
+
+def test_parse_quota_reset_the_issues_own_message():
+    """The literal issue #431 example: "resets Sep 8 at 10am (Europe/London)",
+    four days out, must parse to the exact wall time instead of being
+    rejected and falling back to hourly probing."""
+    now = datetime(2026, 9, 4, 9, 0, 0, tzinfo=timezone.utc)  # 10:00 London (BST)
+    r = parse_quota_reset("resets Sep 8 at 10am (Europe/London)", now=now)
+    assert r == datetime(2026, 9, 8, 9, 0, 0, tzinfo=timezone.utc)
+
+
+def test_parse_quota_reset_stale_dated_message_rolled_to_next_year_is_rejected():
+    """Pitfall 1: the year-roll (`candidate < local_now - 1 day` rolls to next
+    year) fires on a STALE message — the same "Sep 8" text read weeks later,
+    in October — landing the result ~11 months out. The dated 8-day ceiling
+    must still reject that, not park a task for a year on a stale banner."""
+    now = datetime(2026, 10, 1, 0, 0, 0, tzinfo=timezone.utc)
+    r = parse_quota_reset("resets Sep 8 at 10am (Europe/London)", now=now)
+    assert r is None
+
+
+def test_parse_quota_reset_across_the_year_boundary_is_kept():
+    """The legitimate year-boundary case must keep working: checked on
+    Dec 30 for a "Jan 2" reset, the roll produces a real, ~4-days-out wall,
+    not a rejection."""
+    now = datetime(2026, 12, 30, 0, 0, 0, tzinfo=timezone.utc)
+    r = parse_quota_reset("resets Jan 2 at 6pm (Europe/London)", now=now)
+    assert r is not None
+    assert r == datetime(2027, 1, 2, 18, 0, 0, tzinfo=timezone.utc)
+
+
+def test_parse_quota_reset_undated_still_capped_at_six_hours():
+    """AC3: an UNDATED (session-limit) reset message keeps the original
+    6-hour ceiling — the wider 8-day ceiling only applies to dated resets."""
+    now = datetime(2026, 8, 22, 1, 3, 55, tzinfo=timezone.utc)  # 04:03 Jerusalem
+    r = parse_quota_reset("resets 11pm (Asia/Jerusalem)", now=now)  # ~19h out
+    assert r is None
 
 
 # --------------------- ConvergenceTracker (P2) ------------------------- #

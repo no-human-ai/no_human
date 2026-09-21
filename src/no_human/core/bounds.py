@@ -689,7 +689,15 @@ _QUOTA_RESET_MONTHS = {
 # tests share one definition of "too soon" / "too far" rather than
 # re-deriving the numbers.
 _QUOTA_RESET_MIN_WAIT_S = 300      # 5 minutes
-_QUOTA_RESET_MAX_WAIT_S = 6 * 3600  # 6 hours
+_QUOTA_RESET_MAX_WAIT_S = 6 * 3600  # 6 hours, for an UNDATED (session-limit)
+# reset like "resets 4:20am (Asia/Jerusalem)" — a bare hour so far out that a
+# wrong parse is more likely than a real "days from now" wall.
+
+# A DATED reset ("resets Sep 8 at 10am (Europe/London)") carries a much
+# stronger signal — month + day, not just an hour — and a weekly quota reset
+# is legitimately several days out (issue #431). Widen the ceiling for the
+# dated form only; the undated ceiling above is unchanged.
+_QUOTA_RESET_MAX_DATED_WAIT_S = 8 * 86400  # 8 days
 
 
 def parse_quota_reset(message: str, *, now: datetime) -> datetime | None:
@@ -700,14 +708,18 @@ def parse_quota_reset(message: str, *, now: datetime) -> datetime | None:
     `zoneinfo`, and returns the next occurrence of that wall-clock time at or
     after ``now`` as an aware UTC datetime. Returns ``None`` when the message
     doesn't match, the zone is missing or unknown, or the result parses so far
-    out that a wrong parse is more likely than a real "days from now" wall
-    (see the upper clamp below).
+    out that a wrong parse is more likely than a real reset wall (see the
+    upper clamp below).
 
     The result is clamped: below ``now + 5min`` it is raised to ``now + 5min``
     (a reset that is about to pass is still worth a short wait, not an
-    immediate re-park); above ``now + 6h`` this returns ``None`` so the caller
-    falls back to the fixed retry hour instead of trusting a parse that says
-    "days".
+    immediate re-park); above the upper bound this returns ``None`` so the
+    caller falls back to the fixed retry hour instead of trusting a bad
+    parse. The upper bound depends on the message shape: a DATED message
+    ("resets Jul 24 at 6pm (...)") gets an 8-day ceiling, because month+day
+    is a much stronger signal than a bare hour and a weekly quota reset is
+    legitimately days out; an UNDATED message ("resets 4:20am (...)") — the
+    session-limit form — keeps the original 6-hour ceiling.
     """
     if not message:
         return None
@@ -741,7 +753,12 @@ def parse_quota_reset(message: str, *, now: datetime) -> datetime | None:
         except ValueError:
             return None
         # No year in the message; a date+time more than a day in the past is
-        # next year's occurrence, not today's.
+        # next year's occurrence, not today's. This roll is what makes a
+        # legitimate year-boundary wall (checked on Dec 30 for a Jan 2
+        # reset) work — it must stay in place. A STALE message (the same
+        # "Sep 8" text read weeks later, in October) also rolls here, to
+        # ~11 months out; it is the dated ceiling below, not this roll,
+        # that rejects it. Don't try to special-case "just rolled" here.
         if candidate < local_now - timedelta(days=1):
             candidate = candidate.replace(year=candidate.year + 1)
     else:
@@ -754,7 +771,9 @@ def parse_quota_reset(message: str, *, now: datetime) -> datetime | None:
     lower_bound = now + timedelta(seconds=_QUOTA_RESET_MIN_WAIT_S)
     if result < lower_bound:
         return lower_bound
-    if result > now + timedelta(seconds=_QUOTA_RESET_MAX_WAIT_S):
+    dated = month_name is not None
+    ceiling = _QUOTA_RESET_MAX_DATED_WAIT_S if dated else _QUOTA_RESET_MAX_WAIT_S
+    if result > now + timedelta(seconds=ceiling):
         return None
     return result
 
@@ -903,5 +922,12 @@ class QuotaExhausted(Exception):
         if resets_at is None:
             parsed = parse_quota_reset(message, now=now)
             resets_at = parsed.isoformat() if parsed is not None else None
+        # True when `resets_at` is the WALL's own reset time (caller-supplied
+        # or parsed above), False when it is about to become the
+        # self-correcting fallback hour below. The scheduler reads this to
+        # decide whether the pool may resume at full width or must send a
+        # single probe first (issue #431) — a guess must not throw
+        # max_workers tasks at a wall it isn't sure is still up.
+        self.reset_exact = bool(resets_at)
         self.resets_at = resets_at or (
             now + timedelta(seconds=self.RETRY_AFTER_S)).isoformat()

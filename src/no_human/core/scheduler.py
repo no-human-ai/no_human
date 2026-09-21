@@ -601,6 +601,19 @@ class Scheduler:
         # behind it" (INCIDENT 2026-08-20 — see `_resume_quota_parks`).
         self._quota_wall: datetime | None = None
         self._quota_wall_profile: str | None = None
+        # Whether `_quota_wall` above is the wall's OWN reset time (a parked
+        # blocker's `reset_exact: True`) or the self-correcting fallback hour
+        # (`reset_exact: False` — `QuotaExhausted` guessed). Defaults True
+        # ("unknown => treat as exact => no probe") so every park row written
+        # before this field existed, and every fixture in the existing test
+        # suite, keeps behaving exactly as it does today — probe mode is
+        # opt-in on evidence, never on ignorance of a missing key.
+        self._quota_wall_exact: bool = True
+        # The id dispatched as the single probe task while a fallback wall's
+        # cooldown lapse is unverified (issue #431); see the arm/cap/disarm
+        # sites in `tick`/`_run`.
+        self._quota_probe_id: str | None = None
+        self._quota_probe_armed: bool = False
         # True on the FIRST tick of any process (so a restart sweeps parked
         # quota tasks before claiming pending) and re-armed whenever a
         # cooldown this process was holding lapses (see `_was_cooling` below).
@@ -787,6 +800,7 @@ class Scheduler:
         newest_raised: datetime | None = None
         newest: datetime | None = None
         newest_profile: str | None = None
+        newest_exact: bool = True
         for task in await self.store.list_tasks(TaskStatus.PAUSED_QUOTA):
             resets = _parse_iso(getattr(task, "wake_check_at", None))
             if resets is None:
@@ -802,12 +816,14 @@ class Scheduler:
                       or datetime.min.replace(tzinfo=timezone.utc))
             if newest_raised is None or raised > newest_raised:
                 newest_raised, newest, newest_profile = raised, resets, theirs
+                newest_exact = bool(blocker.get("reset_exact", True))
         if newest is not None:
             # Remembered even when it has already passed — a lapsed wall is
             # exactly what `_resume_quota_parks` needs to sweep the parks
             # behind it, and this is the only place that knows it.
             self._quota_wall = newest
             self._quota_wall_profile = newest_profile
+            self._quota_wall_exact = newest_exact
         if newest is None or newest <= now:
             return None
         if self._quota_cooldown_until is not None and self._quota_cooldown_until >= newest:
@@ -2235,6 +2251,18 @@ class Scheduler:
         cooling = self._in_quota_cooldown(now)
         if self._was_cooling and not cooling:
             self._resume_parks_pending = True   # first tick after a cooldown ended
+            # The wall that just lapsed was a GUESS (`_quota_wall_exact` is
+            # False — the fallback hour, not a parsed reset), and it belongs
+            # to THIS profile (or none) — arm a single probe task instead of
+            # trusting the guess enough to feed it `max_workers` attempts at
+            # once (issue #431: 371/372 zero-token quota attempts over 30
+            # days started inside an already-recorded wall). A wall stamped
+            # for a DIFFERENT profile must never throttle this pool — that is
+            # the other half of the same incident class.
+            mine = active_auth_profile()
+            if (not self._quota_wall_exact
+                    and self._quota_wall_profile in (None, mine)):
+                self._quota_probe_armed = True
         self._was_cooling = cooling
         if cooling:
             # Nothing is dispatched during a pause, so no NEW wait is emitted
@@ -2277,6 +2305,14 @@ class Scheduler:
                         "credential detected — dispatch resumed")
 
         slots = self.max_workers - len(self._inflight)
+        # Cap dispatch to ONE while a fallback wall's lapse is unverified
+        # (issue #431) — the pool sends a single probe rather than
+        # `max_workers` tasks into a wall it only guessed was open. Only
+        # dispatch is capped; `_resume_quota_parks` above already moved every
+        # other park back to IMPLEMENTING, so they queue behind this one
+        # probe slot instead of dispatching alongside it.
+        if self._quota_probe_armed:
+            slots = min(slots, 1)
         started: list[str] = []
         claimable = await self._claimable()
         self._last_claimable_count = len(claimable)
@@ -2290,8 +2326,14 @@ class Scheduler:
             if started:
                 self._dispatched.update(started)
                 self._last_dispatch_at = time.time()
-                self._on_event("dispatch", f"started {len(started)} task(s); "
-                               f"{len(self._inflight)}/{self.max_workers} busy")
+                if self._quota_probe_armed:
+                    self._quota_probe_id = started[0]
+                    self._on_event(
+                        "quota_probe",
+                        f"probing the wall with 1 task; {len(claimable)} held")
+                else:
+                    self._on_event("dispatch", f"started {len(started)} task(s); "
+                                   f"{len(self._inflight)}/{self.max_workers} busy")
         await self._note_slot_waits(claimable, started)
         if not started and slots <= 0:
             return []
@@ -2436,15 +2478,24 @@ class Scheduler:
                     # An UNRELATED park (a different `auth_profile`, or an
                     # unattributed one) is a wall of its own and adopts its own
                     # reset — the guard restricts the floor to same/unstamped.
-                    if (self._quota_wall is not None
-                            and self._quota_wall_profile in (None, prof)
-                            and self._quota_wall > now
-                            and self._quota_wall > resets):
+                    kept_retained_wall = (
+                        self._quota_wall is not None
+                        and self._quota_wall_profile in (None, prof)
+                        and self._quota_wall > now
+                        and self._quota_wall > resets)
+                    if kept_retained_wall:
                         resets = self._quota_wall
                     self._quota_cooldown_until = resets
                     self._infra_cooldown_active = False
                     self._quota_wall = resets
                     self._quota_wall_profile = prof
+                    # Exactness follows whichever value won above: a retained
+                    # wall keeps whatever exactness it already carried (it was
+                    # set when IT was recorded), a fresh park's own
+                    # `reset_exact` stamp otherwise.
+                    if not kept_retained_wall:
+                        self._quota_wall_exact = bool(
+                            parked_blocker.get("reset_exact", True))
                     self._on_event("quota_pause",
                                    f"pool paused until {resets.isoformat()}")
         except Exception as exc:  # noqa: BLE001 — one task must not kill the pool
@@ -2536,6 +2587,18 @@ class Scheduler:
         finally:
             self._running.pop(task.id, None)
             self._inflight.discard(task.id)
+            # In `finally`, not the success path: a probe that CRASHES must
+            # not wedge the pool at one worker forever. If the probe re-parked
+            # on the wall, `_run`'s own live-arming above has already armed a
+            # fresh cooldown for it, so `_in_quota_cooldown` is true and the
+            # flag stays armed — the next lapse re-arms the probe through the
+            # same edge in `tick` (the "persistent per probe cycle" behaviour,
+            # issue #431). If the probe ran clean, the wall is open and the
+            # pool returns to full width on the very next tick.
+            if self._quota_probe_id == task.id:
+                self._quota_probe_id = None
+                if not self._in_quota_cooldown(datetime.now(timezone.utc)):
+                    self._quota_probe_armed = False
             self._live_status.pop(task.id, None)
             # Final notify so SSE clients see the task finished, then clean up.
             if task.id in self._event_notify:
