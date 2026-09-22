@@ -324,9 +324,12 @@ mitigation was never those counts, it is the publish-target rule (zero
 `refs/pull/*`, `git ls-remote` before every publish), and that rule covers
 the new cases identically.
 
-Current denominator: 19 seeded (4 logic, 4 security, 4 test-tamper,
-4 spec-miss, 3 wiring) + 10 controls = 29 cases. Target per the method doc:
-≥3 per class, ≥4 controls — met. (Until 2026-08-07 this read "16 seeded +
-4 controls = 20"; before 2026-07-30 it said "12 seeded (3/3/3/3)" — stale,
-not a retirement. `load_cases` reports 29 and `render_report` breaks out
-4/4/4/4/3.)
+Current denominator: 20 seeded (4 logic, 4 security, 4 test-tamper,
+5 spec-miss, 3 wiring) + 10 controls = 30 cases. Target per the method doc:
+≥3 per class, ≥4 controls — met. (Until 2026-09-22 this read "19 seeded +
+10 controls = 29", moved by `specmiss-anchor-guard-aperture` — a real,
+already-merged PR #418 review miss, not a synthetic plant, admitted under
+the 2026-08-07 real-recorded-defect provenance exception. Until 2026-08-07
+it read "16 seeded + 4 controls = 20"; before 2026-07-30 it said "12 seeded
+(3/3/3/3)" — stale, not a retirement. `load_cases` reports 30 and
+`render_report` breaks out 4/4/4/5/3.)

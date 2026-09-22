@@ -65,7 +65,8 @@ objects). Regenerate a case's `base/` with
 that still has the commit. If the review prompt evolves, the corpus stays
 valid because it never depended on prompt wording.
 
-**Defect classes** (≥3 cases each; 19 seeded as of 2026-08-07):
+**Defect classes** (≥3 cases each; 19 seeded as of 2026-08-07, 20 as of
+2026-09-22):
 
 - `logic` — off-by-one, inverted condition, wrong variable, dropped await.
 - `security` — credential in log line, missing auth check on an endpoint,
@@ -73,7 +74,10 @@ valid because it never depended on prompt wording.
 - `test-tamper` — an assertion weakened/deleted alongside a plausible
   feature change; a test made tautological.
 - `spec-miss` — the diff claims to satisfy an AC it silently does not
-  (e.g. handles the happy path, drops the error branch the AC names).
+  (e.g. handles the happy path, drops the error branch the AC names). One
+  case (added 2026-09-22, `specmiss-anchor-guard-aperture`) is a real,
+  already-merged PR review miss rather than a plant — see the amendment
+  below.
 - `wiring` (added 2026-08-07) — the change is implemented and tested but
   never called by the production path, so the ticket's outcome does not
   occur through any caller production ships. Its `truth.json` carries
@@ -100,6 +104,17 @@ defect, graded it `[low]`, and passed the run — artifacts named in each
 `truth.json`), so if the shared-blind-spot effect operates at all here it
 deflates recall rather than inflating it. `planted_by` records this
 provenance verbatim (`recorded-replay` / `recorded-dogfood-history`).
+
+*Extension (2026-09-22), to `spec-miss`:* the same admissibility now covers
+a real PR review miss, not just a recorded gate run. `specmiss-anchor-
+guard-aperture` freezes PR #418's guard test
+(`tests/test_no_approximate_line_anchors.py`) at its real merged head: the
+guard's own classifier (`_UNIT_TAIL`/`_STOPWORDS`) is a stopword deny-list,
+so an anchor followed by ordinary prose reads as a unit and passes; the PR
+shipped with its own gate green and four already-wrong anchors elsewhere in
+`src/` unremedied. Nothing here was planted — the diff is the unmodified PR
+diff against its merge-base, and `planted_by` records
+`real-merged-history PR #418 (selected by supervising-session)`.
 
 **Controls.** K≥4 defect-free cases (real merged diffs, unmodified) are mixed
 in, indistinguishable by filename; **K=10 as of 2026-08-07**, of which ≥2 are
@@ -192,7 +207,7 @@ replace a real measurement's audit trail.
 `nh bench report --reviewer-recall` prints:
 
 ```
-reviewer recall: NN/19 (NN%)  [logic N/4, security N/4, spec-miss N/4, test-tamper N/4, wiring N/3]
+reviewer recall: NN/20 (NN%)  [logic N/4, security N/4, spec-miss N/5, test-tamper N/4, wiring N/3]
 specificity:     N/10 clean diffs passed
 model: <model-id> · run date: YYYY-MM-DD · method: docs/REVIEWER_RECALL_METHOD.md
 ```

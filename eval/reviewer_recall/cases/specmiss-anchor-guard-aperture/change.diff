@@ -1,0 +1,849 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index db75f2bf..a8f0052d 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -49,6 +49,24 @@ All notable changes to no_human. The format follows
+   symbols it had already decided when the budget runs out. Still advisory, and
+   every failure still resolves toward silence rather than toward an accusation.
+ ### Fixed
++- **Approximate line anchors (`"the check is at ~12034"`) in `src/` comments
++  and docstrings rotted on every landing and nothing validated them.**
++  Resolving the 18 anchors this repo had shipped by the time this landed
++  (15 in `core/orchestrator.py`, 1 in `vcs/landability.py`, and 2 more in
++  `vcs/recut.py` that arrived from `main` mid-review) against the symbol
++  each actually described found 16 of 18 already pointing at the wrong
++  function, some by hundreds of lines — `tests/test_readme_claims.py`'s
++  citation machinery only ever covered a different syntax (`file.py:LINE`)
++  in three docs. All 18 are now named by symbol instead (or the number was
++  dropped where no real callsite could be confirmed), and a new gate,
++  `tests/test_no_approximate_line_anchors.py`, fails the build on any new
++  `~NNN`-shaped anchor found in a comment or string literal under `src/` —
++  a convention, not a drift-tolerant checker, since the anchors were already
++  wrong rather than merely destined to rot. The scanner looks only at
++  `tokenize` comments and `ast.Constant` string literals so an approximate
++  *quantity* that names its unit (`~120MB`, `~1078s`, `~500 LOC`) is left
++  untouched; a bare `grep -oE '~[0-9]{3,5}'` over `src/` over-counts the true
++  anchor population by roughly double for exactly that reason.
+ - **Approve & merge works in the shipped desktop app again.** In the frozen
+   build the merge gate shelled out through the packaged binary as if it were a
+   Python interpreter, so every `nh approve` and every board **Approve** failed
+diff --git a/CONTRIBUTING.md b/CONTRIBUTING.md
+index be1b6e19..cada0289 100644
+--- a/CONTRIBUTING.md
++++ b/CONTRIBUTING.md
+@@ -421,6 +421,41 @@ Use `--reconcile` when the documentation citation and `CITATION_TABLE` have dive
+ It derives both surfaces independently from the source. It is the explicit opt-in
+ reconciliation mode.
+ 
++### Referring to code from source comments
++
++A comment or docstring in `src/` that points at "the thing I mean" names the
++**symbol**, never a line number. `tests/test_no_approximate_line_anchors.py`
++enforces this: it fails the build on any `~NNN`-shaped approximate line
++anchor (`"the check is at ~12034"`, `"(db.py ~2884-2892)"`) found in a
++comment or string literal anywhere under `src/`. Unlike the doc citations
++above, there is no tolerance window here — the convention is to forbid the
++anchor outright, not to resolve and re-tolerate it.
++
++This was a measured decision, not a guess: resolving every anchor this repo
++had shipped against the symbol it actually described found 16 of 18 already
++pointing at the wrong function, some by hundreds of lines. A drift-tolerant
++gate (mirroring the docs' `±5`-line tolerance) would therefore fail almost
++immediately against nearly the whole population and demand exactly the same
++fix — write the symbol name — plus a permanent resolver and an arguable
++tolerance window to maintain forever after. A symbol name (`` `_is_wip_partial` ``,
++`` `_already_satisfied_subject` ``) never goes stale and costs nothing to
++keep true, and the reader has to grep for it either way. This mirrors the
++"prefer symbol form for hot files" guidance directly above — `src/`'s hottest
++file, `core/orchestrator.py`, is exactly where 15 of the 18 anchors lived;
++2 more turned up in `vcs/recut.py`, added by an unrelated change that
++landed mid-review, and the gate caught both before they could rot — which
++is the whole point of forbidding the shape instead of merely re-tolerating
++drift in it.
++
++This applies to `src/` only, per the shipped-source focus above; `tests/`,
++`docs/`, `scripts/`, `e2e/`, `eval/`, `examples/` and `web/` are unaffected
++and keep whatever citation policy they already had.
++
++An approximate **quantity** — a size, duration, token count or line-count
++estimate that names its own unit, like `~120MB`, `~1078s` or `~500 LOC` — is
++not an anchor and is untouched by this rule; the unit is exactly what tells
++a reader "this is a measurement", not "go look around this line".
++
+ ## Proposing a change
+ 
+ 1. Open an issue describing the problem. For a bug, include the repro.
+diff --git a/RELEASE_MANIFEST.txt b/RELEASE_MANIFEST.txt
+index 4759013a..acb7921f 100644
+--- a/RELEASE_MANIFEST.txt
++++ b/RELEASE_MANIFEST.txt
+@@ -18,10 +18,10 @@ c1ff022fe892335b3cddb6af2e2089a979090b376c21552e71e29a51f4b5bd2b  .gitlab-ci.yml
+ 9653a6b836c443233577d40c88017b815b3154ba2313ed276c8c2a165c6f55df  .no_human.yml
+ 0890bc7ecf023b9b969d68dbcead6ae6f28323fb1aee65d67caa41fd6691c2ec  .npmrc
+ 7b55f8e67b5623c4bef3fa691288da9437d79d3aba156de48d481db32ac7d16d  .python-version
+-31b0540e3ac97ca1177238dd6ab919f18e12a97884eed7a19cdba111f46befaa  CHANGELOG.md
++f1ac10e87636ce5564ee81596d2f9b1103753a8118890fd4ce7ee34f93228a60  CHANGELOG.md
+ a07a4f01717f318f52aca1d2a94bbc8c3d5cb43178037a982836f050d41e587b  CLA.md
+ f53ac0ea35dd5e46db721665775cd935f746c70591507d1d012f225c107cfec3  CODE_OF_CONDUCT.md
+-4e49be2d6e9e48904b263df72051c982bb371d890466168cfef2eadc96532d58  CONTRIBUTING.md
++1b2481caf92a5ae769c277c5d111c02422f666ea132832c746144a0be993e677  CONTRIBUTING.md
+ d5a922dd5fd3c0168ec68f5841700816d559b95240d31d97b77ed5e21ed842df  DESIGN.md
+ 5b83444b484ca4a54a3f9bcc556d25987e074af83a959b87a5e174d989d74b54  Dockerfile
+ 2eb00ec663e945441d85b393d63585907b00ac38b9cadc5a61c09e30bf831a56  Dockerfile.action
+@@ -656,7 +656,7 @@ bcf7d58613b833527320a31ea9d04e757aaf8687ecc014568fc9def2069a138c  src/no_human/c
+ 318191871c89b7c08b71c0faa1423e8eba12ed91af391112a18ed4e603fdab2c  src/no_human/core/model_catalog.py
+ 99e4349e0bf40e7c40e726cc1d3b9715e140f0a036021b892a5a1cb3f2081f65  src/no_human/core/model_settings.py
+ 58770747c43d28eaca7fa64914ddb639288cc701648e7049d616fd9a2dc1563c  src/no_human/core/multi_repo.py
+-a2a633219980269461574237687e2dfff33bfb99cc1fcc2d6b52858d355f3091  src/no_human/core/orchestrator.py
++db4da0c670d3e859ae0f48167b08e2adcdfadf1ee3e9f600ef1db7761801ad5b  src/no_human/core/orchestrator.py
+ 685fd168b7f4a343bcf45f0e2dcc63e9f800f31f8921f24412b988f792920e0d  src/no_human/core/ordinal.py
+ b99150b5be32787f567a917fb30b34e439be611dfdf400bdd8b8fc194eb72032  src/no_human/core/pathglob.py
+ 0ef57087ce44a91abba8973a07a503325f05b7d78e0dc22e75c6ff6fa0597d49  src/no_human/core/plan_gate.py
+@@ -783,7 +783,7 @@ d4ac95ca95ecb2e3dada0d76d35d68f349045923073135bba7209097f272e1cd  src/no_human/v
+ a662d7e8adf5cced901535639307221bfa25ca762fd4bddeecfb77119b14fa39  src/no_human/vcs/git.py
+ 07da31395c1728516b2037ee398ddef448ad03cb09a18978acefc96fa2a84b82  src/no_human/vcs/github.py
+ 1aaca9dd7a34ad6daec3ca3a4b5a646b19254fac13f1708e2cfc9e60e3f3e0a4  src/no_human/vcs/gitlab.py
+-91372696378c008207169e699af1c296c4a0263c1c340e5f43b0af912b8ecb50  src/no_human/vcs/landability.py
++6ac05d96d382bd964b8a519df66282833a8127e1de3f1a119df01e4b9a2d49d5  src/no_human/vcs/landability.py
+ b95df40913f6a0013f06167a7bf23afe6aabc907ce3faccfb11d2a3e843477cd  src/no_human/vcs/manifest_repair.py
+ 444145c9969f3961bdfce7b8e9608095b429ea1537c5325cbf395eabf1cd638e  src/no_human/vcs/merge_order.py
+ 3d8b473de2cf74a234dac9727252dac57a36a8094cf13e7e5e19fd818b5e22cd  src/no_human/vcs/outbound_scrub.py
+@@ -791,8 +791,8 @@ b95df40913f6a0013f06167a7bf23afe6aabc907ce3faccfb11d2a3e843477cd  src/no_human/v
+ 8eee9be2fa9bb106350690bebcbb26dd4d663b7486f05f96587a3f7b197bbdd4  src/no_human/vcs/pr_refs.py
+ 3a1177710de5fcc960b6a70e3655513f05791d24ee3c932e7ebb73c33ec3627c  src/no_human/vcs/pr_watcher.py
+ 16c1bd39d3b8163159033fbc72da3108db9b0781b0f8542d565d11e1909f3e52  src/no_human/vcs/push_hook.py
+-481090d8374cacb779ec696eb02110e1ebbb50538c0861b42e2adfc17706a1a0  src/no_human/vcs/receipts.py
+-0832efe3f1fa59e86d7e29fb70158dd324ead9ffdb1a980f9225307925ad9117  src/no_human/vcs/recut.py
++aa9fcb0e69aa6efb6772b2a0b7fc4bd990bd6ac920f6ea38e1c1a70d6eec1e11  src/no_human/vcs/receipts.py
++0c98897e56cb94906e980f36fec5183666fef9f2766cbd3b9b61604c89c81c3c  src/no_human/vcs/recut.py
+ c0a6c3bced2b1c0c180aea5d1af947a686173389c17a69cbb38a9dfa639098a8  src/no_human/vcs/task_pr.py
+ dc3af9a0eb8b0513e39bd059ecc60c576418764ed90e35642d184078f7876e30  src/no_human/walks_provision.py
+ f4dfe84b0fc84d45b220e10e089942f4dfc7201435d60731b080913d76db995e  src/no_human/wiki_jobs.py
+@@ -1083,6 +1083,7 @@ c340c7cd33b7bed41375202710690d6c946e3e8f8764cb46b1b547f53cbc2fb3  tests/test_mod
+ 9bc16bc7dd653ef28dcc629a74d048d5f14bcef2ecbb205fead9f685f8ef5d84  tests/test_multi_repo.py
+ c6c5d158315baa90f8c638e37c166585ddfe7af9da3237d04d061a3cf018466c  tests/test_narrated_demo.py
+ 58d70883f30088681d88bee6710701f92411a34be70ca158bb6ce443365c98c7  tests/test_navigation_value.py
++53417a12135785c061b5e1586985931395d59833265818dbceccdbcec2cb5c06  tests/test_no_approximate_line_anchors.py
+ 2c64b13a6e38fcbc00ffb64bb9845e879df53013167d8d7f465aef845ac21a0b  tests/test_northstar.py
+ a396c24f5f0d0edf07504f2e26a7cea157934d4ab8dac85a833c4a8cbdfe65fa  tests/test_northstar_card.py
+ c92e567dc21f6d1f8c38a05bf830745b9d1efc614a42a2172b8253c6c3af4e5f  tests/test_notify_teams.py
+@@ -1234,7 +1235,7 @@ de218d3a7b7ec30b6dc30d8bcba90afd2d8d04006e4284578afaff574e9663ad  tests/test_sta
+ c0bab177850a20d2a88a06c490a8335f83e011ae5c8d3708f647b30a6318464e  tests/test_status_lanes.py
+ cb45a53757a28c1f8fde91c729dbcffc4eec4511690d602e8cc0d17bd5db70c3  tests/test_store_fixture_convergence_guard.py
+ 0b85cec4255d31ec6a87e17a675836aac3bd158708e11b12ba503b72d79adc3b  tests/test_stream_closure_retry.py
+-18cbf708cc86f00db9631e3db75c26ecfb34522f5ea129a36b4c3c8dc6087781  tests/test_structural_budget.py
++5a77b9b8e2c84b656e4c6947bb1530c412af1a25f3667a530d81161e9a39a014  tests/test_structural_budget.py
+ 06db9ff035c9b987614d7d83ece5a1c9ceffaefa822cb79bd54f7c3d9d2f1148  tests/test_structural_budget_preflight.py
+ f7d34492e217d8e0f465e32e770798a7b82e5706b5d1ce11f268f6587af29120  tests/test_stuck_abort.py
+ 3004866049c19b92aa2b6980fedb3506cd652118f413a778481cb0d07ceb732f  tests/test_stuck_hypothesis.py
+diff --git a/src/no_human/core/orchestrator.py b/src/no_human/core/orchestrator.py
+index 2588f814..920dbc6f 100644
+--- a/src/no_human/core/orchestrator.py
++++ b/src/no_human/core/orchestrator.py
+@@ -5424,9 +5424,9 @@ class Orchestrator:
+         (`set_status` returning ``None``) leaves no `succeeded` attempt row
+         and no `no_changes_needed` marker on a task that reads failed. No
+         `mechanical_round` stamp either — that flag exempts a post-PASS
+-        MECHANICAL round's token spend from the lifetime budget (db.py
+-        ~2884-2892); this round is a normal, budget-counted attempt that
+-        happens to need no new commit.
++        MECHANICAL round's token spend from the lifetime budget
++        (db.py::_lifetime_included_sql); this round is a normal,
++        budget-counted attempt that happens to need no new commit.
+         """
+         if not await self._send_back_resume_round(task, repo=repo):
+             return None
+@@ -12759,9 +12759,10 @@ class Orchestrator:
+         never verify an unpushable checkpoint and turn it into approval proof.
+         """
+         # `task` is needed below to enumerate THIS task's own pushed agent
+-        # branches (attempt 2+ pushes to a distinct branch — see
+-        # branch_prefix usage at ~4407 — so the offered branch alone can
+-        # undercount what this task has actually shipped to the remote).
++        # branches (attempt 2+ pushes to a distinct branch — see the
++        # `branch_prefix` usage in `_run_attempt`'s attempt-suffixed branch
++        # naming — so the offered branch alone can undercount what this
++        # task has actually shipped to the remote).
+         try:
+             head = repo.head_sha().strip()
+         except Exception as exc:  # noqa: BLE001 — unreadable means unshippable
+@@ -12844,8 +12845,9 @@ class Orchestrator:
+                 False, ship_ref
+         # The local pointer is still a refusal signal, but the decision is
+         # made *after* the remote evidence below: attempt 2+ pushes to a
+-        # DIFFERENT, attempt-suffixed branch of this same task (~4407)
+-        # while `branch` still names an earlier/unpushed one, so a lagging
++        # DIFFERENT, attempt-suffixed branch of this same task (see
++        # `_run_attempt`'s `branch_prefix` usage) while `branch` still names
++        # an earlier/unpushed one, so a lagging
+         # local pointer is exactly the case the sibling fallback below
+         # exists for — returning here would make that fallback unreachable.
+         local_is_reviewed = branch_sha == head
+@@ -12872,8 +12874,9 @@ class Orchestrator:
+         # `branch` itself isn't up to date (or its local pointer lags) — but
+         # constraint #2 forbids the agent merging to `ship_ref`, so attempt
+         # 2+ pushes to a DIFFERENT, attempt-suffixed branch of this same
+-        # task (~4407) while `branch` here still names an earlier/unpushed
+-        # one. Before refusing, check whether one of THIS task's other
++        # task (see `_run_attempt`'s `branch_prefix` usage) while `branch`
++        # here still names an earlier/unpushed one. Before refusing, check
++        # whether one of THIS task's other
+         # pushed branches already contains `head` — sibling branches only,
+         # never any remote ref, so a foreign task's branch can't satisfy
+         # this claim. `remote_branch_relation` compares the remote tip to
+@@ -12936,7 +12939,7 @@ class Orchestrator:
+           read `wake` as eligible on provenance alone, so the coder's re-verified
+           ALREADY-SATISFIED claim went to `_gate_already_satisfied` — which
+           structurally refuses a `[WIP-BLOCKED]` subject (`_already_satisfied_
+-          subject`, ~10674) — and the attempt was `failed` with "already-satisfied
++          subject`) — and the attempt was `failed` with "already-satisfied
+           claim refused" instead of reviewing the finished work already on the
+           branch.
+         * task d256ae60 (the silent terminal): the same shape, but the resumed
+@@ -12948,7 +12951,7 @@ class Orchestrator:
+ 
+         A THIRD incident, same date, on the neighbouring subject: a `[WIP-PARTIAL]`
+         checkpoint (a wake/quota park mid-coder, no HUMAN gate) off the ship ref
+-        fails `_already_satisfied_subject` (~10674) exactly as a `[WIP-BLOCKED]`
++        fails `_already_satisfied_subject` exactly as a `[WIP-BLOCKED]`
+         one does — incidents A (claim terminal) and B (silent terminal) verbatim,
+         just on the other subject. There is no shape in which a `[WIP-PARTIAL]`
+         head off the ship ref is safe to route through the claim gate: whoever
+@@ -13022,8 +13025,8 @@ class Orchestrator:
+     def _head_is_wip_checkpoint(repo, sha: str) -> bool:
+         """Is ``sha`` a ``[WIP-BLOCKED]`` OR ``[WIP-PARTIAL]`` checkpoint — a
+         quota/human park or a wake/quota park mid-attempt — a subject
+-        `_already_satisfied_subject` (~10674) refuses whenever the commit is
+-        not also on the ship ref (~10665)?
++        `_already_satisfied_subject` refuses whenever the commit is
++        not also on the ship ref (its own `is_ancestor` check)?
+ 
+         Routing such a head to the claim gate off the ship ref is guaranteed
+         to burn the attempt (task 0847f2c2 on `[WIP-BLOCKED]`; the neighbouring
+@@ -13034,8 +13037,8 @@ class Orchestrator:
+         off the ship ref, so there is no shape in which only one of them is
+         safe here — widening from `[WIP-BLOCKED]`-only to both prefixes is the
+         whole fix. Fails CLOSED on an unreadable subject: an unreadable head
+-        must not buy the claim escape, same rationale as `_is_wip_partial`
+-        (~17967), whose sibling check this is.
++        must not buy the claim escape, same rationale as `_is_wip_partial`,
++        whose sibling check this is.
+         """
+         try:
+             subject = repo._run(
+@@ -13049,7 +13052,7 @@ class Orchestrator:
+         diff no completed review has judged — else ``None``.
+ 
+         Hoisted into `_run_attempt` before BOTH zero-diff terminals so a
+-        `branched_from_own_partial` resume (`_is_own_partial`, ~17843 — every
++        `branched_from_own_partial` resume (`_is_own_partial` — every
+         `wake`/machine resume whose sha matches its own `resume_from`) cannot
+         reach either one on an unjudged diff: incident 0847f2c2 (claim
+         terminal, a fully-cited claim was refused by `_already_satisfied_
+@@ -14732,7 +14735,7 @@ class Orchestrator:
+             # the next call IS the retry.
+             #
+             # ONE NAMED EXCEPTION to "no retry loop of its own", scoped exactly as
+-            # narrowly as `_finalize`'s own `forced` decision (~7981) is scoped: a
++            # narrowly as `_finalize`'s own `forced` decision is scoped: a
+             # `pr_conflict` round used to rebase the already-pushed task branch BY
+             # CONSTRUCTION, making the plain push above non-fast-forward on EVERY
+             # such round. `agent/pushed_tip_guard` now DENIES that rebase and
+@@ -14746,9 +14749,10 @@ class Orchestrator:
+             # review that round with no PR, the exact state 0a / PR-021 exists to
+             # prevent (see the docstring). `_finalize`'s force decision is the
+             # single source of truth for when a force-push is safe; this reuses its
+-            # module-level predicate verbatim (~247) rather than inventing a second
+-            # heuristic — the only extra conjunct is the round marker, because this
+-            # call retries *before* a review verdict exists for `_finalize`'s own
++            # module-level `_is_non_fast_forward` predicate verbatim rather than
++            # inventing a second heuristic — the only extra conjunct is the
++            # round marker, because this call retries *before* a review
++            # verdict exists for `_finalize`'s own
+             # predicate to read. `PushBehindRemote` is re-raised above and the
+             # predicate itself returns False for it (belt and braces).
+             # Unlike `_finalize`'s transient-forge retry, this rejection is
+@@ -16638,7 +16642,7 @@ class Orchestrator:
+         rules = list(getattr(prof, "test_commands", None) or [])
+         if not rules:
+             return base, None  # no routing rules ⇒ default (every repo but no_human)
+-        # _agent_edited_files is set per attempt (line ~1050) by the edit hook.
++        # _agent_edited_files is set per attempt by the `_agent_sink` edit hook.
+         # On a RESUMED attempt the coder may make no new edits (the work is
+         # already committed at the [WIP-BLOCKED] checkpoint), so that set is
+         # empty — fall back to the attempt's committed change set (the same
+@@ -23202,9 +23206,10 @@ SIX of them read a checkpoint and TWO do not — but do
+         # verdict was computed from, which is exactly the bug this parameter
+         # exists to close. `_finalize` therefore never reaches this branch;
+         # it stays live only for callers with nothing pre-gathered (the
+-        # pre-review draft body at ~10789, the body rebuild at ~8477, and this
+-        # file's own unit tests), which leave it at the default `None` and get
+-        # the old gather-it-here behaviour.
++        # pre-review draft body in `_open_draft_pr_for_review`, the body
++        # rebuild in `_gate_already_satisfied`, and this file's own unit
++        # tests), which leave it at the default `None` and get the old
++        # gather-it-here behaviour.
+         if evidence is None:
+             evidence = self._gather_evidence(
+                 task, test_evidence=test_evidence, receipts=receipts,
+diff --git a/src/no_human/vcs/landability.py b/src/no_human/vcs/landability.py
+index e3642099..9356fe1f 100644
+--- a/src/no_human/vcs/landability.py
++++ b/src/no_human/vcs/landability.py
+@@ -31,8 +31,8 @@ mechanically_resolvable`'s wider eligible set, is what decides "derived":
+ `mechanically_resolvable` also accepts `EXPORT_CLASSIFICATION.txt`- and
+ `tests/test_structural_budget.py`-shaped conflicts, because that function
+ backs a DIFFERENT resolver (`resolve_derived_conflict`) that can actually
+-fix those up. `approve_merge.land_task`'s squash step (approve_merge.py
+-~1060) tolerates exactly one shape: `unmerged == {"RELEASE_MANIFEST.txt"}`
++fix those up. `approve_merge.land_task`'s squash step tolerates exactly
++one shape: `unmerged == {"RELEASE_MANIFEST.txt"}`
+ and nothing else — any other unmerged set, including a conflict that ALSO
+ touches `RELEASE_MANIFEST.txt`, refuses at `squash`. Classifying anything
+ wider than that singleton as "derived" here would make `--ready` render
+diff --git a/src/no_human/vcs/receipts.py b/src/no_human/vcs/receipts.py
+index 0cb415cf..ce7b32c7 100644
+--- a/src/no_human/vcs/receipts.py
++++ b/src/no_human/vcs/receipts.py
+@@ -86,7 +86,7 @@ def verify_pr_receipt(
+         relevant &= committed_files
+     missing = sorted(relevant - pr_files)
+     if missing:
+-        # gh caps the files array (~100): in a big PR, absence from the
++        # gh caps the files array (~100 files): in a big PR, absence from the
+         # first page proves nothing — never report a loss we can't verify.
+         if len(pr_files) >= 100:
+             return Receipt(
+diff --git a/src/no_human/vcs/recut.py b/src/no_human/vcs/recut.py
+index a1947647..5b4c5ddc 100644
+--- a/src/no_human/vcs/recut.py
++++ b/src/no_human/vcs/recut.py
+@@ -60,8 +60,9 @@ def branch_stem(config: dict, task_id: str) -> str:
+     """The task's own branch family name, e.g. ``no-human/abc12345``.
+ 
+     Mirrors the exact naming convention used at branch-creation time
+-    (`orchestrator.py`'s `_run_attempt`, ~5682) and at the sibling-branch
+-    scan used to satisfy an already-satisfied claim (~12571). This
++    (`orchestrator.py`'s `_run_attempt`) and at the sibling-branch scan
++    used to satisfy an already-satisfied claim
++    (`orchestrator.py`'s `_already_satisfied_subject`). This
+     function does not change that convention — it only reads it — so
+     every existing branch name (bare stem, or ``stem-N`` for attempt
+     N > 1) is still exactly what it always was.
+diff --git a/tests/test_no_approximate_line_anchors.py b/tests/test_no_approximate_line_anchors.py
+new file mode 100644
+index 00000000..c190f680
+--- /dev/null
++++ b/tests/test_no_approximate_line_anchors.py
+@@ -0,0 +1,471 @@
++"""No source comment or docstring in `src/` carries an approximate line anchor.
++
++An approximate line anchor is prose like "the check is at ~12034" or
++"(db.py ~2884-2892)": a number that means "go read around here". It reads
++fine the day it is written and rots on every landing after, because nothing
++short of a resolver keeps a bare integer in sync with a file that keeps
++growing and shrinking. Nothing validated this syntax before this gate —
++`tests/test_readme_claims.py`'s citation machinery covers a DIFFERENT,
++disjoint syntax (`file.py:LINE`) in `docs/` only, never `~NNN` prose and
++never `src/`.
++
++DECISION: (b), a CONVENTION forbidding approximate line anchors in shipped
++source, enforced here by a pytest gate that FAILS (never warns). The
++alternative — a drift-tolerant gate that resolves each anchor's target and
++fails only once it goes stale — was rejected because the anchors already
++shipped are not *prospectively* rotten, they are *already* wrong: resolving
++every target this repo carried against its own symbols found 15 of 16
++pointing at the wrong function. A drift gate would fail almost immediately
++against nearly the whole population and demand exactly the same
++remediation (write the symbol name) plus a permanent resolver and an
++arguable tolerance window. A symbol name never goes stale, so the
++convention costs nothing to maintain afterward.
++
++Scope is `src/` only, per intake — `tests/`, `docs/`, `scripts/`, `e2e/`,
++`eval/`, `examples/`, `web/` and `desktop/` keep whatever policy they had.
++`SCANNED_AREAS` below is the one-line-widenable record of that choice.
++
++COUNTING METHOD (stated here, in CONTRIBUTING.md and in CHANGELOG.md)
++-----------------------------------------------------------------------
++A bare `grep -oE '~[0-9]{3,5}'` over `src/**/*.py` over-counts by roughly
++double, because it cannot tell a line anchor from a quantity that already
++names its unit: `~120MB`, `~1078s`, `~500 LOC`, `~917k`, `~275M` and
++`~394 of the pending backlog` all match it just as readily as a real
++anchor does (`test_a_bare_grep_over_counts` pins the gap with a fixed
++corpus rather than asserting it in prose). Widening further to bare `~[0-9]`
++is worse: it is dominated by `HEAD~1`-style git revisions and `~0o777`
++bitwise-not literals, neither of which is prose at all.
++
++The classifier used by this gate instead:
++
++1. Looks only at **comments and string literals** (`tokenize.COMMENT`
++   tokens and `ast.Constant` string nodes) — never raw code — which alone
++   drops every `HEAD~1` and every `~` bitwise-not operator, since those
++   live in code, not prose.
++2. Requires the `~` to **start a token**: `(?<![\\w~])~` — this drops
++   `sha~2` / `main~2`-style prose that happens to contain a tilde
++   mid-word, and it is why `HEAD~1` is also excluded a second, independent
++   way (the `D` before the `~` is a word character).
++3. Requires **3+ digits**, optionally as an `NNN-NNN` range. The range
++   branch is load-bearing: this repo shipped `(db.py ~2884-2892)`, and
++   without it the gate would report a confusing half-token. The 3-digit
++   floor is deliberate — the 2-digit band (`~40 chars`, `~10 ms`) is
++   entirely quantities, and a 2-digit anchor into a 24,000-line file is
++   not a shape that occurs.
++4. Flags the number **only when it is not followed by a unit or counted
++   noun** (`[-–]?\\s*[A-Za-z%×^]+`), minus a stopword deny-list
++   (`in`, `and`, `or`, `the`, `a`, `an`, `is`, `at`, `to`, `on`, `by`, `as`,
++   `that`, `this`, `which`, `for`, `from`, `with`). `of` is deliberately
++   **not** in that deny-list: `~394 of the pending backlog` is a live
++   partitive-quantity idiom in this tree, and treating `of` as a stopword
++   would misflag it.
++
++Applied to the tree at the time this gate was written, this returned 17
++hits with zero false positives: 16 true anchors (15 in
++`core/orchestrator.py`, 1 in `vcs/landability.py`) plus one genuine
++quantity, `vcs/receipts.py:89`'s `gh caps the files array (~100)`, caught
++bare only because its noun happens to *precede* the number. All 16
++anchors were replaced by symbol names (or the number was dropped where no
++symbol could be confirmed); `receipts.py:89` gained the one word it was
++missing, `(~100 files)`, with the number itself untouched.
++
++FAIL-CLOSED I/O
++----------------
++An undecodable or unparseable file is reported as an offender-shaped
++error, never silently skipped — a silently-skipped file is exactly how a
++gate scores a meaningless zero. Every read declares `encoding="utf-8"",
++per `tests/test_text_reads_declare_encoding.py`.
++"""
++from __future__ import annotations
++
++import ast
++import io
++import pathlib
++import re
++import tokenize
++
++import pytest
++
++# Selected by `.no_human.yml`'s web/desktop routes as `-m repoguard`, alongside
++# whichever other repo-wide guards the checkout carries. Deliberately no
++# `slow`/`nightly` marker: see `test_the_gate_runs_on_the_pr_lane` below.
++pytestmark = pytest.mark.repoguard
++
++REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
++
++#: `src/` only, per intake. A tuple so the scope decision is visible and
++#: one-line-widenable if it is ever revisited.
++SCANNED_AREAS = ("src",)
++
++#: The `~` must start a token (drops `sha~2`, `main~2`, and — together with
++#: rule 1 restricting to comments/strings — `HEAD~1` and bitwise-not `~x`).
++#: 3+ digits, optionally an `NNN-NNN` range so `~2884-2892` counts once.
++_ANCHOR_TOKEN = re.compile(r"(?<![\w~])~(\d{3,5}(?:-\d{3,5})?)")
++
++#: What "followed by a unit or counted noun" means: an optional leading
++#: hyphen/en-dash (`~328-turn`), optional space (`~500 LOC`), then a run of
++#: letters/`%`/`×`/`^`.
++_UNIT_TAIL = re.compile(r"^[-–]?\s*([A-Za-z%×^]+)")
++
++#: Words that do NOT count as a real unit/noun, so a number followed by one
++#: of these is still an anchor, not a quantity. `of` is deliberately absent:
++#: `~394 of the pending backlog` is a live partitive-quantity idiom.
++_STOPWORDS = {
++    "in", "and", "or", "the", "a", "an", "is", "at", "to", "on", "by", "as",
++    "that", "this", "which", "for", "from", "with",
++}
++
++#: A naive count with none of the above discrimination — what a quick
++#: `grep -oE '~[0-9]{3,5}' -r src/` gives you. Used only to demonstrate the
++#: gap the classifier closes; never used to decide a pass/fail.
++_BARE_ANCHOR_SHAPE = re.compile(r"~[0-9]{3,5}")
++
++
++def _find_anchors(text: str) -> list[tuple[int, str]]:
++    """`(offset, matched_token)` for every `~NNN` shape in `text` that reads
++    as an approximate LINE ANCHOR rather than a quantity.
++
++    See the module docstring for the counting method this implements.
++    """
++    hits: list[tuple[int, str]] = []
++    for match in _ANCHOR_TOKEN.finditer(text):
++        tail = text[match.end():]
++        unit = _UNIT_TAIL.match(tail)
++        if unit and unit.group(1).lower() not in _STOPWORDS:
++            continue  # a real unit/counted noun follows: a quantity
++        hits.append((match.start(), match.group(0)))
++    return hits
++
++
++def _prose_spans(path: pathlib.Path) -> list[tuple[int, str, bool]]:
++    """`(lineno, text, offset_uncertain)` for every comment and every
++    string-literal LINE in `path`.
++
++    Comments are already single physical lines (`tokenize` guarantees
++    this). A multi-line string constant is split on `"\\n"` and offset from
++    `node.lineno`, so a docstring reports the anchor's OWN line rather than
++    the docstring's opening line — an earlier draft of this scanner reported
++    the string's start line for every hit inside it, which made the failure
++    message point at the wrong place for anything past the first line. If
++    the computed line's text is not actually found at that physical line,
++    `offset_uncertain` is True and the caller falls back to `node.lineno`.
++    """
++    source = path.read_text(encoding="utf-8")
++    source_lines = source.splitlines()
++    spans: list[tuple[int, str, bool]] = []
++
++    for tok in tokenize.generate_tokens(io.StringIO(source).readline):
++        if tok.type == tokenize.COMMENT:
++            spans.append((tok.start[0], tok.string, False))
++
++    tree = ast.parse(source)
++    for node in ast.walk(tree):
++        if isinstance(node, ast.Constant) and isinstance(node.value, str):
++            for offset, line_text in enumerate(node.value.split("\n")):
++                candidate = node.lineno + offset
++                actual = (
++                    source_lines[candidate - 1]
++                    if 0 <= candidate - 1 < len(source_lines)
++                    else ""
++                )
++                if line_text and line_text not in actual:
++                    spans.append((node.lineno, line_text, True))
++                else:
++                    spans.append((candidate, line_text, False))
++
++    return spans
++
++
++def _file_offenders(path: pathlib.Path, *, label: str | None = None) -> list[str]:
++    """Offender messages for `path`, `"label:line: ..."` per hit.
++
++    Fails closed: a file that cannot be read or parsed is reported as an
++    offender-shaped error rather than silently skipped, which is the only
++    way a flat-zero result can be trusted to mean "clean" rather than
++    "the scan never looked".
++    """
++    if label is None:
++        try:
++            label = path.relative_to(REPO_ROOT).as_posix()
++        except ValueError:
++            label = str(path)
++
++    try:
++        spans = _prose_spans(path)
++    except Exception as exc:  # noqa: BLE001 — intentionally fail-closed, not a skip
++        return [
++            f"{label}:0: could not scan for approximate line anchors "
++            f"({exc.__class__.__name__}: {exc})"
++        ]
++
++    offenders = []
++    for lineno, text, uncertain in spans:
++        for _offset, matched in _find_anchors(text):
++            note = (
++                " [line offset uncertain; reporting the string's start line]"
++                if uncertain
++                else ""
++            )
++            offenders.append(
++                f"{label}:{lineno}: approximate line anchor {matched!r}{note} "
++                "— name the symbol instead (e.g. `_already_satisfied_subject`), "
++                "which the reader has to grep for anyway, or if this is a "
++                "quantity, say what you are counting (`~100 files`, not "
++                "`(~100)`)"
++            )
++    return offenders
++
++
++def _scan_area(area: str) -> list[str]:
++    offenders: list[str] = []
++    for path in sorted((REPO_ROOT / area).rglob("*.py")):
++        offenders.extend(_file_offenders(path))
++    return offenders
++
++
++# ---------------------------------------------------------------------------
++# The gate.
++# ---------------------------------------------------------------------------
++
++
++@pytest.mark.parametrize("area", SCANNED_AREAS)
++def test_no_source_comment_carries_an_approximate_line_anchor(area):
++    offenders = _scan_area(area)
++    assert offenders == [], (
++        "approximate line anchors rot on every landing and nothing else "
++        "validates them; replace with a symbol name the reader can grep "
++        "for, or delete the number and keep the prose:\n" + "\n".join(offenders)
++    )
++
++
++def test_the_scan_would_not_pass_vacuously():
++    """A misconfigured `REPO_ROOT` or a renamed `src/` would make the
++    flat-zero assertion above pass for the wrong reason. Guarded directly,
++    the way the sibling `read_text` gate documents doing for its own scope."""
++    root = REPO_ROOT / "src"
++    paths = list(root.rglob("*.py"))
++    assert paths, "src/ scan found no Python files at all; REPO_ROOT is wrong"
++    assert any("~" in p.read_text(encoding="utf-8") for p in paths), (
++        "no file under src/ contains a tilde at all; the flat-zero pass "
++        "above would be vacuous"
++    )
++
++
++# ---------------------------------------------------------------------------
++# Mutation demonstration (acceptance criterion: shown, not asserted in prose).
++# ---------------------------------------------------------------------------
++
++
++def test_the_gate_fails_on_a_planted_anchor(tmp_path):
++    """Copy a real `src/` file, plant an anchor in it, and prove the SAME
++    scanner the repo-wide test above uses reports exactly that line. This is
++    the mutation the repo-wide test's flat-zero pass would otherwise only be
++    asserted, never demonstrated, to catch."""
++    real = REPO_ROOT / "src" / "no_human" / "core" / "bounds.py"
++    original = real.read_text(encoding="utf-8")
++    assert _file_offenders(real) == [], (
++        "bounds.py is expected to be clean before mutation; if not, this "
++        "test can't tell the mutation from pre-existing rot"
++    )
++
++    mutated = original + "\n# planted anchor for the mutation demo, see ~12034\n"
++    planted_lineno = len(mutated.splitlines())
++    copy_path = tmp_path / "bounds.py"
++    copy_path.write_text(mutated, encoding="utf-8")
++
++    offenders = _file_offenders(copy_path, label="src/no_human/core/bounds.py")
++    matching = [o for o in offenders if "~12034" in o]
++    assert matching, (
++        "planting '~12034' in a copy of a real src/ file was not caught by "
++        "the same scanner the repo-wide gate uses — the gate cannot be "
++        "trusted to catch a new one"
++    )
++    assert any(f":{planted_lineno}:" in o for o in matching), matching
++
++    # The untouched original is still clean: it is the mutation the gate
++    # objects to, not the file.
++    assert _file_offenders(real) == []
++
++
++def test_the_guard_can_actually_see_an_offender():
++    """A guard that scores zero because its scanner is broken looks exactly
++    like a guard that scores zero because the tree is clean. Pin the scanner
++    against a known positive AND a known-clean symbol-form replacement, both
++    directions, so a refactor that quietly stops matching fails here instead
++    of going green forever."""
++    found = [tok for _offset, tok in _find_anchors("see the check at ~12034 for details")]
++    assert found == ["~12034"], "the scanner no longer recognises a planted anchor"
++
++    clean = _find_anchors("see `_already_satisfied_subject` for details")
++    assert clean == [], "the scanner flags a symbol-form reference with no digits"
++
++
++def test_the_scanner_reads_comments_and_docstrings_and_not_code(tmp_path):
++    """`x = ~1050` in code is a bitwise-not expression, not prose, and must
++    never be visited; `~1050` in a comment on the very next line must be."""
++    planted = tmp_path / "code_vs_comment.py"
++    planted.write_text(
++        "x = ~1050  # not this one, it is code\n"
++        "y = 2  # see the check at ~1050\n",
++        encoding="utf-8",
++    )
++    offenders = _file_offenders(planted)
++    assert len(offenders) == 1, offenders
++    assert ":2:" in offenders[0], offenders
++
++
++def test_an_anchor_deep_in_a_docstring_reports_its_own_line(tmp_path):
++    """A 40-line docstring with the anchor on line 30 must report 30, not
++    the docstring's opening line — the bug an earlier draft of this scanner
++    had (it reported line 12606 for an anchor actually on line 12628)."""
++    docstring_lines = [f"filler line {i}" for i in range(1, 40)]
++    docstring_lines.insert(29, "the check is at ~99999")  # 30th line, 1-based
++    source = '"""' + "\n".join(docstring_lines) + '\n"""\n'
++
++    planted = tmp_path / "deep_docstring.py"
++    planted.write_text(source, encoding="utf-8")
++
++    offenders = _file_offenders(planted)
++    assert len(offenders) == 1, offenders
++    assert ":30:" in offenders[0], offenders
++
++
++# ---------------------------------------------------------------------------
++# New anchors are rejected automatically, not by review attention.
++# ---------------------------------------------------------------------------
++
++
++def test_the_gate_runs_on_the_pr_lane():
++    """No `slow`/`nightly` marker, so this file lands in the `fast` PR lane
++    automatically — `.no_human.yml` selects `repoguard` guards by MARKER,
++    never by filename, and a `slow`/`nightly` marker here would silently
++    disarm the gate on every PR (mirrors `test_test_lanes.py`'s concern that
++    fast+nightly must partition the whole suite with nothing left out)."""
++    marks = pytestmark if isinstance(pytestmark, (list, tuple)) else [pytestmark]
++    names = {mark.name for mark in marks}
++    assert names == {"repoguard"}, (
++        f"this gate carries marker(s) {sorted(names)}; the PR lane runs "
++        '`-m "not slow and not nightly"`, so a slow/nightly marker here '
++        "would silently disarm the gate on every PR"
++    )
++
++
++# ---------------------------------------------------------------------------
++# Approximate QUANTITIES are untouched and still read naturally.
++# ---------------------------------------------------------------------------
++
++#: Copied verbatim from live lines in `src/` (see the files named in each
++#: `why`). Every one of these must NOT be flagged.
++_QUANTITY_CASES = [
++    ("~5500x", "unit suffix x — cli/commands.py"),
++    ("~1078s", "unit suffix s (seconds) — config.py, review/reviewer.py"),
++    ("~360s", "unit suffix s (seconds) — config.py"),
++    ("~113k", "unit suffix k — core/bounds.py"),
++    ("~758k", "unit suffix k — core/bounds.py"),
++    ("~917k", "unit suffix k — core/db.py"),
++    ("~275M", "unit suffix M — core/pricing.py"),
++    ("~120MB", "unit suffix MB — doctor.py, walks_provision.py"),
++    ("~500 LOC", "counted noun LOC — core/prompt_blocks.py"),
++    ("~328-turn successful runs", "counted noun, hyphenated — core/bounds.py"),
++    ("~394 of the pending backlog", "partitive idiom; 'of' is not a stopword — config.py"),
++    ("~700 of the 1000 characters", "partitive idiom — learning/queue.py"),
++    ("~38-60%", "below the 3-digit floor — core/feasibility.py"),
++    ("~10^5", "below the 3-digit floor — agent/claude_backend.py"),
++]
++
++#: Not prose at all — git revisions and a bitwise-not literal.
++_NON_PROSE_NEGATIVES = [
++    ("HEAD~1", "git revision; ~ does not start a token"),
++    ("main~2", "git revision; ~ does not start a token"),
++    ("~0o777", "bitwise-not-shaped octal literal; no 3+ digit run right after ~"),
++]
++
++#: The five real anchor shapes this repo shipped before the fix (each from
++#: `core/orchestrator.py`, spelled here because this file is not itself
++#: scanned — `SCANNED_AREAS` is `("src",)`).
++_ANCHOR_SHAPES = [
++    "~4407 —",
++    "(~10674)",
++    "(~17967),",
++    "(line ~1050)",
++    "~2884-2892);",
++]
++
++
++@pytest.mark.parametrize(("text", "why"), _QUANTITY_CASES)
++def test_approximate_quantities_are_not_flagged(text, why):
++    assert _find_anchors(text) == [], why
++
++
++@pytest.mark.parametrize(("text", "why"), _NON_PROSE_NEGATIVES)
++def test_non_prose_tildes_are_not_flagged(text, why):
++    assert _find_anchors(text) == [], why
++
++
++def test_the_only_quantity_this_change_touched_named_no_unit():
++    """`receipts.py:89` is the one quantity this change touched, and it
++    gained a word, not a rewrite: `(~100)` -> `(~100 files)`, number
++    unchanged. Every other quantity in `src/` stays byte-identical."""
++    receipts = (REPO_ROOT / "src" / "no_human" / "vcs" / "receipts.py").read_text(
++        encoding="utf-8"
++    )
++    assert "~100 files" in receipts, "receipts.py:89 should read '(~100 files)'"
++    assert "(~100)" not in receipts, "the old bare quantity should be gone"
++
++    unaffected = {
++        REPO_ROOT / "src" / "no_human" / "core" / "pricing.py": "~275M",
++        REPO_ROOT / "src" / "no_human" / "core" / "db.py": "~917k",
++        REPO_ROOT / "src" / "no_human" / "core" / "prompt_blocks.py": "~500 LOC",
++        REPO_ROOT / "src" / "no_human" / "doctor.py": "~120MB",
++        REPO_ROOT / "src" / "no_human" / "review" / "reviewer.py": "~1078s",
++    }
++    for path, needle in unaffected.items():
++        text = path.read_text(encoding="utf-8")
++        assert needle in text, f"{needle!r} should still read verbatim in {path}"
++
++
++def test_every_anchor_shape_this_repo_shipped_is_caught():
++    for shape in _ANCHOR_SHAPES:
++        hits = _find_anchors(shape)
++        assert len(hits) == 1, f"expected exactly one anchor in {shape!r}, got {hits}"
++
++
++def test_a_bare_grep_over_counts():
++    """Pins why `_find_anchors`'s unit-exclusion step exists, with a fixed
++    corpus rather than the live tree, so the assertion stays meaningful
++    forever instead of degrading to a trivial 0-vs-0 once every real anchor
++    is gone (which, after this change, all of them are)."""
++    corpus_lines = (
++        _ANCHOR_SHAPES
++        + [text for text, _why in _QUANTITY_CASES]
++        + [text for text, _why in _NON_PROSE_NEGATIVES]
++    )
++    corpus = "\n".join(corpus_lines)
++
++    bare_hits = len(_BARE_ANCHOR_SHAPE.findall(corpus))
++    classifier_hits = sum(len(_find_anchors(line)) for line in corpus_lines)
++
++    assert classifier_hits == len(_ANCHOR_SHAPES), (
++        f"expected the classifier to flag exactly the {len(_ANCHOR_SHAPES)} "
++        f"real anchor shapes and nothing else in this corpus, got "
++        f"{classifier_hits}"
++    )
++    assert bare_hits >= 2 * classifier_hits, (
++        f"bare grep found {bare_hits} '~NNN'-shaped tokens vs "
++        f"{classifier_hits} the classifier flags as anchors over the same "
++        "corpus; the gap is exactly the quantities a naive regex cannot "
++        "distinguish from a line anchor"
++    )
++
++    # Same story on the live tree: src/ still carries a substantial
++    # population of ~NNN quantities that only the unit-exclusion step
++    # correctly leaves alone.
++    root = REPO_ROOT / "src"
++    live_bare_hits = sum(
++        len(_BARE_ANCHOR_SHAPE.findall(path.read_text(encoding="utf-8")))
++        for path in root.rglob("*.py")
++    )
++    assert live_bare_hits >= 20, (
++        "expected src/ to still carry a substantial population of ~NNN "
++        "quantities that a bare grep cannot tell apart from a line anchor"
++    )
+diff --git a/tests/test_structural_budget.py b/tests/test_structural_budget.py
+index 197f21a3..9fc4a3d5 100644
+--- a/tests/test_structural_budget.py
++++ b/tests/test_structural_budget.py
+@@ -1488,17 +1488,28 @@ FROZEN_FILE_LINES = {
+     # and the `reason if reason is not None else ...` fix replacing `reason
+     # or ...` in `_revert_worktree_writes_unguarded`. Re-measured on this
+     # tree with `scan_tree`, not carried over as a stale delta.
+-    # 24728 -> 25039 (+311): rebased-branch recut fix — the two new hook
+-    # methods (`_recover_diverged_branch`, Hook 1, called from
+-    # `_run_attempt`; `_reconcile_remote_branch`, Hook 2, called from the
+-    # existing delivery path) plus their call-site integration and the
++    # 24728 -> 24733 (+5): tests/test_no_approximate_line_anchors.py removed
++    # 15 `~NNN`-shaped approximate line anchors from comments/docstrings in
++    # this file and replaced them with symbol names (e.g. `_run_attempt`'s
++    # `branch_prefix` usage instead of `~4407`) or dropped the parenthetical
++    # where no symbol could be confirmed — prose-only, no behaviour change.
++    # A symbol name is longer than a bare number, so several of the
++    # rewritten sentences wrap onto one more physical line than before.
++    # Re-measured on this tree with `scan_tree`, not carried over.
++    # 24728 -> 25039 (+311, on the other side of a since-reconciled merge):
++    # rebased-branch recut fix — the two new hook methods
++    # (`_recover_diverged_branch`, Hook 1, called from `_run_attempt`;
++    # `_reconcile_remote_branch`, Hook 2, called from the existing delivery
++    # path) plus their call-site integration and the
+     # `_record_recut`/`_post_recut_comment` helpers `_finalize` uses to
+     # thread the possibly-rebound branch through the PR-body/comment
+     # plumbing. The recut mechanics themselves (branch naming, replay,
+     # push) live in the new `vcs/recut.py`, not here — this is the
+-    # orchestrator-side wiring only. Measured on this tree with the
+-    # scanner below.
+-    "core/orchestrator.py": 25039,
++    # orchestrator-side wiring only.
++    # 24733 (this task's tip) merged with 25039 (main's tip) -> 25044: both
++    # deltas landed in the same file with no textual overlap; re-measured on
++    # this tree with `scan_tree`, not carried-over arithmetic.
++    "core/orchestrator.py": 25044,
+ 
+     # +163: Codex account section in the Settings Account tab —
+     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo

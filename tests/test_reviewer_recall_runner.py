@@ -374,7 +374,11 @@ def test_prepared_case_repo_matches_the_pinned_base_content():
     # files materialised from this repo's history (two controls are
     # create-only and have none), plus 3 per parcelo replay case
     # (hand-pinned; their base.ref is external, see the provenance test).
-    assert checked == 83, checked
+    # 83 -> 91 on 2026-09-22: specmiss-anchor-guard-aperture (a real PR #418
+    # miss) adds 8 base files, all materialised straight from this repo's
+    # history; the 9th touched file (the guard test itself) is create-only
+    # and has none.
+    assert checked == 91, checked
     # 12 -> 17 on 2026-07-31: five more fixtures now carry a scrub, four of them
     # for the two employer ticket ids that a term list could never have seen.
     # 17 -> 18 later the same day: `control-gate-excerpts/base/tests/test_runner.py`
@@ -908,7 +912,7 @@ def test_load_cases_ignores_a_directory_that_is_not_a_case(tmp_path):
     cases_dir = _copy_corpus(tmp_path)
     (cases_dir / "__pycache__").mkdir()
     (cases_dir / "__pycache__" / "runner.cpython-312.pyc").write_bytes(b"\x00")
-    assert len(rr.load_cases(cases_dir)) == 29
+    assert len(rr.load_cases(cases_dir)) == 30
 
 
 def test_load_cases_raises_on_a_partial_case_instead_of_dropping_it(tmp_path):

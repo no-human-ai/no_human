@@ -1,0 +1,21 @@
+{
+  "class": "spec-miss",
+  "file": "tests/test_no_approximate_line_anchors.py",
+  "hunk_lines": [
+    103,
+    139
+  ],
+  "description": "PR #418 adds a guard (this file, created whole) meant to forbid approximate line anchors like `~12034` anywhere under src/. Rule 1 is right: only comments/string literals are scanned. Rule 2 — the part that decides whether a `~NNN` token is a real anchor or an innocent quantity — is inverted: `_UNIT_TAIL`/`_STOPWORDS` (lines 108-116) is a deny-list of words that do NOT count as a unit, so any `~NNN` followed by anything NOT on that short stopword list is treated as a quantity and silently passed. Two-line repro against src/no_human/core/bounds.py: (1) append `# the retry check at ~12034 handles the rebase case` — `pytest tests/test_no_approximate_line_anchors.py` stays green (27 passed) even though ~12034 is a live forbidden anchor, because 'handles' is not in `_STOPWORDS` so `_UNIT_TAIL` misclassifies it as a unit tail; (2) the control `# see the retry check at ~12034` (nothing trailing) correctly fails 2 tests, proving the guard's mechanism works when the anchor is bare but not when ordinary prose follows it. The fix is to flip the classifier from a stopword deny-list to a unit ALLOW-list (turns, LOC, %, lines, commits, etc.) so anything not recognizably a unit defaults to 'still an anchor' rather than 'safely a quantity'. This is a real, already-merged aperture miss, not a hypothetical: PR #418 passed its own gate 6/6 clean, and four already-wrong anchors shipped unfixed in the same src/ tree past this exact guard (src/no_human/core/task.py:529, src/no_human/api/models.py:349, src/no_human/vcs/db.py:3264, src/no_human/eval/model_catalog.py:32), all written as ordinary prose the deny-list doesn't catch. Caveat for scoring: this case's diff_override reviewer path is single-turn, no-tools, so it only ever sees this hunk in isolation — it cannot grep src/ for the four already-shipped anchors or run the guard's own test suite the way a live review could; the case only measures whether the reviewer can read the classifier logic itself and recognize the inversion.",
+  "keywords": [
+    "_unit_tail",
+    "_stopwords",
+    "deny-list",
+    "allow-list",
+    "unit",
+    "classif",
+    "quantity",
+    "false negative"
+  ],
+  "planted_by": "real-merged-history PR #418 (selected by supervising-session)",
+  "date": "2026-09-22"
+}

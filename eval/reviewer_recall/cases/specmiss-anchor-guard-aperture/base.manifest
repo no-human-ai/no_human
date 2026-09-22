@@ -1,0 +1,8 @@
+0cb415cf5c1fd30a54f79b00ff59a222ed0ea2d9  src/no_human/vcs/receipts.py
+197f21a3410ee03e0c46de0fac4c253ce1215f60  tests/test_structural_budget.py
+2588f81426ca44275cb0af7338d10aa514abe340  src/no_human/core/orchestrator.py
+4759013a912db1bb3aa4217296b6d490349431b9  RELEASE_MANIFEST.txt
+a1947647227d53a5832e774a37012fac98991823  src/no_human/vcs/recut.py
+be1b6e192fd4622934cd42fe1753bc25d10fa1f5  CONTRIBUTING.md
+db75f2bfa8defb44c155a5afee381afc2de7373b  CHANGELOG.md
+e3642099bf53b12535cace21c1bf36e9a077f8b0  src/no_human/vcs/landability.py
