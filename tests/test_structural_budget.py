@@ -2121,7 +2121,11 @@ FROZEN_FILE_LINES = {
     # alongside RESEND_API_KEY_VAR. Measured on this tree with the scanner
     # below: actual 3689, which is what this entry froze at this point.
     # Later entries would move it further.
-    "config.py": 3689,
+    # 3689 -> 3697 (+8): `blockers.allow_comment_bot_authors` default plus
+    # its explanatory comment -- the opt-in that lets a named bot's
+    # comments/reviews count as human feedback despite `user.type ==
+    # "Bot"`. Measured on this tree with the scanner below.
+    "config.py": 3697,
     # +61: the tamper-adjudication one-bounded-retry contract (mechanical-
     # failure classification + the extracted `_review_tamper_adjudication`
     # helper that keeps `AdversarialReviewer.review` itself under the
@@ -2255,7 +2259,12 @@ FROZEN_FILE_LINES = {
     # the FROZEN_FUNCTION_LINES `_check_pr_conflict` entry above (the
     # whole-file delta equals that function's delta). Measured on this tree
     # with the scanner below.
-    "blockers/wake.py": 2763,
+    # 2763 -> 2802 (+39): `allow_comment_bot_authors` config read plus the
+    # new `_is_bot_comment` helper (and its precedence docstring) that
+    # treats `author_type == "Bot"` as a bot regardless of login suffix,
+    # with the allow-list as an opt-in escape; `_is_self_or_bot` now routes
+    # through it. Measured on this tree with the scanner below.
+    "blockers/wake.py": 2802,
     # +91: `_SCAN_WRAPPER_NAMES` + `_peel_scan_wrappers` — peels
     # timeout/xargs/nice/stdbuf (and siblings) for the scan-severity check
     # only, so a wrapped `find … -delete` in a denied compound classifies
