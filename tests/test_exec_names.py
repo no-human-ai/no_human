@@ -31,7 +31,6 @@ import os
 import re
 import subprocess
 import sys
-import time
 from pathlib import Path
 from textwrap import dedent
 
@@ -39,6 +38,8 @@ import pytest
 
 from no_human.agent import exec_names, guard
 from no_human.agent.guard import evaluate
+
+from ._timing import must_not_hang
 
 
 def _decide(command: str) -> bool:
@@ -922,8 +923,9 @@ def test_the_widened_mention_gate_stays_linear():
     runs), while the per-call-recompile mutation calls it once per
     mention-gate hit, which scales with the number of wrappers. That gap is
     what a per-call `re.compile` regression actually looks like, and it is
-    what this test pins; the wall-clock assertion is kept only as a
-    secondary didn't-hang smoke test."""
+    what this test pins; the call is wrapped in `must_not_hang` only as a
+    generous didn't-hang watchdog (a requested ceiling, not a performance
+    claim), not a wall-clock bound to be measured against."""
     nested = "GIT push origin main"
     for _ in range(1000):
         nested = f'sh -c "{nested}"'
@@ -936,19 +938,17 @@ def test_the_widened_mention_gate_stays_linear():
         compile_calls += 1
         return real_compile(*args, **kwargs)
 
-    started = time.monotonic()
     re.compile = counting_compile
     try:
-        decision = evaluate(
-            "Bash", {"command": nested},
+        decision = must_not_hang(
+            evaluate, "Bash", {"command": nested},
             forbidden_paths=[], never_push_to=["main"], cwd=".",
-            env={"PATH": ""})
+            env={"PATH": ""},
+            what="evaluate() on 1000 nested sh -c wrappers")
     finally:
         re.compile = real_compile
-    elapsed = time.monotonic() - started
 
     assert isinstance(decision.allow, bool)  # completed at all, didn't hang
-    assert elapsed < 30, f"linearity bound appears lost: {elapsed}s"
     assert compile_calls < 50, (
         f"{compile_calls} re.compile calls while evaluating 1000 nested "
         "wrappers -- _FORGE_MENTION/_GIT_MENTION are being recompiled per "

@@ -205,7 +205,63 @@ async def test_review_timeout_halves_the_retry_window_on_a_hang(tmp_path, monkey
 
     assert len(windows) == 2, "one bounded infra retry (constraint #4)"
     # Round 2's window was ~half of round 1's — not another full 0.4s.
+    #
+    # This is a ratio between two MEASURED, tainted quantities (not a
+    # measurement compared to an absolute literal), so it stays outside
+    # `tests/_clock_assertion_guard.py`'s scope by design — confirmed via a
+    # direct scan (`find_wallclock_assertions` reports no findings in this
+    # file). It is also only approximate: it pins "round 2 was meaningfully
+    # smaller", not the exact halved-and-floored value `_agent_review`
+    # actually computes. See the companion test below for the exact,
+    # load-insensitive version of that stronger claim.
     assert windows[1] < windows[0] * 0.75
+
+
+async def test_review_timeout_halving_uses_the_actual_halved_bound(tmp_path, monkeypatch):
+    """Companion to `test_review_timeout_halves_the_retry_window_on_a_hang`.
+
+    That test's own ratio check (`windows[1] < windows[0] * 0.75`) only pins
+    "round 2 was smaller", approximately, by measuring how long the backend
+    actually sat inside each window — which is a load-insensitive RATIO
+    already (both sides inflate together under contention), not an absolute
+    bound, so it is left as-is. What it does NOT pin is the EXACT value
+    `_agent_review` computed: this spies the REQUESTED bound directly
+    (`asyncio.wait_for`'s `timeout=` kwarg — the primitive `_run_bounded`
+    opens each window with) instead of measuring elapsed time, so it is
+    exact rather than approximate and does not depend on how long the
+    backend actually ran inside either window.
+    """
+    import asyncio
+
+    import no_human.review.reviewer as rv
+
+    monkeypatch.setattr(rv, "_REVIEW_MIN_RETRY_TIMEOUT", 0.05)
+
+    opened_timeouts: list[float] = []
+    original_wait_for = rv.asyncio.wait_for
+
+    async def _recording_wait_for(fut, timeout=None, **kwargs):
+        opened_timeouts.append(timeout)
+        return await original_wait_for(fut, timeout=timeout, **kwargs)
+
+    monkeypatch.setattr(rv.asyncio, "wait_for", _recording_wait_for)
+
+    class _HangingBackend:
+        async def run(self, prompt, *, cwd, max_turns, effort=None, on_event=None, **kw):
+            await asyncio.sleep(5)  # never finishes inside any window
+            return _FakeAgentResult(_VERDICT)
+
+    with pytest.raises(ReviewerUnavailable, match="no verdict"):
+        await rv.AdversarialReviewer(backend=_HangingBackend())._agent_review(
+            "p", tmp_path, timeout=0.4
+        )
+
+    # `round_timeout // 2` is FLOOR division, not `/ 2`: `0.4 // 2 == 0.0`,
+    # which is below the floor, so round 2 lands on the floor itself
+    # (`_REVIEW_MIN_RETRY_TIMEOUT`), not on "half of 0.4".
+    assert opened_timeouts == [0.4, 0.05], (
+        "expected round windows [0.4, 0.05] (0.4 // 2 == 0.0, floored at "
+        f"_REVIEW_MIN_RETRY_TIMEOUT=0.05), got {opened_timeouts}")
 
 
 async def test_a_real_failing_verdict_is_never_retried_or_swallowed(tmp_path):

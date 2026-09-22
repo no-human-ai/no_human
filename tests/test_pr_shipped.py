@@ -10,7 +10,6 @@ wiring into WakeWatcher._check_open_pr's CLOSED rung."""
 from __future__ import annotations
 
 import subprocess
-import time
 
 import pytest
 
@@ -18,6 +17,8 @@ from no_human.blockers.wake import WakeWatcher
 from no_human.core.task import Task, TaskStatus
 from no_human.vcs import pr_watcher
 from no_human.vcs.pr_watcher import default_branch_shipped
+
+from ._timing import must_not_hang_async
 
 
 def _git(repo_path, *args):
@@ -721,9 +722,30 @@ async def test_a_hung_merge_driver_cannot_wedge_the_watcher(tmp_path, monkeypatc
     _git(repo, "config", "merge.keepours.driver", "sleep 20")
     monkeypatch.setattr(pr_watcher, "_GIT_TIMEOUT", 1.0)
 
-    started = time.monotonic()
-    assert await default_branch_shipped(str(repo), "feature", "main") is False
-    assert time.monotonic() - started < 15, "the hung driver was not bounded"
+    opened_timeouts: list[float] = []
+    original_wait_for = pr_watcher.asyncio.wait_for
+
+    async def _recording_wait_for(fut, timeout=None, **kwargs):
+        opened_timeouts.append(timeout)
+        return await original_wait_for(fut, timeout=timeout, **kwargs)
+
+    monkeypatch.setattr(pr_watcher.asyncio, "wait_for", _recording_wait_for)
+
+    # `must_not_hang_async`'s budget is a generous watchdog, not the claim
+    # under test — the driver sleeps 20s, so a regression to "not bounded at
+    # all" still gets caught here, just as an honest hang instead of the
+    # suite silently outlasting a wall-clock literal on an idle box.
+    result = await must_not_hang_async(
+        default_branch_shipped(str(repo), "feature", "main"), budget=30,
+        what="default_branch_shipped against a hung merge driver")
+    assert result is False
+    # The real claim: the probe's own git subprocess call was bounded at
+    # exactly the (patched) `_GIT_TIMEOUT`, not left to the driver's 20s
+    # sleep or some other, larger literal — this is what actually cuts the
+    # hung driver off, independent of how fast the box gets there.
+    assert pr_watcher._GIT_TIMEOUT in opened_timeouts, (
+        f"the merge-tree probe never opened a wait_for at _GIT_TIMEOUT "
+        f"({pr_watcher._GIT_TIMEOUT}); saw {opened_timeouts}")
 
 
 async def test_squash_merge_shape_is_shipped_despite_no_ancestry(tmp_path):

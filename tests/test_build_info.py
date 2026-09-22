@@ -313,24 +313,48 @@ def test_concurrent_staleness_checks_spawn_one_git_at_a_time(monkeypatch):
 def test_a_loser_does_not_block_on_the_slow_measurement(monkeypatch):
     """Losers must return immediately. Parking them would swap a git herd for
     a thread-pool herd — these run under `asyncio.to_thread`, whose executor
-    is small enough that 15 waiters would starve everything else."""
+    is small enough that 15 waiters would starve everything else.
+
+    Converted from `time.monotonic() - started < 0.5` (flaky under
+    contention — a blocked loser could still sneak under a generous bound
+    on a fast box, and a correct loser could blow a tight one on a slow
+    box) to a call-count proof: `staleness_note` runs exactly once (the
+    winner) while `release` is still unset when the loser call returns. A
+    loser that truly blocked behind the winner would also observe
+    `note_calls == 1`, but could only ever RETURN `"behind"` (the winner's
+    eventual answer), never `None` — so `got is None` is what actually
+    distinguishes "returned immediately" from "waited and then relayed the
+    winner's answer". Strictly stronger than the clock, and clockless.
+    """
+    from tests._timing import wait_until
+
     # NOT `import no_human.api.app as api`: the api package's __init__
     # binds the name `app` to the FastAPI INSTANCE, which shadows the
     # submodule and silently hands back the wrong object.
     api = importlib.import_module("no_human.api.app")
 
     release = threading.Event()
+    note_calls = [0]
     monkeypatch.setattr(api, "_stale_cache", None)
     monkeypatch.setattr("no_human.core.build_info.head_sha", lambda: "a" * 40)
-    monkeypatch.setattr("no_human.core.build_info.staleness_note",
-                        lambda *_args, **_kwargs: release.wait(timeout=5) or "behind")
+
+    def _slow_note(*_args, **_kwargs):
+        note_calls[0] += 1
+        release.wait(timeout=5)
+        return "behind"
+
+    monkeypatch.setattr("no_human.core.build_info.staleness_note", _slow_note)
 
     winner = threading.Thread(target=api._loaded_code_stale)
     winner.start()
-    time.sleep(0.1)
-    started = time.monotonic()
+    # Wait for the happens-before FACT that the winner has reached the slow
+    # measurement (a poll with a watchdog), not for a duration.
+    wait_until(lambda: note_calls[0] >= 1, what="the winner's staleness_note call")
     got = api._loaded_code_stale()    # must not wait for the winner
-    assert time.monotonic() - started < 0.5
+    assert not release.is_set(), (
+        "the winner had already finished — this run proves nothing about "
+        "a loser")
+    assert note_calls[0] == 1, f"{note_calls[0]} concurrent git measurements"
     # WHAT it returns, not just how fast. With nothing cached yet a loser gets
     # None, which the board renders as no banner — indistinguishable from
     # "current". That is the intended trade: during the first cold miss the

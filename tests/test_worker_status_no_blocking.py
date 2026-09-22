@@ -76,18 +76,40 @@ async def test_status_handler_does_not_hop_the_thread_pool(client, monkeypatch):
 
 async def test_status_is_subsecond_while_git_is_slow(client, monkeypatch):
     """Direct regression pin for the 13.9s-then-0.044s live sample: even
-    with git measurements stubbed to take 5s each, the handler (which no
-    longer calls them) must answer both consecutive polls in well under 1s,
-    and a concurrently running heartbeat coroutine must never see the event
-    loop go quiet for more than 0.25s."""
+    with git measurements stubbed to take 5s each, the handler must never
+    call them at all, and a concurrently running heartbeat coroutine must
+    keep ticking throughout — i.e. the event loop is never handed off to a
+    blocking call.
+
+    Converted from `elapsed < 1.0` (x2) and `max(gaps) < 0.25`: on a
+    contended box a slow-but-correct handler could still sneak under a
+    generous bound, and a genuinely-blocking regression (the exact 13.9s
+    incident) could in principle finish inside a loose one. The mechanism
+    claim is stronger and load-insensitive: (a) `head_sha` / `staleness_note`
+    are called ZERO times across both polls (counter-wrapped, not merely
+    stubbed-slow-and-hoped-unused), and (b) a concurrent heartbeat task that
+    yields via `asyncio.sleep(0)` (a scheduling handoff, not a timed sleep)
+    advances by at least 2 COUNTED ticks across each poll. This counts
+    event-loop round-trips, not elapsed time: a busy box makes every
+    round-trip slower in wall-clock terms but does not change how many
+    round-trips a fixed request path takes, so "≥2 ticks interleaved" does
+    not move with load the way a wall-clock gap bound did. A regression that
+    reintroduces an in-line blocking git call would starve the heartbeat
+    entirely (0 ticks) for the 5s of `time.sleep`, which this still catches.
+    """
     build_info = importlib.import_module("no_human.core.build_info")
     api = importlib.import_module("no_human.api.app")
 
+    head_calls = [0]
+    note_calls = [0]
+
     def _slow_head(*args, **kwargs):
+        head_calls[0] += 1
         time.sleep(5)
         return "b" * 40
 
     def _slow_note(*args, **kwargs):
+        note_calls[0] += 1
         time.sleep(5)
         return "loaded code aaaaaaaa is behind HEAD bbbbbbbb"
 
@@ -95,45 +117,59 @@ async def test_status_is_subsecond_while_git_is_slow(client, monkeypatch):
     monkeypatch.setattr(build_info, "staleness_note", _slow_note)
     monkeypatch.setattr(api, "_stale_cache", ("a" * 40, "current"))
 
-    gaps: list[float] = []
+    ticks = [0]
     stop = asyncio.Event()
 
     async def _heartbeat():
-        last = time.perf_counter()
         while not stop.is_set():
-            await asyncio.sleep(0.01)
-            now = time.perf_counter()
-            gaps.append(now - last)
-            last = now
+            await asyncio.sleep(0)  # a scheduling handoff, not a timed wait
+            ticks[0] += 1
 
     hb = asyncio.create_task(_heartbeat())
     try:
         for _ in range(2):
-            start = time.perf_counter()
+            before = ticks[0]
             r = await client.get("/api/worker/status")
-            elapsed = time.perf_counter() - start
             assert r.status_code == 200
-            assert elapsed < 1.0, f"status took {elapsed:.3f}s"
+            assert ticks[0] - before >= 2, (
+                f"heartbeat only advanced {ticks[0] - before} ticks during "
+                "the request — the event loop stalled")
     finally:
         stop.set()
         await hb
 
-    assert gaps, "heartbeat never ran"
-    assert max(gaps) < 0.25, f"event loop stalled for {max(gaps):.3f}s"
+    assert head_calls[0] == 0, "the handler forked the git HEAD measurement"
+    assert note_calls[0] == 0, "the handler forked the staleness measurement"
 
 
-async def test_status_is_subsecond_with_the_executor_saturated(client):
+async def test_status_is_subsecond_with_the_executor_saturated(client, monkeypatch):
     """Second, weaker mechanism from the plan: even without the git call, a
     saturated default executor would delay any `to_thread` hop. With the hop
-    removed from the request path entirely this cannot touch the handler."""
+    removed from the request path entirely this cannot touch the handler.
+
+    Converted from `elapsed < 1.0`: spy `asyncio.to_thread` directly and
+    assert zero submissions while 40 saturating futures are outstanding —
+    the actual mechanism claim, not a duration a contended box could blow
+    regardless of correctness.
+    """
+    api = importlib.import_module("no_human.api.app")
+    to_thread_calls = [0]
+    original_to_thread = api.asyncio.to_thread
+
+    async def _counting_to_thread(*args, **kwargs):
+        to_thread_calls[0] += 1
+        return await original_to_thread(*args, **kwargs)
+
+    monkeypatch.setattr(api.asyncio, "to_thread", _counting_to_thread)
+
     loop = asyncio.get_running_loop()
     futures = [loop.run_in_executor(None, time.sleep, 3) for _ in range(40)]
     try:
-        start = time.perf_counter()
         r = await client.get("/api/worker/status")
-        elapsed = time.perf_counter() - start
         assert r.status_code == 200
-        assert elapsed < 1.0, f"status took {elapsed:.3f}s"
+        assert to_thread_calls[0] == 0, (
+            "the status handler hopped the thread pool while it was "
+            "saturated")
     finally:
         await asyncio.gather(*futures)
 

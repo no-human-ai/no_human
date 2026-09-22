@@ -35,6 +35,8 @@ from pathlib import Path
 
 import pytest
 
+from ._timing import calibrated_budget
+
 SRC = Path(__file__).resolve().parents[1] / "src" / "no_human"
 BRAIN = SRC / "brain"
 PYPROJECT = Path(__file__).resolve().parents[1] / "pyproject.toml"
@@ -1330,9 +1332,6 @@ def test_A6_the_attempt_records_both_who_paid_and_what_it_knew():
 # produced an empty block anyway. That is exactly what L5 forbids, and the
 # reason it shipped is that no test here ever locked the database.
 
-_LOCK_BUDGET_SECONDS = 3.0
-
-
 def _hold_exclusive_lock(db):
     """A second connection holding a real write lock on the same file."""
     import sqlite3
@@ -1342,11 +1341,38 @@ def _hold_exclusive_lock(db):
     return holder
 
 
-def test_L5_a_locked_database_does_not_block_the_coder_path(tmp_path):
-    """The read path must give up in well under a second, not in ten."""
-    import time as _time
+def _spy_connect_timeouts(monkeypatch, db):
+    """Record the ``timeout=`` kwarg of every ``sqlite3.connect`` call made
+    against `db` through the real, shared ``sqlite3`` module object, so a
+    caller can prove WHICH lock-wait budget a code path actually requested --
+    ``WRITE_TIMEOUT_SECONDS`` (10s, the DDL path) or ``READ_TIMEOUT_SECONDS``
+    (0.25s, the read-only path) -- without timing anything. This is the
+    mechanism that keeps the coder path from blocking on a locked database;
+    a wall-clock race against whatever else this box is doing right now is
+    not.
+    """
+    import sqlite3
 
+    calls: list[float | None] = []
+    original_connect = sqlite3.connect
+    target = str(db)
+
+    def _recording_connect(database, *a, **k):
+        if str(database) == target:
+            calls.append(k.get("timeout"))
+        return original_connect(database, *a, **k)
+
+    monkeypatch.setattr(sqlite3, "connect", _recording_connect)
+    return calls
+
+
+def test_L5_a_locked_database_does_not_block_the_coder_path(tmp_path, monkeypatch):
+    """The read path must open with the short read-only timeout, never the
+    ten-second write timeout the DDL path uses -- that IS what keeps it from
+    blocking on a locked database, not a race against a fixed clock reading
+    that only ever reflected an idle box."""
     from no_human.brain import coder_context, pin_watermark
+    from no_human.brain.store import READ_TIMEOUT_SECONDS, WRITE_TIMEOUT_SECONDS
 
     db = tmp_path / "no_human.db"
     _seed_injectable_rule(db)
@@ -1358,29 +1384,28 @@ def test_L5_a_locked_database_does_not_block_the_coder_path(tmp_path):
 
     holder = _hold_exclusive_lock(db)
     try:
-        start = _time.monotonic()
+        calls = _spy_connect_timeouts(monkeypatch, db)
         watermark = pin_watermark(config)
-        pinned = _time.monotonic() - start
-        start = _time.monotonic()
         ctx = coder_context(config, watermark if watermark is not None else 99)
-        rendered = _time.monotonic() - start
     finally:
         holder.rollback()
         holder.close()
 
-    assert pinned < _LOCK_BUDGET_SECONDS, (
-        f"pin_watermark blocked the attempt for {pinned:.2f}s on a locked "
-        "database")
-    assert rendered < _LOCK_BUDGET_SECONDS, (
-        f"coder_context blocked the coder prompt for {rendered:.2f}s on a "
-        "locked database")
+    assert calls, "pin_watermark/coder_context never opened the database at all"
+    assert WRITE_TIMEOUT_SECONDS not in calls, (
+        f"the coder path opened the database with the DDL write timeout "
+        f"({WRITE_TIMEOUT_SECONDS}s) instead of the read-only one -- exactly "
+        "the regression that once stalled the coder for ten seconds")
+    assert all(t == READ_TIMEOUT_SECONDS for t in calls), (
+        f"expected every coder-path connection to request the "
+        f"{READ_TIMEOUT_SECONDS}s read-only timeout, got {calls}")
     assert ctx.block == ""  # degrades to today's behaviour: zero remote rules
 
 
-def test_L5_a_locked_database_still_produces_a_coder_prompt(tmp_path):
+def test_L5_a_locked_database_still_produces_a_coder_prompt(tmp_path, monkeypatch):
     """End to end through the orchestrator, which is where the ten seconds were
     actually being spent."""
-    import time as _time
+    from no_human.brain.store import READ_TIMEOUT_SECONDS, WRITE_TIMEOUT_SECONDS
 
     db = tmp_path / "no_human.db"
     _seed_injectable_rule(db)
@@ -1394,16 +1419,20 @@ def test_L5_a_locked_database_still_produces_a_coder_prompt(tmp_path):
 
     holder = _hold_exclusive_lock(db)
     try:
-        start = _time.monotonic()
+        calls = _spy_connect_timeouts(monkeypatch, db)
         prompt = _coder_prompt(orch)
-        elapsed = _time.monotonic() - start
     finally:
         holder.rollback()
         holder.close()
 
-    assert elapsed < _LOCK_BUDGET_SECONDS, (
-        f"the implement prompt took {elapsed:.2f}s to build because the brain "
-        "was waiting on a database lock")
+    assert calls, "building the implement prompt never opened the database"
+    assert WRITE_TIMEOUT_SECONDS not in calls, (
+        f"the implement prompt path opened the database with the DDL write "
+        f"timeout ({WRITE_TIMEOUT_SECONDS}s) -- the same regression that once "
+        "stalled it for ten seconds waiting on a lock")
+    assert all(t == READ_TIMEOUT_SECONDS for t in calls), (
+        f"expected every connection made while building the prompt to request "
+        f"the {READ_TIMEOUT_SECONDS}s read-only timeout, got {calls}")
     assert "Acceptance criteria" in prompt
     assert "TEAM CONVENTIONS" not in prompt
 
@@ -1416,8 +1445,6 @@ def test_L5_the_lock_probe_really_blocks_a_writer(tmp_path):
 
     from no_human.brain import store
 
-    import time as _time
-
     db = tmp_path / "no_human.db"
     _seed_injectable_rule(db)
     holder = _hold_exclusive_lock(db)
@@ -1428,17 +1455,35 @@ def test_L5_the_lock_probe_really_blocks_a_writer(tmp_path):
             writer.commit()
         writer.close()
 
-        # The lock reaches the READ path too — a reader that could sail past it
-        # would make the timing tests above prove nothing — and the quarter
-        # second is what bounds the wait. Behavioural, not a comparison of two
-        # function objects.
+        # The lock reaches the READ path too — a reader that could sail past
+        # it would make the two tests above prove nothing. Rather than race
+        # the wait against a fixed literal (flaky under CPU contention), we
+        # calibrate against a fresh short-timeout probe against the SAME held
+        # lock, timed in THIS run: both busy-wait on the same sqlite lock
+        # with a similarly short requested timeout (0.2s vs.
+        # `READ_TIMEOUT_SECONDS`), so if the reader honours its own short
+        # timeout the two stay in the same ballpark regardless of how busy
+        # the box is right now.
+        def _reference_probe():
+            probe = sqlite3.connect(str(db), timeout=0.2)
+            try:
+                with pytest.raises(sqlite3.OperationalError):
+                    probe.execute("BEGIN IMMEDIATE")
+            finally:
+                probe.close()
+
+        budget = calibrated_budget(_reference_probe, multiple=5, reps=3, floor=0.5)
+
         conn = store.connect_readonly(db)
-        start = _time.monotonic()
+        start = time.monotonic()
         with pytest.raises(sqlite3.OperationalError):
             store.watermark(conn)
-        elapsed = _time.monotonic() - start
+        elapsed = time.monotonic() - start
         conn.close()
-        assert elapsed < 1.0, f"the read path waited {elapsed:.2f}s"
+        assert elapsed < budget, (
+            f"the read path waited {elapsed:.2f}s, more than {budget:.2f}s "
+            "(5x a same-run reference probe against the same lock) -- it did "
+            "not honour its short read-only timeout")
     finally:
         holder.rollback()
         holder.close()

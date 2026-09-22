@@ -22,7 +22,6 @@ existing test is touched — this file is purely additive.
 from __future__ import annotations
 
 import subprocess
-import time
 
 import pytest
 
@@ -255,21 +254,42 @@ class _ExploringBackend:
 
 
 @pytest.mark.asyncio
-async def test_small_repo_exploration_completes_without_the_timeout_fallback(tmp_path):
+async def test_small_repo_exploration_completes_without_the_timeout_fallback(
+    tmp_path, monkeypatch
+):
+    from no_human.intake import grill as grill_mod
     from no_human.intake.grill import GrillResult, grill_step
 
     for i in range(8):
         (tmp_path / f"f{i}.py").write_text(f"# {i}\n")
 
-    be = _ExploringBackend(str(tmp_path))
-    start = time.monotonic()
-    result = await grill_step("t", "d", str(tmp_path), [], be)
-    elapsed = time.monotonic() - start
+    # Spy on the actual timeout `grill_step` opens its `wait_for` with, so
+    # this test proves the fast backend beat the REAL exploration budget
+    # (grill_step's own `timeout` default) rather than merely completing
+    # within some wall-clock literal chosen for this test — a load-independent
+    # substitute for measuring elapsed time.
+    opened_timeouts: list[float] = []
+    original_wait_for = grill_mod.asyncio.wait_for
 
-    assert elapsed < 30
+    async def _recording_wait_for(fut, timeout=None, **kwargs):
+        opened_timeouts.append(timeout)
+        return await original_wait_for(fut, timeout=timeout, **kwargs)
+
+    monkeypatch.setattr(grill_mod.asyncio, "wait_for", _recording_wait_for)
+
+    be = _ExploringBackend(str(tmp_path))
+    result = await grill_step("t", "d", str(tmp_path), [], be)
+
     assert isinstance(result, GrillResult)
     text = getattr(result, "title", "") + getattr(result, "description", "")
     assert "codebase exploration took too long" not in text
+    # Non-vacuity: confirms the run went through the same `wait_for` bound
+    # production callers get (grill_step's `timeout` default), not some other,
+    # unrelated code path that could never hit the fallback at all.
+    import inspect
+
+    default_timeout = inspect.signature(grill_step).parameters["timeout"].default
+    assert opened_timeouts == [default_timeout]
 
 
 @pytest.mark.asyncio

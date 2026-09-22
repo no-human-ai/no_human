@@ -31,7 +31,6 @@ See ticket b7090c45 for the open question.
 import asyncio
 import re
 import pathlib
-import time
 
 import pytest
 
@@ -181,11 +180,24 @@ async def test_the_teardown_bound_is_shorter_than_every_callers_budget():
 
 async def test_the_teardown_finishes_well_inside_the_callers_budget(
         tmp_path, monkeypatch):
-    """Wall-clock, not just "it returned".
+    """Not wall-clock — the WIRING, plus the already-asserted constants.
 
-    This is the assertion that makes the VALUE load-bearing. With a
-    never-resolving `proc.wait()` the whole run must still come back inside
-    the budget a real caller allows; at `_TEARDOWN_WAIT = 60` it would not.
+    `test_the_teardown_bound_is_shorter_than_every_callers_budget` (above)
+    already proves, statically, that `_TEARDOWN_WAIT + _STDERR_DRAIN_WAIT`
+    (the VALUES) are `<= _TEARDOWN_MUST_FINISH_WITHIN` and shorter than every
+    real caller's own budget — so a `_TEARDOWN_WAIT = 60` regression is
+    already caught there, without measuring anything. What that static test
+    cannot see is whether `_kill_and_reap`'s actual `proc.wait()` call is
+    really BOUNDED BY those same constants at runtime, as opposed to some
+    other hard-coded value or an unbounded await that happens to still
+    return promptly on an idle box. This test drives `proc.wait()` into
+    never resolving (the state the standalone probe measured hanging past 25s
+    with no bound) and spies `asyncio.wait_for` to record the exact timeout
+    each teardown wait opened — proving the RUNNING code path is wired to
+    `_TEARDOWN_WAIT`/`_STDERR_DRAIN_WAIT`, not merely that the module-level
+    constants have safe values. A wall-clock elapsed measurement would be
+    redundant with (and load-sensitive where the static test is not) proving
+    the same thing.
     """
     monkeypatch.setattr(cx, "_STDOUT_LIMIT", _TINY_STDOUT_LIMIT)
     monkeypatch.setattr(cx, "_LINE_ACCUM_CAP", 65536)
@@ -207,17 +219,36 @@ async def test_the_teardown_finishes_well_inside_the_callers_budget(
     monkeypatch.setattr(cx.asyncio, "create_subprocess_exec",
                         _create_with_a_hanging_wait, raising=False)
 
-    started = time.monotonic()
+    opened_timeouts: list[float] = []
+    original_wait_for = cx.asyncio.wait_for
+
+    async def _recording_wait_for(fut, timeout=None, **kwargs):
+        opened_timeouts.append(timeout)
+        return await original_wait_for(fut, timeout=timeout, **kwargs)
+
+    monkeypatch.setattr(cx.asyncio, "wait_for", _recording_wait_for)
+
+    # Outer hang-prevention only (a requested ceiling, never a speed claim) —
+    # if the teardown regresses to genuinely unbounded, this fails the test
+    # as a timeout rather than wedging the whole suite.
     result = await asyncio.wait_for(
         cx.CodexBackend(env=FAKE_ENV).run("p", cwd=tmp_path, max_turns=9),
         _CALLER_BUDGET_SECONDS + 30)
-    elapsed = time.monotonic() - started
 
     assert result.is_error is True
-    assert elapsed < _TEARDOWN_MUST_FINISH_WITHIN, (
-        f"the teardown took {elapsed:.1f}s, which is not comfortably inside "
-        f"the {_CALLER_BUDGET_SECONDS}s a real caller allows — the bound is "
-        "present but too large to rescue anything")
+    # The never-resolving `proc.wait()` must have been raced against a
+    # `wait_for` opened at exactly `_TEARDOWN_WAIT` — not left unbounded, and
+    # not bounded by some other, larger literal that would lose the race
+    # against every real caller's own timeout.
+    assert cx._TEARDOWN_WAIT in opened_timeouts, (
+        f"the teardown's proc.wait() was never bounded at _TEARDOWN_WAIT "
+        f"({cx._TEARDOWN_WAIT}); wait_for was opened with {opened_timeouts}")
+    # And the stderr drain that runs on the same exit path must be bounded
+    # too, at its own constant — both waits are what the static ordering
+    # test's `ceiling = _TEARDOWN_WAIT + _STDERR_DRAIN_WAIT` is summing.
+    assert cx._STDERR_DRAIN_WAIT in opened_timeouts, (
+        f"the stderr drain was never bounded at _STDERR_DRAIN_WAIT "
+        f"({cx._STDERR_DRAIN_WAIT}); wait_for was opened with {opened_timeouts}")
 
 
 async def test_a_teardown_timeout_does_not_manufacture_a_failure(

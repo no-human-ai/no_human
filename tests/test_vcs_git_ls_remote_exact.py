@@ -22,6 +22,8 @@ import pytest
 
 from no_human.vcs.git import GitRepo
 
+from ._timing import calibrated_budget
+
 
 def _git(cwd, *args, check=True):
     return subprocess.run(
@@ -158,14 +160,52 @@ def test_oserror_returns_none(monkeypatch, tmp_path):
     assert repo.ls_remote_exact("refs/heads/main") is None
 
 
-def test_latency_against_a_local_bare_origin_is_under_100ms(bare_origin):
-    """Not a hard perf gate (CI variance), but pins the design claim that a
-    single exact-ref `ls-remote` against a local remote is cheap enough to
-    run once per attempt without becoming the bottleneck — measured, not
-    assumed. See PR body for the measured number this test asserts against."""
+def test_ls_remote_exact_makes_exactly_one_call_with_the_exact_ref_argv(
+    monkeypatch, bare_origin
+):
+    """Not a hard perf gate (CI variance) — the design claim that a single
+    exact-ref `ls-remote` against a local remote is cheap enough to run once
+    per attempt without becoming the bottleneck is a MECHANISM claim (exactly
+    one subprocess round-trip, no extra probing/retries), not a millisecond
+    claim. A wall-clock `elapsed_ms < 100` assertion could go red purely from
+    contended-box CPU scheduling despite the mechanism being unchanged, or
+    stay green even if a regression added extra round-trips on a fast enough
+    box — counting the actual subprocess invocation and its argv is what the
+    claim is really about. A secondary, load-relative timing check (below)
+    still guards against a gross regression, calibrated against another git
+    subprocess call timed fresh in this same run rather than a fixed literal.
+    """
+    calls: list[tuple[tuple, dict]] = []
+    original_run = subprocess.run
+
+    def _recording_run(*a, **k):
+        calls.append((a, k))
+        return original_run(*a, **k)
+
+    monkeypatch.setattr(subprocess, "run", _recording_run)
+
     repo = GitRepo(bare_origin["work"])
-    start = time.monotonic()
     sha = repo.ls_remote_exact("refs/heads/develop")
-    elapsed_ms = (time.monotonic() - start) * 1000
+
     assert sha == bare_origin["develop_sha"]
-    assert elapsed_ms < 100, f"ls_remote_exact took {elapsed_ms:.1f}ms locally"
+    assert len(calls) == 1, (
+        f"expected exactly one subprocess.run call, got {len(calls)}"
+    )
+    args, kwargs = calls[0]
+    argv = args[0] if args else kwargs.get("args")
+    assert argv == ["git", "ls-remote", "origin", "refs/heads/develop"], argv
+
+    # Secondary, load-relative sanity check: a single local ls-remote should
+    # stay within a small multiple of a trivial git subprocess call timed
+    # fresh on THIS box, in THIS run — not a fixed millisecond literal that
+    # only ever reflected an idle box.
+    budget = calibrated_budget(
+        lambda: _git(bare_origin["work"], "rev-parse", "HEAD"), multiple=6,
+    )
+    start = time.perf_counter()
+    repo.ls_remote_exact("refs/heads/develop")
+    elapsed = time.perf_counter() - start
+    assert elapsed < budget, (
+        f"ls_remote_exact took {elapsed:.4f}s, more than 6x a local "
+        f"`git rev-parse HEAD` ({budget:.4f}s) on this box"
+    )

@@ -447,7 +447,7 @@ async def test_a_file_path_can_never_be_mistaken_for_a_billing_wall():
     assert _classify_error("error", tb, 429) == "rate_limited"
 
 
-def test_a_quota_park_always_carries_a_WAKE_TIME():
+def test_a_quota_park_always_carries_a_WAKE_TIME(monkeypatch):
     """Without one, two separate mechanisms silently do nothing.
 
     `blockers/wake.py` resumes a PAUSED_QUOTA task only when `wake_check_at`
@@ -463,18 +463,39 @@ def test_a_quota_park_always_carries_a_WAKE_TIME():
     could break with the test green. Defaulting inside the class makes the
     invariant structural: no raise site, present or future, can produce a park
     that never wakes.
+
+    The clock `bounds.py` reads (`datetime.now(timezone.utc)`, the single use
+    site inside the module) is frozen here rather than sampled live and
+    compared to a `60 < delta <= 3660`-shaped literal window: that older form
+    measured a live delta between two separate `now()` calls (one inside
+    `__init__`, one in the test) and was therefore a wall-clock-vs-literal
+    assertion in the exact shape this suite forbids elsewhere — a box slow
+    enough to blow 60s between construction and the assertion would have
+    flipped it despite the code being correct. Freezing the clock turns it
+    into an exact, deterministic happens-after fact instead.
     """
-    from datetime import datetime, timezone
+    from datetime import datetime, timedelta, timezone
+
+    from no_human.core import bounds
     from no_human.core.bounds import QuotaExhausted
+
+    fixed_now = datetime(2030, 6, 15, 12, 0, 0, tzinfo=timezone.utc)
+
+    class _FixedClock:
+        @staticmethod
+        def now(tz=None):
+            return fixed_now
+
+    monkeypatch.setattr(bounds, "datetime", _FixedClock)
 
     exc = QuotaExhausted()                      # the bare form, as it was
     assert exc.resets_at, "a quota park with no wake time never resumes"
     parsed = datetime.fromisoformat(exc.resets_at)
     assert parsed.tzinfo is not None, "naive: the scheduler cannot parse it"
-    delta = (parsed - datetime.now(timezone.utc)).total_seconds()
-    # Bounded on BOTH sides: too far ahead stalls the whole pool, too near
-    # thrashes against a wall that has not moved.
-    assert 60 < delta <= 3600 + 60, delta
+    # Exact, not bounded: with the clock frozen, the default is deterministic
+    # — RETRY_AFTER_S past the frozen instant, no more and no less.
+    expected = fixed_now + timedelta(seconds=QuotaExhausted.RETRY_AFTER_S)
+    assert parsed == expected, parsed
     # A caller that genuinely knows the reset time still wins.
     assert QuotaExhausted("m", resets_at="2030-01-01T00:00:00+00:00"
                           ).resets_at == "2030-01-01T00:00:00+00:00"

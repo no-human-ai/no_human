@@ -28,7 +28,6 @@ import json
 import os
 import stat
 import sys
-import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -879,9 +878,11 @@ class _RetryingBackend:
     def __init__(self, *, work: float, result=None, announce: bool = True):
         self._work, self._result, self._announce = work, result, announce
         self.cancelled = 0
+        self.runs = 0
 
     async def run(self, prompt, *, cwd=None, max_turns=1, effort=None,
                   on_event=None, **kw):
+        self.runs += 1
         if self._announce and on_event is not None:
             on_event(AgentEvent(
                 "transport_retry",
@@ -932,22 +933,46 @@ async def test_a_merely_slow_reviewer_gets_no_grace(tmp_path, monkeypatch):
     """THE CONTROL, and it is the whole reason the grace is gated on the event
     rather than granted on every timeout. Without it the test above passes for
     a change that simply made every review window 1.5x longer — which is the
-    regression `_agent_review`'s halving comment was written to prevent."""
+    regression `_agent_review`'s halving comment was written to prevent.
+
+    Converted from `elapsed < 0.9`: on a contended box even a SINGLE 0.05s
+    `wait_for` window can take longer than 0.9s of wall-clock to actually
+    return control to the caller, independent of whether a grace window was
+    ever opened — so a slow-but-correct single window could trip the old
+    bound regardless of the code's correctness, while the property this test
+    exists for is entirely about the NUMBER and SIZE of the windows opened,
+    not how long the box took to service them. Spy `asyncio.wait_for`
+    directly (the exact primitive `_run_bounded` opens each window with) and
+    assert exactly one window was opened, at the requested 0.05s bound — the
+    "gave up on the first window, no 1.5x grace" claim, made mechanically
+    instead of by racing a wall clock.
+    """
     import no_human.review.reviewer as rv
 
     monkeypatch.setattr(rv, "_REVIEW_MIN_RETRY_TIMEOUT", 1.0)
     backend = _RetryingBackend(work=5.0, result=None, announce=False)
 
-    start = time.monotonic()
+    opened_timeouts: list[float] = []
+    original_wait_for = rv.asyncio.wait_for
+
+    async def _recording_wait_for(fut, timeout=None, **kwargs):
+        opened_timeouts.append(timeout)
+        return await original_wait_for(fut, timeout=timeout, **kwargs)
+
+    monkeypatch.setattr(rv.asyncio, "wait_for", _recording_wait_for)
+
     decision, reason, _round = await rv.AdversarialReviewer(backend=backend)._review_once(
         "prompt", tmp_path, max_turns=1, timeout=0.05)
-    elapsed = time.monotonic() - start
 
     assert decision is None
     assert reason == "timed out after 0.05s"
     assert backend.cancelled == 1, "the abandoned session was left running"
-    # It gave up on the FIRST window. A grace here would have cost 1.0s more.
-    assert elapsed < 0.9, elapsed
+    assert backend.runs == 1, "a grace window must not re-invoke the backend"
+    # It gave up on the FIRST window: exactly one wait_for window was opened,
+    # at the requested bound, and no second (grace) window at 1.0s followed.
+    assert opened_timeouts == [0.05], (
+        f"expected exactly one 0.05s window, got {opened_timeouts} — a grace "
+        "window would have opened a second one at 1.0s")
 
 
 async def test_when_even_the_grace_runs_out_the_human_still_hears_transport(

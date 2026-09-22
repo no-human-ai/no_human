@@ -576,7 +576,21 @@ def test_each_tier_carries_its_own_ceiling_as_a_real_per_task_budget(tmp_path):
 def test_a_wedged_holdout_is_killed_by_process_group(tmp_path, monkeypatch):
     """`_holdout_ok`'s timeout path had no test. A plain `proc.kill()` reaps
     the shell and leaves the real work running; the marker file below is
-    written by a GRANDCHILD, so it only stays absent if the whole group died."""
+    written by a GRANDCHILD, so it only stays absent if the whole group died.
+
+    Converted from `elapsed < 3`: on a contended box, the SECOND (unbounded)
+    `proc.communicate()` `_holdout_ok` issues after a successful kill can
+    itself legitimately take a while to reap under load, tripping a fixed
+    wall-clock bound even though the kill worked. The property that bound
+    was actually defending — "the group kill fired, not a no-op" — is
+    proven directly instead: `os.killpg` is spied and must be called exactly
+    once on this path (a regression that silently drops the kill call would
+    leave it at zero). The independent failure mode the bound also used to
+    catch by accident — a killpg that only reaches the direct child, not the
+    whole group — stays caught by the marker check below, now via a bounded
+    poll instead of a flat sleep so a failing run does not have to eat the
+    full 5s before reporting red.
+    """
     import dataclasses
     import time
 
@@ -584,23 +598,39 @@ def test_a_wedged_holdout_is_killed_by_process_group(tmp_path, monkeypatch):
 
     marker = tmp_path / "grandchild-survived"
     # The grandchild touches the marker at +3s and the kill lands at +1s, so
-    # checking at ~+5s is a REAL test of the group kill: a surviving grandchild
-    # has written the file by then. The first version slept 30s before
-    # touching, which made `not marker.exists()` true whether the group died or
-    # not — the timing bound below was doing all the work and the marker was
-    # decoration. Both are asserted now, and they catch different failures: the
-    # bound catches "never killed at all", the marker catches "only the direct
-    # child was killed".
+    # polling out to +5s is a REAL test of the group kill: a surviving
+    # grandchild has written the file by then. The first version slept 30s
+    # before touching, which made `not marker.exists()` true whether the
+    # group died or not — decoration, not a real check. The killpg-call-count
+    # and the marker each catch a different failure: the count catches
+    # "never killed at all", the marker catches "only the direct child was
+    # killed".
     script = f"sleep 3; touch {marker}"
     task = dataclasses.replace(
         load_corpus()[0],
         holdout_cmd=["/bin/sh", "-c", f"/bin/sh -c '{script}' & wait"])
     monkeypatch.setattr(fe, "HOLDOUT_TIMEOUT_S", 1)
 
-    t0 = time.monotonic()
+    killpg_calls: list[tuple[int, int]] = []
+    original_killpg = fe.os.killpg
+
+    def _recording_killpg(pgid, sig):
+        killpg_calls.append((pgid, sig))
+        return original_killpg(pgid, sig)
+
+    monkeypatch.setattr(fe.os, "killpg", _recording_killpg)
+
     assert fe._holdout_ok(task, tmp_path) is False, "a wedged holdout is RED"
-    assert time.monotonic() - t0 < 3, "it must not wait out the sleep"
-    time.sleep(5)
+    assert len(killpg_calls) == 1, (
+        f"expected exactly one process-group kill on the timeout path, got "
+        f"{killpg_calls}")
+
+    # A bounded poll on a requested deadline, not a flat sleep: returns as
+    # soon as the marker appears (a fast red on a real regression) instead of
+    # always paying the full budget.
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline and not marker.exists():
+        time.sleep(0.05)
     assert not marker.exists(), (
         "the grandchild outlived the kill — the process GROUP was not killed")
 

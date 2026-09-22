@@ -303,7 +303,6 @@ def test_a_failed_connect_does_not_hang_the_process(tmp_path, failure, expected_
     env["HOME"] = str(tmp_path / "home")
     (tmp_path / "home").mkdir()
 
-    started = time.monotonic()
     try:
         proc = subprocess.run(
             [sys.executable, "-c", _EXIT_PROBE, str(tmp_path / "nh.db"), failure],
@@ -317,14 +316,17 @@ def test_a_failed_connect_does_not_hang_the_process(tmp_path, failure, expected_
             "worker thread was never stopped, so threading._shutdown joins it "
             f"forever.\n--- child stdout ---\n{exc.stdout!r}"
         ) from None
-    elapsed = time.monotonic() - started
+    # No separate wall-clock assertion: `timeout=60` above already raises
+    # `subprocess.TimeoutExpired` (converted to the AssertionError above) if
+    # the child runs 60s or longer, so "it finished inside 60s" is already
+    # enforced by the requested bound itself — an `elapsed < 60` measurement
+    # here could only ever be redundant with that or falsely red under load.
 
     assert f"RAISED:{expected_exc}" in proc.stdout, (
         f"expected {expected_exc} from the {failure} path; "
         f"got stdout={proc.stdout!r} stderr={proc.stderr[-2000:]!r}"
     )
     assert "REACHED_EXIT" in proc.stdout, proc.stdout
-    assert elapsed < 60, elapsed
 
 
 # --------------------------------------------------------------------------- #
