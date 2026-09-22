@@ -312,6 +312,29 @@ def test_editing_a_different_file_in_between_is_not_progress():
     assert "/a.py" in d.hard_stuck_reason
 
 
+def test_progress_from_a_different_files_test_run_does_not_reset_this_file():
+    """Issue #224: the progress signal used to be one global flag consumed
+    by whichever file was edited NEXT, so a test-outcome change caused by
+    fixing file B would wrongly reset file A's hard count if A happened to
+    be the next file edited — even though the observed progress had nothing
+    to do with A. Progress is now filed under the file that was actually
+    edited right before the test run, so A's count keeps climbing
+    uninterrupted and still hard-aborts at `edit_abort`."""
+    d = StuckDetector()
+    for _ in range(d.edit_abort - 1):
+        d.record_edit("/a.py")
+    assert d.hard_stuck_reason is None
+    # Edit B, then a test run whose outcome changes — progress belongs to
+    # B, not A.
+    d.record_edit("/b.py")
+    d.note_test_run("call-0")
+    assert d.record_test_outcome("call-0", "ok, 1 chars") is True
+    # A's count must NOT have been reset by B's progress signal.
+    d.record_edit("/a.py")
+    assert d.hard_stuck_reason is not None
+    assert "/a.py" in d.hard_stuck_reason
+
+
 def test_ab_cross_file_loop_with_no_progress_signal_still_aborts():
     """Property 3's explicit driven test: an agent alternating between two
     files, with NO test-runner activity at all (so no progress signal ever
