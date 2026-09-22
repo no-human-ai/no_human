@@ -63,6 +63,27 @@ class _CrashingOrch:
         raise RuntimeError("boom")
 
 
+class _SlowOrch:
+    """Never returns until released — lets a test fire a SECOND `tick()`
+    while the first probe task is still inflight (neither finished nor
+    re-parked). Regression for a cap that was re-derived from
+    `max_workers - len(inflight)` every tick instead of gated on a probe
+    already being outstanding: with 4 workers and 1 inflight, that formula
+    is 3, and `min(3, 1)` still lets a second task through."""
+    started: list[str] = []
+    release: asyncio.Event | None = None
+
+    def __init__(self, task):
+        self.task = task
+        self._sink = None
+
+    async def run_task(self, task):
+        _SlowOrch.started.append(task.id)
+        assert _SlowOrch.release is not None
+        await _SlowOrch.release.wait()
+        return None
+
+
 class _ProbeReparkOrch:
     """Re-parks on the SAME wall every dispatch, with a fresh fallback
     (`reset_exact: False`) reset a few minutes out — simulates the wall
@@ -210,6 +231,54 @@ async def test_the_probe_persists_while_the_wall_is_still_up(store, monkeypatch)
         "a SECOND fallback lapse must again probe with exactly one task")
     assert park.id in started2
     assert len(_ProbeReparkOrch.started) == 2
+
+
+async def test_a_second_tick_before_the_probe_returns_dispatches_nothing(store, monkeypatch):
+    """Regression: the one-probe guarantee must hold across the WHOLE
+    unverified window, not just within a single tick. A tick that lands
+    while the first probe task is still inflight (not yet finished or
+    re-parked) must dispatch nothing — not a second task into the same
+    unverified wall."""
+    import no_human.core.scheduler as sched_mod
+    monkeypatch.setattr(sched_mod, "active_auth_profile", lambda: "personal2")
+    _SlowOrch.started.clear()
+    _SlowOrch.release = asyncio.Event()
+    now = datetime.now(timezone.utc)
+    park = await _quota_park(store, now - timedelta(minutes=1),
+                              raised_at=now - timedelta(minutes=61),
+                              auth_profile="personal2", reset_exact=False)
+    await _pending(store, 6)
+    wake = WakeWatcher(store, {})
+    events = []
+    sched = Scheduler(store, _SlowOrch, max_workers=4, wake_watcher=wake,
+                      on_event=lambda k, t: events.append((k, t)))
+    _arm_just_lapsed(sched, now=now, wall_started=now - timedelta(minutes=1),
+                      profile="personal2", exact=False)
+
+    started1 = await sched.tick(now=now)
+    await asyncio.sleep(0.01)  # let the probe task actually start running
+
+    assert len(started1) == 1
+    assert park.id in started1
+    assert sched._quota_probe_id in started1, (
+        "the probe's own task id must be tracked as inflight")
+    assert len(_SlowOrch.started) == 1
+
+    # A second tick lands while the probe is still outstanding. On the
+    # buggy formula, slots = max_workers(4) - len(inflight)(1) = 3, then
+    # min(3, 1) = 1 — a second task would dispatch here.
+    started2 = await sched.tick(now=now)
+
+    assert started2 == [], (
+        "a tick while the probe is still inflight must dispatch nothing — "
+        f"got {started2}")
+    assert len(_SlowOrch.started) == 1, (
+        "no second task may probe the wall while one is already in flight")
+
+    _SlowOrch.release.set()
+    await asyncio.sleep(0.05)
+    assert sched._quota_probe_id is None, (
+        "the probe id must clear once the inflight task actually finishes")
 
 
 async def test_a_clean_probe_restores_full_width_dispatch(store, monkeypatch):

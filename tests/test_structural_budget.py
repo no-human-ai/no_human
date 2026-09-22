@@ -2461,8 +2461,14 @@ FROZEN_FILE_LINES = {
     # `_quota_probe_armed`) that arms when a *fallback* (guessed) wall for
     # the *active* profile lapses, caps dispatch to a single task while
     # armed, and disarms (crash-safe, in `finally`) once the probe
-    # finishes. Measured on this tree with the scanner below.
-    "core/scheduler.py": 3316,
+    # finishes.
+    # 3316 -> 3327 (+11): gate the dispatch cap on `_quota_probe_id` being
+    # set (a probe already outstanding), not merely re-derived from
+    # `max_workers - len(inflight)` each tick -- the prior formula let a
+    # SECOND task dispatch into the same unverified wall on any tick that
+    # landed before the first probe returned. Measured on this tree with
+    # the scanner below.
+    "core/scheduler.py": 3327,
 }
 
 

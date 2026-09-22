@@ -2311,8 +2311,19 @@ class Scheduler:
         # dispatch is capped; `_resume_quota_parks` above already moved every
         # other park back to IMPLEMENTING, so they queue behind this one
         # probe slot instead of dispatching alongside it.
+        #
+        # Gated on `_quota_probe_id`, not merely re-derived from
+        # `max_workers - len(inflight)` each tick: while the probe is
+        # in flight it already occupies one inflight slot, so
+        # `max_workers - len(inflight)` is still > 0 and `min(slots, 1)`
+        # would let a SECOND task dispatch into the same unverified wall on
+        # any tick that lands before the probe returns — and
+        # `_quota_probe_id = started[0]` below would then overwrite the
+        # original probe's id, so its completion would no longer disarm
+        # anything. Zero slots whenever a probe is already outstanding;
+        # only open the single slot once `_quota_probe_id` is None again.
         if self._quota_probe_armed:
-            slots = min(slots, 1)
+            slots = 0 if self._quota_probe_id is not None else min(slots, 1)
         started: list[str] = []
         claimable = await self._claimable()
         self._last_claimable_count = len(claimable)
