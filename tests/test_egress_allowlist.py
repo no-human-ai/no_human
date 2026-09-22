@@ -891,28 +891,39 @@ ALLOWLIST: dict[str, dict[str, Allowed]] = {
     # out when the probe went — it failed naming exactly this entry.
     # The one-shot gate (`nh gate` / `nh gate --pr <url>`, `review/oneshot.py`):
     # fetching a PR by number without creating or deleting a branch ref, unlike
-    # `orchestrator._fetch_pr_diff`'s `_nh_review_pr` branch. Additive and
-    # idempotent — writes only objects and `FETCH_HEAD` — but it is still a
-    # round-trip to the remote, so it is named here like every other fetch.
+    # `orchestrator._fetch_pr_diff`'s `_nh_review_pr` branch. The fetch runs
+    # inside PR mode's own throwaway workspace (`_pr_workspace`), never the
+    # user's own checkout — additive and idempotent there, under a private ref
+    # with `--no-write-fetch-head` so it does not even touch that workspace's
+    # `FETCH_HEAD` — but it is still a round-trip to the remote, so it is named
+    # here like every other fetch.
     "review/oneshot.py": {
         "exec:git fetch": Allowed(
-            "your git remote — `git fetch origin refs/pull/<n>/head` at "
-            ":389, to compare a PR's head against its merge base",
+            "your git remote — `git fetch --no-write-fetch-head origin "
+            "refs/pull/<n>/head:refs/no-human/gate/head` at :435 (inside "
+            "`_resolve_pr_mode`, run against PR mode's own throwaway "
+            "workspace — see `_pr_workspace`), to compare a PR's head "
+            "against its merge base",
             "user-invoked: only when `nh gate --pr <url>` is given a pull "
             "request URL; the default `nh gate` (current branch) never "
             "reaches this path"),
         "exec:git clone": Allowed(
             "no remote at all — `git clone --local --shared --no-checkout` "
-            "at :473 clones the user's own repo (whatever ref it is on) "
-            "into a throwaway temp directory so the reviewed head can be "
-            "checked out for citation verification against the exact "
-            "reviewed tree, never the user's live working tree; `--local` "
-            "reads the source repo's object store directly and never dials "
-            "a network URL",
+            "at :540 (`_materialized_head`, branch mode) and :587 "
+            "(`_pr_workspace`, PR mode) each clone the user's own repo "
+            "(whatever ref it is on) into a throwaway temp directory, so "
+            "the reviewed head can be checked out for citation "
+            "verification against the exact reviewed tree — never the "
+            "user's live working tree — and, in PR mode, so the PR-head "
+            "fetch above lands in that throwaway workspace rather than "
+            "the user's own checkout; `--local` reads the source repo's "
+            "object store directly and never dials a network URL",
             "user-invoked: runs on EVERY `nh gate` invocation, default "
             "(current branch) and `--pr <url>` alike — `_materialized_head` "
-            "clones in both modes so a dirty working tree can never demote "
-            "a citation-backed finding"),
+            "clones in branch mode, `_pr_workspace` clones in PR mode, so a "
+            "dirty working tree can never demote a citation-backed finding "
+            "and a fork PR's refless head always lands in its own object "
+            "store"),
     },
     "integrations/__init__.py": {
         "http:httpx": Allowed(

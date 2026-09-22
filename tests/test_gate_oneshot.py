@@ -19,6 +19,8 @@ without this suite touching the network.
 from __future__ import annotations
 
 import subprocess
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -351,12 +353,16 @@ def _repo_fingerprint(repo):
 # to issue against the user's own checkout — enumerated by reading every
 # `["git", ...]` construction reachable from `run_gate` (oneshot.py's `_git`/
 # `_rev_parse`/`_merge_base`/`_diff`/`_uncommitted_paths`/
-# `_origin_owner_repo`/`_resolve_pr_mode`, `GitRepo.current_branch`/
-# `head_sha`/`default_branch`, and `runner.py`'s `_git_show`/`_git_files`).
-# `clone`/`checkout` are deliberately absent here: they exist only inside
-# `_materialized_head`'s throwaway temp clone and are checked separately.
+# `_origin_owner_repo`, `GitRepo.current_branch`/`head_sha`/`default_branch`,
+# and `runner.py`'s `_git_show`/`_git_files`). `clone`/`checkout` are
+# deliberately absent here: they exist only inside throwaway temp clones
+# (`_materialized_head`, `_pr_workspace`) and are checked separately.
+# `fetch` is likewise absent: PR mode's only fetch now runs inside
+# `_pr_workspace`'s own throwaway clone (never against `real_repo`), so it
+# is covered by the "any verb, any cwd other than `real_repo`" branch below
+# instead of this allowlist.
 _READ_ONLY_GIT_VERBS = {
-    "rev-parse", "merge-base", "diff", "status", "config", "fetch",
+    "rev-parse", "merge-base", "diff", "status", "config",
     "symbolic-ref", "remote", "ls-tree", "show",
 }
 
@@ -393,13 +399,16 @@ def _install_fail_closed_git_spy(monkeypatch, *, real_repo: Path):
     path to the git binary) and to any write verb outside those six (`git
     branch -D`, `git stash`, `git clean -fd`, `git tag -f`, `git remote
     set-head`, ...). Here every call must resolve to the `git` program by
-    basename; its subcommand must be on the fixed read-only allowlist above,
-    with `remote`/`config`/`status` further pinned to the exact read-only
-    subform this call graph actually uses; `clone`/`checkout` are permitted
-    only when clearly scoped to the throwaway PR-head clone, never against
-    `real_repo`; anything else — a different program, an unlisted verb, a
-    write-shaped call, or any use of `Popen` at all (this call graph never
-    needs it) — fails the test immediately instead of silently passing.
+    basename; anything scoped to a throwaway workspace (`cwd != real_repo` —
+    `_pr_workspace`'s clone, its PR-head fetch, `_materialized_head`'s
+    clone) may run any subcommand except `push`; anything that runs with
+    `cwd == real_repo` — the only place a write would actually touch
+    something the user owns — must be on the fixed read-only allowlist
+    above, with `remote`/`config`/`status` further pinned to the exact
+    read-only subform this call graph actually uses; anything else — a
+    different program, an unlisted verb against `real_repo`, a push from a
+    workspace, or any use of `Popen` at all (this call graph never needs
+    it) — fails the test immediately instead of silently passing.
     """
     real_repo = real_repo.resolve()
     real_run = subprocess.run
@@ -426,6 +435,18 @@ def _install_fail_closed_git_spy(monkeypatch, *, real_repo: Path):
             assert "--detach" in argv, f"gate ran a non-detached checkout: {argv}"
             return
 
+        if resolved_cwd is not None and resolved_cwd != real_repo:
+            # Any git subcommand is fine once it is scoped away from the
+            # user's own checkout — PR mode's whole workspace
+            # (`_pr_workspace`) lives in one of these throwaway
+            # directories (never `real_repo`), fetches into it directly
+            # from `origin`, and is removed before `run_gate` returns.
+            # Everything that runs with cwd=`real_repo` itself — the only
+            # place a write would actually touch anything the user owns —
+            # still goes through the closed, read-only allowlist below.
+            assert verb != "push", f"gate pushed from a throwaway workspace: {argv}"
+            return
+
         assert verb in _READ_ONLY_GIT_VERBS, (
             f"gate ran an unlisted (non-allowlisted) git subcommand: {argv}"
         )
@@ -436,7 +457,9 @@ def _install_fail_closed_git_spy(monkeypatch, *, real_repo: Path):
         if verb == "remote":
             assert "show" in argv, f"gate ran a write-shaped `git remote`: {argv}"
         if verb == "config":
-            assert "--get" in argv, f"gate ran a write-shaped `git config`: {argv}"
+            assert "--get" in argv or "--get-regexp" in argv, (
+                f"gate ran a write-shaped `git config`: {argv}"
+            )
         if verb == "status":
             assert "--porcelain" in argv, f"gate ran a non-porcelain `git status`: {argv}"
 
@@ -1987,4 +2010,247 @@ def test_a_lookalike_origin_host_is_not_treated_as_github(tmp_path, monkeypatch)
     assert oneshot._origin_owner_repo(repo) is None, (
         "a lookalike host containing github.com as a substring must not "
         "resolve to a GitHub (owner, repo) pair"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# 27. fork PRs (refless fetch into a shallow checkout) must still check out  #
+# --------------------------------------------------------------------------- #
+#
+# Regression for: `nh gate --pr <url>` failed with "fatal: unable to read
+# tree <sha>" reviewing a PR whose head only ever reached the checkout via a
+# refless fetch (`git fetch origin refs/pull/<n>/head`, no destination ref —
+# exactly how every fork PR arrives) whenever `repo_path` itself was a
+# shallow clone. `git clone --local --shared` silently downgrades to a full
+# transport-level clone whenever the SOURCE repo is shallow ("warning:
+# source repository is shallow, ignoring --local"), and a downgraded clone
+# only imports the source's advertised branches — never a commit that lives
+# only in the source's `FETCH_HEAD`. The old `_materialized_head`, run
+# straight against `repo_path`, hit exactly that. The fix fetches the PR
+# head directly from `origin` into its own throwaway workspace
+# (`_pr_workspace`), so the object always lands in that workspace's own
+# store regardless of `repo_path`'s shallow-ness.
+
+def _make_shallow_repo_with_fork_pr(tmp_path, owner="acme", repo_name="widgets"):
+    """`repo_path` is a shallow (depth-1) clone of `main`'s tip; the PR
+    forked from that same tip (so a merge base genuinely exists within the
+    shallow view) and is pushed only to `refs/pull/<n>/head` — never a
+    branch — exactly the refless shape a fork PR fetch produces."""
+    bare = tmp_path / "origin.git"
+    subprocess.run(["git", "init", "--bare", "-b", "main", str(bare)],
+                    check=True, capture_output=True)
+
+    seed = tmp_path / "seed"
+    seed.mkdir()
+    _git(seed, "init", "-b", "main")
+    _git(seed, "config", "user.email", "t@example.com")
+    _git(seed, "config", "user.name", "t")
+    (seed / "a.txt").write_text("one\n")
+    _git(seed, "add", "a.txt")
+    _git(seed, "commit", "-m", "c1")
+    _git(seed, "remote", "add", "origin", str(bare))
+    _git(seed, "push", "origin", "main")
+
+    (seed / "a.txt").write_text("two\n")
+    _git(seed, "add", "a.txt")
+    _git(seed, "commit", "-m", "c2")
+    _git(seed, "push", "origin", "main")
+    tip = _git_out(seed, "rev-parse", "HEAD")
+
+    # Forked from `main`'s current tip (`c2`), so the merge base the gate
+    # needs is exactly the shallow view's one and only commit — this test
+    # is about the checkout step, not about shallow-clone merge-base
+    # refusal (covered separately above).
+    pr_src = _push_pr_ref(bare, tmp_path / "pr_src_fork", 61)
+    (pr_src / "fork_change.py").write_text("x = 1\n")
+    _git(pr_src, "add", "fork_change.py")
+    _git(pr_src, "commit", "-m", "fork PR change")
+    _git(pr_src, "push", "origin", "HEAD:refs/pull/61/head")
+    pr_head = _git_out(pr_src, "rev-parse", "HEAD")
+
+    github_url = f"https://github.com/{owner}/{repo_name}.git"
+    repo = tmp_path / "repo"
+    subprocess.run(
+        ["git", "clone", "--depth", "1", "--branch", "main", "-q",
+         f"file://{bare}", str(repo)],
+        check=True, capture_output=True,
+    )
+    _git(repo, "config", "user.email", "t@example.com")
+    _git(repo, "config", "user.name", "t")
+    _git(repo, "config", f"url.{bare}.insteadOf", github_url)
+    _git(repo, "remote", "set-url", "origin", github_url)
+    _git(repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+    return repo, tip, pr_head
+
+
+def test_pr_mode_reviews_a_fork_pr_reached_only_via_a_refless_fetch(
+    tmp_path, monkeypatch,
+):
+    repo, base_tip, pr_head = _make_shallow_repo_with_fork_pr(tmp_path)
+    assert _git_out(repo, "rev-parse", "--is-shallow-repository") == "true", (
+        "test premise: repo_path must be a genuinely shallow clone, or this "
+        "test does not exercise the --local/--shared downgrade at all"
+    )
+
+    _ok_credential(monkeypatch)
+    monkeypatch.setattr(oneshot, "AdversarialReviewer", _stub_reviewer(_PASSING_DECISION))
+
+    import asyncio
+    result = asyncio.run(run_gate(
+        repo, pr_url="https://github.com/acme/widgets/pull/61",
+    ))
+
+    assert result.after_ref == pr_head, (
+        "the gate must reach a verdict on the fork PR's real head, not "
+        "fail the checkout or silently review the wrong commit"
+    )
+    assert result.before_ref == base_tip
+
+
+# --------------------------------------------------------------------------- #
+# 28. concurrent `--pr` runs against the same checkout must not collide      #
+# --------------------------------------------------------------------------- #
+#
+# Regression for: two concurrent `nh gate --pr` runs against different PRs
+# in the same checkout used to share `FETCH_HEAD` — a process-global
+# pseudo-ref for a given git directory, overwritten by the next fetch in
+# that same directory — because the old `_resolve_pr_mode` fetched straight
+# into `repo_path` with no destination ref. Whichever run's fetch wrote
+# FETCH_HEAD last could become the commit BOTH runs reviewed. The fix gives
+# each run its own throwaway workspace (`_pr_workspace`) and fetches into a
+# private ref there, so no state is ever shared between concurrent runs.
+
+def test_concurrent_pr_runs_each_review_their_own_prs_head(tmp_path, monkeypatch):
+    repo, bare = _make_repo_with_github_origin(tmp_path)
+
+    pr21 = _push_pr_ref(bare, tmp_path / "pr21_src", 21)
+    (pr21 / "pr21.txt").write_text("pr21\n")
+    _git(pr21, "add", "pr21.txt")
+    _git(pr21, "commit", "-m", "pr21 change")
+    _git(pr21, "push", "origin", "HEAD:refs/pull/21/head")
+    head21 = _git_out(pr21, "rev-parse", "HEAD")
+
+    pr22 = _push_pr_ref(bare, tmp_path / "pr22_src", 22)
+    (pr22 / "pr22.txt").write_text("pr22\n")
+    _git(pr22, "add", "pr22.txt")
+    _git(pr22, "commit", "-m", "pr22 change")
+    _git(pr22, "push", "origin", "HEAD:refs/pull/22/head")
+    head22 = _git_out(pr22, "rev-parse", "HEAD")
+
+    assert head21 != head22, "test premise: the two PRs must differ"
+
+    _ok_credential(monkeypatch)
+    monkeypatch.setattr(oneshot, "AdversarialReviewer", _stub_reviewer(_PASSING_DECISION))
+
+    # Force the interleaving that used to cause the collision: block each
+    # run right after its own fetch completes (so both fetches' writes have
+    # already landed on disk) but before either run reads back what it
+    # fetched. On the old code this guarantees the shared FETCH_HEAD has
+    # been written twice before either read; on the fixed code each run's
+    # fetch and read are scoped to its own workspace, so the barrier is
+    # inert.
+    barrier = threading.Barrier(2, timeout=10)
+    real_git = oneshot._git
+
+    def _synced_git(path, *args):
+        result = real_git(path, *args)
+        if args[:1] == ("fetch",):
+            barrier.wait()
+        return result
+
+    monkeypatch.setattr(oneshot, "_git", _synced_git)
+
+    def _run(pr_url):
+        import asyncio
+        return asyncio.run(run_gate(repo, pr_url=pr_url))
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        future21 = pool.submit(_run, "https://github.com/acme/widgets/pull/21")
+        future22 = pool.submit(_run, "https://github.com/acme/widgets/pull/22")
+        result21 = future21.result(timeout=30)
+        result22 = future22.result(timeout=30)
+
+    assert result21.after_ref == head21, (
+        "the #21 run must resolve and review PR #21's own head, not "
+        "whichever PR's fetch happened to land last"
+    )
+    assert result22.after_ref == head22, (
+        "the #22 run must resolve and review PR #22's own head, not "
+        "whichever PR's fetch happened to land last"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# 29. the rendered verdict names the exact commit it reviewed                #
+# --------------------------------------------------------------------------- #
+
+def test_render_markdown_names_the_reviewed_commit(tmp_path, monkeypatch):
+    """A verdict must be tie-able to a sha without reading logs: the
+    rendered Markdown must name the full commit it reviewed, not just the
+    short prefixes already folded into `comparison`."""
+    repo, _bare = _make_repo_with_origin(tmp_path)
+    _git(repo, "checkout", "-b", "feature")
+    (repo / "b.txt").write_text("change\n")
+    _git(repo, "add", "b.txt")
+    _git(repo, "commit", "-m", "feature commit")
+    expected_head = _git_out(repo, "rev-parse", "HEAD")
+
+    _ok_credential(monkeypatch)
+    monkeypatch.setattr(oneshot, "AdversarialReviewer", _stub_reviewer(_PASSING_DECISION))
+
+    import asyncio
+    result = asyncio.run(run_gate(repo))
+    text = render_markdown(result)
+
+    assert expected_head in text, (
+        "the rendered verdict must name the exact (full) commit it "
+        f"reviewed:\n{text}"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# 30. PR mode must leave no git state behind in the user's own checkout      #
+# --------------------------------------------------------------------------- #
+
+def _extended_repo_fingerprint(repo):
+    """`_repo_fingerprint` (HEAD/status/branch list) already passed even
+    under the old, unfixed code — none of those three reflect a `fetch`
+    that writes only `FETCH_HEAD` and loose objects. This also captures
+    those, so it actually catches PR mode writing anything into
+    `repo`'s own `.git` directory."""
+    git_dir = repo / ".git"
+    fetch_head = git_dir / "FETCH_HEAD"
+    fetch_head_state = (
+        fetch_head.exists(),
+        fetch_head.stat().st_mtime_ns if fetch_head.exists() else None,
+    )
+    loose_objects = set()
+    objects_dir = git_dir / "objects"
+    for sub in objects_dir.iterdir():
+        if sub.is_dir() and len(sub.name) == 2:
+            loose_objects.update(f"{sub.name}{obj.name}" for obj in sub.iterdir())
+    return _repo_fingerprint(repo) + (fetch_head_state, frozenset(loose_objects))
+
+
+def test_pr_mode_writes_no_fetch_head_or_new_objects_into_the_users_checkout(
+    tmp_path, monkeypatch,
+):
+    repo, bare = _make_repo_with_github_origin(tmp_path)
+    pr_src = _push_pr_ref(bare, tmp_path / "pr_src_ac4", 71)
+    (pr_src / "e.txt").write_text("pr change\n")
+    _git(pr_src, "add", "e.txt")
+    _git(pr_src, "commit", "-m", "pr change")
+    _git(pr_src, "push", "origin", "HEAD:refs/pull/71/head")
+
+    _ok_credential(monkeypatch)
+    monkeypatch.setattr(oneshot, "AdversarialReviewer", _stub_reviewer(_PASSING_DECISION))
+
+    before = _extended_repo_fingerprint(repo)
+    import asyncio
+    asyncio.run(run_gate(repo, pr_url="https://github.com/acme/widgets/pull/71"))
+    after = _extended_repo_fingerprint(repo)
+
+    assert before == after, (
+        "PR mode must not write FETCH_HEAD or fetch any new objects into "
+        "the user's own checkout"
     )

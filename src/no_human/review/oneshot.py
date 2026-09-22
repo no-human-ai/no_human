@@ -15,38 +15,54 @@ in `src/` may construct the reviewer for a one-shot review.
 Reads and reports only: every git call this module makes against the user's
 own checkout is read-only plumbing — `rev-parse`, `merge-base`, `diff`,
 `status --porcelain`, `symbolic-ref` (the local-only half of
-`default_branch()`; see below), `config --get remote.origin.url` (to verify
-a `--pr` URL names this checkout's own repository — deliberately not
-`remote get-url`, which would apply any `insteadOf` rewrite instead of
-reporting the repo's actual declared origin; see `_origin_owner_repo`), and,
-in PR mode, a single additive `fetch` of the PR's refs (which writes objects
-and `FETCH_HEAD` but creates no branch and moves no ref the user owns). No
-network call is made by default: `default_branch(local_only=True)` reads
-only the local `refs/remotes/origin/HEAD`, never `git remote show origin`
-(that fallback does real network I/O and, offline, hangs instead of
-answering) — a checkout where that local ref was never recorded refuses by
-name and points at `--base` rather than guessing over the network. Every git
-call that touches the network (PR mode's `fetch`) runs with
-`GIT_TERMINAL_PROMPT=0` and a no-op askpass so a private repo the caller
-lacks credentials for fails fast instead of blocking on a credential prompt
-forever (see `_no_prompt_env`). The tamper guard this module calls
+`default_branch()`; see below), and `config --get`/`--get-regexp` (to verify
+a `--pr` URL names this checkout's own repository, and to read any
+`url.<x>.insteadOf` rewrites the checkout has configured — deliberately not
+`remote get-url`, which would apply such a rewrite instead of reporting the
+repo's actual declared origin; see `_origin_owner_repo`). PR mode makes NO
+git write of any kind against the user's own checkout — not even
+`FETCH_HEAD`: it clones `repo_path` into a private, per-run workspace first
+(`_pr_workspace`, `git clone --local --shared --no-checkout`, a temp
+directory removed before `run_gate` returns), then fetches the PR's head
+directly from `origin` *into that workspace*, under a private ref
+(`_PR_HEAD_REF`) with `--no-write-fetch-head` — so the fetch never touches
+`FETCH_HEAD` anywhere, and two concurrent `--pr` runs against the same
+checkout never share so much as a ref (see `_resolve_pr_mode`). Fetching
+directly from `origin` rather than borrowing objects from `repo_path` via
+`--local --shared` also means PR mode works even when `repo_path` is a
+shallow clone: a shallow *source* silently downgrades `--local --shared` to
+a real transport clone that only carries the source's advertised branches,
+never a commit that exists only in a refless fetch. No network call is made
+by default: `default_branch(local_only=True)` reads only the local
+`refs/remotes/origin/HEAD`, never `git remote show origin` (that fallback
+does real network I/O and, offline, hangs instead of answering) — a
+checkout where that local ref was never recorded refuses by name and points
+at `--base` rather than guessing over the network. Every git call that
+touches the network (PR mode's `fetch`) runs with `GIT_TERMINAL_PROMPT=0`
+and a no-op askpass so a private repo the caller lacks credentials for fails
+fast instead of blocking on a credential prompt forever (see
+`_no_prompt_env`). The tamper guard this module calls
 (`testing.runner.tamper_check_between`) also runs its own read-only git
-plumbing, including `ls-tree` and `show`, against the same checkout — that
+plumbing, including `ls-tree` and `show`, against whichever checkout it is
+given (`repo_path` in branch mode, the PR workspace in PR mode) — that
 module's calls are not enumerated here since they are not this module's to
 promise. Taken together, `run_gate` never commits, pushes, merges, or edits a
-file in the user's checkout.
+file in the user's own checkout.
 
-Both modes materialize the reviewed head (`after_ref`) into a throwaway
-local clone (`git clone --local --shared`, in a temp directory, deleted
-before `run_gate` returns) before handing it to the reviewer, so the
-reviewer's citation check (`reviewer._citation_fails`, which reads files
-straight off disk at whatever path it is given) always reads the exact tree
-that was diffed — never the user's live, possibly-dirty working tree. That
-clone is read-only against the user's repo — `--local --shared` only ever
-reads objects there — and every write it makes (the clone itself, the
-detached checkout inside it) lands solely in the temp directory. The
-reviewer's own backend is constructed read-only via `AdversarialReviewer`/
-`ClaudeBackend(readonly=True)`.
+Both modes materialize the reviewed head (`after_ref`) into a throwaway,
+per-run clone before handing it to the reviewer, so the reviewer's citation
+check (`reviewer._citation_fails`, which reads files straight off disk at
+whatever path it is given) always reads the exact tree that was diffed —
+never the user's live, possibly-dirty working tree. Branch mode does this
+via `_materialized_head` (`git clone --local --shared`, in a temp directory,
+deleted before `run_gate` returns); PR mode reuses its own `_pr_workspace`
+clone directly, checking out the fetched head inside it, rather than
+cloning a second time. Every one of these clones is read-only against the
+user's repo — `--local --shared` only ever reads objects there — and every
+write they make (the clone itself, the fetch into a private ref, the
+detached checkout) lands solely in a temp directory that is removed, success
+or failure, before `run_gate` returns. The reviewer's own backend is
+constructed read-only via `AdversarialReviewer`/`ClaudeBackend(readonly=True)`.
 """
 
 from __future__ import annotations
@@ -56,7 +72,7 @@ import re
 import shutil
 import subprocess
 import tempfile
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -103,6 +119,14 @@ _PR_URL_RE = re.compile(
 _ORIGIN_URL_RE = re.compile(
     r"(?:^|[/@])github\.com[:/](?P<owner>[^/]+)/(?P<repo>[^/]+?)(?:\.git)?/?$"
 )
+
+# Private ref the PR head is fetched under, inside PR mode's own throwaway
+# workspace (`_pr_workspace`) — never `FETCH_HEAD`, which is process-global
+# for a given git directory and would otherwise let two concurrent `--pr`
+# runs race on which PR's head each one reviews. Namespaced under
+# `refs/no-human/` so it can never collide with a ref a user or GitHub
+# itself would create.
+_PR_HEAD_REF = "refs/no-human/gate/head"
 
 
 class GateUnavailable(RuntimeError):
@@ -366,9 +390,26 @@ def _origin_owner_repo(repo_path: Path) -> tuple[str, str] | None:
 
 
 def _resolve_pr_mode(
-    repo: GitRepo, repo_path: Path, pr_url: str, base: str | None,
+    repo: GitRepo, repo_path: Path, workspace: Path, pr_url: str, base: str | None,
 ) -> tuple[str, str, str, str, list[str]]:
-    """Returns (before_ref, after_ref, base_label, comparison, uncommitted)."""
+    """Returns (before_ref, after_ref, base_label, comparison, uncommitted).
+
+    Every git write PR mode makes — the fetch of the PR head, and the
+    private ref (`_PR_HEAD_REF`) it lands under — happens inside
+    ``workspace`` (see `_pr_workspace`), fetched directly from ``origin``,
+    never against ``repo_path``. ``repo_path`` is only ever read here
+    (`_origin_owner_repo`, ``repo.default_branch``), so PR mode makes zero
+    git writes of any kind to the user's own checkout, and two concurrent
+    `--pr` runs against the same checkout never share so much as a ref —
+    each gets its own ``workspace``.
+
+    ``base``, when given, is resolved to a concrete sha in ``repo_path``
+    first: a bare revision expression like a branch name only means what the
+    caller expects there (``workspace`` only ever carries ``repo_path``'s
+    branches as ``refs/remotes/origin/*``, since it was cloned from it), so
+    resolving it in ``repo_path`` keeps `--base` behaving exactly as it did
+    before ``workspace`` existed.
+    """
     match = _PR_URL_RE.match(pr_url.strip())
     if not match:
         raise GateUnavailable(
@@ -390,20 +431,24 @@ def _resolve_pr_mode(
             "different repository than the one checked out"
         )
 
-    proc = _git(repo_path, "fetch", "origin", f"refs/pull/{number}/head")
+    proc = _git(
+        workspace, "fetch", "--no-write-fetch-head", "origin",
+        f"refs/pull/{number}/head:{_PR_HEAD_REF}",
+    )
     if proc.returncode != 0:
         raise GateUnavailable(
             f"could not fetch pull request #{number} from origin: "
             f"{proc.stderr.strip()}"
         )
-    head = _rev_parse(repo_path, "FETCH_HEAD")
+    head = _rev_parse(workspace, _PR_HEAD_REF)
     if not head:
         raise GateUnavailable(
-            f"could not resolve FETCH_HEAD after fetching pull request #{number}"
+            f"could not resolve pull request #{number}'s head after fetching it"
         )
 
     if base:
-        base_ref = base
+        base_display = base
+        base_query = _rev_parse(repo_path, base) or base
     else:
         # local_only=True here too: PR mode already made its one, expected
         # network call above (fetching the PR ref) — resolving the default
@@ -417,38 +462,56 @@ def _resolve_pr_mode(
                 "origin/HEAD locally (this checkout may never have run "
                 "`git remote set-head origin -a`); pass --base"
             )
-        base_ref = f"origin/{default_name}"
+        base_display = f"origin/{default_name}"
+        base_query = base_display
 
-    merge_base = _merge_base(repo_path, base_ref, head)
-    shallow = _is_shallow_repo(repo_path)
+    merge_base = _merge_base(workspace, base_query, head)
+    shallow = _is_shallow_repo(workspace)
     if not merge_base:
         if shallow:
             raise GateUnavailable(
                 f"this checkout is a shallow clone: no merge base between "
-                f"pull request #{number} and {base_ref} exists within the "
+                f"pull request #{number} and {base_display} exists within the "
                 "fetched history — run `git fetch --unshallow` and retry"
             )
         raise GateUnavailable(
-            f"no merge base between pull request #{number} and {base_ref}"
+            f"no merge base between pull request #{number} and {base_display}"
         )
     if merge_base == head:
         if shallow:
             raise GateUnavailable(
                 f"this checkout is a shallow clone: pull request #{number} "
-                f"and {base_ref} resolve to the same commit within the "
+                f"and {base_display} resolve to the same commit within the "
                 "fetched history, which may only be because the shallow "
                 "history doesn't reach the true merge base — run `git "
                 "fetch --unshallow` and retry"
             )
         raise GateUnavailable(
-            f"pull request #{number} has no commits beyond {base_ref}"
+            f"pull request #{number} has no commits beyond {base_display}"
         )
 
     comparison = (
         f"pull request {owner}/{name}#{number} head `{head[:7]}` against "
-        f"merge base with `{base_ref}` @ `{merge_base[:7]}`"
+        f"merge base with `{base_display}` @ `{merge_base[:7]}`"
     )
-    return merge_base, head, base_ref, comparison, []
+    return merge_base, head, base_display, comparison, []
+
+
+def _checkout_detached(path: Path, sha: str) -> None:
+    """Detach-checkout ``sha`` in ``path``, refusing by name on failure.
+
+    Shared by branch mode's `_materialized_head` and PR mode's workspace
+    (`_pr_workspace`/`run_gate`), so a checkout failure is reported the same
+    way regardless of which mode triggered it.
+    """
+    checkout = subprocess.run(
+        ["git", "checkout", "--detach", "-q", sha],
+        cwd=path, capture_output=True, text=True, env=_no_prompt_env(),
+    )
+    if checkout.returncode != 0:
+        raise GateUnavailable(
+            f"could not check out {sha} for review: {checkout.stderr.strip()}"
+        )
 
 
 @contextmanager
@@ -458,18 +521,18 @@ def _materialized_head(repo_path: Path, sha: str):
     The reviewer's citation check reads files straight off disk at whatever
     ``repo_path`` it is given (see ``reviewer._citation_fails``), comparing a
     cited line number against that file's CURRENT on-disk line count. Handing
-    it the user's raw, live checkout is wrong in both modes: in PR mode the
-    PR head only ever lands in ``FETCH_HEAD`` — the user's actual working
-    tree stays on whatever branch they had checked out — and in branch mode
-    the working tree can be dirty, so an uncommitted edit that merely
-    shortens a file could silently demote a real, correctly-cited finding to
-    a pass even though the reviewed diff never touched that edit. Reviewing
-    against a clone detached at the exact reviewed ``sha`` closes both holes
-    the same way. This clones ``repo_path`` locally (``--local --shared``:
-    read-only against the source, objects are shared rather than copied)
-    into a temp directory and checks out ``sha`` there, so the reviewer
-    always reads the exact tree that was diffed. The clone is removed on the
-    way out, success or failure.
+    it the user's raw, live working tree is wrong: it can be dirty, so an
+    uncommitted edit that merely shortens a file could silently demote a
+    real, correctly-cited finding to a pass even though the reviewed diff
+    never touched that edit. Reviewing against a clone detached at the exact
+    reviewed ``sha`` closes that hole. This clones ``repo_path`` locally
+    (``--local --shared``: read-only against the source, objects are shared
+    rather than copied) into a temp directory and checks out ``sha`` there,
+    so the reviewer always reads the exact tree that was diffed. The clone
+    is removed on the way out, success or failure.
+
+    Branch-mode only: PR mode reviews from its own `_pr_workspace` clone
+    directly (see `run_gate`) rather than materializing a second time.
     """
     tmp_dir = Path(tempfile.mkdtemp(prefix="no_human_gate_"))
     try:
@@ -483,15 +546,69 @@ def _materialized_head(repo_path: Path, sha: str):
                 "could not materialize the reviewed commit for review: "
                 f"{clone.stderr.strip()}"
             )
-        checkout = subprocess.run(
-            ["git", "checkout", "--detach", "-q", sha],
-            cwd=tmp_dir, capture_output=True, text=True, env=_no_prompt_env(),
+        _checkout_detached(tmp_dir, sha)
+        yield tmp_dir
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@contextmanager
+def _pr_workspace(repo_path: Path):
+    """Private, per-run clone of ``repo_path`` used for the whole of PR mode.
+
+    Cloned from ``repo_path`` first — cheap, and (unlike fetching into
+    ``repo_path`` itself) makes no write of any kind to the user's own
+    checkout, not even ``FETCH_HEAD`` — then, once `_resolve_pr_mode` knows
+    the PR number, fetched into directly from the real ``origin`` remote,
+    under a private ref (`_PR_HEAD_REF`) with ``--no-write-fetch-head``.
+
+    Fetching straight from ``origin`` rather than borrowing objects from
+    ``repo_path`` via ``--local --shared`` is what makes this work even when
+    ``repo_path`` is a shallow clone: git silently downgrades
+    ``--local --shared`` to a real transport-level clone whenever the
+    *source* repository is shallow ("source repository is shallow, ignoring
+    --local"), and a downgraded clone only carries the source's advertised
+    branches — never a commit that exists only in a refless fetch, which is
+    exactly how a fork PR's head used to fail to check out with "fatal:
+    unable to read tree" even though the object was genuinely present in
+    the fetching checkout. Fetching the PR head directly from ``origin``
+    sidesteps that entirely: the object always lands in this workspace's own
+    store, regardless of ``repo_path``'s shallow-ness.
+
+    Because every write PR mode makes lands in this temporary directory —
+    removed on the way out, success or failure — and never in ``repo_path``,
+    two concurrent `--pr` runs against the same checkout each get their own
+    workspace and never collide on shared state (notably ``FETCH_HEAD``,
+    which is process-global for a given git directory, not per-run).
+    """
+    tmp_dir = Path(tempfile.mkdtemp(prefix="no_human_gate_pr_"))
+    try:
+        clone = subprocess.run(
+            ["git", "clone", "--local", "--shared", "--no-checkout", "-q",
+             str(repo_path), str(tmp_dir)],
+            capture_output=True, text=True, env=_no_prompt_env(),
         )
-        if checkout.returncode != 0:
+        if clone.returncode != 0:
             raise GateUnavailable(
-                f"could not check out {sha} for review: "
-                f"{checkout.stderr.strip()}"
+                "could not create a workspace to review this pull request: "
+                f"{clone.stderr.strip()}"
             )
+        origin_url = _git(repo_path, "config", "--get", "remote.origin.url")
+        if origin_url.returncode == 0 and origin_url.stdout.strip():
+            _git(tmp_dir, "remote", "set-url", "origin", origin_url.stdout.strip())
+        # Carry over any `url.<x>.insteadOf` rewrite `repo_path` has
+        # configured (this suite's own fixtures use one to keep `origin`
+        # resolving to a local bare repo without touching the network; a
+        # real checkout might have one for a corporate mirror) — without
+        # this, the fetch below would try to reach the un-rewritten URL
+        # literally instead of resolving it exactly the way `repo_path`
+        # itself would.
+        rewrites = _git(repo_path, "config", "--get-regexp", r"^url\..*\.insteadof$")
+        if rewrites.returncode == 0:
+            for line in rewrites.stdout.splitlines():
+                key, _, value = line.partition(" ")
+                if key:
+                    _git(tmp_dir, "config", key, value)
         yield tmp_dir
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -553,156 +670,189 @@ async def run_gate(
     # precondition here, and must never escape as an unhandled exception
     # (the CLI would report a generic exit 1, indistinguishable from a real
     # review FAIL, instead of refusing by name at exit 2).
-    try:
-        repo = GitRepo(repo_path)
-        if pr_url:
-            mode = "pr"
-            before_ref, after_ref, _base_label, comparison, uncommitted = (
-                _resolve_pr_mode(repo, repo_path, pr_url, base)
+    #
+    # `ExitStack` rather than a plain `with`: PR mode's `_pr_workspace` and
+    # branch mode's `_materialized_head` are each entered conditionally,
+    # deep inside this function, at different points (the former as soon as
+    # the mode is known, the latter only once a reviewer is about to run) —
+    # `ExitStack` lets both register their cleanup once entered and still
+    # guarantees it runs on every exit path below, including an exception
+    # raised by the diff, the tamper check, reviewer construction, or the
+    # review call itself.
+    with ExitStack() as stack:
+        try:
+            repo = GitRepo(repo_path)
+            if pr_url:
+                mode = "pr"
+                # `_pr_workspace` is PR mode's own private clone: every
+                # write PR mode makes (the PR-head fetch, its private ref)
+                # lands here, never in `repo_path` — see `_pr_workspace`'s
+                # docstring for why that also fixes fork-PR checkouts and
+                # concurrent-run collisions. `git_path` is what the diff and
+                # tamper check run against; PR mode reuses this same clone
+                # as the reviewer's `repo_path` too (checked out below),
+                # rather than materializing a second, redundant clone.
+                git_path = stack.enter_context(_pr_workspace(repo_path))
+                before_ref, after_ref, _base_label, comparison, uncommitted = (
+                    _resolve_pr_mode(repo, repo_path, git_path, pr_url, base)
+                )
+                _checkout_detached(git_path, after_ref)
+                label = f"pull request {pr_url}"
+            else:
+                mode = "branch"
+                git_path = repo_path
+                before_ref, after_ref, _base_label, comparison, uncommitted = (
+                    _resolve_branch_mode(repo, repo_path, base)
+                )
+                label = repo.current_branch()
+        except GitError as exc:
+            raise GateUnavailable(str(exc)) from exc
+
+        if uncommitted:
+            comparison += (
+                f"; {len(uncommitted)} uncommitted file(s) are NOT reviewed — "
+                "commit them to include them"
             )
-            label = f"pull request {pr_url}"
-        else:
-            mode = "branch"
-            before_ref, after_ref, _base_label, comparison, uncommitted = (
-                _resolve_branch_mode(repo, repo_path, base)
+
+        diff = _diff(git_path, before_ref, after_ref)
+        if not diff.strip():
+            # `AdversarialReviewer.review` treats `diff_override=""` as
+            # falsy — identical to "no diff override" — and falls through
+            # to the multi-turn, tool-enabled gate path
+            # (reviewer.py:2566,2588,2601). That defeats the
+            # single-turn/no-tools property this module exists to
+            # guarantee, so refuse outright rather than hand the reviewer
+            # an empty string it would silently reinterpret.
+            raise GateUnavailable(
+                f"no changes to review between {before_ref[:7]} and "
+                f"{after_ref[:7]}: the diff is empty"
             )
-            label = repo.current_branch()
-    except GitError as exc:
-        raise GateUnavailable(str(exc)) from exc
 
-    if uncommitted:
-        comparison += (
-            f"; {len(uncommitted)} uncommitted file(s) are NOT reviewed — "
-            "commit them to include them"
+        # `AdversarialReviewer.review` silently truncates `diff_override` to
+        # `_DIFF_CAP` chars (reviewer.py:2537) with no signal back to the
+        # caller — a diff bigger than the cap would otherwise get a fraction
+        # of itself reviewed and could still print a bare PASS on that
+        # partial view. Refuse by name BEFORE the tamper guard runs or the
+        # reviewer is constructed (and billed) at all: a gate that cannot
+        # see the whole diff has not really reviewed anything, so this must
+        # be exit 2 ("could not run"), never exit 1 with an empty or partial
+        # checklist.
+        if len(diff) > _DIFF_CAP:
+            raise GateUnavailable(
+                f"the diff is {len(diff):,} characters, over the single-turn "
+                f"review cap of {_DIFF_CAP:,} characters — refusing rather "
+                "than construct and bill a reviewer that would only see a "
+                "truncated prefix of the change"
+            )
+
+        try:
+            tamper = tamper_check_between(
+                git_path, before_ref=before_ref, after_ref=after_ref,
+            )
+        except TamperCheckUnavailable as exc:
+            raise GateUnavailable(f"tamper guard could not run: {exc}") from exc
+
+        task = Task.new(
+            title or f"gate: {label}",
+            repo_path=str(repo_path),
+            description=description or None,
         )
+        try:
+            reviewer = AdversarialReviewer.from_config(config.data)
+        except (AuthError, BackendUnavailable) as exc:
+            # Construction itself can fail preflight (e.g. a reviewer pinned
+            # to a backend whose credential vanished between
+            # `_check_credential`'s preview and now) — that is still
+            # "cannot run", not a crash. The tamper guard already ran above;
+            # surface it rather than drop it, so a real tamper finding is
+            # not silently lost behind this refusal.
+            raise GateUnavailable(
+                f"could not construct the reviewer: {exc} "
+                f"(tamper guard already ran: {_format_tamper(tamper)})"
+            ) from exc
 
-    diff = _diff(repo_path, before_ref, after_ref)
-    if not diff.strip():
-        # `AdversarialReviewer.review` treats `diff_override=""` as falsy —
-        # identical to "no diff override" — and falls through to the
-        # multi-turn, tool-enabled gate path (reviewer.py:2566,2588,2601).
-        # That defeats the single-turn/no-tools property this module exists
-        # to guarantee, so refuse outright rather than hand the reviewer an
-        # empty string it would silently reinterpret.
-        raise GateUnavailable(
-            f"no changes to review between {before_ref[:7]} and "
-            f"{after_ref[:7]}: the diff is empty"
-        )
-
-    # `AdversarialReviewer.review` silently truncates `diff_override` to
-    # `_DIFF_CAP` chars (reviewer.py:2537) with no signal back to the
-    # caller — a diff bigger than the cap would otherwise get a fraction of
-    # itself reviewed and could still print a bare PASS on that partial
-    # view. Refuse by name BEFORE the tamper guard runs or the reviewer is
-    # constructed (and billed) at all: a gate that cannot see the whole diff
-    # has not really reviewed anything, so this must be exit 2 ("could not
-    # run"), never exit 1 with an empty or partial checklist.
-    if len(diff) > _DIFF_CAP:
-        raise GateUnavailable(
-            f"the diff is {len(diff):,} characters, over the single-turn "
-            f"review cap of {_DIFF_CAP:,} characters — refusing rather than "
-            "construct and bill a reviewer that would only see a truncated "
-            "prefix of the change"
-        )
-
-    try:
-        tamper = tamper_check_between(
-            repo_path, before_ref=before_ref, after_ref=after_ref,
-        )
-    except TamperCheckUnavailable as exc:
-        raise GateUnavailable(f"tamper guard could not run: {exc}") from exc
-
-    task = Task.new(
-        title or f"gate: {label}",
-        repo_path=str(repo_path),
-        description=description or None,
-    )
-    try:
-        reviewer = AdversarialReviewer.from_config(config.data)
-    except (AuthError, BackendUnavailable) as exc:
-        # Construction itself can fail preflight (e.g. a reviewer pinned to
-        # a backend whose credential vanished between `_check_credential`'s
-        # preview and now) — that is still "cannot run", not a crash. The
-        # tamper guard already ran above; surface it rather than drop it, so
-        # a real tamper finding is not silently lost behind this refusal.
-        raise GateUnavailable(
-            f"could not construct the reviewer: {exc} "
-            f"(tamper guard already ran: {_format_tamper(tamper)})"
-        ) from exc
-
-    try:
-        # The reviewer's citation check reads `review_repo_path` straight off
-        # disk (`reviewer._citation_fails`), comparing cited line numbers
-        # against whatever is on disk right now. Materialize `after_ref`
-        # into a throwaway clone in BOTH modes rather than handing the
-        # reviewer `repo_path` directly: in PR mode the user's checkout never
-        # holds the PR head's content at all (only `FETCH_HEAD` does), and in
-        # branch mode `repo_path` is the user's live working tree, which can
-        # be dirty — an uncommitted edit could otherwise silently demote a
-        # real citation-backed finding to a pass. See `_materialized_head`.
-        with _materialized_head(repo_path, after_ref) as review_repo_path:
+        try:
+            # The reviewer's citation check reads `review_repo_path`
+            # straight off disk (`reviewer._citation_fails`), comparing
+            # cited line numbers against whatever is on disk right now. In
+            # branch mode `repo_path` is the user's live working tree,
+            # which can be dirty — an uncommitted edit could otherwise
+            # silently demote a real citation-backed finding to a pass — so
+            # materialize `after_ref` into a throwaway clone there too. See
+            # `_materialized_head`. PR mode already has exactly the tree it
+            # needs checked out in its own `git_path` (`_pr_workspace`
+            # above), so it reviews from there directly instead of cloning
+            # a second time.
+            if mode == "pr":
+                review_repo_path = git_path
+            else:
+                review_repo_path = stack.enter_context(
+                    _materialized_head(repo_path, after_ref)
+                )
             decision = await reviewer.review(
                 task, repo_path=review_repo_path, diff_override=diff,
                 before_ref=before_ref,
             )
-    except ReviewerUnavailable as exc:
-        # The reviewer itself reaches "no verdict" and escalates rather than
-        # guessing (reviewer.py:2611) — that means the gate did not run, the
-        # same shape as every other unmet precondition here.
-        raise GateUnavailable(
-            f"the reviewer could not reach a verdict: {exc} "
-            f"(tamper guard already ran: {_format_tamper(tamper)})"
-        ) from exc
-    except (AuthError, BackendUnavailable) as exc:
-        # A reviewer backend whose credential/CLI vanished between
-        # `_check_credential`'s preview and this call (e.g. a codex-pinned
-        # reviewer whose CLI disappeared) — still "cannot run", not a crash.
-        raise GateUnavailable(
-            f"the reviewer backend became unusable: {exc} "
-            f"(tamper guard already ran: {_format_tamper(tamper)})"
-        ) from exc
+        except ReviewerUnavailable as exc:
+            # The reviewer itself reaches "no verdict" and escalates rather
+            # than guessing (reviewer.py:2611) — that means the gate did not
+            # run, the same shape as every other unmet precondition here.
+            raise GateUnavailable(
+                f"the reviewer could not reach a verdict: {exc} "
+                f"(tamper guard already ran: {_format_tamper(tamper)})"
+            ) from exc
+        except (AuthError, BackendUnavailable) as exc:
+            # A reviewer backend whose credential/CLI vanished between
+            # `_check_credential`'s preview and this call (e.g. a
+            # codex-pinned reviewer whose CLI disappeared) — still "cannot
+            # run", not a crash.
+            raise GateUnavailable(
+                f"the reviewer backend became unusable: {exc} "
+                f"(tamper guard already ran: {_format_tamper(tamper)})"
+            ) from exc
 
-    if decision.transport_error:
-        # A timeout or transport failure inside the single-turn reviewer
-        # (reviewer.py's `_fast_review`) comes back as an ordinary-looking
-        # FAILING decision — an unclassified "timeout" checklist item that
-        # `blocking_items`/`_refute_candidates` cannot tell apart from a real
-        # finding (it does not match `_reached_no_verdict`'s "structured
-        # output present" sentinel, the only other "gate did not really run"
-        # signal `reviewer.py` exposes). Left unchecked, that is a review
-        # that never happened reading as a real FAIL — the same class of bug
-        # this module exists to prevent for every other unmet precondition.
-        # `reviewer.py` is out of scope for this change, so the refute pass
-        # it may already have run against the bogus "timeout" item cannot be
-        # suppressed from here; this only fixes the verdict that reaches the
-        # caller.
-        if decision.checklist:
-            reason = decision.checklist[0].evidence or decision.checklist[0].label
-        else:
-            reason = "no checklist recorded"
-        raise GateUnavailable(
-            f"the reviewer did not complete (transport error / timeout): "
-            f"{reason} (tamper guard already ran: {_format_tamper(tamper)})"
+        if decision.transport_error:
+            # A timeout or transport failure inside the single-turn
+            # reviewer (reviewer.py's `_fast_review`) comes back as an
+            # ordinary-looking FAILING decision — an unclassified "timeout"
+            # checklist item that `blocking_items`/`_refute_candidates`
+            # cannot tell apart from a real finding (it does not match
+            # `_reached_no_verdict`'s "structured output present" sentinel,
+            # the only other "gate did not really run" signal
+            # `reviewer.py` exposes). Left unchecked, that is a review that
+            # never happened reading as a real FAIL — the same class of bug
+            # this module exists to prevent for every other unmet
+            # precondition. `reviewer.py` is out of scope for this change,
+            # so the refute pass it may already have run against the bogus
+            # "timeout" item cannot be suppressed from here; this only
+            # fixes the verdict that reaches the caller.
+            if decision.checklist:
+                reason = decision.checklist[0].evidence or decision.checklist[0].label
+            else:
+                reason = "no checklist recorded"
+            raise GateUnavailable(
+                f"the reviewer did not complete (transport error / timeout): "
+                f"{reason} (tamper guard already ran: {_format_tamper(tamper)})"
+            )
+
+        passed = decision.passed and not tamper.tampered
+
+        role_backend = effective_role_backend(config.data, "reviewer")
+
+        return GateResult(
+            passed=passed,
+            comparison=comparison,
+            before_ref=before_ref,
+            after_ref=after_ref,
+            mode=mode,
+            tamper=tamper,
+            decision=decision,
+            uncommitted=uncommitted,
+            truncated=False,
+            reviewer_backend=role_backend["backend"],
+            reviewer_model=role_backend["model"],
+            reviewer_backend_is_default=role_backend["is_default"],
         )
-
-    passed = decision.passed and not tamper.tampered
-
-    role_backend = effective_role_backend(config.data, "reviewer")
-
-    return GateResult(
-        passed=passed,
-        comparison=comparison,
-        before_ref=before_ref,
-        after_ref=after_ref,
-        mode=mode,
-        tamper=tamper,
-        decision=decision,
-        uncommitted=uncommitted,
-        truncated=False,
-        reviewer_backend=role_backend["backend"],
-        reviewer_model=role_backend["model"],
-        reviewer_backend_is_default=role_backend["is_default"],
-    )
 
 
 async def review_diff(
@@ -751,6 +901,9 @@ def render_markdown(result: GateResult) -> str:
     verdict = "PASS" if result.passed else "FAIL"
     lines.append(f"## no_human gate — {verdict}")
     lines.append(f"**Compared:** {result.comparison}")
+    lines.append(
+        f"**Reviewed commit:** `{result.after_ref}` (base `{result.before_ref}`)"
+    )
     model_suffix = f" ({result.reviewer_model})" if result.reviewer_model else ""
     override_note = (
         "" if result.reviewer_backend_is_default

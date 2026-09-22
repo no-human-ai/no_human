@@ -6091,10 +6091,10 @@ def gate(repo, pr_url, base, title, description):
     citations. Never commits, pushes, merges, or edits a tracked file. The
     rest of the write surface: reading (never creating)
     ~/.no_human/config.yaml if present; the background update check, which
-    caches into ~/.no_human/cache/; one throwaway local clone per run, in a
-    temp dir; and, with --pr only, one `git fetch` into THIS checkout (writes
-    `FETCH_HEAD` and objects, creates no branch, moves no ref you own). Requires the user's own Claude credential
-    (`claude setup-token`), exactly as every other `nh` command does.
+    caches into ~/.no_human/cache/; and one throwaway local clone per run, in
+    its own temp dir, removed on exit (with --pr, the pull request's head is
+    fetched straight into that clone, never into THIS checkout). Requires the
+    user's own Claude credential (`claude setup-token`), like every `nh` command.
     """
     from ..review.oneshot import GateUnavailable, render_markdown, run_gate
 
