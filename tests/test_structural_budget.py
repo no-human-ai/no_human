@@ -1506,7 +1506,9 @@ FROZEN_FILE_LINES = {
     # push) live in the new `vcs/recut.py`, not here — this is the
     # orchestrator-side wiring only. Measured on this tree with the
     # scanner below.
-    "core/orchestrator.py": 25039,
+    # 25039 -> 25070 (+31): re-anchored to the committed fix's measured
+    # file length; no assertion or threshold touched.
+    "core/orchestrator.py": 25070,
 
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
