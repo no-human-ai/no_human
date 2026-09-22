@@ -7,7 +7,6 @@ too: a hang becomes an honest FAILED attempt, never a forever-wedge.
 from __future__ import annotations
 
 import asyncio
-import time
 
 from no_human.agent.claude_backend import AgentEvent, AgentResult
 from no_human.core.orchestrator import Orchestrator
@@ -33,8 +32,17 @@ _NUDGE_REPLY = AgentResult(
 class _HangBackend:
     """A coder turn that never returns in time (a hung SDK subprocess)."""
 
+    def __init__(self):
+        self.cancelled = False
+        self.completed = False
+
     async def run(self, *a, **k):
-        await asyncio.sleep(30)  # far longer than the patched attempt ceiling
+        try:
+            await asyncio.sleep(30)  # far longer than the patched attempt ceiling
+            self.completed = True
+        except asyncio.CancelledError:
+            self.cancelled = True
+            raise
 
 
 async def test_hung_coder_turn_fails_fast_instead_of_wedging(
@@ -44,18 +52,25 @@ async def test_hung_coder_turn_fails_fast_instead_of_wedging(
     # Tiny ceiling so the hang trips it immediately; default is 3600s.
     cfg.data.setdefault("bounds", {})["attempt_timeout_s"] = 0.3
     events: list = []
-    orch = Orchestrator(store, cfg.data, _HangBackend(), SlackNotifier(None),
+    backend = _HangBackend()
+    orch = Orchestrator(store, cfg.data, backend, SlackNotifier(None),
                         event_sink=events.append)
     t = Task.new("add mul()", repo_path=str(bare_repo))
     await store.create_task(t)
 
-    t0 = time.monotonic()
     outcome = await orch.run_task(t)
-    elapsed = time.monotonic() - t0
 
-    # Proves the timeout FIRED: the backend hangs 30s, but the bounded loop of
-    # short-ceiling attempts completes in well under that — never the 30s wedge.
-    assert elapsed < 15, f"attempt did not time out fast (took {elapsed:.1f}s)"
+    # Proves the timeout FIRED FAST rather than the loop merely outlasting a
+    # generous outer test-hang-watchdog (a wall-clock elapsed bound would pass
+    # even on a defect that lets `_await_coder_turn` fall through to
+    # `task.result()` only once the 30s sleep completes naturally, as long as
+    # that still landed under the literal on an idle box): the backend's own
+    # `run()` must have been CANCELLED — never left to complete — which only
+    # happens if `_await_coder_turn` cut it off at `attempt_timeout_s`, not at
+    # the full 30s hang.
+    assert backend.cancelled is True, "the hung coder turn was never cancelled"
+    assert backend.completed is False, (
+        "the hung coder turn ran to completion instead of being cut off")
     # A terminal, honest non-hang state — never AWAITING_APPROVAL (nothing
     # ran). BLOCKED joined the set with the timeout-streak escalation
     # (SCRUM-4): two consecutive timeouts now park as TRANSIENT_INFRA.

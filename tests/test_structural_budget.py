@@ -52,7 +52,6 @@ from __future__ import annotations
 import ast
 import re
 import textwrap
-import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -2826,11 +2825,37 @@ def test_qualnames_cover_methods_and_nested_functions():
 # ── runtime bound ─────────────────────────────────────────────────────────── #
 
 
-def test_the_whole_walk_finishes_under_five_seconds():
-    start = time.perf_counter()
+def test_scan_tree_reads_every_python_file_under_src_exactly_once(monkeypatch):
+    """The actual scaling hazard for a growing codebase is a scan that
+    re-reads (or re-parses) the same file more than once per run — not raw
+    wall-clock speed. A wall-clock `elapsed < 5.0` assertion could stay
+    green even under a regression that read every file twice on a fast
+    enough box, or go red purely from contended-box CPU scheduling with the
+    scan completely unchanged. Counting reads proves the O(files),
+    read-once claim directly, independent of speed.
+    """
+    expected = sorted(SRC.rglob("*.py"))
+    expected_set = set(expected)
+    assert expected, "expected at least one .py file under SRC"
+
+    seen: list[Path] = []
+    original_read_text = Path.read_text
+
+    def _counting_read_text(self, *args, **kwargs):
+        seen.append(self)
+        return original_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", _counting_read_text)
+
     scan_tree(SRC)
-    elapsed = time.perf_counter() - start
-    assert elapsed < 5.0, f"scan_tree(SRC) took {elapsed:.2f}s (must be < 5.0s)"
+
+    py_reads = [p for p in seen if p in expected_set]
+    unexpected = [p for p in seen if p not in expected_set]
+    assert not unexpected, f"scan_tree read unexpected path(s): {unexpected}"
+    assert sorted(py_reads) == expected, (
+        f"scan_tree must read every .py file under SRC exactly once; "
+        f"read {len(py_reads)} times for {len(expected)} files"
+    )
 
 
 # ── docs ─────────────────────────────────────────────────────────────────── #

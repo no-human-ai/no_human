@@ -4,7 +4,6 @@ every grill/intake/judge LLM call now has a hard wall-clock ceiling: a hang
 becomes a TimeoutError the callers treat as advisory / fail-closed, never a
 forever-wedge."""
 import asyncio
-import time
 from types import SimpleNamespace
 
 from no_human.intake import evaluator
@@ -12,7 +11,11 @@ from no_human.eval import judge
 
 
 class _HangBackend:
+    def __init__(self):
+        self.calls = 0
+
     async def run(self, *a, **k):
+        self.calls += 1
         await asyncio.sleep(30)                    # longer than the patched ceiling
         return SimpleNamespace(final_text="UNREACHABLE", is_error=False)
 
@@ -27,12 +30,19 @@ def test_evaluator_bounded_run_times_out_to_sentinel(monkeypatch):
 def test_judge_times_out_fail_closed(monkeypatch):
     monkeypatch.setattr(judge, "_JUDGE_TIMEOUT_S", 0.05)
     monkeypatch.setattr(judge, "_RETRY_BACKOFF_S", 0.0)
-    gj = judge.GoalJudge(backend=_HangBackend())
-    t0 = time.monotonic()
+    backend = _HangBackend()
+    gj = judge.GoalJudge(backend=backend)
     v = asyncio.run(gj.judge(request="do x", criteria=[], agent_diff="",
                              outcome_status="done"))
-    elapsed = time.monotonic() - t0
     assert v.satisfied is False                    # fail-closed on timeout, no hang
-    # proves the TIMEOUT fired: 2 attempts x 0.05s ceiling (backoff patched to 0)
-    # completes in well under a second, NOT the backend's 30s hang.
-    assert elapsed < 5.0, f"judge did not time out fast (took {elapsed:.1f}s)"
+    # Proves the TIMEOUT fired rather than the shared judge loop's retry-once
+    # bound simply being large enough to still land under a wall-clock literal
+    # on an idle box: the retry-once-then-fail-closed loop (`_judge_loop`)
+    # calls `backend.run` at most twice (`for attempt in range(2)`) — a
+    # backend that hangs forever therefore proves the per-call
+    # `asyncio.wait_for(..., _JUDGE_TIMEOUT_S)` cut EACH call off (never let
+    # one hang consume both attempts, and never fell through to a third,
+    # unbounded retry) purely by the call count, with no dependence on how
+    # fast the box actually ran those two cancellations.
+    assert backend.calls == 2, (
+        f"expected exactly 2 bounded attempts, backend ran {backend.calls}x")

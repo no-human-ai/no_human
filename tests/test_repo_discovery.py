@@ -21,6 +21,8 @@ from no_human.repo_discovery import (
     discover_repos,
 )
 
+from ._timing import calibrated_budget
+
 def _assert_unreadable(p: Path) -> None:
     """Prove the ``chmod`` actually bites before trusting the test that follows.
 
@@ -412,16 +414,57 @@ def test_elapsed_ms_is_reported_so_a_slow_scan_is_visible(tmp_path):
     assert res["elapsed_ms"] >= 0
 
 
-def test_a_wide_tree_stays_fast_enough_for_a_ui(tmp_path):
-    """60 repos across three roots must scan well inside a UI budget."""
+def test_a_wide_tree_scans_via_a_bounded_number_of_scandir_calls(tmp_path, monkeypatch):
+    """60 repos across three roots must scan well inside a UI budget — but the
+    load-bearing claim is mechanism, not a millisecond figure: a directory
+    that IS a repo is a walk LEAF (``_walk`` returns before descending into
+    it), so ``_scandir`` is only ever called on ``home`` plus each
+    conventional root — never once per repo (which would be 60 calls here)
+    and never once per repo-pair (3600). A wall-clock ``wall < 3.0``
+    assertion could stay green even if a regression made the walk descend
+    into every repo on a fast-enough box, or go red purely from contended-box
+    scheduling with the mechanism completely unchanged — counting the actual
+    ``_scandir`` calls proves the O(roots) claim directly. A secondary,
+    load-relative timing check (below) still guards against a gross
+    regression, calibrated against a much smaller scan timed fresh in this
+    same run rather than a fixed-second literal.
+    """
     for root in ("git", "Projects", "Code"):
         for i in range(20):
             _fake_repo(tmp_path / root / f"r{i:02d}")
-    t0 = time.perf_counter()
+
+    calls: list[Path] = []
+    real_scandir = repo_discovery._scandir
+
+    def _counting_scandir(d):
+        calls.append(d)
+        return real_scandir(d)
+
+    monkeypatch.setattr(repo_discovery, "_scandir", _counting_scandir)
+
     res = discover_repos(home=tmp_path)
-    wall = time.perf_counter() - t0
+
     assert len(res["repos"]) == 60
-    assert wall < 3.0, f"discovery took {wall:.2f}s for 60 repos"
+    # home + the 3 conventional roots (git/Projects/Code) is the whole set of
+    # directories ever handed to `_scandir` for this tree, regardless of how
+    # many repos live inside them.
+    assert len(calls) <= 6, (
+        f"expected O(roots) scandir calls (~4), got {len(calls)}: {calls}"
+    )
+
+    small_home = tmp_path / "small_reference_home"
+    for i in range(2):
+        _fake_repo(small_home / "git" / f"s{i}")
+    budget = calibrated_budget(
+        lambda: discover_repos(home=small_home), multiple=40, floor=0.05,
+    )
+    start = time.perf_counter()
+    discover_repos(home=tmp_path)
+    wall = time.perf_counter() - start
+    assert wall < budget, (
+        f"discovery took {wall:.2f}s for 60 repos, more than 40x a 2-repo "
+        f"reference scan ({budget:.2f}s) on this box"
+    )
 
 
 def test_the_untracked_pass_stops_at_a_shared_budget(tmp_path, monkeypatch):
@@ -505,20 +548,35 @@ def test_the_budget_bounds_the_whole_scan_not_each_repo(tmp_path, monkeypatch):
     for i in range(16):
         _real_repo(tmp_path / "git" / f"r{i:02d}")
 
+    calls: list[str] = []
+
     def slow(path, untracked, timeout):
+        calls.append(untracked)
         time.sleep(0.3)
         return ""
 
     monkeypatch.setattr(repo_discovery, "_git_status", slow)
     monkeypatch.setattr(repo_discovery, "DIRTY_BUDGET_S", 0.3)
     monkeypatch.setattr(repo_discovery, "GIT_TIMEOUT_S", 1.0)
-    t0 = time.perf_counter()
+
     res = discover_repos(home=tmp_path)
-    wall = time.perf_counter() - t0
+
     assert len(res["repos"]) == 16
-    # 16 serial 0.3s probes would be 4.8s; the budget plus one in-flight probe
-    # is the ceiling regardless of how many repos there are.
-    assert wall < 2.0, f"scan took {wall:.2f}s"
+    # 16 serial 0.3s probes would need 16 calls; the shared budget instead
+    # caps the number of probes that ever get to RUN at the worker pool size
+    # (`_GIT_WORKERS`), regardless of how many repos there are — the
+    # remaining repos are marked "unavailable"/"partial" without ever
+    # touching `_git_status` again. This is the actual ceiling: a wall-clock
+    # `wall < 2.0` assertion could go red purely from contended-box
+    # scheduling with this exact mechanism unchanged, or stay green under a
+    # regression that let a few extra probes slip through on a fast-enough
+    # box. Counting calls proves the budget bit BY COUNT, not by speed.
+    assert len(calls) <= repo_discovery._GIT_WORKERS, (
+        f"expected the budget to cap probes at the worker pool size "
+        f"({repo_discovery._GIT_WORKERS}), got {len(calls)} calls: {calls}"
+    )
+    # Non-vacuity: the budget actually bit some rows, not merely "ran fast".
+    assert any(r["dirty_scan"] != "complete" for r in res["repos"])
 
 
 # --------------------------------------------------------------------------- #
@@ -641,20 +699,31 @@ def test_a_slow_root_cannot_stall_the_request_forever(tmp_path, monkeypatch):
         _fake_repo(tmp_path / "git" / f"d{i:02d}" / "repo")
 
     real = repo_discovery._scandir
+    calls: list[Path] = []
 
     def slow(d):
+        calls.append(d)
         time.sleep(0.1)
         return real(d)
 
     monkeypatch.setattr(repo_discovery, "_scandir", slow)
     monkeypatch.setattr(repo_discovery, "WALK_BUDGET_S", 0.25)
 
-    t0 = time.perf_counter()
     res = discover_repos(home=tmp_path)
-    wall = time.perf_counter() - t0
 
-    # 13 scandir calls at 0.1s each is 1.3s with no budget in the way.
-    assert wall < 1.0, f"the walk ran for {wall:.2f}s past its budget"
+    # Unbounded, this walk needs 14 scandir calls (home, git, and each of the
+    # 12 `dNN` dirs) to reach every repo. The budget instead cuts the
+    # recursive walk off after a handful of calls, regardless of how many
+    # directories are still unvisited — proving the ceiling is on CALL
+    # COUNT, not on how fast the box happens to run those calls. A
+    # wall-clock `wall < 1.0` assertion could go red purely from
+    # contended-box scheduling with this exact mechanism unchanged, or stay
+    # green under a regression that let the walk run substantially longer
+    # (more calls) on a fast-enough box.
+    assert len(calls) < 14, (
+        f"expected the walk budget to cut the recursion short of all 14 "
+        f"reachable directories, got {len(calls)} scandir calls: {calls}"
+    )
     assert res["walk_truncated"] is True
     assert res["note"], "a truncated search must say so, not return a short list silently"
 

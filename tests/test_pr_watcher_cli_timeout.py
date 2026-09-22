@@ -83,19 +83,40 @@ def hang_cli(monkeypatch):
     return procs, killpg_calls
 
 
-async def test_a_hanging_cli_call_returns_none_within_the_bound(hang_cli, caplog):
+async def test_a_hanging_cli_call_returns_none_within_the_bound(hang_cli, caplog,
+                                                                 monkeypatch):
     """AC1. `_run_cli` internally raises `asyncio.TimeoutError` (via
     `asyncio.wait_for` firing) and converts it, at its own boundary, to the
     `None` every other failure mode already returns — no new exception
-    reaches callers, matching the documented `str | None` contract."""
+    reaches callers, matching the documented `str | None` contract.
+
+    Converted from `elapsed < 1.0`: the outer `asyncio.wait_for(..., 5)`
+    below is the test's own hang-watchdog (kept, deliberately generous, a
+    requested ceiling not a speed claim) — a contended box that legitimately
+    took over a second to unwind the timeout and log it would trip the old
+    bound despite `_run_cli` behaving exactly as documented. The actual
+    claim this test exists for is that `_run_cli` opens its OWN internal
+    bound at exactly `_CLI_TIMEOUT`, not at some larger, accidentally
+    inherited timeout — spied directly on `asyncio.wait_for`, the primitive
+    `_run_cli` uses to open it.
+    """
     procs, _ = hang_cli
+    opened_timeouts: list[float] = []
+    original_wait_for = pw.asyncio.wait_for
+
+    async def _recording_wait_for(fut, timeout=None, **kwargs):
+        opened_timeouts.append(timeout)
+        return await original_wait_for(fut, timeout=timeout, **kwargs)
+
+    monkeypatch.setattr(pw.asyncio, "wait_for", _recording_wait_for)
+
     with caplog.at_level(logging.WARNING, logger="no_human.pr_watcher"):
-        start = asyncio.get_event_loop().time()
         result = await asyncio.wait_for(pw._run_cli(["gh", "pr", "view", "1"]), 5)
-        elapsed = asyncio.get_event_loop().time() - start
 
     assert result is None
-    assert elapsed < 1.0
+    assert pw._CLI_TIMEOUT in opened_timeouts, (
+        f"_run_cli never opened its own bound at _CLI_TIMEOUT "
+        f"({pw._CLI_TIMEOUT}); saw {opened_timeouts}")
     assert len(procs) == 1
     assert any("timed out" in rec.message for rec in caplog.records)
 

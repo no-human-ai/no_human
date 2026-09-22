@@ -263,23 +263,31 @@ def test_the_synchronous_path_uses_the_fresh_result_immediately(tmp_path):
 
 
 def test_background_mode_returns_without_waiting_for_the_fetch(tmp_path):
-    """The default path must not block on the network."""
-    import threading
-    import time
+    """The default path must not block on the network.
 
-    release = threading.Event()
+    Converted from an `elapsed < 1.0` timing assertion (flaky on a
+    contended box — `check_for_update` returning slowly for a reason
+    unrelated to blocking-on-fetch would still pass under load, and a
+    genuinely-blocking regression could still sneak under a generous bound)
+    to a happens-before proof via `BlockingGate`: the fetch is proven to
+    have been ATTEMPTED (kills vacuity — the old test never proved the
+    fetch actually ran) and proven NOT FINISHED at the moment
+    `check_for_update` returns, which is the actual "did not block" claim.
+    """
+    from tests._timing import BlockingGate, wait_until
 
-    def slow():
-        release.wait(5)
-        return "0.2.0"
+    gate = BlockingGate("0.2.0")
 
-    start = time.monotonic()
     result = updates.check_for_update("0.1.0", directory=tmp_path, now=1_000,
-                                      fetch=slow, background=True)
-    elapsed = time.monotonic() - start
-    release.set()
+                                      fetch=gate, background=True)
+    # The refresh runs on a daemon thread `check_for_update` merely starts;
+    # it may not have reached the gate the instant `.start()` returns, so we
+    # wait for the happens-before FACT (a poll with a watchdog), not for a
+    # duration.
+    wait_until(lambda: gate.entered, what="the background fetch")
     assert result is None
-    assert elapsed < 1.0, f"the check blocked the command for {elapsed:.2f}s"
+    gate.assert_caller_did_not_wait()
+    gate.release()
 
 
 def test_the_DEFAULT_call_does_not_block_on_the_network(tmp_path):
@@ -289,23 +297,15 @@ def test_the_DEFAULT_call_does_not_block_on_the_network(tmp_path):
     DEFAULT is the mutation that actually reaches an operator — and a test that
     always passes the argument explicitly cannot see it.
     """
-    import threading
-    import time
+    from tests._timing import BlockingGate, wait_until
 
-    release = threading.Event()
+    gate = BlockingGate("0.2.0")
 
-    def slow():
-        release.wait(5)
-        return "0.2.0"
-
-    start = time.monotonic()
     result = updates.check_for_update("0.1.0", directory=tmp_path, now=1_000,
-                                      fetch=slow)          # <- no background kwarg
-    elapsed = time.monotonic() - start
-    release.set()
-    assert elapsed < 1.0, (
-        f"the default call blocked the command for {elapsed:.2f}s — "
-        "check_for_update must default to the background path")
+                                      fetch=gate)          # <- no background kwarg
+    wait_until(lambda: gate.entered, what="the background fetch")
+    gate.assert_caller_did_not_wait()
+    gate.release()
     assert result is None, "a cold cache must report nothing on the first run"
 
 
