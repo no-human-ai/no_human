@@ -45,6 +45,11 @@ changes nothing measurable, and the rule stays simple: every `.py` under
 `filename` attribute set to the offending path (via the `filename=` kwarg to
 `ast.parse`), rather than being caught and skipped. A file this scanner
 cannot parse must fail loudly, not vanish from coverage.
+
+The scanner itself (`scan_source`/`scan_tree`, and the `Entry` type they use)
+now lives in `src/no_human/testing/structural_budget.py`, imported below
+rather than defined here — see that module's docstring for why it had to
+move out of this test file.
 """
 
 from __future__ import annotations
@@ -53,17 +58,20 @@ import ast
 import re
 import textwrap
 import time
-from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
+from no_human.testing.structural_budget import (
+    MAX_FILE_LINES,
+    MAX_FUNCTION_CC,
+    MAX_FUNCTION_LINES,
+    scan_source,
+    scan_tree,
+)
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC = REPO_ROOT / "src" / "no_human"
-
-MAX_FUNCTION_LINES = 300
-MAX_FUNCTION_CC = 60
-MAX_FILE_LINES = 2500
 
 # Frozen at HEAD 2b2370f582f95465ba408c12224a511c6c74f692, 2026-08-26.
 # Measured with the scanner below; see the PR body for the full table.
@@ -2454,86 +2462,6 @@ FROZEN_FILE_LINES = {
 }
 
 
-@dataclass(frozen=True)
-class Entry:
-    key: str
-    lines: int
-    cc: int
-
-
-def _cyclomatic(fn: ast.AST) -> int:
-    """Cyclomatic complexity estimate for a function node. See module
-    docstring for the exact formula; `AsyncWith` is deliberately excluded."""
-    cc = 1
-    for node in ast.walk(fn):
-        if isinstance(
-            node,
-            (
-                ast.If,
-                ast.For,
-                ast.AsyncFor,
-                ast.While,
-                ast.ExceptHandler,
-                ast.With,
-                ast.IfExp,
-                ast.match_case,
-            ),
-        ):
-            cc += 1
-        elif isinstance(node, ast.BoolOp):
-            cc += len(node.values) - 1
-        elif isinstance(node, ast.comprehension):
-            cc += len(node.ifs)
-    return cc
-
-
-def _walk_defs(node: ast.AST, prefix: str, path_key: str, out: list[Entry]) -> None:
-    """Explicit recursive descent through ClassDef/FunctionDef/AsyncFunctionDef,
-    building dotted qualnames. NOT `ast.walk` — that loses nesting and would
-    collide e.g. two different classes' `_run` methods under one key."""
-    for child in ast.iter_child_nodes(node):
-        if isinstance(child, ast.ClassDef):
-            _walk_defs(child, f"{prefix}{child.name}.", path_key, out)
-        elif isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            qualname = f"{prefix}{child.name}"
-            lines = child.end_lineno - child.lineno + 1
-            out.append(Entry(f"{path_key}:{qualname}", lines, _cyclomatic(child)))
-            _walk_defs(child, f"{qualname}.", path_key, out)
-
-
-def scan_source(text: str, path: str) -> tuple[list[Entry], int]:
-    """Parse `text` (as if it were `path`) and return (every function Entry,
-    total line count of the file). Unfiltered — callers apply thresholds."""
-    tree = ast.parse(text, filename=path)
-    entries: list[Entry] = []
-    _walk_defs(tree, "", path, entries)
-    return entries, len(text.splitlines())
-
-
-def scan_tree(root: Path) -> tuple[dict[str, int], dict[str, int], dict[str, int], int, int]:
-    """Walk every `*.py` under `root` once. Returns three dicts of only the
-    OFFENDING entries (over their respective threshold) — function line
-    counts, function cc, file line counts — plus (total files scanned, total
-    functions scanned) for the fail-closed floor check."""
-    function_lines: dict[str, int] = {}
-    function_cc: dict[str, int] = {}
-    file_lines: dict[str, int] = {}
-    total_functions = 0
-    files = sorted(root.rglob("*.py"))
-    for path in files:
-        rel = path.relative_to(root).as_posix()
-        entries, lines = scan_source(path.read_text(encoding="utf-8"), rel)
-        total_functions += len(entries)
-        if lines > MAX_FILE_LINES:
-            file_lines[rel] = lines
-        for entry in entries:
-            if entry.lines > MAX_FUNCTION_LINES:
-                function_lines[entry.key] = entry.lines
-            if entry.cc > MAX_FUNCTION_CC:
-                function_cc[entry.key] = entry.cc
-    return function_lines, function_cc, file_lines, len(files), total_functions
-
-
 def offenders(
     measured: dict[str, int], frozen: dict[str, int], threshold: int, list_name: str
 ) -> tuple[list[str], list[str], list[str]]:
@@ -2574,6 +2502,32 @@ def scanned() -> tuple[dict[str, int], dict[str, int], dict[str, int], int, int]
 
 
 # ── fail-closed floors + baseline sanity ──────────────────────────────── #
+
+
+def test_the_scanner_is_defined_in_src_not_in_this_test_file():
+    """`scan_source`/`scan_tree` must live in the production module
+    (`src/no_human/vcs/budget_conflict.py::load_scanner` execs it in-process
+    to resolve a `FROZEN_*` merge conflict) and this test file must import
+    them rather than defining its own copy -- otherwise the resolver falls
+    back to exec-ing this whole file by path, `import pytest` and all."""
+    import no_human.testing.structural_budget as sb
+
+    assert hasattr(sb, "scan_tree")
+    assert hasattr(sb, "scan_source")
+    # the name used throughout this file IS the imported one, not a
+    # same-named shadow defined here.
+    assert scan_tree is sb.scan_tree
+    assert scan_source is sb.scan_source
+
+    tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+    module_level_defs = {
+        node.name
+        for node in ast.iter_child_nodes(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+    }
+    assert "scan_tree" not in module_level_defs
+    assert "scan_source" not in module_level_defs
+    assert "Entry" not in module_level_defs
 
 
 def test_the_scanner_sees_the_whole_package(scanned):

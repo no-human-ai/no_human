@@ -53,7 +53,8 @@ _FROZEN_END_RE = re.compile(r"^\}")
 _ENTRY_RE = re.compile(r'^(?P<indent>\s*)"(?P<key>[^"]+)":\s*(?P<value>\d+),\s*$')
 
 #: Maps each frozen dict's name to its positional index in the tuple
-#: `scan_tree()` (defined inside `tests/test_structural_budget.py` itself)
+#: `scan_tree()` (defined in `src/no_human/testing/structural_budget.py`,
+#: imported by `tests/test_structural_budget.py` rather than defined there)
 #: returns: `(function_lines, function_cc, file_lines, total_files,
 #: total_functions)`.
 _DICT_TO_MEASURE = {
@@ -277,15 +278,25 @@ def load_scanner(worktree_path: str, ours_blob_text: str) -> tuple[object | None
 
     Prefers the production module at
     `src/no_human/testing/structural_budget.py` — but ONLY when it actually
-    exposes `scan_tree`. Bugfix context: that path has existed since
-    31a03c9f (2026-09-04) as PR #1035's structural-budget PREFLIGHT helper
-    (`frozen_paths`, `touched_frozen`, …) — it has never defined `scan_tree`,
-    so blindly preferring it (as this used to do) always fails the load
+    exposes `scan_tree`. Bugfix context: that path existed since 31a03c9f
+    (2026-09-04) as PR #1035's structural-budget PREFLIGHT helper
+    (`frozen_paths`, `touched_frozen`, …) without ever defining `scan_tree`,
+    so blindly preferring it (as this used to do) always failed the load
     closed and hid the true fallback (tasks d256ae60/e9e90630, 2026-09-08).
+    `scan_source`/`scan_tree` have since moved into that same production
+    module (see its docstring), so this preferred branch is now the path a
+    normal resolution takes, and it no longer needs pytest importable in
+    this process to do so.
+
     Falls back to loading "ours"'s own copy of `tests/test_structural_budget.py`
-    as a throwaway module — that file is self-contained (the scanner lives
-    inside it today) and "ours" is the side whose conflict we are resolving,
-    so it is the faithful copy of the scanner as of this branch."""
+    as a throwaway module — kept for backwards compatibility with a merge
+    whose "ours" side predates the scanner's move into
+    `src/no_human/testing/structural_budget.py` (an older branch tip whose
+    own copy of the test file is still self-contained). "ours" is the side
+    whose conflict we are resolving, so it is the faithful copy of the
+    scanner as of that branch. This fallback execs that file's `import
+    pytest`, so it depends on pytest being importable in this process —
+    unlike the preferred branch above."""
     real = Path(worktree_path) / "src" / "no_human" / "testing" / "structural_budget.py"
     real_reason = ""
     if real.exists():
