@@ -2259,7 +2259,12 @@ FROZEN_FILE_LINES = {
     # either wording; that growth is counted in `diff_coverage.py`, not
     # here. `AdversarialReviewer.review` stays at 300 lines, off
     # FROZEN_FUNCTION_LINES. Measured on this tree with the scanner below.
-    "review/reviewer.py": 3320,
+    # 3320 -> 3373 (+53): 9b8c64cd "a coverage rejection must feed the next
+    # round" — adds `_COVERAGE_RETRY_NOTE`, imports `coverage_rejection_paths`,
+    # and branches the retry prompt to append that note only when the
+    # rejected round's reason names files cut by `budget_diff`. Measured on
+    # this tree.
+    "review/reviewer.py": 3373,
     # 2706 -> 2711 (+5): pre-existing red on main at 03b262d23 (e922e9b4's
     # landing, change-scoped tests missed the ratchet) — repaired, measured,
     # on this merge; same cause as the two function-level wake.py bumps above.
