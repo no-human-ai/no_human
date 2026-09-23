@@ -1,0 +1,92 @@
+# This repository running its own review gate on its own pull requests.
+#
+# The README documents the wiring a THIRD-PARTY repository uses. This file is
+# not that snippet: `uses: ./` runs the Action from the pull request's own
+# head, so a change to `action.yml`, `Dockerfile.action` or
+# `src/no_human/ci_action/` is exercised by the pull request that makes it
+# rather than by the next one; and it adds a job name, a timeout and the
+# `concurrency` bound below. The secret's name differs too: it is named for
+# what it is meant to hold — an OAuth token rather than the API key the
+# README's example reads. That secret is not a REPOSITORY secret: it is an
+# environment secret of `review-gate`, and the job below names that
+# environment. Read the comment there for what naming it is expected to do
+# and why the expectation is being measured rather than assumed. A fork run is not
+# affected either way — it skips green before the credential is read, as the
+# next paragraph says, and tests/test_ci_action.py pins that ordering.
+#
+# A pull request from a FORK never reaches the reviewer or the credential:
+# `ci_action/run.py` returns its fork skip before it reads the `credential`
+# input, so a fork pull request is a green, comment-free skip here rather than
+# a red missing-secret run. Every external pull request open at the time of
+# writing was a fork — but that is a habit, not a mechanism. Push access to
+# this repository is not limited to its maintainer, and a same-repository
+# branch from anyone who holds it runs THIS job, with the secret, and runs the
+# workflow file as that branch has it. That is GitHub's model for
+# `pull_request`, not something this file chooses; it is the reason the
+# credential here is worth scoping and rotating.
+name: no_human review gate
+
+on:
+  pull_request:
+
+# `contents: read` is for the checkout. `pull-requests: write` is the one extra
+# scope the Action needs, and it buys exactly one thing: upserting its own
+# comment. The repository default is `read` for both, so the write scope has to
+# be asked for here.
+permissions:
+  contents: read
+  pull-requests: write
+
+# A cost bound, not tidiness. This repository's task branches are pushed
+# repeatedly while an attempt runs, and every run of this job is a Docker image
+# build plus a model call billed to whatever credential the secret below holds.
+# A superseded run is cancelled rather than left to finish and pay for a diff
+# nobody will read.
+concurrency:
+  group: review-gate-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    name: no_human review gate
+    runs-on: ubuntu-latest
+    # The credential is an ENVIRONMENT secret of `review-gate`, not a
+    # repository secret, and an environment secret reaches only a job that
+    # names its environment here — which is why every run before this line
+    # existed failed closed with "the `credential` input is empty".
+    # `review-gate`'s deployment branch policy lists exactly one branch,
+    # `main`, while a `pull_request` run's `github.ref` is
+    # `refs/pull/<n>/merge`. If GitHub evaluates that policy against the ref,
+    # this job is REFUSED rather than credentialed, and that refusal is the
+    # boundary: it is what stops a branch pushed by any of this repository's
+    # non-admin collaborators from reading the token by editing this file.
+    # That claim was reasoned from the policy and never observed, and the
+    # whole workflow_run design rests on it, so this line is here to measure
+    # it. Whichever way the run goes, the result decides the design.
+    environment: review-gate
+    timeout-minutes: 30
+    steps:
+      # Both `with:` values are load-bearing, and `ci_action/run.py` exits 2
+      # rather than review the wrong tree if either is missing:
+      #   * `ref:` — on a `pull_request` event `actions/checkout` defaults to
+      #     the ephemeral MERGE commit, not the pull request's head. The Action
+      #     cites file:line against the tree on disk, so it refuses to run when
+      #     the workspace HEAD is not the head commit in the event payload.
+      #   * `fetch-depth: 0` — the Action resolves `merge-base <base> <head>`
+      #     in the checkout, which `actions/checkout`'s default depth of 1
+      #     cannot answer.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      # Deliberately no `credential_mode` and no `fail_on_findings`:
+      # `action.yml`'s defaults (`auto`, `true`) are already what this
+      # repository wants, and a restated default is one more value that can
+      # drift away from the action it is copied from. `auto` reads the
+      # credential's own prefix, so rotating the secret from an OAuth token to
+      # an API key needs no change here.
+      - uses: ./
+        with:
+          credential: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ github.token }}
