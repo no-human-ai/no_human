@@ -1187,6 +1187,21 @@ _RUNNING: dict[int, tuple[str, "subprocess.Popen"]] = {}
 def _register(work_dir: Path, proc: "subprocess.Popen") -> None:
     with _RUNNING_LOCK:
         _RUNNING[id(proc)] = (str(Path(work_dir).resolve()), proc)
+    # Local import: `core` imports `testing` (test-command execution is a
+    # core concern), so a top-level import here would cycle. Guarded and
+    # a no-op with no live attempt scope (a bare test run, or this module's
+    # own test suite) -- see `core/attempt_procs.py`'s module docstring for
+    # the incident this accounts for. `terminate_running` above already
+    # kills this process's group on the xdist-teardown path; this makes the
+    # SAME group additionally reaped by the owning attempt's scope exit (or
+    # a startup sweep if the worker running it crashes outright), so a test
+    # command's own leftover children are covered even when nothing calls
+    # `terminate_running` at all.
+    try:
+        from ..core import attempt_procs
+        attempt_procs.register_group(proc.pid)
+    except Exception:  # noqa: BLE001 - registering a group must never fail a test run
+        pass
 
 
 def _deregister(proc: "subprocess.Popen") -> None:

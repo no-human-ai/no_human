@@ -372,7 +372,11 @@ def test_a_broken_is_own_partial_is_not_swallowed_as_a_missing_checkpoint(
     checkpoint so not even the fallback ran."""
     import inspect
 
-    src = inspect.getsource(Orchestrator._run_attempt)
+    # `_run_attempt` itself is now a thin header — `attempt_scope(...)` around
+    # a delegate call, added for the attempt-process-reaper
+    # (core/attempt_procs.py) — so the resume block this test pins now lives
+    # in `_run_attempt_inner`, where the original body moved verbatim.
+    src = inspect.getsource(Orchestrator._run_attempt_inner)
     head, _, tail = src.partition("_resume_branch_point(repo, ctx, attempt_n)")
     assert tail, "the resume block moved — re-point this test"
     block = tail[:tail.index("if effective_base is None")]

@@ -476,9 +476,15 @@ async def test_the_gate_runs_on_the_codex_backend_path(store, bare_repo, tmp_pat
     assert backend.calls == 1
     assert outcome.status == TaskStatus.FAILED
 
-    src = inspect.getsource(Orchestrator._run_attempt)
+    # `_run_attempt` itself is now a thin header — `attempt_scope(...)` around
+    # a delegate call, added for the attempt-process-reaper
+    # (core/attempt_procs.py) — so the shared control flow this test pins
+    # (the gate, and the push it must precede) now lives in
+    # `_run_attempt_inner`, where the original body moved verbatim.
+    src = inspect.getsource(Orchestrator._run_attempt_inner)
     assert "self._foreign_authored_commits(" in src, (
-        "the gate must live on `_run_attempt`, the one path both backends share"
+        "the gate must live on `_run_attempt_inner`, the one path both "
+        "backends share"
     )
     # `repo.push(branch)` (:6044) is the one real push call `_run_attempt`
     # makes on the success path — a bare "open_pr" substring is NOT a safe

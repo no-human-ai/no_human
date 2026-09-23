@@ -423,8 +423,13 @@ def test_every_coder_sink_session_has_a_stated_stop_disposition():
                             for k in node.keywords)):
                 sites[fn.name] = sites.get(fn.name, 0) + 1
     expected = {
-        # the coder session: CancelRequested caught, _honor_cancel(attempt_id=)
-        "_run_attempt": 1,
+        # the coder session: CancelRequested caught, _honor_cancel(attempt_id=).
+        # `_run_attempt` itself is now a thin header — `attempt_scope(...)`
+        # around a delegate call — added to give every attempt's shell
+        # commands a process-group reaper (core/attempt_procs.py); the
+        # original body, including this call site, moved verbatim to
+        # `_run_attempt_inner`.
+        "_run_attempt_inner": 1,
         # the zero-diff reformat nudge: same catch, same attempt_id
         "_reformat_nudge": 1,
         # the report nudge (RECOVERY for a coder that deferred its report on

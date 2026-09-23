@@ -80,7 +80,12 @@ REGISTRY: dict[tuple[str, str], str] = {
     # nothing at all: there is no in-flight work to preserve.
     ("core/orchestrator.py", "Orchestrator._honor_server_stop"): INHERITS_ELSE_STAMPS,
     # --- internal, within a run the loop already entered ---
-    ("core/orchestrator.py", "Orchestrator._run_attempt"): INTERNAL,
+    # `_run_attempt` itself is now a thin header — `attempt_scope(...)`
+    # around a delegate call, added for the attempt-process-reaper
+    # (core/attempt_procs.py) — so the re-entry this row states a
+    # disposition for now lives in `_run_attempt_inner`, where the
+    # original body moved verbatim.
+    ("core/orchestrator.py", "Orchestrator._run_attempt_inner"): INTERNAL,
     # _advance_after_review's target is a plain variable (TESTING or
     # AWAITING_APPROVAL at its two call sites, both post-review), so the
     # opaque-target scan flags it; it never moves a task back to a
@@ -318,7 +323,10 @@ STOP_REGISTRY: dict[tuple[str, str], str] = {
     # turn zero at the next start. (`_pending_cancel` already lets a human
     # cancel outrank the stop while the process lives.)
     ("core/orchestrator.py", "Orchestrator._honor_server_stop"): KEEPS,
-    ("core/orchestrator.py", "Orchestrator._run_attempt"): STOP_INTERNAL,
+    # See the matching comment above REGISTRY's `_run_attempt_inner` entry:
+    # the thin `_run_attempt` header carries no pending-stop logic of its
+    # own, so this row follows the body into `_run_attempt_inner`.
+    ("core/orchestrator.py", "Orchestrator._run_attempt_inner"): STOP_INTERNAL,
     ("core/orchestrator.py", "Orchestrator._advance_after_review"): STOP_INTERNAL,
     ("core/orchestrator.py", "Orchestrator._land_no_changes_needed"): STOP_INTERNAL,
 }

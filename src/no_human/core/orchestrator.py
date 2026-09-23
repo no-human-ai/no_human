@@ -147,6 +147,7 @@ from ..vcs.push_hook import refresh_protected_patterns
 from ..vcs.receipts import verify_pr_receipt
 from ..vcs.recut import already_recut, branch_stem, diverged_state, recut
 from ..vcs.task_pr import resolve_task_pr
+from . import attempt_procs
 from . import merge_policy
 from . import plan_gate
 from .base_staleness import (
@@ -5547,6 +5548,27 @@ class Orchestrator:
         attempt_seq = len(await self.store.list_attempts(task.id)) + 1
         attempt_id = await self.store.create_attempt(
             task.id, attempt_seq, mechanical=await self._mechanical_round(task))
+        # The `with` block is the ONLY reaper on the ordinary attempt path:
+        # its `__exit__` runs on every terminal route out of
+        # `_run_attempt_inner` below — the ordinary return, `CancelRequested`
+        # raised further down this file, a budget/timeout raise, or any other
+        # crash — because `attempt_scope`'s cleanup lives in a `finally`. See
+        # `core/attempt_procs.py`'s module docstring for the incident (36
+        # orphaned `while True: pass` processes, 6h+, ~12/18 cores) this
+        # closes.
+        with attempt_procs.attempt_scope(task.id, attempt_id):
+            return await self._run_attempt_inner(
+                task, repo, attempt_n, base, attempt_seq, attempt_id)
+
+    async def _run_attempt_inner(
+        self,
+        task: Task,
+        repo: GitRepo,
+        attempt_n: int,
+        base: str | None,
+        attempt_seq: int,
+        attempt_id: str,
+    ) -> TaskOutcome:
         stuck = StuckDetector()
         self._stuck: StuckDetector | None = stuck  # visible to _agent_sink
         # P2: reset per attempt, same as `_stuck` — a non-converging PREVIOUS

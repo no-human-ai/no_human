@@ -61,11 +61,13 @@ than it is:
 ```
 sqlite3.OperationalError: cannot commit transaction - SQL statements in progress
   src/no_human/core/db.py in Store.update_attempt   (await self.db.commit())
-  <- src/no_human/core/orchestrator.py in Orchestrator._run_attempt   (await self.store.update_attempt(attempt_id, branch_name=branch))
+  <- src/no_human/core/orchestrator.py in Orchestrator._run_attempt_inner   (await self.store.update_attempt(attempt_id, branch_name=branch))
 ```
 
 **This is a product defect, not a test defect.** The traceback is entirely in
-shipped code — `Orchestrator._run_attempt` calling `Store.update_attempt` — and
+shipped code — `Orchestrator._run_attempt_inner` (the attempt loop's body;
+`_run_attempt` itself is now a thin `attempt_scope(...)`-wrapping header, see
+`core/attempt_procs.py`) calling `Store.update_attempt` — and
 the condition that triggers it, two tasks running at once against one `Store`,
 is a supported configuration (`concurrency.enabled: true` with `max_workers`
 above 1). A user running two tasks in parallel can lose an attempt to this. The
