@@ -1110,9 +1110,14 @@ jobs:
         id: eb-cache
         uses: actions/cache@v4
         with:
+          # The env vars themselves, not a second copy of the same
+          # path: actions/cache then provably restores into the very
+          # directory electron-builder reads from, rather than two
+          # strings that happen to resolve alike under two different
+          # expansion rules.
           path: |
-            ${{ runner.temp }}\electron-builder-cache
-            ${{ runner.temp }}\electron-cache
+            ${{ env.ELECTRON_BUILDER_CACHE }}
+            ${{ env.ELECTRON_CACHE }}
           key: eb-binaries-${{ runner.os }}-${{ hashFiles('desktop/package-lock.json') }}
           restore-keys: |
             eb-binaries-${{ runner.os }}-
@@ -1431,9 +1436,14 @@ jobs:
         id: eb-cache
         uses: actions/cache@v4
         with:
+          # The env vars themselves, not a second copy of the same
+          # path: actions/cache then provably restores into the very
+          # directory electron-builder reads from, rather than two
+          # strings that happen to resolve alike under two different
+          # expansion rules.
           path: |
-            ${{ runner.temp }}/electron-builder-cache
-            ${{ runner.temp }}/electron-cache
+            ${{ env.ELECTRON_BUILDER_CACHE }}
+            ${{ env.ELECTRON_CACHE }}
           key: eb-binaries-${{ runner.os }}-${{ hashFiles('desktop/package-lock.json') }}
           restore-keys: |
             eb-binaries-${{ runner.os }}-
