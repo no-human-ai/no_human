@@ -637,6 +637,32 @@ def test_normalize_survives_a_sparse_item(token):
     assert task.context["monday"]["status"] == ""
 
 
+def test_normalize_reads_an_acceptance_criteria_heading_the_same_as_every_other_adapter(
+        token):
+    """The shared extractor (Jira/Linear/GitHub/GitLab) prefers an explicit
+    '## Acceptance criteria' section over a body-wide checkbox sweep. Monday's
+    long-text columns carry the same operator-authored markdown, so it must
+    see the same section — this fails on main, where Monday's private
+    checklist-only helper returns [] for plain bullets."""
+    item = _item(column_values=[
+        {"id": "long_text",
+         "text": "Repro: home page stalls\n\n## Acceptance criteria\n"
+                 "- page loads under 2s\n- no 500s",
+         "column": {"title": "Details", "type": "long_text"}},
+    ])
+    task = MondayAdapter(_cfg()).normalize(item)
+    assert task.acceptance_criteria == ["page loads under 2s", "no 500s"]
+
+
+def test_normalize_still_reads_a_plain_checkbox_column_exactly_as_before(token):
+    """No acceptance-criteria heading means the shared extractor falls back to
+    a body-wide checkbox sweep, reproducing Monday's pre-change behaviour
+    exactly, so the switch to the shared helper does not silently alter the
+    path Monday already had."""
+    task = MondayAdapter(_cfg()).normalize(_item())
+    assert task.acceptance_criteria == ["page loads under 2s", "no 500s"]
+
+
 # --------------------------------------------------------------------------- #
 # Columns and label discovery                                                  #
 # --------------------------------------------------------------------------- #

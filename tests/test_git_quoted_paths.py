@@ -10,6 +10,7 @@ is dropped without ever raising. See `src/no_human/vcs/git.py`'s
 `_null_paths` helper and the `-c core.quotePath=false` sites for the fix.
 """
 
+import os
 import subprocess
 import unicodedata
 
@@ -17,9 +18,25 @@ import pytest
 
 from no_human.vcs import GitRepo
 
+#: Win32 forbids `"`, `\` and control characters (including TAB) in a filename,
+#: so the cases that name a file with one cannot even be created on Windows.
+#: They exercise git's UNCONDITIONAL C-quoting, a code path that no Windows
+#: filename can reach, so they are skipped there and stay covered on POSIX.
+_illegal_name_on_windows = pytest.mark.skipif(
+    os.name == "nt",
+    reason="filename uses a character Win32 forbids; unreachable on Windows",
+)
+
 
 def _git(cwd, *args):
-    subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True)
+    # `encoding="utf-8"`, not bare `text=True`: git reports paths as UTF-8, but
+    # `text=True` alone decodes with the host codepage, so a non-UTF-8 Windows
+    # locale (cp1252/cp1255) would mangle a non-ASCII name. Mirrors the
+    # production `GitRepo._run`/`_run_null` decode.
+    subprocess.run(
+        ["git", *args], cwd=cwd, check=True, capture_output=True,
+        encoding="utf-8", errors="replace",
+    )
 
 
 @pytest.fixture
@@ -44,7 +61,8 @@ def _committed_names(repo_path):
     NFC-normalized, mirroring `commit_paths`' own `_null_paths` handling."""
     out = subprocess.run(
         ["git", "show", "--name-only", "--format=", "-z", "HEAD"],
-        cwd=repo_path, capture_output=True, text=True,
+        cwd=repo_path, capture_output=True,
+        encoding="utf-8", errors="replace",  # UTF-8, not the host codepage (see `_git`)
     ).stdout
     return {unicodedata.normalize("NFC", n) for n in out.split("\0") if n}
 
@@ -156,9 +174,9 @@ def test_a_c_quoted_new_directory_is_recognised_as_newly_added(quoted_paths_repo
 @pytest.mark.parametrize(
     "name",
     [
-        pytest.param('we"ird.txt', id="quote"),
-        pytest.param("back\\slash.txt", id="backslash"),
-        pytest.param("tab\tbed.txt", id="tab"),
+        pytest.param('we"ird.txt', id="quote", marks=_illegal_name_on_windows),
+        pytest.param("back\\slash.txt", id="backslash", marks=_illegal_name_on_windows),
+        pytest.param("tab\tbed.txt", id="tab", marks=_illegal_name_on_windows),
         pytest.param("plain.txt", id="plain-ascii-positive-control"),
     ],
 )
@@ -186,8 +204,8 @@ def test_a_quote_backslash_or_tab_named_leftover_is_flagged_by_the_completeness_
 @pytest.mark.parametrize(
     "dirname",
     [
-        pytest.param('we"ird', id="quote"),
-        pytest.param("back\\slash", id="backslash"),
+        pytest.param('we"ird', id="quote", marks=_illegal_name_on_windows),
+        pytest.param("back\\slash", id="backslash", marks=_illegal_name_on_windows),
         pytest.param("plaindir", id="plain-ascii-positive-control"),
     ],
 )

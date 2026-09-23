@@ -1,0 +1,17 @@
+[
+  {
+    "databaseId": 20003,
+    "name": "windows",
+    "conclusion": "cancelled",
+    "steps": [
+      {
+        "name": "Install the desktop shell's dependencies WITH scripts (release build only)",
+        "conclusion": "success"
+      },
+      {
+        "name": "Package the NSIS installer and the zip (release build only)",
+        "conclusion": "cancelled"
+      }
+    ]
+  }
+]
