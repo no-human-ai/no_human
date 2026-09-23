@@ -700,6 +700,55 @@ def test_apostrophes_do_not_mask_surrounding_prose():
     assert verdict.kind is TaskKind.TEST_GAP
 
 
+def test_stray_inch_marks_do_not_mask_surrounding_prose():
+    """The double-quote mask is word-boundary-guarded like the single-quote
+    one (see test_apostrophes_do_not_mask_surrounding_prose above): two
+    unrelated straight quotes used as inch marks sit directly against
+    digits, so they must not pair up across the sentence and swallow the
+    real signal words between them."""
+    task = _task(
+        "Enclosure",
+        description=(
+            'the panel is 24" wide, the retry helper has no tests, '
+            'and the frame is 30" tall'))
+    assert classify_kind(task).kind is TaskKind.TEST_GAP
+
+    # CONTROL: identical sentence with the two stray inch marks removed —
+    # must classify exactly the same way, proving the guard narrows
+    # position (unpaired quote vs. real quote) and not content.
+    control_task = _task(
+        "Enclosure",
+        description=(
+            'the panel is 24 wide, the retry helper has no tests, '
+            'and the frame is 30 tall'))
+    assert classify_kind(control_task).kind is TaskKind.TEST_GAP
+
+
+def test_stray_backtick_does_not_mask_a_later_line():
+    """An inline code span must not cross a newline: without that
+    restriction, a single unterminated backtick pairs with the NEXT real
+    backtick — even lines later — and blanks everything in between,
+    including a real signal in the author's own prose."""
+    task = _task(
+        "Pipeline",
+        description=(
+            "opened with `nh task add`\n"
+            "note the stray ` in this line\n"
+            "the CI build is red on every PR and `x` ends it"))
+    assert classify_kind(task).kind is TaskKind.CI_FIX
+
+    # CONTROL: identical text with the stray backtick removed — must
+    # classify exactly the same way (the properly paired `x` span on the
+    # last line still masks normally; only the stray delimiter is gone).
+    control_task = _task(
+        "Pipeline",
+        description=(
+            "opened with `nh task add`\n"
+            "note the stray in this line\n"
+            "the CI build is red on every PR and `x` ends it"))
+    assert classify_kind(control_task).kind is TaskKind.CI_FIX
+
+
 def test_override_beats_even_a_masked_body():
     task = _load_issue_428()
     verdict = classify_kind(task, override="bugfix")

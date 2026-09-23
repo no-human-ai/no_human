@@ -359,9 +359,21 @@ _FENCE_BLOCK = re.compile(
     r"(?:\1\2[`~]*[ \t]*(?:\n|\Z)|\Z)",  # …until a matching closer, or EOF
     re.M)
 _BLOCKQUOTE_LINE = re.compile(r"^ {0,3}>.*$", re.M)
-_INLINE_CODE_SPAN = re.compile(r"(`+)(?!`)(.+?)(?<!`)\1(?!`)", re.S)
+# No re.S: an inline code span must not cross a newline. Without this, a
+# single stray (unterminated) backtick anywhere in the body pairs with the
+# NEXT real backtick — possibly lines later — and blanks everything between
+# them, including real prose. Confining `.` to one line means an unterminated
+# backtick simply fails to match anything, which is the documented intent
+# below ("a lone stray backtick masks nothing").
+_INLINE_CODE_SPAN = re.compile(r"(`+)(?!`)(.+?)(?<!`)\1(?!`)")
+# Pairing rule: straight double quotes get the SAME word-boundary guard as
+# _SINGLE_QUOTED below, for the same reason — a stray straight quote used as
+# an inch/foot mark (24", 30') or a prime symbol sits directly against a
+# digit, so a quote adjacent to alnum text can never be the start/end of a
+# real quotation. Curly quotes (“ ”) are directional and unambiguous already
+# — “ can only open and ” can only close — so they need no such guard.
 _DOUBLE_QUOTED = re.compile(
-    r'"[^"\n]{1,200}"'
+    r'(?<![A-Za-z0-9])"[^"\n]{1,200}"(?![A-Za-z0-9])'
     r"|“[^”\n]{1,200}”")
 # Word-boundary-guarded so real prose survives an apostrophe: without the
 # guards, "pytest's runner has no tests ... instead of pytest'" would mask
