@@ -474,6 +474,40 @@ def _git_diff(repo_path: Path, before: str = "HEAD~1", after: str = "HEAD") -> t
     return rendered, len(raw), cut_paths
 
 
+def _bounded_override_diff(raw: str) -> tuple[str, int]:
+    """Bound a caller-supplied diff at `_DIFF_CAP` without hiding a file.
+
+    DISCLOSURE, not inspection — deliberately different from `_git_diff`.
+    The refs path can require the reviewer to open every cut path, because
+    it has the refs and a multi-turn tool-enabled session. This path has
+    neither: the caller supplied the diff, `_fast_review` runs single-turn
+    with no tools, and `repo_path` is not guaranteed to hold the reviewed
+    content at all (`_root_mismatch_for_diff_override` exists because of
+    that). So the ledger here TELLS the reviewer which files were cut and
+    asks it to scope its verdict; it does not demand reads it cannot make,
+    and `review()` passes no `required_inspections` on this path — the
+    inspection guard would reject every verdict.
+
+    Never raises. A hard stop is the wrong answer for a diff that merely
+    got big (issue #437 closed a silent truncation, not a gate), so an
+    unsplittable diff falls back to a prefix cut plus an explicit note
+    saying so — the one thing that must not happen is a silent cut.
+    """
+    if len(raw) <= _DIFF_CAP:
+        return raw, len(raw)
+    try:
+        rendered, _cut = budget_diff(raw, _DIFF_CAP, inspection_required=False)
+        return rendered, len(raw)
+    except DiffCoverageError as exc:
+        dropped = len(raw) - _DIFF_CAP
+        note = (
+            f"\n[...diff truncated: {dropped:,} more chars not shown, and the "
+            f"per-file coverage ledger could not be built ({exc}). This cut is "
+            "unattributed to specific files — judge only what is shown.]\n"
+        )
+        return raw[:_DIFF_CAP - len(note)] + note, len(raw)
+
+
 def _changed_paths(repo_path: Path, before: str, after: str,
                    *, include_deleted: bool = False) -> list[str]:
     """Two contracts, picked by ``include_deleted``.
@@ -2667,10 +2701,10 @@ class AdversarialReviewer:
             if not diff_override else ""
         )
         if diff_override:
-            # Caller supplied the diff; there are no refs to read files from, and
-            # _fast_review runs single-turn with no tools.
-            diff = diff_override[:_DIFF_CAP]
-            diff_total_len = len(diff_override)
+            # DISCLOSURE, not inspection — the override path has no refs and
+            # no tools, so it names what it cut instead of demanding reads.
+            # See `_bounded_override_diff` for why this differs from _git_diff.
+            diff, diff_total_len = _bounded_override_diff(diff_override)
         else:
             diff, diff_total_len, cut_paths = _git_diff(repo_path, before_ref, after_ref)
             full_files, omitted_files = _full_file_context(
