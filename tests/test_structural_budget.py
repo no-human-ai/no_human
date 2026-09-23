@@ -1506,9 +1506,15 @@ FROZEN_FILE_LINES = {
     # push) live in the new `vcs/recut.py`, not here — this is the
     # orchestrator-side wiring only. Measured on this tree with the
     # scanner below.
+    # 25039 -> 25070 (+31): `_already_satisfied_subject` gained the "ahead"
+    # remedy branch — a fast-forward push of the task's own branch via
+    # `push_sha_fast_forward`, re-check-and-accept on `up_to_date`, and
+    # named refusals on `ProtectedBranch`/`GitError`/a residual `ahead` —
+    # plus the `relation_reason["ahead"]` map entry. Measured on this tree
+    # with the scanner below.
     # 25039 -> 25072 (+33): re-anchored to the committed fix's measured
     # file-line count for orchestrator.py.
-    "core/orchestrator.py": 25072,
+    "core/orchestrator.py": 25103,
 
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo

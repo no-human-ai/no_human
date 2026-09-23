@@ -116,6 +116,44 @@ async def test_audit_counts_diverged_live_tasks(store, tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# AC 5: `remote_branch_relation` can now also return "ahead" (remote tip is
+# an ancestor of local -- simply not pushed since review). This report
+# normalizes that to "diverged" on purpose (see `audit_diverged_tasks`'s own
+# docstring) -- surfacing a new state key here is explicitly out of scope;
+# only the orchestrator's already-satisfied claim gate treats "ahead"
+# differently.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_an_ahead_branch_is_still_reported_as_diverged(store, tmp_path):
+    repo = _work(tmp_path, "ahead")
+    bare = _bare(tmp_path, "ahead.git")
+    _git(repo, "remote", "add", "origin", str(bare))
+    _git(repo, "checkout", "-q", "-b", "b-ahead")
+    (repo / "pr.py").write_text("v1\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "pr work")
+    _git(repo, "push", "-q", "-u", "origin", "b-ahead")
+    (repo / "pr.py").write_text("v1, more work not pushed\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "more pr work")
+
+    # Precondition demonstrated explicitly: the new classifier calls this
+    # "ahead".
+    assert GitRepo(repo).remote_branch_relation("b-ahead") == "ahead"
+
+    task = await _seed_task(store, repo_path=str(repo), pr_branch="b-ahead")
+
+    report = await audit_diverged_tasks(store, {})
+
+    assert "ahead" not in report.counts, report.counts
+    assert report.counts == {"diverged": 1}, report.counts
+    assert report.diverged_task_ids == {task.id}
+    row = next(r for r in report.rows if r.task_id == task.id)
+    assert row.state == "diverged"
+
+
+# ---------------------------------------------------------------------------
 # Test 8b (AC5 correctness): a task with TWO diverged branches (its current
 # `pr_branch` plus an older same-stem local branch, e.g. left over from
 # before a prior recut) counts as ONE diverged task, not two.
