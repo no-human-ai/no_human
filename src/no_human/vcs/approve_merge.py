@@ -1347,10 +1347,11 @@ def _land_in_worktree(
     # land's critical path. Both worktrees share one object database, so the
     # sha created in the worktree is already visible here.
     guard_plan = land_guard.plan_push(repo.path, os.environ)
-    push_cmd = ["git", "push"]
+    push_ref = f"{landed_sha}:refs/heads/{default}"
     if guard_plan.defer:
-        push_cmd.append("--no-verify")
-    push_cmd += [remote, f"{landed_sha}:refs/heads/{default}"]
+        push_cmd = ["git", "push", "--no-verify", remote, push_ref]
+    else:
+        push_cmd = ["git", "push", remote, push_ref]
     push_proc = _sh(push_cmd, cwd=repo.path)
     if push_proc.returncode != 0:
         return LandResult(ok=False, step="push", branch=branch, pr_url=pr_url,

@@ -740,6 +740,24 @@ ALLOWLIST: dict[str, dict[str, Allowed]] = {
             "user-invoked: only from `nh approve` / the board's "
             "Approve-and-merge button"),
     },
+    # `land_guard.run_deferred_gate` spawns a tiny detached runner (inline
+    # `python -c`) that `os.execv`s into the checkout's own pre-push hook,
+    # over the identical range git would have scanned inline. It is called
+    # ONLY from `vcs/approve_merge.py` step 7, and only when `plan_push`
+    # decides to defer (NH_GUARD_MODE=report and a hook resolved).
+    "vcs/land_guard.py": {
+        # Per vcs/manifest_repair.py's precedent, the `<dynamic>` bucket is
+        # per-file. `sys.executable` is not a string constant, so the
+        # checker cannot name argv[0]; what that interpreter execs into is
+        # the checkout's own pre-push hook, a private-checkout artefact this
+        # module deliberately never names (`_RUNNER_SRC`, :91).
+        "exec:<dynamic>": Allowed(
+            "whatever the checkout's own pre-push hook does — spawned out "
+            "of band, over the identical range git would have scanned "
+            "inline (`run_deferred_gate`, :268)",
+            "user-invoked: only from `nh approve`'s land push, when "
+            "`land_guard.plan_push` decides to defer"),
+    },
     "core/orchestrator.py": {
         "exec:gh": Allowed("your GitHub host — `gh api repos/…/pulls/<n>` for "
                            "the PR diff", _ON + "part of finalize/review"),

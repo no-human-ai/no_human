@@ -139,7 +139,7 @@ def test_report_mode_runs_the_gate_out_of_band_after_the_push(
         "the deferred gate never ran the hook at all")
     stdin_marker = Path(str(marker) + ".stdin")
     assert _wait_for(stdin_marker.exists, timeout=10.0)
-    stdin_text = stdin_marker.read_text()
+    stdin_text = stdin_marker.read_text(encoding="utf-8")
     assert result.landed_sha in stdin_text, (
         f"deferred hook stdin {stdin_text!r} does not name the landed sha "
         f"{result.landed_sha}")
