@@ -5901,10 +5901,7 @@ class Orchestrator:
             recut_branch = await self._recover_diverged_branch(task, repo, branch)
         except ReviewedShaMismatch as exc:
             log.error("%s", exc)
-            if exc.blocker is not None:
-                return await self._raise_blocker(
-                    task, exc.blocker, repo=repo, branch=branch)
-            return await self._escalate(task, str(exc), repo=repo, branch=branch)
+            return await self._escalate_reviewed_sha_mismatch(task, exc, repo, branch)
         if recut_branch != branch:
             branch = recut_branch
             ctx = task.context or {}
@@ -7972,10 +7969,7 @@ class Orchestrator:
             await self.store.update_attempt(
                 attempt_id, status="failed", failure_reason=str(exc),
                 completed_at=_now())
-            if exc.blocker is not None:
-                return await self._raise_blocker(
-                    task, exc.blocker, repo=repo, branch=branch)
-            return await self._escalate(task, str(exc), repo=repo, branch=branch)
+            return await self._escalate_reviewed_sha_mismatch(task, exc, repo, branch)
 
         # A genuine divergence recovered mid-delivery (see
         # `_reconcile_remote_branch`) rebinds `branch` to a freshly cut,
@@ -12515,6 +12509,18 @@ class Orchestrator:
             ok=True,
         )
         return result.to_branch
+
+    async def _escalate_reviewed_sha_mismatch(self, task, exc, repo, branch):
+        """Shared tail of the two `ReviewedShaMismatch` handlers (mid-attempt
+        divergence in `_run_attempt`, delivery-time in `_finalize`): route
+        through the structured `exc.blocker` `_recover_diverged_branch`
+        already built, or fall back to the generic `_escalate` prose when
+        there isn't one.
+        """
+        if exc.blocker is not None:
+            return await self._raise_blocker(
+                task, exc.blocker, repo=repo, branch=branch)
+        return await self._escalate(task, str(exc), repo=repo, branch=branch)
 
     def _reconcile_remote_branch(
         self, repo, branch: str, target: str, *, human_gated_resume: bool,
