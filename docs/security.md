@@ -336,7 +336,6 @@ named here.
 - **The desktop app checks GitHub Releases at startup**, once a day
   (`desktop/main.mjs:270` → `desktop/updater.mjs:116`, called at startup from
   `desktop/main.mjs:1141`, feed `provider: github, owner: no-human-ai, repo:
-<<<<<<< HEAD
   no_human` — `desktop/electron-builder.config.cjs:472`). It never downloads on its own
   (`autoDownload` is off, `desktop/updater.mjs:68`). **This is a separate code
   path from the PyPI check above and neither `NH_NO_UPDATE_CHECK` nor
