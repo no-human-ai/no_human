@@ -47,7 +47,12 @@ from ..review.wiring_evidence import (
 )
 from ..core.jsonparse import loads_lenient
 from ..core.task import Task
-from .diff_coverage import DiffCoverageError, InspectionTracker, budget_diff
+from .diff_coverage import (
+    DiffCoverageError,
+    InspectionTracker,
+    budget_diff,
+    coverage_rejection_paths,
+)
 
 log = logging.getLogger(__name__)
 
@@ -134,6 +139,18 @@ _TRIVIAL_REVIEW_TURNS = 6
 # Constraint #4: retry only on infra failures, and boundedly. A reviewer that
 # never reaches a verdict is an infra failure, not a finding.
 _REVIEW_INFRA_RETRIES = 1
+# Fed into round N+1's prompt (appended, never mutating round N's) when round
+# N's `reason` was a coverage rejection — see the call site in `_agent_review`
+# for why only this no-verdict reason gets feedback.
+_COVERAGE_RETRY_NOTE = (
+    "\n\nPREVIOUS ROUND REJECTED — THE VERDICT WAS DISCARDED, NOT COUNTED.\n"
+    "{reason}\n"
+    "These files were CUT from the diff above, so the patch you were shown "
+    "does not contain their changes. Before reaching any verdict this round, "
+    "read each path listed above with a read/search tool and cite what you "
+    "found. A verdict over a file you did not open is discarded again and the "
+    "task escalates to a human unreviewed.\n"
+)
 # On a *timeout* (hung/saturated reviewer, not turn-starved) the retry's window
 # is halved down to this floor rather than granted another full one — a hang
 # won't clear in a second full window, it just doubles how long a task sits
@@ -2998,7 +3015,10 @@ class AdversarialReviewer:
 
         So: retry once with a larger budget (constraint #4 — infra-only, bounded),
         then raise :class:`ReviewerUnavailable` so the task escalates honestly.
-        No path here ever turns a missing verdict into a pass.
+        No path here ever turns a missing verdict into a pass. The retry prompt
+        is the SAME every round with one exception: a coverage rejection (see
+        the branch below, after `last_reason` is set) appends its own text —
+        the only no-verdict reason a reviewer can act on differently.
 
         A round that ERRORED is a round with no verdict (see ``_review_once``),
         which means a finding made in the last turn before truncation is
@@ -3051,10 +3071,14 @@ class AdversarialReviewer:
         # were billed — `_carry_usage` folds their spend onto whatever leaves
         # this method so the attempt row shows what the gate really cost.
         discarded: list[AgentResult] = []
+        # The prompt actually sent this round. Reset to `prompt` every
+        # iteration (not accumulated) so feedback never stacks across rounds —
+        # see the coverage-rejection branch below for why.
+        round_prompt = prompt
         for round_n in range(_REVIEW_INFRA_RETRIES + 1):
             budget = max_turns * (2 ** round_n)
             decision, reason, result = await self._review_once(
-                prompt, repo_path, max_turns=budget, timeout=round_timeout,
+                round_prompt, repo_path, max_turns=budget, timeout=round_timeout,
                 before_ref=before_ref, verify_citations=verify_citations,
                 extra_repos=extra_repos,
                 required_inspections=required_inspections,
@@ -3073,6 +3097,35 @@ class AdversarialReviewer:
             # a missing verdict into a pass; only escalates a hang sooner.
             if reason.startswith("timed out"):
                 round_timeout = max(_REVIEW_MIN_RETRY_TIMEOUT, round_timeout // 2)
+            # A coverage rejection is the only no-verdict reason that is
+            # DETERMINISTIC IN THE REVIEWER'S OWN CHOICES and actionable: the
+            # reviewer that decided those cut paths were not worth opening
+            # decides that again on an identical prompt, now billed at double
+            # the turn budget and (since "reviewer reached a verdict without
+            # referencing..." does not start with "timed out") a FULL timeout
+            # window too — the most expensive no-verdict path there is (5
+            # escalated tasks, 83.2M raw / 18.4M weighted tokens reaching no
+            # verdict, task 68e66468 alone at 34.6M raw / 18 cut paths). So
+            # round N+1's prompt carries round N's rejection verbatim plus an
+            # instruction to open each named path — reset from `prompt`, not
+            # accumulated, so only the MOST RECENT rejection is fed forward: a
+            # path referenced in round N is no longer missing, and re-demanding
+            # it would send the reviewer chasing a path the guard is already
+            # satisfied on. The other three no-verdict reasons — timed out
+            # (hung/saturated, already handled by the halving above), no
+            # REVIEW_JSON block / bad stop reason (malformed or truncated
+            # output), errored session (dead transport / turn exhaustion) — are
+            # resource/format failures the reviewer cannot act on differently;
+            # the doubled turn budget already granted below IS the whole
+            # remedy for those, and appending text would only add noise and
+            # shrink the budget the retry exists to grant. This never relaxes
+            # the guard: `InspectionTracker.rejection()` is untouched, and a
+            # coverage rejection on the FINAL round still falls through to
+            # `ReviewerUnavailable` below, never a pass.
+            round_prompt = prompt
+            missing = coverage_rejection_paths(reason)
+            if missing:
+                round_prompt = prompt + _COVERAGE_RETRY_NOTE.format(reason=reason)
             log.warning(
                 "reviewer reached no verdict (%s) on round %d/%d (budget %d turns)",
                 reason, round_n + 1, _REVIEW_INFRA_RETRIES + 1, budget,
