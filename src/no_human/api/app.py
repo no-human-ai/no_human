@@ -129,6 +129,23 @@ async def _record_tasks_orphaned(store, config) -> None:
         pass
 
 
+def _reap_stale_attempt_procs_at_startup() -> None:
+    """Startup sweep for `core/attempt_procs.py`: reap every process group
+    left behind by a worker that died without running its own cleanup at all
+    -- the one path a live `attempt_scope` cannot cover, because there was no
+    live scope left to run a `finally`. See that module's docstring for the
+    incident (36 orphaned `while True: pass` processes, 6h+, ~12/18 cores)
+    this closes. Never allowed to block startup: a sweep failure degrades to
+    a logged error, not a crashed server."""
+    try:
+        from ..core import attempt_procs
+        for marker, killed in attempt_procs.reap_stale():
+            log.warning("attempt_procs.reap_stale: reaped %d group(s) for %s",
+                        killed, marker)
+    except Exception:
+        log.error("attempt_procs.reap_stale failed at startup", exc_info=True)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     config = load_config()
@@ -206,6 +223,9 @@ async def lifespan(app: FastAPI):
     # the count reflects what was actually found dead rather than what the
     # sweep has already fixed up.
     await _record_tasks_orphaned(store, config)
+
+    # See `_reap_stale_attempt_procs_at_startup`'s docstring; same ordering reason as above.
+    _reap_stale_attempt_procs_at_startup()
 
     # Always start the embedded worker — board up = worker up.
     # CLI may override max_workers/poll_interval via app.state._worker_opts.

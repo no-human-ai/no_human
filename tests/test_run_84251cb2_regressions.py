@@ -284,7 +284,11 @@ def test_run_attempt_protects_the_base_before_the_agent_session_starts():
     import inspect
     from no_human.core.orchestrator import Orchestrator
 
-    src = inspect.getsource(Orchestrator._run_attempt)
+    # `_run_attempt` itself is now a thin header — `attempt_scope(...)` around
+    # a delegate call, added for the attempt-process-reaper
+    # (core/attempt_procs.py) — so the wiring this test pins now lives in
+    # `_run_attempt_inner`, where the original body moved verbatim.
+    src = inspect.getsource(Orchestrator._run_attempt_inner)
     assert "self._protect_base_branch(" in src, "nothing protects the PR base"
     assert src.index("self._protect_base_branch(") < src.index("self.backend.run("), (
         "the base must be protected before the agent gets a Bash tool"
@@ -297,7 +301,9 @@ async def test_a_task_cannot_override_the_agent_git_identity(store, tmp_path):
     import inspect
     from no_human.core.orchestrator import Orchestrator
 
-    src = inspect.getsource(Orchestrator._run_attempt)
+    # See the comment above `test_run_attempt_protects_the_base_before_the_agent_session_starts`:
+    # this wiring now lives in `_run_attempt_inner`, not the thin `_run_attempt` header.
+    src = inspect.getsource(Orchestrator._run_attempt_inner)
     idx_task_vars = src.index('.get("env_vars", {})')
     idx_identity = src.index("self._agent_git_identity()")
     assert idx_identity > idx_task_vars, (

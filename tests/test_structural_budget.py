@@ -189,7 +189,16 @@ FROZEN_FUNCTION_LINES = {
     # hook body, not here — this is only the call site plus its
     # explanatory comment and the once-per-branch context bookkeeping it
     # threads through. Measured on this tree with the scanner below.
-    "core/orchestrator.py:Orchestrator._run_attempt": 2308,
+    # 2308 -> renamed: attempt-process-reaper fix (the 36-orphan `while
+    # True: pass` incident) cuts `_run_attempt` down to a thin header --
+    # a preflight gate check, attempt_seq/attempt_id creation, then
+    # `with attempt_procs.attempt_scope(...): return await
+    # self._run_attempt_inner(...)` -- and moves the entire original body
+    # verbatim into the new `_run_attempt_inner`, which is what this entry
+    # now tracks (2308 -> 2293: the ~15 lines extracted into the header).
+    # `_run_attempt` itself is well under MAX_FUNCTION_LINES and carries no
+    # entry here. See `core/attempt_procs.py`.
+    "core/orchestrator.py:Orchestrator._run_attempt_inner": 2293,
     # 760 -> 778 (+18): dispatch-time intake-eval hoisted path — the `elif
     # ctx.get("eval_result")` branch that acts on a grill/wizard-stored
     # verdict (idempotency marker, cost/residual-gap comments) added inside
@@ -556,7 +565,15 @@ FROZEN_FUNCTION_CC = {
     # `if recut_branch != branch:` guard on the returned (possibly rebound)
     # branch, matching the shape of the sibling preflight call sites
     # already counted above. Measured on this tree with the scanner below.
-    "core/orchestrator.py:Orchestrator._run_attempt": 257,
+    # 257 -> 255 (-2): attempt-process-reaper fix, renamed from
+    # `_run_attempt` -- see the matching note in FROZEN_FUNCTION_LINES
+    # above. The thin `_run_attempt` header (a preflight check, id
+    # creation, and one `with attempt_scope(...):`) carries a couple of
+    # branches of its own but is nowhere near MAX_FUNCTION_CC, so it
+    # carries no entry here; this row now tracks `_run_attempt_inner`,
+    # the original body's cc re-measured with the scanner below (the -2
+    # is the one `if` branch that moved into the extracted header).
+    "core/orchestrator.py:Orchestrator._run_attempt_inner": 255,
     # Landing of 4e0299ad: unchanged at 115 — the harness row is dropped by
     # the comprehension filter inside `_reviewer_items`, which the scanner
     # counts the same as the `if` it replaced (the first landing pass had a
@@ -1510,9 +1527,20 @@ FROZEN_FILE_LINES = {
     # remedy branch — a fast-forward push of the task's own branch via
     # `push_sha_fast_forward`, re-check-and-accept on `up_to_date`, and
     # named refusals on `ProtectedBranch`/`GitError`/a residual `ahead` —
-    # plus the `relation_reason["ahead"]` map entry. Measured on this tree
-    # with the scanner below.
-    "core/orchestrator.py": 25070,
+    # plus the `relation_reason["ahead"]` map entry.
+    # 25070 -> 25092 (+22, independently rebased on top of the above):
+    # attempt-process-reaper fix (the 36-orphan `while True: pass`
+    # incident) -- `_run_attempt` split into a thin header
+    # (`attempt_procs.attempt_scope(...)` around a delegate call) and
+    # `_run_attempt_inner` (the original body, moved verbatim), plus the
+    # header's explanatory comment. See `core/attempt_procs.py`. Both
+    # deltas landed on independent branches that touched this same file;
+    # this merge conflicted in this file's own frozen table and is
+    # resolved here by re-measuring THIS tree (post-merge) with
+    # `len(Path("src/no_human/core/orchestrator.py").read_text().splitlines())`
+    # (25092), matching the scanner's own metric rather than carrying
+    # either parent's number forward by hand.
+    "core/orchestrator.py": 25092,
 
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
@@ -1922,7 +1950,12 @@ FROZEN_FILE_LINES = {
     # and threading `registration_status` into the persisted onboarding
     # state and the response body. Measured on this tree with the scanner
     # below.
-    "api/app.py": 6366,
+    # 6366 -> 6386 (+20): attempt-process-reaper fix -- `lifespan` gains a
+    # one-line call to the new `_reap_stale_attempt_procs_at_startup()`
+    # helper (kept as a separate function, not inlined, specifically to
+    # keep `lifespan` itself under MAX_FUNCTION_LINES). See
+    # `core/attempt_procs.py`.
+    "api/app.py": 6386,
     # +51: W5 active-time phase writer (phase instrumentation).
     # +84: `list_escalations`/`list_review_fails`/`list_tamper_trips` — the
     # three new failure-signal sources the recurring learning harvest mines.
@@ -2610,8 +2643,8 @@ def test_frozen_lists_are_the_measured_baseline():
     assert FROZEN_FUNCTION_LINES
     assert FROZEN_FUNCTION_CC
     assert FROZEN_FILE_LINES
-    assert "core/orchestrator.py:Orchestrator._run_attempt" in FROZEN_FUNCTION_LINES
-    assert "core/orchestrator.py:Orchestrator._run_attempt" in FROZEN_FUNCTION_CC
+    assert "core/orchestrator.py:Orchestrator._run_attempt_inner" in FROZEN_FUNCTION_LINES
+    assert "core/orchestrator.py:Orchestrator._run_attempt_inner" in FROZEN_FUNCTION_CC
     assert "core/orchestrator.py" in FROZEN_FILE_LINES
 
 

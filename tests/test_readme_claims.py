@@ -2661,12 +2661,12 @@ def test_known_issues_traceback_cites_the_functions_it_names(known_issues_doc):
         "traceback"
     )
     assert (
-        "src/no_human/core/orchestrator.py in Orchestrator._run_attempt"
+        "src/no_human/core/orchestrator.py in Orchestrator._run_attempt_inner"
         in known_issues_doc
     ), (
         "the traceback no longer names orchestrator.py's "
-        "Orchestrator._run_attempt frame — this test is pointed at stale "
-        "text; re-derive from the current traceback"
+        "Orchestrator._run_attempt_inner frame — this test is pointed at "
+        "stale text; re-derive from the current traceback"
     )
     assert "await self.db.commit()" in known_issues_doc, (
         "the traceback no longer quotes the commit statement it blames"
@@ -2701,11 +2701,15 @@ def test_known_issues_traceback_cites_the_functions_it_names(known_issues_doc):
     )
 
     orch_src = ORCHESTRATOR_PY.read_text(encoding="utf-8")
-    orch_body = _function_body_source(orch_src, "_run_attempt")
+    # `_run_attempt` itself is now a thin header — `attempt_scope(...)` around
+    # a delegate call, added for the attempt-process-reaper
+    # (core/attempt_procs.py) — so the call this entry blames now lives in
+    # `_run_attempt_inner`, where the original body moved verbatim.
+    orch_body = _function_body_source(orch_src, "_run_attempt_inner")
     assert (
         "self.store.update_attempt(attempt_id, branch_name=branch)" in orch_body
     ), (
-        "Orchestrator._run_attempt no longer contains "
+        "Orchestrator._run_attempt_inner no longer contains "
         "`self.store.update_attempt(attempt_id, branch_name=branch)` — "
         "re-derive the traceback from the current code"
     )

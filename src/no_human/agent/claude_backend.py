@@ -22,6 +22,7 @@ Constraints honoured here:
 from __future__ import annotations
 
 import asyncio
+import shutil
 from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable
 
@@ -43,6 +44,7 @@ from claude_agent_sdk import (
     query,
 )
 
+from ..core import attempt_procs
 from . import guard
 from .child_env import scrub_foreign_secrets_into
 from .backend import AgentEvent, AgentResult, BackendCapabilities
@@ -708,6 +710,17 @@ class ClaudeBackend:
         # into the SDK's `env` (additive over the subprocess environment,
         # per the comment above) — never into this process's `os.environ`.
         env.update(mark_env("claude"))
+        # Stamp the record path for the attempt-process-reaper shim (see the
+        # `cli_path` block below): the shim is a `sh -c exec ...` script the
+        # SDK invokes with no extra arguments, so this env var is the only way
+        # it learns which attempt's ledger to append its group to. Set BEFORE
+        # `scrub_foreign_secrets_into(env)` below -- that call only blanks
+        # names it finds secret-shaped (TOKEN/SECRET/KEY/...) AND not already
+        # a key in `env`; this name is neither, so it survives untouched
+        # (confirmed by test, not assumed).
+        _proc_scope = attempt_procs.current_scope()
+        if _proc_scope is not None:
+            env[attempt_procs.RECORD_ENV] = str(_proc_scope.record_path)
         # Deny the coder subprocess the launcher's ambient secrets. The SDK
         # inherits the whole parent environment into the child (`{**os.environ,
         # **env}`), so blanking every secret-shaped variable that is not
@@ -725,6 +738,25 @@ class ClaudeBackend:
             kwargs["env"] = env
         if self.cli_path:
             kwargs["cli_path"] = self.cli_path
+        # Attempt-scoped reaping (core/attempt_procs.py): when a scope is live
+        # for this attempt, route the real `claude` CLI through the launcher
+        # shim so a shell command IT spawns -- and every descendant, however
+        # deep -- is attributable via NH_ATTEMPT=<task>:<attempt> on `ps` and
+        # reaped when the attempt ends. See that module's docstring for the
+        # incident (36 orphaned `while True: pass` processes) this closes.
+        # The SDK builds its own argv from `cli_path` alone and takes no
+        # extra arguments, so wrapping happens via a shim script on disk, not
+        # `launch_argv`. Every step here fails open: no live scope, no
+        # resolvable CLI, no interpreter, or a write failure all leave
+        # `cli_path` exactly as the SDK would have picked it -- a wrapping
+        # failure degrades to "run the CLI unwrapped", never a broken
+        # session.
+        if _proc_scope is not None:
+            real_cli = self.cli_path or shutil.which("claude")
+            if real_cli:
+                shim = attempt_procs.cli_shim(_proc_scope, real_cli)
+                if shim is not None:
+                    kwargs["cli_path"] = str(shim)
         # ALWAYS set explicitly. Never leave this to the SDK default.
         #
         # This block used to set the field only for writing or skilled sessions

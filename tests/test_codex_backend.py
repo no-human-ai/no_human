@@ -1119,6 +1119,11 @@ def _fake_codex(lines: list, *, returncode: int = 0, stderr: bytes = b""):
             self.stderr = _Reader(stderr)
             self.returncode = None
             self.killed = False
+            # A real `asyncio.subprocess.Process` always has `.pid`; the
+            # codex backend reads it unconditionally right after spawn (for
+            # `attempt_procs.register_group`, core/attempt_procs.py) even
+            # when no attempt scope is live, so the fake needs one too.
+            self.pid = 4242
         def kill(self): self.killed = True
         async def wait(self):
             self.returncode = returncode

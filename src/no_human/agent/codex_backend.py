@@ -127,6 +127,7 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Callable
 
 from ..config import CODEX_SUBSCRIPTION_SCRUB_VARS
+from ..core import attempt_procs
 from ..proc import hidden_console_kwargs
 from . import guard
 from .backend import (
@@ -969,6 +970,17 @@ async def _kill_and_reap(proc: Any) -> tuple[int, bytes]:
     # ConvergenceAbort). Without this a cancelled attempt leaves a live
     # `codex` writing to the working tree that is about to be diffed and
     # committed.
+    #
+    # `proc` here is our direct child -- the attempt_launcher (see
+    # `core/attempt_launcher.py`) when a scope was live, or the real codex
+    # binary otherwise. `proc.kill()` below is a plain SIGKILL of that one
+    # process; it does NOT forward to the launcher's process group, so a
+    # shell command codex spawned (the launcher's siblings-of-the-child it
+    # is tracking) would survive a bare `proc.kill()` alone. That is fine:
+    # `core/orchestrator.py`'s `with attempt_procs.attempt_scope(...)` is the
+    # authoritative backstop and its `finally` reaps the whole recorded
+    # group regardless of how this function's caller exits -- this call only
+    # needs to stop OUR direct child promptly so teardown does not hang.
     if proc.returncode is None:
         try:
             proc.kill()
@@ -1622,14 +1634,29 @@ class CodexBackend:
         stop_reason: str | None = None
         api_error_status: int | None = None
 
+        # Attempt-scoped reaping (core/attempt_procs.py): when a scope is live
+        # for this attempt, run the real coder session through the launcher
+        # so a shell command IT spawns -- and every descendant, however deep
+        # -- is attributable via NH_ATTEMPT=<task>:<attempt> on `ps` and
+        # reaped when the attempt ends, closing the incident that module's
+        # docstring documents (36 orphaned `while True: pass` processes,
+        # 6h+, ~12/18 cores). `launch_argv` is a no-op (returns `cmd`
+        # unchanged) outside a live scope, so a bare `nh run` or a unit test
+        # with no attempt in flight behaves exactly as before. `new_group`
+        # mandates a fresh session for every in-attempt spawn regardless of
+        # whether the scope wrapped it (the launcher needs it; an unwrapped
+        # command gets it as a harmless no-op) -- this is a hard mandate, not
+        # best-effort, so `register_group` below always finds a real group.
+        _proc_scope = attempt_procs.current_scope()
         proc = await asyncio.create_subprocess_exec(
-            *cmd, cwd=str(cwd), env=env,
+            *attempt_procs.launch_argv(cmd, _proc_scope), cwd=str(cwd), env=env,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             limit=_STDOUT_LIMIT,
-            **hidden_console_kwargs(),
+            **hidden_console_kwargs(new_group=True),
         )
+        attempt_procs.register_group(proc.pid, _proc_scope)
         assert proc.stdin is not None and proc.stdout is not None
         try:
             proc.stdin.write(prompt.encode())

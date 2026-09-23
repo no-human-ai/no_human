@@ -765,6 +765,28 @@ ALLOWLIST: dict[str, dict[str, Allowed]] = {
             _ON + "runs whenever a task carries env_setup/env_teardown; the "
                   "content is the task author's, not ours"),
     },
+    # The reaper's own launcher (core/attempt_procs.py's module docstring has
+    # the incident: 36 orphaned `while True: pass` processes, 6h+, nothing
+    # reaping them). This module is a transparent process-group wrapper —
+    # `os.setsid()` then `exec` — around an argv `attempt_procs.launch_argv`
+    # builds from the CALLER's own command (the coder session's CLI, or any
+    # shell command the attempt itself runs). It chooses no destination of
+    # its own; the `<dynamic>` channel is the wrapped command's, already
+    # covered by that command's own line (e.g. agent/codex_backend.py above)
+    # or, for an attempt's free-form shell use, by the same allowance
+    # `agent/guard.py` gives it (an attempt is free to run shell commands —
+    # this ticket's OUT OF SCOPE note says so explicitly; the defect being
+    # fixed here is the missing reaper, not a new permission).
+    "core/attempt_launcher.py": {
+        "exec:<dynamic>": Allowed(
+            "whatever the wrapped attempt command itself already talks to "
+            "— this module only supervises the process group so it can be "
+            "reaped when the attempt ends",
+            _ON + "runs whenever an attempt scope is live (core/"
+                  "attempt_procs.py's attempt_scope, wired from "
+                  "_run_attempt); there is no flag that turns off "
+                  "supervising an attempt's own children"),
+    },
     "core/web_build.py": {
         # `rebuild()` loops `for argv in _BUILD_ARGVS: run(argv, ...)` — the
         # analyzer sees argv bound by a loop, not a literal at the call site,
