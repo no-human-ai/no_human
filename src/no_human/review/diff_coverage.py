@@ -26,6 +26,11 @@ _DISCLOSURE_NOTE = (
     "files were not fully visible rather than clearing them:\n"
 )
 _MAX_PREFIX_CHARS = 2_000
+#: Prefix every coverage rejection carries. `reviewer._agent_review` classifies
+#: on it to feed the rejection into the next round; one literal, not two copies.
+COVERAGE_REJECTION_PREFIX = (
+    "reviewer reached a verdict without referencing truncated "
+    "changed file(s): ")
 
 
 class DiffCoverageError(RuntimeError):
@@ -277,5 +282,21 @@ class InspectionTracker:
         missing = self.unreferenced()
         if not missing:
             return ""
-        return ("reviewer reached a verdict without referencing truncated "
-                f"changed file(s): {', '.join(missing)}")
+        return f"{COVERAGE_REJECTION_PREFIX}{', '.join(missing)}"
+
+
+def coverage_rejection_paths(reason: str) -> list[str]:
+    """The unreferenced paths a coverage rejection names, or [] if `reason`
+    is not one.
+
+    A prefix test, not a structural flag, because `_review_once` collapses
+    every no-verdict cause into one opaque `reason` string and this module
+    owns the only one whose text is ours. Residual risk: `_errored_round_
+    reason` builds its reason from backend text, so a reason could in
+    principle start with this exact sentence too; the worst case there is a
+    harmless extra instruction fed into round 2, never a relaxed gate.
+    """
+    if not reason.startswith(COVERAGE_REJECTION_PREFIX):
+        return []
+    remainder = reason[len(COVERAGE_REJECTION_PREFIX):]
+    return [path for path in remainder.split(", ") if path]
