@@ -1,6 +1,6 @@
 # Merge-ready policy
 
-_Harness-captured record for task `54cf508f`, commit `3fa913f051995aba3223cfa0f30947f96e5b8c86` — not model-authored: no_human wrote this file from the repo's merge policy evaluated against this commit — advisory to the human, nothing merges on it. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `54cf508f`, commit `12172328cd3993f606dfd7dbce8fd2df52c9a8c5` — not model-authored: no_human wrote this file from the repo's merge policy evaluated against this commit — advisory to the human, nothing merges on it. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ```json
 {
@@ -14,9 +14,9 @@ _Harness-captured record for task `54cf508f`, commit `3fa913f051995aba3223cfa0f3
       "passed": true
     },
     {
-      "detail": "tests: 1 failed of 13552 run",
+      "detail": "tests: 0 failed of 13663 run",
       "name": "tests_ran_and_passed",
-      "passed": false
+      "passed": true
     },
     {
       "detail": "tamper guard did not fire",
@@ -34,12 +34,12 @@ _Harness-captured record for task `54cf508f`, commit `3fa913f051995aba3223cfa0f3
       "passed": true
     },
     {
-      "detail": "ci: none reported (tolerated)",
+      "detail": "ci: success",
       "name": "ci",
       "passed": true
     }
   ],
   "source": "default",
-  "summary": "not ready \u2014 2 of 6 rules failed: tests_ran_and_passed, repro_gate"
+  "summary": "not ready \u2014 1 of 6 rules failed: repro_gate"
 }
 ```
