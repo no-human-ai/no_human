@@ -171,17 +171,21 @@ def parse_grill_response(
             round=round_n,
         )
 
+    # `.get(key, default)` returns the default only for an ABSENT key; a
+    # present-but-null field yields None, which violates the `str`/`list[str]`
+    # fields below and crashes a `for c in acceptance_criteria` consumer. `or`
+    # collapses a null (or empty) field to its typed default.
     if data.get("type") == "done":
         return GrillResult(
-            title=data.get("title", ""),
-            description=data.get("description", ""),
-            acceptance_criteria=data.get("acceptance_criteria", []),
+            title=data.get("title") or "",
+            description=data.get("description") or "",
+            acceptance_criteria=data.get("acceptance_criteria") or [],
             qa_log=list(qa_history),
         )
 
     return GrillQuestion(
-        question=data.get("question", "Please clarify your requirements."),
-        suggestions=data.get("suggestions", []),
+        question=data.get("question") or "Please clarify your requirements.",
+        suggestions=data.get("suggestions") or [],
         round=round_n,
     )
 

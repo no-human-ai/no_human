@@ -19,6 +19,12 @@ _COVERAGE_NOTE = (
     "budget. Inspect every listed path with read/search tools before reaching "
     "a verdict:\n"
 )
+_DISCLOSURE_NOTE = (
+    "\nDIFF COVERAGE — these changed-file patches were cut by the per-file "
+    "budget. You have NO tools in this pass and no checkout to read them "
+    "from: judge only what is shown, and say in your verdict that these "
+    "files were not fully visible rather than clearing them:\n"
+)
 _MAX_PREFIX_CHARS = 2_000
 
 
@@ -108,26 +114,34 @@ def _allocate(chunks: list[str], budget: int) -> list[int]:
     return allocation
 
 
-def budget_diff(raw: str, cap: int) -> tuple[str, list[str]]:
+def budget_diff(
+    raw: str, cap: int, *, inspection_required: bool = True
+) -> tuple[str, list[str]]:
     """Return small diffs unchanged; fairly bound oversized diffs by file.
 
     Every changed file keeps at least its ``diff --git`` header. Remaining
     space is shared across incomplete patches. Paths whose patch content is cut
     are appended to the rendered diff, so the caller can require explicit tool
     inspection before accepting any verdict.
+
+    ``inspection_required`` selects the ledger wording: the default asks the
+    reviewer to inspect every cut path with tools (the refs path, which has
+    them); ``False`` only discloses what was cut, for callers with no tools
+    and no checkout to inspect from.
     """
     if len(raw) <= cap:
         return raw, []
     if cap <= 0:
         raise DiffCoverageError("diff cap must be positive")
 
+    note_header = _COVERAGE_NOTE if inspection_required else _DISCLOSURE_NOTE
     prefix, chunks = _split(raw)
     paths = [_patch_path(chunk) for chunk in chunks]
     required_paths = [p for p in paths if p not in TRUSTED_COVERAGE_EXCLUSIONS]
 
     # Reserve the worst-case ledger first; doing so guarantees the final output
     # never has to hide a path merely because the note itself did not fit.
-    worst_note = _COVERAGE_NOTE + "".join(f"- {path}\n" for path in required_paths)
+    worst_note = note_header + "".join(f"- {path}\n" for path in required_paths)
     header_total = sum(_header_len(chunk) for chunk in chunks)
     prefix_budget = min(len(prefix), _MAX_PREFIX_CHARS)
     available = cap - len(worst_note) - prefix_budget
@@ -150,7 +164,7 @@ def budget_diff(raw: str, cap: int) -> tuple[str, list[str]]:
     # reviewer patches had been cut and then listed none — an instruction it
     # could not follow, about a thing that did not happen.
     note = ("" if not cut_paths else
-            _COVERAGE_NOTE + "".join(f"- {path}\n" for path in cut_paths))
+            note_header + "".join(f"- {path}\n" for path in cut_paths))
     rendered = prefix[:prefix_budget] + "".join(
         chunk[:take] for chunk, take in zip(chunks, allocation)
     ) + note
