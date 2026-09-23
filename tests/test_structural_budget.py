@@ -189,7 +189,13 @@ FROZEN_FUNCTION_LINES = {
     # hook body, not here — this is only the call site plus its
     # explanatory comment and the once-per-branch context bookkeeping it
     # threads through. Measured on this tree with the scanner below.
-    "core/orchestrator.py:Orchestrator._run_attempt": 2308,
+    # 2308 -> 2321 (+13): raced-cancel stop (issue #423) — the
+    # `_persisted_terminal_cancel` check plus its `_stop_for_raced_cancel`
+    # call site, inserted right before `set_status(task, IMPLEMENTING)` so a
+    # human cancel that landed between attempt dispatch and the coder
+    # session stops the attempt instead of raising `IllegalTransition`.
+    # Measured on this tree with the scanner below.
+    "core/orchestrator.py:Orchestrator._run_attempt": 2321,
     # 760 -> 778 (+18): dispatch-time intake-eval hoisted path — the `elif
     # ctx.get("eval_result")` branch that acts on a grill/wizard-stored
     # verdict (idempotency marker, cost/residual-gap comments) added inside
@@ -203,7 +209,14 @@ FROZEN_FUNCTION_LINES = {
     # `_reviewer_items`, before BOTH D6 halves (the pass rate had still
     # counted it: a one-round red run equalised 2/3 and 1/2 into 2/4 and
     # 1/2). Measured on this tree with the scanner below.
-    "core/orchestrator.py:Orchestrator._drive": 789,
+    # 789 -> 803 (+14): raced-cancel stop (issue #423) — the same
+    # `_persisted_terminal_cancel` check at `_drive`'s entry (before the
+    # human-gated-CI/plan-approval route split, where a cancel that lands
+    # during intake or planning would otherwise fall through unnoticed) and
+    # again at the attempt-loop head (before `create_attempt`, for a cancel
+    # racing a further attempt after a prior one already ran its coder
+    # session). Measured on this tree with the scanner below.
+    "core/orchestrator.py:Orchestrator._drive": 803,
     # 449 -> 457 (+8): D3.1 (2026-08-31, auto-activation pipeline) adds the
     # one call (plus its explanatory comment) that hands `paused`/
     # `activated_at`/`learning_events` schema work to a new sibling method,
@@ -556,14 +569,22 @@ FROZEN_FUNCTION_CC = {
     # `if recut_branch != branch:` guard on the returned (possibly rebound)
     # branch, matching the shape of the sibling preflight call sites
     # already counted above. Measured on this tree with the scanner below.
-    "core/orchestrator.py:Orchestrator._run_attempt": 257,
+    # 257 -> 258 (+1): raced-cancel stop (issue #423) — the `if terminal:`
+    # branch guarding the `_persisted_terminal_cancel` check before
+    # `set_status(task, IMPLEMENTING)` adds one branch. Measured on this
+    # tree with the scanner below.
+    "core/orchestrator.py:Orchestrator._run_attempt": 258,
     # Landing of 4e0299ad: unchanged at 115 — the harness row is dropped by
     # the comprehension filter inside `_reviewer_items`, which the scanner
     # counts the same as the `if` it replaced (the first landing pass had a
     # three-clause condition in `_failing_labels`, measured 116; the second
     # pass moved the check into `_reviewer_items`, measured 115). Measured on
     # this tree with the scanner below.
-    "core/orchestrator.py:Orchestrator._drive": 115,
+    # 115 -> 117 (+2): raced-cancel stop (issue #423) — the two `if
+    # terminal:` branches guarding `_persisted_terminal_cancel` at `_drive`'s
+    # entry and at the attempt-loop head each add one branch. Measured on
+    # this tree with the scanner below.
+    "core/orchestrator.py:Orchestrator._drive": 117,
     "agent/guard.py:_approve_denial": 81,
     # 73 -> 74 (+1): same cause as the LINES entry above — e922e9b4's landing
     # grew the conflict watcher; pre-existing red on main at 03b262d23,
@@ -1506,7 +1527,12 @@ FROZEN_FILE_LINES = {
     # push) live in the new `vcs/recut.py`, not here — this is the
     # orchestrator-side wiring only. Measured on this tree with the
     # scanner below.
-    "core/orchestrator.py": 25039,
+    # 25039 -> 25166 (+127): raced-cancel stop (issue #423) — the new
+    # `_persisted_terminal_cancel`/`_stop_for_raced_cancel` helper pair plus
+    # their three call sites (`_drive`'s entry, the attempt-loop head, and
+    # `_run_attempt` immediately before `set_status(IMPLEMENTING)`).
+    # Measured on this tree with the scanner below.
+    "core/orchestrator.py": 25166,
 
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
