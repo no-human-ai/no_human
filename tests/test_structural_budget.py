@@ -2241,7 +2241,19 @@ FROZEN_FILE_LINES = {
     # note it enforces and unit-testable there; leaving it inline here cost
     # +27. `AdversarialReviewer.review` stays at 300 and off
     # FROZEN_FUNCTION_LINES. Measured on this merge with the scanner below.
-    "review/reviewer.py": 3286,
+    # 3286 -> 3320 (+34): the `diff_override` path blind-truncated at
+    # `_DIFF_CAP` with no coverage ledger — the same failure #437 fixed on
+    # the refs path, reachable via `nh gate --pr`. Adds module-level
+    # `_bounded_override_diff` (+33 with its docstring recording why it
+    # DISCLOSES cut files instead of requiring inspection like `_git_diff`
+    # does: this path has no refs, no tools, and no repo guarantee) and
+    # trims the call site to a 4-line call, net +1 there. `budget_diff`
+    # gains a keyword-only `inspection_required` flag (default `True`,
+    # byte-identical refs-path behaviour) so the same mechanism renders
+    # either wording; that growth is counted in `diff_coverage.py`, not
+    # here. `AdversarialReviewer.review` stays at 300 lines, off
+    # FROZEN_FUNCTION_LINES. Measured on this tree with the scanner below.
+    "review/reviewer.py": 3320,
     # 2706 -> 2711 (+5): pre-existing red on main at 03b262d23 (e922e9b4's
     # landing, change-scoped tests missed the ratchet) — repaired, measured,
     # on this merge; same cause as the two function-level wake.py bumps above.

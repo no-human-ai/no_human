@@ -984,13 +984,14 @@ def test_run_gate_actually_discovers_real_uncommitted_files(tmp_path, monkeypatc
 def test_a_diff_over_the_review_cap_refuses_before_constructing_the_reviewer(
     tmp_path, monkeypatch,
 ):
-    """`AdversarialReviewer.review` silently truncates `diff_override` past
-    `_DIFF_CAP` chars with no signal back to the caller (reviewer.py:2537) —
-    so without this guard, a diff bigger than the cap would get a fraction
-    of itself reviewed and could still come back as a bare PASS. The gate
-    must refuse by name (exit 2, `GateUnavailable`) BEFORE constructing (and
-    billing) a reviewer at all — never construct one, run it on a truncated
-    prefix, and only then report FAIL with an empty checklist."""
+    """`AdversarialReviewer.review`'s `diff_override` path now discloses cut
+    files to the reviewer instead of silently truncating, but the gate's own
+    policy is stricter than disclosure: a verdict on a partial diff is still
+    a verdict on a partial diff. The gate must refuse by name (exit 2,
+    `GateUnavailable`) BEFORE constructing (and billing) a reviewer at all —
+    never construct one, run it on a truncated prefix, and only then report
+    FAIL with an empty checklist — and the refusal must name which changed
+    file(s) would have lost patch content."""
     repo, _bare = _make_repo_with_origin(tmp_path)
     _git(repo, "checkout", "-b", "feature")
     # One line per byte-ish, comfortably over `_DIFF_CAP` (60_000 chars).
@@ -1014,11 +1015,14 @@ def test_a_diff_over_the_review_cap_refuses_before_constructing_the_reviewer(
     monkeypatch.setattr(oneshot, "AdversarialReviewer", _NeverConstructed)
 
     import asyncio
-    with pytest.raises(GateUnavailable, match=r"60,000|_DIFF_CAP|characters"):
+    with pytest.raises(GateUnavailable, match=r"60,000|_DIFF_CAP|characters") as excinfo:
         asyncio.run(run_gate(repo))
     assert not constructed, (
         "the reviewer must never be constructed or invoked once the diff "
         "exceeds the single-turn review cap"
+    )
+    assert "big.txt" in str(excinfo.value), (
+        "the refusal must name the oversized file, not just its size"
     )
 
 
