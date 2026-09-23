@@ -10,11 +10,14 @@ merges anything (constraint #2 is unchanged).
 The eight-step procedure, proven by hand before this module existed:
 
   1. preconditions   — config enabled, a PR exists, `gh` is on PATH, the
-                        branch resolves. (Review-PASS-for-head-sha is a
-                        CALLER precondition — see `cli/commands.py`'s
-                        `approve` — because it needs `Orchestrator.
-                        _rounds_for_head`, which this lower-level vcs module
-                        must not import.)
+                        branch resolves, and the squash subject the task
+                        title would produce (after redaction) is Conventional
+                        Commits v1.0.0 compliant — refused, never
+                        auto-rewritten, pointing at `nh task retitle`.
+                        (Review-PASS-for-head-sha is a CALLER precondition —
+                        see `cli/commands.py`'s `approve` — because it needs
+                        `Orchestrator._rounds_for_head`, which this
+                        lower-level vcs module must not import.)
   2. fetch + worktree — fetch the remote, resolve the CURRENT default-branch
                         tip, and create a detached temp worktree there.
   3. squash           — `git merge --squash <branch>` into the worktree. A
@@ -867,6 +870,27 @@ def land_task(
         return LandResult(ok=True, step="preconditions", skipped=True, branch=branch,
                            pr_url=pr_url, message="gh CLI not found — cannot merge "
                            "automatically; merge the PR yourself")
+
+    # Fail CLOSED on a non-Conventional-Commits squash subject. The squash
+    # message's first line is built from the task title verbatim (below), and
+    # a task title is prose — 4 of the last 8 origin/main subjects (measured
+    # 2026-09-19) were a prose task title that violated the operator's hard
+    # rule (Conventional Commits v1.0.0, 2026-09-17). Validated on the
+    # REDACTED string, which is the exact byte sequence that reaches git
+    # history. NEVER auto-rewrites: the title is the human's to correct.
+    from ..eval.vendor_terms import redact_for_publish
+    from ..core.task import conventional_subject_error
+    subject = redact_for_publish(task_title).splitlines()[0] if task_title else ""
+    reason = conventional_subject_error(subject)
+    if reason is not None:
+        return LandResult(
+            ok=False, step="preconditions", branch=branch, pr_url=pr_url,
+            stderr=(f"refused: squash subject {subject!r} is not "
+                    f"Conventional Commits v1.0.0 ({reason}). "
+                    f"Nothing was pushed. Fix the task title with "
+                    f"`nh task retitle {task_id} \"fix(scope): …\"` "
+                    f"and re-run `nh approve`."),
+        )
 
     git_cfg = config.get("git") or {}
     try:
