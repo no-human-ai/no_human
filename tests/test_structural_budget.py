@@ -1506,7 +1506,13 @@ FROZEN_FILE_LINES = {
     # push) live in the new `vcs/recut.py`, not here — this is the
     # orchestrator-side wiring only. Measured on this tree with the
     # scanner below.
-    "core/orchestrator.py": 25039,
+    # 25039 -> 25070 (+31): `_already_satisfied_subject` gained the "ahead"
+    # remedy branch — a fast-forward push of the task's own branch via
+    # `push_sha_fast_forward`, re-check-and-accept on `up_to_date`, and
+    # named refusals on `ProtectedBranch`/`GitError`/a residual `ahead` —
+    # plus the `relation_reason["ahead"]` map entry. Measured on this tree
+    # with the scanner below.
+    "core/orchestrator.py": 25070,
 
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
@@ -2237,7 +2243,24 @@ FROZEN_FILE_LINES = {
     # note it enforces and unit-testable there; leaving it inline here cost
     # +27. `AdversarialReviewer.review` stays at 300 and off
     # FROZEN_FUNCTION_LINES. Measured on this merge with the scanner below.
-    "review/reviewer.py": 3286,
+    # 3286 -> 3320 (+34): the `diff_override` path blind-truncated at
+    # `_DIFF_CAP` with no coverage ledger — the same failure #437 fixed on
+    # the refs path, reachable via `nh gate --pr`. Adds module-level
+    # `_bounded_override_diff` (+33 with its docstring recording why it
+    # DISCLOSES cut files instead of requiring inspection like `_git_diff`
+    # does: this path has no refs, no tools, and no repo guarantee) and
+    # trims the call site to a 4-line call, net +1 there. `budget_diff`
+    # gains a keyword-only `inspection_required` flag (default `True`,
+    # byte-identical refs-path behaviour) so the same mechanism renders
+    # either wording; that growth is counted in `diff_coverage.py`, not
+    # here. `AdversarialReviewer.review` stays at 300 lines, off
+    # FROZEN_FUNCTION_LINES. Measured on this tree with the scanner below.
+    # 3320 -> 3373 (+53): 9b8c64cd "a coverage rejection must feed the next
+    # round" — adds `_COVERAGE_RETRY_NOTE`, imports `coverage_rejection_paths`,
+    # and branches the retry prompt to append that note only when the
+    # rejected round's reason names files cut by `budget_diff`. Measured on
+    # this tree.
+    "review/reviewer.py": 3373,
     # 2706 -> 2711 (+5): pre-existing red on main at 03b262d23 (e922e9b4's
     # landing, change-scoped tests missed the ratchet) — repaired, measured,
     # on this merge; same cause as the two function-level wake.py bumps above.

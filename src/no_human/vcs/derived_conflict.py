@@ -62,6 +62,7 @@ from .approve_merge import (
 )
 from .budget_conflict import (
     BUDGET_TEST_PATH,
+    NO_INTERPRETER_DETAIL,
     _HUNK_BASE,
     _HUNK_END,
     _HUNK_SEP,
@@ -896,6 +897,16 @@ def _take_budget_hunks(worktree_path: Path, branch_tip_sha: str,
     return None, notes
 
 
+def _budget_proof_detail(proof_output: str) -> str:
+    """Word the structural-budget proof's outcome honestly: distinguishes
+    "the proof could not run" (no interpreter -- `run_budget_test` never
+    shelled out, see `NO_INTERPRETER_DETAIL`) from "the proof ran and
+    failed", since callers must not conflate the two."""
+    if proof_output == NO_INTERPRETER_DETAIL:
+        return _cap(f"structural budget re-anchor could not be proved: {proof_output}")
+    return _cap(f"structural budget re-anchor did not pass its own test:\n{proof_output}")
+
+
 def _resolve_in_worktree(*, repo: GitRepo, worktree_path: Path, remote: str,
                          branch: str, base_tip_sha: str,
                          eligible: frozenset[str] = DERIVED_ARTEFACTS,
@@ -1098,12 +1109,11 @@ def _resolve_in_worktree(*, repo: GitRepo, worktree_path: Path, remote: str,
     # Never trust the arithmetic alone: run the very test the ratchet is
     # gated on, in the committed merged tree, before this is ever pushed.
     if budget_notes:
-        proof_ok, proof_output = run_budget_test(str(worktree_path))
+        proof_ok, proof_output = run_budget_test(str(worktree_path), repo_root=repo.path)
         if not proof_ok:
             return DerivedResolution(
                 ok=False, step="budget", unpinned=unpinned,
-                detail=_cap("structural budget re-anchor did not pass its own "
-                            f"test:\n{proof_output}"))
+                detail=_budget_proof_detail(proof_output))
 
     # -- step 7: verify BEFORE any push ------------------------------------ #
     verify_proc = _run_export_guard(worktree_path, ["verify"], timeout=_VERIFY_TIMEOUT_S)

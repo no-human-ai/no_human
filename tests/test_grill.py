@@ -81,6 +81,28 @@ class TestParseGrillResponse:
         assert isinstance(result, GrillQuestion)
         assert result.suggestions == []
 
+    def test_null_json_fields_coerce_to_typed_defaults(self):
+        # A present-but-null field is not an absent one: `dict.get(key, default)`
+        # returns None for it, which violates the `str`/`list[str]` fields and
+        # crashes a `for c in acceptance_criteria` consumer.
+        done = parse_grill_response(
+            '```json\n{"type": "done", "title": null, "description": null, '
+            '"acceptance_criteria": null}\n```',
+            round_n=1, qa_history=[],
+        )
+        assert isinstance(done, GrillResult)
+        assert done.title == ""
+        assert done.description == ""
+        assert done.acceptance_criteria == []
+
+        question = parse_grill_response(
+            '```json\n{"type": "question", "question": null, "suggestions": null}\n```',
+            round_n=1, qa_history=[],
+        )
+        assert isinstance(question, GrillQuestion)
+        assert isinstance(question.question, str) and question.question
+        assert question.suggestions == []
+
 
 # --------------------------------------------------------------------------- #
 # grill_step (with a fake backend)                                             #

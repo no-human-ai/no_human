@@ -74,6 +74,7 @@ from ..config import (
 from ..core.role_backend_settings import effective_role_backend
 from ..core.runtime import assert_task_backend_usable
 from ..core.task import Task
+from ..review.diff_coverage import DiffCoverageError, budget_diff
 from ..review.reviewer import _DIFF_CAP, AdversarialReviewer, ReviewDecision, ReviewerUnavailable
 from ..testing import tamper_guard
 from ..testing.runner import TamperCheckUnavailable, tamper_check_between
@@ -589,20 +590,31 @@ async def run_gate(
             f"{after_ref[:7]}: the diff is empty"
         )
 
-    # `AdversarialReviewer.review` silently truncates `diff_override` to
-    # `_DIFF_CAP` chars (reviewer.py:2537) with no signal back to the
-    # caller — a diff bigger than the cap would otherwise get a fraction of
-    # itself reviewed and could still print a bare PASS on that partial
-    # view. Refuse by name BEFORE the tamper guard runs or the reviewer is
-    # constructed (and billed) at all: a gate that cannot see the whole diff
-    # has not really reviewed anything, so this must be exit 2 ("could not
-    # run"), never exit 1 with an empty or partial checklist.
+    # `AdversarialReviewer.review`'s `diff_override` path now bounds an
+    # over-cap diff through `_bounded_override_diff` and DISCLOSES the cut
+    # files to the reviewer instead of silently dropping them (see that
+    # helper's docstring) — but disclosure is not enough for a gate: a
+    # verdict reached on a partial view is still a verdict on a partial
+    # view. So the gate keeps its own, stricter policy: refuse by name
+    # BEFORE the tamper guard runs or the reviewer is constructed (and
+    # billed) at all, naming which changed files would have lost patch
+    # content, so this must be exit 2 ("could not run"), never exit 1 with
+    # an empty or partial checklist.
     if len(diff) > _DIFF_CAP:
+        try:
+            _, would_cut = budget_diff(diff, _DIFF_CAP)
+        except DiffCoverageError:
+            would_cut = []
+        cut_note = (
+            "; the patches these changed file(s) would lose: "
+            + ", ".join(would_cut[:10])
+            + (f" (+{len(would_cut) - 10} more)" if len(would_cut) > 10 else "")
+        ) if would_cut else ""
         raise GateUnavailable(
             f"the diff is {len(diff):,} characters, over the single-turn "
             f"review cap of {_DIFF_CAP:,} characters — refusing rather than "
             "construct and bill a reviewer that would only see a truncated "
-            "prefix of the change"
+            "prefix of the change" + cut_note
         )
 
     try:

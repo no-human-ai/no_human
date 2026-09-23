@@ -280,8 +280,9 @@ class StuckDetector:
     _edit_counts: dict[str, int] = field(default_factory=dict)
     # HARD tier's own per-file counter: unlike `_edit_counts` above, this one
     # resets to 1 whenever `record_edit` observes progress since the file's
-    # previous edit — a changed test-runner outcome (`record_test_outcome`
-    # set `_progress_since_last_edit`) — see `record_edit`. An edit LOOP is
+    # previous edit — a changed test-runner outcome filed under this file by
+    # `record_test_outcome` (`_progress_by_file`) — see `record_edit`. An
+    # edit LOOP is
     # edits whose observed outcome does not change; edits that keep
     # converging on a fix, however many, are not one, however many test runs
     # it takes. Editing a DIFFERENT file in between is deliberately NOT
@@ -291,7 +292,17 @@ class StuckDetector:
     # escape both this tier and ping-pong (see `edit_ceiling` below for the
     # backstop that still bounds it).
     _hard_edit_counts: dict[str, int] = field(default_factory=dict)
-    _progress_since_last_edit: bool = False
+    # Progress used to be one global flag consumed by whichever file was
+    # edited NEXT, regardless of which file the test run that set it was
+    # actually about (issue #224: a test-outcome change caused by fixing
+    # file B would reset file A's hard count if A happened to be edited
+    # next). Progress is now keyed to `_last_edited_file` — the file that
+    # was edited immediately before the test run — so only THAT file's
+    # count resets; a different file's next edit is unaffected, same as
+    # editing a different file in between already is (see `_hard_edit_counts`
+    # above).
+    _progress_by_file: dict[str, bool] = field(default_factory=dict)
+    _last_edited_file: str | None = None
     # Up to the last 2 test-outcome summaries (most recent last), carried
     # into the hard `edit-loop` reason so a human can see the outcome really
     # did not change.
@@ -337,20 +348,22 @@ class StuckDetector:
 
         Also maintains the HARD tier's own progress-gated counter
         (`_hard_edit_counts`, read by `hard_stuck_reason`): it resets to 1
-        whenever this edit followed observed progress since the file's
-        previous edit — a test-runner invocation whose outcome summary
-        changed (`record_test_outcome` set `_progress_since_last_edit`).
-        Editing a different file in between is NOT progress by itself (see
-        the field comment on `_hard_edit_counts`). Progress is consumed here
-        (reset to False) so it counts for exactly the one edit that follows
-        it.
+        whenever THIS file has a pending progress signal — a test-runner
+        invocation run right after THIS file's previous edit whose outcome
+        summary changed (`record_test_outcome`, which files the signal
+        under `_last_edited_file`). Editing a different file in between is
+        NOT progress by itself (see the field comment on
+        `_hard_edit_counts`), and a test outcome that changed because of a
+        DIFFERENT file's edit no longer resets this file's count either
+        (issue #224) — progress is consumed here (popped) so it counts for
+        exactly the one edit of the file it was actually filed under.
         """
         self._edit_counts[file_path] = self._edit_counts.get(file_path, 0) + 1
-        progressed = self._progress_since_last_edit
+        progressed = self._progress_by_file.pop(file_path, False)
         self._hard_edit_counts[file_path] = (
             1 if progressed else self._hard_edit_counts.get(file_path, 0) + 1
         )
-        self._progress_since_last_edit = False
+        self._last_edited_file = file_path
         return self._edit_counts[file_path] >= self.edit_threshold
 
     def note_test_run(self, tool_use_id: str | None) -> None:
@@ -400,8 +413,8 @@ class StuckDetector:
         self._test_summaries.append(summary)
         if len(self._test_summaries) > 2:
             self._test_summaries = self._test_summaries[-2:]
-        if changed:
-            self._progress_since_last_edit = True
+        if changed and self._last_edited_file is not None:
+            self._progress_by_file[self._last_edited_file] = True
         return changed
 
     @property
@@ -483,7 +496,8 @@ class StuckDetector:
         self._consecutive_repeats = 0
         self._edit_counts.clear()
         self._hard_edit_counts.clear()
-        self._progress_since_last_edit = False
+        self._progress_by_file.clear()
+        self._last_edited_file = None
         self._test_summaries.clear()
         self._pending_test_runs.clear()
 
