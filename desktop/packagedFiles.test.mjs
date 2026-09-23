@@ -349,6 +349,22 @@ test("the mac targets include zip, or auto-update cannot work at all", () => {
     `mac.target must include "zip" for the update feed, got ${JSON.stringify(targets)}`);
 });
 
+test("mac.target excludes dmg — electron-builder's dmg is never notarized", () => {
+  // electron-builder's own dmg target signs but does not notarize/staple its
+  // output; the DMG that actually ships is built separately, from the `dir`
+  // target's .app bundle, by packaging/make-dmg.sh. If `dmg` were in this
+  // list anyway, electron-builder would still write a latest-mac.yml
+  // `files:` row naming an artifact (no_human-<version>-arm64.dmg) that
+  // Gatekeeper would refuse to open and that no release ever uploads — see
+  // scripts/check_release_feeds.py for the gate that catches exactly this.
+  const targets = builderConfig.mac?.target ?? [];
+  assert.ok(!targets.includes("dmg"),
+    "mac.target must not include \"dmg\": electron-builder's dmg target is "
+    + "signed but never notarized/stapled, so shipping it (or even just "
+    + "building it) would make latest-mac.yml name an unnotarized artifact "
+    + `that is not what packaging/make-dmg.sh publishes, got ${JSON.stringify(targets)}`);
+});
+
 test("the build config and the packaging guard read the SAME file list", () => {
   // The allowlist above is only meaningful if it is the list the build uses.
   assert.deepEqual(builderConfig.files, pkg.nhPackagedFiles.files,

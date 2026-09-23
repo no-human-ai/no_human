@@ -58,6 +58,31 @@ All notable changes to no_human. The format follows
   symbols it had already decided when the budget runs out. Still advisory, and
   every failure still resolves toward silence rather than toward an accusation.
 ### Fixed
+- **`latest-mac.yml` named a dmg that no release ever published.**
+  `desktop/electron-builder.config.cjs`'s `mac.target` included `dmg`
+  alongside `dir`/`zip`, so electron-builder's own dmg target ran during
+  every mac build and packagedFiles wrote a `files:` row for it
+  (`no_human-<version>-arm64.dmg`) into `latest-mac.yml` — even though that
+  target is signed but never notarized or stapled, and the DMG actually
+  shipped in every release comes from `packaging/make-dmg.sh`, built
+  separately from the `dir` target's `.app` bundle. The two were never
+  duplicates: electron-builder's own dmg is a different, unnotarized
+  artifact that Gatekeeper would refuse to open, and it was never uploaded —
+  so the `files:` row in `latest-mac.yml` pointed at a URL that 404s. This
+  was live in v0.2.2 and v0.2.3 (confirmed against the real published
+  releases, not just a local `dist/`); v0.1.7 and v0.2.0 separately shipped
+  Windows/Linux assets with no `latest.yml`/`latest-linux.yml` at all — the
+  same class of bug, an update feed silently absent or wrong, going
+  undetected because nothing checked a feed's `url:`/`path:` against what a
+  release actually uploads. Fixed at the source: `mac.target` is now
+  `["dir", "zip"]`, so electron-builder never builds, and therefore never
+  names, its own dmg. A new gate, `scripts/check_release_feeds.py` (wrapped
+  by the new `packaging/publish-release.sh`, now the documented way to
+  publish — see `docs/DISTRIBUTION.md` §5), checks every feed's referenced
+  asset against the release's actual asset list and checks that every
+  platform present in a release's assets has its feed, both before upload
+  and again against the live release afterward; a mismatch is a hard
+  blocker, not a warning.
 - **Approve & merge works in the shipped desktop app again.** In the frozen
   build the merge gate shelled out through the packaged binary as if it were a
   Python interpreter, so every `nh approve` and every board **Approve** failed
