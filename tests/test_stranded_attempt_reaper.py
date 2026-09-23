@@ -117,6 +117,52 @@ async def test_an_existing_failure_reason_survives_the_reap(store, cfg):
     assert rows[attempt_id]["failure_reason"] == "pre-existing note"
 
 
+async def test_a_failed_attempt_close_is_not_counted_as_reaped_and_self_heals(
+    store, cfg, monkeypatch,
+):
+    """The write order is `set_status` THEN `close_stranded_attempt` —
+    never the reverse — precisely so that a failure of the SECOND write can
+    never be counted as a successful reap nor leave the task stuck in
+    IMPLEMENTING forever. If `close_stranded_attempt` blows up after the
+    task has already left IMPLEMENTING, the row must be counted `skipped`
+    (not `reaped`), the task status write must still have landed (it is not
+    rolled back — that is the documented, accepted trade-off), and the
+    leftover `in_progress` attempt row must not be permanently invisible:
+    `Store.create_attempt`'s own stale-row sweep retires it the next time
+    this task starts a fresh attempt, which is the self-healing path the
+    reaper's docstring relies on instead of a cross-method transaction."""
+    task, attempt_id = await _stranded(store)
+
+    real_close = store.close_stranded_attempt
+
+    async def _boom(*a, **k):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(store, "close_stranded_attempt", _boom)
+
+    reaped, skipped = await reap_stranded_implementing_attempts(
+        store, cfg.data, server_probe=lambda: False, row_is_live=_never_live)
+
+    assert (reaped, skipped) == (0, 1)
+
+    # The status write already landed — the task is off IMPLEMENTING, so it
+    # is no longer invisible to every reconciliation verb.
+    reloaded = await store.get_task(task.id)
+    assert reloaded.status is TaskStatus.PENDING
+
+    # The attempt row itself is untouched by the failed second write.
+    rows = {r["id"]: r for r in await store.list_attempts(task.id)}
+    assert rows[attempt_id]["status"] == "in_progress"
+
+    # Self-heal: the next attempt this task starts retires the leftover row
+    # via `create_attempt`'s existing, unmodified stale-row sweep — the task
+    # is not stuck forever just because the reap's second write failed once.
+    monkeypatch.setattr(store, "close_stranded_attempt", real_close)
+    await store.create_attempt(task.id, 2)
+    rows = {r["id"]: r for r in await store.list_attempts(task.id)}
+    assert rows[attempt_id]["status"] == "interrupted"
+
+
 # --------------------------------------------------------------------------- #
 # AC2 — the task returns to pending / awaiting_approval, validated write     #
 # --------------------------------------------------------------------------- #

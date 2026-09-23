@@ -199,6 +199,27 @@ async def reap_stranded_implementing_attempts(
     scheduler wires its own `_row_is_live`), then the attempt-row CAS in
     `Store.close_stranded_attempt` itself (a live worker or a second sweep
     winning the race is a no-op, not a clobber).
+
+    ORDERING, deliberate: the TASK STATUS write (`set_status`) happens
+    BEFORE the attempt row is retired, not after. A row is counted as
+    `reaped` only once BOTH writes have landed. If `set_status` itself
+    is refused (CAS lost a race) or raises, nothing has been written yet —
+    the attempt row is untouched and the row is `skipped`, identical to the
+    fail-closed AC3 shape, so the next sweep sees the same candidate and
+    tries again. If `set_status` lands but the subsequent
+    `close_stranded_attempt` then fails (lost race, DB error), the task has
+    already left IMPLEMENTING — the one state this reaper watches — so a
+    leftover `in_progress` row is not stranded silently forever: the next
+    time this task starts a fresh attempt, `Store.create_attempt`'s own
+    stale-row sweep (`UPDATE attempts ... WHERE task_id = ? AND status =
+    'in_progress' AND attempt_number < ?`) retires it. The reverse order
+    (retire first, set_status second) was tried and rejected: a `set_status`
+    failure AFTER the attempt row was already closed left the task stuck in
+    IMPLEMENTING with no open attempt at all — invisible to every sweep,
+    including this one (`latest_open_attempt` returns None), because nothing
+    ever creates a new attempt for a row that never leaves IMPLEMENTING.
+    That is worse than the pre-reap state, which this ordering cannot
+    produce.
     """
     candidates = await store.list_tasks(TaskStatus.IMPLEMENTING)
     if not candidates:
@@ -221,21 +242,30 @@ async def reap_stranded_implementing_attempts(
             attempt = await store.latest_open_attempt(t.id)
             if attempt is None:
                 continue
-            closed = await store.close_stranded_attempt(
-                t.id, attempt["id"], reason=_REASON)
-            if not closed:
-                continue
-            row_reaped = True
 
             pr_url = (attempt.get("pr_url") or "").strip()
             review_passed = attempt.get("review_passed")
             target = (TaskStatus.AWAITING_APPROVAL
                       if pr_url and review_passed == 1 else TaskStatus.PENDING)
 
+            # Re-read, never write from the possibly-stale `t` handle: a
+            # human's own write between `list_tasks` above and here must
+            # win. `set_status`'s own CAS is the authority on whether this
+            # task is still IMPLEMENTING at commit time; if it is not (or
+            # was moved concurrently), this is a normal skip, not an error.
             current = await store.get_task(t.id)
-            if current is not None:
-                await store.set_status(
-                    current, target, reconciliation_gate=assert_stranded_reap)
+            if current is None or current.status is not TaskStatus.IMPLEMENTING:
+                continue
+            moved = await store.set_status(
+                current, target, reconciliation_gate=assert_stranded_reap)
+            if moved is None:
+                continue
+
+            # Only now — status already off IMPLEMENTING — retire the
+            # attempt row. A failure here is not stranding: see the
+            # ordering note in this function's docstring.
+            row_reaped = await store.close_stranded_attempt(
+                t.id, attempt["id"], reason=_REASON)
         except Exception:  # noqa: BLE001 — one bad row must not abort the pass
             log.exception(
                 "stranded-attempt reap failed for task %s", getattr(t, "id", "?"))
