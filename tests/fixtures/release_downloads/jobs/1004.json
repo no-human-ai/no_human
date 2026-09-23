@@ -1,0 +1,13 @@
+[
+  {
+    "databaseId": 20004,
+    "name": "linux",
+    "conclusion": "failure",
+    "steps": [
+      {
+        "name": "Package the .deb and the AppImage (x64)",
+        "conclusion": "failure"
+      }
+    ]
+  }
+]

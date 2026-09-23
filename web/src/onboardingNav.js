@@ -63,11 +63,23 @@ export function canJumpTo({ from, to, busy }) {
   return !busy;
 }
 
+/** True when a step's dot may render "done". Position alone used to decide
+ *  it (`idx < current`), so a stepper jump from Welcome to Launch painted
+ *  Email green while the wizard would refuse to complete for want of an
+ *  address — the step described a state the wizard had not actually reached. */
+export function stepDone({ key, idx, current, emailSatisfied }) {
+  if (idx >= current) return false;
+  return key === "email" ? Boolean(emailSatisfied) : true;
+}
+
 /** The accessible name for a step button: its title, its 1-based position, and
  *  whether it is where you are, done, or still ahead. `total` is STEPS.length,
- *  passed from the wizard so the label can say "of N". */
-export function stepButtonLabel(step, idx, current, total) {
-  const state = idx === current ? "current" : idx < current ? "completed" : "not started";
+ *  passed from the wizard so the label can say "of N". `done`, when passed,
+ *  overrides the default `idx < current` completion check (see `stepDone`);
+ *  omitting it preserves every existing label byte-for-byte. */
+export function stepButtonLabel(step, idx, current, total, done) {
+  const isDone = done ?? idx < current;
+  const state = idx === current ? "current" : isDone ? "completed" : "not started";
   const of = total ? ` of ${total}` : "";
   return `${step.title}, step ${idx + 1}${of}, ${state}`;
 }

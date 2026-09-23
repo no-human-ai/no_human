@@ -7,10 +7,11 @@ configuration that the code under review can edit.
 
 from __future__ import annotations
 
-import ast
 import re
 import shlex
 from collections.abc import Iterable
+
+from .lint_evidence import unquote_git_path
 
 
 TRUSTED_COVERAGE_EXCLUSIONS: frozenset[str] = frozenset()
@@ -19,7 +20,18 @@ _COVERAGE_NOTE = (
     "budget. Inspect every listed path with read/search tools before reaching "
     "a verdict:\n"
 )
+_DISCLOSURE_NOTE = (
+    "\nDIFF COVERAGE — these changed-file patches were cut by the per-file "
+    "budget. You have NO tools in this pass and no checkout to read them "
+    "from: judge only what is shown, and say in your verdict that these "
+    "files were not fully visible rather than clearing them:\n"
+)
 _MAX_PREFIX_CHARS = 2_000
+#: Prefix every coverage rejection carries. `reviewer._agent_review` classifies
+#: on it to feed the rejection into the next round; one literal, not two copies.
+COVERAGE_REJECTION_PREFIX = (
+    "reviewer reached a verdict without referencing truncated "
+    "changed file(s): ")
 
 
 class DiffCoverageError(RuntimeError):
@@ -27,12 +39,10 @@ class DiffCoverageError(RuntimeError):
 
 
 def _unquote_path(token: str) -> str:
-    token = token.strip()
-    if token.startswith('"'):
-        try:
-            token = ast.literal_eval(token)
-        except (SyntaxError, ValueError):
-            token = token.strip('"')
+    # git quotes the WHOLE token including its a/b/ prefix and, when it does,
+    # C-escapes non-ASCII bytes octal-per-byte (e.g. "a/docs/\303\251val.md"),
+    # so the shared decoder must run before the prefix is stripped.
+    token = unquote_git_path(token.strip())
     if token.startswith(("a/", "b/")):
         token = token[2:]
     return token
@@ -108,26 +118,34 @@ def _allocate(chunks: list[str], budget: int) -> list[int]:
     return allocation
 
 
-def budget_diff(raw: str, cap: int) -> tuple[str, list[str]]:
+def budget_diff(
+    raw: str, cap: int, *, inspection_required: bool = True
+) -> tuple[str, list[str]]:
     """Return small diffs unchanged; fairly bound oversized diffs by file.
 
     Every changed file keeps at least its ``diff --git`` header. Remaining
     space is shared across incomplete patches. Paths whose patch content is cut
     are appended to the rendered diff, so the caller can require explicit tool
     inspection before accepting any verdict.
+
+    ``inspection_required`` selects the ledger wording: the default asks the
+    reviewer to inspect every cut path with tools (the refs path, which has
+    them); ``False`` only discloses what was cut, for callers with no tools
+    and no checkout to inspect from.
     """
     if len(raw) <= cap:
         return raw, []
     if cap <= 0:
         raise DiffCoverageError("diff cap must be positive")
 
+    note_header = _COVERAGE_NOTE if inspection_required else _DISCLOSURE_NOTE
     prefix, chunks = _split(raw)
     paths = [_patch_path(chunk) for chunk in chunks]
     required_paths = [p for p in paths if p not in TRUSTED_COVERAGE_EXCLUSIONS]
 
     # Reserve the worst-case ledger first; doing so guarantees the final output
     # never has to hide a path merely because the note itself did not fit.
-    worst_note = _COVERAGE_NOTE + "".join(f"- {path}\n" for path in required_paths)
+    worst_note = note_header + "".join(f"- {path}\n" for path in required_paths)
     header_total = sum(_header_len(chunk) for chunk in chunks)
     prefix_budget = min(len(prefix), _MAX_PREFIX_CHARS)
     available = cap - len(worst_note) - prefix_budget
@@ -150,7 +168,7 @@ def budget_diff(raw: str, cap: int) -> tuple[str, list[str]]:
     # reviewer patches had been cut and then listed none — an instruction it
     # could not follow, about a thing that did not happen.
     note = ("" if not cut_paths else
-            _COVERAGE_NOTE + "".join(f"- {path}\n" for path in cut_paths))
+            note_header + "".join(f"- {path}\n" for path in cut_paths))
     rendered = prefix[:prefix_budget] + "".join(
         chunk[:take] for chunk, take in zip(chunks, allocation)
     ) + note
@@ -159,7 +177,12 @@ def budget_diff(raw: str, cap: int) -> tuple[str, list[str]]:
     return rendered, cut_paths
 
 
-_PATH_TOKEN = re.compile(r"[A-Za-z0-9._/+@-]+")
+# `\w` is Unicode by default in Python and is a strict superset of
+# `A-Za-z0-9_`, so every ASCII token still tokenizes byte-identically; the
+# only newly admitted characters are non-ASCII word characters, needed so a
+# non-ASCII cut path (e.g. "docs/éval.md") is not split into fragments that
+# `_names_path` then rejects. Do not "simplify" this back to the ASCII class.
+_PATH_TOKEN = re.compile(r"[\w._/+@-]+")
 
 
 def _path_tokens(text: str) -> list[str]:
@@ -263,5 +286,21 @@ class InspectionTracker:
         missing = self.unreferenced()
         if not missing:
             return ""
-        return ("reviewer reached a verdict without referencing truncated "
-                f"changed file(s): {', '.join(missing)}")
+        return f"{COVERAGE_REJECTION_PREFIX}{', '.join(missing)}"
+
+
+def coverage_rejection_paths(reason: str) -> list[str]:
+    """The unreferenced paths a coverage rejection names, or [] if `reason`
+    is not one.
+
+    A prefix test, not a structural flag, because `_review_once` collapses
+    every no-verdict cause into one opaque `reason` string and this module
+    owns the only one whose text is ours. Residual risk: `_errored_round_
+    reason` builds its reason from backend text, so a reason could in
+    principle start with this exact sentence too; the worst case there is a
+    harmless extra instruction fed into round 2, never a relaxed gate.
+    """
+    if not reason.startswith(COVERAGE_REJECTION_PREFIX):
+        return []
+    remainder = reason[len(COVERAGE_REJECTION_PREFIX):]
+    return [path for path in remainder.split(", ") if path]

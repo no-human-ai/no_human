@@ -44,6 +44,20 @@
 // fetches — when a zip target is present. With `["dmg"]` alone the updater
 // fails at runtime with ERR_UPDATER_ZIP_FILE_NOT_FOUND. The DMG remains the
 // thing a human downloads; the ZIP is what the updater consumes.
+//
+// `dmg` is deliberately NOT in this list. electron-builder's own dmg target
+// signs its output but does not notarize or staple it — notarization here
+// happens only inside packaging/make-dmg.sh, which builds the actual shipped
+// DMG directly from the `dir` target's .app bundle, entirely outside
+// electron-builder's publish step. The two are not duplicates of each other:
+// electron-builder's dmg is a DIFFERENT, unnotarized artifact that Gatekeeper
+// would refuse to open, and it is never uploaded to a release. Yet with `dmg`
+// in this list electron-builder still writes a `files:` row for it into
+// `latest-mac.yml` (see updateInfoBuilder.js), naming a file
+// (`no_human-<version>-arm64.dmg`) that never ships — a broken URL latent in
+// every release's update feed (see scripts/check_release_feeds.py). Leaving
+// `dmg` out stops that row from ever being generated; make-dmg.sh's output
+// remains the only DMG a human ever downloads.
 
 const fs = require("fs");
 const path = require("path");
@@ -133,12 +147,17 @@ if (process.platform === "darwin") requireFreshIcon("icon.icns");
 
 const mac = {
   category: "public.app-category.developer-tools",
-  // "The DMG remains the thing a human downloads" (see the header) — but `dmg`
-  // was never in this list, so no build has ever produced one. The header
-  // described the intent; the list did not implement it. Both are needed and
-  // they are not alternatives: dropping `zip` breaks the updater exactly as the
-  // header warns, and omitting `dmg` leaves a human with a bare .app in a zip.
-  target: ["dir", "zip", "dmg"],
+  // `dmg` is excluded on purpose — see the header comment above this config's
+  // top ("`dmg` is deliberately NOT in this list..."). This is not a
+  // duplication concern (packaging/make-dmg.sh building "another" DMG would
+  // be fine on its own): electron-builder's dmg target is signed but never
+  // notarized/stapled, so including it would make electron-builder emit a
+  // `latest-mac.yml` `files:` row naming an artifact that (a) Gatekeeper
+  // would refuse to open even if it did ship, and (b) never ships at all,
+  // because packaging/make-dmg.sh — not this target — is what actually gets
+  // uploaded. `zip` stays: dropping it breaks the updater exactly as the
+  // header warns.
+  target: ["dir", "zip"],
   // `undefined` means "auto-discover from CSC_LINK/CSC_NAME"; `null` means
   // "explicitly do not sign". They are NOT interchangeable — see signing.cjs.
   identity: plan.identity,

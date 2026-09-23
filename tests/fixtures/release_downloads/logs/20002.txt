@@ -1,0 +1,7 @@
+> desktop@0.2.3 dist:linux
+> electron-builder --linux deb AppImage --publish never
+
+  • electron-builder  version=26.0.12 os=6.8.0
+  • loaded configuration  file=electron-builder.config.cjs
+  • downloading   url=https://github.com/electron/electron/releases/download/v43.4.1/electron-v43.4.1-linux-x64.zip duration=3.4s
+  ⨯ Response code 504 (Gateway Time-out)  url=https://github.com/electron/electron/releases/download/v43.4.1/electron-v43.4.1-linux-x64.zip label=electron

@@ -6,8 +6,11 @@ import { dirname, join } from "node:path";
 import { offlineBanner } from "./offlineRetry.js";
 import {
   EMAIL_REJECT_MESSAGE,
+  EMAIL_MISSING_MESSAGE,
   isWellFormedEmail,
   emailBlocksContinue,
+  emailStepBlocks,
+  requireEmail,
   submitEmail,
 } from "./onboardingEmail.js";
 
@@ -32,6 +35,53 @@ test("rejects malformed addresses with the pinned message", () => {
 
 test("trims surrounding whitespace before validating", () => {
   assert.equal(isWellFormedEmail("  a@b.co  "), true);
+});
+
+// ── The reload fix: requireEmail (completion gate) / emailStepBlocks (Email
+// step's own Continue gate) both take {email, onFile} rather than email
+// alone, because a reload wipes THIS MOUNT's email field but not the
+// server's record. `onFile` is the derived boolean the server hands back
+// (`email_registered` on GET /api/onboarding/status) — never the address. ──
+
+test("requireEmail: typed-here-and-valid always passes regardless of onFile", () => {
+  assert.equal(requireEmail({ email: "a@b.co", onFile: false }), null);
+  assert.equal(requireEmail({ email: "a@b.co", onFile: true }), null);
+  assert.equal(requireEmail({ email: "a@b.co", onFile: null }), null);
+});
+
+test("requireEmail: empty field + server has one on file -> allowed (the reload case)", () => {
+  assert.equal(requireEmail({ email: "", onFile: true }), null);
+});
+
+test("requireEmail: empty field + server confirms none -> refused, visibly", () => {
+  assert.equal(requireEmail({ email: "", onFile: false }), EMAIL_MISSING_MESSAGE);
+});
+
+test("requireEmail: empty field + could not ask the server (onFile: null) -> refused, fail closed", () => {
+  assert.equal(requireEmail({ email: "", onFile: null }), EMAIL_MISSING_MESSAGE);
+});
+
+test("requireEmail: something typed but malformed -> the existing reject message, not the missing one", () => {
+  assert.equal(requireEmail({ email: "nope", onFile: true }), EMAIL_REJECT_MESSAGE);
+  assert.equal(requireEmail({ email: "nope", onFile: false }), EMAIL_REJECT_MESSAGE);
+});
+
+test("requireEmail: surrounding whitespace is trimmed before either branch decides", () => {
+  assert.equal(requireEmail({ email: "  a@b.co  ", onFile: false }), null);
+  assert.equal(requireEmail({ email: "   ", onFile: true }), null, "whitespace-only counts as empty");
+});
+
+test("emailStepBlocks: empty field relaxes to allowed only when the server confirms an address on file", () => {
+  assert.equal(emailStepBlocks({ email: "", onFile: true }), null);
+  assert.equal(emailStepBlocks({ email: "", onFile: false }), EMAIL_REJECT_MESSAGE);
+  assert.equal(emailStepBlocks({ email: "", onFile: null }), EMAIL_REJECT_MESSAGE);
+});
+
+test("emailStepBlocks: unchanged default behaviour — a typed address is validated exactly like emailBlocksContinue, onFile notwithstanding", () => {
+  for (const onFile of [true, false, null]) {
+    assert.equal(emailStepBlocks({ email: "a@b.co", onFile }), emailBlocksContinue("a@b.co"));
+    assert.equal(emailStepBlocks({ email: "nope", onFile }), emailBlocksContinue("nope"));
+  }
 });
 
 // ── AC6: failure behaviour must match the wizard's existing contract ──────

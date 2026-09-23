@@ -82,6 +82,7 @@ from typing import Any
 import httpx
 
 from ..core.task import Task
+from .criteria import extract_acceptance_criteria
 
 log = logging.getLogger("no_human.intake.linear")
 
@@ -265,15 +266,6 @@ def _raise_for_graphql_errors(payload: Any, status: int) -> None:
     if code == "AUTHENTICATION_ERROR":
         raise LinearAuthError(message, code=code, status=status)
     raise LinearError(message, code=code, status=status)
-
-
-def _checklist_items(text: str) -> list[str]:
-    """Markdown task-list checkboxes (`- [ ] ...`) as acceptance criteria.
-
-    Linear descriptions are markdown, so this is the same extraction the Jira
-    adapter runs over its flattened ADF.
-    """
-    return [m.strip() for m in re.findall(r"^\s*[-*]\s*\[[ xX]\]\s*(.+)$", text or "", re.M)]
 
 
 class LinearAdapter:
@@ -623,7 +615,8 @@ class LinearAdapter:
         description = issue.get("description") or ""
         task = Task.new(title, source="linear", external_id=identifier,
                         description=description)
-        task.acceptance_criteria = _checklist_items(description)
+        task.acceptance_criteria = extract_acceptance_criteria(
+            description, f"Linear issue {task.external_id}")
         state = issue.get("state") or {}
         labels = [
             n.get("name") for n in ((issue.get("labels") or {}).get("nodes") or [])
