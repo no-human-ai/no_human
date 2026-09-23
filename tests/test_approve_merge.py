@@ -1009,6 +1009,106 @@ def test_full_gate_failure_blocks_the_push(land_env, monkeypatch):
         "a failed full gate must never push"
 
 
+# --------------------------------------------------------------------------- #
+# tests-step failure output: tail, not head (the actionable pytest summary   #
+# — FAILED identifiers, final counts line — sits at the END of a `-q` run,   #
+# so a head-cap always discards it; see PR #481, 2026-09-18).                #
+# --------------------------------------------------------------------------- #
+
+
+def test_pytest_tail_keeps_the_failure_summary_not_the_head():
+    # The dot-fill sits in a SINGLE line up front (mimicking `-q`'s progress
+    # dots); >=80 lines of `PASSED` noise after it push it out of the last
+    # `_PYTEST_TAIL_LINES` window entirely.
+    noise = "." * 5000 + "\n" + "\n".join(
+        f"PASSED tests/test_x.py::test_{i}" for i in range(90))
+    summary = (
+        "=== short test summary info ===\n"
+        "FAILED tests/test_zebra.py::test_last - AssertionError\n"
+        "1 failed, 900 passed in 1140.02s\n"
+    )
+    text = noise + "\n" + summary
+    tail = approve_merge._pytest_tail(text)
+    assert "FAILED tests/test_zebra.py::test_last" in tail
+    assert "1 failed, 900 passed in 1140.02s" in tail
+    assert "." * 5000 not in tail
+    assert len(tail) <= approve_merge._TEST_OUTPUT_CAP + len("…(truncated)\n")
+    # Pins the regression: the OLD head-cap would drop the identifier.
+    capped = approve_merge._cap(text)
+    assert "FAILED tests/test_zebra.py::test_last" not in capped
+
+
+def test_pytest_tail_is_identity_for_short_output():
+    text = "1 failed, 0 passed in 0.01s"
+    assert approve_merge._pytest_tail(text) == text
+    assert "truncated" not in approve_merge._pytest_tail(text)
+
+
+def test_full_gate_failure_names_the_failing_test(land_env):
+    """End-to-end with a REAL pytest run (no `_run_pytest` patch): a failing
+    full-gate tests step must surface WHICH test failed, not just leading
+    noise."""
+    before = land_env.remote_main_sha()
+    branch, head_sha = land_env.cut_branch(
+        "no-human/t-failsummary",
+        extra_files={
+            "tests/test_broken.py":
+                "def test_definitely_fails():\n    assert 1 == 2\n",
+        },
+    )
+    result = land_task(
+        repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
+        task_id="deadbeef", task_title="Add feature", review_evidence="review PASS",
+        config=land_env.config, tested_commit_sha="",
+    )
+    assert not result.ok
+    assert result.step == "tests"
+    assert result.gate == "full"
+    assert "test_definitely_fails" in result.stderr
+    assert "FAILED" in result.stderr
+    assert "failed" in result.stderr
+    assert result.stderr.startswith(result.gate_reason), \
+        "gate_reason must still lead stderr, ahead of the tail window"
+    assert land_env.remote_main_sha() == before, "a failed full gate must never push"
+
+
+def test_full_gate_passing_run_still_lands(land_env):
+    """Positive control for the test above: same shape, but the extra test
+    PASSES — proves the failing case above fails because of the fixture's
+    test, not because of some unrelated breakage."""
+    before = land_env.remote_main_sha()
+    branch, head_sha = land_env.cut_branch(
+        "no-human/t-failsummary-pass",
+        extra_files={
+            "tests/test_broken.py":
+                "def test_definitely_fails():\n    assert 1 == 1\n",
+        },
+    )
+    result = land_task(
+        repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
+        task_id="deadbeef", task_title="Add feature", review_evidence="review PASS",
+        config=land_env.config, tested_commit_sha="",
+    )
+    assert result.ok, result.stderr
+    assert result.step == "close_pr"
+    assert land_env.remote_main_sha() != before
+
+
+def test_verify_step_failure_still_head_capped(land_env):
+    """Scope guard: the `verify` step's error reporting must NOT have been
+    rerouted through `_pytest_tail` — it keeps calling `_cap()` untouched."""
+    branch, head_sha = land_env.cut_branch(
+        "no-human/t-verifyfail-scope", extra_files={"FORCE_VERIFY_FAIL": "x"})
+    result = land_task(
+        repo_path=str(land_env.clone), branch=branch, pr_url=land_env.pr_url,
+        task_id="deadbeef", task_title="Add feature", review_evidence="review PASS",
+        config=land_env.config,
+    )
+    assert not result.ok
+    assert result.step == "verify"
+    assert result.stderr
+
+
 def _pin_branch_head(land_env) -> str:
     """Re-pin RELEASE_MANIFEST.txt at the branch's own HEAD and amend — what
     a real coder attempt is required to do before pushing a new/changed
