@@ -71,6 +71,13 @@ REGISTRY: dict[tuple[str, str], str] = {
     # attempt that actually died (the one still `in_progress`), never one a
     # CLEARS path above deliberately removed.
     ("core/scheduler.py", "Scheduler._recover_orphans"): INHERITS_ELSE_STAMPS,
+    # The abandoned-IMPLEMENTING-row sweep (this task, `core/abandoned.py`):
+    # a dead run's commit, same rescue shape as the orphan sweep just above,
+    # via `_inherit_checkpoint` — a still-armed human gate is inherited
+    # untouched; otherwise the dead attempt's own commit is stamped in
+    # (provenance `"orphan_recovery"`, reused rather than inventing a fourth
+    # label `MACHINE_REQUEUE_PROVENANCE` would also need registering).
+    ("core/abandoned.py", "recover_abandoned"): INHERITS_ELSE_STAMPS,
     # A graceful server stop mid-session: the same rule as the orphan sweep,
     # one restart earlier. A HUMAN's gated sha is inherited untouched (the
     # WIP commit is still named on the attempt row, so it is findable);
@@ -313,6 +320,11 @@ STOP_REGISTRY: dict[tuple[str, str], str] = {
     ("cli/commands.py", "task_retry._go"): WITHDRAWS,
     ("blockers/wake.py", "WakeWatcher._resume"): KEEPS,
     ("core/scheduler.py", "Scheduler._recover_orphans"): KEEPS,
+    # Same reasoning as the orphan sweep directly above: the abandoned-row
+    # sweep (`core/abandoned.py::recover_abandoned`) is a machine requeue
+    # that executes no new human decision, so a human's still-pending stop
+    # survives it and `_drive` parks on turn zero at the next start.
+    ("core/abandoned.py", "recover_abandoned"): KEEPS,
     # A graceful server stop is a machine requeue: it executes no human
     # decision, so a human's pending pause survives it and `_drive` parks on
     # turn zero at the next start. (`_pending_cancel` already lets a human

@@ -66,7 +66,19 @@ tasks — see `find_abandoned`):
 A `cancel_requested` row IS recovered (that is 0d637473's shape — nothing is
 alive to consume the flag, so waiting for an operator would wait forever);
 the next worker that picks the row back up from PENDING sees the flag on its
-own first tick and ends the task honestly, same as any other resume.
+own first tick and ends the task honestly, same as any other resume. This is
+a MACHINE re-entry (`tests/test_resume_entry_registry.py`'s STOP_REGISTRY:
+KEEPS) — it executes no new human decision, so a human's still-pending stop
+survives it and `_drive` parks on turn zero at the next start, same as
+`Scheduler._recover_orphans` and `Orchestrator._honor_server_stop`.
+
+`resume_from` is INHERITS_ELSE_STAMPS (`test_resume_entry_registry.py`'s
+REGISTRY), via `_inherit_checkpoint` below: a still-armed human gate is
+inherited untouched; otherwise the dead attempt's own commit is stamped in
+(provenance `"orphan_recovery"`, reused — see `_inherit_checkpoint`'s
+docstring) BEFORE its open attempt row is closed, so a genuinely abandoned
+run's committed work is not silently discarded the way the 2026-08-10 orphan
+incident discarded it before `_recover_orphans` grew the same mirror.
 """
 
 from __future__ import annotations
@@ -75,6 +87,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Callable
 
+from ..blockers import human_gate_armed, resume_provenance
 from . import plan_gate
 from .task import Task, TaskStatus
 
@@ -157,6 +170,42 @@ async def find_abandoned(
     return out
 
 
+async def _inherit_checkpoint(store: Any, t: Task) -> str:
+    """Stamp the dead attempt's own commit onto ``resume_from`` BEFORE its
+    open attempt row is closed — mirrors `Scheduler._inherited_checkpoint`
+    (scheduler.py), written for the exact same failure mode: a requeue
+    re-enters as a FRESH bounded loop at ``attempt_n == 1``, where
+    `_resume_branch_point` ignores the dead attempt's ``handoff.wip_sha`` —
+    so ``resume_from`` is the ONLY checkpoint that survives, and leaving it
+    untouched silently discards whatever the abandoned run had already
+    committed (the 2026-08-10 incident this mirror exists to not repeat: 3
+    restarts, 11 attempts burned, because nothing copied a dead attempt's
+    commit into the one place a fresh run actually reads).
+
+    A HUMAN's still-armed gate (`human_gate_armed`) is inherited untouched —
+    stamping over it relabels their gated sha as the machine's own and
+    disarms `Orchestrator._is_own_partial`'s zero-diff honesty check, the
+    exact defect ten prior review rounds kept re-introducing.
+
+    Provenance is ``"orphan_recovery"``, reused rather than invented: this
+    sweep rescues a dead run's commit the same way `Scheduler._recover_orphans`
+    does, and `blockers.MACHINE_REQUEUE_PROVENANCE` already treats that label
+    as machine-requeue provenance everywhere the zero-diff honesty gate reads
+    it (`Orchestrator._already_satisfied_eligible`) — inventing a fourth label
+    would need registering there too, for no behavioural difference.
+    """
+    ctx = t.context or {}
+    if human_gate_armed(ctx):
+        return ""                    # a human gated it — execute, don't decide
+    resume = ctx.get("resume_from") or {}
+    sha = (await store.latest_open_attempt(t.id) or {}).get("commit_sha") or ""
+    if not sha or sha == resume.get("sha"):
+        return sha                   # nothing to inherit, or already stamped
+    await store.merge_context(
+        t.id, {"resume_from": resume_provenance({"sha": sha}, "orphan_recovery")})
+    return sha
+
+
 async def recover_abandoned(
     store: Any, *, inflight_ids: Any, threshold_s: float,
     on_event: Callable[[str, str], None] | None = None,
@@ -215,6 +264,16 @@ async def recover_abandoned(
                 },
             ) is None:
                 continue  # CAS refused (row went terminal) — touch nothing else
+            try:
+                # MUST run before `close_open_attempts` below: the dead
+                # attempt's commit is only readable from `latest_open_attempt`
+                # while its row is still `in_progress`.
+                await _inherit_checkpoint(store, t)
+            except Exception as exc:  # noqa: BLE001 — the rescue above already
+                # landed; a checkpoint is an optimisation, not the rescue
+                # itself, so a lookup failure must not abort the row.
+                log.warning("abandoned-row recovery: checkpoint inheritance "
+                            "failed for %s: %s", t.id[:8], exc)
             # The open attempt row IS the dangling work this sweep exists to
             # close out — `close_open_attempts` is idempotent and safe even
             # when nothing is actually running any more (db.py:2729).
