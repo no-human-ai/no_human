@@ -805,6 +805,66 @@ def test_remote_branch_relation_is_diverged_when_neither_is_an_ancestor(
     assert repo.remote_branch_relation("no-human/t1") == "diverged"
 
 
+def _ahead_of_remote_branch(work):
+    """Push a branch, then commit once more locally without pushing — the
+    remote tip becomes a strict ANCESTOR of the local head, i.e. the branch
+    was simply never pushed since the extra commit. Never a divergence."""
+    repo = GitRepo(work, identity_name="no_human", identity_email="a@b.invalid")
+    repo.create_branch("no-human/t1")
+    (work / "feature.py").write_text("y = 1\n")
+    repo.commit_all("the work")
+    repo.push("no-human/t1")                       # pushed once
+    (work / "more.py").write_text("z = 1\n")
+    repo.commit_all("more work, not yet pushed")
+    return repo
+
+
+def test_remote_branch_relation_is_ahead_when_remote_tip_is_an_ancestor_of_local(
+        repo_with_bare_remote):
+    """AC1: a branch simply not (yet) pushed since review must read "ahead",
+    not "diverged" -- fails on main, which has no third ancestry outcome."""
+    repo = _ahead_of_remote_branch(repo_with_bare_remote)
+    assert repo.remote_branch_relation("no-human/t1") == "ahead"
+
+
+def test_remote_branch_relation_is_ahead_when_the_local_head_is_a_merge(
+        repo_with_bare_remote):
+    """`is_ancestor` is merge-aware: a local head that is a merge commit
+    still reads "ahead" as long as the remote tip is reachable from it."""
+    repo = GitRepo(repo_with_bare_remote, identity_name="no_human",
+                    identity_email="a@b.invalid")
+    repo.create_branch("no-human/t1")
+    (repo_with_bare_remote / "feature.py").write_text("y = 1\n")
+    repo.commit_all("the work")
+    repo.push("no-human/t1")
+    _git(repo_with_bare_remote, "checkout", "-b", "no-human/side")
+    (repo_with_bare_remote / "side.py").write_text("s = 1\n")
+    _git(repo_with_bare_remote, "add", "-A")
+    _git(repo_with_bare_remote, "commit", "-m", "side work")
+    _git(repo_with_bare_remote, "checkout", "no-human/t1")
+    _git(repo_with_bare_remote, "merge", "--no-ff", "-m", "merge side",
+         "no-human/side")
+    assert repo.remote_branch_relation("no-human/t1") == "ahead"
+
+
+def test_remote_branch_relation_is_still_diverged_when_the_local_head_contains_a_merge(
+        repo_with_bare_remote):
+    """AC4: a merge commit does not turn a genuine divergence into "ahead" --
+    the same rebase-of-a-pushed-branch shape as above, but merged with an
+    unrelated local branch so the head is a merge, and neither side of the
+    relation is an ancestor of the other."""
+    repo = _rebased_pushed_branch(repo_with_bare_remote)
+    assert repo.remote_branch_relation("no-human/t1") == "diverged"
+    _git(repo_with_bare_remote, "checkout", "-b", "no-human/unrelated", "main")
+    (repo_with_bare_remote / "unrelated.py").write_text("u = 1\n")
+    _git(repo_with_bare_remote, "add", "-A")
+    _git(repo_with_bare_remote, "commit", "-m", "unrelated work")
+    _git(repo_with_bare_remote, "checkout", "no-human/t1")
+    _git(repo_with_bare_remote, "merge", "--no-ff", "-m", "merge unrelated",
+         "no-human/unrelated")
+    assert repo.remote_branch_relation("no-human/t1") == "diverged"
+
+
 def test_remote_branch_relation_is_up_to_date_right_after_a_clean_push(
         repo_with_bare_remote):
     repo = GitRepo(repo_with_bare_remote, identity_name="no_human",
@@ -859,6 +919,27 @@ def test_a_diverged_branch_still_forces_with_lease(repo_with_bare_remote):
     assert repo.remote_branch_relation("no-human/t1") == "diverged"
     assert _is_non_fast_forward(RuntimeError(
         "! [rejected] no-human/t1 -> no-human/t1 (non-fast-forward)")) is True
+
+    local = repo._run("rev-parse", "no-human/t1")
+    pushed = repo.push("no-human/t1", force_with_lease=True)
+    assert pushed == local
+    remote = subprocess.run(
+        ["git", "ls-remote", "origin", "refs/heads/no-human/t1"],
+        cwd=repo_with_bare_remote, capture_output=True, text=True, check=True,
+    ).stdout.split()[0]
+    assert remote == local, "the remote did not end at the branch we pushed"
+
+
+def test_force_with_lease_on_an_ahead_branch_still_forces_exactly_as_diverged_did(
+        repo_with_bare_remote):
+    """AC5: every OTHER caller of `remote_branch_relation` must treat "ahead"
+    exactly as it treated "diverged" before -- `push`'s force-with-lease
+    pre-check is one such caller (via `_legacy_relation`). Mirrors
+    `test_a_diverged_branch_still_forces_with_lease` above, but on a branch
+    that is AHEAD of its remote rather than genuinely diverged: no
+    `PushBehindRemote` is raised, and the push still lands."""
+    repo = _ahead_of_remote_branch(repo_with_bare_remote)
+    assert repo.remote_branch_relation("no-human/t1") == "ahead"
 
     local = repo._run("rev-parse", "no-human/t1")
     pushed = repo.push("no-human/t1", force_with_lease=True)
