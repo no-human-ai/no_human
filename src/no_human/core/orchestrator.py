@@ -724,6 +724,71 @@ def _test_run_summary(meta: dict | None) -> str:
     return f"{status}, {meta.get('result_chars', 0)} chars"
 
 
+def drive_stuck_detector(
+    detector: StuckDetector, event: AgentEvent, *, repo_root: str = ""
+) -> tuple[list[str], str | None]:
+    """The entry point `_agent_sink` feeds every coder-role event through to
+    keep `StuckDetector` current — doom-loop/ping-pong (`record_tool_call`/
+    `detect_ping_pong`), the edit-loop tiers (`record_edit`, gated by
+    `is_agent_owned`/`is_outside_repo` against *repo_root* exactly the way
+    `_agent_sink` gates its own `_agent_edited_files` bookkeeping), and the
+    test-outcome progress signal (`note_test_run`/`record_test_outcome`) —
+    then reads `hard_stuck_reason`, in that order, so the hard check sees
+    whatever the record calls above it just wrote for THIS event.
+
+    Extracted (not reimplemented) so `no_human.eval.event_replay` can feed a
+    RECORDED event stream through the exact same code production runs,
+    instead of a hand-rolled replica that silently drifts from it — see
+    that module's docstring for why a replica cannot be trusted to reproduce
+    a hard-abort fire. Pure with respect to everything outside *detector*:
+    does not touch `ConvergenceTracker` (a separate signal `_agent_sink`
+    also feeds from the same event) or `self._agent_edited_files`, and
+    never emits or raises — it only reports what fired so the caller
+    decides what to do about it.
+
+    Returns ``(advisories, hard)``: *advisories* is the ordered list of
+    advisory-tier reason strings that fired for this one event (usually
+    empty, occasionally more than one — a doom-loop/ping-pong fire and an
+    edit-loop fire are independent and can both land on the same event, so
+    this is a list, not a single Optional str); *hard* is the hard-tier
+    reason string, or None.
+    """
+    advisories: list[str] = []
+    if event.kind == "tool_use":
+        sig = _summarize_tool_sig(event.tool_name or "", event.tool_input or {})
+        if detector.record_tool_call(event.tool_name or "", sig):
+            advisories.append(
+                "doom-loop: identical tool call repeated "
+                f"{detector.doom_loop_threshold}×; "
+                "will reset context on next attempt"
+            )
+        elif detector.detect_ping_pong():
+            advisories.append(
+                "ping-pong: alternating between two actions; "
+                "consider a different approach"
+            )
+    if event.kind == "tool_use" and event.tool_name in ("Write", "Edit", "MultiEdit", "NotebookEdit"):
+        inp = event.tool_input or {}
+        path = inp.get("file_path") or inp.get("path") or inp.get("notebook_path") or ""
+        if path and not (is_agent_owned(path, repo_root) or is_outside_repo(path, repo_root)):
+            if detector.record_edit(str(path)):
+                advisories.append(
+                    f"edit-loop: {path} edited {detector._edit_counts[str(path)]}×; "
+                    "consider a different approach"
+                )
+    if event.kind == "tool_use" and event.tool_name in ("Bash", "Terminal"):
+        command = (event.tool_input or {}).get("command") or (
+            event.tool_input or {}).get("cmd") or ""
+        if _looks_like_test_run(command):
+            detector.note_test_run(event.meta.get("tool_use_id"))
+    elif event.kind == "tool_result":
+        detector.record_test_outcome(
+            event.meta.get("tool_use_id"), _test_run_summary(event.meta)
+        )
+    hard = detector.hard_stuck_reason if event.kind == "tool_use" else None
+    return advisories, hard
+
+
 # How often the watcher re-reads `tasks.cancel_requested` while a task runs.
 # The agent session is the only thing being interrupted, and it emits events far
 # faster than this, so the operator's `nh task pause` lands within a few seconds.
@@ -2779,8 +2844,15 @@ class Orchestrator:
         the shared predicate makes `ConvergenceTracker` slightly easier to
         keep alive on that shape — the intended correction, not an
         oversight (see its docstring).
+
+        Only the CONVERGENCE half lives here now — the `StuckDetector` half
+        (`note_test_run`/`record_test_outcome`) moved into `drive_stuck_
+        detector` (module-level, below the helpers this docstring names),
+        which `_agent_sink` calls once per event for every `StuckDetector`
+        signal. Kept separate rather than folded into that call because this
+        one also touches `ConvergenceTracker`, which `drive_stuck_detector`
+        deliberately does not.
         """
-        detector = getattr(self, "_stuck", None)
         if event.kind == "tool_use" and event.tool_name in ("Bash", "Terminal"):
             command = (event.tool_input or {}).get("command") or (
                 event.tool_input or {}).get("cmd") or ""
@@ -2788,12 +2860,6 @@ class Orchestrator:
                 conv = self._active_convergence()
                 if conv is not None:
                     conv.mark_progress()
-                if detector is not None:
-                    detector.note_test_run(event.meta.get("tool_use_id"))
-        elif event.kind == "tool_result" and detector is not None:
-            detector.record_test_outcome(
-                event.meta.get("tool_use_id"), _test_run_summary(event.meta)
-            )
 
     def _agent_sink(self, event: AgentEvent, *, role: str = CODER_ROLE) -> None:
         self._sink(
@@ -2953,26 +3019,8 @@ class Orchestrator:
         # Phase 7e: feed tool calls to the doom-loop detector.  If the
         # agent repeats the exact same call 3× consecutively, emit a "stuck"
         # event — advisory telemetry, the attempt runs on. Only the HARD
-        # tier (checked after both record paths below) aborts the attempt.
-        if event.kind == "tool_use":
-            detector = getattr(self, "_stuck", None)
-            if detector is not None:
-                sig = _summarize_tool_sig(
-                    event.tool_name or "", event.tool_input or {}
-                )
-                if detector.record_tool_call(event.tool_name or "", sig):
-                    self.emit(
-                        "stuck",
-                        "doom-loop: identical tool call repeated "
-                        f"{detector.doom_loop_threshold}×; "
-                        "will reset context on next attempt",
-                    )
-                elif detector.detect_ping_pong():
-                    self.emit(
-                        "stuck",
-                        "ping-pong: alternating between two actions; "
-                        "consider a different approach",
-                    )
+        # tier (checked once, after every record path, via a single
+        # `drive_stuck_detector` call further down) aborts the attempt.
         if event.kind == "tool_use" and event.tool_name in ("Write", "Edit", "MultiEdit", "NotebookEdit"):
             inp = event.tool_input or {}
             path = inp.get("file_path") or inp.get("path") or inp.get("notebook_path") or ""
@@ -2997,18 +3045,14 @@ class Orchestrator:
                     if not hasattr(self, "_agent_edited_files"):
                         self._agent_edited_files: set[str] = set()
                     self._agent_edited_files.add(str(path))
-                    # P2: a real file edit is a convergence signal.
+                    # P2: a real file edit is a convergence signal. The
+                    # StuckDetector's own edit-count bookkeeping (R2.3 Layer
+                    # 1) is NOT done here — it happens once, below, inside
+                    # the single `drive_stuck_detector` call every event
+                    # goes through (it re-derives the same `path`/gating).
                     conv = self._active_convergence()
                     if conv is not None:
                         conv.mark_progress()
-                    # R2.3 Layer 1: per-file edit count.
-                    detector = getattr(self, "_stuck", None)
-                    if detector is not None and detector.record_edit(str(path)):
-                        self.emit(
-                            "stuck",
-                            f"edit-loop: {path} edited {detector._edit_counts[str(path)]}×; "
-                            "consider a different approach",
-                        )
                 else:
                     # P2 (review fix): a write the edit tier does not count
                     # is still real CONVERGENCE progress. That is now two
@@ -3026,18 +3070,28 @@ class Orchestrator:
                     conv = self._active_convergence()
                     if conv is not None:
                         conv.mark_progress()
-        # P2 + R2.3 Layer 1: a recognized test-runner invocation/outcome is fed
-        # to both the convergence tracker and the hard edit tier's progress
-        # gate — see `_note_test_activity`.
+        # P2: a recognized test-runner invocation feeds the convergence
+        # tracker only now — see `_note_test_activity`. Its StuckDetector
+        # progress-gate bookkeeping (R2.3 Layer 1) moved into
+        # `drive_stuck_detector` below, alongside every other detector
+        # write, so the whole detector state for this one event is
+        # produced by a single call.
         self._note_test_activity(event)
-        # Hard tier (ARCH_REVIEW B2 #1): checked AFTER both record paths so an
-        # edit-tool event counts toward both detectors before the verdict.
-        # Advisory fires above are telemetry; this one has teeth — the raise
-        # unwinds the session at this tool boundary, the attempt fails with a
-        # [WIP-PARTIAL] checkpoint, and the bounded loop retries fresh.
-        if event.kind == "tool_use":
-            detector = getattr(self, "_stuck", None)
-            hard = detector.hard_stuck_reason if detector is not None else None
+        # Hard tier (ARCH_REVIEW B2 #1): `drive_stuck_detector` records
+        # doom-loop/ping-pong, the edit-loop tier, and the test-outcome
+        # progress signal for this event (in that order) and THEN reads
+        # `hard_stuck_reason`, so the hard check sees whatever the record
+        # calls above it just wrote. Advisory fires are telemetry; the hard
+        # fire has teeth — the raise unwinds the session at this tool
+        # boundary, the attempt fails with a [WIP-PARTIAL] checkpoint, and
+        # the bounded loop retries fresh.
+        detector = getattr(self, "_stuck", None)
+        if detector is not None:
+            advisories, hard = drive_stuck_detector(
+                detector, event, repo_root=getattr(self, "_active_repo_root", "")
+            )
+            for reason in advisories:
+                self.emit("stuck", reason)
             if hard:
                 self.emit(
                     "stuck",
