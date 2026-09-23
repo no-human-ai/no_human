@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -400,3 +401,62 @@ async def test_no_lease_lost_leaves_payload_unchanged(store):
     assert h.paused_reason is None
     d = h.as_dict()
     assert d["paused_reason"] is None
+
+
+async def test_free_slots_plus_queue_plus_abandoned_row_is_not_reported_healthy(
+        store):
+    """AC5, the live incident's own shape: `workers_busy: 2, max_workers: 4,
+    stuck: false` was arithmetically true and substantively wrong — two free
+    slots, 22 queued, and nothing claimable could ever be reached. Reading
+    `workers_busy` alone (busy=0, max=4 here — looks idle, not stuck) cannot
+    tell the two apart; `h.abandoned`/`h.abandoned_ids` is the field that
+    does, and it must flip `stuck` where the old completion/transition check
+    alone would not (nothing here is even claimed, so nothing "transitions")."""
+    stuck_row = await _task(store, TaskStatus.IMPLEMENTING, updated_min_ago=60)
+    await store.create_attempt(stuck_row.id, 1)
+    await store.save_events(stuck_row.id, [
+        {"ts": time.time() - 60 * 60, "kind": "tool_call", "source": "agent"}])
+    for _ in range(3):
+        await _task(store, TaskStatus.PENDING)
+
+    h = await queue_health(
+        store, inflight_ids=set(), max_workers=4, abandoned_after_s=40 * 60)
+
+    assert h.workers_busy == 0     # this field alone would read "idle", not stuck
+    assert h.abandoned == 1
+    assert h.abandoned_ids == [stuck_row.id]
+    assert h.stuck is True
+    assert "abandoned" in h.stuck_reason
+
+
+async def test_an_idle_pool_with_no_abandoned_rows_is_not_flagged(store):
+    """Companion control: free slots + a non-empty queue + a genuinely fresh
+    IMPLEMENTING row (never emitted an event — `find_abandoned`'s fail-closed
+    rule) + a recent completion must NOT read as stuck."""
+    await _task(store, TaskStatus.IMPLEMENTING)          # fresh, no event ever
+    await _task(store, TaskStatus.PENDING)
+    await _task(store, TaskStatus.DONE, updated_min_ago=1)   # recent completion
+
+    h = await queue_health(
+        store, inflight_ids=set(), max_workers=4, abandoned_after_s=40 * 60)
+
+    assert h.stuck is False
+    assert h.abandoned == 0
+    assert h.abandoned_ids == []
+
+
+async def test_existing_health_fields_are_unchanged(store):
+    """Additive-only (no existing `as_dict()` field renamed, removed, or
+    retyped) — the human-gated back-compat question is answered
+    conservatively."""
+    h = await queue_health(store, max_workers=2)
+    d = h.as_dict()
+    for key in (
+        "open_tasks", "at_gate", "completed_in_window", "window_minutes",
+        "stuck", "stuck_reason", "eta_minutes", "workers_busy", "max_workers",
+        "queue_depth", "est_drain_seconds", "paused", "paused_reason",
+        "paused_until", "paused_profile",
+    ):
+        assert key in d
+    assert d["abandoned"] == 0
+    assert d["abandoned_ids"] == []

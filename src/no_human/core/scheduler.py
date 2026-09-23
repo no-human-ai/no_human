@@ -41,6 +41,7 @@ from ..config import (AuthError, DEFAULT_CONFIG, active_auth_profile,
                       worktree_isolation_enabled)
 from ..vcs.pr_watcher import landing_sha_candidates, orphan_landed_evidence
 from ..vcs.task_pr import resolve_task_pr
+from .abandoned import recover_abandoned
 from .bounds import QuotaExhausted
 from .db import Store
 from . import plan_gate
@@ -98,6 +99,21 @@ _TRACEBACK_EXCERPT_CAP = _STDERR_EXCERPT_CAP
 # tickets happened to be older). FIFO is only the final tie-break inside a
 # priority tier of a group, not the ordering of a status on its own anymore.
 _CLAIMABLE = (TaskStatus.IMPLEMENTING, TaskStatus.PENDING)
+
+# WIP-first only stays safe because two things are now true that were not
+# true when two abandoned IMPLEMENTING rows starved 22 PENDING tasks for
+# hours (live incident, measured 2026-09): (i) `tick()`'s dispatch loop below
+# now counts STARTED tasks instead of slicing `claimable[:slots]`, so a
+# claimable row the scheduler declines to start (e.g. `_shipped_before_
+# dispatch` returning True) can no longer consume a free slot it never used;
+# and (ii) an IMPLEMENTING row nothing holds (`id not in _inflight`) that has
+# gone genuinely silent is demoted to PENDING by `core.abandoned.
+# recover_abandoned` — called every tick, immediately above, before this
+# tuple is ever walked — so it cannot sit at the head of the claim order
+# forever. Neither change reorders `_CLAIMABLE` itself: a live, currently-
+# silent-for-a-good-reason IMPLEMENTING row (mid-tool-call, or waiting for a
+# slot — `core/slot_wait.py`) still claims ahead of PENDING, exactly as
+# before.
 
 # PLANNING is claimed too, but only for a plan-approval correction resumed
 # into it (see `_claimable`'s `plan_gate.correcting` branch below) — never
@@ -614,6 +630,13 @@ class Scheduler:
         self.retirement = retirement_job
         self.harvest = harvest_job
         self._config = config or {}
+        # Same knob `blockers.wake.WakeWatcher.stuck_active_minutes` reads
+        # (default 40 min, > the 30-min run_tests timeout so a long test
+        # never trips either sweep) — one number, both "is this row hung"
+        # judgments, so raising it for a slow environment raises both at
+        # once instead of drifting apart.
+        self._abandoned_after_s = 60.0 * float(
+            self._config.get("blockers", {}).get("stuck_active_minutes", 40))
         # Re-probed every tick (see config.assert_subscription_mode), not just
         # at startup, so an added credential resumes dispatch without a
         # restart. None = no check configured = today's zero-gate behavior.
@@ -2276,14 +2299,42 @@ class Scheduler:
                         "setup_complete",
                         "credential detected — dispatch resumed")
 
+        # An abandoned IMPLEMENTING row (silent, unheld, not queued for a
+        # slot — see `core/abandoned.py`) sits at the HEAD of `_CLAIMABLE`
+        # (WIP-first). Swept every tick, immediately before `_claimable()` is
+        # built, so a row demoted here is re-ranked alongside PENDING on this
+        # SAME tick rather than staying at the head one tick longer. Per the
+        # intake decision: detect-and-recover per tick, in the same code path
+        # that dispatches, not a slower periodic sweep that would leave the
+        # pool starved in the interval.
+        try:
+            await recover_abandoned(
+                self.store, inflight_ids=self._inflight,
+                threshold_s=self._abandoned_after_s, on_event=self._on_event,
+                now=now)
+        except Exception as exc:  # noqa: BLE001 — sweep must not kill the pool
+            log.warning("abandoned-row sweep failed: %s", exc)
+
         slots = self.max_workers - len(self._inflight)
         started: list[str] = []
         claimable = await self._claimable()
         self._last_claimable_count = len(claimable)
         if slots > 0:
-            for task in claimable[:slots]:
+            # Counted, not sliced (`claimable[:slots]`): a claimable row the
+            # scheduler DECLINES to start (`_shipped_before_dispatch` ->
+            # True) must never consume a free slot it never used. The old
+            # `claimable[:slots]` slice made that `continue` silently burn
+            # the slot instead — with a fixed-size head of such rows, the
+            # slice re-produced the SAME skipped rows every tick, and no
+            # PENDING task past them was ever reached (the incident this
+            # whole task fixes). Walking the FULL list and stopping once
+            # `len(started)` reaches `slots` means a decline costs nothing
+            # but the (cheap, already-memoized) check itself.
+            for task in claimable:
+                if len(started) >= slots:
+                    break
                 if await self._shipped_before_dispatch(task):
-                    continue                      # completed; no attempt starts
+                    continue                      # completed; no attempt starts, no slot spent
                 self._inflight.add(task.id)      # reserve BEFORE scheduling
                 self._run_tasks[task.id] = asyncio.ensure_future(self._run(task))
                 started.append(task.id)

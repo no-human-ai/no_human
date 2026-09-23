@@ -2255,7 +2255,14 @@ FROZEN_FILE_LINES = {
     # the FROZEN_FUNCTION_LINES `_check_pr_conflict` entry above (the
     # whole-file delta equals that function's delta). Measured on this tree
     # with the scanner below.
-    "blockers/wake.py": 2763,
+    # 2763 -> 2780 (+17): docstring-only edits (no behavior change) recording
+    # that `tick()`'s stuck-active sweep judging only `active_ids` is
+    # deliberate -- the complementary case (active status, genuinely
+    # unclaimed) is owned end-to-end by the new `core/abandoned.py` sweep,
+    # called once per scheduler tick. `tests/test_stall_watchdog_scope.py`'s
+    # pre-existing two tests pass unchanged. Measured on this tree with the
+    # scanner below.
+    "blockers/wake.py": 2780,
     # +91: `_SCAN_WRAPPER_NAMES` + `_peel_scan_wrappers` — peels
     # timeout/xargs/nice/stdbuf (and siblings) for the scan-severity check
     # only, so a wrapped `find … -delete` in a denied compound classifies
@@ -2450,7 +2457,21 @@ FROZEN_FILE_LINES = {
     # additions. Measured on this tree with the scanner below: actual 3253,
     # which is what this entry froze at this point. Later entries would
     # move it further.
-    "core/scheduler.py": 3253,
+    # 3253 -> 3304 (+51): an abandoned IMPLEMENTING row (silent, unheld, not
+    # queued for a slot) starving the whole PENDING queue behind it --
+    # `_CLAIMABLE` stays WIP-first (unreordered), but `tick()`'s dispatch
+    # loop now counts STARTED tasks instead of slicing `claimable[:slots]`
+    # (a row the scheduler DECLINES to start can no longer burn a free
+    # slot it never used), and calls the new `core.abandoned.
+    # recover_abandoned` sweep once per tick, immediately before
+    # `_claimable()` is built, plus a `self._abandoned_after_s` config read
+    # in `__init__` and an explanatory paragraph appended to the
+    # `_CLAIMABLE` comment block recording why WIP-first is still safe. The
+    # detection predicate and the mutating recovery itself live in the new
+    # `core/abandoned.py` (not counted here — a new file, not a frozen
+    # entry's growth). Measured on this tree with the scanner below
+    # (`len(Path(...).read_text().splitlines())`).
+    "core/scheduler.py": 3304,
 }
 
 

@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 import pytest
 
 from no_human.blockers.wake import WakeWatcher
+from no_human.core import abandoned
 from no_human.core.task import Task, TaskStatus
 
 
@@ -69,6 +70,31 @@ async def test_tick_without_active_ids_skips_the_sweep(store):
     assert (t.id, "escalated_stalled") not in actions
     refreshed = await store.get_task(t.id)
     assert refreshed.status == TaskStatus.IMPLEMENTING
+
+
+@pytest.mark.asyncio
+async def test_an_unclaimed_active_row_is_left_to_the_abandoned_sweep(store):
+    """The complementary case to `test_unclaimed_implementing_task_is_not_
+    stalled` above: the watchdog's blindness to an unclaimed active row is
+    DELIBERATE, not an oversight (see `WakeWatcher.tick`'s docstring, updated
+    alongside this test) — the row is instead owned end-to-end by
+    `core.abandoned.recover_abandoned`, called once per scheduler tick,
+    immediately before `_claimable()` is built (`Scheduler.tick`,
+    scheduler.py). This test names that sweep and proves it is the one that
+    actually handles the case the watchdog explicitly declines."""
+    t = await _silent_implementing_task(store, silent_minutes=90)
+    watcher = WakeWatcher(store, _cfg())
+
+    actions = await watcher.tick(now=datetime.now(timezone.utc), active_ids=set())
+    assert (t.id, "escalated_stalled") not in actions
+    refreshed = await store.get_task(t.id)
+    assert refreshed.status == TaskStatus.IMPLEMENTING
+
+    recovered = await abandoned.recover_abandoned(
+        store, inflight_ids=set(), threshold_s=40 * 60)
+    assert recovered == [t.id]
+    refreshed = await store.get_task(t.id)
+    assert refreshed.status == TaskStatus.PENDING
 
 
 @pytest.mark.asyncio

@@ -460,6 +460,18 @@ class WakeWatcher:
         minutes behind a deep queue (live, 2026-07-24). ``None`` means the
         caller cannot know what is claimed (standalone ``nh wake``), so the
         sweep — whose whole purpose is freeing hung worker slots — is skipped.
+
+        This "only judge claimed rows" scope is DELIBERATE, not an oversight:
+        an active-status row NOT in ``active_ids`` cannot be hung *in a
+        worker slot*, because nothing here ever put it in one. The
+        complementary case — active status, genuinely unclaimed, gone silent
+        with no operator action — is a different failure (not stuck-while-
+        held, but never held at all) and is owned end-to-end by
+        ``core.abandoned``: ``core.abandoned.find_abandoned`` detects it,
+        ``core.abandoned.recover_abandoned`` recovers it, and
+        ``Scheduler.tick`` calls the latter every tick, immediately before
+        the claim loop this watcher's caller feeds into. See that module's
+        docstring for why conflating the two sweeps would be wrong.
         """
         now = now or datetime.now(timezone.utc)
         actions: list[tuple[str, str]] = []
@@ -491,7 +503,12 @@ class WakeWatcher:
 
     async def _escalate_if_stalled(self, task: Task, *, now: datetime) -> bool:
         """Escalate a task that has emitted no event for longer than the
-        stuck-active threshold. Returns True iff it escalated."""
+        stuck-active threshold. Returns True iff it escalated.
+
+        Only ever called (via ``tick``, above) for a task in the caller's
+        ``active_ids`` — i.e. one a worker actually holds. A stalled row
+        NOT held by any worker is not this method's job; ``core.abandoned``
+        owns that case (see ``tick``'s docstring)."""
         if self.stuck_active_minutes <= 0:
             return False  # watchdog disabled
         if getattr(task, "cancel_requested", None):

@@ -14,10 +14,13 @@ actually has, neither of which the board could answer:
 from __future__ import annotations
 
 import json
+import logging
 import statistics
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
+
+log = logging.getLogger("no_human.health")
 
 # Statuses that mean "the queue still owes the operator work".
 OPEN_STATUSES = ("pending", "implementing", "reviewing")
@@ -50,6 +53,14 @@ class QueueHealth:
     paused_reason: str | None = None   # "quota" | "infra" | "lease_lost" | None
     paused_until: str | None = None    # ISO, the wall's reset time
     paused_profile: str | None = None  # which auth profile hit the wall
+    # Additive (task: "An abandoned IMPLEMENTING row starves the whole
+    # pending queue"): a row `core.abandoned.find_abandoned` judges silent,
+    # unheld, and not queued for a slot. `workers_busy`/`max_workers` alone
+    # cannot say why free slots + a non-empty queue aren't draining — this is
+    # the field that does. Zero/empty whenever `abandoned_after_s` isn't
+    # passed (every caller before this task) or nothing qualifies.
+    abandoned: int = 0
+    abandoned_ids: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -70,6 +81,8 @@ class QueueHealth:
             "paused_reason": self.paused_reason,
             "paused_until": self.paused_until,
             "paused_profile": self.paused_profile,
+            "abandoned": self.abandoned,
+            "abandoned_ids": list(self.abandoned_ids),
         }
 
 
@@ -125,6 +138,7 @@ async def queue_health(
     attempt_sample: int = 20, quota_cooldown_until: datetime | None = None,
     infra_cooldown_until: datetime | None = None,
     lease_lost: str | None = None,
+    abandoned_after_s: float | None = None,
 ) -> QueueHealth:
     # `store.query`/`query_one`, never `store.db`. This runs on the board's
     # live store while the pool writes through the same connection, and an
@@ -158,6 +172,26 @@ async def queue_health(
     rows = await store.query(
         f"SELECT id FROM tasks WHERE status IN ({claimable_q})", CLAIMABLE_STATUSES)
     h.queue_depth = sum(1 for (tid,) in rows if tid not in inflight)
+
+    # `abandoned_after_s=None` (every caller before this task, and every
+    # caller that hasn't opted in) skips this entirely — additive, never a
+    # behavior change for a caller that doesn't ask. Computed here, before
+    # either early-return below, so `h.abandoned`/`h.abandoned_ids` are
+    # populated whenever a caller DOES ask, including on the lease_lost/
+    # idle-queue paths (where an abandoned row — itself one of the open/
+    # claimable statuses counted above — is impossible by construction, so
+    # this is always empty there; harmless to compute regardless).
+    if abandoned_after_s is not None:
+        try:
+            from .abandoned import find_abandoned
+            abandoned_rows = await find_abandoned(
+                store, inflight_ids=inflight, threshold_s=abandoned_after_s,
+                now=now)
+        except Exception as exc:  # noqa: BLE001 — health must never raise
+            log.warning("queue_health: find_abandoned failed: %s", exc)
+            abandoned_rows = []
+        h.abandoned = len(abandoned_rows)
+        h.abandoned_ids = [t.id for t in abandoned_rows]
 
     median_secs = await _median_attempt_seconds(store, attempt_sample)
     # Denominator is AVAILABLE workers (max - busy), not max_workers: busy
@@ -214,27 +248,43 @@ async def queue_health(
             h.eta_minutes = None
         return h
 
-    stuck_cutoff = _iso_cutoff(stuck_after_minutes, now=now)
-    recent_completion = await count(
-        f"SELECT COUNT(*) FROM tasks WHERE status IN ({done_q}) "
-        "AND updated_at >= ?", *DONE_STATUSES, stuck_cutoff)
-    # Completions alone false-alarm on a one-worker pool whose tasks each take
-    # longer than the window (live, 2026-07-24: "Queue stuck" while a task had
-    # entered review minutes earlier). A recent STATE event — a pipeline stage
-    # transition — is motion a busy-looping coder cannot fake: loops emit
-    # usage/tool events, never state events, so the original anti-busy-loop
-    # property survives. task_events.ts is epoch seconds, not ISO.
-    epoch_cutoff = (
-        (now or datetime.now(timezone.utc)) - timedelta(minutes=stuck_after_minutes)
-    ).timestamp()
-    recent_transition = await count(
-        "SELECT COUNT(*) FROM (SELECT 1 FROM task_events WHERE ts >= ? "
-        "AND json_extract(data, '$.kind') = 'state' LIMIT 1)", epoch_cutoff)
-    if recent_completion == 0 and recent_transition == 0:
+    # Ranked below `lease_lost` and the quota/infra `paused` branches above
+    # (a paused pool is CHOOSING not to dispatch — not wedged) but takes
+    # priority over the completion/transition check below: free slots + a
+    # non-empty queue + at least one abandoned row IS the wedge regardless of
+    # whether something unrelated happened to complete/transition recently.
+    # This is what makes `workers_busy: 2, max_workers: 4, stuck: false,
+    # queue_depth: 22` — the live incident this task fixes — impossible to
+    # report again.
+    free_slots = h.max_workers - h.workers_busy
+    if h.abandoned and h.queue_depth > 0 and free_slots > 0:
         h.stuck = True
         h.stuck_reason = (
-            f"{h.open_tasks} task(s) open, nothing completed and no task "
-            f"changed stage in {stuck_after_minutes} minutes")
+            f"{h.abandoned} abandoned task(s) hold no worker but sit in an "
+            f"active status; {free_slots} slot(s) free, {h.queue_depth} queued")
+    else:
+        stuck_cutoff = _iso_cutoff(stuck_after_minutes, now=now)
+        recent_completion = await count(
+            f"SELECT COUNT(*) FROM tasks WHERE status IN ({done_q}) "
+            "AND updated_at >= ?", *DONE_STATUSES, stuck_cutoff)
+        # Completions alone false-alarm on a one-worker pool whose tasks each
+        # take longer than the window (live, 2026-07-24: "Queue stuck" while
+        # a task had entered review minutes earlier). A recent STATE event —
+        # a pipeline stage transition — is motion a busy-looping coder cannot
+        # fake: loops emit usage/tool events, never state events, so the
+        # original anti-busy-loop property survives. task_events.ts is epoch
+        # seconds, not ISO.
+        epoch_cutoff = (
+            (now or datetime.now(timezone.utc)) - timedelta(minutes=stuck_after_minutes)
+        ).timestamp()
+        recent_transition = await count(
+            "SELECT COUNT(*) FROM (SELECT 1 FROM task_events WHERE ts >= ? "
+            "AND json_extract(data, '$.kind') = 'state' LIMIT 1)", epoch_cutoff)
+        if recent_completion == 0 and recent_transition == 0:
+            h.stuck = True
+            h.stuck_reason = (
+                f"{h.open_tasks} task(s) open, nothing completed and no task "
+                f"changed stage in {stuck_after_minutes} minutes")
 
     if h.completed_in_window > 0:
         rate_per_min = h.completed_in_window / window_minutes
