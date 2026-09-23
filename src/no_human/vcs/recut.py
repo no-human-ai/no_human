@@ -44,7 +44,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from .git import GitError, GitRepo
+from .git import GitError, GitRepo, _legacy_relation
 
 __all__ = [
     "RecutResult",
@@ -128,8 +128,15 @@ def diverged_state(repo: GitRepo, branch: str, *, remote: str = "origin") -> str
     ``"diverged"`` (neither is an ancestor of the other — the only state a
     recut is for), or ``"unknown"`` (never pushed, or the remote could not
     be read — fails open to "do nothing", exactly today's behaviour).
+
+    `remote_branch_relation` can also return ``"ahead"`` (remote tip is an
+    ancestor of local — never pushed since review). That is deliberately
+    folded into ``"diverged"`` here so `_recover_diverged_branch`'s recut
+    decision for it is unchanged; the orchestrator's claim gate handles
+    ``"ahead"`` on its own, cheaper path (a fast-forward push) before a recut
+    would ever be considered.
     """
-    return repo.remote_branch_relation(branch, remote=remote)
+    return _legacy_relation(repo.remote_branch_relation(branch, remote=remote))
 
 
 def already_recut(ctx: dict | None, branch: str) -> bool:

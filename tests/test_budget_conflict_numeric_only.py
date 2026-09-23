@@ -13,14 +13,20 @@ from the end-to-end mechanical-resolution tests in
 """
 from __future__ import annotations
 
+import subprocess
+import sys
 from pathlib import Path
 
+from no_human.vcs import budget_conflict
 from no_human.vcs.budget_conflict import (
+    BUDGET_TEST_PATH,
+    NO_INTERPRETER_DETAIL,
     hunks_numeric_only,
     load_scanner,
     measure,
     parse_conflict_hunks,
     resolve_hunks,
+    run_budget_test,
 )
 
 _KEY = "core/orchestrator.py:Orchestrator._run_attempt"
@@ -240,3 +246,87 @@ def test_no_scanner_at_all_names_both_attempts(tmp_path):
     assert mod is None
     assert str(real_path) in reason
     assert "scan_tree" in reason
+
+
+# --- run_budget_test: must resolve its interpreter through `proc.real_python` -
+# --- instead of `sys.executable` -- in a PyInstaller-frozen desktop build ------
+# --- `sys.executable` IS the frozen `nh` binary, and `[nh, "-m", "pytest", ...]`-
+# --- re-enters the click CLI instead of running the proof (issue: fifth site of-
+# --- the scar fixed for approve_merge.py / manifest_repair.py / runner.py). ----
+
+
+def _plant_venv(venv_root: Path) -> Path:
+    """A venv root with an interpreter FILE inside it (POSIX shape), mirroring
+    `tests/test_proc.py::_plant` -- `real_python` only checks `is_file()`."""
+    bin_dir = venv_root / "bin"
+    bin_dir.mkdir(parents=True)
+    exe = bin_dir / "python"
+    exe.write_text("", encoding="utf-8")
+    return exe
+
+
+def _recording_sh(calls: list):
+    def _fake_sh(argv, **kwargs):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, returncode=0, stdout="", stderr="")
+    return _fake_sh
+
+
+def test_run_budget_test_does_not_shell_out_to_the_frozen_binary(monkeypatch, tmp_path):
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    primary = tmp_path / "primary"
+    venv_python = _plant_venv(primary / ".venv")
+    worktree = tmp_path / "wt"
+    worktree.mkdir()
+
+    calls: list = []
+    monkeypatch.setattr(budget_conflict, "_sh", _recording_sh(calls))
+
+    ok, _ = run_budget_test(str(worktree), repo_root=str(primary))
+
+    assert ok is True
+    assert len(calls) == 1
+    argv = calls[0]
+    assert argv[0] == str(venv_python)
+    assert argv[0] != sys.executable
+    assert argv[1:4] == ["-m", "pytest", BUDGET_TEST_PATH]
+
+
+def test_run_budget_test_still_uses_sys_executable_when_not_frozen(monkeypatch, tmp_path):
+    monkeypatch.delattr(sys, "frozen", raising=False)
+    primary = tmp_path / "primary"
+    _plant_venv(primary / ".venv")
+    worktree = tmp_path / "wt"
+    worktree.mkdir()
+
+    calls: list = []
+    monkeypatch.setattr(budget_conflict, "_sh", _recording_sh(calls))
+
+    ok, _ = run_budget_test(str(worktree), repo_root=str(primary))
+
+    assert ok is True
+    assert len(calls) == 1
+    assert calls[0][0] == sys.executable
+
+
+def test_run_budget_test_fails_closed_without_shelling_out_when_no_interpreter(
+    monkeypatch, tmp_path,
+):
+    monkeypatch.setattr(budget_conflict, "real_python", lambda *a: None)
+
+    calls: list = []
+
+    def _forbidden_sh(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise AssertionError("run_budget_test must not shell out with no interpreter")
+
+    monkeypatch.setattr(budget_conflict, "_sh", _forbidden_sh)
+
+    worktree = tmp_path / "wt"
+    worktree.mkdir()
+    ok, detail = run_budget_test(str(worktree))
+
+    assert ok is False
+    assert calls == []
+    assert "interpreter" in detail.lower()
+    assert detail == NO_INTERPRETER_DETAIL
