@@ -175,19 +175,23 @@ async def fetch_github_pr_comments(
     ])
     if out:
         for c in json.loads(out):
-            if c.get("user", {}).get("login") == agent_login:
+            # GitHub sends `"user": null` for a deleted account — a *present*
+            # key with a null value, so `.get("user", {})` still returns None
+            # and `.get("login")` on that raises. `or {}` covers null too.
+            user = c.get("user") or {}
+            if user.get("login") == agent_login:
                 continue
             created = c.get("created_at", "")
             if since and created <= since:
                 continue
             comments.append(PrComment(
-                author=c.get("user", {}).get("login", "unknown"),
+                author=user.get("login", "unknown"),
                 body=c.get("body", ""),
                 path=c.get("path"),
                 line=c.get("original_line") or c.get("line"),
                 diff_hunk=c.get("diff_hunk"),
                 created_at=created,
-                author_type=c.get("user", {}).get("type", ""),
+                author_type=user.get("type", ""),
             ))
 
     # 2. Issue comments (general PR comments)
@@ -198,16 +202,17 @@ async def fetch_github_pr_comments(
     ])
     if out:
         for c in json.loads(out):
-            if c.get("user", {}).get("login") == agent_login:
+            user = c.get("user") or {}
+            if user.get("login") == agent_login:
                 continue
             created = c.get("created_at", "")
             if since and created <= since:
                 continue
             comments.append(PrComment(
-                author=c.get("user", {}).get("login", "unknown"),
+                author=user.get("login", "unknown"),
                 body=c.get("body", ""),
                 created_at=created,
-                author_type=c.get("user", {}).get("type", ""),
+                author_type=user.get("type", ""),
             ))
 
     # 3. Review summaries (the review object's own `body`). A review's line
@@ -232,7 +237,12 @@ async def fetch_github_pr_comments(
     ])
     if out:
         for r in json.loads(out):
-            if r.get("user", {}).get("login") == agent_login:
+            # Same null-user hazard as blocks 1/2 above: GitHub sends
+            # `"user": null` for a review whose author deleted their
+            # account, and `.get("user", {})` does not catch a present-but-
+            # null value, so `.get("login")` on it raises.
+            user = r.get("user") or {}
+            if user.get("login") == agent_login:
                 continue
             state = (r.get("state") or "").upper()
             if state not in ("CHANGES_REQUESTED", "COMMENTED"):
@@ -250,12 +260,12 @@ async def fetch_github_pr_comments(
             if since and submitted <= since:
                 continue
             comments.append(PrComment(
-                author=r.get("user", {}).get("login", "unknown"),
+                author=user.get("login", "unknown"),
                 body=body,
                 path=None,
                 line=None,
                 created_at=submitted,
-                author_type=r.get("user", {}).get("type", ""),
+                author_type=user.get("type", ""),
             ))
 
     return comments

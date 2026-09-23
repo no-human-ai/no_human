@@ -42,6 +42,7 @@ _COMMENTED_WITH_BODY = REVIEWS[2]
 _COMMENTED_EMPTY = REVIEWS[3]
 _CHANGES_REQUESTED_MARKER = REVIEWS[4]
 _PENDING = REVIEWS[5]
+_NULL_USER = REVIEWS[6]              # deleted-account author — the crash fix
 
 
 def _install_fixture_cli(monkeypatch, *, reviews=True, review_comments=True,
@@ -103,6 +104,30 @@ async def test_pending_review_with_no_submitted_at_is_dropped(monkeypatch):
     assert not any(c.body == _PENDING["body"] for c in comments)
 
 
+async def test_deleted_account_null_user_review_does_not_crash_the_fetch(monkeypatch):
+    """POSITIVE CONTROL for the null-user crash: GitHub sends `"user": null`
+    for a review whose author has since deleted their account. `dict.get(key,
+    default)` only substitutes the default when `key` is ABSENT — a
+    present-but-null `"user"` still returns None, so a bare
+    `r.get("user", {}).get("login")` raises AttributeError on `None.get`.
+    Before the `(r.get("user") or {})` fix, this line — the `reviews.json`
+    dispatch below — is what raises and takes out the whole fetch (no line
+    comments, no issue comments, no other reviews reach the caller either)."""
+    _install_fixture_cli(monkeypatch)
+    comments = await pw.fetch_github_pr_comments("org/repo", 42)
+
+    # The null-user review itself is still surfaced, with a fallback author.
+    null_user_matches = [c for c in comments if c.body == _NULL_USER["body"]]
+    assert len(null_user_matches) == 1, comments
+    assert null_user_matches[0].author == "unknown"
+    assert null_user_matches[0].author_type == ""
+
+    # And the fetch did not raise out before reaching the OTHER endpoints.
+    assert any(c.body == _CHANGES_REQUESTED["body"] for c in comments)
+    assert any(c.body == REVIEW_COMMENTS[0]["body"] for c in comments)
+    assert any(c.body == ISSUE_COMMENTS[0]["body"] for c in comments)
+
+
 async def test_review_line_comments_and_issue_comments_still_flow(monkeypatch):
     """The new reviews block is ADDITIVE — the two existing endpoints keep
     working, and a bot-typed line comment carries `author_type` through."""
@@ -162,9 +187,12 @@ async def test_review_body_with_agent_marker_is_filtered(monkeypatch, store):
     assert w._is_self_or_bot(marker_comment) is True
 
 
-def test_review_has_no_created_at_field():
-    """Pins WHY the freshness check must read `submitted_at`: GitHub's review
-    object has no `created_at` at all."""
+def test_review_fixture_pins_no_created_at_field():
+    """Documents WHY the freshness check must read `submitted_at`: GitHub's
+    review object has no `created_at` at all. This only pins the fixture's
+    shape (a literal recorded payload) — it cannot fail on a code change, so
+    it is not itself coverage for the `submitted_at` keying; that behavior is
+    covered by `test_review_at_or_before_the_cursor_is_not_fresh` below."""
     assert "created_at" not in _CHANGES_REQUESTED
 
 

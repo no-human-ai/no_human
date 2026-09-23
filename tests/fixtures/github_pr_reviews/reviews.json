@@ -58,5 +58,15 @@
     "submitted_at": null,
     "html_url": "https://github.com/org/repo/pull/42#pullrequestreview-1006",
     "author_association": "COLLABORATOR"
+  },
+  {
+    "id": 1007,
+    "node_id": "PRR_kwDOAbc1007",
+    "user": null,
+    "body": "This is broken, please fix before merging.",
+    "state": "CHANGES_REQUESTED",
+    "submitted_at": "2026-06-01T15:00:00Z",
+    "html_url": "https://github.com/org/repo/pull/42#pullrequestreview-1007",
+    "author_association": "NONE"
   }
 ]
