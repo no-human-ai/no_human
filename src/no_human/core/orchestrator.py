@@ -11221,9 +11221,24 @@ class Orchestrator:
         # unmatched rather than lying about what it reviewed.
         await self._conclude_review_round(task, decision, sha=reviewed_sha)
         await self._append_review_history(task, decision, commit_sha=reviewed_sha)
+        # Stamp the head this review-only round actually judged onto the
+        # attempt ROW too, not just `review_history` above. A PASS with a NULL
+        # `commit_sha` is invisible to every consumer keyed on the attempts
+        # table: `_send_back_resume_round`/`_land_no_changes_needed` match
+        # `commit_sha == head`, and `nh approve`/the API pass
+        # `latest_attempt_branch()["commit_sha"]` to `land_task` as
+        # `tested_commit_sha`, which `approve_merge._decide_gate` downgrades to
+        # the FULL post-merge gate when it is empty. This attempt opened no
+        # commit of its own, so there is nothing here to clobber.
+        # Fail closed, same contract as the `review_history` stamp above: an
+        # unresolvable head stamps NOTHING rather than a guessed or stale sha
+        # — an unstamped PASS stays unmergeable, which is the gate working.
+        stamped_fields: dict[str, Any] = {}
+        if (reviewed_sha or "").strip():
+            stamped_fields["commit_sha"] = reviewed_sha.strip()
         await self.store.update_attempt(
             attempt_id, review_checklist=decision.as_dict(), review_passed=1,
-            status="succeeded",
+            status="succeeded", **stamped_fields,
         )
         # This attempt opened no PR of its own (it is a zero-diff claim), but
         # the task may already have one from an earlier attempt or a draft —

@@ -1506,7 +1506,12 @@ FROZEN_FILE_LINES = {
     # push) live in the new `vcs/recut.py`, not here — this is the
     # orchestrator-side wiring only. Measured on this tree with the
     # scanner below.
-    "core/orchestrator.py": 25039,
+    # 25039 -> 25054 (+15): already-satisfied PASS branch now stamps
+    # `commit_sha=reviewed_sha` onto the attempt row (guarded so a blank
+    # reviewed sha stamps nothing), plus the comment explaining why — the
+    # `review_history` stamp lived here already, but the attempts-table row
+    # itself did not. Measured on this tree with the scanner below.
+    "core/orchestrator.py": 25054,
 
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
