@@ -62,6 +62,7 @@ from .approve_merge import (
 )
 from .budget_conflict import (
     BUDGET_TEST_PATH,
+    NO_INTERPRETER_DETAIL,
     _HUNK_BASE,
     _HUNK_END,
     _HUNK_SEP,
@@ -141,11 +142,39 @@ def _inventory_argv() -> list[str]:
     ``proc.real_python`` — the interpreter resolver every other
     ``sys.executable`` fallback in this codebase shares (issue #402) — not
     ``uv run``: the script is stdlib-only by its own contract, and ``uv run``
-    inside a resolver worktree would sync/claim a venv there for nothing. Any
-    Python serves a stdlib-only script, so the venv preference `real_python`
-    applies elsewhere is harmless here; the ``"python3"`` literal is kept as
-    the last resort because this call site, unlike the others, never fails
-    closed — it must always return an argv."""
+    inside a resolver worktree would sync/claim a venv there for nothing. The
+    venv preference `real_python` applies elsewhere is therefore harmless here,
+    and the ``"python3"`` literal is kept as the last resort because this call
+    site, unlike the others, never fails closed — it must always return an argv.
+
+    What that argv[0] actually IS, though, is not this module's choice, and it
+    is NOT BOUNDED: ``proc.real_python`` falls through to
+    ``shutil.which("python3")`` and then ``shutil.which("python")``, so it is
+    whatever those names mean on that host — /usr/bin/python3 on a stock macOS
+    (3.9, unless Homebrew/pyenv/conda shadow it), 3.6 on RHEL 8, and ``python``
+    can still be a 2.7.
+
+    That unbounded set is why "stdlib-only by its own contract" was not the
+    reassurance it read as. It is a claim about IMPORTS; it says nothing about
+    language or API level, and the two were conflated here. The script passed
+    a ``newline=`` keyword to ``Path.write_text``, which only reached 3.10, so
+    ``--write`` died with a TypeError under exactly this argv — and
+    ``resolve_derived_conflict`` turns that into ``ok=False`` at step
+    ``regenerate``, which ``blockers/wake.py`` routes to a human blocker rather
+    than a coder round. Every conflict it was called on there escalated.
+
+    What holds now is A FLOOR CI ENFORCES, not a floor the code guarantees, and
+    the honest version is: the script's grammar parses at 3.8 and no lower
+    (``ast.parse(feature_version=(3, 7))`` fails on the assignment expression
+    in ``check_release_manifest.py``), and the ``File inventory`` job in
+    .github/workflows/ci.yml runs ``--write`` under 3.9 on every pull request
+    to a PUBLIC repo — that job carries ``if: !github.event.repository.private``,
+    so the private mirror, where this module also ships, is not covered by it.
+    3.9 is a checkpoint below the 3.10 line that broke it, picked because it is
+    the stock macOS interpreter — not a proof about the tail of that set. A
+    host whose ``python3`` is older than 3.8 is still unserved and nothing here
+    detects it. Move the version in that job and this paragraph together, or
+    the claim stops being checkable."""
     return [real_python() or "python3", "scripts/check_release_manifest.py"]
 
 
@@ -868,6 +897,16 @@ def _take_budget_hunks(worktree_path: Path, branch_tip_sha: str,
     return None, notes
 
 
+def _budget_proof_detail(proof_output: str) -> str:
+    """Word the structural-budget proof's outcome honestly: distinguishes
+    "the proof could not run" (no interpreter -- `run_budget_test` never
+    shelled out, see `NO_INTERPRETER_DETAIL`) from "the proof ran and
+    failed", since callers must not conflate the two."""
+    if proof_output == NO_INTERPRETER_DETAIL:
+        return _cap(f"structural budget re-anchor could not be proved: {proof_output}")
+    return _cap(f"structural budget re-anchor did not pass its own test:\n{proof_output}")
+
+
 def _resolve_in_worktree(*, repo: GitRepo, worktree_path: Path, remote: str,
                          branch: str, base_tip_sha: str,
                          eligible: frozenset[str] = DERIVED_ARTEFACTS,
@@ -1070,12 +1109,11 @@ def _resolve_in_worktree(*, repo: GitRepo, worktree_path: Path, remote: str,
     # Never trust the arithmetic alone: run the very test the ratchet is
     # gated on, in the committed merged tree, before this is ever pushed.
     if budget_notes:
-        proof_ok, proof_output = run_budget_test(str(worktree_path))
+        proof_ok, proof_output = run_budget_test(str(worktree_path), repo_root=repo.path)
         if not proof_ok:
             return DerivedResolution(
                 ok=False, step="budget", unpinned=unpinned,
-                detail=_cap("structural budget re-anchor did not pass its own "
-                            f"test:\n{proof_output}"))
+                detail=_budget_proof_detail(proof_output))
 
     # -- step 7: verify BEFORE any push ------------------------------------ #
     verify_proc = _run_export_guard(worktree_path, ["verify"], timeout=_VERIFY_TIMEOUT_S)

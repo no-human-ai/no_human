@@ -145,7 +145,7 @@ from pathlib import Path
 from typing import Callable
 
 from ..agent.session_mark import current_mark
-from ..proc import real_python
+from ..proc import _VENV_INTERPRETERS, real_python
 from .git import GitError, GitRepo, ProtectedBranch
 from .pr_watcher import parse_pr_url
 
@@ -155,6 +155,8 @@ STEPS = (
 )
 
 _STDERR_CAP = 4000
+_PYTEST_TAIL_LINES = 80
+_TEST_OUTPUT_CAP = 12000
 _DEFAULT_TEST_TIMEOUT_S = 1800
 _DEFAULT_FULL_TEST_TIMEOUT_S = 5400
 _APPROVE_TIMEOUT_S = 120
@@ -199,6 +201,36 @@ def _cap(text: str) -> str:
     if len(text) <= _STDERR_CAP:
         return text
     return text[:_STDERR_CAP] + "\n…(truncated)"
+
+
+def _pytest_tail(text: str) -> str:
+    """Return the tail of a pytest run's combined stdout+stderr.
+
+    `_cap()` keeps the HEAD of the output, which is fine for most subprocess
+    failures (the error is usually near the top). Pytest is the opposite:
+    with `-q` (and worse, `-n 4` xdist interleaving), the useful part — the
+    `=== short test summary info ===` block, the `FAILED <nodeid> - <reason>`
+    lines, and the final `N failed, M passed in Xs` counts line — is always
+    at the END of the run. Landing task 1f88d3c0 (PR #481, 2026-09-18) hit
+    this directly: the full-gate `pytest -q -n 4` failed after ~19 minutes,
+    and a head-cap surfaced nothing but leading progress dots and
+    "…(truncated)" — no way to tell which test failed, or whether it was a
+    real failure vs. an xdist worker crash. Keeping the tail instead of the
+    head fixes that.
+    """
+    text = (text or "").strip()
+    if not text:
+        return ""
+    lines = text.split("\n")
+    if len(lines) > _PYTEST_TAIL_LINES:
+        tail = lines[-_PYTEST_TAIL_LINES:]
+        result = "…(truncated; showing the last %d lines)\n%s" % (
+            _PYTEST_TAIL_LINES, "\n".join(tail))
+    else:
+        result = text
+    if len(result) > _TEST_OUTPUT_CAP:
+        result = "…(truncated)\n" + result[-_TEST_OUTPUT_CAP:]
+    return result
 
 
 def _sh(args: list[str], *, cwd: Path | str, timeout: float | None = None,
@@ -649,15 +681,37 @@ def _real_python(repo_path: Path | None = None) -> str | None:
     this repo's shape, on every land made from the app.
 
     Third instance of this exact scar. A FOURTH then landed in
-    ``vcs/manifest_repair.py`` (issue #402), so the resolution itself now
+    ``vcs/manifest_repair.py`` (issue #402), so the frozen resolution itself
     lives once in ``proc.real_python`` and this is the merge gate's binding
-    of it — the target repo's own venv tried first, because it has the
-    repo's dependencies and pytest. This wrapper stays because it is the
-    name the merge gate's tests pin and the docstring the reviewer of that
-    incident reads. ``None`` means the caller must fail closed and say so,
-    never shell out to the CLI by accident.
+    of it. ``None`` means the caller must fail closed and say so, never shell
+    out to the CLI by accident.
+
+    THIS gate needs an interpreter carrying the TARGET's test deps (pytest)
+    even OFF a freeze, so it probes the target repo's ``.venv`` itself, ahead
+    of delegating to ``proc.real_python``. That delegation cannot cover this
+    case: ``proc.real_python`` returns ``sys.executable`` off a freeze by
+    design — several callers depend on that (``worktree._builder_python``
+    builds a venv WITH the running interpreter and must not switch it), so its
+    non-frozen behavior must not change. But ``sys.executable`` is the pytest
+    carrier ONLY when nh runs from a dev checkout's own ``.venv``; a ``uv tool
+    install`` of nh runs on an interpreter with only nh's RUNTIME deps — no
+    pytest — so the gate's ``[py, "-m", "pytest"]`` failed with "No module
+    named pytest" and NO PR could land (measured 2026-09-17). Probing the
+    repo's ``.venv`` here fixes that without touching the shared resolver.
+
+    *repo_path* must be the MAIN repo checkout (``repo.path``), NOT the
+    throwaway ``nh-land-*`` worktree the land runs in: a fresh detached
+    worktree has no ``.venv`` of its own. The main checkout's ``.venv`` holds
+    the deps. A repo with no ``.venv`` (the test fixtures, an arbitrary target
+    project) falls through to ``proc.real_python`` unchanged.
     """
-    return real_python(Path(repo_path) / ".venv" if repo_path is not None else None)
+    if repo_path is not None:
+        venv = Path(repo_path) / ".venv"
+        for sub, name in _VENV_INTERPRETERS:
+            candidate = venv / sub / name
+            if candidate.is_file():
+                return str(candidate)
+    return real_python()
 
 
 def _run_pytest(argv: list[str], *, cwd: Path, timeout: float,
@@ -955,7 +1009,7 @@ def _cleanup_worktree(repo: "GitRepo", path: Path) -> None:
 
 
 def _land_regenerate_manifest(
-    *, worktree_path: Path, guard: Path, inventory: Path, manifest: Path,
+    *, worktree_path: Path, py: str, guard: Path, inventory: Path, manifest: Path,
     tip_sha: str, resolved_branch: str, branch: str, pr_url: str,
 ) -> tuple["LandResult | None", str]:
     """`_land_in_worktree` step 4: regenerate RELEASE_MANIFEST.txt for the
@@ -968,18 +1022,13 @@ def _land_regenerate_manifest(
     unchanged from when this lived inline. Returns `(None, reconciled_note)`
     on success, `(failure_result, "")` on failure — the caller returns the
     failure result as-is.
+
+    *py* is the interpreter `_land_in_worktree` already resolved once (from the
+    MAIN repo's `.venv`, not the venv-less worktree — see `_real_python`) and
+    None-checked, so this step reuses it rather than resolving a second, wrong
+    one against the worktree.
     """
     reconciled_note = ""
-    # Same resolution as `land_task`'s: `sys.executable` is the frozen `nh`
-    # binary in the desktop build, not a Python — see `_real_python`.
-    py = _real_python(worktree_path)
-    if py is None:
-        return LandResult(
-            ok=False, step="manifest", branch=branch, pr_url=pr_url,
-            stderr="no Python interpreter available to regenerate the "
-                   "manifest: this build's sys.executable is the frozen `nh` "
-                   "binary and no python3/python was found on PATH, nor a "
-                   ".venv in the worktree"), ""
     if guard.exists() and manifest.exists():
         co = _sh(["git", "checkout", tip_sha, "--", "RELEASE_MANIFEST.txt"],
                   cwd=worktree_path)
@@ -1095,12 +1144,15 @@ def _land_in_worktree(
     inventory = worktree_path / "scripts" / "check_release_manifest.py"
     manifest = worktree_path / "RELEASE_MANIFEST.txt"
 
-    # Every interpreter shell-out below goes through this, resolved once.
-    # `sys.executable` is the frozen `nh` binary in the desktop build, not a
-    # Python — see `_real_python`. Fail closed with the condition named
-    # rather than re-entering the click CLI and reporting its own
-    # argument-parser error as a test or manifest failure.
-    py = _real_python(worktree_path)
+    # Every interpreter shell-out below goes through this, resolved once from
+    # the MAIN repo's `.venv` (the throwaway worktree has none of its own), so
+    # a tool-installed nh — whose own interpreter lacks pytest — still runs the
+    # gate on the repo's dep-complete interpreter. `sys.executable` is the
+    # frozen `nh` binary in the desktop build, not a Python — see
+    # `_real_python`. Fail closed with the condition named rather than
+    # re-entering the click CLI and reporting its own argument-parser error as
+    # a test or manifest failure.
+    py = _real_python(repo.path)
     if py is None:
         return LandResult(
             ok=False, step="preconditions", branch=branch, pr_url=pr_url,
@@ -1158,8 +1210,9 @@ def _land_in_worktree(
     # -- step 4: manifest merge-result ledger rule ------------------------ #
     _step(on_step, "manifest")
     manifest_err, reconciled_note = _land_regenerate_manifest(
-        worktree_path=worktree_path, guard=guard, inventory=inventory, manifest=manifest,
-        tip_sha=tip_sha, resolved_branch=resolved_branch, branch=branch, pr_url=pr_url)
+        worktree_path=worktree_path, py=py, guard=guard, inventory=inventory,
+        manifest=manifest, tip_sha=tip_sha, resolved_branch=resolved_branch,
+        branch=branch, pr_url=pr_url)
     if manifest_err is not None:
         return manifest_err
 
@@ -1261,8 +1314,8 @@ def _land_in_worktree(
             if test_proc.returncode != 0:
                 return LandResult(ok=False, step="tests", branch=branch, pr_url=pr_url,
                                    landed_sha=landed_sha, gate=gate, gate_reason=gate_reason,
-                                   stderr=_cap(f"{gate_reason}\n"
-                                               + test_proc.stdout + "\n" + test_proc.stderr))
+                                   stderr=f"{gate_reason}\n" + _pytest_tail(
+                                       test_proc.stdout + "\n" + test_proc.stderr))
     else:
         env = dict(os.environ)
         env["PYTHONPATH"] = str(worktree_path / "src")
@@ -1283,8 +1336,8 @@ def _land_in_worktree(
         elif test_proc.returncode != 0:
             return LandResult(ok=False, step="tests", branch=branch, pr_url=pr_url,
                                landed_sha=landed_sha, gate=gate, gate_reason=gate_reason,
-                               stderr=_cap(f"{gate_reason}\n"
-                                           + test_proc.stdout + "\n" + test_proc.stderr))
+                               stderr=f"{gate_reason}\n" + _pytest_tail(
+                                   test_proc.stdout + "\n" + test_proc.stderr))
 
     # -- step 7: ff-merge + push, remote-ref verified ---------------------- #
     _step(on_step, "push")
