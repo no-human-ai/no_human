@@ -6,6 +6,15 @@ All notable changes to no_human. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- **A grill "done" response with null/empty acceptance criteria now warns
+  instead of proceeding silently.** `parse_grill_response` and the
+  force-finish branch in `grill_step` both route through one
+  `_resolve_criteria` helper: the result is still `[]` (inventing a
+  criterion would fabricate a spec no human approved), but a WARNING now
+  names the task so the UNGRADABLE state is visible, matching the posture
+  issue #511 established for the issue-URL intake path.
+
 ## [0.2.4] - 2026-09-17
 
 ### Added
