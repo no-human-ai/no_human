@@ -1942,12 +1942,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # distinct failure signature like max_ci_fix_rounds; past the cap the
         # failing job is escalated to the human.
         "max_ci_gate_fix_rounds": 3,
-        # Stuck-active watchdog: a task emitting NO event for this many minutes
-        # while in an active state (implementing/reviewing/testing/planning/
-        # context) is escalated as a probable hung Agent-SDK session (the
-        # 2026-07-11 reviewer hang). 40 > the 30-min run_tests timeout so a
-        # long test never trips it; 0 disables. wake.py mirrors this default
-        # (the deep-merge trap: a user `blockers:` block replaces this map).
+        # Stuck-active watchdog: a task emitting NO event for this many
+        # minutes while active (implementing/reviewing/testing/planning/
+        # context) is escalated (the 2026-07-11 reviewer hang). 0 disables.
+        # FLOOR, not the effective value — see
+        # stall_watchdog.effective_stuck_active_minutes().
         "stuck_active_minutes": 40,
     },
     "supervisor": {
