@@ -21,10 +21,31 @@ import pytest
 from no_human.eval.funnel_corpus import load_corpus
 from no_human.eval.funnel_eval import (
     compare_to_baseline, compare_to_cost_reference, corpus_ceiling_tokens,
-    load_cost_reference, run_funnel_eval,
+    load_cost_reference, record_cost_reference, run_funnel_eval,
 )
 
-pytestmark = pytest.mark.usefixtures("isolated_env_file")
+pytestmark = pytest.mark.usefixtures("isolated_env_file", "isolated_cost_reference")
+
+
+@pytest.fixture
+def isolated_cost_reference(tmp_path, monkeypatch):
+    """Point ``funnel_eval.COST_REFERENCE_PATH`` at a per-test tmp file.
+
+    `record_cost_reference` (the FINDING-2 writer wired into `_run`) appends
+    tonight's night to whatever `COST_REFERENCE_PATH` names, every time
+    `run_funnel_eval` completes a night that was not refused. Left unpatched,
+    every one of this module's `run_funnel_eval(...)` calls would write into
+    the real shipped `eval/funnel_corpus/cost_median.json` — corrupting the
+    actual reference with test-generated rows on every test run.
+
+    Requested BY NAME via the module-level `pytestmark` above, matching
+    `isolated_env_file`'s own doctrine — never autouse; see that fixture's
+    docstring for why an autouse fixture that monkeypatches is the wrong
+    shape here regardless of how many tests would otherwise need it spelled
+    out individually.
+    """
+    from no_human.eval import funnel_eval as fe
+    monkeypatch.setattr(fe, "COST_REFERENCE_PATH", tmp_path / "cost_median.json")
 
 
 # --------------------------------------------------------------------------- #
@@ -415,7 +436,10 @@ def test_the_reference_window_is_thirty_nights_by_default():
     assert not any("10,000,000" in ln for ln in lines), lines
 
 
-def test_a_missing_or_unreadable_reference_is_not_a_cost_verdict(tmp_path):
+def test_a_missing_reference_is_a_warm_up_not_a_verdict(tmp_path):
+    """A file that has genuinely never been written — the very first night, or
+    a fresh checkout — is not evidence of anything wrong. `_run` reads that as
+    "establishing the reference" and the night passes on cost."""
     missing = load_cost_reference(tmp_path / "does-not-exist.json")
     assert missing == {"nights": []}
     ok, lines = compare_to_cost_reference(
@@ -424,9 +448,34 @@ def test_a_missing_or_unreadable_reference_is_not_a_cost_verdict(tmp_path):
     assert any("0/30" in ln for ln in lines), lines
     assert any("establishing" in ln.lower() for ln in lines), lines
 
+
+def test_a_corrupt_reference_fails_the_night_closed_not_open(tmp_path):
+    """FINDING 1 (round-3 send-back): `load_cost_reference` used to catch
+    `OSError` and `ValueError` identically and return `{"nights": []}` for
+    both, so a missing file (fresh start) and a corrupt/truncated/unreadable
+    one (should be a hard failure) were indistinguishable — both silently
+    PASSED the cost gate. A file that EXISTS but cannot be parsed, or parses
+    to something without a usable `nights` list, must instead read `_error`
+    and make the night RED — not merely print a message and carry on."""
     corrupt = tmp_path / "corrupt.json"
     corrupt.write_text("{not json", encoding="utf-8")
-    assert load_cost_reference(corrupt) == {"nights": []}
+    ref = load_cost_reference(corrupt)
+    assert ref["nights"] == []
+    assert ref.get("_error"), "an unreadable file must be flagged, not silently emptied"
+    assert str(corrupt) in ref["_error"], ref["_error"]
+
+    ok, lines = compare_to_cost_reference(
+        [{"task": "t1_docs_oneliner", "cost": 1}], ref, nights=30)
+    assert ok is False, "an unreadable reference must fail the night, not pass it"
+    assert any(str(corrupt) in ln for ln in lines), lines
+
+    malformed = tmp_path / "malformed.json"
+    malformed.write_text(json.dumps({"nights": "not-a-list"}), encoding="utf-8")
+    ref2 = load_cost_reference(malformed)
+    assert ref2.get("_error"), "a 'nights' that is not a list must also be flagged"
+    ok2, lines2 = compare_to_cost_reference(
+        [{"task": "t1_docs_oneliner", "cost": 1}], ref2, nights=30)
+    assert ok2 is False, lines2
 
 
 def test_the_shipped_cost_reference_is_readable_and_covers_corpus_tiers():
@@ -584,6 +633,120 @@ def test_the_recorded_cost_includes_the_output_premium(tmp_path):
     assert rec["weighted_tokens"] == expected, rec
     assert rec["cost"] == rec["weighted_tokens"], (
         "evaluate() must read the recorded total, not recompute it", rec)
+
+
+# --------------------------------------------------------------------------- #
+# The cost reference writer (FINDING 2, round-3 send-back) — nothing else in  #
+# the repo ever wrote cost_median.json, so with it shipping at n=1 and        #
+# COST_HISTORY_NIGHTS=30, compare_to_cost_reference stayed in permanent       #
+# warm-up until 30 consecutive nights were hand-appended: the gate could      #
+# never fire in practice. The nightly run must record its OWN measured       #
+# night.                                                                       #
+# --------------------------------------------------------------------------- #
+
+def test_the_runner_appends_its_own_night_so_the_gate_can_ever_fire(
+        tmp_path, monkeypatch):
+    """Run the nightly path twice against the same tmp reference and confirm
+    the second run's file holds both nights, with the first run's row
+    surviving untouched — the exact proof the send-back asked for."""
+    from no_human.eval import funnel_eval as fe
+
+    unseeded_baseline = tmp_path / "baseline.json"
+    unseeded_baseline.write_text(json.dumps(
+        {"unseeded": True, "tasks": [], "_how_to_refresh": "test fixture"}))
+    monkeypatch.setattr(fe, "BASELINE_PATH", unseeded_baseline)
+
+    ref = tmp_path / "cost_median.json"
+    monkeypatch.setattr(fe, "COST_REFERENCE_PATH", ref)
+    assert not ref.exists(), "starting from nothing recorded"
+
+    corpus = [t for t in _four_tier_corpus() if t.name == "t1_docs_oneliner"]
+    run_funnel_eval(tmp_path / "home1", tmp_path / "out1",
+                    backend_factory=lambda t: _TierBackend(t.name),
+                    reviewer=_PassReviewer(), corpus=corpus)
+
+    after_first = json.loads(ref.read_text(encoding="utf-8"))
+    assert len(after_first["nights"]) == 1, after_first
+    first_night = after_first["nights"][0]
+    assert first_night["date"]
+    assert first_night["total"] == sum(first_night["tasks"].values())
+    assert set(first_night["tasks"]) == {"t1_docs_oneliner"}
+
+    run_funnel_eval(tmp_path / "home2", tmp_path / "out2",
+                    backend_factory=lambda t: _TierBackend(t.name),
+                    reviewer=_PassReviewer(), corpus=corpus)
+
+    after_second = json.loads(ref.read_text(encoding="utf-8"))
+    assert len(after_second["nights"]) == 2, after_second
+    assert after_second["nights"][0] == first_night, (
+        "the first run's row must survive untouched, never edited")
+
+
+def test_a_refused_night_never_writes_the_cost_reference(tmp_path):
+    """The writer's first guard: a night that refused to start (empty corpus,
+    a missing tier, the budget guard) produced no real per-tier cost, so it
+    must not invent a row for tonight."""
+    from no_human.eval import funnel_eval as fe
+
+    ref = Path(fe.COST_REFERENCE_PATH)
+    assert not ref.exists()
+
+    rc = run_funnel_eval(tmp_path / "home", tmp_path / "out",
+                         backend_factory=_ExplodingFactory(),
+                         reviewer=_PassReviewer(), corpus=[])
+
+    assert rc == 1
+    assert not ref.exists(), "a refused night must not write a cost row"
+
+
+def test_record_cost_reference_appends_without_editing_existing_entries(
+        tmp_path, monkeypatch):
+    """Direct unit coverage of the writer's own contract: append-only, never
+    touching a prior entry, and trimmed to the most recent
+    `COST_HISTORY_NIGHTS` — exercised without paying for a full run per
+    night."""
+    from no_human.eval import funnel_eval as fe
+
+    ref = tmp_path / "cost_median.json"
+    monkeypatch.setattr(fe, "COST_HISTORY_NIGHTS", 2)
+
+    record_cost_reference(
+        {"date": "2026-09-01",
+         "tasks": [{"task": "t1_docs_oneliner", "cost": 100_000}]}, ref)
+    first = json.loads(ref.read_text(encoding="utf-8"))
+    assert first["nights"] == [
+        {"date": "2026-09-01", "total": 100_000,
+         "tasks": {"t1_docs_oneliner": 100_000}}]
+
+    record_cost_reference(
+        {"date": "2026-09-02",
+         "tasks": [{"task": "t1_docs_oneliner", "cost": 110_000}]}, ref)
+    second = json.loads(ref.read_text(encoding="utf-8"))
+    assert second["nights"][0] == first["nights"][0], "the first row was edited"
+    assert len(second["nights"]) == 2
+
+    record_cost_reference(
+        {"date": "2026-09-03",
+         "tasks": [{"task": "t1_docs_oneliner", "cost": 120_000}]}, ref)
+    third = json.loads(ref.read_text(encoding="utf-8"))
+    assert [n["date"] for n in third["nights"]] == ["2026-09-02", "2026-09-03"], (
+        "COST_HISTORY_NIGHTS=2 must trim the oldest night, not the newest", third)
+
+
+def test_record_cost_reference_leaves_an_unreadable_file_untouched(tmp_path):
+    """The writer's second guard: if the existing reference is unreadable
+    (`_error`), overwriting it with tonight alone would erase the evidence of
+    the corruption instead of surfacing it — so it must do nothing."""
+    corrupt = tmp_path / "cost_median.json"
+    corrupt.write_text("{not json", encoding="utf-8")
+    before = corrupt.read_bytes()
+
+    record_cost_reference(
+        {"date": "2026-09-01",
+         "tasks": [{"task": "t1_docs_oneliner", "cost": 100_000}]}, corrupt)
+
+    assert corrupt.read_bytes() == before, (
+        "a corrupt reference must be left alone, not silently overwritten")
 
 
 # --------------------------------------------------------------------------- #

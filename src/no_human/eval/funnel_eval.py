@@ -421,15 +421,32 @@ def compare_to_baseline(records: list[dict], baseline: dict) -> tuple[bool, list
 
 
 def load_cost_reference(path: Path | None = None) -> dict:
+    """Load the cost reference, distinguishing "nothing recorded yet" from
+    "the history we had is now unreadable" — the two are NOT the same event.
+
+    A genuinely MISSING file is a fresh start: `compare_to_cost_reference`
+    reads `nights: []` as "0 recorded", the same warm-up path a corpus with
+    fewer than `nights` recorded takes. A file that EXISTS but cannot be read
+    (permissions, a truncated write, a bad merge) or parses to something
+    without a usable `nights` list is a different event — the history is
+    there and this call could not see it — and must fail the night CLOSED,
+    not silently take the warm-up path. That case is signalled back via the
+    `_error` key; `compare_to_cost_reference` turns it into a red verdict.
+    """
     p = Path(path or COST_REFERENCE_PATH)
     try:
-        return json.loads(p.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        # A missing or unreadable reference is a fresh start, not a green
-        # night with nothing gated on cost forever: `compare_to_cost_reference`
-        # reads `nights: []` as "0 recorded", the same warm-up path a corpus
-        # with fewer than `nights` recorded takes.
+        text = p.read_text(encoding="utf-8")
+    except FileNotFoundError:
         return {"nights": []}
+    except OSError as exc:
+        return {"nights": [], "_error": f"{p}: {exc}"}
+    try:
+        data = json.loads(text)
+    except ValueError as exc:
+        return {"nights": [], "_error": f"{p}: invalid JSON — {exc}"}
+    if not isinstance(data, dict) or not isinstance(data.get("nights"), list):
+        return {"nights": [], "_error": f"{p}: no usable 'nights' list"}
+    return data
 
 
 def compare_to_cost_reference(records: list[dict], reference: dict, *,
@@ -448,7 +465,19 @@ def compare_to_cost_reference(records: list[dict], reference: dict, *,
     the reference has nothing to compare against yet, so tonight passes and
     says so — this is what lets `cost_median.json` ship with one recorded
     night instead of needing 30 invented ones.
+
+    An UNREADABLE reference (``reference["_error"]``, set by
+    `load_cost_reference` for anything that is not a genuinely missing file)
+    is the opposite of a warm-up: the history exists and could not be read,
+    so this fails the night CLOSED rather than falling through to "nothing
+    is gated on cost tonight" — a truncated write or a bad merge must read
+    as red, not as ordinary warm-up output.
     """
+    if reference.get("_error"):
+        return False, [
+            f"cost reference unreadable — {reference['_error']} — failing "
+            "closed rather than skipping the cost gate"]
+
     hist = sorted(reference.get("nights") or [], key=lambda n: n.get("date", ""))
     hist = hist[-nights:] if nights > 0 else []
     if len(hist) < nights:
@@ -513,6 +542,42 @@ def compare_to_cost_reference(records: list[dict], reference: dict, *,
                 f"COST {name}: {cost:,} > {bound:,.0f} "
                 f"({TIER_BAND}x its median {med:,.0f})")
     return ok, lines
+
+
+def record_cost_reference(report: dict[str, Any], path: Path | None = None) -> None:
+    """Append tonight's per-tier weighted cost as one more night, so
+    `cost_median.json` grows on its own instead of needing a human to
+    hand-append an entry every single night forever (a gate that can only
+    fire after 30 consecutive by-hand appends is not armed, it is
+    documentation).
+
+    Guarded exactly the way `_how_to_refresh`'s own doctrine demands of a
+    human doing this by hand: this is called from `_run` ONLY after the
+    night was not refused and produced a real ``cost`` for every task in
+    ``report["tasks"]`` — never on a refusal (no measurement happened) and
+    never with an invented number. Only APPENDS, never edits an existing
+    entry, and trims to the most recent `COST_HISTORY_NIGHTS`.
+
+    If the existing reference is unreadable (`load_cost_reference`'s
+    ``_error``), this does nothing: overwriting a corrupt file with tonight
+    alone would erase the evidence of the corruption instead of surfacing it
+    — that needs a human, same as any other fail-closed read here.
+    """
+    p = Path(path or COST_REFERENCE_PATH)
+    ref = load_cost_reference(p)
+    if ref.get("_error"):
+        log.warning("nightly: cost reference at %s is unreadable (%s) — "
+                    "not recording tonight's night into it", p, ref["_error"])
+        return
+
+    tasks = {t["task"]: int(t.get("cost") or 0) for t in report["tasks"]}
+    night = {"date": report["date"], "total": sum(tasks.values()),
+             "tasks": tasks}
+    nights = [*ref.get("nights", []), night][-COST_HISTORY_NIGHTS:]
+    payload = {k: v for k, v in ref.items() if k != "nights"}
+    payload["nights"] = nights
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
 # --------------------------------------------------------------------------- #
@@ -670,6 +735,12 @@ async def _run(home: Path, out: Path, *, backend_factory, reviewer,
         report["tasks"], load_cost_reference(), nights=COST_HISTORY_NIGHTS)
     report["exit_code"] = 0 if (
         report["failed"] == 0 and ratchet_ok and cost_ok) else 1
+    # Only reached for a night that was NOT refused (both refusal paths
+    # above `return` before this) and that ran every tier to a real record
+    # with a real `cost` — never an invented one. `record_cost_reference`
+    # itself is the one place that then declines to write, if the existing
+    # reference is unreadable.
+    record_cost_reference(report)
     _write(out, report)
     return report["exit_code"]
 
@@ -728,8 +799,8 @@ def main(argv: list[str] | None = None) -> int:
 
 __all__ = ["run_funnel_eval", "compare_to_baseline", "load_baseline",
            "corpus_ceiling_tokens", "BASELINE_PATH", "load_cost_reference",
-           "compare_to_cost_reference", "COST_REFERENCE_PATH",
-           "COST_HISTORY_NIGHTS", "main"]
+           "compare_to_cost_reference", "record_cost_reference",
+           "COST_REFERENCE_PATH", "COST_HISTORY_NIGHTS", "main"]
 
 
 if __name__ == "__main__":

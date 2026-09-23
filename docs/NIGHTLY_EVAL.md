@@ -150,7 +150,7 @@ and ratchets nothing, and the summary says so. To seed or refresh it: take an
 commit — in the commit that fixes or accepts something, never to turn a red
 night green.
 
-## The cost reference, and how to refresh it
+## The cost reference, and how it is written
 
 `eval/funnel_corpus/cost_median.json` holds the last `COST_HISTORY_NIGHTS`
 (30) recorded nights, and the nightly run holds tonight's weighted cost
@@ -179,12 +179,23 @@ has nothing to compare against yet, so the run passes on cost and says so in
 the summary — this is why `cost_median.json` ships with a single recorded
 night instead of 30 invented ones.
 
-A cheaper or costlier night is **recorded and changes nothing about what
-already passed** — same doctrine as the baseline. To refresh it: append one
-`{"date", "total", "tasks"}` entry, copied from an `out/nightly-YYYY-MM-DD.json`
-**you have read**; never edit or remove an existing entry in place, and never
-invent a night that was not read off a real report — a fabricated entry is a
-fake reference the whole gate then trusts.
+**The runner writes this file itself.** Unlike the baseline, a human does not
+maintain `cost_median.json` by hand: after a night that was **not refused**
+and produced a real, measured `cost` for every tier (never an invented one),
+`funnel_eval._run` appends `{"date", "total", "tasks"}` for that night —
+never editing or removing an existing entry — and trims the file to the most
+recent `COST_HISTORY_NIGHTS`. A refused night (the corpus check or the
+budget guard fired before anything ran) writes nothing, because there is no
+real measurement to record.
+
+**An unreadable reference is a FAILURE, not a fresh start.** A file that has
+genuinely never been written is the warm-up path above. A file that
+**exists** but does not parse as JSON, or parses to something without a
+usable `nights` list — a truncated write, a bad merge, a hand-edit gone
+wrong — is a different event: the history is there and could not be read, so
+the night is **red**, with a line naming the file and the parse error, and
+the runner leaves the file untouched rather than silently overwriting the
+evidence of the corruption with tonight's night alone.
 
 ## Scheduling it (after sign-off)
 
