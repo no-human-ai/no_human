@@ -11,12 +11,19 @@ cd desktop && npm install && npm run desktop
 
 ## Package (unsigned dmg, v1)
 ```bash
-cd desktop && npm run dist        # → desktop/dist/no_human-<v>.dmg
+cd desktop && npm run dist        # → desktop/dist/no_human-<v>-arm64-mac.zip + latest-mac.yml (no dmg — see below)
 cd desktop && npm run dist:win    # → desktop/dist/no_human-<v>-UNSIGNED.exe (on Windows)
 cd desktop && npm run dist:linux  # → desktop/dist/no_human-<v>-linux-amd64.deb + no_human-<v>-linux-x86_64.AppImage (on Linux; CI's `linux` job)
 ```
-The dmg is unsigned: on first launch either right-click → Open, or clear the
-quarantine bit: `xattr -dr com.apple.quarantine /Applications/no_human.app`.
+`npm run dist` alone does not produce a DMG: `mac.target` is `["dir",
+"zip"]`, deliberately without `dmg` (electron-builder's own `dmg` target
+signs but never notarizes/staples its output, so it isn't the DMG anyone
+should ship — see `docs/INSTALLER.md`'s "Release assets" section and
+`scripts/check_release_feeds.py`). The actual DMG comes from
+`packaging/make-dmg.sh`, run as part of `npm run dist:bundled`
+(`docs/INSTALLER.md`); it too is unsigned in a plain dev build: on first
+launch either right-click → Open, or clear the quarantine bit:
+`xattr -dr com.apple.quarantine /Applications/no_human.app`.
 `nh` itself is NOT bundled — install it once with
 `uv tool install --editable <repo>`; the shell finds it via `$NH_BIN`, the
 login shell's PATH, or the usual install locations.

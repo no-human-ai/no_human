@@ -36,7 +36,7 @@ from no_human.core.task import Task, TaskStatus
 from no_human.notify.slack import SlackNotifier
 from no_human.vcs.git import GitRepo
 from no_human.vcs.receipts import Receipt
-from no_human.vcs.recut import branch_stem
+from no_human.vcs.recut import branch_stem, diverged_state
 
 
 class _Backend:
@@ -154,6 +154,76 @@ async def test_a_branch_diverged_before_the_run_is_recut_and_pushed(
     text = recut_events[0]["text"]
     assert local_tip in text, text
     assert remote_tip in text, text
+
+    assert task.context["pr_branch"] == new_branch, task.context
+    recorded = task.context.get("recut")
+    assert recorded and recorded[-1]["from_branch"] == branch, recorded
+    assert recorded[-1]["to_branch"] == new_branch, recorded
+
+
+def _make_ahead_branch(work, name):
+    """Push `name`, then commit once more LOCALLY with no further push — the
+    remote tip is a strict ancestor of local, i.e. "ahead" (simply not
+    pushed since review), the shape `GitRepo.remote_branch_relation` now
+    distinguishes from a genuine divergence. `diverged_state` still folds
+    this into `"diverged"` on purpose (see its own docstring), so this
+    hook's recut decision must be unaffected — the orchestrator's OTHER
+    caller (the already-satisfied claim gate) is what gives "ahead" its
+    own, cheaper remedy (a plain fast-forward, no recut)."""
+    _git(work, "checkout", "-q", "-b", name)
+    (work / "pr_marker.py").write_text("# reviewed work\n")
+    _git(work, "add", "-A")
+    _git(work, "commit", "-q", "-m", "PR work")
+    _git(work, "push", "-q", "-u", "origin", name)
+    remote_tip = _git(work, "rev-parse", name)
+    (work / "more_pr_marker.py").write_text("# more reviewed work, not pushed\n")
+    _git(work, "add", "-A")
+    _git(work, "commit", "-q", "-m", "more PR work")
+    return remote_tip
+
+
+# ---------------------------------------------------------------------------
+# AC 5: `remote_branch_relation` can now also return "ahead". Every OTHER
+# caller (not the already-satisfied claim gate) must treat it exactly as it
+# treated "diverged" before, via `_legacy_relation` — this hook's recut
+# decision is one such caller (through `diverged_state`).
+# ---------------------------------------------------------------------------
+
+async def test_an_ahead_branch_still_routes_through_the_recut_path(
+    store, tmp_path, repo, origin,
+):
+    task = Task.new("Recut test", repo_path=str(repo))
+    await store.create_task(task)
+    stem = branch_stem({"git": {}}, task.id)
+    branch = f"{stem}-6"
+
+    remote_tip = _make_ahead_branch(repo, branch)
+    local_tip = _git(repo, "rev-parse", branch)
+    gitrepo = GitRepo(repo)
+
+    # Precondition demonstrated explicitly: the new classifier calls this
+    # "ahead", but the recut hook's own vocabulary (`diverged_state`) still
+    # folds it into "diverged" — unchanged from before "ahead" existed.
+    assert gitrepo.remote_branch_relation(branch) == "ahead"
+    assert diverged_state(gitrepo, branch) == "diverged"
+
+    task.context = {"pr_branch": branch}
+    await store.set_status(task, TaskStatus.IMPLEMENTING, validate=False)
+
+    events: list[dict] = []
+    orch = _orch(store, tmp_path, events=events)
+
+    new_branch = await orch._recover_diverged_branch(task, gitrepo, branch)
+
+    assert new_branch == f"{stem}-7", new_branch
+    assert _git(origin, "rev-parse", f"refs/heads/{new_branch}") == local_tip, (
+        "the new branch must be pushed to origin at the reviewed sha")
+    assert _git(origin, "rev-parse", f"refs/heads/{branch}") == remote_tip, (
+        "the OLD branch's remote ref must be left byte-for-byte alone"
+    )
+
+    recut_events = [e for e in events if e.get("kind") == "branch_recut"]
+    assert recut_events, f"no branch_recut event emitted: {events}"
 
     assert task.context["pr_branch"] == new_branch, task.context
     recorded = task.context.get("recut")
