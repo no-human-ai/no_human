@@ -1003,6 +1003,46 @@ def test_conventional_subject_variants_are_accepted():
         assert conventional_subject_error(subject) is not None, subject
 
 
+def test_whitespace_only_description_is_refused():
+    """`if not description:` is truthy for a whitespace-only description, so
+    a subject like `feat:    ` (no actual description, just whitespace after
+    the separator) silently passed the old check. `.strip()` closes it."""
+    from no_human.core.task import conventional_subject_error
+
+    for subject in ("feat:    ", "fix:  ", "fix: \t", "fix(a):   "):
+        assert conventional_subject_error(subject) is not None, subject
+    # Control: a real, non-whitespace description still passes.
+    assert conventional_subject_error("fix: x") is None
+
+
+def test_composed_subject_with_external_id_can_be_non_conventional():
+    """`commit_subject()` — the repo's one home for composing a subject from
+    a title plus an external ticket ref — prepends `f"{external_id}: "`
+    ahead of the title's own type token. A ticket ref (`MON-123`, `PROJ-7`,
+    a bare numeric monday.com id, `owner/repo#42`) is never itself a valid
+    Conventional Commits type (a letter-led single word), so the composed
+    result is non-conventional even when the bare title alone is fine —
+    `conventional_subject_error` correctly tells the two apart.
+
+    NB: `land_task`'s own squash-commit step (`_land_in_worktree`, step 5)
+    builds its message from `redact_for_publish(task_title)` alone and never
+    calls `commit_subject()` — external_id/prefix composition happens only
+    for the per-attempt in-branch commit and the PR title, both of which the
+    squash discards. So this is a validator-correctness test, not a claim
+    that `land_task` gates on the composed form: doing that would refuse
+    every external_id-bearing task unconditionally and unfixably (no title
+    correction can undo `commit_subject`'s auto-prepended ref), since a
+    ticket ref can never itself be a valid Conventional Commits type.
+    """
+    from no_human.core.task import commit_subject, conventional_subject_error
+
+    title = "fix(x): y"
+    assert conventional_subject_error(title) is None
+    for external_id in ("MON-123", "PROJ-7", "1234567890", "owner/repo#42"):
+        composed = commit_subject(title, external_id, "")
+        assert conventional_subject_error(composed) is not None, composed
+
+
 def test_aborts_when_export_guard_verify_fails(land_env):
     branch, head_sha = land_env.cut_branch(
         "no-human/t-verifyfail", extra_files={"FORCE_VERIFY_FAIL": "x"})

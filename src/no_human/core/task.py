@@ -65,7 +65,7 @@ def conventional_subject_error(subject: str) -> str | None:
     if ": " not in first_line:
         return "missing the ': ' separator after a type"
     head, _, description = first_line.partition(": ")
-    if not description:
+    if not description.strip():
         return "empty description after ':'"
     if head.endswith("!"):
         head = head[:-1]

@@ -872,12 +872,17 @@ def land_task(
                            "automatically; merge the PR yourself")
 
     # Fail CLOSED on a non-Conventional-Commits squash subject. The squash
-    # message's first line is built from the task title verbatim (below), and
+    # message's first line is built from the task title verbatim (step 5
+    # below: `redact_for_publish(task_title)`, with no `commit_subject()`
+    # external_id/prefix composition — that only happens for the per-attempt
+    # in-branch commit and the PR title, both of which step 5 discards), and
     # a task title is prose — 4 of the last 8 origin/main subjects (measured
     # 2026-09-19) were a prose task title that violated the operator's hard
     # rule (Conventional Commits v1.0.0, 2026-09-17). Validated on the
     # REDACTED string, which is the exact byte sequence that reaches git
-    # history. NEVER auto-rewrites: the title is the human's to correct.
+    # history — this call must stay byte-identical to step 5's own
+    # `redact_for_publish(task_title)` or the guard checks a string that
+    # never lands. NEVER auto-rewrites: the title is the human's to correct.
     from ..eval.vendor_terms import redact_for_publish
     from ..core.task import conventional_subject_error
     subject = redact_for_publish(task_title).splitlines()[0] if task_title else ""
