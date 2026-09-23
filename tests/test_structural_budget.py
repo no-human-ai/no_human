@@ -407,7 +407,12 @@ FROZEN_FUNCTION_LINES = {
     # published report carries the same recorded-branch/HEAD-fallback
     # disclosure as the terminal (see the `bench_run` note above). Measured
     # on the merge result with the scanner below.
-    "eval/northstar_card.py:render_northstar_md": 333,
+    # 333 -> 340 (+7): unexpected-honest-stops judging surfaces in the
+    # published report — a new comment block plus an f-string line reporting
+    # `stops_judged_correct` of `stops_judged`, explicitly called out as NOT
+    # part of the success rate above it. Measured on this tree with the
+    # scanner below.
+    "eval/northstar_card.py:render_northstar_md": 340,
     "core/orchestrator.py:Orchestrator._reformat_summary_markdown": 327,
     "core/orchestrator.py:Orchestrator._generate_plan": 322,
     "core/orchestrator.py:Orchestrator._scan_leaf_blocks": 319,
