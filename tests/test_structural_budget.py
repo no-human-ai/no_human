@@ -1723,7 +1723,14 @@ FROZEN_FILE_LINES = {
     # that runs the fresh-session reviewer and the tamper guard over the
     # current branch or a GitHub PR with no daemon, no server, and no Store).
     # Measured via `wc -l src/no_human/cli/commands.py` (agrees: 9250).
-    "cli/commands.py": 9250,
+    # 9250 -> 9264 (+14): `task_cancel._go`'s unconfirmed-cancel branch no
+    # longer withdraws the stop flag it raised — clearing it there destroyed
+    # the only cooperative signal a live-in-another-process attempt could
+    # still observe, leaving a cancelled task running unaware and opening its
+    # own PR. Replaced the false "no live session can exist here" comment
+    # with the corrected ordering rationale. Measured via
+    # `wc -l src/no_human/cli/commands.py`.
+    "cli/commands.py": 9264,
     # api/app.py 5338 -> 5346 (+8): same budget-floor warning surfaced by
     # `send-back`/`reply` as `budget_warning` in the JSON response. Net cost
     # was trimmed from a naive +14 to +8 by computing `Bounds.from_config(...)`
