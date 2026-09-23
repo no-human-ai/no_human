@@ -109,24 +109,29 @@ def test_mutated_threshold_loses_the_fire():
 
 
 def test_mutated_progress_gate_also_loses_the_fire():
-    """The same acceptance criterion, but mutating the OTHER half of the
-    edit-loop hard tier it names explicitly: "its progress gate". Disabling
-    the ceiling tier too (raising `edit_ceiling`) isolates the progress-gated
-    tier from the absolute-ceiling tier, so a change that only broke the
-    progress gate is still caught."""
+    """The same acceptance criterion, but isolating the progress-gated half
+    of the edit-loop hard tier from the absolute-ceiling backstop: only
+    `edit_abort` is raised here (`bounds.py`'s `hard_stuck_reason` compares
+    it against `_hard_edit_counts`, the counter `record_edit` resets on an
+    observed progress signal — see that field's comment). `edit_ceiling`
+    (the raw, progress-blind backstop) is left at its default (30); the
+    fixture's real recorded edit count (15) never reaches it, so the loss
+    below is caused by the progress-gated tier alone, not by also disabling
+    the ceiling — proving `edit_abort` on its own is "the progress gate"
+    this criterion names, distinct from `test_mutated_threshold_loses_the_fire`
+    above, which raises both knobs together."""
     attempt = er.load_attempt_events(str(FIXTURE_DB), FIXTURE_ATTEMPT_ID)
 
     before = er.replay_fires(attempt.events, StuckDetector(), repo_root=attempt.repo_root)
-    # edit_abort unchanged, but edit_ceiling lowered below the recorded edit
-    # count so the ABSOLUTE ceiling tier would mask a broken progress gate if
-    # we didn't also confirm the specific reason text changed.
-    detector = StuckDetector()
-    after_events = attempt.events
-    after = er.replay_fires(after_events, detector, repo_root=attempt.repo_root)
-    assert after == before  # sanity: unmutated detector reproduces identically
+    after = er.replay_fires(
+        attempt.events,
+        StuckDetector(edit_abort=1000),
+        repo_root=attempt.repo_root,
+    )
 
-    result = er.diff(before, before)
-    assert result == {"lost": set(), "new": set()}
+    result = er.diff(before, after)
+    assert result["lost"] == {"hard-abort:edit-loop"}
+    assert result["new"] == set()
 
 
 # ---------------------------------------------------------------------------
