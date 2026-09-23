@@ -1506,12 +1506,18 @@ FROZEN_FILE_LINES = {
     # push) live in the new `vcs/recut.py`, not here — this is the
     # orchestrator-side wiring only. Measured on this tree with the
     # scanner below.
+    # 25039 -> 25070 (+31): `_already_satisfied_subject` gained the "ahead"
+    # remedy branch — a fast-forward push of the task's own branch via
+    # `push_sha_fast_forward`, re-check-and-accept on `up_to_date`, and
+    # named refusals on `ProtectedBranch`/`GitError`/a residual `ahead` —
+    # plus the `relation_reason["ahead"]` map entry. Measured on this tree
+    # with the scanner below.
     # 25039 -> 25047 (+8): `_park_quota` now stamps the park blocker with a
     # `"reset_exact"` field alongside the existing `"auth_profile"` /
     # `"infra"` fields, telling `scheduler.py` whether the parked wall is
     # the quota provider's own reset time or the self-correcting fallback
     # hour (issue #431). Measured on this tree with the scanner below.
-    "core/orchestrator.py": 25047,
+    "core/orchestrator.py": 25078,
 
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
