@@ -109,7 +109,7 @@ def load_events(task_id: str) -> list[dict]:
     """Load `_event_replay_fixture_events.json` (see the module docstring
     for its provenance) and substitute *task_id* for the placeholder baked
     into the worktree-style edit paths and every event's `task_id` field."""
-    raw = json.loads(EVENTS_JSON_PATH.read_text())
+    raw = json.loads(EVENTS_JSON_PATH.read_text(encoding="utf-8"))
     events = []
     for ev in raw:
         text = json.dumps(ev).replace(TASK_ID_PLACEHOLDER, task_id)
