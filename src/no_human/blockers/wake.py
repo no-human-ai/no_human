@@ -29,6 +29,7 @@ from ..core.task import Task, TaskStatus
 from ..vcs.pr_outcome import observe_pr
 from ..vcs.task_pr import resolve_task_pr
 from .shipped import _TICK_ABORTED, complete_if_content_landed as _complete_landed
+from .stall_watchdog import close_stalled_attempt, effective_stuck_active_minutes, stamp_resume_checkpoint, worker_liveness
 from .taxonomy import BlockerCategory, Blocker, resume_checkpoint, resume_provenance
 
 log = logging.getLogger("no_human.wake")
@@ -186,11 +187,8 @@ class WakeWatcher:
         self.max_pr_conflict_rounds = int(
             blockers_cfg.get("max_pr_conflict_rounds", 3)
         )
-        # Stuck-active watchdog threshold (minutes). Default 40 > the 30-min
-        # run_tests timeout, so a long test never trips it; a genuinely hung
-        # session does. 0 disables.
-        self.stuck_active_minutes = float(
-            blockers_cfg.get("stuck_active_minutes", 40))
+        # Stuck-active floor: see stall_watchdog.effective_stuck_active_minutes. 0 disables.
+        self.stuck_active_minutes = effective_stuck_active_minutes(config or {})
         # Bounded CI_GATE-integration-failure → fix cycles (M6), same pattern.
         self.max_ci_gate_fix_rounds = int(
             blockers_cfg.get("max_ci_gate_fix_rounds", 3)
@@ -490,8 +488,7 @@ class WakeWatcher:
         return actions
 
     async def _escalate_if_stalled(self, task: Task, *, now: datetime) -> bool:
-        """Escalate a task that has emitted no event for longer than the
-        stuck-active threshold. Returns True iff it escalated."""
+        """Escalate a task with no event for longer than the stuck-active threshold. Returns True iff it escalated."""
         if self.stuck_active_minutes <= 0:
             return False  # watchdog disabled
         if getattr(task, "cancel_requested", None):
@@ -500,28 +497,31 @@ class WakeWatcher:
         if last_ts is None:
             return False  # never emitted — leave to the normal loop / startup
         age_min = (now.timestamp() - last_ts) / 60.0
-        if age_min < self.stuck_active_minutes:
+        if age_min < self.stuck_active_minutes or worker_liveness(self.config, task.id) is not False:
             return False
         # Load-bearing terminal guard (SCRUM-68) — a task shipped/cancelled
         # between the caller's list fetch and this write must not be flipped
         # to ESCALATED by the stall watchdog.
         if await self._is_terminal(task):
             return False
+        stalled_status = task.status.value
+        await stamp_resume_checkpoint(self.store, task)
         data = task.blocker or {}
         data["category"] = "NOVEL_UNKNOWN"
         data["question"] = (
-            f"This task stalled in {task.status.value} — no activity for "
+            f"This task stalled in {stalled_status} — no activity for "
             f"{age_min:.0f} min. The agent/reviewer session likely hung. "
             "Resume to retry, or take over?")
         data["root_cause_hypothesis"] = (
-            f"no event for {age_min:.0f} min while {task.status.value}; "
+            f"no event for {age_min:.0f} min while {stalled_status}; "
             "probable hung Agent-SDK session")
         task.blocker = data
         await self.store.update_task_columns(task)
         await self.store.set_status(task, TaskStatus.ESCALATED, validate=False)
+        usage_note = await close_stalled_attempt(self.store, task, age_min=age_min, stalled_status=stalled_status)
         await self._emit(task, "escalated_stalled",
-                         f"{task.id[:8]} stalled in {task.status.value} "
-                         f"({age_min:.0f}m no activity) — escalated")
+                         f"{task.id[:8]} stalled in {stalled_status} "
+                         f"({age_min:.0f}m no activity) — escalated{usage_note}")
         return True
 
     # Throttled liveness proof. A healthy parked task produces no action

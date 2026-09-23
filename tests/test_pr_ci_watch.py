@@ -389,7 +389,16 @@ async def test_the_evaluate_rung_does_not_reprobe_after_confirming_shipped(store
 # needed a hand-run `nh doctor` to spot. The watchdog escalates it honestly.
 
 def _stuck_watcher(store, *, minutes=30):
-    return WakeWatcher(store, {"blockers": {"stuck_active_minutes": minutes}})
+    # `attempt_timeout_s` is set small enough that `effective_stuck_active_
+    # minutes`'s floor (ceil(attempt_timeout_s / 60) + 1) sits below `minutes`
+    # itself, so the effective threshold these tests see is exactly `minutes`
+    # — unchanged from before the stall-watchdog-ordering fix. Without this,
+    # every `minutes=30` case here would be silently raised to the (default
+    # 3600s attempt_timeout_s) 61-minute floor and stop escalating.
+    return WakeWatcher(store, {
+        "blockers": {"stuck_active_minutes": minutes},
+        "bounds": {"attempt_timeout_s": minutes * 60 / 4},
+    })
 
 
 async def _active_task(store, *, last_event_age_min: float | None):
@@ -812,14 +821,25 @@ async def test_a_real_operator_comment_still_resumes(store):
 async def test_stalled_active_task_escalates_honestly(store):
     """2026-07-11: a hung Agent-SDK reviewer left a task in 'reviewing'
     forever, holding a worker slot and never failing. The watchdog escalates
-    a task with no event past the threshold."""
+    a task with no event past the threshold.
+
+    The stale age here (65m) is past the *effective* stuck-active threshold,
+    not the raw 40-min config value: with the default `bounds.
+    attempt_timeout_s` of 3600s (60m), `effective_stuck_active_minutes`
+    floors the threshold at 61m so this watchdog can never fire before the
+    attempt-level one does (see wake.py's stall-watchdog-ordering fix). A
+    50-min-old event — enough to trip the raw 40-min config, not enough to
+    clear the 61-min floor — used to escalate here, 20 minutes before the
+    attempt-level bound that actually detects a hung backend; that false
+    escalation is exactly the bug this floor exists to prevent.
+    """
     import time
     t = Task.new("stalled", repo_path="/tmp/x")
     await store.create_task(t)
     await store.set_status(t, TaskStatus.REVIEWING, validate=False)
-    # An event 50 minutes old (> the 40-min default threshold).
+    # An event 65 minutes old — past the *effective* (floored) threshold.
     await store.save_events(t.id, [{"source": "orchestrator", "kind": "state",
-                                    "text": "reviewing", "ts": time.time() - 3000}])
+                                    "text": "reviewing", "ts": time.time() - 65 * 60}])
     events = []
     w = _watcher(store, events=events)
     # The sweep judges only worker-claimed tasks — a hung session HOLDS a slot.

@@ -19,7 +19,7 @@ from typing import (
 import aiosqlite
 
 from . import slot_wait
-from .attempt_completion import stamp_completion
+from .attempt_completion import stamp_completion, utc_now_iso
 from .task import (
     IllegalTransition,
     Task,
@@ -2823,6 +2823,35 @@ class Store:
         await self.db.commit()
         return int(cur.rowcount or 0)
 
+    async def abandon_open_attempt(
+        self, task_id: str, *, reason: str,
+    ) -> dict[str, Any] | None:
+        """Close *task_id*'s open attempt ``interrupted`` with usage columns
+        coerced non-NULL, for the stall sweep escalating a task whose worker
+        may STILL be running (`close_open_attempts` above runs only once it
+        is gone). No raw SQL: composed from `latest_open_attempt` /
+        `update_attempt` / `latest_attempt`, so `update_attempt`'s commit,
+        `stamp_completion`, and never-clobber contract land for free — a
+        still-NULL usage column becomes an honest zero. None if there is no
+        open row (idempotent under a repeat sweep pass)."""
+        row = await self.latest_open_attempt(task_id)
+        if row is None:
+            return None
+        def keep(col: str) -> int:
+            return row[col] if row[col] is not None else 0
+        await self.update_attempt(
+            row["id"],
+            status="interrupted",
+            completed_at=row["completed_at"] or utc_now_iso(),
+            failure_reason=(row["failure_reason"] or "").strip() or reason,
+            turns_used=keep("turns_used"),
+            tokens_used=keep("tokens_used"),
+            output_tokens=keep("output_tokens"),
+            cache_read_tokens=keep("cache_read_tokens"),
+            cache_creation_tokens=keep("cache_creation_tokens"),
+        )
+        return await self.latest_attempt(task_id)
+
     @serialized_write
     async def add_verification_receipt(self, attempt_id: str, receipt: Any) -> None:
         """Append one verification receipt to *attempt_id*.
@@ -3694,67 +3723,32 @@ class Store:
         does not go back for what walked through it. See the block below.
         """
         # ── STRANDED ROWS, and what this change does NOT do to them ────────
+        # Measured 2026-08-07 against a `cp` of the operator's live database
+        # (a snapshot of one install, not a schema property): 20 pre-existing
+        # rows have `confirmed = 0` with a `source` `pending()` does not
+        # select — 18 `source='confirmed'` (no known producer: `confirm_memory`
+        # is the only writer of that literal and always sets `confirmed = 1`
+        # in the same UPDATE, so the combination is unexplained, not
+        # impossible — e.g. a hand-run UPDATE or an older code path) and 2
+        # `source='reply'` (the known producer: `nh reply`'s mined learning,
+        # the bug this guard exists for).
         #
-        # Measured 2026-08-07 against a `cp` of the operator's live database —
-        # never the live file, which a running server holds open — so the
-        # numbers below are a snapshot of one install, not a property of the
-        # schema. 20 rows have `confirmed = 0` and a `source` that `pending()`
-        # does not select, in two shapes:
+        # They are not fully inert: `LearningQueue.pending()`, `active()`,
+        # `GET /api/learnings`, prompt injection, and session recall all
+        # exclude them (confirmed=1 or source='proposed' required), so they
+        # can never become an active rule or reach the human confirm gate —
+        # but `learning/curator.py`'s `curate()` still reads
+        # `list_memories(confirmed=False)` with no source filter, so its
+        # dedupe/LLM passes can touch them, and `nh recall --include-pending`
+        # still lists them.
         #
-        #   18 rows  source='confirmed', confirmed=0
-        #            created_at  2026-07-01 13:40:03 (all 18, identical)
-        #            updated_at  2026-07-01T13:40:39.458782+00:00
-        #                     …  2026-07-01T13:40:39.467533+00:00
-        #            origin NULL, archived 0
-        #    2 rows  source='reply', confirmed=0
-        #            created 2026-07-26 23:53:41 and 2026-07-27 00:14:28
-        #
-        # The 2 reply rows have a known producer: `nh reply`'s mined learning
-        # passed source="reply", which is the bug this guard exists for.
-        #
-        # The 18 do not, and the honest claim is narrower than it is tempting to
-        # make. `confirm_memory` DOES write source='confirmed' — it is the only
-        # writer of that literal anywhere in this repo's history (`git log --all
-        # -S"source = 'confirmed'" -- src` returns exactly one commit, the one
-        # that introduced the method) — and it has always set `confirmed = 1` in
-        # the SAME UPDATE. So it is the COMBINATION that has no producer either
-        # this session or the review before it could find. Not "no code path can
-        # produce it": nothing here rules out a hand-run UPDATE, an older tree,
-        # or a path we did not think to look at. One more clue, recorded rather
-        # than interpreted: `created_at` on all 18 is in the column DEFAULT's
-        # format (`datetime('now')` — space separator, no offset) while
-        # `updated_at` is Python `_now()`'s ISO-8601 with microseconds, so the
-        # rows were inserted with the default and updated 36 seconds later by
-        # something in Python. Which thing, we could not establish.
-        #
-        # WHAT "STRANDED" MEANS HERE, precisely — the first draft of this said
-        # "no code path will ever surface them again", and that is false:
-        #   · NOT reachable: `LearningQueue.pending()` (source='proposed'),
-        #     `active()` and `GET /api/learnings` (confirmed=1), prompt
-        #     injection via `list_memories(confirmed=True, …)`, and
-        #     `context/sessions.py`'s recall (`WHERE confirmed = 1`). So they
-        #     can never become an active rule, and can never reach the human
-        #     confirm gate — the two paths that decide anything.
-        #   · STILL reachable: `learning/curator.py`'s `curate()` reads
-        #     `list_memories(confirmed=False)` with no source filter, so its
-        #     dedupe pass can archive one as a duplicate and its LLM pass can
-        #     propose archiving or consolidating it; and `nh recall <q>
-        #     --include-pending` lists them as "memory (pending)".
-        #
-        # THIS BRANCH RUNS NOTHING AGAINST THEM. There is no migration here and
-        # no write to the operator's database. The options are the operator's:
-        #   1. Leave them. Nothing injects them into any prompt. The only cost
-        #      is that an ad-hoc count of "pending learnings" disagrees with the
-        #      queue by 20.
-        #   2. Re-queue them — `UPDATE memories SET source='proposed' WHERE
-        #      confirmed=0 AND source<>'proposed'` — which is the only option
-        #      that hands the decision back, at the cost of 20 more rows on a
-        #      queue already holding 329.
-        #   3. Archive them (`archived=1`), keeping the rows and their dedupe
-        #      keys while removing them from the curator's input.
-        # Deleting them is not on the list: the row carries the dedupe key, and
-        # their content is environment notes about the operator's own machine
-        # and workplace — not quoted here, because this file ships.
+        # THIS BRANCH RUNS NOTHING AGAINST THEM — no migration, no write to
+        # the operator's database. Left to the operator: leave them (only
+        # cost is an ad-hoc pending-count mismatch), re-queue them (`UPDATE
+        # memories SET source='proposed' WHERE confirmed=0 AND
+        # source<>'proposed'`), or archive them (`archived=1`). Not deleting:
+        # the row carries the dedupe key, and content is the operator's own
+        # environment notes, not quoted here because this file ships.
         if not confirmed and source != SOURCE_PROPOSED:
             raise ValueError(
                 f"add_memory(confirmed=False, source={source!r}) would write a "
