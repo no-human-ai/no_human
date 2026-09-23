@@ -6,6 +6,14 @@ All notable changes to no_human. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- **An already-satisfied review PASS now stamps the commit it judged onto the
+  attempt row**, not just onto `review_history`. Previously the attempt row
+  was left with `review_passed=1, commit_sha=NULL` — gate-ready on the board
+  while `nh approve`'s merge precondition correctly refused it, and the PR
+  kept pointing at a pre-review branch head. An unresolvable head still
+  stamps nothing, so the merge gate keeps refusing it in that case.
+
 ## [0.2.4] - 2026-09-17
 
 ### Added
