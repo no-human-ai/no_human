@@ -6,6 +6,20 @@ All notable changes to no_human. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- **`nh approve` no longer blocks a land on a report-only history scan it
+  cannot fail.** The land's push runs from the operator's main checkout,
+  which can carry its own `core.hooksPath` pre-push hook distinct from the
+  agent worktree guard (`push_hook.py`); when that hook's mode is
+  report-only (`NH_GUARD_MODE` unset/`"report"`), it logs a verdict but can
+  never refuse the push, so waiting for it inline bought nothing — on a
+  loaded machine a slow scan there read exactly like a hung land. The push
+  now defers that hook (push with `--no-verify`, then re-run the identical
+  hook out of band) only when it is actually safe to: report mode, a hook
+  present, and the `NH_LAND_GUARD_DEFER=0` escape hatch not set. Any other
+  mode (`"enforce"`, or an unrecognised value) still runs the hook inline
+  and can still refuse the land — see `vcs/land_guard.py`.
+
 ## [0.2.4] - 2026-09-17
 
 ### Added

@@ -146,6 +146,7 @@ from typing import Callable
 
 from ..agent.session_mark import current_mark
 from ..proc import _VENV_INTERPRETERS, real_python
+from . import land_guard
 from .git import GitError, GitRepo, ProtectedBranch
 from .pr_watcher import parse_pr_url
 
@@ -192,6 +193,13 @@ class LandResult:
     #: Human-readable reason behind ``gate`` — also folded into ``message``
     #: on success and into ``stderr`` on a tests-step failure.
     gate_reason: str = ""
+    #: What step 7 decided about the checkout's pre-push hook — e.g. that a
+    #: report-mode gate was deferred out of band, or that it ran inline
+    #: because it can refuse the land (``NH_GUARD_MODE=enforce``) or because
+    #: the checkout has none. Also folded into ``message`` on success, so a
+    #: synchronous scan under load reads as "the gate is running" rather than
+    #: as a hang. See `land_guard.py`.
+    guard_note: str = ""
 
 
 def _cap(text: str) -> str:
@@ -1328,17 +1336,25 @@ def _land_in_worktree(
     # installs a pre-push hook there (push_hook.py) that refuses any push
     # whose resolved ref matches `never_push_to` — the agent's second
     # enforcement point. This IS the one sanctioned protected-branch write
-    # (a human `nh approve`, never the agent), and the main repo carries no
-    # such hook, so pushing from there is what makes this write reach the
-    # remote at all. Both worktrees share one object database, so the sha
-    # created in the worktree is already visible here.
-    push_proc = _sh(
-        ["git", "push", remote, f"{landed_sha}:refs/heads/{default}"],
-        cwd=repo.path,
-    )
+    # (a human `nh approve`, never the agent). The main repo is NOT hookless,
+    # though: it carries its OWN `core.hooksPath` pre-push hook (unrelated to
+    # `push_hook.py`, which only ever installs into a worktree's
+    # `core.hooksPath`), and a plain `git push` here runs that hook inline —
+    # `land_guard.plan_push` decides whether that has to happen synchronously
+    # (the hook can refuse the push, or none was found) or can be deferred:
+    # push with `--no-verify` and re-run the identical hook out of band, so a
+    # report-only scan that can never fail the push stops sitting on this
+    # land's critical path. Both worktrees share one object database, so the
+    # sha created in the worktree is already visible here.
+    guard_plan = land_guard.plan_push(repo.path, os.environ)
+    push_cmd = ["git", "push"]
+    if guard_plan.defer:
+        push_cmd.append("--no-verify")
+    push_cmd += [remote, f"{landed_sha}:refs/heads/{default}"]
+    push_proc = _sh(push_cmd, cwd=repo.path)
     if push_proc.returncode != 0:
         return LandResult(ok=False, step="push", branch=branch, pr_url=pr_url,
-                           landed_sha=landed_sha,
+                           landed_sha=landed_sha, guard_note=guard_plan.reason,
                            stderr=_cap(push_proc.stdout + "\n" + push_proc.stderr))
 
     ls_proc = _sh(["git", "ls-remote", remote, f"refs/heads/{default}"], cwd=repo.path)
@@ -1346,16 +1362,29 @@ def _land_in_worktree(
     if remote_sha != landed_sha:
         return LandResult(
             ok=False, step="push", branch=branch, pr_url=pr_url, landed_sha=landed_sha,
+            guard_note=guard_plan.reason,
             stderr=f"remote ref did not advance to {landed_sha} "
                    f"(saw {remote_sha or '(none)'})")
+
+    guard_note = guard_plan.reason
+    if guard_plan.defer and guard_plan.hook is not None:
+        remote_url = _sh(["git", "remote", "get-url", remote], cwd=repo.path).stdout.strip()
+        log_dir = land_guard.resolve_log_dir(repo.path)
+        _started, spawn_note, _log_path = land_guard.run_deferred_gate(
+            repo.path, guard_plan.hook, remote, remote_url, landed_sha,
+            f"refs/heads/{default}", current_tip, log_dir)
+        guard_note = f"{guard_plan.reason}; {spawn_note}"
 
     # -- step 8: close the PR, without a comment ---------------------------#
     _step(on_step, "close_pr")
     close_cwd = repo.path if repo.path.exists() else Path(tempfile.gettempdir())
     close_note = _close_pr(pr_url, close_cwd)
     msg = f"landed {landed_sha[:12]} onto {default}; gate: {gate_reason}"
+    if guard_note:
+        msg += f"; guard: {guard_note}"
     if close_note:
         msg += f"; {close_note}"
     return LandResult(ok=True, step="close_pr", branch=branch, pr_url=pr_url,
                       reconciled=reconciled_note, gate=gate, gate_reason=gate_reason,
+                       guard_note=guard_note,
                        landed_sha=landed_sha, message=msg)
