@@ -1,12 +1,12 @@
 # Merge-ready policy
 
-_Harness-captured record for task `77eb6fc4`, commit `c76e5cbeac8575c77378efd1c4055e9f8b86d1c6` — not model-authored: no_human wrote this file from the repo's merge policy evaluated against this commit — advisory to the human, nothing merges on it. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `77eb6fc4`, commit `249dda000ec66e60eb7152f234abcd8fcb862b45` — not model-authored: no_human wrote this file from the repo's merge policy evaluated against this commit — advisory to the human, nothing merges on it. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ```json
 {
   "policy_changed_in_diff": false,
   "problems": [],
-  "ready": true,
+  "ready": false,
   "rules": [
     {
       "detail": "review PASSED on head",
@@ -14,9 +14,9 @@ _Harness-captured record for task `77eb6fc4`, commit `c76e5cbeac8575c77378efd1c4
       "passed": true
     },
     {
-      "detail": "tests: 0 failed of 13555 run",
+      "detail": "tests: 1 failed of 13573 run",
       "name": "tests_ran_and_passed",
-      "passed": true
+      "passed": false
     },
     {
       "detail": "tamper guard did not fire",
@@ -34,12 +34,12 @@ _Harness-captured record for task `77eb6fc4`, commit `c76e5cbeac8575c77378efd1c4
       "passed": true
     },
     {
-      "detail": "ci: none reported (tolerated)",
+      "detail": "ci: success",
       "name": "ci",
       "passed": true
     }
   ],
   "source": "default",
-  "summary": "ready \u2014 6 of 6 rules satisfied"
+  "summary": "not ready \u2014 1 of 6 rules failed: tests_ran_and_passed"
 }
 ```

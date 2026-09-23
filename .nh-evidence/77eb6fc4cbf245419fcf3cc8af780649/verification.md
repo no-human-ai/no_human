@@ -1,48 +1,31 @@
 # How I verified this — full log
 
-_Harness-captured record for task `77eb6fc4`, commit `c76e5cbeac8575c77378efd1c4055e9f8b86d1c6` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
+_Harness-captured record for task `77eb6fc4`, commit `249dda000ec66e60eb7152f234abcd8fcb862b45` — not model-authored: no_human wrote this file from the command receipts a PostToolUse observer recorded. It records what the gate produced; it is not a verdict of the model that wrote the code._
 
 ## How I verified this
-4 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
+2 commands recorded - as recorded (shortened, folded onto one line), grouped by kind. **No entry asserts a pass or a fail:** read the output. Not necessarily everything the session ran.
 
 ### test
-- `uv run pytest -q tests/test_funnel_eval.py tests/test_funnel_criteria.py 2>&1 | tail -60`
+- `uv run pytest tests/test_funnel_eval.py -q -k "cost_reference or missing_reference or corrupt_reference or appends_its_own or refused_night_never or record_cost_reference or no_record_carries or output_premium or the_cost_verdict" 2>&1 | tail -100`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-..............................................                           [100%]
-46 passed in 42.53s
-```
-
-- `uv run pytest -q tests/test_funnel_corpus.py tests/test_structural_budget.py 2>&1 | tail -30`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-....................................                                     [100%]
-36 passed in 4.79s
-```
-
-- `uv run pytest -q -n 4 tests/test_funnel_eval.py tests/test_funnel_criteria.py tests/test_funnel_corpus.py tests/test_structural_budget.py 2>&1 | tail -40`
-
-```
-warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
-bringing up nodes...
-bringing up nodes...
-
-........................................................................ [ 87%]
+   Building no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/77eb6fc4cbf245419fcf3cc8af780649.56167.6374f450
+      Built no-human @ file:///Users/eyalgolan/.<redacted>/worktrees/77eb6fc4cbf245419fcf3cc8af780649.56167.6374f450
+Installed 73 packages in 1.56s
 ..........                                                               [100%]
-82 passed in 15.45s
+10 passed, 30 deselected in 53.98s
 ```
 
-- `uv run pytest -q -n 4 tests/test_funnel_eval.py tests/test_funnel_criteria.py 2>&1 | tail -10`
+- `uv run pytest tests/test_funnel_eval.py tests/test_funnel_criteria.py -q -n 4 2>&1 | tail -100`
 
 ```
 warning: `VIRTUAL_ENV=/Users/eyalgolan/git/<redacted>-public/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
 bringing up nodes...
 bringing up nodes...
 
-..............................................                           [100%]
-46 passed in 16.99s
+...................................................                      [100%]
+51 passed in 138.08s (0:02:18)
 ```
 
 
