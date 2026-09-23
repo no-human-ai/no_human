@@ -71,3 +71,42 @@ def test_mixed_opaque_and_test_id_names_route_to_the_fix_loop():
     ci = _ci_with_failures(["Python", "com.acme.billing.InvoiceIT.testTotals"])
     changed = ["tests/test_wake.py"]
     assert _ci_failure_unrelated(ci, changed) is None
+
+
+def test_looks_like_test_id_discriminates_substring_from_shape():
+    """Send-back on ticket 429/E1A: the dotted-id branch used to accept any
+    segment CONTAINING a test-ish substring (``re.search``), so a name whose
+    only "test-shaped" segment was an unrelated word merely containing
+    "Test"/"IT" was wrongly treated as a real test identifier — which let
+    ``_ci_failure_unrelated`` proceed to stem-match it and possibly report a
+    false "unrelated" verdict for a failure that might be ours.
+
+    OVERMATCH rows (must be False): four segments that only CONTAIN a
+    test-ish substring without a segment ending/starting in the marker shape
+    — "EDITservice" contains "IT", "MONOLITH" contains "IT", "Latest"
+    contains "test" (lowercase, not a capital-"Test" suffix), "GIT" is just
+    a 1-letter prefix + "IT" and was the sole test-shaped segment.
+
+    CONTROL rows (must stay True): the pytest node id, dotted JUnit id, and
+    bare class name shapes the function is meant to accept — these are the
+    same shapes exercised by the criterion/negative-control tests above,
+    repeated here so this test alone proves the rule discriminates rather
+    than merely accepts."""
+    from no_human.core.orchestrator import _looks_like_test_id
+
+    overmatch_names = [
+        "com.acme.EDITservice.render",
+        "org.example.MONOLITH.deploy",
+        "com.acme.Latest.build",
+        "a.GIT",
+    ]
+    for name in overmatch_names:
+        assert _looks_like_test_id(name) is False, name
+
+    control_names = [
+        "tests/test_x.py::test_y",  # pytest node id
+        "com.acme.billing.InvoiceIT.testTotals",  # dotted JUnit id
+        "InvoiceServiceTest",  # bare class name
+    ]
+    for name in control_names:
+        assert _looks_like_test_id(name) is True, name

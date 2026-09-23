@@ -1700,7 +1700,19 @@ def _classify_error(stop_reason: str | None, text: str,
     return "error"
 
 
-_TESTish = r"(?:[Tt]est|IT|Spec|TestCase)"
+# A segment "looks test-shaped" iff it ENDS with a test marker
+# (Test/Tests/TestCase/IT/Spec) preceded by at least one more identifier
+# character, or STARTS with `Test` followed by an uppercase letter. The
+# `\w+` (not `\w*`) before the marker is load-bearing: a bare one-letter
+# prefix would let acronyms/words that merely CONTAIN the marker slip
+# through — e.g. "GIT" (= "G" + "IT"), "EDITservice", "MONOLITH" (contains
+# "IT" as a substring, not a suffix), "Latest" (contains "test" but doesn't
+# END in capital-"Test") — the send-back on ticket 429/E1A. Same regex is
+# reused for both the bare-name and the per-segment check so there is one
+# notion of "test-ish", not two.
+_TEST_SHAPE_RE = re.compile(
+    r"(?:[A-Za-z_]\w+(?:Test|Tests|TestCase|IT|Spec)|Test[A-Z]\w*)"
+)
 
 
 def _looks_like_test_id(name: str) -> bool:
@@ -1709,24 +1721,26 @@ def _looks_like_test_id(name: str) -> bool:
     ``test (3.12)``). Only opaque-vs-identifier shape is decided here — no
     attempt to resolve it against the diff. Accepts exactly three shapes:
     a pytest node id (``tests/test_x.py::test_y``), a dotted JUnit-style id
-    where every segment is identifier-ish and at least one segment is
-    test-ish (``com.acme.billing.InvoiceIT.testTotals``), or a bare class
-    name ending/prefixed with a test marker (``InvoiceServiceTest``,
-    ``TestInvoiceService``). Anything else — including job labels with
-    spaces, parens, or no test-ish segment — is opaque."""
+    where every segment is identifier-ish and at least one segment matches
+    the SAME test-shape rule as the bare-class case
+    (``com.acme.billing.InvoiceIT.testTotals``), or a bare class name
+    ending/prefixed with a test marker (``InvoiceServiceTest``,
+    ``TestInvoiceService``). A segment that merely CONTAINS a test-ish
+    substring without ending/starting with it (``EDITservice``,
+    ``org.example.MONOLITH``, ``a.GIT``) does not count. Anything else —
+    including job labels with spaces, parens, or no test-shaped segment —
+    is opaque."""
     name = name.strip()
     if not name:
         return False
     if "::" in name:
         left = name.split("::", 1)[0]
         return left.endswith(".py")
-    if re.fullmatch(r"[A-Za-z_]\w*(?:Test|Tests|TestCase|IT|Spec)", name) or re.fullmatch(
-        r"Test[A-Z]\w*", name
-    ):
+    if _TEST_SHAPE_RE.fullmatch(name):
         return True
     segments = name.split(".")
     if len(segments) >= 2 and all(re.fullmatch(r"[A-Za-z_][\w-]*", seg) for seg in segments):
-        return any(re.search(_TESTish, seg) for seg in segments)
+        return any(_TEST_SHAPE_RE.fullmatch(seg) for seg in segments)
     return False
 
 
