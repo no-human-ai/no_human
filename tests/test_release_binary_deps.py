@@ -185,9 +185,12 @@ def test_both_release_jobs_cache_the_electron_builder_binaries():
         cache_step = _step(job, "Cache electron-builder's downloaded binaries")
         assert cache_step.get("uses", "").startswith("actions/cache@v4")
 
+        # The path references the pinned env vars rather than repeating the
+        # literal directories, so assert on those names; the exact entries are
+        # pinned by test_the_cache_path_matches_the_pinned_env_vars_exactly.
         path = cache_step["with"]["path"]
-        assert "electron-builder" in path
-        assert "electron" in path
+        assert "ELECTRON_BUILDER_CACHE" in path
+        assert "ELECTRON_CACHE" in path
 
         key = cache_step["with"]["key"]
         assert "hashFiles('desktop/package-lock.json')" in key
@@ -488,13 +491,32 @@ def test_the_doc_forbids_the_retry_loop_explicitly():
 # Cross-cutting: both jobs pin the electron/electron-builder cache dirs
 # ---------------------------------------------------------------------------
 
+#: The cache env vars are set by the job's FIRST STEP writing to $GITHUB_ENV,
+#: not by a job-level `env:`. They cannot live at job level: `runner` is not an
+#: available context there, and one unavailable context rejects the WHOLE
+#: workflow — GitHub creates zero jobs and every gate in the file stops running
+#: (fixed in 8c22f68f; guarded by tests/test_workflow_job_contexts.py).
+_PIN_STEP = "Point electron-builder's caches at the runner temp dir"
+#: Both shells quote the assignment — pwsh `"NAME=..." | Out-File`, bash
+#: `echo "NAME=..." >> "$GITHUB_ENV"` — so match the quoted pair rather
+#: than anchoring at line start, which only the pwsh form satisfies.
+_PIN_RE = re.compile(r'"(ELECTRON_BUILDER_CACHE|ELECTRON_CACHE)=([^"]+)"')
+
+
+def _pinned_cache_env(job):
+    """``{name: value}`` as the pin step exports them, for either shell."""
+    run = _step(job, _PIN_STEP)["run"]
+    found = dict(_PIN_RE.findall(run))
+    assert found, f"no ELECTRON_* pins found in the {_PIN_STEP!r} step"
+    return found
+
+
 def test_both_release_jobs_pin_electron_cache_env_vars():
     workflow = _load_workflow()
     for job_name in ("windows", "linux"):
-        job = _job(workflow, job_name)
-        env = job.get("env", {})
-        assert "ELECTRON_CACHE" in env
-        assert "ELECTRON_BUILDER_CACHE" in env
+        env = _pinned_cache_env(_job(workflow, job_name))
+        assert "ELECTRON_CACHE" in env, job_name
+        assert "ELECTRON_BUILDER_CACHE" in env, job_name
 
 
 def test_the_pinned_cache_dirs_are_not_a_bare_tilde():
@@ -509,8 +531,7 @@ def test_the_pinned_cache_dirs_are_not_a_bare_tilde():
     """
     workflow = _load_workflow()
     for job_name in ("windows", "linux"):
-        job = _job(workflow, job_name)
-        env = job["env"]
+        env = _pinned_cache_env(_job(workflow, job_name))
         for name in ("ELECTRON_BUILDER_CACHE", "ELECTRON_CACHE"):
             value = env[name]
             assert not value.startswith("~"), (
@@ -530,10 +551,18 @@ def test_the_cache_path_matches_the_pinned_env_vars_exactly():
     workflow = _load_workflow()
     for job_name in ("windows", "linux"):
         job = _job(workflow, job_name)
-        env = job["env"]
+        pinned = _pinned_cache_env(job)
         cache_step = _step(job, "Cache electron-builder's downloaded binaries")
         path_lines = [
-            line for line in cache_step["with"]["path"].splitlines() if line.strip()
+            line.strip() for line in cache_step["with"]["path"].splitlines()
+            if line.strip()
         ]
-        assert env["ELECTRON_BUILDER_CACHE"] in path_lines
-        assert env["ELECTRON_CACHE"] in path_lines
+        # ONE source of truth: the path entries ARE the env vars, so the
+        # directory actions/cache restores into cannot drift from the one
+        # electron-builder reads. Comparing two separately-written strings —
+        # what this used to do — passes right up until one of them is edited.
+        assert path_lines == [
+            "${{ env.ELECTRON_BUILDER_CACHE }}",
+            "${{ env.ELECTRON_CACHE }}",
+        ], f"{job_name}: cache path must reference the pinned env vars, got {path_lines}"
+        assert set(pinned) == {"ELECTRON_BUILDER_CACHE", "ELECTRON_CACHE"}, job_name
