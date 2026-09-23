@@ -128,11 +128,63 @@ def test_ci_empty_list_is_unknown_not_pass():
     """`default_pr_checks` returns [] for no-gh AND for no-CI. Neither is green."""
     assert po.classify_ci([]) == po.CI_UNKNOWN
     assert po.classify_ci(None) == po.CI_UNKNOWN
-    assert po.classify_ci([{"status": "pass"}]) == po.CI_PASS
-    assert po.classify_ci([{"status": "pass"}, {"status": "fail"}]) == po.CI_FAIL
-    assert po.classify_ci([{"status": "pass"}, {"status": "pending"}]) == po.CI_PENDING
+    assert po.classify_ci([{"status": "pass", "required": True}]) == po.CI_PASS
+    # A dict with no `required` key carries no required-ness evidence at all
+    # (never emitted by `default_pr_checks`, which always writes the key) —
+    # that is treated the same as "known non-required", i.e. unknown.
+    assert po.classify_ci([{"status": "pass"}]) == po.CI_UNKNOWN
+    assert po.classify_ci(
+        [{"status": "pass", "required": True}, {"status": "fail", "required": True}]
+    ) == po.CI_FAIL
+    assert po.classify_ci(
+        [{"status": "pass", "required": True}, {"status": "pending", "required": True}]
+    ) == po.CI_PENDING
     # A vocabulary we do not recognise is not a pass.
-    assert po.classify_ci([{"status": "weird"}]) == po.CI_UNKNOWN
+    assert po.classify_ci([{"status": "weird", "required": True}]) == po.CI_UNKNOWN
+
+
+def test_ci_all_non_required_green_is_unknown_not_pass():
+    """THE DEFECT THIS PINS. Measured on a real PR: the only check that ran
+    was a `pull_request_target` "CLA nudge" job that is always green and is
+    NOT one of the checks branch protection actually requires. A merge gate
+    that calls this `pass` is fail-open — it never observed the checks it
+    is supposed to be gating on.
+    """
+    assert po.classify_ci(
+        [{"name": "CLA nudge", "status": "pass", "required": False}]
+    ) == po.CI_UNKNOWN
+    # Not an arity artefact: still unknown with more than one non-required
+    # green check.
+    assert po.classify_ci([
+        {"name": "CLA nudge", "status": "pass", "required": False},
+        {"name": "welcome-bot", "status": "pass", "required": False},
+    ]) == po.CI_UNKNOWN
+
+
+def test_ci_required_green_still_passes():
+    """The both-directions guard: a fix that makes everything non-pass is not
+    a fix. At least one required check with status=pass, nothing failing or
+    pending, must still read as pass."""
+    assert po.classify_ci(
+        [{"name": "Python", "status": "pass", "required": True}]
+    ) == po.CI_PASS
+    # A non-required green alongside a required green is still a pass.
+    assert po.classify_ci([
+        {"name": "CLA nudge", "status": "pass", "required": False},
+        {"name": "Python", "status": "pass", "required": True},
+    ]) == po.CI_PASS
+
+
+def test_ci_failing_and_pending_outrank_required_ness():
+    """The required-check condition only gates the `pass` branch — it must
+    not swallow a real fail or pending into `unknown` just because the check
+    that failed or is pending happens to be non-required."""
+    assert po.classify_ci(
+        [{"name": "CLA nudge", "status": "fail", "required": False}]
+    ) == po.CI_FAIL
+    assert po.classify_ci(
+        [{"name": "CLA nudge", "status": "pending", "required": False}]
+    ) == po.CI_PENDING
 
 
 # --------------------------------------------------------------------------- #
@@ -342,6 +394,24 @@ async def test_observe_pr_never_raises_and_returns_the_outcome():
 
     assert await po.observe_pr(Broken(), "t1", GH_URL,
                                forge_state="MERGED") == po.MERGED
+
+
+async def test_observe_pr_records_unknown_for_all_non_required_green():
+    """The caller that actually consumes the fixed `classify_ci` return
+    value: `observe_pr` writes it straight into the recorded `ci_status`. A
+    PR-#541-shaped `checks` list must land as `unknown` in the stored row,
+    not `pass`."""
+    recorded = {}
+
+    class Capturing:
+        async def record_pr_outcome(self, **kw):
+            recorded.update(kw)
+
+    await po.observe_pr(
+        Capturing(), "t1", GH_URL, forge_state="OPEN",
+        checks=[{"name": "CLA nudge", "status": "pass", "required": False}])
+
+    assert recorded["ci_status"] == po.CI_UNKNOWN
 
 
 # --------------------------------------------------------------------------- #
