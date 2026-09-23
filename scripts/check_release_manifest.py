@@ -220,6 +220,73 @@ def _previous_rows(manifest_path: Path) -> dict[str, str]:
         return {}
 
 
+
+def _core_autocrlf(root: Path) -> str:
+    """Return the effective core.autocrlf value for diagnostics."""
+    try:
+        proc = subprocess.run(
+            ["git", "config", "--get", "core.autocrlf"],
+            cwd=root, capture_output=True, text=True,
+        )
+    except OSError:
+        return "unknown"
+    if proc.returncode != 0:
+        return "unset"
+    return (proc.stdout or "").strip() or "unset"
+
+
+def _lf_normalized_hash(root: Path, rel: str) -> str | None:
+    """Hash a regular file after CRLF -> LF conversion, for diagnosis only."""
+    path = root / rel
+    if path.is_symlink() or not path.is_file():
+        return None
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    if b"\r\n" not in data:
+        return None
+    normalized = data.replace(b"\r\n", b"\n")
+    if normalized == data:
+        return None
+    return hashlib.sha256(normalized).hexdigest()
+
+
+def _line_ending_matches(
+    root: Path,
+    expected: dict[str, str],
+    candidates: list[str] | None = None,
+) -> list[str]:
+    """Paths whose raw bytes drift but whose CRLF-normalized bytes match."""
+    allowed = set(candidates) if candidates is not None else None
+    matches: list[str] = []
+    for rel, digest in expected.items():
+        if rel == MANIFEST_NAME:
+            continue
+        if allowed is not None and rel not in allowed:
+            continue
+        path = root / rel
+        if not (path.exists() or path.is_symlink()):
+            continue
+        try:
+            actual = hash_path(root, rel)
+        except OSError:
+            continue
+        if actual == digest:
+            continue
+        if _lf_normalized_hash(root, rel) == digest:
+            matches.append(rel)
+    return sorted(matches)
+
+
+def _line_ending_detail(root: Path, paths: list[str]) -> str:
+    shown = ", ".join(paths[:3])
+    suffix = f" +{len(paths) - 3} more" if len(paths) > 3 else ""
+    return (
+        f"{len(paths)} pinned file(s) differ only by CRLF/LF conversion "
+        f"({shown}{suffix}); core.autocrlf={_core_autocrlf(root)}"
+    )
+
 def _warn_if_nearly_every_row_changed(previous: dict[str, str],
                                       rows: dict[str, str]) -> None:
     """Say so when a regeneration rewrites most of the manifest.
@@ -264,6 +331,23 @@ def write_manifest(root: Path) -> int:
                   f"    {APPROVE_CMD}", file=sys.stderr)
             return 2
 
+    line_ending_matches = _line_ending_matches(root, previous, tracked)
+    if line_ending_matches:
+        print(
+            f"--write: REFUSED — {_line_ending_detail(root, line_ending_matches)}. "
+            "Their LF-normalized bytes still match the reviewed manifest, so "
+            "regenerating now would replace reviewed LF hashes with checkout-"
+            "converted CRLF hashes.",
+            file=sys.stderr,
+        )
+        print(
+            "  Set 'git config core.autocrlf false', re-materialise the checkout "
+            "as LF, and re-run the check before regenerating. The existing "
+            "manifest was left byte-identical.",
+            file=sys.stderr,
+        )
+        return 2
+
     rows = {rel: hash_path(root, rel) for rel in tracked}
     body = "".join(f"{digest}  {rel}\n" for rel, digest in sorted(rows.items()))
     # Written as BYTES, which is the only way to be sure of them. Through the
@@ -304,6 +388,7 @@ def check_manifest(root: Path, *, strict: bool = False) -> int:
     # correctly-unpinned are counted, never reported as either.
     problems: list[str] = []
     unlisted: list[str] = []
+    line_ending_matches: list[str] = []
     if MANIFEST_NAME in listed:
         problems.append(f"{MANIFEST_NAME} lists itself; it cannot pin its own "
                         "content")
@@ -337,6 +422,8 @@ def check_manifest(root: Path, *, strict: bool = False) -> int:
             continue
         actual = hash_path(root, rel)
         if actual != listed[rel]:
+            if _lf_normalized_hash(root, rel) == listed[rel]:
+                line_ending_matches.append(rel)
             problems.append(
                 f"{rel}: content differs from the manifest "
                 f"(listed {listed[rel][:12]}…, actual {actual[:12]}…)")
@@ -357,23 +444,42 @@ def check_manifest(root: Path, *, strict: bool = False) -> int:
         for p in problems:
             print(f"  {p}", file=sys.stderr)
 
-    # One remedy, printed for either bucket, because both are answered by the
-    # same act: putting a row in the manifest. WHICH command does that is the
-    # thing this text exists to get right — in a classified tree `--write` is
-    # the damaging action, not the cure, so it is never recommended there.
+    if line_ending_matches:
+        print(
+            f"\n  LINE ENDINGS: {_line_ending_detail(root, line_ending_matches)}. "
+            "Their LF-normalized bytes match the reviewed pins exactly.",
+            file=sys.stderr,
+        )
+
+    # A classified tree must use the deliberate approval path. In an
+    # unclassified tree, a CRLF/LF-only mismatch must be repaired at checkout
+    # level BEFORE any manifest rewrite; otherwise --write would legitimize
+    # checkout-converted bytes as reviewed content.
     if problems or unlisted:
-        print("\n  REMEDY: " + (
-            f"pin each file deliberately — {APPROVE_CMD} — which is the one "
-            f"write path the export gate trusts. Do NOT run --write in this "
-            f"tree: it regenerates from the tree and {CLASSIFICATION_NAME} "
-            f"marks {len(unpinnable)} tracked path(s) that must never be pinned."
-            if unpinnable is not None else
-            f"regenerate with `python scripts/check_release_manifest.py "
-            f"--write`. That is safe here: this tree carries no "
-            f"{CLASSIFICATION_NAME}, so every tracked file ships and no "
-            f"private path can be pinned. In the source repo, which does carry "
-            f"one, use `scripts/export_guard.py approve` instead."),
-            file=sys.stderr)
+        if unpinnable is not None:
+            remedy = (
+                f"pin each file deliberately — {APPROVE_CMD} — which is the one "
+                f"write path the export gate trusts. Do NOT run --write in this "
+                f"tree: it regenerates from the tree and {CLASSIFICATION_NAME} "
+                f"marks {len(unpinnable)} tracked path(s) that must never be pinned."
+            )
+        elif line_ending_matches:
+            remedy = (
+                "restore an LF checkout before changing the manifest. Do NOT run "
+                "--write while the line-ending mismatch above is present: set "
+                "'git config core.autocrlf false', re-materialise the checkout, "
+                "and re-run this check. Address any remaining real content drift "
+                "only after the line-ending mismatch is gone."
+            )
+        else:
+            remedy = (
+                f"regenerate with `python scripts/check_release_manifest.py "
+                f"--write`. That is safe here: this tree carries no "
+                f"{CLASSIFICATION_NAME}, so every tracked file ships and no "
+                f"private path can be pinned. In the source repo, which does carry "
+                f"one, use `scripts/export_guard.py approve` instead."
+            )
+        print("\n  REMEDY: " + remedy, file=sys.stderr)
 
     if problems:
         return 1
