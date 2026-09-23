@@ -31,6 +31,46 @@ One process, one pull request, one comment, then exit. The state machine:
    :class:`no_human.ci_action.github.GitHubClient`'s narrow read surface, and
    synthesizes a unified diff from the API's own per-file ``patch`` text
    instead of running ``git diff``.
+   FORK ``workflow_run``: PR IDENTITY FROM AN ARTIFACT. ``pull_requests`` is
+   populated only for a SAME-repository PR; for a fork PR it is always
+   empty, because GitHub does not consider a fork PR "associated" with the
+   base repository's run in the way that field requires. A separate,
+   no-secret "recorder" workflow (out of scope for this module — it owns
+   ``.github/workflows/review-gate-recorder.yml``) runs on the fork branch
+   itself and uploads an artifact named :data:`_PR_CONTEXT_ARTIFACT`
+   containing a :data:`_PR_CONTEXT_MEMBER` member with ``{"number":
+   <int>, "head_sha": <40-hex str>}``. Because that job executes on the
+   contributor's own branch, every byte of the artifact is
+   ATTACKER-CONTROLLED and is treated that way end to end:
+   (a) BINDING — the artifact is fetched by
+   :meth:`no_human.ci_action.github.GitHubClient.find_run_artifact`, scoped
+   to ``github.event.workflow_run.id`` (the run that just triggered THIS
+   job), never looked up by name alone — see that method's and
+   ``github.py``'s ``_RUN_ARTIFACTS_PATH`` docstrings for why a name-only
+   listing is excluded from the write surface entirely, not merely unused.
+   (b) PARSING — :func:`_parse_pr_context` treats the downloaded zip as
+   hostile input: bounded member count, an exact (non-glob) required member
+   name with no ``..``/absolute path segments, a size cap enforced against
+   both the declared and the actual read length, and strict JSON/shape
+   validation of the two fields, including a case-sensitive 40-hex sha
+   regex and a strictly-positive, non-bool integer number.
+   (c) IDENTITY — a head sha alone does not uniquely identify a PR (two open
+   PRs can share a head sha against different bases), so the artifact's
+   claimed ``(number, head_sha)`` pair is only the FIRST filter
+   (:func:`_resolve_pr_context`); the pull request is then fetched BY THAT
+   NUMBER (never by a sha search) and :func:`_assert_pull_matches_run`
+   cross-checks the fetched pull's own number, head sha, head repository/
+   branch, and base repository/ref against what the triggering
+   ``workflow_run`` actually named, before any of it is trusted. Any
+   failure in (a)-(c) raises :class:`ActionError`/an artifact-layer error
+   that is funneled to :func:`_fail` (exit 2) BEFORE the credential is read
+   and before any comment is posted — a malformed or absent artifact fails
+   exactly like a missing credential, not like "nothing to review".
+   RESIDUAL RISK, not closed by any of the above: an attacker who opens two
+   of their OWN pull requests at the same head sha from the same fork
+   branch can still name either number in the artifact — nothing in a
+   ``workflow_run`` payload can narrow that further, since both are
+   equally "this attacker's own PR".
 2. CREDENTIAL. Exactly one of an OAuth token or an API key, read from the
    ``credential`` input, immediately masked (``::add-mask::``) before another
    line is printed, then used to set the ONE matching environment variable
@@ -91,12 +131,14 @@ One process, one pull request, one comment, then exit. The state machine:
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import os
 import re
 import subprocess
 import sys
 import tempfile
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -156,6 +198,27 @@ _TEST_FILE_DELETED_PREFIX = "test file deleted: "
 #: (`CLAUDE_CODE_OAUTH_TOKEN_<PROFILE>`) — never the bare `SUBSCRIPTION_TOKEN_VAR`
 #: itself, which each branch below sets or clears explicitly.
 _OAUTH_PROFILE_PREFIX = f"{SUBSCRIPTION_TOKEN_VAR}_"
+
+#: A fork PR's `workflow_run` event carries an EMPTY `pull_requests` array
+#: (GitHub only populates it for same-repository PRs — see the module
+#: docstring's TRUST GATE section). The no-secret "recorder" workflow that
+#: pairs with this Action (out of scope here; owned separately) uploads the
+#: PR's number and head sha as this artifact, written by a job that runs on
+#: the untrusted fork branch — every byte of it is attacker-controlled and
+#: is treated that way below.
+_PR_CONTEXT_ARTIFACT = "pr-context"
+_PR_CONTEXT_MEMBER = "pr.json"
+#: A `{number, head_sha}` JSON object is a few dozen bytes; 64 KiB is a
+#: generous cap that still refuses a cost-attack payload outright.
+_PR_CONTEXT_JSON_CAP = 64 * 1024
+#: However small legitimate zips are, an attacker can still fill one with
+#: many small members — cap the count so `zipfile`'s own bookkeeping stays
+#: bounded regardless of member size.
+_PR_CONTEXT_MAX_MEMBERS = 16
+#: A git commit sha is exactly 40 lowercase hex characters — `fullmatch`,
+#: never `search`/`match`, so a longer or differently-cased string refuses
+#: rather than silently truncating to a valid-looking prefix.
+_SHA_RE = re.compile(r"[0-9a-f]{40}")
 
 
 class ActionError(RuntimeError):
@@ -894,28 +957,229 @@ _REST_TAMPER_SKIP_REASON = (
 )
 
 
+def _trusted_workflow_run_fields(wr: dict[str, Any]) -> tuple[int, str, str, str]:
+    """Validate and return the ``workflow_run`` event's own trusted fields:
+    ``(run_id, head_sha, head_branch, head_repository_full_name)``.
+
+    These come off the ``workflow_run`` object GitHub itself sent us in the
+    triggering event payload — NOT off the artifact, which is attacker
+    content (see the module docstring). Every field is still validated for
+    shape before use, both because a malformed event is itself a signal
+    something is wrong and because `run_id` in particular is about to be
+    spliced into a URL. Defense in depth: when present, `event` must be
+    `"pull_request"` and `conclusion` must be `"success"` — a `workflow_run`
+    triggered any other way, or one whose own run failed, gets no artifact
+    trust extended to it.
+    """
+    run_id = wr.get("id")
+    if not isinstance(run_id, int) or isinstance(run_id, bool) or run_id <= 0:
+        raise ActionError(
+            "the `workflow_run` event's `id` is missing or not a positive integer"
+        )
+    head_sha = wr.get("head_sha")
+    if not isinstance(head_sha, str) or not _SHA_RE.fullmatch(head_sha):
+        raise ActionError(
+            "the `workflow_run` event's `head_sha` is missing or not 40 "
+            "lowercase hex characters"
+        )
+    head_branch = wr.get("head_branch")
+    if not isinstance(head_branch, str) or not head_branch:
+        raise ActionError("the `workflow_run` event's `head_branch` is missing")
+    head_repo_full = (wr.get("head_repository") or {}).get("full_name")
+    if not isinstance(head_repo_full, str) or not head_repo_full:
+        raise ActionError(
+            "the `workflow_run` event's `head_repository.full_name` is missing"
+        )
+    event_name = wr.get("event")
+    if event_name is not None and event_name != "pull_request":
+        raise ActionError(
+            f"the triggering `workflow_run`'s own `event` is {event_name!r}, "
+            "not `pull_request` — refusing to trust its artifact"
+        )
+    conclusion = wr.get("conclusion")
+    if conclusion is not None and conclusion != "success":
+        raise ActionError(
+            f"the triggering `workflow_run`'s `conclusion` is {conclusion!r}, "
+            "not `success` — refusing to trust its artifact"
+        )
+    return run_id, head_sha, head_branch, head_repo_full
+
+
+def _parse_pr_context(blob: bytes) -> tuple[int, str]:
+    """Parse the downloaded ``pr-context`` artifact's ``pr.json`` member as
+    fully hostile input, returning ``(number, head_sha)``.
+
+    Every check below fails CLOSED (raises :class:`ActionError`) rather than
+    defaulting or coercing: a bad zip, too many members, a missing or
+    unsafe member name, an oversized member (checked against both its
+    declared and its actual read length — a zip entry can lie about its
+    own size), non-UTF-8 or non-JSON bytes, a non-object JSON value, or
+    either field failing its own type/shape check.
+    """
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(blob))
+    except zipfile.BadZipFile as exc:
+        raise ActionError(f"the `{_PR_CONTEXT_ARTIFACT}` artifact is not a valid zip file: {exc}") from exc
+    except zipfile.LargeZipFile as exc:
+        raise ActionError(f"the `{_PR_CONTEXT_ARTIFACT}` artifact is too large to parse: {exc}") from exc
+
+    with zf:
+        names = zf.namelist()
+        if len(names) > _PR_CONTEXT_MAX_MEMBERS:
+            raise ActionError(
+                f"the `{_PR_CONTEXT_ARTIFACT}` artifact contains {len(names)} "
+                f"members, over the {_PR_CONTEXT_MAX_MEMBERS} cap"
+            )
+        for name in names:
+            if name.startswith("/") or ".." in name.split("/"):
+                raise ActionError(
+                    f"the `{_PR_CONTEXT_ARTIFACT}` artifact contains an unsafe "
+                    f"member name: {name!r}"
+                )
+        if _PR_CONTEXT_MEMBER not in names:
+            raise ActionError(
+                f"the `{_PR_CONTEXT_ARTIFACT}` artifact has no `{_PR_CONTEXT_MEMBER}` member"
+            )
+        info = zf.getinfo(_PR_CONTEXT_MEMBER)
+        if info.file_size > _PR_CONTEXT_JSON_CAP:
+            raise ActionError(
+                f"the `{_PR_CONTEXT_MEMBER}` member's declared size "
+                f"({info.file_size} bytes) is over the {_PR_CONTEXT_JSON_CAP} byte cap"
+            )
+        with zf.open(info) as fh:
+            raw = fh.read(_PR_CONTEXT_JSON_CAP + 1)
+
+    if len(raw) > _PR_CONTEXT_JSON_CAP:
+        raise ActionError(
+            f"the `{_PR_CONTEXT_MEMBER}` member's actual size exceeds its "
+            "declared size — refusing a zip entry that lied about its length"
+        )
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ActionError(f"the `{_PR_CONTEXT_MEMBER}` member is not valid UTF-8: {exc}") from exc
+    if not text.strip():
+        raise ActionError(f"the `{_PR_CONTEXT_MEMBER}` member is empty")
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ActionError(f"the `{_PR_CONTEXT_MEMBER}` member is not valid JSON: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ActionError(
+            f"the `{_PR_CONTEXT_MEMBER}` member must be a JSON object, got {type(data).__name__}"
+        )
+
+    number = data.get("number")
+    if not isinstance(number, int) or isinstance(number, bool) or number <= 0:
+        raise ActionError(
+            f"the `{_PR_CONTEXT_MEMBER}` member's `number` must be a positive "
+            f"integer, got {number!r}"
+        )
+    head_sha = data.get("head_sha")
+    if not isinstance(head_sha, str) or not _SHA_RE.fullmatch(head_sha):
+        raise ActionError(
+            f"the `{_PR_CONTEXT_MEMBER}` member's `head_sha` must be 40 "
+            f"lowercase hex characters, got {head_sha!r}"
+        )
+    return number, head_sha
+
+
+def _resolve_pr_context(
+    client: github.GitHubClient, repo_full: str, run_id: int, trusted_head_sha: str,
+) -> int:
+    """Fetch, unzip, and validate the ``pr-context`` artifact THIS run
+    uploaded, returning the artifact-claimed PR number.
+
+    This is the BINDING step: the artifact is fetched by `run_id` (never by
+    name alone — see `github.find_run_artifact`), and its own claimed head
+    sha must equal the triggering `workflow_run`'s trusted head sha before
+    the claimed number is returned at all. This is only the FIRST filter,
+    not the whole identity check: the caller still must fetch the pull
+    request BY THAT NUMBER and cross-check it (`_assert_pull_matches_run`)
+    before trusting it for anything, because a head sha alone does not
+    uniquely identify a PR.
+    """
+    artifact = client.find_run_artifact(repo_full, run_id, _PR_CONTEXT_ARTIFACT)
+    blob = client.download_artifact_zip(repo_full, artifact["id"])
+    number, artifact_head_sha = _parse_pr_context(blob)
+    if artifact_head_sha != trusted_head_sha:
+        raise ActionError(
+            f"the `{_PR_CONTEXT_ARTIFACT}` artifact's head sha "
+            f"({artifact_head_sha}) does not match the triggering "
+            f"workflow_run's head sha ({trusted_head_sha})"
+        )
+    return number
+
+
+def _assert_pull_matches_run(
+    pr_rest: dict[str, Any], number: int, trusted_head_sha: str, head_branch: str,
+    head_repo_full: str, repo_full: str,
+) -> None:
+    """Cross-check the fetched pull request against what the triggering
+    ``workflow_run`` itself named, raising :class:`ActionError` unless ALL
+    of the following hold. This is the IDENTITY defect's fix: a head sha
+    equality alone does not uniquely identify a PR (two open PRs can share
+    one against different bases), so every one of these is required, not
+    any single one:
+
+    1. the fetched pull's own ``number`` equals the number we requested it
+       by — defense in depth against a future refactor that stops fetching
+       strictly by number;
+    2. its head sha equals the trusted head sha;
+    3. its head repository and branch equal the triggering run's own head
+       repository/branch;
+    4. its base repository is THIS repository and its base ref is
+       non-empty.
+    """
+    actual_number = pr_rest.get("number")
+    if not isinstance(actual_number, int) or isinstance(actual_number, bool) or actual_number != number:
+        raise ActionError(
+            f"the pull request fetched for #{number} reports number "
+            f"{actual_number!r} — refusing a mismatched identity"
+        )
+    head = pr_rest.get("head") or {}
+    actual_head_sha = head.get("sha", "")
+    if actual_head_sha != trusted_head_sha:
+        raise ActionError(
+            f"pull request #{number}'s head sha ({actual_head_sha!r}) does not "
+            f"match the triggering workflow_run's head sha ({trusted_head_sha!r})"
+        )
+    actual_head_repo = (head.get("repo") or {}).get("full_name", "")
+    actual_head_ref = head.get("ref", "")
+    if actual_head_repo != head_repo_full or actual_head_ref != head_branch:
+        raise ActionError(
+            f"pull request #{number}'s head ({actual_head_repo!r}:"
+            f"{actual_head_ref!r}) does not match the triggering "
+            f"workflow_run's head ({head_repo_full!r}:{head_branch!r})"
+        )
+    base = pr_rest.get("base") or {}
+    actual_base_repo = (base.get("repo") or {}).get("full_name", "")
+    actual_base_ref = base.get("ref", "")
+    if actual_base_repo != repo_full or not actual_base_ref:
+        raise ActionError(
+            f"pull request #{number}'s base ({actual_base_repo!r}:"
+            f"{actual_base_ref!r}) does not match this workflow_run's own "
+            f"repository ({repo_full!r}) or has an empty base ref"
+        )
+
+
 def _run_workflow_run(event: dict[str, Any]) -> int:
     """The ``workflow_run`` trigger's path: no checkout, no ``pull_request``
     payload — everything is fetched over :class:`github.GitHubClient`'s
     narrow, GET-only read surface. See the module docstring's TRUST GATE and
     TAMPER GUARD sections for why this path exists and what it cannot do.
+
+    ``pull_requests`` non-empty is the SAME-repository path: the number and
+    head sha come straight off the trusted event payload, byte for byte
+    unchanged from before this module gained fork support, and this branch
+    never reads an artifact. ``pull_requests`` empty covers BOTH a fork PR
+    and a closed same-repository PR (GitHub empties the field either way);
+    the fork artifact path below resolves which one it is and tolerates a
+    closed PR via the ordinary not-open skip further down.
     """
     wr = event.get("workflow_run") or {}
     prs = wr.get("pull_requests") or []
-    if not prs:
-        return _fail(
-            "the `workflow_run` event payload carries no `pull_requests` "
-            "entry — nothing to review. This Action only supports "
-            "`workflow_run` triggered by a `pull_request`-triggered workflow."
-        )
-    event_pr_number = prs[0].get("number")
-    event_head_sha = (prs[0].get("head") or {}).get("sha", "")
     repo_full = (event.get("repository") or {}).get("full_name", "")
-    if not (repo_full and event_pr_number and event_head_sha):
-        return _fail(
-            "the `workflow_run` event payload is missing repository/"
-            "pull_requests[0] number/head sha fields"
-        )
 
     github_token = _input("github_token") or os.environ.get("GITHUB_TOKEN", "")
     if not github_token:
@@ -924,46 +1188,109 @@ def _run_workflow_run(event: dict[str, Any]) -> int:
         )
 
     api_url = os.environ.get("GITHUB_API_URL", github.DEFAULT_API_URL)
+
+    if prs:
+        event_pr_number = prs[0].get("number")
+        event_head_sha = (prs[0].get("head") or {}).get("sha", "")
+        if not (repo_full and event_pr_number and event_head_sha):
+            return _fail(
+                "the `workflow_run` event payload is missing repository/"
+                "pull_requests[0] number/head sha fields"
+            )
+        try:
+            with github.GitHubClient(token=github_token, api_url=api_url) as client:
+                return _run_workflow_run_with_client(
+                    client, event, repo_full, event_pr_number, event_head_sha,
+                    github_token, apply_fork_skip=True,
+                )
+        except (github.GitHubAPIError, github.WriteSurfaceViolation) as exc:
+            # Every read on this path funnels here: a non-200 anywhere in the
+            # acquisition phase (metadata, file listing, or a file's contents)
+            # must mean "the gate did not run", never a PASS that silently
+            # skipped whatever the failing call would have contributed. No
+            # comment has been posted by this point in any of these branches.
+            return _fail(f"a GitHub API call failed while reconstructing the pull request: {exc}")
+
+    # Fork path (or a closed same-repository PR — see docstring above): the
+    # PR identity is not on this payload at all, so it is resolved from the
+    # `pr-context` artifact THIS run uploaded, entirely before any of it is
+    # trusted enough to read the `credential` input or post a comment.
+    if not repo_full:
+        return _fail("the `workflow_run` event payload is missing repository.full_name")
+    try:
+        run_id, trusted_head_sha, head_branch, head_repo_full = _trusted_workflow_run_fields(wr)
+    except ActionError as exc:
+        return _fail(str(exc))
+
     try:
         with github.GitHubClient(token=github_token, api_url=api_url) as client:
-            return _run_workflow_run_with_client(client, event, repo_full, event_pr_number, event_head_sha, github_token)
+            try:
+                pr_number = _resolve_pr_context(client, repo_full, run_id, trusted_head_sha)
+            except ActionError as exc:
+                return _fail(str(exc))
+            return _run_workflow_run_with_client(
+                client, event, repo_full, pr_number, trusted_head_sha, github_token,
+                apply_fork_skip=False,
+                run_binding=(head_branch, head_repo_full),
+            )
     except (github.GitHubAPIError, github.WriteSurfaceViolation) as exc:
-        # Every read on this path funnels here: a non-200 anywhere in the
-        # acquisition phase (metadata, file listing, or a file's contents)
-        # must mean "the gate did not run", never a PASS that silently
-        # skipped whatever the failing call would have contributed. No
-        # comment has been posted by this point in any of these branches.
         return _fail(f"a GitHub API call failed while reconstructing the pull request: {exc}")
 
 
 def _run_workflow_run_with_client(
-    client: "github.GitHubClient",
+    client: github.GitHubClient,
     event: dict[str, Any],
     repo_full: str,
     event_pr_number: int,
     event_head_sha: str,
     github_token: str,
+    *,
+    apply_fork_skip: bool = True,
+    run_binding: tuple[str, str] | None = None,
 ) -> int:
+    """The tail shared by both the same-repository payload path
+    (``apply_fork_skip=True``, ``run_binding=None``) and the fork artifact
+    path (``apply_fork_skip=False``, ``run_binding=(head_branch,
+    head_repo_full)``) — one pull-request fetch, then everything from the
+    not-open skip through :func:`_finish_review` is byte-for-byte identical
+    between the two callers.
+    """
     pr_rest = client.get_pull(repo_full, event_pr_number)
 
-    # `_is_fork_pr` is reused verbatim — the fork fact is derived over REST
-    # here instead of read off a `pull_request` payload, but the shape it
-    # needs (`repository.full_name` / `pull_request.head.repo.full_name`) is
-    # identical, so a REST-fetched pull object slots straight into it.
-    fork_event = {"repository": event.get("repository"), "pull_request": pr_rest}
-    if _is_fork_pr(fork_event):
-        head_repo = ((pr_rest.get("head") or {}).get("repo") or {}).get("full_name", "(deleted fork)")
-        msg = (
-            f"skipping: this pull request's head is `{head_repo}`, not this "
-            "repository — running review code against an unvetted fork's head "
-            "in a context that can carry secrets is refused by design. Ask a "
-            "maintainer to run this from a branch on the base repository."
-        )
-        print(msg)
-        _append_step_summary(f"### no_human review gate — skipped (fork PR)\n\n{msg}\n")
-        _set_output("skipped", "true")
-        _set_output("verdict", "SKIPPED")
-        return EXIT_OK
+    if apply_fork_skip:
+        # `_is_fork_pr` is reused verbatim — the fork fact is derived over
+        # REST here instead of read off a `pull_request` payload, but the
+        # shape it needs (`repository.full_name` /
+        # `pull_request.head.repo.full_name`) is identical, so a
+        # REST-fetched pull object slots straight into it.
+        fork_event = {"repository": event.get("repository"), "pull_request": pr_rest}
+        if _is_fork_pr(fork_event):
+            head_repo = ((pr_rest.get("head") or {}).get("repo") or {}).get("full_name", "(deleted fork)")
+            msg = (
+                f"skipping: this pull request's head is `{head_repo}`, not this "
+                "repository — running review code against an unvetted fork's head "
+                "in a context that can carry secrets is refused by design. Ask a "
+                "maintainer to run this from a branch on the base repository."
+            )
+            print(msg)
+            _append_step_summary(f"### no_human review gate — skipped (fork PR)\n\n{msg}\n")
+            _set_output("skipped", "true")
+            _set_output("verdict", "SKIPPED")
+            return EXIT_OK
+    else:
+        # The fork-artifact path: a fork IS the expected case here, so
+        # `_is_fork_pr` is deliberately NOT applied. Instead, the fetched
+        # pull request is cross-checked against what the triggering
+        # `workflow_run` itself named — see `_assert_pull_matches_run`'s
+        # docstring for why a head-sha match alone is not enough.
+        head_branch, head_repo_full = run_binding
+        try:
+            _assert_pull_matches_run(
+                pr_rest, event_pr_number, event_head_sha, head_branch,
+                head_repo_full, repo_full,
+            )
+        except ActionError as exc:
+            return _fail(str(exc))
 
     if pr_rest.get("state") != "open" or pr_rest.get("merged"):
         msg = (
