@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from ..vcs.git import GitError, GitRepo
+from ..vcs.git import GitError, GitRepo, _legacy_relation
 from ..vcs.recut import branch_stem
 from .task import TaskStatus
 
@@ -109,6 +109,13 @@ async def audit_diverged_tasks(
     (never pushed, remote unreachable, or the repo itself is unreadable —
     fails open, exactly `remote_branch_relation`'s own contract).
 
+    `remote_branch_relation` can also return `"ahead"` (remote tip is an
+    ancestor of local, i.e. simply not pushed since review). That is
+    normalized to `"diverged"` here on purpose — surfacing a new state key
+    in this report's rows/counts is a separate, out-of-scope change; the
+    orchestrator's claim gate is what actually fast-forwards an ahead
+    branch.
+
     A task with no readable repo, or with no candidate branches at all,
     contributes nothing to `rows`/`counts` but is still counted in
     `scanned` — "N diverged of M live tasks scanned" must account for every
@@ -130,7 +137,7 @@ async def audit_diverged_tasks(
             stem = branch_stem({"git": {"branch_prefix": prefix}}, task.id)
             for branch in _candidate_branches(repo, task, stem):
                 try:
-                    state = repo.remote_branch_relation(branch)
+                    state = _legacy_relation(repo.remote_branch_relation(branch))
                 except Exception:  # noqa: BLE001 — never let one bad repo abort the scan
                     state = "unknown"
                 local_sha = repo._run("rev-parse", branch, check=False) or None

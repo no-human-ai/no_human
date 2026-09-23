@@ -211,6 +211,37 @@ def classify_ci(checks: Sequence[dict] | None) -> str:
     ``[]`` for "no ``gh``", "unparseable ref", "network error" AND "this repo
     runs no CI", and none of those is a green build. Any failing check makes
     the whole head ``fail``; otherwise any pending check makes it ``pending``.
+
+    The adjacent case the empty-list handling above does NOT cover: the repo
+    DOES run CI, but CI never ran on THIS head, and some other always-green,
+    non-required job did (e.g. a ``pull_request_target`` "CLA nudge" that
+    fires on every PR regardless of what branch protection actually
+    requires). Measured on a real PR: ``[{'name': 'CLA nudge', 'status':
+    'pass', 'required': False}]`` while branch protection on that head still
+    listed six unsatisfied required contexts. ``statuses == {CI_PASS}`` alone
+    cannot tell that apart from a real green build, so a green verdict also
+    needs at least one ``required`` check in the list — otherwise there is no
+    evidence the checks the merge actually gates on ever ran, and this
+    returns ``unknown`` rather than fabricating a ``pass``.
+
+    Why ``unknown`` and not ``fail`` for an all-non-required list: the
+    ``required`` flag itself comes from a ``gh`` lookup
+    (``pr_watcher._required_check_names``) that fails OPEN — if that lookup
+    fails, every entry comes back ``required=False``, which is "no
+    required-ness data", not "confirmed zero required checks". ``unknown`` is
+    honest under both readings and gets re-polled later; ``fail`` would be a
+    fabricated red. This is the desired outcome, not a gap to close.
+
+    Consumer chain: ``observe_pr`` calls this and writes the result to the
+    ``pr_outcomes.ci_status`` column, read by ``nh pr-outcomes show`` and the
+    API row mapper; ``UNKNOWN_CAVEAT`` already keeps ``unknown`` from ever
+    being counted as a success there. Note what this does NOT change: the
+    merge gate itself (``core.merge_policy._check_ci``) reads
+    ``task.context["ci_status"]``, which is populated by
+    ``vcs.ci_rollup.aggregate_rollup`` — a separate reducer with its own
+    "no required-ness data ⇒ evaluate every entry" fallback — so on a
+    PR-#541-shaped head the merge gate can still render ``ci: success`` even
+    though the outcome recorded here is now ``unknown``.
     """
     if not checks:
         return CI_UNKNOWN
@@ -219,9 +250,10 @@ def classify_ci(checks: Sequence[dict] | None) -> str:
         return CI_FAIL
     if CI_PENDING in statuses:
         return CI_PENDING
-    if statuses == {CI_PASS}:
+    if statuses == {CI_PASS} and any(c.get("required") for c in checks):
         return CI_PASS
-    # A status vocabulary we do not recognise. Not a pass.
+    # A status vocabulary we do not recognise, or a green list with no
+    # required check on it. Not a pass.
     return CI_UNKNOWN
 
 

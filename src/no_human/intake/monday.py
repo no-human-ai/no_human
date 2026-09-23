@@ -86,12 +86,12 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
 from typing import Any
 
 import httpx
 
 from ..core.task import Task
+from .criteria import extract_acceptance_criteria
 
 log = logging.getLogger("no_human.intake.monday")
 
@@ -243,15 +243,6 @@ def _raise_for_graphql_errors(payload: Any, status: int) -> None:
     if code == "NOT_AUTHENTICATED" or status == 401:
         raise MondayAuthError(message, code=code, status=status)
     raise MondayError(message, code=code, status=status)
-
-
-def _checklist_items(text: str) -> list[str]:
-    """Markdown task-list checkboxes (`- [ ] ...`) as acceptance criteria.
-
-    Same extraction the Jira and Linear adapters run — monday long-text columns
-    are plain text, but operators write checklists in them all the same.
-    """
-    return [m.strip() for m in re.findall(r"^\s*[-*]\s*\[[ xX]\]\s*(.+)$", text or "", re.M)]
 
 
 def _status_labels_from_settings(settings_str: str | None) -> dict[str, str]:
@@ -614,7 +605,8 @@ class MondayAdapter:
         description = "\n".join(f"{k}: {v}" for k, v in columns if v)
         task = Task.new(title, source="monday", external_id=item_id,
                         description=description)
-        task.acceptance_criteria = _checklist_items(description)
+        task.acceptance_criteria = extract_acceptance_criteria(
+            description, f"monday item {task.external_id}")
         task.context = {
             "monday": {
                 "id": item_id,
