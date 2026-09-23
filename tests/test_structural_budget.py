@@ -1508,7 +1508,9 @@ FROZEN_FILE_LINES = {
     # scanner below.
     # 25039 -> 25075 (+36): the committed fix for this round's blocker.
     # Re-anchored, measured on this tree with the scanner below.
-    "core/orchestrator.py": 25075,
+    # 25075 -> 25089 (+14): the committed fix for this round's blocker.
+    # Re-anchored, measured on this tree with the scanner below.
+    "core/orchestrator.py": 25089,
 
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
