@@ -1512,7 +1512,12 @@ FROZEN_FILE_LINES = {
     # named refusals on `ProtectedBranch`/`GitError`/a residual `ahead` —
     # plus the `relation_reason["ahead"]` map entry. Measured on this tree
     # with the scanner below.
-    "core/orchestrator.py": 25070,
+    # 25070 -> 25085 (+15): already-satisfied PASS branch now stamps
+    # `commit_sha=reviewed_sha` onto the attempt row (guarded so a blank
+    # reviewed sha stamps nothing), plus the comment explaining why — the
+    # `review_history` stamp lived here already, but the attempts-table row
+    # itself did not. Measured on this tree with the scanner below.
+    "core/orchestrator.py": 25085,
 
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
