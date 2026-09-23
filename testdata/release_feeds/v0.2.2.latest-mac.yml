@@ -1,0 +1,11 @@
+version: 0.2.2
+files:
+  - url: no_human-0.2.2-arm64-mac.zip
+    sha512: WGQbf9j14q3O+p4QVzdY+awm4JLpRpeucWkeVp6iW5Wlf0IABO6eYCjkB/dGsQbdlpOMpNoSgmzMgN0EVwkuMQ==
+    size: 153895081
+  - url: no_human-0.2.2-arm64.dmg
+    sha512: DyDldJdCDLTMoQn4VO/fsCT3pfyYjMhDRcZEkpqVxkl7fEOyK+ltsHZ8PVstINFlrQnIiwmdEVKhTo8QOqMc6A==
+    size: 153997836
+path: no_human-0.2.2-arm64-mac.zip
+sha512: WGQbf9j14q3O+p4QVzdY+awm4JLpRpeucWkeVp6iW5Wlf0IABO6eYCjkB/dGsQbdlpOMpNoSgmzMgN0EVwkuMQ==
+releaseDate: '2026-09-08T14:12:56.157Z'
