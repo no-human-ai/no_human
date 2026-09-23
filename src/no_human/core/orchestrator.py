@@ -12902,6 +12902,35 @@ class Orchestrator:
             if relation == "up_to_date":
                 label = f"{head[:12]} (pushed branch {branch}, not on {ship_ref})"
                 return True, head, label, "", False, ship_ref
+            if relation == "ahead":
+                # The remote tip is an ANCESTOR of the reviewed commit: the
+                # branch was simply never pushed since review. That is not a
+                # divergence and the cheap, safe remedy is a fast-forward
+                # push of this task's own branch — never a force, never a
+                # protected branch (`push_sha_fast_forward` enforces
+                # `never_push_to` itself and git rejects a server-side race
+                # rather than overwriting it).
+                try:
+                    await asyncio.to_thread(repo.push_sha_fast_forward, head, branch)
+                except (ProtectedBranch, GitError) as exc:
+                    return False, head, "", (
+                        f"{prefix}; the reviewed commit could not be "
+                        f"fast-forwarded onto pushed branch {branch!r} "
+                        f"({exc})"), False, ship_ref
+                self.emit(
+                    "already_satisfied_branch_fast_forwarded",
+                    f"{branch}: fast-forwarded to reviewed sha {head}",
+                )
+                try:
+                    relation = await asyncio.to_thread(
+                        repo.remote_branch_relation, branch)
+                except Exception as exc:  # noqa: BLE001 — external check must fail closed
+                    return False, head, "", (
+                        f"{prefix}; cannot verify pushed branch {branch!r} "
+                        f"({exc})"), False, ship_ref
+                if relation == "up_to_date":
+                    label = f"{head[:12]} (pushed branch {branch}, not on {ship_ref})"
+                    return True, head, label, "", False, ship_ref
         # `branch` itself isn't up to date (or its local pointer lags) — but
         # constraint #2 forbids the agent merging to `ship_ref`, so attempt
         # 2+ pushes to a DIFFERENT, attempt-suffixed branch of this same
@@ -12932,6 +12961,8 @@ class Orchestrator:
                 "behind": "the remote branch contains commits the reviewer did not judge",
                 "diverged": "the remote branch diverged from the reviewed commit",
                 "unknown": "the pushed branch could not be verified",
+                "ahead": "the pushed branch is ahead of its remote and could not "
+                         "be fast-forwarded",
             }.get(relation, f"the pushed branch relation is unrecognized ({relation!r})")
             return False, head, "", (
                 f"{prefix}; {relation_reason}"), False, ship_ref

@@ -41,6 +41,12 @@ That runs three steps:
 2. `electron-builder --config electron-builder.config.cjs --mac` — wraps it as
    `no_human.app`, with the frozen server copied in as `extraResources`, and
    also emits the `.zip` + `latest-mac.yml` the auto-updater consumes.
+   `mac.target` is deliberately `["dir", "zip"]`, with no `dmg`:
+   electron-builder's own `dmg` target signs its output but never notarizes
+   or staples it, so building one here would only add an artifact Gatekeeper
+   refuses to open, and one that this step used to (wrongly) name in
+   `latest-mac.yml`'s `files:` list even though it was never uploaded — see
+   `scripts/check_release_feeds.py` and the next step.
 3. `packaging/make-dmg.sh` — produces
    `packaging/dist/no_human-<version>[-UNSIGNED|-UNNOTARIZED].dmg`, then
    **mounts it and verifies its contents** (below).
@@ -62,6 +68,17 @@ nothing downloads or installs unattended (`desktop/updater.mjs` turns
 `autoDownload` and `autoInstallOnAppQuit` off). The unsigned Windows and
 Linux builds stamp `nhCanAutoUpdate: false` — they report the newer version
 but refuse the install path.
+
+Publishing these assets is gated by `scripts/check_release_feeds.py`
+(wrapped by `packaging/publish-release.sh` — see `docs/DISTRIBUTION.md` §5),
+which checks that every `url:`/`path:` a feed names resolves to an asset
+actually present in the same release, and that every platform whose assets
+are present has its feed too. Both halves of that check have failed for real
+releases before: v0.2.2 and v0.2.3's `latest-mac.yml` named a
+`no_human-<version>-arm64.dmg` that was never uploaded (electron-builder's
+own unnotarized `dmg` target, described above — now excluded from
+`mac.target` so it can't happen again), and v0.1.7 and v0.2.0 shipped
+Windows/Linux assets with no `latest.yml`/`latest-linux.yml` at all.
 
 ## The build stamp, and why the DMG is opened before it is called done
 
