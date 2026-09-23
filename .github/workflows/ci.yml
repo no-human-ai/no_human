@@ -965,13 +965,22 @@ jobs:
     # is already an absolute, job-scoped path with no tilde involved, so the
     # exact same string is used here and in the cache step's `path:` below --
     # there is nothing left to expand differently.
-    env:
-      ELECTRON_BUILDER_CACHE: ${{ runner.temp }}\electron-builder-cache
-      ELECTRON_CACHE: ${{ runner.temp }}\electron-cache
+    # NOT a job-level `env:`. `runner` is not available in that context — the
+    # whole workflow fails to evaluate and GitHub creates ZERO jobs, which is
+    # how this file silently stopped running every check for four days. Set as
+    # the first step instead, so every later step sees them exactly as a
+    # job-level env would.
     defaults:
       run:
         shell: pwsh
     steps:
+      - name: Point electron-builder's caches at the runner temp dir
+        run: |
+          "ELECTRON_BUILDER_CACHE=$env:RUNNER_TEMP\electron-builder-cache" |
+            Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "ELECTRON_CACHE=$env:RUNNER_TEMP\electron-cache" |
+            Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
       # fetch-depth: 0 on purpose. build-installer.ps1 refuses to build a
       # checkout that is behind origin/main (the stale-DMG guard). With the
       # default shallow fetch there is no origin/main ref for it to resolve,
@@ -1047,9 +1056,14 @@ jobs:
         id: eb-cache
         uses: actions/cache@v4
         with:
+          # The env vars themselves, not a second copy of the same
+          # path: actions/cache then provably restores into the very
+          # directory electron-builder reads from, rather than two
+          # strings that happen to resolve alike under two different
+          # expansion rules.
           path: |
-            ${{ runner.temp }}\electron-builder-cache
-            ${{ runner.temp }}\electron-cache
+            ${{ env.ELECTRON_BUILDER_CACHE }}
+            ${{ env.ELECTRON_CACHE }}
           key: eb-binaries-${{ runner.os }}-${{ hashFiles('desktop/package-lock.json') }}
           restore-keys: |
             eb-binaries-${{ runner.os }}-
@@ -1281,10 +1295,14 @@ jobs:
     # is already an absolute, job-scoped path with no tilde involved, so the
     # exact same string is used here and in the cache step's `path:` below --
     # there is nothing left to expand differently.
-    env:
-      ELECTRON_BUILDER_CACHE: ${{ runner.temp }}/electron-builder-cache
-      ELECTRON_CACHE: ${{ runner.temp }}/electron-cache
+    # NOT a job-level `env:` — see the windows job above: `runner` is not
+    # available there and the workflow fails to evaluate at all.
     steps:
+      - name: Point electron-builder's caches at the runner temp dir
+        run: |
+          echo "ELECTRON_BUILDER_CACHE=$RUNNER_TEMP/electron-builder-cache" >> "$GITHUB_ENV"
+          echo "ELECTRON_CACHE=$RUNNER_TEMP/electron-cache" >> "$GITHUB_ENV"
+
       # fetch-depth: 0 for the same reason as the windows job: the stale-
       # checkout guard in build-installer.sh needs origin/main to exist, or it
       # silently cannot fire.
@@ -1364,9 +1382,14 @@ jobs:
         id: eb-cache
         uses: actions/cache@v4
         with:
+          # The env vars themselves, not a second copy of the same
+          # path: actions/cache then provably restores into the very
+          # directory electron-builder reads from, rather than two
+          # strings that happen to resolve alike under two different
+          # expansion rules.
           path: |
-            ${{ runner.temp }}/electron-builder-cache
-            ${{ runner.temp }}/electron-cache
+            ${{ env.ELECTRON_BUILDER_CACHE }}
+            ${{ env.ELECTRON_CACHE }}
           key: eb-binaries-${{ runner.os }}-${{ hashFiles('desktop/package-lock.json') }}
           restore-keys: |
             eb-binaries-${{ runner.os }}-
