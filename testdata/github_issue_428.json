@@ -1,0 +1,13 @@
+{
+  "_about": "Real no_human GitHub issue #428, captured via gh api repos/no-human-ai/no_human/issues/428 on 2026-09-22. Regression fixture for the intake kind-classifier positional-signal defect: the body's only occurrences of 'no tests' sit inside quoted strings (the SYMPTOM being complained about), not the issue's own prose asking for a test to be written.",
+  "title": "Repro gate hands JavaScript repro tests to pytest in Python-profile repos",
+  "body": "## Problem\nIn a repo whose profile is Python or declares no ecosystem, `run_repro_gate` (`testing/repro_gate.py`) runs every manifest entry with pytest. A bugfix whose repro manifest names a `.mjs` test is then collected by pytest and ends in an `error` verdict (\"no tests ran\").\n- **Frequency:** in our own runs this produced 30 repro `error` verdicts on 22 tasks since July, 3 of them in runs where the gate was enforced (`[required]`), most recently on 2026-09-15.\n- **Out of scope:** repos whose profile names a non-Python ecosystem already route entries through the profile's `test_cmd` (with the files appended), and this issue does not change that path.\n\nA fix is not simply \"use the repo's routing rules\". `.no_human.yml` `test_commands` rules route a changed area to a command that runs a whole suite, and appending one test file to such a command does not prove that file fails before and passes after. How to run a single JS test file per entry is the open design question.\n\n## Acceptance criteria\n- In a repo whose profile is Python or declares no ecosystem, a non-Python manifest entry is never passed to pytest. The test fails on main.\n- The manifest's verdict names each such entry's extension and says no per-file runner is configured, instead of pytest's \"no tests ran\".\n- Manifests with only Python entries, and every manifest in a repo whose profile names a non-Python ecosystem, behave exactly as before.\n- The gate returns one verdict per manifest. A manifest that mixes Python and non-Python entries must never become `pass` because the non-Python entry was set aside: a manifest that yields `error` today still does not yield `pass`.\n",
+  "number": 428,
+  "html_url": "https://github.com/no-human-ai/no_human/issues/428",
+  "state": "open",
+  "labels": [
+    {
+      "name": "bug"
+    }
+  ]
+}
