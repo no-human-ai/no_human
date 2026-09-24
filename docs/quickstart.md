@@ -320,15 +320,15 @@ into their current base right now — rebase before approving.
 ```
 
 The conflicted task is never hidden and never auto-resolved; add `--yes` to
-land only the ready (non-conflicted) tasks, one at a time through the exact
-same approve path, stopping at the first failure — a conflicted task is
-skipped with a visible "not landed" message instead. It is still advisory
+land only the ready (`merge: clean`) tasks, one at a time through the exact
+same approve path, stopping at the first failure — a conflicted or
+unknown-mergeability task is skipped with a visible "not landed" message instead. It is still advisory
 and still your approval — `--ready`/`--yes` never merges anything
 `nh approve <task-id>` wouldn't:
 
 ```bash
 uv run nh approve --ready        # list what's merge-ready; lands nothing
-uv run nh approve --ready --yes  # land the ready (non-conflicted) tasks
+uv run nh approve --ready --yes  # land the ready (merge: clean) tasks
 ```
 
 If you want changes:

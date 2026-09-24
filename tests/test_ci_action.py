@@ -16,6 +16,7 @@ fork-skip. 1 = ran and found blocking findings/tamper (only when
 from __future__ import annotations
 
 import ast
+import base64
 import json
 import re
 import os
@@ -178,6 +179,156 @@ def _no_comments_then_create_handler(calls: list[tuple[str, str]], created_id: i
 
 
 # --------------------------------------------------------------------------- #
+# workflow_run fixtures: reconstruct the PR over REST, no checkout available   #
+# --------------------------------------------------------------------------- #
+
+
+def _workflow_run_event(*, repo_full: str = "acme/widgets", pr_number: int = 7,
+                         head_sha: str = "d" * 40, run_id: int = 555) -> dict:
+    """A minimal `workflow_run` event payload: no `pull_request` key at all —
+    the PR identity comes from `workflow_run.pull_requests[0]`, per the design
+    doc's section G and this Action's own docstring."""
+    return {
+        "repository": {"full_name": repo_full},
+        "workflow_run": {
+            "id": run_id,
+            "pull_requests": [
+                {"number": pr_number, "head": {"sha": head_sha, "repo": {"full_name": repo_full}}}
+            ],
+        },
+    }
+
+
+def _pr_rest_payload(*, repo_full: str = "acme/widgets", pr_number: int = 7,
+                      head_sha: str = "d" * 40, base_sha: str = "c" * 40,
+                      fork: bool = False, deleted_fork: bool = False,
+                      state: str = "open", merged: bool = False,
+                      title: str = "Add a feature", body: str = "does the thing",
+                      changed_files: int = 2) -> dict:
+    """The shape `GET /repos/{o}/{r}/pulls/{n}` returns, trimmed to the
+    fields this Action actually reads."""
+    if deleted_fork:
+        head_repo = None
+    elif fork:
+        head_repo = {"full_name": "someone-else/widgets"}
+    else:
+        head_repo = {"full_name": repo_full}
+    return {
+        "number": pr_number, "title": title, "body": body,
+        "state": state, "merged": merged,
+        "base": {"sha": base_sha},
+        "head": {"sha": head_sha, "repo": head_repo},
+        "changed_files": changed_files,
+    }
+
+
+def _pr_file(path: str, patch: str | None = "@@ -0,0 +1 @@\n+x\n", status: str = "modified",
+             previous_filename: str | None = None) -> dict:
+    """One entry of `GET /repos/{o}/{r}/pulls/{n}/files`."""
+    d: dict[str, Any] = {"filename": path, "status": status}
+    if patch is not None:
+        d["patch"] = patch
+    if previous_filename:
+        d["previous_filename"] = previous_filename
+    return d
+
+
+def _b64(text: str) -> str:
+    return base64.b64encode(text.encode("utf-8")).decode("ascii")
+
+
+@pytest.fixture
+def workflow_env(tmp_path, monkeypatch):
+    """Base environment for a `workflow_run` run: no `GITHUB_WORKSPACE`
+    checkout at all — this path is REST-only by construction."""
+    event_path = tmp_path / "wr_event.json"
+    event_path.write_text(json.dumps(_workflow_run_event()))
+    out_path = tmp_path / "output.txt"
+    summary_path = tmp_path / "summary.md"
+    out_path.write_text("")
+    summary_path.write_text("")
+
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "workflow_run")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(event_path))
+    monkeypatch.setenv("GITHUB_OUTPUT", str(out_path))
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary_path))
+    monkeypatch.setenv("INPUT_CREDENTIAL", "sk-ant-api-testvalue")
+    monkeypatch.setenv("INPUT_GITHUB_TOKEN", "ghp_testtoken")
+    monkeypatch.delenv("INPUT_CREDENTIAL_MODE", raising=False)
+    monkeypatch.delenv("INPUT_MAX_FILES", raising=False)
+    monkeypatch.delenv("INPUT_FAIL_ON_FINDINGS", raising=False)
+    monkeypatch.delenv("INPUT_DRY_RUN", raising=False)
+    monkeypatch.delenv("INPUT_MODEL", raising=False)
+    monkeypatch.delenv("GITHUB_WORKSPACE", raising=False)
+    for var in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"):
+        monkeypatch.delenv(var, raising=False)
+    return {"event_path": event_path, "out_path": out_path, "summary_path": summary_path}
+
+
+def _rest_handler(pr_payload: dict, files_payload: list[dict] | None = None,
+                   contents: dict[str, str] | None = None,
+                   comments: list[dict] | None = None,
+                   status_overrides: dict[str, tuple[int, dict]] | None = None):
+    """Serve `GET .../pulls/{n}`, `GET .../pulls/{n}/files`, `GET
+    .../contents/*`, and the comment list/create endpoints off one
+    `MockTransport`.
+
+    `status_overrides` maps a target name (``"pulls"``, ``"files"``, or
+    ``"contents"``) to an ``(status_code, headers)`` pair returned INSTEAD of
+    the normal 200 for every request matching that target — the one knob the
+    non-200-state matrix test needs.
+
+    Returns ``(handler, calls)`` where `calls` records every
+    ``(method, url)`` pair seen, in order.
+    """
+    files_payload = files_payload if files_payload is not None else []
+    contents = contents or {}
+    comments = comments if comments is not None else []
+    status_overrides = status_overrides or {}
+    calls: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append((request.method, str(request.url)))
+        path = request.url.path
+
+        if re.match(r"^/repos/[^/]+/[^/]+/pulls/\d+$", path):
+            if "pulls" in status_overrides:
+                status, headers = status_overrides["pulls"]
+                return httpx.Response(status, headers=headers, text="")
+            return httpx.Response(200, json=pr_payload)
+
+        if re.match(r"^/repos/[^/]+/[^/]+/pulls/\d+/files$", path):
+            if "files" in status_overrides:
+                status, headers = status_overrides["files"]
+                return httpx.Response(status, headers=headers, text="")
+            return httpx.Response(200, json=files_payload)
+
+        m = re.match(r"^/repos/[^/]+/[^/]+/contents/(.+)$", path)
+        if m:
+            if "contents" in status_overrides:
+                status, headers = status_overrides["contents"]
+                return httpx.Response(status, headers=headers, text="")
+            sub = m.group(1)
+            # Any path not explicitly stubbed in `contents` still resolves
+            # (as a trivial file) rather than 404ing — a real 404 is reached
+            # only through `status_overrides["contents"]`, the one knob the
+            # failure-matrix test below actually needs.
+            text = contents.get(sub, f"# stub content for {sub}\n")
+            return httpx.Response(
+                200, json={"type": "file", "encoding": "base64", "content": _b64(text)},
+            )
+
+        if re.match(r"^/repos/[^/]+/[^/]+/issues/\d+/comments$", path):
+            if request.method == "GET":
+                return httpx.Response(200, json=comments)
+            return httpx.Response(201, json={"id": 1, "body": ""})
+
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    return handler, calls
+
+
+# --------------------------------------------------------------------------- #
 # Package boundary: no daemon, no store, no queueing CLI                       #
 # --------------------------------------------------------------------------- #
 
@@ -266,6 +417,21 @@ def test_pull_request_target_refused_even_with_valid_credential(env, monkeypatch
     assert "privilege-escalation" in out
 
 
+def test_pull_request_target_refused_even_though_workflow_run_is_now_supported(workflow_env, monkeypatch, capsys):
+    """`workflow_run` becoming a supported trigger (section G) must not
+    loosen the `pull_request_target` refusal in any way — same message, no
+    flag to opt back in. Uses the `workflow_run` environment/event shape
+    (rather than `env`'s `pull_request` shape) specifically to prove the
+    dispatcher's event-name check still runs, and still refuses, before it
+    ever looks at which payload shape it was given."""
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request_target")
+    assert run.main() == run.EXIT_DID_NOT_RUN
+    out = capsys.readouterr().out
+    assert "pull_request_target" in out
+    assert "::error::" in out
+    assert "privilege-escalation" in out
+
+
 def test_workspace_head_must_match_pr_head_sha(env, monkeypatch, repo, capsys):
     """`actions/checkout` defaults to an ephemeral MERGE commit on
     `pull_request` events, not the PR's actual head. If the on-disk
@@ -323,6 +489,25 @@ def test_fork_pr_is_skipped_not_reviewed(env, monkeypatch, deleted_fork, capsys)
     assert calls == [], "a fork skip must make zero GitHub API calls"
     out = capsys.readouterr().out
     assert "skipping" in out.lower()
+
+
+def test_fork_pr_skip_precedes_any_credential_read(env, monkeypatch, capsys):
+    """Acceptance criterion (c), read literally: `_is_fork_pr` must skip a
+    fork PR on the `pull_request` trigger BEFORE any credential read — not
+    just before any GitHub API call (already pinned above by
+    `test_fork_pr_is_skipped_not_reviewed`'s `calls == []`). Force
+    `_configure_credential` to blow up if it is ever reached; a fork skip
+    that read the credential first (e.g. to mask it) would turn this red."""
+    event_path = env["event_path"]
+    event_path.write_text(json.dumps(_event(env["repo"], fork=True)))
+    monkeypatch.setattr(
+        run, "_configure_credential",
+        lambda *a, **kw: (_ for _ in ()).throw(AssertionError("credential must not be read before the fork check")),
+    )
+    monkeypatch.setattr(run, "review_diff", _fake_review_diff(exc=AssertionError("must not be called")))
+    assert run.main() == run.EXIT_OK
+    out = capsys.readouterr().out
+    assert "::add-mask::" not in out, "no credential-masking output means no credential was read"
 
 
 def test_same_repo_pr_proceeds_to_review(env, monkeypatch):
@@ -767,6 +952,43 @@ def test_no_changed_files_is_a_synthetic_pass_without_reviewer_or_tamper(env, mo
     assert run.main() == run.EXIT_OK
 
 
+def test_no_changed_files_comment_states_the_tamper_check_did_not_run(env, monkeypatch, repo):
+    """The checkout (`pull_request`) path's own no-changed-files branch never
+    calls `tamper_check_between` either (there is nothing to diff), so its
+    posted comment must say the guard did not run — with the TRUE reason for
+    this branch ("no changed files"), not the workflow_run REST branch's "no
+    checked-out tree" reason. Regression test for a `render_body` call site
+    that used to omit `tamper_ran` entirely and rely on a fail-OPEN default,
+    which rendered a bare PASS with no tamper line at all."""
+    event = _event(repo)
+    event["pull_request"]["base"]["sha"] = repo.head_sha
+    env["event_path"].write_text(json.dumps(event))
+    monkeypatch.setattr(run, "review_diff", _fake_review_diff(exc=AssertionError("must not run")))
+    monkeypatch.setattr(run, "tamper_check_between", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("must not run")))
+    bodies = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(200, json=[], headers={})
+        if request.method == "POST":
+            bodies.append(json.loads(request.content)["body"])
+            return httpx.Response(201, json={"id": 1, "body": ""})
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    _mock_client(monkeypatch, handler)
+    assert run.main() == run.EXIT_OK
+    assert len(bodies) == 1
+    body = bodies[0]
+    assert "Tamper guard: DID NOT RUN" in body, body
+    assert (
+        "no file changes were found between the merge base and the head "
+        "commit, so there was nothing to check for tampering."
+    ) in body, body
+    assert "no checked-out repository tree was available in this workflow_run" not in body, body
+    for phrase in ("Tamper guard: TAMPERED", "tamper guard passed", "no tampering"):
+        assert phrase not in body, body
+
+
 # --------------------------------------------------------------------------- #
 # Tamper guard                                                                #
 # --------------------------------------------------------------------------- #
@@ -1180,6 +1402,191 @@ def test_dry_run_makes_no_http_calls(env, monkeypatch, capsys):
 
 
 # --------------------------------------------------------------------------- #
+# workflow_run: reconstruct the PR over REST, no checkout available           #
+# --------------------------------------------------------------------------- #
+
+
+def test_workflow_run_event_reaches_the_review_path(workflow_env, monkeypatch):
+    """Acceptance criterion 1a: a `workflow_run` event fixture reaches the
+    review path. PR number/head sha must come from
+    `workflow_run.pull_requests[0]` — this event carries no `pull_request`
+    key at all, so if `run.py` tried to read one it would crash or refuse,
+    not silently pass."""
+    pr_payload = _pr_rest_payload()
+    files_payload = [_pr_file("src/app.py"), _pr_file("tests/bar.py")]
+    monkeypatch.setattr(run, "review_diff", _fake_review_diff(_pass_decision()))
+    handler, calls = _rest_handler(pr_payload, files_payload)
+    _mock_client(monkeypatch, handler)
+
+    assert run.main() == run.EXIT_OK
+    assert any(m == "GET" and re.search(r"/pulls/7$", u) for m, u in calls)
+    assert any(m == "GET" and "/pulls/7/files" in u for m, u in calls)
+    assert any(m == "POST" and u.endswith("/comments") for m, u in calls)
+
+
+def test_workflow_run_fork_pr_is_skipped(workflow_env, monkeypatch, capsys):
+    """The `workflow_run` path reconstructs `_is_fork_pr`'s input over REST
+    (`get_pull`) instead of reading a `pull_request` payload, but the fork
+    check itself is the SAME reused function and must still fire — and still
+    precede any Anthropic-credential read, exactly like the `pull_request`
+    trigger's fork skip."""
+    pr_payload = _pr_rest_payload(fork=True)
+    monkeypatch.setattr(
+        run, "_configure_credential",
+        lambda *a, **kw: (_ for _ in ()).throw(AssertionError("credential must not be read before the fork check")),
+    )
+    monkeypatch.setattr(run, "review_diff", _fake_review_diff(exc=AssertionError("must not be called")))
+    handler, calls = _rest_handler(pr_payload)
+    _mock_client(monkeypatch, handler)
+
+    assert run.main() == run.EXIT_OK
+    out = capsys.readouterr().out
+    assert "skipping" in out.lower()
+    assert "::add-mask::" not in out
+    # Only the one `get_pull` call was needed to learn the fork fact — no
+    # file listing, no contents fetch, no comment post.
+    assert len(calls) == 1
+    assert calls[0][0] == "GET"
+    assert calls[0][1].endswith("/pulls/7")
+
+
+def test_workflow_run_closed_pr_is_skipped(workflow_env, monkeypatch, capsys):
+    pr_payload = _pr_rest_payload(state="closed")
+    monkeypatch.setattr(
+        run, "_configure_credential",
+        lambda *a, **kw: (_ for _ in ()).throw(AssertionError("credential must not be read for a closed PR")),
+    )
+    monkeypatch.setattr(run, "review_diff", _fake_review_diff(exc=AssertionError("must not be called")))
+    handler, calls = _rest_handler(pr_payload)
+    _mock_client(monkeypatch, handler)
+
+    assert run.main() == run.EXIT_OK
+    out = capsys.readouterr().out
+    assert "skipping" in out.lower()
+    assert "::add-mask::" not in out
+
+
+def test_workflow_run_without_pull_requests_entry_fails_closed(workflow_env, monkeypatch):
+    workflow_env["event_path"].write_text(json.dumps({
+        "repository": {"full_name": "acme/widgets"},
+        "workflow_run": {"id": 555, "pull_requests": []},
+    }))
+    handler, calls = _rest_handler(_pr_rest_payload())
+    _mock_client(monkeypatch, handler)
+    assert run.main() == run.EXIT_DID_NOT_RUN
+    assert calls == [], "nothing to review — must fail before any GitHub API call"
+
+
+def test_workflow_run_head_sha_moved_since_trigger_fails_closed(workflow_env, monkeypatch, capsys):
+    """The event that triggered this `workflow_run` carried one head sha; if
+    the API now reports a different one (a new commit landed on the PR after
+    the triggering run started), reviewing the stale sha would silently
+    review the wrong diff. Must refuse rather than proceed."""
+    pr_payload = _pr_rest_payload(head_sha="f" * 40)  # event's default head_sha is "d" * 40
+    monkeypatch.setattr(run, "review_diff", _fake_review_diff(exc=AssertionError("must not be called")))
+    handler, calls = _rest_handler(pr_payload)
+    _mock_client(monkeypatch, handler)
+    assert run.main() == run.EXIT_DID_NOT_RUN
+    out = capsys.readouterr().out
+    assert "moved" in out.lower()
+    assert not any(m == "POST" for m, _ in calls)
+
+
+def test_workflow_run_comment_states_the_tamper_check_did_not_run(workflow_env, monkeypatch):
+    """Acceptance criterion 4: when the tamper guard cannot run (no checked-
+    out tree — always true in `workflow_run` mode), the posted comment must
+    say so explicitly, verbatim, rather than silently reading as a clean
+    PASS."""
+    pr_payload = _pr_rest_payload()
+    files_payload = [_pr_file("src/app.py")]
+    monkeypatch.setattr(run, "review_diff", _fake_review_diff(_pass_decision()))
+    handler, _calls = _rest_handler(pr_payload, files_payload)
+    bodies = []
+
+    def wrap(request):
+        resp = handler(request)
+        if request.method == "POST" and str(request.url).endswith("/comments"):
+            bodies.append(json.loads(request.content)["body"])
+        return resp
+
+    _mock_client(monkeypatch, wrap)
+    assert run.main() == run.EXIT_OK
+    assert len(bodies) == 1
+    assert (
+        "- **Tamper guard: DID NOT RUN** — no checked-out repository "
+        "tree was available in this workflow_run context, so no "
+        "test-tampering check was performed. This comment makes no "
+        "claim about test tampering."
+    ) in bodies[0]
+
+
+def test_workflow_run_never_calls_the_tamper_guard(workflow_env, monkeypatch):
+    """`tamper_check_between` is CHECKOUT-ONLY. Pin that the `workflow_run`
+    path never even imports/invokes it — not "invokes it against an empty
+    tree", not "invokes it and discards the result" — by making any call
+    raise."""
+    def _must_not_run(*a, **kw):
+        raise AssertionError("tamper_check_between must never run in workflow_run mode")
+
+    monkeypatch.setattr(run, "tamper_check_between", _must_not_run)
+    pr_payload = _pr_rest_payload()
+    files_payload = [_pr_file("src/app.py")]
+    monkeypatch.setattr(run, "review_diff", _fake_review_diff(_pass_decision()))
+    handler, calls = _rest_handler(pr_payload, files_payload)
+    _mock_client(monkeypatch, handler)
+    assert run.main() == run.EXIT_OK
+
+
+def test_workflow_run_contents_fetches_are_bounded_by_max_files(workflow_env, monkeypatch):
+    """Acceptance criterion 5: `max_files` must bound contents fetches
+    STRUCTURALLY, verified by counting calls — not by reading a log line.
+    The PR's file listing here (3 files) exceeds `max_files` (1); exactly
+    one `contents` GET may happen, for whichever single file survives
+    `sorted(...)[:max_files]`."""
+    monkeypatch.setenv("INPUT_MAX_FILES", "1")
+    pr_payload = _pr_rest_payload(changed_files=3)
+    files_payload = [_pr_file("a.py"), _pr_file("b.py"), _pr_file("c.py")]
+    monkeypatch.setattr(run, "review_diff", _fake_review_diff(_pass_decision()))
+    handler, calls = _rest_handler(pr_payload, files_payload)
+    _mock_client(monkeypatch, handler)
+
+    assert run.main() == run.EXIT_OK
+    contents_calls = [u for m, u in calls if "/contents/" in u]
+    assert len(contents_calls) == 1, (
+        f"expected exactly 1 contents fetch (max_files=1 of 3 files), got {len(contents_calls)}: {contents_calls}"
+    )
+    assert contents_calls[0].endswith("/contents/a.py?ref=" + "d" * 40)
+
+
+@pytest.mark.parametrize("target", ["pulls", "files", "contents"])
+@pytest.mark.parametrize(
+    "status, headers",
+    [
+        (301, {"location": "https://evil.example/"}),
+        (403, {"x-ratelimit-remaining": "0"}),
+        (404, {}),
+        (429, {}),
+        (500, {}),
+    ],
+)
+def test_rest_failure_states_exit_two_and_post_no_pass_comment(workflow_env, monkeypatch, target, status, headers):
+    """Acceptance criterion 3: every non-200 state from design section F
+    (at least 301, 403 w/ `x-ratelimit-remaining: 0`, 404, 429, 500), on ANY
+    of the three REST reads this path makes, must exit 2 with NO comment
+    posted at all — never a silent PASS that quietly skipped whatever the
+    failing call would have contributed."""
+    pr_payload = _pr_rest_payload(changed_files=1)
+    files_payload = [_pr_file("a.py")]
+    monkeypatch.setattr(run, "review_diff", _fake_review_diff(exc=AssertionError("must not be called")))
+    handler, calls = _rest_handler(pr_payload, files_payload, status_overrides={target: (status, headers)})
+    _mock_client(monkeypatch, handler)
+
+    assert run.main() == run.EXIT_DID_NOT_RUN
+    assert not any(m == "POST" for m, _ in calls), "an acquisition-phase failure must post no comment at all"
+    assert not any(m == "PATCH" for m, _ in calls)
+
+
+# --------------------------------------------------------------------------- #
 # Rendering helpers                                                           #
 # --------------------------------------------------------------------------- #
 
@@ -1241,6 +1648,22 @@ def test_truncate_drops_advisory_before_hard_truncating():
     )
     assert len(huge_body) <= run._BODY_CAP
     assert "omitted for length" in huge_body
+
+
+def test_render_body_fails_closed_when_a_caller_forgets_tamper_ran():
+    """`tamper_ran` must default to False, not True: a call site that forgets
+    to pass it can never silently render a clean PASS that implies the guard
+    ran. This is the exact defect class a prior review caught (a call site
+    at the checkout path's no-changed-files branch omitted `tamper_ran` and,
+    with a `True` default, rendered nothing at all about the tamper guard)."""
+    body = run.render_body(
+        verdict="PASS", blocking=[], advisory=[], demoted_citations=[],
+        model="m", files_total=0, files_reviewed=0,
+        credential_mode="api_key", tampered=False,
+    )
+    assert "Tamper guard: DID NOT RUN" in body, body
+    for phrase in ("Tamper guard: TAMPERED", "tamper guard passed", "no tampering"):
+        assert phrase not in body, body
 
 
 # --------------------------------------------------------------------------- #
@@ -1635,6 +2058,34 @@ def test_write_surface_violation_blocks_disallowed_paths():
         client._send("DELETE", "/repos/o/r/issues/comments/9")
     with pytest.raises(github.WriteSurfaceViolation):
         client._send("DELETE", "/repos/o/r/git/refs/heads/main")
+    # Section G widens the read surface to exactly three GET shapes
+    # (pulls/{n}, pulls/{n}/files, contents/{path}) — everything ELSE on
+    # those same resources, including other verbs and neighboring paths one
+    # segment away, must stay refused. A guard that was accidentally widened
+    # to a prefix match (e.g. matching `/pulls/1` as a prefix of `/pulls/1/
+    # merge`) would let every one of these through instead of raising.
+    with pytest.raises(github.WriteSurfaceViolation):
+        client._send("GET", "/repos/o/r/pulls/1/merge")
+    with pytest.raises(github.WriteSurfaceViolation):
+        client._send("GET", "/repos/o/r/pulls/1/reviews")
+    with pytest.raises(github.WriteSurfaceViolation):
+        client._send("GET", "/repos/o/r/pulls/1/commits")
+    with pytest.raises(github.WriteSurfaceViolation):
+        client._send("GET", "/repos/o/r/pulls/1/files/extra")
+    with pytest.raises(github.WriteSurfaceViolation):
+        client._send("GET", "/repos/o/r/pulls")
+    # Path traversal out of `contents/` and back into a disallowed shape must
+    # not be reachable through the read surface either — `_CONTENTS_PATH`
+    # alone (`[^?]+`) would match this; `_is_safe_contents_path` is what
+    # must reject it.
+    with pytest.raises(github.WriteSurfaceViolation):
+        client._send("GET", "/repos/o/r/contents/../../pulls/1/merge")
+    with pytest.raises(github.WriteSurfaceViolation):
+        client._send("PUT", "/repos/o/r/contents/x")
+    with pytest.raises(github.WriteSurfaceViolation):
+        client._send("DELETE", "/repos/o/r/pulls/1")
+    with pytest.raises(github.WriteSurfaceViolation):
+        client._send("POST", "/repos/o/r/pulls/1/files")
     assert calls == [], "a refused write must never reach the transport"
 
 
@@ -1644,6 +2095,32 @@ def test_write_surface_allows_comment_endpoints_including_query_strings():
 
     client = github.GitHubClient(token="t", transport=httpx.MockTransport(handler), sleep=lambda s: None)
     client._send("GET", "/repos/o/r/issues/1/comments?per_page=100")
+
+
+def test_read_surface_allows_exactly_the_three_pr_read_paths():
+    """Acceptance criterion 2's positive case: `GET /pulls/{n}`, `GET
+    /pulls/{n}/files`, and `GET /contents/{path}` must each be reachable —
+    not merely refused-everything-else, which `test_write_surface_violation_
+    blocks_disallowed_paths` alone would not catch (a guard that refused
+    literally every path would also pass that test)."""
+    calls: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append((request.method, str(request.url)))
+        if request.url.path.endswith("/files"):
+            return httpx.Response(200, json=[])
+        if "/contents/" in request.url.path:
+            return httpx.Response(200, json={"type": "file", "encoding": "base64", "content": ""})
+        return httpx.Response(200, json={"number": 1})
+
+    client = github.GitHubClient(token="t", transport=httpx.MockTransport(handler), sleep=lambda s: None)
+    client.get_pull("o/r", 1)
+    client.list_pull_files("o/r", 1)
+    client.get_contents("o/r", "src/app.py", ref="deadbeef")
+    assert len(calls) == 3
+    assert calls[0][1].endswith("/repos/o/r/pulls/1")
+    assert calls[1][1].endswith("/repos/o/r/pulls/1/files?per_page=100&page=1")
+    assert "/repos/o/r/contents/src/app.py" in calls[2][1]
 
 
 def test_upsert_creates_when_no_marked_comment_exists():
