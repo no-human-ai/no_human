@@ -275,23 +275,29 @@ def assert_landed_reconciliation(src: TaskStatus) -> None:
 #: refusing this edge. The only failed/cancelled shape recognised here is
 #: `FAILED` itself — there is no separate `CANCELLED` status (see
 #: `core/scheduler.py`; "cancelled" is `FAILED` + `context["cancel_reason"]`).
-#: `PARTIAL_SUCCESS` is included too: a salvaged crash whose branch later
-#: merges must not be *less* recoverable than the plain `FAILED` it replaces.
+#: `PARTIAL_SUCCESS` is deliberately NOT included here. Unlike `FAILED`, it
+#: has no auto-reconcile sweep wired up: `Store.landed_reconcilable_terminal_
+#: tasks` (core/db.py) SELECTs only `status = FAILED`, and the
+#: `terminal_reconcile` CAS in `Store._write_status` (core/db.py) requires the
+#: row still read exactly `FAILED` at write time. Adding `PARTIAL_SUCCESS`
+#: here without updating both of those would make it silently *less*
+#: recoverable than `FAILED` — never a candidate for the sweep, and a no-op
+#: write even if it somehow reached this gate. A human can still land it via
+#: the ordinary hand-land override path (`blockers/landed_override.py`).
 TERMINAL_LANDED_RECONCILABLE: frozenset[TaskStatus] = frozenset({
     TaskStatus.FAILED,
-    TaskStatus.PARTIAL_SUCCESS,
 })
 
 
 def assert_terminal_landed_reconciliation(src: TaskStatus) -> None:
-    """Raise `IllegalTransition` unless *src* is `FAILED` or `PARTIAL_SUCCESS`.
+    """Raise `IllegalTransition` unless *src* is `FAILED`.
 
     The terminal-row twin of `assert_landed_reconciliation`: a task that
-    already went failed (with or without a `cancel_reason`), or was salvaged
-    as `PARTIAL_SUCCESS` after a post-commit crash, but whose recorded work
-    is verifiably reachable from the default branch, is reconciled to DONE
-    ONLY through this gate — never by widening `ALLOWED_TRANSITIONS` or
-    `LANDED_RECONCILABLE`.
+    already went failed (with or without a `cancel_reason`), but whose
+    recorded work is verifiably reachable from the default branch, is
+    reconciled to DONE ONLY through this gate — never by widening
+    `ALLOWED_TRANSITIONS` or `LANDED_RECONCILABLE`. `PARTIAL_SUCCESS` is not
+    accepted here — see `TERMINAL_LANDED_RECONCILABLE`'s comment.
     """
     if src not in TERMINAL_LANDED_RECONCILABLE:
         raise IllegalTransition(
