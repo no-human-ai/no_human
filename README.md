@@ -284,6 +284,12 @@ your secrets. `pull_request_target` is refused outright (exit 2), even with a
 valid credential, because that trigger is the one shape that can carry a
 fork's head into a secret-bearing job.
 
+`workflow_run` is also a supported trigger, reconstructing the pull request's
+number, head commit, and changed files over the GitHub REST API instead of
+from a `pull_request` payload; because that mode has no checked-out repository
+tree, the tamper guard does not run, and the posted comment says so explicitly
+rather than implying a clean tamper check.
+
 **Dependabot pull requests fail closed with exit `2`, and that is GitHub's
 restriction, not this Action's.** A Dependabot-opened pull request has the
 same repository as its head — it is not a fork, so the check above does not
