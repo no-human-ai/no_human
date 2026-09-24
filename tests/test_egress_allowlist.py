@@ -808,6 +808,18 @@ ALLOWLIST: dict[str, dict[str, Allowed]] = {
             _ON + "updates.enabled defaults to TRUE; off with "
                   "updates.enabled:false or NH_NO_UPDATE_CHECK=1"),
     },
+    "capability_gap.py": {
+        "http:urllib.request": Allowed(
+            "capability_gap.endpoint, an operator-named collector (https, or "
+            "http on loopback — `_valid_endpoint` refuses anything else) — a "
+            "closed set of coarse capability classes, reason codes and "
+            "constraints, plus this install's own pseudonym and the app "
+            "version; never task, repo, prompt or diff content, and never "
+            "telemetry's instance id",
+            _CFG + "capability_gap.enabled, capability_gap.endpoint — both "
+                   "empty/false by default, and the `jsonl` default sink "
+                   "sends nothing anywhere"),
+    },
     "telemetry.py": {
         "http:urllib.request": Allowed(
             "https://us.i.posthog.com/batch/ (telemetry.posthog_host), or "
