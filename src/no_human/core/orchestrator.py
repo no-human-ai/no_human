@@ -9766,8 +9766,8 @@ class Orchestrator:
         `docs/WINDOWS.md` directly and — by that test's own docstring — a
         `CITATION_TABLE` row cannot catch a drifted bare `file.py:LINE`
         citation there, so TESTING sees a doc this preflight cannot; but
-        `plan()` also flags any IN-WINDOW drift (`_locate_line_citation`
-        status `"drifted"`) as unfixed unless re-anchored, while TESTING's
+        `plan()` also flags any IN-WINDOW drift of a `symbol:line` row
+        (`_symbol_drift`) as unfixed unless re-anchored, while TESTING's
         own assertion only fails BEYOND `_CITATION_DRIFT_WINDOW` lines — so
         this preflight is stricter within the table's three docs than
         TESTING is. The two are incomparable, not one strictly inside the

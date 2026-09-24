@@ -162,7 +162,7 @@ surfaced in the headline as `· pass^{trials} {rate}`
 from the same `per_spec_passes` — no new arithmetic) on each core spec's row
 in the "Per-task" table, present only when `trials > 1` (`pass^1` is
 arithmetically the mean; printing it would read as a second, corroborating
-measurement that does not exist — `tests/test_bench_trials.py:272` pins this).
+measurement that does not exist — `tests/test_bench_trials.py:test_a_single_trial_report_still_refuses_to_print_a_bare_percentage:272` pins this).
 So the deferral branch of this task's acceptance criteria does **not** apply.
 
 The one real caveat is operational, not a missing feature: a multi-trial full

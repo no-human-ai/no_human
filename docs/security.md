@@ -328,16 +328,16 @@ named here.
   spellings and started EXECUTING them, which is how most of the list was
   found.
 - **One `GET https://pypi.org/pypi/no-human/json` per day**, to notice a newer
-  release (`updates.py:44`). No identifier, no repo name, no telemetry — the
+  release (`updates.py:PYPI_JSON_URL:44`). No identifier, no repo name, no telemetry — the
   same request `pip install` makes. On by default (`updates.enabled: true`,
   `interval_seconds: 86400`); off with `updates.enabled: false` in
   `~/.no_human/config.yaml` or `NH_NO_UPDATE_CHECK=1`
-  (`updates.py:57`, which also covers CI).
+  (`updates.py:DISABLE_ENV_VAR:57`, which also covers CI).
 - **The desktop app checks GitHub Releases at startup**, once a day
-  (`desktop/main.mjs:270` → `desktop/updater.mjs:116`, called at startup from
-  `desktop/main.mjs:1141`, feed `provider: github, owner: no-human-ai, repo:
-  no_human` — `desktop/electron-builder.config.cjs:457`). It never downloads on its own
-  (`autoDownload` is off, `desktop/updater.mjs:68`). **This is a separate code
+  (`desktop/main.mjs:checkForUpdates:270` → `desktop/updater.mjs:check:116`, called at startup from
+  `desktop/main.mjs:gotLock:1141`, feed `provider: github, owner: no-human-ai, repo:
+  no_human` — `desktop/electron-builder.config.cjs:module.exports:457`). It never downloads on its own
+  (`autoDownload` is off, `desktop/updater.mjs:configure:68`). **This is a separate code
   path from the PyPI check above and neither `NH_NO_UPDATE_CHECK` nor
   `updates.enabled` exists in `desktop/` — those switches do not reach it.**
   Today the only way to stop it is to not run the desktop app. That gap is a
@@ -386,21 +386,21 @@ config key that turns it on and the default that keeps it off.
     default *state*) POSTs a pipeline via
     `glab api --method POST projects/<project>/pipeline`, sending the **branch
     name** and the **key/value pairs you put in `ci.variables`** (default `{}`)
-    as the request body (`ci/gitlab.py:403`). It has no watch-only mode: if
+    as the request body (`ci/gitlab.py:GitLabCI._trigger:403`). It has no watch-only mode: if
     it is enabled, it triggers.
   - **Jenkins** (`ci.backend: "jenkins"`) reaches `ci.base_url` over `curl`
-    (`ci/jenkins.py:301-330`). `ci.mode` defaults to **`watch`**, which only
+    (`ci/jenkins.py:JenkinsCI._curl:306-335`). `ci.mode` defaults to **`watch`**, which only
     polls `…/lastBuild/api/json`; **`ci.mode: "trigger"` is opt-in** and POSTs
     `…/buildWithParameters` with `ci.variables` in the query string
-    (`ci/jenkins.py:154-169`). The same job API is used by the PR-image
-    enrichment path (`ci_gate/enrich.py:70-83`).
+    (`ci/jenkins.py:JenkinsCI._run_once:154-169`). The same job API is used by the PR-image
+    enrichment path (`ci_gate/enrich.py:_curl:70-88`).
   - **CircleCI** (`ci.backend: "circleci"`) talks to
     `https://circleci.com/api/v2` with the `CIRCLECI_TOKEN` from
     `~/.no_human/.env`. `ci.mode` defaults to **`watch`** — a `GET` of the
-    pipeline your PR push already started (`ci/circleci.py:169-180`).
+    pipeline your PR push already started (`ci/circleci.py:CircleCICI._latest_pipeline_for:169-180`).
     **`ci.mode: "trigger"` is opt-in** and sends a JSON POST
     `{"branch": "<your branch>"}` to `POST /project/<slug>/pipeline`
-    (`ci/circleci.py:182-186`).
+    (`ci/circleci.py:CircleCICI._create_pipeline:182-186`).
   - **GitHub / GHE check runs** (`ci.backend: "github_actions"` or
     `"ghe_checkruns"`) read status via `gh` and never write
     (`ci/ghe_checkruns.py`, `ci/github_actions.py`).
@@ -419,14 +419,14 @@ config key that turns it on and the default that keeps it off.
   `context.m365.token`, your query text is sent to Microsoft Graph — a POST to
   `https://graph.microsoft.com/v1.0/search/query` carrying the task's external
   ID or up to three keywords derived from the task title
-  (`context/teams.py:35`, `:55-66`; `context/outlook.py` shares the same
+  (`context/teams.py:GraphTeamsClient:35`, `context/teams.py:GraphTeamsClient.search:55-66`; `context/outlook.py` shares the same
   client). `DEFAULT_CONFIG` has no `context.m365` block at all, so with no token
   configured the client **fails closed and sends nothing** — it raises before
-  building the request (`context/teams.py:50-54`). It is opt-in, not default-on.
+  building the request (`context/teams.py:GraphTeamsClient.search:50-54`). It is opt-in, not default-on.
 - **Slack / Teams notification webhooks.** `notifications.slack_webhook_url` and
   `notifications.teams_webhook_url` both default to **`null`**; with a URL set,
   a task-status line (and, for Teams, a card linking to your board) is POSTed to
-  it (`notify/slack.py:53`, `notify/teams.py:205`).
+  it (`notify/slack.py:SlackNotifier.notify:53`, `notify/teams.py:TeamsNotifier.notify:205`).
 - **Integration health checks.** The board's integrations page authenticates
   against whichever of Jira, Linear, monday, CircleCI, GitHub, GitLab and
   Jenkins you have configured, to show a live status
@@ -442,7 +442,7 @@ config key that turns it on and the default that keeps it off.
 - **Team brain control plane.** `team_brain.enabled` defaults to **`false`** and
   `team_brain.control_plane_url` to **`""`**; when set, the client exchanges
   task patterns with that URL over `https` (loopback excepted)
-  (`brain/client.py:89-133`).
+  (`brain/client.py:_base:89-133`).
 - **Onboarding email registration.** The Email step's `POST
   /api/onboarding/email` always persists the address locally first
   (`~/.no_human/config.yaml`'s `onboarding.email`), then — off the request's
@@ -485,9 +485,9 @@ config key that turns it on and the default that keeps it off.
 
 The CLI, the desktop app and the MCP bridge talk to no_human's **own** API on
 `server.host`:`server.port`, which is `127.0.0.1:8420` by default
-(`cli/api_client.py`, `intake/mcp_bridge.py:40`,
+(`cli/api_client.py`, `intake/mcp_bridge.py:BASE_URL:40`,
 `cli/commands.py:print_no_task_matching:86`), and the transcript-research reader probes a language
-server on localhost (`history/extractor.py:65-72`). These never leave the
+server on localhost (`history/extractor.py:LanguageServerClient.__init__:65-69`). These never leave the
 machine, and `server.host` defaults to `127.0.0.1`.
 
 That API is unauthenticated, and a loopback address is not an authentication
