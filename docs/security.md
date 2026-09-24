@@ -487,8 +487,11 @@ The CLI, the desktop app and the MCP bridge talk to no_human's **own** API on
 `server.host`:`server.port`, which is `127.0.0.1:8420` by default
 (`cli/api_client.py`, `intake/mcp_bridge.py:40`,
 `cli/commands.py:print_no_task_matching:86`), and the transcript-research reader probes a language
-server on localhost (`history/extractor.py:65-72`). These never leave the
-machine, and `server.host` defaults to `127.0.0.1`.
+server on localhost (`history/extractor.py:65-72`). The stranded-attempt
+reaper's own pool-liveness check makes the same kind of call, one GET of our
+own `/api/tasks` (`core/stranded_attempts.py`), same trust model as
+`cli/pool_probe.py` above. These never leave the machine, and `server.host`
+defaults to `127.0.0.1`.
 
 That API is unauthenticated, and a loopback address is not an authentication
 boundary on its own: a page the operator visits while the board is up can reach

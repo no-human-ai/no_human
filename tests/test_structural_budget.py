@@ -2052,7 +2052,12 @@ FROZEN_FILE_LINES = {
     # approve` uses to find the task(s) that name a given task in
     # `follows_id` — used to warn/refuse landing a task a later one already
     # follows up on. Measured via `wc -l src/no_human/core/db.py`.
-    "core/db.py": 5331,
+    # 5331 -> 5370 (+39): the stranded-implementing-attempt reaper adds
+    # `close_stranded_attempt`, the CAS-guarded row-scoped sibling of
+    # `close_attempts_of_terminal_tasks` that retires ONE dead pool's
+    # `in_progress` row without touching a live worker's. Measured via
+    # `wc -l src/no_human/core/db.py` on this tree.
+    "core/db.py": 5370,
     # +71: set_local_backend_fields — the config-write helper for the Settings
     # pane's local coder-backend fields (llm.local_model / llm.local_base_url).
     # +75: Codex account config helpers.
@@ -2476,7 +2481,12 @@ FROZEN_FILE_LINES = {
     # additions. Measured on this tree with the scanner below: actual 3253,
     # which is what this entry froze at this point. Later entries would
     # move it further.
-    "core/scheduler.py": 3253,
+    # 3253 -> 3291 (+38): wires the stranded-implementing-attempt reaper into
+    # `run_forever` (between `_salvage_dead_worktrees` and `_recover_orphans`)
+    # via the new `_reap_stranded_implementing_attempts` boot-safety wrapper —
+    # the logic itself lives in `core/stranded_attempts.py`, kept out of this
+    # frozen file. Measured via `wc -l src/no_human/core/scheduler.py`.
+    "core/scheduler.py": 3291,
 }
 
 

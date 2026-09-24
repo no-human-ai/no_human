@@ -2824,6 +2824,45 @@ class Store:
         return int(cur.rowcount or 0)
 
     @serialized_write
+    async def close_stranded_attempt(
+        self, task_id: str, attempt_id: str, *, reason: str,
+    ) -> bool:
+        """Retire ONE `in_progress` attempt row whose owning pool is dead.
+
+        The NON-terminal twin of `close_attempts_of_terminal_tasks` above:
+        that sweep only ever looks at attempts under `done`/`failed` tasks,
+        so a task stuck `IMPLEMENTING` because the pool that owned its
+        attempt died is invisible to it — nothing retires the row, and
+        every reconciliation verb is fail-closed against `implementing`
+        status, so a landing can never be recorded while the row lies. This
+        is that missing case, scoped to a single row rather than swept in
+        bulk, because the caller (`core.stranded_attempts.
+        reap_stranded_implementing_attempts`) has already independently
+        proven this row's pool is dead, one task at a time.
+
+        `WHERE id = ? AND task_id = ? AND status = 'in_progress'` is the CAS:
+        if a live worker (or a second, concurrent sweep) already moved the
+        row off `in_progress`, `rowcount` is 0 and this is a no-op, not a
+        clobber — exactly the same guard shape as
+        `Store.cas_scheduler_heartbeat`. Touches only `status`,
+        `completed_at`, and `failure_reason` — deliberately not one token or
+        cost column — so any spend already recorded on the row survives
+        untouched, and `_zero_priced_work_sql`'s zero-priced check still
+        correctly excludes a row that never actually did any billed work.
+
+        Returns whether this call retired the row (`bool(rowcount)`).
+        """
+        cur = await self.db.execute(
+            "UPDATE attempts SET status = 'interrupted', "
+            "completed_at = COALESCE(completed_at, datetime('now')), "
+            "failure_reason = COALESCE(NULLIF(TRIM(failure_reason), ''), ?) "
+            "WHERE id = ? AND task_id = ? AND status = 'in_progress'",
+            (reason, attempt_id, task_id),
+        )
+        await self.db.commit()
+        return bool(cur.rowcount)
+
+    @serialized_write
     async def add_verification_receipt(self, attempt_id: str, receipt: Any) -> None:
         """Append one verification receipt to *attempt_id*.
 
