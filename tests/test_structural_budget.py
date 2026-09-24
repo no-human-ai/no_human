@@ -1515,7 +1515,11 @@ FROZEN_FILE_LINES = {
     # guard call, plus the guard's own wiring. Re-measured on this merged
     # tree with `len(Path(...).read_text().splitlines())`, the scanner's
     # own metric, not either parent's number carried forward by hand.
-    "core/orchestrator.py": 25229,
+    # 25229 -> 25237 (+8): the report-kind completion branch now takes the
+    # same two legal hops (`REVIEWING` then `DONE`) the code-review
+    # completion path already used, instead of an unvalidated jump straight
+    # to `DONE`. Re-measured with the scanner's own metric.
+    "core/orchestrator.py": 25237,
 
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
