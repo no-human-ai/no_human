@@ -9065,7 +9065,9 @@ def _load_reviewer_recall_runner():
 @click.option("--reviewer-recall", is_flag=True,
              help="Score the fresh-context reviewer against the seeded-defect "
                   "corpus instead (SCRUM-29, docs/REVIEWER_RECALL_METHOD.md).")
-def bench_report(reviewer_recall: bool):
+@click.option("--mode", type=click.Choice(["diff-only", "gate"]), default="diff-only",
+              help="With --reviewer-recall: 'gate' scores the shipping gate (issue #436).")
+def bench_report(reviewer_recall: bool, mode: str):
     """Re-render docs/NORTH_STAR_BENCH.md from the latest saved results."""
     if reviewer_recall:
         config, _ = _bootstrap()
@@ -9073,14 +9075,12 @@ def bench_report(reviewer_recall: bool):
         # markup=False: the per-class breakdown is bracketed ("[logic 2/2, …]")
         # and rich would otherwise swallow it as a style tag.
         try:
-            text = module.run_and_report(repo_root, model=config.review_model)
-        except module.HeadlineRefusedError as exc:
-            # SCRUM-47's refusal is the correct outcome for a broken checkout —
-            # surface it as a clean refusal, not a traceback.
-            console.print(f"[red]recall headline refused:[/] {escape(str(exc))}")
-            sys.exit(1)
-        except module.TranscriptOverwriteRefused as exc:
-            console.print(f"[red]recall run refused:[/] {escape(str(exc))}")
+            text = module.run_and_report(repo_root, model=config.review_model, mode=mode,
+                                         config_data=config.data)
+        except (module.HeadlineRefusedError, module.TranscriptOverwriteRefused) as exc:
+            # A refusal (SCRUM-47, invalid instrument, day already written) is not a traceback.
+            what = "headline" if isinstance(exc, module.HeadlineRefusedError) else "run"
+            console.print(f"[red]recall {escape(what)} refused:[/] {escape(str(exc))}")
             sys.exit(1)
         console.print(text, markup=False)
         return

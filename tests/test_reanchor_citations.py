@@ -1,5 +1,5 @@
 """`scripts/reanchor_citations.py` — the mechanical re-anchor helper for the
-drift-tolerant line citations `tests/test_readme_claims.py` checks.
+`path:symbol:line` citations `tests/test_readme_claims.py` checks.
 
 Written as fail-open probes, per `tests/test_verify_artefact.py`'s stated
 idiom: each test constructs an input that is wrong in one specific way (an
@@ -69,61 +69,91 @@ def test_apply_is_idempotent():
     both surfaces is that the next run reads it as `"exact"`, not
     `"drifted"` again.
     """
-    def fake_locate(resolve_path, spec, token):
-        if spec == "5":
-            return "drifted", 8, ""
-        if spec == "8":
-            return "exact", 8, ""
-        raise AssertionError(f"unexpected spec {spec!r}")
+    def fake_cited(spec):
+        return int(spec.split(":")[-1])
+    def fake_resolve(path):
+        class FakePath:
+            def read_text(self, encoding): return ""
+        return [FakePath()]
+    def fake_token_line(text, symbol, token, path=None):
+        return 8
 
     fake_mod = types.SimpleNamespace(
         _LEGACY_LINE_SPEC_RE=re.compile(r"^\d+(?:-\d+)?$"),
-        _locate_line_citation=fake_locate,
+        _cited_line=fake_cited,
+        _resolve_source=fake_resolve,
+        _token_line_in_symbol=fake_token_line,
+        _new_symbol_spec=lambda spec, n: f"{spec.rsplit(':', 1)[0]}:{n}"
     )
-    first_rows = [("fake.md", "widget.py:5", "widget.py", "line 5")]
+    first_rows = [("fake.md", "widget.py:foo:5", "widget.py", "drifted")]
     drifts, unfixable = ra.plan(fake_mod, first_rows)
     assert not unfixable
-    assert [d.new_raw for d in drifts] == ["widget.py:8"]
+    assert [d.new_raw for d in drifts] == ["widget.py:foo:8"]
 
-    second_rows = [("fake.md", d.new_raw, "widget.py", "line 5") for d in drifts]
+    second_rows = [("fake.md", d.new_raw, "widget.py", "not drifted") for d in drifts]
     drifts2, unfixable2 = ra.plan(fake_mod, second_rows)
     assert drifts2 == []
     assert unfixable2 == []
 
 
-def test_ambiguous_or_missing_citation_is_reported_not_guessed():
-    """0 occurrences, or 2+ occurrences, of the raw citation text must both
-    refuse to rewrite rather than guessing which one is meant — and a row
-    whose content is genuinely gone (`"missing"`) must come back as
-    Unfixable, never silently dropped or silently anchored somewhere wrong.
+def test_ambiguous_or_missing_citation_is_reported_not_guessed(tmp_path, monkeypatch):
+    """0 occurrences, or 2+ occurrences, of a `symbol:line` citation's raw
+    text must refuse to rewrite rather than guessing which one is meant; a
+    row whose symbol or token cannot be found is never anchored anywhere; and
+    a line-only row comes back as Unfixable, never silently dropped.
     """
-    assert ra.rewrite("no citation here", "widget.py:5", "widget.py:8") is None
-    dup_text = "see `widget.py:5` and also `widget.py:5` again"
-    assert ra.rewrite(dup_text, "widget.py:5", "widget.py:8") is None
-    ok_text = "see `widget.py:5` here"
-    assert ra.rewrite(ok_text, "widget.py:5", "widget.py:8") == "see `widget.py:8` here"
+    old, new = "widget.py:make:5", "widget.py:make:8"
+    assert ra.rewrite("no citation here", old, new) is None
+    dup_text = f"see `{old}` and also `{old}` again"
+    assert ra.rewrite(dup_text, old, new) is None
+    assert ra.rewrite(f"see `{old}` here", old, new) == f"see `{new}` here"
 
     dup_table = (
         'CITATION_TABLE = (\n'
-        '    ("fake.md", "widget.py:5", "widget.py", "a"),\n'
-        '    ("fake.md", "widget.py:5", "widget.py", "b"),\n'
+        f'    ("fake.md", "{old}", "widget.py", "a"),\n'
+        f'    ("fake.md", "{old}", "widget.py", "b"),\n'
         ')\n\nassert len(CITATION_TABLE) >= 20,\n'
     )
-    assert ra.rewrite_table_row(dup_table, "widget.py:5", "widget.py:8") is None
+    assert ra.rewrite_table_row(dup_table, old, new) is None
 
-    def fake_locate(resolve_path, spec, token):
-        return "missing", None, "not found anywhere in widget.py"
-
-    fake_mod = types.SimpleNamespace(
+    # Through `_apply_all`: a doc citing the same row twice is refused, and
+    # nothing is handed back to write.
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "tests").mkdir()
+    doc_path = tmp_path / "docs" / "fake.md"
+    doc_path.write_text(dup_text + "\n", encoding="utf-8")
+    (tmp_path / "tests" / "test_readme_claims.py").write_text(
+        'CITATION_TABLE = (\n'
+        f'    ("fake.md", "{old}", "widget.py", "a"),\n'
+        ')\n\nassert len(CITATION_TABLE) >= 20,\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(ra, "REPO", tmp_path)
+    apply_mod = types.SimpleNamespace(
+        _CITATION_DOC_PATHS={"fake.md": doc_path},
         _LEGACY_LINE_SPEC_RE=re.compile(r"^\d+(?:-\d+)?$"),
-        _locate_line_citation=fake_locate,
     )
-    drifts, unfixable = ra.plan(
-        fake_mod, [("fake.md", "widget.py:5", "widget.py", "line 5")]
+    texts, unresolved = ra._apply_all(apply_mod, [ra.Drift(
+        doc="fake.md", old_raw=old, new_raw=new, resolve_path="widget.py")])
+    assert texts is None
+    assert "does not occur exactly once" in unresolved[0].reason
+
+    # A symbol row whose symbol/token no longer resolves: no drift is invented
+    # (the checker reports it); a line-only row: unfixable, by form.
+    plan_mod = types.SimpleNamespace(
+        _LEGACY_LINE_SPEC_RE=re.compile(r"^\d+(?:-\d+)?$"),
+        _cited_line=lambda tail: int(tail.rsplit(":", 1)[1]),
+        _resolve_source=lambda path: [doc_path],
+        _token_line_in_symbol=lambda text, symbol, token, path=None: None,
     )
+    drifts, unfixable = ra.plan(plan_mod, [
+        ("fake.md", old, "widget.py", "gone"),
+        ("fake.md", "widget.py:5", "widget.py", "line 5"),
+    ])
     assert drifts == []
     assert len(unfixable) == 1
-    assert "not found anywhere" in unfixable[0].reason
+    assert unfixable[0].raw == "widget.py:5"
+    assert "line-only" in unfixable[0].reason
 
 
 def test_rewrite_table_row_only_touches_the_citation_table_slice():
@@ -153,7 +183,7 @@ def test_rewrite_table_row_only_touches_the_citation_table_slice():
 
 def test_check_mode_is_clean_on_this_tree():
     """`--check` against the real repository must be clean (exit 0, the
-    same VERDICT `test_every_line_citation_currently_resolves_exactly`
+    same VERDICT `test_every_citation_currently_resolves_exactly`
     implies) and must never write — the fail-open probe here is a `--check`
     run that would otherwise silently touch a file's mtime.
     """
@@ -437,7 +467,7 @@ def test_main_reconcile_reports_only_modified_files(tmp_path, monkeypatch, capsy
         _LEGACY_LINE_SPEC_RE=re.compile(r"^\d+(?:-\d+)?$"),
         _cited_line=lambda tail: 8213,
         _resolve_source=lambda path: [resolve_path],
-        _token_line_in_symbol=lambda text, sym, tok: 2,
+        _token_line_in_symbol=lambda text, sym, tok, path=None: 2,
     )
     monkeypatch.setattr(ra, "_load_checker", lambda: fake_mod)
 
@@ -478,7 +508,7 @@ def test_main_reconcile_reports_no_modified_files_when_zero_changes(tmp_path, mo
         _LEGACY_LINE_SPEC_RE=re.compile(r"^\d+(?:-\d+)?$"),
         _cited_line=lambda tail: 2,
         _resolve_source=lambda path: [resolve_path],
-        _token_line_in_symbol=lambda text, sym, tok: 2,
+        _token_line_in_symbol=lambda text, sym, tok, path=None: 2,
     )
     monkeypatch.setattr(ra, "_load_checker", lambda: fake_mod)
 
@@ -568,3 +598,160 @@ def test_apply_writes_lf_bytes_and_no_bom(tmp_path, monkeypatch):
     assert b"\r" not in written
     assert not written.startswith(b"\xef\xbb\xbf")
     assert written.endswith(b"\n")
+
+
+# --------------------------------------------------------------------------- #
+# Issue #506: every citation carries a symbol. Driven through `main()` with   #
+# the REAL checker module (only its table, doc paths and source resolution    #
+# are pointed at a tmp fixture), so these observe the verdict a user gets.    #
+# --------------------------------------------------------------------------- #
+
+def _real_checker_on(tmp_path, monkeypatch, *, doc_text, rows, source_name,
+                     source_text):
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "tests").mkdir()
+    doc_path = tmp_path / "docs" / "fake.md"
+    table_path = tmp_path / "tests" / "test_readme_claims.py"
+    source = tmp_path / source_name
+    doc_path.write_text(doc_text, encoding="utf-8")
+    table_path.write_text(
+        "CITATION_TABLE = (\n"
+        + "".join(f'    ("{d}", "{raw}", "{rp}", "token"),\n'
+                  for d, raw, rp, _ in rows)
+        + ")\n\nassert len(CITATION_TABLE) >= 20,\n",
+        encoding="utf-8",
+    )
+    source.write_text(source_text, encoding="utf-8")
+    mod = ra._load_checker()
+    monkeypatch.setattr(mod, "CITATION_TABLE", tuple(rows))
+    monkeypatch.setattr(mod, "_CITATION_DOC_PATHS", {"fake.md": doc_path})
+    monkeypatch.setattr(mod, "_resolve_source", lambda path: [source])
+    monkeypatch.setattr(ra, "_load_checker", lambda: mod)
+    monkeypatch.setattr(ra, "REPO", tmp_path)
+    return doc_path, table_path
+
+
+def test_check_rejects_a_line_only_citation_as_unfixable(
+    tmp_path, monkeypatch, capsys
+):
+    """A line-only row fails `--check` even when its line is exactly right:
+    it has no symbol, so the tool reports it unfixable instead of passing it
+    (or offering a proximity guess) — and `--apply` writes nothing for it."""
+    doc_path, table_path = _real_checker_on(
+        tmp_path, monkeypatch,
+        doc_text="See `widget.py:2` for details.\n",
+        rows=[("fake.md", "widget.py:2", "widget.py", "line 2")],
+        source_name="widget.py",
+        source_text="def make_widget():\n    return 'line 2'\n",
+    )
+    before = (doc_path.read_bytes(), table_path.read_bytes())
+
+    assert ra.main(["--check"]) == 1
+    out = capsys.readouterr().out
+    assert ("FAIL: fake.md `widget.py:2` — citation is line-only; symbol "
+            "missing, cannot auto-reanchor") in out
+    assert "VERDICT=FAIL" in out
+    assert "VERDICT=OK" not in out
+
+    assert ra.main(["--apply"]) == 1
+    assert "VERDICT=FAIL" in capsys.readouterr().out
+    assert (doc_path.read_bytes(), table_path.read_bytes()) == before
+
+
+def test_apply_reanchors_a_drifted_symbol_citation_exactly(
+    tmp_path, monkeypatch, capsys
+):
+    """A symbol-anchored citation whose code moved 40 lines down — far outside
+    the checker's drift window — is rewritten to the exact new line on both
+    surfaces by `--apply`, and a second `--check` is clean.
+
+    The source is `.mjs` (it fails to parse as Python, so the regex fallback
+    resolves the symbols), covering both shapes the desktop citations use: an
+    indented `async function` and a `const` binding."""
+    body = (
+        "export const FEED = 'github';\n"
+        "  async function checkForUpdates({ manual = false } = {}) {\n"
+        "    return autoUpdater.checkForUpdates();\n"
+        "  }\n"
+    )
+    pad = "".join(f"// padding {i}\n" for i in range(40))
+    doc_path, table_path = _real_checker_on(
+        tmp_path, monkeypatch,
+        doc_text=("Feed `widget.mjs:FEED:1`, checked by "
+                  "`widget.mjs:checkForUpdates:3`.\n"),
+        rows=[
+            ("fake.md", "widget.mjs:FEED:1", "widget.mjs", "'github'"),
+            ("fake.md", "widget.mjs:checkForUpdates:3", "widget.mjs",
+             "autoUpdater.checkForUpdates()"),
+        ],
+        source_name="widget.mjs",
+        source_text=pad + body,
+    )
+
+    assert ra.main(["--apply"]) == 0
+    capsys.readouterr()
+    assert doc_path.read_text(encoding="utf-8") == (
+        "Feed `widget.mjs:FEED:41`, checked by "
+        "`widget.mjs:checkForUpdates:43`.\n")
+    table = table_path.read_text(encoding="utf-8")
+    assert '"widget.mjs:FEED:41"' in table
+    assert '"widget.mjs:checkForUpdates:43"' in table
+    assert ":1\"" not in table and ":3\"" not in table
+
+    # The checker reads the monkeypatched tuple, not the fixture file, so hand
+    # it the rewritten rows, as a fresh run would read them, and re-check.
+    monkeypatch.setattr(ra._load_checker(), "CITATION_TABLE", (
+        ("fake.md", "widget.mjs:FEED:41", "widget.mjs", "'github'"),
+        ("fake.md", "widget.mjs:checkForUpdates:43", "widget.mjs",
+         "autoUpdater.checkForUpdates()"),
+    ))
+    assert ra.main(["--check"]) == 0
+    assert "VERDICT=OK" in capsys.readouterr().out
+
+
+def _check_warnings(tmp_path, monkeypatch, capsys, *, name, source, symbol,
+                    token, line):
+    """Run `--check` on a one-row fixture; return (exit, stdout, warnings)."""
+    import warnings
+
+    raw = f"{name}:{symbol}:{line}"
+    _real_checker_on(
+        tmp_path, monkeypatch,
+        doc_text=f"See `{raw}`.\n",
+        rows=[("fake.md", raw, name, token)],
+        source_name=name,
+        source_text=source,
+    )
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        code = ra.main(["--check"])
+    return code, capsys.readouterr().out, [str(w.message) for w in caught]
+
+
+def test_check_resolves_a_js_symbol_without_a_python_ast_warning(
+    tmp_path, monkeypatch, capsys
+):
+    """A `.mjs` source is never Python, so resolving a symbol in it must not
+    attempt `ast.parse` and warn "AST parse failed" on every run — that noise
+    buries the warning that means a real `.py` file is broken."""
+    code, out, caught = _check_warnings(
+        tmp_path, monkeypatch, capsys, name="widget.mjs",
+        source="export function outer() {\n  return 'js token';\n}\n",
+        symbol="outer", token="'js token'", line=2,
+    )
+    assert code == 0 and "VERDICT=OK" in out
+    assert not [m for m in caught if "AST parse failed" in m], caught
+
+
+def test_check_still_warns_when_a_python_source_fails_to_parse(
+    tmp_path, monkeypatch, capsys
+):
+    """Positive control: a `.py` file with a syntax error elsewhere still
+    resolves its healthy symbol through the regex fallback, AND says so."""
+    code, out, caught = _check_warnings(
+        tmp_path, monkeypatch, capsys, name="widget.py",
+        source="def healthy():\n    return 'py token'\n\ndef broken(:\n    pass\n",
+        symbol="healthy", token="'py token'", line=2,
+    )
+    assert code == 0 and "VERDICT=OK" in out
+    assert [m for m in caught if "AST parse failed" in m], caught
