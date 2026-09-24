@@ -1729,7 +1729,10 @@ FROZEN_FILE_LINES = {
     # that runs the fresh-session reviewer and the tamper guard over the
     # current branch or a GitHub PR with no daemon, no server, and no Store).
     # Measured via `wc -l src/no_human/cli/commands.py` (agrees: 9250).
-    "cli/commands.py": 9250,
+    # 9250 -> 9267 (+17): `nh approve --ready` reports an unknown
+    # mergeability as its own not-landable category (summary line and the
+    # --yes skip message) instead of counting it as landable.
+    "cli/commands.py": 9267,
     # api/app.py 5338 -> 5346 (+8): same budget-floor warning surfaced by
     # `send-back`/`reply` as `budget_warning` in the JSON response. Net cost
     # was trimmed from a naive +14 to +8 by computing `Bounds.from_config(...)`
@@ -2255,7 +2258,12 @@ FROZEN_FILE_LINES = {
     # either wording; that growth is counted in `diff_coverage.py`, not
     # here. `AdversarialReviewer.review` stays at 300 lines, off
     # FROZEN_FUNCTION_LINES. Measured on this tree with the scanner below.
-    "review/reviewer.py": 3320,
+    # 3320 -> 3373 (+53): 9b8c64cd "a coverage rejection must feed the next
+    # round" — adds `_COVERAGE_RETRY_NOTE`, imports `coverage_rejection_paths`,
+    # and branches the retry prompt to append that note only when the
+    # rejected round's reason names files cut by `budget_diff`. Measured on
+    # this tree.
+    "review/reviewer.py": 3373,
     # 2706 -> 2711 (+5): pre-existing red on main at 03b262d23 (e922e9b4's
     # landing, change-scoped tests missed the ratchet) — repaired, measured,
     # on this merge; same cause as the two function-level wake.py bumps above.

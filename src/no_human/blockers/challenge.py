@@ -112,3 +112,16 @@ def parse_challenge(text: str) -> ChallengeVerdict | None:
         reasoning=str(data.get("reasoning", "")).strip(),
         assumption=assumption,
     )
+
+def check_challenge_eligibility(config: dict[str, Any], blocker: Blocker,
+                                context: dict[str, Any] | None) -> str | None:
+    """Returns the skip reason if the challenge gate is disabled, the category
+    is not challengeable, or the task was already challenged. Returns None
+    if eligible."""
+    if not (config.get("blockers") or {}).get("challenge", True):
+        return "gate disabled"
+    if blocker.category not in CHALLENGEABLE:
+        return f"category not challengeable: {blocker.category.name}"
+    if (context or {}).get("blocker_challenged"):
+        return "already challenged"
+    return None

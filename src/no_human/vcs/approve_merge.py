@@ -158,6 +158,8 @@ STEPS = (
 )
 
 _STDERR_CAP = 4000
+_PYTEST_TAIL_LINES = 80
+_TEST_OUTPUT_CAP = 12000
 _DEFAULT_TEST_TIMEOUT_S = 1800
 _DEFAULT_FULL_TEST_TIMEOUT_S = 5400
 _APPROVE_TIMEOUT_S = 120
@@ -202,6 +204,36 @@ def _cap(text: str) -> str:
     if len(text) <= _STDERR_CAP:
         return text
     return text[:_STDERR_CAP] + "\n…(truncated)"
+
+
+def _pytest_tail(text: str) -> str:
+    """Return the tail of a pytest run's combined stdout+stderr.
+
+    `_cap()` keeps the HEAD of the output, which is fine for most subprocess
+    failures (the error is usually near the top). Pytest is the opposite:
+    with `-q` (and worse, `-n 4` xdist interleaving), the useful part — the
+    `=== short test summary info ===` block, the `FAILED <nodeid> - <reason>`
+    lines, and the final `N failed, M passed in Xs` counts line — is always
+    at the END of the run. Landing task 1f88d3c0 (PR #481, 2026-09-18) hit
+    this directly: the full-gate `pytest -q -n 4` failed after ~19 minutes,
+    and a head-cap surfaced nothing but leading progress dots and
+    "…(truncated)" — no way to tell which test failed, or whether it was a
+    real failure vs. an xdist worker crash. Keeping the tail instead of the
+    head fixes that.
+    """
+    text = (text or "").strip()
+    if not text:
+        return ""
+    lines = text.split("\n")
+    if len(lines) > _PYTEST_TAIL_LINES:
+        tail = lines[-_PYTEST_TAIL_LINES:]
+        result = "…(truncated; showing the last %d lines)\n%s" % (
+            _PYTEST_TAIL_LINES, "\n".join(tail))
+    else:
+        result = text
+    if len(result) > _TEST_OUTPUT_CAP:
+        result = "…(truncated)\n" + result[-_TEST_OUTPUT_CAP:]
+    return result
 
 
 def _sh(args: list[str], *, cwd: Path | str, timeout: float | None = None,
@@ -872,17 +904,29 @@ def land_task(
                            "automatically; merge the PR yourself")
 
     # Fail CLOSED on a non-Conventional-Commits squash subject. The squash
-    # message's first line is built from the task title verbatim (step 5
-    # below: `redact_for_publish(task_title)`, with no `commit_subject()`
-    # external_id/prefix composition — that only happens for the per-attempt
-    # in-branch commit and the PR title, both of which step 5 discards), and
+    # message's first line is built from THIS FUNCTION's `task_title`
+    # parameter verbatim (step 5 below: `redact_for_publish(task_title)`) —
     # a task title is prose — 4 of the last 8 origin/main subjects (measured
     # 2026-09-19) were a prose task title that violated the operator's hard
     # rule (Conventional Commits v1.0.0, 2026-09-17). Validated on the
     # REDACTED string, which is the exact byte sequence that reaches git
-    # history — this call must stay byte-identical to step 5's own
-    # `redact_for_publish(task_title)` or the guard checks a string that
-    # never lands. NEVER auto-rewrites: the title is the human's to correct.
+    # history for THIS call: `land_task` takes no `external_id`/`prefix` and
+    # never calls `commit_subject()`, so there is no composition step between
+    # this check and step 5's own `redact_for_publish(task_title)` — this
+    # call must stay byte-identical to that one or the guard checks a string
+    # that never lands.
+    #
+    # Deliberately NOT validating `commit_subject(task_title, external_id,
+    # prefix)` here even though that composition is the PR title / in-branch
+    # commit subject (`Orchestrator._commit_message`, `nh task retitle
+    # --update-pr`) for the same task: a ticket ref (`MON-123`, `PROJ-7`, a
+    # bare numeric id) is never itself a valid Conventional Commits type, so
+    # gating the squash on the composed form would refuse EVERY external_id-
+    # bearing task unconditionally and unfixably — no title correction can
+    # undo an auto-prepended ref the land path doesn't even apply. See
+    # `test_composed_subject_with_external_id_can_be_non_conventional` in
+    # tests/test_approve_merge.py. NEVER auto-rewrites: the title is the
+    # human's to correct.
     from ..eval.vendor_terms import redact_for_publish
     from ..core.task import conventional_subject_error
     subject = redact_for_publish(task_title).splitlines()[0] if task_title else ""
@@ -1311,8 +1355,8 @@ def _land_in_worktree(
             if test_proc.returncode != 0:
                 return LandResult(ok=False, step="tests", branch=branch, pr_url=pr_url,
                                    landed_sha=landed_sha, gate=gate, gate_reason=gate_reason,
-                                   stderr=_cap(f"{gate_reason}\n"
-                                               + test_proc.stdout + "\n" + test_proc.stderr))
+                                   stderr=f"{gate_reason}\n" + _pytest_tail(
+                                       test_proc.stdout + "\n" + test_proc.stderr))
     else:
         env = dict(os.environ)
         env["PYTHONPATH"] = str(worktree_path / "src")
@@ -1333,8 +1377,8 @@ def _land_in_worktree(
         elif test_proc.returncode != 0:
             return LandResult(ok=False, step="tests", branch=branch, pr_url=pr_url,
                                landed_sha=landed_sha, gate=gate, gate_reason=gate_reason,
-                               stderr=_cap(f"{gate_reason}\n"
-                                           + test_proc.stdout + "\n" + test_proc.stderr))
+                               stderr=f"{gate_reason}\n" + _pytest_tail(
+                                   test_proc.stdout + "\n" + test_proc.stderr))
 
     # -- step 7: ff-merge + push, remote-ref verified ---------------------- #
     _step(on_step, "push")
