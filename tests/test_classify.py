@@ -1,5 +1,8 @@
 """WS-A: task-type classification routes the four reference shapes correctly."""
 
+import json
+from pathlib import Path
+
 import pytest
 
 from no_human.core.task import Task
@@ -11,12 +14,25 @@ from no_human.intake.classify import (
     parse_agent_verdict,
     find_test_bearing_signal,
 )
+from no_human.intake.github_issues import GitHubAdapter
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+ISSUE_428_FIXTURE = REPO_ROOT / "testdata" / "github_issue_428.json"
 
 
 def _task(title, *, description=None, criteria=None, source="freeform", external_id=None):
     t = Task.new(title, source=source, description=description, external_id=external_id)
     t.acceptance_criteria = list(criteria or [])
     return t
+
+
+def _load_issue_428() -> Task:
+    """Load the offline fixture for no-human-ai/no_human#428 and run it
+    through the real GitHub intake path (body -> description AND extracted
+    acceptance criteria), the same way `nh intake` would."""
+    raw = json.loads(ISSUE_428_FIXTURE.read_text(encoding="utf-8"))
+    raw["_ref"] = {"host": "github.com", "owner": "no-human-ai", "repo": "no_human"}
+    return GitHubAdapter().normalize(raw)
 
 
 # The four shapes named in the WS-A DoD. ----------------------------------- #
@@ -624,3 +640,129 @@ def test_no_false_positive_on_substrings():
     embedded in a larger word is not the signal word itself."""
     assert find_test_bearing_signal(["the criteria are testable and clear"]) is None
     assert find_test_bearing_signal(["do not contest the outcome"]) is None
+
+
+# Position-aware masking (defect: issue #428 quoted "no tests ran" read as a
+# test_gap signal). --------------------------------------------------------- #
+
+def test_issue_428_quoted_no_tests_does_not_route_to_test_gap():
+    """Regression fixture: no-human-ai/no_human#428 is a repro-gate bugfix.
+    Its only occurrence of the test_gap signal is inside a quoted symptom —
+    `instead of pytest's "no tests ran"` — in an acceptance criterion, not a
+    statement that tests are missing. On main this classifies test_gap; the
+    fix must not classify it that way."""
+    task = _load_issue_428()
+    verdict = classify_kind(task)
+    assert verdict.kind is not TaskKind.TEST_GAP
+    assert "no tests" not in verdict.reason
+
+
+@pytest.mark.parametrize("wrapped", [
+    "`no tests`",
+    "```\nno tests ran\n```",
+    "> no tests ran",
+    '"no tests ran"',
+    "'no tests ran'",
+])
+def test_signal_inside_code_span_fence_blockquote_or_quote_is_not_a_signal(wrapped):
+    task = _task(
+        "Add a dark-mode toggle",
+        description=f"Running the old script prints:\n{wrapped}\nplease add it anyway.",
+    )
+    verdict = classify_kind(task)
+    assert verdict.kind is TaskKind.FEATURE
+    assert verdict.source == "default"
+
+
+def test_same_signal_in_bare_prose_still_classifies():
+    """Positive control (same test body, per spec): remove the delimiters
+    around the identical words and the signal fires again — proving the fix
+    narrows *position*, not the word list, and does so kind-wide, not just
+    for test_gap."""
+    test_gap_task = _task("Parser", description="the retry helper has no tests")
+    assert classify_kind(test_gap_task).kind is TaskKind.TEST_GAP
+
+    test_gap_task2 = _task("Parser", description="add a missing test for it")
+    assert classify_kind(test_gap_task2).kind is TaskKind.TEST_GAP
+
+    ci_fix_task = _task("Nightly", description="the CI build is red")
+    assert classify_kind(ci_fix_task).kind is TaskKind.CI_FIX
+
+
+def test_apostrophes_do_not_mask_surrounding_prose():
+    """The single-quote mask is word-boundary-guarded: without that guard,
+    the apostrophe in "pytest's" plus a later stray apostrophe could swallow
+    everything between them as one giant 'quoted string', blinding the
+    classifier to real prose in between."""
+    task = _task(
+        "Parser", description="pytest's runner has no tests for the parser")
+    verdict = classify_kind(task)
+    assert verdict.kind is TaskKind.TEST_GAP
+
+
+def test_stray_inch_marks_do_not_mask_surrounding_prose():
+    """The double-quote mask is word-boundary-guarded like the single-quote
+    one (see test_apostrophes_do_not_mask_surrounding_prose above): two
+    unrelated straight quotes used as inch marks sit directly against
+    digits, so they must not pair up across the sentence and swallow the
+    real signal words between them."""
+    task = _task(
+        "Enclosure",
+        description=(
+            'the panel is 24" wide, the retry helper has no tests, '
+            'and the frame is 30" tall'))
+    assert classify_kind(task).kind is TaskKind.TEST_GAP
+
+    # CONTROL: identical sentence with the two stray inch marks removed —
+    # must classify exactly the same way, proving the guard narrows
+    # position (unpaired quote vs. real quote) and not content.
+    control_task = _task(
+        "Enclosure",
+        description=(
+            'the panel is 24 wide, the retry helper has no tests, '
+            'and the frame is 30 tall'))
+    assert classify_kind(control_task).kind is TaskKind.TEST_GAP
+
+
+def test_stray_backtick_does_not_mask_a_later_line():
+    """An inline code span must not cross a newline: without that
+    restriction, a single unterminated backtick pairs with the NEXT real
+    backtick — even lines later — and blanks everything in between,
+    including a real signal in the author's own prose."""
+    task = _task(
+        "Pipeline",
+        description=(
+            "opened with `nh task add`\n"
+            "note the stray ` in this line\n"
+            "the CI build is red on every PR and `x` ends it"))
+    assert classify_kind(task).kind is TaskKind.CI_FIX
+
+    # CONTROL: identical text with the stray backtick removed — must
+    # classify exactly the same way (the properly paired `x` span on the
+    # last line still masks normally; only the stray delimiter is gone).
+    control_task = _task(
+        "Pipeline",
+        description=(
+            "opened with `nh task add`\n"
+            "note the stray in this line\n"
+            "the CI build is red on every PR and `x` ends it"))
+    assert classify_kind(control_task).kind is TaskKind.CI_FIX
+
+
+def test_override_beats_even_a_masked_body():
+    task = _load_issue_428()
+    verdict = classify_kind(task, override="bugfix")
+    assert verdict.kind is TaskKind.BUGFIX
+    assert verdict.source == "override"
+
+
+def test_reason_names_matched_text_and_zone():
+    prose_verdict = classify_kind(_task("Parser", description="add a missing test for it"))
+    assert "test" in prose_verdict.reason
+    assert "description" in prose_verdict.reason
+    assert not any(ch.isdigit() for ch in prose_verdict.reason)
+
+    intent_verdict = classify_kind(_task("Add a missing test"))
+    assert "test" in intent_verdict.reason
+    assert "title/criteria" in intent_verdict.reason
+    assert not any(ch.isdigit() for ch in intent_verdict.reason)
