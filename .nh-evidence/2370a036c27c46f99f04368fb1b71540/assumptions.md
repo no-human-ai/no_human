@@ -1,0 +1,20 @@
+# Assumptions
+
+_Harness-captured record for task `2370a036`, commit `ff24ede7c4210bf501fdbff76427ec15f477b5f5` — not model-authored: no_human wrote this file from the intake step's recorded questions and assumptions. It records what the gate produced; it is not a verdict of the model that wrote the code._
+
+> ⚠️ **Unresolved:** Two consecutive attempts ended without editing any file. Either the acceptance criteria are already satisfied by the existing code, or the agent cannot identify the change to make.
+
+> ⚠️ **Open question:** Is this task already implemented, or does the spec need to name the required change more concretely?
+
+<details><summary>⚠️ 7 assumptions made on your behalf — verify at review</summary>
+
+- **Q:** When rework diverges from the pushed tip, should the fix automatically rebase the rework onto the pushed tip, merge the pushed tip into the rework, or use a different strategy? **A:** Rebase the rework onto the pushed tip. This replays the new commits atop the pushed tip, making the result a linear descendant that fast-forwards at delivery, avoids merge commits in automated contexts, and aligns with standard CI rework patterns. _(assumption)_
+- **Q:** How should the fix detect that a case is rework-after-rejection (eligible for the fix)? Is there explicit metadata tracking rejection, or must we infer from attempt history? **A:** Infer from attempt history: if the prior attempt failed and the current branch HEAD differs from the prior pushed tip SHA, but the current branch was created after that failure (via attempted rework), classify as rework-after-rejection. Explicit rejection metadata is not assumed to exist. _(assumption)_
+- **Q:** What characteristic distinguishes legitimate rework-after-rejection (fix should apply) from a malicious force-push attempt (fix should NOT apply)? AC3 requires that genuine force-pushes still be refused. **A:** The pushed tip must be an ancestor of the reworked commit. Legitimate rework includes the pushed tip in its history; a malicious force-push rewrites history so the new tip and pushed tip diverge (neither is ancestor of the other). Test that rebasing succeeds when pushed tip ∈ ancestors; refuse rebase when it does not. _(assumption)_
+- **Q:** In AC4, when a task's divergence 'still cannot be avoided', what specific conditions trigger that determination—merge conflicts, semantic incompatibility, or something else? **A:** Divergence cannot be avoided when: (a) rebase onto pushed tip encounters unresolvable merge conflicts, (b) the reworked commits semantically depend on removing/rewriting pushed commits (detected by analyzing conflict markers or commit diffs), or (c) rebase returns a non-zero exit status. Escalate only in these cases, not preemptively. _(assumption)_
+- **Q:** If the fix attempts to merge and encounters conflicts, what should happen: auto-fail and escalate, attempt automatic resolution, or another approach? **A:** Attempt automatic conflict resolution for trivial conflicts (non-overlapping hunks). If conflicts remain after auto-resolution or rebase returns non-zero, fail the rebase and escalate rather than attempting complex manual merging. The merge path is reserved for the escalation message as a concrete option for the human. _(assumption)_
+- **Q:** For AC2's test reproducing 'the exact state seen in recorded incidents', can we query the recorded history database to source real test data, or must tests be built synthetically? **A:** HUMAN-GATED: not self-answerable
+- **Q:** For AC4's escalation messages (naming SHAs, indicating which has more work, offering merge), does an existing escalation system exist to integrate with, or should we define a new format/channel? **A:** Integrate with the existing ReviewedShaMismatch exception handler in core/orchestrator.py (referenced in task). The escalation should emit to the same channel as current delivery refusals, naming both pushed-tip SHA and reworked SHA, indicating which commit has more new work (via commit count or diff size), and explicitly offering 'git merge <pushed-tip>' as the human's manual recovery option. _(assumption)_
+
+</details>
+
