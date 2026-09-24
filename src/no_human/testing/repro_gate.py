@@ -24,7 +24,11 @@ base-tree pytest run that COLLECTS ZERO tests (the declared file/id no
 longer exists at the merge base — the base moved under the ticket) is
 likewise ``error`` with a distinct "not found at base — re-anchor" reason,
 never the "already passes at base" verdict: zero collection is a
-selection/anchoring fact, not a test outcome (110655e5).
+selection/anchoring fact, not a test outcome (110655e5). A non-``.py``
+manifest entry under the pytest path (Python profile, or no profile) is
+also ``error``, naming the offending extension and stating no per-file
+runner is configured — never pytest's own "no tests ran", which that
+entry would otherwise surface.
 """
 
 from __future__ import annotations
@@ -324,6 +328,29 @@ def _test_files(tests: list[str]) -> list[str]:
     for t in tests:
         seen.setdefault(t.split("::", 1)[0], None)
     return list(seen)
+
+
+_PY_SUFFIX = ".py"
+
+
+def _non_python_entries(tests: list[str]) -> list[tuple[str, str]]:
+    """[(file, extension-label)] for every declared entry pytest cannot run.
+
+    Only ``.py`` is Python here (intake: .pyi are stubs, .pyx needs a Cython
+    build, .pyw is a Windows GUI convention — none are part of the default
+    pytest flow). Compared on the FILE part of the node id (``path::case``),
+    deduplicated, order preserved, the same convention as ``_test_files``.
+    Suffix compared case-insensitively. An entry with no suffix is labelled
+    "(no extension)" and counts as non-Python — pytest collects by
+    ``test_*.py``, so an extensionless path is not a Python test either.
+    """
+    offenders: list[tuple[str, str]] = []
+    for f in _test_files(tests):
+        suffix = Path(f).suffix
+        if suffix.lower() == _PY_SUFFIX:
+            continue
+        offenders.append((f, suffix or "(no extension)"))
+    return offenders
 
 
 def declared_test_files(repo_path: Path) -> list[str]:
@@ -653,7 +680,10 @@ def run_repro_gate(
 
     ``profile`` is the repo's confirmed :class:`ProjectProfile` (or None). A
     Python profile (or no profile — the historical default) runs the repro
-    tests with pytest, unchanged. Any other declared ecosystem routes the same
+    tests with pytest, unchanged — except a non-``.py`` manifest entry never
+    reaches pytest on this path: it is refused as ``error`` naming the
+    extension, since pytest would otherwise report "no tests ran" for it (see
+    :func:`_non_python_entries`). Any other declared ecosystem routes the same
     fails-before/passes-after proof through the profile's own ``test_cmd``
     instead (SCRUM-65), so the guarantee is not pytest-only.
 
@@ -721,6 +751,15 @@ def run_repro_gate(
             f"declared test file(s) missing from the attempt tree: {missing} "
             "— a listed repro test may not be deleted"])
     if python is not None:
+        offenders = _non_python_entries(tests)
+        if offenders:
+            named = ", ".join(f"{f} ({ext})" for f, ext in offenders)
+            return ReproResult("error", tests=tests, reasons=[
+                f"no per-file runner is configured for: {named} — this repo's "
+                "profile is Python or declares no ecosystem, so the gate would "
+                "run these through pytest, which cannot execute them. Declare "
+                "the repo's ecosystem and test_cmd in its profile, or point "
+                f"{MANIFEST} at .py test(s)."])
         after_env = {**env, "PYTHONPATH": os.pathsep.join(
             [str(repo_path), str(repo_path / "src"), env.get("PYTHONPATH", "")])}
     else:
