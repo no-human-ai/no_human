@@ -49,22 +49,34 @@ assert LandEnv and land_env
 
 
 def _install_guard_hook(clone, marker: Path, *, sleep_s: float = 0,
-                         refuse: bool = False) -> Path:
+                         refuse: bool = False,
+                         wait_for: Path | None = None) -> Path:
     """Install a REAL executable `pre-push` hook into *clone* via
     `core.hooksPath` — standing in for the private-checkout history-scan
-    hook this repo does not carry. Every invocation appends one line to
-    *marker* (proving the hook ran) and the full stdin it was handed
-    (`<marker>.stdin`, proving a deferred re-run reproduces the pre-push
-    protocol) before sleeping *sleep_s* seconds and exiting 1 (refuse) or 0
-    (report-only pass) depending on *refuse*."""
+    hook this repo does not carry. The hook always reads its full stdin
+    first (`<marker>.stdin`, proving a deferred re-run reproduces the
+    pre-push protocol) — that happens unconditionally, before any barrier,
+    since the deferred runner feeds stdin from a temp file closed at spawn
+    time. If *wait_for* is given, the hook then busy-waits for that file to
+    exist before doing anything else observable; this gives a TEST a
+    deterministic barrier ("the hook cannot possibly have finished, because
+    I never created the release file") instead of a wall-clock guess. Once
+    past the barrier (or immediately, if none was given), it appends one
+    line to *marker* (proving the hook ran to completion), sleeps
+    *sleep_s* seconds, then exits 1 (refuse) or 0 (report-only pass)."""
     hooks_dir = clone / ".git" / "guard-hooks"
     hooks_dir.mkdir(parents=True, exist_ok=True)
     hook = hooks_dir / "pre-push"
     marker_q = shlex.quote(str(marker))
     stdin_marker_q = shlex.quote(str(marker) + ".stdin")
+    wait_block = ""
+    if wait_for is not None:
+        wait_q = shlex.quote(str(wait_for))
+        wait_block = f"while [ ! -f {wait_q} ]; do sleep 0.05; done\n"
     hook.write_text(
         "#!/bin/sh\n"
         f"cat >> {stdin_marker_q}\n"
+        f"{wait_block}"
         f"echo ran >> {marker_q}\n"
         f"sleep {sleep_s}\n"
         f"exit {1 if refuse else 0}\n"
@@ -100,22 +112,30 @@ def _land(land_env, monkeypatch, *, branch: str) -> "object":
 def test_report_mode_land_does_not_run_the_gate_inside_the_push(
     land_env, monkeypatch,
 ):
-    """The whole bug: report mode cannot refuse, so a slow scan must not sit
-    on the land's critical path. A 3s hook must not add anywhere near 3s to
-    `land_task`'s own wall-clock."""
+    """The whole bug: report mode cannot refuse, so a scan must not sit on
+    the land's critical path. Proven by OBSERVATION, not a wall-clock bound
+    (a duration assertion reds under load for reasons that have nothing to
+    do with the hook): the hook is installed with a release-file barrier
+    the test alone controls, so it is IMPOSSIBLE for it to have run to
+    completion when `land_task` returns unless the land waited for it
+    inline — there is no window in which this could pass by luck."""
     monkeypatch.delenv("NH_GUARD_MODE", raising=False)
     branch, _head_sha = land_env.cut_branch("no-human/t-defer-fast")
     marker = land_env.tmp_path / "marker.txt"
-    _install_guard_hook(land_env.clone, marker, sleep_s=3)
+    release = land_env.tmp_path / "release-fast.flag"
+    _install_guard_hook(land_env.clone, marker, wait_for=release)
 
-    start = time.monotonic()
     result = _land(land_env, monkeypatch, branch=branch)
-    elapsed = time.monotonic() - start
 
     assert result.ok, result.stderr
-    assert elapsed < 2.0, (
-        f"land_task took {elapsed:.2f}s with a 3s pre-push hook installed — "
-        "the report-only gate ran (or was waited on) inside the push")
+    assert not marker.exists(), (
+        "the hook ran to completion despite its release file never having "
+        "been created — land_task must have waited for (and run) the gate "
+        "inline instead of deferring it")
+
+    release.touch()
+    assert _wait_for(marker.exists, timeout=10.0), (
+        "the deferred hook never ran even after being released")
 
 
 def test_report_mode_runs_the_gate_out_of_band_after_the_push(
@@ -123,18 +143,31 @@ def test_report_mode_runs_the_gate_out_of_band_after_the_push(
 ):
     """The deferred hook must actually run, out of band, over the pushed
     range — a report-mode gate that silently never runs again is just a
-    quieter version of the same bug (nothing ever gets scanned)."""
+    quieter version of the same bug (nothing ever gets scanned).
+
+    The "has not run yet" half is proven with a release-file barrier the
+    test controls (see `_install_guard_hook`), not by racing a bare
+    ``assert not marker.exists()`` against an unsynchronised detached
+    child — that assertion can only ever be true by luck (it finishes
+    before the check on a loaded runner) and cannot tell "ran inline" from
+    "ran out of band and finished fast" apart. `result.guard_note` naming
+    the deferral is the other, independent, non-racy proof of which branch
+    the code took."""
     monkeypatch.delenv("NH_GUARD_MODE", raising=False)
     branch, _head_sha = land_env.cut_branch("no-human/t-defer-runs")
     marker = land_env.tmp_path / "marker.txt"
-    _install_guard_hook(land_env.clone, marker, sleep_s=0)
+    release = land_env.tmp_path / "release-runs.flag"
+    _install_guard_hook(land_env.clone, marker, wait_for=release)
 
     result = _land(land_env, monkeypatch, branch=branch)
     assert result.ok, result.stderr
+    assert "deferred" in result.guard_note.lower(), (
+        f"guard_note {result.guard_note!r} does not name a deferral")
     assert not marker.exists(), (
-        "hook already ran synchronously — this test's premise (a deferred "
-        "gate) does not hold")
+        "the hook ran to completion despite its release file never having "
+        "been created — this is not a deferred, out-of-band run")
 
+    release.touch()
     assert _wait_for(marker.exists, timeout=10.0), (
         "the deferred gate never ran the hook at all")
     stdin_marker = Path(str(marker) + ".stdin")
@@ -143,7 +176,6 @@ def test_report_mode_runs_the_gate_out_of_band_after_the_push(
     assert result.landed_sha in stdin_text, (
         f"deferred hook stdin {stdin_text!r} does not name the landed sha "
         f"{result.landed_sha}")
-    assert "deferred" in result.guard_note.lower()
 
 
 def test_enforce_mode_gate_can_still_refuse_the_land(land_env, monkeypatch):
