@@ -39,3 +39,4 @@ may predate the current code — check its date before treating it as current.
 | [BASELINE_M0.md](BASELINE_M0.md) | The M0.5 cost baseline every later milestone is measured against (2026-07-10) |
 | [design/lease-takeover-vs-orphan-grace.md](design/lease-takeover-vs-orphan-grace.md) | Decision record for the 600s lease-takeover and row-orphan divergence |
 | [design/memory-lifecycle-triage.md](design/memory-lifecycle-triage.md) | Operator runbook for memory retirement: the 45-day auto-archive sweep and flood control |
+| [design/untrusted-pr-review-gate.md](design/untrusted-pr-review-gate.md) | Why the review gate moves off `pull_request` to a `workflow_run` split, what that does and does not fix (2026-09-17) |
