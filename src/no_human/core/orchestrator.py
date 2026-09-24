@@ -36,10 +36,8 @@ from urllib.parse import quote as _url_quote
 
 from ..agent.advisory import advisory_backend
 from ..agent.backend import AgentEvent, CodingBackend, local_run_without_subscription, resolve_backend_name
-from ..agent.claude_backend import ClaudeBackend
 from ..agent.claude_backend import (
     TRANSPORT_DIAGNOSIS_MARKER as _TRANSPORT_BLOCKER_MARKER,
-    AgentEvent,
     ClaudeBackend,
     dewrap as _dewrap,
 )
@@ -77,6 +75,7 @@ from ..blockers import (
     triage,
     user_pause_blocker,
 )
+from .. import capability_gap
 from ..ci.base import CIResult, HumanGatedCI
 from ..config import NO_HUMAN_HOME, active_auth_profile, ui_evidence_should_run, permission_mode
 from ..history.skills import discover_skills
@@ -619,10 +618,10 @@ def _summarize_tool_sig(tool: str, inp: dict) -> str:
 #: whose runner is a harness script read as making no progress to whichever
 #: guard still used the narrower set, so it was collapsed into this one.
 #: This is the closest cheap proxy the live event stream has for "a test
-#: result appeared": `tool_result` events never carry output text
+#: result appeared": a `tool_result`'s meta never carries output text
 #: (`claude_backend._exit_status`'s docstring — only size, and an exit code
-#: on failure, by design), so whether the run PASSED cannot be read from the
-#: stream at all. Running one of these commands is itself evidence the
+#: on failure, by design; `AgentEvent.output` is in-process, read only by the
+#: reviewer's coverage tracker), so PASSED is not read here. Running one is evidence the
 #: attempt is verifying, not just looking around.
 #:
 #: `node <script>` (task 0ab78498 attempt 1/2: `node /tmp/dcrace/harness.mjs`;
@@ -698,8 +697,8 @@ def _looks_like_test_run(command: str) -> bool:
 def _test_run_summary(meta: dict | None) -> str:
     """A human-readable, comparable outcome for one test-runner invocation.
 
-    Rendered from `tool_result` meta ALONE — the SDK never delivers output
-    text on the wire (`claude_backend._exit_status`'s docstring, by design,
+    Rendered from `tool_result` meta ALONE — output text never enters meta
+    (`claude_backend._exit_status`'s docstring, by design,
     so a printed credential is never captured): `exit_code` when a FAILED
     result states one, else ``ok``/``failed`` from `is_error`, plus
     `result_chars`. Two test-runner calls with the SAME outcome produce a
@@ -2213,6 +2212,7 @@ class Orchestrator:
     def emit(self, kind: str, text: str = "", **meta: Any) -> None:
         self._sink({"source": "orchestrator", "kind": kind, "text": text, **meta})
         self._telemetry_hook(kind, meta)
+        capability_gap.observe(self, kind, meta)
 
     def _emit_manifest_repairs(self, repaired: list[tuple[list[str], str]]) -> None:
         """Drain every ``on_repair(paths, note)`` call from one manifest
@@ -9815,8 +9815,8 @@ class Orchestrator:
         `docs/WINDOWS.md` directly and — by that test's own docstring — a
         `CITATION_TABLE` row cannot catch a drifted bare `file.py:LINE`
         citation there, so TESTING sees a doc this preflight cannot; but
-        `plan()` also flags any IN-WINDOW drift (`_locate_line_citation`
-        status `"drifted"`) as unfixed unless re-anchored, while TESTING's
+        `plan()` also flags any IN-WINDOW drift of a `symbol:line` row
+        (`_symbol_drift`) as unfixed unless re-anchored, while TESTING's
         own assertion only fails BEYOND `_CITATION_DRIFT_WINDOW` lines — so
         this preflight is stricter within the table's three docs than
         TESTING is. The two are incomparable, not one strictly inside the

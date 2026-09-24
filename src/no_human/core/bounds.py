@@ -390,7 +390,7 @@ class StuckDetector:
 
         `summary` is expected to be `_test_run_summary`'s
         `"{status}, {chars} chars"` string, not pass/fail counts — the event
-        stream never carries test output text (`claude_backend._exit_status`'s
+        meta never carries test output text (`claude_backend._exit_status`'s
         docstring: only size, and an exit code on failure, by design, so a
         printed credential is never captured), so "5 passed, 2 failed" is not
         obtainable here. The comparison itself, though, looks at `status`
@@ -526,7 +526,7 @@ class ConvergenceTracker:
     signals the live event stream can actually see cheaply. It is
     deliberately NOT "a new test result" in the literal pass/fail sense:
     `claude_backend._exit_status` documents, with a measured corpus, that a
-    ``tool_result`` event carries only size and (on a FAILURE only) an exit
+    ``tool_result`` event's meta carries only size and (on a FAILURE only) an exit
     code — never the command's output text, by design, so a printed
     credential is never captured. Treating "a test command ran" as progress
     is the honest signal available at this seam.

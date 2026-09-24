@@ -232,6 +232,22 @@ def _result_size(content: Any) -> dict[str, Any]:
     the HIGH end where that overhead is proportionally small, so the headline survives,
     but any median or percentile taken from repr lengths is wrong.
     """
+    text, non_text = _result_text(content)
+    return {
+        "result_chars": len(text),
+        "over_cap": len(text) > _TOOL_RESULT_CAP,
+        # A threshold read off the GLOBAL distribution must exclude these; a
+        # threshold read off the Bash slice is unaffected, since Bash is text-only.
+        "non_text_blocks": non_text,
+    }
+
+
+def _result_text(content: Any) -> tuple[str, int]:
+    """A tool result's text as the model sees it, and its non-text block count.
+
+    Split out of `_result_size` so the same text can ride on the in-process
+    `AgentEvent.output` (never persisted) without a second decoder.
+    """
     non_text = 0
     if content is None:
         text = ""
@@ -260,13 +276,7 @@ def _result_size(content: Any) -> dict[str, Any]:
         text = "".join(parts)
     else:
         text = str(content)
-    return {
-        "result_chars": len(text),
-        "over_cap": len(text) > _TOOL_RESULT_CAP,
-        # A threshold read off the GLOBAL distribution must exclude these; a
-        # threshold read off the Bash slice is unaffected, since Bash is text-only.
-        "non_text_blocks": non_text,
-    }
+    return text, non_text
 
 
 #: What a failed tool result OPENS with, and how far in we look for it. The
@@ -282,7 +292,7 @@ def _exit_status(content: Any, *, is_error: bool) -> dict[str, int]:
     103 `export_guard` invocations across 8 tasks in one night, and the DB
     cannot say whether any of that was a refusal LOOP: the size above cannot
     tell a refusal from a pass. An int can, and an int is not output — the
-    no-text rule this file states at the emit site is unchanged.
+    no-persisted-text rule this file states at the emit site is unchanged.
 
     🔴 TWO SIGNALS, AND NEITHER ALONE WILL DO — the first version of this
     docstring claimed the SHAPE separated the populations, and that was wrong.
@@ -874,12 +884,12 @@ class ClaudeBackend:
                 # executed once. Verified against the SDK types: UserMessage carries
                 # `content: str | list[ContentBlock]` and `tool_use_result`.
                 #
-                # We emit the SIZE, never the text. PR-024 measured that 72% of an
-                # attempt's cost is the conversation re-read every turn, and tool
-                # results are the payload — but persisting that text would bloat the DB
-                # by ~1,500 results per session AND risk capturing whatever a command
-                # printed, including credentials. The size is what the truncation
-                # threshold must be chosen from; the text is not needed for it.
+                # We PERSIST the size, never the text (`output` is in-process only;
+                # the sinks do not copy it). PR-024: 72% of an attempt's cost is the
+                # conversation re-read every turn, and tool results are the payload —
+                # but persisting that text would bloat the DB by ~1,500 results per
+                # session AND risk capturing whatever a command printed, including
+                # credentials. The size is what the truncation threshold needs.
                 if isinstance(message, UserMessage):
                     blocks = message.content
                     if isinstance(blocks, list):
@@ -890,7 +900,7 @@ class ClaudeBackend:
                                 # result that did not fail.
                                 is_error = bool(getattr(block, "is_error", False))
                                 yield AgentEvent(
-                                    "tool_result",
+                                    "tool_result", output=_result_text(block.content)[0],
                                     meta={
                                         # JOIN KEY — pairs this size with its tool.
                                         "tool_use_id": block.tool_use_id,
