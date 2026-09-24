@@ -28,7 +28,7 @@ from no_human.cli.commands import gate
 from no_human.core.task import Task
 from no_human.review import oneshot
 from no_human.review.oneshot import GateUnavailable, GateResult, render_markdown, review_diff, run_gate
-from no_human.review.reviewer import ReviewDecision, ReviewerUnavailable
+from no_human.review.reviewer import _DIFF_CAP, ReviewDecision, ReviewerUnavailable
 from no_human.review.selfcheck import ChecklistItem
 from no_human.config import AuthError, MissingCredentialError
 from no_human.agent.backend import BackendUnavailable
@@ -1991,4 +1991,221 @@ def test_a_lookalike_origin_host_is_not_treated_as_github(tmp_path, monkeypatch)
     assert oneshot._origin_owner_repo(repo) is None, (
         "a lookalike host containing github.com as a substring must not "
         "resolve to a GitHub (owner, repo) pair"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# 27. the diff budget excludes the generated, hash-verified manifest         #
+# --------------------------------------------------------------------------- #
+
+def _raw_diff(repo, before, after, *pathspec):
+    """Like `_git_out`, but WITHOUT the trailing-newline `.strip()` — the
+    internal diff `run_gate` measures (`oneshot._diff`) is `git diff`'s raw
+    stdout, unstripped, so a byte-for-byte length comparison against it must
+    not silently drift by one trailing newline."""
+    args = ["git", "-C", str(repo), "diff", "--no-color", f"{before}..{after}"]
+    if pathspec:
+        args += ["--", *pathspec]
+    return subprocess.run(args, text=True, capture_output=True, check=True).stdout
+
+
+def _manifest_rows(n: int, seed: int) -> str:
+    return "\n".join(
+        f"{'0123456789abcdef'[(i + seed) % 16] * 64}  src/file_{i:03d}.py"
+        for i in range(n)
+    ) + "\n"
+
+
+def test_a_manifest_repin_no_longer_pushes_the_diff_over_the_budget(
+    tmp_path, monkeypatch,
+):
+    """A source change that is comfortably under the single-turn review cap
+    on its own must not be refused just because `RELEASE_MANIFEST.txt` also
+    changed alongside it in the same diff — the manifest is regenerated and
+    hash-verified by CI, never read as a diff, so it must not count against
+    the budget the gate enforces."""
+    repo, _bare = _make_repo_with_origin(tmp_path)
+
+    (repo / "RELEASE_MANIFEST.txt").write_text(_manifest_rows(250, seed=0))
+    _git(repo, "add", "RELEASE_MANIFEST.txt")
+    _git(repo, "commit", "-m", "add manifest")
+    _git(repo, "push", "origin", "main")
+
+    _git(repo, "checkout", "-b", "feature")
+    (repo / "src").mkdir()
+    (repo / "src" / "big.py").write_text(
+        "\n".join(f"x_{i} = {i}" for i in range(3200)) + "\n"
+    )
+    _git(repo, "add", "src/big.py")
+    # Re-pin every row: a whole-file rewrite, so the manifest patch alone is
+    # large.
+    (repo / "RELEASE_MANIFEST.txt").write_text(_manifest_rows(250, seed=1))
+    _git(repo, "add", "RELEASE_MANIFEST.txt")
+    _git(repo, "commit", "-m", "big source change + re-pin manifest")
+
+    raw_diff = _raw_diff(repo, "origin/main", "HEAD")
+    manifest_only = _raw_diff(repo, "origin/main", "HEAD", "RELEASE_MANIFEST.txt")
+    assert len(raw_diff) > _DIFF_CAP, (
+        "fixture must exceed the cap unexcluded, or this test proves nothing"
+    )
+    assert len(raw_diff) - len(manifest_only) < _DIFF_CAP, (
+        "fixture must drop under the cap once the manifest patch alone is "
+        "excluded, or this test proves nothing"
+    )
+
+    _ok_credential(monkeypatch)
+    captured = {}
+
+    class _Spy:
+        @classmethod
+        def from_config(cls, data, **kw):
+            return cls()
+
+        async def review(self, task, *, repo_path, diff_override, before_ref, **kw):
+            captured["diff_override"] = diff_override
+            return _PASSING_DECISION
+
+    monkeypatch.setattr(oneshot, "AdversarialReviewer", _Spy)
+
+    import asyncio
+    result = asyncio.run(run_gate(repo))
+
+    assert "diff_override" in captured, (
+        "the reviewer must have been constructed and invoked — the gate "
+        "must not refuse this diff"
+    )
+    assert "src/big.py" in captured["diff_override"]
+    assert "RELEASE_MANIFEST.txt" not in captured["diff_override"]
+    assert len(captured["diff_override"]) == len(raw_diff) - result.generated_excluded_chars
+    assert result.generated_excluded_paths == ["RELEASE_MANIFEST.txt"]
+
+
+def test_the_budget_exclusion_does_not_narrow_the_tamper_guard(tmp_path, monkeypatch):
+    """`split_generated` only changes what the diff BUDGET measures — the
+    tamper guard runs on `(before_ref, after_ref)` git refs, never on diff
+    text (an unchanged mechanism), so it must still see
+    `RELEASE_MANIFEST.txt` exactly as it always has."""
+    repo, _bare = _make_repo_with_origin(tmp_path)
+
+    (repo / "RELEASE_MANIFEST.txt").write_text(_manifest_rows(250, seed=0))
+    _git(repo, "add", "RELEASE_MANIFEST.txt")
+    _git(repo, "commit", "-m", "add manifest")
+    _git(repo, "push", "origin", "main")
+
+    _git(repo, "checkout", "-b", "feature")
+    (repo / "src").mkdir()
+    (repo / "src" / "big.py").write_text(
+        "\n".join(f"x_{i} = {i}" for i in range(3200)) + "\n"
+    )
+    _git(repo, "add", "src/big.py")
+    (repo / "RELEASE_MANIFEST.txt").write_text(_manifest_rows(250, seed=1))
+    _git(repo, "add", "RELEASE_MANIFEST.txt")
+    _git(repo, "commit", "-m", "big source change + re-pin manifest")
+
+    _ok_credential(monkeypatch)
+    monkeypatch.setattr(oneshot, "AdversarialReviewer", _stub_reviewer(_PASSING_DECISION))
+
+    captured = {}
+    real_tamper_check_between = oneshot.tamper_check_between
+
+    def _spy(repo_path, *, before_ref, after_ref):
+        captured["before_ref"] = before_ref
+        captured["after_ref"] = after_ref
+        return real_tamper_check_between(
+            repo_path, before_ref=before_ref, after_ref=after_ref,
+        )
+
+    monkeypatch.setattr(oneshot, "tamper_check_between", _spy)
+
+    import asyncio
+    asyncio.run(run_gate(repo))
+
+    assert "before_ref" in captured and "after_ref" in captured, (
+        "the tamper guard must still have been called"
+    )
+    full_diff = _git_out(
+        repo, "diff", "--no-color", captured["before_ref"], captured["after_ref"],
+    )
+    assert "RELEASE_MANIFEST.txt" in full_diff, (
+        "the tamper guard's own ref-to-ref view must still include the "
+        "manifest — the budget split must never narrow what it sees"
+    )
+
+
+def test_the_gate_states_the_manifest_was_repinned_and_by_how_many_rows(
+    tmp_path, monkeypatch,
+):
+    """Excluding the manifest from the BUDGET must not make the manifest
+    change invisible — the gate's rendered output must still say it changed
+    and by how many rows, so a silent re-pin is never mistaken for "nothing
+    to review"."""
+    repo, _bare = _make_repo_with_origin(tmp_path)
+
+    base_rows = [f"{'0' * 64}  src/file_{i}.py" for i in range(5)]
+    (repo / "RELEASE_MANIFEST.txt").write_text("\n".join(base_rows) + "\n")
+    _git(repo, "add", "RELEASE_MANIFEST.txt")
+    _git(repo, "commit", "-m", "add manifest")
+    _git(repo, "push", "origin", "main")
+
+    _git(repo, "checkout", "-b", "feature")
+    (repo / "b.txt").write_text("change\n")
+    _git(repo, "add", "b.txt")
+    rows = list(base_rows)
+    # Re-pin exactly 3 of the 5 rows.
+    rows[0] = f"{'1' * 64}  src/file_0.py"
+    rows[1] = f"{'2' * 64}  src/file_1.py"
+    rows[2] = f"{'3' * 64}  src/file_2.py"
+    (repo / "RELEASE_MANIFEST.txt").write_text("\n".join(rows) + "\n")
+    _git(repo, "add", "RELEASE_MANIFEST.txt")
+    _git(repo, "commit", "-m", "re-pin 3 rows")
+
+    _ok_credential(monkeypatch)
+    monkeypatch.setattr(oneshot, "AdversarialReviewer", _stub_reviewer(_PASSING_DECISION))
+
+    import asyncio
+    result = asyncio.run(run_gate(repo))
+
+    assert result.generated_excluded_rows == {"RELEASE_MANIFEST.txt": 3}
+    text = render_markdown(result)
+    assert "RELEASE_MANIFEST.txt re-pinned, 3 rows" in text, text
+
+
+def test_a_generated_file_not_on_the_allow_list_still_refuses(tmp_path, monkeypatch):
+    """`BUDGET_EXEMPT_GENERATED` is a strict allow-list, not a pattern: a
+    similarly-named generated file that is NOT in it (here `docs/RELEASE_
+    MANIFEST.txt`, not the exact repo-root `RELEASE_MANIFEST.txt`) must
+    still be counted in full and can still cause a refusal."""
+    repo, _bare = _make_repo_with_origin(tmp_path)
+    _git(repo, "checkout", "-b", "feature")
+    (repo / "docs").mkdir()
+    (repo / "docs" / "RELEASE_MANIFEST.txt").write_text(
+        "\n".join(f"line {i}" for i in range(20_000))
+    )
+    _git(repo, "add", "docs/RELEASE_MANIFEST.txt")
+    _git(repo, "commit", "-m", "huge non-exempt generated-looking file")
+
+    _ok_credential(monkeypatch)
+    constructed = []
+
+    class _NeverConstructed:
+        @classmethod
+        def from_config(cls, data, **kw):
+            constructed.append(True)
+            return cls()
+
+        async def review(self, task, *, repo_path, diff_override, before_ref, **kw):
+            constructed.append(True)
+            return _PASSING_DECISION
+
+    monkeypatch.setattr(oneshot, "AdversarialReviewer", _NeverConstructed)
+
+    import asyncio
+    with pytest.raises(GateUnavailable, match=r"60,000|_DIFF_CAP|characters") as excinfo:
+        asyncio.run(run_gate(repo))
+    assert not constructed, (
+        "a generated-looking file that is not on the exact-path allow-list "
+        "must still refuse the gate before constructing a reviewer"
+    )
+    assert "docs/RELEASE_MANIFEST.txt" in str(excinfo.value), (
+        "the refusal must name the oversized file, not just its size"
     )

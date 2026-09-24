@@ -103,6 +103,7 @@ from typing import Any
 
 from ..config import API_KEY_VAR, DEFAULT_CONFIG, SUBSCRIPTION_TOKEN_VAR, scrub_metered_auth
 from ..core.task import Task
+from ..review.diff_coverage import split_generated
 from ..review.reviewer import _DIFF_CAP as _REVIEWER_DIFF_CAP
 from ..review.oneshot import review_diff
 from ..review.reviewer import ReviewerUnavailable
@@ -248,6 +249,28 @@ def _fail(message: str) -> int:
     print(f"::error::{message}")
     _append_step_summary(f"### no_human review gate — did not run\n\n{message}\n")
     return EXIT_DID_NOT_RUN
+
+
+def _generated_excluded_note(split) -> str:
+    """The `"<path> re-pinned, N rows"` line(s) for a `split_generated` result.
+
+    Same wording `oneshot.render_markdown` uses for the `nh gate` path, so a
+    manifest re-pin with no matching source change is visible here too rather
+    than disappearing along with the patch the budget excluded."""
+    return "".join(
+        f"{path} re-pinned, {split.excluded_rows.get(path, 0)} rows — "
+        "generated and hash-verified by CI, excluded from the diff budget. "
+        for path in split.excluded_paths
+    )
+
+
+def _generated_excluded_parenthetical(split) -> str:
+    if not split.excluded_paths:
+        return ""
+    return (
+        f" ({split.excluded_chars:,} characters of generated, hash-verified "
+        "content excluded from the budget: " + ", ".join(split.excluded_paths) + ")"
+    )
 
 
 def _pop_oauth_bare_and_profiles() -> list[str]:
@@ -734,17 +757,24 @@ def _run_pull_request(event: dict[str, Any]) -> int:
             "silently reviewing an incomplete diff or falling back to "
             "reviewing every changed file uncapped"
         )
-    if len(diff_override) > _REVIEWER_DIFF_CAP:
+    # Generated, hash-verified patches (`RELEASE_MANIFEST.txt`) carry nothing
+    # for a verdict to depend on — the File inventory CI job checks them by
+    # hash, never by reading the diff — so they are dropped from what the
+    # budget MEASURES before the cap check below. This never touches the
+    # tamper guard (a separate git walk over refs, below), which still sees
+    # every file including the manifest.
+    split = split_generated(diff_override)
+    if len(split.budgeted) > _REVIEWER_DIFF_CAP:
         # FAIL CLOSED, the same rule `review.oneshot.run_gate` applies to the
         # `nh gate` path: past this cap `AdversarialReviewer.review` truncates
         # the diff and reviews a prefix, so a PASS would be a green check on a
         # change the reviewer never saw. Lower `max_files`, or split the pull
         # request, rather than trusting a partial read.
         return _fail(
-            f"the scoped diff is {len(diff_override):,} characters, over the "
+            f"the scoped diff is {len(split.budgeted):,} characters, over the "
             f"single-turn review cap of {_REVIEWER_DIFF_CAP:,} — refusing "
             "rather than review a truncated prefix. Lower `max_files` or "
-            "split the pull request."
+            "split the pull request." + _generated_excluded_parenthetical(split)
         )
 
     try:
@@ -759,11 +789,12 @@ def _run_pull_request(event: dict[str, Any]) -> int:
     return _finish_review(
         repo_full=repo_full, pr_number=pr_number, github_token=github_token,
         model=model, fail_on_findings=fail_on_findings, dry_run=dry_run,
-        workspace=workspace, diff_text=diff_override,
+        workspace=workspace, diff_text=split.budgeted,
         before_ref=merge_base, after_ref=head_sha,
         pr_title=pr_title, pr_body=pr_body,
         files_total=files_total, kept=kept, credential_mode=cred.mode,
         tamper_items=tamper_items, tampered=bool(tamper_report.tampered), tamper_ran=True,
+        note=_generated_excluded_note(split),
     )
 
 
@@ -1068,18 +1099,25 @@ def _run_workflow_run_with_client(
             f"{', ...' if len(missing) > 5 else ''}) — refusing rather than "
             "silently reviewing an incomplete diff"
         )
-    if len(diff_override) > _REVIEWER_DIFF_CAP:
+    # Same exclusion the checkout path applies, above: generated,
+    # hash-verified patches (`RELEASE_MANIFEST.txt`) carry nothing for a
+    # verdict to depend on, so they're dropped from what the budget MEASURES
+    # before this cap check. The REST path has no tamper guard at all
+    # (`tamper_ran=False` below), so there's nothing here for the split to
+    # narrow.
+    split = split_generated(diff_override)
+    if len(split.budgeted) > _REVIEWER_DIFF_CAP:
         return _fail(
-            f"the synthesized diff is {len(diff_override):,} characters, over "
+            f"the synthesized diff is {len(split.budgeted):,} characters, over "
             f"the single-turn review cap of {_REVIEWER_DIFF_CAP:,} — refusing "
             "rather than review a truncated prefix. Lower `max_files` or "
-            "split the pull request."
+            "split the pull request." + _generated_excluded_parenthetical(split)
         )
 
-    note = ""
+    note = _generated_excluded_note(split)
     if skipped_no_diff:
         shown = skipped_no_diff[:10]
-        note = "Not reviewed (no diff available): " + ", ".join(f"`{p}`" for p in shown)
+        note += "Not reviewed (no diff available): " + ", ".join(f"`{p}`" for p in shown)
         if len(skipped_no_diff) > len(shown):
             note += f", and {len(skipped_no_diff) - len(shown)} more"
 
@@ -1103,7 +1141,7 @@ def _run_workflow_run_with_client(
         return _finish_review(
             repo_full=repo_full, pr_number=pr_number, github_token=github_token,
             model=model, fail_on_findings=fail_on_findings, dry_run=dry_run,
-            workspace=tmpdir, diff_text=diff_override,
+            workspace=tmpdir, diff_text=split.budgeted,
             before_ref=base_sha, after_ref=head_sha,
             pr_title=pr_title, pr_body=pr_body,
             files_total=files_total, kept=kept, credential_mode=cred.mode,
