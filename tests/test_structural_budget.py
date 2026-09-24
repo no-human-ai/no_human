@@ -1496,23 +1496,30 @@ FROZEN_FILE_LINES = {
     # and the `reason if reason is not None else ...` fix replacing `reason
     # or ...` in `_revert_worktree_writes_unguarded`. Re-measured on this
     # tree with `scan_tree`, not carried over as a stale delta.
-    # 24728 -> 25039 (+311): rebased-branch recut fix — the two new hook
+    # 24728 -> 25070 (+342): rebased-branch recut fix — the two new hook
     # methods (`_recover_diverged_branch`, Hook 1, called from
     # `_run_attempt`; `_reconcile_remote_branch`, Hook 2, called from the
-    # existing delivery path) plus their call-site integration and the
+    # existing delivery path), their call-site integration, the
     # `_record_recut`/`_post_recut_comment` helpers `_finalize` uses to
     # thread the possibly-rebound branch through the PR-body/comment
-    # plumbing. The recut mechanics themselves (branch naming, replay,
-    # push) live in the new `vcs/recut.py`, not here — this is the
-    # orchestrator-side wiring only. Measured on this tree with the
-    # scanner below.
-    # 25039 -> 25070 (+31): `_already_satisfied_subject` gained the "ahead"
-    # remedy branch — a fast-forward push of the task's own branch via
+    # plumbing, and `_already_satisfied_subject`'s "ahead" remedy branch —
+    # a fast-forward push of the task's own branch via
     # `push_sha_fast_forward`, re-check-and-accept on `up_to_date`, and
     # named refusals on `ProtectedBranch`/`GitError`/a residual `ahead` —
-    # plus the `relation_reason["ahead"]` map entry. Measured on this tree
-    # with the scanner below.
-    "core/orchestrator.py": 25070,
+    # plus the `relation_reason["ahead"]` map entry. The recut mechanics
+    # themselves (branch naming, replay, push) live in the new
+    # `vcs/recut.py`, not here — this is the orchestrator-side wiring only.
+    # 25070 -> 25229 (+159): merged with `claim_gate_decision` — extracting
+    # delivery's zero-diff claim decision into one function that both
+    # `_run_attempt`'s commit section and the new mid-attempt landed-claim
+    # guard call, plus the guard's own wiring. Re-measured on this merged
+    # tree with `len(Path(...).read_text().splitlines())`, the scanner's
+    # own metric, not either parent's number carried forward by hand.
+    # 25229 -> 25237 (+8): the report-kind completion branch now takes the
+    # same two legal hops (`REVIEWING` then `DONE`) the code-review
+    # completion path already used, instead of an unvalidated jump straight
+    # to `DONE`. Re-measured with the scanner's own metric.
+    "core/orchestrator.py": 25237,
 
     # +163: Codex account section in the Settings Account tab —
     # _codex_status_payload + endpoints (app.py) and the I4 AI-history repo
