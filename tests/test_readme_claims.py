@@ -2086,7 +2086,7 @@ CITATION_TABLE = (
     # docs/KNOWN_ISSUES.md
     ("KNOWN_ISSUES.md", "db.py:Store.connect", "db.py", "aiosqlite.connect"),
     # docs/WINDOWS.md
-    ("WINDOWS.md", "cli/commands.py:_try_kill:7713", "cli/commands.py", "signal.SIGKILL"),
+    ("WINDOWS.md", "cli/commands.py:_try_kill:7727", "cli/commands.py", "signal.SIGKILL"),
 )
 
 assert len(CITATION_TABLE) >= 20, (
