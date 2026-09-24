@@ -1140,6 +1140,71 @@ def test_a_diff_over_the_reviewer_cap_refuses_instead_of_reviewing_a_prefix(
     assert "over the single-turn review cap" in capsys.readouterr().out
 
 
+def test_the_action_budget_also_excludes_the_generated_manifest(
+    env, monkeypatch, repo, capsys,
+):
+    """A `RELEASE_MANIFEST.txt` re-pin that alone pushes the scoped diff past
+    `_REVIEWER_DIFF_CAP` must not refuse the gate: it is generated,
+    hash-verified content the File inventory CI job checks by hash, never by
+    reading the diff. The Action's checkout-path budget must apply the same
+    `split_generated` exclusion `review.oneshot.run_gate` does — this test
+    fails on main, where the manifest counts against the cap and the run is
+    refused (`_fail`, no comment posted) — and the rendered comment must
+    still say the manifest was re-pinned, so the change does not go silent."""
+    manifest_body = "\n".join(
+        f"{('0123456789abcdef'[i % 16]) * 64}  src/file_{i:04d}.py"
+        for i in range(1000)
+    )
+    (repo.path / "RELEASE_MANIFEST.txt").write_text(manifest_body + "\n")
+    _git(repo.path, "add", ".")
+    _git(repo.path, "commit", "-q", "-m", "re-pin manifest, oversized on its own")
+    new_head = _git(repo.path, "rev-parse", "HEAD").strip()
+
+    event = _event(repo)
+    event["pull_request"]["head"]["sha"] = new_head
+    env["event_path"].write_text(json.dumps(event))
+
+    raw_diff = run._git(
+        repo.path, "diff", "--no-color", "--patch", f"{repo.head_sha}..{new_head}",
+    )
+    manifest_only = run._git(
+        repo.path, "diff", "--no-color", "--patch", f"{repo.head_sha}..{new_head}",
+        "--", "RELEASE_MANIFEST.txt",
+    )
+    assert len(raw_diff) > run._REVIEWER_DIFF_CAP, (
+        "fixture must exceed the cap unexcluded, or this test proves nothing"
+    )
+    assert len(raw_diff) - len(manifest_only) < run._REVIEWER_DIFF_CAP, (
+        "fixture must drop under the cap once the manifest patch alone is "
+        "excluded, or this test proves nothing"
+    )
+
+    seen = {}
+
+    async def _capture(task, *, repo_path, diff, before_ref, after_ref, model=None):
+        seen["diff"] = diff
+        return _pass_decision()
+
+    monkeypatch.setattr(run, "review_diff", _capture)
+    bodies = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(200, json=[])
+        bodies.append(json.loads(request.content))
+        return httpx.Response(201, json={"id": 1, "body": ""})
+
+    _mock_client(monkeypatch, handler)
+
+    assert run.main() == run.EXIT_OK, capsys.readouterr().out
+    assert "diff" in seen and seen["diff"], "diff must not be empty/falsy"
+    assert "RELEASE_MANIFEST.txt" not in seen["diff"], (
+        "the manifest patch must be excluded from what the reviewer is shown"
+    )
+    assert "src/app.py" in seen["diff"] or "tests/bar.py" in seen["diff"]
+    assert "RELEASE_MANIFEST.txt re-pinned" in bodies[0]["body"], bodies[0]["body"]
+
+
 # --------------------------------------------------------------------------- #
 # Review outcomes and exit codes                                              #
 # --------------------------------------------------------------------------- #
