@@ -17,10 +17,12 @@ from __future__ import annotations
 
 import ast
 import base64
+import io
 import json
 import re
 import os
 import subprocess
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -153,11 +155,23 @@ def _pass_decision() -> ReviewDecision:
     return ReviewDecision(passed=True, checklist=[])
 
 
+_REAL_GITHUB_CLIENT = github.GitHubClient  # captured once, before any monkeypatching
+
+
 def _mock_client(monkeypatch, handler):
     """Monkeypatch `run.github.GitHubClient` so every construction uses an
-    `httpx.MockTransport` around *handler*, never a real socket."""
+    `httpx.MockTransport` around *handler*, never a real socket.
 
-    class _Patched(github.GitHubClient):
+    Subclasses the real client captured at import time (`_REAL_GITHUB_CLIENT`),
+    not `github.GitHubClient` as looked up at call time — a test that calls
+    this helper more than once (e.g. to swap handlers mid-test) would otherwise
+    have its second `_Patched` class silently inherit from the *first* call's
+    already-monkeypatched `_Patched`, dropping the new `transport`/`sleep`
+    kwargs into the base `__init__`'s `**kw` and routing traffic through the
+    stale first handler instead.
+    """
+
+    class _Patched(_REAL_GITHUB_CLIENT):
         def __init__(self, *, token, api_url=github.DEFAULT_API_URL, **kw):
             super().__init__(token=token, api_url=api_url,
                               transport=httpx.MockTransport(handler), sleep=lambda s: None)
@@ -200,14 +214,23 @@ def _workflow_run_event(*, repo_full: str = "acme/widgets", pr_number: int = 7,
 
 def _pr_rest_payload(*, repo_full: str = "acme/widgets", pr_number: int = 7,
                       head_sha: str = "d" * 40, base_sha: str = "c" * 40,
+                      head_ref: str = "feature", base_ref: str = "main",
+                      base_repo_full: str | None = None,
+                      head_repo_full: str | None = None,
                       fork: bool = False, deleted_fork: bool = False,
                       state: str = "open", merged: bool = False,
                       title: str = "Add a feature", body: str = "does the thing",
                       changed_files: int = 2) -> dict:
     """The shape `GET /repos/{o}/{r}/pulls/{n}` returns, trimmed to the
-    fields this Action actually reads."""
+    fields this Action actually reads.
+
+    `head_ref` / `base_ref` / `base_repo_full` exist for the fork artifact
+    path's `_assert_pull_matches_run` cross-check — the same-repo path never
+    reads them, so their defaults are inert for every pre-existing test."""
     if deleted_fork:
         head_repo = None
+    elif head_repo_full is not None:
+        head_repo = {"full_name": head_repo_full}
     elif fork:
         head_repo = {"full_name": "someone-else/widgets"}
     else:
@@ -215,10 +238,61 @@ def _pr_rest_payload(*, repo_full: str = "acme/widgets", pr_number: int = 7,
     return {
         "number": pr_number, "title": title, "body": body,
         "state": state, "merged": merged,
-        "base": {"sha": base_sha},
-        "head": {"sha": head_sha, "repo": head_repo},
+        "base": {
+            "sha": base_sha, "ref": base_ref,
+            "repo": {"full_name": base_repo_full if base_repo_full is not None else repo_full},
+        },
+        "head": {"sha": head_sha, "ref": head_ref, "repo": head_repo},
         "changed_files": changed_files,
     }
+
+
+# --------------------------------------------------------------------------- #
+# fork workflow_run fixtures: PR identity from a run-bound artifact           #
+# --------------------------------------------------------------------------- #
+
+
+def _fork_workflow_run_event(*, repo_full: str = "acme/widgets", run_id: int = 555,
+                              head_sha: str = "d" * 40, head_branch: str = "feature",
+                              head_repo_full: str = "someone-else/widgets",
+                              event_field: str | None = "pull_request",
+                              conclusion: str | None = "success") -> dict:
+    """A `workflow_run` event triggered by a FORK pull request:
+    `pull_requests` is empty (GitHub never populates it for a fork PR — see
+    run.py's module docstring), so the PR identity must be resolved from the
+    `pr-context` artifact instead of read off this payload."""
+    wr: dict = {
+        "id": run_id,
+        "pull_requests": [],
+        "head_sha": head_sha,
+        "head_branch": head_branch,
+        "head_repository": {"full_name": head_repo_full},
+    }
+    if event_field is not None:
+        wr["event"] = event_field
+    if conclusion is not None:
+        wr["conclusion"] = conclusion
+    return {"repository": {"full_name": repo_full}, "workflow_run": wr}
+
+
+def _artifact_meta(*, artifact_id: int = 1, name: str = "pr-context",
+                    size: int = 256, expired: bool = False) -> dict:
+    """One entry of `GET /repos/{o}/{r}/actions/runs/{run_id}/artifacts`."""
+    return {"id": artifact_id, "name": name, "size_in_bytes": size, "expired": expired}
+
+
+def _pr_context_zip(*, number: int = 7, head_sha: str = "d" * 40,
+                     member: str = "pr.json", raw_body: bytes | None = None) -> bytes:
+    """Build a `pr-context` artifact zip. Pass `raw_body` to override the
+    `pr.json` payload entirely (for the malformed-content matrix); otherwise
+    a well-formed `{"number": ..., "head_sha": ...}` document is written."""
+    body = raw_body if raw_body is not None else json.dumps(
+        {"number": number, "head_sha": head_sha}
+    ).encode("utf-8")
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr(member, body)
+    return buf.getvalue()
 
 
 def _pr_file(path: str, patch: str | None = "@@ -0,0 +1 @@\n+x\n", status: str = "modified",
@@ -264,18 +338,61 @@ def workflow_env(tmp_path, monkeypatch):
     return {"event_path": event_path, "out_path": out_path, "summary_path": summary_path}
 
 
-def _rest_handler(pr_payload: dict, files_payload: list[dict] | None = None,
+@pytest.fixture
+def fork_workflow_env(tmp_path, monkeypatch):
+    """Base environment for a `workflow_run` run triggered by a FORK pull
+    request: `pull_requests` is empty, so the PR identity must come from the
+    `pr-context` artifact rather than the event payload."""
+    event_path = tmp_path / "fork_wr_event.json"
+    event_path.write_text(json.dumps(_fork_workflow_run_event()))
+    out_path = tmp_path / "output.txt"
+    summary_path = tmp_path / "summary.md"
+    out_path.write_text("")
+    summary_path.write_text("")
+
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "workflow_run")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(event_path))
+    monkeypatch.setenv("GITHUB_OUTPUT", str(out_path))
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary_path))
+    monkeypatch.setenv("INPUT_CREDENTIAL", "sk-ant-api-testvalue")
+    monkeypatch.setenv("INPUT_GITHUB_TOKEN", "ghp_testtoken")
+    monkeypatch.delenv("INPUT_CREDENTIAL_MODE", raising=False)
+    monkeypatch.delenv("INPUT_MAX_FILES", raising=False)
+    monkeypatch.delenv("INPUT_FAIL_ON_FINDINGS", raising=False)
+    monkeypatch.delenv("INPUT_DRY_RUN", raising=False)
+    monkeypatch.delenv("INPUT_MODEL", raising=False)
+    monkeypatch.delenv("GITHUB_WORKSPACE", raising=False)
+    for var in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"):
+        monkeypatch.delenv(var, raising=False)
+    return {"event_path": event_path, "out_path": out_path, "summary_path": summary_path}
+
+
+def _rest_handler(pr_payload: dict | None = None, files_payload: list[dict] | None = None,
                    contents: dict[str, str] | None = None,
                    comments: list[dict] | None = None,
-                   status_overrides: dict[str, tuple[int, dict]] | None = None):
+                   status_overrides: dict[str, tuple[int, dict]] | None = None,
+                   pulls: dict[int, dict] | None = None,
+                   artifacts: list[dict] | None = None,
+                   artifact_zips: dict[int, bytes] | None = None):
     """Serve `GET .../pulls/{n}`, `GET .../pulls/{n}/files`, `GET
-    .../contents/*`, and the comment list/create endpoints off one
-    `MockTransport`.
+    .../contents/*`, the comment list/create endpoints, the run-scoped
+    artifact listing, and an artifact's zip download (including the
+    unauthenticated blob-host redirect hop) off one `MockTransport`.
 
-    `status_overrides` maps a target name (``"pulls"``, ``"files"``, or
-    ``"contents"``) to an ``(status_code, headers)`` pair returned INSTEAD of
-    the normal 200 for every request matching that target — the one knob the
-    non-200-state matrix test needs.
+    `status_overrides` maps a target name (``"pulls"``, ``"files"``,
+    ``"contents"``, ``"artifacts"``, or ``"artifact_zip"``) to an
+    ``(status_code, headers)`` pair returned INSTEAD of the normal 200 for
+    every request matching that target — the one knob the non-200-state
+    matrix test needs.
+
+    `pulls` maps PR number -> REST payload, for tests that need more than
+    one open pull request in play at once (the identity-binding tests); a
+    plain `pr_payload` is folded in under its own `number` for every
+    pre-existing single-PR test. `artifacts` is the list served by the
+    run-scoped artifact listing; `artifact_zips` maps artifact id -> the raw
+    zip bytes served (via a redirect to a fake `blob.example` host, mirroring
+    GitHub's real Azure Blob Storage redirect) once that artifact is
+    downloaded. An artifact id absent from `artifact_zips` 404s.
 
     Returns ``(handler, calls)`` where `calls` records every
     ``(method, url)`` pair seen, in order.
@@ -284,17 +401,56 @@ def _rest_handler(pr_payload: dict, files_payload: list[dict] | None = None,
     contents = contents or {}
     comments = comments if comments is not None else []
     status_overrides = status_overrides or {}
+    pulls_map: dict[int, dict] = dict(pulls) if pulls is not None else {}
+    if pr_payload is not None:
+        pulls_map.setdefault(pr_payload["number"], pr_payload)
+    artifacts = artifacts if artifacts is not None else []
+    artifact_zips = artifact_zips or {}
     calls: list[tuple[str, str]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         calls.append((request.method, str(request.url)))
         path = request.url.path
 
-        if re.match(r"^/repos/[^/]+/[^/]+/pulls/\d+$", path):
+        if request.url.host == "blob.example":
+            bm = re.match(r"^/artifact-(\d+)\.zip$", path)
+            if bm:
+                if "blob" in status_overrides:
+                    status, headers = status_overrides["blob"]
+                    return httpx.Response(status, headers=headers, text="")
+                return httpx.Response(200, content=artifact_zips.get(int(bm.group(1)), b""))
+            raise AssertionError(f"unexpected blob-host request: {request.method} {request.url}")
+
+        am = re.match(r"^/repos/[^/]+/[^/]+/actions/runs/(\d+)/artifacts$", path)
+        if am:
+            if "artifacts" in status_overrides:
+                status, headers = status_overrides["artifacts"]
+                return httpx.Response(status, headers=headers, text="")
+            name = request.url.params.get("name")
+            matched = [a for a in artifacts if name is None or a.get("name") == name]
+            return httpx.Response(200, json={"artifacts": matched, "total_count": len(matched)})
+
+        zm = re.match(r"^/repos/[^/]+/[^/]+/actions/artifacts/(\d+)/zip$", path)
+        if zm:
+            if "artifact_zip" in status_overrides:
+                status, headers = status_overrides["artifact_zip"]
+                return httpx.Response(status, headers=headers, text="")
+            artifact_id = int(zm.group(1))
+            if artifact_id not in artifact_zips:
+                return httpx.Response(404, json={"message": "Not Found"})
+            return httpx.Response(
+                302, headers={"location": f"https://blob.example/artifact-{artifact_id}.zip"},
+            )
+
+        pm = re.match(r"^/repos/[^/]+/[^/]+/pulls/(\d+)$", path)
+        if pm:
             if "pulls" in status_overrides:
                 status, headers = status_overrides["pulls"]
                 return httpx.Response(status, headers=headers, text="")
-            return httpx.Response(200, json=pr_payload)
+            number = int(pm.group(1))
+            if number not in pulls_map:
+                return httpx.Response(404, json={"message": "Not Found"})
+            return httpx.Response(200, json=pulls_map[number])
 
         if re.match(r"^/repos/[^/]+/[^/]+/pulls/\d+/files$", path):
             if "files" in status_overrides:
@@ -1466,6 +1622,14 @@ def test_workflow_run_closed_pr_is_skipped(workflow_env, monkeypatch, capsys):
 
 
 def test_workflow_run_without_pull_requests_entry_fails_closed(workflow_env, monkeypatch):
+    """An empty `pull_requests` array no longer means an immediate refusal on
+    its own — a fork PR is expected to hit exactly this shape (see run.py's
+    module docstring's FORK `workflow_run` section), so this must attempt
+    the artifact-resolution path rather than bailing out untried. What must
+    still hold is: a `workflow_run` object too bare to trust (no `head_sha`
+    of its own) fails before any GitHub API call at all, and one that *is*
+    trustworthy but whose artifact cannot be retrieved fails closed after
+    actually trying — exit 2 either way, never a comment."""
     workflow_env["event_path"].write_text(json.dumps({
         "repository": {"full_name": "acme/widgets"},
         "workflow_run": {"id": 555, "pull_requests": []},
@@ -1473,7 +1637,19 @@ def test_workflow_run_without_pull_requests_entry_fails_closed(workflow_env, mon
     handler, calls = _rest_handler(_pr_rest_payload())
     _mock_client(monkeypatch, handler)
     assert run.main() == run.EXIT_DID_NOT_RUN
-    assert calls == [], "nothing to review — must fail before any GitHub API call"
+    assert calls == [], "a workflow_run object with no trusted head_sha of its own must fail before any GitHub API call"
+
+    # Now a fully-formed, trustworthy `workflow_run` object — but no
+    # `pr-context` artifact was ever uploaded for it. This must still fail
+    # closed, but only after actually attempting the run-scoped lookup.
+    workflow_env["event_path"].write_text(json.dumps(_fork_workflow_run_event(run_id=555)))
+    handler, calls = _rest_handler(pulls={7: _pr_rest_payload()}, artifacts=[], artifact_zips={})
+    _mock_client(monkeypatch, handler)
+    assert run.main() == run.EXIT_DID_NOT_RUN
+    assert not any(m in ("POST", "PATCH") for m, _ in calls)
+    assert any("/actions/runs/555/artifacts" in u for m, u in calls), (
+        f"expected a run-scoped artifact lookup against run 555, got: {calls}"
+    )
 
 
 def test_workflow_run_head_sha_moved_since_trigger_fails_closed(workflow_env, monkeypatch, capsys):
@@ -1583,6 +1759,353 @@ def test_rest_failure_states_exit_two_and_post_no_pass_comment(workflow_env, mon
     assert run.main() == run.EXIT_DID_NOT_RUN
     assert not any(m == "POST" for m, _ in calls), "an acquisition-phase failure must post no comment at all"
     assert not any(m == "PATCH" for m, _ in calls)
+
+
+# --------------------------------------------------------------------------- #
+# fork workflow_run: PR identity bound to the triggering run's own artifact   #
+# --------------------------------------------------------------------------- #
+
+
+def test_fork_workflow_run_resolves_pr_via_artifact_and_reviews(fork_workflow_env, monkeypatch):
+    """The core fork-path happy path: no `pull_request` payload, no
+    checkout — PR #7's identity is resolved from the `pr-context` artifact
+    THIS run uploaded, cross-checked against the triggering `workflow_run`,
+    and the review proceeds exactly as the same-repo path would."""
+    monkeypatch.setattr(run, "review_diff", _fake_review_diff(_pass_decision()))
+    handler, calls = _rest_handler(
+        pulls={7: _pr_rest_payload(fork=True)},
+        files_payload=[_pr_file("src/app.py")],
+        artifacts=[_artifact_meta(artifact_id=1)],
+        artifact_zips={1: _pr_context_zip(number=7)},
+    )
+    _mock_client(monkeypatch, handler)
+
+    assert run.main() == run.EXIT_OK
+    assert any(m == "GET" and re.search(r"/actions/runs/555/artifacts", u) for m, u in calls)
+    assert any(m == "GET" and "/actions/artifacts/1/zip" in u for m, u in calls)
+    assert any(m == "GET" and u.endswith("/pulls/7") for m, u in calls)
+    assert any(m == "GET" and "/pulls/7/files" in u for m, u in calls)
+    assert any(m == "POST" and u.endswith("/comments") for m, u in calls)
+
+
+def test_fork_workflow_run_artifact_fetch_is_scoped_to_triggering_run_id(fork_workflow_env, monkeypatch):
+    """BINDING (acceptance criterion 1): the artifact must be looked up by
+    the triggering run's OWN id, never by name alone — a name-only lookup is
+    forgeable by anyone who can get an artifact of that name attached to ANY
+    workflow run in the repository. Mutating the fetch to a name-only
+    lookup makes the first assertion below fail: the run-scoped URL
+    `/actions/runs/999/artifacts` would never be requested at all."""
+    fork_workflow_env["event_path"].write_text(json.dumps(_fork_workflow_run_event(run_id=999)))
+    monkeypatch.setattr(run, "review_diff", _fake_review_diff(_pass_decision()))
+    handler, calls = _rest_handler(
+        pulls={7: _pr_rest_payload(fork=True)},
+        artifacts=[_artifact_meta(artifact_id=1)],
+        artifact_zips={1: _pr_context_zip(number=7)},
+    )
+    _mock_client(monkeypatch, handler)
+
+    assert run.main() == run.EXIT_OK
+    assert any(m == "GET" and re.search(r"/actions/runs/999/artifacts\b", u) for m, u in calls), calls
+    assert any(m == "GET" and "/actions/artifacts/1/zip" in u for m, u in calls), calls
+
+
+def test_two_open_prs_share_a_head_sha_artifact_selects_the_claimed_number(fork_workflow_env, monkeypatch):
+    """IDENTITY (acceptance criterion 2): two distinct open PRs can share one
+    head sha against different bases (e.g. the same fork branch opened
+    against two different base branches). The artifact's claimed `number`
+    — not the head sha alone — must pick which one gets reviewed."""
+    shared_sha = "e" * 40
+    fork_workflow_env["event_path"].write_text(json.dumps(
+        _fork_workflow_run_event(head_sha=shared_sha, run_id=555)
+    ))
+    monkeypatch.setattr(run, "review_diff", _fake_review_diff(_pass_decision()))
+    pulls = {
+        101: _pr_rest_payload(pr_number=101, head_sha=shared_sha, base_ref="main", fork=True),
+        102: _pr_rest_payload(pr_number=102, head_sha=shared_sha, base_ref="release", fork=True),
+    }
+    handler, calls = _rest_handler(
+        pulls=pulls,
+        artifacts=[_artifact_meta(artifact_id=1)],
+        artifact_zips={1: _pr_context_zip(number=102, head_sha=shared_sha)},
+    )
+    _mock_client(monkeypatch, handler)
+
+    assert run.main() == run.EXIT_OK
+    assert any(m == "GET" and u.endswith("/pulls/102") for m, u in calls)
+    assert not any(m == "GET" and u.endswith("/pulls/101") for m, u in calls)
+
+
+def test_pull_whose_number_disagrees_with_the_artifact_is_refused(fork_workflow_env, monkeypatch):
+    """IDENTITY (acceptance criterion 2): even though the pull is always
+    fetched BY the artifact's claimed number (`GET /pulls/{number}`),
+    `_assert_pull_matches_run` still checks the fetched object's own
+    `number` field — belt-and-suspenders against an API/mock that reports an
+    inconsistent identity. Dropping this comparison (leaving only head-sha
+    equality) would let this mismatched pull through undetected."""
+    fork_workflow_env["event_path"].write_text(json.dumps(_fork_workflow_run_event(run_id=555)))
+    monkeypatch.setattr(run, "review_diff", _fake_review_diff(exc=AssertionError("must not be called")))
+    inconsistent = _pr_rest_payload(pr_number=101, fork=True)  # served for GET /pulls/102
+    handler, calls = _rest_handler(
+        pulls={102: inconsistent},
+        artifacts=[_artifact_meta(artifact_id=1)],
+        artifact_zips={1: _pr_context_zip(number=102)},
+    )
+    _mock_client(monkeypatch, handler)
+
+    assert run.main() == run.EXIT_DID_NOT_RUN
+    assert not any(m in ("POST", "PATCH") for m, _ in calls)
+
+
+def test_pull_base_repository_mismatch_is_refused(fork_workflow_env, monkeypatch):
+    """IDENTITY (acceptance criterion 3): the fetched pull's base repository
+    must be THIS repository. Removing this comparison would accept a
+    same-numbered, same-head-sha pull that is actually based against an
+    entirely different repository."""
+    fork_workflow_env["event_path"].write_text(json.dumps(_fork_workflow_run_event(run_id=555)))
+    monkeypatch.setattr(run, "review_diff", _fake_review_diff(exc=AssertionError("must not be called")))
+    wrong_base = _pr_rest_payload(fork=True, base_repo_full="attacker/widgets")
+    handler, calls = _rest_handler(
+        pulls={7: wrong_base},
+        artifacts=[_artifact_meta(artifact_id=1)],
+        artifact_zips={1: _pr_context_zip(number=7)},
+    )
+    _mock_client(monkeypatch, handler)
+
+    assert run.main() == run.EXIT_DID_NOT_RUN
+    assert not any(m in ("POST", "PATCH") for m, _ in calls)
+
+
+def test_pull_base_ref_empty_is_refused(fork_workflow_env, monkeypatch):
+    fork_workflow_env["event_path"].write_text(json.dumps(_fork_workflow_run_event(run_id=555)))
+    monkeypatch.setattr(run, "review_diff", _fake_review_diff(exc=AssertionError("must not be called")))
+    empty_base_ref = _pr_rest_payload(fork=True, base_ref="")
+    handler, calls = _rest_handler(
+        pulls={7: empty_base_ref},
+        artifacts=[_artifact_meta(artifact_id=1)],
+        artifact_zips={1: _pr_context_zip(number=7)},
+    )
+    _mock_client(monkeypatch, handler)
+
+    assert run.main() == run.EXIT_DID_NOT_RUN
+    assert not any(m in ("POST", "PATCH") for m, _ in calls)
+
+
+def test_pull_head_repository_mismatch_is_refused(fork_workflow_env, monkeypatch):
+    """The fetched pull's head repository must match the triggering
+    workflow_run's own `head_repository.full_name` (default
+    `someone-else/widgets`)."""
+    fork_workflow_env["event_path"].write_text(json.dumps(_fork_workflow_run_event(run_id=555)))
+    monkeypatch.setattr(run, "review_diff", _fake_review_diff(exc=AssertionError("must not be called")))
+    wrong_head_repo = _pr_rest_payload(head_repo_full="not-the-triggering-fork/widgets")
+    handler, calls = _rest_handler(
+        pulls={7: wrong_head_repo},
+        artifacts=[_artifact_meta(artifact_id=1)],
+        artifact_zips={1: _pr_context_zip(number=7)},
+    )
+    _mock_client(monkeypatch, handler)
+
+    assert run.main() == run.EXIT_DID_NOT_RUN
+    assert not any(m in ("POST", "PATCH") for m, _ in calls)
+
+
+def test_pull_head_branch_mismatch_is_refused(fork_workflow_env, monkeypatch):
+    """The fetched pull's head branch must match the triggering
+    workflow_run's own `head_branch` (default `feature`)."""
+    fork_workflow_env["event_path"].write_text(json.dumps(_fork_workflow_run_event(run_id=555)))
+    monkeypatch.setattr(run, "review_diff", _fake_review_diff(exc=AssertionError("must not be called")))
+    wrong_head_ref = _pr_rest_payload(fork=True, head_ref="some-other-branch")
+    handler, calls = _rest_handler(
+        pulls={7: wrong_head_ref},
+        artifacts=[_artifact_meta(artifact_id=1)],
+        artifact_zips={1: _pr_context_zip(number=7)},
+    )
+    _mock_client(monkeypatch, handler)
+
+    assert run.main() == run.EXIT_DID_NOT_RUN
+    assert not any(m in ("POST", "PATCH") for m, _ in calls)
+
+
+def test_fetched_pull_head_sha_disagreeing_with_trusted_run_is_refused(fork_workflow_env, monkeypatch):
+    """The fetched pull's own head sha must equal the triggering
+    workflow_run's trusted head sha — independent of the earlier
+    artifact-vs-trusted-run binding check, this guards against the PR having
+    moved (or the API disagreeing with itself) between the artifact upload
+    and this read."""
+    trusted_sha = "d" * 40
+    fork_workflow_env["event_path"].write_text(json.dumps(
+        _fork_workflow_run_event(head_sha=trusted_sha, run_id=555)
+    ))
+    monkeypatch.setattr(run, "review_diff", _fake_review_diff(exc=AssertionError("must not be called")))
+    stale = _pr_rest_payload(head_sha="f" * 40)
+    handler, calls = _rest_handler(
+        pulls={7: stale},
+        artifacts=[_artifact_meta(artifact_id=1)],
+        artifact_zips={1: _pr_context_zip(number=7, head_sha=trusted_sha)},
+    )
+    _mock_client(monkeypatch, handler)
+
+    assert run.main() == run.EXIT_DID_NOT_RUN
+    assert not any(m in ("POST", "PATCH") for m, _ in calls)
+
+
+def test_artifact_head_sha_disagreeing_with_trusted_run_head_sha_is_refused(fork_workflow_env, monkeypatch):
+    """BINDING: the artifact's OWN claimed head sha must equal the
+    triggering workflow_run's trusted head sha before its claimed number is
+    even used — this must fail before the pull is ever fetched by number."""
+    fork_workflow_env["event_path"].write_text(json.dumps(
+        _fork_workflow_run_event(head_sha="d" * 40, run_id=555)
+    ))
+    monkeypatch.setattr(run, "review_diff", _fake_review_diff(exc=AssertionError("must not be called")))
+    handler, calls = _rest_handler(
+        pulls={7: _pr_rest_payload(head_sha="d" * 40, fork=True)},
+        artifacts=[_artifact_meta(artifact_id=1)],
+        artifact_zips={1: _pr_context_zip(number=7, head_sha="f" * 40)},  # disagrees with trusted
+    )
+    _mock_client(monkeypatch, handler)
+
+    assert run.main() == run.EXIT_DID_NOT_RUN
+    assert not any(m in ("POST", "PATCH") for m, _ in calls)
+    assert not any(u.endswith("/pulls/7") for m, u in calls), (
+        "must refuse before ever fetching the pull request by number"
+    )
+
+
+def test_pr_context_artifact_not_uploaded_fails_closed(fork_workflow_env, monkeypatch):
+    """Acceptance criterion 4 (absent): no `pr-context` artifact was ever
+    uploaded for this run — fail closed, no comment."""
+    monkeypatch.setattr(run, "review_diff", _fake_review_diff(exc=AssertionError("must not be called")))
+    handler, calls = _rest_handler(pulls={7: _pr_rest_payload(fork=True)}, artifacts=[], artifact_zips={})
+    _mock_client(monkeypatch, handler)
+
+    assert run.main() == run.EXIT_DID_NOT_RUN
+    assert not any(m in ("POST", "PATCH") for m, _ in calls)
+
+
+def test_pr_context_zip_without_pr_json_member_fails_closed(fork_workflow_env, monkeypatch):
+    """Acceptance criterion 4 (absent file inside the zip)."""
+    monkeypatch.setattr(run, "review_diff", _fake_review_diff(exc=AssertionError("must not be called")))
+    blob = _pr_context_zip(member="something-else.json")
+    handler, calls = _rest_handler(
+        pulls={7: _pr_rest_payload(fork=True)}, artifacts=[_artifact_meta(artifact_id=1)], artifact_zips={1: blob},
+    )
+    _mock_client(monkeypatch, handler)
+
+    assert run.main() == run.EXIT_DID_NOT_RUN
+    assert not any(m in ("POST", "PATCH") for m, _ in calls)
+
+
+def test_pr_context_artifact_not_a_zip_fails_closed(fork_workflow_env, monkeypatch):
+    """Acceptance criterion 4 (malformed): the downloaded bytes aren't even
+    a valid zip file."""
+    monkeypatch.setattr(run, "review_diff", _fake_review_diff(exc=AssertionError("must not be called")))
+    handler, calls = _rest_handler(
+        pulls={7: _pr_rest_payload(fork=True)}, artifacts=[_artifact_meta(artifact_id=1)],
+        artifact_zips={1: b"this is not a zip file at all"},
+    )
+    _mock_client(monkeypatch, handler)
+
+    assert run.main() == run.EXIT_DID_NOT_RUN
+    assert not any(m in ("POST", "PATCH") for m, _ in calls)
+
+
+_MALFORMED_PR_CONTEXT_CASES = [
+    ("empty_file", b""),
+    ("whitespace_only", b"   \n"),
+    ("not_json", b"not json at all"),
+    ("json_not_object", b"[1, 2, 3]"),
+    ("number_missing", json.dumps({"head_sha": "d" * 40}).encode()),
+    ("number_zero", json.dumps({"number": 0, "head_sha": "d" * 40}).encode()),
+    ("number_negative", json.dumps({"number": -5, "head_sha": "d" * 40}).encode()),
+    ("number_float", json.dumps({"number": 7.5, "head_sha": "d" * 40}).encode()),
+    ("number_string", json.dumps({"number": "7", "head_sha": "d" * 40}).encode()),
+    ("number_bool", json.dumps({"number": True, "head_sha": "d" * 40}).encode()),
+    ("head_sha_missing", json.dumps({"number": 7}).encode()),
+    ("head_sha_too_short", json.dumps({"number": 7, "head_sha": "d" * 39}).encode()),
+    ("head_sha_too_long", json.dumps({"number": 7, "head_sha": "d" * 41}).encode()),
+    ("head_sha_uppercase", json.dumps({"number": 7, "head_sha": "D" * 40}).encode()),
+    ("head_sha_non_hex", json.dumps({"number": 7, "head_sha": "g" * 40}).encode()),
+]
+
+
+@pytest.mark.parametrize("case_name, raw_body", _MALFORMED_PR_CONTEXT_CASES)
+def test_malformed_pr_context_fails_closed(fork_workflow_env, monkeypatch, case_name, raw_body):
+    """Acceptance criterion 4: a malformed `pr-context` artifact — bad
+    number shape, bad head-sha shape, non-JSON, non-object, or an empty file
+    — must fail closed with no comment posted, never coerced into something
+    reviewable."""
+    monkeypatch.setattr(run, "review_diff", _fake_review_diff(exc=AssertionError("must not be called")))
+    blob = _pr_context_zip(raw_body=raw_body)
+    handler, calls = _rest_handler(
+        pulls={7: _pr_rest_payload(fork=True)}, artifacts=[_artifact_meta(artifact_id=1)], artifact_zips={1: blob},
+    )
+    _mock_client(monkeypatch, handler)
+
+    assert run.main() == run.EXIT_DID_NOT_RUN, case_name
+    assert not any(m in ("POST", "PATCH") for m, _ in calls), case_name
+
+
+def test_fork_workflow_run_ambiguous_artifact_name_is_refused(fork_workflow_env, monkeypatch):
+    """Two artifacts named `pr-context` on the same run is a fatal
+    ambiguity — `find_run_artifact` must never guess/pick the first."""
+    monkeypatch.setattr(run, "review_diff", _fake_review_diff(exc=AssertionError("must not be called")))
+    handler, calls = _rest_handler(
+        pulls={7: _pr_rest_payload(fork=True)},
+        artifacts=[_artifact_meta(artifact_id=1), _artifact_meta(artifact_id=2)],
+        artifact_zips={1: _pr_context_zip(number=7), 2: _pr_context_zip(number=999)},
+    )
+    _mock_client(monkeypatch, handler)
+
+    assert run.main() == run.EXIT_DID_NOT_RUN
+    assert not any(m in ("POST", "PATCH") for m, _ in calls)
+
+
+def test_fork_workflow_run_credential_not_read_before_artifact_resolved(fork_workflow_env, monkeypatch):
+    """The fail-closed-before-credential-read guarantee extends to the
+    fork artifact path: an unresolvable artifact must never reach the
+    `credential` input at all."""
+    monkeypatch.setattr(
+        run, "_configure_credential",
+        lambda *a, **kw: (_ for _ in ()).throw(
+            AssertionError("credential must not be read before artifact resolution")
+        ),
+    )
+    monkeypatch.setattr(run, "review_diff", _fake_review_diff(exc=AssertionError("must not be called")))
+    handler, _calls = _rest_handler(pulls={7: _pr_rest_payload(fork=True)}, artifacts=[], artifact_zips={})
+    _mock_client(monkeypatch, handler)
+
+    assert run.main() == run.EXIT_DID_NOT_RUN
+
+
+def test_fork_workflow_run_with_failed_conclusion_is_refused(fork_workflow_env, monkeypatch):
+    """Defense in depth: a triggering `workflow_run` whose own `conclusion`
+    is not `success` gets no artifact trust extended to it at all — refused
+    before any GitHub API call."""
+    fork_workflow_env["event_path"].write_text(json.dumps(
+        _fork_workflow_run_event(conclusion="failure")
+    ))
+    handler, calls = _rest_handler(
+        pulls={7: _pr_rest_payload(fork=True)}, artifacts=[_artifact_meta(artifact_id=1)],
+        artifact_zips={1: _pr_context_zip(number=7)},
+    )
+    _mock_client(monkeypatch, handler)
+
+    assert run.main() == run.EXIT_DID_NOT_RUN
+    assert calls == [], "must refuse before any API call when the triggering run itself did not succeed"
+
+
+def test_same_repo_workflow_run_never_reads_an_artifact(workflow_env, monkeypatch):
+    """Acceptance criterion 5: a `workflow_run` event with a non-empty
+    `pull_requests` entry is the SAME-repository path — PR identity comes
+    straight off the trusted payload, and this branch must never attempt to
+    read an artifact at all (not merely 'succeed without one')."""
+    pr_payload = _pr_rest_payload()
+    files_payload = [_pr_file("src/app.py")]
+    monkeypatch.setattr(run, "review_diff", _fake_review_diff(_pass_decision()))
+    handler, calls = _rest_handler(pr_payload, files_payload)
+    _mock_client(monkeypatch, handler)
+
+    assert run.main() == run.EXIT_OK
+    assert not any("/actions/" in u for m, u in calls), calls
 
 
 # --------------------------------------------------------------------------- #
